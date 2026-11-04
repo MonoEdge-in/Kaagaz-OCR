@@ -5,6 +5,7 @@
 
 import { describeAction, describeTarget, whoText } from "@/components/admin/logic";
 import { labelName } from "@/components/files/labels";
+import { formatNumber } from "@/lib/format";
 import type { ActivityEntry } from "@/lib/types";
 
 type Entry = Pick<ActivityEntry, "action" | "actor_name" | "details"> &
@@ -38,6 +39,8 @@ export const ACTIVITY_WORDS: Record<string, (entry: Entry) => string> = {
   "document.autofile_undo": () => "undid the automatic filing",
   "document.reprocess": () => "asked to read it again",
   "audit.export": () => "exported the activity",
+  "folder.upload": (entry) =>
+    typeof entry.details.files === "number" ? `uploaded a folder of ${formatNumber(entry.details.files)} files` : "uploaded a folder",
 };
 
 /** The action in words; one this table does not know falls back to the admin log's words. */

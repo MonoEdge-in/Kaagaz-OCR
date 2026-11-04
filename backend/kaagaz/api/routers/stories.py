@@ -68,7 +68,7 @@ from kaagaz.api.auth import CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.middleware import RateLimiter
-from kaagaz.api.routers.documents import _same_user
+from kaagaz.api.routers.documents import same_user
 from kaagaz.db import audit, listing, trash
 from kaagaz.db import document_stories as stories_sql
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -124,7 +124,7 @@ class StoryMatchBody(StoryMatchParams):
 
 def _same_tab(user_id: str | None, user: CurrentUser) -> None:
     try:
-        _same_user(user_id, user)
+        same_user(user_id, user)
     except ApiError:
         raise ApiError(409, "session_changed", SESSION_CHANGED) from None
 

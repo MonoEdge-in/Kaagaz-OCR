@@ -91,7 +91,8 @@ describe("health in words", () => {
 describe("activity and health source guards", () => {
   // Changed on purpose (spec 17 Oct 2026): Feature switches is the eighth tab.
   // Changed on purpose (0040): Timeout setup is the ninth. Changed on purpose (0053): Speed the tenth.
-  it("uses the admin screen's tablist pattern for ten tabs", () => {
+  // Changed on purpose (#484): Folder uploads comes before Feature switches.
+  it("uses the admin screen's tablist pattern for eleven tabs", () => {
     expect(OPERATOR_TABS.map((tab) => tab.label)).toEqual([
       "Overview",
       "Quality",
@@ -100,6 +101,7 @@ describe("activity and health source guards", () => {
       "AI spend",
       "Activity",
       "Health",
+      "Folder uploads",
       "Feature switches",
       "Timeout setup",
       "Speed",

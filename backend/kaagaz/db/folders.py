@@ -1,14 +1,17 @@
-"""Folders: one customer's tree, at most 5 levels deep (PRD 1 F1, WP1.2).
+"""Folders: one customer's tree, at most 100 levels deep (PRD 1 F1, WP1.2; #484).
 
 Why here: the tree rules live in SQL next to the data. Every function takes a
 connection from ``Database.customer(customer_id)`` and also filters on
 ``customer_id`` (two locks, docs/architecture.md).
 
 The tree is an adjacency list (``parent_id``). A top-level folder is at
-depth 1; the deepest allowed is depth 5. Folders are few per customer, so
-walking the tree with a recursive CTE is cheap. Every recursive CTE here is
-bounded (``depth < 6``) and filters ``customer_id`` in both terms, so even a
-damaged tree cannot make a statement loop.
+depth 1; the deepest allowed is depth 100 (Tushar, 3 Nov 2026: any depth, like
+Google Drive, whose own limit is 100; it was 5). A customer may hold tens of
+thousands of folders, 100 levels deep; every walk is on an index (up: the
+primary key, down: ``folders_sibling_name``'s prefix) and bounded, O(depth) up
+and O(subtree) down. Every recursive CTE here is bounded (``depth < 101``) and
+filters ``customer_id`` in both terms, so even a damaged tree cannot make a
+statement loop.
 
 Concurrency: create, move and delete first take the customer's tree lock
 (``_lock_tree``: one row lock on ``customers``). Tree changes of one customer
@@ -36,7 +39,7 @@ from sqlalchemy.exc import IntegrityError
 from kaagaz.db import audit
 from kaagaz.db.sqlstate import CHECK_VIOLATION, FOREIGN_KEY_VIOLATION, UNIQUE_VIOLATION, sqlstate
 
-_MAX_DEPTH = 5
+MAX_DEPTH = 100  # Tushar, 3 Nov 2026 (#484): was 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,7 +82,7 @@ class FolderCycle(FolderError):
 
 
 class FolderTooDeep(FolderError):
-    """The folder, or a folder inside it, would end up deeper than 5 levels."""
+    """The folder, or a folder inside it, would end up deeper than 100 levels."""
 
     def __init__(self) -> None:
         super().__init__("folder_too_deep")
@@ -138,7 +141,7 @@ _PATH = (
     " UNION ALL"
     " SELECT f.id, f.parent_id, f.name, f.created_at, f.kind, f.sort_order, up.depth + 1 FROM up"
     " JOIN folders f ON f.id = up.parent_id"
-    " WHERE f.customer_id = :c AND up.depth < 6)"
+    " WHERE f.customer_id = :c AND up.depth < 101)"
     " SELECT id, parent_id, name, created_at, kind, sort_order FROM up ORDER BY depth DESC"
 )
 
@@ -148,7 +151,7 @@ _DEPTH = (
     " UNION ALL"
     " SELECT f.id, f.parent_id, up.depth + 1 FROM up"
     " JOIN folders f ON f.id = up.parent_id"
-    " WHERE f.customer_id = :c AND up.depth < 6)"
+    " WHERE f.customer_id = :c AND up.depth < 101)"
     " SELECT max(depth) FROM up"
 )
 
@@ -159,7 +162,7 @@ _DESCENDANTS = (
     " UNION ALL"
     " SELECT f.id, down.depth + 1 FROM down"
     " JOIN folders f ON f.parent_id = down.id"
-    " WHERE f.customer_id = :c AND down.depth < 6)"
+    " WHERE f.customer_id = :c AND down.depth < 101)"
     " SELECT id FROM down ORDER BY depth, id"
 )
 
@@ -172,13 +175,13 @@ _MOVE_CHECK = (
     " UNION ALL"
     " SELECT f.id, f.parent_id, up.depth + 1 FROM up"
     " JOIN folders f ON f.id = up.parent_id"
-    " WHERE f.customer_id = :c AND up.depth < 6),"
+    " WHERE f.customer_id = :c AND up.depth < 101),"
     " down (id, depth) AS ("
     " SELECT f.id, 1 FROM folders f WHERE f.customer_id = :c AND f.id = :f"
     " UNION ALL"
     " SELECT f.id, down.depth + 1 FROM down"
     " JOIN folders f ON f.parent_id = down.id"
-    " WHERE f.customer_id = :c AND down.depth < 6)"
+    " WHERE f.customer_id = :c AND down.depth < 101)"
     " SELECT (SELECT max(depth) FROM up),"
     " EXISTS (SELECT 1 FROM up WHERE up.id = :f),"
     " (SELECT max(depth) FROM down)"
@@ -226,8 +229,8 @@ def create_folder(
     """Add a folder at the top level (``parent_id`` None) or inside ``parent_id``.
 
     Raises FolderNotFound (no such parent), FolderTooDeep (the parent is at
-    depth 5), DepartmentNotTopLevel or FolderNameTaken. O(d log F) time for the
-    parent's depth d <= 5, O(1) space.
+    depth 100), DepartmentNotTopLevel or FolderNameTaken. O(d log F) time for the
+    parent's depth d <= 100, O(1) space.
     """
     if kind == "department" and parent_id is not None:
         raise DepartmentNotTopLevel()
@@ -236,7 +239,7 @@ def create_folder(
         parent_depth: int | None = conn.execute(text(_DEPTH), {"c": customer_id, "f": parent_id}).scalar_one()
         if parent_depth is None:
             raise FolderNotFound()
-        if parent_depth >= _MAX_DEPTH:
+        if parent_depth >= MAX_DEPTH:
             raise FolderTooDeep()
     params = {
         "c": customer_id,
@@ -288,9 +291,9 @@ def move_folder(conn: Connection, customer_id: str, folder_id: str, *, parent_id
     None) or inside ``parent_id``.
 
     Raises FolderNotFound (the folder or the target), FolderCycle (the target is
-    the folder or inside it), FolderTooDeep (depth(target) + height(subtree) > 5)
+    the folder or inside it), FolderTooDeep (depth(target) + height(subtree) > 100)
     or FolderNameTaken. One check statement: O((d + s) log F) time for the
-    target's depth d <= 5 and the subtree's size s, O(d + s) space.
+    target's depth d <= 100 and the subtree's size s, O(d + s) space.
     """
     _lock_tree(conn, customer_id)
     if parent_id is not None:
@@ -301,7 +304,7 @@ def move_folder(conn: Connection, customer_id: str, folder_id: str, *, parent_id
             raise FolderNotFound()
         if cycle:
             raise FolderCycle()
-        if int(target_depth) + int(height) > _MAX_DEPTH:
+        if int(target_depth) + int(height) > MAX_DEPTH:
             raise FolderTooDeep()
     before = conn.execute(text(_PARENT), {"c": customer_id, "f": folder_id}).scalar()
     row = _write_named(conn, _MOVE, {"c": customer_id, "f": folder_id, "p": parent_id}).first()
@@ -337,7 +340,7 @@ def delete_folder(conn: Connection, customer_id: str, folder_id: str) -> None:
 
 def folder_path(conn: Connection, customer_id: str, folder_id: str) -> list[FolderRow]:
     """The folder and its ancestors, root first; empty if there is no such folder.
-    O(d log F) time and O(d) space for its depth d <= 5."""
+    O(d log F) time and O(d) space for its depth d <= 100."""
     return [_folder(row) for row in conn.execute(text(_PATH), {"c": customer_id, "f": folder_id})]
 
 

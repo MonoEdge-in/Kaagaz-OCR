@@ -2,7 +2,7 @@
 
 Why some choices:
 
-* **Thin.** The tree rules (at most 5 levels, no cycles, one name per parent
+* **Thin.** The tree rules (at most 100 levels, no cycles, one name per parent
   in any letter case, only an empty folder can go) live in
   ``kaagaz.db.folders``, which raises a ``FolderError`` carrying the API code.
   ``_refused`` turns it into the reply: 404 for a folder that isn't there

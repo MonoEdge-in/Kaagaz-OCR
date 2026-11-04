@@ -17,6 +17,7 @@ from kaagaz.answering.hard_to_read import FlaggedPage, not_found_note
 from kaagaz.api.auth import CurrentUser
 from kaagaz.db import audit
 from kaagaz.db import ensemble as ensemble_sql
+from kaagaz.db.folder_upload_items import ItemRow
 from kaagaz.db.folders import FolderRow
 from kaagaz.db.listing import CLEAR_COPY_LINES, CLEAR_COPY_TEXT, MAX_READING_LINES, MAX_READING_TEXT
 from kaagaz.db.tags import TagRow
@@ -405,6 +406,31 @@ def folder(row: FolderRow) -> dict[str, Any]:
         "created_at": iso(row.created_at),
         "kind": row.kind,  # File management F1
         "sort_order": row.sort_order,
+    }
+
+
+def folder_upload_item(row: ItemRow) -> dict[str, Any]:
+    """``FolderUploadItem`` (#484): the item, and its document's state (null with none, or one
+    deleted for good)."""
+    document = None
+    if row.document_status is not None:
+        document = {
+            "status": row.document_status,
+            "failure_code": row.document_failure_code,
+            "folder_id": row.document_folder_id,
+            "in_trash": row.in_trash,
+        }
+    return {
+        "id": row.id,
+        "seq": row.seq,
+        "path_key": row.path_key,
+        "name": row.name,
+        "folder_id": row.folder_id,
+        "size": row.size,
+        "state": row.state,
+        "failure_code": row.failure_code,
+        "document_id": row.document_id,
+        "document": document,
     }
 
 

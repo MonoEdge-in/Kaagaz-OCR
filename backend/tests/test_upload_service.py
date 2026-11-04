@@ -69,6 +69,7 @@ class AcceptTest(unittest.TestCase):
                 "version_no",
                 "ocr_choice",
                 "batch_id",
+                "keep_place",  # Changed on purpose (#484): a flag, never a name
             },
         )
 

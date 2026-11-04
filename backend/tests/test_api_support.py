@@ -261,12 +261,14 @@ class Api:
         queue: ApiFakeQueue | None = None,
         model: ModelClient | None = None,
         answers: Answers | None = None,
+        storage: ApiFakeStorage | None = None,
     ) -> None:
-        """``answers``: the real AnswerService for a test that needs one; FakeAnswers otherwise."""
+        """``answers``: the real AnswerService for a test that needs one; FakeAnswers otherwise.
+        ``storage``: one that also takes resumable uploads (#484), for a test that sends one."""
         self.db = db
         self.settings = settings or make_settings()
         self.clock = clock or MovingClock()
-        self.storage = ApiFakeStorage()
+        self.storage = storage or ApiFakeStorage()
         self.queue = queue or ApiFakeQueue()
         self.answers = FakeAnswers()
         self.app = create_app(

@@ -1,13 +1,18 @@
 // The folder tree, built from the flat list GET /api/folders sends (each
 // folder names its parent). Pure functions, unit tested in node
 // (tests/folder-tree.test.ts). The server enforces the real rules (no loops,
-// at most 5 levels, names unique among siblings); these only decide what the
-// screen offers, and they never loop, even on bad input.
+// at most 100 levels, names unique among siblings); these only decide what the
+// screen offers, and they never loop, even on bad input. A customer may hold
+// thousands of folders 100 levels deep (#484), so the screens draw only what is
+// open (visibleNodes), at most CHILD_CAP of one folder's folders at a time.
 
 import type { Folder } from "@/lib/types";
 
-/** Folders nest at most this deep. A top-level folder is at depth 1 (PRD 1, F1). */
-export const MAX_FOLDER_DEPTH = 5;
+/** Folders nest at most this deep, Google Drive's own maximum (#484). A top-level folder is at depth 1. */
+export const MAX_FOLDER_DEPTH = 100;
+
+/** The most of one folder's folders drawn at once; "Show all" draws the rest (#484). */
+export const CHILD_CAP = 200;
 
 export interface FolderNode {
   folder: Folder;
@@ -132,7 +137,7 @@ function levelsIn(node: FolderNode): number {
 
 /**
  * Where a folder may move to: any folder except itself and those inside it,
- * and only where its deepest folder stays within 5 levels. The top level is
+ * and only where its deepest folder stays within MAX_FOLDER_DEPTH levels. The top level is
  * always allowed and is not in this list. In tree order. Time and space O(F).
  */
 export function validMoveTargets(tree: FolderTree, folderId: string): FolderNode[] {
@@ -142,4 +147,68 @@ export function validMoveTargets(tree: FolderTree, folderId: string): FolderNode
   return preorder(tree.roots, folderId).filter(
     (target) => target.depth + levels <= MAX_FOLDER_DEPTH,
   );
+}
+
+/** One row of a tree drawn flat: a folder, or "Show all" for the folders of `parent` past CHILD_CAP. */
+export type VisibleRow =
+  | { kind: "folder"; node: FolderNode; open: boolean; hasChildren: boolean }
+  | { kind: "more"; parent: FolderNode | null; depth: number; hidden: number };
+
+/** The key in `showAll` for the top-level list itself. */
+export const TOP_LIST = "";
+
+/**
+ * The rows to draw, top down: these folders, and inside each open one its folders. A folder
+ * is open when it is in `expanded`, or is the one shown (`current`) or above it. Each list
+ * stops at CHILD_CAP unless its parent's id (TOP_LIST for `nodes`) is in `showAll`.
+ * O(rows drawn + depth of current).
+ */
+export function visibleNodes(
+  nodes: readonly FolderNode[],
+  expanded: ReadonlySet<string>,
+  current: FolderNode | null,
+  showAll: ReadonlySet<string> = new Set(),
+): VisibleRow[] {
+  const onPath = new Set<string>();
+  for (let node = current; node; node = node.parent) onPath.add(node.folder.id);
+  const rows: VisibleRow[] = [];
+  const list = (siblings: readonly FolderNode[], parent: FolderNode | null) => {
+    const shown = showAll.has(parent?.folder.id ?? TOP_LIST) ? siblings : siblings.slice(0, CHILD_CAP);
+    for (const node of shown) {
+      const hasChildren = node.children.length > 0;
+      const open = hasChildren && (expanded.has(node.folder.id) || onPath.has(node.folder.id));
+      rows.push({ kind: "folder", node, open, hasChildren });
+      if (open) list(node.children, node);
+    }
+    if (shown.length < siblings.length) {
+      rows.push({ kind: "more", parent, depth: (parent?.depth ?? 0) + 1, hidden: siblings.length - shown.length });
+    }
+  };
+  list(nodes, null);
+  return rows;
+}
+
+/** head + hidden + tail: the first `head` and last `tail`; hidden is empty when nothing would be. O(n). */
+export function collapseCrumbs<T>(path: readonly T[], head = 1, tail = 2): { head: T[]; hidden: T[]; tail: T[] } {
+  if (path.length <= head + tail + 1) return { head: [...path], hidden: [], tail: [] };
+  return { head: path.slice(0, head), hidden: path.slice(head, path.length - tail), tail: path.slice(path.length - tail) };
+}
+
+/** "L1 / … / L39 / L40" past `keep` levels (the top and the last keep - 1); pathLabel when shorter. O(depth). */
+export function shortPathLabel(tree: FolderTree, folderId: string, keep = 3): string {
+  const names = folderPath(tree, folderId).map((folder) => folder.name);
+  if (names.length <= keep) return names.join(" / ");
+  return [names[0], "…", ...names.slice(names.length - (keep - 1))].join(" / ");
+}
+
+/** Folders whose name holds `query` (no letter case), in tree order, at most `limit`. O(F). */
+export function searchFolders(tree: FolderTree, query: string, limit = 50): FolderNode[] {
+  const words = query.trim().toLocaleLowerCase("en-IN");
+  if (!words) return [];
+  const found: FolderNode[] = [];
+  for (const node of inTreeOrder(tree)) {
+    if (node.folder.name.toLocaleLowerCase("en-IN").includes(words)) found.push(node);
+    if (found.length === limit) break;
+  }
+  return found;
 }

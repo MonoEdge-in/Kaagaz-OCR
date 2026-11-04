@@ -23,6 +23,9 @@
 // Each file is sent with who was signed in when it was added, so the server
 // refuses it if another account has signed in since (critical #5); then
 // no file still waiting is sent, and each says why.
+// Upload a folder (#484): a folder dropped here goes to `onFolders` (read in the drop handler,
+// folderPick.ts), its loose files to `onFiles`; each folder upload has its own row at the top of
+// the tray (FolderUploadRow), and its line joins the status bar's one polite line.
 // Auto-filing (feature 28): a file Kaagaz filed says "Filed into Invoices · Undo"
 // (AutofileNote, also on the document screen); one it could not place says so.
 // "Read with" (ReaderSelect, readers.ts) picks how the scans of the files added
@@ -77,7 +80,8 @@ import {
 } from "./batchTray";
 import type { StoredBatch } from "./batchTray";
 import { BusyLabel } from "./BusyLabel";
-import { pathLabel } from "./folderTree";
+import { droppedItems } from "./folderPick";
+import { shortPathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
 import { ALL_DOCUMENTS, libraryHref } from "./libraryQuery";
 import {
@@ -383,6 +387,7 @@ export function useUploads(onUploaded: () => void) {
     limits,
     limitsLoaded,
     reader: reader ?? startReader(limits.readers, scanLevel),
+    reading: readingToSend(limits.readers, reader), // what "Read with" sends with the next upload
     views,
     stored,
     chooseReader,
@@ -518,6 +523,7 @@ export function Dropzone({
   variant,
   limits,
   onFiles,
+  onFolders,
   enabled = true,
   className,
   children,
@@ -525,6 +531,7 @@ export function Dropzone({
   variant: "full" | "page";
   limits: UploadLimits;
   onFiles: (files: File[]) => void;
+  onFolders?: (folders: FileSystemDirectoryEntry[]) => void; // #484: whole folders dropped
   enabled?: boolean;
   className?: string;
   children?: ReactNode;
@@ -536,6 +543,13 @@ export function Dropzone({
     if (!takes(event)) return;
     event.preventDefault();
     setDragging(false);
+    if (onFolders) {
+      // Read now: the browser empties the drop's items once this handler returns.
+      const { folders, files } = droppedItems(event.dataTransfer.items);
+      if (folders.length > 0) onFolders(folders);
+      if (files.length > 0) onFiles(files);
+      return;
+    }
     const files = Array.from(event.dataTransfer.files);
     if (files.length > 0) onFiles(files);
   }
@@ -566,7 +580,7 @@ export function Dropzone({
       {variant === "page" && dragging && enabled && (
         <div className={styles.dropOverlay} aria-hidden="true">
           <Icon name="upload" size={20} className={styles.dropIcon} />
-          <p className={styles.dropText}>Drop the files to upload them.</p>
+          <p className={styles.dropText}>{onFolders ? "Drop files or folders to upload them." : "Drop the files to upload them."}</p>
           <p className={styles.dropHint}>{uploadLimitsHint(limits)}</p>
         </div>
       )}
@@ -596,6 +610,7 @@ export function BatchTray({
   onUndone,
   canReread,
   onHide,
+  folderRows = null,
 }: {
   entries: UploadEntry[];
   views: Record<string, BatchView>;
@@ -607,8 +622,9 @@ export function BatchTray({
   onUndone: () => void;
   canReread: boolean; // a reviewer or an admin: may read a document again
   onHide?: () => void;
+  folderRows?: ReactNode; // #484: one row a folder upload, above the drops of files
 }) {
-  if (entries.length === 0) return null;
+  if (entries.length === 0 && folderRows === null) return null;
   const settled = entries.some((entry) => !isBusy(entry));
   // Issue 369: the story prompt is said once for the tray; each finished file has a short link.
   const storyPrompt = entries.some((entry) => storyTarget(entry.state) !== null);
@@ -650,6 +666,7 @@ export function BatchTray({
           )}
         </span>
       </div>
+      {folderRows}
       {storyPrompt && <p className={`muted ${styles.small}`}>{STORY_PROMPT}</p>}
       {[...batches].map(([id, rows]) => {
         const view = views[id] ?? null;
@@ -795,7 +812,7 @@ function UploadRow({
           <AutofileNote
             document={document}
             name={entry.name}
-            filed={document.folder_id ? filedText(pathLabel(tree, document.folder_id)) : ""}
+            filed={document.folder_id ? filedText(shortPathLabel(tree, document.folder_id)) : ""}
             folderHref={document.folder_id ? libraryHref({ ...ALL_DOCUMENTS, folderId: document.folder_id }) : null}
             onUndone={onUndone}
           />
@@ -879,11 +896,16 @@ function UploadRow({
 export function UploadStatus({
   open,
   onOpenChange,
+  folderText = "",
   ...tray
-}: Omit<Parameters<typeof BatchTray>[0], "onHide"> & { open: boolean; onOpenChange: (open: boolean) => void }) {
+}: Omit<Parameters<typeof BatchTray>[0], "onHide"> & {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  folderText?: string; // #484: the folder uploads' line, changed only on a new phase or each tenth
+}) {
   const id = useId();
   const toggle = useRef<HTMLButtonElement>(null);
-  const shown = tray.entries.length > 0;
+  const shown = tray.entries.length > 0 || (tray.folderRows ?? null) !== null;
   // The time left counts down only while a file is sending or being read; settled, the line
   // stays still instead of redrawing on the shared tick.
   const busy = tray.entries.some(isBusy);
@@ -895,9 +917,9 @@ export function UploadStatus({
     <InStatusBar>
       <p className={styles.barLine} aria-live="polite">
         {busy ? (
-          <TickingLine entries={tray.entries} views={tray.views} />
+          <TickingLine entries={tray.entries} views={tray.views} before={folderText} />
         ) : (
-          <LineText text={statusBarText(tray.entries, tray.views, 0)} />
+          <LineText text={joinLine(folderText, statusBarText(tray.entries, tray.views, 0))} />
         )}
       </p>
       {shown && (
@@ -929,9 +951,11 @@ export function UploadStatus({
   );
 }
 
-function TickingLine({ entries, views }: { entries: UploadEntry[]; views: Record<string, BatchView> }) {
+const joinLine = (...parts: string[]) => parts.filter(Boolean).join(" · ");
+
+function TickingLine({ entries, views, before }: { entries: UploadEntry[]; views: Record<string, BatchView>; before: string }) {
   const now = useTick();
-  return <LineText text={statusBarText(entries, views, now)} />;
+  return <LineText text={joinLine(before, statusBarText(entries, views, now))} />;
 }
 
 /**

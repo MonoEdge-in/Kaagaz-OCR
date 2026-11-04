@@ -37,6 +37,7 @@ from kaagaz.api.routers import (
     dashboard,
     documents,
     ensemble,
+    folder_uploads,
     folders,
     health,
     operator,
@@ -111,7 +112,11 @@ def create_app(
     # The operator's own way in (super admin PR 2): only /api/operator asks for it.
     app.state.kaagaz_operator = OperatorDatabase(database.engine)
     errors.install(app)
-    app.add_middleware(RequestMiddleware, limiter=RateLimiter(settings.rate_limit_per_minute))
+    app.add_middleware(
+        RequestMiddleware,
+        limiter=RateLimiter(settings.rate_limit_per_minute),
+        folder_limiter=RateLimiter(settings.folder_upload_calls_per_minute),
+    )
     app.add_middleware(ErrorMiddleware)  # added last, so it is the outermost
     for router in (
         health.router,
@@ -122,6 +127,7 @@ def create_app(
         batches.router,
         dashboard.router,
         folders.router,
+        folder_uploads.router,
         tags.router,
         chat.router,
         ai_settings.router,

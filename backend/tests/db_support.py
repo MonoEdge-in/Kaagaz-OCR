@@ -7,6 +7,7 @@ random names, so tests cannot see each other's rows (row level security).
 """
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -34,7 +35,8 @@ def database_url() -> str:
 
 def migrate(url: str, revision: str = "head") -> None:
     """Upgrade the database at ``url`` to ``revision`` (for migration tests: "0001")."""
-    if revision != "head" and not (len(revision) == 4 and revision.isdigit()):
+    # Changed on purpose (#484, 3 Nov 2026): a letter may follow the 4 digits ("0061b").
+    if revision != "head" and not re.fullmatch(r"\d{4}[a-z]?", revision):
         raise ValueError("revision must be 'head' or a 4-digit revision id")
     subprocess.run(  # noqa: S603 - fixed command; the revision is checked above
         [sys.executable, "-m", "alembic", "upgrade", revision],

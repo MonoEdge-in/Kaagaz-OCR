@@ -6,7 +6,8 @@
 // (AdminsDialog); AI settings opens its scanning and answering settings, Ensemble and
 // budget (OrgAiSettings, features 25-27); Feature switches its own switches (0039,
 // OrgFeatureSwitchesDialog); Session timeout its own sign-in idle timeout (0040,
-// OrgSessionTimeoutDialog). They sit in one Manage menu per row (ManageMenu,
+// OrgSessionTimeoutDialog); Folder upload limits its own folder upload limits (#484,
+// OrgFolderUploadLimitsDialog). They sit in one Manage menu per row (ManageMenu,
 // 16 Oct 2026). Each change opens a dialog (ConfirmDialog): disable, enable,
 // delete (only a disabled organisation) and cancel the deletion; a row being
 // deleted shows its date and the days left. Auto-filing (feature 28) is allowed or
@@ -33,6 +34,7 @@ import { OrgFeatureSwitchesDialog } from "./FeatureSwitches";
 import { OrgAiSettings, orgAiFocusId } from "./OrgAiSettings";
 import { OrgModelRates } from "./OrgModelRates";
 import { OrgSessionTimeoutDialog } from "./SessionTimeout";
+import { OrgFolderUploadLimitsDialog } from "./FolderUploadLimits";
 import { afterDone, countText, deleteCountdown, filterOrgs, GRACE_DAYS, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts } from "./logic";
 import { MoreRows, useRowCap } from "@/components/admin/RowCap";
 import admin from "@/components/admin/Admin.module.css";
@@ -68,6 +70,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
   const [ratesOf, setRatesOf] = useState<Organisation | null>(null);
   const [switchesOf, setSwitchesOf] = useState<Organisation | null>(null);
   const [timeoutOf, setTimeoutOf] = useState<Organisation | null>(null);
+  const [folderLimitsOf, setFolderLimitsOf] = useState<Organisation | null>(null);
   const [done, setDone] = useState("");
   const now = useMinuteNow();
 
@@ -205,6 +208,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
                       onModelRates={() => setRatesOf(org)}
                       onSwitches={() => setSwitchesOf(org)}
                       onTimeout={() => setTimeoutOf(org)}
+                      onFolderLimits={() => setFolderLimitsOf(org)}
                       onChange={(change) => setChanging(orgConfirm(org, change, Date.now()))}
                       onAutofile={() => setChanging(autofileConfirm(org, !org.autofile_granted))}
                     />
@@ -231,6 +235,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
       {ratesOf && <OrgModelRates org={ratesOf} onClose={() => setRatesOf(null)} onSaved={setDone} />}
       {switchesOf && <OrgFeatureSwitchesDialog org={switchesOf} onClose={() => setSwitchesOf(null)} />}
       {timeoutOf && <OrgSessionTimeoutDialog org={timeoutOf} onClose={() => setTimeoutOf(null)} />}
+      {folderLimitsOf && <OrgFolderUploadLimitsDialog org={folderLimitsOf} onClose={() => setFolderLimitsOf(null)} />}
       {changing && (
         <ConfirmDialog
           confirm={changing}
@@ -252,6 +257,7 @@ export const MENU_HELP = {
   ai: "Choose which AI reads its scans and answers its questions, Ensemble and its monthly budget.",
   switches: "Turn features on or off for this organisation only.",
   timeout: "Choose how long its people can be idle before they are signed out.",
+  folderLimits: "Set the most files, size and folders one folder upload may have.",
   limits: "Cap how many AI requests a minute it and each of its people may send.",
   allowAutofile: "Lets its admin turn on filing new uploads into folders by type.",
   stopAutofile: "Turns auto-filing off here. Files already filed stay where they are.",
@@ -279,10 +285,11 @@ function OrgRow(props: {
   onModelRates(): void;
   onSwitches(): void;
   onTimeout(): void;
+  onFolderLimits(): void;
   onChange(change: OrgChange): void;
   onAutofile(): void;
 }) {
-  const { org, now, onAdmins, onModels, onModelRates, onSwitches, onTimeout, onChange, onAutofile } = props;
+  const { org, now, onAdmins, onModels, onModelRates, onSwitches, onTimeout, onFolderLimits, onChange, onAutofile } = props;
   const status = orgStatus(org);
   const countdown = org.status === "deleting" ? deleteCountdown(org.delete_after, now) : null;
   const size = formatBytes(org.storage_bytes);
@@ -340,6 +347,7 @@ function OrgRow(props: {
                   { label: "AI settings", description: MENU_HELP.ai, onSelect: onModels },
                   { label: "Feature switches", description: MENU_HELP.switches, onSelect: onSwitches },
                   { label: "Session timeout", description: MENU_HELP.timeout, onSelect: onTimeout },
+                  { label: "Folder upload limits", description: MENU_HELP.folderLimits, onSelect: onFolderLimits },
                   { label: "Request limits", description: MENU_HELP.limits, onSelect: onModelRates },
                   org.autofile_granted
                     ? { label: "Stop auto-filing", description: MENU_HELP.stopAutofile, onSelect: onAutofile }

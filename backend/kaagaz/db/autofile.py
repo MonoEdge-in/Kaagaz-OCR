@@ -30,7 +30,7 @@ same party's folder. There is no per-organisation GSTIN setting, so its own is t
 on the most of its verified invoices (``own_gstin``); when that is not clear, or neither
 side of the invoice is it, the file goes in the type folder. The folder is named after the
 other party as printed (``party_name``); a sibling of that name already there gets
-" (<GSTIN>)" added, and when that is taken too, or there is no room (depth 5) or nobody to
+" (<GSTIN>)" added, and when that is taken too, or there is no room (depth 100) or nobody to
 own a new folder, the type folder is used. Undo still moves the family to the top level.
 
 ``undo`` moves a filed family back to the top level, or to its department when it was filed
@@ -62,7 +62,7 @@ from sqlalchemy import Connection, RowMapping, text
 
 from kaagaz.chunking.script import fold_digits, is_devanagari, latin_spelling, sound_key
 from kaagaz.db import ai_settings, audit
-from kaagaz.db.folders import _DEPTH, _MAX_DEPTH, _lock_tree, prune_empty
+from kaagaz.db.folders import _DEPTH, MAX_DEPTH, _lock_tree, prune_empty
 from kaagaz.db.trash import InTrash, lock_live_family
 from kaagaz.extraction.checks import gstin_valid
 
@@ -125,6 +125,18 @@ _CREATE = (
     "INSERT INTO folders (customer_id, parent_id, name, created_by, autofile_key, kind)"
     " VALUES (:c, :p, :name, :u, :k, :kind) RETURNING id"
 )
+# The organisation's switch, or its grant and an "on" level for it or the uploader (:by), on
+# ``customers``: the insert's rule for a new upload (``PgDocuments.add_if_absent``) and
+# ``applies``', so the two can't differ.
+APPLIES = (
+    "(autofile_on OR (autofile_granted AND EXISTS (SELECT 1 FROM ai_task_settings s"
+    " WHERE s.customer_id = :c AND s.task = 'autofile' AND s.level = 'on'"
+    " AND (s.user_id IS NULL OR s.user_id = :by))))"
+)
+_APPLIES = (
+    "SELECT " + APPLIES + " AS pending,"  # noqa: S608 - a fixed fragment, APPLIES
+    " autofile_on, autofile_granted, CAST(:by AS uuid) AS uploaded_by FROM customers WHERE id = :c"
+)
 _DEPARTMENTS = (
     "SELECT id, name FROM folders"
     " WHERE customer_id = :c AND parent_id IS NULL AND kind = 'department' ORDER BY lower(name), id"
@@ -147,7 +159,7 @@ _FILE_FAMILY = (
 )
 _FILED_IN = "SELECT autofile, folder_id FROM documents WHERE customer_id = :c AND id = :f"
 # Undo's way back (File management F3): the department above the filed folder (the top-level
-# folder at most 5 levels up, when it is of kind department), where a file uploaded into a
+# folder at most 100 levels up, when it is of kind department), where a file uploaded into a
 # department was before filing; NULL (the top level) otherwise.
 # ponytail: a type folder a person moved into a department sends Undo there; remember the
 # upload's folder if that matters.
@@ -155,7 +167,7 @@ _DEPARTMENT_ABOVE = (
     "WITH RECURSIVE up (id, parent_id, depth) AS ("
     " SELECT f.id, f.parent_id, 1 FROM folders f WHERE f.customer_id = :c AND f.id = :folder"
     " UNION ALL SELECT f.id, f.parent_id, up.depth + 1 FROM up JOIN folders f ON f.id = up.parent_id"
-    " WHERE f.customer_id = :c AND up.depth < 6)"
+    " WHERE f.customer_id = :c AND up.depth < 101)"
     " SELECT dep.id FROM up JOIN folders dep ON dep.customer_id = :c AND dep.id = up.id"
     " WHERE up.parent_id IS NULL AND dep.kind = 'department'"
 )
@@ -239,6 +251,13 @@ def file_document(conn: Connection, customer_id: str, document_id: str) -> str |
         details={"folder_id": folder},
     )
     return FILED
+
+
+def applies(conn: Connection, customer_id: str, user_id: str) -> bool:
+    """Would this user's upload with no folder be filed by its type ("Let Kaagaz sort them",
+    #484)? The insert's rule marks it pending and ``_filing_on`` files it. Three statements."""
+    row = conn.execute(text(_APPLIES), {"c": customer_id, "by": user_id}).mappings().one()
+    return bool(row["pending"]) and _filing_on(conn, customer_id, row)
 
 
 def _filing_on(conn: Connection, customer_id: str, state: RowMapping) -> bool:
@@ -380,7 +399,7 @@ def _child(
 ) -> str:
     """The folder holding ``key`` wherever it now is; else ``parent``'s child of that name
     with no key, adopted; else a new child. ``parent`` itself when the name is taken by a
-    keyed folder, there is no room (depth 5) or no owner."""
+    keyed folder, there is no room (depth 100) or no owner."""
     params = {"c": customer_id, "k": key, "p": parent, "name": name}
     keyed = conn.execute(text(_BY_KEY), params).scalar()
     if keyed is not None:
@@ -392,7 +411,7 @@ def _child(
         conn.execute(text(_ADOPT), {**params, "f": same[0]})
         return str(same[0])
     depth: int | None = conn.execute(text(_DEPTH), {"c": customer_id, "f": parent}).scalar_one()
-    if owner is None or depth is None or depth >= _MAX_DEPTH:
+    if owner is None or depth is None or depth >= MAX_DEPTH:
         return parent
     return _create(conn, customer_id, parent, name, owner, key, kind)
 
@@ -468,7 +487,7 @@ def _party_folder(
     _, key, name = own
     gstin = key.removeprefix("party:")
     depth: int | None = conn.execute(text(_DEPTH), {"c": customer_id, "f": type_folder}).scalar_one()
-    if owner is None or depth is None or depth >= _MAX_DEPTH:
+    if owner is None or depth is None or depth >= MAX_DEPTH:
         return type_folder
     for candidate in (name, f"{name} ({gstin})"):
         taken = conn.execute(text(_CHILD_NAMED), {"c": customer_id, "p": type_folder, "name": candidate})

@@ -48,7 +48,7 @@ from kaagaz.versions import name_key
 # File management (Q3, Q4, F5, O1 to O3): the owner and label, the version count, the
 # document date, the last change (the newest upload or the details stamp, whichever is
 # newer) and who made it, the department (the top-level folder above the document, when it
-# is a department; at most 5 levels up) and a pending version suggestion naming this
+# is a department; at most 100 levels up) and a pending version suggestion naming this
 # document as the new one (``new``) or its family as the candidate (``candidate``).
 # ponytail: the candidate probe has no index of its own; suggestions are few per customer.
 _LAST_UPLOAD = (
@@ -72,7 +72,7 @@ _FILE_COLUMNS = (
     " (WITH RECURSIVE up (id, parent_id, depth) AS ("
     " SELECT f.id, f.parent_id, 1 FROM folders f WHERE f.customer_id = d.customer_id AND f.id = d.folder_id"
     " UNION ALL SELECT f.id, f.parent_id, up.depth + 1 FROM up JOIN folders f ON f.id = up.parent_id"
-    " WHERE f.customer_id = d.customer_id AND up.depth < 6)"
+    " WHERE f.customer_id = d.customer_id AND up.depth < 101)"
     " SELECT json_build_object('id', dep.id, 'name', dep.name) FROM up"
     " JOIN folders dep ON dep.customer_id = d.customer_id AND dep.id = up.id"
     " WHERE up.parent_id IS NULL AND dep.kind = 'department') AS department,"
@@ -210,7 +210,7 @@ _OUTSIDE_DEPARTMENTS = (
     " AND (d.folder_id IS NULL OR d.folder_id NOT IN (WITH RECURSIVE tree (id, depth) AS ("
     " SELECT id, 1 FROM folders WHERE customer_id = :c AND parent_id IS NULL AND kind = 'department'"
     " UNION ALL SELECT f.id, t.depth + 1 FROM tree t JOIN folders f ON f.parent_id = t.id"
-    " WHERE f.customer_id = :c AND t.depth < 6) SELECT id FROM tree))"
+    " WHERE f.customer_id = :c AND t.depth < 101) SELECT id FROM tree))"
 )
 _OF_OWNER = " AND d.owner_id = :owner_id"
 _LABELLED = " AND d.sensitivity = ANY(CAST(:sensitivities AS text[]))"
@@ -857,12 +857,12 @@ _DASHBOARD_TYPES = text(
     " WHERE customer_id = :c AND is_current AND deleted_at IS NULL"
     " GROUP BY doc_type ORDER BY n DESC, doc_type NULLS LAST"
 )
-# Each department with the current, untrashed documents anywhere below it (5 levels at most).
+# Each department with the current, untrashed documents anywhere below it (100 levels at most).
 _DASHBOARD_DEPARTMENTS = text(
     "WITH RECURSIVE tree (id, root, depth) AS ("
     " SELECT id, id, 1 FROM folders WHERE customer_id = :c AND parent_id IS NULL AND kind = 'department'"
     " UNION ALL SELECT f.id, t.root, t.depth + 1 FROM tree t JOIN folders f ON f.parent_id = t.id"
-    " WHERE f.customer_id = :c AND t.depth < 6)"
+    " WHERE f.customer_id = :c AND t.depth < 101)"
     " SELECT dep.id, dep.name, dep.sort_order, count(d.id) AS files FROM folders dep"
     " JOIN tree t ON t.root = dep.id"
     " LEFT JOIN documents d ON d.customer_id = :c AND d.folder_id = t.id"
