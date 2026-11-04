@@ -484,7 +484,8 @@ def test_the_user_list_shows_lock_2fa_and_password_status(db: Database) -> None:
     items = {item["id"]: item for item in admin.client.get("/api/admin/users").json()["items"]}
 
     # Changed on purpose (#457 phase 1): the list says how each person signs in.
-    assert all(set(item) == ADMIN_USER_FIELDS | {"signs_in_with"} for item in items.values())
+    # Changed on purpose (#507): and whether their role needs a Google account connected.
+    assert all(set(item) == ADMIN_USER_FIELDS | {"signs_in_with", "google_needed"} for item in items.values())
     assert items[member_id]["locked_until"] == (api.clock() + timedelta(minutes=15)).isoformat()
     assert items[member_id]["totp_enabled"] is False
     assert items[admin.user_id]["totp_enabled"] is True

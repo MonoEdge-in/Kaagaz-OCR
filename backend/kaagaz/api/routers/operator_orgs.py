@@ -22,6 +22,12 @@ one ``kaagaz_op_*`` function, which writes its own ``platform_audit`` row.
   2026; 0068, step-up): ``{required}``, whether the organisation's admins must have two-step
   sign-in. Off by default; while on, an admin who turned it off sets it up at sign-in and none
   may turn it off. Audited ``org.admin_two_step_on`` or ``_off`` in both logs.
+* ``GET`` and ``PUT /operator/orgs/{id}/google-signin`` {on: true, false or null, code} (#507,
+  0072, step-up): ``{on, platform_on, effective, google_only_roles, domains}``: the organisation's
+  own value (null: follow the platform), the platform's, the one in force (with the server's
+  GOOGLE_SIGNIN_ENABLED), and its admin's "Google only" roles and domains, read-only. A change of
+  the value in force signs out its people with an approved connection (the connections are
+  kept); off, every password signs in. Audited ``org.google_signin_set`` in both logs.
 * ``POST /operator/orgs/{id}/schedule-delete`` {name, code} (PR 4, step-up): a DISABLED
   organisation whose name is typed exactly is removed for good after a grace period
   (7 days, PROVISIONAL), by the worker; ``/cancel-delete`` {code} (step-up) during it
@@ -55,7 +61,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import RowMapping
 
-from kaagaz.api import emails, totp
+from kaagaz.api import emails, oidc, totp
 from kaagaz.api.auth import CurrentOperator, OperatorSession, current_operator, hash_password
 from kaagaz.api.context import AppContext, get_context, get_operator_db
 from kaagaz.api.errors import ApiError
@@ -131,6 +137,13 @@ class AdminTwoStepBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     required: bool
+    code: str = Field(min_length=1, max_length=MAX_CODE)
+
+
+class GoogleSigninBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    on: bool | None  # required; null: follow the platform
     code: str = Field(min_length=1, max_length=MAX_CODE)
 
 
@@ -231,6 +244,42 @@ def set_admin_two_step(
         )
     _check(db, operator, outcome, step_up)
     return {"required": body.required}
+
+
+@router.get("/{customer_id}/google-signin")
+def get_google_signin(
+    customer_id: uuid.UUID, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, Any]:
+    with db.operator() as conn:
+        row = orgs_sql.google_signin(conn, operator.operator_id, str(customer_id))
+    if row is None:  # an unknown organisation, or the operator was disabled meanwhile
+        raise ApiError(404, "not_found")
+    on, platform_on = row["org_on"], bool(row["platform_on"])
+    return {
+        "on": on,
+        "platform_on": platform_on,
+        "effective": oidc.enabled(context.settings, "google") and (platform_on if on is None else bool(on)),
+        "google_only_roles": list(row["only_roles"]),
+        "domains": list(row["domains"]),
+    }
+
+
+@router.put("/{customer_id}/google-signin")
+def set_google_signin(
+    customer_id: uuid.UUID,
+    body: GoogleSigninBody,
+    operator: OperatorSession,
+    db: OperatorDb,
+    context: Context,
+) -> dict[str, Any]:
+    """A fresh code first; the organisation's people follow it from their next request."""
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = orgs_sql.set_google_signin(
+            conn, operator.operator_id, str(customer_id), on=body.on, step=step_up.step
+        )
+    _check(db, operator, outcome, step_up)
+    return get_google_signin(customer_id, operator, db, context)
 
 
 @router.post("/{customer_id}/schedule-delete")

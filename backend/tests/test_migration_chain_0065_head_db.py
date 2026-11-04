@@ -51,7 +51,13 @@ def test_head_down_to_0065_and_up_again_with_rows(fresh: tuple[str, Database]) -
             {"c": customer},
         )
     as_owner(db, "UPDATE customers SET admin_two_step_required = true WHERE id = :c", {"c": customer})
-    as_owner(db, "UPDATE platform_ai_settings SET daily_page_limit = 10", {})
+    as_owner(db, "UPDATE platform_ai_settings SET daily_page_limit = 10, google_signin = false", {})
+    as_owner(  # 0072 (#507): the super admin's switch and the org admin's Google rules
+        db,
+        "UPDATE customers SET google_signin = true, google_only_roles = '{admin}',"
+        " google_domains = '{sharma.in}' WHERE id = :c",
+        {"c": customer},
+    )
     as_owner(
         db,
         "INSERT INTO audit_log_kept (id, customer_id, action, target_type, details, created_at, deleted_at)"

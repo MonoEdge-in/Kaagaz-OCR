@@ -157,7 +157,8 @@ FROM_0061 = {"email_links": (True, True, False, False)}
 # Connected accounts (0062, #457 phase 1): read, added and deleted; only the approval and
 # last-used columns may change (a column grant).
 FROM_0062 = {"user_identities": (True, True, False, True)}
-UPDATES_0062 = {"user_identities": {"status", "approved_at", "approved_by", "last_used_at"}}
+# Changed on purpose (#507, 0072): Google's hd claim, refreshed at each sign-in.
+UPDATES_0062 = {"user_identities": {"status", "approved_at", "approved_by", "last_used_at", "hosted_domain"}}
 # The reading pause (0066, #478): a day's counter is added and counted up (a column grant).
 FROM_0066 = {"reading_days": (True, True, False, False)}
 UPDATES_0066 = {"reading_days": {"pages", "cost_usd", "alerted_at"}}
@@ -501,6 +502,12 @@ OPERATOR_RIGHTS = {
         EMPTY_PATH,
     ),
     "kaagaz_op_set_folder_upload_limits": ("text", EMPTY_PATH),
+    # 0072 (#507): Google sign-in per organisation and for the platform, and its write (step-up).
+    "kaagaz_op_google_signin": (
+        "TABLE(org_on boolean, platform_on boolean, only_roles text[], domains text[])",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_set_google_signin": ("text", EMPTY_PATH),
     # 0046: operator-only read/write for customer and user RPM overrides.
     "kaagaz_op_model_rates": (
         "TABLE(org_rpm integer, user_id uuid, email text, user_rpm integer)",
@@ -782,10 +789,14 @@ def test_the_app_may_update_only_the_upload_limit_and_the_auto_filing_switch_of_
         ).all()
     # Changed on purpose (auto-filing council, 15 Oct 2026): the admin's switch, 0025.
     # Changed on purpose (#457 phase 1, 0062): the admin's auto-approval switch.
+    # Changed on purpose (#507, 0072): the admin's Google rules; never google_signin (the operator's).
     assert {name for name, may_update in columns if may_update} == {
         "max_upload_mb",
         "autofile_on",
         "auto_approve_connections",
+        "google_roles",
+        "google_only_roles",
+        "google_domains",
     }
 
 

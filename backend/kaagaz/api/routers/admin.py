@@ -54,6 +54,21 @@ settings, a 400 to set); another organisation's ids are 404. Approving or declin
 the person's sessions as they are. Resetting a person's password clears their connections
 too. ``/admin/users`` says how each person signs in (``signs_in_with``).
 
+Why Google sign-in has rules here (#507, 0072): where the super admin leaves Google on for the
+organisation (``kaagaz.db.google_rules``), its admin sets, per role, whether Google is allowed and
+whether it is the only way in, and the company domains (``/admin/settings`` ``google``, all three
+replaced at once, in one transaction, audited ``settings.google_rules``). A save signs out the
+people with an approved connection of each role whose rules changed (every role when the domains
+did); the saver stays signed in. Making admins "Google only" needs the saver's own connection to
+pass the new domains, else 409 ``google_lockout`` (audited ``settings.google_rules_refused`` in its
+own transaction). Approving a connection refuses one's own (403 ``own_connection``), an
+organisation that is off (409 ``google_off``), a role that may not use Google (``role_refused``)
+and an account outside the domains (``domain_refused``). Promotion to admin puts the person's
+approved connections back to waiting (audited ``auth.identity_reapproval``; the admins are
+emailed), so another admin approves them again. The people list says ``google_needed`` (their
+role uses Google only, and no connection of theirs passes), and the invite says to connect Google
+while the new person's role uses it.
+
 Why auto-filing is a setting here (feature 28, council 15 Oct 2026): the platform operator
 grants it, then the admin switches it on or off (``autofile_on``) in the same form as the
 upload limit. Each field left out of the PATCH is left as it is. Switching it on without
@@ -67,7 +82,7 @@ import json
 import re
 import secrets
 import uuid
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Annotated, Any, Literal
@@ -87,7 +102,7 @@ from kaagaz.api.readers import usable
 from kaagaz.api.routers.documents import day_start
 from kaagaz.api.views import CURSOR, admin_user, failed_document, iso, timeline, without_money
 from kaagaz.db import admin as admin_sql
-from kaagaz.db import audit, identities, listing, reading_days
+from kaagaz.db import audit, google_rules, identities, listing, reading_days
 from kaagaz.db import email_links as links_sql
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import runs as runs_sql
@@ -109,6 +124,19 @@ _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 RoleName = Literal["member", "reviewer", "admin"]
 PASSWORD_ONLY = ["password"]  # every account keeps its Kaagaz password (#457)
 ALREADY_BELONGS = "This Google account already belongs to a Kaagaz user."
+# #507: the org admin's Google rules, refused in plain words.
+GOOGLE_OFF = "Google sign-in is off for your organisation."
+ONLY_NOT_ALLOWED = "A role that uses Google only must also be allowed to use Google."
+BAD_DOMAIN = "Enter a domain like sharmatraders.com."
+PERSONAL_DOMAIN = "Gmail and other personal email domains can't be used. Enter your company's own domain."
+TOO_MANY_DOMAINS = f"Add at most {google_rules.MAX_DOMAINS} domains."
+LOCKOUT = {
+    "no_link": "Connect your own Google account first, in Account, Ways to sign in. Then you can make"
+    " Google the only way in for admins.",
+    "outside_domains": "Your own Google account isn't from these domains, so you'd be locked out. Add its"
+    " domain, or connect one that is.",
+}
+_DOMAIN = re.compile(r"(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}")
 
 USAGE_MAX_DAYS = 366
 USAGE_CSV_COLUMNS = ("day", "user", "model", "kind", "calls", "tokens")
@@ -153,6 +181,16 @@ class DeleteForeverBody(BaseModel):
     allowed: bool
 
 
+class GoogleRulesBody(BaseModel):
+    """#507: all three rules, replacing the stored ones."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    allowed_roles: list[RoleName] = Field(max_length=10)
+    only_roles: list[RoleName] = Field(max_length=10)
+    domains: list[Annotated[str, Field(max_length=253)]] = Field(max_length=50)
+
+
 class SettingsBody(BaseModel):
     """Left out: unchanged (``model_fields_set``). An explicit null limit: the platform's."""
 
@@ -161,25 +199,49 @@ class SettingsBody(BaseModel):
     max_upload_mb: int | None = Field(default=None, ge=1)
     autofile_on: bool = False
     auto_approve_connections: bool = False
+    google: GoogleRulesBody | None = None
+
+
+def _google_on(conn: Connection, context: AppContext, customer_id: str) -> google_rules.Rules | None:
+    """The organisation's Google rules while Google sign-in is on for it (the server's switch and
+    the super admin's); None while it is off."""
+    if not oidc.enabled(context.settings, "google"):
+        return None
+    rules = google_rules.rules(conn, customer_id)
+    return rules if rules is not None and rules.on else None
+
+
+def _people(
+    conn: Connection, context: AppContext, customer_id: str, rows: Iterable[RowMapping]
+) -> list[dict[str, Any]]:
+    """``admin_user`` with how each signs in and ``google_needed`` (#507): Google counts only while
+    it is on, for an allowed role, with a connection that passes the domains; a "Google only" role
+    with one no longer signs in with the password. One read of the rules and the connections."""
+    rules = _google_on(conn, context, customer_id)
+    links: dict[str, list[google_rules.Link]] = {}
+    for link in google_rules.links(conn, customer_id) if rules is not None else []:
+        links.setdefault(link.user_id, []).append(link)
+    now = context.clock()
+    people = []
+    for row in rows:
+        role = str(row["role"])
+        mine = links.get(str(row["id"]), [])
+        passes = (
+            rules is not None
+            and role in rules.allowed_roles
+            and any(link.passes(rules.domains) for link in mine)
+        )
+        only = rules is not None and role in rules.only_roles
+        ways = ([] if only and passes else PASSWORD_ONLY) + (["google"] if passes else [])
+        people.append(admin_user(row, now=now, signs_in_with=ways, google_needed=only and not passes))
+    return people
 
 
 @router.get("/admin/users")
 def list_users(user: AdminSession, context: Context) -> dict[str, Any]:
-    on = _providers_on(context)
     with context.db.customer(user.customer_id) as conn:
         rows = users_sql.list_users(conn, user.customer_id)
-        connected = identities.providers_by_user(conn, user.customer_id) if on else {}
-    now = context.clock()
-    return {
-        "items": [
-            admin_user(
-                row,
-                now=now,
-                signs_in_with=PASSWORD_ONLY + [p for p in connected.get(str(row["id"]), []) if p in on],
-            )
-            for row in rows
-        ]
-    }
+        return {"items": _people(conn, context, user.customer_id, rows)}
 
 
 @router.post("/admin/users", status_code=201)
@@ -215,11 +277,13 @@ def create_user(body: NewUserBody, user: AdminSession, context: Context) -> JSON
             )
             target = str(row["id"])
             link = emails.add_link(conn, context, user.customer_id, target, "invite") if inviting else None
+            rules = _google_on(conn, context, user.customer_id) if inviting else None
     except users_sql.EmailTaken:
         raise ApiError(409, "conflict", "That e-mail is already in use.") from None
     if link is None:
         return JSONResponse(admin_user(row, now=context.clock()), status_code=201)
-    invited = emails.send(context, email, "invite", emails.invite(user.customer_name, link))
+    google = rules is not None and body.role in rules.allowed_roles  # #507: "connect your Google account"
+    invited = emails.send(context, email, "invite", emails.invite(user.customer_name, link, google))
     if invited:  # the one follow-up write, only when the email went
         with context.db.customer(user.customer_id) as conn:
             _audit_user(conn, user, "auth.invite_sent", target)
@@ -228,13 +292,21 @@ def create_user(body: NewUserBody, user: AdminSession, context: Context) -> JSON
 
 @router.patch("/admin/users/{user_id}")
 def update_user(
-    user_id: uuid.UUID, body: UserChangesBody, user: AdminSession, context: Context
+    user_id: uuid.UUID,
+    body: UserChangesBody,
+    user: AdminSession,
+    background: BackgroundTasks,
+    context: Context,
 ) -> dict[str, Any]:
     target = str(user_id)
     if target == user.user_id and (body.disabled is True or (body.role is not None and body.role != "admin")):
         raise ApiError(400, "bad_request", "You can't disable yourself or remove your own admin role.")
     password_hash = None if body.password is None else hash_password(body.password)
     with context.db.customer(user.customer_id) as conn:
+        promoted = body.role == "admin" and users_sql.role_of(conn, user.customer_id, target) not in (
+            None,
+            "admin",
+        )
         row = users_sql.update_user(
             conn,
             user.customer_id,
@@ -260,7 +332,36 @@ def update_user(
                 "password_changed": password_hash is not None,
             },
         )
+        # #507: a new admin's connections wait for another admin again (update_user signed them out).
+        reapproved = google_rules.reapprove(conn, user.customer_id, target) if promoted else []
+        for identity in reapproved:
+            _audit_identity(conn, user, "auth.identity_reapproval", {**identity, "user_id": target})
+    if reapproved:
+        emails.after(
+            background,
+            "approval_waiting",
+            _tell_admins,
+            context,
+            user.customer_id,
+            user.customer_name,
+            row["email"],
+        )
     return admin_user(row, now=context.clock())
+
+
+def _tell_admins(context: AppContext, customer_id: str, organisation: str, but: str) -> None:
+    """Waiting for your approval, to each admin but ``but`` (the e-mail of the one promoted), while
+    email is on."""
+    if not email_on(context):
+        return
+    with context.db.customer(customer_id) as conn:
+        admins = users_sql.admin_contacts(conn, customer_id)
+    link = f"{context.settings.app_url}/admin"
+    for address, name in admins:
+        if address != but:
+            emails.send(
+                context, address, "approval_waiting", emails.connection_waiting(name, organisation, link)
+            )
 
 
 @router.post("/admin/users/{user_id}/unlock")
@@ -390,7 +491,8 @@ def approve_identity(
 ) -> dict[str, Any]:
     """A waiting connection signs in from now on, unless its email became another user's sign-in
     email meanwhile (409, the one outside account rule). The person stays signed in (approval
-    only adds a way in) and gets a notice. The list left."""
+    only adds a way in) and gets a notice. The list left. #507: never one's own (another admin
+    approves it), and only what the organisation's Google rules let in now."""
     _connections_on(context)
     target = str(identity_id)
     with context.db.customer(user.customer_id) as conn:
@@ -399,12 +501,15 @@ def approve_identity(
         )
     if waiting is None:
         raise ApiError(404, "not_found")
+    if str(waiting["user_id"]) == user.user_id:
+        raise ApiError(403, "own_connection", "Another admin needs to approve your own Google account.")
     email = waiting["email_at_link"]
     with context.db.system() as conn:
         taken = email is not None and identities.email_belongs_to_other(conn, email, str(waiting["user_id"]))
     if taken:
         raise ApiError(409, "conflict", ALREADY_BELONGS)
     with context.db.customer(user.customer_id) as conn:
+        _approvable(conn, context, user.customer_id, target)
         row = identities.approve(conn, user.customer_id, target, user.user_id, context.clock())
         if row is None:  # approved or declined a moment ago
             raise ApiError(404, "not_found")
@@ -415,6 +520,23 @@ def approve_identity(
         background, "identity_approved", emails.notify, *who, "identity_approved", emails.google_approved
     )
     return reply
+
+
+def _approvable(conn: Connection, context: AppContext, customer_id: str, identity_id: str) -> None:
+    """409 while Google is off for the organisation, for a role that may not use it, or for an
+    account outside its domains (#507). Read in the approval's own transaction."""
+    link = google_rules.link(conn, customer_id, identity_id)
+    if link is None:  # not a Google connection: no Google rule applies
+        return
+    rules = _google_on(conn, context, customer_id)
+    if rules is None:
+        raise ApiError(409, "google_off", GOOGLE_OFF)
+    if link.role not in rules.allowed_roles:
+        raise ApiError(
+            409, "role_refused", "Your organisation doesn't use Google sign-in for this person's role."
+        )
+    if not google_rules.domain_ok(rules.domains, link.hosted_domain, link.email_at_link):
+        raise ApiError(409, "domain_refused", "This Google account isn't from your organisation's domains.")
 
 
 @router.post("/admin/identities/{identity_id}/decline")
@@ -468,7 +590,9 @@ def remove_connections(
     return admin_user(row, now=context.clock(), signs_in_with=PASSWORD_ONLY)
 
 
-def _audit_identity(conn: Connection, user: CurrentUser, action: str, row: RowMapping) -> None:
+def _audit_identity(
+    conn: Connection, user: CurrentUser, action: str, row: Mapping[str, Any] | RowMapping
+) -> None:
     audit.record(
         conn,
         user.customer_id,
@@ -491,7 +615,7 @@ def _audit_user(conn: Connection, user: CurrentUser, action: str, target: str) -
     )
 
 
-def _settings_json(row: RowMapping, context: AppContext) -> dict[str, Any]:
+def _settings_json(row: RowMapping, context: AppContext, google: dict[str, Any] | None) -> dict[str, Any]:
     return {
         "customer_name": row["name"],
         "max_upload_mb": row["max_upload_mb"],
@@ -503,6 +627,26 @@ def _settings_json(row: RowMapping, context: AppContext) -> dict[str, Any]:
             if _providers_on(context)
             else {}
         ),
+        **({} if google is None else {"google": google}),
+    }
+
+
+def _google_json(conn: Connection, context: AppContext, user: CurrentUser) -> dict[str, Any] | None:
+    """#507's ``google``: whether Google sign-in is on for the organisation (``available``), its
+    rules, and whether the admin's own connection passes them. None (left out) while the server's
+    Google sign-in is off, as ``auto_approve_connections``."""
+    if not oidc.enabled(context.settings, "google"):
+        return None
+    rules = google_rules.rules(conn, user.customer_id)
+    if rules is None:
+        return None
+    mine = google_rules.links(conn, user.customer_id, user_id=user.user_id)
+    return {
+        "available": rules.on,
+        "allowed_roles": list(rules.allowed_roles),
+        "only_roles": list(rules.only_roles),
+        "domains": list(rules.domains),
+        "my_link_ok": any(link.passes(rules.domains) for link in mine),
     }
 
 
@@ -510,9 +654,77 @@ def _settings_json(row: RowMapping, context: AppContext) -> dict[str, Any]:
 def get_settings(user: AdminSession, context: Context) -> dict[str, Any]:
     with context.db.customer(user.customer_id) as conn:
         row = admin_sql.get_settings(conn, user.customer_id)
+        google = _google_json(conn, context, user)
     if row is None:
         raise ApiError(404, "not_found")
-    return _settings_json(row, context)
+    return _settings_json(row, context, google)
+
+
+def _wanted_rules(body: GoogleRulesBody) -> tuple[list[str], list[str], list[str]]:
+    """The roles in order and the domains trimmed, lower case and once each; 400 in plain words."""
+    allowed, only = google_rules.ordered(body.allowed_roles), google_rules.ordered(body.only_roles)
+    if not set(only) <= set(allowed):
+        raise ApiError(400, "bad_request", ONLY_NOT_ALLOWED)
+    domains = list(dict.fromkeys(domain.strip().lower() for domain in body.domains))
+    if len(domains) > google_rules.MAX_DOMAINS:
+        raise ApiError(400, "bad_request", TOO_MANY_DOMAINS)
+    for domain in domains:
+        if not _DOMAIN.fullmatch(domain):
+            raise ApiError(400, "bad_request", BAD_DOMAIN)
+        if google_rules.personal(domain):
+            raise ApiError(400, "bad_request", PERSONAL_DOMAIN)
+    return allowed, only, domains
+
+
+class _Lockout(Exception):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _save_google(
+    conn: Connection, context: AppContext, user: CurrentUser, wanted: tuple[list[str], list[str], list[str]]
+) -> None:
+    """Replace the rules (in the caller's transaction): 409 while Google is off, ``_Lockout`` when
+    admins would be "Google only" and the saver's own connection doesn't pass the new domains.
+    Signs out the people with an approved connection of each role whose rules changed (every role
+    when the domains did), the saver kept. Nothing changed: nothing written, nothing audited."""
+    allowed, only, domains = wanted
+    rules = _google_on(conn, context, user.customer_id)
+    if rules is None:
+        raise ApiError(409, "google_off", GOOGLE_OFF)
+    if "admin" in only:
+        approved = [
+            link
+            for link in google_rules.links(conn, user.customer_id, user_id=user.user_id)
+            if link.status == "approved"
+        ]
+        if not approved:
+            raise _Lockout("no_link")
+        if not any(link.passes(domains) for link in approved):
+            raise _Lockout("outside_domains")
+    if (tuple(allowed), tuple(only), tuple(domains)) == (
+        rules.allowed_roles,
+        rules.only_roles,
+        rules.domains,
+    ):
+        return
+    google_rules.save_rules(conn, user.customer_id, allowed_roles=allowed, only_roles=only, domains=domains)
+    details: dict[str, audit.DetailValue] = {
+        "allowed_roles": ",".join(allowed),
+        "only_roles": ",".join(only),
+        "domains": ",".join(domains),
+    }
+    _audit_settings(conn, user, "settings.google_rules", details)
+    changed = [
+        role
+        for role in google_rules.ROLES
+        if (role in allowed) != (role in rules.allowed_roles) or (role in only) != (role in rules.only_roles)
+    ]
+    if set(domains) != set(rules.domains):
+        changed = list(google_rules.ROLES)
+    if changed:
+        google_rules.sign_out_linked(conn, user.customer_id, changed, keep=user.user_id)
 
 
 @router.patch("/admin/settings")
@@ -523,10 +735,29 @@ def update_settings(body: SettingsBody, user: AdminSession, context: Context) ->
     platform = context.settings.max_upload_bytes // MIB
     if body.max_upload_mb is not None and body.max_upload_mb > platform:
         raise ApiError(400, "bad_request", f"The limit can be at most {platform} MB.")
+    wanted = None if body.google is None else _wanted_rules(body.google)
+    try:
+        return _update_settings(body, user, context, wanted)
+    except _Lockout as refused:  # the whole PATCH was rolled back; the refusal is kept on its own
+        with context.db.customer(user.customer_id) as conn:
+            _audit_settings(conn, user, "settings.google_rules_refused", {"reason": refused.reason})
+        raise ApiError(409, "google_lockout", LOCKOUT[refused.reason]) from None
+
+
+def _update_settings(
+    body: SettingsBody,
+    user: CurrentUser,
+    context: AppContext,
+    wanted: tuple[list[str], list[str], list[str]] | None,
+) -> dict[str, Any]:
+    """Every field given, in one transaction."""
+    given = body.model_fields_set
     with context.db.customer(user.customer_id) as conn:
         before = admin_sql.get_settings(conn, user.customer_id)
         if before is None:
             raise ApiError(404, "not_found")
+        if wanted is not None:
+            _save_google(conn, context, user, wanted)
         if "max_upload_mb" in given:
             admin_sql.update_settings(conn, user.customer_id, max_upload_mb=body.max_upload_mb)
             _audit_settings(conn, user, "settings.update", {"max_upload_mb": body.max_upload_mb})
@@ -541,9 +772,10 @@ def update_settings(body: SettingsBody, user: AdminSession, context: Context) ->
             admin_sql.set_auto_approve(conn, user.customer_id, on=on)
             _audit_settings(conn, user, "settings.auto_approve_on" if on else "settings.auto_approve_off")
         row = admin_sql.get_settings(conn, user.customer_id)
+        google = _google_json(conn, context, user)
     if row is None:
         raise ApiError(404, "not_found")
-    return _settings_json(row, context)
+    return _settings_json(row, context, google)
 
 
 def _audit_settings(
