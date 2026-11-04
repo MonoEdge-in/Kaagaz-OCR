@@ -61,7 +61,7 @@ switch that requires two-step sign-in for an organisation's admins (#481).
 Folder upload (0071, #484, NEEDS VRUSHIT'S APPROVAL): an upload, its folders and its items the
 app reads, adds and updates, never deletes (they go with the customer); an organisation's own
 limits it reads in four columns only, written by the operator's two functions (step-up).
-"Add new files only" (#484, 0071 in place): the upload counts the files it sends
+"Add new files only" (#484, 0072): the upload counts the files it sends
 (``items_counted``); the browser's SHA-256 of a file is never kept, on the upload or its items.
 """
 
@@ -807,7 +807,7 @@ def _columns(db: Database, table: str) -> set[str]:
 
 
 def test_a_folder_upload_keeps_counts_and_never_the_browsers_hash_of_a_file(db: Database) -> None:
-    """0071 (#484, "Add new files only"): ``items_counted``, the files registered that weren't
+    """0072 (#484, "Add new files only"): ``items_counted``, the files registered that weren't
     already in, is what the limit is checked against; no column keeps a file's SHA-256."""
     assert _columns(db, "folder_uploads") == {
         "id", "customer_id", "user_id", "target", "parent_folder_id", "root_folder_id", "source_name",

@@ -3,9 +3,10 @@ the checks that keep an item's state, failure code and document in step, and the
 their ceilings. Customer separation: test_isolation_folder_uploads.
 
 Changed on purpose (#484, production at 0061c): 0071 merges production's 0061c
-(production-with-folder-upload's file, byte for byte) with 0070 and adds only what Testing-Env
-has more. Production's database (0061c, with uploads in it) and a fresh one or the test server
-(0070, no folder tables) end on the same schema; down across 0071 leaves 0070 and 0061c."""
+(production-with-folder-upload's file, byte for byte) with 0070 and adds nothing; 0072 adds what
+Testing-Env has more. A fresh database, production's (0061c, with uploads in it) and the test
+server's (0071 as #509 merged it, with uploads) end on the same schema; down across 0071 leaves
+0070 and 0061c."""
 
 import uuid
 from typing import Any
@@ -20,6 +21,7 @@ from tests import test_migration_0002_db as base
 from tests.db_support import database_url, insert_folder, migrate, new_customer
 from tests.folder_upload_support import new_folder_upload, path_key
 from tests.test_migration_0004_db import _current, _head
+from tests.test_migration_0034 import _load
 from tests.test_operator_auth_db import _owner
 
 pytestmark = pytest.mark.db
@@ -99,14 +101,45 @@ def _empty_again(url: str, db: Database) -> None:
     base._recreate(database_url(), str(make_url(url).database), create=True)
 
 
-def test_0071_up_down_up(fresh: tuple[str, Database]) -> None:
-    """The normal path: a fresh database, or the test server at 0070 with no folder tables. Head
-    runs production's 0061c, then 0071's differences."""
+def _normal(url: str, db: Database) -> tuple[dict[str, list[tuple[Any, ...]]], ...]:
+    """The normal path's states (a fresh database): at 0070 and 0061c, at 0071 and at head; then
+    the database empty again."""
+    migrate(url, "0070")
+    migrate(url, "0061c")
+    parents = _state(db)
+    migrate(url, "0071")
+    at_0071 = _state(db)
+    migrate(url, "head")
+    at_head = _state(db)
+    _empty_again(url, db)
+    return parents, at_0071, at_head
+
+
+def _as_509_left_it(url: str, db: Database) -> None:
+    """The test server: 0070, then 0071 as #509 merged it (revision "0071", down "0070"). That
+    file's statements were 0061c's byte for byte (only its revision ids and its module's name
+    differ: ``git show 5518439e:backend/migrations/versions/0071_folder_upload.py``), so they are
+    run straight from 0061c's file, in one transaction as alembic did, and the one version row
+    says 0071."""
+    migrate(url, "0070")
+    statements = _load("0061c_folder_upload.py").UPGRADE
+    with db.engine.begin() as conn:  # the owner, as the migrations run
+        for statement in statements:
+            conn.execute(text(statement))
+        conn.execute(text("UPDATE alembic_version SET version_num = '0071'"))
+
+
+def test_0071_is_a_merge_alone_and_0072_up_down_up(fresh: tuple[str, Database]) -> None:
+    """The normal path, a fresh database: head runs 0070, production's 0061c, 0071 (the merge,
+    nothing more), then 0072's "Add new files only". Down to 0071 and to 0070 and up again."""
     url, db = fresh
     migrate(url, "0070")
     assert base._names(base._schema(db), "relations").isdisjoint(TABLES)
-    migrate(url, "0061c")  # what head runs first on the test server
+    migrate(url, "0061c")
     parents = _state(db)
+    migrate(url, "0071")
+    assert _heads(url) == ["0071"]
+    assert _state(db) == parents  # a merge: nothing added
     migrate(url, "head")
     assert _current(url) == _head()
     after = _state(db)
@@ -114,6 +147,13 @@ def test_0071_up_down_up(fresh: tuple[str, Database]) -> None:
     with db.system() as conn:
         assert conn.execute(_COMMENT).scalar_one() == "Folders for documents, nested at most 100 levels."
     customer, upload = _upload_with_rows(db)
+    base._downgrade(url, "0071")
+    assert _heads(url) == ["0071"]
+    assert _state(db) == parents
+    assert _rows(db, customer, upload) == (1, 2, 2, 20, 2, 3)
+    migrate(url, "head")
+    assert _state(db) == after
+    assert _owner(db, _COUNTED, {"u": upload}) == [(2,)]
     base._downgrade(url, "0070")
     assert _heads(url) == ["0061c", "0070"]
     assert _state(db) == parents
@@ -123,20 +163,42 @@ def test_0071_up_down_up(fresh: tuple[str, Database]) -> None:
     assert _owner(db, _COUNTED, {"u": upload}) == [(2,)]
 
 
+def test_the_test_server_at_509s_0071_migrates_to_the_same_schema_and_keeps_its_uploads(
+    fresh: tuple[str, Database],
+) -> None:
+    """The test server ran 0071 as #509 merged it (the folder tables straight after 0070) and
+    has uploads. That is 0071's state of the other paths, so head runs 0072 (and on) alone and
+    ends on the normal path's schema, ``items_counted`` filled. Down and up again keeps the rows."""
+    url, db = fresh
+    _, normal_0071, normal = _normal(url, db)
+
+    _as_509_left_it(url, db)
+    assert _heads(url) == ["0071"]
+    assert _state(db) == normal_0071
+    customer, upload = _upload_with_rows(db)
+    migrate(url, "head")
+    assert _current(url) == _head()
+    assert _state(db) == normal
+    assert _rows(db, customer, upload) == (1, 2, 2, 20, 2, 3)
+    assert _owner(db, _COUNTED, {"u": upload}) == [(2,)]
+
+    base._downgrade(url, "0071")
+    assert _heads(url) == ["0071"]
+    assert _state(db) == normal_0071
+    migrate(url, "head")
+    assert _state(db) == normal
+    assert _owner(db, _COUNTED, {"u": upload}) == [(2,)]
+
+
 def test_production_at_0061c_migrates_to_the_same_schema_and_keeps_its_uploads(
     fresh: tuple[str, Database],
 ) -> None:
     """Production ran production-with-folder-upload (0061c) and has uploads. The release runs
-    0061 ... 0070 with the folder tables there, then 0071 adds only ``items_counted`` (the files
-    registered, all counted against the limits there): the schema and every function body as the
-    normal path's. Down and up again across 0071 keeps the rows."""
+    0061 ... 0070 with the folder tables there, the merge 0071, then 0072 adds only
+    ``items_counted`` (the files registered, all counted against the limits there): the schema
+    and every function body as the normal path's. Down and up again across 0071 keeps the rows."""
     url, db = fresh
-    migrate(url, "0070")
-    migrate(url, "0061c")
-    normal_parents = _state(db)
-    migrate(url, "head")
-    normal = _state(db)
-    _empty_again(url, db)
+    normal_parents, normal_0071, normal = _normal(url, db)
 
     migrate(url, "0061c")
     assert _heads(url) == ["0061c"]
@@ -144,6 +206,8 @@ def test_production_at_0061c_migrates_to_the_same_schema_and_keeps_its_uploads(
     migrate(url, "0070")
     assert _heads(url) == ["0061c", "0070"]
     assert _state(db) == normal_parents
+    migrate(url, "0071")
+    assert _state(db) == normal_0071
     migrate(url, "head")
     assert _current(url) == _head()
     assert _state(db) == normal
@@ -206,7 +270,7 @@ def test_limits_stay_inside_their_ceilings_and_an_org_row_names_one(db: Database
 
 
 def test_an_uploads_counted_files_start_at_0_and_are_never_negative(db: Database) -> None:
-    """ "Add new files only" (0071 in place): ``items_counted``, the files registered that
+    """ "Add new files only" (0072): ``items_counted``, the files registered that
     weren't already in Kaagaz."""
     customer, user = new_customer(db)
     with db.customer(customer) as conn:

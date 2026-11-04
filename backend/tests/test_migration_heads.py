@@ -43,3 +43,12 @@ def test_productions_0061c_is_a_branch_off_0061b_that_0071_merges() -> None:
     scripts = _scripts()
     assert scripts.get_revision("0061c").down_revision == "0061b"
     assert scripts.get_revision("0071").down_revision == ("0070", "0061c")
+
+
+def test_0071_is_the_merge_alone_and_0072_adds_after_it() -> None:
+    """#484, 5 Nov 2026: the test server ran 0071 as #509 merged it, so 0071 is the merge alone
+    (it never runs there again) and "Add new files only" is 0072's, after it."""
+    scripts = _scripts()
+    assert scripts.get_revision("0072").down_revision == "0071"
+    merge = (VERSIONS / "0071_folder_upload.py").read_text(encoding="utf-8")
+    assert "op.execute" not in merge and "items_counted" not in merge.split('"""')[-1]
