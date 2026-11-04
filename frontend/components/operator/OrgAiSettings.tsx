@@ -31,6 +31,10 @@
 // the Mistral model while Mistral reads; the Gemini-only fields are hidden then (the draft
 // keeps them) and Ensemble is off. A banner says when Mistral has stopped or isn't set up,
 // and how many documents wait for it.
+// Ultra low cost (#488, council 4 Nov 2026): a third reader. While it reads, the fields it sets
+// itself (thinking, the output limit, pages read again) are hidden (the draft keeps them),
+// Ensemble is off, "Most a page may cost" follows the reader, and the Cost per page panel says
+// the ceiling and what ultra low cost measured.
 
 import { useCallback, useEffect, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
@@ -58,6 +62,7 @@ import type {
   OperatorModel,
   Organisation,
   OrgAiReply,
+  ScanReader,
 } from "@/lib/types";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { canCloseDialog, countText, operatorErrorMessage } from "./logic";
@@ -65,6 +70,8 @@ import {
   APPLIES_NOTE,
   CAREFUL_RESOLUTION_HINT,
   CAREFUL_THINKING_HINT,
+  CEILING_HINT,
+  CEILING_LABEL,
   CHECK_LABEL,
   CHECK_PAGES_HINT,
   CHECK_PAGE_CHOICES,
@@ -74,6 +81,7 @@ import {
   COST_SAVING,
   DYNAMIC_HINT,
   ENSEMBLE_NOT_WITH_MISTRAL,
+  ENSEMBLE_NOT_WITH_ULC,
   ENSEMBLE_OFF,
   GEMINI_HIDDEN,
   LEVELS,
@@ -94,12 +102,17 @@ import {
   TOKENS_LOW,
   TOKENS_RANGE,
   TOKENS_UNDER_AVERAGE,
+  ULC_CEILING_PAISE,
+  ULC_HIDDEN,
+  ULC_HINT,
   VENDOR_NOT_ALLOWED,
   accuracyWords,
   aiBody,
   DAILY_PAGES_HINT,
   aiErrors,
   askScanCost,
+  ceilingOf,
+  ceilingText,
   changesText,
   checkEffect,
   checkRefusal,
@@ -114,6 +127,7 @@ import {
   inheritedText,
   inrText,
   levelNote,
+  limitShown,
   mistralModelOf,
   mistralModelText,
   mistralName,
@@ -141,6 +155,7 @@ import {
   tokensTooLow,
   tokensUnderAverage,
   tokensWords,
+  ulcWords,
   withCost,
 } from "./models";
 import type { AiDraft, AiErrors, AiField, Area, CheckPages, CostReply, ScanSetting, Section } from "./models";
@@ -166,7 +181,7 @@ export function refusalOf(caught: unknown): { field: AiField | "code"; message: 
 
 /** The first field with a problem, in the form's order, for the focus. */
 export function firstProblem(errors: AiErrors): AiField | null {
-  const order: AiField[] = ["scan_models", "scan_default", "page_max_output_tokens", "daily_page_limit", "chat_models", "chat_default", "chat_levels", "budget", "form"];
+  const order: AiField[] = ["ulc_ceiling_paise", "scan_models", "scan_default", "page_max_output_tokens", "daily_page_limit", "chat_models", "chat_default", "chat_levels", "budget", "form"];
   return order.find((field) => errors[field]) ?? null;
 }
 
@@ -229,8 +244,8 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy || !draft || unchanged) return;
-    const found = aiErrors(draft, false);
+    if (busy || !loaded || !draft || unchanged) return;
+    const found = aiErrors(draft, false, readerOf(draft, loaded.reply.defaults, loaded.reply.env, false));
     const badCode = codeError(code);
     setErrors(found);
     setCodeProblem(badCode);
@@ -296,7 +311,7 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
         {loaded && draft && (
           <form ref={focusFirst} className={styles.dialogForm} onSubmit={submit} noValidate>
             <MistralStopped env={loaded.reply.env} />
-            <p role="status">{statusText(aiBody(draft))}</p>
+            <p role="status">{statusText(aiBody(draft), readerOf({ scan_reader: null }, loaded.reply.defaults, loaded.reply.env, false))}</p>
             <div>
               <button
                 type="button"
@@ -487,12 +502,13 @@ function SectionBox(props: {
   section: Section;
   platform: boolean;
   draft: AiDraft;
+  followed: ScanReader; // the reader it follows when it names none
   busy: boolean;
   onChange(draft: AiDraft): void;
   children: ReactNode;
 }) {
-  const { title, section, platform, draft, busy, onChange, children } = props;
-  const same = sameAsDefault(draft, section);
+  const { title, section, platform, draft, followed, busy, onChange, children } = props;
+  const same = sameAsDefault(draft, section, followed);
   return (
     <fieldset className={styles.area} disabled={busy}>
       <legend>
@@ -551,12 +567,16 @@ export function AiFields(props: {
     options: values.map((value) => ({ value, words: words[value] })),
     onPick: (value: string) => onChange({ ...draft, [field]: value || null }),
   });
-  const section = { platform, draft, busy, onChange };
+  const section = { platform, draft, followed: readerOf({ scan_reader: null }, defaults, env, platform), busy, onChange };
   const rupees = inrText(parseBudget(draft.budget));
   const scanTicked = catalogue.filter((model) => draft.scan_models.includes(model.id));
   const scanNoLevels = scanTicked.length > 0 && scanTicked.every(hasNoLevels);
   // #473: who really reads, and an organisation saved as Mistral while Mistral isn't set up.
-  const mistral = readerOf(draft, defaults, env, platform) === "mistral";
+  const reader = readerOf(draft, defaults, env, platform);
+  const mistral = reader === "mistral";
+  const ulc = reader === "ultra_low_cost"; // #488
+  const ceilingId = fieldId("ulc_ceiling_paise");
+  const readerHint = [env.mistral_missing ? MISTRAL_MISSING[env.mistral_missing] : "", ulc ? ULC_HINT : ""].filter(Boolean).join(" ");
   const mistralModel = env.mistral_models.find((each) => each.id === mistralModelOf(draft, defaults, env, platform));
   const waiting = !platform && !env.mistral_ready && readerOf(saved, defaults, env, false) === "mistral";
   const readerId = fieldId("scan_reader");
@@ -577,7 +597,7 @@ export function AiFields(props: {
                     ? { value, words: MISTRAL_NOT_SET_UP, disabled: true }
                     : { value, words: READER_WORDS[value] },
                 )}
-                hint={env.mistral_missing ? MISTRAL_MISSING[env.mistral_missing] : undefined}
+                hint={readerHint || undefined}
                 problem={
                   <>
                     <FieldError field="scan_reader" errors={errors} />
@@ -607,6 +627,38 @@ export function AiFields(props: {
                   onPick={(value) => onChange({ ...draft, mistral_model: (value || null) as MistralModelId | null })}
                 />
               )}
+              {ulc && (
+                <SettingField
+                  id={ceilingId}
+                  label={CEILING_LABEL}
+                  platform={platform}
+                  own={draft.ulc_ceiling.trim() !== ""}
+                  hint={CEILING_HINT}
+                  onFollow={() => onChange({ ...draft, ulc_ceiling: "" })}
+                  control={(describedBy) => (
+                    <input
+                      id={ceilingId}
+                      className="input"
+                      type="number"
+                      inputMode="decimal"
+                      min="0.20"
+                      max="0.40"
+                      step="0.01"
+                      placeholder={
+                        platform ? `The server's setting (${ceilingText(ULC_CEILING_PAISE)})` : `Platform default (${from("ulc_ceiling_paise")})`
+                      }
+                      value={draft.ulc_ceiling}
+                      // The wheel scrolls the dialog, never the number: the box lets go of the focus first.
+                      onWheel={(event) => event.currentTarget.blur()}
+                      onChange={(event) => onChange({ ...draft, ulc_ceiling: event.target.value })}
+                      aria-invalid={errors.ulc_ceiling_paise ? true : undefined}
+                      aria-describedby={describedBy}
+                    />
+                  )}
+                  problem={errors.ulc_ceiling_paise ? <FieldError field="ulc_ceiling_paise" errors={errors} /> : null}
+                  problemId={`${ceilingId}-error`}
+                />
+              )}
               {mistral ? (
                 <p className="hint">{GEMINI_HIDDEN}</p>
               ) : (
@@ -621,7 +673,7 @@ export function AiFields(props: {
                     errors={errors}
                     onChange={onChange}
                   />
-                  {scanNoLevels ? (
+                  {ulc ? null : scanNoLevels ? (
                     // Every ticked scan model has no thinking levels: nothing to choose (Tushar, 18 Oct 2026).
                     <div className="field">
                       <span className="label">Thinking level</span>
@@ -636,81 +688,87 @@ export function AiFields(props: {
                     hint={RESOLUTION_HINT}
                     {...setting("scan_resolution", RESOLUTIONS, RESOLUTION_WORDS)}
                   />
-                  <SettingField
-                    id={fieldId("page_max_output_tokens")}
-                    label="Most output tokens a page"
-                    platform={platform}
-                    own={draft.page_max_output_tokens.trim() !== ""}
-                    hint={TOKENS_HINT}
-                    onFollow={() => onChange({ ...draft, page_max_output_tokens: "" })}
-                    control={(describedBy) => (
-                      <input
-                        id={fieldId("page_max_output_tokens")}
-                        className="input"
-                        type="number"
-                        inputMode="numeric"
-                        min="1024"
-                        max="65536"
-                        step="1"
-                        placeholder={
-                          platform
-                            ? `The server's setting (${from("page_max_output_tokens")})`
-                            : `Platform default (${from("page_max_output_tokens")})`
-                        }
-                        value={draft.page_max_output_tokens}
-                        // The wheel scrolls the dialog, never the number: the box lets go of the focus first.
-                        onWheel={(event) => event.currentTarget.blur()}
-                        onChange={(event) => onChange({ ...draft, page_max_output_tokens: event.target.value })}
-                        aria-invalid={errors.page_max_output_tokens ? true : undefined}
-                        aria-describedby={describedBy}
-                      />
-                    )}
-                    problem={errors.page_max_output_tokens ? <FieldError field="page_max_output_tokens" errors={errors} /> : null}
-                    problemId={`${fieldId("page_max_output_tokens")}-error`}
-                  />
-                  <h3 className={styles.subHeading}>Pages read again</h3>
-                  {platform ? (
-                    <label className={styles.choice}>
-                      <input
-                        type="checkbox"
-                        checked={draft.dynamic === true}
-                        aria-describedby="ai-dynamic-hint"
-                        onChange={(event) => onChange({ ...draft, dynamic: event.target.checked })}
-                      />
-                      <span>{COST_SAVING}</span>
-                    </label>
+                  {ulc ? (
+                    <p className="hint">{ULC_HIDDEN}</p>
                   ) : (
-                    <SettingSelect
-                      id="ai-dynamic"
-                      label={COST_SAVING}
-                      platform={false}
-                      hint={DYNAMIC_HINT}
-                      inherit={`Platform default (${from("dynamic")})`}
-                      value={draft.dynamic === null ? "" : draft.dynamic ? "on" : "off"}
-                      options={[
-                        { value: "on", words: "On" },
-                        { value: "off", words: "Off" },
-                      ]}
-                      onPick={(value) => onChange({ ...draft, dynamic: value === "" ? null : value === "on" })}
-                    />
+                    <>
+                      <SettingField
+                        id={fieldId("page_max_output_tokens")}
+                        label="Most output tokens a page"
+                        platform={platform}
+                        own={draft.page_max_output_tokens.trim() !== ""}
+                        hint={TOKENS_HINT}
+                        onFollow={() => onChange({ ...draft, page_max_output_tokens: "" })}
+                        control={(describedBy) => (
+                          <input
+                            id={fieldId("page_max_output_tokens")}
+                            className="input"
+                            type="number"
+                            inputMode="numeric"
+                            min="1024"
+                            max="65536"
+                            step="1"
+                            placeholder={
+                              platform
+                                ? `The server's setting (${from("page_max_output_tokens")})`
+                                : `Platform default (${from("page_max_output_tokens")})`
+                            }
+                            value={draft.page_max_output_tokens}
+                            // The wheel scrolls the dialog, never the number: the box lets go of the focus first.
+                            onWheel={(event) => event.currentTarget.blur()}
+                            onChange={(event) => onChange({ ...draft, page_max_output_tokens: event.target.value })}
+                            aria-invalid={errors.page_max_output_tokens ? true : undefined}
+                            aria-describedby={describedBy}
+                          />
+                        )}
+                        problem={errors.page_max_output_tokens ? <FieldError field="page_max_output_tokens" errors={errors} /> : null}
+                        problemId={`${fieldId("page_max_output_tokens")}-error`}
+                      />
+                      <h3 className={styles.subHeading}>Pages read again</h3>
+                      {platform ? (
+                        <label className={styles.choice}>
+                          <input
+                            type="checkbox"
+                            checked={draft.dynamic === true}
+                            aria-describedby="ai-dynamic-hint"
+                            onChange={(event) => onChange({ ...draft, dynamic: event.target.checked })}
+                          />
+                          <span>{COST_SAVING}</span>
+                        </label>
+                      ) : (
+                        <SettingSelect
+                          id="ai-dynamic"
+                          label={COST_SAVING}
+                          platform={false}
+                          hint={DYNAMIC_HINT}
+                          inherit={`Platform default (${from("dynamic")})`}
+                          value={draft.dynamic === null ? "" : draft.dynamic ? "on" : "off"}
+                          options={[
+                            { value: "on", words: "On" },
+                            { value: "off", words: "Off" },
+                          ]}
+                          onPick={(value) => onChange({ ...draft, dynamic: value === "" ? null : value === "on" })}
+                        />
+                      )}
+                      {platform && (
+                        <span id="ai-dynamic-hint" className="hint">
+                          {DYNAMIC_HINT}
+                        </span>
+                      )}
+                      <SettingSelect
+                        id="ai-careful-thinking"
+                        label="Thinking for pages read again"
+                        hint={CAREFUL_THINKING_HINT}
+                        {...setting("careful_thinking", SCAN_LEVELS, LEVEL_WORDS)}
+                      />
+                      <SettingSelect
+                        id="ai-careful-resolution"
+                        label="Picture detail for pages read again"
+                        hint={CAREFUL_RESOLUTION_HINT}
+                        {...setting("careful_resolution", RESOLUTIONS, RESOLUTION_WORDS)}
+                      />
+                    </>
                   )}
-                  {platform && (
-                    <span id="ai-dynamic-hint" className="hint">
-                      {DYNAMIC_HINT}
-                    </span>
-                  )}
-                  <SettingSelect
-                    id="ai-careful-thinking"
-                    label="Thinking for pages read again"
-                    hint={CAREFUL_THINKING_HINT}
-                    {...setting("careful_thinking", SCAN_LEVELS, LEVEL_WORDS)}
-                  />
-                  <SettingSelect
-                    id="ai-careful-resolution"
-                    label="Picture detail for pages read again"
-                    hint={CAREFUL_RESOLUTION_HINT}
-                    {...setting("careful_resolution", RESOLUTIONS, RESOLUTION_WORDS)}
-                  />
                 </>
               )}
             </div>
@@ -720,6 +778,8 @@ export function AiFields(props: {
               saved={saved}
               draft={draft}
               level={draft.scan_thinking ?? (platform ? null : defaults.scan_thinking) ?? env.scan_thinking}
+              reader={reader}
+              ulcCeiling={ulc ? ceilingOf(draft, defaults, platform) : null}
               check={check}
             />
           </div>
@@ -818,8 +878,10 @@ export function AiFields(props: {
                 <input
                   type="checkbox"
                   checked={draft.ensemble}
-                  disabled={busy || mistral}
-                  aria-describedby={mistral ? "ai-ensemble-hint ai-ensemble-mistral" : "ai-ensemble-hint"}
+                  disabled={busy || mistral || ulc}
+                  aria-describedby={
+                    mistral ? "ai-ensemble-hint ai-ensemble-mistral" : ulc ? "ai-ensemble-hint ai-ensemble-ulc" : "ai-ensemble-hint"
+                  }
                   onChange={(event) => onChange({ ...draft, ensemble: event.target.checked })}
                 />
                 <span>Ensemble: models work together</span>
@@ -832,6 +894,11 @@ export function AiFields(props: {
               {mistral && (
                 <span id="ai-ensemble-mistral" className="hint">
                   {ENSEMBLE_NOT_WITH_MISTRAL}
+                </span>
+              )}
+              {ulc && (
+                <span id="ai-ensemble-ulc" className="hint">
+                  {ENSEMBLE_NOT_WITH_ULC}
                 </span>
               )}
             </div>
@@ -973,22 +1040,34 @@ function SettingSelect(props: {
  * organisation, its accuracy against max settings. Never an empty box. The #463 review:
  * an output limit out of range is never priced (its range is said instead); a limit alone
  * is not priced; the draft's models are not priced until saved; a level the model doesn't
- * take is said; no check starts while the form has a problem. */
+ * take is said; no check starts while the form has a problem. Ultra low cost (#488) says its
+ * ceiling and what it measured, and none of the tokens, which it sets itself. */
 function CostPanel(props: {
   platform: boolean;
   customerId: string | null;
   saved: AiValues;
   draft: AiDraft;
   level: string; // the first read's thinking level asked: the draft's, else the one it follows
+  reader: ScanReader; // the one that really reads (readerOf)
+  ulcCeiling: number | null; // in paise, while ultra low cost reads
   check?: { latest: AccuracyCheck | null; onCheck(): void };
 }) {
-  const { platform, customerId, saved, draft, level, check } = props;
+  const { platform, customerId, saved, draft, level, reader, ulcCeiling, check } = props;
   const draftAsk = scanSettings(aiBody(draft));
-  const { scan_thinking, scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens, dynamic, scan_reader, mistral_model } =
-    draftAsk;
+  const {
+    scan_thinking,
+    scan_resolution,
+    careful_thinking,
+    careful_resolution,
+    page_max_output_tokens,
+    dynamic,
+    scan_reader,
+    mistral_model,
+    ulc_ceiling_paise,
+  } = draftAsk;
   const differs = !sameSettings(saved, draftAsk);
   const limit = parseTokens(draft.page_max_output_tokens);
-  const badLimit = limit === undefined; // never priced as the limit it would follow
+  const badLimit = limitShown(reader) && limit === undefined; // never priced as the limit it would follow; a hidden one isn't asked
   const finished = check?.latest?.finished_at ?? null; // a finished check: ask again for its result
   const [savedCost, setSavedCost] = useState<CostReply>(null);
   const [draftCost, setDraftCost] = useState<CostReply>(null);
@@ -1008,6 +1087,7 @@ function CostPanel(props: {
               dynamic,
               scan_reader,
               mistral_model,
+              ulc_ceiling_paise,
             }),
             postScanCost,
             setDraftCost,
@@ -1026,21 +1106,24 @@ function CostPanel(props: {
       dynamic,
       scan_reader,
       mistral_model,
+      ulc_ceiling_paise,
     ],
   );
   const shown = differs ? draftCost : savedCost;
-  const words = badLimit ? { figure: null, dollars: null, lines: [TOKENS_RANGE] } : costWords(shown);
+  const words = badLimit
+    ? { figure: null, dollars: null, lines: [TOKENS_RANGE] }
+    : ulcCeiling === null ? costWords(shown) : ulcWords(shown, ulcCeiling);
   const limitOnly = !badLimit && differs && onlyLimitDiffers(saved, draftAsk);
   const change = differs && !limitOnly && !badLimit ? costChange(savedCost, draftCost) : null;
   const reply = !badLimit && shown !== null && shown !== "failed" ? shown : null;
   const fixedPrice = reply?.fixed_price === true; // Mistral (#473): by the page, not by tokens
   const modelsDiffer = scanModelsDiffer(saved, aiBody(draft));
-  const readsAt = reply && levelNote(reply, level);
+  const readsAt = reply && ulcCeiling === null && levelNote(reply, level); // ultra low cost always reads at Minimal
   const accuracy = check ? accuracyWords(reply?.accuracy ?? null, check.latest) : null;
   const running = checkRunning(check?.latest ?? null);
   const tooLow = reply !== null && tokensTooLow(reply, limit ?? null);
   const underAverage = reply !== null && tokensUnderAverage(reply, limit ?? null);
-  const blocked = Object.keys(aiErrors(draft, platform)).length > 0; // a check reads the draft as it would save
+  const blocked = Object.keys(aiErrors(draft, platform, reader)).length > 0; // a check reads the draft as it would save
   return (
     <div className={styles.costColumn}>
       <section className={styles.costPanel} aria-labelledby="ai-cost-heading">
@@ -1065,26 +1148,28 @@ function CostPanel(props: {
           {readsAt && <p className={styles.costSmall}>{readsAt}</p>}
           {modelsDiffer && <p className={styles.costSmall}>{COST_SAVED_MODELS}</p>}
         </div>
-        <div className={styles.accuracy}>
-          {!fixedPrice && <h3 className={styles.subHeading}>Tokens a page</h3>}
-          <div id="ai-tokens" aria-live="polite">
-            {reply && tokensWords(reply).map((line) => (
-              <p key={line} className={styles.costSmall}>
-                {line}
-              </p>
-            ))}
-            {tooLow && (
-              <p id="ai-tokens-low" className="error-text">
-                {TOKENS_LOW}
-              </p>
-            )}
-            {underAverage && (
-              <p id="ai-tokens-low" className="error-text">
-                {TOKENS_UNDER_AVERAGE}
-              </p>
-            )}
+        {ulcCeiling === null && (
+          <div className={styles.accuracy}>
+            {!fixedPrice && <h3 className={styles.subHeading}>Tokens a page</h3>}
+            <div id="ai-tokens" aria-live="polite">
+              {reply && tokensWords(reply).map((line) => (
+                <p key={line} className={styles.costSmall}>
+                  {line}
+                </p>
+              ))}
+              {tooLow && (
+                <p id="ai-tokens-low" className="error-text">
+                  {TOKENS_LOW}
+                </p>
+              )}
+              {underAverage && (
+                <p id="ai-tokens-low" className="error-text">
+                  {TOKENS_UNDER_AVERAGE}
+                </p>
+              )}
+            </div>
           </div>
-        </div>
+        )}
         <div className={styles.accuracy}>
           <h3 id={ACCURACY_ID} className={styles.subHeading} tabIndex={-1}>
             Accuracy

@@ -52,11 +52,14 @@ _USAGE = (
 
 
 def scan_model(db: Database, efforts: tuple[str, ...] = EVERY_LEVEL) -> str:
-    """A made-up Google scan model (``catalog_model``'s: enabled and verified), taking ``efforts``."""
+    """A made-up Google scan model (``catalog_model``'s: enabled and verified), taking ``efforts``,
+    with no price a request or an image (0, as a refresh saves a model that lists them free;
+    #488 review)."""
     model = catalog_model(db)
     as_owner(
         db,
-        "UPDATE model_catalog SET efforts = CAST(:e AS text[]) WHERE id = :m",
+        "UPDATE model_catalog SET efforts = CAST(:e AS text[]), price_request_usd = 0, price_image_usd = 0"
+        " WHERE id = :m",
         {"e": list(efforts), "m": model},
     )
     return model
@@ -189,6 +192,7 @@ def test_both_audits_hold_the_scan_cost_settings(db: Database, platform: str) ->
         "scan_reader": None,  # Changed on purpose (#473, 0065): the page reader too
         "mistral_model": None,
         "daily_page_limit": None,  # Changed on purpose (#478)
+        "ulc_ceiling_paise": None,  # Changed on purpose (#488)
     }
     assert not set(hidden) & set(details)
     assert platform_details == {**details, **hidden, "budget_usd": 3}

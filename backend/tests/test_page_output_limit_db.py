@@ -209,5 +209,9 @@ def test_the_estimates_tokens_are_measured(db: Database, platform: str) -> None:
         "limit_hits": 0,
         "pages": 0,
     }
-    inherited = client.post("/api/operator/scan-cost", json={"customer_id": customer}, headers=CSRF).json()
-    assert inherited["tokens"]["limit"] == PAGE_MAX_OUTPUT_TOKENS  # null: what the save would inherit
+    # Changed on purpose (#488 review): null is what the save would inherit; left out, its own.
+    followed = {"customer_id": customer, "page_max_output_tokens": None}
+    inherited = client.post("/api/operator/scan-cost", json=followed, headers=CSRF).json()
+    assert inherited["tokens"]["limit"] == PAGE_MAX_OUTPUT_TOKENS
+    own = client.post("/api/operator/scan-cost", json={"customer_id": customer}, headers=CSRF).json()
+    assert own["tokens"]["limit"] == 8192

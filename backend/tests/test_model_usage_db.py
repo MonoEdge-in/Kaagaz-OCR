@@ -333,3 +333,14 @@ def test_read_again_bills_who_asked_and_keeps_the_model_unless_given_one_the_swe
             assert ask(conn)
             seen.append(tuple(conn.execute(_BILLED, {"d": document}).one()))
     assert seen == [(member, model), (admin, model), (None, model)]
+
+
+def test_an_ultra_low_cost_read_of_a_document_deleted_for_good_counts_as_the_deleted_document(
+    db: Database,
+) -> None:
+    customer, _ = new_customer(db)
+    with db.customer(customer) as conn:
+        add_usage(conn, customer, kind="ulc_scan", calls=3, cost_usd=0.009, created_at=OCT_3)
+        report = usage_report(conn, customer, **_days(date(2026, 10, 2), date(2026, 10, 3)))
+    assert _approx(report, "by_kind") == [("ulc_scan", 3, pytest.approx(0.009))]
+    assert _approx(report, "top_documents") == [(DELETED_DOCUMENT, 3, pytest.approx(0.009))]

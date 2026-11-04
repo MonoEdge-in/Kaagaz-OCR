@@ -334,6 +334,8 @@ describe("usageKindText", () => {
     expect(usageKindText("embed")).toBe("Search indexing");
     expect(usageKindText("story")).toBe("Stories");
     expect(usageKindText("land")).toBe("Land records");
+    // #488: an org admin never sees "ultra low cost", only that pages were read
+    expect(usageKindText("ulc_scan")).toBe("Reading scanned pages");
   });
 
   it("has words for every kind the backend bills (kaagaz/ai/usage.py KINDS), never the raw kind", () => {

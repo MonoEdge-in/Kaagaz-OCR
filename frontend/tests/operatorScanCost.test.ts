@@ -90,6 +90,7 @@ const values = (overrides: Partial<AiValues> = {}): AiValues => ({
   scan_reader: null, // Changed on purpose (#473): who reads the pages, and the Mistral model
   mistral_model: null,
   daily_page_limit: null, // Changed on purpose (#478): the daily page limit
+  ulc_ceiling_paise: null, // Changed on purpose (#488): the most a page may cost under ultra low cost
   ...overrides,
 });
 const ENV: AiEnv = {
@@ -122,6 +123,7 @@ const COUNTS: AiDefaults["orgs_inheriting"] = {
   scan_reader: 5, // Changed on purpose (#473)
   mistral_model: 5,
   daily_page_limit: 1, // Changed on purpose (#478)
+  ulc_ceiling_paise: 1, // Changed on purpose (#488)
 };
 const catalogue: OperatorModel[] = [];
 
@@ -276,8 +278,8 @@ describe("the scan settings' draft and save", () => {
   });
 
   it("counts them in the Scanning area and resets them with it", () => {
-    expect(follows(values({ scan_resolution: "low" })).scan).toBe("some");
-    expect(follows(values({ careful_resolution: "high" })).scan).toBe("some");
+    expect(follows(values({ scan_resolution: "low" }), "openrouter").scan).toBe("some");
+    expect(follows(values({ careful_resolution: "high" }), "openrouter").scan).toBe("some");
     expect(aiBody(resetSection(draftOf(own), "scan"))).toEqual(values());
   });
 
@@ -328,6 +330,7 @@ describe("the scan settings' draft and save", () => {
       expect(sent[1]?.body).toMatchObject({ scan_thinking: null, scan_resolution: null, careful_thinking: null, careful_resolution: null });
       // Changed on purpose (#463 review): Cost saving (`dynamic`) joins the cost's question.
       // Changed on purpose (#473): so do who reads the pages and the Mistral model.
+      // Changed on purpose (#488 review): and the most a page may cost.
       expect(sent[2]).toEqual({
         url: "/api/operator/scan-cost",
         method: "POST",
@@ -341,6 +344,7 @@ describe("the scan settings' draft and save", () => {
           dynamic: null,
           scan_reader: null,
           mistral_model: null,
+          ulc_ceiling_paise: null,
         },
       });
       expect(costAsk(null, values())).toEqual({
@@ -353,6 +357,7 @@ describe("the scan settings' draft and save", () => {
         dynamic: null,
         scan_reader: null,
         mistral_model: null,
+        ulc_ceiling_paise: null,
       });
     });
 
@@ -360,6 +365,7 @@ describe("the scan settings' draft and save", () => {
       const sent = capture({ id: "c-1" }, 202);
       // Changed on purpose (#463 review): Cost saving (`dynamic`) joins the check's body.
       // Changed on purpose (#473): so do who reads the pages and the Mistral model.
+      // Changed on purpose (#488 review): and the most a page may cost.
       const limited = { ...own, page_max_output_tokens: 8192, dynamic: true };
       expect(await postAccuracyCheck("org-1", { ...scanSettings(aiBody(draftOf(limited))), pages: 50 }, "123456")).toEqual({ id: "c-1" });
       expect(sent[0]).toEqual({
@@ -374,6 +380,7 @@ describe("the scan settings' draft and save", () => {
           dynamic: true,
           scan_reader: null,
           mistral_model: null,
+          ulc_ceiling_paise: null,
           pages: 50,
           code: "123456",
         },
@@ -453,7 +460,9 @@ describe("the Cost per page panel", () => {
     // Changed on purpose (#463 review): Cost saving (`dynamic`) is asked too (U2), and an
     // output limit out of range is never asked (S6).
     // Changed on purpose (#473): who reads the pages and the Mistral model are asked too.
-    const asked = "scan_thinking, scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens, dynamic, scan_reader, mistral_model";
+    // Changed on purpose (#488 review): and the most a page may cost.
+    const asked =
+      "scan_thinking, scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens, dynamic, scan_reader, mistral_model, ulc_ceiling_paise";
     const flat = source.replace(/\s+/g, " ").replace(/, \}/g, " }").replace(/, \]/g, " ]");
     expect(flat).toContain(`costAsk(customerId, { ${asked} }),`);
     expect(flat).toContain(`[ customerId, differs, badLimit, finished, ${asked} ]`);
@@ -720,8 +729,8 @@ describe("the most output tokens a page (Tushar, 31 Oct 2026)", () => {
     expect(["", " 1024 ", "65536", "8192"].map(parseTokens)).toEqual([null, 1024, 65536, 8192]);
     for (const bad of ["1023", "65537", "0", "-5", "2048.5", "1e4", "lots"]) expect(parseTokens(bad), bad).toBeUndefined();
     const draft = { ...draftOf(values()), page_max_output_tokens: "500" };
-    expect(aiErrors(draft, false)).toEqual({ page_max_output_tokens: "Choose a number from 1,024 to 65,536." });
-    expect(aiErrors({ ...draft, chat_levels: ["low"], chat_default_level: "low" }, true)).toEqual({
+    expect(aiErrors(draft, false, "openrouter")).toEqual({ page_max_output_tokens: "Choose a number from 1,024 to 65,536." });
+    expect(aiErrors({ ...draft, chat_levels: ["low"], chat_default_level: "low" }, true, "openrouter")).toEqual({
       page_max_output_tokens: TOKENS_RANGE,
     });
     expect(firstProblem({ budget: "x", page_max_output_tokens: "y" })).toBe("page_max_output_tokens");
@@ -751,7 +760,7 @@ describe("the most output tokens a page (Tushar, 31 Oct 2026)", () => {
   it("saves it, null following, and lists it in the changes, the counts and the summary", () => {
     expect(aiBody(draftOf(values({ page_max_output_tokens: 8192 })))).toEqual(values({ page_max_output_tokens: 8192 }));
     expect(aiBody(draftOf(values()))).toEqual(values());
-    expect(follows(values({ page_max_output_tokens: 8192 })).scan).toBe("some");
+    expect(follows(values({ page_max_output_tokens: 8192 }), "openrouter").scan).toBe("some");
     expect(resetSection(draftOf(values({ page_max_output_tokens: 8192 })), "scan").page_max_output_tokens).toBe("");
     const saved = draftOf(values());
     expect(changesText(saved, { ...saved, page_max_output_tokens: "8192" }, catalogue)).toEqual(["Most output tokens a page: 8,192"]);
@@ -948,6 +957,7 @@ describe("the #463 review (council, 31 Oct 2026)", () => {
       "dynamic",
       "scan_reader", // Changed on purpose (#473)
       "mistral_model",
+      "ulc_ceiling_paise", // Changed on purpose (#488 review)
     ]);
   });
 

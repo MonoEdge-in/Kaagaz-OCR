@@ -105,6 +105,7 @@ ORG_ROW = {
     "scan_reader": None,  # Changed on purpose (#473)
     "mistral_model": None,
     "daily_page_limit": None,  # Changed on purpose (#478)
+    "ulc_ceiling_paise": None,  # Changed on purpose (#488)
     "ensemble": True,
     "ai_budget_usd": Decimal("50.00"),
 }
@@ -124,6 +125,7 @@ DEFAULTS_ROW = {
     "scan_reader": None,  # Changed on purpose (#473)
     "mistral_model": None,
     "daily_page_limit": None,  # Changed on purpose (#478)
+    "ulc_ceiling_paise": None,  # Changed on purpose (#488)
     "orgs_inheriting_scan_models": 4,
     "orgs_inheriting_chat_models": 7,
     "orgs_inheriting_scan_thinking": 6,
@@ -136,6 +138,7 @@ DEFAULTS_ROW = {
     "orgs_inheriting_scan_reader": 8,  # Changed on purpose (#473)
     "orgs_inheriting_mistral_model": 8,
     "orgs_inheriting_daily_page_limit": 3,  # Changed on purpose (#478)
+    "orgs_inheriting_ulc_ceiling_paise": 3,  # Changed on purpose (#488)
 }
 ORG_BODY: dict[str, Any] = {
     "scan_models": [MODEL, OTHER],
@@ -153,6 +156,7 @@ ORG_BODY: dict[str, Any] = {
     "scan_reader": None,  # Changed on purpose (#473)
     "mistral_model": None,
     "daily_page_limit": None,  # Changed on purpose (#478)
+    "ulc_ceiling_paise": None,  # Changed on purpose (#488)
     "ensemble": True,
     "ai_budget_usd": 12.5,
 }
@@ -172,6 +176,7 @@ DEFAULTS_BODY: dict[str, Any] = {
     "scan_reader": None,  # Changed on purpose (#473)
     "mistral_model": None,
     "daily_page_limit": None,  # Changed on purpose (#478)
+    "ulc_ceiling_paise": None,  # Changed on purpose (#488)
 }
 USAGE_ROW = {
     "customer_id": CID,
@@ -480,6 +485,7 @@ def test_an_organisations_ai_settings_round_trip_with_the_defaults_it_follows(of
             "scan_reader": None,  # Changed on purpose (#473)
             "mistral_model": None,
             "daily_page_limit": None,  # Changed on purpose (#478)
+            "ulc_ceiling_paise": None,  # Changed on purpose (#488)
             "chat_levels": None,
             "chat_default_level": None,
             "dynamic": None,
@@ -497,6 +503,7 @@ def test_an_organisations_ai_settings_round_trip_with_the_defaults_it_follows(of
             "scan_reader": None,  # Changed on purpose (#473)
             "mistral_model": None,
             "daily_page_limit": None,  # Changed on purpose (#478)
+            "ulc_ceiling_paise": None,  # Changed on purpose (#488)
             "chat_levels": ["low", "medium"],
             "chat_default_level": "low",
             "dynamic": False,
@@ -547,7 +554,9 @@ def test_saving_an_organisations_ai_settings_needs_a_fresh_code(offline: _Offlin
         path, json={**ORG_BODY, "code": offline.wrong_code()}, headers=offline.headers
     )
     assert (refused.status_code, refused.json()["error"]["code"]) == (403, "step_up_failed")
-    assert offline.names() == ["step_up_failed"]
+    # Changed on purpose (#488): a save that follows the platform's reader reads the defaults first
+    # (Ultra low cost may be theirs), before the code is checked; nothing is written.
+    assert offline.names() == ["ai_defaults", "step_up_failed"]
 
 
 def test_ensemble_saved_off_with_one_scanning_model_is_said_not_refused(offline: _Offline) -> None:
@@ -654,6 +663,7 @@ def test_the_platform_defaults_say_how_many_organisations_follow_each_area(offli
             "scan_reader": None,  # Changed on purpose (#473)
             "mistral_model": None,
             "daily_page_limit": None,  # Changed on purpose (#478)
+            "ulc_ceiling_paise": None,  # Changed on purpose (#488)
             "chat_levels": ["low", "medium"],
             "chat_default_level": "low",
             "dynamic": False,
@@ -672,6 +682,7 @@ def test_the_platform_defaults_say_how_many_organisations_follow_each_area(offli
             "scan_reader": 8,  # Changed on purpose (#473)
             "mistral_model": 8,
             "daily_page_limit": 3,  # Changed on purpose (#478)
+            "ulc_ceiling_paise": 3,  # Changed on purpose (#488)
         },
     }
     offline.defaults = None  # the operator was disabled meanwhile

@@ -291,10 +291,12 @@ def test_ensemble_reads_the_settings_once() -> None:
 def test_the_five_scan_cost_fields_are_declared_once() -> None:
     assert issubclass(router.ScanCostBody, router.ScanSettingsBody)
     assert issubclass(router.AccuracyCheckBody, router.ScanSettingsBody)
-    # Changed on purpose (#473): the draft's page reader and Mistral model too.
+    # Changed on purpose (#473): the draft's page reader and Mistral model too; (#488) and Ultra low
+    # cost's ceiling.
     assert set(router.ScanSettingsBody.model_fields) == {
         *models.SCAN_COST_FIELDS,
         "dynamic",
         "scan_reader",
         "mistral_model",
+        "ulc_ceiling_paise",
     }

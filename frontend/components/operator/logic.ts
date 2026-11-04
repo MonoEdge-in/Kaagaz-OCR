@@ -120,6 +120,8 @@ export const CONFLICT = "That change is not possible now. Reload the list and tr
 /** The most output tokens a page the server accepts (#463), said on the field and for its refusal. */
 export const TOKENS_RANGE = "Choose a number from 1,024 to 65,536.";
 export const DAILY_PAGES_RANGE = "Choose a daily page limit from 1 to 1,000,000 pages, or leave it empty."; // #478
+// #488: the server's words for ceiling_out_of_range, said by the field's own check too.
+export const CEILING_RANGE = "Choose from ₹0.20 to ₹0.40 a page, or leave it empty.";
 
 /** The server's error codes in plain words (the server sends most refusals as
  * 409 "conflict" with its own sentence, which is used then). */
@@ -144,6 +146,9 @@ export const REFUSALS: Record<string, string> = {
   limit_out_of_range: TOKENS_RANGE, // the most output tokens a page (#463)
   pages_out_of_range: DAILY_PAGES_RANGE, // the daily page limit (#478)
   mistral_not_set_up: "Mistral isn't set up on this server yet.", // #473
+  // #488: ultra low cost, in the server's words.
+  ceiling_out_of_range: CEILING_RANGE,
+  ulc_needs_gemini: "Ultra low cost needs a Gemini model with a known price that can read with minimal thinking.",
 };
 
 /** Plain words for a refused change. A 409 keeps the server's own sentence

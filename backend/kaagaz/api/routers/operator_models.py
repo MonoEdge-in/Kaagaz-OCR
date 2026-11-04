@@ -73,6 +73,17 @@ writes its own audit rows.
   is set, reaching it pauses reading too (no other switch); Ask keeps working. ``GET
   .../orgs/{id}/ai`` adds ``reading_today``: its pages read today and their dollars (the
   India day).
+* Ultra low cost (#488, Tushar, 4 Nov 2026; 0070): ``scan_reader`` may be ``ultra_low_cost``, and
+  both AI settings carry ``ulc_ceiling_paise``, the most one read of a page may cost, 20 to 40
+  paise (400 ``ceiling_out_of_range``), null to inherit (the platform's null: 40); the defaults
+  count the organisations inheriting it. Choosing it, or keeping it in effect, needs its lead
+  (the default scan model in effect when it is a Gemini with a known price, else OCR_MODEL) to be
+  a Gemini in the catalogue with a known price that takes minimal thinking (409
+  ``ulc_needs_gemini``), both checked before a code is used. The estimate and the accuracy check
+  take the draft's ceiling too: with Ultra low cost in effect the estimate adds ``ulc``
+  {ceiling_paise, ceiling_usd, pages, usd_per_page, top_usd_per_page, limit_hits}, measured on the
+  scope's ``ulc_scan`` ledger rows of the last LEDGER_DAYS days (``kaagaz_op_ulc_cost``; null
+  otherwise), and the check's model is "ulc/<paise>/<model>" at minimal thinking.
 * ``GET /operator/usage?from&to``: tokens and dollars per organisation and model, days in
   TIMEZONE with both ends included (this month so far when left out), at most
   ``MAX_DAYS``. Never a user or a document: the function has no column for either.
@@ -127,7 +138,15 @@ from kaagaz.api.views import iso
 from kaagaz.db import models
 from kaagaz.db import operator_models as models_sql
 from kaagaz.db.engine import OperatorDatabase
-from kaagaz.db.models import LEDGER_DAYS, MAX_AGENTS, SCAN_COST_FIELDS, vendor
+from kaagaz.db.models import (
+    LEDGER_DAYS,
+    MAX_AGENTS,
+    MINIMAL,
+    SCAN_COST_FIELDS,
+    ULC_CEILING_PAISE,
+    ULTRA_LOW_COST,
+    vendor,
+)
 from kaagaz.db.operator_models import AiChoice
 from kaagaz.db.operator_orgs import Outcome
 from kaagaz.db.reading_days import india_day
@@ -211,6 +230,17 @@ _REFUSALS = {
     ),
     # #473: Mistral chosen on a server without its key or zero data retention confirmed.
     "mistral_not_set_up": (409, "mistral_not_set_up", "Mistral isn't set up on this server yet."),
+    # #488: Ultra low cost's ceiling a page, and its lead.
+    "ceiling_out_of_range": (
+        400,
+        "ceiling_out_of_range",
+        "Choose from ₹0.20 to ₹0.40 a page, or leave it empty.",
+    ),
+    "ulc_needs_gemini": (
+        409,
+        "ulc_needs_gemini",
+        "Ultra low cost needs a Gemini model with a known price that can read with minimal thinking.",
+    ),
 }
 
 Level = Literal["low", "medium", "high"]
@@ -218,12 +248,14 @@ ScanLevel = Literal["minimal", "low", "medium", "high"]  # #463: minimal for sca
 Resolution = Literal["low", "high"]  # #463: the picture detail OpenRouter can send (settings)
 # #473: who reads scanned pages (mistral_ocr.OPENROUTER, MISTRAL) and the Mistral models
 # (MISTRAL_OCR_MODELS' ids; migration 0065's CHECKs list the same).
-ScanReader = Literal["openrouter", "mistral"]
+ScanReader = Literal["openrouter", "mistral", "ultra_low_cost"]  # #488: Ultra low cost (0070)
 MistralModelId = Literal["mistral-ocr-4-1", "mistral-ocr-2512"]
 # #463: a page read's output limit, in tokens (TOKENS_LOW to openrouter.PAGE_MAX_OUTPUT_TOKENS).
 OutputTokens = Annotated[int, Field(strict=True)]
 # #478: a daily page limit (1 to MAX_PAGES_A_DAY, checked by ``_choice``).
 DailyPages = Annotated[int, Field(strict=True)]
+# #488: Ultra low cost's ceiling a page in paise (ULC_CEILING_PAISE, checked by ``_ceiling``).
+UlcPaise = Annotated[int, Field(strict=True)]
 # #463: the estimate's organisation with nothing of its own, so its connection sees the platform
 # defaults alone (row level security shows no organisation this id).
 NO_ORGANISATION = str(uuid.UUID(int=0))
@@ -257,6 +289,7 @@ class OrgAiBody(BaseModel):
     scan_reader: ScanReader | None  # #473
     mistral_model: MistralModelId | None
     daily_page_limit: DailyPages | None  # #478
+    ulc_ceiling_paise: UlcPaise | None  # #488
     chat_levels: Levels | None
     chat_default_level: Level | None
     dynamic: bool | None
@@ -352,6 +385,7 @@ class DefaultsBody(BaseModel):
     scan_reader: ScanReader | None  # #473: null, openrouter
     mistral_model: MistralModelId | None  # null, DEFAULT_MISTRAL_MODEL
     daily_page_limit: DailyPages | None  # #478: null, no limit
+    ulc_ceiling_paise: UlcPaise | None  # #488: null, ULC_DEFAULT_PAISE
     chat_levels: Levels
     chat_default_level: Level
     dynamic: bool
@@ -361,7 +395,8 @@ class DefaultsBody(BaseModel):
 class ScanSettingsBody(BaseModel):
     """#463: a draft's scan settings (SCAN_COST_FIELDS) and Cost saving (#463 review), each
     null for what the save would inherit (an organisation's: the platform's, else the
-    server's; the platform's: the server's, its Dynamic its saved one)."""
+    server's; the platform's: the server's, its Dynamic its saved one); #488 review: each left
+    out is the organisation's (or the platform's) own effective value."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -374,6 +409,7 @@ class ScanSettingsBody(BaseModel):
     # #473: the draft's reader and Mistral model (null: inherited), as the scan settings are.
     scan_reader: ScanReader | None = None
     mistral_model: MistralModelId | None = None
+    ulc_ceiling_paise: UlcPaise | None = None  # #488
 
 
 class ScanCostBody(ScanSettingsBody):
@@ -464,6 +500,7 @@ def get_ai_defaults(operator: OperatorSession, db: OperatorDb, context: Context)
                 "scan_reader",  # #473
                 "mistral_model",
                 "daily_page_limit",  # #478
+                "ulc_ceiling_paise",  # #488
             )
         },
     }
@@ -481,6 +518,7 @@ def set_ai_defaults(
         return None if row is None else row["scan_reader"]
 
     choice = _choice(body, context.settings, saved_reader)
+    _needs_gemini(db, operator, body, context.settings, platform=None)
     step_up = _step_up(db, context, operator, body.code)
     with db.operator() as conn:
         outcome = models_sql.set_ai_defaults(
@@ -534,6 +572,7 @@ def set_org_ai(
         return None if row is None else row["scan_reader"]
 
     choice = _choice(body, context.settings, saved_reader)
+    _needs_gemini(db, operator, body, context.settings, platform=_platform(db, operator, body))
     step_up = _step_up(db, context, operator, body.code)
     with db.operator() as conn:
         outcome = models_sql.set_org_ai(
@@ -578,6 +617,7 @@ def _plan(
     organisation (or an operator disabled meanwhile)."""
     settings = context.settings
     _limit(draft_fields.page_max_output_tokens)
+    _ceiling(draft_fields.ulc_ceiling_paise)
     if customer is not None:
         with db.operator() as conn:
             if models_sql.org_ai(conn, operator.operator_id, customer) is None:
@@ -589,13 +629,24 @@ def _plan(
         rows = models.usable_models(conn, scope, settings=settings)
         allowed = models.effective_settings(conn, scope)
         platform = allowed if customer is None else models.effective_settings(conn, NO_ORGANISATION)
-    # What the save would inherit: an organisation's the platform's; the platform's the server's.
+    # A field sent null is what the save would inherit: an organisation's the platform's; the
+    # platform's the server's. #488 review: one left out is the scope's own (its effective value).
+    given = draft_fields.model_fields_set
     draft: dict[str, Any] = {
-        name: getattr(draft_fields, name) or (platform[name] if customer is not None else None)
-        for name in (*SCAN_COST_FIELDS, "scan_reader", "mistral_model")  # #473: the reader too
+        name: allowed[name]
+        if name not in given
+        else getattr(draft_fields, name) or (platform[name] if customer is not None else None)
+        # #473: the reader too; #488: and Ultra low cost's ceiling.
+        for name in (*SCAN_COST_FIELDS, "scan_reader", "mistral_model", "ulc_ceiling_paise")
     }
     # #463 review: the draft's Cost saving (null: the platform's), never past the switches.
-    dynamic = platform["dynamic"] if draft_fields.dynamic is None else draft_fields.dynamic
+    dynamic = (
+        allowed["dynamic"]
+        if "dynamic" not in given
+        else platform["dynamic"]
+        if draft_fields.dynamic is None
+        else draft_fields.dynamic
+    )
     draft["dynamic"] = bool(dynamic and allowed["cost_saving"])
     reading = models.scope_reading(rows, {**allowed, **draft}, settings=settings)
     lead = reading.lead.model
@@ -611,6 +662,9 @@ def _plan(
     if reading.scan_reader == MISTRAL:  # #473: Mistral reads every page at its one setting, alone
         first, careful = (read_by(reading.mistral_model), MISTRAL_THINKING, MISTRAL_RESOLUTION), None
         asked_first = first  # review, 2 Nov 2026: a Gemini level in the draft never hides its check
+    if reading.ulc is not None:  # #488: once, at minimal, under its ceiling: never a Gemini scan's
+        first = (accuracy.ulc_model(reading.ulc.paise, lead), MINIMAL, resolution)
+        asked_first, draft["dynamic"] = first, False
     asked = (
         *asked_first,
         careful_thinking,
@@ -638,6 +692,7 @@ def scan_cost(
     plan = _plan(db, operator, context, customer, body)
     first, careful = plan.first, plan.careful
     mistral = plan.reading.scan_reader == MISTRAL
+    ceiling = plan.reading.ulc
     with db.operator() as conn:
         row = models_sql.scan_cost(conn, operator.operator_id, customer, first, careful, plan.best)
         check = (
@@ -645,8 +700,23 @@ def scan_cost(
             if customer is None
             else models_sql.accuracy_check(conn, operator.operator_id, customer, plan.asked)
         )
-    if row is None:
+        measured = (
+            None
+            if ceiling is None
+            else models_sql.ulc_cost(conn, operator.operator_id, customer, plan.reading.lead.model)
+        )
+    if row is None or (ceiling is not None and measured is None):
         raise ApiError(401, "not_signed_in")
+    ulc = None
+    if ceiling is not None and measured is not None:
+        ulc = {
+            "ceiling_paise": ceiling.paise,
+            "ceiling_usd": ceiling.usd,
+            "pages": int(measured["pages"]),
+            "usd_per_page": _per_page(measured["cost_usd"], measured["pages"]),
+            "top_usd_per_page": _number(measured["top_usd_per_page"]),
+            "limit_hits": int(measured["limit_hits"]),
+        }
     first_usd = _per_page(row["first_usd"], row["first_pages"])
     first_read = _read(first, first_usd, row["first_pages"])
     re_read = None
@@ -685,6 +755,7 @@ def scan_cost(
         "fixed_usd_per_page": MISTRAL_OCR_MODELS[plan.reading.mistral_model].usd_per_page
         if mistral
         else None,
+        "ulc": ulc,  # #488: null unless Ultra low cost reads
     }
 
 
@@ -762,6 +833,53 @@ def _limit(tokens: int | None) -> None:
     """400 ``limit_out_of_range`` for a page read's output limit outside 1024 to 65536."""
     if tokens is not None and not TOKENS_LOW <= tokens <= PAGE_MAX_OUTPUT_TOKENS:
         raise ApiError(*_REFUSALS["limit_out_of_range"])
+
+
+def _ceiling(paise: int | None) -> None:
+    """#488: 400 ``ceiling_out_of_range`` for Ultra low cost's ceiling outside 20 to 40 paise."""
+    low, high = ULC_CEILING_PAISE
+    if paise is not None and not low <= paise <= high:
+        raise ApiError(*_REFUSALS["ceiling_out_of_range"])
+
+
+def _platform(db: OperatorDatabase, operator: CurrentOperator, body: OrgAiBody) -> RowMapping | None:
+    """#488: the platform defaults an organisation's save inherits from (its reader, its default
+    scan model), read only when Ultra low cost may read after it (none for Gemini or Mistral)."""
+    if body.scan_reader not in (None, ULTRA_LOW_COST):
+        return None
+    with db.operator() as conn:
+        row = models_sql.ai_defaults(conn, operator.operator_id)
+    if row is None:  # the operator was disabled meanwhile
+        raise ApiError(401, "not_signed_in")
+    return row
+
+
+def _needs_gemini(
+    db: OperatorDatabase,
+    operator: CurrentOperator,
+    body: OrgAiBody | DefaultsBody,
+    settings: Settings,
+    *,
+    platform: RowMapping | None,
+) -> None:
+    """#488: 409 ``ulc_needs_gemini`` when Ultra low cost would read after the save (``body``'s
+    reader, else the ``platform`` defaults' an organisation inherits) and its lead (as
+    ``models._ulc_reading`` picks it: the default scan model in effect when a Gemini with a known
+    price, else OCR_MODEL) is not a catalogue Gemini with a known price that takes minimal
+    thinking. One catalogue read, only while Ultra low cost would read."""
+    reader = body.scan_reader or (None if platform is None else platform["scan_reader"])
+    if reader != ULTRA_LOW_COST:
+        return
+    default = body.scan_default
+    if not body.scan_models and platform is not None:
+        default = platform["scan_default"]
+    with db.operator() as conn:
+        catalogue = {row["id"]: row for row in models_sql.list_models(conn, operator.operator_id)}
+    lead = catalogue.get(default or "")
+    if lead is None or not models.ulc_priced(lead):
+        lead = catalogue.get(settings.ocr_model)
+    if lead is None or not models.ulc_priced(lead) or MINIMAL not in lead["efforts"]:
+        raise ApiError(*_REFUSALS["ulc_needs_gemini"])
 
 
 def _share(part: int, whole: int) -> float | None:
@@ -1147,6 +1265,7 @@ def _choice(body: OrgAiBody | DefaultsBody, settings: Settings, saved: Callable[
     _limit(body.page_max_output_tokens)
     if body.daily_page_limit is not None and not 1 <= body.daily_page_limit <= MAX_PAGES_A_DAY:
         raise ApiError(*_REFUSALS["pages_out_of_range"])  # #478, before a code is used up
+    _ceiling(body.ulc_ceiling_paise)  # #488, before a code is used up
     if body.scan_reader == MISTRAL and not settings.mistral_ready and saved() != MISTRAL:
         raise ApiError(*_REFUSALS["mistral_not_set_up"])
     return AiChoice(
@@ -1165,6 +1284,7 @@ def _choice(body: OrgAiBody | DefaultsBody, settings: Settings, saved: Callable[
         scan_reader=body.scan_reader,
         mistral_model=body.mistral_model,
         daily_page_limit=body.daily_page_limit,
+        ulc_ceiling_paise=body.ulc_ceiling_paise,
     )
 
 
@@ -1183,6 +1303,7 @@ def _ai(row: RowMapping) -> dict[str, Any]:
         "scan_reader": row["scan_reader"],  # #473
         "mistral_model": row["mistral_model"],
         "daily_page_limit": row["daily_page_limit"],  # #478
+        "ulc_ceiling_paise": row["ulc_ceiling_paise"],  # #488
         "chat_levels": None if row["chat_levels"] is None else list(row["chat_levels"]),
         "chat_default_level": row["chat_default_level"],
         "dynamic": row["dynamic"],

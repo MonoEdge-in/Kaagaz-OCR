@@ -13,6 +13,7 @@
 // the cost a page now.
 // Who reads the pages (#473): the default reader and Mistral model with the same fields, its
 // row in the summary, and the banner while Mistral has stopped.
+// Ultra low cost (#488): the same fields, and "Most a page may cost" in the summary while it reads.
 
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
@@ -23,7 +24,7 @@ import { getAiDefaults, postScanCost, putAiDefaults } from "@/lib/api";
 import type { AiDefaults, OperatorModel } from "@/lib/types";
 import { LoadFailed } from "./LoadFailed";
 import { canCloseDialog, countText, operatorErrorMessage } from "./logic";
-import { COST_SAVING, KEEP_OWN, aiBody, aiErrors, costAsk, defaultsImpact, draftOf, inheritedText, withCost } from "./models";
+import { CEILING_LABEL, COST_SAVING, KEEP_OWN, aiBody, aiErrors, costAsk, defaultsImpact, draftOf, inheritedText, readerOf, withCost } from "./models";
 import type { AiDraft, AiErrors } from "./models";
 import { AiFields, CODE_ID, MistralStopped, fieldId, firstProblem, refusalOf } from "./OrgAiSettings";
 import admin from "@/components/admin/Admin.module.css";
@@ -98,6 +99,10 @@ export function DefaultsSummary({ reply, catalogue }: { reply: AiDefaults; catal
     ...((defaults.scan_reader ?? env.scan_reader) === "mistral"
       ? [{ label: "Mistral model", value: inheritedText("mistral_model", defaults, env, catalogue), count: counts.mistral_model }]
       : []),
+    // #488: the ceiling only while the platform reads with ultra low cost.
+    ...((defaults.scan_reader ?? env.scan_reader) === "ultra_low_cost"
+      ? [{ label: CEILING_LABEL, value: inheritedText("ulc_ceiling_paise", defaults, env, catalogue), count: counts.ulc_ceiling_paise }]
+      : []),
     { label: "Scanning models", value: inheritedText("scan_models", defaults, env, catalogue), count: counts.scan_models },
     { label: "Scanning thinking level", value: inheritedText("scan_thinking", defaults, env, catalogue), count: counts.scan_thinking },
     { label: "Picture detail", value: inheritedText("scan_resolution", defaults, env, catalogue), count: counts.scan_resolution },
@@ -156,7 +161,7 @@ function DefaultsDialog(props: {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return;
-    const found = aiErrors(draft, true);
+    const found = aiErrors(draft, true, readerOf(draft, reply.defaults, reply.env, true));
     const badCode = codeError(code);
     setErrors(found);
     setCodeProblem(badCode);

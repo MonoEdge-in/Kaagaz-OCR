@@ -95,6 +95,7 @@ FOLLOWS_DEFAULTS: dict[str, Any] = {
     "scan_reader": None,  # Changed on purpose (#473): who reads the pages, and the Mistral model
     "mistral_model": None,
     "daily_page_limit": None,  # Changed on purpose (#478)
+    "ulc_ceiling_paise": None,  # Changed on purpose (#488)
     "chat_levels": None,
     "chat_default_level": None,
     "dynamic": None,

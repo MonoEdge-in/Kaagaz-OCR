@@ -3,7 +3,9 @@
 a time per organisation and a few an hour on the platform; the job reads only that
 organisation's pages, at the draft's settings and at max, keeps numbers only (never a word,
 in the table or the log), bills the organisation as accuracy_check, never its budget; and the
-estimate shows the latest done check at the same settings and the share of clean pages.
+estimate shows the latest done check at the same settings and the share of clean pages. #488: a
+check on an Ultra low cost organisation reads "your settings" compact, held under its ceiling,
+and a field the request leaves out is the organisation's own value, never the platform's.
 
 Each test moves its checks out of the last hour when it ends (``old_checks``), so the platform's
 hourly limit never reaches another test."""
@@ -29,14 +31,15 @@ from kaagaz.db import usage as usage_sql
 from kaagaz.db.engine import Database, OperatorDatabase
 from kaagaz.ingestion.ports import BlobNotFound
 from kaagaz.jobs.accuracy import AccuracyChecks
-from kaagaz.reading.gemini_ocr import GeminiEngine
-from kaagaz.reading.ocr import as_page_engine
+from kaagaz.reading.compact import COMPACT_SCHEMA, encode_compact
+from kaagaz.reading.gemini_ocr import GeminiEngine, as_result, checked
+from kaagaz.reading.ocr import INR_PER_USD, as_page_engine
 from kaagaz.settings import Settings
 from tests.db_support import insert_document
 from tests.settings_factory import make_settings
 from tests.test_api_support import CSRF, Api, TestClient, wrong_code
 from tests.test_gemini_ocr import FakeFinder, FakeRapidOcr, line, reply, value
-from tests.test_isolation_ai_settings import platform, set_org
+from tests.test_isolation_ai_settings import platform, set_defaults, set_org
 from tests.test_migration_0023_db import as_owner
 from tests.test_operator_auth_db import _Operator, _owner
 from tests.test_operator_models_db import _signed_in
@@ -47,6 +50,7 @@ __all__ = ["platform"]  # the fixture, used by name
 GEMINI = make_settings(ocr_engine="gemini")
 MAX_TEXT = "Bill to Sharma Traders Total ₹12,450 GSTIN 27AAACO1234"
 DRAFT_TEXT = "Bill to Sharma Traders Total ₹8,000 GSTIN 27AAACO1234"
+FLASH_LITE_PRICES = (0.30, 2.50)  # dollars a million tokens in and out
 
 
 @pytest.fixture
@@ -97,6 +101,38 @@ class Reads:
         usage.record_call(str(model), None, 10, 20, 0, 0.001)  # billed as the real client bills
         words = MAX_TEXT if thinking_level == "high" else DRAFT_TEXT
         return reply(value(line(words, (100, 100, 130, 900))))
+
+
+class CompactReads(Reads):
+    """Reads, and a read held under a ceiling (``budget``, Ultra low cost) gets the compact reply
+    of DRAFT_TEXT, billed as the real client bills it; each such call noted as (schema, the
+    ceiling in dollars, the output limit it allowed)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.held: list[tuple[Any, float, int | None]] = []
+
+    def read_page(
+        self,
+        *,
+        media_resolution: str,
+        thinking_level: str,
+        model: str | None = None,
+        schema: Any = None,
+        budget: Any = None,
+        **_: Any,
+    ) -> PageReply:
+        if budget is None:
+            return super().read_page(
+                media_resolution=media_resolution, thinking_level=thinking_level, model=model
+            )
+        with self._lock:
+            self.calls.append((model, thinking_level, media_resolution))
+            self.held.append((schema, budget.usd, budget.cap()))
+        usage.record_call(str(model), None, 10, 20, 0, 0.001)
+        budget.charge(10, 20, 0.001)
+        page = as_result(checked(value(line(DRAFT_TEXT, (100, 100, 130, 900)))))
+        return reply({"r": encode_compact(page)}, 10, 20)
 
 
 def model_page(
@@ -153,6 +189,14 @@ def run(db: Database, api: Api, images: PageImages, reads: Reads, settings: Sett
     local = FakeRapidOcr()
     engine = GeminiEngine(settings, client=reads, pool=FakeFinder(), local=lambda: as_page_engine(local))
     AccuracyChecks(db, images, engine, settings=settings)(api.queue.jobs[-1], lambda: None)
+
+
+def flash_lite(db: Database, model: str) -> None:
+    """``model`` at Flash Lite's prices (FLASH_LITE_PRICES), so a page fits under a ceiling."""
+    params = {"m": model, "i": FLASH_LITE_PRICES[0], "o": FLASH_LITE_PRICES[1]}
+    as_owner(
+        db, "UPDATE model_catalog SET price_in_usd_per_m = :i, price_out_usd_per_m = :o WHERE id = :m", params
+    )
 
 
 def _org(db: Database, platform: str, api: Api, name: str, **choice: Any) -> tuple[str, str]:
@@ -315,3 +359,57 @@ def test_no_customer_session_starts_or_reads_a_check(db: Database) -> None:
     # The app's own role reaches the table only through its organisation's claim and finish.
     with pytest.raises(DBAPIError), db.customer(admin.customer_id) as conn:
         conn.execute(text("SELECT count(*) FROM scan_accuracy_checks"))
+
+
+def test_an_ultra_low_cost_check_reads_your_settings_compact_under_its_ceiling(
+    db: Database, platform: str, old_checks: None
+) -> None:
+    api = Api(db, settings=GEMINI)
+    operator, client = _signed_in(api)
+    images, reads = PageImages(), CompactReads()
+    customer, lead = _org(db, platform, api, "Check ULC", scan_reader="ultra_low_cost", ulc_ceiling_paise=30)
+    flash_lite(db, lead)
+    for _ in range(2):
+        model_page(db, images, customer, read_by=lead)
+    started = start(api, operator, client, customer)
+    assert started.status_code == 202, started.text
+    run(db, api, images, reads)
+    ceiling = 30 / 100 / INR_PER_USD
+    assert len(reads.held) == 2  # "your settings": compact, held under 30 paise
+    assert all(schema is COMPACT_SCHEMA and usd == pytest.approx(ceiling) for schema, usd, _ in reads.held)
+    assert all(cap is not None and 1150 * 0.30e-6 + cap * 2.50e-6 <= ceiling for _, _, cap in reads.held)
+    assert sorted(set(reads.calls)) == [
+        (lead, "high", "high"),
+        (lead, "minimal", GEMINI.ocr_media_resolution),
+    ]
+    done = client.get(f"/api/operator/orgs/{customer}/accuracy-check/latest").json()
+    assert (done["status"], done["pages_checked"], done["pages_failed"]) == ("done", 2, 0)
+    assert done["settings"]["model"] == f"ulc/30/{lead}"
+    assert done["word_match"] == pytest.approx(1 - 1 / 8)
+
+
+def test_a_field_left_out_is_the_organisations_own_never_the_platforms(
+    db: Database, platform: str, old_checks: None
+) -> None:
+    api = Api(db, settings=GEMINI)
+    operator, client = _signed_in(api)
+    platform_ulc = ops.AiChoice(
+        chat_levels=["low"], chat_default_level="low", dynamic=False, ulc_ceiling_paise=40
+    )
+    assert set_defaults(db, platform, platform_ulc) == "done"
+    customer, lead = _org(db, platform, api, "Check Own", scan_reader="ultra_low_cost", ulc_ceiling_paise=25)
+    flash_lite(db, lead)
+    model_page(db, images := PageImages(), customer, read_by=lead)
+    estimate = client.post("/api/operator/scan-cost", json={"customer_id": customer}, headers=CSRF)
+    assert estimate.status_code == 200, estimate.text
+    assert estimate.json()["ulc"]["ceiling_paise"] == 25
+    followed = {"customer_id": customer, "ulc_ceiling_paise": None}  # sent empty: what the save inherits
+    assert (
+        client.post("/api/operator/scan-cost", json=followed, headers=CSRF).json()["ulc"]["ceiling_paise"]
+        == 40
+    )
+    started = start(api, operator, client, customer)
+    assert started.status_code == 202, started.text
+    run(db, api, images, CompactReads())
+    done = client.get(f"/api/operator/orgs/{customer}/accuracy-check/latest").json()
+    assert done["settings"]["model"] == f"ulc/25/{lead}"
