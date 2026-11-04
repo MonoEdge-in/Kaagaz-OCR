@@ -33,7 +33,7 @@ from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import DOCUMENT_NAME_MAX, FOLDER_NAME_MAX, shown_upload_name, upload_name
 from kaagaz.api.routers.documents import same_user, user_upload_policy
-from kaagaz.api.views import folder_upload_item, iso
+from kaagaz.api.views import folder_upload_item, held_message, iso
 from kaagaz.db import audit
 from kaagaz.db import folder_upload_items as items_sql
 from kaagaz.db.folder_upload_items import NewItem, Summary
@@ -290,7 +290,8 @@ def list_folder_upload_items(
 
 
 def summary_json(row: Summary) -> dict[str, Any]:
-    """``FolderUploadSummary``; reading, ready and problem are null in the list."""
+    """``FolderUploadSummary``; reading, ready, problem and held are null in the list. ``held``:
+    stored files the reading pause holds (#478), with its words (``held_message``)."""
     return {
         "id": row.id,
         "root_folder_id": row.root_folder_id,
@@ -311,4 +312,6 @@ def summary_json(row: Summary) -> dict[str, Any]:
         "reading": row.reading,
         "ready": row.ready,
         "problem": row.problem,
+        "held": row.held,
+        "held_message": held_message(row.held_reason),
     }

@@ -76,6 +76,7 @@ export function FolderUploadRow({
         </div>
       )}
       {reading && <p className={`muted ${styles.small}`}>{reading}</p>}
+      {view.held > 0 && view.heldMessage && <p className={`muted ${styles.small}`}>{view.heldMessage}</p>}
       {view.sending.length > 0 && (
         <ul className={styles.uploads}>
           {view.sending.map((row) => (
@@ -113,7 +114,7 @@ export function FolderUploadRow({
         )}
       </div>
       {notSent.total > 0 && (
-        <ul className={styles.uploads} aria-label="Not sent">
+        <ul className={styles.uploads} aria-label="Not sent yet">
           {notSent.rows.map((row) => (
             <li key={row.item.id} className={styles.upload} data-state="error">
               <div className={styles.uploadBody}>
@@ -129,7 +130,7 @@ export function FolderUploadRow({
             </li>
           ))}
           {notSent.total > notSent.rows.length && (
-            <li className={`muted ${styles.small}`}>and {formatNumber(notSent.total - notSent.rows.length)} more not sent</li>
+            <li className={`muted ${styles.small}`}>and {formatNumber(notSent.total - notSent.rows.length)} more not sent yet</li>
           )}
         </ul>
       )}
@@ -149,7 +150,7 @@ export function FolderUploadRow({
           render={(item) => <DuplicateItem key={item.id} item={item} tree={tree} />}
         />
       )}
-      {attention === 0 && notSent.total === 0 && view.duplicates === 0 && view.phase === "done" && view.reading === 0 && (
+      {attention === 0 && notSent.total === 0 && view.duplicates === 0 && view.phase === "done" && view.reading === 0 && view.held === 0 && (
         <p className={`muted ${styles.small}`}>Every file is in its folder.</p>
       )}
     </div>

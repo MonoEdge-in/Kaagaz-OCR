@@ -71,6 +71,12 @@ PAUSED_BUDGET = (
 _PAUSE_WORDS = {CODES[DAILY_LIMIT]: PAUSED_FOR_TODAY, CODES[BUDGET]: PAUSED_BUDGET}
 
 
+def held_message(reason: str | None) -> str | None:
+    """#484 with #478: the words for files the reading pause holds (``documents.reading_held``,
+    DAILY_LIMIT or BUDGET), as a held document's own; None with none held."""
+    return None if reason is None else _PAUSE_WORDS[CODES[reason]]
+
+
 def files_ahead_message(count: int) -> str:
     """ "Waiting: 12 files ahead in your batch" (Q6)."""
     return f"Waiting: {count} {'file' if count == 1 else 'files'} ahead in your batch"

@@ -11,6 +11,7 @@ import {
   folderLine,
   folderUploadsReducer,
   itemProblemText,
+  readingLine,
   refusedReason,
   restoredUpload,
   sendWaiting,
@@ -113,6 +114,8 @@ function summaryOf(id: string, items: FolderUploadItem[]): FolderUploadSummary {
     reading: 0,
     ready: count("stored"),
     problem: 0,
+    held: 0,
+    held_message: null,
   };
 }
 
@@ -349,9 +352,32 @@ describe("what the tray and the status bar say", () => {
     expect(state.u).toMatchObject({ rootName: "A", stored: 4990, reading: 7, ready: 4983, problem: 0 });
   });
 
+  it("counts the files the reading pause holds apart from those reading, with the pause's own words (#478)", () => {
+    const summary: FolderUploadSummary = {
+      ...summaryOf("u", []),
+      file_count: 5,
+      registered: 5,
+      stored: 5,
+      reading: 0,
+      ready: 2,
+      held: 3,
+      held_message: "Reading is paused. Your organisation has reached its daily page limit. This file will be read on its own when the limit resets, or sooner if it is raised.",
+    };
+    let state = folderUploadsReducer(start, { type: "counts", id: "u", summary });
+    expect(state.u).toMatchObject({ reading: 0, held: 3, heldMessage: summary.held_message });
+    expect(readingLine(state.u!)).toBe("Reading: 2 of 5 ready, 3 waiting. Reading can take a while for big folders.");
+    state = folderUploadsReducer(state, { type: "counts", id: "u", summary: { ...summary, held: null, held_message: null } });
+    expect(state.u).toMatchObject({ held: 3, heldMessage: summary.held_message }); // the list leaves them out
+    state = folderUploadsReducer(state, { type: "counts", id: "u", summary: { ...summary, ready: 5, held: 0, held_message: null } });
+    expect(state.u).toMatchObject({ held: 0, heldMessage: null });
+    expect(readingLine(state.u!)).toBeNull();
+  });
+
   it("names the folder to choose again after a reload, and gives a plain fix for a refused file", () => {
     const waiting = folderUploadsReducer(start, { type: "phase", id: "u", phase: "needs_pick" });
-    expect(folderLine(waiting.u!)).toBe("Folder “A”: 0 of 5,000 uploaded. Choose “A” again to send the rest.");
+    expect(folderLine(waiting.u!)).toBe("Folder “A”: 0 of 5,000 uploaded, 5,000 not sent yet. Choose “A” again to send them.");
+    const stopped = folderUploadsReducer(start, { type: "phase", id: "u", phase: "stopped" });
+    expect(folderLine(stopped.u!)).toBe("Folder “A”: stopped at 0 of 5,000 uploaded, 5,000 not sent yet");
     const item = (over: Partial<FolderUploadItem>): FolderUploadItem => ({
       id: "i",
       seq: 0,
@@ -426,7 +452,7 @@ describe("after a reload", () => {
     expect(cut).toMatchObject({ listed: false, again: { target: { kind: "folder", parentId: "p9" }, merge: false } });
     const state = cut!.events.reduce(folderUploadsReducer, EMPTY_FOLDER_UPLOADS);
     expect(state.r).toMatchObject({ rootName: "A", phase: "needs_pick", stored: 1 });
-    expect(folderLine(state.r!)).toBe("Folder “A”: 1 of 3 uploaded. Choose “A” again to send the rest.");
+    expect(folderLine(state.r!)).toBe("Folder “A”: 1 of 3 uploaded, 2 not sent yet. Choose “A” again to send them.");
     expect(restoredUpload(summary({ registered: 0, target: "department" }))?.again.target).toEqual({ kind: "department" });
   });
 

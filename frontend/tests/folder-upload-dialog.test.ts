@@ -14,8 +14,13 @@ import { FolderReadingDialog, FolderUploadDialog, clashOf, dialogProblem, summar
 import { FolderUploadRow } from "@/components/documents/FolderUploadRow";
 import { buildTree } from "@/components/documents/folderTree";
 import { EMPTY_FOLDER_UPLOADS, folderUploadsReducer } from "@/components/documents/folderUpload";
-import type { FolderUploadLimits, Folder } from "@/lib/types";
+import type { FolderUploadItem, FolderUploadLimits, Folder } from "@/lib/types";
 
+const PAUSED =
+  "Reading is paused. Your organisation has reached its daily page limit. This file will be read on its own when the limit resets, or sooner if it is raised.";
+const NOT_SENT_ITEM: FolderUploadItem = {
+  id: "i1", seq: 1, path_key: "k", name: "lost.pdf", folder_id: "f0", size: 1, state: "waiting", failure_code: null, document_id: null, document: null,
+};
 const LIMITS: FolderUploadLimits = {
   max_files: 50000,
   max_bytes: 5 * 1024 ** 3,
@@ -181,13 +186,14 @@ describe("the tray's row for a folder upload", () => {
     expect(row("stopped", false)).toContain("Choose “A” again");
   });
 
-  const settled = (counts: { failed?: number; problem?: number; duplicate?: number }, notSent = 0) => {
+  const settled = (counts: { failed?: number; problem?: number; duplicate?: number; held?: number }, notSent = 0) => {
     let state = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, { type: "start", id: "u", rootName: "A", total: 10 });
     const summary = {
       id: "u", root_folder_id: "f0", root_name: "A", source_name: "A", target: "folder" as const, parent_folder_id: null,
       merge: true, created_at: "", file_count: 10, total_bytes: 0, skipped_count: 0, registered: 10, waiting: 0,
       stored: 10 - (counts.failed ?? 0) - (counts.duplicate ?? 0), duplicate: counts.duplicate ?? 0, failed: counts.failed ?? 0,
       reading: 0, ready: 0, problem: counts.problem ?? 0,
+      held: counts.held ?? 0, held_message: counts.held ? PAUSED : null,
     };
     state = folderUploadsReducer(state, { type: "counts", id: "u", summary });
     state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "done" });
@@ -195,7 +201,7 @@ describe("the tray's row for a folder upload", () => {
       createElement(FolderUploadRow, {
         view: state.u!,
         held: true,
-        notSent: { rows: [], total: notSent },
+        notSent: { rows: notSent > 0 ? [{ item: NOT_SENT_ITEM, message: "Lost.", retry: true }] : [], total: notSent },
         tree: buildTree([]),
         limits: { pdf_bytes: 1, image_bytes: 1, sheet_bytes: 1, max_pages: 1, readers: [] },
         actions: {
@@ -222,6 +228,20 @@ describe("the tray's row for a folder upload", () => {
     expect(settled({ duplicate: 1 })).not.toContain("Every file is in its folder.");
     expect(settled({ problem: 1 })).not.toContain("Every file is in its folder.");
     expect(settled({}, 1)).not.toContain("Every file is in its folder.");
+    expect(settled({ held: 2 })).not.toContain("Every file is in its folder.");
+  });
+
+  it("shows the reading pause's own words while its files are held (#478)", () => {
+    const html = settled({ held: 3 });
+    expect(html).toContain("3 waiting");
+    expect(html).toContain(PAUSED);
+    expect(settled({})).not.toContain("Reading is paused");
+  });
+
+  it("calls the files not sent “not sent yet”: Waiting is the reading pause's word", () => {
+    const html = settled({}, 3);
+    expect(html).toContain('aria-label="Not sent yet"');
+    expect(html).toContain("and 2 more not sent yet");
   });
 
   it("offers to move a file already in Kaagaz here, in those words", () => {

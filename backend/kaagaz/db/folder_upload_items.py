@@ -20,6 +20,8 @@ an upload.
   stored it, then died before finishing), else ``duplicate`` (Kaagaz already had the file).
 * ``summaries`` counts the items by state on the index ``folder_upload_items_state``; only one
   upload's ``progress`` joins documents (reading, ready, a problem), under a statement timeout.
+  A stored file the reading pause holds (``documents.reading_held``, #478) is counted ``held``,
+  never reading, with why (``held_reason``: the budget first, as ``pause_reason``).
 """
 
 import uuid
@@ -84,9 +86,11 @@ class Summary:
     stored: int
     duplicate: int
     failed: int
-    reading: int | None  # these three only for one upload (``progress``)
+    reading: int | None  # these five only for one upload (``progress``)
     ready: int | None
     problem: int | None
+    held: int | None  # waiting for the reading pause (#478), not counted in reading
+    held_reason: str | None  # DAILY_LIMIT or BUDGET (kaagaz.jobs.reading_pause); None with none held
 
 
 class ItemsRefused(Exception):
@@ -281,10 +285,14 @@ _STATES = text(
     " GROUP BY folder_upload_id, state"
 )
 _SET_TIMEOUT = text("SELECT set_config('statement_timeout', :ms, true)")
+# Held: as the release sweep's (reading_days.waiting). min(): 'budget' sorts before
+# 'daily_limit', so the budget is named first, as pause_reason does.
 _PROGRESS = text(
-    "SELECT count(*) FILTER (WHERE d.status IN ('received', 'clean')),"
+    "SELECT count(*) FILTER (WHERE d.status IN ('received', 'clean') AND d.reading_held IS NULL),"
     " count(*) FILTER (WHERE d.status = 'ready'),"
-    " count(*) FILTER (WHERE d.status IN ('failed', 'rejected', 'needs_reader'))"
+    " count(*) FILTER (WHERE d.status IN ('failed', 'rejected', 'needs_reader')),"
+    " count(*) FILTER (WHERE d.status IN ('received', 'clean') AND d.reading_held IS NOT NULL),"
+    " min(d.reading_held) FILTER (WHERE d.status IN ('received', 'clean'))"
     " FROM folder_upload_items i JOIN documents d ON d.customer_id = i.customer_id AND d.id = i.document_id"
     " WHERE i.customer_id = :c AND i.folder_upload_id = :u AND i.state = 'stored'"
 )
@@ -299,14 +307,22 @@ def summaries(conn: Connection, customer_id: str, *, user_id: str) -> list[Summa
 
 def progress(conn: Connection, customer_id: str, upload_id: str, *, user_id: str) -> Summary | None:
     """One upload of this user, its items counted by state and its stored files by where their
-    reading is; None for none. Three statements under TIMEOUT_MS, O(n log D) for n items."""
+    reading is (held by the reading pause apart); None for none. Three statements under
+    TIMEOUT_MS, O(n log D) for n items."""
     params = {"c": customer_id, "usr": user_id, "u": upload_id}
     found = _summaries(conn, params, conn.execute(_ONE, params).all())
     if not found:
         return None
     conn.execute(_SET_TIMEOUT, {"ms": str(TIMEOUT_MS)})
-    reading, ready, problem = conn.execute(_PROGRESS, params).one()
-    return replace(found[0], reading=int(reading), ready=int(ready), problem=int(problem))
+    reading, ready, problem, held, reason = conn.execute(_PROGRESS, params).one()
+    return replace(
+        found[0],
+        reading=int(reading),
+        ready=int(ready),
+        problem=int(problem),
+        held=int(held),
+        held_reason=reason,
+    )
 
 
 def _summaries(conn: Connection, params: dict[str, Any], uploads: Sequence[Any]) -> list[Summary]:
@@ -336,6 +352,8 @@ def _summaries(conn: Connection, params: dict[str, Any], uploads: Sequence[Any])
             reading=None,
             ready=None,
             problem=None,
+            held=None,
+            held_reason=None,
         )
         for row in uploads
     ]

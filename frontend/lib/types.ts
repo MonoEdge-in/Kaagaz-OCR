@@ -659,7 +659,7 @@ export interface FolderItemsPage {
 }
 
 /** GET /folder-uploads/{id}: one folder upload's counts, by state, and of its documents. In the
- * list (GET /folder-uploads) reading, ready and problem are null. */
+ * list (GET /folder-uploads) reading, ready, problem and held are null. */
 export interface FolderUploadSummary {
   id: string;
   root_folder_id: string | null;
@@ -680,6 +680,8 @@ export interface FolderUploadSummary {
   reading: number | null; // stored, still being checked or read
   ready: number | null;
   problem: number | null; // stored, but its reading failed or was refused
+  held: number | null; // stored, waiting for the reading pause (#478), not counted in reading
+  held_message: string | null; // the pause's own words while any is held, as a held document's
 }
 
 /** What an upload or a whole document's Read again asks for (feature 26); nothing: the default. */

@@ -241,6 +241,8 @@ export interface FolderUploadView {
   reading: number;
   ready: number;
   problem: number; // stored, but its reading failed or was refused
+  held: number; // stored, waiting for the reading pause (#478): "waiting", never "not sent yet"
+  heldMessage: string | null; // the pause's own words (the server's), while any is held
   sending: SendingRow[]; // at most FOLDER_UPLOADS_AT_ONCE
   phase: FolderPhase;
   message: string | null;
@@ -251,6 +253,8 @@ export interface FolderUploadView {
 export const EMPTY_FOLDER_UPLOADS: Readonly<Record<string, FolderUploadView>> = {};
 
 const uploadedOf = (view: FolderUploadView) => view.stored + view.duplicates;
+/** Files not sent yet (#478: "Waiting" is the reading pause's word): listed or not, none sent. */
+const notSentYetOf = (view: FolderUploadView) => Math.max(0, view.total - uploadedOf(view) - view.failed);
 /** What needs attention, as the server's "attention" list holds it: the files not sent are listed apart. */
 export const attentionOf = (view: FolderUploadView) => view.failed + view.problem;
 
@@ -261,10 +265,12 @@ export function folderLine(view: FolderUploadView): string {
   if (view.phase === "registering") return `${name}: listing its files…`;
   if (view.phase === "refused") return `${name} was not uploaded.`;
   const counts = `${formatNumber(uploadedOf(view))} of ${formatNumber(view.total)} uploaded`;
-  if (view.phase === "needs_pick") return `${name}: ${counts}. Choose “${view.rootName}” again to send the rest.`;
+  const left = notSentYetOf(view);
+  const notYet = left === 0 ? "" : `, ${formatNumber(left)} not sent yet`;
+  if (view.phase === "needs_pick") return `${name}: ${counts}${notYet}. Choose “${view.rootName}” again to send them.`;
   const attention = attentionOf(view);
   const needs = attention === 0 ? "" : `, ${formatNumber(attention)} ${attention === 1 ? "needs" : "need"} attention`;
-  return `${name}: ${view.phase === "stopped" ? `stopped at ${counts}` : counts}${needs}`;
+  return `${name}: ${view.phase === "stopped" ? `stopped at ${counts}${notYet}` : counts}${needs}`;
 }
 
 /** The status bar's line, said politely: "Uploading folder “A”: 1,000 of 5,000 uploaded" while it sends. */
@@ -273,10 +279,12 @@ function spokenLine(view: FolderUploadView): string {
   return `Uploading folder “${view.rootName}”: ${formatNumber(uploadedOf(view))} of ${formatNumber(view.total)} uploaded`;
 }
 
-/** Kaagaz reading what was stored, in words; null when nothing is left to read. */
+/** Kaagaz reading what was stored, in words, with the files the reading pause holds as
+ * "waiting" (#478); null when nothing is left to read. */
 export function readingLine(view: FolderUploadView): string | null {
-  if (view.reading === 0) return null;
-  return `Reading: ${formatNumber(view.ready)} of ${formatNumber(view.stored)} ready. Reading can take a while for big folders.`;
+  if (view.reading === 0 && view.held === 0) return null;
+  const waiting = view.held === 0 ? "" : `, ${formatNumber(view.held)} waiting`;
+  return `Reading: ${formatNumber(view.ready)} of ${formatNumber(view.stored)} ready${waiting}. Reading can take a while for big folders.`;
 }
 
 function withSpoken(view: FolderUploadView): FolderUploadView {
@@ -302,6 +310,8 @@ export function folderUploadsReducer(
       reading: 0,
       ready: 0,
       problem: 0,
+      held: 0,
+      heldMessage: null,
       sending: [],
       phase: "planning",
       message: null,
@@ -340,6 +350,8 @@ export function folderUploadsReducer(
         reading: summary.reading ?? view.reading,
         ready: summary.ready ?? view.ready,
         problem: summary.problem ?? view.problem,
+        held: summary.held ?? view.held,
+        heldMessage: summary.held === null ? view.heldMessage : summary.held_message,
       };
       break;
     }
