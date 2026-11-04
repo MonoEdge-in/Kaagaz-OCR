@@ -4,6 +4,7 @@ audit row with counts and ids only), registering files (idempotent, their folder
 the limits from registered sizes, a bad name failed) and reading progress. The limits and the
 depth: test_folder_uploads_plan_db. Sending the files: test_api_folder_upload_files."""
 
+import json
 import unicodedata
 import uuid
 from typing import Any
@@ -148,6 +149,32 @@ def test_a_plan_over_8_mb_is_413_before_it_is_read(db: Database) -> None:
         "/api/folder-uploads", content=huge, headers={**CSRF, "Content-Type": "application/json"}
     )
     assert reply.status_code == 413
+
+
+def test_a_register_page_over_2_mb_is_413_and_a_full_page_of_long_names_fits(db: Database) -> None:
+    """Production QA S6: a register page was parsed whole up to Caddy's 60 MB. A full page of
+    1,000 files with 255-character Devanagari names is about 1 MB, so 2 MB refuses no real page."""
+    signed = Api(db).new_signed()
+    planned = plan(signed, file_count=1000, total_bytes=1_000_000).json()
+    upload, root = planned["id"], planned["folder_ids"][0]
+    name = "क" * 251 + ".pdf"  # 255 characters, 3 bytes each in UTF-8
+    page = [{**item(f"A/{n}.pdf", root), "name": name} for n in range(1000)]
+    body = json.dumps({"user_id": signed.user_id, "items": page}, ensure_ascii=False).encode()
+    assert 900_000 < len(body) < 2 * 1024 * 1024
+    huge = b'{"items": "' + b"x" * (2 * 1024 * 1024) + b'"}'
+    reply = signed.client.post(
+        f"/api/folder-uploads/{upload}/items",
+        content=huge,
+        headers={**CSRF, "Content-Type": "application/json"},
+    )
+    assert _error(reply)[:2] == (413, "too_large")
+    reply = signed.client.post(
+        f"/api/folder-uploads/{upload}/items",
+        content=body,
+        headers={**CSRF, "Content-Type": "application/json"},
+    )
+    assert reply.status_code == 200, reply.text
+    assert len(reply.json()["items"]) == 1000
 
 
 def test_registering_twice_returns_the_same_items_and_never_moves_their_folder(db: Database) -> None:

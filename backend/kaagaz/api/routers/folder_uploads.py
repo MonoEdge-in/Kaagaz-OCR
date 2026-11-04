@@ -12,7 +12,8 @@ batches and duplicates stay exactly as for any upload.
   folders. One user's uploads send at a time per organisation (409 ``upload_in_progress``, until
   the other has been quiet for 30 minutes) and one plan
   is built at a time (429 ``plan_busy``, ``Retry-After: 2``).
-* ``POST /folder-uploads/{id}/items``: a page of at most 1,000 files; each gets its folder and
+* ``POST /folder-uploads/{id}/items`` (at most MAX_REGISTER_BYTES, checked before it is parsed):
+  a page of at most 1,000 files; each gets its folder and
   batch now (``db/folder_upload_items.py``). A file with an unsafe name is registered failed
   ``bad_name``, never a 400 for the page.
 * ``GET /folder-uploads`` (this user's of the last 7 days, counts by state only),
@@ -57,6 +58,9 @@ Context = Annotated[AppContext, Depends(get_context)]
 
 MAX_PLAN_BYTES = 8 * 1024 * 1024  # 50,000 folders' names fit with room to spare
 REGISTER_PAGE = 1000
+# A register page's body (production QA S6: it was parsed whole up to Caddy's 60 MB). A full page
+# of 1,000 files with 255-character Devanagari names is about 1 MB.
+MAX_REGISTER_BYTES = 2 * 1024 * 1024
 _BAD_NAME = "A folder name is empty, longer than 100 characters, or holds a character Kaagaz can't keep."
 
 
@@ -110,16 +114,18 @@ def _words(code: str, limits: FolderUploadLimits) -> str:
     }.get(code, "")
 
 
-async def _body(request: Request, most: int) -> bytes:
-    """The request body, refused (413) past ``most`` bytes before it is read whole or parsed."""
+async def _body(
+    request: Request, most: int, words: str = "This folder is too big to plan in one go."
+) -> bytes:
+    """The request body, refused (413, ``words``) past ``most`` bytes before it is read whole or parsed."""
     declared = request.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > most:
-        raise ApiError(413, "too_large", "This folder is too big to plan in one go.")
+        raise ApiError(413, "too_large", words)
     body = bytearray()
     async for chunk in request.stream():
         body.extend(chunk)
         if len(body) > most:
-            raise ApiError(413, "too_large", "This folder is too big to plan in one go.")
+            raise ApiError(413, "too_large", words)
     return bytes(body)
 
 
@@ -220,7 +226,20 @@ def _plan_and_audit(
 
 
 @router.post("/folder-uploads/{upload_id}/items")
-def register_items(upload_id: uuid.UUID, body: RegisterBody, user: User, context: Context) -> dict[str, Any]:
+async def register_items(
+    upload_id: uuid.UUID, request: Request, user: User, context: Context
+) -> dict[str, Any]:
+    raw = await _body(request, MAX_REGISTER_BYTES, "This page of files is too big to register in one go.")
+    try:
+        body = RegisterBody.model_validate_json(raw)
+    except ValidationError:
+        raise ApiError(400, "bad_request") from None
+    return await run_in_threadpool(_register, context, user, upload_id, body)
+
+
+def _register(
+    context: AppContext, user: CurrentUser, upload_id: uuid.UUID, body: RegisterBody
+) -> dict[str, Any]:
     same_user(body.user_id, user)
     items = []
     for entry in body.items:
