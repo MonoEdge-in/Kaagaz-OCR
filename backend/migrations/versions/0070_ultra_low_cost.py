@@ -21,9 +21,16 @@ more than a ceiling a page.
   organisation's or every one's: the pages, their cost, the pages read locally to stay within the
   ceiling (``limit_hits``: the reader counts one on its row for each such page) and the highest
   cost a page of one document. Numbers only. ``model_usage_ulc_reads`` keeps it to those rows.
+* ``model_catalog``: ``price_request_usd`` and ``price_image_usd`` (new, #488 review), OpenRouter's
+  pricing.request and pricing.image in dollars, what each call costs besides its tokens, which
+  Ultra low cost pays from every call's ceiling. numeric NULL with a named CHECK (at least 0);
+  NULL is not known, and Ultra low cost never reads with a lead whose price a call is not known.
+  Every row is NULL until the next catalogue refresh (the worker's daily one, or ``kaagaz
+  refresh-models``) writes them; the app may write them, as the other refresh columns (0023).
 * ``kaagaz_op_models`` (0033): its pages read and their real cost count ``ulc_scan`` as a page
-  read too; the live text is 0033's, changed in place (CREATE OR REPLACE keeps the owner, grants
-  and comment).
+  read too, and it returns the two prices a call (the operator's check of the lead); 0033's text
+  with those changes, dropped and created again (its columns change) with 0033's comment and
+  grants.
 * The operator's other spend figures count ``ulc_scan`` as a page read too (``SPEND``):
   ``kaagaz_op_daily`` (the Overview: a first read, a scanned page, scan and document spend),
   ``kaagaz_op_test_model`` (the test model's pages and cost) and ``kaagaz_op_model_board`` (a
@@ -34,8 +41,8 @@ more than a ceiling a page.
 The downgrade puts Ultra low cost back to NULL (Gemini, as every organisation read before: no
 reader is lost to a CHECK), undoes SPEND's rewrites, drops the new function and index, puts
 0033's and 0066's functions and 0065's CHECKs and comments back exactly, then drops the
-columns. Lost on downgrade: the choice of Ultra low cost and the ceilings (the ledger's
-``ulc_scan`` rows stay).
+columns. Lost on downgrade: the choice of Ultra low cost, the ceilings and the prices a call (the
+ledger's ``ulc_scan`` rows stay; a catalogue refresh writes the prices again).
 
 Revision ID: 0070
 Revises: 0069a (paused runs)
@@ -219,13 +226,23 @@ ULC_COST_COMMENT = (
     " locally to stay within the ceiling, and the highest cost a page of one document. Numbers only."
 )
 
-# 0033's catalogue: an Ultra low cost read is a page read too (both of its uses of the kinds).
+# 0033's catalogue: an Ultra low cost read is a page read too (both of its uses of the kinds), and
+# the prices a call, last.
 MODELS_NEW = _changed(
     _0033.NEW,
-    [(_0033.SCAN_KINDS, f"{_0033.SCAN_KINDS}, '{ULC_KIND}'")],
+    [
+        (_0033.SCAN_KINDS, f"{_0033.SCAN_KINDS}, '{ULC_KIND}'"),
+        (
+            "answer_cost_unknown_calls bigint)",
+            "answer_cost_unknown_calls bigint,\n                   price_request_usd numeric, price_image_usd numeric)",
+        ),
+        (
+            "coalesce(s.answer_unknown, 0)::bigint\n",
+            "coalesce(s.answer_unknown, 0)::bigint,\n               m.price_request_usd, m.price_image_usd\n",
+        ),
+    ],
     times={_0033.SCAN_KINDS: 2},
 )
-_REPLACE = ("CREATE FUNCTION", "CREATE OR REPLACE FUNCTION")  # in place: grants and comment stay
 
 # The operator's spend figures count an Ultra low cost read as the page read it is: the Overview
 # (0034's daily, last changed by 0069a) as a first read, a scanned page and document work; the
@@ -292,6 +309,17 @@ COMMENTS = {
 }
 
 
+# #488 review (R3): the catalogue's prices a call, {column: comment}; NULL is not known.
+CATALOG_PRICES = {
+    "price_request_usd": "OpenRouter's price of one request in US dollars (pricing.request), paid on"
+    " every call besides its tokens. NULL: not known (not listed at the last catalogue refresh);"
+    " Ultra low cost never reads with a lead whose price a call is not known.",
+    "price_image_usd": "OpenRouter's price of one image in US dollars (pricing.image), paid on every"
+    " page call besides its tokens. NULL: not known (not listed at the last catalogue refresh);"
+    " Ultra low cost never reads with a lead whose price a call is not known.",
+}
+
+
 def _readers(table: str, readers: str) -> str:
     """``table``'s scan_reader CHECK, under its 0065 name, taking ``readers``."""
     name = f"{_PREFIXES[table]}_scan_reader"
@@ -308,6 +336,17 @@ def _ceiling(table: str) -> str:
 
 
 UPGRADE = [
+    *[
+        f"ALTER TABLE model_catalog ADD COLUMN {column} numeric NULL"
+        f" CONSTRAINT ai_model_catalog_{column} CHECK ({column} >= 0)"
+        for column in CATALOG_PRICES
+    ],
+    *[
+        f"COMMENT ON COLUMN model_catalog.{column} IS {_literal(comment)}"
+        for column, comment in CATALOG_PRICES.items()
+    ],
+    f"GRANT INSERT ({', '.join(CATALOG_PRICES)}), UPDATE ({', '.join(CATALOG_PRICES)}) ON model_catalog"
+    f" TO {_0066.APP_ROLE}",
     # The four functions with their old parameters and columns go first: nothing calls them now.
     *[f"DROP FUNCTION public.{signature}" for signature in OLD],
     *[_readers(table, READERS) for table in _PREFIXES],
@@ -323,13 +362,13 @@ UPGRADE = [
     "COMMENT ON INDEX model_usage_ulc_reads IS 'Every organisation''s uncached Ultra low cost page reads by"
     " time (the operator''s Ultra low cost cost).'",
     *_create(ULC_COST, ULC_COST_SQL, ULC_COST_COMMENT),
-    _changed(MODELS_NEW, [_REPLACE]),
+    *_0033._replace(MODELS_NEW, _0033.NEW_COMMENT),
     *_spend(back=False),
 ]
 
 DOWNGRADE = [
     *_spend(back=True),
-    _changed(_0033.NEW, [_REPLACE]),
+    *_0033._replace(_0033.NEW, _0033.NEW_COMMENT),
     f"DROP FUNCTION public.{ULC_COST}",
     "DROP INDEX model_usage_ulc_reads",
     *[f"DROP FUNCTION public.{signature}" for signature in NEW],
@@ -344,6 +383,8 @@ DOWNGRADE = [
         for signature, body in OLD.items()
         for statement in _create(signature, body, _comment(signature))
     ],
+    # Their grants go with them.
+    *[f"ALTER TABLE model_catalog DROP COLUMN {column}" for column in CATALOG_PRICES],
 ]
 
 

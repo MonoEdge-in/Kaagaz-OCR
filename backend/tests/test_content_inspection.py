@@ -4,6 +4,7 @@ Every attack sample here is made up and harmless: the scripts only call
 ``app.alert``, and the "programs" are just their header bytes.
 """
 
+import hashlib
 import io
 import random
 import re
@@ -12,8 +13,10 @@ import time
 import unittest
 import zipfile
 import zlib
+from pathlib import Path
 from unittest import mock
 
+import pypdfium2 as pdfium
 from pdfminer import pdftypes
 from PIL import Image
 
@@ -555,6 +558,102 @@ class SecurityReviewFailClosed(unittest.TestCase):
     def test_a_type_with_no_check_is_blocked(self) -> None:
         old_xls = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 504
         self.assertIs(inspect(old_xls), Finding.BLOCKED)
+
+
+GOLDEN = Path(__file__).parent / "golden"
+
+
+def scanned_pdf(pages: int) -> bytes:
+    """A scan as a scanner app saves one: a 150 dpi greyscale picture of text on each A4
+    page, written by pdfium (one page, one content stream and one picture per page)."""
+    document = pdfium.PdfDocument.new()
+    for _ in range(pages):
+        page = document.new_page(595, 842)
+        picture = pdfium.PdfImage.new(document)
+        picture.set_bitmap(pdfium.PdfBitmap.from_pil(text_like_picture(1240, 1754, mode="L")))
+        picture.set_matrix(pdfium.PdfMatrix().scale(595, 842))
+        page.insert_obj(picture)
+        page.gen_content()
+    out = io.BytesIO()
+    document.save(out)
+    return out.getvalue()
+
+
+# The padding every Standard-security password is filled to 32 bytes with (PDF 1.7, 7.6.3.3).
+PASSWORD_PAD = bytes.fromhex("28BF4E5E4E758A4164004E56FFFA01082E2E00B6D0683E802F0CA9FE6453697A")
+
+
+def rc4(key: bytes, data: bytes) -> bytes:
+    """RC4, the cipher of the oldest PDF encryption (V1, R2): for building a test file only."""
+    box, j = list(range(256)), 0
+    for i in range(256):
+        j = (j + box[i] + key[i % len(key)]) % 256
+        box[i], box[j] = box[j], box[i]
+    out, i, j = bytearray(), 0, 0
+    for byte in data:
+        i = (i + 1) % 256
+        j = (j + box[i]) % 256
+        box[i], box[j] = box[j], box[i]
+        out.append(byte ^ box[(box[i] + box[j]) % 256])
+    return bytes(out)
+
+
+def owner_locked_pdf() -> bytes:
+    """A one-page PDF encrypted with an owner password only (printing and copying turned
+    off): every reader opens it with no password, as a bank or registry statement often is.
+    PDF 1.7 algorithms 3 (O), 2 (the key) and 4 (U), 40-bit RC4."""
+
+    def md5(data: bytes) -> bytes:
+        return hashlib.md5(data, usedforsecurity=False).digest()  # what the format uses
+
+    doc_id, permissions = b"\x33" * 16, -44
+    owner = rc4(md5((b"owner-secret" + PASSWORD_PAD)[:32])[:5], PASSWORD_PAD)
+    key = md5(PASSWORD_PAD + owner + struct.pack("<i", permissions) + doc_id)[:5]
+    object_4_key = md5(key + b"\x04\x00\x00\x00\x00")[:10]  # object 4, generation 0
+    page_text = rc4(object_4_key, b"BT /F1 12 Tf 72 700 Td (Total 500) Tj ET")
+    objects = [
+        CATALOG,
+        PAGES,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length %d >>\nstream\n" % len(page_text) + page_text + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Filter /Standard /V 1 /R 2 /P %d /O <%s> /U <%s> >>"
+        % (permissions, owner.hex().encode(), rc4(key, PASSWORD_PAD).hex().encode()),
+    ]
+    plain = pdf_with(objects)
+    trailer = b"/Root 1 0 R /Encrypt 6 0 R /ID [<%s> <%s>]" % (doc_id.hex().encode(), doc_id.hex().encode())
+    return plain.replace(b"/Root 1 0 R", trailer)  # after the index: its offsets still hold
+
+
+class OrdinaryPdfsFitTheReadBudget(unittest.TestCase):
+    """Test server, 4 Nov 2026: a customer's sale deed was refused as ``unscannable``. The
+    read budget did not cover pdfminer's own re-reads (a 4 KiB buffer filled again at every
+    seek, four times for a stream object), so ordinary PDFs of many small objects ran out."""
+
+    def test_every_golden_pdf_passes(self) -> None:
+        paths = sorted(GOLDEN.rglob("*.pdf"))
+        self.assertGreater(len(paths), 30)
+        for path in paths:
+            with self.subTest(pdf=path.name):
+                self.assertIsNone(inspect(path.read_bytes()))
+
+    def test_a_long_scanned_pdf_passes(self) -> None:
+        scan = scanned_pdf(30)
+        self.assertGreater(len(scan), 300_000)
+        self.assertIsNone(inspect(scan))
+
+    def test_a_pdf_locked_with_an_owner_password_only_passes(self) -> None:
+        """It opens with no password, so every object is decrypted and walked."""
+        locked = owner_locked_pdf()
+        self.assertIsNone(inspect(locked))
+        self.assertIn(b"/Encrypt", locked)
+
+    def test_a_pdf_that_needs_a_password_to_open_is_unscannable(self) -> None:
+        """Nothing in it can be read, so it is not called safe: the customer sees the
+        ``unscannable`` message (it cannot be checked)."""
+        locked = make_pdf([Page(texts=[Text(72, 700, "Total 500")])], password_protected=True)
+        self.assertIs(inspect(locked), Finding.UNSCANNABLE)
 
 
 if __name__ == "__main__":

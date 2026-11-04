@@ -212,6 +212,25 @@ def test_a_price_is_per_million_and_must_fit_the_column() -> None:
     assert candidate(too_much, efforts=EFFORTS, today=TODAY) is None
 
 
+def test_a_price_a_request_and_an_image_are_dollars_and_unknown_when_left_out_or_bad() -> None:
+    """#488 review (R3): pricing.request and pricing.image are dollars a call (a string, as
+    OpenRouter sends them, or a number). The fixture's lists send neither, and nothing says one
+    left out is free, so one left out or not a finite number at least 0 is None (not known); the
+    model stays a candidate."""
+    tokens = {"prompt": "0.0000003", "completion": "0.0000025"}
+    model = candidate(
+        _with(pricing={**tokens, "request": "0.0001", "image": 0.001238}), efforts=EFFORTS, today=TODAY
+    )
+    assert model is not None and (model.price_request_usd, model.price_image_usd) == (0.0001, 0.001238)
+    free = candidate(_with(pricing={**tokens, "request": "0", "image": "0"}), efforts=EFFORTS, today=TODAY)
+    assert free is not None and (free.price_request_usd, free.price_image_usd) == (0.0, 0.0)
+    for bad in (None, "NaN", "Infinity", "-0.01", True, "a dollar", [1]):
+        given = {} if bad is None else {"request": bad, "image": bad}
+        model = candidate(_with(pricing={**tokens, **given}), efforts=EFFORTS, today=TODAY)
+        assert model is not None and (model.price_request_usd, model.price_image_usd) == (None, None), bad
+    assert GOOD["pricing"].keys() == {"prompt", "completion"}  # OpenRouter's lists as faked: neither
+
+
 def test_a_model_expiring_within_30_days_is_left_out() -> None:
     edge = TODAY + catalog.EXPIRY_MARGIN
     assert candidate(_with(expiration_date=edge.isoformat()), efforts=EFFORTS, today=TODAY) is None

@@ -73,6 +73,10 @@ OPERATOR_LOGIN_FAILED = (
     "the super admin's database login cannot be used: set OPS_DATABASE_URL to kaagaz_ops's login"
     " whenever APP_DATABASE_URL is set (docs/running-locally.md, Limited database logins)"
 )
+DATABASE_UNREACHABLE = (
+    "the API cannot reach the database: check that postgres is running and on the api's network"
+    " (docs/running-locally.md, The closed lines and the storage keys)"
+)
 
 
 def _utc_now() -> datetime:
@@ -192,13 +196,15 @@ def check_operator_login(operator_db: OperatorDatabase) -> None:
             conn.execute(text("SELECT 1"))
     except SQLAlchemyError as error:
         why = sqlstate(error) if isinstance(error, DBAPIError) else None
-        _log.critical(
-            "%s (%s)",
-            OPERATOR_LOGIN_FAILED,
-            why or type(error).__name__,
-            extra={"code": "operator_login_failed"},
+        # No SQLSTATE (no answer at all) or class 08 (connection): the database, not the login.
+        unreachable = why is None or why.startswith("08")
+        said, code = (
+            (DATABASE_UNREACHABLE, "database_unreachable")
+            if unreachable
+            else (OPERATOR_LOGIN_FAILED, "operator_login_failed")
         )
-        raise RuntimeError(OPERATOR_LOGIN_FAILED) from None
+        _log.critical("%s (%s)", said, why or type(error).__name__, extra={"code": code})
+        raise RuntimeError(said) from None
 
 
 def configure_logging(level: str) -> None:

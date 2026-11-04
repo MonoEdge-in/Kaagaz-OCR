@@ -132,7 +132,7 @@ _AREA = """
     )
     SELECT c.id, c.name, c.price_in_usd_per_m, c.price_out_usd_per_m, c.tokens_per_page_in,
            c.tokens_per_page_out, a.is_default AS is_default_{area}, c.providers, c.efforts,
-           s.ledger_tokens_in, s.ledger_tokens_out
+           s.ledger_tokens_in, s.ledger_tokens_out, c.price_request_usd, c.price_image_usd
     FROM area a
     JOIN model_catalog c ON c.id = a.model
     LEFT JOIN LATERAL (
@@ -359,7 +359,8 @@ def usable_models(
     each eligible, enabled, verified for ``prompt_version`` (the reader's) and inside both
     ceilings; the default first, then by name. Keys: id, name, price_in_usd_per_m,
     price_out_usd_per_m, tokens_per_page_in, tokens_per_page_out, is_default_scan,
-    providers, efforts, ledger_tokens_in, ledger_tokens_out. Empty: none set anywhere
+    providers, efforts, ledger_tokens_in, ledger_tokens_out, price_request_usd,
+    price_image_usd. Empty: none set anywhere
     (every scan is read with OCR_MODEL, as before), or none usable now. On a
     ``Database.customer()`` connection of ``customer_id``."""
     params = {"customer": customer_id, "prompt": prompt_version, "days": LEDGER_DAYS}
@@ -573,11 +574,14 @@ def scope_reading(rows: Sequence[RowMapping], allowed: Mapping[Any, Any], *, set
 
 
 def ulc_priced(row: Mapping[Any, Any]) -> bool:
-    """#488: ``row`` (a catalogue row) is a Gemini model with a known price in and out."""
+    """#488: ``row`` (a catalogue row) is a Gemini model with a known price in and out, and a known
+    price a request and an image (#488 review: the reader refuses a lead without them)."""
     return (
         vendor(row["id"]) == ULC_VENDOR
         and float(row["price_in_usd_per_m"]) > 0
         and float(row["price_out_usd_per_m"]) > 0
+        and row["price_request_usd"] is not None
+        and row["price_image_usd"] is not None
     )
 
 
@@ -588,18 +592,24 @@ def ulc_ceiling(paise: int | None) -> UlcCeiling:
 
 
 _ULC_PRICES = text(
-    "SELECT price_in_usd_per_m, price_out_usd_per_m, tokens_per_page_in FROM model_catalog WHERE id = :m"
+    "SELECT price_in_usd_per_m, price_out_usd_per_m, tokens_per_page_in, price_request_usd + price_image_usd"
+    " AS per_call_usd FROM model_catalog WHERE id = :m"
 )
 
 
 def ulc_prices(conn: Connection, model: str) -> UlcPrices | None:
     """#488: Ultra low cost's ``model`` prices from its catalogue row, taken once a document by
-    the pipeline and once a check by the accuracy check (None: no row, so nothing is sent)."""
+    the pipeline and once a check by the accuracy check (None: no row, so nothing is sent). Its
+    price a call is its price a request and an image together, None unless both are known."""
     row = conn.execute(_ULC_PRICES, {"m": model}).mappings().one_or_none()
     if row is None:
         return None
+    per_call = row["per_call_usd"]
     return UlcPrices(
-        float(row["price_in_usd_per_m"]), float(row["price_out_usd_per_m"]), row["tokens_per_page_in"]
+        float(row["price_in_usd_per_m"]),
+        float(row["price_out_usd_per_m"]),
+        row["tokens_per_page_in"],
+        None if per_call is None else float(per_call),
     )
 
 

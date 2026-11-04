@@ -15,11 +15,13 @@ from kaagaz.db.engine import Database
 from kaagaz.reading.ocr import UlcCeiling, UlcPrices
 from tests.db_support import insert_document, new_customer
 from tests.pdf_builder import make_pdf
-from tests.test_migration_0023_db import catalog_model
+from tests.test_migration_0023_db import as_owner, catalog_model
 from tests.test_model_choice_pipeline import _Reading
 from tests.test_pipeline_gemini import MODEL, SCANNED, TOTAL, FakeChecker, ScriptedReader, page_read, rig
 from tests.test_reader_choice_db import _job_reading
 
+# #488 review (R3): a catalogue row with no price a request or an image (NULL: not known, as
+# catalog_model makes it) gives per_call_usd None, and the reader refuses the lead.
 PRICES = UlcPrices(price_in_usd_per_m=0.3, price_out_usd_per_m=2.5, tokens_per_page_in=2500)
 
 
@@ -34,14 +36,15 @@ def _opened(reading: models.Reading, prices: UlcPrices | None) -> object:
 
 def test_488_the_pipeline_passes_the_ceiling_and_the_prices_to_the_reader() -> None:
     lead = models.Agent(MODEL, "google-vertex", "Gemini")
-    opened = _opened(models.Reading("single", lead, thinking="minimal", ulc=UlcCeiling.of(30)), PRICES)
+    opened = _opened(models.Reading("single", lead, thinking="minimal", ulc=models.ulc_ceiling(30)), PRICES)
     assert (opened.ulc, opened.ulc_prices) == (UlcCeiling(30 / 100 / 88, 30), PRICES)  # type: ignore[attr-defined]
     plain = _opened(models.Reading("single", lead, thinking="low"), None)
     assert (plain.ulc, plain.ulc_prices) == (None, None)  # type: ignore[attr-defined]
 
 
 def test_488_a_ceiling_is_paise_at_88_rupees_to_the_dollar() -> None:
-    assert UlcCeiling.of(40) == UlcCeiling(usd=0.40 / 88, paise=40)
+    assert models.ulc_ceiling(40) == UlcCeiling(usd=0.40 / 88, paise=40)
+    assert not hasattr(UlcCeiling, "of")  # #488 review (R9): one way to make one, models.ulc_ceiling
 
 
 @pytest.mark.db
@@ -51,9 +54,20 @@ def test_488_the_worker_takes_the_leads_catalogue_prices_once_for_a_ulc_document
     with db.customer(customer) as conn:
         document = insert_document(conn, customer)
     lead = models.Agent(model, "google-vertex", "Gemini")
-    under = models.Reading("single", lead, thinking="minimal", ulc=UlcCeiling.of(40))
+    under = models.Reading("single", lead, thinking="minimal", ulc=models.ulc_ceiling(40))
     with mock.patch.object(models, "resolve_scan", return_value=under):
         assert _job_reading(db, customer, document).ulc_prices == PRICES
+    # #488 review (R3): a call's price is its request's and its image's, once both are known.
+    known = "UPDATE model_catalog SET price_request_usd = :r, price_image_usd = :i WHERE id = :m"
+    for request, image, per_call in (
+        (0.0001, None, None),
+        (0.0001, 0.001238, 0.0001 + 0.001238),
+        (0, 0, 0.0),
+    ):
+        as_owner(db, known, {"m": model, "r": request, "i": image})
+        with mock.patch.object(models, "resolve_scan", return_value=under):
+            got = _job_reading(db, customer, document).ulc_prices
+        assert got is not None and got.per_call_usd == (None if per_call is None else pytest.approx(per_call))
     with mock.patch.object(models, "resolve_scan", return_value=dataclasses.replace(under, ulc=None)):
         assert _job_reading(db, customer, document).ulc_prices is None  # no query, no prices
     gone = dataclasses.replace(under, lead=models.Agent("google/not-in-the-catalogue", "google-vertex", "X"))

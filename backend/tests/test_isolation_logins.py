@@ -317,6 +317,18 @@ def test_the_api_refuses_to_start_when_its_operator_login_cannot_switch(
     _start_api(_owner_url(), _owner_url())  # release day, the owner's for both: it starts
 
 
+def test_a_database_it_cannot_reach_is_said_as_such_never_as_a_login_to_fix(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test server, 4 Nov 2026: postgres left on the old network made the start-up check blame
+    OPS_DATABASE_URL, which was never set. No answer from the database is its own plain line."""
+    nowhere = "postgresql://kaagaz:unused@127.0.0.1:1/kaagaz"
+    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError, match="cannot reach the database"):
+        _start_api(nowhere, nowhere)
+    said = [r.getMessage() for r in caplog.records if getattr(r, "code", None) == "database_unreachable"]
+    assert len(said) == 1 and "OPS_DATABASE_URL" not in said[0]
+
+
 class _Queue:
     """The upgrade sweep's queue: the jobs it was given."""
 

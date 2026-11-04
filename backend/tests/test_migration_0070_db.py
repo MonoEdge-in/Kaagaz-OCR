@@ -16,7 +16,7 @@ from kaagaz.db.engine import Database, OperatorDatabase
 from tests import test_migration_0002_db as base
 from tests.db_support import migrate, new_customer, violation
 from tests.test_isolation_ai_settings import platform, set_defaults, set_org
-from tests.test_migration_0023_db import as_owner
+from tests.test_migration_0023_db import as_owner, catalog_model
 from tests.test_migration_0037 import _load
 from tests.test_migration_0066_db import _BODIES as _BODIES_0066
 
@@ -96,6 +96,41 @@ def test_the_checks_take_ultra_low_cost_and_a_ceiling_of_20_to_40_paise(db: Data
         as_owner(db, "DELETE FROM customer_ai_settings WHERE customer_id = :c", {"c": customer})
     names = {row[1] for row in base._schema(db)["constraints"] if row[0] in _TABLES}
     assert {f"ai_{side}_settings_ulc_ceiling_paise" for side in ("customer", "platform")} <= names
+
+
+def test_the_catalogue_keeps_a_price_a_request_and_an_image_null_when_not_known(
+    db: Database, platform: str
+) -> None:
+    """#488 review (R3): OpenRouter's pricing.request and pricing.image, dollars a call, at least 0;
+    NULL: not known. The refresh (the app) writes them; the operator's catalogue shows them."""
+    schema = base._schema(db)
+    columns = {row[1]: row[2:4] for row in schema["columns"] if row[0] == "model_catalog"}
+    assert columns["price_request_usd"] == columns["price_image_usd"] == ("numeric", False)  # nullable
+    names = {row[1] for row in schema["constraints"] if row[0] == "model_catalog"}
+    assert {"ai_model_catalog_price_request_usd", "ai_model_catalog_price_image_usd"} <= names
+    model = catalog_model(db)
+    assert as_owner(
+        db, "SELECT price_request_usd, price_image_usd FROM model_catalog WHERE id = :m", {"m": model}
+    ) == [(None, None)]
+    for update in (
+        "UPDATE model_catalog SET price_request_usd = -0.000001 WHERE id = :m",
+        "UPDATE model_catalog SET price_image_usd = -0.000001 WHERE id = :m",
+    ):
+        assert _refused(db, update, {"m": model}) == "23514"
+    comments = as_owner(
+        db,
+        "SELECT col_description('model_catalog'::regclass, attnum) FROM pg_attribute"
+        " WHERE attrelid = 'model_catalog'::regclass AND attname IN ('price_request_usd', 'price_image_usd')",
+    )
+    assert len(comments) == 2 and all(comment and "NULL" in comment for (comment,) in comments)
+    with db.system() as conn:  # the app role, as the refresh writes
+        conn.execute(
+            text("UPDATE model_catalog SET price_request_usd = 0, price_image_usd = 0.001238 WHERE id = :m"),
+            {"m": model},
+        )
+    with OperatorDatabase(db.engine).operator() as conn:
+        [row] = [row for row in ops.list_models(conn, platform) if row["id"] == model]
+    assert (row["price_request_usd"], float(row["price_image_usd"])) == (0, 0.001238)
 
 
 def test_the_org_save_keeps_the_ceiling_audits_it_for_the_operator_only_and_refuses_one_outside(

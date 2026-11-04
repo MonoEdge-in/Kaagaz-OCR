@@ -84,7 +84,7 @@ def _decode(compact: str) -> dict[str, Any]:
 
 def _decoded(compact: str) -> Decoded:
     """``_decode`` as the real decoder gives it (the CLI takes its ``result``)."""
-    return Decoded(_decode(compact), frozenset())
+    return Decoded(_decode(compact), frozenset(), headed=True)
 
 
 def _chars(result: dict[str, Any]) -> int:
