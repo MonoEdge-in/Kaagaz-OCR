@@ -130,6 +130,9 @@ class CatalogModel:
     expires_on: date | None
     eligible: bool
     chat_eligible: bool = False  # features 25-27, C11: may draft answers
+    # #488 review (R3): pricing.request and pricing.image, dollars a call; None: not known.
+    price_request_usd: float | None = None
+    price_image_usd: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +169,19 @@ def _price_per_m(value: object) -> float | None:
         return None
     per_m = round(per_token * TOKENS_PER_M, 6)
     return per_m if math.isfinite(per_m) and 0 <= per_m <= MAX_PRICE_PER_M else None
+
+
+def _price_per_call(value: object) -> float | None:
+    """OpenRouter's USD a request or an image (a string or a number), or None when it is left
+    out or not a finite number at least 0: not known. Nothing in OpenRouter's lists as Kaagaz
+    reads them says one left out is free, so it is never taken as 0 (#488 review)."""
+    if isinstance(value, bool) or not isinstance(value, str | int | float):
+        return None
+    try:
+        usd = float(value)
+    except ValueError:
+        return None
+    return usd if math.isfinite(usd) and usd >= 0 else None
 
 
 def _name(value: object, model_id: str) -> str:
@@ -241,6 +257,8 @@ def candidate(item: object, *, efforts: frozenset[str], today: date) -> CatalogM
         expires_on=expires_on,
         eligible=scan,
         chat_eligible=chat,
+        price_request_usd=_price_per_call(pricing.get("request")),
+        price_image_usd=_price_per_call(pricing.get("image")),
     )
 
 
@@ -362,6 +380,8 @@ def fetch(
                 model.expires_on,
                 model.eligible and allowed,
                 model.chat_eligible and allowed,
+                model.price_request_usd,
+                model.price_image_usd,
             )
         )
     return Fetched(models, tuple(skipped))
@@ -369,11 +389,12 @@ def fetch(
 
 _UPSERT = text(
     "INSERT INTO model_catalog (id, name, price_in_usd_per_m, price_out_usd_per_m, providers, efforts,"
-    " expires_on, eligible, chat_eligible, seen_at)"
+    " expires_on, eligible, chat_eligible, price_request_usd, price_image_usd, seen_at)"
     " VALUES (:id, :name, :price_in, :price_out, CAST(:providers AS text[]), CAST(:efforts AS text[]),"
-    " :expires_on, :eligible, :chat_eligible, now())"
+    " :expires_on, :eligible, :chat_eligible, :price_request, :price_image, now())"
     " ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, price_in_usd_per_m = EXCLUDED.price_in_usd_per_m,"
-    " price_out_usd_per_m = EXCLUDED.price_out_usd_per_m, providers = EXCLUDED.providers,"
+    " price_out_usd_per_m = EXCLUDED.price_out_usd_per_m, price_request_usd = EXCLUDED.price_request_usd,"
+    " price_image_usd = EXCLUDED.price_image_usd, providers = EXCLUDED.providers,"
     " efforts = EXCLUDED.efforts, expires_on = EXCLUDED.expires_on, eligible = EXCLUDED.eligible,"
     " chat_eligible = EXCLUDED.chat_eligible, seen_at = EXCLUDED.seen_at"
 )
@@ -401,6 +422,8 @@ def save(db: Database, models: Sequence[CatalogModel], *, untouched: Sequence[st
             "expires_on": model.expires_on,
             "eligible": model.eligible,
             "chat_eligible": model.chat_eligible,
+            "price_request": model.price_request_usd,
+            "price_image": model.price_image_usd,
         }
         for model in models
     ]
@@ -411,7 +434,8 @@ def save(db: Database, models: Sequence[CatalogModel], *, untouched: Sequence[st
 
 
 def valid(model: CatalogModel) -> bool:
-    """``model`` fits 0023's model_catalog CHECKs: its id, name, prices, providers and efforts."""
+    """``model`` fits 0023's model_catalog CHECKs: its id, name, prices, providers and efforts
+    (0070's prices a call: not known, or at least 0, as ``_price_per_call`` makes them)."""
     return (
         valid_model_id(model.id)
         and 1 <= len(model.name) <= MAX_NAME
@@ -420,6 +444,10 @@ def valid(model: CatalogModel) -> bool:
         )
         and _valid_list(model.providers, _slug) == model.providers
         and _valid_list(model.efforts, _effort) == model.efforts
+        and all(
+            price is None or (math.isfinite(price) and price >= 0)
+            for price in (model.price_request_usd, model.price_image_usd)
+        )
     )
 
 

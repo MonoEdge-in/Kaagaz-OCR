@@ -176,12 +176,12 @@ that may have been billed but says no usage is charged its worst case; the one r
 billed mid-reply error's retry are sent only when still affordable. Never halves, Careful,
 crops, Cost saving's words, a low read alongside, routing, region re-reads or Ensemble: a page
 read again is read whole, the same way. A page that can't be read within its ceiling (a lead
-that can't think minimal: THINKING_FALLBACK; no known price, a price a call that is unknown or
-not 0 (``UlcPrices.per_call_usd``: model_catalog keeps none yet, so every lead is refused until
-it does), an output limit below MIN_CAP_TOKENS, a reply cut off at its cap, a repair or retry it
-can't afford: COST_CEILING, each one limit hit on its ``ulc_scan`` ledger row,
-``usage.record_unsent_hit`` when nothing was sent; a failure after a call was billed) is read
-locally as reader_refused and never left to wait (a wait would read it again past its
+that can't think minimal: THINKING_FALLBACK; no known price, a price a call that is unknown
+(``UlcPrices.per_call_usd`` None: a catalogue refresh fills it; a known one is paid from every
+call's ceiling, ``PageBudget``), an output limit below MIN_CAP_TOKENS, a reply cut off at its
+cap, a repair or retry it can't afford: COST_CEILING, each one limit hit on its ``ulc_scan``
+ledger row, ``usage.record_unsent_hit`` when nothing was sent; a failure after a call was
+billed) is read locally as reader_refused and never left to wait (a wait would read it again past its
 ceiling); once a call was billed for it, its key holds a ULC_MARK row, so the document read on
 after a wait never sends it again (only "Read again" on it does: a new read). Only a failure
 before anything was billed is the outage it always was. Every refusal before a call comes
@@ -991,8 +991,8 @@ class GeminiEngine:
         if model in pages.plain or (taken is not None and ULC_THINKING not in taken):
             return self._read_locally(image, page_no, READER_REFUSED, THINKING_FALLBACK)
         prices = pages.ulc_prices
-        # No known price, or a price a call (unknown too, #488 review): no output limit can hold it.
-        if prices is None or prices.price_out_usd_per_m <= 0 or prices.per_call_usd != 0:
+        # No known price, or no known price a call (#488 review): no output limit can hold it.
+        if prices is None or prices.price_out_usd_per_m <= 0 or prices.per_call_usd is None:
             record_unsent_hit(model, thinking=ULC_THINKING, resolution=resolution)
             return self._read_locally(image, page_no, READER_REFUSED, COST_CEILING)
         if self._left() < MIN_CALL_SECONDS:
@@ -1005,6 +1005,7 @@ class GeminiEngine:
             prices.price_out_usd_per_m / 1e6,
             self._ulc_estimate(prices),
             rates=rates,
+            per_call=prices.per_call_usd,
         )
         if budget.cap() is None:  # not even MIN_CAP_TOKENS affordable: nothing is sent
             record_unsent_hit(model, thinking=ULC_THINKING, resolution=resolution)

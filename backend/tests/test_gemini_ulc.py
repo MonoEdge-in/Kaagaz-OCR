@@ -397,6 +397,39 @@ def test_488_a_lead_with_no_known_price_is_never_sent(fake: OpenRouterFake) -> N
     assert fake.requests == []
 
 
+def test_488_a_price_a_call_is_taken_off_the_ceiling_never_refused(fake: OpenRouterFake) -> None:
+    # #488 review (R3): pricing.request and pricing.image (per_call_usd) are paid on every call:
+    # its output limit is what is left after them and its input.
+    per_call = 0.0004
+    fake.script("completions", compact())
+    read = Rig(fake).read(ulc(prices=dataclasses.replace(PRICES, per_call_usd=per_call)))
+    [body] = fake.bodies()
+    usd, price_in, price_out = (
+        ceiling().usd,
+        PRICES.price_in_usd_per_m / 1e6,
+        PRICES.price_out_usd_per_m / 1e6,
+    )
+    assert body["max_completion_tokens"] == math.floor((usd - (per_call + FIRST * price_in)) / price_out)
+    assert body["max_completion_tokens"] < cap_for(usd, FIRST)
+    assert read.read_by == FLASH
+
+
+def test_488_a_budget_charges_a_calls_price_on_every_call() -> None:
+    # #488 review (R3): the worst case, a reply that says its tokens and no cost, and one billed at
+    # the listed prices (the price a call is no reason to raise a token's rate).
+    per_call, price_in, price_out = 0.0004, 0.3e-6, 2.5e-6
+    budget = PageBudget(ceiling().usd, price_in, price_out, FIRST, per_call=per_call)
+    assert budget.worst(None, 100) == pytest.approx(per_call + FIRST * price_in + 100 * price_out)
+    listed = per_call + 2400 * price_in + 300 * price_out
+    budget.charge(2400, 300, None)
+    assert budget.spent == pytest.approx(listed)
+    budget.charge(2400, 300, listed)
+    assert budget.spent == pytest.approx(2 * listed)
+    assert (budget.rate_in, budget.rate_out) == (price_in, price_out)
+    budget.charge(2400, 300, 2 * listed)  # billed above: the rates rise
+    assert budget.rate_in > price_in and budget.rate_out > price_out
+
+
 def test_488_a_lead_that_cannot_think_minimal_is_no_limit_hit(fake: OpenRouterFake) -> None:
     with ledger() as kept:
         Rig(fake).read(ulc(plain=frozenset({FLASH})))
@@ -544,14 +577,12 @@ def test_488_a_cost_above_the_price_raises_the_prices_for_the_rest_of_the_docume
     assert markup * spent(2400, cap) <= usd
 
 
-@pytest.mark.parametrize("per_call", [None, 0.0002])
-def test_488_a_lead_with_a_price_a_call_unknown_or_not_zero_is_never_sent(
-    fake: OpenRouterFake, per_call: float | None
-) -> None:
-    # R3: a price a request or an image is in no token count, so no output limit can hold the page
-    # under its ceiling: the lead is refused, nothing sent, as one with no known price.
+def test_488_a_lead_with_a_price_a_call_unknown_is_never_sent(fake: OpenRouterFake) -> None:
+    # R3: a price a request or an image not known, so no output limit is known to hold the page
+    # under its ceiling: the lead is refused, nothing sent, as one with no known price. A known one
+    # is paid from the ceiling (test_488_a_price_a_call_is_taken_off_the_ceiling_never_refused).
     with ledger() as kept:
-        read = Rig(fake).read(ulc(prices=dataclasses.replace(PRICES, per_call_usd=per_call)))
+        read = Rig(fake).read(ulc(prices=dataclasses.replace(PRICES, per_call_usd=None)))
     assert fake.requests == []
     assert (read.read_by, read.issues[0]) == ("rapidocr", READER_REFUSED)
     assert [(row.kind, row.calls, row.limit_hits, row.pages) for row in kept.rows] == [("ulc_scan", 1, 1, 1)]
@@ -621,13 +652,14 @@ class Provider:
     """A provider billing as a real one would, and worse: each call's input near ``base`` tokens
     (a retry of the page: the same request, the same input; a repair: the page's, plus its reply
     and problem at two bytes a token), its output at most the call's max_completion_tokens, at
-    ``markup`` times the catalogue's prices. A random outcome each time: usage.cost says what it
-    billed (at markup 1 it may say less, or nothing); "no_usage" leaves usage out, "not_json" is a
-    200 whose body is not JSON, "dropped" closes the connection once the request is read, all
-    three billed all the same; "down" is a 503, never billed. ``billed`` is what the page's calls
-    cost; ``told`` whether a reply has said its tokens and cost yet."""
+    ``markup`` times the catalogue's prices, its price a call too. A random outcome each time:
+    usage.cost says what it billed (at markup 1 it may say less, or nothing); "no_usage" leaves
+    usage out, "not_json" is a 200 whose body is not JSON, "dropped" closes the connection once
+    the request is read, all three billed all the same; "down" is a 503, never billed. ``billed``
+    is what the page's calls cost; ``told`` whether a reply has said its tokens and cost yet."""
 
     def __init__(self, rng: random.Random, prices: UlcPrices, base: int, markup: float) -> None:
+        assert prices.per_call_usd is not None
         self.rng, self.prices, self.base, self.markup = rng, prices, base, markup
         self.billed: list[float] = []
         self.page_prompt: int | None = None
@@ -654,7 +686,7 @@ class Provider:
                 self.page_prompt = rng.randint(math.ceil(self.base * 0.96), self.base)
             prompt = self.page_prompt
         completion = cap if outcome == "length" else rng.randint(0, cap)
-        true = self.markup * spent(prompt, completion, self.prices)
+        true = self.markup * (spent(prompt, completion, self.prices) + (self.prices.per_call_usd or 0.0))
         self.billed.append(true)
         if outcome in ("no_usage", "not_json", "dropped"):
             self.unknown += 1
@@ -690,14 +722,15 @@ def test_488_a_pages_billed_cost_never_passes_its_ceiling(fake: OpenRouterFake) 
     a 200 that is not JSON and a dropped connection are no surprise: they are charged their worst
     case."""
     rng = random.Random(4880)  # noqa: S311 - a fixed seed draws test prices and replies, not a secret
-    pages_checked = held = passed = repairs = retries = unknown = 0
+    pages_checked = held = passed = repairs = retries = unknown = per_call_pages = 0
     closest = 0.0
     for _document in range(150):
         prices = UlcPrices(
             price_in_usd_per_m=rng.uniform(0.01, 0.6),
             price_out_usd_per_m=rng.uniform(0.2, 12.0),
             tokens_per_page_in=rng.choice([None, rng.randint(300, 4000)]),
-            per_call_usd=0.0,
+            # #488 review (R3): a price a request and an image, charged on every call.
+            per_call_usd=rng.choice([0.0, rng.uniform(0.00001, 0.0008)]),
         )
         paise = rng.randint(20, 40)
         known = prices.tokens_per_page_in
@@ -726,6 +759,7 @@ def test_488_a_pages_billed_cost_never_passes_its_ceiling(fake: OpenRouterFake) 
                     held += 1
                     closest = max(closest, bill / usd)
                 passed += bill > usd * (1 + 1e-9)
+                per_call_pages += bool(prices.per_call_usd) and bill > 0  # sent, paying a call's price
                 pages_checked += 1
         repairs, retries = repairs + provider.repairs, retries + provider.retries
         unknown += provider.unknown
@@ -734,6 +768,7 @@ def test_488_a_pages_billed_cost_never_passes_its_ceiling(fake: OpenRouterFake) 
     assert pages_checked > 250 and held > 50 and closest > 0.9, (pages_checked, held, closest)
     assert passed > 0
     assert repairs >= 10 and retries >= 5 and unknown >= 20, (repairs, retries, unknown)
+    assert per_call_pages > 50, per_call_pages
 
 
 def test_488_the_compact_cache_row_is_the_g3_shape(fake: OpenRouterFake) -> None:

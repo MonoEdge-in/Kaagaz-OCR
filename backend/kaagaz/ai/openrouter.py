@@ -318,16 +318,18 @@ class PageBudget:
     """#488 (Ultra low cost): the money left for one read of a page, held over every call made
     for it. ``usd_left`` starts at the page's ceiling; ``price_in`` and ``price_out`` are the
     lead's catalogue prices in dollars a token; ``input_estimate`` the tokens a call with the
-    page takes in, at most (the reader's estimate). Each token is taken to cost ``rate_in`` and
-    ``rate_out``: the prices, or more (``rates``, what the document's replies were billed so far;
-    #488 review). Before each call ``cap`` gives its output limit: what is left after its input,
-    at the rates, so the call can never cost more than is left (None, below MIN_CAP_TOKENS:
-    nothing is sent). Each billed reply is charged the larger of its reported cost and its
-    tokens at the rates (``charge``), so a cost the reply leaves out is still counted; a cost
-    above its tokens at the prices raises the rates. A call that may have been billed but says
-    no usage (none in the reply, a 200 that is not JSON, a connection lost after the send) is
-    charged its worst case: its input estimate and its whole output limit (``charge_unknown``).
-    One page's calls are made one after another, so there is no lock. O(1) each."""
+    page takes in, at most (the reader's estimate); ``per_call`` what every call costs besides its
+    tokens (OpenRouter's pricing.request and pricing.image; #488 review). Each token is taken to
+    cost ``rate_in`` and ``rate_out``: the prices, or more (``rates``, what the document's replies
+    were billed so far; #488 review). Before each call ``cap`` gives its output limit: what is
+    left after its price a call and its input, at the rates, so the call can never cost more than
+    is left (None, below MIN_CAP_TOKENS: nothing is sent). Each billed reply is charged the larger
+    of its reported cost and its price a call and tokens at the rates (``charge``), so a cost the
+    reply leaves out is still counted; a cost above its price a call and tokens at the prices
+    raises the rates. A call that may have been billed but says no usage (none in the reply, a 200
+    that is not JSON, a connection lost after the send) is charged its worst case: its price a
+    call, its input estimate and its whole output limit (``charge_unknown``). One page's calls
+    are made one after another, so there is no lock. O(1) each."""
 
     def __init__(
         self,
@@ -337,9 +339,11 @@ class PageBudget:
         input_estimate: int,
         *,
         rates: tuple[float, float] = (0.0, 0.0),
+        per_call: float = 0.0,
     ) -> None:
         self.usd = usd
         self.usd_left = usd
+        self.per_call = per_call
         self.price_in = price_in
         self.price_out = price_out
         self.rate_in, self.rate_out = max(price_in, rates[0]), max(price_out, rates[1])
@@ -358,9 +362,9 @@ class PageBudget:
 
     def worst(self, input_tokens: int | None, cap: int) -> float:
         """The most a call taking in ``input_tokens`` (None: ``page_tokens``) with output limit
-        ``cap`` can cost, at the rates."""
+        ``cap`` can cost: its price a call, and its tokens at the rates."""
         tokens_in = self.page_tokens() if input_tokens is None else input_tokens
-        return tokens_in * self.rate_in + cap * self.rate_out
+        return self.per_call + tokens_in * self.rate_in + cap * self.rate_out
 
     def cap(self, input_tokens: int | None = None) -> int | None:
         """The output limit of a call that takes in ``input_tokens`` (None: ``page_tokens``), at
@@ -376,13 +380,14 @@ class PageBudget:
 
     def charge(self, input_tokens: int, output_tokens: int, cost: float | None) -> None:
         """One billed reply that says its tokens: the larger of ``cost`` (its usage.cost) and its
-        tokens at the rates, taken off what is left. A cost above its tokens at the prices is then
-        put on each kind of token in turn (on its tokens, or, with none, as the same share of the
-        price), so the rates are at least what the provider charges for either."""
-        self.usd_left -= max(cost or 0.0, input_tokens * self.rate_in + output_tokens * self.rate_out)
-        priced = input_tokens * self.price_in + output_tokens * self.price_out
-        if cost is not None and priced > 0 and cost > priced:
-            over, scale = cost - priced, cost / priced
+        price a call and tokens at the rates, taken off what is left. A cost above its price a call
+        and tokens at the prices is then put on each kind of token in turn (on its tokens, or, with
+        none, as the same share of the price), so the rates are at least what the provider charges
+        for either."""
+        self.usd_left -= max(cost or 0.0, self.worst(input_tokens, output_tokens))
+        tokens = input_tokens * self.price_in + output_tokens * self.price_out
+        if cost is not None and tokens > 0 and cost > self.per_call + tokens:
+            over, scale = cost - self.per_call - tokens, (cost - self.per_call) / tokens
             self.rate_in = max(
                 self.rate_in, self.price_in + over / input_tokens if input_tokens else self.price_in * scale
             )

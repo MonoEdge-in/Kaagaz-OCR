@@ -113,6 +113,9 @@ def test_no_ceiling_saved_is_40_paise_and_the_reading_records_it() -> None:
         [],  # no usable model: OCR_MODEL, as before model choice
         [row("anthropic/claude-sonnet-5.5", default=True, efforts=("low",))],  # not a Gemini
         [row(LEAD, default=True, price=(0, 2.5))],  # a price not known
+        # #488 review (R3): a price a request or an image not known, so no call is known to fit.
+        [row(LEAD, default=True, price=(0.3, 2.5), per_call=(None, 0.0))],
+        [row(LEAD, default=True, price=(0.3, 2.5), per_call=(0.0, None))],
         [row(LEAD, price=(0.3, 2.5))],  # no default
     ],
 )
@@ -121,6 +124,14 @@ def test_without_a_priced_default_gemini_the_lead_is_ocr_model(rows: list[dict[s
     reading = models.resolve_scan(conn.conn(), CUSTOMER, DOCUMENT, settings=GEMINI)
     assert reading.lead == Agent(GEMINI.ocr_model, DEFAULT_PROVIDER, GEMINI.ocr_model)
     assert (reading.thinking, reading.mode) == ("minimal", "single") and reading.thinking != NO_THINKING
+
+
+def test_a_known_price_a_call_that_is_not_0_still_leads() -> None:
+    """#488 review (R3): the reader charges a price a request or an image, so it never stops the
+    default Gemini leading; only one not known does."""
+    dear = [row(LEAD, default=True, efforts=("minimal",), price=(0.3, 2.5), per_call=(0.0001, 0.001238))]
+    conn = FakeConn(scan=dear, settings=ULC, document=_document("single", None, None))
+    assert models.resolve_scan(conn.conn(), CUSTOMER, DOCUMENT, settings=GEMINI).lead.model == LEAD
 
 
 def test_ensemble_is_refused_like_mistral() -> None:

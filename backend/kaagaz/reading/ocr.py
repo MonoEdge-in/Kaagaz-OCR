@@ -593,11 +593,10 @@ class UlcCeiling:
 class UlcPrices:
     """#488: the lead model's ``model_catalog`` prices (dollars a million tokens in and out) and
     its tokens a page in (None: not measured), taken once for the document, so a price change
-    mid-document never moves a page's output limit under it. ``per_call_usd`` (#488 review): its
-    prices that are not a token's, a call (OpenRouter's pricing.request and pricing.image), None
-    when not known; no output limit holds a page under its ceiling unless they are 0, so the
-    reader refuses the lead otherwise. model_catalog does not keep them yet, so the worker's are
-    None."""
+    mid-document never moves a page's output limit under it. ``per_call_usd`` (#488 review): what
+    a call costs besides its tokens (OpenRouter's pricing.request and pricing.image, together),
+    paid from each call's ceiling; None when either is not known (``models.ulc_prices``), and then
+    no output limit holds a page under its ceiling, so the reader refuses the lead."""
 
     price_in_usd_per_m: float
     price_out_usd_per_m: float

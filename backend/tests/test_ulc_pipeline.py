@@ -15,13 +15,13 @@ from kaagaz.db.engine import Database
 from kaagaz.reading.ocr import UlcCeiling, UlcPrices
 from tests.db_support import insert_document, new_customer
 from tests.pdf_builder import make_pdf
-from tests.test_migration_0023_db import catalog_model
+from tests.test_migration_0023_db import as_owner, catalog_model
 from tests.test_model_choice_pipeline import _Reading
 from tests.test_pipeline_gemini import MODEL, SCANNED, TOTAL, FakeChecker, ScriptedReader, page_read, rig
 from tests.test_reader_choice_db import _job_reading
 
-# #488 review (R3): model_catalog keeps no price a request or an image, so the worker's prices
-# say none is known (per_call_usd None) and the reader refuses the lead until it does.
+# #488 review (R3): a catalogue row with no price a request or an image (NULL: not known, as
+# catalog_model makes it) gives per_call_usd None, and the reader refuses the lead.
 PRICES = UlcPrices(price_in_usd_per_m=0.3, price_out_usd_per_m=2.5, tokens_per_page_in=2500)
 
 
@@ -57,6 +57,17 @@ def test_488_the_worker_takes_the_leads_catalogue_prices_once_for_a_ulc_document
     under = models.Reading("single", lead, thinking="minimal", ulc=models.ulc_ceiling(40))
     with mock.patch.object(models, "resolve_scan", return_value=under):
         assert _job_reading(db, customer, document).ulc_prices == PRICES
+    # #488 review (R3): a call's price is its request's and its image's, once both are known.
+    known = "UPDATE model_catalog SET price_request_usd = :r, price_image_usd = :i WHERE id = :m"
+    for request, image, per_call in (
+        (0.0001, None, None),
+        (0.0001, 0.001238, 0.0001 + 0.001238),
+        (0, 0, 0.0),
+    ):
+        as_owner(db, known, {"m": model, "r": request, "i": image})
+        with mock.patch.object(models, "resolve_scan", return_value=under):
+            got = _job_reading(db, customer, document).ulc_prices
+        assert got is not None and got.per_call_usd == (None if per_call is None else pytest.approx(per_call))
     with mock.patch.object(models, "resolve_scan", return_value=dataclasses.replace(under, ulc=None)):
         assert _job_reading(db, customer, document).ulc_prices is None  # no query, no prices
     gone = dataclasses.replace(under, lead=models.Agent("google/not-in-the-catalogue", "google-vertex", "X"))

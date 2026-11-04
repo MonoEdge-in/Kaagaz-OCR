@@ -19,7 +19,7 @@ from kaagaz.db import operator_models as ops
 from kaagaz.db.engine import Database, OperatorDatabase
 from kaagaz.pipeline import JobReading
 from kaagaz.reading.compact import COMPACT_SCHEMA, INSTRUCTION_COMPACT
-from kaagaz.reading.gemini_ocr import INSTRUCTION, PAGE_SCHEMA, GeminiEngine
+from kaagaz.reading.gemini_ocr import INSTRUCTION, PAGE_SCHEMA, ULC_INPUT_TOKENS, GeminiEngine
 from kaagaz.reading.ocr import UlcCeiling, UlcPrices, as_page_engine
 from kaagaz.settings import Settings
 from tests.db_support import insert_document, new_customer
@@ -38,7 +38,10 @@ from tests.test_scan_cost_settings_db import scan_model
 
 pytestmark = pytest.mark.db
 __all__ = ["platform"]  # the fixture, used by name
-PRICES = UlcPrices(price_in_usd_per_m=0.30, price_out_usd_per_m=2.50, tokens_per_page_in=2500)
+# #488 review (R3): an image's price, paid on every call (pricing.image), and no request's.
+PRICES = UlcPrices(
+    price_in_usd_per_m=0.30, price_out_usd_per_m=2.50, tokens_per_page_in=2500, per_call_usd=0.0002
+)
 PAISE = 30
 # A land record's page as the model writes it compactly: a title, then a block with an unsure word.
 PAGE_R = "g 0 l -\nt 40 100 70 900 Survey 42\n\np 100 100 120 900 Owner Ramesh Patil\n? Patil"
@@ -47,13 +50,19 @@ COST = (PROMPT * PRICES.price_in_usd_per_m + COMPLETION * PRICES.price_out_usd_p
 
 
 def _lead(db: Database) -> str:
-    """A Gemini scan model taking every level, at Flash Lite's prices."""
+    """A Gemini scan model taking every level, at Flash Lite's prices (PRICES)."""
     model = scan_model(db)
     as_owner(
         db,
-        "UPDATE model_catalog SET price_in_usd_per_m = :i, price_out_usd_per_m = :o, tokens_per_page_in = :t"
-        " WHERE id = :m",
-        {"m": model, "i": PRICES.price_in_usd_per_m, "o": PRICES.price_out_usd_per_m, "t": 2500},
+        "UPDATE model_catalog SET price_in_usd_per_m = :i, price_out_usd_per_m = :o, tokens_per_page_in = :t,"
+        " price_request_usd = 0, price_image_usd = :image WHERE id = :m",
+        {
+            "m": model,
+            "i": PRICES.price_in_usd_per_m,
+            "o": PRICES.price_out_usd_per_m,
+            "t": 2500,
+            "image": PRICES.per_call_usd,
+        },
     )
     return model
 
@@ -143,7 +152,7 @@ def test_an_organisation_set_to_ultra_low_cost_reads_compact_under_its_ceiling_a
     assert (job.reading.mode, job.reading.thinking, job.reading.ulc) == (
         "single",
         "minimal",
-        UlcCeiling.of(PAISE),
+        UlcCeiling(PAISE / 100 / 88, PAISE),
     )
     assert job.ulc_prices == PRICES
 
@@ -155,8 +164,9 @@ def test_an_organisation_set_to_ultra_low_cost_reads_compact_under_its_ceiling_a
     assert body["response_format"]["json_schema"]["schema"] == COMPACT_SCHEMA
     assert body["messages"][0]["content"][0]["text"] == INSTRUCTION_COMPACT
     assert body["reasoning"] == {"effort": "minimal", "exclude": True}
-    ceiling, tokens_in = PAISE / 100 / 88, math.ceil(2500 * 1.15)  # the catalogue's tokens a page
-    cap = math.floor((ceiling - tokens_in * 0.30e-6) / 2.50e-6)
+    # The catalogue's tokens a page, never below ULC_INPUT_TOKENS; the image's price paid first.
+    ceiling, tokens_in = PAISE / 100 / 88, max(math.ceil(2500 * 1.15), ULC_INPUT_TOKENS)
+    cap = math.floor((ceiling - (0.0002 + tokens_in * 0.30e-6)) / 2.50e-6)
     assert body["max_completion_tokens"] == cap
     assert any("Survey 42" in text for text in texts) and any("Owner Ramesh Patil" in text for text in texts)
     assert _ledger(db, customer) == [("ulc_scan", lead, False, 1, 1, "minimal", pytest.approx(COST), 0)]
