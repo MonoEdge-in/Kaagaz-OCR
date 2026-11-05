@@ -43,6 +43,12 @@ export function formatBytes(bytes: number): string {
   return `${text} ${BYTE_UNITS[unit]}`;
 }
 
+/** What an organisation has stored of its storage limit (#516): "12.4 GB of 50 GB used". The
+ * limit is in whole GB as it is set, so 10,000 GB stays "10,000 GB", never "9.8 TB". */
+export function storageUsedText(usedBytes: number, limitGb: number): string {
+  return `${formatBytes(usedBytes)} of ${formatNumber(limitGb)} GB used`;
+}
+
 function parse(iso: string): Date | null {
   const date = new Date(iso);
   return Number.isNaN(date.getTime()) ? null : date;

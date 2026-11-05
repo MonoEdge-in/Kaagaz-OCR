@@ -1792,6 +1792,26 @@ export interface OrgFolderLimits {
   defaults: Record<FolderLimitName, number>;
 }
 
+/** GET /operator/storage-limit and /operator/orgs/{id}/storage-limit (#516): how much an
+ * organisation may store in all, in whole GB. storage_gb is this level's own (null: an
+ * organisation follows the platform; the platform uses the default); effective_gb is the one that
+ * applies; used_bytes is what the organisation has stored, Trash included (0 for the platform). */
+export interface StorageLimit {
+  storage_gb: number | null;
+  platform_gb: number | null;
+  effective_gb: number;
+  default_gb: number;
+  most_gb: number;
+  used_bytes: number;
+}
+
+/** GET /admin/storage (#516): what this organisation has stored, Trash included, and its limit. */
+export interface AdminStorage {
+  used_bytes: number;
+  limit_bytes: number;
+  limit_gb: number;
+}
+
 /** GET /operator/speed (package S, 0053): each speed control's saved value (null: the server's
  * setting) and the most this server allows, set when it is deployed. */
 export type SpeedName = "model_rpm" | "documents_at_once" | "pages_at_once";

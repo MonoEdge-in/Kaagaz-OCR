@@ -11,6 +11,7 @@ import type {
   ActivityPage,
   AdminChange,
   AdminCreated,
+  AdminStorage,
   AdminUser,
   AiDefaults,
   AiSettings,
@@ -97,6 +98,7 @@ import type {
   Speed,
   SpeedName,
   Stats,
+  StorageLimit,
   Tag,
   TaskLevel,
   TestModel,
@@ -907,6 +909,8 @@ export const resetUser2fa = (id: string) =>
 export const setDeleteForever = (id: string, allowed: boolean) =>
   request<AdminUser>("PUT", `/admin/users/${id}/delete-forever`, { allowed });
 export const getSettings = () => request<CustomerSettings>("GET", "/admin/settings");
+/** What this organisation has stored, Trash included, and its storage limit (#516). */
+export const getAdminStorage = () => request<AdminStorage>("GET", "/admin/storage");
 /** ``autofileOn`` left out: the switch is left as it is (feature 28). */
 export const updateSettings = (maxUploadMb: number | null, autofileOn?: boolean) =>
   request<CustomerSettings>("PATCH", "/admin/settings", {
@@ -1111,6 +1115,15 @@ export const setFolderUploadLimits = (limits: FolderLimits, code: string) =>
 export const getOrgFolderUploadLimits = (orgId: string) => request<OrgFolderLimits>("GET", folderLimitsPath(orgId));
 export const setOrgFolderUploadLimits = (orgId: string, limits: FolderLimits, code: string) =>
   request<OrgFolderLimits>("PUT", folderLimitsPath(orgId), { ...limits, code });
+
+/** Operator: the storage limit (#516), the platform's default (no orgId) or one organisation's. */
+const storageLimitPath = (orgId?: string | null) =>
+  orgId ? `/operator/orgs/${encodeURIComponent(orgId)}/storage-limit` : "/operator/storage-limit";
+export const getStorageLimit = (orgId?: string) => request<StorageLimit>("GET", storageLimitPath(orgId));
+/** Save it with a fresh code (step-up). null orgId: the platform's default; null storageGb: an
+ * organisation follows the platform, the platform goes back to the default (50 GB). */
+export const setStorageLimit = (orgId: string | null, storageGb: number | null, code: string) =>
+  request<StorageLimit>("PUT", storageLimitPath(orgId), { storage_gb: storageGb, code });
 
 /** Operator: the speed controls (package S, 0053); saving needs a fresh code, null: the server's setting. */
 export const getSpeed = () => request<Speed>("GET", "/operator/speed");
