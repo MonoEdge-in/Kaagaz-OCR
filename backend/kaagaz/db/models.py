@@ -31,6 +31,15 @@ Dynamic (Tushar, 16 Oct 2026): the first read of every page thinks at DYNAMIC_FI
 it at OCR_RETRY_THINKING_LEVEL (``gemini_ocr._careful``), with the Careful tier, or with the
 lead itself when there is no other (so Dynamic works with one allowed model).
 
+Ultra low cost (#488, production, no migration): while OCR_ULTRA_LOW_COST is on,
+``resolve_scan`` gives ``_ulc_reading``'s ``Reading`` for every document the AI reads: single,
+the lead it would have had when its catalogue row takes minimal thinking (else OCR_MODEL, which
+the worker checked at start-up, ``ulc_not_ready``; note ``thinking_fallback``), minimal
+thinking, the ceiling OCR_PAGE_CEILING_PAISE (``Reading.ulc``) and the note ``ultra_low_cost``,
+whatever the document asked for (Dynamic, Careful, Save, High and Max); the local reader only
+stays the local reader only, and Ensemble is refused (``resolve_ensemble``). Off: nothing here
+reads differently.
+
 The ledger columns (``ledger_tokens_in``/``_out``) are the average tokens a scanned page
 took in the organisation's own ledger of the last LEDGER_DAYS days (MC3); prices never
 leave the server (Tushar, 15 Oct 2026: org admins and members never see cost).
@@ -53,7 +62,7 @@ from sqlalchemy import Connection, RowMapping, text
 
 from kaagaz.answering.draft import ANSWER_PROMPT_HASH
 from kaagaz.db import ai_settings
-from kaagaz.reading.ocr import GEMINI, READER_PROMPT_VERSION
+from kaagaz.reading.ocr import GEMINI, INR_PER_USD, READER_PROMPT_VERSION, UlcCeiling, UlcPrices
 from kaagaz.settings import DEFAULT_PROVIDER, NO_THINKING, Settings
 
 # MC3: the days of ledger a page's estimate averages over.
@@ -64,6 +73,8 @@ MAX_AGENTS = 3  # the lead and at most two others (documents.read_also holds two
 # Careful is offered only when it costs at least this much more a page than Standard.
 DEARER = 1.1
 DYNAMIC_FIRST_THINKING = "low"  # Dynamic's quick first read (Tushar, 16 Oct 2026)
+ULTRA_LOW_COST = "ultra_low_cost"  # #488: the note of a Reading read under Ultra low cost
+MINIMAL = "minimal"  # #488: Ultra low cost's thinking level
 
 # The organisation's own models of an area, else the platform's (only when it has none of
 # its own), each with the catalogue row and the average tokens of its scan calls (not
@@ -169,6 +180,7 @@ class Reading:
     thinking: str = ""
     notes: tuple[str, ...] = ()
     routes: bool = False
+    ulc: UlcCeiling | None = None  # #488: Ultra low cost's ceiling (None: as before)
 
     @property
     def reader(self) -> str:
@@ -189,6 +201,8 @@ class Reading:
             "careful": None if self.careful is None else agent(self.careful),
             "thinking": self.thinking,
             "notes": list(self.notes),
+            # #488: only while Ultra low cost reads, so every other run's config is as before.
+            **({} if self.ulc is None else {"ulc": {"paise": self.ulc.paise, "usd": self.ulc.usd}}),
         }
 
 
@@ -364,6 +378,8 @@ def resolve_scan(conn: Connection, customer_id: str, document_id: str, *, settin
         level = task.effective if task.chosen else None
     if level == "none":  # the local reader only, even for an explicit "Read with"
         return Reading("local", lead, thinking=thinking, notes=notes)
+    if settings.ocr_ultra_low_cost:  # #488: its own reading, whatever was asked
+        return _ulc_reading(lead_row, lead, settings)
     if level is not None and read_model is None:  # no explicit "Read with": the level decides
         mode = "dynamic" if level in ("save", "low") else "single"
         if level in ("high", "max"):
@@ -393,6 +409,60 @@ def resolve_scan(conn: Connection, customer_id: str, document_id: str, *, settin
     return Reading("single", lead, thinking=thinking, notes=notes)
 
 
+def _ulc_reading(lead_row: RowMapping | None, lead: Agent, settings: Settings) -> Reading:
+    """#488: Ultra low cost's ``Reading``: single, ``lead`` when its catalogue row takes minimal
+    thinking (no row: OCR_MODEL already), else OCR_MODEL with the note ``thinking_fallback``;
+    minimal thinking, the ceiling, the note ``ultra_low_cost``; no Careful and no routing."""
+    notes: tuple[str, ...] = (ULTRA_LOW_COST,)
+    if lead_row is not None and MINIMAL not in lead_row["efforts"]:
+        lead, notes = (
+            Agent(settings.ocr_model, DEFAULT_PROVIDER, settings.ocr_model),
+            (*notes, "thinking_fallback"),
+        )
+    return Reading(
+        "single", lead, thinking=MINIMAL, notes=notes, ulc=ulc_ceiling(settings.ocr_page_ceiling_paise)
+    )
+
+
+def ulc_ceiling(paise: int) -> UlcCeiling:
+    """#488: the ceiling of one read of a page, ``paise``, in dollars at INR_PER_USD."""
+    return UlcCeiling(usd=paise / 100 / INR_PER_USD, paise=paise)
+
+
+_ULC_PRICES = text(
+    "SELECT price_in_usd_per_m, price_out_usd_per_m, tokens_per_page_in, efforts"
+    " FROM model_catalog WHERE id = :m"
+)
+
+
+def ulc_prices(conn: Connection, model: str) -> UlcPrices | None:
+    """#488: Ultra low cost's ``model`` prices from its catalogue row, taken once a document by the
+    pipeline (None: no row, so nothing is sent). shortcut: production's catalogue has no request
+    or image price, so a call's price besides its tokens is not known (the reader keeps a reserve
+    back for it). Add the columns when the Testing-Env release (0070) lands."""
+    row = conn.execute(_ULC_PRICES, {"m": model}).mappings().one_or_none()
+    if row is None:
+        return None
+    return UlcPrices(
+        float(row["price_in_usd_per_m"]), float(row["price_out_usd_per_m"]), row["tokens_per_page_in"]
+    )
+
+
+def ulc_not_ready(conn: Connection, settings: Settings) -> str | None:
+    """#488: why OCR_MODEL can't read under Ultra low cost (the worker's start-up check, on any
+    connection: the catalogue is platform data), or None when it can: its catalogue row takes
+    minimal thinking and has a price out."""
+    model = settings.ocr_model
+    row = conn.execute(_ULC_PRICES, {"m": model}).mappings().one_or_none()
+    if row is None:
+        return f"OCR_MODEL {model} has no model_catalog row, so neither its thinking nor its price is known"
+    if MINIMAL not in row["efforts"]:
+        return f"OCR_MODEL {model} can't take minimal thinking (catalogue efforts: {list(row['efforts'])})"
+    if not float(row["price_out_usd_per_m"]) > 0:
+        return f"OCR_MODEL {model} has no known price out in model_catalog"
+    return None
+
+
 def _careful(rows: Sequence[RowMapping], lead: Agent, settings: Settings) -> Agent:
     """Careful: the Careful tier, else the lead itself (one allowed model)."""
     tier = pick_tiers(rows)[1] if rows else None
@@ -406,7 +476,11 @@ def resolve_ensemble(conn: Connection, customer_id: str, document_id: str, *, se
     Raises ``AiNotAllowed("ensemble_not_allowed")`` when the organisation's Ensemble grant is
     off, scans are not read by a model (OCR_ENGINE is not gemini), or no other model is
     usable. The API checks it before a run and the job again when it starts (S2)."""
-    if settings.ocr_engine != GEMINI or not effective_settings(conn, customer_id)["ensemble"]:
+    if (
+        settings.ocr_engine != GEMINI
+        or settings.ocr_ultra_low_cost  # #488: never past a page's ceiling
+        or not effective_settings(conn, customer_id)["ensemble"]
+    ):
         raise AiNotAllowed("ensemble_not_allowed")
     scan = resolve_scan(conn, customer_id, document_id, settings=settings)
     rows = usable_models(conn, customer_id, settings=settings)

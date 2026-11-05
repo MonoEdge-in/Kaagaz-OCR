@@ -790,6 +790,23 @@ def catalog_refresh(settings: Settings, db: Database) -> Callable[[], Refreshed]
     return lambda: refresh(db, client, settings, today=_utc_now().date())
 
 
+class UlcNotReady(Exception):
+    """#488: OCR_ULTRA_LOW_COST is on but OCR_MODEL can't read under it (the message says why)."""
+
+
+def ulc_check(settings: Settings, db: Database) -> None:
+    """#488: with OCR_ULTRA_LOW_COST on, ``UlcNotReady`` unless OCR_MODEL's catalogue row takes
+    minimal thinking and has a price (``models.ulc_not_ready``); nothing when it is off."""
+    if not settings.ocr_ultra_low_cost:
+        return
+    from kaagaz.db import models
+
+    with db.system() as conn:
+        problem = models.ulc_not_ready(conn, settings)
+    if problem is not None:
+        raise UlcNotReady(problem)
+
+
 def main() -> None:
     settings = Settings.from_env()
     configure_logging(settings.log_level)
@@ -801,6 +818,9 @@ def main() -> None:
     except QueueSetupError as error:
         # A setup mistake, not a bug: the code says what to fix (jobs/ports.py).
         logger.critical("worker cannot start: queue setup", extra={"code": error.code})
+        sys.exit(1)
+    except UlcNotReady as error:  # #488: the message names the model and what it lacks
+        logger.critical("worker cannot start: OCR_ULTRA_LOW_COST: %s", error, extra={"code": "ulc_not_ready"})
         sys.exit(1)
     except Exception as error:  # noqa: BLE001 - the process boundary, see the comment above
         logger.critical("worker crashed", extra={"code": type(error).__name__})
@@ -825,6 +845,7 @@ def _serve(settings: Settings) -> None:
         idle_in_transaction_timeout_seconds=settings.db_idle_in_transaction_timeout_seconds,
     )
     db = Database(engine, settings.db_app_role)
+    ulc_check(settings, db)  # #488: before any job is taken
     storage = S3Storage(settings)
     queue = SqsQueue(settings)
     max_receives = queue.max_receives()  # once; no redrive policy stops the worker here

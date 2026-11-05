@@ -103,6 +103,13 @@ GEMINI = "gemini"
 # without loading the reader, and the API may import it. g2: the strict-portable PAGE_SCHEMA.
 # g3 (#383, #382): each line's block, the kind "note", and a table cell's col_span.
 READER_PROMPT_VERSION = "g3"
+# #488 (Ultra low cost, OCR_ULTRA_LOW_COST): the compact reply's prompt version
+# (``kaagaz/reading/compact.py``: INSTRUCTION_COMPACT, COMPACT_SCHEMA). A page read under Ultra low
+# cost is cached under "c1+ulc<paise>", so it is never taken for a g3 read, nor a g3 read for it.
+COMPACT_PROMPT_VERSION = "c1"
+# #488: rupees to the dollar (the operator's screens use the same), so a ceiling in paise is a
+# ceiling in dollars.
+INR_PER_USD = 88  # shortcut: a fixed rate; make it a platform setting if the rupee moves
 # PRD 5 RT2: pages.read_by for a page the local reader read.
 LOCAL_READ_BY = "rapidocr"
 # PRD 5 F3: the span qualities that mark one word of a line, not the line.
@@ -549,6 +556,31 @@ def as_page_engine(engine: OcrEngine) -> PageEngine:
     return engine if isinstance(engine, PageEngine) else _LinesAsPages(engine)
 
 
+@dataclass(frozen=True, slots=True)
+class UlcCeiling:
+    """#488: the most one read of a page may cost under Ultra low cost: ``paise`` as
+    OCR_PAGE_CEILING_PAISE sets it (20 to 55), and the same in US dollars (``usd``, at
+    INR_PER_USD), which every call made for the read is held under. "Read again" is a new read,
+    with its own ceiling. ``kaagaz.db.models.ulc_ceiling`` makes one."""
+
+    usd: float
+    paise: int
+
+
+@dataclass(frozen=True, slots=True)
+class UlcPrices:
+    """#488: the lead model's ``model_catalog`` prices (dollars a million tokens in and out) and
+    its tokens a page in (None: not measured), taken once for the document, so a price change
+    mid-document never moves a page's output limit under it. shortcut: production's catalogue
+    has no request or image price, so what a call costs besides its tokens is not known: each
+    call keeps a reserve back for it and the reported usage.cost is charged (``gemini_ocr``); add
+    the price columns (Testing-Env's ``per_call_usd``, 0070) when that release lands."""
+
+    price_in_usd_per_m: float
+    price_out_usd_per_m: float
+    tokens_per_page_in: int | None = None
+
+
 class PageCache(Protocol):
     """The page cache (PRD 5 G7): ``kaagaz.db.page_reads.PgPageReads`` in the product."""
 
@@ -582,7 +614,12 @@ class DocumentPages:
 
     Never failed (16 Oct 2026): a page read above low thinking gets a low read alongside once
     it is slow, on the same 60 s page deadline (``careful_read`` reads do not: their first read
-    stays)."""
+    stays).
+
+    #488 (Ultra low cost, OCR_ULTRA_LOW_COST): with ``ulc`` set, each page is one compact read by
+    ``model`` at minimal thinking, every call held under the ceiling at ``ulc_prices`` (None: no
+    known price, so nothing is sent); never Careful, Ensemble, routing, regions or halves
+    (``gemini_ocr``'s module notes). None: everything above, as before."""
 
     customer_id: str
     document_id: str
@@ -611,6 +648,8 @@ class DocumentPages:
     # #385: for a page asked to be read again for some of its regions (page fractions x0, y0,
     # x1, y1; ``pages.read_again_regions``), only those regions are read again.
     read_again_regions: Mapping[int, tuple[Region, ...]] = dataclasses.field(default_factory=dict)
+    ulc: UlcCeiling | None = None
+    ulc_prices: UlcPrices | None = None
 
 
 @runtime_checkable

@@ -141,6 +141,36 @@ and Ensemble's models, a cut-off page's halves and an early Careful read each ru
 small pool of their own (never the page pool: a page thread waiting on it could wait for
 itself), each call in its own copy of the context, so it is billed to the same scope.
 
+**Ultra low cost** (#488, OCR_ULTRA_LOW_COST, production port with no migration). A document
+whose ``DocumentPages.ulc`` is set has each page read once by its model in the compact reply
+(``kaagaz.reading.compact``: INSTRUCTION_COMPACT, COMPACT_SCHEMA), always at ULC_THINKING
+(minimal: never NO_THINKING, which leaves the model's own thinking on), billed under the
+scope's own kind (scan). Every call made for the read is held under the page's ceiling
+(OCR_PAGE_CEILING_PAISE) by a ``PageBudget`` at the lead's catalogue prices
+(``DocumentPages.ulc_prices``, taken once for the document), which the client enforces: each
+call's output limit is what is left after its input and a reserve of ULC_CALL_RESERVE_SHARE of
+the ceiling (shortcut: production's catalogue has no request or image price, so a call's price
+besides its tokens is not known; the reply's usage.cost is charged when it is more than its
+tokens at the prices, and raises the rates for the rest of the document), the input estimated
+as the largest first call's input seen in the document (ULC_SEEN_MARGIN more), else the
+catalogue's tokens a page in (ULC_CATALOG_MARGIN more), never below ULC_INPUT_TOKENS; a call
+that may have been billed but says no usage is charged its worst case; the one repair and a
+billed mid-reply error's retry are sent only when still affordable. Never halves, Careful,
+crops, a low read alongside, routing, region re-reads or Ensemble: a page read again is read
+whole, the same way. A page that can't be read within its ceiling (a lead that can't think
+minimal: THINKING_FALLBACK; no known price, an output limit below MIN_CAP_TOKENS, a reply cut
+off at its cap, a repair or retry it can't afford: COST_CEILING; a failure after a call was
+billed) is read locally as reader_refused and never left to wait (a wait would read it again
+past its ceiling); once a call was billed for it, its key holds a ULC_MARK row, so the
+document read on after a wait never sends it again (only "Read again" on it does: a new read).
+Only a failure before anything was billed is the outage it always was. Every refusal before a
+call comes before the page's boxes are looked for. The decoded reply is checked and pinned as a
+g3 one, and cached under "c1+ulc<paise>" (``_ulc_key``) when it had its header line; its rows
+whose box the decoder made up (the page's width, x0 0 and x1 1000) stay unpinned, from the
+cache too, so they go to review. A page billed past its ceiling anyway (its input above the
+estimate, a reported cost above the price and the reserve, the first time) is logged at error
+as ULC_BREACHED, with ids and numbers only.
+
 Nothing here logs page text: warnings carry a code only. The page is data: the
 instruction tells the model to copy any instruction written on it, never follow it.
 
@@ -157,6 +187,7 @@ import functools
 import hashlib
 import io
 import itertools
+import json
 import logging
 import math
 import re
@@ -169,13 +200,23 @@ from typing import Any, Protocol, cast
 
 from PIL import Image, ImageDraw
 
-from kaagaz.ai.openrouter import OpenRouterClient, PageReply, ProviderNotAllowed, process_gate
+from kaagaz.ai.client import estimate_tokens
+from kaagaz.ai.openrouter import (
+    COST_CEILING,
+    OpenRouterClient,
+    PageBudget,
+    PageReply,
+    ProviderNotAllowed,
+    process_gate,
+)
 from kaagaz.ai.replies import ModelOutputError, ModelUnavailable, billed, schema_problem
 from kaagaz.ai.usage import billed_as, record_call
 from kaagaz.db.engine import Database
 from kaagaz.db.page_reads import PageKey
 from kaagaz.ingestion.errors import BackendUnavailable
+from kaagaz.reading.compact import COMPACT_SCHEMA, INSTRUCTION_COMPACT, decode_compact
 from kaagaz.reading.ocr import (
+    COMPACT_PROMPT_VERSION,
     ENSEMBLE_MAX_PAGES,
     MAX_BLOCK_CHARS,
     MAX_BLOCKS_PER_PAGE,
@@ -191,6 +232,8 @@ from kaagaz.reading.ocr import (
     PageEngine,
     PageRead,
     RapidOcrEngine,
+    UlcCeiling,
+    UlcPrices,
     as_page_engine,
     cache_prompt_version,
     careful_plan,
@@ -262,6 +305,29 @@ LOW_ALONGSIDE_SHARE = 0.5
 DOCUMENT_BUDGET = "document_budget"  # the code of a page read locally when the budget ran out
 # A timeout here is not read again (NO_THINKING: a model with no thinking levels has one mode).
 QUICKEST_THINKING = frozenset({"minimal", LOW_THINKING, NO_THINKING})
+# #488 (Ultra low cost): every page is read at this level, never NO_THINKING (that sends no
+# reasoning field, so the model's own default thinking runs, and is billed); a lead that can't
+# take it is refused, nothing sent, with THINKING_FALLBACK.
+ULC_THINKING = "minimal"
+THINKING_FALLBACK = "thinking_fallback"
+# #488: a page's input estimate: the largest first-call input seen in the document, this much
+# more; else the catalogue's tokens a page in, this much more, never below ULC_INPUT_TOKENS
+# (set below INSTRUCTION, which it is measured against).
+ULC_SEEN_MARGIN = 1.05
+ULC_CATALOG_MARGIN = 1.15
+# #488: what one g3 page read took in on the test server (4 Nov 2026: about 2,519 input tokens a
+# page), its instruction, its image and the request's wrapping.
+G3_PAGE_INPUT_TOKENS = 2519
+# #488 shortcut (production, no migration): its catalogue has no request or image price, so
+# each call keeps this share of the page's ceiling back for a price a call that is not known;
+# the reply's usage.cost is charged when it says more. Drop it when the price columns land.
+ULC_CALL_RESERVE_SHARE = 0.1
+ULC_BREACHED = "ulc_ceiling_breached"  # the code logged for a page billed past its ceiling
+# #488: the one key of the cache row a page read locally once a call was billed for it holds
+# (its value the code), so the same read never sends it again.
+ULC_MARK = "ulc_refused"
+# A share of a ceiling's dollars that is float noise, never a breach.
+_ULC_NOISE = 1e-9
 # G3: the kinds the model may give a line (all in spans.BLOCK_KINDS).
 LINE_KINDS: tuple[str, ...] = (
     "title",
@@ -321,6 +387,19 @@ goes on at the top of the next page; false on every other line.
 any of it is handwritten, "scripts" names the scripts it is written in, and "issues" \
 lists each problem you see on it. A page with no text has no lines.
 """
+# #488: the least a compact read's call is taken to take in before any page of the document
+# was: the compact instruction and schema (``estimate_tokens``) plus the image and the wrapping
+# (a g3 page's measured input less its own instruction, its schema left in for margin),
+# ULC_CATALOG_MARGIN more.
+ULC_INPUT_TOKENS = math.ceil(
+    ULC_CATALOG_MARGIN
+    * (
+        estimate_tokens(INSTRUCTION_COMPACT)
+        + estimate_tokens(json.dumps(COMPACT_SCHEMA))
+        + G3_PAGE_INPUT_TOKENS
+        - estimate_tokens(INSTRUCTION)
+    )
+)
 
 # G3, strict-portable (model choice, council 11 Oct 2026): every object closed with
 # additionalProperties false (OpenAI's strict mode needs it) and no numeric or length bounds
@@ -455,6 +534,7 @@ class PageClient(Protocol):
         model: str | None = None,
         provider: str | None = None,
         validate: Callable[[dict[str, Any]], str | None] | None = None,
+        budget: PageBudget | None = None,
     ) -> PageReply: ...
 
     def now(self) -> float: ...
@@ -543,6 +623,9 @@ class GeminiEngine:
         self._last_failure: dict[str, float] = {}
         self._pages: DocumentPages | None = None
         self._read_with = self._model  # the last document's model, for ``version``
+        self._prompt = GEMINI_OCR_PROMPT_VERSION  # and its prompt (#488: c1 under Ultra low cost)
+        self._ulc_seen = 0  # #488: the open document's largest first-call input, in tokens
+        self._ulc_rates = (0.0, 0.0)  # #488: and the most its replies were billed a token
 
     @classmethod
     def from_settings(
@@ -557,9 +640,10 @@ class GeminiEngine:
     def version(self) -> str:
         """The model of the document open, or of the last one (the pipeline asks after the
         document closed, as RapidOCR's version), else OCR_MODEL; plus
-        GEMINI_OCR_PROMPT_VERSION (G1, model choice)."""
+        GEMINI_OCR_PROMPT_VERSION (G1, model choice), or COMPACT_PROMPT_VERSION for one read
+        under Ultra low cost (#488)."""
         with self._lock:
-            return f"{self._read_with};prompt={GEMINI_OCR_PROMPT_VERSION}"
+            return f"{self._read_with};prompt={self._prompt}"
 
     @contextlib.contextmanager
     def document(self, pages: DocumentPages) -> Iterator[None]:
@@ -571,6 +655,8 @@ class GeminiEngine:
                 raise RuntimeError("the Gemini reader is already reading a document")
             self._pages = pages
             self._region_pages = 0
+            self._ulc_seen, self._ulc_rates = 0, (0.0, 0.0)
+            self._prompt = GEMINI_OCR_PROMPT_VERSION if pages.ulc is None else COMPACT_PROMPT_VERSION
             self._read_with = self._model if pages.model is None else pages.model
             # O(1): max(seconds per page x pages, one page's read); no budget without a page
             # count (Dynamic's second reading of a long document: each page keeps its own).
@@ -603,6 +689,8 @@ class GeminiEngine:
             return dataclasses.replace(
                 self._local_reader().read_page(image, page_no=page_no), page_no=page_no
             )
+        if pages.ulc is not None:  # #488: one compact read held under the ceiling, nothing else
+            return self._ulc(image, page_no, pages, pages.ulc)
         sha = pixels_sha256(image)
         first = None if pages.memo is None or pages.inline_careful else pages.memo.get((page_no, sha))
         if first is not None and (page_no not in pages.escalate or pages.careful is None):
@@ -1043,6 +1131,166 @@ class GeminiEngine:
             pages.cache.put(key, result, input_tokens, output_tokens)
         return self._page(reply, image, page_no, model, tokens=(input_tokens, output_tokens), boxes=boxes)
 
+    # Ultra low cost (#488).
+
+    def _ulc(self, image: Image.Image, page_no: int, pages: DocumentPages, ceiling: UlcCeiling) -> PageRead:
+        """#488: the page read under Ultra low cost (see the module notes): from the page cache
+        under ``_ulc_key`` unless it is read again (its rows whose box the decoder made up, the
+        page's width, left unpinned as on its first read; a ULC_MARK row read locally again,
+        nothing sent), else one compact read held under ``ceiling``."""
+        model, sha = pages.model or self._model, pixels_sha256(image)
+        key = self._ulc_key(pages, sha, page_no, model, ceiling)
+        hit = None if page_no in pages.read_again else pages.cache.get(key)
+        if hit is not None and isinstance(hit[0].get(ULC_MARK), str):
+            return self._read_locally(image, page_no, READER_REFUSED, hit[0][ULC_MARK])
+        reply = _cached(hit)
+        if hit is not None and reply is not None:
+            record_call(model, None, 0, 0, 0, 0.0, cached=True)  # SP1: a cached page costs 0
+            made_up = {
+                i for i, line in enumerate(reply.lines) if line.box[1] == 0 and line.box[3] == BOX_SCALE
+            }
+            return self._page(reply, image, page_no, model, cached=True, unpinned=made_up)
+        return self._ulc_read(image, page_no, pages, ceiling, model, key)
+
+    def _ulc_read(
+        self,
+        image: Image.Image,
+        page_no: int,
+        pages: DocumentPages,
+        ceiling: UlcCeiling,
+        model: str,
+        key: PageKey,
+    ) -> PageRead:
+        """The one compact read (#488), its boxes found alongside, or the local reader with
+        reader_refused when it can't be made or finished within the ceiling (module notes); every
+        refusal before anything is sent comes before the boxes are looked for. Cached when the
+        reply had its header; a page read locally once a call was billed for it is marked
+        (``_ulc_refused``)."""
+        if model in pages.plain:
+            return self._read_locally(image, page_no, READER_REFUSED, THINKING_FALLBACK)
+        prices = pages.ulc_prices
+        if prices is None or prices.price_out_usd_per_m <= 0:  # no known price: no limit holds it
+            return self._read_locally(image, page_no, READER_REFUSED, COST_CEILING)
+        if self._left() < MIN_CALL_SECONDS:
+            return self._read_locally(image, page_no, READER_REFUSED, DOCUMENT_BUDGET)
+        with self._lock:
+            rates = self._ulc_rates
+        budget = PageBudget(
+            ceiling.usd,
+            prices.price_in_usd_per_m / 1e6,
+            prices.price_out_usd_per_m / 1e6,
+            self._ulc_estimate(prices),
+            rates=rates,
+            reserve=ULC_CALL_RESERVE_SHARE * ceiling.usd,  # shortcut: a price a call not known
+        )
+        if budget.cap() is None:  # not even MIN_CAP_TOKENS affordable: nothing is sent
+            return self._read_locally(image, page_no, READER_REFUSED, COST_CEILING)
+        started = self._client.now()
+        with ThreadPoolExecutor(1) as finder:
+            boxes = finder.submit(self._pool.find_boxes, image)
+            try:
+                got = self._client.read_page(
+                    png=png_of(image),
+                    instruction=INSTRUCTION_COMPACT,
+                    schema=COMPACT_SCHEMA,
+                    media_resolution=self._normal[0],
+                    thinking_level=ULC_THINKING,
+                    deadline=self._page_deadline(),
+                    model=model,
+                    provider=pages.provider,
+                    budget=budget,
+                )
+            except ModelUnavailable as error:
+                tokens = (error.input_tokens, error.output_tokens)
+                if budget.spent > 0:  # paid for already: a wait would read it again past its ceiling
+                    return self._ulc_refused(image, page_no, pages, key, budget, error.code, tokens)
+                return self._outage(image, page_no, model, error.code, started, tokens=tokens)
+            except ModelOutputError as error:  # cut off at its cap (no halves), refused, unaffordable
+                code = COST_CEILING if error.code == TRUNCATED else error.code
+                tokens = (error.input_tokens, error.output_tokens)
+                return self._ulc_refused(image, page_no, pages, key, budget, code, tokens)
+            except ProviderNotAllowed:
+                return self._read_locally(image, page_no, READER_REFUSED, PROVIDER_NOT_ALLOWED)
+            finally:
+                self._ulc_after(budget, ceiling, pages, page_no)
+            decoded = decode_compact(got.value["r"])
+            tokens = (got.input_tokens, got.output_tokens)
+            try:
+                reply = checked(decoded.result)  # only a reply past the page's caps fails here
+            except ModelOutputError as error:
+                return self._ulc_refused(image, page_no, pages, key, budget, error.code, tokens)
+            with self._lock:
+                self._down_since.pop(model, None)
+                self._last_failure.pop(model, None)
+            if decoded.headed:  # a made-up box stays unpinned from the cache too (``_ulc``)
+                pages.cache.put(key, as_result(reply), *tokens)
+            return self._page(
+                reply, image, page_no, model, tokens=tokens, boxes=boxes, unpinned=decoded.unpinned
+            )
+
+    def _ulc_refused(
+        self,
+        image: Image.Image,
+        page_no: int,
+        pages: DocumentPages,
+        key: PageKey,
+        budget: PageBudget,
+        code: str,
+        tokens: tuple[int, int],
+    ) -> PageRead:
+        """#488: the page read locally as reader_refused with ``code``. Once a call was billed for
+        it, its key holds a ULC_MARK row, so this read never sends it again (the document read
+        on after a wait, or after "Read again" on another page); "Read again" on the page itself
+        is a new read, and its read replaces the mark."""
+        if budget.spent > 0:
+            pages.cache.put(key, {ULC_MARK: code}, *tokens)
+        return self._read_locally(image, page_no, READER_REFUSED, code, tokens=tokens)
+
+    def _ulc_key(
+        self, pages: DocumentPages, sha: str, page_no: int, model: str, ceiling: UlcCeiling
+    ) -> PageKey:
+        """#488: "c1+ulc<paise>", so a compact read is never taken for a g3 read, a g3 read for
+        it, or one ceiling's for another."""
+        version = f"{COMPACT_PROMPT_VERSION}+ulc{ceiling.paise}"
+        return PageKey(pages.customer_id, pages.document_id, page_no, sha, model, version)
+
+    def _ulc_estimate(self, prices: UlcPrices) -> int:
+        """#488: the tokens a page's call takes in, at most (module notes). O(1)."""
+        with self._lock:
+            seen = self._ulc_seen
+        if seen:
+            return math.ceil(seen * ULC_SEEN_MARGIN)
+        if prices.tokens_per_page_in:
+            return max(math.ceil(prices.tokens_per_page_in * ULC_CATALOG_MARGIN), ULC_INPUT_TOKENS)
+        return ULC_INPUT_TOKENS
+
+    def _ulc_after(self, budget: PageBudget, ceiling: UlcCeiling, pages: DocumentPages, page_no: int) -> None:
+        """#488: the page's input and what its replies were billed a token, for the next pages
+        of the document; and a page billed past its ceiling (its input above the estimate, or a
+        reported cost above the price) logged as ULC_BREACHED with the ids and the numbers only."""
+        with self._lock:
+            if budget.page_input is not None:
+                self._ulc_seen = max(self._ulc_seen, budget.page_input)
+            self._ulc_rates = (
+                max(self._ulc_rates[0], budget.rate_in),
+                max(self._ulc_rates[1], budget.rate_out),
+            )
+        if budget.spent > ceiling.usd * (1 + _ULC_NOISE):
+            _log.error(
+                "page %d billed %.6f USD, past its ceiling of %.6f USD",
+                page_no,
+                budget.spent,
+                ceiling.usd,
+                extra={
+                    "code": ULC_BREACHED,
+                    "customer_id": pages.customer_id,
+                    "document_id": pages.document_id,
+                    "page_no": page_no,
+                    "ceiling_usd": ceiling.usd,
+                    "spent_usd": budget.spent,
+                },
+            )
+
     def _ask_in_time(
         self,
         image: Image.Image,
@@ -1205,11 +1453,12 @@ class GeminiEngine:
         cached: bool = False,
         tokens: tuple[int, int] = (0, 0),
         boxes: "Future[list[PixelBox]] | None" = None,
+        unpinned: Collection[int] = (),
     ) -> PageRead:
         """The reply as a ``PageRead``, its lines pinned to the found boxes (G5, F1):
-        ``boxes``, found already, or found now."""
+        ``boxes``, found already, or found now; the lines in ``unpinned`` never (#488)."""
         found = (self._pool.find_boxes(image) if boxes is None else boxes.result()) if reply.lines else []
-        lines = tuple(pinned(reply.lines, found, image.width, image.height))
+        lines = tuple(pinned(reply.lines, found, image.width, image.height, unpinned=unpinned))
         extra = []
         if any(ILLEGIBLE_MARK in line.text for line in lines):
             extra.append(ILLEGIBLE_WORDS)
@@ -1769,12 +2018,15 @@ def _words(text: str) -> str:
 # Pinning boxes (G5).
 
 
-def pinned(lines: Iterable[_Line], found: list[PixelBox], width: int, height: int) -> list[OcrLine]:
+def pinned(
+    lines: Iterable[_Line], found: list[PixelBox], width: int, height: int, *, unpinned: Collection[int] = ()
+) -> list[OcrLine]:
     """Each line in pixels of the page, its box the union of the found boxes it matches
     ("found"), or the model's own box when none does ("model"). A matched found box that
-    is not the line's alone is clipped to the line's grown box first (``_own_part``).
-    O(lines x found + matches x log lines), plus the lines whose middles a shared found
-    box holds."""
+    is not the line's alone is clipped to the line's grown box first (``_own_part``). The
+    lines numbered in ``unpinned`` (#488: a compact row whose box was made up) keep it, as
+    "model". O(lines x found + matches x log lines), plus the lines whose middles a shared
+    found box holds."""
     lines = list(lines)
     boxes = [_pixels(line.box, width, height) for line in lines]
     middles = sorted(((b[1] + b[3]) / 2, (b[0] + b[2]) / 2, index) for index, b in enumerate(boxes))
@@ -1785,7 +2037,7 @@ def pinned(lines: Iterable[_Line], found: list[PixelBox], width: int, height: in
         matches = [
             _own_part(candidate, grown, index, middles, middle_ys)
             for candidate in found
-            if _overlap_share(grown, candidate) >= MIN_OVERLAP
+            if index not in unpinned and _overlap_share(grown, candidate) >= MIN_OVERLAP
         ]
         source = "model"
         if matches:
