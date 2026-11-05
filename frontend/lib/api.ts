@@ -465,6 +465,27 @@ export type UploadWaiting = (waiting: boolean, why?: "connection" | "server") =>
 /** A failing server (5xx) is asked this many more times, then the row fails with Retry. */
 const SERVER_RETRIES = 4;
 
+// An upload call that never answers (a server restart mid-request) is given up on, then sent
+// again as after a lost connection, so a row never waits for ever (production QA, 5 Nov 2026).
+/** A part with no progress and no answer for this long. Not the whole part: a slow line takes longer. */
+const PART_IDLE_MS = 120_000;
+/** The upload's JSON calls; `complete` stores and checks the whole file, so it gets longer. */
+const CALL_TIMEOUT_MS = 60_000;
+const COMPLETE_TIMEOUT_MS = 300_000;
+
+/** request(), given up after `ms` with no answer as a TypeError (a lost connection), for retryWhileOffline. */
+async function requestInTime<T>(ms: number, method: string, path: string, body?: unknown): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await request<T>(method, path, body, controller.signal);
+  } catch (error) {
+    throw controller.signal.aborted ? new TypeError("No answer in time") : error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Upload calls from this tab (start, each part, finish): a burst of this many, then this many
  * a minute. The API gives a file's upload calls their own budget of RATE_LIMIT_PER_MINUTE
@@ -534,8 +555,20 @@ function putPart(url: string, body: Blob, onProgress: (loaded: number) => void):
     xhr.open("PUT", url);
     xhr.withCredentials = true;
     xhr.setRequestHeader("X-Requested-With", "kaagaz");
-    xhr.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(event.loaded); };
+    let idle: ReturnType<typeof setTimeout> | undefined;
+    const waitIdle = () => {
+      clearTimeout(idle);
+      idle = setTimeout(() => {
+        reject(new TypeError("No answer in time")); // sent again, as after a lost connection
+        xhr.abort();
+      }, PART_IDLE_MS);
+    };
+    xhr.upload.onprogress = (event) => {
+      waitIdle();
+      if (event.lengthComputable) onProgress(event.loaded);
+    };
     xhr.onload = async () => {
+      clearTimeout(idle);
       if (xhr.status >= 200 && xhr.status < 300) resolve();
       else if (xhr.status === 0) reject(new ApiError(0, "network", "Could not reach the server."));
       else reject(noticeSessionEnd(await errorFrom(new Response(xhr.responseText, {
@@ -543,9 +576,16 @@ function putPart(url: string, body: Blob, onProgress: (loaded: number) => void):
         headers: { "Content-Type": "application/json", "Retry-After": xhr.getResponseHeader("Retry-After") ?? "" },
       }))));
     };
-    xhr.onerror = () => reject(new TypeError("Network error"));
-    xhr.onabort = () => reject(new TypeError("Upload interrupted"));
+    xhr.onerror = () => {
+      clearTimeout(idle);
+      reject(new TypeError("Network error"));
+    };
+    xhr.onabort = () => {
+      clearTimeout(idle);
+      reject(new TypeError("Upload interrupted"));
+    };
     xhr.send(body);
+    waitIdle();
   });
 }
 
@@ -569,8 +609,8 @@ async function resumableUpload(
   const fingerprint = await digest(new Blob([partHashes.join("")]));
   const identified = { ...metadata, fingerprint };
   const { candidates } = await retryWhileOffline(
-    () => request<{ candidates: { id: string; parts: Record<string, string> }[] }>(
-      "POST", "/documents/upload-sessions/candidates", identified,
+    () => requestInTime<{ candidates: { id: string; parts: Record<string, string> }[] }>(
+      CALL_TIMEOUT_MS, "POST", "/documents/upload-sessions/candidates", identified,
     ),
     onWaiting,
   );
@@ -587,8 +627,8 @@ async function resumableUpload(
     if (matches) { resumeId = candidate.id; savedParts = candidate.parts; break; }
   }
   const session = await retryWhileOffline(
-    () => request<{ id: string; part_size: number; part_count: number } | UploadResult>(
-      "POST", "/documents/upload-sessions", { ...identified, resume_session_id: resumeId },
+    () => requestInTime<{ id: string; part_size: number; part_count: number } | UploadResult>(
+      CALL_TIMEOUT_MS, "POST", "/documents/upload-sessions", { ...identified, resume_session_id: resumeId },
     ),
     onWaiting,
   );
@@ -611,7 +651,7 @@ async function resumableUpload(
   }
   onSent?.();
   return retryWhileOffline(
-    () => request<UploadResult>("POST", `/documents/upload-sessions/${session.id}/complete`, {}),
+    () => requestInTime<UploadResult>(COMPLETE_TIMEOUT_MS, "POST", `/documents/upload-sessions/${session.id}/complete`, {}),
     onWaiting,
   );
 }

@@ -12,6 +12,7 @@
 
 import { failureWords } from "@/components/operator/platform";
 import { ApiError, rateLimitWait } from "@/lib/api";
+import type { UploadWaiting } from "@/lib/api";
 import { formatNumber } from "@/lib/format";
 import { documentWords, failureFix } from "@/lib/status";
 import type {
@@ -42,7 +43,7 @@ export interface FolderUploadApi {
   plan(body: FolderUploadPlanBody): Promise<FolderUploadPlan>;
   register(id: string, userId: string, items: NewFolderItem[]): Promise<unknown>;
   items(id: string, view: FolderItemView, after: number, limit: number): Promise<FolderItemsPage>;
-  send(file: File, item: FolderUploadItem, onProgress: (fraction: number) => void): Promise<UploadResult>;
+  send(file: File, item: FolderUploadItem, onProgress: (fraction: number) => void, onWaiting?: UploadWaiting): Promise<UploadResult>;
   summary(id: string): Promise<FolderUploadSummary>;
 }
 
@@ -55,14 +56,18 @@ export interface FolderSource {
 
 export type FolderTarget = { kind: "department" } | { kind: "folder"; parentId: string | null };
 
-type FolderPhase = "planning" | "registering" | "sending" | "done" | "stopped" | "needs_pick" | "refused";
+/** Why a file being sent waits to go again (lib/api.ts retryWhileOffline). */
+type Waiting = "connection" | "server";
+
+// stopping: Stop was pressed; the files being sent finish, then it is stopped.
+type FolderPhase = "planning" | "registering" | "sending" | "stopping" | "done" | "stopped" | "needs_pick" | "refused";
 
 export type FolderEvent =
   | { type: "start"; id: string; rootName: string; total: number }
   | { type: "phase"; id: string; phase: FolderPhase; message?: string }
   | { type: "planned"; id: string; rootFolderId: string }
   | { type: "counts"; id: string; summary: FolderUploadSummary }
-  | { type: "sending"; id: string; itemId: string; name: string; fraction: number }
+  | { type: "sending"; id: string; itemId: string; name: string; fraction: number; waiting?: Waiting }
   | { type: "sent"; id: string; itemId: string; outcome: "stored" | "duplicate" | "failed" }
   | { type: "notSent"; id: string; itemId: string; name: string; message: string; retry: boolean; item: FolderUploadItem }
   | { type: "remove"; id: string };
@@ -94,7 +99,8 @@ async function keyIndex(source: FolderSource): Promise<Map<string, number>> {
   return keys;
 }
 
-/** Plan, register, then send. `stopped` is asked before each file is sent (Stop). */
+/** Plan, register, then send. `stopped` (Stop) is asked after the plan, before each page of
+ * the listing, and before each file is sent; Continue upload lists again with the same id. */
 export async function startFolderUpload(
   api: FolderUploadApi,
   args: { id: string; userId: string; source: FolderSource; target: FolderTarget; merge: boolean; limits?: UploadLimits },
@@ -123,10 +129,12 @@ export async function startFolderUpload(
     return;
   }
   emit({ type: "planned", id, rootFolderId: plan.root_folder_id });
+  if (stopped()) return emit({ type: "phase", id, phase: "stopped" });
   emit({ type: "phase", id, phase: "registering" });
   const keys = new Map<string, number>();
   try {
     for (let start = 0; start < manifest.fileCount; start += REGISTER_PAGE) {
+      if (stopped()) return emit({ type: "phase", id, phase: "stopped" });
       const page: NewFolderItem[] = [];
       for (let at = start; at < Math.min(start + REGISTER_PAGE, manifest.fileCount); at++) {
         const file = picked.files[at]!;
@@ -183,12 +191,19 @@ export async function sendWaiting(
     emit({ type: "sending", id, itemId: item.id, name: item.name, fraction: 0 });
     let shown = 0;
     try {
-      const result = await api.send(file, item, (fraction) => {
-        // Whole tenths only: a browser reports about every 50 ms, and each report redraws the tray.
-        if (Math.floor(fraction * 10) === Math.floor(shown * 10)) return;
-        shown = fraction;
-        emit({ type: "sending", id, itemId: item.id, name: item.name, fraction });
-      });
+      const result = await api.send(
+        file,
+        item,
+        (fraction) => {
+          // Whole tenths only: a browser reports about every 50 ms, and each report redraws the tray.
+          if (Math.floor(fraction * 10) === Math.floor(shown * 10)) return;
+          shown = fraction;
+          emit({ type: "sending", id, itemId: item.id, name: item.name, fraction });
+        },
+        // The row says while the file waits for the connection or the server (production QA, 5 Nov 2026).
+        (waiting, why) =>
+          emit({ type: "sending", id, itemId: item.id, name: item.name, fraction: shown, ...(waiting ? { waiting: why ?? "connection" } : {}) }),
+      );
       emit({ type: "sent", id, itemId: item.id, outcome: result.duplicate ? "duplicate" : "stored" });
     } catch (caught) {
       const changed = sessionChangedMessage(caught);
@@ -228,6 +243,7 @@ interface SendingRow {
   itemId: string;
   name: string;
   fraction: number;
+  waiting?: Waiting;
 }
 
 export interface FolderUploadView {
@@ -320,9 +336,13 @@ export function folderUploadsReducer(
   const without = (itemId: string) => view.sending.filter((row) => row.itemId !== itemId);
   let next: FolderUploadView;
   switch (event.type) {
-    case "phase":
-      next = { ...view, phase: event.phase, message: event.message ?? null, sending: event.phase === "sending" ? view.sending : [] };
+    case "phase": {
+      // Stop pressed just as the run ended changes nothing: the row is not left stopping.
+      if (event.phase === "stopping" && !["planning", "registering", "sending"].includes(view.phase)) return state;
+      const keep = event.phase === "sending" || event.phase === "stopping";
+      next = { ...view, phase: event.phase, message: event.message ?? null, sending: keep ? view.sending : [] };
       break;
+    }
     case "planned":
       next = { ...view, rootFolderId: event.rootFolderId };
       break;
@@ -344,7 +364,7 @@ export function folderUploadsReducer(
       break;
     }
     case "sending": {
-      const row = { itemId: event.itemId, name: event.name, fraction: event.fraction };
+      const row = { itemId: event.itemId, name: event.name, fraction: event.fraction, ...(event.waiting ? { waiting: event.waiting } : {}) };
       const rest = without(event.itemId);
       next = { ...view, sending: [...rest, row].slice(-FOLDER_UPLOADS_AT_ONCE) };
       break;
