@@ -423,6 +423,7 @@ class _Land:
     plot: ValueRef | None = None
     khata: ValueRef | None = None
     printed: dict[str, list[tuple[ValueRef, str | None]]] = field(default_factory=dict)  # map values, keys
+    unplaced: set[str] = field(default_factory=set)  # map fields printed only with no usable spot
 
     def owning(self) -> list[_Party]:
         return [party for party in self.parties if party.role != "sellers"]
@@ -542,9 +543,13 @@ def _lands(values: Sequence[tuple[str, str | None, ValueRef]]) -> dict[tuple[str
             land.plot = land.plot or ref
         elif ref.field == _KHATA:
             land.khata = land.khata or ref
-        elif (ref.field in _MEASURES or ref.field in _SIDES) and valid_regions([ref.region]):
-            # A map value with no spot on its page is never quoted, words included (decision 2).
-            land.printed.setdefault(ref.field, []).append((ref, latin))
+        elif ref.field in _MEASURES or ref.field in _SIDES:
+            # A map value with no spot on its page is never quoted, words included (decision 2),
+            # nor called "not printed": it is (production QA).
+            if valid_regions([ref.region]):
+                land.printed.setdefault(ref.field, []).append((ref, latin))
+            else:
+                land.unplaced.add(ref.field)
     for spot, party in parties.items():
         party.share = shares.get(spot)
     for land in lands.values():
@@ -664,7 +669,7 @@ def _map_lines(land: _Land, ask: OwnerAsk) -> list[tuple[str, Cited]]:
         if refs:
             printed = _and([_printed(ref) for ref in refs])
             lines.append((f"The {word} of {name} {verb} printed as {printed}.", [*named, *refs]))
-        else:
+        elif stored not in land.unplaced:  # printed with no spot to cite: nothing said of it
             lines.append(
                 (f"The {word} of {name} {verb} not printed on the map, so none is worked out.", named)
             )
@@ -675,7 +680,7 @@ def _map_lines(land: _Land, ask: OwnerAsk) -> list[tuple[str, Cited]]:
             lines.append((f"The neighbours printed for {name}: {listed}.", [*named, *(r for _, r in sides)]))
         else:
             lines.append((f"No neighbour of {name} is printed by side, so none is worked out.", named))
-    if not lines:  # the map itself
+    if not ask.measures and not ask.borders:  # the map itself
         words = {**_MEASURES, **{stored: f"{side} neighbour" for stored, side in _SIDES.items()}}
         parts = [
             (word, [r for r, _ in land.printed[stored]])
