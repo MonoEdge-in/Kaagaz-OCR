@@ -1,7 +1,7 @@
 // The decisions behind the documents screen, kept out of the components so
 // they are unit tested in node (tests/shell-documents.test.ts).
 
-import { ApiError } from "@/lib/api";
+import { ApiError, isStorageFull } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import type { DocumentStatus, DocumentSummary, UploadLimits } from "@/lib/types";
 
@@ -314,8 +314,18 @@ export function sessionChangedMessage(caught: unknown): string | null {
   return caught instanceof ApiError && caught.code === "session_changed" ? caught.message : null;
 }
 
+/**
+ * Not sent because of the connection or the server, not because the file was refused: it can be
+ * sent again (Retry, Retry all). Storage full (#516) never: only deleting files or a higher limit
+ * makes room, whatever the status.
+ */
+export const canSendAgain = (caught: unknown) =>
+  !isStorageFull(caught) &&
+  (!(caught instanceof ApiError) || caught.status === 0 || caught.status === 429 || caught.status >= 500);
+
 /** The words for an upload that failed permanently. Transient connection loss resumes automatically. */
 export function uploadErrorText(caught: unknown, online: boolean): string {
+  if (isStorageFull(caught)) return (caught as ApiError).message; // the API's words, as they are (#516)
   if (!online) {
     // A failed row: it does not resume by itself (a paused one is the "offline" state instead).
     return "Not uploaded: no internet connection. Choose the file again when you're back online.";

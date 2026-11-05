@@ -29,7 +29,7 @@ import type {
 import { pathKey } from "./folderPick";
 import type { Manifest, Picked } from "./folderPick";
 import type { NotSentRow } from "./FolderUploadRow";
-import { limitFor, sessionChangedMessage, uploadErrorText, uploadKind } from "./logic";
+import { canSendAgain, limitFor, sessionChangedMessage, uploadErrorText, uploadKind } from "./logic";
 import { createSlots } from "./uploadQueue";
 
 const FOLDER_UPLOADS_AT_ONCE = 4;
@@ -212,7 +212,7 @@ export async function sendWaiting(
         emit({ type: "sent", id, itemId: item.id, outcome: "failed" });
         return;
       }
-      const retry = changed === null && canRetry(caught);
+      const retry = changed === null && canSendAgain(caught);
       notSent(changed ?? uploadErrorText(caught, online()), retry);
     }
   }
@@ -232,10 +232,6 @@ export async function sendWaiting(
   if (signedOut !== null) emit({ type: "phase", id, phase: "stopped", message: signedOut });
   else emit({ type: "phase", id, phase: stopped() ? "stopped" : "done" });
 }
-
-/** A connection or server problem, not a refusal: the same item can be sent again. */
-const canRetry = (caught: unknown) =>
-  !(caught instanceof ApiError) || caught.status === 0 || caught.status === 429 || caught.status >= 500;
 
 // --- the state the tray shows ---------------------------------------------------------
 

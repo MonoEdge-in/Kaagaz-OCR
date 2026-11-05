@@ -86,6 +86,7 @@ import type { FolderTree } from "./folderTree";
 import { ALL_DOCUMENTS, libraryHref } from "./libraryQuery";
 import {
   FALLBACK_UPLOAD_LIMITS,
+  canSendAgain,
   estimateIngestSeconds,
   flaggedText,
   scanPhrase,
@@ -109,10 +110,6 @@ import { WrapName } from "./WrapName";
 import styles from "./Documents.module.css";
 
 type Start = (onProgress: (fraction: number) => void, onSent: () => void, onWaiting: UploadWaiting) => Promise<UploadResult>;
-
-/** Not sent because of the connection or the server, not because the file was refused: it can be sent again. */
-const canRetry = (caught: unknown) =>
-  !(caught instanceof ApiError) || caught.status === 0 || caught.status === 429 || caught.status >= 500;
 
 // The reading picked in "Read with" during this visit; null: the organisation's default.
 let sessionReader: string | null = null;
@@ -272,7 +269,7 @@ export function useUploads(onUploaded: () => void) {
       onUploaded();
     } catch (caught) {
       stopped.current ??= sessionChangedMessage(caught);
-      const retry = stopped.current === null && canRetry(caught) && kept.current.has(key);
+      const retry = stopped.current === null && canSendAgain(caught) && kept.current.has(key);
       update(key, { kind: "error", message: uploadErrorText(caught, navigator.onLine), retry });
     }
   }

@@ -5,12 +5,15 @@
 // (feature 28), shown only once the platform has allowed it, saved by the same Save.
 // UI audit AD6 (16 Oct 2026): each in its own section (Uploads, Filing), and the Save
 // bar sticks to the foot of the screen only while something is changed.
+// Under the workspace's name, one line says what the organisation has stored of its storage
+// limit (#516, GET /admin/storage), loaded on its own so the settings never wait for it.
 
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import libraryStyles from "@/components/documents/Library.module.css";
-import { ApiError, getSettings, updateSettings } from "@/lib/api";
-import type { CustomerSettings } from "@/lib/types";
+import { ApiError, getAdminStorage, getSettings, updateSettings } from "@/lib/api";
+import { storageUsedText } from "@/lib/format";
+import type { AdminStorage, CustomerSettings } from "@/lib/types";
 import { AUTOFILE_HELP, AUTOFILE_LABEL, parseUploadLimit, settingsChanged, settingsErrorText } from "./logic";
 import styles from "./Admin.module.css";
 
@@ -22,6 +25,19 @@ export function SettingsPanel() {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [storage, setStorage] = useState<AdminStorage | null>(null);
+  const [storageFailed, setStorageFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getAdminStorage().then(
+      (result) => !cancelled && setStorage(result),
+      () => !cancelled && setStorageFailed(true),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -97,6 +113,7 @@ export function SettingsPanel() {
           <p className={styles.customer}>
             Workspace: <strong>{settings.customer_name}</strong>
           </p>
+          <StorageLine storage={storage} failed={storageFailed} />
           <fieldset className={styles.settingsGroup}>
             <legend className={styles.settingsLegend}>Uploads</legend>
             <div className="field">
@@ -151,6 +168,20 @@ export function SettingsPanel() {
         </form>
       )}
     </section>
+  );
+}
+
+/** "Storage: 12.4 GB of 50 GB used" (#516); while loading, or when it could not be loaded, it says so. */
+export function StorageLine({ storage, failed }: { storage: AdminStorage | null; failed: boolean }) {
+  return (
+    <p className={styles.customer}>
+      Storage:{" "}
+      {storage ? (
+        <strong>{storageUsedText(storage.used_bytes, storage.limit_gb)}</strong>
+      ) : (
+        <span className="muted">{failed ? "Could not load it. Reload the page to try again." : "Loading…"}</span>
+      )}
+    </p>
   );
 }
 
