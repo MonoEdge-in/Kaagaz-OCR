@@ -187,3 +187,29 @@ def test_a_question_about_one_document_is_never_a_habit(db: Database) -> None:
         )
     items = signed.client.get("/api/chat/ready-questions").json()["items"]
     assert [item["text"] for item in items] == [LAND]
+
+
+@pytest.mark.db
+def test_b2_a_document_being_read_never_makes_home_make_its_answers_again(db: Database) -> None:
+    """Production QA B2: each progress write of a document being read moved the newest
+    ``updated_at``, so every Home look paid for its ready answers again. A document not read
+    yet (received or clean) is no part of the stamp; once read, it changes the stamp at once."""
+    api = Api(db)
+    signed = api.new_signed()
+    api.add_document(signed.customer_id, name="7-12 Extract.pdf", doc_type="land_record")
+    reading = api.add_document(signed.customer_id, name="deed.pdf", doc_type="land_record", status="clean")
+    signed.client.get("/api/chat/ready-questions")
+    made = len(api.answers.asked)
+    assert made > 0
+    for page in range(1, 4):  # Home looks again while deed.pdf is being read
+        with db.customer(signed.customer_id) as conn:
+            conn.execute(
+                text("UPDATE documents SET progress = CAST(:p AS jsonb) WHERE id = :d"),
+                {"p": f'{{"step": "reading", "done": {page}, "total": 5}}', "d": reading},
+            )
+        signed.client.get("/api/chat/ready-questions")
+    assert len(api.answers.asked) == made
+    with db.customer(signed.customer_id) as conn:
+        conn.execute(text("UPDATE documents SET status = 'ready', progress = NULL WHERE id = :d"), {"d": reading})
+    signed.client.get("/api/chat/ready-questions")
+    assert len(api.answers.asked) > made  # read now: the answers are made again

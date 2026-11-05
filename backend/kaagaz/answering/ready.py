@@ -64,11 +64,14 @@ _TYPES = text(
     " AND doc_type IS NOT NULL GROUP BY doc_type ORDER BY count(*) DESC, doc_type"
 )
 # What a ready answer was made from: the documents and their values (how many, newest change).
+# A document not read yet (received or clean) is left out: its progress writes move its
+# updated_at page by page, and each move made Home pay for its answers again (production QA B2).
 # shortcut: two scans of one customer's rows, fine at today's thousands; an index on
 # (customer_id, updated_at) or a change counter when a customer holds millions.
 _STAMP = text(
     "SELECT (SELECT count(*) || '/' || coalesce(max(updated_at)::text, '') FROM documents"
-    " WHERE customer_id = :c) || '|' || (SELECT count(*) || '/' || coalesce(max(updated_at)::text, '')"
+    " WHERE customer_id = :c AND status NOT IN ('received', 'clean'))"
+    " || '|' || (SELECT count(*) || '/' || coalesce(max(updated_at)::text, '')"
     " FROM extracted_values WHERE customer_id = :c)"
 )
 
