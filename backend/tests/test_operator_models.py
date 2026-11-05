@@ -55,6 +55,8 @@ MODEL_ROUTES = {
     ("PUT", f"/api/operator/orgs/{ANY_ID}/model-rates"),
     ("PUT", f"/api/operator/orgs/{ANY_ID}/users/{ANY_ID}/model-rate"),
     ("GET", "/api/operator/usage"),
+    ("GET", "/api/operator/storage-limit"),  # #516
+    ("PUT", "/api/operator/storage-limit"),
 }
 CATALOGUE_ROW = {
     "id": MODEL,

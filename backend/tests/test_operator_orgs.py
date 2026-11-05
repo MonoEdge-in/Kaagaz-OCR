@@ -62,6 +62,8 @@ ORG_ROUTES = {
     ("PUT", f"{ORGS}/{ANY_ID}/session-timeout"),
     ("GET", f"{ORGS}/{ANY_ID}/folder-upload-limits"),  # #484
     ("PUT", f"{ORGS}/{ANY_ID}/folder-upload-limits"),
+    ("GET", f"{ORGS}/{ANY_ID}/storage-limit"),  # #516
+    ("PUT", f"{ORGS}/{ANY_ID}/storage-limit"),
     # Changed on purpose (#212, 21 Oct 2026): one organisation's model call rates.
     ("GET", f"{ORGS}/{ANY_ID}/model-rates"),
     ("PUT", f"{ORGS}/{ANY_ID}/model-rates"),
