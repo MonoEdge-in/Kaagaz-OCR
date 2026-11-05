@@ -327,6 +327,21 @@ def fail_item(conn: Connection, customer_id: str, item_id: str, code: str) -> No
     conn.execute(_FAIL, {"c": customer_id, "i": item_id, "code": code})
 
 
+_SENT = text(
+    "SELECT coalesce(sum(i.size_bytes), 0) FROM folder_upload_items i"
+    " JOIN folder_uploads u ON u.customer_id = i.customer_id AND u.id = i.folder_upload_id"
+    " WHERE i.customer_id = :c AND i.folder_upload_id = :u AND u.user_id = :usr"
+    " AND i.state IN ('stored', 'duplicate')"
+)
+
+
+def sent_bytes(conn: Connection, customer_id: str, upload_id: str, *, user_id: str) -> int:
+    """#516: the bytes of this user's upload already in Kaagaz (stored, or a duplicate); 0 for a
+    new upload. A re-plan ("Continue upload") checks only the rest against the storage limit, so
+    the files it sent are not counted twice. O(k) for its k items in, on ``folder_upload_items_state``."""
+    return int(conn.execute(_SENT, {"c": customer_id, "u": upload_id, "usr": user_id}).scalar_one())
+
+
 _UPLOADS = (
     "SELECT id, root_folder_id, root_name, target, created_at, file_count, total_bytes, skipped_count,"
     " items_registered, source_name, parent_folder_id, merge"

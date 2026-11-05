@@ -123,6 +123,13 @@ Why some choices:
   already in is 200 with the item, storing nothing. A folder deleted since or a refused file
   fails the item with that code. Never auto-filed. ``_accept_item`` holds a send slot (429
   ``rate_limited``, ``Retry-After: 2``, past FOLDER_UPLOAD_FILES_AT_ONCE[_PER_ORG]).
+* **Storage limit** (#516): a new file that would take the organisation past its storage limit
+  (``db/storage_limits.py``) is 413 ``storage_full``, with ``details`` {used_bytes, limit_bytes,
+  limit_gb} and the words of ``storage_full_message``, before anything is stored: in the upload
+  service (an upload, a new version, a resumable complete and a folder upload's file all go
+  through it) and at the resumable start, before a session is made (the size is known; the
+  bytes are not, so a duplicate sent this way is refused there too). A duplicate sent as one
+  file costs nothing. A folder upload's file refused so stays waiting, to be sent again.
 * **Undo auto-filing** (feature 28, R16): any user of the customer may move a family
   Kaagaz filed back to the top level, under the family lock; the folder stays. In Trash
   is 409 ``in_trash``; filed no more (moved since, or its folder deleted) is 409
@@ -172,7 +179,7 @@ from kaagaz.api.views import (
     timeline,
 )
 from kaagaz.db import admin as admin_sql
-from kaagaz.db import audit, autofile, listing, reading_days, trash
+from kaagaz.db import audit, autofile, listing, reading_days, storage_limits, trash
 from kaagaz.db import chat as chat_sql
 from kaagaz.db import folder_upload_items as items_sql
 from kaagaz.db import folders as folders_sql
@@ -196,10 +203,10 @@ from kaagaz.db.folder_uploads import effective_limits
 from kaagaz.db.folders import MAX_DEPTH
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import RejectCode, UploadRejected
-from kaagaz.ingestion.messages import over_every_limit_message, too_large_message
+from kaagaz.ingestion.messages import over_every_limit_message, storage_full_message, too_large_message
 from kaagaz.ingestion.pagecount import goes_express
 from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
-from kaagaz.ingestion.ports import BlobNotFound, Job, JobQueue, UnknownFamily, UnknownFolder
+from kaagaz.ingestion.ports import BlobNotFound, Job, JobQueue, StorageRoom, UnknownFamily, UnknownFolder
 from kaagaz.ingestion.service import UploadResult, UploadService
 from kaagaz.jobs.reading_pause import BUDGET, DAILY_LIMIT, pause_reason
 from kaagaz.reading.ocr import GEMINI
@@ -277,6 +284,7 @@ _REJECT_STATUS = {
     RejectCode.EMPTY_FILE: 400,
     RejectCode.UNSUPPORTED_TYPE: 400,
     RejectCode.TOO_LARGE: 413,
+    RejectCode.STORAGE_FULL: 413,
 }
 
 
@@ -451,6 +459,20 @@ def get_upload_limits(user: User, context: Context) -> dict[str, Any]:
     }
 
 
+def storage_full(room: StorageRoom) -> ApiError:
+    """#516: the refusal of a new upload past the organisation's storage limit (module notes)."""
+    limit_gb = room.limit_bytes // storage_limits.GIB
+    details = {"used_bytes": room.used_bytes, "limit_bytes": room.limit_bytes, "limit_gb": limit_gb}
+    return ApiError(413, RejectCode.STORAGE_FULL.value, storage_full_message(limit_gb), details=details)
+
+
+def _refused(rejected: UploadRejected, policy: UploadPolicy) -> ApiError:
+    """The reply to a file the upload service refused."""
+    if rejected.code is RejectCode.STORAGE_FULL and rejected.used is not None and rejected.limit is not None:
+        return storage_full(StorageRoom(limit_bytes=rejected.limit, used_bytes=rejected.used))
+    return ApiError(_REJECT_STATUS[rejected.code], rejected.code.value, _refusal_message(rejected, policy))
+
+
 def _refusal_message(rejected: UploadRejected, policy: UploadPolicy) -> str | None:
     """The words for a refused upload; None means the code's usual message."""
     if rejected.code is not RejectCode.TOO_LARGE:
@@ -618,8 +640,7 @@ def _accept(
             keep_place=item is not None,
         )
     except UploadRejected as rejected:
-        message = _refusal_message(rejected, policy)
-        raise ApiError(_REJECT_STATUS[rejected.code], rejected.code.value, message) from None
+        raise _refused(rejected, policy) from None
     except UnknownFolder:  # deleted since the check; the service removed the stored file
         if item is not None:
             raise ApiError(409, "folder_gone", _FOLDER_GONE) from None
@@ -842,8 +863,7 @@ def _accept_version(
             uploaded_by=user.user_id,
         )
     except UploadRejected as rejected:
-        message = _refusal_message(rejected, policy)
-        raise ApiError(_REJECT_STATUS[rejected.code], rejected.code.value, message) from None
+        raise _refused(rejected, policy) from None
     except UnknownFamily:  # gone or moved to Trash since the check; the service removed the stored file
         raise ApiError(404, "not_found") from None
     if note is not None and not result.duplicate:  # V9: this version's note
@@ -963,6 +983,10 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
                 >= context.settings.max_files_per_batch
             ):
                 raise ApiError(409, "batch_full")
+    with context.db.customer(user.customer_id) as conn:  # #516, before a session is made
+        room = storage_limits.storage_room(conn, user.customer_id)
+    if room.used_bytes + body.file_size > room.limit_bytes:
+        raise storage_full(room)
 
     session_id = str(uuid.uuid4())
     storage_key, upload_id = context.storage.start_resumable(user.customer_id, user.user_id, session_id)

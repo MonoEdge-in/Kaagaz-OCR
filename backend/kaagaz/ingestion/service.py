@@ -7,9 +7,13 @@ The steps, in order:
 2. Refuse empty files and types that are not allowed (sniff.py), then a file
    over its own type's limit (PRD 1, U2), with its kind, size and limit.
 3. If this customer already has this fingerprint, reply "duplicate" and stop.
-4. Count its pages (pagecount.py, PRD 5 Q4): a document of at most
+   A duplicate costs no storage, so it is answered even when the organisation is full.
+4. Refuse a file that would take the organisation past its storage limit
+   (#516, ``storage_full``): the bytes used plus this file's must be at most the
+   limit, so a file of exactly the bytes left goes in.
+5. Count its pages (pagecount.py, PRD 5 Q4): a document of at most
    ``express_max_pages`` pages is queued in the express lane.
-5. Store the file, record it, queue a job.
+6. Store the file, record it, queue a job.
 
 Time O(n) in the bytes read, at most the largest limit plus one byte.
 
@@ -200,6 +204,14 @@ class UploadService:
             existing = self._repository.find_by_fingerprint(customer_id, spooled.sha256)
             if existing is not None:
                 return UploadResult(existing.document_id, duplicate=True)
+
+            # #516: before anything is stored. shortcut: concurrent uploads may overshoot by the
+            # files in flight; add a per-customer advisory lock if it matters.
+            room = self._repository.storage_room(customer_id)
+            if room.used_bytes + spooled.size > room.limit_bytes:
+                raise UploadRejected(
+                    RejectCode.STORAGE_FULL, size=spooled.size, limit=room.limit_bytes, used=room.used_bytes
+                )
 
             record = DocumentRecord(
                 customer_id=customer_id,
