@@ -9,12 +9,14 @@
 //   the picked files by path_key, and send the server's files_at_once (at most
 //   FOLDER_UPLOADS_AT_ONCE) at a time to that item, so a retry always lands in the folder the
 //   server recorded. A file missing from the pick, or whose size changed, is said and not sent.
-//   Once another account signs in here, nothing more goes.
+//   Once another account signs in here, nothing more goes. Once a file is refused for storage
+//   (#516), nothing more goes either: the row says the API's words once, and the files left
+//   wait on the server for Continue upload, after room is made.
 // - The state keeps counts and at most FOLDER_UPLOADS_AT_ONCE rows being sent, never a row a
 //   file: the lists of what needs attention are read from the server, a page at a time.
 
 import { failureWords } from "@/components/operator/platform";
-import { ApiError, rateLimitWait } from "@/lib/api";
+import { ApiError, isStorageFull, rateLimitWait } from "@/lib/api";
 import { formatNumber } from "@/lib/format";
 import { documentWords, failureFix } from "@/lib/status";
 import type {
@@ -206,7 +208,8 @@ export async function sendWaiting(
   const keys = await keyIndex(source);
   const slots = createSlots(Math.max(1, Math.min(args.atOnce ?? FOLDER_UPLOADS_AT_ONCE, FOLDER_UPLOADS_AT_ONCE)));
   let signedOut: string | null = null;
-  const halted = () => signedOut !== null || stopped();
+  let full: string | null = null; // the API's storage_full words (#516)
+  const halted = () => signedOut !== null || full !== null || stopped();
 
   async function sendOne(item: FolderUploadItem) {
     if (halted()) return;
@@ -229,6 +232,10 @@ export async function sendWaiting(
       });
       emit({ type: "sent", id, itemId: item.id, outcome: result.duplicate ? "duplicate" : "stored" });
     } catch (caught) {
+      if (isStorageFull(caught)) {
+        full ??= uploadErrorText(caught, online()); // the item stays waiting on the server
+        return;
+      }
       const changed = sessionChangedMessage(caught);
       signedOut ??= changed;
       if (caught instanceof ApiError && ITEM_FAILURES.has(caught.code)) {
@@ -252,7 +259,8 @@ export async function sendWaiting(
   } catch (caught) {
     signedOut ??= sessionChangedMessage(caught) ?? `Kaagaz could not list the files still to send. ${uploadErrorText(caught, online())}`;
   }
-  if (signedOut !== null) emit({ type: "phase", id, phase: "stopped", message: signedOut });
+  const why = signedOut ?? full;
+  if (why !== null) emit({ type: "phase", id, phase: "stopped", message: why });
   else emit({ type: "phase", id, phase: stopped() ? "stopped" : "done" });
 }
 

@@ -45,6 +45,7 @@ import {
   ApiError,
   getBatch,
   getUploadLimits,
+  isStorageFull,
   restoreDocument,
   undoAutofile,
   uploadDocument,
@@ -113,6 +114,8 @@ import { WrapName } from "./WrapName";
 import styles from "./Documents.module.css";
 
 type Start = (onProgress: (fraction: number) => void, onSent: () => void, onWaiting: UploadWaiting) => Promise<UploadResult>;
+/** One drop of files: the API's words once one of them was refused for storage (#516). */
+type Drop = { full: string | null };
 
 // The reading picked in "Read with" during this visit; null: the organisation's default.
 let sessionReader: string | null = null;
@@ -234,7 +237,7 @@ export function useUploads(onUploaded: () => void) {
   }, [atRisk]);
 
   /** Send it: sending, saving, then (follow) followed while it is read; or say why not. */
-  async function send(key: string, start: Start, follow: boolean) {
+  async function send(key: string, start: Start, follow: boolean, drop?: Drop) {
     const times: StageTimes = { startedAt: null, sentAt: null, repliedAt: null };
     let fraction = 0;
     dispatch({ type: "change", key, change: { state: { kind: "sending", fraction: 0 }, times } });
@@ -277,17 +280,27 @@ export function useUploads(onUploaded: () => void) {
     } catch (caught) {
       stopped.current ??= sessionChangedMessage(caught);
       const retry = stopped.current === null && canSendAgain(caught) && kept.current.has(key);
-      update(key, { kind: "error", message: uploadErrorText(caught, navigator.onLine), retry });
+      const message = uploadErrorText(caught, navigator.onLine);
+      if (drop && isStorageFull(caught)) drop.full ??= message;
+      update(key, { kind: "error", message, retry });
     }
   }
 
   /** Count a PDF's or TIFF's pages (kept for the time estimate), then send it, unless it has too many. */
-  async function checkThenSend(key: string, file: File, start: Start, follow: boolean) {
-    if (notSent(key)) return;
+  async function checkThenSend(key: string, file: File, start: Start, follow: boolean, drop?: Drop) {
+    if (notSent(key) || dropFull(key, drop)) return;
     const { pages, problem } = await checkPages(file, limits.max_pages);
     dispatch({ type: "change", key, change: { pages } });
     if (problem) update(key, { kind: "error", message: problem });
-    else if (!notSent(key)) await send(key, start, follow);
+    else if (!notSent(key) && !dropFull(key, drop)) await send(key, start, follow, drop);
+  }
+
+  /** True, and the file says why, once another file of its drop was refused for storage: the
+   * rest of the drop is not started (#516). */
+  function dropFull(key: string, drop?: Drop): boolean {
+    if (!drop?.full) return false;
+    update(key, { kind: "error", message: drop.full, retry: false });
+    return true;
   }
 
   /** True, and the file says why, once another account has signed in here. */
@@ -333,8 +346,9 @@ export function useUploads(onUploaded: () => void) {
     setStored((before) => [...batches.map(({ batchId }) => ({ id: batchId, at, already: 0, notSent: 0 })), ...before]);
     const sending = added.filter((item) => item.entry.state.kind === "waiting");
     for (const { entry, start } of sending) kept.current.set(entry.key, start);
+    const drop: Drop = { full: null };
     // A few at a time across every drop, so many drops do not multiply them.
-    await Promise.all(sending.map(({ entry, file, start }) => slots(() => checkThenSend(entry.key, file, start, true))));
+    await Promise.all(sending.map(({ entry, file, start }) => slots(() => checkThenSend(entry.key, file, start, true, drop))));
   }
 
   /** Queue one file as the next version of a document, with its note (V9, optional). It has
