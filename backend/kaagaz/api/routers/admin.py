@@ -78,6 +78,10 @@ grants it, then the admin switches it on or off (``autofile_on``) in the same fo
 upload limit. Each field left out of the PATCH is left as it is. Switching it on without
 the grant is 409 ``not_granted`` and changes nothing; a real change is audited as
 ``settings.autofile_on`` or ``settings.autofile_off``.
+
+Why the storage line (#516): ``/admin/storage`` gives the bytes the organisation's documents hold
+(every version and the Trash) and its storage limit, which the super admin sets, so the admin
+sees how close it is before an upload is refused ``storage_full``. Numbers only.
 """
 
 import csv
@@ -106,7 +110,7 @@ from kaagaz.api.readers import usable
 from kaagaz.api.routers.documents import day_start
 from kaagaz.api.views import CURSOR, admin_user, failed_document, iso, timeline, without_money
 from kaagaz.db import admin as admin_sql
-from kaagaz.db import audit, google_rules, identities, listing, reading_days
+from kaagaz.db import audit, google_rules, identities, listing, reading_days, storage_limits
 from kaagaz.db import email_links as links_sql
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import runs as runs_sql
@@ -978,6 +982,18 @@ def get_stats(user: AdminSession, context: Context) -> dict[str, Any]:
 
 MemberPeriod = Literal["month", "30d", "all"]
 MEMBER_DAYS = 30
+
+
+@router.get("/admin/storage")
+def get_storage(user: AdminSession, context: Context) -> dict[str, Any]:
+    """#516: ``{used_bytes, limit_bytes, limit_gb}`` of the admin's own organisation."""
+    with context.db.customer(user.customer_id) as conn:
+        room = storage_limits.storage_room(conn, user.customer_id)
+    return {
+        "used_bytes": room.used_bytes,
+        "limit_bytes": room.limit_bytes,
+        "limit_gb": room.limit_bytes // storage_limits.GIB,
+    }
 
 
 @router.get("/admin/members")

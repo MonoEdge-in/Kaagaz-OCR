@@ -220,3 +220,34 @@ def test_a_re_plan_does_not_count_the_files_it_already_sent_twice(db: Database) 
     again = plan(signed, TREE, id=body["id"], file_count=2, total_bytes=total)  # "Continue upload"
     assert again.status_code == 200, again.text
     _refused(plan(signed, TREE, total_bytes=total), used=GIB - len(TEXT_BYTES))  # a new upload of it
+
+
+# --- the organisation admin's view ------------------------------------------------------------
+
+
+def test_an_admin_sees_the_storage_used_and_the_limit_and_no_other_organisations(db: Database) -> None:
+    api = Api(db)
+    admin = api.new_admin()
+    other = api.new_admin()
+    with db.customer(admin.customer_id) as conn:
+        insert_document(conn, admin.customer_id, size_bytes=1234)
+    fill(db, other.customer_id, left=5, gb=3)
+    with platform_reset(db):
+        assert admin.client.get("/api/admin/storage").json() == {
+            "used_bytes": 1234,
+            "limit_bytes": 50 * GIB,
+            "limit_gb": 50,
+        }
+        _owner(db, "UPDATE platform_ai_settings SET storage_gb = 60", {})
+        assert admin.client.get("/api/admin/storage").json()["limit_gb"] == 60
+    assert other.client.get("/api/admin/storage").json() == {
+        "used_bytes": 3 * GIB - 5,
+        "limit_bytes": 3 * GIB,
+        "limit_gb": 3,
+    }
+
+
+def test_a_member_may_not_read_the_storage(db: Database) -> None:
+    member = Api(db).new_signed()
+    reply = member.client.get("/api/admin/storage")
+    assert (reply.status_code, reply.json()["error"]["code"]) == (403, "admin_session_required")
