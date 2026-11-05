@@ -31,6 +31,8 @@ audit rows.
 * ``speed`` and ``set_speed`` (0053): the platform's speed controls.
 * ``folder_upload_limits`` and ``set_folder_upload_limits`` (0061c, #484): the folder upload
   limits (files, GB, folders), the platform's and one organisation's.
+* ``storage_limit`` and ``set_storage_limit`` (0061d, #516): the storage limit in GB, the
+  platform's and one organisation's, with the bytes the organisation's documents hold.
 * ``current_test_model``, ``set_test_model`` and ``clear_test_model`` (0038): the platform
   test model, one model for every organisation's scanning and answering, and its undo.
 
@@ -273,6 +275,25 @@ def set_folder_upload_limits(
     ``missing``, ``deleting``, ``step_up`` or ``signed_out``."""
     params = {"o": operator_id, "c": customer_id, "f": max_files, "g": max_gb, "d": max_folders, "step": step}
     statement = text("SELECT kaagaz_op_set_folder_upload_limits(:o, :c, :f, :g, :d, :step)")
+    return str(conn.execute(statement, params).scalar_one())
+
+
+def storage_limit(conn: Connection, operator_id: str, customer_id: str | None) -> RowMapping | None:
+    """The storage limit (0061d): org_storage_gb (None without a customer or with no own),
+    platform_storage_gb (None: the default) and used_bytes (0 without a customer). None for an
+    unknown organisation or an operator who is not enabled."""
+    params = {"o": operator_id, "c": customer_id}
+    return conn.execute(text("SELECT * FROM kaagaz_op_storage_limit(:o, :c)"), params).mappings().first()
+
+
+def set_storage_limit(
+    conn: Connection, operator_id: str, customer_id: str | None, storage_gb: int | None, *, step: int
+) -> str:
+    """Set the platform's storage limit (no customer; None: the default) or one organisation's
+    (None: follow the platform), ``step`` of a fresh code required; audited. ``done``,
+    ``unchanged``, ``missing``, ``deleting``, ``step_up`` or ``signed_out``."""
+    params = {"o": operator_id, "c": customer_id, "g": storage_gb, "step": step}
+    statement = text("SELECT kaagaz_op_set_storage_limit(:o, :c, :g, :step)")
     return str(conn.execute(statement, params).scalar_one())
 
 
