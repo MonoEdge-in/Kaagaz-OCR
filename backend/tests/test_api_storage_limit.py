@@ -222,6 +222,20 @@ def test_a_re_plan_does_not_count_the_files_it_already_sent_twice(db: Database) 
     _refused(plan(signed, TREE, total_bytes=total), used=GIB - len(TEXT_BYTES))  # a new upload of it
 
 
+def test_an_add_new_files_only_plan_is_not_checked_but_each_new_file_is(db: Database) -> None:
+    """Testing-Env port (#516 with #484's "Add new files only", 0072): such a plan's bytes hold
+    the files already in Kaagaz, which cost nothing, so the plan is not refused for storage; a new
+    file past the limit is, when it is sent, and its item stays waiting."""
+    api = Api(db)
+    signed = api.new_signed()
+    fill(db, signed.customer_id, left=len(PDF_BYTES) - 1)
+    _refused(plan(signed, TREE, total_bytes=len(PDF_BYTES)), used=GIB - len(PDF_BYTES) + 1)
+    _, (one,) = planned(signed, {"A/bill.pdf": PDF_BYTES}, only_new=True)  # the same bytes: planned
+    _refused(send(signed, one["id"], PDF_BYTES), used=GIB - len(PDF_BYTES) + 1)
+    state = _owner(db, "SELECT state FROM folder_upload_items WHERE id = :i", {"i": one["id"]})
+    assert [tuple(row) for row in state] == [("waiting",)]
+
+
 # --- the organisation admin's view ------------------------------------------------------------
 
 

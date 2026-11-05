@@ -19,8 +19,11 @@ _ROW = "INSERT INTO org_storage_limits (customer_id, storage_gb) VALUES (:c, :g)
 
 
 def test_0061d_up_down_up_keeps_every_other_row(fresh: tuple[str, Database]) -> None:
+    """Changed on purpose (Testing-Env port, #516): down to 0061c leaves 0061c and 0070 (0071, the
+    merge of the two, and all after it go), so the state before is 0061c's and 0070's."""
     url, db = fresh
     migrate(url, "0061c")
+    migrate(url, "0070")
     before = base._schema(db)
     customer, _ = new_customer(db)
     with db.customer(customer) as conn:

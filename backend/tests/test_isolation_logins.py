@@ -28,6 +28,7 @@ from kaagaz.api.app import create_app
 from kaagaz.cli import main
 from kaagaz.db.engine import Database, OperatorDatabase, make_engine
 from kaagaz.db.sqlstate import sqlstate
+from kaagaz.db.storage_limits import GIB
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.catalog import last_refreshed
 from kaagaz.jobs.fair_share import first_free_lock, sweep_lock
@@ -38,10 +39,14 @@ from kaagaz.search.indexing import embed_missing
 from kaagaz.search.story_vectors import embed_missing_stories
 from tests.db_support import APP_ROLE, database_url, insert_document, new_customer
 from tests.settings_factory import make_settings
+from tests.support import TEXT_BYTES
+from tests.test_api_folder_upload_files import ResumableStorage, _fingerprint
 from tests.test_api_folder_uploads import TREE, item, plan, register
 from tests.test_api_support import CSRF, PDF_BYTES, Api, ApiFakeQueue, ApiFakeStorage, FakeAnswers, TestClient
 from tests.test_indexing_db import FakeModel
 from tests.test_isolation_customer_purge import KeyStorage
+from tests.test_migration_0023_db import new_operator
+from tests.test_operator_auth_db import _owner
 
 pytestmark = pytest.mark.db
 
@@ -276,6 +281,57 @@ def test_a_folder_upload_plans_registers_and_sends_under_the_app_login(logins: d
         assert (progress["stored"], progress["waiting"], progress["reading"]) == (1, 0, 1)
     finally:
         engine.dispose()
+
+
+def test_the_storage_limit_is_read_and_enforced_under_the_two_logins(
+    db: Database, logins: dict[str, str]
+) -> None:
+    """#516 (0061d, merged by 0075) under #479: no owner right anywhere. The super admin's login
+    reads one organisation's limit and the bytes it holds (``kaagaz_op_storage_limit``); on the
+    app's login its admin reads the same, a file of exactly the bytes left goes in, the next is
+    refused ``storage_full`` at the upload, the resumable start and the folder upload plan, and a
+    duplicate is still answered. The limit is written as the owner here: its write needs a fresh
+    code (test_operator_storage_limit_db)."""
+    app_engine, ops_engine = make_engine(logins[API]), make_engine(logins[OPS])
+    try:
+        api = Api(Database(app_engine, APP_ROLE), storage=ResumableStorage())
+        admin = api.new_admin()
+        customer = admin.customer_id
+        _owner(db, "INSERT INTO org_storage_limits (customer_id, storage_gb) VALUES (:c, 1)", {"c": customer})
+        with db.customer(customer) as conn:
+            insert_document(conn, customer, size_bytes=GIB - len(PDF_BYTES))
+        with OperatorDatabase(ops_engine).operator() as conn:
+            read = text("SELECT * FROM kaagaz_op_storage_limit(:o, :c)")
+            row = conn.execute(read, {"o": new_operator(db), "c": customer}).one()
+        assert tuple(row) == (1, None, GIB - len(PDF_BYTES))
+        assert admin.client.get("/api/admin/storage").json() == {
+            "used_bytes": GIB - len(PDF_BYTES),
+            "limit_bytes": GIB,
+            "limit_gb": 1,
+        }
+        pdf = {"file": ("bill.pdf", PDF_BYTES, "application/pdf")}
+        assert admin.client.post("/api/documents", files=pdf, headers=CSRF).status_code == 201
+        start = {
+            "file_name": "big.pdf",
+            "file_size": 1,
+            "fingerprint": _fingerprint(b"x"),
+            "user_id": admin.user_id,
+        }
+        refused = [
+            admin.client.post(
+                "/api/documents", files={"file": ("b.csv", TEXT_BYTES, "text/csv")}, headers=CSRF
+            ),
+            admin.client.post("/api/documents/upload-sessions", json=start, headers=CSRF),
+            plan(admin, TREE, file_count=1, total_bytes=1),
+        ]
+        assert [(reply.status_code, reply.json()["error"]["code"]) for reply in refused] == [
+            (413, "storage_full")
+        ] * 3, [reply.text for reply in refused]
+        again = admin.client.post("/api/documents", files=pdf, headers=CSRF)
+        assert (again.status_code, again.json()["duplicate"]) == (200, True)
+    finally:
+        app_engine.dispose()
+        ops_engine.dispose()
 
 
 def test_an_owner_command_is_refused_under_the_app_login(db: Database, logins: dict[str, str]) -> None:
