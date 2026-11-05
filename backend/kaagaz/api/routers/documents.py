@@ -118,9 +118,10 @@ Why some choices:
   (``db/storage_limits.py``) is 413 ``storage_full``, with ``details`` {used_bytes, limit_bytes,
   limit_gb} and the words of ``storage_full_message``, before anything is stored: in the upload
   service (an upload, a new version, a resumable complete and a folder upload's file all go
-  through it) and at the resumable start, before a session is made (the size is known; the
-  bytes are not, so a duplicate sent this way is refused there too). A duplicate sent as one
-  file costs nothing. A folder upload's file refused so stays waiting, to be sent again.
+  through it). The resumable start is not checked: its bytes are not known yet, so it can't
+  tell a duplicate, and a duplicate costs nothing; a resumable file refused at its complete has
+  its parts and session removed, as any refusal there. A folder upload's file refused so stays
+  waiting, to be sent again.
 * **Undo auto-filing** (feature 28, R16): any user of the customer may move a family
   Kaagaz filed back to the top level, under the family lock; the folder stays. In Trash
   is 409 ``in_trash``; filed no more (moved since, or its folder deleted) is 409
@@ -967,10 +968,6 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
                 >= context.settings.max_files_per_batch
             ):
                 raise ApiError(409, "batch_full")
-    with context.db.customer(user.customer_id) as conn:  # #516, before a session is made
-        room = storage_limits.storage_room(conn, user.customer_id)
-    if room.used_bytes + body.file_size > room.limit_bytes:
-        raise storage_full(room)
 
     session_id = str(uuid.uuid4())
     storage_key, upload_id = context.storage.start_resumable(user.customer_id, user.user_id, session_id)

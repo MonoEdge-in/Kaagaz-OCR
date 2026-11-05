@@ -1,9 +1,10 @@
 """The storage limit per organisation (#516) against PostgreSQL. The limit is the organisation's
 own, else the platform's, else 50 GB; the bytes used are every document row's, every version
 and the Trash until it is purged. A new upload past it is refused 413 ``storage_full`` with the
-same words and details at each of its three checks: the upload service (a single upload, a new
-version, a resumable complete, a folder upload's file), the resumable start and the folder
-upload plan. A duplicate costs nothing; exactly the bytes left go in. The service's own rules:
+same words and details at each of its two checks: the upload service (a single upload, a new
+version, a resumable complete, a folder upload's file) and the folder upload plan. The
+resumable start is not checked, so a duplicate sent that way costs nothing too; exactly the
+bytes left go in. The service's own rules:
 test_upload_storage_limit. The operator's routes: test_operator_storage_limit_db."""
 
 import io
@@ -161,7 +162,7 @@ def test_a_folder_uploads_file_is_refused_and_its_item_stays_waiting(db: Databas
     assert [tuple(row) for row in state] == [("waiting", None)]  # sent again once there is room
 
 
-# --- 2. the resumable start, and its complete through the service ------------------------------
+# --- 2. the resumable path: its start is not checked, its complete goes through the service -----
 
 
 def _start(signed: Signed, data: bytes, **extra: Any) -> Any:
@@ -175,16 +176,40 @@ def _start(signed: Signed, data: bytes, **extra: Any) -> Any:
     return signed.client.post(SESSIONS, json=body, headers=CSRF)
 
 
-def test_a_resumable_start_past_the_limit_makes_no_session(db: Database) -> None:
+def _send_all(signed: Signed, data: bytes) -> Any:
+    """Start, send the one part and complete: the complete's reply."""
+    started = _start(signed, data)
+    assert started.status_code == 200, started.text
+    session = started.json()["id"]
+    sent = signed.client.put(f"{SESSIONS}/{session}/parts/1", content=data, headers=CSRF)
+    assert sent.status_code == 204
+    return signed.client.post(f"{SESSIONS}/{session}/complete", headers=CSRF)
+
+
+def _sessions(db: Database, customer: str) -> Any:
+    return _owner(db, "SELECT count(*) FROM upload_sessions WHERE customer_id = :c", {"c": customer})
+
+
+def test_a_full_orgs_resumable_send_of_a_file_it_already_has_is_the_duplicate(db: Database) -> None:
     api = Api(db, storage=ResumableStorage())
     signed = api.new_signed()
-    fill(db, signed.customer_id, left=len(PDF_BYTES))
-    _refused(_start(signed, PDF_BYTES + b"1"), used=GIB - len(PDF_BYTES))
-    sessions = _owner(
-        db, "SELECT count(*) FROM upload_sessions WHERE customer_id = :c", {"c": signed.customer_id}
-    )
-    assert sessions == [(0,)]
-    assert _start(signed, PDF_BYTES).status_code == 200  # exactly the bytes left
+    first = upload(signed, PDF_BYTES).json()["document"]["id"]
+    fill(db, signed.customer_id, left=0)  # full; the start has no bytes, so it can't tell a duplicate
+    again = _send_all(signed, PDF_BYTES)
+    assert again.status_code == 200, again.text
+    assert (again.json()["duplicate"], again.json()["document"]["id"]) == (True, first)
+
+
+def test_a_resumable_send_past_the_limit_is_refused_at_its_complete_and_cleaned_up(db: Database) -> None:
+    storage = ResumableStorage()
+    api = Api(db, storage=storage)
+    signed = api.new_signed()
+    fill(db, signed.customer_id, left=len(PDF_BYTES) - 1)
+    _refused(_send_all(signed, PDF_BYTES), used=GIB - len(PDF_BYTES) + 1)  # one byte over
+    assert (storage.parts, storage.done) == ({}, {})  # its stored parts are gone
+    assert _sessions(db, signed.customer_id) == [(0,)]  # and its session
+    assert len(api.queue.jobs) == 0
+    assert _send_all(signed, TEXT_BYTES).status_code == 201  # a file that fits still goes in
 
 
 def test_a_resumable_complete_is_refused_when_the_room_went_meanwhile(db: Database) -> None:

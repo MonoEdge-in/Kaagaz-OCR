@@ -1,6 +1,7 @@
 // Storage limit per organisation (#516): an upload that would take the organisation past its
-// storage limit is refused with `storage_full`, at the resumable start, at its complete, or at a
-// folder upload's plan. The row shows the API's message as it is, and it is never sent again by
+// storage limit is refused with `storage_full`, at its complete or at a folder upload's plan (the
+// server no longer checks the resumable start, which can't tell a duplicate; one refused there is
+// still handled the same). The row shows the API's message as it is, and it is never sent again by
 // itself: not by the upload's own retries (whatever the status), not by Retry, not by Retry all.
 
 import { createElement } from "react";
