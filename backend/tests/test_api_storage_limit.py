@@ -21,7 +21,7 @@ from kaagaz.ingestion.ports import StorageRoom
 from tests.db_support import insert_document, new_customer
 from tests.support import TEXT_BYTES
 from tests.test_api_folder_upload_files import ResumableStorage, _fingerprint, planned, send
-from tests.test_api_folder_uploads import TREE, plan
+from tests.test_api_folder_uploads import TREE, item, plan, register
 from tests.test_api_support import CSRF, PDF_BYTES, Api, Signed
 from tests.test_operator_auth_db import _owner
 
@@ -245,6 +245,20 @@ def test_a_re_plan_does_not_count_the_files_it_already_sent_twice(db: Database) 
     again = plan(signed, TREE, id=body["id"], file_count=2, total_bytes=total)  # "Continue upload"
     assert again.status_code == 200, again.text
     _refused(plan(signed, TREE, total_bytes=total), used=GIB - len(TEXT_BYTES))  # a new upload of it
+
+
+def test_a_re_plan_does_not_count_its_failed_files_which_are_never_stored(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    huge = api.settings.max_upload_bytes + 1  # registered failed too_large
+    total = len(PDF_BYTES) + huge
+    body = plan(signed, TREE, file_count=2, total_bytes=total).json()
+    a = body["folder_ids"][0]
+    rows = register(signed, body["id"], [item("A/bill.pdf", a, len(PDF_BYTES)), item("A/huge.pdf", a, huge)])
+    assert [row["state"] for row in rows.json()["items"]] == ["waiting", "failed"]
+    fill(db, signed.customer_id, left=len(PDF_BYTES))  # room for the one file still to send
+    again = plan(signed, TREE, id=body["id"], file_count=2, total_bytes=total)  # "Continue upload"
+    assert again.status_code == 200, again.text
 
 
 # --- the organisation admin's view ------------------------------------------------------------

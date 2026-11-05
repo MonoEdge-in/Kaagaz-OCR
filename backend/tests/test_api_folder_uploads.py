@@ -232,6 +232,24 @@ def test_a_file_kaagaz_cant_take_is_registered_failed_with_its_reason(db: Databa
         assert _error(reply)[:2] == (400, "bad_request"), told
 
 
+def test_a_file_the_browser_refused_is_not_counted_against_the_plans_bytes(db: Database) -> None:
+    signed = Api(db).new_signed()
+    planned = plan(signed, file_count=3, total_bytes=1_000).json()  # the browser left both out (#516)
+    a = planned["folder_ids"][0]
+    page = [
+        item("A/ok.pdf", a),
+        item("A/run.exe", a, 5_000, refused="unsupported_type"),
+        {**item("A/evil", a, 5_000, refused="unsupported_type"), "name": "evil‮txt.exe"},  # and bad_name
+    ]
+    reply = register(signed, planned["id"], page)
+    assert reply.status_code == 200, reply.text
+    assert [(row["state"], row["failure_code"]) for row in reply.json()["items"]] == [
+        ("waiting", None),
+        ("failed", "unsupported_type"),
+        ("failed", "bad_name"),
+    ]
+
+
 def test_an_unsafe_or_nfc_colliding_file_name_is_failed_bad_name_and_the_rest_register(db: Database) -> None:
     signed = Api(db).new_signed()
     planned = plan(signed, file_count=7, total_bytes=10**6).json()

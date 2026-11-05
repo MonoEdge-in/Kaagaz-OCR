@@ -13,7 +13,8 @@ batches and duplicates stay exactly as for any upload.
   the other has been quiet for 30 minutes) and one plan
   is built at a time (429 ``plan_busy``, ``Retry-After: 2``). A plan whose bytes would take the
   organisation past its storage limit is 413 ``storage_full`` before any folder is made (#516,
-  ``documents.storage_full``); a re-plan counts only the bytes it has not sent yet.
+  ``documents.storage_full``); a re-plan counts only the bytes it still has to send (not a file
+  stored, a duplicate or failed), and the browser leaves out the files it refuses.
 * ``POST /folder-uploads/{id}/items`` (at most MAX_REGISTER_BYTES, checked before it is parsed):
   a page of at most 1,000 files; each gets its folder and
   batch now (``db/folder_upload_items.py``). A file with an unsafe name is registered failed
