@@ -210,6 +210,8 @@ def test_b2_a_document_being_read_never_makes_home_make_its_answers_again(db: Da
         signed.client.get("/api/chat/ready-questions")
     assert len(api.answers.asked) == made
     with db.customer(signed.customer_id) as conn:
-        conn.execute(text("UPDATE documents SET status = 'ready', progress = NULL WHERE id = :d"), {"d": reading})
+        conn.execute(
+            text("UPDATE documents SET status = 'ready', progress = NULL WHERE id = :d"), {"d": reading}
+        )
     signed.client.get("/api/chat/ready-questions")
     assert len(api.answers.asked) > made  # read now: the answers are made again
