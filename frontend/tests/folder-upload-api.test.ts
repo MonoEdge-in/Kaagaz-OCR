@@ -3,7 +3,7 @@
 // folder or a batch; a failing server is asked again for the same item; the lists' shapes.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createTurn, listFolderItems, planFolderUpload, registerFolderItems, uploadFolderItem } from "@/lib/api";
+import { createTurn, getPreviousFolderUpload, listFolderItems, planFolderUpload, registerFolderItems, uploadFolderItem } from "@/lib/api";
 import { FakePart, fakeUploadServer } from "./fake-upload-server";
 
 const UPLOADED = { document: { id: "d1" }, duplicate: false, in_trash: false };
@@ -140,5 +140,16 @@ describe("the folder upload API's shapes", () => {
       },
       { url: "/api/folder-uploads/f1/items?view=attention&after=-1&limit=500", method: "GET", body: undefined },
     ]);
+  });
+
+  it("asks for this person's last upload of a folder of that name", async () => {
+    const urls: string[] = [];
+    const previous = { id: "f0", target: "folder", parent_folder_id: "p1", root_folder_id: "r1", created_at: "2026-11-03T10:00:00Z" };
+    vi.stubGlobal("fetch", async (url: string) => {
+      urls.push(url);
+      return new Response(JSON.stringify({ previous }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    await expect(getPreviousFolderUpload("Bills & Co")).resolves.toEqual({ previous });
+    expect(urls).toEqual(["/api/folder-uploads/previous?source_name=Bills+%26+Co"]);
   });
 });

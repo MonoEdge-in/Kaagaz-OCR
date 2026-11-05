@@ -11,7 +11,11 @@
   temporary password and no code yet gets a session that can only set the new password
   (``current_user``); the next sign-in then sets up the code. An admin who turned two-step
   off themselves (``users.totp_off_at``, 0061b) gets the admin session on the password
-  alone, after Google too.
+  alone, after Google too. Google only (#507): a user whose role signs in with Google only
+  and who has a passing Google link gets 403 ``password_refused`` after a right password
+  (audited, the count cleared; a wrong one is the one 401 as ever), except an admin who still
+  has to set up two-step, who enrols first. With no passing link, the password opens the
+  limited session (``api/auth.py``, ``google_link_required``), which can only connect Google.
 * ``POST /auth/admin/login``: 410 ``gone``, whatever is sent. Not kept as an alias: one
   route to sign in is one set of rules to get right, and an old page gets a clear answer.
 * ``POST /auth/2fa/start`` {password} (any session; #457 opened it to every role, it was
@@ -37,11 +41,14 @@
 * ``POST /auth/password`` {current_password, new_password, code?}: a new password;
   every other browser is signed out, this one is re-signed. Anyone with two-step sign-in on
   also sends the code (#457; the sign-in's own check, ``_code_problem``), and a security
-  notice is emailed while email is on.
+  notice is emailed while email is on. In the limited session (#507) only a temporary
+  password may be changed (403 ``google_link_required`` otherwise), so a stolen password
+  can't take the account from its owner.
 * ``POST /auth/confirm-password`` {password}: only for a member or reviewer an
   admin allowed to delete forever; the password, counted like a sign-in, then a
   5-minute confirm cookie (kaagaz/api/auth.py) for Delete forever. 204.
-* ``POST /auth/logout``, ``POST /auth/logout-everywhere``, ``GET /auth/me``.
+* ``POST /auth/logout``, ``POST /auth/logout-everywhere`` (the limited session too, #507
+  review), ``GET /auth/me``.
 * ``GET /auth/session`` (issue 378): the app's first look, 200 either way: ``{signed_in:
   false, providers}`` with no session (one ``/auth/me`` would refuse with 401; ``providers``:
   those switched on, #457), else ``{signed_in: true, me}``, the same checks and reply as
@@ -110,15 +117,18 @@ from sqlalchemy import Connection
 
 from kaagaz.api import emails, oidc, totp
 from kaagaz.api.auth import (
+    GOOGLE_LINK_REQUIRED,
     CurrentUser,
     SessionClaims,
     User,
+    UserAllowGoogleLink,
     UserAllowPasswordChange,
     clear_session_cookie,
     current_user_allow_password_change,
     feature_on,
     hash_password,
     load_user,
+    needs_google_link,
     new_enrol,
     new_session,
     read_enrol,
@@ -159,6 +169,7 @@ WRONG_CODE = "That code is not right. Wait for the next code and try again."
 ORG_PENDING = "Your organisation is waiting for approval."
 UNREADABLE = "Your two-step code can't be checked right now. Ask your admin to reset it."
 TWO_STEP_REQUIRED = "Your organisation requires two-step sign-in for admins, so it stays on."
+PASSWORD_REFUSED = "Your organisation asks you to sign in with Google. Use Continue with Google."  # noqa: S105
 RECENT_DAYS = 14  # how long the app's "Google connected" banner shows (#457 phase 1)
 # Sign-ups an hour (PROVISIONAL). Behind the Next.js proxy every visitor shares the proxy's
 # address (kaagaz/api/middleware.py), so in production this is one cap for the whole site,
@@ -396,6 +407,8 @@ def change_password(
     background: BackgroundTasks,
     context: Context,
 ) -> JSONResponse:
+    if needs_google_link(user, context.settings.google_signin_enabled) and not user.must_change_password:
+        raise ApiError(403, "google_link_required", GOOGLE_LINK_REQUIRED)
     if body.new_password == body.current_password:
         raise ApiError(400, "bad_request", "Choose a new password that is different from the current one.")
     now = context.clock()
@@ -441,7 +454,7 @@ def logout(user: UserAllowPasswordChange, context: Context) -> Response:
 
 
 @router.post("/auth/logout-everywhere", status_code=204)
-def logout_everywhere(user: User, context: Context) -> Response:
+def logout_everywhere(user: UserAllowGoogleLink, context: Context) -> Response:  # also the limited session
     with context.db.customer(user.customer_id) as conn:
         users_sql.bump_session_version(conn, user.customer_id, user.user_id)
         _record(conn, user.customer_id, "auth.logout_everywhere", actor=user.user_id, target=user.user_id)
@@ -530,7 +543,24 @@ def _check_password(context: AppContext, email: str, password: str) -> AttemptRo
     if not attempt.customer_active:  # its organisation is disabled or being deleted (0014)
         _failed(context, attempt, "customer_disabled")
         raise _refused(context)
+    if _google_only(context, attempt):  # told only after a right password, so no account is shown
+        _succeeded(context, attempt)
+        _audit_failure(context, attempt.customer_id, attempt.user_id, "password_refused")
+        raise ApiError(403, "password_refused", PASSWORD_REFUSED)
     return attempt
+
+
+def _google_only(context: AppContext, attempt: AttemptRow) -> bool:
+    """Google only for this user (#507): Google on, the role uses it only, and a passing link.
+    Not for an admin who still has to set up two-step: Google says ``password_first`` to them."""
+    enrolling = attempt.role == "admin" and attempt.totp_enabled_at is None and attempt.totp_off_at is None
+    return (
+        context.settings.google_signin_enabled
+        and attempt.google_on
+        and attempt.google_only
+        and attempt.google_linked
+        and not enrolling
+    )
 
 
 def _begin(context: AppContext, customer_id: str, user_id: str, now: datetime) -> AttemptRow | None:
@@ -766,12 +796,18 @@ def _failed(context: AppContext, attempt: AttemptRow, reason: str) -> None:
 
 
 def _audit_failure(
-    context: AppContext, customer_id: str, user_id: str, reason: str, *, locked: bool = False
+    context: AppContext,
+    customer_id: str,
+    user_id: str,
+    reason: str,
+    *,
+    locked: bool = False,
+    details: dict[str, audit.DetailValue] | None = None,
 ) -> None:
+    """``auth.login_failed`` {reason, and ``details``: a Google sign-in's ``via`` and ``domain``}."""
     with context.db.customer(customer_id) as conn:
-        _record(
-            conn, customer_id, "auth.login_failed", actor=None, target=user_id, details={"reason": reason}
-        )
+        written: dict[str, audit.DetailValue] = {"reason": reason, **(details or {})}
+        _record(conn, customer_id, "auth.login_failed", actor=None, target=user_id, details=written)
         if locked:
             _record(conn, customer_id, "auth.locked", actor=None, target=user_id)
 

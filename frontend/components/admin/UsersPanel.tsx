@@ -18,6 +18,10 @@
 // "Signs in with" column, and "Remove connected accounts" in a row's menu, asked first. The
 // section hides only on the server's 404 (no provider on); any other failure says so, with Try
 // again. Approving one another admin already decided (404) reloads the list.
+// #507: "Needs to connect Google" beside how someone signs in, while their role uses Google only
+// and they have no Google account that passes (googleTag: or that its domain is not checked yet); Reset password says it disconnects Google too.
+// Add a user says, under the role, that the person connects Google after choosing a password,
+// while Google sign-in is on for that role (the rules from Settings, read when the form opens).
 //
 // A reset password comes back once, in the reply. It is shown in a card above
 // the list, with Copy, until Done or until the tab is left; it is never stored.
@@ -37,6 +41,7 @@ import {
   approveConnection,
   createUser,
   declineConnection,
+  getSettings,
   listUsers,
   pendingConnections,
   removeConnections,
@@ -49,7 +54,7 @@ import {
 import { DRAFT_KEPT, clearDraft, readDraft, saveDraftSoon } from "@/lib/drafts";
 import { errorWords } from "@/lib/errorWords";
 import { formatDate } from "@/lib/format";
-import type { AddedUser, AdminUser, PendingConnection, Role } from "@/lib/types";
+import type { AddedUser, AdminUser, GoogleRules, PendingConnection, Role } from "@/lib/types";
 import table from "@/components/documents/Table.module.css";
 import { CopyButton } from "./CopyButton";
 import { MoreRows, useRowCap } from "./RowCap";
@@ -64,16 +69,19 @@ import {
   MIN_PASSWORD_LENGTH,
   NEW_USER_FIELD_IDS,
   addedNotice,
+  addUserGoogleHint,
   ROLES,
   allowForeverQuestion,
   decideLabel,
   firstInvalidField,
+  googleTag,
   foreverControl,
   generatePassword,
   newUserDraft,
   newUserFromDraft,
   pendingLine,
   removeConnectionsQuestion,
+  resetPasswordQuestion,
   signsInWith,
   twoStepNote,
   userActions,
@@ -242,6 +250,7 @@ export function UsersPanel({
       {adding && (
         <AddUserPanel
           userId={currentUserId}
+          google={providers.includes("google")}
           onClose={() => setAdding(false)}
           onAdded={(user) => {
             setUsers((current) => (current ? [...current, user] : [user]));
@@ -260,11 +269,10 @@ export function UsersPanel({
  * so does allowing Delete forever (UI audit AD2: every action that takes something away). */
 type Confirming = "disable" | "password" | "2fa" | "forever" | "connections";
 
-const CONFIRM_TEXT: Record<Confirming, (name: string, providers: readonly string[]) => string> = {
+const CONFIRM_TEXT: Record<Confirming, (name: string, providers: readonly string[], ways?: readonly string[]) => string> = {
   connections: (name, providers) => removeConnectionsQuestion(name, providers),
   disable: (name) => `Disable ${name}'s account? They are signed out and can't sign in until it is enabled again.`,
-  password: (name) =>
-    `Reset ${name}'s password? They are signed out everywhere and must choose a new one.`,
+  password: (name, _providers, ways) => resetPasswordQuestion(name, ways),
   "2fa": (name) =>
     `Reset ${name}'s two-step code? They are signed out, and can sign in with their password, then set up a new code.`,
   forever: allowForeverQuestion,
@@ -382,6 +390,7 @@ function UserRow({
       ? [{ label: "Disable", description: USER_MENU_HELP.disable, onSelect: () => setConfirming("disable"), destructive: true }]
       : []),
   ];
+  const tag = googleTag(user);
   return (
     <tr role="row">
       <td role="cell" className={styles.userCell}>
@@ -426,7 +435,14 @@ function UserRow({
         </span>
       </td>
       <td role="cell" data-label="Signs in with">
-        {signsInWith(user.signs_in_with)}
+        <span className={styles.statusList}>
+          {signsInWith(user.signs_in_with)}
+          {tag && (
+            <span className="status-chip" data-tone="working">
+              {tag}
+            </span>
+          )}
+        </span>
       </td>
       <td role="cell" data-label="Added" className="tabular">
         <span className={styles.date}>{formatDate(user.created_at)}</span>
@@ -438,7 +454,7 @@ function UserRow({
         </span>
         {confirming && (
           <ActionDialog title={user.display_name} onClose={() => setConfirming(null)} canClose={() => !busy}>
-            <p>{CONFIRM_TEXT[confirming](user.display_name, providers)}</p>
+            <p>{CONFIRM_TEXT[confirming](user.display_name, providers, user.signs_in_with)}</p>
             {/* [Cancel] [Yes, ...]: the action last; Cancel has focus, so Enter never acts by accident. */}
             <div className="actions">
               <button type="button" className="btn" data-autofocus disabled={busy} onClick={() => setConfirming(null)}>
@@ -621,10 +637,12 @@ const UNSAVED_QUESTION = "Close without adding? What you typed here will be lost
  */
 function AddUserPanel({
   userId,
+  google,
   onClose,
   onAdded,
 }: {
   userId: string; // #468: the draft (email, name, role) is this admin's only
+  google: boolean; // Google sign-in is switched on (Me's providers): its rules are read
   onClose: () => void;
   onAdded: (user: AddedUser) => void;
 }) {
@@ -643,6 +661,10 @@ function AddUserPanel({
   const [serverError, setServerError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [masked, setMasked] = useState(true);
+  // #507: the organisation's Google rules, for the hint under the role; none until read (or if
+  // reading fails: the hint is only a hint).
+  const [googleRules, setGoogleRules] = useState<GoogleRules | undefined>(undefined);
+  const googleHint = addUserGoogleHint(googleRules, input.role);
   const unsaved = input.email !== "" || input.display_name !== "" || input.password !== "";
   const askClose = () => {
     if (!busy && closeAllowed(unsaved, () => window.confirm(UNSAVED_QUESTION))) {
@@ -654,6 +676,20 @@ function AddUserPanel({
   useEffect(() => {
     saveDraftSoon(userId, ADD_USER_DRAFT, newUserDraft(input));
   }, [userId, input]);
+
+  useEffect(() => {
+    if (!google) return;
+    let live = true;
+    getSettings().then(
+      (settings) => {
+        if (live) setGoogleRules(settings.google);
+      },
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [google]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -747,6 +783,7 @@ function AddUserPanel({
             <select
               id="new-user-role"
               className="input"
+              aria-describedby={googleHint ? "new-user-google-hint" : undefined}
               value={input.role}
               onChange={(event) => {
                 const role = ROLES.find((option) => option === event.target.value);
@@ -759,6 +796,11 @@ function AddUserPanel({
                 </option>
               ))}
             </select>
+            {googleHint && (
+              <span id="new-user-google-hint" className="hint">
+                {googleHint}
+              </span>
+            )}
           </div>
           {/* AD3: the password across the panel, Generate and Copy under it. */}
           <div className={styles.passwordBlock}>

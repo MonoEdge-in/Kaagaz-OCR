@@ -218,15 +218,19 @@ def plan_folders(
     total_bytes: int,
     skipped_count: int,
     limits: FolderUploadLimits,
+    only_new: bool = False,
 ) -> Plan:
     """Make or merge the picked folder's tree (module notes) and record the upload. Raises
     PlanRefused, FolderNotFound (the parent, or another user's upload of this id) or
     FolderTooDeep; after PlanRefused("too_many_folders") the caller's transaction must roll
     back. The caller checks the list: entry 0 alone has no parent, every parent is earlier.
+    ``only_new`` ("Add new files only"): the declared files and bytes are checked against the
+    ceilings, as registering counts only the files not already in against the limits.
     O(F) rows in at most 2H + 12 statements."""
-    if file_count > limits.max_files:
+    most_files, most_bytes = (MOST_FILES, MOST_GB * GIB) if only_new else (limits.max_files, limits.max_bytes)
+    if file_count > most_files:
         raise PlanRefused("too_many_files")
-    if total_bytes > limits.max_bytes:
+    if total_bytes > most_bytes:
         raise PlanRefused("too_large_upload")
     if len(folders) > limits.max_folders:
         raise PlanRefused("too_many_folders")

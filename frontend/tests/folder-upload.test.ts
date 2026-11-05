@@ -2,7 +2,8 @@
 // to its item; Continue sends only what is still waiting, matched by path; a file that changed
 // or is missing is said, not sent; the counts and the line the status bar says.
 
-import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { describe, expect, it, vi } from "vitest";
 import { buildManifest, fromFileList, pathKey } from "@/components/documents/folderPick";
 import type { Picked } from "@/components/documents/folderPick";
 import {
@@ -38,7 +39,7 @@ const pickOf = (paths: string[]): Picked => {
 };
 
 /** An in-memory server: the plan gives folder ids f0, f1…; items keep their folder and state. */
-function fakeServer(options: { refuse?: (item: FolderUploadItem) => ApiError | null } = {}) {
+function fakeServer(options: { refuse?: (item: FolderUploadItem) => ApiError | null; known?: Set<string> } = {}) {
   const items: FolderUploadItem[] = [];
   const registers: NewFolderItem[][] = [];
   let inFlight = 0;
@@ -57,6 +58,7 @@ function fakeServer(options: { refuse?: (item: FolderUploadItem) => ApiError | n
       registers.push(page);
       for (const each of page) {
         if (items.some((item) => item.path_key === each.path_key)) continue;
+        const already = !each.refused && each.sha256 !== undefined && options.known?.has(each.sha256);
         items.push({
           id: `i${items.length}`,
           seq: items.length,
@@ -64,10 +66,10 @@ function fakeServer(options: { refuse?: (item: FolderUploadItem) => ApiError | n
           name: each.name,
           folder_id: each.folder_id,
           size: each.size,
-          state: each.refused ? "failed" : "waiting",
+          state: each.refused ? "failed" : already ? "duplicate" : "waiting",
           failure_code: each.refused ?? null,
-          document_id: null,
-          document: null,
+          document_id: already ? `d-${each.sha256}` : null,
+          document: already ? { status: "ready", failure_code: null, folder_id: "f9", in_trash: false } : null,
         });
       }
     },
@@ -482,5 +484,146 @@ describe("after a reload", () => {
   it("says so when another folder is picked to continue", () => {
     expect(wrongFolderText("A", "A")).toBeNull();
     expect(wrongFolderText("A", "B")).toBe("This is “B”. Choose “A” to continue.");
+  });
+});
+
+describe("adding new files only", () => {
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+  /** A picked file whose bytes are `text`. */
+  function filled(path: string, text: string): File {
+    const file = new File([text], path.split("/").at(-1) ?? path);
+    Object.defineProperty(file, "webkitRelativePath", { value: path });
+    return file;
+  }
+  const sourceOf = (files: File[]) => {
+    const pick = fromFileList(files);
+    if (!pick) throw new Error("empty");
+    return { picked: pick, manifest: buildManifest(pick) };
+  };
+  const many = (count: number) => Array.from({ length: count }, (_, n) => filled(`A/f${n}.pdf`, `bill ${n}`));
+  const target = { kind: "folder" as const, parentId: null };
+
+  it("hashes one file at a time: the most reads in flight is 1", async () => {
+    const read = Blob.prototype.arrayBuffer;
+    let inFlight = 0;
+    let most = 0;
+    const spy = vi.spyOn(Blob.prototype, "arrayBuffer").mockImplementation(async function (this: Blob) {
+      inFlight += 1;
+      most = Math.max(most, inFlight);
+      await new Promise((resolve) => setImmediate(resolve));
+      try {
+        return await read.call(this);
+      } finally {
+        inFlight -= 1;
+      }
+    });
+    try {
+      const server = fakeServer();
+      await startFolderUpload(server.api, { id: "h1", userId: "me", source: sourceOf(many(120)), target, merge: true, onlyNew: true }, () => undefined, never);
+      expect(spy).toHaveBeenCalledTimes(120);
+      expect(most).toBe(1);
+      expect(server.registers[0]?.[7]?.sha256).toBe(sha("bill 7"));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("registers sha256 only for files Kaagaz could take, and never sends a file already in Kaagaz", async () => {
+    const locked = filled("A/locked.pdf", "secret");
+    Object.defineProperty(locked, "arrayBuffer", { value: () => Promise.reject(new Error("NotReadableError")) });
+    const files = [
+      filled("A/notes.docx", "words"), // a kind Kaagaz can't take
+      filled("A/zero.pdf", ""), // empty
+      filled("A/big.pdf", "x".repeat(60)), // over the PDF limit below
+      locked, // the browser can't read it
+      filled("A/bill.pdf", "bill"),
+      filled("A/scan.png", "scan"),
+    ];
+    const limits = { ...FALLBACK_UPLOAD_LIMITS, pdf_bytes: 50 };
+    const server = fakeServer({ known: new Set([sha("bill")]) });
+    const bodies: FolderUploadPlanBody[] = [];
+    const plan = server.api.plan;
+    server.api.plan = async (body) => {
+      bodies.push(body);
+      return plan(body);
+    };
+    await startFolderUpload(server.api, { id: "h2", userId: "me", source: sourceOf(files), target, merge: true, limits, onlyNew: true }, () => undefined, never);
+    expect(bodies[0]?.only_new).toBe(true);
+    expect(server.registers[0]?.map((each) => [each.name, each.sha256])).toEqual([
+      ["notes.docx", undefined],
+      ["zero.pdf", undefined],
+      ["big.pdf", undefined],
+      ["locked.pdf", undefined],
+      ["bill.pdf", sha("bill")],
+      ["scan.png", sha("scan")],
+    ]);
+    // Those not hashed go as today; the server judges them.
+    expect(server.items.find((item) => item.name === "bill.pdf")?.state).toBe("duplicate");
+    expect(server.sentIds.map((itemId) => server.items.find((item) => item.id === itemId)?.name).sort()).toEqual([
+      "big.pdf",
+      "locked.pdf",
+      "scan.png",
+      "zero.pdf",
+    ]);
+
+    const plain = fakeServer();
+    await startFolderUpload(plain.api, { id: "h3", userId: "me", source: sourceOf(files), target, merge: true, limits }, () => undefined, never);
+    expect(plain.registers[0]?.every((each) => !("sha256" in each))).toBe(true);
+  });
+
+  it("says “checking your files: N of M” every 50 files, then how many were already in Kaagaz", async () => {
+    const files = many(120);
+    const server = fakeServer({ known: new Set(files.slice(0, 100).map((_, n) => sha(`bill ${n}`))) });
+    const events: FolderEvent[] = [];
+    await startFolderUpload(server.api, { id: "h4", userId: "me", source: sourceOf(files), target, merge: true, onlyNew: true }, run(events), never);
+    const checked = events.flatMap((event) => (event.type === "checked" ? [event.done] : []));
+    expect(checked).toEqual([0, 50, 100, 120]);
+    const upTo = events.findIndex((event) => event.type === "checked" && event.done === 50);
+    const checking = events.slice(0, upTo + 1).reduce(folderUploadsReducer, EMPTY_FOLDER_UPLOADS);
+    expect(folderLine(checking.h4!)).toBe("Folder “A”: checking your files: 50 of 120");
+    const done = events.reduce(folderUploadsReducer, EMPTY_FOLDER_UPLOADS);
+    expect(folderLine(done.h4!)).toBe("Folder “A”: 120 of 120 uploaded, 100 already in Kaagaz");
+    expect(server.sentIds).toHaveLength(20);
+  });
+
+  it("stops while checking, keeping what is registered, and Continue checks the rest", async () => {
+    const source = sourceOf(many(2500));
+    const server = fakeServer();
+    const events: FolderEvent[] = [];
+    const stop = () => events.some((event) => event.type === "checked" && event.done >= 1200);
+    await startFolderUpload(server.api, { id: "h5", userId: "me", source, target, merge: true, onlyNew: true }, run(events), stop);
+    expect(server.registers.map((page) => page.length)).toEqual([1000]);
+    expect(server.items).toHaveLength(1000);
+    expect(server.sentIds).toEqual([]);
+    expect(events.at(-1)).toEqual({ type: "phase", id: "h5", phase: "stopped" });
+    expect(events.filter((event) => event.type === "checked").at(-1)).toMatchObject({ done: 1200 });
+
+    await startFolderUpload(server.api, { id: "h5", userId: "me", source, target, merge: true, onlyNew: true }, () => undefined, never);
+    expect(server.items).toHaveLength(2500);
+    expect(server.items.every((item) => item.state === "stored")).toBe(true);
+  });
+
+  it("keeps listing with “listing its files…” when not checking, and checks again after a reload when it was adding", () => {
+    const start = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, { type: "start", id: "u", rootName: "A", total: 5000 });
+    const listing = folderUploadsReducer(start, { type: "phase", id: "u", phase: "registering" });
+    expect(folderLine(listing.u!)).toBe("Folder “A”: listing its files…");
+    const checking = folderUploadsReducer(listing, { type: "checked", id: "u", done: 1240 });
+    expect(folderLine(checking.u!)).toBe("Folder “A”: checking your files: 1,240 of 5,000");
+    // The status bar says it again only each tenth of the files checked.
+    let state = listing;
+    const said = new Set<string>([state.u!.spoken]);
+    for (let done = 0; done <= 1240; done += 50) {
+      state = folderUploadsReducer(state, { type: "checked", id: "u", done });
+      said.add(state.u!.spoken);
+    }
+    expect([...said]).toEqual([
+      "Folder “A”: listing its files…",
+      "Folder “A”: checking your files: 0 of 5,000",
+      "Folder “A”: checking your files: 500 of 5,000",
+      "Folder “A”: checking your files: 1,000 of 5,000",
+    ]);
+    const cut = { ...summaryOf("r", []), file_count: 3, registered: 1 };
+    expect(restoredUpload({ ...cut, merge: true })?.again.onlyNew).toBe(true);
+    expect(restoredUpload({ ...cut, merge: false })?.again.onlyNew).toBe(false);
   });
 });

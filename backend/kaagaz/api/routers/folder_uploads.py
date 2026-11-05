@@ -14,6 +14,14 @@ batches and duplicates stay exactly as for any upload.
 * ``POST /folder-uploads/{id}/items``: a page of at most 1,000 files; each gets its folder and
   batch now (``db/folder_upload_items.py``). A file with an unsafe name is registered failed
   ``bad_name``, never a 400 for the page.
+* "Add new files only": the plan says ``only_new`` (its declared counts checked against the
+  ceilings, not the organisation's limits; ``folder.upload`` says it), and each file Kaagaz
+  could take comes with the browser's ``sha256``. A file already in this organisation (that
+  hash and size) comes back ``duplicate`` with its document and is never sent; the hash is
+  only looked up, never kept, and moves or stores nothing. The page stays on the general
+  per-user rate limit, at most 1,000 hashes a call.
+* ``GET /folder-uploads/previous?source_name=``: this user's latest upload of a folder of that
+  name whose root folder is still there, so "Add new files only" can offer the same place.
 * ``GET /folder-uploads`` (this user's of the last 7 days, counts by state only),
   ``GET /folder-uploads/{id}`` (also where its stored files' reading is) and
   ``GET /folder-uploads/{id}/items?view=waiting|attention|duplicate|all&after=-1&limit=500``.
@@ -78,6 +86,7 @@ class PlanBody(BaseModel):
     file_count: int = Field(ge=0, le=MOST_FILES)
     total_bytes: int = Field(ge=0, le=MOST_GB * GIB)
     skipped_count: int = Field(ge=0, le=2**31 - 1)
+    only_new: bool = False  # "Add new files only": the files already in Kaagaz aren't sent
 
 
 class ItemBody(BaseModel):
@@ -88,6 +97,7 @@ class ItemBody(BaseModel):
     folder_id: uuid.UUID
     size: int = Field(ge=0, le=MOST_GB * GIB)
     refused: Literal["unsupported_type"] | None = None  # too_large and empty_file: the server's
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")  # the browser's: looked up only
 
 
 class RegisterBody(BaseModel):
@@ -195,6 +205,7 @@ def _plan_and_audit(
         total_bytes=body.total_bytes,
         skipped_count=body.skipped_count,
         limits=limits,
+        only_new=body.only_new,
     )
     if plan.new or plan.created:
         details: dict[str, audit.DetailValue] = {
@@ -205,6 +216,7 @@ def _plan_and_audit(
             "folders_merged": plan.merged,
             "skipped": body.skipped_count,
             "target": body.target,
+            "only_new": body.only_new,
         }
         audit.record(
             conn,
@@ -227,7 +239,7 @@ def register_items(upload_id: uuid.UUID, body: RegisterBody, user: User, context
         refused: str | None = entry.refused
         if name is None:
             name, refused = shown_upload_name(entry.name, max_length=DOCUMENT_NAME_MAX), "bad_name"
-        items.append(NewItem(entry.path_key, name, str(entry.folder_id), entry.size, refused))
+        items.append(NewItem(entry.path_key, name, str(entry.folder_id), entry.size, refused, entry.sha256))
     largest = user_upload_policy(context, user).largest_limit
     customer_id = user.customer_id
     with context.db.customer(customer_id) as conn:
@@ -254,6 +266,30 @@ def list_folder_uploads(user: User, context: Context) -> dict[str, Any]:
     with context.db.customer(user.customer_id) as conn:
         rows = items_sql.summaries(conn, user.customer_id, user_id=user.user_id)
     return {"items": [summary_json(row) for row in rows]}
+
+
+@router.get("/folder-uploads/previous")
+def previous_folder_upload(
+    source_name: Annotated[str, Query(max_length=4 * FOLDER_NAME_MAX)], user: User, context: Context
+) -> dict[str, Any]:
+    """``{previous: {id, target, parent_folder_id, root_folder_id, created_at} | null}``: this
+    user's latest upload of a folder of this name whose root folder is still there."""
+    name = upload_name(source_name, max_length=FOLDER_NAME_MAX)
+    found = None
+    if name is not None:
+        with context.db.customer(user.customer_id) as conn:
+            found = items_sql.previous(conn, user.customer_id, user_id=user.user_id, source_name=name)
+    if found is None:
+        return {"previous": None}
+    return {
+        "previous": {
+            "id": found.id,
+            "target": found.target,
+            "parent_folder_id": found.parent_folder_id,
+            "root_folder_id": found.root_folder_id,
+            "created_at": iso(found.created_at),
+        }
+    }
 
 
 @router.get("/folder-uploads/{upload_id}")

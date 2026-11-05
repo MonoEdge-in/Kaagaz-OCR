@@ -5,6 +5,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import text
 
 from kaagaz.db import identities
 from kaagaz.db import users as users_sql
@@ -198,7 +199,7 @@ def test_touch_used_stamps_last_used(db: Database) -> None:
     customer_id, user_id = new_customer(db)
     identity_id = add(db, customer_id, user_id, subject(), approved=True)
     with db.customer(customer_id) as conn:
-        identities.touch_used(conn, customer_id, identity_id, NOW + timedelta(hours=1))
+        identities.touch_used(conn, customer_id, identity_id, NOW + timedelta(hours=1), hosted_domain=None)
         rows = identities.for_user(conn, customer_id, user_id)
     assert [row["last_used_at"] for row in rows] == [NOW + timedelta(hours=1)]
 
@@ -212,3 +213,29 @@ def test_email_belongs_to_other(db: Database) -> None:
     with db.system() as conn:
         assert identities.email_belongs_to_other(conn, found[0].upper(), admin_b) is True
         assert identities.email_belongs_to_other(conn, found[0], admin_a) is False
+
+
+def test_hosted_domain_is_kept_on_add_and_refreshed_by_touch_used(db: Database) -> None:
+    """#507: the Google Workspace domain (``hd``) of the account (lower case already, from
+    ``kaagaz.api.oidc``); a sign-in refreshes it."""
+    customer_id, user_id = new_customer(db)
+    with db.customer(customer_id) as conn:
+        identity_id = identities.add(
+            conn,
+            customer_id,
+            user_id,
+            provider="google",
+            issuer=ISSUER,
+            subject=subject(),
+            email="ramesh@sharmatraders.com",
+            approved=True,
+            approved_by=None,
+            now=NOW,
+            hosted_domain="sharmatraders.com",
+        )
+        stored = text("SELECT hosted_domain FROM user_identities WHERE id = :i")
+        assert conn.execute(stored, {"i": identity_id}).scalar() == "sharmatraders.com"
+        identities.touch_used(conn, customer_id, identity_id, NOW, hosted_domain=None)
+        assert conn.execute(stored, {"i": identity_id}).scalar() is None
+        identities.touch_used(conn, customer_id, identity_id, NOW, hosted_domain="sharma.in")
+        assert conn.execute(stored, {"i": identity_id}).scalar() == "sharma.in"

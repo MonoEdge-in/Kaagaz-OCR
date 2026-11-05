@@ -139,12 +139,18 @@ def confirm_email(link: str) -> Message:
     )
 
 
-def invite(organisation: str, link: str) -> Message:
+GOOGLE_INVITE_LINE = (
+    "Your organisation signs in with Google. After you choose your password, connect your Google account."
+)
+
+
+def invite(organisation: str, link: str, google: bool = False) -> Message:
+    """``google``: the organisation's Google sign-in is on for the new person's role (#507)."""
     return (
         "You're invited to Kaagaz",
         f"Hello,\n\nYou have been added to {organisation} on Kaagaz. Choose your password"
-        f" here:\n\n{link}\n\nThe link works once, for 7 days. If you did not expect this, you can"
-        " ignore this email." + _SIGN_OFF,
+        f" here:\n\n{link}\n\n" + (f"{GOOGLE_INVITE_LINE}\n\n" if google else "") + "The link works"
+        " once, for 7 days. If you did not expect this, you can ignore this email." + _SIGN_OFF,
     )
 
 

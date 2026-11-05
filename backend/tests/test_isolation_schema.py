@@ -61,6 +61,8 @@ switch that requires two-step sign-in for an organisation's admins (#481).
 Folder upload (0071, #484, NEEDS VRUSHIT'S APPROVAL): an upload, its folders and its items the
 app reads, adds and updates, never deletes (they go with the customer); an organisation's own
 limits it reads in four columns only, written by the operator's two functions (step-up).
+"Add new files only" (#484, 0072): the upload counts the files it sends
+(``items_counted``); the browser's SHA-256 of a file is never kept, on the upload or its items.
 """
 
 import re
@@ -157,7 +159,18 @@ FROM_0061 = {"email_links": (True, True, False, False)}
 # Connected accounts (0062, #457 phase 1): read, added and deleted; only the approval and
 # last-used columns may change (a column grant).
 FROM_0062 = {"user_identities": (True, True, False, True)}
-UPDATES_0062 = {"user_identities": {"status", "approved_at", "approved_by", "last_used_at"}}
+# Changed on purpose (#507, 0074): Google's hd claim, refreshed at each sign-in, and its email,
+# kept with hd when a Google sign-in is refused for the domains (#507 review).
+UPDATES_0062 = {
+    "user_identities": {
+        "status",
+        "approved_at",
+        "approved_by",
+        "last_used_at",
+        "hosted_domain",
+        "email_at_link",
+    }
+}
 # The reading pause (0066, #478): a day's counter is added and counted up (a column grant).
 FROM_0066 = {"reading_days": (True, True, False, False)}
 UPDATES_0066 = {"reading_days": {"pages", "cost_usd", "alerted_at"}}
@@ -504,6 +517,12 @@ OPERATOR_RIGHTS = {
         EMPTY_PATH,
     ),
     "kaagaz_op_set_folder_upload_limits": ("text", EMPTY_PATH),
+    # 0074 (#507): Google sign-in per organisation and for the platform, and its write (step-up).
+    "kaagaz_op_google_signin": (
+        "TABLE(org_on boolean, platform_on boolean, only_roles text[], domains text[])",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_set_google_signin": ("text", EMPTY_PATH),
     # 0046: operator-only read/write for customer and user RPM overrides.
     "kaagaz_op_model_rates": (
         "TABLE(org_rpm integer, user_id uuid, email text, user_rpm integer)",
@@ -785,11 +804,41 @@ def test_the_app_may_update_only_the_upload_limit_and_the_auto_filing_switch_of_
         ).all()
     # Changed on purpose (auto-filing council, 15 Oct 2026): the admin's switch, 0025.
     # Changed on purpose (#457 phase 1, 0062): the admin's auto-approval switch.
+    # Changed on purpose (#507, 0074): the admin's Google rules; never google_signin (the operator's).
     assert {name for name, may_update in columns if may_update} == {
         "max_upload_mb",
         "autofile_on",
         "auto_approve_connections",
+        "google_roles",
+        "google_only_roles",
+        "google_domains",
     }
+
+
+def _columns(db: Database, table: str) -> set[str]:
+    with db.system() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT attname::text FROM pg_attribute WHERE attrelid = CAST(:t AS regclass)"
+                " AND attnum > 0 AND NOT attisdropped"
+            ),
+            {"t": table},
+        ).scalars()
+        return set(rows)
+
+
+def test_a_folder_upload_keeps_counts_and_never_the_browsers_hash_of_a_file(db: Database) -> None:
+    """0072 (#484, "Add new files only"): ``items_counted``, the files registered that weren't
+    already in, is what the limit is checked against; no column keeps a file's SHA-256."""
+    assert _columns(db, "folder_uploads") == {
+        "id", "customer_id", "user_id", "target", "parent_folder_id", "root_folder_id", "source_name",
+        "root_name", "merge", "file_count", "total_bytes", "skipped_count", "folders_created",
+        "items_registered", "items_counted", "bytes_registered", "created_at", "updated_at",
+    }  # fmt: skip
+    assert _columns(db, "folder_upload_items") == {
+        "id", "customer_id", "folder_upload_id", "seq", "path_key", "name", "folder_id", "size_bytes",
+        "batch_id", "state", "failure_code", "document_id", "updated_at",
+    }  # fmt: skip
 
 
 _FOREIGN_KEYS = text(

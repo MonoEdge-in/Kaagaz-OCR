@@ -46,6 +46,10 @@ Why each piece (FULL-BUILD-SPEC section 3, PRD 1 A1 to A7):
   403 ``mfa_enrol_required`` (MFA required for admins, 16 Oct 2026). Only the few
   routes that use ``current_user_allow_password_change`` (/auth/password,
   /auth/logout, /auth/me, /auth/session) skip both; /auth/admin/enrol needs no session.
+* **The limited session** (#507): last, a "Google only" user with no passing Google link
+  (``needs_google_link``) gets 403 ``google_link_required`` everywhere except the routes above
+  and those using ``current_user_allow_google_link`` (connect, its callback, Ways to sign in's
+  list and remove, and sign out everywhere). Their password signs them in only to connect Google.
 * **CSRF**: every request that is not GET, HEAD or OPTIONS must carry
   ``X-Requested-With: kaagaz``. A cross-site form cannot add a header, and a
   cross-site script cannot either without CORS, which the API never allows.
@@ -724,6 +728,26 @@ class CurrentUser:
     idle_hours: int | None = None  # the idle timeout in effect (0040); None: no idle limit
     seen_at: datetime | None = None  # the session's last use or sign-in, the idle clock
     email_confirmed: bool = False  # the user proved their e-mail with a link (0061)
+    # Google sign-in (#507, ``users._GOOGLE_COLUMNS``): the organisation's switch, else the
+    # platform's; the role may use Google; uses it only; a passing link; the domains; an approved
+    # link whose domain is not checked yet (``users.google_unchecked``).
+    google_on: bool = True
+    google_allowed: bool = True
+    google_only: bool = False
+    google_linked: bool = False
+    google_domains: tuple[str, ...] = ()
+    google_unchecked: bool = False
+
+
+GOOGLE_LINK_REQUIRED = (
+    "Your organisation asks you to sign in with Google. Connect your Google account to continue."
+)
+
+
+def needs_google_link(user: CurrentUser, google_enabled: bool) -> bool:
+    """The limited session (#507): Google is on (``google_enabled``, GOOGLE_SIGNIN_ENABLED, and
+    the organisation's or platform's switch) and the role uses Google only, with no passing link."""
+    return google_enabled and user.google_on and user.google_only and not user.google_linked
 
 
 # The idle timeout (0040): the last use is written at most this often, so a request is not a write.
@@ -775,7 +799,17 @@ def current_user(request: Request) -> CurrentUser:
     user (enabled, same role, same session version). Then 403
     ``password_change_required`` while the user must set a new password, and 403
     ``mfa_enrol_required`` for an admin without two-step sign-in set up (one who turned it
-    off themselves, 0061b, signs in with the password and is let through)."""
+    off themselves, 0061b, signs in with the password and is let through). Then 403
+    ``google_link_required`` in the limited session (#507, ``needs_google_link``)."""
+    user = current_user_allow_google_link(request)
+    if needs_google_link(user, get_context(request).settings.google_signin_enabled):
+        raise ApiError(403, "google_link_required", GOOGLE_LINK_REQUIRED)
+    return user
+
+
+def current_user_allow_google_link(request: Request) -> CurrentUser:
+    """``current_user`` without the limited session's gate (#507). Only for connecting Google
+    (its start and callback), Ways to sign in's list and remove, and sign out everywhere."""
     user = _signed_in(request)
     if user.must_change_password:
         raise ApiError(403, "password_change_required")
@@ -839,10 +873,17 @@ def load_user(db: Database, customer_id: str, user_id: str, *, scope: str) -> Cu
         idle_hours=row["idle_hours"],
         seen_at=row["seen_at"],
         email_confirmed=bool(row["email_confirmed"]),
+        google_on=bool(row["google_on"]),
+        google_allowed=bool(row["google_allowed"]),
+        google_only=bool(row["google_only"]),
+        google_linked=users_sql.google_linked(row),
+        google_domains=tuple(row["google_domains"]),
+        google_unchecked=users_sql.google_unchecked(row),
     )
 
 
 User = Annotated[CurrentUser, Depends(current_user)]
+UserAllowGoogleLink = Annotated[CurrentUser, Depends(current_user_allow_google_link)]
 UserAllowPasswordChange = Annotated[CurrentUser, Depends(current_user_allow_password_change)]
 
 

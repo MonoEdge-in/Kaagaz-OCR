@@ -126,7 +126,8 @@ def test_pending_connection_cannot_sign_in(db: Database, google: FakeGoogle) -> 
     member_id, _ = api.add_user(customer_id, "member")
     subject = _connect(api, customer_id, member_id, approved=False)
     client = api.client()
-    assert _error(_sign_in_at_google(api, google, client, subject)) == "not_connected"
+    # Changed on purpose (#507): a waiting connection says so, after the organisation's rules.
+    assert _error(_sign_in_at_google(api, google, client, subject)) == "waiting"
     assert not client.cookies.get(SESSION_COOKIE)
 
 

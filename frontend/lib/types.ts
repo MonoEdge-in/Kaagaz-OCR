@@ -48,6 +48,13 @@ export interface Me {
     two_step_required?: boolean; // the super admin requires it for this organisation's admins (#481)
     can_delete_forever: boolean; // an admin allowed this member or reviewer (never an admin)
     email_confirmed: boolean; // false: the "Confirm your email" banner (#457; true while email is off)
+    // #507: the organisation asks this person to sign in with Google and they have no connected
+    // account that passes its rules yet: every route but Ways to sign in replies 403
+    // google_link_required, so the app sends them there (lib/session.tsx).
+    google_link_required?: boolean;
+    // #507 review: in that session, the connected account is from before its domain could be
+    // checked, so the banner asks for one Google sign-in instead of a new connection.
+    google_unchecked?: boolean;
   };
   customer: { id: string; name: string };
   session: { scope: SessionScope };
@@ -73,6 +80,9 @@ export interface ConnectedIdentity {
 export interface WaysToSignIn {
   providers: string[];
   identities: ConnectedIdentity[];
+  // #507: the organisation's rules for this person: Google only for their role, and the
+  // company domains a Google account must be from (empty: any).
+  rules?: { google_only: boolean; domains: string[] };
 }
 
 /** Admin, People, Connections to approve (GET /admin/identities). */
@@ -608,6 +618,7 @@ export interface FolderUploadPlanBody {
   file_count: number;
   total_bytes: number;
   skipped_count: number;
+  only_new?: boolean; // "Add new files only": the counts are checked against the ceilings, not the organisation's limits
 }
 
 /** The plan's reply: folder_ids[i] is the Kaagaz folder for manifest folder i. */
@@ -627,6 +638,7 @@ export interface NewFolderItem {
   folder_id: string;
   size: number;
   refused?: "unsupported_type"; // the server judges size, emptiness and names itself
+  sha256?: string; // "Add new files only": the SHA-256 (hex) of its bytes; a match comes back "duplicate", never sent
 }
 
 export type FolderItemFailure = "too_large" | "unsupported_type" | "empty_file" | "folder_gone" | "bad_name";
@@ -650,6 +662,15 @@ export interface FolderUploadItem {
     folder_id: string | null;
     in_trash: boolean;
   } | null;
+}
+
+/** GET /folder-uploads/previous: this person's latest upload of a folder of that name whose folder is still there. */
+export interface FolderUploadPrevious {
+  id: string;
+  target: "department" | "folder";
+  parent_folder_id: string | null;
+  root_folder_id: string;
+  created_at: string;
 }
 
 /** GET /folder-uploads/{id}/items: a page, and where the next starts (null: the last page). */
@@ -1126,6 +1147,10 @@ export interface AdminUser {
   // #457 phase 1: "password" and each approved provider. Only the list and the replies that
   // removed connections send it; a row keeps what it had otherwise.
   signs_in_with?: string[];
+  // #507: their role signs in with Google only and they have no connected account that passes.
+  google_needed?: boolean;
+  // #507 review: and their connected account's domain is not checked yet (one Google sign-in does).
+  google_unchecked?: boolean;
 }
 
 /** POST /admin/users: the new user; with email on (#457), whether the invite email went. */
@@ -1153,6 +1178,29 @@ export interface CustomerSettings {
   autofile: { granted: boolean; on: boolean };
   // #457 phase 1: "Approve new sign-in connections automatically"; left out while no provider is on.
   auto_approve_connections?: boolean;
+  // #507: Ways to sign in, per role; left out while Google sign-in is off for the product.
+  google?: GoogleRules;
+}
+
+/** The admin's Google sign-in rules (#507). available: Google sign-in is on for the organisation
+ * (the super admin's switch). */
+export interface GoogleRules {
+  available: boolean;
+  allowed_roles: Role[];
+  only_roles: Role[];
+  domains: string[];
+}
+
+/** PATCH /admin/settings' google: it replaces all three. */
+export type GoogleRulesChange = Pick<GoogleRules, "allowed_roles" | "only_roles" | "domains">;
+
+/** Operator: one organisation's Google sign-in (#507). on: null follows the platform. */
+export interface OrgGoogleSignIn {
+  on: boolean | null;
+  platform_on: boolean;
+  effective: boolean;
+  google_only_roles: Role[];
+  domains: string[];
 }
 
 export interface AuditEntry {
@@ -1508,7 +1556,7 @@ export interface AiValues {
   scan_reader: ScanReader | null; // #473
   mistral_model: MistralModelId | null;
   daily_page_limit: number | null; // #478: pages AI may read in one India day; the platform's null: no limit
-  ulc_ceiling_paise: number | null; // #488: the most a page may cost under ultra low cost, 20 to 40; null follows (40)
+  ulc_ceiling_paise: number | null; // #488: the most a page may cost under ultra low cost, 20 to 55; null follows (40)
 }
 
 /** What the server uses when the platform defaults name no model or scan setting, and

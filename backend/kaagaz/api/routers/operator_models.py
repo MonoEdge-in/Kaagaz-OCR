@@ -74,7 +74,7 @@ writes its own audit rows.
   .../orgs/{id}/ai`` adds ``reading_today``: its pages read today and their dollars (the
   India day).
 * Ultra low cost (#488, Tushar, 4 Nov 2026; 0070): ``scan_reader`` may be ``ultra_low_cost``, and
-  both AI settings carry ``ulc_ceiling_paise``, the most one read of a page may cost, 20 to 40
+  both AI settings carry ``ulc_ceiling_paise``, the most one read of a page may cost, 20 to 55
   paise (400 ``ceiling_out_of_range``), null to inherit (the platform's null: 40); the defaults
   count the organisations inheriting it. Choosing it, or keeping it in effect, needs its lead
   (the default scan model in effect when it is a Gemini with a known price, else OCR_MODEL) to be
@@ -100,6 +100,11 @@ writes its own audit rows.
   organisation's admins and members stay signed in with no activity, 1 to 24 hours; the
   organisation's, else the platform's, else none (``default_hours``: SESSION_HOURS, the
   session's own end, which stays the cap) (0040).
+* ``GET`` and ``PUT`` {on, code} ``/operator/google-signin`` (PUT with a fresh code): ``{on}``,
+  Google sign-in for every organisation that follows the platform (true by default; the server's
+  GOOGLE_SIGNIN_ENABLED stays the master switch). A change signs out their people with an
+  approved connection; an organisation with its own value is untouched. Audited
+  ``google.platform_set`` (0074, #507; one organisation's: ``/operator/orgs/{id}/google-signin``).
 * ``GET`` and ``PUT`` {model_rpm, documents_at_once, pages_at_once, code} ``/operator/speed``
   (PUT with a fresh code): the platform's model requests a minute, documents read at once and
   pages of one document read at once, each null for the server's setting and never above it
@@ -142,6 +147,7 @@ from kaagaz.api.routers.operator_orgs import StepUp, StepUpBody, _check, _step_u
 from kaagaz.api.views import iso
 from kaagaz.db import models
 from kaagaz.db import operator_models as models_sql
+from kaagaz.db import operator_orgs as orgs_sql
 from kaagaz.db.engine import OperatorDatabase
 from kaagaz.db.folder_uploads import (
     DEFAULT_MAX_FILES,
@@ -247,7 +253,7 @@ _REFUSALS = {
     "ceiling_out_of_range": (
         400,
         "ceiling_out_of_range",
-        "Choose from ₹0.20 to ₹0.40 a page, or leave it empty.",
+        "Choose from ₹0.20 to ₹0.55 a page, or leave it empty.",
     ),
     "ulc_needs_gemini": (
         409,
@@ -861,7 +867,7 @@ def _limit(tokens: int | None) -> None:
 
 
 def _ceiling(paise: int | None) -> None:
-    """#488: 400 ``ceiling_out_of_range`` for Ultra low cost's ceiling outside 20 to 40 paise."""
+    """#488: 400 ``ceiling_out_of_range`` for Ultra low cost's ceiling outside 20 to 55 paise (0073)."""
     low, high = ULC_CEILING_PAISE
     if paise is not None and not low <= paise <= high:
         raise ApiError(*_REFUSALS["ceiling_out_of_range"])
@@ -1046,6 +1052,35 @@ def set_org_session_timeout(
         )
     _refuse(db, operator, outcome, step_up)
     return get_org_session_timeout(customer_id, operator, db, context)
+
+
+class PlatformGoogleBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    on: bool
+    code: str = Field(min_length=1, max_length=MAX_CODE)
+
+
+@router.get("/google-signin")
+def get_google_signin(operator: OperatorSession, db: OperatorDb) -> dict[str, bool]:
+    """The platform's Google sign-in default (0074)."""
+    with db.operator() as conn:
+        row = orgs_sql.google_signin(conn, operator.operator_id, None)
+    if row is None:  # the operator was disabled meanwhile
+        raise ApiError(401, "not_signed_in")
+    return {"on": bool(row["platform_on"])}
+
+
+@router.put("/google-signin")
+def set_google_signin(
+    body: PlatformGoogleBody, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, bool]:
+    """Set it (a fresh code first); every organisation that follows it follows at its next request."""
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = orgs_sql.set_google_signin(conn, operator.operator_id, None, on=body.on, step=step_up.step)
+    _check(db, operator, outcome, step_up)
+    return get_google_signin(operator, db)
 
 
 _FOLDER_DEFAULTS = {

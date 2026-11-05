@@ -117,8 +117,8 @@ class AiChoice:
     DEFAULT_MISTRAL_MODEL. Whether Mistral is set up is the API's check, not the database's.
     #478 (0066): the daily page limit (pages AI may read in one India day); for the platform,
     None is no limit. #488 (0070): Ultra low cost's ceiling, the most one read of a page may cost,
-    in paise (20 to 40; ``scan_reader`` ultra_low_cost reads with it); for the platform, None is
-    ULC_DEFAULT_PAISE."""
+    in paise (20 to 55, 0073; ``scan_reader`` ultra_low_cost reads with it); for the platform,
+    None is ULC_DEFAULT_PAISE."""
 
     scan_models: Sequence[str] = ()
     scan_default: str | None = None

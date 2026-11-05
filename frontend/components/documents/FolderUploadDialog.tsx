@@ -7,12 +7,15 @@
 // (too deep, a name Kaagaz can't keep, over this organisation's limits), with Start disabled.
 // The server checks all of it again. While a dropped folder is still being read, it says how
 // many files it has found.
+// Adding to a folder already there offers "Add new files only", on: each file is checked and
+// only the ones Kaagaz doesn't have are sent, so the file and size limits count only those. The
+// place of this person's last upload of a folder of the same name is chosen at first.
 
 import { useId, useState } from "react";
 import type { FormEvent } from "react";
 import { isDepartment } from "@/components/files/departments";
-import { formatBytes, formatNumber } from "@/lib/format";
-import type { FolderUploadLimits } from "@/lib/types";
+import { formatBytes, formatDate, formatNumber } from "@/lib/format";
+import type { FolderUploadLimits, FolderUploadPrevious } from "@/lib/types";
 import { ActionDialog } from "./ActionDialog";
 import { visibleName } from "./folderPick";
 import type { Manifest } from "./folderPick";
@@ -24,8 +27,14 @@ import styles from "./Library.module.css";
 
 const plural = (count: number, one: string, many: string) => `${formatNumber(count)} ${count === 1 ? one : many}`;
 
-/** Why this folder can't be uploaded here, in plain words; null when it can. */
-export function dialogProblem(manifest: Manifest, targetDepth: number, limits: FolderUploadLimits | undefined): string | null {
+/** Why this folder can't be uploaded here, in plain words; null when it can. Adding only new files,
+ * the file and size limits count only the files sent, which the server checks once it knows them. */
+export function dialogProblem(
+  manifest: Manifest,
+  targetDepth: number,
+  limits: FolderUploadLimits | undefined,
+  onlyNew = false,
+): string | null {
   const most = limits?.max_depth ?? MAX_FOLDER_DEPTH;
   const deep = targetDepth + manifest.height;
   if (deep > most) {
@@ -38,10 +47,10 @@ export function dialogProblem(manifest: Manifest, targetDepth: number, limits: F
       : `A folder name has a character Kaagaz can’t keep: “${visibleName(name)}”. Rename it, then choose the folder again.`;
   }
   if (!limits) return null;
-  if (manifest.fileCount > limits.max_files) {
+  if (!onlyNew && manifest.fileCount > limits.max_files) {
     return `A folder upload can hold at most ${formatNumber(limits.max_files)} files. This one has ${formatNumber(manifest.fileCount)}.`;
   }
-  if (manifest.totalBytes > limits.max_bytes) {
+  if (!onlyNew && manifest.totalBytes > limits.max_bytes) {
     return `A folder upload can be at most ${formatBytes(limits.max_bytes)}. This one is ${formatBytes(manifest.totalBytes)}.`;
   }
   if (manifest.folders.length > limits.max_folders) {
@@ -74,15 +83,26 @@ export function clashOf(tree: FolderTree, target: FolderTarget, rootName: string
   };
 }
 
+/** What Start sends: add to the folder already there or not, and only new files only when adding to it. */
+export function startChoice(clash: Clash | null, merge: boolean, onlyNew: boolean): { merge: boolean; onlyNew: boolean } {
+  const adding = clash !== null && clash.merge && merge;
+  return { merge: clash === null || adding, onlyNew: adding && onlyNew };
+}
+
 /** The dialog's lines about what was read. */
-export function summaryLines(source: FolderSource): { counts: string; skipped: string | null; read: string } {
+export function summaryLines(source: FolderSource, onlyNew = false): { counts: string; skipped: string | null; read: string } {
   const { manifest, picked } = source;
   return {
     counts: `${plural(manifest.folders.length, "folder", "folders")}, ${plural(manifest.fileCount, "file", "files")}, ${formatBytes(manifest.totalBytes)}. ${plural(manifest.height, "level", "levels")} deep.`,
     skipped: picked.skippedCount === 0 ? null : `${plural(picked.skippedCount, "hidden or system file", "hidden or system files")} skipped`,
-    read: `Kaagaz will read ${plural(manifest.fileCount, "file", "files")}. Reading can take a while for big folders.`,
+    read: onlyNew
+      ? `Kaagaz will check ${plural(manifest.fileCount, "file", "files")} and send only the new ones.`
+      : `Kaagaz will read ${plural(manifest.fileCount, "file", "files")}. Reading can take a while for big folders.`,
   };
 }
+
+const ONLY_NEW_HINT =
+  "Kaagaz checks each file on this computer and sends only the ones it doesn’t have. Files already in Kaagaz stay where they are.";
 
 const EMPTY_FOLDERS_NOTE =
   "This browser can’t see empty folders, so they won’t be made. Drag the folder here instead to keep them.";
@@ -93,26 +113,40 @@ interface FolderUploadDialogProps {
   folderId: string | null; // the folder being viewed: where it goes at first
   admin: boolean;
   limits: FolderUploadLimits | undefined;
-  onStart(target: FolderTarget, merge: boolean): void;
+  previous?: FolderUploadPrevious | null; // this person's last upload of a folder of this name: chosen at first
+  onStart(target: FolderTarget, merge: boolean, onlyNew: boolean): void;
   onClose(): void;
 }
 
-export function FolderUploadDialog({ source, tree, folderId, admin, limits, onStart, onClose }: FolderUploadDialogProps) {
+export function FolderUploadDialog({ source, tree, folderId, admin, limits, previous = null, onStart, onClose }: FolderUploadDialogProps) {
   const id = useId();
   const root = source.picked.rootName;
-  const [where, setWhere] = useState<"folder" | "department">("folder");
-  const [inside, setInside] = useState<string | null>(folderId !== null && tree.byId.has(folderId) ? folderId : null);
+  // The last upload's place, when it can still be chosen here.
+  const last =
+    previous &&
+    (previous.target === "department"
+      ? admin
+      : previous.parent_folder_id === null || tree.byId.has(previous.parent_folder_id))
+      ? previous
+      : null;
+  const viewed = folderId !== null && tree.byId.has(folderId) ? folderId : null;
+  const [where, setWhere] = useState<"folder" | "department">(last?.target ?? "folder");
+  const [inside, setInside] = useState<string | null>(last?.target === "folder" ? last.parent_folder_id : viewed);
   const [merge, setMerge] = useState(true);
+  const [onlyNew, setOnlyNew] = useState(true);
   const target: FolderTarget = where === "department" ? { kind: "department" } : { kind: "folder", parentId: inside };
   const depth = target.kind === "folder" && inside !== null ? (tree.byId.get(inside)?.depth ?? 0) : 0;
-  const problem = dialogProblem(source.manifest, depth, limits);
   const clash = clashOf(tree, target, root);
-  const lines = summaryLines(source);
+  const choice = startChoice(clash, merge, onlyNew);
+  const problem = dialogProblem(source.manifest, depth, limits, choice.onlyNew);
+  const lines = summaryLines(source, choice.onlyNew);
   const skippedMore = source.picked.skippedCount - source.picked.skipped.length;
+  const lastHere =
+    last !== null && (last.target === "department" ? where === "department" : where === "folder" && inside === last.parent_folder_id);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (problem === null) onStart(target, clash === null || (clash.merge && merge));
+    if (problem === null) onStart(target, choice.merge, choice.onlyNew);
   }
 
   return (
@@ -175,6 +209,12 @@ export function FolderUploadDialog({ source, tree, folderId, admin, limits, onSt
           </fieldset>
         )}
 
+        {last && lastHere && (
+          <p className="hint">
+            You uploaded “{root}” here on {formatDate(last.created_at)}.
+          </p>
+        )}
+
         {clash && clash.merge && (
           <fieldset className={styles.fieldset}>
             <legend>A folder named “{clash.existing}” is already there</legend>
@@ -193,6 +233,22 @@ export function FolderUploadDialog({ source, tree, folderId, admin, limits, onSt
               </li>
             </ul>
           </fieldset>
+        )}
+        {clash && clash.merge && merge && (
+          <div>
+            <label className={styles.check}>
+              <input
+                type="checkbox"
+                checked={onlyNew}
+                aria-describedby={`${id}-only-new`}
+                onChange={(event) => setOnlyNew(event.target.checked)}
+              />
+              Add new files only
+            </label>
+            <p id={`${id}-only-new`} className="hint">
+              {ONLY_NEW_HINT}
+            </p>
+          </div>
         )}
         {clash && !clash.merge && (
           <p className="hint">

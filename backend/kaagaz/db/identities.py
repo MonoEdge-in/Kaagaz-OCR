@@ -13,7 +13,10 @@ The key (provider, issuer, subject) is unique across every customer and a user h
 one connection of each provider: ``add`` turns either unique violation into
 ``IdentityTaken`` (``has_provider`` says which, by the key's constraint name), so two people
 connecting one account at the same moment get one winner and one refusal, never a 500.
-The email is stored in lower case, as a label only.
+The email is stored in lower case, as a label only, and so is Google's ``hd`` (``hosted_domain``,
+#507, lower case from ``kaagaz.api.oidc``): the organisation's domain rule reads both; a sign-in
+refreshes ``hd`` (``touch_used``), and a Google sign-in refused for the domains, or still waiting,
+keeps Google's current ``hd`` and email (``keep_claims``, #507 review).
 
 Each call is one indexed statement: O(log n), except ``pending`` and ``providers_by_user``,
 which are O(connections of this customer).
@@ -85,6 +88,7 @@ def add(
     approved: bool,
     approved_by: str | None,
     now: datetime,
+    hosted_domain: str | None = None,
 ) -> str:
     """A new connection, pending or approved at once; its id. Raises ``IdentityTaken``; the
     caller's transaction is then unusable and must end (leave the ``with`` block)."""
@@ -92,8 +96,8 @@ def add(
         identity_id: object = conn.execute(
             text(
                 "INSERT INTO user_identities (customer_id, user_id, provider, issuer, subject,"
-                " email_at_link, status, linked_at, approved_at, approved_by)"
-                " VALUES (:c, :u, :p, :i, :s, :e, :status, :now, :approved_at, :by) RETURNING id"
+                " email_at_link, status, linked_at, approved_at, approved_by, hosted_domain)"
+                " VALUES (:c, :u, :p, :i, :s, :e, :status, :now, :approved_at, :by, :hd) RETURNING id"
             ),
             {
                 "c": customer_id,
@@ -106,6 +110,7 @@ def add(
                 "now": now,
                 "approved_at": now if approved else None,
                 "by": approved_by if approved else None,
+                "hd": hosted_domain,
             },
         ).scalar_one()
     except IntegrityError as error:
@@ -200,11 +205,36 @@ def remove_all(conn: Connection, customer_id: str, user_id: str) -> int:
     return int(result.rowcount)
 
 
-def touch_used(conn: Connection, customer_id: str, identity_id: str, now: datetime) -> None:
-    """The connection was just used to sign in."""
+def touch_used(
+    conn: Connection, customer_id: str, identity_id: str, now: datetime, *, hosted_domain: str | None
+) -> None:
+    """The connection was just used to sign in, with this ``hd`` (#507: Google's, now)."""
     conn.execute(
-        text("UPDATE user_identities SET last_used_at = :now WHERE customer_id = :c AND id = :i"),
-        {"c": customer_id, "i": identity_id, "now": now},
+        text(
+            "UPDATE user_identities SET last_used_at = :now, hosted_domain = :hd"
+            " WHERE customer_id = :c AND id = :i"
+        ),
+        {"c": customer_id, "i": identity_id, "now": now, "hd": hosted_domain},
+    )
+
+
+def keep_claims(
+    conn: Connection, customer_id: str, identity_id: str, *, hosted_domain: str | None, email: str | None
+) -> None:
+    """Google's ``hd`` and email now (#507 review), for a connection whose Google sign-in was refused
+    for the domains or still waits, so the stored link says what Google says. The caller passes
+    them only when Google verified the email."""
+    conn.execute(
+        text(
+            "UPDATE user_identities SET hosted_domain = :hd, email_at_link = :e"
+            " WHERE customer_id = :c AND id = :i"
+        ),
+        {
+            "c": customer_id,
+            "i": identity_id,
+            "hd": hosted_domain,
+            "e": None if email is None else email.lower(),
+        },
     )
 
 

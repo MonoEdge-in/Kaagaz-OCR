@@ -139,7 +139,15 @@ def test_0014_up_down_up(fresh: tuple[str, Database]) -> None:
     assert all(column[3] for column in columns.values())  # each commented (0007's rule)
     # Changed on purpose (#239, 27 Oct 2026): 0025 (auto-filing) lets the app update autofile_on.
     # Changed on purpose (#457 phase 1): 0062, the admin's auto-approval switch.
-    assert _app_may_update(database) == {"max_upload_mb", "autofile_on", "auto_approve_connections"}
+    # Changed on purpose (#507): 0074, the admin's Google rules (never google_signin, the operator's).
+    assert _app_may_update(database) == {
+        "max_upload_mb",
+        "autofile_on",
+        "auto_approve_connections",
+        "google_roles",
+        "google_only_roles",
+        "google_domains",
+    }
 
     m0002._downgrade(url, "0013")
     assert m0002._schema(database) == at_0013

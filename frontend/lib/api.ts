@@ -51,9 +51,11 @@ import type {
   FolderItemView,
   FolderItemsPage,
   FolderLimits,
+  GoogleRulesChange,
   FolderUploadItem,
   FolderUploadPlan,
   FolderUploadPlanBody,
+  FolderUploadPrevious,
   FolderUploadSummary,
   NewFolderItem,
   InsightsReply,
@@ -71,6 +73,7 @@ import type {
   OrgAdmin,
   OrgAiReply,
   OrgFeatureSwitch,
+  OrgGoogleSignIn,
   OrgFolderLimits,
   Organisation,
   OrgModelRates,
@@ -138,9 +141,18 @@ export function onSessionEnded(listener: (() => void) | null): void {
   sessionEnded = listener;
 }
 
+let googleLinkRequired: (() => void) | null = null;
+
+/** Who to tell when a reply says this session may only connect Google first (#507: 403
+ * google_link_required); null stops telling. */
+export function onGoogleLinkRequired(listener: (() => void) | null): void {
+  googleLinkRequired = listener;
+}
+
 function noticeSessionEnd(error: ApiError): ApiError {
   const ended = error.status === 401 && error.code === "not_signed_in";
   if (ended || (error.status === 403 && error.code === "mfa_enrol_required")) sessionEnded?.();
+  if (error.status === 403 && error.code === "google_link_required") googleLinkRequired?.();
   return error;
 }
 
@@ -719,6 +731,9 @@ export const registerFolderItems = (id: string, userId: string, items: NewFolder
 export const getFolderUpload = (id: string) => request<FolderUploadSummary>("GET", folderUpload(id));
 /** This person's folder uploads of the last days, newest first. */
 export const listFolderUploads = () => request<{ items: FolderUploadSummary[] }>("GET", "/folder-uploads");
+/** This person's latest upload of a folder named `sourceName` whose folder is still there, or null. */
+export const getPreviousFolderUpload = (sourceName: string) =>
+  request<{ previous: FolderUploadPrevious | null }>("GET", `/folder-uploads/previous${query({ source_name: sourceName })}`);
 /** One page of a folder upload's items in seq order, after `after` (-1: from the start). */
 export const listFolderItems = (id: string, view: FolderItemView, after: number, limit: number) =>
   request<FolderItemsPage>("GET", `${folderUpload(id)}/items${query({ view, after, limit })}`);
@@ -962,11 +977,13 @@ export const declineConnection = (id: string) =>
 /** Every connected account of this person goes, and they are signed out; the password stays. */
 export const removeConnections = (id: string) =>
   request<AdminUser>("POST", `/admin/users/${encodeURIComponent(id)}/remove-connections`);
-/** ``autofileOn`` left out: the switch is left as it is (feature 28). */
-export const updateSettings = (maxUploadMb: number | null, autofileOn?: boolean) =>
+/** ``autofileOn`` left out: the switch is left as it is (feature 28). ``google`` (#507), when
+ * given, replaces the three Google sign-in rules; left out, they stay. */
+export const updateSettings = (maxUploadMb: number | null, autofileOn?: boolean, google?: GoogleRulesChange) =>
   request<CustomerSettings>("PATCH", "/admin/settings", {
     max_upload_mb: maxUploadMb,
     ...(autofileOn === undefined ? {} : { autofile_on: autofileOn }),
+    ...(google === undefined ? {} : { google }),
   });
 /** A5: the admin log, filtered (stage 3); `cursor` is the reply's `next`. The older reply pages by offset. */
 export type AuditParams = {
@@ -1178,6 +1195,15 @@ export const getAdminTwoStep = (orgId: string) => request<{ required: boolean }>
 /** Require it or stop requiring it, with a fresh code (step-up). */
 export const setAdminTwoStep = (orgId: string, required: boolean, code: string) =>
   request<{ required: boolean }>("PUT", adminTwoStepPath(orgId), { required, code });
+/** Operator: Google sign-in (#507), one organisation's (null: follow the platform) and the
+ * platform's default; each change needs a fresh code (step-up). */
+const orgGooglePath = (orgId: string) => `/operator/orgs/${encodeURIComponent(orgId)}/google-signin`;
+export const getOrgGoogleSignIn = (orgId: string) => request<OrgGoogleSignIn>("GET", orgGooglePath(orgId));
+export const setOrgGoogleSignIn = (orgId: string, on: boolean | null, code: string) =>
+  request<OrgGoogleSignIn>("PUT", orgGooglePath(orgId), { on, code });
+export const getGoogleSignIn = () => request<{ on: boolean }>("GET", "/operator/google-signin");
+export const setGoogleSignIn = (on: boolean, code: string) =>
+  request<{ on: boolean }>("PUT", "/operator/google-signin", { on, code });
 /** Operator: the folder upload limits (#484), the platform's or one organisation's; saving needs a fresh code. */
 const folderLimitsPath = (orgId?: string) =>
   orgId ? `/operator/orgs/${encodeURIComponent(orgId)}/folder-upload-limits` : "/operator/folder-upload-limits";

@@ -16,6 +16,9 @@
 // app opens once the new password is saved. An admin without two-step sign-in
 // (MFA required, 16 Oct 2026; a session from before, or just after a temporary
 // password) is signed out and sent to the sign-in, which sets it up.
+// #507: a session that may only connect Google (me.user.google_link_required) sees only Ways to sign
+// in: any other page sends the browser there, and so does a 403 google_link_required from any
+// reply (who is signed in is asked again first, the server decides).
 
 import { usePathname, useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
@@ -28,10 +31,11 @@ import {
   searchToKeep,
   signInPath,
   twoStepPath,
+  WAYS_PATH,
 } from "@/components/shell/gate";
 import { SetPasswordScreen } from "@/components/shell/SetPasswordScreen";
 import styles from "@/components/shell/Shell.module.css";
-import { ApiError, currentSession, logout, onSessionEnded } from "./api";
+import { ApiError, currentSession, logout, onGoogleLinkRequired, onSessionEnded } from "./api";
 import { clearDrafts, flushDrafts, keepDraftsOf, saveDraft } from "./drafts";
 import { announceSession, leavePage, watchSession } from "./sessionChannel";
 import type { Me } from "./types";
@@ -164,7 +168,22 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     void logout().then(go, go); // signed out or not, the sign-in sets two-step up
   }, [gate, pathname]);
 
-  if (session && gate !== "set_two_step") {
+  // #507: a reply refused with 403 google_link_required: ask who is signed in again, and the gate
+  // below sends the browser to Ways to sign in. Once Me says so already, there is nothing to ask.
+  const linkRequired = session?.me.user.google_link_required === true;
+  useEffect(() => {
+    onGoogleLinkRequired(linkRequired ? null : refresh);
+    return () => onGoogleLinkRequired(null);
+  }, [linkRequired, refresh]);
+
+  useEffect(() => {
+    if (gate !== "connect_google" || pathname === WAYS_PATH) return;
+    router.replace(WAYS_PATH);
+  }, [gate, pathname, router]);
+
+  // Any other page waits for the move: its screen would only be refused.
+  const leaving = gate === "set_two_step" || (gate === "connect_google" && pathname !== WAYS_PATH);
+  if (session && !leaving) {
     return (
       <SessionContext.Provider value={session}>
         {appGate(session.me) === "set_password" ? (
@@ -206,9 +225,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         <span className="spinner" aria-hidden="true" />
         {gate === "set_two_step"
           ? "Taking you to set up two-step sign-in…"
-          : state.kind === "signed_out"
-            ? "Taking you to sign in…"
-            : "Loading…"}
+          : gate === "connect_google"
+            ? "Taking you to Ways to sign in…"
+            : state.kind === "signed_out"
+              ? "Taking you to sign in…"
+              : "Loading…"}
       </p>
     </main>
   );

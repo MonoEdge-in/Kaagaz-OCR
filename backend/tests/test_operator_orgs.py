@@ -64,6 +64,9 @@ ORG_ROUTES = {
     # Changed on purpose (#481, 0068): whether its admins must have two-step sign-in.
     ("GET", f"{ORGS}/{ANY_ID}/admin-two-step"),
     ("PUT", f"{ORGS}/{ANY_ID}/admin-two-step"),
+    # Changed on purpose (#507, 0074): its Google sign-in.
+    ("GET", f"{ORGS}/{ANY_ID}/google-signin"),
+    ("PUT", f"{ORGS}/{ANY_ID}/google-signin"),
     ("GET", f"{ORGS}/{ANY_ID}/folder-upload-limits"),  # #484
     ("PUT", f"{ORGS}/{ANY_ID}/folder-upload-limits"),
     # Changed on purpose (#212, 21 Oct 2026): one organisation's model call rates.

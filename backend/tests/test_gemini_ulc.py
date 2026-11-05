@@ -27,6 +27,7 @@ from kaagaz.ai import usage
 from kaagaz.ai.client import estimate_tokens
 from kaagaz.ai.openrouter import ModelGate, OpenRouterClient, PageBudget
 from kaagaz.ai.replies import ModelUnavailable
+from kaagaz.db.models import ULC_CEILING_PAISE
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading.compact import COMPACT_SCHEMA, INSTRUCTION_COMPACT
 from kaagaz.reading.gemini_ocr import (
@@ -723,7 +724,7 @@ def test_488_a_pages_billed_cost_never_passes_its_ceiling(fake: OpenRouterFake) 
     case."""
     rng = random.Random(4880)  # noqa: S311 - a fixed seed draws test prices and replies, not a secret
     pages_checked = held = passed = repairs = retries = unknown = per_call_pages = 0
-    closest = 0.0
+    closest, top = 0.0, 0
     for _document in range(150):
         prices = UlcPrices(
             price_in_usd_per_m=rng.uniform(0.01, 0.6),
@@ -732,7 +733,8 @@ def test_488_a_pages_billed_cost_never_passes_its_ceiling(fake: OpenRouterFake) 
             # #488 review (R3): a price a request and an image, charged on every call.
             per_call_usd=rng.choice([0.0, rng.uniform(0.00001, 0.0008)]),
         )
-        paise = rng.randint(20, 40)
+        paise = rng.randint(*ULC_CEILING_PAISE)  # Changed on purpose (#488, 0073): up to 55
+        top = max(top, paise)
         known = prices.tokens_per_page_in
         first = max(math.ceil(known * 1.15), ULC_INPUT_TOKENS) if known else ULC_INPUT_TOKENS
         honest = rng.random() < 0.5
@@ -769,6 +771,7 @@ def test_488_a_pages_billed_cost_never_passes_its_ceiling(fake: OpenRouterFake) 
     assert passed > 0
     assert repairs >= 10 and retries >= 5 and unknown >= 20, (repairs, retries, unknown)
     assert per_call_pages > 50, per_call_pages
+    assert top == ULC_CEILING_PAISE[1] == 55  # the highest ceiling was read with
 
 
 def test_488_the_compact_cache_row_is_the_g3_shape(fake: OpenRouterFake) -> None:

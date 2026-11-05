@@ -80,18 +80,19 @@ def test_upgrade_starts_every_ceiling_empty_and_changes_no_reader(fresh: tuple[s
         assert column[2:4] == ("smallint", False)  # nullable
 
 
-def test_the_checks_take_ultra_low_cost_and_a_ceiling_of_20_to_40_paise(db: Database) -> None:
+def test_the_checks_take_ultra_low_cost_and_a_ceiling_of_20_to_55_paise(db: Database) -> None:
+    # Changed on purpose (#488, 0073): up to 55 paise (was 40); test_migration_0073_db.
     customer, _ = new_customer(db)
     insert = (
         "INSERT INTO customer_ai_settings (customer_id, scan_reader, ulc_ceiling_paise) VALUES (:c, :r, :p)"
     )
-    for reader, paise in (("gemini", None), ("ultra_low_cost", 19), ("ultra_low_cost", 41)):
+    for reader, paise in (("gemini", None), ("ultra_low_cost", 19), ("ultra_low_cost", 56)):
         assert _refused(db, insert, {"c": customer, "r": reader, "p": paise}) == "23514"
         assert (
             _refused(db, "UPDATE platform_ai_settings SET ulc_ceiling_paise = :p", {"p": paise or 0})
             == "23514"
         )
-    for paise in (20, 40):
+    for paise in (20, 55):
         as_owner(db, insert, {"c": customer, "r": "ultra_low_cost", "p": paise})
         as_owner(db, "DELETE FROM customer_ai_settings WHERE customer_id = :c", {"c": customer})
     names = {row[1] for row in base._schema(db)["constraints"] if row[0] in _TABLES}
@@ -137,7 +138,7 @@ def test_the_org_save_keeps_the_ceiling_audits_it_for_the_operator_only_and_refu
     db: Database, platform: str
 ) -> None:
     customer, _ = new_customer(db)
-    for paise in (19, 41):
+    for paise in (19, 56):  # Changed on purpose (#488, 0073): up to 55
         outcome = set_org(
             db, platform, customer, ops.AiChoice(scan_reader="ultra_low_cost", ulc_ceiling_paise=paise)
         )
@@ -165,7 +166,7 @@ def test_the_defaults_save_audits_before_and_after_and_counts_the_organisations_
     with OperatorDatabase(db.engine).operator() as conn:
         before = ops.ai_defaults(conn, platform)
     assert before is not None and before["orgs_inheriting_ulc_ceiling_paise"] >= 1
-    refused = ops.AiChoice(chat_levels=["low"], chat_default_level="low", dynamic=False, ulc_ceiling_paise=50)
+    refused = ops.AiChoice(chat_levels=["low"], chat_default_level="low", dynamic=False, ulc_ceiling_paise=56)
     assert set_defaults(db, platform, refused) == "ceiling_out_of_range"
     chosen = ops.AiChoice(
         chat_levels=["low"],
