@@ -14,29 +14,26 @@
 // together; in Trash they can be restored together, or deleted forever together
 // by whoever may (canDeleteForever, asked first; a granted member or reviewer
 // types their password in that step). In Trash the list shows when each
-// document was trashed. Each row is the family's
-// current version; a newer one still being read, or one that failed, gets a
-// line under the name ("Version 3: ..."), linking to it. The Type column
-// gives the file type, and after it what kind of document it is ("PDF · Invoice"), once the AI
-// model's card has said (PRD 2, D6); with no card yet (the model off, down, or still reading)
-// that line is left out, never "Unknown" on every row (issue 371). Names wrap in full at
-// their _ . - and @ marks (WrapName.tsx). The By cell says "Uploaded by" in
-// words; the full table hides those words under its By header. A document with
-// reading problems says so in its status ("Scan complete" then "12 flagged · Review",
-// the link read out as "Review 12 flagged words in ..."), and a reviewer or an admin can have ticked documents
-// read again, one at a time, after an inline question.
+// document was trashed. Each row is the family's current version, its version a chip beside
+// the name, dashed while a newer one waits (the chip's title says when one is being read or
+// failed; on a card a line under the name links to it). The Type column gives the file type,
+// and after it what kind of document it is ("PDF · Invoice"), once the AI model's card has
+// said (PRD 2, D6); with no card yet that part is left out, never "Unknown" (issue 371).
+// The compact list (handoff sections 20 and 21, Documents.html, 5 Nov 2026): one 44px line per
+// file with no file icon, every cell cut with "…" and its whole words in a title; To check
+// shows only what needs acting on ("9 to check", the link to them, read out as "in <name>:
+// 7 words to check and 2 pages to check"), Updated is "2h ago · Anita", and the ⋯ button shows
+// on hover or focus. A reviewer or an admin can have ticked documents read again, one at a
+// time, after an inline question.
 // Move to folder (16 Oct 2026): every row out of Trash can be ticked, and the bar's Move to folder
 // opens the same Move dialog as a row's menu (MoveDialog) for the ticked rows.
-// Scan states (16 Oct 2026): the status cell is two fixed lines while a document
-// is queued, being read, or read, so a scan finishing never changes its row's height;
-// a row keeps its place (the list is newest first, which a state never changes), and
+// A row keeps its place (the list is newest first, which a state never changes), and
 // while the pointer is on the list a row not shown yet waits until it leaves
 // (rowsInPlace), so nothing is put in above the pointer.
 
 import Link from "next/link";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, RefCallback } from "react";
-import { extensionOf } from "@/components/dashboard/words";
 import { LabelChip } from "@/components/files/LabelChip";
 import { labelName } from "@/components/files/labels";
 import { FILES_TEXT, NEWER_SPOKEN, versionCell } from "@/components/files/words";
@@ -76,7 +73,6 @@ import {
   toReview,
 } from "./logic";
 import { StatusChip } from "./StatusChip";
-import { TimeLeft } from "./TimeLeft";
 import { WrapName } from "./WrapName";
 import {
   type BulkAction,
@@ -365,70 +361,72 @@ export function DocumentsTable({
 
   return (
     <>
-      <table
-        className={`table ${styles.docs}`}
-        role="table"
-        onPointerEnter={() => setPinned(new Set(listed.map((item) => item.id)))}
-        onPointerLeave={() => setPinned(null)}
-      >
-        <caption className="visually-hidden">{inTrash ? "Documents in Trash" : "Your documents"}</caption>
-        <thead role="rowgroup">
-          <tr role="row">
-            <th scope="col" role="columnheader" className={styles.selectColumn}>
-              {deletableItems.length > 0 ? (
-                <label className={styles.selectHit}>{allBox("Select all visible documents")}</label>
-              ) : (
-                <span className="visually-hidden">Select</span>
-              )}
-            </th>
-            {/* File management F5, Q4 (Changed on purpose, PRD 1 screens): every column with a sort key sorts. */}
-            <SortHeader className={styles.nameColumn} column="name" label={FILES_TEXT.columns.name} sorting={sorting} />
-            <th scope="col" role="columnheader" className={styles.statusColumn}>Status</th>
-            <SortHeader className={styles.typeColumn} column="doc_type" label={FILES_TEXT.columns.type} sorting={sorting} />
-            <SortHeader className={styles.ownerColumn} column="owner" label={FILES_TEXT.columns.owner} sorting={sorting} />
-            <SortHeader className={styles.labelColumn} column="sensitivity" label={FILES_TEXT.columns.label} sorting={sorting} />
-            <SortHeader className={styles.versionColumn} column="version" label={FILES_TEXT.columns.version} sorting={sorting} />
-            <SortHeader
-              className={styles.docDateColumn}
-              column="document_date"
-              label={FILES_TEXT.columns.documentDate}
-              sorting={sorting}
-            />
-            <SortHeader
-              className={styles.uploadedColumn}
-              column="updated_at"
-              label={inTrash ? "Trashed" : FILES_TEXT.columns.updatedAt}
-              sorting={inTrash ? undefined : sorting}
-            />
-            <th scope="col" role="columnheader" className={styles.byColumn}>{FILES_TEXT.columns.updatedBy}</th>
-            <th scope="col" role="columnheader" className={styles.actionsColumn}>
-              <span className="visually-hidden">Actions</span>
-            </th>
-          </tr>
-        </thead>
-        <tbody ref={body} role="rowgroup">
-          {items.map((document) => (
-            <DocumentRow
-              key={document.id}
-              document={document}
-              whenShort={shortWhen(whenOf(document, inTrash), now)}
-              whenSpoken={whenSpoken(document, inTrash, now)}
-              inTrash={inTrash}
-              deletable={tickable(document)}
-              readable={readable(document)}
-              canForever={canForever}
-              askPassword={askPassword}
-              selected={selectedIds.has(document.id)}
-              onToggle={toggle}
-              tree={tree}
-              tags={tags}
-              suggestions={suggestions}
-              movedLeaves={movedLeaves}
-              events={rowEvents}
-            />
-          ))}
-        </tbody>
-      </table>
+      <div className={styles.tableBox}>
+        <table
+          className={`table ${styles.docs}`}
+          role="table"
+          onPointerEnter={() => setPinned(new Set(listed.map((item) => item.id)))}
+          onPointerLeave={() => setPinned(null)}
+        >
+          <caption className="visually-hidden">{inTrash ? "Documents in Trash" : "Your documents"}</caption>
+          <thead role="rowgroup">
+            <tr role="row">
+              <th scope="col" role="columnheader" className={styles.selectColumn}>
+                {deletableItems.length > 0 ? (
+                  <label className={styles.selectHit}>{allBox("Select all visible documents")}</label>
+                ) : (
+                  <span className="visually-hidden">Select</span>
+                )}
+              </th>
+              {/* File management F5, Q4 (Changed on purpose, PRD 1 screens): every column with a sort key sorts. */}
+              <SortHeader className={styles.nameColumn} column="name" label={FILES_TEXT.columns.name} sorting={sorting} />
+              <th scope="col" role="columnheader" className={styles.statusColumn}>
+                {FILES_TEXT.columns.toCheck}
+              </th>
+              <SortHeader className={styles.typeColumn} column="doc_type" label={FILES_TEXT.columns.type} sorting={sorting} />
+              <SortHeader className={styles.ownerColumn} column="owner" label={FILES_TEXT.columns.owner} sorting={sorting} />
+              <SortHeader className={styles.labelColumn} column="sensitivity" label={FILES_TEXT.columns.label} sorting={sorting} />
+              <SortHeader
+                className={styles.docDateColumn}
+                column="document_date"
+                label={FILES_TEXT.columns.docDate}
+                sorting={sorting}
+              />
+              <SortHeader
+                className={styles.uploadedColumn}
+                column="updated_at"
+                label={inTrash ? "Trashed" : FILES_TEXT.columns.updated}
+                sorting={inTrash ? undefined : sorting}
+              />
+              <th scope="col" role="columnheader" className={styles.actionsColumn}>
+                <span className="visually-hidden">Actions</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody ref={body} role="rowgroup">
+            {items.map((document) => (
+              <DocumentRow
+                key={document.id}
+                document={document}
+                whenShort={shortWhen(whenOf(document, inTrash), now)}
+                whenSpoken={whenSpoken(document, inTrash, now)}
+                inTrash={inTrash}
+                deletable={tickable(document)}
+                readable={readable(document)}
+                canForever={canForever}
+                askPassword={askPassword}
+                selected={selectedIds.has(document.id)}
+                onToggle={toggle}
+                tree={tree}
+                tags={tags}
+                suggestions={suggestions}
+                movedLeaves={movedLeaves}
+                events={rowEvents}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
       {deletableItems.length > 0 && (
         <div
           className={styles.selectionBar}
@@ -880,25 +878,32 @@ const DocumentRow = memo(function DocumentRow({
         )}
       </td>
       <td role="cell" className={styles.nameCell}>
-        <Link
-          href={`/documents/${document.id}`}
-          className={`quiet-link ${styles.name}`}
-          title={document.display_name}
-          onClick={rememberListScroll}
-          onDragStart={(event) => {
-            if (inTrash) return;
-            event.dataTransfer.setData(DOCUMENT_DRAG, document.id);
-            event.dataTransfer.effectAllowed = "copyMove";
-          }}
-        >
-          <span className={`k-file-ic ${styles.fileIcon}`} data-ext={extensionOf(document.display_name)} aria-hidden="true" />
-          <span>
-            <WrapName name={document.display_name} />
+        <span className={styles.nameRow}>
+          <Link
+            href={`/documents/${document.id}`}
+            className={`quiet-link ${styles.name}`}
+            title={document.display_name}
+            onClick={rememberListScroll}
+            onDragStart={(event) => {
+              if (inTrash) return;
+              event.dataTransfer.setData(DOCUMENT_DRAG, document.id);
+              event.dataTransfer.effectAllowed = "copyMove";
+            }}
+          >
+            <span>
+              <WrapName name={document.display_name} />
+            </span>
+          </Link>
+          {/* Documents.html (5 Nov 2026): the version beside the name, dashed while a newer one waits. */}
+          <span
+            className={`k-ver ${styles.verChip}${newer || document.newer_version ? " k-ver--newer" : ""}`}
+            title={document.newer_version ? newerVersionText(document.newer_version) : undefined}
+          >
+            {version}
           </span>
-        </Link>
-        {/* F5: the label, owner, type, version and date, each here until its own column has room.
-            Issue 452: one line under the name, in this order, whatever width the table has; cut
-            at its end with "…", the whole line in its title (review panel, 29 Oct 2026). */}
+        </span>
+        {/* F5: on a card, the label, owner, type and date on one line under the name (the table
+            has a column for each); cut at its end with "…", the whole line in its title. */}
         <span className={styles.facts} title={factsLine}>
           {document.sensitivity && (
             <span className={styles.factLabel}>
@@ -935,14 +940,18 @@ const DocumentRow = memo(function DocumentRow({
           onRetry={readable ? () => void retry() : undefined}
           busy={busy}
         />
+        {error && (
+          <p className={`error-text ${styles.rowError}`} role="alert" title={error}>
+            {error}
+          </p>
+        )}
       </td>
       {/* Issue 452: "PDF · Land record" on the first line, the size on the second, on every row. */}
       <td role="cell" className={`${styles.meta} ${styles.typeCell}`}>
-        <span className={styles.typeLine} title={typeWords}>
+        <span className={styles.typeLine} title={`${typeWords} · ${formatBytes(document.size_bytes)}`}>
           {typeLabel(document.detected_type)}
           {document.doc_type && <span className={styles.docType}>{docTypeLabel(document.doc_type)}</span>}
         </span>
-        <span className={`${styles.bandSize} tabular`}>{formatBytes(document.size_bytes)}</span>
       </td>
       <td role="cell" className={`${styles.meta} ${styles.ownerCell}`}>
         {owner ? (
@@ -957,39 +966,29 @@ const DocumentRow = memo(function DocumentRow({
         {document.sensitivity ? <LabelChip label={document.sensitivity} /> : dash}
         {tagList()}
       </td>
-      <td role="cell" className={`${styles.meta} ${styles.versionCell} tabular`}>
-        {version}
-      </td>
-      <td role="cell" className={`${styles.meta} ${styles.docDateCell} tabular`}>
+      <td
+        role="cell"
+        className={`${styles.meta} ${styles.docDateCell} tabular`}
+        title={document.document_date ? formatDate(document.document_date) : undefined}
+      >
         {document.document_date ? formatDate(document.document_date) : dash}
       </td>
       <td role="cell" className={`${styles.meta} ${styles.uploadedCell}`}>
         {inTrash && <span className="visually-hidden">Trashed </span>}
-        {/* One short line, the exact date in its title; read out in full instead. */}
-        <time dateTime={when} title={formatDateTime(when)} className={styles.when} aria-hidden="true">
-          {whenShort}
-        </time>
-        <span className="visually-hidden">{whenSpoken}</span>
-        {by && (
-          <span className={styles.bandBy} title={by}>
-            <span className="visually-hidden">Updated </span>by {by}
-          </span>
-        )}
-      </td>
-      <td role="cell" className={`${styles.meta} ${styles.byCell}`} data-empty={by ? undefined : "true"}>
-        {by ? (
-          <>
-            <span className={styles.byLabel}>Updated by </span>
-            <span className={styles.byName} title={by}>
-              <WrapName name={by} />
+        {/* One line, "2h ago · Anita" (Documents.html): the exact time in its title, read out in full. */}
+        <span className={styles.updatedLine} title={by ? `${formatDateTime(when)} · ${by}` : formatDateTime(when)}>
+          <time dateTime={when} className={styles.when} aria-hidden="true">
+            {whenShort}
+          </time>
+          <span className="visually-hidden">{whenSpoken}</span>
+          {by && (
+            <span className={styles.byPart}>
+              <span aria-hidden="true"> · </span>
+              <span className="visually-hidden">, updated by </span>
+              {by}
             </span>
-          </>
-        ) : (
-          <>
-            <span aria-hidden="true">—</span>
-            <span className="visually-hidden">Not known</span>
-          </>
-        )}
+          )}
+        </span>
       </td>
       <td role="cell" className={styles.actionsCell}>
         {confirming === null && busy ? (
@@ -1042,11 +1041,6 @@ const DocumentRow = memo(function DocumentRow({
             </div>
           </ActionDialog>
         )}
-        {error && (
-          <p className={`error-text ${styles.rowError}`} role="alert">
-            {error}
-          </p>
-        )}
         {editing && (
           <EditDialog
             action={editing}
@@ -1067,12 +1061,11 @@ const DocumentRow = memo(function DocumentRow({
 });
 
 /**
- * The status cell. Queued, being read, and read: two lines of fixed height (the chip and
- * its words, then the bar and the time left, or what was flagged), keyed by phase so the
- * new lines fade in (opacity only) and nothing else moves. Any other state: the chip and
- * the server's words, which may wrap.
- * Issue 407: with `onRetry` (whoever may read it again), a failed row, or one still being read
- * 6 hours on (`stuck`), ends its second line with Retry; the server checks both again.
+ * The To check cell (Documents.html, 5 Nov 2026): one line, and only when there is something to
+ * act on. A clean read shows nothing (read out as "Scan complete"); a read with words or pages to
+ * check is "9 to check", a link to them; one being read, or any other state, is its chip and its
+ * words cut with "…", whole in their title. Issue 407: with `onRetry` (whoever may read it again), a failed row,
+ * or one still being read 6 hours on (`stuck`), ends with Retry; the server checks both again.
  */
 export function StatusCell({
   document,
@@ -1086,8 +1079,9 @@ export function StatusCell({
   busy?: boolean;
 }) {
   const retry = onRetry && !inTrash && (document.status === "failed" || document.stuck === true) && (
-    <button type="button" className={styles.statusAction} onClick={onRetry} disabled={busy}>
-      Retry<span className="visually-hidden">{` ${document.display_name}`}</span>
+    <button type="button" className={styles.statusAction} onClick={onRetry} disabled={busy} title="Retry">
+      <Icon name="refresh" size={14} />
+      <span className="visually-hidden">{`Retry ${document.display_name}`}</span>
     </button>
   );
   if (beingRead(document.status) && document.deleted_at === null) {
@@ -1096,61 +1090,49 @@ export function StatusCell({
     // QA U10: a file held for the reader or by a reading pause waits; its words say why.
     const chip = words ? words.chip : document.progress?.step === "waiting" ? "Waiting" : "Queued";
     return (
-      <span className={styles.statusContent} key="scanning">
-        <span className={styles.statusLine}>
-          <StatusChip status={document.status} text={chip} />
-          <span className={styles.statusText} title={detail}>
-            {detail}
-          </span>
+      <span className={styles.statusLine} key="scanning" title={detail}>
+        <StatusChip status={document.status} text={chip} />
+        <span className={styles.statusText} title={detail}>
+          {detail}
         </span>
-        <span className={styles.statusLine}>
-          <TimeLeft document={document} />
-          {retry}
-        </span>
+        {retry}
       </span>
     );
   }
   if (document.status === "ready") {
     const flagged = flaggedShort(document);
-    // UI audit D4 (16 Oct 2026): a clean read is its badge alone; the second line stays laid out.
-    const clean = !toReview(document);
+    if (document.understanding === true) {
+      return (
+        <span className={styles.statusLine} key="done">
+          <span className={styles.statusText} title={UNDERSTANDING_TEXT}>
+            {UNDERSTANDING_TEXT}
+          </span>
+        </span>
+      );
+    }
+    if (!toReview(document)) return <span className="visually-hidden">Scan complete</span>;
     return (
-      <span className={styles.statusContent} key="done">
-        <span className={styles.statusLine}>
-          <StatusChip status="ready" text="Scan complete" />
-        </span>
-        <span className={styles.statusLine}>
-          {document.understanding === true ? (
-            <span className={styles.statusText} title={UNDERSTANDING_TEXT}>
-              {UNDERSTANDING_TEXT}
-            </span>
-          ) : (
-            !clean && (
-              <span className={styles.statusText} title={flagged.spoken}>
-                {flagged.shown}
-              </span>
-            )
-          )}
-          {!inTrash && toReview(document) && (
-            <Link href={`/documents/${document.id}`} className={styles.statusAction} onClick={rememberListScroll}>
-              Review<span className="visually-hidden">{` ${flagged.spoken} in ${document.display_name}`}</span>
-            </Link>
-          )}
-        </span>
+      <span className={styles.statusLine} key="done">
+        {inTrash ? (
+          <span className={styles.statusText} title={flagged.spoken}>
+            {flagged.shown}
+          </span>
+        ) : (
+          <Link href={`/documents/${document.id}`} className="k-check-link" title={flagged.spoken} onClick={rememberListScroll}>
+            {flagged.shown}
+            <span className="visually-hidden">{` in ${document.display_name}: ${flagged.spoken}`}</span>
+          </Link>
+        )}
       </span>
     );
   }
   return (
-    <span className={styles.statusContent}>
-      <span className={styles.statusLine}>
-        <StatusChip status={document.status} />
+    <span className={styles.statusLine} title={document.status_message}>
+      <StatusChip status={document.status} />
+      <span className={styles.statusText} title={document.status_message}>
+        {document.status_message}
       </span>
-      <span className={styles.statusLine}>
-        <span className={styles.statusText} title={document.status_message}>
-          {document.status_message}
-        </span>
-        {retry}
-      </span>
+      {retry}
     </span>
   );
 }

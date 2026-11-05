@@ -340,10 +340,11 @@ export function DashboardBody({ data, now }: { data: DashboardData; now: number 
         </div>
         {tiles.versions_to_confirm > 0 ? (
           <Link href="/documents?newer=1" className={styles.total}>
-            <span className={`k-eyebrow ${styles.eyebrowRow}`}>
-              {DASHBOARD_TEXT.tiles.toConfirm} <span className="k-ver k-ver--newer">{DASHBOARD_TEXT.waitingBadge}</span>
+            <span className="k-eyebrow">{DASHBOARD_TEXT.tiles.toConfirm}</span>
+            <span className={styles.numberRow}>
+              <span className={`k-num ${styles.waiting}`}>{formatNumber(tiles.versions_to_confirm)}</span>
+              <span className="k-ver k-ver--newer">{DASHBOARD_TEXT.waitingBadge}</span>
             </span>
-            <span className={`k-num ${styles.waiting}`}>{formatNumber(tiles.versions_to_confirm)}</span>
             <span className={styles.more}>
               {DASHBOARD_TEXT.toConfirmLink}
               <Icon name="arrow-right" size="sm" />

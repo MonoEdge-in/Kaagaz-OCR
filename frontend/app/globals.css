@@ -355,7 +355,7 @@ body {
   padding: 0;
   min-width: 320px;
   min-height: 100vh;
-  min-height: 100dvh;
+  min-height: 100dvh; /* Safari's toolbars (handoff section 21); 100vh where dvh is unknown */
   overflow-wrap: break-word;
   /* No background of its own: <html> paints the page colour, so a sign-in
      page's band colour behind it (login.module.css) can show when pulled. */
@@ -450,6 +450,8 @@ h2,
 h3 {
   font-family: var(--font-display);
   font-stretch: var(--k-display-stretch);
+  /* Safari ignores font-stretch on some variable fonts: the axis too (handoff section 21). */
+  font-variation-settings: "wdth" 112;
   line-height: var(--k-lh-tight);
   margin: 0 0 var(--space-2);
   color: var(--fg);
@@ -470,6 +472,7 @@ h2 {
 h3 {
   font-family: var(--font-sans);
   font-stretch: normal;
+  font-variation-settings: normal;
   font-size: var(--fs-lg);
   font-weight: 600;
   line-height: 1.3;
@@ -484,6 +487,24 @@ input[type="radio"] {
   accent-color: var(--accent);
   width: 18px;
   height: 18px;
+}
+
+/* Safari stretches or shifts a native checkbox in a flex row (handoff section 21). */
+input[type="checkbox"] {
+  flex: none;
+  margin: 0;
+}
+
+/* Safari draws its own search field chrome unless it is reset (handoff section 21). */
+input[type="search"] {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+input[type="search"]::-webkit-search-decoration,
+input[type="search"]::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  display: none;
 }
 
 /* A tick or a chosen radio settles in (scale only: some radios are see-through). */
@@ -1009,6 +1030,7 @@ textarea.input {
 }
 
 select.input {
+  -webkit-appearance: none;
   appearance: none;
   /* Room for the 12px caret and 12px either side of it, no more, so a short
      choice ("Reviewer") is never cut in a narrow column. */

@@ -51,12 +51,15 @@ export const FALLBACK_UPLOAD_LIMITS: Readonly<UploadLimits> = {
   readers: [], // no "Scan with" until the server says which readers it has
 };
 
-/** The limits in words, shown next to the dropzone. */
+/** The kinds of file that can be uploaded, in the drop zone's words (Upload.html: no HEIC). */
+export const ACCEPTED_FORMATS = "PDF, JPG, PNG, TIFF, Excel, CSV";
+
+/** The formats, then the limits in words, shown with the dropzone. */
 export function uploadLimitsHint(limits: UploadLimits = FALLBACK_UPLOAD_LIMITS): string {
   return (
-    `PDF up to ${Math.floor(limits.pdf_bytes / MB)} MB. ` +
-    `PNG, JPG or TIFF up to ${Math.floor(limits.image_bytes / MB)} MB. ` +
-    `CSV or XLSX up to ${Math.floor(limits.sheet_bytes / MB)} MB.`
+    `${ACCEPTED_FORMATS} · PDF up to ${Math.floor(limits.pdf_bytes / MB)} MB, ` +
+    `images up to ${Math.floor(limits.image_bytes / MB)} MB, ` +
+    `Excel and CSV up to ${Math.floor(limits.sheet_bytes / MB)} MB.`
   );
 }
 

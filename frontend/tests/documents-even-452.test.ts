@@ -154,60 +154,55 @@ describe("the documents grid's cards (issue 452)", () => {
   });
 });
 
+// Changed on purpose (handoff sections 20 and 21, Documents.html, 5 Nov 2026): the compact list.
+// One 44px line per file in the table, each cell cut with "…" and its whole words in a title; the
+// facts line under the name stays for the cards below 36rem only.
 describe("the documents list's rows (issue 452)", () => {
   const html = table([doc()]);
+  const table36 = DOCS.indexOf("@container docs-list (min-width: 36rem) {");
 
-  it("gives the name one line, its whole words in the title, and one facts line under it", () => {
+  it("gives the name one line, its whole words in the title, the version beside it", () => {
     const name = cell(html, "nameCell");
     expect(name).toContain('title="7-12 Utara Survey No 45 Wakad with mutation entries 2007 to 2026.pdf"');
-    expect(rule(DOCS, ".name > span")).toMatch(/-webkit-line-clamp: 1;/);
-    // Review panel, 29 Oct 2026: the owner comes early (its column is hidden up to 64rem), then the
-    // type line of the narrowest table, inside the facts line, not a line of its own; the whole
-    // line in its title.
+    expect(name).not.toContain("k-file-ic"); // no file icon: the extension is in the name
+    expect(name).toMatch(/<span class="k-ver [^"]*verChip[^"]*">v1<\/span>/);
+    expect(rule(DOCS, ".name > span")).toMatch(/overflow: hidden;\s*white-space: nowrap;\s*text-overflow: ellipsis;/);
+    // The facts line is the cards' alone; the table has a column for each fact.
     const line = "Confidential · Owner: Vrushit · PDF · Land record · 882.1 KB · v1 · Dated 15 Jun 2007 · In Land &amp; Legal";
-    expect(name).toMatch(
-      new RegExp(
-        `<span class="[^"]*facts[^"]*" title="${line}"><span class="[^"]*factLabel[^"]*">(?:(?!</span></span>).)*</span></span><span class="[^"]*factOwner[^"]*">Owner: Vrushit</span><span class="[^"]*bandType[^"]*">PDF · Land record · 882.1 KB</span>`,
-      ),
-    );
-    const table36 = DOCS.lastIndexOf("@container docs-list (min-width: 36rem) {");
-    // Review panel, 29 Oct 2026: facts that did not fit wrapped to a line never shown, gone without
-    // a trace at 36 to 64rem. The line is one line of text, cut at its end with "…".
-    const facts = rule(DOCS, ".facts", table36);
-    expect(facts).toMatch(/display: block;/);
-    expect(facts).toMatch(/height: var\(--row-sub\);/);
-    expect(facts).toMatch(/overflow: hidden;\s*white-space: nowrap;\s*text-overflow: ellipsis;/);
-    expect(rule(DOCS, ".facts > *", table36)).not.toMatch(/flex|overflow|display/);
-    expect(rule(DOCS, ".inFolder", table36)).toMatch(/display: inline;/);
-    expect(DOCS).toMatch(/@container docs-list \(min-width: 36rem\) and \(max-width: 47\.98rem\) \{[^@]*\.bandType \{\s*display: inline;/);
+    expect(name).toContain(`title="${line}"`);
+    expect(DOCS.slice(table36)).toMatch(/\.facts,\s*\.factTags,\s*\.newerVersion,\s*table\.docs \.nameCell > ul \{\s*display: none;/);
   });
 
-  it("puts one short count and Review on the status's second line, Review at its end", () => {
+  it("links the count to check, one short pill, its words in full in its title and read out", () => {
     const status = cell(html, "statusCell");
-    expect(status).toMatch(/title="6 words to check and 2 pages to check">8 to check<\/span>/);
-    expect(status).toContain(">Review<span class=\"visually-hidden\"> 6 words to check and 2 pages to check in ");
+    expect(status).toMatch(/class="k-check-link" title="6 words to check and 2 pages to check" href="\/documents\/d1">8 to check/);
+    expect(status).toContain('<span class="visually-hidden"> in 7-12 Utara');
+    // A clean read says nothing to see, only to a screen reader.
+    const clean = cell(table([doc({ words_unsure: 0, pages_unreadable: 0, pages_uncertain: 0, values_to_review: 0 })]), "statusCell");
+    expect(clean).not.toContain("k-check-link");
   });
 
-  it("gives the Type cell \"PDF · Land record\" and the size, the same two lines on every row", () => {
+  it("gives the Type cell \"PDF · Land record\" on one line, the size in its title", () => {
     for (const row of [doc(), doc({ doc_type: null })]) {
       const type = cell(table([row]), "typeCell");
-      expect(type.match(/<span class="[^"]*(typeLine|bandSize)[^"]*"/g)).toHaveLength(2);
-      expect(type).toMatch(/bandSize[^"]*tabular">882.1 KB<\/span>/);
+      expect(type.match(/<span class="[^"]*typeLine[^"]*"/g)).toHaveLength(1);
+      expect(type).toContain("882.1 KB\"");
     }
-    expect(cell(html, "typeCell")).toMatch(/title="PDF · Land record">PDF<span class="[^"]*docType[^"]*">Land record<\/span>/);
+    expect(cell(html, "typeCell")).toMatch(/title="PDF · Land record · 882.1 KB">PDF<span class="[^"]*docType[^"]*">Land record<\/span>/);
   });
 
   it("keeps the owner on one line, its whole name in the title", () => {
     expect(cell(html, "ownerCell")).toMatch(/<span class="[^"]*oneLine[^"]*" title="Vrushit">Vrushit<\/span>/);
-    // Review panel, 29 Oct 2026: one rule for every line cut with "…".
-    expect(DOCS).toMatch(/\.oneLine,\s*\.typeLine,\s*\.bandBy,\s*\.byName \{\s*overflow: hidden;\s*white-space: nowrap;\s*text-overflow: ellipsis;\s*\}/);
-    expect(DOCS).toMatch(/\.oneLine,\s*\.typeLine \{\s*display: block;\s*\}/);
-    // The tags under the name hide once the Label column shows them (folded into one rule).
-    expect(DOCS).toMatch(/\.factLabel,\s*table\.docs \.factTags \{\s*display: none;\s*\}/);
+    // One rule for every line cut with "…", and every table cell is one line too.
+    expect(DOCS).toMatch(/\.oneLine,\s*\.typeLine,\s*\.updatedLine \{\s*display: block;\s*overflow: hidden;\s*white-space: nowrap;\s*text-overflow: ellipsis;\s*\}/);
+    expect(rule(DOCS, "table.docs td", table36)).toMatch(/overflow: hidden;\s*white-space: nowrap;\s*text-overflow: ellipsis;/);
   });
 
-  it("puts Last updated's time on the first line and who on the second", () => {
+  it("puts Updated and who changed it on one line: \"2h ago · Vrushit\"", () => {
     const updated = cell(html, "uploadedCell");
-    expect(updated.indexOf("<time")).toBeLessThan(updated.indexOf("by Vrushit"));
+    expect(updated).toMatch(/class="[^"]*updatedLine[^"]*"/);
+    expect(updated.indexOf("<time")).toBeLessThan(updated.lastIndexOf(">Vrushit<"));
+    expect(updated).toContain('<span aria-hidden="true"> · </span>');
+    expect(html).not.toMatch(/byCell|byColumn|versionCell|versionColumn/);
   });
 });

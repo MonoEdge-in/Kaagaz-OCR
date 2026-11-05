@@ -110,7 +110,9 @@ describe("the Read with select in the source", () => {
   it("points at the picked reader's hint and uses the shared control size", () => {
     expect(select).toContain("aria-describedby={`${id}-hint`}");
     expect(reader).toContain('<p id={`${id}-hint`}');
-    expect(select).toContain("className={`input ");
+    expect(select).toContain('className="input"');
+    // Handoff section 21 (5 Nov 2026): in the wrapper with its chevron, so Safari draws no chrome.
+    expect(reader).toMatch(/<SelectWrap className=\{styles\.readerWrap\}>\s*<select/);
   });
 
   it("is offered once, at the end of the list's head row", () => {
@@ -140,7 +142,9 @@ describe("the Read with select in the source", () => {
     const docs = readFileSync(join(__dirname, "..", "components/documents/Documents.module.css"), "utf8");
     expect(docs).toMatch(/\.uploadControls \.reader \{[^}]*display: grid;[^}]*grid-template-columns: auto minmax\(0, auto\);/);
     expect(docs).toMatch(/\.uploadControls \.readerHint \{[^}]*grid-column: 2;/);
-    expect(docs).toMatch(/\.uploadControls \.readerSelect \{[^}]*width: auto;/); // beats select.input's 100%
+    // Changed on purpose (handoff section 21, 5 Nov 2026): the wrapper is at least 220px, the select its full width.
+    expect(docs).toMatch(/\.uploadControls \.readerWrap \{[^}]*min-width: 220px;/);
+    expect(docs).toMatch(/\.uploadControls \{[^}]*gap: var\(--space-2\) var\(--space-4\);/); // 16px to the links
     expect(docs).toMatch(/@media \(max-width: 639\.98px\) \{\s*\.uploadControls \{[^}]*justify-content: flex-start;/);
   });
 });

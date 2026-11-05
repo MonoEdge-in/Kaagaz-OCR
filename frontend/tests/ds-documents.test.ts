@@ -113,8 +113,11 @@ describe("the MonoEdge design system on the documents screens", () => {
     expect(wrap("components/documents/Table.module.css", ".reflowWrap")).toMatch(/overflow-x:\s*auto;/);
     // Changed on purpose (Vrushit UAT 2, 27 Oct 2026, #416): the document page has no values table.
     expect(read("app/(app)/documents/[id]/DocumentView.tsx")).not.toContain("<table");
-    // The list's own table opens its Actions menus past the row, so it is kept unwrapped, said in its CSS.
-    expect(read("components/documents/Documents.module.css")).toContain("No overflow wrapper (the MonoEdge rule for tables)");
+    // Changed on purpose (handoff section 21, 5 Nov 2026): the list's table scrolls inside its own box,
+    // but only below a 1024px window; its Actions menus open in a portal, so the box never cuts one off.
+    const docs = read("components/documents/Documents.module.css");
+    expect(docs).toMatch(/@media \(max-width: 1023\.98px\) \{\s*\.tableBox \{\s*overflow-x: auto;/);
+    expect(read("components/documents/DocumentActions.tsx")).toContain("createPortal(");
   });
 
   // Changed on purpose (Tushar, 16 Oct 2026: Ready to verify).

@@ -672,7 +672,8 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                   onFolders={dropFolders}
                 >
                   <EmptyState
-                    icon="file"
+                    icon="upload"
+                    art="circle"
                     title={current ? "No documents in this folder yet" : "No documents yet"}
                     headingLevel={3}
                     action={

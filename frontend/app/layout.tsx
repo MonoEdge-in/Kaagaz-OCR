@@ -36,7 +36,7 @@ const plexSans = IBM_Plex_Sans({
 // Not preloaded: most pages carry no Devanagari, and the face's unicode range
 // means a browser fetches it only when a page does.
 const plexDevanagari = IBM_Plex_Sans_Devanagari({
-  subsets: ["devanagari"],
+  subsets: ["devanagari", "latin"], // its own Latin too, so Safari never falls back to Kohinoor
   weight: ["400", "500", "600"],
   display: "swap",
   preload: false,

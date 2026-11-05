@@ -120,7 +120,8 @@ describe("the UI council's responsiveness fixes", () => {
 
   it("gives a phone a bigger page, two-line names on cards, and an icon Send on a small phone", () => {
     expect(css("components/viewer/PageViewer.module.css")).toMatch(/@media \(max-width: 639\.98px\) \{\s*\.frame \{\s*padding: var\(--space-1\);/);
-    expect(css("components/documents/Documents.module.css")).toMatch(/@media \(max-width: 35\.98rem\) \{\s*\.name > span \{\s*-webkit-line-clamp: 2;/);
+    // Changed on purpose (handoff section 20, 5 Nov 2026): with the cards' own rules, where the list is narrow.
+    expect(css("components/documents/Documents.module.css")).toMatch(/@container docs-list \(max-width: 35\.98rem\) \{[^@]*\.name > span \{\s*display: -webkit-box;[^}]*-webkit-line-clamp: 2;/);
     expect(css("components/chat/Chat.module.css")).toMatch(/@media \(max-width: 479\.98px\) \{\s*\.send \{\s*width: var\(--control-h\);/);
     expect(css("components/shell/Shell.module.css")).toMatch(/@media \(max-width: 419\.98px\) \{\s*\.pageName \{\s*display: none;/);
   });
@@ -138,38 +139,35 @@ describe("the document page, 24 Oct 2026 (later)", () => {
   });
 });
 
+// Changed on purpose (handoff sections 20 and 21, Documents.html, 5 Nov 2026): the compact list is
+// one 44px line per file; what used to be the lines under a name (the facts, the tags, a newer
+// version) are the cards' alone.
 describe("the Documents list's line rhythm", () => {
-  it("gives every line after a row's first the same height, in every column", () => {
+  it("gives every row one line, the same height in every column", () => {
     const text = css("components/documents/Documents.module.css");
-    const block = text.slice(text.lastIndexOf("@container docs-list (min-width: 36rem) {"));
-    // Changed on purpose (Vrushit UAT, 25 Oct 2026): "keep it clustered, one line after one":
-    // the same height in every column still, but 24px (--row-sub), not 32px.
-    expect(block).toMatch(/\.facts \{\s*margin-block-start: 0;\s*line-height: var\(--row-sub\);/);
-    expect(block).toMatch(/\.inFolder,\s*\.bandSize,\s*\.bandBy \{\s*line-height: var\(--row-sub\);/);
-    // Changed on purpose (owner, 29 Oct 2026, #452): the kind is on the type's own first line
-    // ("PDF · Land record") and the size is the Type cell's second line, --row-sub like the others.
-    expect(text).toMatch(/@container docs-list \(min-width: 36rem\) \{[^@]*\.bandSize \{\s*display: block;/);
+    const block = text.slice(text.indexOf("@container docs-list (min-width: 36rem) {\n  table.docs {"));
+    expect(block).toMatch(/table\.docs td \{\s*height: var\(--h-lg\);[^}]*white-space: nowrap;/);
+    expect(block).toMatch(/\.facts,\s*\.factTags,\s*\.newerVersion,\s*table\.docs \.nameCell > ul \{\s*display: none;/);
   });
 
-  // Vrushit UAT (25 Oct 2026): "no vertical spacing and padding. Keep it clustered."
-  it("stacks the lines under a name close, with a compact row padding", () => {
+  it("keeps the tick box's line the control height, and no line under a name in the table", () => {
     const text = css("components/documents/Documents.module.css");
-    expect(text).toMatch(/table\.docs \{\s*--row-line: var\(--control-h\);[^}]*--row-sub: var\(--badge-h\);/);
-    expect(text).toMatch(/table\.docs td \{\s*height: 48px;\s*padding-block: var\(--space-2\);/);
-    expect(text).not.toMatch(/\.(facts|inFolder|bandBy|docType|statusLine) \{[^}]*var\(--h-sm\)/);
+    expect(text).toMatch(/table\.docs \{[^}]*--row-line: var\(--control-h\);/);
+    expect(text).not.toMatch(/--row-sub|\.bandSize|\.bandBy/);
   });
 });
 
-// Vrushit UAT (25 Oct 2026): the tags go in the Label column, after the label, not under the name.
+// Vrushit UAT (25 Oct 2026): the tags go with the label, not under the name.
+// Changed on purpose (Documents.html, 5 Nov 2026): the compact table shows the label alone, quiet;
+// the tags stay on the cards (under the name) and on the document's page.
 describe("the Documents list's tags", () => {
-  it("puts the tags with the label, under the name only while the Label column is hidden", () => {
+  it("keeps the tags with the label in the markup, and shows them on the cards only", () => {
     const table = read("components/documents/DocumentsTable.tsx");
-    const label = table.slice(table.indexOf("styles.labelCell}"), table.indexOf("styles.versionCell}"));
+    const label = table.slice(table.indexOf("styles.labelCell}"), table.indexOf("styles.docDateCell}"));
     expect(label).toMatch(/<LabelChip label=\{document\.sensitivity\} \/> : dash\}\s*\{tagList\(\)\}/);
     expect(table).toContain("{tagList(styles.factTags)}");
-    expect(table.match(/aria-label="Tags"/g)).toHaveLength(1); // one list, drawn in the two places
     const text = css("components/documents/Documents.module.css");
-    // Changed on purpose (review panel, 29 Oct 2026): as table.docs' tags, over the tag list's own display.
-    expect(text).toMatch(/@container docs-list \(min-width: 56rem\) \{[^@]*\.factLabel,\s*table\.docs \.factTags \{\s*display: none;/);
+    expect(text).toMatch(/table\.docs \.labelCell > ul \{\s*display: none;/);
+    expect(text).toMatch(/table\.docs \.labelCell :global\(\.label-chip\) \{[^}]*background: transparent;\s*border-color: transparent;/);
   });
 });

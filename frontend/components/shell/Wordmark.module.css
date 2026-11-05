@@ -56,6 +56,7 @@
 .name {
   font-family: var(--font-display);
   font-stretch: var(--k-display-stretch);
+  font-variation-settings: "wdth" 112; /* Safari: the axis too (handoff section 21) */
   font-size: 1.25rem;
   font-weight: 650;
   letter-spacing: -0.02em;

@@ -39,6 +39,7 @@ import type { DragEvent, ReactNode } from "react";
 import { InStatusBar } from "@/components/shell/StatusBar";
 import { VERSION_TEXT, suggestionsText } from "@/components/versions/words";
 import { Icon } from "@/components/ui/Icon";
+import { SelectWrap } from "@/components/ui/SelectWrap";
 import { beingRead } from "@/components/viewer/reprocess";
 import { storyHref, storyTarget } from "@/components/viewer/story";
 import {
@@ -505,19 +506,21 @@ export function ReaderSelect({
       <label htmlFor={`${id}-select`} className={styles.readerLabel}>
         Read with
       </label>
-      <select
-        id={`${id}-select`}
-        className={`input ${styles.readerSelect}`}
-        value={current?.id}
-        aria-describedby={`${id}-hint`}
-        onChange={(event) => onPick(event.target.value)}
-      >
-        {readerOptions(readers).map((option) => (
-          <option key={option.id} value={option.id} disabled={option.disabled}>
-            {option.label}
-          </option>
-        ))}
-      </select>
+      <SelectWrap className={styles.readerWrap}>
+        <select
+          id={`${id}-select`}
+          className="input"
+          value={current?.id}
+          aria-describedby={`${id}-hint`}
+          onChange={(event) => onPick(event.target.value)}
+        >
+          {readerOptions(readers).map((option) => (
+            <option key={option.id} value={option.id} disabled={option.disabled}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </SelectWrap>
       <p id={`${id}-hint`} className={styles.readerHint} title={current?.hint}>
         {current?.hint}
       </p>
@@ -592,7 +595,9 @@ export function Dropzone({
       {variant === "full" && <p className={styles.dropHint}>Or drag files here. {uploadLimitsHint(limits)}</p>}
       {variant === "page" && dragging && enabled && (
         <div className={styles.dropOverlay} aria-hidden="true">
-          <Icon name="upload" size={20} className={styles.dropIcon} />
+          <span className={styles.dropCircle}>
+            <Icon name="upload" size={22} />
+          </span>
           <p className={styles.dropText}>{onFolders ? "Drop files or folders to upload them." : "Drop the files to upload them."}</p>
           <p className={styles.dropHint}>{uploadLimitsHint(limits)}</p>
         </div>

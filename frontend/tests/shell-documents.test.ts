@@ -186,10 +186,10 @@ describe("upload limits by type (PRD U2)", () => {
 
   it("tells people each type's limit next to the dropzone", () => {
     expect(uploadLimitsHint()).toBe(
-      "PDF up to 50 MB. PNG, JPG or TIFF up to 20 MB. CSV or XLSX up to 10 MB.",
+      "PDF, JPG, PNG, TIFF, Excel, CSV · PDF up to 50 MB, images up to 20 MB, Excel and CSV up to 10 MB.",
     );
     expect(uploadLimitsHint(customer)).toBe(
-      "PDF up to 25 MB. PNG, JPG or TIFF up to 20 MB. CSV or XLSX up to 10 MB.",
+      "PDF, JPG, PNG, TIFF, Excel, CSV · PDF up to 25 MB, images up to 20 MB, Excel and CSV up to 10 MB.",
     );
   });
 });
