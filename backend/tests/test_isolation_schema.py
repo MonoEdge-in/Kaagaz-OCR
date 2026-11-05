@@ -54,6 +54,9 @@ the replacing save, never updated.
 Folder upload (0061c, #484, NEEDS VRUSHIT'S APPROVAL): an upload, its folders and its items the
 app reads, adds and updates, never deletes (they go with the customer); an organisation's own
 limits it reads in four columns only, written by the operator's two functions (step-up).
+
+Storage limit per organisation (0061d, #516): an organisation's own limit the app reads in two
+columns only, written by the operator's two functions (step-up).
 """
 
 import re
@@ -152,6 +155,8 @@ FROM_0061C = {
     "folder_upload_items": (True, True, True, False),
     "org_upload_limits": (False, False, False, False),
 }
+# Storage limit (0061d): a column grant only, the operator writes.
+FROM_0061D = {"org_storage_limits": (False, False, False, False)}
 UPDATES_0030 = {
     "word_changes": {"applied", "undone_at", "undone_by"},
     "ensemble_runs": {
@@ -399,6 +404,12 @@ OPERATOR_RIGHTS = {
         EMPTY_PATH,
     ),
     "kaagaz_op_set_folder_upload_limits": ("text", EMPTY_PATH),
+    # 0061d, #516: the storage limits (numbers and the bytes used only), and their write (step-up).
+    "kaagaz_op_storage_limit": (
+        "TABLE(org_storage_gb integer, platform_storage_gb integer, used_bytes bigint)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_set_storage_limit": ("text", EMPTY_PATH),
     # 0046: operator-only read/write for customer and user RPM overrides.
     "kaagaz_op_model_rates": (
         "TABLE(org_rpm integer, user_id uuid, email text, user_rpm integer)",
@@ -474,6 +485,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0051)
         | set(FROM_0056)
         | set(FROM_0061C)
+        | set(FROM_0061D)
     )
 
     with db.system() as conn:
@@ -520,7 +532,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         # An organisation's models and settings are the operator's. Changed on purpose (0039):
         # its feature switches too.
         # Changed on purpose (0040): and its sign-in idle timeout.
-        if table not in FROM_0023 | FROM_0026 | FROM_0039 | FROM_0040 | FROM_0043 | FROM_0061C:
+        if table not in FROM_0023 | FROM_0026 | FROM_0039 | FROM_0040 | FROM_0043 | FROM_0061C | FROM_0061D:
             assert (select, insert) == (True, True), table
     for table in FROM_0002:
         assert granted[table] == (True, True, True, True), table
@@ -542,6 +554,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0051
         | FROM_0056
         | FROM_0061C
+        | FROM_0061D
     ).items():
         assert granted[table] == expected, table
 
