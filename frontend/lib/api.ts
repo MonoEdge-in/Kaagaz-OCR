@@ -145,6 +145,11 @@ export const FEATURE_OFF = "This is turned off for now.";
 /** A refusal because the super admin switched the feature off for everyone. */
 export const isFeatureOff = (caught: unknown) => caught instanceof ApiError && caught.code === "feature_off";
 
+/** An upload refused because it would take the organisation past its storage limit (#516). Its
+ * message is the API's own words, shown as they are; it is never sent again by itself, whatever
+ * its status, as more room comes only from deleting files or a higher limit. */
+export const isStorageFull = (caught: unknown) => caught instanceof ApiError && caught.code === "storage_full";
+
 async function errorFrom(response: Response): Promise<ApiError> {
   const waitHeader = Number(response.headers.get("Retry-After") ?? "");
   const retryAfter = waitHeader > 0 ? waitHeader : undefined;
@@ -533,6 +538,7 @@ async function retryWhileOffline<T>(
     await turn();
     try { return await work(); }
     catch (error) {
+      if (isStorageFull(error)) throw error; // never again by itself, even as a 5xx (#516)
       const paced = rateLimitWait(error, delay);
       if (paced !== null) {
         await waitForNetwork(paced);
