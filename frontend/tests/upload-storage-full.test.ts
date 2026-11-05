@@ -192,7 +192,7 @@ function folderApi(planRefusal: ApiError | null, sendRefusal: ApiError | null) {
     summary: async (id) => ({
       id, root_folder_id: "f0", root_name: "A", source_name: "A", target: "folder", parent_folder_id: null, merge: true,
       created_at: "2026-11-05T10:00:00Z", file_count: items.length, total_bytes: 0, skipped_count: 0, registered: items.length,
-      waiting: items.length, stored: 0, duplicate: 0, failed: 0, reading: 0, ready: 0, problem: 0,
+      waiting: items.length, stored: 0, duplicate: 0, failed: 0, reading: 0, ready: 0, problem: 0, held: 0, held_message: null,
     }),
   };
   return { api, plans: () => plans, sends: () => sends };

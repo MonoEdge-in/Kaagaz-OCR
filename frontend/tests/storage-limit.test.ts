@@ -144,9 +144,12 @@ describe("where the super admin finds it", () => {
     const view = read("components/operator/OrganisationsView.tsx");
     const folder = '{ label: "Folder upload limits", description: MENU_HELP.folderLimits, onSelect: onFolderLimits },';
     const storage = '{ label: "Storage limit", description: MENU_HELP.storage, onSelect: onStorage },';
-    expect(view).toContain(`${folder}\n                  ${storage}`);
+    expect(view).toContain(`${folder}\n                    ${storage}`);
     expect(view).toContain("onStorage={() => setStorageOf(org)}");
-    expect(view).toContain("{storageOf && <OrgStorageLimitDialog org={storageOf} onClose={() => setStorageOf(null)} />}");
+    // Its words go to the page's Toast too (onDone), as the folder upload limits' do on Testing-Env.
+    expect(view).toContain(
+      "{storageOf && <OrgStorageLimitDialog org={storageOf} onClose={() => setStorageOf(null)} onDone={setDone} />}",
+    );
     expect(MENU_HELP.storage).toBe("Set how much this organisation may store in all, in GB.");
   });
 
