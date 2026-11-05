@@ -33,8 +33,8 @@ _ORG = "INSERT INTO org_storage_limits (customer_id, storage_gb) VALUES (:c, :g)
 
 def _words(gb: int) -> str:
     return (
-        f"This organisation has used its {gb} GB of storage. Empty the Trash or delete files,"
-        " or ask Kaagaz to raise the limit."
+        f"This organisation has used its {gb} GB of storage. Delete files forever from the Trash"
+        " to free space, or ask Kaagaz to raise the limit."
     )
 
 

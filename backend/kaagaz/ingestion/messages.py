@@ -45,6 +45,6 @@ def over_every_limit_message(limit: int) -> str:
 def storage_full_message(limit_gb: int) -> str:
     """A new file past the organisation's storage limit, ``limit_gb`` whole GB (#516)."""
     return (
-        f"This organisation has used its {limit_gb} GB of storage. Empty the Trash or delete files,"
-        " or ask Kaagaz to raise the limit."
+        f"This organisation has used its {limit_gb} GB of storage. Delete files forever from the Trash"
+        " to free space, or ask Kaagaz to raise the limit."
     )
