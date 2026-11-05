@@ -49,6 +49,7 @@ vi.mock("@/lib/api", () => ({
   getAiSettings: () => new Promise(() => undefined), // AI settings unknown: nothing capped
   getBatch: api.getBatch,
   getUploadLimits: () => new Promise(() => undefined), // the platform's limits apply
+  isStorageFull: () => false, // no upload here is refused for storage (#516)
   restoreDocument: vi.fn(),
   uploadDocument: api.uploadDocument,
   uploadVersion: api.uploadVersion,
