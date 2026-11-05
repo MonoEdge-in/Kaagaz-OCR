@@ -114,6 +114,14 @@ writes its own audit rows.
   and folders one folder upload may hold; the organisation's own, else the platform's, else
   ``defaults`` (50,000 files, 5 GB, 10,000 folders), each at most 200,000, 20 and 50,000
   (400 before a code is used up). An organisation's all null follows the platform (0071, #484).
+* ``GET`` and ``PUT`` {storage_gb, code} ``/operator/storage-limit`` and
+  ``/operator/orgs/{id}/storage-limit`` (PUT with a fresh code): the most gigabytes an
+  organisation's documents may hold (every version and the Trash); the organisation's own, else
+  the platform's, else ``default_gb`` (50), 1 to ``most_gb`` (10,000) (400 before a code is used
+  up). Null follows the platform (an organisation's) or the default (the platform's). The reply:
+  ``storage_gb`` (this level's own), ``platform_gb``, ``effective_gb``, ``default_gb``,
+  ``most_gb`` and ``used_bytes`` (the organisation's documents now; 0 for the platform)
+  (0061d, merged by 0075, #516).
 * ``GET``, ``POST`` {scan_model, chat_model, note, code} and ``DELETE`` {code}
   ``/operator/test-model`` (POST and DELETE with a fresh code): the platform test model, one
   allowed model for every organisation's scanning and answering, and its undo (every
@@ -169,6 +177,7 @@ from kaagaz.db.models import (
 from kaagaz.db.operator_models import AiChoice
 from kaagaz.db.operator_orgs import Outcome
 from kaagaz.db.reading_days import india_day
+from kaagaz.db.storage_limits import DEFAULT_STORAGE_GB, MOST_STORAGE_GB
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs import accuracy
 from kaagaz.reading.mistral_ocr import (
@@ -366,6 +375,16 @@ class FolderLimitsBody(BaseModel):
     max_files: Annotated[int, Field(strict=True, ge=1, le=MOST_FILES)] | None
     max_gb: Annotated[int, Field(strict=True, ge=1, le=MOST_GB)] | None
     max_folders: Annotated[int, Field(strict=True, ge=1, le=MOST_FOLDERS)] | None
+    code: str = Field(min_length=1, max_length=MAX_CODE)
+
+
+class StorageLimitBody(BaseModel):
+    """The storage limit in whole GB (0061d, #516), 1 to 10,000; null: the default (the
+    platform's) or follow the platform (an organisation's). Strict: 1.5, "3" and true are refused."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    storage_gb: Annotated[int, Field(strict=True, ge=1, le=MOST_STORAGE_GB)] | None
     code: str = Field(min_length=1, max_length=MAX_CODE)
 
 
@@ -1157,6 +1176,73 @@ def set_org_folder_upload_limits(
         )
     _refuse(db, operator, outcome, step_up)
     return get_org_folder_upload_limits(customer_id, operator, db)
+
+
+def _storage_limit(
+    db: OperatorDatabase, operator: CurrentOperator, customer_id: str | None
+) -> dict[str, Any]:
+    """This level's storage limit with the platform's, the one in effect, the default, the most
+    and the bytes used (#516; module notes)."""
+    with db.operator() as conn:
+        row = models_sql.storage_limit(conn, operator.operator_id, customer_id)
+    if row is None:  # an unknown organisation, or the operator was disabled meanwhile
+        raise ApiError(404, "not_found") if customer_id else ApiError(401, "not_signed_in")
+    own, platform = row["org_storage_gb"], row["platform_storage_gb"]
+    storage = platform if customer_id is None else own
+    return {
+        "storage_gb": storage,
+        "platform_gb": platform,
+        "effective_gb": storage or platform or DEFAULT_STORAGE_GB,
+        "default_gb": DEFAULT_STORAGE_GB,
+        "most_gb": MOST_STORAGE_GB,
+        "used_bytes": int(row["used_bytes"]),
+    }
+
+
+@router.get("/storage-limit")
+def get_storage_limit(operator: OperatorSession, db: OperatorDb) -> dict[str, Any]:
+    """The platform's storage limit (null: the default)."""
+    return _storage_limit(db, operator, None)
+
+
+@router.put("/storage-limit")
+def set_storage_limit(
+    body: StorageLimitBody, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, Any]:
+    """Set it (a fresh code first); every organisation without its own follows at its next upload."""
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = models_sql.set_storage_limit(
+            conn, operator.operator_id, None, body.storage_gb, step=step_up.step
+        )
+    _refuse(db, operator, outcome, step_up)
+    return _storage_limit(db, operator, None)
+
+
+@router.get("/orgs/{customer_id}/storage-limit")
+def get_org_storage_limit(
+    customer_id: uuid.UUID, operator: OperatorSession, db: OperatorDb
+) -> dict[str, Any]:
+    """One organisation's own limit (null: follow the platform) and the bytes its documents hold."""
+    return _storage_limit(db, operator, str(customer_id))
+
+
+@router.put("/orgs/{customer_id}/storage-limit")
+def set_org_storage_limit(
+    customer_id: uuid.UUID,
+    body: StorageLimitBody,
+    operator: OperatorSession,
+    db: OperatorDb,
+    context: Context,
+) -> dict[str, Any]:
+    """Set one organisation's (null: follow the platform), a fresh code first."""
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = models_sql.set_storage_limit(
+            conn, operator.operator_id, str(customer_id), body.storage_gb, step=step_up.step
+        )
+    _refuse(db, operator, outcome, step_up)
+    return _storage_limit(db, operator, str(customer_id))
 
 
 _SPEED_WORDS = {
