@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BatchTray } from "@/components/documents/UploadArea";
+import { BatchTray, CANT_CHECK_TEXT } from "@/components/documents/UploadArea";
 import {
   KEEP_MS,
   MAX_FILES_PER_BATCH,
@@ -158,6 +158,21 @@ describe("each file's place in the tray", () => {
     const at = rows.map((item) => html.indexOf(`>${item.key}.pdf<`));
     expect(at.every((place) => place > -1)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
+  });
+
+  it("says it can't check right now while the batches don't answer, and not otherwise", () => {
+    const tray = (checkFailing: boolean) => renderToStaticMarkup(createElement(BatchTray, { ...TRAY, entries: rows, checkFailing }));
+    expect(tray(true)).toContain(CANT_CHECK_TEXT);
+    expect(tray(false)).not.toContain(CANT_CHECK_TEXT);
+  });
+
+  it("offers Retry all not sent on a drop with two or more files not sent, and not with one", () => {
+    const notSent = (key: string) => row(key, { kind: "error", message: "The server was restarting. Retry.", retry: true });
+    const tray = (entries: UploadEntry[]) => renderToStaticMarkup(createElement(BatchTray, { ...TRAY, entries }));
+    expect(tray([notSent("a"), notSent("b"), row("ready", done(doc("r")))])).toContain(">Retry all not sent<");
+    expect(tray([notSent("a"), row("ready", done(doc("r")))])).not.toContain("Retry all not sent");
+    // A file refused for itself (retry: false) is not counted: sending it again would not help.
+    expect(tray([notSent("a"), row("big", { kind: "error", message: "Too big." })])).not.toContain("Retry all not sent");
   });
 
   it("sums the drop up in one line", () => {

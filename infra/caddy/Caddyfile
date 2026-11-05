@@ -15,6 +15,10 @@
 	# Browsers then use only HTTPS for this site for a year (security checklist, 15 Oct 2026).
 	header Strict-Transport-Security "max-age=31536000"
 
+	# Compressed replies (production QA T3): JSON lists such as GET /api/folders shrink about
+	# 6 times. Caddy skips what is already compressed or too small.
+	encode zstd gzip
+
 	# A deploy restarts api and frontend (infra/ec2/deploy.sh, #246 A7). While one cannot be
 	# reached, Caddy tries it again every half second for up to 30 s before giving up, so a
 	# request waits through the restart instead of failing at once. Only requests that never

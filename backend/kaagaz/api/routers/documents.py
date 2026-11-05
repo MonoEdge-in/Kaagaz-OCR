@@ -142,7 +142,7 @@ from starlette.datastructures import FormData, UploadFile
 from kaagaz.api.auth import CanDeleteForever, CurrentUser, Reviewer, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
-from kaagaz.api.names import CONTROL_CHARACTERS, DOCUMENT_NAME_MAX, clean_document_name
+from kaagaz.api.names import CONTROL_CHARACTERS, DOCUMENT_NAME_MAX, clean_document_name, mark_hidden
 from kaagaz.api.readers import SINGLE, ReadingChoice, check_reading, check_shape, offer
 from kaagaz.api.upload_guard import check_upload_request
 from kaagaz.api.views import (
@@ -264,10 +264,11 @@ _REJECT_STATUS = {
 
 
 def display_name(filename: str | None) -> str:
-    """The name shown for an upload: path stripped, control characters removed,
-    at most 255 characters, "document" if nothing is left."""
+    """The name shown for an upload: path stripped, control characters removed, a character
+    that can hide or reorder what is shown as U+FFFD (``names.mark_hidden``), at most 255
+    characters, "document" if nothing is left."""
     name = (filename or "").replace("\\", "/").rsplit("/", 1)[-1]
-    name = CONTROL_CHARACTERS.sub("", name).strip()[:DOCUMENT_NAME_MAX].strip()
+    name = mark_hidden(CONTROL_CHARACTERS.sub("", name)).strip()[:DOCUMENT_NAME_MAX].strip()
     return name or "document"
 
 
@@ -1017,10 +1018,14 @@ async def upload_resumable_part(
 @router.post("/documents/upload-sessions/{session_id}/complete")
 def complete_resumable_upload(session_id: uuid.UUID, user: User, context: Context) -> JSONResponse:
     with context.db.customer(user.customer_id) as conn:
-        session = upload_sessions_sql.get(conn, user.customer_id, user.user_id, str(session_id))
+        session = upload_sessions_sql.get(
+            conn, user.customer_id, user.user_id, str(session_id), finished=True
+        )
     if session is None:
         raise ApiError(404, "not_found")
     metadata = cast(dict[str, Any], session["metadata"])
+    if metadata.get("completed") is not None:  # sent again after a lost reply (production QA T1)
+        return JSONResponse(metadata["completed"], status_code=200)
     if not context.storage.resumable_complete(str(session["storage_key"])):
         parts = context.storage.resumable_parts(
             str(session["storage_key"]), str(session["storage_upload_id"])
@@ -1083,7 +1088,7 @@ def complete_resumable_upload(session_id: uuid.UUID, user: User, context: Contex
             raise
     context.storage.delete_resumable(str(session["storage_key"]))
     with context.db.customer(user.customer_id) as conn:
-        upload_sessions_sql.delete(conn, user.customer_id, user.user_id, str(session_id))
+        upload_sessions_sql.complete(conn, user.customer_id, user.user_id, str(session_id), result)
     return JSONResponse(result, status_code=status or (200 if result["duplicate"] else 201))
 
 
@@ -1475,7 +1480,11 @@ def update_document(
     if "display_name" in given:
         name = clean_document_name(body.display_name or "")
         if name is None:
-            raise ApiError(400, "bad_request", f"Enter a name of 1 to {DOCUMENT_NAME_MAX} characters.")
+            raise ApiError(
+                400,
+                "bad_request",
+                f"Enter a name of 1 to {DOCUMENT_NAME_MAX} characters, with no hidden characters.",
+            )
     customer_id, target = user.customer_id, str(document_id)
     folder_id = None if body.folder_id is None else str(body.folder_id)
     try:

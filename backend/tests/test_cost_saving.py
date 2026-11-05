@@ -151,10 +151,19 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(careful_plan(clear, lead=STANDARD), [])
         self.assertEqual(careful_pages({1: clear}, lead=STANDARD), ([], 0))
 
-    def test_a_handwritten_page_is_read_whole_even_when_every_word_was_sure(self) -> None:
-        # Tushar's accuracy first (16 Oct 2026): a quick read of handwriting can be sure and wrong.
-        written = dataclasses.replace(hard_read(0, 5), handwritten=True)
-        self.assertEqual(careful_plan(written, lead=STANDARD), ["handwritten", PATH_PAGE])
+    def test_b1_a_printed_page_with_a_signature_keeps_its_first_read(self) -> None:
+        # Changed on purpose (production QA B1, 5 Nov 2026): "handwritten" is set for any
+        # handwriting on the page, one signature enough, so it re-read most pages whole. Hard
+        # handwriting is still caught by the reader's handwriting_hard issue and unsure words.
+        signed = dataclasses.replace(hard_read(0, 5), handwritten=True)
+        self.assertEqual(careful_plan(signed, lead=STANDARD), [])
+        self.assertEqual(careful_pages({1: signed}, lead=STANDARD), ([], 0))
+
+    def test_b1_a_page_of_hard_handwriting_is_still_read_whole(self) -> None:
+        hard = dataclasses.replace(hard_read(0, 5), handwritten=True, issues=("handwriting_hard",))
+        self.assertEqual(careful_plan(hard, lead=STANDARD), ["handwriting_hard", PATH_PAGE])
+        unsure = dataclasses.replace(hard_read(1, 5), handwritten=True)
+        self.assertEqual(careful_plan(unsure, lead=STANDARD), ["unsure_words", PATH_WORDS])
 
     def test_a_few_pinned_hard_lines_are_read_as_words(self) -> None:
         self.assertEqual(careful_plan(hard_read(2, 10), lead=STANDARD), ["unsure_words", PATH_WORDS])

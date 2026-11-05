@@ -14,6 +14,7 @@ import { FolderReadingDialog, FolderUploadDialog, clashOf, dialogProblem, summar
 import { FolderUploadRow } from "@/components/documents/FolderUploadRow";
 import { buildTree } from "@/components/documents/folderTree";
 import { EMPTY_FOLDER_UPLOADS, folderUploadsReducer } from "@/components/documents/folderUpload";
+import type { NotSentRow } from "@/components/documents/FolderUploadRow";
 import type { FolderUploadLimits, Folder } from "@/lib/types";
 
 const LIMITS: FolderUploadLimits = {
@@ -144,15 +145,16 @@ describe("the dialog", () => {
 });
 
 describe("the tray's row for a folder upload", () => {
-  const row = (phase: "sending" | "needs_pick" | "stopped", held = true) => {
+  const row = (phase: "planning" | "registering" | "sending" | "stopping" | "needs_pick" | "stopped", held = true, notSent: { rows: NotSentRow[]; total: number } = { rows: [], total: 0 }) => {
     let state = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, { type: "start", id: "u", rootName: "A", total: 5000 });
+    if (phase === "stopping") state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "sending" });
     state = folderUploadsReducer(state, { type: "phase", id: "u", phase });
     for (let n = 0; n < 1240; n++) state = folderUploadsReducer(state, { type: "sent", id: "u", itemId: `i${n}`, outcome: "stored" });
     return renderToStaticMarkup(
       createElement(FolderUploadRow, {
         view: state.u!,
         held,
-        notSent: { rows: [], total: 0 },
+        notSent,
         tree: buildTree([]),
         limits: { pdf_bytes: 1, image_bytes: 1, sheet_bytes: 1, max_pages: 1, readers: [] },
         actions: {
@@ -172,13 +174,80 @@ describe("the tray's row for a folder upload", () => {
     const html = row("sending");
     expect(html).toContain('aria-valuetext="1,240 of 5,000"');
     expect(html).toContain("Folder “A”: 1,240 of 5,000 uploaded");
-    expect(html).toContain(">Stop<");
+    expect(html).toContain(">Stop<span"); // changed on purpose (production QA): Stop names the folder
+  });
+
+  it("says on a file being sent that it waits for the connection", () => {
+    let state = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, { type: "start", id: "u", rootName: "A", total: 2 });
+    state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "sending" });
+    state = folderUploadsReducer(state, { type: "sending", id: "u", itemId: "i1", name: "a.pdf", fraction: 0, waiting: "connection" });
+    state = folderUploadsReducer(state, { type: "sending", id: "u", itemId: "i2", name: "b.pdf", fraction: 0 });
+    const html = renderToStaticMarkup(
+      createElement(FolderUploadRow, {
+        view: state.u!,
+        held: true,
+        notSent: { rows: [], total: 0 },
+        tree: buildTree([]),
+        limits: { pdf_bytes: 1, image_bytes: 1, sheet_bytes: 1, max_pages: 1, readers: [] },
+        actions: {
+          stop: () => undefined,
+          resume: () => undefined,
+          chooseAgain: () => undefined,
+          retry: () => undefined,
+          retryAll: () => undefined,
+          clear: () => undefined,
+          loadItems: async () => ({ items: [], next_after: null }),
+        },
+      }),
+    );
+    expect(html).toContain("a.pdf: Waiting for connection");
+    expect(html).toContain("Sending b.pdf");
+  });
+
+  it("offers Stop while it makes its folders and lists its files too", () => {
+    expect(row("planning")).toContain(">Stop<span");
+    expect(row("registering")).toContain(">Stop<span");
+  });
+
+  it("names the folder on each of its buttons for a screen reader", () => {
+    const named = '<span class="visually-hidden"> folder “A”</span>';
+    expect(row("sending")).toContain(`Stop${named}`);
+    expect(row("stopping")).toContain(`Stopping after the files being sent…${named}`);
+    expect(row("stopped", true)).toContain(`Continue upload${named}`);
+    const item = { id: "i1", seq: 0, path_key: "k", name: "a.pdf", folder_id: "f0", size: 1, state: "waiting" as const, failure_code: null, document_id: null, document: null };
+    expect(row("stopped", true, { rows: [{ item, message: "Not sent.", retry: true }], total: 1 })).toContain(`Retry all failed${named}`);
   });
 
   it("after a reload names the folder to choose again; stopped here, it continues with the files it holds", () => {
     expect(row("needs_pick", false)).toContain("Choose “A” again");
     expect(row("stopped", true)).toContain("Continue upload");
     expect(row("stopped", false)).toContain("Choose “A” again");
+  });
+
+  it("offers Clear on a row stopped or waiting to be chosen again, never while it sends", () => {
+    expect(row("stopped", true)).toContain("Clear<span");
+    expect(row("stopped", false)).toContain("Clear<span");
+    expect(row("needs_pick", false)).toContain("Clear<span");
+    expect(row("sending")).not.toContain("Clear<span");
+  });
+
+  it("says it is stopping after Stop, with no Stop or Retry, until the files being sent are in", () => {
+    const html = row("stopping");
+    expect(html).toContain("<button type=\"button\" class=\"btn\" disabled=\"\">Stopping after the files being sent…");
+    expect(html).not.toContain(">Stop<span");
+    expect(html).not.toContain("Retry");
+    expect(html).not.toContain("Clear<span");
+  });
+
+  it("keeps the files being sent while it stops, and never goes back to stopping once it ended", () => {
+    let state = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, { type: "start", id: "u", rootName: "A", total: 5 });
+    state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "sending" });
+    state = folderUploadsReducer(state, { type: "sending", id: "u", itemId: "i1", name: "a.pdf", fraction: 0.5 });
+    state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "stopping" });
+    expect(state.u?.phase).toBe("stopping");
+    expect(state.u?.sending.map((each) => each.name)).toEqual(["a.pdf"]);
+    state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "stopped" });
+    expect(folderUploadsReducer(state, { type: "phase", id: "u", phase: "stopping" })).toBe(state);
   });
 
   const settled = (counts: { failed?: number; problem?: number; duplicate?: number }, notSent = 0) => {

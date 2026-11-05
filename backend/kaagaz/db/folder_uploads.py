@@ -14,8 +14,9 @@ docs/architecture.md).
   - The counts are checked against the limits before the lock; the folders it would make,
     after it (``too_many_folders`` rolls the whole plan back).
   - One plan is built at a time per organisation (``plan_busy`` at once, never a wait: a
-    transaction advisory lock), and a new upload is refused while another of the organisation
-    still has files waiting (``upload_in_progress``); a re-plan of the same upload is not.
+    transaction advisory lock), and a new upload is refused while another user's upload of the
+    organisation still has files waiting and was active in the last 30 minutes
+    (``upload_in_progress``); a re-plan of the same upload, or the same user's new one, is not.
   - Merge (the default): a same-name folder already there (any letter case, as
     ``folders_sibling_name`` compares, and NFC on both sides, so a folder a Mac made is found)
     is used at every level. Keep separate makes the root ``Name (2)`` or the first free
@@ -111,11 +112,16 @@ class PlanRefused(FolderError):
 _PLAN_LOCK = text(
     "SELECT pg_try_advisory_xact_lock(hashtextextended('kaagaz.folder_plan:' || CAST(:c AS uuid)::text, 0))"
 )
-# Another upload of the organisation with a file still waiting, upload by upload on the state index.
+# Another user's upload of the organisation with a file still waiting, upload by upload on the
+# state index, that was active in the last 30 minutes (production QA P1: a stopped or abandoned
+# upload's waiting files blocked the organisation for ever; the browser alone knows it stopped).
 _SENDING = text(
-    "SELECT EXISTS (SELECT 1 FROM folder_uploads u WHERE u.customer_id = :c AND EXISTS ("
-    "SELECT 1 FROM folder_upload_items i WHERE i.customer_id = :c AND i.folder_upload_id = u.id"
-    " AND i.state = 'waiting'))"
+    "SELECT EXISTS (SELECT 1 FROM folder_uploads u WHERE u.customer_id = :c AND u.user_id <> :usr"
+    " AND EXISTS (SELECT 1 FROM folder_upload_items i WHERE i.customer_id = :c"
+    " AND i.folder_upload_id = u.id AND i.state = 'waiting')"
+    " AND greatest(u.updated_at, (SELECT max(i.updated_at) FROM folder_upload_items i"
+    " WHERE i.customer_id = :c AND i.folder_upload_id = u.id))"
+    " > now() - interval '30 minutes')"
 )
 
 

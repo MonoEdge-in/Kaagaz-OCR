@@ -78,6 +78,11 @@ def _env_example() -> dict[str, str]:
         (None, "document"),
         ("folder/", "document"),
         ("tab\tand\nnewline.pdf", "tabandnewline.pdf"),
+        # Production QA S5: a character that hides or reorders what is shown is shown as U+FFFD,
+        # as a folder upload's refused name is (names.shown_upload_name); ZWJ and ZWNJ stay.
+        ("evil‮txt.pdf", "evil�txt.pdf"),
+        ("a​b.pdf", "a�b.pdf"),
+        ("क्‍ष.pdf", "क्‍ष.pdf"),
     ],
 )
 def test_display_name_strips_the_path_and_control_characters(given: str | None, expected: str) -> None:
