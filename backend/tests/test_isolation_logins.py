@@ -40,8 +40,9 @@ from kaagaz.search.story_vectors import embed_missing_stories
 from tests.db_support import APP_ROLE, database_url, insert_document, new_customer
 from tests.settings_factory import make_settings
 from tests.support import TEXT_BYTES
-from tests.test_api_folder_upload_files import ResumableStorage, _fingerprint
+from tests.test_api_folder_upload_files import ResumableStorage
 from tests.test_api_folder_uploads import TREE, item, plan, register
+from tests.test_api_storage_limit import _send_all as send_all
 from tests.test_api_support import CSRF, PDF_BYTES, Api, ApiFakeQueue, ApiFakeStorage, FakeAnswers, TestClient
 from tests.test_indexing_db import FakeModel
 from tests.test_isolation_customer_purge import KeyStorage
@@ -289,8 +290,8 @@ def test_the_storage_limit_is_read_and_enforced_under_the_two_logins(
     """#516 (0061d, merged by 0075) under #479: no owner right anywhere. The super admin's login
     reads one organisation's limit and the bytes it holds (``kaagaz_op_storage_limit``); on the
     app's login its admin reads the same, a file of exactly the bytes left goes in, the next is
-    refused ``storage_full`` at the upload, the resumable start and the folder upload plan, and a
-    duplicate is still answered. The limit is written as the owner here: its write needs a fresh
+    refused ``storage_full`` at the upload, the resumable complete and the folder upload plan, and
+    a duplicate is still answered. The limit is written as the owner here: its write needs a fresh
     code (test_operator_storage_limit_db)."""
     app_engine, ops_engine = make_engine(logins[API]), make_engine(logins[OPS])
     try:
@@ -311,17 +312,11 @@ def test_the_storage_limit_is_read_and_enforced_under_the_two_logins(
         }
         pdf = {"file": ("bill.pdf", PDF_BYTES, "application/pdf")}
         assert admin.client.post("/api/documents", files=pdf, headers=CSRF).status_code == 201
-        start = {
-            "file_name": "big.pdf",
-            "file_size": 1,
-            "fingerprint": _fingerprint(b"x"),
-            "user_id": admin.user_id,
-        }
         refused = [
             admin.client.post(
                 "/api/documents", files={"file": ("b.csv", TEXT_BYTES, "text/csv")}, headers=CSRF
             ),
-            admin.client.post("/api/documents/upload-sessions", json=start, headers=CSRF),
+            send_all(admin, TEXT_BYTES),  # the resumable start, a part, then its complete
             plan(admin, TREE, file_count=1, total_bytes=1),
         ]
         assert [(reply.status_code, reply.json()["error"]["code"]) for reply in refused] == [
