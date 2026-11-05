@@ -19,7 +19,7 @@ import type { UploadEntry } from "@/components/documents/uploadQueue";
 import { ApiError, isStorageFull, uploadDocument } from "@/lib/api";
 import { settle } from "./fake-clock";
 
-const FULL = "This organisation has used its 50 GB of storage. Empty the Trash or delete files, or ask Kaagaz to raise the limit.";
+const FULL = "This organisation has used its 50 GB of storage. Delete files forever from the Trash to free space, or ask Kaagaz to raise the limit.";
 const DETAILS = { used_bytes: 50 * 1024 ** 3, limit_bytes: 50 * 1024 ** 3, limit_gb: 50 };
 const full = (status: number) => new ApiError(status, "storage_full", FULL, DETAILS);
 const json = (status: number, body: unknown) =>
