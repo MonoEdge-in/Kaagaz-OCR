@@ -9,6 +9,7 @@ import base64
 import json
 import re
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from sqlalchemy import text
@@ -217,7 +218,8 @@ def test_signed_out_visitors_behind_caddy_each_have_their_own_bucket() -> None:
     dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
     assert re.findall(r"^ENV FORWARDED_ALLOW_IPS=(.+)$", dockerfile, re.MULTILINE) == ['"*"']
     app = _offline_client(rate_limit_per_minute=2).app
-    client = TestClient(ProxyHeadersMiddleware(app, trusted_hosts="*"))
+    # uvicorn and starlette type the ASGI callables differently.
+    client = TestClient(cast(Any, ProxyHeadersMiddleware(cast(Any, app), trusted_hosts="*")))
     first, second = {"X-Forwarded-For": "203.0.113.7"}, {"X-Forwarded-For": "198.51.100.9"}
     for _ in range(2):
         assert client.get("/api/auth/me", headers=first).status_code == 401
