@@ -147,8 +147,8 @@ interface Loaded {
   defaults: Record<FolderLimitName, number>;
 }
 
-/** Loads the platform's values (no org) or one organisation's, again after each save. */
-function useLimits(orgId?: string) {
+/** Loads the platform's values (no org) or one organisation's, again after each save. Exported for its tests. */
+export function useLimits(orgId?: string) {
   const [attempt, setAttempt] = useState(0);
   const [value, setValue] = useState<Loaded | null>(null);
   const [error, setError] = useState<{ attempt: number; message: string } | null>(null);
@@ -166,7 +166,8 @@ function useLimits(orgId?: string) {
     };
   }, [orgId, attempt]);
   const failed = error?.attempt === attempt ? error.message : null;
-  return { value, failed, reload: () => setAttempt((n) => n + 1) };
+  // A failed load (after a save, too) shows that it failed, never the values from before it.
+  return { value: failed ? null : value, failed, reload: () => setAttempt((n) => n + 1) };
 }
 
 export function FolderUploadLimitsView() {

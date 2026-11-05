@@ -105,8 +105,8 @@ export function StorageLimitForm(props: { value: StorageLimit; org: boolean; onS
   );
 }
 
-/** Loads the platform's value (no org) or one organisation's, again after each save. */
-function useStorageLimit(orgId?: string) {
+/** Loads the platform's value (no org) or one organisation's, again after each save. Exported for its tests. */
+export function useStorageLimit(orgId?: string) {
   const [attempt, setAttempt] = useState(0);
   const [value, setValue] = useState<StorageLimit | null>(null);
   const [error, setError] = useState<{ attempt: number; message: string } | null>(null);
@@ -121,7 +121,8 @@ function useStorageLimit(orgId?: string) {
     };
   }, [orgId, attempt]);
   const failed = error?.attempt === attempt ? error.message : null;
-  return { value, failed, reload: () => setAttempt((n) => n + 1) };
+  // A failed load (after a save, too) shows that it failed, never the value from before it.
+  return { value: failed ? null : value, failed, reload: () => setAttempt((n) => n + 1) };
 }
 
 /** The platform's default, on the Folder uploads tab. */
