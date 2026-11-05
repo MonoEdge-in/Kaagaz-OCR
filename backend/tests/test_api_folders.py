@@ -78,7 +78,7 @@ def test_the_name_is_trimmed_and_must_be_1_to_100_characters(db: Database) -> No
         assert reply.status_code == 400, name
         assert _error(reply) == {
             "code": "bad_request",
-            "message": "Enter a folder name of 1 to 100 characters.",
+            "message": "Enter a folder name of 1 to 100 characters, with no hidden characters.",
         }
 
 

@@ -186,8 +186,8 @@ class CarefulPagesTest(unittest.TestCase):
     def test_c5_each_trigger_chooses_the_page_with_its_reason(self) -> None:
         # Changed on purpose (Cost saving, 16 Oct 2026): the reasons end with how the page is
         # read again (here the whole page: one line, so its hard line is all of it), and
-        # a fair grade and a crowded page need a hard line too (the next test). Handwriting
-        # stays page wide (Tushar's accuracy first, 16 Oct 2026).
+        # a fair grade and a crowded page need a hard line too (the next test). Hard
+        # handwriting is page wide; the handwritten flag alone is no reason (production QA B1).
         illegible = dataclasses.replace(
             read(issues=("illegible_words",)), lines=(OcrLine(f"Total {ILLEGIBLE_MARK}", 0, 0, 10, 1, None),)
         )
@@ -201,7 +201,6 @@ class CarefulPagesTest(unittest.TestCase):
             "handwriting_hard": read(issues=("handwriting_hard",)),
             "illegible_words": illegible,
             "no_text": read(issues=("no_text",), lines=0),
-            "handwritten": read(handwritten=True),
             "quality_poor": read(quality="poor"),
             "unsure_words": read(unsure=1),
         }
@@ -221,7 +220,8 @@ class CarefulPagesTest(unittest.TestCase):
         with_a_hard_word = read(handwritten=True, quality="fair", unsure=1)
         self.assertEqual(
             careful_pages({3: with_a_hard_word}, lead=STANDARD),
-            ([{"page": 3, "reasons": ["handwritten", "quality_fair", "unsure_words", PATH_PAGE]}], 0),
+            # Changed on purpose (production QA B1): the handwritten flag is no reason.
+            ([{"page": 3, "reasons": ["quality_fair", "unsure_words", PATH_PAGE]}], 0),
         )
 
     def test_c5_never_for_cut_off_low_resolution_tilted_or_a_clean_page(self) -> None:
@@ -239,8 +239,9 @@ class CarefulPagesTest(unittest.TestCase):
         # Changed on purpose (Cost saving, 16 Oct 2026): a fair grade alone keeps the first read,
         # so each page has an unsure word too, and every page one reason more (its path).
         reads = {n: read(quality="fair", unsure=1) for n in range(1, DYNAMIC_MAX_PAGES + 6)}
-        reads[30] = read(quality="poor", handwritten=True, issues=("blurry",), unsure=1)  # four: first
-        reads[17] = read(quality="fair", handwritten=True, unsure=2)  # three reasons: next
+        # Changed on purpose (production QA B1): handwriting_hard, not the handwritten flag.
+        reads[30] = read(quality="poor", issues=("blurry", "faint"), unsure=1)  # five: first
+        reads[17] = read(quality="fair", issues=("handwriting_hard",), unsure=2)  # four: next
         chosen, cap_hit = careful_pages(reads, lead=STANDARD)
         self.assertEqual([page["page"] for page in chosen[:2]], [30, 17])
         self.assertEqual(len(chosen), DYNAMIC_MAX_PAGES)

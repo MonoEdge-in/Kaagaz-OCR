@@ -233,6 +233,9 @@ class ReplayTest(unittest.TestCase):
         # page wide) are still read whole, so the calls and values are the same.
         # Changed on purpose (Cost saving tuning, 16 Oct 2026; recorded again, same replies and
         # calls): each escalated page carries its first-read and Careful tokens, and kept_quick.
+        # Changed on purpose (production QA B1, 5 Nov 2026; recorded again): page 3 is only
+        # flagged handwritten, every word sure, so it keeps its first read: one Careful call
+        # fewer, the same values.
         reading = Reading(
             "dynamic",
             Agent(LEAD, VERTEX, "Standard"),

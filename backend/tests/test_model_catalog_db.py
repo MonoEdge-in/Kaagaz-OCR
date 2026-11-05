@@ -4,6 +4,7 @@ verify-models pass, and a model OpenRouter no longer lists stays, ineligible. Th
 filter rules themselves: ``test_model_catalog.py``."""
 
 import copy
+import logging
 from collections.abc import Iterator
 from datetime import date
 from typing import Any
@@ -40,6 +41,12 @@ def _refresh(db: Database, fake: OpenRouterFake) -> catalog.Refreshed:
 def test_a_refresh_saves_the_candidates_and_a_model_no_longer_listed_stays_ineligible(
     db: Database, fake: OpenRouterFake
 ) -> None:
+    # Production QA B7: a run before left PRO verified ('g9' below); start from no verify pass.
+    _owner(
+        db,
+        "UPDATE model_catalog SET verified_prompt_version = NULL, verified_at = NULL WHERE id = :m",
+        {"m": PRO},
+    )
     done = _refresh(db, fake)
     # Changed on purpose (features 25-27, 15 Oct 2026): answer-only candidates are saved too,
     # and the fixture has Gemini 3.8 Flash.
@@ -101,3 +108,32 @@ def test_0023_refuses_a_model_id_outside_the_pattern(db: Database, model_id: str
             " VALUES (:m, 'x', 1, 1)",
             {"m": model_id},
         )
+
+
+def test_l2_a_refresh_names_each_env_model_the_catalogue_lacks_or_holds_ineligible(
+    db: Database, fake: OpenRouterFake, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Production QA L2: a withdrawn OCR_MODEL showed only as 404s, one page at a time. After
+    each refresh (and at worker start) an ERROR names each model .env sets that the catalogue
+    does not hold, or holds as not eligible for its use: OCR_MODEL to read, MODEL_CHAT to answer."""
+    caplog.set_level(logging.ERROR, logger="kaagaz.worker")
+    gone = "google/gemini-0-withdrawn"
+    settings = make_settings(
+        openrouter_api_key=KEY,
+        openrouter_base_url=fake.url,
+        ocr_model=PRO,
+        model_chat=gone,
+        model_enabled=True,
+    )
+    catalog.refresh(db, OpenRouterClient(settings), settings, today=TODAY, pause=lambda seconds: None)
+    logged = [r for r in caplog.records if r.getMessage() == "env model not usable"]
+    assert [(r.__dict__["where"], r.__dict__["model"], r.__dict__["code"]) for r in logged] == [
+        ("MODEL_CHAT", gone, "missing")
+    ]
+    _owner(db, "UPDATE model_catalog SET eligible = false WHERE id = :m", {"m": PRO})
+    assert catalog.check_env_models(db, settings) == [
+        ("OCR_MODEL", PRO, "not_eligible"),
+        ("MODEL_CHAT", gone, "missing"),
+    ]
+    off = make_settings(ocr_model=SONNET, model_chat=gone, model_enabled=False)
+    assert catalog.check_env_models(db, off) == []  # MODEL_CHAT is not used with AI off
