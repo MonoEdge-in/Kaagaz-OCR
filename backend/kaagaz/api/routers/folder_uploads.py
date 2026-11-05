@@ -12,7 +12,8 @@ batches and duplicates stay exactly as for any upload.
   folders. One upload sends at a time per organisation (409 ``upload_in_progress``) and one plan
   is built at a time (429 ``plan_busy``, ``Retry-After: 2``). A plan whose bytes would take the
   organisation past its storage limit is 413 ``storage_full`` before any folder is made (#516,
-  ``documents.storage_full``); a re-plan counts only the bytes it has not sent yet, and "Add new
+  ``documents.storage_full``); a re-plan counts only the bytes it still has to send (not a file
+  stored, a duplicate or failed), the browser leaves out the files it refuses, and "Add new
   files only" is not checked there (its bytes hold the files already in Kaagaz, which cost
   nothing): each new file is, as it is sent.
 * ``POST /folder-uploads/{id}/items``: a page of at most 1,000 files; each gets its folder and

@@ -7,6 +7,7 @@ resumable start is not checked, so a duplicate sent that way costs nothing too; 
 bytes left go in. The service's own rules:
 test_upload_storage_limit. The operator's routes: test_operator_storage_limit_db."""
 
+import hashlib
 import io
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -21,7 +22,7 @@ from kaagaz.ingestion.ports import StorageRoom
 from tests.db_support import insert_document, new_customer
 from tests.support import TEXT_BYTES
 from tests.test_api_folder_upload_files import ResumableStorage, _fingerprint, planned, send
-from tests.test_api_folder_uploads import TREE, plan
+from tests.test_api_folder_uploads import TREE, item, plan, register
 from tests.test_api_support import CSRF, PDF_BYTES, Api, Signed
 from tests.test_operator_auth_db import _owner
 
@@ -247,18 +248,47 @@ def test_a_re_plan_does_not_count_the_files_it_already_sent_twice(db: Database) 
     _refused(plan(signed, TREE, total_bytes=total), used=GIB - len(TEXT_BYTES))  # a new upload of it
 
 
-def test_an_add_new_files_only_plan_is_not_checked_but_each_new_file_is(db: Database) -> None:
+def test_an_add_new_files_only_plan_and_its_already_in_files_cost_no_storage(db: Database) -> None:
     """Testing-Env port (#516 with #484's "Add new files only", 0072): such a plan's bytes hold
-    the files already in Kaagaz, which cost nothing, so the plan is not refused for storage; a new
-    file past the limit is, when it is sent, and its item stays waiting."""
+    the files already in Kaagaz, which cost nothing, so the plan is not refused for storage; a
+    file registered already in is never counted; a new file that fits goes in, one past the
+    limit is refused when it is sent and its item stays waiting."""
     api = Api(db)
     signed = api.new_signed()
-    fill(db, signed.customer_id, left=len(PDF_BYTES) - 1)
-    _refused(plan(signed, TREE, total_bytes=len(PDF_BYTES)), used=GIB - len(PDF_BYTES) + 1)
-    _, (one,) = planned(signed, {"A/bill.pdf": PDF_BYTES}, only_new=True)  # the same bytes: planned
-    _refused(send(signed, one["id"], PDF_BYTES), used=GIB - len(PDF_BYTES) + 1)
-    state = _owner(db, "SELECT state FROM folder_upload_items WHERE id = :i", {"i": one["id"]})
+    fill(db, signed.customer_id, left=len(PDF_BYTES) + len(TEXT_BYTES))
+    document = api.add_document(signed.customer_id, data=PDF_BYTES)  # room left: TEXT_BYTES
+    sha = hashlib.sha256(document.encode()).hexdigest()  # Api.add_document's fingerprint
+    more = TEXT_BYTES.replace(b"INV-1,100", b"INV-2,200")  # another file of the same size
+    total = len(PDF_BYTES) + len(TEXT_BYTES) + len(more)
+    _refused(plan(signed, TREE, file_count=3, total_bytes=total), used=GIB - len(TEXT_BYTES))
+    body = plan(signed, TREE, file_count=3, total_bytes=total, only_new=True)  # past it: planned
+    assert body.status_code == 200, body.text
+    a = body.json()["folder_ids"][0]
+    page = [
+        item("A/bill.pdf", a, len(PDF_BYTES), sha256=sha),
+        item("A/list.csv", a, len(TEXT_BYTES)),
+        item("A/more.csv", a, len(more)),
+    ]
+    rows = register(signed, body.json()["id"], page).json()["items"]
+    assert [row["state"] for row in rows] == ["duplicate", "waiting", "waiting"]
+    assert send(signed, rows[1]["id"], TEXT_BYTES, name="list.csv").status_code == 201  # exactly fits
+    _refused(send(signed, rows[2]["id"], more, name="more.csv"), used=GIB)
+    state = _owner(db, "SELECT state FROM folder_upload_items WHERE id = :i", {"i": rows[2]["id"]})
     assert [tuple(row) for row in state] == [("waiting",)]
+
+
+def test_a_re_plan_does_not_count_its_failed_files_which_are_never_stored(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    huge = api.settings.max_upload_bytes + 1  # registered failed too_large
+    total = len(PDF_BYTES) + huge
+    body = plan(signed, TREE, file_count=2, total_bytes=total).json()
+    a = body["folder_ids"][0]
+    rows = register(signed, body["id"], [item("A/bill.pdf", a, len(PDF_BYTES)), item("A/huge.pdf", a, huge)])
+    assert [row["state"] for row in rows.json()["items"]] == ["waiting", "failed"]
+    fill(db, signed.customer_id, left=len(PDF_BYTES))  # room for the one file still to send
+    again = plan(signed, TREE, id=body["id"], file_count=2, total_bytes=total)  # "Continue upload"
+    assert again.status_code == 200, again.text
 
 
 # --- the organisation admin's view ------------------------------------------------------------

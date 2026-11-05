@@ -28,7 +28,7 @@ import type {
   UploadLimits,
   UploadResult,
 } from "@/lib/types";
-import { fileSha256, pathKey } from "./folderPick";
+import { fileSha256, pathKey, refusedReason } from "./folderPick";
 import type { Manifest, Picked } from "./folderPick";
 import type { NotSentRow } from "./FolderUploadRow";
 import { canSendAgain, limitFor, sessionChangedMessage, uploadErrorText, uploadKind } from "./logic";
@@ -76,9 +76,7 @@ export type FolderEvent =
 /** The server's item failures: it recorded the item failed, so sending it again can't help. */
 const ITEM_FAILURES = new Set(["too_large", "unsupported_type", "empty_file", "folder_gone", "item_refused"]);
 
-/** A kind of file Kaagaz can't take, refused before it is sent; the server judges size and emptiness. */
-export const refusedReason = (file: { name: string }): NewFolderItem["refused"] =>
-  uploadKind(file.name) === null ? "unsupported_type" : undefined;
+export { refusedReason };
 
 /** The plan, asked again after the server's Retry-After while another plan of the organisation is built. */
 async function planWhenFree(api: FolderUploadApi, body: FolderUploadPlanBody): Promise<FolderUploadPlan> {
