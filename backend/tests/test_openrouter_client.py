@@ -34,6 +34,7 @@ from kaagaz.ai.openrouter import (
     STRICT_SCHEMA,
     ModelGate,
     OpenRouterClient,
+    PageBudget,
     PageReply,
     Usage,
     page_request,
@@ -580,6 +581,23 @@ def test_l2_a_chat_404_on_the_readers_model_id_is_not_a_reading_problem(
     assert [line["model"] for line in _lines(caplog, "model not found")] == [PRO]
     assert _lines(caplog, "reading model unusable") == []
     assert client.gate.health() == ("working", None)
+
+
+def test_l2_an_ultra_low_cost_read_404_is_a_reading_problem_too(
+    fake: OpenRouterFake, caplog: pytest.LogCaptureFixture
+) -> None:
+    """#488's capped page read (``budget``) goes through the same path: a 404 names its model
+    and marks the reader unusable, exactly as an uncapped read does."""
+    caplog.set_level(logging.WARNING, logger="kaagaz.ai.openrouter")
+    fake.script("completions", error_reply(404))
+    client = _client(fake.url, Clock())
+    with pytest.raises(ModelUnavailable) as caught:
+        _read(client, budget=PageBudget(0.006, 0.75e-6, 3.75e-6, 3000))
+    assert caught.value.code == "model_not_found"
+    assert [(line["level"], line["model"]) for line in _lines(caplog, "reading model unusable")] == [
+        ("ERROR", PRO)
+    ]
+    assert client.gate.health()[0] == "key_problem"
 
 
 def test_any_other_status_is_an_http_error(fake: OpenRouterFake) -> None:
