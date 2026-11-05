@@ -29,7 +29,7 @@ from kaagaz.eta import HISTORY_RUNS, RunTiming
 from kaagaz.extraction.learned import LearnedCorrection
 from kaagaz.extraction.values import ExtractedValue
 from kaagaz.ingestion.errors import BackendUnavailable
-from kaagaz.ingestion.ports import BlobNotFound, DocumentRecord, Job, UnknownFolder
+from kaagaz.ingestion.ports import BlobNotFound, DocumentRecord, Job, StorageRoom, UnknownFolder
 from kaagaz.jobs.worker import JobFailed, Superseded
 from kaagaz.pipeline import (
     DocumentContent,
@@ -53,7 +53,8 @@ class MemoryRepository:
     One lock makes check-and-insert atomic, like a UNIQUE (customer_id, sha256)
     constraint would in the real database. A record filed in a folder that is
     not in ``folders`` (keyed by customer) raises UnknownFolder, like the
-    folder foreign key.
+    folder foreign key. ``storage_limit`` is every customer's storage limit in bytes (#516);
+    the bytes used are its records' sizes.
     """
 
     def __init__(self) -> None:
@@ -64,6 +65,7 @@ class MemoryRepository:
         self._lock = threading.Lock()
         self.fail_add = False
         self.fail_remove = False
+        self.storage_limit = 50 * 1024**3  # DEFAULT_STORAGE_GB
 
     def get(self, customer_id: str, document_id: str) -> DocumentRecord | None:
         with self._lock:
@@ -131,6 +133,10 @@ class MemoryRepository:
     def records_for(self, customer_id: str) -> list[DocumentRecord]:
         with self._lock:
             return [r for (c, _), r in self._by_fingerprint.items() if c == customer_id]
+
+    def storage_room(self, customer_id: str) -> StorageRoom:
+        used = sum(record.size for record in self.records_for(customer_id))
+        return StorageRoom(limit_bytes=self.storage_limit, used_bytes=used)
 
 
 class MemoryStorage:

@@ -74,12 +74,12 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
-from kaagaz.db import audit, autofile, customers, folders, versions
+from kaagaz.db import audit, autofile, customers, folders, storage_limits, versions
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.runs import close_running, finish_run, is_run_open
 from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, retry_on_deadlock, sqlstate
 from kaagaz.db.trash import lock_family
-from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, UnknownFolder
+from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, StorageRoom, UnknownFolder
 from kaagaz.jobs.worker import Superseded
 from kaagaz.reading.ocr import Region
 from kaagaz.scanning.gate import DocumentStatus
@@ -789,6 +789,11 @@ class PgDocuments:
                 text("DELETE FROM documents WHERE customer_id = :c AND id = :d AND sha256 = :h"),
                 {"c": record.customer_id, "d": record.document_id, "h": record.sha256},
             )
+
+    def storage_room(self, customer_id: str) -> StorageRoom:
+        """The storage limit and the bytes used (#516, ``storage_limits.storage_room``)."""
+        with unavailable(), self._db.customer(customer_id) as conn:
+            return storage_limits.storage_room(conn, customer_id)
 
     # --- StatusStore ----------------------------------------------------------
 

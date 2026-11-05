@@ -41,6 +41,14 @@ class DocumentRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class StorageRoom:
+    """One organisation's storage limit and what its documents hold now, in bytes (#516)."""
+
+    limit_bytes: int
+    used_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
 class Job:
     """A request to process one document.
 
@@ -107,6 +115,11 @@ class DocumentRepository(Protocol):
 
     def remove(self, record: DocumentRecord) -> None:
         """Undo an insert. Removes only if the stored document id matches."""
+        ...
+
+    def storage_room(self, customer_id: str) -> StorageRoom:
+        """This customer's storage limit and the bytes its documents hold now: every version,
+        and the Trash until it is purged (#516)."""
         ...
 
 
