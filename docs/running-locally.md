@@ -788,7 +788,7 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 
 **14c. Storage limit per organisation (#516)**
 - Check (API): as the operator, `PUT $API/operator/orgs/<id>/storage-limit` with `{"storage_gb": 1, "code": "<a fresh code>"}`; as that organisation's admin, `GET $API/admin/storage`; then upload files until it is full.
-- Expect: `{used_bytes, limit_bytes, limit_gb}` for the admin; the first file past 1 GB is 413 `storage_full` with its words and `details`, at the upload, the resumable start or the folder upload plan; the same file again (a duplicate) is still answered; emptying the Trash (delete forever) makes room. `{"storage_gb": null}` follows the platform (`/api/operator/storage-limit`, null: 50 GB).
+- Expect: `{used_bytes, limit_bytes, limit_gb}` for the admin; the first file past 1 GB is 413 `storage_full` with its words and `details`, at the upload (a resumable one at its complete) or the folder upload plan; the same file again (a duplicate) is still answered; emptying the Trash (delete forever) makes room. `{"storage_gb": null}` follows the platform (`/api/operator/storage-limit`, null: 50 GB).
 - Tests: `test_api_storage_limit.py`, `test_upload_storage_limit.py`, `test_operator_storage_limit_db.py`, `test_migration_0061d_db.py`, `test_isolation_storage_limits.py`.
 
 **15. Document viewer**

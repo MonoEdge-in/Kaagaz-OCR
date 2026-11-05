@@ -7,8 +7,8 @@ and how much it holds now.
 * **The bytes used**: the sum of the organisation's ``documents.size_bytes``: every uploaded
   file, every version, and the Trash until it is purged (a purge deletes the row). Page images
   are not counted.
-* A new upload past the limit is refused ``storage_full`` (the upload service, the resumable
-  start and the folder upload plan); nothing already stored is touched.
+* A new upload past the limit is refused ``storage_full`` (the upload service, after its
+  duplicate check, and the folder upload plan); nothing already stored is touched.
 
 ``storage_room`` takes a connection from ``Database.customer(customer_id)`` and also filters on
 ``customer_id`` (two locks, docs/architecture.md). One statement; the sum walks the
