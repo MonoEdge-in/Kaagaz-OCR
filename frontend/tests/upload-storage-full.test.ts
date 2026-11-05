@@ -3,6 +3,7 @@
 // server no longer checks the resumable start, which can't tell a duplicate; one refused there is
 // still handled the same). The row shows the API's message as it is, and it is never sent again by
 // itself: not by the upload's own retries (whatever the status), not by Retry, not by Retry all.
+// A folder upload stops at its first file refused so, its other files left waiting for Continue.
 
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -13,7 +14,7 @@ import { buildTree } from "@/components/documents/folderTree";
 import { EMPTY_FOLDER_UPLOADS, folderUploadsReducer, startFolderUpload } from "@/components/documents/folderUpload";
 import type { FolderEvent, FolderUploadApi } from "@/components/documents/folderUpload";
 import { FolderUploadRow } from "@/components/documents/FolderUploadRow";
-import { canSendAgain, uploadErrorText } from "@/components/documents/logic";
+import { FALLBACK_UPLOAD_LIMITS, canSendAgain, uploadErrorText } from "@/components/documents/logic";
 import { BatchTray } from "@/components/documents/UploadArea";
 import type { UploadEntry } from "@/components/documents/uploadQueue";
 import { ApiError, isStorageFull, uploadDocument } from "@/lib/api";
@@ -199,12 +200,14 @@ function folderApi(planRefusal: ApiError | null, sendRefusal: ApiError | null) {
   return { api, plans: () => plans, sends: () => sends };
 }
 
-async function runFolder(api: FolderUploadApi, paths: string[]): Promise<FolderEvent[]> {
+async function runFolder(api: FolderUploadApi, paths: string[], filesAtOnce?: number): Promise<FolderEvent[]> {
   const pick = pickOf(paths);
   const events: FolderEvent[] = [];
+  const folderLimits = { max_files: 50000, max_bytes: 5 * 1024 ** 3, max_folders: 10000, max_depth: 100, calls_per_minute: 600 };
+  const limits = filesAtOnce ? { ...FALLBACK_UPLOAD_LIMITS, folder_upload: { ...folderLimits, files_at_once: filesAtOnce } } : undefined;
   await startFolderUpload(
     api,
-    { id: "u1", userId: "me", source: { picked: pick, manifest: buildManifest(pick) }, target: { kind: "folder", parentId: null }, merge: true },
+    { id: "u1", userId: "me", source: { picked: pick, manifest: buildManifest(pick) }, target: { kind: "folder", parentId: null }, merge: true, limits },
     (event) => events.push(event),
     () => false,
   );
@@ -224,29 +227,34 @@ describe("a folder upload refused because storage is full", () => {
     }
   });
 
-  it("says each file the server refused for storage as not sent, with no Retry", async () => {
-    const server = folderApi(null, full(507));
-    const events = await runFolder(server.api, ["A/a.pdf", "A/b.pdf"]);
-    expect(server.sends()).toBe(2); // each once
-    const notSent = events.flatMap((event) => (event.type === "notSent" ? [event] : []));
-    expect(notSent.map((event) => [event.name, event.message, event.retry])).toEqual([
-      ["a.pdf", FULL, false],
-      ["b.pdf", FULL, false],
-    ]);
-    expect(events.some((event) => event.type === "sent")).toBe(false); // not counted as failed for good
+  it("stops at the first file the server refused for storage: its words once, the rest left waiting", async () => {
+    for (const status of [413, 507]) {
+      const server = folderApi(null, full(status));
+      const events = await runFolder(server.api, ["A/a.pdf", "A/b.pdf", "A/c.pdf"], 1);
+      expect(server.sends()).toBe(1); // b.pdf and c.pdf are not sent
+      // Not a file not sent, nor failed for good: each is still waiting on the server, for Continue upload.
+      expect(events.some((event) => event.type === "notSent" || event.type === "sent")).toBe(false);
+      expect(events.at(-1)).toEqual({ type: "phase", id: "u1", phase: "stopped", message: FULL });
+    }
   });
 
-  it("shows the words on the folder's row, with no Retry and no Retry all failed", () => {
+  it("lets the files already being sent finish, then starts no more", async () => {
+    const server = folderApi(null, full(413));
+    const events = await runFolder(server.api, Array.from({ length: 10 }, (_, n) => `A/f${n}.pdf`));
+    expect(server.sends()).toBe(4); // the 4 sent at a time
+    expect(events.at(-1)).toEqual({ type: "phase", id: "u1", phase: "stopped", message: FULL });
+  });
+
+  it("shows the words once on the folder's row, with Continue upload and no Retry", () => {
     let state = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, { type: "start", id: "u", rootName: "A", total: 2 });
-    state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "done" });
-    const item = (id: string) => ({ id, seq: 0, path_key: id, name: `${id}.pdf`, folder_id: "f0", size: 10, state: "waiting" as const, failure_code: null, document_id: null, document: null });
-    const rowHtml = (phase: "done" | "refused") => {
-      const view = phase === "done" ? state.u! : folderUploadsReducer(state, { type: "phase", id: "u", phase: "refused", message: FULL }).u!;
+    state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "stopped", message: FULL });
+    const rowHtml = (phase: "stopped" | "refused") => {
+      const view = phase === "stopped" ? state.u! : folderUploadsReducer(state, { type: "phase", id: "u", phase: "refused", message: FULL }).u!;
       return renderToStaticMarkup(
         createElement(FolderUploadRow, {
           view,
           held: true,
-          notSent: phase === "done" ? { rows: [{ item: item("a"), message: FULL, retry: false }, { item: item("b"), message: FULL, retry: false }], total: 2 } : { rows: [], total: 0 },
+          notSent: { rows: [], total: 0 },
           tree: buildTree([]),
           limits: { pdf_bytes: 1, image_bytes: 1, sheet_bytes: 1, max_pages: 1, readers: [] },
           actions: {
@@ -261,9 +269,10 @@ describe("a folder upload refused because storage is full", () => {
         }),
       );
     };
-    const files = rowHtml("done");
-    expect(files.split(FULL.replaceAll("'", "&#x27;")).length - 1).toBe(2);
-    expect(files).not.toContain("Retry");
+    const stopped = rowHtml("stopped");
+    expect(stopped.split(FULL.replaceAll("'", "&#x27;")).length - 1).toBe(1);
+    expect(stopped).toContain("Continue upload");
+    expect(stopped).not.toContain("Retry");
     const folder = rowHtml("refused");
     expect(folder).toContain("Folder “A” was not uploaded.");
     expect(folder).toContain(FULL.replaceAll("'", "&#x27;"));
