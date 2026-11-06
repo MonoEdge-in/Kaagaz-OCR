@@ -24,7 +24,7 @@ from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.extraction.flags import word_key
 from kaagaz.extraction.values import ExtractedValue
 from kaagaz.pipeline import DocumentContent, PageRecord, ReaderOutput
-from kaagaz.reading.spans import BoxLocation, PageInfo, Span, location_to_json
+from kaagaz.reading.spans import BoxLocation, CellLocation, PageInfo, Span, location_to_json
 from tests.db_support import insert_document, new_customer
 from tests.settings_factory import make_settings
 from tests.test_answering_neighbours_db import DraftModel
@@ -289,3 +289,28 @@ def test_homes_ready_answers_are_made_again_after_a_correction_or_its_undo(db: D
     with db.customer(customer) as conn:
         undone = ready.stamp(conn, customer)
     assert len({before, corrected, undone}) == 3
+
+
+def test_a_spreadsheet_cell_is_corrected_in_its_piece_and_value(db: Database) -> None:
+    """A cell has no box: the piece and the value at the same cell hold it."""
+    customer, user = new_customer(db)
+    with db.customer(customer) as conn:
+        document = insert_document(conn, customer, uploaded_by=user, detected_type="xlsx")
+    cell = CellLocation(1, 2, 1)
+    spans = (Span("150000", "150000", cell, None, None, "cell"),)
+    value = ExtractedValue(
+        "sheet:1:row:2", "total_amount", "150000", "150000", cell, None, None, "verified", "direct_cell",
+        Decimal(150000),
+    )  # fmt: skip
+    content = DocumentContent(
+        customer, document, [PageRecord(PageInfo(1, 1.0, 2.0, "cells"), False, "cells")],
+        [ReaderOutput("first", "cells", "1", spans)],
+        [Piece(customer, document, "A: 150000", (cell,), "verified")], [value], reader="cells",
+    )  # fmt: skip
+    PgPipelineStore(db).save(content)
+    key = word_key("line", 1, location_to_json(cell), "150000")
+
+    correct(db, customer, document, key, "150000", "1500000", user)
+
+    assert rows(db, customer, PIECES, document) == [("A: 1500000", True)]
+    assert rows(db, customer, VALUES, document) == [("1500000", Decimal("1500000"), "verified", "corrected")]
