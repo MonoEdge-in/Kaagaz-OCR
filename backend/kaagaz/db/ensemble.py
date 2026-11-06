@@ -42,7 +42,7 @@ from kaagaz.db import audit, word_review
 from kaagaz.db.word_review import Refused
 from kaagaz.extraction.flags import LINE, MARK, READINGS_DIFFER, REVIEW, Flag, overlaps, word_key
 from kaagaz.extraction.labels import majority
-from kaagaz.reading.spans import BoxLocation, location_from_json
+from kaagaz.reading.spans import BoxLocation, location_from_json, text_lines
 
 SCOPES = ("word", "words", "flagged", "document")
 ACTIVE = ("queued", "running")
@@ -118,7 +118,7 @@ _SCANNED = text(
 # The first reader's OCR lines of some pages (word marks left out), in reading order.
 _LINES = text(
     "SELECT CAST(e.span -> 'region' ->> 'page' AS integer) AS page_no, e.span ->> 'text' AS text,"
-    " e.span -> 'region' AS region"
+    " e.span ->> 'raw' AS raw, e.span -> 'region' AS region"
     " FROM reader_outputs ro"
     " CROSS JOIN LATERAL jsonb_array_elements(ro.output) WITH ORDINALITY AS e(span, ord)"
     " WHERE ro.customer_id = :c AND ro.document_id = :d AND ro.role = 'first'"
@@ -280,21 +280,27 @@ def _spot(
         )
         mark, box = box_of(flag.region), None if line is None else box_of(line["region"])
         if line is not None and mark is not None and box is not None and box.x1 > box.x0:
-            start = word_at(str(line["text"]), flag.as_read, _share(mark, box))
+            raw = line.get("raw") or str(line["text"])
+            start = word_at(str(line["text"]), flag.as_read, _share(mark, box, str(raw)))
             if start is not None:
                 return line["region"], str(line["text"]), (start, start + len(flag.as_read.split()))
     return flag.region, now, (0, len(now.split()))
 
 
-def _share(mark: BoxLocation, line: BoxLocation) -> float:
-    """How far into its line's text a word mark is, from 0 to 1, by its box (ocr._word_marks):
-    across the line; #523: in a block of written lines, a mark is one line's band tall, so its
-    line of them counts first. Approximate, as the marks are."""
+def _share(mark: BoxLocation, line: BoxLocation, raw: str) -> float:
+    """How far into its line's text a word mark is, from 0 to 1, by its box, as ocr._word_marks
+    placed it: across the line. #523: in a block whose raw text keeps its written lines
+    (``text_lines``, one band each), the mark's band names its line, and the share is the
+    characters of the lines before it plus its place across that line's own length, over them
+    all (the lines are seldom of equal length). Approximate, as the marks are."""
     across = (mark.x0 - line.x0) / (line.x1 - line.x0)
-    tall = mark.y1 - mark.y0
-    rows = max(1, round((line.y1 - line.y0) / tall)) if tall > 0 else 1
-    row = min(rows - 1, max(0, round((mark.y0 - line.y0) / tall))) if rows > 1 else 0
-    return (row + across) / rows
+    rows = text_lines(raw)
+    if len(rows) < 2 or line.y1 <= line.y0:
+        return across
+    band = (line.y1 - line.y0) / len(rows)
+    row = min(len(rows) - 1, max(0, int(((mark.y0 + mark.y1) / 2 - line.y0) / band)))
+    lengths = [end - start for start, end in rows]
+    return (sum(lengths[:row]) + across * lengths[row]) / (sum(lengths) or 1)
 
 
 def word_at(line: str, word: str, share: float) -> int | None:

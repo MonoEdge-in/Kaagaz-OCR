@@ -127,13 +127,15 @@ def reading_of(spans: Sequence[Span], box: BoxLocation | None, target: ensemble_
             and inside(span.location, box) >= VOTE_INSIDE)
     ]  # fmt: skip
     if box is not None and all(is_word_mark(span) for span in here):
-        # #523: a spot on one written line of a block another model gave whole: the line holding it.
-        here = [
+        # #523: a spot on one written line of a block another model gave whole: the line holding
+        # it, with the marks already found at the spot, so a model unsure there still has no vote.
+        holding = [
             span
             for span in spans
             if isinstance(span.location, BoxLocation) and span.location.page == box.page
-            and inside(box, span.location) >= VOTE_INSIDE
+            and not is_word_mark(span) and inside(box, span.location) >= VOTE_INSIDE
         ]  # fmt: skip
+        here = [*holding, *here]
     lines = [span.text for span in here if not is_word_mark(span)]
     words = aligned(target.spot_text, " ".join(lines), target.words) if lines else None
     if words is None or ILLEGIBLE_MARK in words:
