@@ -47,14 +47,18 @@ const MB = 1024 * 1024;
 
 describe("validateUpload", () => {
   it("accepts every supported kind, in any letter case", () => {
-    for (const name of ["a.pdf", "b.PNG", "c.jpg", "d.JPEG", "e.tif", "f.tiff", "g.csv", "h.xlsx"]) {
+    const office = ["i.docx", "j.DOC", "k.dotx", "l.pptx", "m.ppt", "n.XLS"]; // #522 PR 2
+    for (const name of ["a.pdf", "b.PNG", "c.jpg", "d.JPEG", "e.tif", "f.tiff", "g.csv", "h.xlsx", ...office]) {
       expect(validateUpload({ name, size: 10 })).toBeNull();
     }
   });
 
   it("refuses other kinds and names without an ending", () => {
     expect(validateUpload({ name: "virus.exe", size: 10 })).toMatch(/can't be uploaded/);
-    expect(validateUpload({ name: "old.xls", size: 10 })).toMatch(/can't be uploaded/);
+    expect(validateUpload({ name: "old.xlsm", size: 10 })).toMatch(/can't be uploaded/);
+    expect(validateUpload({ name: "notes.odt", size: 10 })).toBe(
+      "This kind of file can't be uploaded. Use PDF, Word, PowerPoint, PNG, JPG, TIFF, CSV, XLSX or XLS.",
+    );
     expect(validateUpload({ name: "README", size: 10 })).toMatch(/can't be uploaded/);
     expect(validateUpload({ name: "invoice.pdf.exe", size: 10 })).toMatch(/can't be uploaded/);
   });
@@ -66,7 +70,7 @@ describe("validateUpload", () => {
   it("allows exactly the limit and refuses one byte over", () => {
     expect(validateUpload({ name: "a.pdf", size: 50 * MB })).toBeNull();
     expect(validateUpload({ name: "a.pdf", size: 50 * MB + 1 })).toBe(
-      "PDFs can be up to 50 MB. This one is 51 MB. Split it or save it smaller and try again.",
+      "PDF, Word and PowerPoint files can be up to 50 MB. This one is 51 MB. Split it or save it smaller and try again.",
     );
   });
 
@@ -78,15 +82,15 @@ describe("validateUpload", () => {
   });
 
   it("offers the same kinds in the file picker", () => {
-    expect(ACCEPT_ATTRIBUTE).toBe(".pdf,.png,.jpg,.jpeg,.tif,.tiff,.csv,.xlsx");
+    expect(ACCEPT_ATTRIBUTE).toBe(".pdf,.png,.jpg,.jpeg,.tif,.tiff,.csv,.xlsx,.xls,.doc,.docx,.dotx,.ppt,.pptx");
   });
 });
 
 describe("upload limits by type (PRD U2)", () => {
   const cases = [
-    { names: ["a.pdf"], limit: 50 * MB },
+    { names: ["a.pdf", "a.docx", "a.dotx", "a.doc", "a.pptx", "a.ppt"], limit: 50 * MB },
     { names: ["a.png", "a.jpg", "a.jpeg", "a.tif", "a.tiff"], limit: 20 * MB },
-    { names: ["a.csv", "a.xlsx"], limit: 10 * MB },
+    { names: ["a.csv", "a.xlsx", "a.xls"], limit: 10 * MB },
   ];
 
   it("allows each type exactly at its limit and refuses one byte over", () => {
@@ -123,7 +127,7 @@ describe("upload limits by type (PRD U2)", () => {
       "Photos and scans can be up to 20 MB. This one is 34 MB. Save it at a lower resolution and try again.",
     );
     expect(validateUpload({ name: "statement.pdf", size: 61 * MB })).toBe(
-      "PDFs can be up to 50 MB. This one is 61 MB. Split it or save it smaller and try again.",
+      "PDF, Word and PowerPoint files can be up to 50 MB. This one is 61 MB. Split it or save it smaller and try again.",
     );
     expect(validateUpload({ name: "ledger.xlsx", size: 12 * MB })).toBe(
       "Spreadsheets, CSV and text files can be up to 10 MB. This one is 12 MB. Split it into smaller files and try again.",
@@ -132,7 +136,7 @@ describe("upload limits by type (PRD U2)", () => {
       "Photos and scans can be up to 20 MB. This one is 34 MB. Save it at a lower resolution and try again.",
     );
     expect(tooLargeMessage("pdf", 61 * MB, 50 * MB)).toBe(
-      "PDFs can be up to 50 MB. This one is 61 MB. Split it or save it smaller and try again.",
+      "PDF, Word and PowerPoint files can be up to 50 MB. This one is 61 MB. Split it or save it smaller and try again.",
     );
     expect(tooLargeMessage("sheet", 12 * MB, 10 * MB)).toBe(
       "Spreadsheets, CSV and text files can be up to 10 MB. This one is 12 MB. Split it into smaller files and try again.",
@@ -176,7 +180,7 @@ describe("upload limits by type (PRD U2)", () => {
 
     expect(validateUpload({ name: "a.pdf", size: 25 * MB }, customer)).toBeNull();
     expect(validateUpload({ name: "a.pdf", size: 25 * MB + 1 }, customer)).toBe(
-      "PDFs can be up to 25 MB. This one is 26 MB. Split it or save it smaller and try again.",
+      "PDF, Word and PowerPoint files can be up to 25 MB. This one is 26 MB. Split it or save it smaller and try again.",
     );
     expect(validateUpload({ name: "a.png", size: 21 * MB }, customer)).toBe(
       "Photos and scans can be up to 20 MB. This one is 21 MB. Save it at a lower resolution and try again.",
@@ -186,10 +190,10 @@ describe("upload limits by type (PRD U2)", () => {
 
   it("tells people each type's limit next to the dropzone", () => {
     expect(uploadLimitsHint()).toBe(
-      "PDF up to 50 MB. PNG, JPG or TIFF up to 20 MB. CSV or XLSX up to 10 MB.",
+      "PDF, Word or PowerPoint up to 50 MB. PNG, JPG or TIFF up to 20 MB. CSV, XLSX or XLS up to 10 MB.",
     );
     expect(uploadLimitsHint(customer)).toBe(
-      "PDF up to 25 MB. PNG, JPG or TIFF up to 20 MB. CSV or XLSX up to 10 MB.",
+      "PDF, Word or PowerPoint up to 25 MB. PNG, JPG or TIFF up to 20 MB. CSV, XLSX or XLS up to 10 MB.",
     );
   });
 });

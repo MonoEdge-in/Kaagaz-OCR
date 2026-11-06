@@ -82,6 +82,12 @@ describe("typeLabel", () => {
     expect(typeLabel("pdf")).toBe("PDF");
     expect(typeLabel("zip")).toBe("Spreadsheet");
     expect(typeLabel("text")).toBe("CSV");
+    expect(typeLabel("docx")).toBe("Word");
+    expect(typeLabel("dotx")).toBe("Word template");
+    expect(typeLabel("doc")).toBe("Word 97-2003");
+    expect(typeLabel("pptx")).toBe("PowerPoint");
+    expect(typeLabel("ppt")).toBe("PowerPoint 97-2003");
+    expect(typeLabel("xls")).toBe("Excel 97-2003");
   });
 });
 

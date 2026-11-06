@@ -124,6 +124,12 @@ const TYPE_LABELS: Record<DetectedType, string> = {
   zip: "Spreadsheet",
   ole2: "Old Office file",
   text: "CSV",
+  docx: "Word",
+  dotx: "Word template",
+  doc: "Word 97-2003",
+  pptx: "PowerPoint",
+  ppt: "PowerPoint 97-2003",
+  xls: "Excel 97-2003",
 };
 
 /** The file kind in words, from the type the server detected from the bytes. */

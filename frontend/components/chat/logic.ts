@@ -129,7 +129,7 @@ export const STILL_LOOKING_AFTER_MS = 10_000;
 // --- Source cards ---------------------------------------------------------------
 
 // Spreadsheets and CSV files have sheets, not pages; the backend numbers them as pages.
-const SHEET_TYPES: ReadonlySet<DetectedType> = new Set<DetectedType>(["zip", "ole2", "text"]);
+const SHEET_TYPES: ReadonlySet<DetectedType> = new Set<DetectedType>(["zip", "ole2", "text", "xls"]);
 
 function placeWord(citation: Pick<Citation, "detected_type">): "Page" | "Sheet" {
   return SHEET_TYPES.has(citation.detected_type) ? "Sheet" : "Page";

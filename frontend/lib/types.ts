@@ -11,7 +11,21 @@ export type DocumentStatus =
   | "ready"
   | "failed";
 
-export type DetectedType = "pdf" | "png" | "jpeg" | "tiff" | "zip" | "ole2" | "text";
+export type DetectedType =
+  | "pdf"
+  | "png"
+  | "jpeg"
+  | "tiff"
+  | "zip"
+  | "ole2"
+  | "text"
+  // #522 PR 2: told after the scan; a Word or PowerPoint file is shown as its PDF rendition.
+  | "docx"
+  | "dotx"
+  | "doc"
+  | "pptx"
+  | "ppt"
+  | "xls";
 
 export type Label = "verified" | "needs_review";
 

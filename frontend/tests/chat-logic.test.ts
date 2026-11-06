@@ -125,6 +125,8 @@ describe("source cards", () => {
     expect(sourcePlace(citation({ detected_type: "zip" }))).toBe("Sheet 3");
     expect(sourcePlace(citation({ detected_type: "ole2" }))).toBe("Sheet 3");
     expect(sourcePlace(citation({ detected_type: "text" }))).toBe("Sheet 3");
+    expect(sourcePlace(citation({ detected_type: "xls" }))).toBe("Sheet 3");
+    expect(sourcePlace(citation({ detected_type: "docx" }))).toBe("Page 3");
   });
 
   it("writes the meta line as place and file kind", () => {

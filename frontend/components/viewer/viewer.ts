@@ -2,7 +2,7 @@
 // unit tested in node (tests/viewer-*.test.ts): zoom steps, which rows and
 // columns of a sheet to fetch and show, how a page is drawn, and how it was read.
 
-import type { DocumentSummary, PageSummary, ReadIssue, Region, SheetCells } from "@/lib/types";
+import type { DetectedType, DocumentSummary, PageSummary, ReadIssue, Region, SheetCells } from "@/lib/types";
 import type { ViewRect } from "./canvasPlan";
 import { sameRegion } from "./selection";
 
@@ -214,6 +214,15 @@ export function bringPageForSpot(shown: Region | null, next: Region): boolean {
 
 export type PageMode = "pdf" | "image" | "sheet" | "none";
 
+// #522 PR 2: a Word or PowerPoint file was read from the PDF the server made of it, which its
+// file address serves the viewer (Download still gets the original).
+const PDF_VIEWED: ReadonlySet<DetectedType> = new Set<DetectedType>(["pdf", "docx", "dotx", "doc", "pptx", "ppt"]);
+
+/** Whether a document's pages are a PDF's, drawn by PDF.js: a PDF, or a Word or PowerPoint file. */
+export function viewsAsPdf(detectedType: DetectedType): boolean {
+  return PDF_VIEWED.has(detectedType);
+}
+
 /** How a page can be drawn: PDF.js for PDFs, the stored image, a cell grid, or nothing. */
 export function pageMode(
   document: Pick<DocumentSummary, "detected_type">,
@@ -221,7 +230,7 @@ export function pageMode(
   pdfFailed: boolean,
 ): PageMode {
   if (page.unit === "cells") return "sheet";
-  if (document.detected_type === "pdf" && !pdfFailed) return "pdf";
+  if (viewsAsPdf(document.detected_type) && !pdfFailed) return "pdf";
   if (page.has_image) return "image";
   return "none";
 }
