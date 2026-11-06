@@ -119,7 +119,7 @@ services:
     # app's zip limits (500 MB, 50,000 files: backend/tests/test_clamav_settings.py checks
     # it). clamd writes a stream to a temporary file and unpacks archives to temporary
     # files, so these are disk, not memory; its memory is the signatures (1.5 to 3 GiB
-    # while it reloads them), so docker-compose.prod.yml's mem_limit of 4g stays. An
+    # while it reloads them), so its 4g memory limit in docker-compose.prod.yml stays. An
     # encrypted zip is not an alert (AlertEncrypted would turn it on again): the file
     # with a password is refused on its own when the zip is unpacked (unzip.ENCRYPTED).
     # A zip that unpacks to more than MaxScanSize is reported, so it is unscannable.
