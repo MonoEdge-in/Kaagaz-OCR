@@ -23,9 +23,11 @@ at its daily page limit, and for the month at its monthly budget; Ask keeps work
   and no pause now (a new India day, a raised limit or budget, a new month) has its waiting
   documents queued again,
   oldest first, only as many as the pages left today (one page each at least) and at most
-  RELEASE_PER_PASS, never one in the Trash, then its held Ensemble runs (at most
-  RELEASE_PER_PASS, oldest first). Each hold ends only once its job is queued, so a
-  queue that is down keeps every hold it did not queue; its end is audited
+  RELEASE_PER_PASS, never one in the Trash, then its held Ensemble runs in the pages still left
+  (one each at least; at most RELEASE_PER_PASS, oldest first). Each hold ends in the transaction
+  that queues its job, so a queue that is down keeps every hold it did not queue, and a worker
+  that takes the job at once and finds the organisation paused again holds it after that
+  commit, never before it (#520 review); its end is audited
   (``document.reading_released``) and its "waiting" progress cleared (``reading_days.unhold``).
   A disabled or deleting organisation's holds are kept (QA T1, 4 Nov 2026). One
   organisation's error is logged and the others go on (review, 3 Nov 2026). The first turn
@@ -243,19 +245,26 @@ def _release(db: Database, send: Send, customer: str, day: date, sent: list[Job]
         room = RELEASE_PER_PASS if org.page_limit is None else org.page_limit - org.pages_today
         reading_days.end_stale_holds(conn, customer)
         waiting = reading_days.waiting(conn, customer, min(room, RELEASE_PER_PASS))
-        runs = ensemble_sql.held_runs(conn, customer, RELEASE_PER_PASS)
+        # #520 review: held Ensemble runs share the pages left with the documents, one page each at
+        # least; with no limit, each has the pass's own cap.
+        left = RELEASE_PER_PASS if org.page_limit is None else min(room - len(waiting), RELEASE_PER_PASS)
+        runs = ensemble_sql.held_runs(conn, customer, left) if left > 0 else []
+    # Each hold ends in the transaction that queues its job (#520 review): its row stays locked
+    # until the commit, so a worker given the job at once and finding the organisation paused again
+    # holds it after the commit, never before it (cleared, the item would wait with no job and no
+    # hold); a queue that is down rolls the end back and keeps this hold and the rest.
     for document in waiting:
         job = Job(customer, document)
-        send(job)  # first: a queue that is down keeps this hold and the rest
-        sent.append(job)
         with unavailable(), db.customer(customer) as conn:
             reading_days.unhold(conn, customer, document)
+            send(job)
+            sent.append(job)
     for document, run in runs:  # #520: Ensemble runs held on the run, the same way
         job = Job(customer, document, run_id=run)
-        send(job)
-        sent.append(job)
         with unavailable(), db.customer(customer) as conn:
             ensemble_sql.unhold(conn, customer, run)
+            send(job)
+            sent.append(job)
 
 
 class ReleaseHeld:

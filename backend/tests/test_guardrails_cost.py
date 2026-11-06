@@ -4,10 +4,13 @@ and the rate limits against sharing the wrong way (chat a person, read again an 
 AI request allowance an organisation and a user). No model is called.
 """
 
+import threading
+import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -22,10 +25,11 @@ from kaagaz.db import reading_days
 from kaagaz.db.documents import mark_for_reprocess
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.db.models import Agent, Reading
+from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.reading_pause import BUDGET, CODES, DAILY_LIMIT, ReadingPaused, release_held
 from kaagaz.pipeline import JobReading
-from tests.db_support import new_customer
+from tests.db_support import insert_document, new_customer
 from tests.pdf_builder import make_pdf
 from tests.settings_factory import make_settings
 from tests.test_api_ensemble import ready, start
@@ -38,10 +42,12 @@ from tests.test_ensemble_job_db import READ_AGAIN, T0, FakeReader, deliver, run_
 from tests.test_ensemble_job_db import org as ensemble_org
 from tests.test_ensemble_job_db import start as ensemble_start
 from tests.test_gemini_ocr import line, reply, value
+from tests.test_migration_0023_db import as_owner
 from tests.test_pipeline_gemini import SHARP, beat, rig
-from tests.test_reading_pause_db import NIGHT, counter, document, gate, held, set_budget, set_limit
+from tests.test_reading_pause_db import NIGHT, counter, document, gate, held, mine, set_budget, set_limit
 from tests.test_reading_pause_qa_db import READING_PAUSED
 from tests.test_reading_pause_review_db import count_today
+from tests.test_word_review_db import scanned as scanned_words
 
 # --- Rail 11: the reading pause -------------------------------------------------------------------
 
@@ -218,6 +224,148 @@ def test_rail11_a_queued_ensemble_run_picked_up_while_paused_is_held_then_releas
         assert run_row(db, o, run_id)["error_code"] is None
         deliver(db, o, reader, run_id)
         assert run_row(db, o, run_id)["status"] == "done" and reader.reads
+
+
+class Racing:
+    """A queue whose send hands ``customer``'s job straight to another worker (``worker``, on its
+    own thread and connection) once the organisation is paused again (``pause_again``), and returns
+    when that worker is done or waits on a row lock; other organisations' jobs (the shared test
+    database's) are only queued. ``join`` waits for the worker and raises what it raised."""
+
+    def __init__(
+        self, db: Database, customer: str, pause_again: Callable[[], None], worker: Callable[[], None]
+    ) -> None:
+        self._db, self._customer, self._pause_again, self._worker = db, customer, pause_again, worker
+        self._threads: list[threading.Thread] = []
+        self._errors: list[BaseException] = []
+
+    def _run(self) -> None:
+        try:
+            self._worker()
+        except BaseException as error:  # noqa: BLE001 - re-raised by join
+            self._errors.append(error)
+
+    def __call__(self, job: Job) -> None:
+        if job.customer_id != self._customer:
+            return
+        self._pause_again()
+        thread = threading.Thread(target=self._run)
+        self._threads.append(thread)
+        thread.start()
+        deadline = time.monotonic() + 20
+        while thread.is_alive() and time.monotonic() < deadline:
+            [(locked,)] = as_owner(
+                self._db,
+                "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()"
+                " AND wait_event_type = 'Lock' AND state = 'active'",
+            )
+            if locked:
+                return  # it waits on the row the release holds, until that commits
+            time.sleep(0.02)
+
+    def join(self) -> None:
+        for thread in self._threads:
+            thread.join(30)
+            assert not thread.is_alive()
+        if self._errors:
+            raise self._errors[0]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("reason", [DAILY_LIMIT, BUDGET])
+def test_rail11_a_released_ensemble_run_paused_again_at_once_stays_held(db: Database, reason: str) -> None:
+    """Review of #520: the sweep queues a held run; another worker takes the job at once, finds
+    the organisation paused again and holds it. That hold must survive the sweep ending the old
+    one, or the run is queued with no job and no hold, and blocks every later Ensemble on it."""
+    with ensemble_org(db) as o:
+        run_id = ensemble_start(db, o, scope="document")
+        _pause(db, o["c"], reason, T0)
+        reader = FakeReader(READ_AGAIN)
+        deliver(db, o, reader, run_id)
+        _unpause(db, o["c"], reason)
+        send = Racing(
+            db, o["c"], lambda: _pause_again(db, o["c"], reason), lambda: deliver(db, o, reader, run_id)
+        )
+
+        released = [job for job in release_held(db, send, now=T0) if job.customer_id == o["c"]]
+        send.join()
+
+        assert released == [Job(o["c"], o["d"], run_id=run_id)]
+        held_run = run_row(db, o, run_id)
+        assert (held_run["status"], held_run["error_code"], reader.reads) == ("queued", CODES[reason], [])
+        _unpause(db, o["c"], reason)  # the next sweep finds it again
+        again = release_held(db, lambda job: None, now=T0)
+        assert [job for job in again if job.customer_id == o["c"]] == released
+
+
+@pytest.mark.db
+def test_rail11_a_released_document_paused_again_at_once_stays_held(db: Database) -> None:
+    """The same race for a held document: the worker's hold lands after the sweep's commit."""
+    customer, _ = new_customer(db)
+    _pause(db, customer, DAILY_LIMIT, NIGHT)
+    waiting = document(db, customer)
+    with pytest.raises(ReadingPaused), gate(db, NIGHT).admit(customer, waiting):
+        pytest.fail("let in while paused")
+    _unpause(db, customer, DAILY_LIMIT)
+
+    def worker() -> None:
+        with pytest.raises(ReadingPaused), gate(db, NIGHT).admit(customer, waiting):
+            pytest.fail("let in while paused")
+
+    send = Racing(db, customer, lambda: _pause_again(db, customer, DAILY_LIMIT), worker)
+    assert mine(release_held(db, send, now=NIGHT), customer) == [waiting]
+    send.join()
+
+    assert held(db, customer, waiting) == DAILY_LIMIT
+    _unpause(db, customer, DAILY_LIMIT)
+    assert mine(release_held(db, lambda job: None, now=NIGHT), customer) == [waiting]
+
+
+@pytest.mark.db
+def test_rail11_held_ensemble_runs_are_released_only_into_the_pages_left_today(db: Database) -> None:
+    """Review of #520: three held runs, one page left today: one is queued (one page each at
+    least, as documents), the other two stay held."""
+    with ensemble_org(db) as o:
+        runs = [ensemble_start(db, o, scope="document")]
+        for _ in range(2):
+            o["d"] = _another_scan(db, o)
+            runs.append(ensemble_start(db, o, scope="document"))
+        with db.customer(o["c"]) as conn:
+            for run in runs:
+                ensemble_sql.hold(conn, o["c"], run, CODES[DAILY_LIMIT])
+        set_limit(db, o["c"], 5)
+        count_today(db, o["c"], T0, 4)
+
+        released = [job for job in release_held(db, lambda job: None, now=T0) if job.customer_id == o["c"]]
+
+        [queued] = [job.run_id for job in released]
+        codes = as_owner(
+            db, "SELECT id::text, error_code FROM ensemble_runs WHERE customer_id = :c", {"c": o["c"]}
+        )
+        assert sorted(codes) == sorted((run, None if run == queued else CODES[DAILY_LIMIT]) for run in runs)
+
+
+def _another_scan(db: Database, o: dict[str, Any]) -> str:
+    """One more ready scan in ``o``'s organisation (test_ensemble_job_db.org's); no file stored."""
+    with db.customer(o["c"]) as conn:
+        made = insert_document(conn, o["c"], uploaded_by=o["u"], detected_type="tiff")
+    PgPipelineStore(db).save(scanned_words(o["c"], made, quality="illegible"))
+    return made
+
+
+def _unpause(db: Database, customer: str, reason: str) -> None:
+    if reason == DAILY_LIMIT:
+        set_limit(db, customer, None)
+    else:
+        set_budget(db, customer, None)
+
+
+def _pause_again(db: Database, customer: str, reason: str) -> None:
+    """``_pause``'s limit or budget set again (its pages or spend are still counted)."""
+    if reason == DAILY_LIMIT:
+        set_limit(db, customer, 1)
+    else:
+        set_budget(db, customer, "1.00")
 
 
 @pytest.mark.db
