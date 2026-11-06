@@ -16,18 +16,18 @@ spreadsheet is ``needs_reader``). The touch trigger is off for this, as in 0002,
 row level security does not hold (no FORCE), so it sees every customer's rows.
 
 The downgrade puts every kind back to the sniffed type it came from (a HEIC photo, which
-before 0077 had none, to ``ole2``: kept and never read), then 0001's CHECK and 0007's comment.
+before 0078 had none, to ``ole2``: kept and never read), then 0001's CHECK and 0007's comment.
 
-Merges after the versioning PR (#521), whose 0076 comes first; this changes nothing of it.
+Merges after the versioning PR (#521), whose 0076 and 0077 come first; this changes nothing of it.
 
-Revision ID: 0077
-Revises: 0076 (version spotting)
+Revision ID: 0078
+Revises: 0077 (the versioning PR's exact overlap)
 """
 
 from alembic import op
 
-revision = "0077"
-down_revision = "0076"
+revision = "0078"
+down_revision = "0077"
 branch_labels = None
 depends_on = None
 
@@ -35,7 +35,7 @@ CHECK = "documents_detected_type_check"
 SNIFFED = ("pdf", "png", "jpeg", "tiff", "zip", "ole2", "text")  # 0001's
 # kaagaz.ingestion.resolve.KINDS that are not sniffed types, with the sniffed type each comes from.
 KINDS = {
-    "heic": "ole2",  # sniffed as heic from 0077 on; before, no type held it
+    "heic": "ole2",  # sniffed as heic from 0078 on; before, no type held it
     "xlsx": "zip",
     "docx": "zip",
     "dotx": "zip",

@@ -983,7 +983,7 @@ class PgDocuments:
 
     def set_detected_type(self, customer_id: str, document_id: str, detected_type: str) -> None:
         """#522: the kind resolve.py told after the virus scan, in place of the sniffed type
-        (0077's CHECK holds both). One indexed statement."""
+        (0078's CHECK holds both). One indexed statement."""
         with unavailable(), self._db.customer(customer_id) as conn:
             conn.execute(
                 text("UPDATE documents SET detected_type = :t WHERE customer_id = :c AND id = :d"),

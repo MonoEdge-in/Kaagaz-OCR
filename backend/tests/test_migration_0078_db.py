@@ -1,4 +1,4 @@
-"""Migration 0077 (#522, Tushar, 6 Nov 2026): ``documents.detected_type`` takes the file kinds
+"""Migration 0078 (#522, Tushar, 6 Nov 2026): ``documents.detected_type`` takes the file kinds
 the worker tells after the virus scan, and the sniffed types still. A ready zip becomes xlsx and
 a ready text file csv, with ``updated_at`` kept; every other document keeps its type. Up, down
 (every kind back to its sniffed type) and up again: the schema, comments and grants as before
@@ -19,7 +19,7 @@ from tests.test_migration_0071_db import _state
 
 pytestmark = pytest.mark.db
 fresh = base.fresh
-M0077 = _load("0077_file_kinds.py")
+M0078 = _load("0078_file_kinds.py")
 _SET = "UPDATE documents SET detected_type = :t WHERE id = :d"
 _COLUMN_COMMENT = (
     "SELECT col_description('documents'::regclass, attnum) FROM pg_attribute"
@@ -35,19 +35,19 @@ def _types(db: Database, ids: dict[str, str]) -> dict[str, tuple[Any, ...]]:
     }
 
 
-def test_the_revision_follows_0076_and_names_every_sniffed_type_and_kind() -> None:
-    assert (M0077.revision, M0077.down_revision) == ("0077", "0076")  # after the versioning PR's 0076
-    assert set(M0077.SNIFFED) == sniff.KNOWN_TYPES - {sniff.HEIC}  # 0001's
-    assert set(M0077.SNIFFED) | set(M0077.KINDS) == sniff.KNOWN_TYPES | resolve.KINDS
-    assert set(M0077.KINDS.values()) <= set(M0077.SNIFFED)  # each goes back to a type 0001 takes
+def test_the_revision_follows_0077_and_names_every_sniffed_type_and_kind() -> None:
+    assert (M0078.revision, M0078.down_revision) == ("0078", "0077")  # after the versioning PR's 0077
+    assert set(M0078.SNIFFED) == sniff.KNOWN_TYPES - {sniff.HEIC}  # 0001's
+    assert set(M0078.SNIFFED) | set(M0078.KINDS) == sniff.KNOWN_TYPES | resolve.KINDS
+    assert set(M0078.KINDS.values()) <= set(M0078.SNIFFED)  # each goes back to a type 0001 takes
 
 
 def test_up_tells_ready_documents_down_puts_the_sniffed_types_back_and_up_again(
     fresh: tuple[str, Database],
 ) -> None:
     url, db = fresh
-    migrate(url, "0076")
-    at_0076_before = _state(db)
+    migrate(url, "0077")
+    at_0077 = _state(db)
     customer, _ = new_customer(db)
     with db.customer(customer) as conn:
         ids = {
@@ -61,8 +61,8 @@ def test_up_tells_ready_documents_down_puts_the_sniffed_types_back_and_up_again(
     assert _refused(db, _SET, {"t": "heic", "d": ids["pdf"]}) == "23514"
     before = _types(db, ids)
 
-    migrate(url, "0077")
-    at_0077 = _state(db)
+    migrate(url, "0078")
+    at_0078 = _state(db)
     after = _types(db, ids)
     told = {name: row[0] for name, row in after.items()}
     assert told == {
@@ -74,7 +74,7 @@ def test_up_tells_ready_documents_down_puts_the_sniffed_types_back_and_up_again(
         "pdf": "pdf",
     }
     assert {name: row[1] for name, row in after.items()} == {name: row[1] for name, row in before.items()}
-    assert as_owner(db, _COLUMN_COMMENT) == [(M0077.COMMENT,)]
+    assert as_owner(db, _COLUMN_COMMENT) == [(M0078.COMMENT,)]
     for kind in sorted(resolve.KINDS | sniff.KNOWN_TYPES):
         as_owner(db, _SET, {"t": kind, "d": ids["pdf"]})
     for refused in (resolve.UNSUPPORTED, "exe", "PDF"):
@@ -82,20 +82,20 @@ def test_up_tells_ready_documents_down_puts_the_sniffed_types_back_and_up_again(
     for name, kind in (("pdf", "heic"), ("waiting", "txt"), ("word", "docx"), ("failed_zip", "doc")):
         as_owner(db, _SET, {"t": kind, "d": ids[name]})
 
-    base._downgrade(url, "0076")
-    assert _state(db) == at_0076_before
+    base._downgrade(url, "0077")
+    assert _state(db) == at_0077
     assert {name: row[0] for name, row in _types(db, ids).items()} == {
         "sheet": "zip",
         "word": "zip",
         "failed_zip": "ole2",
         "csv": "text",
         "waiting": "text",
-        "pdf": "ole2",  # a HEIC photo: kept, never read before 0077
+        "pdf": "ole2",  # a HEIC photo: kept, never read before 0078
     }
     assert _refused(db, _SET, {"t": "xlsx", "d": ids["pdf"]}) == "23514"
 
-    migrate(url, "0077")
-    assert _state(db) == at_0077
+    migrate(url, "0078")
+    assert _state(db) == at_0078
     assert as_owner(db, "SELECT detected_type FROM documents WHERE id = :d", {"d": ids["sheet"]}) == [
         ("xlsx",)
     ]

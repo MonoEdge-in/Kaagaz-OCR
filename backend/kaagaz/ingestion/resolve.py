@@ -47,7 +47,7 @@ from typing import IO
 from kaagaz.ingestion import sniff
 from kaagaz.reading.spans import ReadError
 
-# The kinds (``documents.detected_type`` once read, migration 0077).
+# The kinds (``documents.detected_type`` once read, migration 0078).
 PDF = "pdf"
 PNG = "png"
 JPEG = "jpeg"

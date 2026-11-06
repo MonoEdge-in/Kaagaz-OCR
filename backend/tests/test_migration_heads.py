@@ -71,7 +71,9 @@ def test_productions_0061d_is_a_branch_off_0061c_that_0075_merges() -> None:
     assert scripts.get_revision("0075").down_revision == ("0074", "0061d")
     merge = (VERSIONS / "0075_org_storage_limit_merge.py").read_text(encoding="utf-8")
     assert "op.execute" not in merge
-    # Changed on purpose (#522): the versioning PR's 0076 follows 0075, then 0077 (the file kinds).
+    # Changed on purpose (#522): the versioning PR's 0076 and 0077 follow 0075, then 0078 (the file
+    # kinds).
     assert scripts.get_revision("0076").down_revision == "0075"
     assert scripts.get_revision("0077").down_revision == "0076"
-    assert scripts.get_heads() == ["0077"]
+    assert scripts.get_revision("0078").down_revision == "0077"
+    assert scripts.get_heads() == ["0078"]
