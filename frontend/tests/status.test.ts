@@ -63,7 +63,7 @@ describe("valueStatus", () => {
     expect(valueStatus("needs_review", "single_reader").reason).toBe("Only one reader saw this");
     expect(valueStatus("needs_review", "model_chosen").reason).toBe("Picked by Kaagaz, check the page");
     expect(valueStatus("needs_review", "local_reader").reason).toBe("Read by the backup reader");
-    expect(valueStatus("needs_review", "mixed_digits").reason).toBe("Mixed Marathi and English digits");
+    expect(valueStatus("needs_review", "mixed_digits").reason).toBe("Digits of two scripts in one amount");
     expect(valueStatus("needs_review", "amount_commas").reason).toBe("The amount's commas look wrong");
     expect(valueStatus("needs_review", "direct_cell")).toEqual({ state: "review", reason: null });
   });

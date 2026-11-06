@@ -331,6 +331,12 @@ describe("reasons for values the AI model or OCR read (PRD 2)", () => {
       "Read from a scan in Hindi, Marathi or mixed script. Check it against the page.",
     );
   });
+
+  it("says an amount mixes digits of two scripts, naming no language (#524)", () => {
+    expect(reasonText("mixed_digits")).toBe(
+      "This amount has digits of two scripts. Check each digit against the page.",
+    );
+  });
 });
 
 describe("the reason for a value an invoice check flagged (PRD 2, K3)", () => {

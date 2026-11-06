@@ -162,7 +162,7 @@ describe("the reason filter", () => {
 
   it("names the amount reasons in plain words (#524)", () => {
     const text = Object.fromEntries(REASON_FILTERS.map((choice) => [choice.value, choice.text]));
-    expect(text.mixed_digits).toBe("Mixed Marathi and English digits");
+    expect(text.mixed_digits).toBe("Digits of two scripts in one amount");
     expect(text.amount_commas).toBe("The amount's commas look wrong");
     expect(text.amount_mark).toBe("A mark in the amount looks wrong");
     expect(text.amount_outlier).toBe("Much bigger than the other total");

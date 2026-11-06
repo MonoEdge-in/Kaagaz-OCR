@@ -34,7 +34,7 @@ const REVIEW_REASONS: Partial<Record<LabelReason, string>> = {
   single_reader: "Only one reader saw this",
   model_chosen: "Picked by Kaagaz, check the page",
   local_reader: "Read by the backup reader",
-  mixed_digits: "Mixed Marathi and English digits", // #524: the amount reasons
+  mixed_digits: "Digits of two scripts in one amount", // #524: the amount reasons
   amount_commas: "The amount's commas look wrong",
   amount_mark: "A mark in the amount looks wrong",
   amount_outlier: "Much bigger than the other total",
