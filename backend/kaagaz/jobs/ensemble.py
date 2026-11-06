@@ -116,8 +116,9 @@ def aligned(stored: str, read: str, words: tuple[int, int]) -> str | None:
 
 def reading_of(spans: Sequence[Span], box: BoxLocation | None, target: ensemble_sql.Target) -> str | None:
     """What one model read at ``target``: its lines (inside ``box`` by VOTE_INSIDE of their
-    own box, or every line of a crop) joined, lined up with the target's words. None when it
-    read nothing there, or marked a word of it unsure or unreadable (no vote)."""
+    own box, else the lines holding ``box`` by as much of it, #523; or every line of a crop)
+    joined, lined up with the target's words. None when it read nothing there, or marked a
+    word of it unsure or unreadable (no vote)."""
     here = [
         span
         for span in spans
@@ -125,6 +126,14 @@ def reading_of(spans: Sequence[Span], box: BoxLocation | None, target: ensemble_
         or (isinstance(span.location, BoxLocation) and span.location.page == box.page
             and inside(span.location, box) >= VOTE_INSIDE)
     ]  # fmt: skip
+    if box is not None and all(is_word_mark(span) for span in here):
+        # #523: a spot on one written line of a block another model gave whole: the line holding it.
+        here = [
+            span
+            for span in spans
+            if isinstance(span.location, BoxLocation) and span.location.page == box.page
+            and inside(box, span.location) >= VOTE_INSIDE
+        ]  # fmt: skip
     lines = [span.text for span in here if not is_word_mark(span)]
     words = aligned(target.spot_text, " ".join(lines), target.words) if lines else None
     if words is None or ILLEGIBLE_MARK in words:

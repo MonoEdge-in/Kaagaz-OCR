@@ -280,11 +280,21 @@ def _spot(
         )
         mark, box = box_of(flag.region), None if line is None else box_of(line["region"])
         if line is not None and mark is not None and box is not None and box.x1 > box.x0:
-            share = (mark.x0 - box.x0) / (box.x1 - box.x0)
-            start = word_at(str(line["text"]), flag.as_read, share)
+            start = word_at(str(line["text"]), flag.as_read, _share(mark, box))
             if start is not None:
                 return line["region"], str(line["text"]), (start, start + len(flag.as_read.split()))
     return flag.region, now, (0, len(now.split()))
+
+
+def _share(mark: BoxLocation, line: BoxLocation) -> float:
+    """How far into its line's text a word mark is, from 0 to 1, by its box (ocr._word_marks):
+    across the line; #523: in a block of written lines, a mark is one line's band tall, so its
+    line of them counts first. Approximate, as the marks are."""
+    across = (mark.x0 - line.x0) / (line.x1 - line.x0)
+    tall = mark.y1 - mark.y0
+    rows = max(1, round((line.y1 - line.y0) / tall)) if tall > 0 else 1
+    row = min(rows - 1, max(0, round((mark.y0 - line.y0) / tall))) if rows > 1 else 0
+    return (row + across) / rows
 
 
 def word_at(line: str, word: str, share: float) -> int | None:

@@ -304,6 +304,39 @@ class FindQuoteTest(unittest.TestCase):
         self.assertIsNone(find_quote(reader_text([line(long_word)]), "ab"))
 
 
+class LineBandTest(unittest.TestCase):
+    """#523: a quote inside a block the reader gave as one entry of several written lines
+    (its raw text keeps their breaks) is placed on the band of the lines holding it, not the
+    whole block, so the highlight leaves the rest of the writing readable."""
+
+    rows = tuple("land mortgage Rs 45000 owed" if n == 6 else f"line {n} of the letter" for n in range(10))
+    block = Span(" ".join(" ".join(rows).split()), "\n".join(rows), BoxLocation(2, 0.1, 0.2, 0.9, 0.7))
+
+    def test_a_value_on_line_7_of_a_block_covers_line_7_only(self) -> None:
+        found = find_quote(reader_text([self.block]), "Rs 45000")
+        assert found is not None
+        box = found.location
+        assert isinstance(box, BoxLocation)
+        self.assertEqual((box.page, box.x0, box.x1, found.text), (2, 0.1, 0.9, "Rs 45000"))
+        self.assertAlmostEqual(box.y0, 0.5)  # ten bands of 0.05 from 0.2: the seventh
+        self.assertAlmostEqual(box.y1, 0.55)
+
+    def test_a_quote_over_two_lines_covers_their_two_bands(self) -> None:
+        found = find_quote(reader_text([self.block]), "of the letter land mortgage")
+        assert found is not None
+        box = found.location
+        assert isinstance(box, BoxLocation)
+        self.assertAlmostEqual(box.y0, 0.45)  # line 6 of 10 (from 1) ...
+        self.assertAlmostEqual(box.y1, 0.55)  # ... to line 7
+        self.assertEqual((box.x0, box.x1), (0.1, 0.9))
+
+    def test_a_one_line_span_keeps_its_box(self) -> None:
+        span = Span("Total Rs 45000", "Total  Rs 45000", BoxLocation(1, 0.1, 0.1, 0.9, 0.2))
+        found = find_quote(reader_text([span]), "Rs 45000")
+        assert found is not None
+        self.assertEqual(found.location, span.location)
+
+
 class FindLabelledTest(unittest.TestCase):
     def test_a_value_that_appears_twice_the_first_after_the_label_wins(self) -> None:
         spans = [line("Order date 12/08/2026", y=0.1), line("Invoice date 12/08/2026", y=0.2)]

@@ -258,6 +258,7 @@ from kaagaz.extraction.invoice import finish_invoice, local_today
 from kaagaz.extraction.labelled import tax_components, values_from_lines
 from kaagaz.extraction.labels import (
     LineMarks,
+    at_line,
     label_quoted,
     label_reading_marks,
     label_values,
@@ -1562,7 +1563,7 @@ class DocumentProcessor:
             ):
                 continue  # read directly, not scanned; no origin counts as scanned (fail closed)
             if box.page in pictured and box.page in checker_pages and box not in already:
-                text = line_texts.get(box, value.value_text)
+                text = at_line(box, line_texts) or value.value_text
                 wanted.setdefault(box.page, {})[box] = _DEVANAGARI.search(text) is not None
         readings: dict[Location, str] = {}
         checked: set[Location] = set()

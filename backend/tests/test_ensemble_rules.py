@@ -151,6 +151,22 @@ def test_a_model_unsure_there_has_no_reading() -> None:
     assert reading_of([line, elsewhere], LINE_BOX, mark) == "4,350"
 
 
+def test_a_spot_on_one_line_of_a_block_is_read_in_the_block_holding_it() -> None:
+    """#523: a value placed on one written line's band of a block; another model that gave the
+    block whole has no line inside the band, so the line holding the band is read, its words
+    lined up with the value's."""
+    band = BoxLocation(1, 0.1, 0.30, 0.9, 0.35)
+    value = ensemble_sql.Target(flag(LINE, band, "Rs 4,850"), "Rs 4,850", True, False,
+                                location_to_json(band), "Rs 4,850", (0, 2))  # fmt: skip
+    block = Span("dear sir the loan of Rs 4,850 is paid", "", BoxLocation(1, 0.1, 0.1, 0.9, 0.6), None,
+                 "paragraph", "ocr")  # fmt: skip
+    assert reading_of([block], band, value) == "Rs 4,850"
+    own_line = Span("Rs 4,350", "", band, None, "paragraph", "ocr")
+    assert reading_of([block, own_line], band, value) == "Rs 4,350"  # a line at the spot comes first
+    away = Span("Rs 4,850", "", BoxLocation(1, 0.1, 0.8, 0.9, 0.85), None, "paragraph", "ocr")
+    assert reading_of([away], band, value) is None
+
+
 # --- where a word is read ------------------------------------------------------------------
 
 
@@ -163,6 +179,17 @@ def test_a_word_mark_is_read_on_its_line_and_found_by_position() -> None:
     assert ensemble_sql.word_at("a [?] b [?]", "[?]", 0.1) == 1
     assert ensemble_sql.word_at("Total Rs 4,850.", "4,850", 0.6) == 2
     assert ensemble_sql.word_at("Total", "4,850", 0.5) is None
+
+
+def test_a_word_mark_on_one_line_of_a_block_is_found_on_that_line() -> None:
+    """#523: in a block of written lines a mark is placed on its own line's band, across by its
+    place in that line, so the word repeated on another line is never the one compared."""
+    block = BoxLocation(1, 0.1, 0.1, 0.9, 0.4)  # three lines of 0.1
+    text = "paid 4,850 to him / and 4,850 more / then 4,850 again"
+    lines = [cast(RowMapping, {"page_no": 1, "text": text, "region": location_to_json(block)})]
+    for line, token in ((0, 1), (1, 6), (2, 10)):
+        mark = flag(MARK, BoxLocation(1, 0.3, 0.1 + 0.1 * line, 0.4, 0.2 + 0.1 * line), "4,850")
+        assert ensemble_sql._spot(mark, "4,850", lines)[2] == (token, token + 1)
 
 
 def test_the_crop_is_the_spot_grown_by_the_checkers_margin() -> None:
