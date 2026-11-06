@@ -245,7 +245,11 @@ MAX_SHEET_ROWS = 500
 MAX_TAG_FILTERS = tags_sql.MAX_TAG_FILTERS
 
 DocumentStatusParam = Literal["received", "clean", "rejected", "needs_reader", "ready", "failed"]
-DetectedTypeParam = Literal["pdf", "png", "jpeg", "tiff", "zip", "ole2", "text"]
+# The sniffed types, then the kinds the worker tells after the scan (#522, kaagaz/ingestion/resolve.py).
+DetectedTypeParam = Literal[
+    "pdf", "png", "jpeg", "tiff", "heic", "zip", "ole2", "text",
+    "xlsx", "xls", "csv", "docx", "dotx", "doc", "pptx", "ppt", "txt", "md", "json", "html",
+]  # fmt: skip
 IsoDay = Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")]
 SortParam = Literal[
     "name", "doc_type", "owner", "sensitivity", "version", "document_date", "updated_at", "created_at"
@@ -258,9 +262,24 @@ _CONTENT_TYPES = {
     "png": ("image/png", "png"),
     "jpeg": ("image/jpeg", "jpg"),
     "tiff": ("image/tiff", "tif"),
-    "zip": ("application/octet-stream", "xlsx"),  # only a spreadsheet passes the read
+    "heic": ("image/heic", "heic"),
+    # #522: a zip or an old Office file not told yet (a ready one before 0078 is xlsx), then the
+    # kinds. Text of any kind is sent as plain text, never as a page to render.
+    "zip": ("application/zip", "zip"),
     "ole2": ("application/octet-stream", "bin"),
-    "text": ("text/plain; charset=utf-8", "csv"),
+    "text": ("text/plain; charset=utf-8", "txt"),
+    "xlsx": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"),
+    "xls": ("application/vnd.ms-excel", "xls"),
+    "docx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docx"),
+    "dotx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.template", "dotx"),
+    "doc": ("application/msword", "doc"),
+    "pptx": ("application/vnd.openxmlformats-officedocument.presentationml.presentation", "pptx"),
+    "ppt": ("application/vnd.ms-powerpoint", "ppt"),
+    "csv": ("text/plain; charset=utf-8", "csv"),
+    "txt": ("text/plain; charset=utf-8", "txt"),
+    "md": ("text/plain; charset=utf-8", "md"),
+    "json": ("text/plain; charset=utf-8", "json"),
+    "html": ("text/plain; charset=utf-8", "html"),
 }
 _REPROCESS_LIMITED = {
     "hourly": "Too many documents were sent to be read again in the last hour. Please try again later.",

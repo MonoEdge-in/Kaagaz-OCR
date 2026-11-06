@@ -34,6 +34,21 @@ _STATUS_MESSAGES = {
     "needs_reader": "Stored safely. This kind of file can't be read yet.",
 }
 _IN_PROGRESS = ("received", "clean")
+# All formats (#522): a file that can never be read as it is, in words that say what to do.
+FILE_FAILURES = {
+    "corrupt_file": "This file is damaged, so it can't be opened. Save it again and upload that copy.",
+    "unsupported_type": (
+        "Kaagaz can't read this kind of file. Save it as a PDF, a photo, a spreadsheet or a text file"
+        " and upload that."
+    ),
+    "not_utf8": (
+        "This text file isn't saved as UTF-8, so it can't be read. Save it as UTF-8 and upload it again."
+    ),
+    "too_deep": (
+        "This JSON file is nested more than 100 levels deep, so it can't be read. Flatten it and upload it"
+        " again."
+    ),
+}
 _MONEY_KEY = re.compile(r"usd|price|budget|cost", re.IGNORECASE)
 
 # How far the worker has got (PRD 2 X3), by step. PROVISIONAL wording (plan 3.3).
@@ -134,6 +149,8 @@ def status_message(
     if status == "failed" and failure_code == "customer_disabled":
         # The worker came to it while the organisation was turned off (0014): nothing was read.
         return "This file was not read because your organisation was turned off. Read it again."
+    if status == "failed" and failure_code in FILE_FAILURES:
+        return FILE_FAILURES[failure_code]  # #522: a read again can't help; another copy can
     if status == "failed":
         return "This file needs another read. Read it again, or try another copy of it."
     if status == "ready" and pages_unreadable > 0:

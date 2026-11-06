@@ -1,4 +1,4 @@
-"""Read a photo or scan (png, jpeg, tiff) with the OCR engine.
+"""Read a photo or scan (png, jpeg, tiff, heic) with the OCR engine.
 
 Each page is decoded exactly as the page picture is made
 (``kaagaz/preparing/pages.py``: the same limits, EXIF orientation applied,

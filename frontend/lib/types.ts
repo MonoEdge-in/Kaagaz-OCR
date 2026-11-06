@@ -11,7 +11,31 @@ export type DocumentStatus =
   | "ready"
   | "failed";
 
-export type DetectedType = "pdf" | "png" | "jpeg" | "tiff" | "zip" | "ole2" | "text";
+/**
+ * The file's type: at upload, the one sniffed from its first bytes (pdf, png, jpeg, tiff, heic,
+ * zip, ole2, text); once the worker has checked it, its kind (#522, the backend's resolve.py).
+ */
+export type DetectedType =
+  | "pdf"
+  | "png"
+  | "jpeg"
+  | "tiff"
+  | "heic"
+  | "zip"
+  | "ole2"
+  | "text"
+  | "xlsx"
+  | "xls"
+  | "csv"
+  | "docx"
+  | "dotx"
+  | "doc"
+  | "pptx"
+  | "ppt"
+  | "txt"
+  | "md"
+  | "json"
+  | "html";
 
 export type Label = "verified" | "needs_review";
 

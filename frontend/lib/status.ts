@@ -90,6 +90,11 @@ const FIXES: Record<string, string> = {
   unscannable: "Save it again and upload that copy.",
   blocked_content: "Save it again as a plain PDF, photo or spreadsheet and upload that.",
   needs_reader: "Upload it as a PDF, photo or spreadsheet.",
+  // #522: the file itself can't be read, so only another copy helps.
+  corrupt_file: "Save it again and upload that copy.",
+  unsupported_type: "Save it as a PDF, a photo, a spreadsheet or a text file and upload that.",
+  not_utf8: "Save it as UTF-8 and upload it again.",
+  too_deep: "Flatten the JSON and upload it again.",
 };
 const ANY_FIX = "Read it again, or try another copy of it.";
 

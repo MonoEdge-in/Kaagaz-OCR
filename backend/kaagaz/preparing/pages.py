@@ -40,6 +40,8 @@ Time is O(total pixels) to draw; memory is one page's picture at a time, O(1)
 in the page count.
 """
 
+import functools
+import importlib
 import io
 import math
 import struct
@@ -56,8 +58,9 @@ from kaagaz.ingestion import sniff
 from kaagaz.preparing.page_checks import PageCheck, is_blank, largest_image_dpi, low_resolution, photo_dpi
 from kaagaz.reading.spans import CellLocation, PageInfo, ReadError, Span, TooManyPages
 
-_IMAGE_TYPES = frozenset({sniff.PNG, sniff.JPEG, sniff.TIFF})
+_IMAGE_TYPES = frozenset({sniff.PNG, sniff.JPEG, sniff.TIFF, sniff.HEIC})
 _IMAGE_FORMATS = ("PNG", "JPEG", "TIFF")  # Pillow never tries any other format
+_HEIF_FORMATS = ("HEIF",)  # a HEIC or HEIF photo, by pillow-heif's opener only
 _POINTS_PER_INCH = 72.0
 
 # Errors Pillow raises for a damaged or refused image. Pillow reports a file it
@@ -252,10 +255,12 @@ def render_pdf_page(page: Any, *, dpi: int, max_image_pixels: int, smooth_text: 
 
 
 def image_pages(data: bytes, *, max_pages: int, max_image_pixels: int) -> Iterator[Image.Image]:
-    """Each page of a png, jpeg or tiff as an upright RGB picture, one at a time.
+    """Each page of a png, jpeg, tiff or heic as an upright RGB picture, one at a time.
 
     Every frame of a TIFF is a page. Only the first frame of any other
-    format is (a phone's JPEG can carry a second, smaller preview picture).
+    format is (a phone's JPEG can carry a second, smaller preview picture;
+    a HEIC file with several pictures, a burst or a live photo, is read by
+    its first, its main one).
     """
     image = _open_image(data)
     try:
@@ -268,14 +273,26 @@ def image_pages(data: bytes, *, max_pages: int, max_image_pixels: int) -> Iterat
 
 
 def _open_image(data: bytes) -> Image.Image:
+    formats: tuple[str, ...] = _IMAGE_FORMATS
+    if sniff.detect_type(data[:16]) == sniff.HEIC:
+        _heif_opener()
+        formats = _HEIF_FORMATS
     code = "corrupt_file"
     try:
-        return Image.open(io.BytesIO(data), formats=_IMAGE_FORMATS)  # reads the header only
+        return Image.open(io.BytesIO(data), formats=formats)  # reads the header only
     except _IMAGE_BOMB:
         code = "image_too_large"
     except _IMAGE_DAMAGED:
         pass
     raise ReadError(code)
+
+
+@functools.cache
+def _heif_opener() -> None:
+    """pillow-heif's opener for Pillow (#522), set up on the first HEIC photo only, so a worker
+    that never sees one never loads libheif. Pillow's own decompression bomb check runs on its
+    header as on any other format's."""
+    importlib.import_module("pillow_heif").register_heif_opener()
 
 
 def _frame_count(image: Image.Image) -> int:

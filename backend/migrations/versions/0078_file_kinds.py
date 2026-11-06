@@ -18,7 +18,7 @@ row level security does not hold (no FORCE), so it sees every customer's rows.
 The downgrade puts every kind back to the sniffed type it came from (a HEIC photo, which
 before 0078 had none, to ``ole2``: kept and never read), then 0001's CHECK and 0007's comment.
 
-Merges after the versioning PR (#521), whose 0076 and 0077 come first; this changes nothing of it.
+Merges after the versioning PR (#521), whose 0077 comes first; this changes nothing of it.
 
 Revision ID: 0078
 Revises: 0077 (the versioning PR's exact overlap)

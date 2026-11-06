@@ -78,15 +78,18 @@ describe("validateUpload", () => {
   });
 
   it("offers the same kinds in the file picker", () => {
-    expect(ACCEPT_ATTRIBUTE).toBe(".pdf,.png,.jpg,.jpeg,.tif,.tiff,.csv,.xlsx");
+    // Changed on purpose (#522): HEIC photos and text files too.
+    expect(ACCEPT_ATTRIBUTE).toBe(
+      ".pdf,.png,.jpg,.jpeg,.tif,.tiff,.heic,.heif,.csv,.xlsx,.txt,.md,.json,.html,.htm",
+    );
   });
 });
 
 describe("upload limits by type (PRD U2)", () => {
   const cases = [
     { names: ["a.pdf"], limit: 50 * MB },
-    { names: ["a.png", "a.jpg", "a.jpeg", "a.tif", "a.tiff"], limit: 20 * MB },
-    { names: ["a.csv", "a.xlsx"], limit: 10 * MB },
+    { names: ["a.png", "a.jpg", "a.jpeg", "a.tif", "a.tiff", "IMG_0042.HEIC", "a.heif"], limit: 20 * MB },
+    { names: ["a.csv", "a.xlsx", "a.txt", "a.md", "a.json", "a.html", "a.HTM"], limit: 10 * MB },
   ];
 
   it("allows each type exactly at its limit and refuses one byte over", () => {
@@ -186,10 +189,10 @@ describe("upload limits by type (PRD U2)", () => {
 
   it("tells people each type's limit next to the dropzone", () => {
     expect(uploadLimitsHint()).toBe(
-      "PDF up to 50 MB. PNG, JPG or TIFF up to 20 MB. CSV or XLSX up to 10 MB.",
+      "PDF up to 50 MB. PNG, JPG, TIFF or HEIC up to 20 MB. CSV, XLSX, TXT, MD, JSON or HTML up to 10 MB.",
     );
     expect(uploadLimitsHint(customer)).toBe(
-      "PDF up to 25 MB. PNG, JPG or TIFF up to 20 MB. CSV or XLSX up to 10 MB.",
+      "PDF up to 25 MB. PNG, JPG, TIFF or HEIC up to 20 MB. CSV, XLSX, TXT, MD, JSON or HTML up to 10 MB.",
     );
   });
 });

@@ -5,12 +5,13 @@ ever talks to the socket, never to a reader (CLAUDE.md "The reader plug
 socket"). Adding a reader means one new module and one entry here.
 
 * Readers are chosen by the kind ``kaagaz/ingestion/resolve.py`` tells after the
-  virus scan (#522): csv -> CsvReader, xlsx -> XlsxReader, pdf -> PdfReader (text layer, and OCR
+  virus scan (#522): csv -> CsvReader; txt, md, json and html -> TextReader (each
+  file's text as lines on pages, no AI); xlsx -> XlsxReader; pdf -> PdfReader (text layer, and OCR
   for pages whose text layer fails the route check when an engine is set up,
   drawn at OCR_DPI or, by OCR_DPI_RULE, at the DPI its text needs with OCR_DPI
   as the ceiling; PRD 2 R2 and R3 with the TEXT_LAYER_*, SCAN_IMAGE_COVERAGE
   and BLANK_PAGE_STDDEV settings).
-* png, jpeg, tiff -> ImageReader, only with an OCR engine. Without one they
+* png, jpeg, tiff, heic -> ImageReader, only with an OCR engine. Without one they
   have no reader, so they are stored and marked needs_reader.
 * Second readers: pdf -> PdfiumReader. Nothing else has one yet, so every
   other value stays single_reader.
@@ -41,6 +42,8 @@ from kaagaz.reading.rapid_pool import RapidOcrPool
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import PagePool, Reader, ReaderSocket
 from kaagaz.reading.text_quality import PageSignals, TextLayerRules
+from kaagaz.reading.text_reader import KINDS as TEXT_KINDS
+from kaagaz.reading.text_reader import TextReader
 from kaagaz.reading.xlsx_reader import XlsxLimits, XlsxReader
 from kaagaz.settings import Settings
 
@@ -149,6 +152,7 @@ def build_reader_socket(settings: Settings, ocr: OcrEngine | None) -> ReaderSock
     pages = page_pool(settings, ocr)
     readers: dict[str, Reader] = {
         resolve.CSV: CsvReader(max_cells=settings.csv_max_cells),
+        **{kind: TextReader(kind) for kind in sorted(TEXT_KINDS)},
         resolve.XLSX: XlsxReader(
             XlsxLimits(
                 max_entries=settings.xlsx_max_entries,
@@ -179,6 +183,6 @@ def build_reader_socket(settings: Settings, ocr: OcrEngine | None) -> ReaderSock
             dpi_rule=settings.ocr_dpi_rule,
             pages=pages,
         )
-        readers.update({sniff.PNG: images, sniff.JPEG: images, sniff.TIFF: images})
+        readers.update({sniff.PNG: images, sniff.JPEG: images, sniff.TIFF: images, sniff.HEIC: images})
     second_readers: dict[str, Reader] = {sniff.PDF: PdfiumReader(max_pages=settings.max_pages)}
     return ReaderSocket(readers, second_readers)

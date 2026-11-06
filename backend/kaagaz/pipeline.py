@@ -230,7 +230,7 @@ from kaagaz.chunking.context import with_context
 from kaagaz.chunking.layout import Layout, page_layout
 from kaagaz.chunking.lines import pieces_from_lines
 from kaagaz.chunking.piece import Piece
-from kaagaz.chunking.rows import pieces_from_rows
+from kaagaz.chunking.rows import pieces_from_rows, pieces_from_text_lines
 from kaagaz.chunking.script import languages_without_model
 from kaagaz.chunking.sections import (
     MAP_PROMPT_HASH,
@@ -362,6 +362,8 @@ _PHOTO_TYPES = frozenset({sniff.PNG, sniff.JPEG, sniff.TIFF, sniff.HEIC})
 # Read from their cells, never by AI (kaagaz/reading/wiring.py): the daily page limit never holds
 # them. The sniffed text and zip types too: a new upload's, before the worker tells its kind (#522).
 _SHEET_TYPES = frozenset({sniff.TEXT, sniff.ZIP, resolve.XLSX, resolve.XLS, *resolve.TEXT_KINDS})
+# The text kinds read as lines on pages (the text reader), not as a sheet's cells (#522).
+_TEXT_LINE_KINDS = resolve.TEXT_KINDS - {resolve.CSV}
 
 # Stored page pictures are for people to look at (PRD 1, S1), so they are WebP.
 # Method 2 (R2 finding 2): several times faster to encode than 4, for under 1 dB
@@ -1164,7 +1166,9 @@ class DocumentProcessor:
         # rule here too, so no piece or value can be saved without one. A word mark (PRD 5
         # F3) is drawn on the page from the stored output, never a piece or a value.
         usable = [span for span in spans if _points_at(span.location) and not is_word_mark(span)]
-        pieces = pieces_from_rows(customer_id, document_id, usable)
+        # #522: a text file's lines make paragraphs; a sheet's cells make one piece per row.
+        prose = record.detected_type in _TEXT_LINE_KINDS
+        pieces = (pieces_from_text_lines if prose else pieces_from_rows)(customer_id, document_id, usable)
         # CX1: a page whose sentence goes on onto the next one, as its reader said.
         continued = {page_no for page_no, read in run.page_reads.items() if read.continues_on_next_page}
         pieces += pieces_from_lines(customer_id, document_id, usable, continues=continued)
@@ -1192,7 +1196,8 @@ class DocumentProcessor:
         # Council 16 Oct 2026: the card (type, date, summary, links) is asked only on readable
         # pages, never on a local reader's text of an unreadable one; with none, no card or map.
         readable = [span for span in usable if getattr(span.location, "page", None) not in unreadable]
-        rule = values_from_cells(usable) + values_from_lines(usable)
+        # A text file's lines are no table: its header rule would make values of prose (#522).
+        rule = ([] if prose else values_from_cells(usable)) + values_from_lines(usable)
 
         # Ready first (Tushar, 16 Oct 2026): saved and ready with the rule values, checked and
         # labelled as with the model off, before the card and the map are asked (Ready waits

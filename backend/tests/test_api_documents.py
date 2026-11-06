@@ -1182,7 +1182,9 @@ def test_file_is_served_as_a_download_and_sandboxed(db: Database) -> None:
     [
         ("सातबारा उतारा.pdf", "pdf", "%E0%A4%B8%E0%A4%BE%E0%A4%A4%E0%A4%AC%E0%A4%BE%E0%A4%B0%E0%A4%BE%20"),
         ('a"b\r\nSet-Cookie: x=1.png', "png", "a%22b%0D%0ASet-Cookie%3A%20x%3D1.png"),
-        ("stock list", "zip", "stock%20list.xlsx"),
+        ("stock list", "xlsx", "stock%20list.xlsx"),  # changed on purpose (#522): a ready zip is xlsx
+        ("page.htm", "html", "page.html"),
+        ("IMG_0042.HEIC", "heic", "IMG_0042.heic"),
     ],
 )
 def test_the_download_keeps_the_users_name_with_the_true_extension(

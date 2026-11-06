@@ -13,8 +13,15 @@ export const ACCEPTED_EXTENSIONS = [
   "jpeg",
   "tif",
   "tiff",
+  "heic",
+  "heif",
   "csv",
   "xlsx",
+  "txt",
+  "md",
+  "json",
+  "html",
+  "htm",
 ] as const;
 
 /** For the file picker's accept attribute. */
@@ -32,8 +39,16 @@ const KIND_OF_EXTENSION: Readonly<Record<AcceptedExtension, UploadKind>> = {
   jpeg: "image",
   tif: "image",
   tiff: "image",
+  heic: "image",
+  heif: "image",
   csv: "sheet",
   xlsx: "sheet",
+  // Text files (#522) have the spreadsheets' limit.
+  txt: "sheet",
+  md: "sheet",
+  json: "sheet",
+  html: "sheet",
+  htm: "sheet",
 };
 
 const MB = 1024 * 1024;
@@ -55,8 +70,8 @@ export const FALLBACK_UPLOAD_LIMITS: Readonly<UploadLimits> = {
 export function uploadLimitsHint(limits: UploadLimits = FALLBACK_UPLOAD_LIMITS): string {
   return (
     `PDF up to ${Math.floor(limits.pdf_bytes / MB)} MB. ` +
-    `PNG, JPG or TIFF up to ${Math.floor(limits.image_bytes / MB)} MB. ` +
-    `CSV or XLSX up to ${Math.floor(limits.sheet_bytes / MB)} MB.`
+    `PNG, JPG, TIFF or HEIC up to ${Math.floor(limits.image_bytes / MB)} MB. ` +
+    `CSV, XLSX, TXT, MD, JSON or HTML up to ${Math.floor(limits.sheet_bytes / MB)} MB.`
   );
 }
 
@@ -119,7 +134,7 @@ export function validateUpload(
 ): string | null {
   const kind = uploadKind(file.name);
   if (kind === null) {
-    return "This kind of file can't be uploaded. Use PDF, PNG, JPG, TIFF, CSV or XLSX.";
+    return "This kind of file can't be uploaded. Use PDF, PNG, JPG, TIFF, HEIC, CSV, XLSX, TXT, MD, JSON or HTML.";
   }
   if (file.size === 0) return "This file is empty.";
   const limit = limitFor(kind, limits);

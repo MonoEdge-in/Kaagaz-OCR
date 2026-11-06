@@ -121,9 +121,23 @@ const TYPE_LABELS: Record<DetectedType, string> = {
   png: "Image (PNG)",
   jpeg: "Image (JPEG)",
   tiff: "Image (TIFF)",
-  zip: "Spreadsheet",
+  heic: "Image (HEIC)",
+  // Changed on purpose (#522): the sniffed types, until the worker has told the file's kind.
+  zip: "ZIP file",
   ole2: "Old Office file",
-  text: "CSV",
+  text: "Text file",
+  xlsx: "Spreadsheet",
+  xls: "Spreadsheet (XLS)",
+  csv: "CSV",
+  docx: "Word document",
+  dotx: "Word template",
+  doc: "Word document (DOC)",
+  pptx: "PowerPoint",
+  ppt: "PowerPoint (PPT)",
+  txt: "Text",
+  md: "Markdown",
+  json: "JSON",
+  html: "Web page (HTML)",
 };
 
 /** The file kind in words, from the type the server detected from the bytes. */

@@ -80,8 +80,23 @@ describe("formatNumber", () => {
 describe("typeLabel", () => {
   it("names each detected type in words", () => {
     expect(typeLabel("pdf")).toBe("PDF");
-    expect(typeLabel("zip")).toBe("Spreadsheet");
-    expect(typeLabel("text")).toBe("CSV");
+    // Changed on purpose (#522): a ready spreadsheet is xlsx, and zip and text are only the
+    // sniffed types, until the worker has told the file's kind.
+    expect(typeLabel("xlsx")).toBe("Spreadsheet");
+    expect(typeLabel("csv")).toBe("CSV");
+    expect(typeLabel("zip")).toBe("ZIP file");
+    expect(typeLabel("text")).toBe("Text file");
+  });
+
+  it("names every kind the worker can tell (#522)", () => {
+    expect(typeLabel("heic")).toBe("Image (HEIC)");
+    expect(typeLabel("txt")).toBe("Text");
+    expect(typeLabel("md")).toBe("Markdown");
+    expect(typeLabel("json")).toBe("JSON");
+    expect(typeLabel("html")).toBe("Web page (HTML)");
+    expect(typeLabel("docx")).toBe("Word document");
+    expect(typeLabel("pptx")).toBe("PowerPoint");
+    expect(typeLabel("xls")).toBe("Spreadsheet (XLS)");
   });
 });
 

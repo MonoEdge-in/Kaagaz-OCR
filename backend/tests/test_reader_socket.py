@@ -335,13 +335,23 @@ class WiringTest(unittest.TestCase):
         self.assertEqual(socket.reader_id(resolve.XLSX), ("xlsx", "1"))
         self.assertEqual(socket.reader_id(sniff.PDF)[0], "pdfplumber")
         self.assertEqual(socket.reader_id(sniff.PDF, second=True)[0], "pdfium")
-        for kind in (sniff.PNG, sniff.JPEG, sniff.TIFF):
+        for kind in (sniff.PNG, sniff.JPEG, sniff.TIFF, sniff.HEIC):
+            with self.subTest(kind), self.assertRaises(NoReader):
+                socket.read(kind, b"")
+
+    def test_the_text_kinds_have_the_text_reader_and_the_office_kinds_none_yet(self) -> None:
+        # #522 PR 1: Word, PowerPoint, old Office files and a zip as a folder are stored, not read.
+        socket = build_reader_socket(make_settings(), FakeOcr())
+        for kind in ("txt", "md", "json", "html"):
+            with self.subTest(kind):
+                self.assertEqual(socket.reader_id(kind), (f"text-{kind}", "1"))
+        for kind in ("docx", "dotx", "doc", "pptx", "ppt", "xls", "zip"):
             with self.subTest(kind), self.assertRaises(NoReader):
                 socket.read(kind, b"")
 
     def test_with_ocr_photos_are_read_and_the_pdf_version_names_the_engine(self) -> None:
         socket = build_reader_socket(make_settings(), FakeOcr())
-        for kind in (sniff.PNG, sniff.JPEG, sniff.TIFF):
+        for kind in (sniff.PNG, sniff.JPEG, sniff.TIFF, sniff.HEIC):
             with self.subTest(kind):
                 self.assertEqual(socket.reader_id(kind), ("fake-ocr", "0"))
         self.assertTrue(socket.reader_id(sniff.PDF)[1].endswith("+fake-ocr-0"))
