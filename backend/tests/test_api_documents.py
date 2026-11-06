@@ -10,19 +10,26 @@ import re
 from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import httpx2 as httpx
 import pytest
 from PIL import Image
 from sqlalchemy import Connection, event, text
 
-from kaagaz.api.routers.documents import day_start, display_name, upload_policy
+from kaagaz.api.routers.documents import (
+    _CONTENT_TYPES,
+    DetectedTypeParam,
+    day_start,
+    display_name,
+    upload_policy,
+)
 from kaagaz.api.views import document_time_left, in_progress, progress_message, status_message
 from kaagaz.db import folders as folders_sql
 from kaagaz.db.engine import Database
 from kaagaz.db.folders import FolderRow
 from kaagaz.db.pipeline_store import span_to_json
+from kaagaz.ingestion import resolve, sniff
 from kaagaz.reading import ocr
 from kaagaz.reading.spans import CellLocation, Span
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES
@@ -112,8 +119,12 @@ def test_status_messages() -> None:
     # Changed on purpose (UI quality council, 15 Oct 2026): no failure code on screen.
     # Changed on purpose (council 16 Oct 2026): the same file uploaded again is a duplicate
     # and is never read again.
+    # Changed on purpose (#522): a damaged file is told so, since only another copy helps.
+    assert message("failed", "corrupt_file") == (
+        "This file is damaged, so it can't be opened. Save it again and upload that copy."
+    )
     assert (
-        message("failed", "corrupt_file")
+        message("failed", "malformed_csv")
         == "This file needs another read. Read it again, or try another copy of it."
     )
     # PROVISIONAL: the PRD quotes the real page count, which is not stored when a PDF fails.
@@ -226,6 +237,7 @@ def test_the_shipped_settings_give_every_allowed_type_its_limit() -> None:
         "png": 20 * MB,
         "jpeg": 20 * MB,
         "tiff": 20 * MB,
+        "heic": 20 * MB,  # #522
         "text": 10 * MB,
         "zip": 10 * MB,
     }
@@ -316,8 +328,12 @@ def test_old_progress_is_ignored_once_a_document_is_ready_or_failed() -> None:
     # Changed on purpose (UI quality council, 15 Oct 2026): no failure code on screen.
     # Changed on purpose (council 16 Oct 2026): the same file uploaded again is a duplicate
     # and is never read again.
+    # Changed on purpose (#522): a damaged file is told so, since only another copy helps.
+    assert message("failed", "corrupt_file") == (
+        "This file is damaged, so it can't be opened. Save it again and upload that copy."
+    )
     assert (
-        message("failed", "corrupt_file")
+        message("failed", "malformed_csv")
         == "This file needs another read. Read it again, or try another copy of it."
     )
     assert in_progress("ready", progress) is None
@@ -1174,6 +1190,36 @@ def test_file_is_served_as_a_download_and_sandboxed(db: Database) -> None:
     )
     assert reply.headers["content-security-policy"] == "sandbox"
     assert reply.headers["x-content-type-options"] == "nosniff"
+
+
+def test_every_type_and_kind_downloads_with_its_own_media_type_and_ending() -> None:
+    """#522: each sniffed type and each kind the worker tells, with a media type that is never a
+    page to render for text (a download is an attachment in a sandbox, nosniff)."""
+    assert set(_CONTENT_TYPES) == set(get_args(DetectedTypeParam)) == resolve.KINDS | sniff.KNOWN_TYPES
+    assert {kind: ending for kind, (_, ending) in _CONTENT_TYPES.items()} == {
+        "pdf": "pdf",
+        "png": "png",
+        "jpeg": "jpg",
+        "tiff": "tif",
+        "heic": "heic",
+        "zip": "zip",
+        "ole2": "bin",
+        "text": "txt",
+        "xlsx": "xlsx",
+        "xls": "xls",
+        "csv": "csv",
+        "docx": "docx",
+        "dotx": "dotx",
+        "doc": "doc",
+        "pptx": "pptx",
+        "ppt": "ppt",
+        "txt": "txt",
+        "md": "md",
+        "json": "json",
+        "html": "html",
+    }
+    for kind in resolve.TEXT_KINDS | {sniff.TEXT}:
+        assert _CONTENT_TYPES[kind][0] == "text/plain; charset=utf-8", kind
 
 
 @pytest.mark.db

@@ -11,7 +11,7 @@ import {
   statusChip,
   typeLabel,
 } from "@/lib/format";
-import type { DocType, DocumentStatus } from "@/lib/types";
+import type { DetectedType, DocType, DocumentStatus } from "@/lib/types";
 
 describe("formatBytes", () => {
   it("shows bytes as whole numbers", () => {
@@ -89,14 +89,25 @@ describe("typeLabel", () => {
   });
 
   it("names every kind the worker can tell (#522)", () => {
-    expect(typeLabel("heic")).toBe("Image (HEIC)");
-    expect(typeLabel("txt")).toBe("Text");
-    expect(typeLabel("md")).toBe("Markdown");
-    expect(typeLabel("json")).toBe("JSON");
-    expect(typeLabel("html")).toBe("Web page (HTML)");
-    expect(typeLabel("docx")).toBe("Word document");
-    expect(typeLabel("pptx")).toBe("PowerPoint");
-    expect(typeLabel("xls")).toBe("Spreadsheet (XLS)");
+    const kinds: [DetectedType, string][] = [
+      ["xlsx", "Spreadsheet"],
+      ["xls", "Spreadsheet (XLS)"],
+      ["csv", "CSV"],
+      ["docx", "Word document"],
+      ["dotx", "Word template"],
+      ["doc", "Word document (DOC)"],
+      ["pptx", "PowerPoint"],
+      ["ppt", "PowerPoint (PPT)"],
+      ["txt", "Text"],
+      ["md", "Markdown"],
+      ["json", "JSON"],
+      ["html", "Web page (HTML)"],
+      ["heic", "Image (HEIC)"],
+      ["zip", "ZIP file"],
+    ];
+    for (const [kind, words] of kinds) {
+      expect(typeLabel(kind), kind).toBe(words);
+    }
   });
 });
 

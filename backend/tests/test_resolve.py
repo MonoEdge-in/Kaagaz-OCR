@@ -1,7 +1,9 @@
 """The file kind after the virus scan (#522, ``kaagaz/ingestion/resolve.py``): a zip's parts, an
 old Office file's root streams, and a text file's name, each read as little as it can be."""
 
+import io
 import struct
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -159,6 +161,53 @@ def _zip64(parts: dict[str, bytes], entries: int) -> bytes:
     )
     locator = struct.pack("<4sIQI", b"PK\x06\x07", 0, at, 1)
     return data[:at] + record + locator + end[:8] + b"\xff\xff\xff\xff" + end[12:]
+
+
+def _many(entries: int) -> bytes:
+    """A Word file's parts and ``entries`` empty ones, stored: a zip of entries + 1 entries."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("word/document.xml", b"<w/>")
+        for n in range(entries):
+            archive.writestr(str(n), b"")
+    return buffer.getvalue()
+
+
+def test_a_zip_with_more_entries_than_the_cap_is_a_zip_counted_never_listed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    at_cap, over = _many(resolve.ZIP_MAX_ENTRIES - 1), _many(resolve.ZIP_MAX_ENTRIES)
+    assert _kind(at_cap) == resolve.DOCX
+    listed: list[zipfile.ZipFile] = []
+
+    def contents(archive: zipfile.ZipFile) -> str:
+        listed.append(archive)
+        return resolve.DOCX
+
+    monkeypatch.setattr(resolve, "_zip_contents", contents)
+    assert _kind(over) == resolve.ZIP
+    # A lying end record (it claims 1 entry) changes nothing: the entries are counted.
+    at = over.rfind(b"PK\x05\x06")
+    lying = over[: at + 8] + struct.pack("<HH", 1, 1) + over[at + 12 :]
+    assert _kind(lying) == resolve.ZIP
+    assert listed == []  # never handed to zipfile to list
+
+
+_ZIP_END = resolve._END_OF_DIRECTORY
+
+
+def test_an_entry_signature_cut_across_two_chunks_is_counted_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    data = make_zip({"word/document.xml": b"<w/>", "a": b"", "b": b""})  # 3 entries
+    end = data.rfind(_ZIP_END)
+    lying = data[: end + 8] + struct.pack("<HH", 1, 1) + data[end + 12 :]  # claims 1: counted
+    monkeypatch.setattr(resolve, "ZIP_MAX_ENTRIES", 2)
+    for chunk in (1, 2, 3, 5, 7, 4096):
+        monkeypatch.setattr(resolve, "_CHUNK", chunk)
+        assert _kind(lying) == resolve.ZIP, chunk
+    monkeypatch.setattr(resolve, "ZIP_MAX_ENTRIES", 3)
+    for chunk in (1, 2, 3, 5, 7, 4096):
+        monkeypatch.setattr(resolve, "_CHUNK", chunk)
+        assert _kind(data) == resolve.DOCX, chunk
 
 
 def test_a_zip_claiming_more_entries_than_the_cap_is_a_zip_never_listed() -> None:

@@ -11,6 +11,9 @@ and a text file (CSV, plain text, Markdown, JSON, HTML) are each one type there.
   ``word/document.xml`` is a Word file (``dotx`` when its content type is a
   template's), ``ppt/presentation.xml`` a PowerPoint, ``xl/workbook.xml`` a
   spreadsheet; any other zip is ``zip``. No part is parsed as XML here.
+  A zip of more than ``ZIP_MAX_ENTRIES`` entries, by its end record's count or
+  by its central directory entries counted before anything is listed, is
+  ``zip`` unlisted, so millions of entries can't stall it.
 * An old Office file (OLE2, "compound file"): its directory only, read sector by
   sector with the standard library and a cap on every chain, for the streams at
   its root: ``WordDocument`` is ``doc``, ``PowerPoint Document`` is ``ppt``,
@@ -93,6 +96,8 @@ ZIP_MAX_ENTRIES = 50_000
 _END_OF_DIRECTORY = b"PK\x05\x06"
 _ZIP64_LOCATOR = b"PK\x06\x07"
 _END_SEARCH = 22 + 0xFFFF  # the end record and the longest comment
+_CENTRAL_ENTRY = b"PK\x01\x02"  # the signature of each central directory entry
+_CHUNK = 1024 * 1024
 # What zipfile raises for a damaged or unreadable zip (a bad CRC or deflate stream, an
 # encrypted part, a method it lacks, a header past the end).
 _ZIP_DAMAGED = (
@@ -187,8 +192,7 @@ def _opened(source: Source) -> IO[bytes]:
 
 
 def _zip_kind(file: IO[bytes]) -> str:
-    entries = _zip_entries(file)
-    if entries is not None and entries > ZIP_MAX_ENTRIES:
+    if _too_many_entries(file):
         return ZIP
     kind = None
     try:
@@ -210,6 +214,28 @@ def _zip_contents(archive: zipfile.ZipFile) -> str:
     if _EXCEL_PART in names:
         return XLSX
     return ZIP
+
+
+def _too_many_entries(file: IO[bytes]) -> bool:
+    """Whether the zip has more than ZIP_MAX_ENTRIES entries, told before zipfile lists its
+    central directory (which builds one object per entry): by the count its end record
+    claims, and by its central directory entries' signatures, counted in 1 MB chunks and
+    stopped past the cap, since a hostile end record can claim fewer than there are. A
+    signature inside a part's data can only count one too many, never one too few.
+    O(n) in the file size, in C."""
+    entries = _zip_entries(file)
+    if entries is not None and entries > ZIP_MAX_ENTRIES:
+        return True
+    file.seek(0)
+    found = 0
+    carry = b""  # the last 3 bytes, for a signature cut across two chunks
+    while chunk := file.read(_CHUNK):
+        window = carry + chunk
+        found += window.count(_CENTRAL_ENTRY)
+        if found > ZIP_MAX_ENTRIES:
+            return True
+        carry = window[-3:]
+    return False
 
 
 def _zip_entries(file: IO[bytes]) -> int | None:
