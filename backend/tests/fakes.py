@@ -272,6 +272,17 @@ class MemoryDocuments(MemoryRepository):
         if self.get(customer_id, document_id) is not None:
             self.page_counts[(customer_id, document_id)] = page_count
 
+    def set_detected_type(self, customer_id: str, document_id: str, detected_type: str) -> None:
+        """#522: the kind resolve.py told, on the record (and its fingerprint's)."""
+        with self._lock:
+            record = self._by_id.get((customer_id, document_id))
+            if record is None:
+                return
+            resolved = replace(record, detected_type=detected_type)
+            self._by_id[(customer_id, document_id)] = resolved
+            if self._by_fingerprint.get((customer_id, record.sha256)) == record:
+                self._by_fingerprint[(customer_id, record.sha256)] = resolved
+
     def mark_ready(
         self,
         customer_id: str,

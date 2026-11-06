@@ -4,10 +4,10 @@ import threading
 import unittest
 from typing import Any, cast
 
-from kaagaz.ingestion import sniff
+from kaagaz.ingestion import resolve, sniff
 from kaagaz.ingestion.errors import BackendUnavailable, RejectCode, UploadRejected
 from kaagaz.ingestion.messages import over_every_limit_message, too_large_message
-from kaagaz.ingestion.policy import KIND_OF, UploadPolicy, limits_by_type
+from kaagaz.ingestion.policy import KIND_OF, UPLOAD_TYPES, UploadPolicy, limits_by_type
 from kaagaz.ingestion.ports import DocumentRecord, Job, UnknownFamily, UnknownFolder
 from kaagaz.ingestion.service import UploadResult, UploadService
 from tests.fakes import MemoryQueue, MemoryRepository, MemoryStorage
@@ -22,6 +22,7 @@ _FIRST_BYTES = {
     sniff.PNG: b"\x89PNG\r\n\x1a\n",
     sniff.JPEG: b"\xff\xd8\xff",
     sniff.TIFF: b"II*\x00",
+    sniff.HEIC: b"\x00\x00\x00\x18ftypheic",
     sniff.ZIP: b"PK\x03\x04",
     sniff.TEXT: b"invoice,amount\n",
 }
@@ -222,10 +223,11 @@ class TypeLimitTest(unittest.TestCase):
     """Each type has its own size limit, checked after the type is sniffed (PRD U2)."""
 
     def test_each_type_passes_at_its_limit_and_is_refused_one_byte_over(self) -> None:
-        for detected, kind in KIND_OF.items():
+        for detected in sorted(UPLOAD_TYPES):  # changed on purpose (#522): the kinds have limits too
+            kind = KIND_OF[detected]
             # Only this type's limit is low, so no other limit can be what refuses it.
             limits = dict.fromkeys(KIND_OF, 3000) | {detected: 1000}
-            policy = UploadPolicy(max_bytes=5000, allowed_types=frozenset(KIND_OF), type_limits=limits)
+            policy = UploadPolicy(max_bytes=5000, allowed_types=UPLOAD_TYPES, type_limits=limits)
             with self.subTest(detected=detected):
                 service, repo, storage, queue = make_service(policy)
                 accepted = service.accept(CUSTOMER, io.BytesIO(file_of(detected, 1000)))
@@ -244,7 +246,7 @@ class TypeLimitTest(unittest.TestCase):
 
     def test_the_customers_limit_lowers_a_types_limit(self) -> None:
         limits = limits_by_type(pdf=5000, image=2000, sheet=1000)
-        policy = UploadPolicy(max_bytes=1500, allowed_types=frozenset(KIND_OF), type_limits=limits)
+        policy = UploadPolicy(max_bytes=1500, allowed_types=UPLOAD_TYPES, type_limits=limits)
         service, _, _, _ = make_service(policy)
         self.assertFalse(service.accept(CUSTOMER, io.BytesIO(file_of(sniff.PNG, 1500))).duplicate)
         # 1500 is now the largest limit of all, so reading stops there, before the type is known.
@@ -255,7 +257,7 @@ class TypeLimitTest(unittest.TestCase):
 
     def test_the_customers_limit_never_raises_a_types_limit(self) -> None:
         limits = limits_by_type(pdf=5000, image=2000, sheet=1000)
-        policy = UploadPolicy(max_bytes=10_000, allowed_types=frozenset(KIND_OF), type_limits=limits)
+        policy = UploadPolicy(max_bytes=10_000, allowed_types=UPLOAD_TYPES, type_limits=limits)
         service, _, _, _ = make_service(policy)
         with self.assertRaises(UploadRejected) as ctx:
             service.accept(CUSTOMER, io.BytesIO(file_of(sniff.TEXT, 1001)))
@@ -277,7 +279,7 @@ class MessageTest(unittest.TestCase):
         )
         self.assertEqual(
             too_large_message("sheet", 14 * MB, 10 * MB),
-            "Spreadsheets and CSV files can be up to 10 MB. This one is 14 MB."
+            "Spreadsheets, CSV and text files can be up to 10 MB. This one is 14 MB."
             " Split it into smaller files and try again.",
         )
 
@@ -408,13 +410,12 @@ class PolicyTest(unittest.TestCase):
 
     def test_a_types_limit_is_its_own_lowered_but_never_raised_by_the_customers(self) -> None:
         limits = limits_by_type(pdf=5000, image=2000, sheet=1000)
-        every_type = frozenset(KIND_OF)
-        roomy = UploadPolicy(max_bytes=10_000, allowed_types=every_type, type_limits=limits)
-        tight = UploadPolicy(max_bytes=1500, allowed_types=every_type, type_limits=limits)
-        self.assertEqual({t: roomy.limit_for(t) for t in every_type}, limits)
+        roomy = UploadPolicy(max_bytes=10_000, allowed_types=UPLOAD_TYPES, type_limits=limits)
+        tight = UploadPolicy(max_bytes=1500, allowed_types=UPLOAD_TYPES, type_limits=limits)
+        self.assertEqual({t: roomy.limit_for(t) for t in KIND_OF}, limits)
         self.assertEqual(
-            {t: tight.limit_for(t) for t in every_type},
-            {"pdf": 1500, "png": 1500, "jpeg": 1500, "tiff": 1500, "text": 1000, "zip": 1000},
+            {t: tight.limit_for(t) for t in UPLOAD_TYPES},
+            {"pdf": 1500, "png": 1500, "jpeg": 1500, "tiff": 1500, "heic": 1500, "text": 1000, "zip": 1000},
         )
         self.assertEqual((roomy.largest_limit, tight.largest_limit), (5000, 1500))
 
@@ -424,14 +425,35 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(sheets.largest_limit, 1000)
 
     def test_limits_by_type_gives_every_type_of_each_kind_its_kinds_limit(self) -> None:
+        # Changed on purpose (#522): HEIC, and every kind resolve.py tells, have a size group too.
         self.assertEqual(
             limits_by_type(pdf=3, image=2, sheet=1),
-            {"pdf": 3, "png": 2, "jpeg": 2, "tiff": 2, "text": 1, "zip": 1},
+            {
+                "pdf": 3,
+                "png": 2,
+                "jpeg": 2,
+                "tiff": 2,
+                "heic": 2,
+                "text": 1,
+                "zip": 1,
+                "docx": 3,
+                "dotx": 3,
+                "doc": 3,
+                "pptx": 3,
+                "ppt": 3,
+                "xlsx": 1,
+                "xls": 1,
+                "csv": 1,
+                "txt": 1,
+                "md": 1,
+                "json": 1,
+                "html": 1,
+            },
         )
+        self.assertEqual(KIND_OF.keys(), (resolve.KINDS | sniff.KNOWN_TYPES) - {sniff.OLE2})
         self.assertEqual(
-            dict(KIND_OF),
-            {"pdf": "pdf", "png": "image", "jpeg": "image", "tiff": "image", "text": "sheet", "zip": "sheet"},
-        )
+            UPLOAD_TYPES, sniff.KNOWN_TYPES - {sniff.OLE2}
+        )  # an old Office file has no limit yet
 
 
 class VersionTest(unittest.TestCase):

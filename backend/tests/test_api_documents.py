@@ -542,7 +542,7 @@ def test_an_exe_renamed_to_pdf_is_refused_by_its_first_bytes(db: Database) -> No
         (
             "register.csv",
             _padded(CSV_BYTES, 1 * MB + 1, b"0"),
-            "Spreadsheets and CSV files can be up to 1 MB. This one is 2 MB."
+            "Spreadsheets, CSV and text files can be up to 1 MB. This one is 2 MB."
             " Split it into smaller files and try again.",
         ),
         (

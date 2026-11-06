@@ -104,7 +104,7 @@ export function tooLargeMessage(kind: UploadKind, sizeBytes: number, limitBytes:
     case "image":
       return `Photos and scans can be up to ${limit} MB. This one is ${size} MB. Save it at a lower resolution and try again.`;
     case "sheet":
-      return `Spreadsheets and CSV files can be up to ${limit} MB. This one is ${size} MB. Split it into smaller files and try again.`;
+      return `Spreadsheets, CSV and text files can be up to ${limit} MB. This one is ${size} MB. Split it into smaller files and try again.`;
   }
 }
 

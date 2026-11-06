@@ -73,7 +73,7 @@ describe("validateUpload", () => {
   it("uses the server's limits when given them", () => {
     const limits: UploadLimits = { ...FALLBACK_UPLOAD_LIMITS, sheet_bytes: 5 * MB };
     expect(validateUpload({ name: "a.csv", size: 6 * MB }, limits)).toBe(
-      "Spreadsheets and CSV files can be up to 5 MB. This one is 6 MB. Split it into smaller files and try again.",
+      "Spreadsheets, CSV and text files can be up to 5 MB. This one is 6 MB. Split it into smaller files and try again.",
     );
   });
 
@@ -126,7 +126,7 @@ describe("upload limits by type (PRD U2)", () => {
       "PDFs can be up to 50 MB. This one is 61 MB. Split it or save it smaller and try again.",
     );
     expect(validateUpload({ name: "ledger.xlsx", size: 12 * MB })).toBe(
-      "Spreadsheets and CSV files can be up to 10 MB. This one is 12 MB. Split it into smaller files and try again.",
+      "Spreadsheets, CSV and text files can be up to 10 MB. This one is 12 MB. Split it into smaller files and try again.",
     );
     expect(tooLargeMessage("image", 34 * MB, 20 * MB)).toBe(
       "Photos and scans can be up to 20 MB. This one is 34 MB. Save it at a lower resolution and try again.",
@@ -135,7 +135,7 @@ describe("upload limits by type (PRD U2)", () => {
       "PDFs can be up to 50 MB. This one is 61 MB. Split it or save it smaller and try again.",
     );
     expect(tooLargeMessage("sheet", 12 * MB, 10 * MB)).toBe(
-      "Spreadsheets and CSV files can be up to 10 MB. This one is 12 MB. Split it into smaller files and try again.",
+      "Spreadsheets, CSV and text files can be up to 10 MB. This one is 12 MB. Split it into smaller files and try again.",
     );
   });
 

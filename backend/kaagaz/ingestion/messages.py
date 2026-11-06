@@ -23,7 +23,7 @@ _TOO_LARGE: dict[Kind, str] = {
         " Save it at a lower resolution and try again."
     ),
     "sheet": (
-        "Spreadsheets and CSV files can be up to {limit} MB. This one is {size} MB."
+        "Spreadsheets, CSV and text files can be up to {limit} MB. This one is {size} MB."
         " Split it into smaller files and try again."
     ),
 }

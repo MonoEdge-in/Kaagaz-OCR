@@ -4,7 +4,8 @@ Application code (the pipeline) calls ``build_reader_socket`` and then only
 ever talks to the socket, never to a reader (CLAUDE.md "The reader plug
 socket"). Adding a reader means one new module and one entry here.
 
-* text -> CsvReader, zip -> XlsxReader, pdf -> PdfReader (text layer, and OCR
+* Readers are chosen by the kind ``kaagaz/ingestion/resolve.py`` tells after the
+  virus scan (#522): csv -> CsvReader, xlsx -> XlsxReader, pdf -> PdfReader (text layer, and OCR
   for pages whose text layer fails the route check when an engine is set up,
   drawn at OCR_DPI or, by OCR_DPI_RULE, at the DPI its text needs with OCR_DPI
   as the ceiling; PRD 2 R2 and R3 with the TEXT_LAYER_*, SCAN_IMAGE_COVERAGE
@@ -27,7 +28,7 @@ import importlib
 from typing import Any
 
 from kaagaz.db.engine import Database
-from kaagaz.ingestion import sniff
+from kaagaz.ingestion import resolve, sniff
 from kaagaz.preparing import page_checks
 from kaagaz.reading import ocr_dpi, text_quality
 from kaagaz.reading.csv_reader import CsvReader
@@ -147,8 +148,8 @@ def page_pool(settings: Settings, engine: OcrEngine | None) -> PagePool | None:
 def build_reader_socket(settings: Settings, ocr: OcrEngine | None) -> ReaderSocket:
     pages = page_pool(settings, ocr)
     readers: dict[str, Reader] = {
-        sniff.TEXT: CsvReader(max_cells=settings.csv_max_cells),
-        sniff.ZIP: XlsxReader(
+        resolve.CSV: CsvReader(max_cells=settings.csv_max_cells),
+        resolve.XLSX: XlsxReader(
             XlsxLimits(
                 max_entries=settings.xlsx_max_entries,
                 max_member_bytes=settings.xlsx_max_member_bytes,

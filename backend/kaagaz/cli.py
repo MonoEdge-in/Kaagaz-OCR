@@ -181,6 +181,7 @@ from kaagaz.db.engine import Database, make_engine
 from kaagaz.extraction.checks import GSTIN_FIELDS, gstin_valid
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
+from kaagaz.ingestion.resolve import UNSUPPORTED, resolve_kind
 from kaagaz.ingestion.spool import HEAD_SIZE
 from kaagaz.jobs import catalog, land_facts
 from kaagaz.jobs.purge import CustomerStorage, purge_customer
@@ -1092,8 +1093,11 @@ def _measure(
         data = path.read_bytes()
     except OSError:
         raise CliError("the file cannot be opened") from None
-    detected = sniff.detect_type(data[:HEAD_SIZE])
-    if detected is None:
+    try:  # its kind, as the worker tells it after the scan (#522)
+        detected = resolve_kind(data, sniff.detect_type(data[:HEAD_SIZE]), path.name)
+    except ReadError as error:
+        raise CliError(f"the file cannot be read ({error.code})") from None
+    if detected == UNSUPPORTED:
         raise CliError("this kind of file is not supported")
     engine = build_ocr_engine(settings)
     meter = None if engine is None else MeteredOcrEngine(engine, timer=timer)

@@ -276,9 +276,11 @@ from kaagaz.extraction.understanding import (
     understand,
 )
 from kaagaz.extraction.values import CARD_RECORD, DocumentFacts, ExtractedValue, InvoiceRow, LinkIdentifier
-from kaagaz.ingestion import sniff
+from kaagaz.ingestion import resolve, sniff
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, Job
+from kaagaz.ingestion.resolve import UNSUPPORTED, resolve_kind
+from kaagaz.ingestion.spool import HEAD_SIZE
 from kaagaz.jobs.ports import LeaseLost
 from kaagaz.jobs.reading_pause import CODES as PAUSE_CODES
 from kaagaz.jobs.reading_pause import ReadingPaused
@@ -356,9 +358,10 @@ _VERDICT_CODES = REJECTION_CODES - {"rejected"}
 # it, so they are read. Rejected is not here: the scan gate refuses it for good.
 _SETTLED = frozenset({DocumentStatus.READY, DocumentStatus.FAILED, DocumentStatus.NEEDS_READER})
 # The detected types whose every page is a picture read by OCR (the time left, fast scan).
-_PHOTO_TYPES = frozenset({sniff.PNG, sniff.JPEG, sniff.TIFF})
-# Read from their cells, never by AI (kaagaz/reading/wiring.py): the daily page limit never holds them.
-_SHEET_TYPES = frozenset({sniff.TEXT, sniff.ZIP})
+_PHOTO_TYPES = frozenset({sniff.PNG, sniff.JPEG, sniff.TIFF, sniff.HEIC})
+# Read from their cells, never by AI (kaagaz/reading/wiring.py): the daily page limit never holds
+# them. The sniffed text and zip types too: a new upload's, before the worker tells its kind (#522).
+_SHEET_TYPES = frozenset({sniff.TEXT, sniff.ZIP, resolve.XLSX, resolve.XLS, *resolve.TEXT_KINDS})
 
 # Stored page pictures are for people to look at (PRD 1, S1), so they are WebP.
 # Method 2 (R2 finding 2): several times faster to encode than 4, for under 1 dB
@@ -550,6 +553,11 @@ class DocumentStore(Protocol):
         ...
 
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None: ...
+
+    def set_detected_type(self, customer_id: str, document_id: str, detected_type: str) -> None:
+        """#522: the kind ``resolve.resolve_kind`` told after the virus scan, in place of the
+        type sniffed at upload."""
+        ...
 
     def mark_ready(
         self,
@@ -1084,6 +1092,7 @@ class DocumentProcessor:
         data = self._scan(job, run)
         if hashlib.sha256(data).hexdigest() != record.sha256:
             raise JobFailed("content_changed", retryable=False)
+        record = self._resolved(record, data)
         heartbeat()
 
         run.rates, run.preparing_started = self._rates(job, record.detected_type), self._timer()
@@ -1446,6 +1455,18 @@ class DocumentProcessor:
         except TooManyPages as error:
             self._documents.set_page_count(job.customer_id, job.document_id, error.pages)
             raise
+
+    def _resolved(self, record: DocumentRecord, data: bytes) -> DocumentRecord:
+        """The record with its kind (#522), told from the scanned bytes and its name now, and
+        stored when it is not the one stored (the type sniffed at upload, or a renamed text
+        file's). Every reader is chosen by it. A file of no kind Kaagaz reads fails for good."""
+        sniffed = sniff.detect_type(data[:HEAD_SIZE])
+        kind = _or_fail(lambda: resolve_kind(data, sniffed, record.display_name))
+        if kind == UNSUPPORTED:
+            raise JobFailed("unsupported_type", retryable=False)
+        if kind != record.detected_type:
+            self._documents.set_detected_type(record.customer_id, record.document_id, kind)
+        return replace(record, detected_type=kind)
 
     def _scan(self, job: Job, run: _Run) -> bytes:
         try:
