@@ -17,6 +17,10 @@ reviewer's Confirm and Edit, the history and Undo.
   ``changed_since``, never overwritten.
 * ``GET /documents/{id}/changes`` and ``POST .../changes/{change_id}/undo``: the history,
   newest first (``source`` person or ensemble), and Undo of the latest change.
+* ``POST /documents/{id}/lines/{line_key}/edit`` (#527): a reviewer or an admin corrects a
+  line of the clean copy, flagged or not, with Edit's body; the reply is the change's id and
+  the line as the clean copy now shows it. The text is 1 to MAX_TEXT characters once
+  trimmed, with no control or hidden character (``names.clean_name``'s rule), and changed.
 
 Every lookup runs as the signed-in customer, so another customer's document, word or
 change is 404, as is a rejected file (like the page readings). The rules live in
@@ -32,6 +36,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection, RowMapping
 
+from kaagaz.api import names, views
 from kaagaz.api.auth import CurrentUser, Reviewer, User, require_feature
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
@@ -56,6 +61,8 @@ MESSAGES = {
     " Reload to see the latest text.",
     "not_latest": "Only the latest change can be undone. Undo the changes after it first.",
     "empty_text": "Type the correct text.",
+    "hidden_text": "Type the line without line breaks or hidden characters.",
+    "unchanged": "The line already reads that way.",
 }
 STATUS = {"not_found": 404, "in_trash": 409, "not_ready": 409, "changed_since": 409, "not_latest": 409}
 ENSEMBLE_WAIT = "Ensemble is available when scanning finishes."
@@ -303,9 +310,41 @@ def edit_word(
     return _change(context, user, document_id, word_key, expected_text=body.expected_text, new_text=typed)
 
 
-def _history(review: word_review.Review, user: CurrentUser) -> list[dict[str, Any]]:
-    """Every change, newest first."""
-    keys = {flag.key for flag in review.flags}
+@router.post("/documents/{document_id}/lines/{line_key}/edit")
+def edit_line(
+    document_id: uuid.UUID, line_key: str, body: EditBody, user: Reviewer, context: Context
+) -> dict[str, Any]:
+    typed = body.text.strip()
+    if not typed:
+        raise ApiError(400, "bad_request", MESSAGES["empty_text"])
+    if names.clean_name(typed, max_length=MAX_TEXT) != typed:
+        raise ApiError(400, "bad_request", MESSAGES["hidden_text"])
+    customer_id, target = user.customer_id, str(document_id)
+    with context.db.customer(customer_id) as conn:
+        _document(conn, user, document_id)
+        try:
+            change_id = word_review.change_word(
+                conn,
+                customer_id,
+                target,
+                line_key,
+                expected_text=body.expected_text,
+                new_text=typed,
+                user_id=user.user_id,
+                now=context.clock(),
+                line=True,
+            )
+        except word_review.Refused as error:
+            if error.code == "unchanged":
+                raise ApiError(400, "bad_request", MESSAGES["unchanged"]) from None
+            raise _refused(error) from None
+        row = word_review.lines(conn, customer_id, target)[line_key]
+        latest = word_review.latest_changes(conn, customer_id, target)
+    return {"change_id": change_id, "line": views.clear_line(row, latest)}
+
+
+def _history(review: word_review.Review, keys: set[str], user: CurrentUser) -> list[dict[str, Any]]:
+    """Every change, newest first; ``keys`` are those still on the page (``word_review.on_page``)."""
     live = [row for row in review.changes if row["undone_at"] is None]
     latest_id = str(live[-1]["id"]) if live else None
     return [
@@ -327,7 +366,8 @@ def list_changes(
     with context.db.customer(customer_id) as conn:
         _document(conn, user, document_id)
         review = word_review.load(conn, customer_id, str(document_id))
-    items = [item for item in _history(review, user) if source is None or item["by"] == source]
+        keys = word_review.on_page(conn, customer_id, str(document_id), review)
+    items = [item for item in _history(review, keys, user) if source is None or item["by"] == source]
     if before is not None:
         ids = [item["id"] for item in items]
         if str(before) not in ids:
@@ -351,4 +391,5 @@ def undo_change(
         except word_review.Refused as error:
             raise _refused(error) from None
         review = word_review.load(conn, customer_id, target)
-    return next(item for item in _history(review, user) if item["id"] == str(change_id))
+        keys = word_review.on_page(conn, customer_id, target, review)
+    return next(item for item in _history(review, keys, user) if item["id"] == str(change_id))
