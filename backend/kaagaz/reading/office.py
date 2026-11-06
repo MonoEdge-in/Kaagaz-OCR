@@ -7,6 +7,11 @@ rendition, stored beside the original for the viewer (``put_rendition``). An old
 (``xls``) is converted to an XLSX, which the XLSX reader reads; it has no rendition, since
 its cells are shown, not a page.
 
+Marathi and Hindi survive into the PDF (the image has Noto Sans Devanagari, and pdfium reads
+the text exactly), but LibreOffice gives some Devanagari glyphs their text only by
+/ActualText, which the PDF reader's pdfplumber skips: such a page reads with "(cid:N)" gaps,
+so its route check sends it to OCR (right, at a page's OCR cost), never keeps the gaps.
+
 Each conversion runs ``soffice --headless --norestore --nolockcheck --convert-to`` once:
 
 * in a new temporary folder (``lo-<random>``), removed after, whatever happened: the file
@@ -31,9 +36,10 @@ OpenDocument file with macros dressed as a .docx is not opened at all: LibreOffi
 
 What this can't enforce: the network. The worker's network is what it is; LibreOffice is
 only told never to fetch (the link settings above). The backend image's tests prove a
-linked picture and an INCLUDEPICTURE field fetch nothing, while the same file with link
-updates on does fetch. Other ways a document could reach out (an OLE object's link, a Calc
-external reference in an .xls) are covered by the same settings but not each tested.
+linked picture and an INCLUDEPICTURE field fetch nothing, while the same file, converted
+with link updates on and nothing blocked, does fetch. Other ways a document could reach
+out (an OLE object's link, a Calc external reference in an .xls) are covered by the same
+settings but not each tested.
 
 A file LibreOffice can't open (a password, damage), a conversion that runs out of time,
 and an output that is missing, empty, of the wrong kind or too large all raise

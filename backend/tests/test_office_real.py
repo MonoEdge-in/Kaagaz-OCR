@@ -31,11 +31,29 @@ from typing import ClassVar
 import pypdfium2
 
 from kaagaz.ingestion import resolve, sniff
+from kaagaz.ingestion.policy import UPLOAD_TYPES, UploadPolicy, limits_by_type
+from kaagaz.ingestion.ports import Job
 from kaagaz.ingestion.resolve import resolve_kind
+from kaagaz.ingestion.service import UploadService
+from kaagaz.pipeline import DocumentProcessor, OnPicture
+from kaagaz.preparing.pages import PreparedPages, prepare_pages, sheet_pages
 from kaagaz.reading import office
 from kaagaz.reading.office import OfficeConverter
 from kaagaz.reading.spans import CellLocation, ReadError
+from kaagaz.reading.wiring import build_reader_socket, pdf_text_layer_checks
 from kaagaz.reading.xlsx_reader import XlsxLimits, XlsxReader
+from kaagaz.scanning.gate import DocumentStatus, ScanGate, Verdict
+from tests.fakes import (
+    FakeScanner,
+    MemoryDocuments,
+    MemoryPageImages,
+    MemoryPipelineStore,
+    MemoryQueue,
+    MemoryStatuses,
+    MemoryStorage,
+)
+from tests.settings_factory import make_settings
+from tests.support import SeqIds
 
 SOFFICE = shutil.which("soffice")
 FIXTURES = Path(__file__).with_name("fixtures") / "office"
@@ -70,6 +88,18 @@ SHEET = f"""<?xml version="1.0" encoding="UTF-8"?>
 </table:table-row></table:table></office:spreadsheet></office:body>
 </office:document>
 """
+# A page of English and a page of Marathi, as a letter would have.
+PARAGRAPH = (
+    "This rent agreement is made at Pune between the owner and the tenant of the flat. The tenant pays"
+    " the rent on the fifth day of every month, and the deposit is returned when the flat is handed back."
+)
+MARATHI = "हा भाडेकरार पुणे येथे घरमालक आणि भाडेकरू यांच्यात करण्यात आला आहे. भाडे दर महिन्याच्या पाच तारखेला दिले जाईल."
+LETTER = TEXT.replace(
+    f"<text:p>{LATIN}</text:p><text:p>{DEVANAGARI}</text:p>", f"<text:p>{PARAGRAPH}</text:p>" * 4
+)
+MARATHI_LETTER = TEXT.replace(
+    f"<text:p>{LATIN}</text:p><text:p>{DEVANAGARI}</text:p>", f"<text:p>{MARATHI}</text:p>" * 4
+)
 # What each kind is made with, from which of the texts above.
 MADE = {
     resolve.DOCX: ("text.fodt", TEXT, "docx:MS Word 2007 XML"),
@@ -78,6 +108,8 @@ MADE = {
     resolve.PPTX: ("slides.fodp", SLIDES, "pptx:Impress MS PowerPoint 2007 XML"),
     resolve.PPT: ("slides.fodp", SLIDES, "ppt:MS PowerPoint 97"),
     resolve.XLS: ("sheet.fods", SHEET, "xls:MS Excel 97"),
+    "letter": ("letter.fodt", LETTER, "docx:MS Word 2007 XML"),
+    "marathi": ("marathi.fodt", MARATHI_LETTER, "docx:MS Word 2007 XML"),
 }
 # A profile that allows what ours forbids: macros run, links update, nothing is blocked.
 _ALLOWING = (
@@ -150,16 +182,20 @@ def soffice_processes(wait: float = 5) -> list[int]:
     return found
 
 
+_LIBREOFFICE = frozenset({"soffice", "soffice.bin", "oosplash"})
+
+
 def _soffice_processes() -> list[int]:
     found = []
     for entry in Path("/proc").iterdir():
         if entry.name.isdigit():
             try:
-                command = (entry / "cmdline").read_bytes()
+                program = (entry / "cmdline").read_bytes().split(b"\0", 1)[0]
                 state = (entry / "stat").read_text().rsplit(")", 1)[1].split()[0]
             except OSError:
                 continue
-            if b"soffice" in command and state != "Z":
+            # The program itself (oosplash, soffice.bin), never a shell whose command names it.
+            if Path(program.decode(errors="replace")).name in _LIBREOFFICE and state != "Z":
                 found.append(int(entry.name))
     return found
 
@@ -308,11 +344,27 @@ class RealConversionTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, "password_protected")
 
     def test_a_timeout_kills_libreoffice_and_fails_cleanly(self) -> None:
+        seen: set[int] = set()  # LibreOffice's processes while it ran: the check below sees them
+        running = threading.Event()
+        running.set()
+
+        def watch() -> None:
+            while running.is_set():
+                seen.update(_soffice_processes())
+                time.sleep(0.02)
+
+        watcher = threading.Thread(target=watch, daemon=True)
+        watcher.start()
         started = time.monotonic()
-        with self.assertRaises(ReadError) as caught:
-            self.converter(timeout=0.5).convert(resolve.PPTX, self.made[resolve.PPTX])
+        try:
+            with self.assertRaises(ReadError) as caught:
+                self.converter(timeout=1.5).convert(resolve.PPTX, self.made[resolve.PPTX])
+        finally:
+            running.clear()
+            watcher.join()
         self.assertEqual(caught.exception.code, office.UNREADABLE)
         self.assertLess(time.monotonic() - started, 10)
+        self.assertNotEqual(seen, set(), "LibreOffice was never seen running: the check proves nothing")
         self.assertEqual(soffice_processes(), [])  # oosplash and soffice.bin both gone
 
     def test_a_macro_document_converts_without_running_its_macro(self) -> None:
@@ -361,6 +413,84 @@ class RealConversionTest(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_word_powerpoint_and_excel_files_go_through_the_pipeline_end_to_end(self) -> None:
+        # The worker's own steps with the real converter, PDF and XLSX readers and page drawing;
+        # only the stores are in memory and the virus scan is faked. No AI: the text layer.
+        settings = make_settings()
+        statuses, storage, queue = MemoryStatuses(), MemoryStorage(), MemoryQueue()
+        documents, store, pictures = MemoryDocuments(statuses), MemoryPipelineStore(), MemoryPageImages()
+        limits = limits_by_type(pdf=50_000_000, image=20_000_000, sheet=10_000_000)
+        upload = UploadService(
+            UploadPolicy(max_bytes=50_000_000, allowed_types=UPLOAD_TYPES, type_limits=limits),
+            documents,
+            storage,
+            queue,
+            new_id=SeqIds(),
+        )
+
+        def prepare(detected_type: str, data: bytes, on_picture: OnPicture) -> PreparedPages:
+            return prepare_pages(
+                detected_type,
+                data,
+                on_picture,
+                dpi=settings.page_image_dpi,
+                max_pages=settings.max_pages,
+                max_image_pixels=settings.max_image_pixels,
+                blank_stddev=settings.blank_page_stddev,
+                low_res_dpi=settings.low_res_dpi,
+            )
+
+        processor = DocumentProcessor(
+            gate=ScanGate(storage, FakeScanner(Verdict.CLEAN), storage, statuses),
+            statuses=statuses,
+            documents=documents,
+            socket=build_reader_socket(settings, None),
+            prepare=prepare,
+            sheet_pages=sheet_pages,
+            page_images=pictures,
+            store=store,
+            office=self.converter().convert,
+            renditions=storage,
+            kind_limits=limits,
+        )
+        for made, kind, name in (
+            ("letter", resolve.DOCX, "lease.docx"),
+            (resolve.PPT, resolve.PPT, "slides.ppt"),
+            (resolve.XLS, resolve.XLS, "book.xls"),
+        ):
+            with self.subTest(kind):
+                data = self.made[made]
+                doc = upload.accept("cust-a", io.BytesIO(data), display_name=name).document_id
+                processor(Job("cust-a", doc), lambda: None)
+                self.assertIs(statuses.get_status("cust-a", doc), DocumentStatus.READY)
+                record = documents.get("cust-a", doc)
+                self.assertEqual(record.detected_type if record else None, kind)
+                self.assertEqual(storage.get("cust-a", doc), data)  # the original, kept as it was
+                text = " ".join(piece.text for piece in store.for_document("cust-a", doc))
+                if kind == resolve.XLS:
+                    self.assertIn("INV-7", text)
+                    self.assertNotIn(("cust-a", doc), storage.renditions)
+                    continue
+                if kind == resolve.DOCX:  # a full page: read from its text layer, no AI
+                    self.assertIn(PARAGRAPH, " ".join(text.split()))
+                    [page] = store.pages_for("cust-a", doc)
+                    self.assertEqual(page.route, "text_layer")
+                else:
+                    self.assertIn(LATIN, text)
+                self.assertTrue(storage.get_rendition("cust-a", doc).startswith(b"%PDF-"))
+                self.assertIn(("cust-a", doc, 1), pictures.images)  # its page drawn for the screens
+
+    def test_a_marathi_word_page_goes_to_ocr_as_its_text_layer_reads_with_gaps(self) -> None:
+        # Known (#522 PR 2): the PDF holds the Marathi exactly (pdfium reads it, as above), but
+        # LibreOffice gives some Devanagari glyphs their text only by /ActualText, which the PDF
+        # reader's pdfplumber skips, so it reads "(cid:N)" gaps. Its route check sends such a page
+        # to OCR, which reads it right, at a page's OCR cost. Reading it free needs pdfium's text.
+        pdf = self.converter().convert(resolve.DOCX, self.made["marathi"])
+        letters = unicodedata.normalize("NFC", "".join(pdf_text(pdf).split()))
+        self.assertIn("".join(MARATHI.split()), letters)  # pdfium drops a few spaces after a matra
+        [(decision, _signals)] = pdf_text_layer_checks(make_settings(), pdf)
+        self.assertEqual(decision.route, "ocr")
 
     def test_nothing_is_left_in_the_temporary_folder(self) -> None:
         before = {p.name for p in Path(tempfile.gettempdir()).glob("lo-*")}
