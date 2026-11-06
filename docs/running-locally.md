@@ -10,7 +10,7 @@ placeholder**, never a real secret.
 | Service | Port | What it is | On the EC2 server |
 |---|---|---|---|
 | `frontend` | 3000 | Next.js web app (open this) | the same image, behind Caddy |
-| `api` | 8000 | FastAPI, `/api/*` | the same image, behind Caddy |
+| `api` | 8000, on 127.0.0.1 only | FastAPI, `/api/*` | the same image, behind Caddy |
 | `worker` | none | `python -m kaagaz.worker_main`, one job at a time | the same image |
 | `migrate` | none | one-shot: `alembic upgrade head`, then makes the storage bucket | on every deploy |
 | `postgres` | 5432 | PostgreSQL 17 with pgvector | the same container (no RDS in this phase) |
@@ -112,6 +112,9 @@ Open http://localhost:3000.
   signatures. The worker waits for it; the web app and API work meanwhile.
 * The frontend image bakes in `BACKEND_URL=http://api:8000` when it is built
   (Next.js writes the `/api` rewrite into the build).
+* The API's port 8000 is published on 127.0.0.1 only, never to the network:
+  the image trusts the `X-Forwarded-For` it is sent (`backend/Dockerfile`), so
+  another machine could choose its own address.
 * Scans are read by the `OCR_ENGINE` in `.env`: `rapidocr` on a laptop with no
   key, or `gemini` with `OPENROUTER_API_KEY` set (section 1).
 * Stop with `docker compose stop` (the worker finishes the job in hand).
