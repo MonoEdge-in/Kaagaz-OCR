@@ -26,8 +26,9 @@ again on its own before it is stored.
   unpacks to other than the size it says, or can't be unpacked, is ``damaged``.
 
 The ratio (Tushar, 6 Nov 2026: 100:1 at most, a file and the whole zip): a file of at most
-RATIO_FLOOR bytes is never too compressed (a blank page or a small text file packs far better
-than 100:1, and no bomb is that small), and neither is a zip that unpacks to at most RATIO_FLOOR.
+RATIO_FLOOR (1 MB) bytes is never too compressed (a blank page or a small text file packs far
+better than 100:1, and no bomb is that small), and neither is a zip that unpacks to at most
+RATIO_FLOOR. This exemption is Tushar's, approved on 6 Nov 2026.
 
 Time: ``open_zip`` O(n) for an n-byte zip plus O(e log e) for its e entries; ``list_zip``
 O(e) and O(total name length); ``read_file`` O(its bytes), memory O(its limit).
@@ -109,6 +110,7 @@ ZIP_FAILURES = {
     " organisation's lower limit. Split it into smaller zips and upload each.",
     "zip_too_many_folders": "This zip holds more folders than your organisation's folder upload limit."
     " Split it into smaller zips and upload each.",
+    "zip_over_limit": "Zip files can be up to 1 GB. Unzip it on your computer and upload the folder instead.",
     "zip_too_large": "This zip unpacks to more than your organisation's folder upload limit. Split it into"
     " smaller zips and upload each.",
     "zip_too_compressed": "This zip unpacks to more than 100 times its own size, as a zip bomb does, so it"

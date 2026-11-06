@@ -5,8 +5,10 @@ limit once its kind is told. The unpacking itself runs on PostgreSQL (test_unpac
 
 import io
 import unittest
+from dataclasses import replace
 
 from kaagaz.ingestion import resolve
+from kaagaz.ingestion.policy import ZIP_MAX_BYTES
 from kaagaz.ingestion.ports import DocumentRecord, Job
 from kaagaz.jobs.worker import Heartbeat, JobFailed
 from kaagaz.pipeline import DocumentProcessor
@@ -90,3 +92,25 @@ class ZipInThePipelineTest(unittest.TestCase):
         system = build()
         doc = run(system, unpack, workbook, "book.xlsx", kind_limit=len(workbook))
         self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.READY)
+
+    def test_a_zip_over_1_gb_is_refused_before_the_scan_loads_it(self) -> None:
+        """A fake size: the record says 1 GB and a byte; the worker never reads the file."""
+        system, unpack = build(), Unpacker()
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(FOLDER_ZIP), display_name="Huge.zip").document_id
+        record = system.repo.get(CUSTOMER, doc)
+        assert record is not None
+        system.repo._by_id[(CUSTOMER, doc)] = replace(record, size=ZIP_MAX_BYTES + 1)
+        with self.assertRaises(JobFailed) as failed:
+            processor(system, unpack)(Job(customer_id=CUSTOMER, document_id=doc), lambda: None)
+        self.assertEqual((failed.exception.code, failed.exception.retryable), ("zip_over_limit", False))
+        self.assertEqual((system.scanner.scanned, unpack.calls), ([], []))
+        self.assertEqual(ZIP_MAX_BYTES, 1024**3)
+
+    def test_a_zip_of_exactly_1_gb_goes_on(self) -> None:
+        system, unpack = build(), Unpacker()
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(FOLDER_ZIP), display_name="Big.zip").document_id
+        record = system.repo.get(CUSTOMER, doc)
+        assert record is not None
+        system.repo._by_id[(CUSTOMER, doc)] = replace(record, size=ZIP_MAX_BYTES)
+        processor(system, unpack)(Job(customer_id=CUSTOMER, document_id=doc), lambda: None)
+        self.assertEqual(len(unpack.calls), 1)

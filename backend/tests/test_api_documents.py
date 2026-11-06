@@ -264,6 +264,9 @@ def test_a_zip_has_the_folder_upload_limit_which_the_customers_own_lowers() -> N
     }
     assert policy.largest_limit == 1024 * MB
     assert upload_policy(settings, customer_max_mb=None, folder_bytes=MB).limit_for("zip") == 5 * MB
+    # Never more than 1 GB, whatever the folder upload limit: the scan gate holds a zip in memory.
+    capped = upload_policy(settings, customer_max_mb=None, folder_bytes=5 * 1024 * MB)
+    assert (capped.limit_for("zip"), capped.largest_limit) == (1024 * MB, 1024 * MB)
     lowered = upload_policy(settings, customer_max_mb=3, folder_bytes=1024 * MB)
     assert (lowered.limit_for("zip"), lowered.limit_for("pdf"), lowered.limit_for("png")) == (
         3 * MB,
@@ -626,13 +629,14 @@ def test_upload_limits_are_the_type_limits_lowered_by_the_customers_own(db: Data
     readers = ocr.ocr_choices(api.settings)
     # Changed on purpose (#484): the folder upload's limits and sort_available come too
     # (test_api_folder_upload_files checks them). Changed on purpose (#522): a zip's limit is the
-    # organisation's folder upload limit (5 GB by default), lowered by the customer's own.
+    # organisation's folder upload limit (5 GB by default) capped at 1 GB, lowered by the
+    # customer's own.
     folder = {key: reply.json().pop(key, None) for key in ("folder_upload", "sort_available")}
     assert {key: value for key, value in reply.json().items() if key not in folder} == {
         "pdf_bytes": 5 * MB,
         "image_bytes": 2 * MB,
         "sheet_bytes": MB,
-        "zip_bytes": 5 * 1024 * MB,
+        "zip_bytes": 1024 * MB,
         "max_pages": max_pages,
         "readers": readers,
     }
@@ -824,12 +828,12 @@ def test_a_declared_size_over_every_limit_is_413_before_the_body_is_read(db: Dat
     )
     # The body is a small PDF the upload would take. Only its declared size is too large,
     # so this reply can only come from the check made before the body is read.
-    request.headers["Content-Length"] = str(5 * 1024 * MB + 64 * 1024 + 1)
+    request.headers["Content-Length"] = str(1024 * MB + 64 * 1024 + 1)
     reply = signed.client.send(request)
     assert reply.status_code == 413
     assert reply.json()["error"] == {
         "code": "too_large",
-        "message": "Files can be up to 5120 MB. This one is larger."
+        "message": "Files can be up to 1024 MB. This one is larger."
         " Split it or save it smaller and try again.",
     }
     assert api.storage.count() == 0

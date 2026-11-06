@@ -27,15 +27,22 @@ _TOO_LARGE: dict[Kind, str] = {
         " Split it into smaller files and try again."
     ),
     # #522 PR 3: the organisation's folder upload limit (or the PDF or sheet limit, when larger).
-    "zip": (
-        "Zip files can be up to {limit} MB. This one is {size} MB. Split it into smaller zips and try again."
-    ),
+    # #522 PR 3: at most ZIP_MAX_BYTES (1 GB), named in GB when it is whole GB.
+    "zip": "Zip files can be up to {limit}. Unzip it on your computer and upload the folder instead.",
 }
 
 
 def too_large_message(kind: Kind, size: int, limit: int) -> str:
     """A file over its own kind's limit. ``size`` and ``limit`` are in bytes."""
+    if kind == "zip":
+        return _TOO_LARGE[kind].format(limit=_megabytes_or_gigabytes(limit))
     return _TOO_LARGE[kind].format(limit=limit // MB, size=-(-size // MB))
+
+
+def _megabytes_or_gigabytes(limit: int) -> str:
+    """ "1 GB" for a whole number of GB, else "N MB", rounded down."""
+    gigabytes, rest = divmod(limit, 1024 * MB)
+    return f"{gigabytes} GB" if gigabytes and not rest else f"{limit // MB} MB"
 
 
 def over_every_limit_message(limit: int) -> str:

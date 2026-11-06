@@ -278,6 +278,7 @@ from kaagaz.extraction.understanding import (
 from kaagaz.extraction.values import CARD_RECORD, DocumentFacts, ExtractedValue, InvoiceRow, LinkIdentifier
 from kaagaz.ingestion import resolve, sniff
 from kaagaz.ingestion.errors import BackendUnavailable
+from kaagaz.ingestion.policy import ZIP_MAX_BYTES
 from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, Job, JobQueue
 from kaagaz.ingestion.resolve import UNSUPPORTED, resolve_kind
 from kaagaz.ingestion.spool import HEAD_SIZE
@@ -1100,6 +1101,9 @@ class DocumentProcessor:
 
     def _read_and_save(self, job: Job, record: DocumentRecord, heartbeat: Heartbeat, run: _Run) -> None:
         customer_id, document_id = job.customer_id, job.document_id
+        if record.detected_type == sniff.ZIP and record.size > ZIP_MAX_BYTES:
+            # #522 PR 3: refused before the scan gate loads it into memory (policy.ZIP_MAX_BYTES).
+            raise JobFailed("zip_over_limit", retryable=False)
         self._progress(job, run, "scanning", 0, 1)
         data = self._scan(job, run)
         if hashlib.sha256(data).hexdigest() != record.sha256:

@@ -346,3 +346,17 @@ def test_a_zip_s_unpack_is_not_listed_with_a_person_s_folder_uploads(unpacking: 
         assert items_sql.summaries(conn, unpacking.customer_id, user_id=unpacking.user_id) == []
         upload = zip_unpacks.unpack_id(record.document_id)
         assert items_sql.owned(conn, unpacking.customer_id, upload, user_id=unpacking.user_id)
+
+
+def test_a_zip_of_at_most_1_mb_is_never_too_compressed(unpacking: Unpacking) -> None:
+    """Approved by Tushar (6 Nov 2026): a file, or a whole zip, of at most 1 MB unpacked is never
+    held to 100:1; blank pages and small text pack far better, and no bomb is that small."""
+    data = make_zip([(f"blank{n}.txt", bytes([65 + n]) * (300 * 1024)) for n in range(3)])
+    assert len(data) * 100 < 900 * 1024  # far more than 100:1
+    record = unpacking.upload(data)
+    assert unpacking.unpack(record, data) is True
+    found = unpacking.result(record)
+    assert found is not None and (found.stored, found.failed) == (3, 0)
+    assert zip_message("failed", "zip_over_limit", None) == (
+        "Zip files can be up to 1 GB. Unzip it on your computer and upload the folder instead."
+    )

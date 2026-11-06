@@ -4,7 +4,8 @@ of a zip (#522 PR 3), so both check one policy.
 * Each type's own limit: MAX_UPLOAD_MB for PDFs (and Word and PowerPoint files), MAX_IMAGE_MB,
   MAX_SHEET_MB; a zip's is the organisation's folder upload byte limit
   (``folder_uploads.effective_limits``), or the PDF or sheet limit when that is larger, since an
-  .xlsx, .docx or .pptx is sniffed as a zip too.
+  .xlsx, .docx or .pptx is sniffed as a zip too, and never more than ``ZIP_MAX_BYTES`` (1 GB: the
+  scan gate holds the whole zip in memory).
 * The customer's own limit (``customers.max_upload_mb``, an admin's) lowers every type's, never
   raises one.
 
@@ -16,7 +17,7 @@ from sqlalchemy import Connection
 
 from kaagaz.db import admin as admin_sql
 from kaagaz.db.folder_uploads import effective_limits
-from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
+from kaagaz.ingestion.policy import ZIP_MAX_BYTES, UploadPolicy, limits_by_type
 from kaagaz.settings import Settings
 
 MIB = 1024 * 1024
@@ -33,7 +34,7 @@ def upload_policy(
         pdf=pdf,
         image=settings.max_image_bytes,
         sheet=sheet,
-        zip=None if folder_bytes is None else max(folder_bytes, pdf, sheet),
+        zip=None if folder_bytes is None else min(ZIP_MAX_BYTES, max(folder_bytes, pdf, sheet)),
     )
     # The largest type's limit (MAX_UPLOAD_MB before #522), so only the customer's own lowers one.
     max_bytes = settings.max_upload_bytes if folder_bytes is None else max(type_limits.values())
