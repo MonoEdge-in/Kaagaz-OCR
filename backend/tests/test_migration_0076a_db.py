@@ -54,5 +54,5 @@ def test_down_up_restores_0076_exactly(fresh: tuple[str, Database]) -> None:
     assert base._schema(db) == at_0076
     assert _bodies(db) == bodies_0076_before
     migrate(url, "0076a")
-    assert base._schema(db) == at_0076
+    assert base._schema(db) == at_0076a
     assert _bodies(db) == bodies_0076a
