@@ -208,14 +208,14 @@ export function DocumentView({
   useEffect(() => {
     // After the first paint (the store is the browser's), once.
     const timer = setTimeout(() => {
-      const flash = takeFlash();
+      const flash = takeFlash(documentId);
       if (flash === null) return;
       const linked = flash.undoLinkOf;
       setToast(flash.message);
       setToastUndo(() => (linked ? () => undoVersionLink(linked) : null));
     }, 0);
     return () => clearTimeout(timer);
-  }, []);
+  }, [documentId]);
   const [moreOpen, setMoreOpen] = useState(false); // the status line's More details
   const viewerRef = useRef<HTMLElement>(null);
   // Set when a poll sees reading end: the next detail says what was found ("again": after Read again).

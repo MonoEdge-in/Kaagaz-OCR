@@ -115,7 +115,8 @@ export function VersionsPanel({
                   <span className="visually-hidden">{` for version ${version.version_no}`}</span>
                 </button>
               )}
-              {!inTrash && versions.length > 1 && (
+              {/* Never version 1: its id is its family's (review, 6 Nov 2026; 409 first_version). */}
+              {!inTrash && versions.length > 1 && version.id !== detail.family_id && (
                 <RowMenu
                   compact
                   name={`version ${version.version_no}`}

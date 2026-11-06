@@ -14,14 +14,15 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useEffectEvent, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import type { KeyboardEvent } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { ApiError, compareDocuments, getDocument, pageImageUrl } from "@/lib/api";
 import { FROM_PARAM, backFrom } from "@/lib/backLink";
 import type { DocumentCompare, VersionSuggestion } from "@/lib/types";
 import { compareColumns, nextChange } from "./compare";
 import type { ColumnRun } from "./compare";
-import { saveFlash } from "./flash";
+import { flashTarget, saveFlash } from "./flash";
 import { VersionChoice } from "./VersionChoice";
 import type { Chosen } from "./VersionChoice";
 import { VERSION_TEXT } from "./words";
@@ -29,6 +30,16 @@ import styles from "./Versions.module.css";
 
 // A page with fewer words than this on both sides is shown as its two images (kaagaz MIN_WORDS).
 const FEW_WORDS = 20;
+
+/** N jumps to the next change, only while the focus is inside the compare screen and nobody is
+ * typing, with no Ctrl, Alt or Meta (WCAG 2.1.4: a one-key shortcut works only where it is). */
+export function isJumpKey(
+  event: { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean },
+  where: { inside: boolean; typing: boolean },
+): boolean {
+  if (!where.inside || where.typing || event.ctrlKey || event.metaKey || event.altKey) return false;
+  return event.key.toLowerCase() === "n";
+}
 
 /** The pending suggestion this pair is, from the right side's detail; null otherwise. */
 function pairSuggestion(suggestion: VersionSuggestion | null | undefined, withId: string): VersionSuggestion | null {
@@ -69,7 +80,9 @@ export function CompareView({ documentId, withId }: { documentId: string; withId
   }, [documentId, withId, attempt]);
 
   function chosen(done: Chosen) {
-    saveFlash({ message: done.message, undoLinkOf: done.undo && choice ? choice.document.id : undefined });
+    const target = flashTarget(from, documentId); // the words show on that document's page only
+    const undoLinkOf = done.undo && choice ? choice.document.id : undefined;
+    if (target !== null) saveFlash({ message: done.message, documentId: target, undoLinkOf });
     router.push(from?.href ?? `/documents/${encodeURIComponent(documentId)}`);
   }
 
@@ -124,17 +137,14 @@ export function CompareBody({
     setSaid(`Change ${next + 1} of ${changes}.`);
   }
 
-  // N jumps too, unless the person is typing.
-  const onKey = useEffectEvent((event: KeyboardEvent) => {
-    const typing = event.target instanceof HTMLElement && event.target.closest("input, textarea, [contenteditable]");
-    if (event.key.toLowerCase() === "n" && !event.ctrlKey && !event.metaKey && !event.altKey && !typing) goNext();
-  });
-  useEffect(() => {
-    if (changes === 0) return;
-    const listener = (event: KeyboardEvent) => onKey(event);
-    window.addEventListener("keydown", listener);
-    return () => window.removeEventListener("keydown", listener);
-  }, [changes]);
+  // N jumps too, while the focus is inside this screen (its keydown) and nobody is typing.
+  function onKey(event: KeyboardEvent<HTMLDivElement>) {
+    const typing = event.target instanceof HTMLElement && event.target.closest("input, textarea, [contenteditable]") !== null;
+    if (changes > 0 && isJumpKey(event, { inside: true, typing })) {
+      event.preventDefault();
+      goNext();
+    }
+  }
 
   // Both columns carry the change's number; the left comes first in the page, so "Next change"
   // lands on what was removed, or on what was added when nothing was.
@@ -177,17 +187,21 @@ export function CompareBody({
 
   const before = choice ? VERSION_TEXT.yours(choice.candidate.name) : VERSION_TEXT.before;
   const after = choice ? VERSION_TEXT.upload(choice.document.name) : VERSION_TEXT.after;
-  const image = (id: string, pageNo: number, whose: string) => (
-    <Image
-      src={pageImageUrl(id, pageNo)}
-      alt={`${VERSION_TEXT.page(pageNo)}, ${whose}`}
-      width={600}
-      height={800}
-      unoptimized
-    />
-  );
+  // A side's page image only when that file has the page; else it says so.
+  const image = (id: string, pageNo: number, pagesThere: number | null | undefined, whose: string) =>
+    pagesThere !== null && pagesThere !== undefined && pageNo > pagesThere ? (
+      <p className="muted">{VERSION_TEXT.noPage(pageNo)}</p>
+    ) : (
+      <Image
+        src={pageImageUrl(id, pageNo)}
+        alt={`${VERSION_TEXT.page(pageNo)}, ${whose}`}
+        width={600}
+        height={800}
+        unoptimized
+      />
+    );
   return (
-    <>
+    <div data-compare-area="true" onKeyDown={onKey}>
       <header className={styles.compareHead}>
         <div>
           <h1 className={styles.compareTitle}>{VERSION_TEXT.compareTitle}</h1>
@@ -226,8 +240,8 @@ export function CompareBody({
             {sent?.truncated && <p className="muted">{VERSION_TEXT.truncated}</p>}
             {scan && (
               <div className={styles.pageImages}>
-                {image(data.left_id, page.page_no, before)}
-                {image(data.right_id, page.page_no, after)}
+                {image(data.left_id, page.page_no, data.left_pages, before)}
+                {image(data.right_id, page.page_no, data.right_pages, after)}
               </div>
             )}
             <div className={styles.columns}>
@@ -243,6 +257,6 @@ export function CompareBody({
           <VersionChoice suggestion={choice} showCompare={false} onDone={onChosen} />
         </div>
       )}
-    </>
+    </div>
   );
 }

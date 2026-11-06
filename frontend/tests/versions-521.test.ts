@@ -3,16 +3,18 @@
 // banner, the upload tray's row and the compare screen); Make it a separate file on the
 // Versions tab. The server's side: backend tests/test_versions*.py.
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BatchTray } from "@/components/documents/UploadArea";
+import { BatchTray, TrayChoice, trayChoices } from "@/components/documents/UploadArea";
 import { buildTree } from "@/components/documents/folderTree";
-import { CompareBody } from "@/components/versions/CompareView";
+import { CompareBody, isJumpKey } from "@/components/versions/CompareView";
 import { SeparateDialog } from "@/components/versions/SeparateDialog";
 import { VersionChoice, chooseFile, chooseVersion } from "@/components/versions/VersionChoice";
 import { VersionsPanel } from "@/components/versions/VersionsPanel";
-import { saveFlash, takeFlash } from "@/components/versions/flash";
+import { flashTarget, saveFlash, takeFlash } from "@/components/versions/flash";
 import {
   VERSION_TEXT,
   bannerTitle,
@@ -25,6 +27,7 @@ import * as api from "@/lib/api";
 import type { DocumentCompare, DocumentDetail, DocumentSummary, VersionSuggestion } from "@/lib/types";
 
 const render = (element: Parameters<typeof renderToStaticMarkup>[0]) => renderToStaticMarkup(element);
+const read = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -127,6 +130,23 @@ describe("Pattern A: the words and the share of the text", () => {
   });
 });
 
+describe("the upload tray keeps what was decided", () => {
+  it("keeps the row's words and Undo after a later poll says the suggestion was decided", () => {
+    const decided = suggestion({ status: "accepted" });
+    const chosen = { message: 'Saved as version 2 of "7/12 Survey 44 Wakad.pdf".', undo: async () => undefined };
+    // The poll now sends it accepted: no longer asked, but its row still says what was done.
+    const rows = trayChoices([decided], new Map([["s1", { suggestion: suggestion(), chosen, undone: false }]]));
+    expect(rows.get("d3")?.chosen?.message).toBe(chosen.message);
+    expect(trayChoices([decided], new Map()).get("d3")).toBeUndefined(); // decided elsewhere: nothing
+    expect(trayChoices([suggestion()], new Map()).get("d3")?.chosen).toBeUndefined(); // still asked
+    const html = render(
+      createElement(TrayChoice, { suggestion: suggestion(), chosen, undone: false, onDone: () => undefined, onUndone: () => undefined }),
+    );
+    expect(html).toContain('Saved as version 2 of &quot;7/12 Survey 44 Wakad.pdf&quot;.');
+    expect(html).toContain(">Undo<");
+  });
+});
+
 describe("See the differences", () => {
   const pages: DocumentCompare["pages"] = [
     {
@@ -183,22 +203,55 @@ describe("See the differences", () => {
     expect(html).not.toContain(">See the differences<"); // already here
   });
 
-  it("carries the words after the choice back to the page it came from, once", () => {
+  it("carries the words after the choice to the document it goes back to, and only to it, once", () => {
+    // Changed on purpose (review, 6 Nov 2026): the words name their document; another page leaves them.
     const store = new Map<string, string>();
     vi.stubGlobal("sessionStorage", {
       getItem: (key: string) => store.get(key) ?? null,
       setItem: (key: string, value: string) => void store.set(key, value),
       removeItem: (key: string) => void store.delete(key),
     });
-    saveFlash({ message: 'Saved as version 2 of "Lease.pdf".', undoLinkOf: "d3" });
-    expect(takeFlash()).toEqual({ message: 'Saved as version 2 of "Lease.pdf".', undoLinkOf: "d3" });
-    expect(takeFlash()).toBeNull();
+    saveFlash({ message: 'Saved as version 2 of "Lease.pdf".', documentId: "d3", undoLinkOf: "d3" });
+    expect(takeFlash("d1")).toBeNull(); // another document's page: not shown, kept
+    expect(takeFlash("d3")).toEqual({ message: 'Saved as version 2 of "Lease.pdf".', documentId: "d3", undoLinkOf: "d3" });
+    expect(takeFlash("d3")).toBeNull(); // once
+    expect(flashTarget({ href: "/documents/d7", name: "previous document" }, "d3")).toBe("d7");
+    expect(flashTarget({ href: "/chat", name: "chat" }, "d3")).toBeNull(); // no document: no words
+    expect(flashTarget(null, "d3")).toBe("d3");
+    expect(read("app/(app)/documents/[id]/DocumentView.tsx")).toContain("takeFlash(documentId)");
+  });
+
+  it("jumps with N only while the focus is inside the compare screen, never while typing (WCAG 2.1.4)", () => {
+    const key = (k: string, more: Partial<{ ctrlKey: boolean; metaKey: boolean; altKey: boolean }> = {}) => ({
+      key: k,
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      ...more,
+    });
+    expect(isJumpKey(key("n"), { inside: true, typing: false })).toBe(true);
+    expect(isJumpKey(key("N"), { inside: true, typing: false })).toBe(true);
+    expect(isJumpKey(key("n"), { inside: false, typing: false })).toBe(false);
+    expect(isJumpKey(key("n"), { inside: true, typing: true })).toBe(false);
+    expect(isJumpKey(key("n", { ctrlKey: true }), { inside: true, typing: false })).toBe(false);
+    const source = read("components/versions/CompareView.tsx");
+    expect(source).not.toContain('window.addEventListener("keydown"');
+    expect(render(createElement(CompareBody, { data }))).toMatch(/<div[^>]*data-compare-area="true"/);
+  });
+
+  it("shows a page image only for a side that has that page, else says so", () => {
+    const short = { ...data, left_pages: 1, right_pages: 2 };
+    const html = render(createElement(CompareBody, { data: short }));
+    expect(html).not.toContain('src="/api/documents/d1/pages/2/image"');
+    expect(html).toContain("No page 2 in this file");
+    expect(html).toContain('src="/api/documents/d3/pages/2/image"');
   });
 });
 
 describe("Make it a separate file", () => {
   const family = {
     id: "d1",
+    family_id: "d1",
     display_name: "Lease.pdf",
     deleted_at: null,
     versions: [
@@ -207,9 +260,12 @@ describe("Make it a separate file", () => {
     ],
   } as unknown as DocumentDetail;
 
-  it("is offered on each version's menu, never for a single version", () => {
+  it("is offered on each newer version's menu, never on version 1 or for a single version", () => {
+    // Changed on purpose (review, 6 Nov 2026): version 1's id is its family's, so it is refused.
     const html = render(createElement(VersionsPanel, { detail: family, onChanged: () => undefined }));
-    expect(html.match(/>Make it a separate file</g)).toHaveLength(2);
+    expect(html.match(/>Make it a separate file</g)).toHaveLength(1);
+    expect(html).toContain('aria-label="Actions for version 2"');
+    expect(html).not.toContain('aria-label="Actions for version 1"');
     const alone = { ...family, versions: family.versions.slice(0, 1) } as DocumentDetail;
     expect(render(createElement(VersionsPanel, { detail: alone, onChanged: () => undefined }))).not.toContain(
       "Make it a separate file",

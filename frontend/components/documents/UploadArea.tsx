@@ -657,8 +657,13 @@ export function BatchTray({
   onHide?: () => void;
   folderRows?: ReactNode; // #484: one row a folder upload, above the drops of files
 }) {
+  // #521 review: what was decided on a row, by suggestion id, kept until Clear finished, so a
+  // later poll that no longer asks it never takes the words and Undo away.
+  const [decided, setDecided] = useState<ReadonlyMap<string, TrayDecided>>(() => new Map());
   if (entries.length === 0 && folderRows === null) return null;
   const settled = entries.some((entry) => !isBusy(entry));
+  const keep = (suggestion: VersionSuggestion, chosen: Chosen, undone: boolean) =>
+    setDecided((before) => new Map(before).set(suggestion.id, { suggestion, chosen, undone }));
   // Issue 369: the story prompt is said once for the tray; each finished file has a short link.
   const storyPrompt = entries.some((entry) => storyTarget(entry.state) !== null);
   const batches = new Map<string, UploadEntry[]>();
@@ -667,11 +672,12 @@ export function BatchTray({
     if (entry.batchId) batches.set(entry.batchId, [...(batches.get(entry.batchId) ?? []), entry]);
     else loose.push(entry);
   }
-  const row = (entry: UploadEntry, suggestions?: ReadonlyMap<string, VersionSuggestion>) => (
+  const row = (entry: UploadEntry, asks?: ReadonlyMap<string, TrayAsk>) => (
     <UploadRow
       key={entry.key}
       entry={entry}
-      suggestion={suggestions?.get(rowDocument(entry) ?? "")}
+      ask={asks?.get(rowDocument(entry) ?? "")}
+      onDecided={keep}
       onRestore={onRestore}
       onRetry={onRetry}
       tree={tree}
@@ -688,7 +694,14 @@ export function BatchTray({
         </h2>
         <span className={styles.uploadsActions}>
           {settled && (
-            <button type="button" className="btn btn-quiet" onClick={onClearFinished}>
+            <button
+              type="button"
+              className="btn btn-quiet"
+              onClick={() => {
+                setDecided(new Map());
+                onClearFinished();
+              }}
+            >
               Clear finished
             </button>
           )}
@@ -713,11 +726,7 @@ export function BatchTray({
         const found = view?.version_suggestions?.[0];
         const first = found ? { document_id: found.document.id, display_name: found.document.name } : undefined;
         // #521: each file that looks like a new version gets the choice on its own row.
-        const asked = new Map(
-          (view?.version_suggestions ?? [])
-            .filter((each) => each.status === "pending" && each.outcome === "suggested")
-            .map((each) => [each.document.id, each] as const),
-        );
+        const asked = trayChoices(view?.version_suggestions ?? [], decided);
         return (
           <div key={id} className={styles.batch}>
             <div className={styles.batchHead}>
@@ -804,19 +813,57 @@ function rowDocument(entry: UploadEntry): string | null {
   return entry.state.kind === "reading" || entry.state.kind === "done" ? entry.state.documentId : null;
 }
 
+/** #521: what a tray row decided, kept by the tray (BatchTray) by suggestion id. */
+export interface TrayDecided {
+  suggestion: VersionSuggestion;
+  chosen: Chosen;
+  undone: boolean;
+}
+
+/** #521: a tray row's near match: still asked, or what was decided on it. */
+export interface TrayAsk {
+  suggestion: VersionSuggestion;
+  chosen?: Chosen;
+  undone?: boolean;
+}
+
+/** Each row's near match by its document: the suggestions still asked, and every one decided on a
+ * row (kept, even once the batch's poll says it was decided or leaves it out). O(n). */
+export function trayChoices(
+  suggestions: readonly VersionSuggestion[],
+  decided: ReadonlyMap<string, TrayDecided>,
+): Map<string, TrayAsk> {
+  const asks = new Map<string, TrayAsk>();
+  for (const each of suggestions) {
+    if (each.status === "pending" && each.outcome === "suggested") asks.set(each.document.id, { suggestion: each });
+  }
+  for (const kept of decided.values()) asks.set(kept.suggestion.document.id, kept);
+  return asks;
+}
+
 /** #521: a tray row's near match, asked on the row; then what was done, with Undo after a version. */
-function TrayChoice({ suggestion }: { suggestion: VersionSuggestion }) {
-  const [done, setDone] = useState<Chosen | null>(null);
-  const [undone, setUndone] = useState(false);
-  if (done === null) return <VersionChoice suggestion={suggestion} onDone={setDone} />;
+export function TrayChoice({
+  suggestion,
+  chosen,
+  undone,
+  onDone,
+  onUndone,
+}: {
+  suggestion: VersionSuggestion;
+  chosen?: Chosen;
+  undone?: boolean;
+  onDone(chosen: Chosen): void;
+  onUndone(): void;
+}) {
+  if (!chosen) return <VersionChoice suggestion={suggestion} onDone={onDone} />;
   return (
     <p className={styles.small} role="status">
-      {undone ? VERSION_TEXT.reverted : done.message}{" "}
-      {done.undo && !undone && (
+      {undone ? VERSION_TEXT.reverted : chosen.message}{" "}
+      {chosen.undo && !undone && (
         <button
           type="button"
           className={`btn btn-quiet ${styles.inlineAction}`}
-          onClick={() => void done.undo?.().then(() => setUndone(true), () => undefined)}
+          onClick={() => void chosen.undo?.().then(onUndone, () => undefined)}
         >
           {VERSION_TEXT.undo}
         </button>
@@ -827,7 +874,8 @@ function TrayChoice({ suggestion }: { suggestion: VersionSuggestion }) {
 
 function UploadRow({
   entry,
-  suggestion,
+  ask,
+  onDecided,
   onRestore,
   onRetry,
   tree,
@@ -835,7 +883,8 @@ function UploadRow({
   canReread,
 }: {
   entry: UploadEntry;
-  suggestion?: VersionSuggestion;
+  ask?: TrayAsk;
+  onDecided(suggestion: VersionSuggestion, chosen: Chosen, undone: boolean): void;
   onRestore: (key: string, documentId: string, existingName: string) => void;
   onRetry: (key: string) => void;
   tree: FolderTree;
@@ -941,7 +990,15 @@ function UploadRow({
             </Link>
           </p>
         )}
-        {suggestion && <TrayChoice suggestion={suggestion} />}
+        {ask && (
+          <TrayChoice
+            suggestion={ask.suggestion}
+            chosen={ask.chosen}
+            undone={ask.undone}
+            onDone={(chosen) => onDecided(ask.suggestion, chosen, false)}
+            onUndone={() => ask.chosen && onDecided(ask.suggestion, ask.chosen, true)}
+          />
+        )}
         {state.kind === "error" && <p className={`error-text ${styles.small}`}>{state.message}</p>}
         {state.kind === "error" && state.retry && (
           <button type="button" className={`btn ${styles.inlineAction}`} onClick={() => onRetry(entry.key)}>

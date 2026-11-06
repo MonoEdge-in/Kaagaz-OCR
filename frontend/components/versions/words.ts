@@ -57,6 +57,7 @@ export const VERSION_TEXT = {
   loadFailed: "The comparison did not load.",
   back: "Back to the document",
   page: (n: number) => `Page ${n}`,
+  noPage: (n: number) => `No page ${n} in this file`, // #521 review: one side is shorter
   before: "The version compared with",
   after: "This version",
   yours: (name: string) => `The file you have, "${name}"`, // #521: a suggested pair's left side
