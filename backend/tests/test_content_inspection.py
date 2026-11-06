@@ -359,6 +359,42 @@ class OfficePackages(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIs(inspect(with_member(spreadsheet(), name, b"x")), Finding.BLOCKED)
 
+    def test_a_chart_s_workbook_or_a_picture_may_be_embedded_nothing_else(self) -> None:
+        """#522, security review (6 Nov 2026): a chart in a PowerPoint or Word file keeps its
+        data as an embedded .xlsx (ClamAV looks inside it too), and a picture may be embedded;
+        an OLE object, any .bin package, a program, a script or a macro-enabled file may not."""
+        slides = zip_bytes({"ppt/presentation.xml": b"<p/>", _TYPES: b"<Types/>"})
+        letter = zip_bytes({"word/document.xml": b"<w/>", _TYPES: b"<Types/>"})
+        allowed = (
+            "ppt/embeddings/Microsoft_Excel_Worksheet.xlsx",
+            "word/embeddings/Microsoft_Excel_Worksheet1.XLSX",
+            "word/embeddings/Microsoft_Word_Document.docx",
+            "ppt/embeddings/Microsoft_PowerPoint_Presentation.pptx",
+            "ppt/embeddings/image1.png",
+            "word/embeddings/image2.jpeg",
+            "word/embeddings/image3.emf",
+        )
+        for name in allowed:
+            with self.subTest(name=name):
+                self.assertIsNone(inspect(with_member(slides, name, b"x")))
+        refused = (
+            "word/embeddings/oleObject1.bin",
+            "word/embeddings/Microsoft_Excel_Worksheet.bin",
+            "ppt/embeddings/package.bin",
+            "word/embeddings/run.exe",
+            "word/embeddings/hook.dll",
+            "word/embeddings/x.js",
+            "word/embeddings/x.vbs",
+            "word/embeddings/book.xlsm",
+            "word/embeddings/letter.docm",
+            "word/embeddings/vbaProject.bin",
+            "word/embeddings/picture.svg",
+            "word/embeddings/notes",
+        )
+        for name in refused:
+            with self.subTest(name=name):
+                self.assertIs(inspect(with_member(letter, name, b"x")), Finding.BLOCKED)
+
     def test_an_executable_or_archive_inside(self) -> None:
         for name in ("xl/media/run.exe", "docs/payload.js", "inner.zip", "report.xlsm"):
             with self.subTest(name=name):

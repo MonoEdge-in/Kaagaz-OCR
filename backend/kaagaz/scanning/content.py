@@ -17,7 +17,8 @@ may contain, and refuses the rest, whether or not any signature matches:
 * **Office files (zip):** no macros (vbaProject), no ActiveX, no embedded OLE
   objects, no external templates or links in the package relationships, no
   executables or nested archives inside, and no path traversal (``../``,
-  absolute paths).
+  absolute paths). Embedded parts (``embeddings/``) only as a chart's or another
+  Office package (.xlsx, .docx, .pptx, which ClamAV looks inside too) or a picture.
 * **A plain zip** (none of ``[Content_Types].xml`` and the parts that make a Word,
   PowerPoint or Excel file, as ``kaagaz/ingestion/resolve.py`` tells them: a folder
   of files, #522 PR 3): the
@@ -594,9 +595,14 @@ def _pdfium_sees_active(data: bytes) -> bool:
 # --- Office packages (zip) ---------------------------------------------------------
 
 _RISKY_PARTS = re.compile(
-    r"(^|/)(vbaProject\.bin|vbaData\.xml|activeX/|embeddings/|oleObject|macrosheets/)",
+    r"(^|/)(vbaProject\.bin|vbaData\.xml|activeX/|oleObject|macrosheets/)",
     re.IGNORECASE,
 )
+# What a package may embed (#522, security review 6 Nov 2026): a chart's workbook, another
+# Office package (ClamAV looks inside each too) or a picture. Anything else under embeddings/
+# (an OLE object, any .bin package, a program, a macro-enabled file) is refused.
+_EMBEDDINGS = re.compile(r"(^|/)embeddings/", re.IGNORECASE)
+_EMBEDDABLE = re.compile(r"\.(xlsx|docx|pptx|png|jpe?g|gif|bmp|tiff?|emf|wmf)$", re.IGNORECASE)
 _RISKY_EXTENSIONS = re.compile(
     r"\.(exe|dll|com|scr|msi|msp|bat|cmd|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|hta|lnk|jar|"
     r"iso|img|vhd|zip|rar|7z|gz|tar|cab|docm|xlsm|pptm|dotm|xltm|xlam|ppam)$",
@@ -636,7 +642,8 @@ def _zip_finding(data: bytes) -> Finding | None:
                     return Finding.BLOCKED  # path traversal (Zip Slip)
                 if package and info.flag_bits & 0x1:
                     return Finding.UNSCANNABLE  # a password-protected part cannot be checked
-                risky = _RISKY_PARTS.search(name) or _RISKY_EXTENSIONS.search(name)
+                embedded = bool(_EMBEDDINGS.search(name)) and not _EMBEDDABLE.search(name)
+                risky = bool(_RISKY_PARTS.search(name) or _RISKY_EXTENSIONS.search(name)) or embedded
                 if risky and (package or not _NESTED_ZIP.search(name)):
                     return Finding.BLOCKED
             for info in infos:
