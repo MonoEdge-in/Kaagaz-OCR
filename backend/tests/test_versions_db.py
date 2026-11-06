@@ -2,7 +2,8 @@
 as 0041's (V2), spotting and its suggestion (V1, V3 to V5, V8), accept, reject and Undo (V6,
 V7), the note (V9), make current and mark_ready's read again (V10), compare (V11), the version
 list (V12), the batch tray, the one-time sweep, section 10's version cases, the type rule on an
-older version, and auto-filing's Undo back to the department. Without a database:
+older version, auto-filing's Undo back to the department, and #521's 80% line counted exactly,
+never linked on its own. Without a database:
 test_versions.py.
 """
 
@@ -25,7 +26,7 @@ from tests.test_autofile_db import organisation, upload
 from tests.test_file_management import _migration
 from tests.test_file_management_db import _department, _land, _place, _read
 from tests.test_operator_auth_db import _owner
-from tests.test_versions import _ENGLISH, _LEASE, _MARATHI, _SATBARA, _text
+from tests.test_versions import _ENGLISH, _MARATHI, _SATBARA, _extended, _text
 
 pytestmark = pytest.mark.db
 
@@ -210,7 +211,9 @@ def test_v1_to_v6_next_years_satbara_is_suggested_then_accepted_into_the_familys
         "7/12 Survey 44 Wakad.pdf",
         2,
     )
-    assert banner["reasons"].endswith("% of the text is the same and the survey number matches")
+    # Changed on purpose (#521, NB-17): the exact share of the text, the banner's brackets.
+    assert (banner["reasons"], banner["text_overlap_estimated"]) == ("84% the same text", False)
+    assert round(banner["text_overlap"], 4) == 0.8441
     assert signed.client.get(f"/api/documents/{old}").json()["version_suggestion"]["role"] == "candidate"
     listed = signed.client.get("/api/documents", params={"has_newer_version": "true"}).json()["items"]
     assert [item["id"] for item in listed] == [old]
@@ -270,17 +273,19 @@ def test_v4_a_satbara_and_its_sale_deed_stay_related_never_versions(db: Database
     assert _suggestions(db, signed.customer_id) == []
 
 
-# --- V4 auto, V7 Undo ---------------------------------------------------------------------
+# --- V4 never on its own (#521), V7 Undo -----------------------------------------------------
+_LONG_LEASE = _text(10, 1200)
 
 
 def _leases(api: Api, db: Database, signed: Signed) -> tuple[str, str, str]:
-    """A lease in a folder, and the same lease with one word changed, same name, filed there."""
+    """A lease in a folder, and the same lease with one word changed (99% of the text), same
+    name and type, filed there: the old automatic link's case."""
     folder = api.add_folder(signed.customer_id, signed.user_id, "Leases")
-    changed = [*_LEASE[:150], "twelve", *_LEASE[151:]]
+    changed = [*_LONG_LEASE[:600], "twelve", *_LONG_LEASE[601:]]
     old = _doc(
         api,
         signed,
-        list(_LEASE),
+        list(_LONG_LEASE),
         "Rent Agreement Shinde.pdf",
         hours_ago=48,
         doc_type="contract",
@@ -301,12 +306,57 @@ def _leases(api: Api, db: Database, signed: Signed) -> tuple[str, str, str]:
     return old, new, batch
 
 
-def test_v4_an_almost_exact_copy_is_linked_on_its_own_and_v7_undo_puts_it_back(db: Database) -> None:
+def _accept(signed: Signed, db: Database, document: str) -> None:
+    suggestion = _suggestion_id(db, signed.customer_id, document)
+    reply = signed.client.post(f"/api/version-suggestions/{suggestion}/accept", headers=CSRF)
+    assert reply.status_code == 200, reply.text
+
+
+def test_521_the_old_automatic_case_is_only_suggested_and_v7_undo_after_accepting_puts_it_back(
+    db: Database,
+) -> None:
+    """Changed on purpose (#521, Tushar, 6 Nov 2026): same name, same folder and type, 99% of the
+    text, was linked on its own; now a person decides, and Undo still works after Accept."""
     api = Api(db)
     signed = api.new_signed()
     customer = signed.customer_id
     old, new, batch = _leases(api, db, signed)
     _spot(db, customer, new)
+    folder = _family(db, customer, old)[3]
+    assert _suggestions(db, customer) == [(new, old, "suggested", "pending", None)]
+    assert _family(db, customer, new) == (new, 1, True, folder)  # still its own document
+    assert "version.accepted" not in api.audit_actions(customer)
+    banner = signed.client.get(f"/api/documents/{new}").json()["version_suggestion"]
+    assert (banner["outcome"], banner["status"]) == ("suggested", "pending")
+    assert banner["reasons"] == "99% the same text"
+    tray = signed.client.get(f"/api/batches/{batch}").json()
+    assert tray["version_suggestion_count"] == 1
+    assert tray["version_suggestions"][0]["outcome"] == "suggested"
+
+    _accept(signed, db, new)
+    assert _family(db, customer, new) == (old, 2, True, folder)
+    versions_shown = signed.client.get(f"/api/documents/{new}").json()["versions"]
+    assert [v["joined"] for v in versions_shown] == ["uploaded", "linked"]
+    with db.customer(customer) as conn:  # a person moved the family since: Undo goes back
+        conn.execute(text("UPDATE documents SET folder_id = NULL WHERE family_id = :f"), {"f": old})
+    undone = signed.client.post(f"/api/documents/{new}/version-undo", headers=CSRF)
+    assert undone.status_code == 200, undone.text
+    assert _family(db, customer, new) == (new, 1, True, folder)  # the folder it had before the link
+    assert _family(db, customer, old)[1:3] == (1, True)  # current again
+    assert _suggestions(db, customer)[0][3] == "undone"
+
+
+def test_521_an_automatic_link_made_before_stays_and_v7_undo_puts_it_back(db: Database) -> None:
+    """A suggestion linked on its own before #521 (outcome auto, accepted by no one) is left as it
+    is: the tray and the version list still say so, and Undo still works."""
+    api = Api(db)
+    signed = api.new_signed()
+    customer = signed.customer_id
+    old, new, batch = _leases(api, db, signed)
+    _spot(db, customer, new)
+    with db.customer(customer) as conn:  # as the code before #521 left it
+        conn.execute(text("UPDATE version_suggestions SET outcome = 'auto', text_overlap_exact = NULL"))
+        versions_sql.link(conn, customer, _suggestion_id(db, customer, new), by=None)
     folder = _family(db, customer, old)[3]
     assert _suggestions(db, customer) == [(new, old, "auto", "accepted", None)]
     assert _family(db, customer, new) == (old, 2, True, folder)
@@ -316,6 +366,7 @@ def test_v4_an_almost_exact_copy_is_linked_on_its_own_and_v7_undo_puts_it_back(d
         "auto",
         old,
     )
+    assert tray["version_suggestions"][0]["text_overlap_estimated"] is True  # from before 0076
     versions_shown = signed.client.get(f"/api/documents/{new}").json()["versions"]
     assert [v["joined"] for v in versions_shown] == ["uploaded", "auto"]
 
@@ -346,12 +397,100 @@ def test_section_10_undo_after_a_third_version_is_not_newest(db: Database) -> No
     signed = api.new_signed()
     old, new, _ = _leases(api, db, signed)
     _spot(db, signed.customer_id, new)
+    _accept(signed, db, new)  # Changed on purpose (#521): never linked on its own now
     api.add_document(
         signed.customer_id, uploaded_by=signed.user_id, family_id=old, version_no=3, is_current=False
     )
     reply = signed.client.post(f"/api/documents/{new}/version-undo", headers=CSRF)
     assert (reply.status_code, reply.json()["error"]["code"]) == (409, "not_newest")
     assert _family(db, signed.customer_id, new)[:2] == (old, 2)
+
+
+# --- #521: the 80% line, counted exactly ------------------------------------------------------
+_STORED = "SELECT text_overlap, text_overlap_exact FROM version_suggestions WHERE customer_id = :c"
+
+
+def _stored(db: Database, customer: str) -> list[tuple[Any, ...]]:
+    with db.customer(customer) as conn:
+        return [(round(float(t), 4), exact) for t, exact in conn.execute(text(_STORED), {"c": customer})]
+
+
+def _pair(api: Api, db: Database, signed: Signed, texts: tuple[str, str], names: tuple[str, str]) -> str:
+    """An old document and a new upload, of one type, with no link: the new one's id."""
+    old = _doc(api, signed, texts[0].split(), names[0], hours_ago=48, doc_type="contract")
+    _old(db, signed.customer_id, old)
+    return _doc(api, signed, texts[1].split(), names[1], hours_ago=0, doc_type="contract")
+
+
+def test_521_exactly_80_percent_of_the_text_alone_is_suggested(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    new = _pair(api, db, signed, _extended(80, 20), ("Lease deed Shinde.pdf", "Scan 0001.pdf"))
+    _spot(db, signed.customer_id, new)
+    assert [row[2:4] for row in _suggestions(db, signed.customer_id)] == [("suggested", "pending")]
+    assert _stored(db, signed.customer_id) == [(0.8, True)]
+    banner = signed.client.get(f"/api/documents/{new}").json()["version_suggestion"]
+    assert (banner["reasons"], banner["text_overlap_estimated"]) == ("80% the same text", False)
+
+
+def test_521_79_percent_of_the_text_is_not_suggested_even_with_the_same_name(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    new = _pair(api, db, signed, _extended(79, 21), ("Lease deed Shinde.pdf", "Lease deed Shinde.pdf"))
+    with db.customer(signed.customer_id) as conn:
+        assert versions_sql.spot(conn, signed.customer_id, new) == "none"  # found by its name, not enough
+    assert _suggestions(db, signed.customer_id) == []
+
+
+def test_521_an_estimate_of_83_with_77_counted_exactly_is_not_suggested(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    new = _pair(api, db, signed, _extended(77, 23), ("Lease deed Shinde.pdf", "Lease deed Shinde.pdf"))
+    monkeypatch.setattr(versions, "overlap", lambda *_: 0.83)
+    with db.customer(signed.customer_id) as conn:
+        assert versions_sql.spot(conn, signed.customer_id, new) == "none"
+    assert _suggestions(db, signed.customer_id) == []
+
+
+def test_521_an_estimate_of_77_with_83_counted_exactly_is_suggested(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    new = _pair(api, db, signed, _extended(83, 17), ("Lease deed Shinde.pdf", "Lease deed Shinde.pdf"))
+    monkeypatch.setattr(versions, "overlap", lambda *_: 0.77)
+    with db.customer(signed.customer_id) as conn:
+        assert versions_sql.spot(conn, signed.customer_id, new) == "suggested"
+    assert _stored(db, signed.customer_id) == [(0.83, True)]
+    banner = signed.client.get(f"/api/documents/{new}").json()["version_suggestion"]
+    assert banner["reasons"] == "83% the same text"
+
+
+def test_521_over_the_compare_limits_the_estimate_decides_and_is_shown_as_one(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(versions, "MAX_COMPARE_TOTAL", 250)  # the Satbaras have 300 and 335 words
+    api = Api(db)
+    signed = api.new_signed()
+    _, new = _satbaras(api, db, signed)
+    _spot(db, signed.customer_id, new)
+    assert _stored(db, signed.customer_id) == [(0.8281, False)]  # 53 of the 64 values (84% counted)
+    banner = signed.client.get(f"/api/documents/{new}").json()["version_suggestion"]
+    assert (banner["reasons"], banner["text_overlap_estimated"]) == ("about 83% the same text", True)
+
+
+def test_521_a_copy_in_another_organisation_is_never_suggested(db: Database) -> None:
+    api = Api(db)
+    a, b = api.new_signed(), api.new_signed()
+    theirs = _doc(api, a, list(_LONG_LEASE), "Rent Agreement Shinde.pdf", hours_ago=48, doc_type="contract")
+    _old(db, a.customer_id, theirs)
+    copy = [*_LONG_LEASE[:600], "twelve", *_LONG_LEASE[601:]]
+    mine = _doc(api, b, copy, "Rent Agreement Shinde.pdf", hours_ago=0, doc_type="contract")
+    with db.customer(b.customer_id) as conn:
+        assert versions_sql.spot(conn, b.customer_id, mine) == "none"
+    assert _suggestions(db, a.customer_id) == _suggestions(db, b.customer_id) == []
 
 
 # --- V6 reject, V8 the switch ----------------------------------------------------------------

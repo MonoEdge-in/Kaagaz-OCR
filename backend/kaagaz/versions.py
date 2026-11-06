@@ -4,10 +4,11 @@
   ASCII, punctuation dropped, spaces collapsed), every run of SHINGLE words, MinHash with
   HASHES blake2b values (each seed its own salt) and LSH in BANDS bands of ROWS values, each
   band hashed to one number. Under MIN_WORDS words there is none. Values are signed 64-bit,
-  so they fit ``bigint``.
+  so they fit ``bigint``. ``exact_overlap`` (#521) counts the same shingles exactly: 64 hashes
+  estimate an overlap near 0.8 only to about 0.05 either way.
 * ``name_key`` (V2): the rule of migration 0041's ``NAME_KEY``, step for step, so a new
   upload's key is the same as the backfill's (tests/test_versions_db.py compares them).
-* ``outcome`` (V4): the scoring table, ``reasons`` the banner's plain words (V6).
+* ``outcome`` (V4): the scoring table, ``reasons`` the banner's plain words (V6, NB-17).
 * ``compare`` (V11): a word-level difflib comparison, page by page, as runs of same, added
   and removed, with a summary.
 
@@ -33,10 +34,10 @@ MAX_WORDS = 50_000
 _SALTS = tuple(seed.to_bytes(16, "big") for seed in range(HASHES))
 _BAND_SALTS = tuple((HASHES + band).to_bytes(16, "big") for band in range(BANDS))
 
-# V4: the starting values (docs/architecture.md records them once tuned on the bulk test).
-AUTO_NAME, AUTO_TEXT = 0.8, 0.95
-TEXT_SIGNAL, NAME_SIGNAL, TEXT_ALONE = 0.8, 0.6, 0.9
-AUTO, SUGGESTED = "auto", "suggested"
+# V4 as Tushar set it on 6 Nov 2026 (#521; docs/architecture.md): 80% of the text alone, or
+# two signals, suggest; nothing is ever linked on its own (rows linked so before stay "auto").
+TEXT_SIGNAL, NAME_SIGNAL, TEXT_ALONE = 0.8, 0.6, 0.8
+SUGGESTED = "suggested"
 
 # V11: a page longer than this is compared on its first words only, and the pages together on
 # at most MAX_COMPARE_TOTAL words (later pages then truncated), so one request stays bounded.
@@ -51,6 +52,11 @@ def words(text: str) -> list[str]:
     return "".join(" " if unicodedata.category(ch)[0] == "P" else ch for ch in folded).split()
 
 
+def _shingles(found: list[str]) -> set[str]:
+    """Every run of SHINGLE words."""
+    return {" ".join(found[i : i + SHINGLE]) for i in range(len(found) - SHINGLE + 1)}
+
+
 def _hash64(data: bytes, salt: bytes) -> int:
     return int.from_bytes(hashlib.blake2b(data, digest_size=8, salt=salt).digest(), "big", signed=True)
 
@@ -61,7 +67,7 @@ def fingerprint(text: str) -> tuple[list[int], list[int]] | None:
     found = words(text)[:MAX_WORDS]
     if len(found) < MIN_WORDS:
         return None
-    shingles = {" ".join(found[i : i + SHINGLE]).encode() for i in range(len(found) - SHINGLE + 1)}
+    shingles = {shingle.encode() for shingle in _shingles(found)}
     minhash = [min(_hash64(shingle, salt) for shingle in shingles) for salt in _SALTS]
     bands = [
         _hash64(
@@ -79,6 +85,23 @@ def overlap(first: list[int] | None, second: list[int] | None) -> float | None:
     if not first or not second:
         return None
     return sum(a == b for a, b in zip(first, second, strict=True)) / HASHES
+
+
+def exact_overlap(first: Mapping[int, str], second: Mapping[int, str]) -> float | None:
+    """#521: the exact share of SHINGLE-word runs two texts have in common (their Jaccard), each
+    text's pages read in order as ``fingerprint`` reads them. None when either has under
+    MIN_WORDS words, a page over MAX_COMPARE_WORDS or over MAX_COMPARE_TOTAL words in all (V11's
+    limits); then only the estimate is known. O(w) for the w words."""
+    found = []
+    for pages in (first, second):
+        page_words = [words(pages[page_no]) for page_no in sorted(pages)]
+        total = sum(map(len, page_words))
+        too_long = any(len(each) > MAX_COMPARE_WORDS for each in page_words)
+        if too_long or not MIN_WORDS <= total <= MAX_COMPARE_TOTAL:
+            return None
+        found.append(_shingles([word for each in page_words for word in each]))
+    mine, theirs = found
+    return len(mine & theirs) / len(mine | theirs)
 
 
 # --- V2: the name key, as 0041's NAME_KEY -------------------------------------------------
@@ -106,38 +129,35 @@ def name_key(display_name: str) -> str:
 # --- V4 and V6 --------------------------------------------------------------------------
 
 
-def outcome(
-    text_overlap: float | None,
-    name_similarity: float | None,
-    shared_identifier: bool,
-    *,
-    same_type: bool,
-    same_folder: bool,
-) -> str | None:
-    """V4: ``auto`` (linked on its own, with Undo), ``suggested`` or None (nothing). A shared
-    identifier alone is never enough."""
+def outcome(text_overlap: float | None, name_similarity: float | None, shared_identifier: bool) -> str | None:
+    """V4 (#521): ``suggested`` or None (nothing); a person always decides. A shared identifier
+    alone is never enough."""
     text, name = text_overlap or 0.0, name_similarity or 0.0
-    if name >= AUTO_NAME and text >= AUTO_TEXT and same_type and same_folder:
-        return AUTO
     if text >= TEXT_ALONE or (text >= TEXT_SIGNAL) + (name >= NAME_SIGNAL) + shared_identifier >= 2:
         return SUGGESTED
     return None
 
 
-def reasons(text_overlap: float | None, name_similarity: float | None, shared_identifier: str | None) -> str:
-    """V6: the signals that matched, in plain words: "91% of the text is the same and the
-    agreement number matches"."""
+def reasons(
+    text_overlap: float | None,
+    name_similarity: float | None,
+    shared_identifier: str | None,
+    *,
+    estimated: bool = False,
+) -> str:
+    """V6 and NB-17 (#521): why, for the banner's brackets. "86% the same text" (with "about"
+    when only estimated) when the text led; else the name and identifier in plain words, "same
+    name and same survey number"; "" when nothing counted."""
+    if text_overlap is not None and text_overlap >= TEXT_ALONE:
+        percent = round(text_overlap * 100)
+        percent = 99 if percent == 100 and text_overlap < 1 else percent  # never "100%" unless all
+        return f"{'about ' if estimated else ''}{percent}% the same text"
     parts = []
-    if text_overlap is not None and text_overlap >= TEXT_SIGNAL:
-        parts.append(f"{round(text_overlap * 100)}% of the text is the same")
     if name_similarity is not None and name_similarity >= NAME_SIGNAL:
-        parts.append("the name is almost the same")
+        parts.append("same name" if name_similarity >= 1 else "similar name")
     if shared_identifier:
-        parts.append(f"the {shared_identifier.replace('_', ' ')} matches")
-    if not parts:
-        return ""
-    sentence = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
-    return sentence[0].upper() + sentence[1:]
+        parts.append(f"same {shared_identifier.replace('_', ' ')}")
+    return " and ".join(parts)
 
 
 # --- V11 -------------------------------------------------------------------------------

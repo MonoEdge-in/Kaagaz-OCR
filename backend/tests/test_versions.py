@@ -1,7 +1,7 @@
 """File management (Phase 2 PRD 1) stage 2, versions, without a database: the fingerprint (V1),
-the name key (V2), the scoring table with the PRD's eight fixtures (V4), the banner's words
-(V6), compare (V11), the version list's row (V12) and the one-time fingerprint sweep's worker
-wrapper. The SQL: test_versions_db.py.
+the name key (V2), the scoring table with the PRD's eight fixtures (V4), the exact overlap and
+two invoices of one template (#521), the banner's words (V6, NB-17), compare (V11), the version
+list's row (V12) and the one-time fingerprint sweep's worker wrapper. The SQL: test_versions_db.py.
 """
 
 import random
@@ -45,21 +45,21 @@ def _name_similarity(first: str, second: str) -> float:
     return len(a & b) / len(a | b) if a | b else 0.0
 
 
+def _exact(first: str, second: str) -> float | None:
+    return versions.exact_overlap({1: first}, {1: second})
+
+
 def _score(
-    old: tuple[str, str, str],
-    new: tuple[str, str, str],
-    *,
-    identifier: bool = False,
-    same_folder: bool = True,
+    old: tuple[str, str, str], new: tuple[str, str, str], *, identifier: bool = False
 ) -> tuple[str | None, float | None, float]:
-    """(outcome, text overlap, name similarity) of ``new`` (text, name, type) against ``old``.
-    A shared identifier counts only for the same type (the related documents rule)."""
+    """(outcome, text overlap, name similarity) of ``new`` (text, name, type) against ``old``, as
+    spotting scores it: the exact overlap when both have a fingerprint (#521). A shared
+    identifier counts only for the same type (the related documents rule)."""
     text_overlap = _overlap(old[0], new[0])
+    if text_overlap is not None:
+        text_overlap = _exact(old[0], new[0])
     name = _name_similarity(old[1], new[1])
-    same_type = old[2] == new[2]
-    found = versions.outcome(
-        text_overlap, name, identifier and same_type, same_type=same_type, same_folder=same_folder
-    )
+    found = versions.outcome(text_overlap, name, identifier and old[2] == new[2])
     return found, text_overlap, name
 
 
@@ -97,7 +97,7 @@ def test_v1_a_spreadsheet_with_one_changed_cell_keeps_almost_every_value() -> No
     changed = [*cells[:70], "cement 999", *cells[71:]]
     overlap = _overlap("\n".join(cells), "\n".join(changed))
     assert overlap is not None and overlap >= versions.TEXT_ALONE
-    assert versions.outcome(overlap, 1.0, False, same_type=False, same_folder=True) == versions.SUGGESTED
+    assert versions.outcome(overlap, 1.0, False) == versions.SUGGESTED
 
 
 # --- V2: the name key -------------------------------------------------------------------
@@ -120,12 +120,15 @@ _LEASE = _text(10, 400)
 _LEASE_NAME = "Rent Agreement Shinde.pdf"
 
 
-def test_v4_a_one_word_change_with_the_same_name_is_linked_in_the_same_folder() -> None:
-    changed = [*_LEASE[:200], "fourteenth", *_LEASE[201:]]
-    old, new = (" ".join(_LEASE), _LEASE_NAME, "contract"), (" ".join(changed), _LEASE_NAME, "contract")
+def test_v4_a_one_word_change_with_the_same_name_is_only_suggested_never_linked() -> None:
+    """Changed on purpose (#521, Tushar, 6 Nov 2026): nothing is linked on its own any more, not
+    even the old auto case (same name, same type and folder, 99% of the text)."""
+    long = _text(10, 1200)
+    changed = [*long[:600], "fourteenth", *long[601:]]
+    old, new = (" ".join(long), _LEASE_NAME, "contract"), (" ".join(changed), _LEASE_NAME, "contract")
     found, overlap, name = _score(old, new)
-    assert (found, name) == (versions.AUTO, 1.0) and overlap is not None and overlap >= 0.95
-    assert _score(old, new, same_folder=False)[0] == versions.SUGGESTED  # another folder: asked
+    assert (found, name) == (versions.SUGGESTED, 1.0) and overlap is not None and round(overlap, 2) == 0.99
+    assert not hasattr(versions, "AUTO")
 
 
 def test_v4_a_renamed_changed_copy_is_suggested() -> None:
@@ -164,8 +167,8 @@ def test_v4_next_years_satbara_with_a_mutation_entry_is_suggested() -> None:
         identifier=True,
     )
     assert found == versions.SUGGESTED and name < versions.NAME_SIGNAL
-    assert overlap is not None and versions.TEXT_SIGNAL <= overlap < versions.AUTO_TEXT
-    assert versions.reasons(overlap, name, "survey_number").endswith("and the survey number matches")
+    assert overlap is not None and versions.TEXT_SIGNAL <= overlap < 0.9  # suggested on text alone now
+    assert versions.reasons(overlap, name, "survey_number") == "84% the same text"
 
 
 def test_v4_a_satbara_and_its_sale_deed_are_not_suggested() -> None:
@@ -203,7 +206,7 @@ def test_v4_an_invoice_and_its_receipt_are_not_suggested() -> None:
         identifier=True,
     )
     assert found is None
-    assert versions.outcome(None, None, True, same_type=True, same_folder=True) is None  # even one type
+    assert versions.outcome(None, None, True) is None  # even one type
 
 
 def test_v4_a_short_note_gets_no_fingerprint() -> None:
@@ -212,29 +215,121 @@ def test_v4_a_short_note_gets_no_fingerprint() -> None:
 
 
 def test_v4_the_table_at_its_edges() -> None:
+    """Changed on purpose (#521, Tushar, 6 Nov 2026): 80% of the text alone suggests (was 90%),
+    and the old auto row (name 0.8, text 0.95) is only suggested."""
     outcome = versions.outcome
-    assert outcome(0.95, 0.8, False, same_type=True, same_folder=True) == versions.AUTO
-    assert outcome(0.95, 0.8, False, same_type=False, same_folder=True) == versions.SUGGESTED
-    assert outcome(0.9, None, False, same_type=False, same_folder=False) == versions.SUGGESTED  # text alone
-    assert outcome(0.89, None, False, same_type=True, same_folder=True) is None
-    assert outcome(0.8, 0.6, False, same_type=False, same_folder=False) == versions.SUGGESTED
-    assert outcome(0.8, None, True, same_type=False, same_folder=False) == versions.SUGGESTED
-    assert outcome(None, 0.6, True, same_type=False, same_folder=False) == versions.SUGGESTED
-    assert outcome(0.79, 0.59, True, same_type=True, same_folder=True) is None
+    assert versions.TEXT_ALONE == versions.TEXT_SIGNAL == 0.8
+    assert outcome(1.0, 1.0, True) == versions.SUGGESTED  # never anything stronger
+    assert outcome(0.95, 0.8, False) == versions.SUGGESTED
+    assert outcome(0.8, None, False) == versions.SUGGESTED  # text alone, at the line
+    assert outcome(0.79, None, False) is None
+    assert outcome(0.79, 1.0, False) is None  # the name is one signal of two
+    assert outcome(0.79, 0.6, True) == versions.SUGGESTED  # two of: name and identifier
+    assert outcome(None, 0.6, True) == versions.SUGGESTED  # under 20 words: as before
+    assert outcome(None, 0.59, True) is None
+    assert outcome(None, 1.0, False) is None
+
+
+# --- #521: the exact overlap -----------------------------------------------------------------
+
+
+def _extended(shared: int, extra: int) -> tuple[str, str]:
+    """Two texts of distinct words whose exact overlap is shared / (shared + extra): the second
+    is the first with ``extra`` new words added at its end."""
+    first = [f"w{n}" for n in range(shared + versions.SHINGLE - 1)]
+    return " ".join(first), " ".join([*first, *(f"x{n}" for n in range(extra))])
+
+
+def test_521_the_exact_overlap_decides_at_80_and_79() -> None:
+    at_80, at_79 = _extended(80, 20), _extended(79, 21)
+    assert _exact(*at_80) == 0.8 and versions.outcome(_exact(*at_80), None, False) == versions.SUGGESTED
+    assert _exact(*at_79) == 0.79 and versions.outcome(_exact(*at_79), None, False) is None
+    assert versions.reasons(_exact(*at_80), None, None) == "80% the same text"
+
+
+def test_521_the_exact_overlap_reads_the_pages_as_the_fingerprint_does() -> None:
+    """Normalised words, pages in order and shingles across a page break, as fingerprint()."""
+    words = _text(3, 60)
+    one = {1: " ".join(words)}
+    split = {2: " ".join(words[30:]).upper(), 1: ", ".join(words[:30])}
+    assert versions.exact_overlap(one, split) == 1.0
+    assert versions.exact_overlap(one, {1: " ".join(words[:19])}) is None  # under MIN_WORDS: no text signal
+    assert versions.exact_overlap(one, {1: ""}) is None
+
+
+def test_521_over_the_compare_limits_there_is_no_exact_overlap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Then spotting keeps the estimate and marks it estimated (test_versions_db.py)."""
+    monkeypatch.setattr(versions, "MAX_COMPARE_WORDS", 40)
+    monkeypatch.setattr(versions, "MAX_COMPARE_TOTAL", 70)
+    page = " ".join(_text(4, 40))
+    assert versions.exact_overlap({1: page}, {1: page}) == 1.0
+    assert versions.exact_overlap({1: page + " more"}, {1: page}) is None  # one page too long
+    assert versions.exact_overlap({1: page, 2: page}, {1: page}) is None  # too many words in all
+    assert versions.exact_overlap({1: page}, {1: page, 2: page}) is None
+
+
+# Two invoices of one template (#521): only the numbers differ.
+_ITEMS = [
+    ("Cement OPC 53 grade bag", "2523", 50, 380),
+    ("TMT bar 12 mm", "7214", 20, 640),
+    ("Binding wire kg", "7217", 10, 85),
+    ("PVC pipe 4 inch", "3917", 12, 410),
+    ("Wall putty 40 kg", "3214", 6, 720),
+]
+
+
+def _invoice(number: str, date: str, items: list[tuple[str, str, int, int]]) -> str:
+    lines = " ".join(
+        f"{n} {what} {hsn} {qty} {rate} {qty * rate}" for n, (what, hsn, qty, rate) in enumerate(items, 1)
+    )
+    taxable = sum(qty * rate for _, _, qty, rate in items)
+    tax = round(taxable * 0.09)
+    return (
+        "Tax Invoice Sharma Traders Shop 12 Market Yard Gultekdi Pune 411037 GSTIN 27ABCPS9876K1Z2"
+        f" Phone 9822012345 Invoice No {number} Date {date} Bill To Patil Hardware Stores Wakad Pune"
+        " GSTIN 27AAACS1234F1Z5 Place of Supply Maharashtra Sr No Description HSN Qty Rate Amount"
+        f" {lines} Taxable Value {taxable} CGST 9% {tax} SGST 9% {tax} Total {taxable + 2 * tax}"
+        " Amount in words Rupees as above only Bank HDFC Bank Account No 50100123456789 IFSC HDFC0001234"
+        " Terms Goods once sold will not be taken back Interest at 18% after 30 days Subject to Pune"
+        " jurisdiction For Sharma Traders Authorised Signatory"
+    )
+
+
+def test_521_two_invoices_of_one_template_with_other_numbers_are_not_suggested() -> None:
+    """Every number of the bill differs (its number, date, quantities, rates and totals): 44% of
+    the 5-word shingles are the same, so the template alone never reaches 80%. GSTIN and PAN
+    never link (extraction/links.py), and the invoice numbers differ, so no identifier either."""
+    reorder = [(what, hsn, qty - 3, rate + 5) for what, hsn, qty, rate in _ITEMS]
+    first = (_invoice("SHT/2026/0412", "03-10-2026", _ITEMS), "Sharma Traders SHT-2026-0412.pdf", "invoice")
+    second = (_invoice("SHT/2026/0587", "21-10-2026", reorder), "Sharma Traders SHT-2026-0587.pdf", "invoice")
+    found, overlap, name = _score(first, second)
+    assert found is None and overlap is not None and round(overlap, 2) == 0.44
+    assert name >= versions.NAME_SIGNAL  # one signal of the two needed
+
+
+def test_521_a_repeat_bill_for_the_same_goods_reaches_90_and_is_suggested() -> None:
+    """Reported to Tushar (#521), not tuned: the same goods and quantities, only the bill's number
+    and date changed, is 90% the same text (128 of 142 shingles), so it is suggested; it was at
+    the old 90% line too. Keep separate answers it once for the pair."""
+    first = (_invoice("SHT/2026/0412", "03-10-2026", _ITEMS), "Bill 0412.pdf", "invoice")
+    second = (_invoice("SHT/2026/0587", "21-10-2026", _ITEMS), "Bill 0587.pdf", "invoice")
+    found, overlap, _ = _score(first, second)
+    assert found == versions.SUGGESTED and overlap is not None and round(overlap, 2) == 0.90
 
 
 # --- V6: the banner's words --------------------------------------------------------------
 
 
-def test_v6_the_reasons_name_each_signal_that_matched_in_plain_words() -> None:
+def test_v6_nb17_the_reason_is_the_share_of_text_else_the_name_and_identifier_in_plain_words() -> None:
+    """Changed on purpose (#521, NB-17): the banner's brackets, "(86% the same text)"; a name- or
+    identifier-led suggestion says why in words instead."""
     reasons = versions.reasons
-    assert (
-        reasons(0.91, 0.2, "agreement_number")
-        == "91% of the text is the same and the agreement number matches"
-    )
-    assert reasons(0.96, 0.85, None) == "96% of the text is the same and the name is almost the same"
-    assert reasons(0.5, 0.7, "survey_number") == "The name is almost the same and the survey number matches"
-    assert reasons(0.86, 0.31, "survey_number") == "86% of the text is the same and the survey number matches"
+    assert reasons(0.86, 0.31, "survey_number") == "86% the same text"
+    assert reasons(0.96, 1.0, None) == "96% the same text"
+    assert reasons(0.86, None, None, estimated=True) == "about 86% the same text"
+    assert reasons(0.5, 1.0, "survey_number") == "same name and same survey number"
+    assert reasons(None, 0.7, "agreement_number") == "similar name and same agreement number"
+    assert reasons(0.79, 0.2, None) == ""
 
 
 def test_v6_a_suggestion_says_which_side_this_document_is() -> None:
@@ -246,6 +341,7 @@ def test_v6_a_suggestion_says_which_side_this_document_is() -> None:
         "candidate_id": "d1",
         "candidate_name": "7/12 Survey 44 Wakad.pdf",
         "text_overlap": 0.86,
+        "text_overlap_exact": True,
         "name_similarity": 0.31,
         "shared_identifier": "survey_number",
         "outcome": "suggested",
@@ -256,7 +352,13 @@ def test_v6_a_suggestion_says_which_side_this_document_is() -> None:
     assert shown["role"] == "new" and view(row, "d1")["role"] == "candidate"
     assert shown["candidate"] == {"family_id": "d1", "id": "d1", "name": "7/12 Survey 44 Wakad.pdf"}
     assert shown["next_version_no"] == 2
-    assert shown["reasons"] == "86% of the text is the same and the survey number matches"
+    assert (shown["reasons"], shown["text_overlap_estimated"]) == ("86% the same text", False)
+    for exact in (False, None):  # None: a suggestion from before 0076, an estimate
+        estimated = view({**row, "text_overlap_exact": exact}, "d3")
+        assert estimated["reasons"] == "about 86% the same text" and estimated["text_overlap_estimated"]
+    no_text = view({**row, "text_overlap": None, "text_overlap_exact": None, "name_similarity": 1.0}, "d3")
+    assert no_text["reasons"] == "same name and same survey number"
+    assert no_text["text_overlap_estimated"] is False
 
 
 # --- V11: compare --------------------------------------------------------------------------
