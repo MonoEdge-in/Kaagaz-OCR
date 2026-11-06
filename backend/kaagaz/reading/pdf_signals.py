@@ -336,7 +336,7 @@ def _unseen(page: Any, textpage: Any, checked: list[tuple[int, tuple[int, int, i
     every = {index for index, _, light in checked if light}
     if len(every) > MAX_LIGHT_GLYPHS:
         checked = [glyph for glyph in checked if not glyph[2]]
-    if len(checked) - len(every) > MAX_DARK_GLYPHS:
+    if sum(1 for glyph in checked if not glyph[2]) > MAX_DARK_GLYPHS:  # the dark ones only (#505)
         checked = [glyph for glyph in checked if glyph[2]]
     if not checked:
         return every

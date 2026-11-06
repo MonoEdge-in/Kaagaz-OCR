@@ -168,6 +168,24 @@ _INSTRUCTION_LIKE = (
         re.DOTALL,
     ),
 )
+# #520 (Tushar, 6 Nov 2026): a line that reads as if addressed to the model, though no phrase of
+# _INSTRUCTION_LIKE: "Answer: ...", "The answer is ...", "Reveal ...", "Ignore ...", "System:".
+# Kept as evidence (a FAQ or a policy may say so), never dropped; the answer is Needs review
+# (``reads_like_instructions``, the service's INSTRUCTION_NOTE) when the answer cites the piece.
+# Review of #520: each at a line's start only, after any bullet, number or markdown ("- ", "1. ",
+# "**", "## ", "> "), so a form's "If the answer is 'Yes', give details" is never one, nor an ERP
+# printout's "User: RKUMAR" (no "user:").
+_LINE_START = r"^[\s\-*•#>_\d.)]*"
+_ADDRESSED_LIKE = tuple(
+    re.compile(_LINE_START + pattern, re.IGNORECASE | re.MULTILINE)
+    for pattern in (
+        r"(?:final\s+|correct\s+)?answer[\s*_]*:",
+        r"the\s+(?:final\s+|correct\s+)?answer\s+is\b",
+        r"(?:reveal|ignore|disregard|forget|override)\b",
+        r"(?:system|assistant)[\s*_]*:",
+    )
+)
+INSTRUCTION_NOTE = "A source line reads like an instruction."
 
 
 class Hit(Protocol):
@@ -671,9 +689,22 @@ def related_documents(
 
 
 def looks_like_instructions(text: str) -> bool:
-    """Any phrase of ``_INSTRUCTION_LIKE`` in the NFKC text, without the marks that draw nothing. O(n)."""
-    folded = strip_ignorable(unicodedata.normalize("NFKC", text)).translate(_BLANKS)
+    """Any phrase of ``_INSTRUCTION_LIKE`` in the NFKC text, without the marks that draw nothing:
+    left out of the evidence. O(n)."""
+    folded = _unhidden(text)
     return any(pattern.search(folded) for pattern in _INSTRUCTION_LIKE)
+
+
+def reads_like_instructions(text: str) -> bool:
+    """``looks_like_instructions``, or a line addressed as if to the model (``_ADDRESSED_LIKE``):
+    kept as evidence, but an answer drafted from it is Needs review (#520). O(n)."""
+    folded = _unhidden(text)
+    return any(pattern.search(folded) for pattern in (*_INSTRUCTION_LIKE, *_ADDRESSED_LIKE))
+
+
+def _unhidden(text: str) -> str:
+    """NFKC, without the marks that draw nothing."""
+    return strip_ignorable(unicodedata.normalize("NFKC", text)).translate(_BLANKS)
 
 
 def valid_regions(regions: Sequence[Any]) -> list[dict[str, Any]]:

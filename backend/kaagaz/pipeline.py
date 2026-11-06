@@ -188,7 +188,8 @@ Model choice and AI spend (council 11 Oct 2026), when the processor is given the
   the document is held in the database until the release sweep queues it again. A document let
   in is read to its end. A spreadsheet is asked with no AI pages (the budget only, QA P4); the
   upgrade sweep's read again (no one asked) is never asked: its document was ready, and a hold
-  would take it out of search (QA P1, 4 Nov 2026). Its pages are counted, as Ensemble's.
+  would take it out of search (QA P1, 4 Nov 2026). Its pages are counted. (Ensemble after the scan is
+  paused too, #520: kaagaz/jobs/ensemble.py.)
 
 Dynamic and Ensemble reading (features 26 and 27, council 15 Oct 2026): ``job_reading``
 gives the document's whole ``Reading`` (``kaagaz.db.models.resolve_scan``, checked again

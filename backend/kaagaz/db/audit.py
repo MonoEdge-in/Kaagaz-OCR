@@ -157,6 +157,7 @@ SHOWN_DETAILS: dict[str, tuple[str, ...]] = {
     "version.rejected": _VERSION_DETAILS,
     "version.undone": _VERSION_DETAILS,
     "version.make_current": _VERSION_DETAILS,
+    "document.version_separated": _VERSION_DETAILS,  # #521: made a separate file
 }
 SHOWN_KINDS = ("document", "version", "folder")
 

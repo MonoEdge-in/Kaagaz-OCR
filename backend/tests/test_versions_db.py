@@ -2,10 +2,13 @@
 as 0041's (V2), spotting and its suggestion (V1, V3 to V5, V8), accept, reject and Undo (V6,
 V7), the note (V9), make current and mark_ready's read again (V10), compare (V11), the version
 list (V12), the batch tray, the one-time sweep, section 10's version cases, the type rule on an
-older version, and auto-filing's Undo back to the department. Without a database:
+older version, auto-filing's Undo back to the department, and #521's 80% line counted exactly,
+never linked on its own. Without a database:
 test_versions.py.
 """
 
+import contextlib
+import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -14,7 +17,7 @@ import pytest
 from sqlalchemy import text
 
 from kaagaz import versions
-from kaagaz.db import autofile, trash
+from kaagaz.db import ai_settings, autofile, trash
 from kaagaz.db import versions as versions_sql
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database
@@ -25,7 +28,16 @@ from tests.test_autofile_db import organisation, upload
 from tests.test_file_management import _migration
 from tests.test_file_management_db import _department, _land, _place, _read
 from tests.test_operator_auth_db import _owner
-from tests.test_versions import _ENGLISH, _LEASE, _MARATHI, _SATBARA, _text
+from tests.test_versions import (
+    _ENGLISH,
+    _ITEMS,
+    _MARATHI,
+    _SATBARA,
+    _extended,
+    _invoice,
+    _name_similarity,
+    _text,
+)
 
 pytestmark = pytest.mark.db
 
@@ -210,7 +222,9 @@ def test_v1_to_v6_next_years_satbara_is_suggested_then_accepted_into_the_familys
         "7/12 Survey 44 Wakad.pdf",
         2,
     )
-    assert banner["reasons"].endswith("% of the text is the same and the survey number matches")
+    # Changed on purpose (#521, NB-17): the exact share of the text, the banner's brackets.
+    assert (banner["reasons"], banner["text_overlap_estimated"]) == ("84% the same text", False)
+    assert round(banner["text_overlap"], 4) == 0.8441
     assert signed.client.get(f"/api/documents/{old}").json()["version_suggestion"]["role"] == "candidate"
     listed = signed.client.get("/api/documents", params={"has_newer_version": "true"}).json()["items"]
     assert [item["id"] for item in listed] == [old]
@@ -270,17 +284,19 @@ def test_v4_a_satbara_and_its_sale_deed_stay_related_never_versions(db: Database
     assert _suggestions(db, signed.customer_id) == []
 
 
-# --- V4 auto, V7 Undo ---------------------------------------------------------------------
+# --- V4 never on its own (#521), V7 Undo -----------------------------------------------------
+_LONG_LEASE = _text(10, 1200)
 
 
 def _leases(api: Api, db: Database, signed: Signed) -> tuple[str, str, str]:
-    """A lease in a folder, and the same lease with one word changed, same name, filed there."""
+    """A lease in a folder, and the same lease with one word changed (99% of the text), same
+    name and type, filed there: the old automatic link's case."""
     folder = api.add_folder(signed.customer_id, signed.user_id, "Leases")
-    changed = [*_LEASE[:150], "twelve", *_LEASE[151:]]
+    changed = [*_LONG_LEASE[:600], "twelve", *_LONG_LEASE[601:]]
     old = _doc(
         api,
         signed,
-        list(_LEASE),
+        list(_LONG_LEASE),
         "Rent Agreement Shinde.pdf",
         hours_ago=48,
         doc_type="contract",
@@ -301,12 +317,57 @@ def _leases(api: Api, db: Database, signed: Signed) -> tuple[str, str, str]:
     return old, new, batch
 
 
-def test_v4_an_almost_exact_copy_is_linked_on_its_own_and_v7_undo_puts_it_back(db: Database) -> None:
+def _accept(signed: Signed, db: Database, document: str) -> None:
+    suggestion = _suggestion_id(db, signed.customer_id, document)
+    reply = signed.client.post(f"/api/version-suggestions/{suggestion}/accept", headers=CSRF)
+    assert reply.status_code == 200, reply.text
+
+
+def test_521_the_old_automatic_case_is_only_suggested_and_v7_undo_after_accepting_puts_it_back(
+    db: Database,
+) -> None:
+    """Changed on purpose (#521, Tushar, 6 Nov 2026): same name, same folder and type, 99% of the
+    text, was linked on its own; now a person decides, and Undo still works after Accept."""
     api = Api(db)
     signed = api.new_signed()
     customer = signed.customer_id
     old, new, batch = _leases(api, db, signed)
     _spot(db, customer, new)
+    folder = _family(db, customer, old)[3]
+    assert _suggestions(db, customer) == [(new, old, "suggested", "pending", None)]
+    assert _family(db, customer, new) == (new, 1, True, folder)  # still its own document
+    assert "version.accepted" not in api.audit_actions(customer)
+    banner = signed.client.get(f"/api/documents/{new}").json()["version_suggestion"]
+    assert (banner["outcome"], banner["status"]) == ("suggested", "pending")
+    assert banner["reasons"] == "99% the same text"
+    tray = signed.client.get(f"/api/batches/{batch}").json()
+    assert tray["version_suggestion_count"] == 1
+    assert tray["version_suggestions"][0]["outcome"] == "suggested"
+
+    _accept(signed, db, new)
+    assert _family(db, customer, new) == (old, 2, True, folder)
+    versions_shown = signed.client.get(f"/api/documents/{new}").json()["versions"]
+    assert [v["joined"] for v in versions_shown] == ["uploaded", "linked"]
+    with db.customer(customer) as conn:  # a person moved the family since: Undo goes back
+        conn.execute(text("UPDATE documents SET folder_id = NULL WHERE family_id = :f"), {"f": old})
+    undone = signed.client.post(f"/api/documents/{new}/version-undo", headers=CSRF)
+    assert undone.status_code == 200, undone.text
+    assert _family(db, customer, new) == (new, 1, True, folder)  # the folder it had before the link
+    assert _family(db, customer, old)[1:3] == (1, True)  # current again
+    assert _suggestions(db, customer)[0][3] == "undone"
+
+
+def test_521_an_automatic_link_made_before_stays_and_v7_undo_puts_it_back(db: Database) -> None:
+    """A suggestion linked on its own before #521 (outcome auto, accepted by no one) is left as it
+    is: the tray and the version list still say so, and Undo still works."""
+    api = Api(db)
+    signed = api.new_signed()
+    customer = signed.customer_id
+    old, new, batch = _leases(api, db, signed)
+    _spot(db, customer, new)
+    with db.customer(customer) as conn:  # as the code before #521 left it
+        conn.execute(text("UPDATE version_suggestions SET outcome = 'auto', text_overlap_exact = NULL"))
+        versions_sql.link(conn, customer, _suggestion_id(db, customer, new), by=None)
     folder = _family(db, customer, old)[3]
     assert _suggestions(db, customer) == [(new, old, "auto", "accepted", None)]
     assert _family(db, customer, new) == (old, 2, True, folder)
@@ -316,6 +377,7 @@ def test_v4_an_almost_exact_copy_is_linked_on_its_own_and_v7_undo_puts_it_back(d
         "auto",
         old,
     )
+    assert tray["version_suggestions"][0]["text_overlap_estimated"] is True  # from before 0076
     versions_shown = signed.client.get(f"/api/documents/{new}").json()["versions"]
     assert [v["joined"] for v in versions_shown] == ["uploaded", "auto"]
 
@@ -346,12 +408,208 @@ def test_section_10_undo_after_a_third_version_is_not_newest(db: Database) -> No
     signed = api.new_signed()
     old, new, _ = _leases(api, db, signed)
     _spot(db, signed.customer_id, new)
+    _accept(signed, db, new)  # Changed on purpose (#521): never linked on its own now
     api.add_document(
         signed.customer_id, uploaded_by=signed.user_id, family_id=old, version_no=3, is_current=False
     )
     reply = signed.client.post(f"/api/documents/{new}/version-undo", headers=CSRF)
     assert (reply.status_code, reply.json()["error"]["code"]) == (409, "not_newest")
     assert _family(db, signed.customer_id, new)[:2] == (old, 2)
+
+
+# --- #521: the 80% line, counted exactly ------------------------------------------------------
+_STORED = "SELECT text_overlap, text_overlap_exact FROM version_suggestions WHERE customer_id = :c"
+
+
+def _stored(db: Database, customer: str) -> list[tuple[Any, ...]]:
+    with db.customer(customer) as conn:
+        return [(round(float(t), 4), exact) for t, exact in conn.execute(text(_STORED), {"c": customer})]
+
+
+def _pair(api: Api, db: Database, signed: Signed, texts: tuple[str, str], names: tuple[str, str]) -> str:
+    """An old document and a new upload, of one type, with no link: the new one's id."""
+    old = _doc(api, signed, texts[0].split(), names[0], hours_ago=48, doc_type="contract")
+    _old(db, signed.customer_id, old)
+    return _doc(api, signed, texts[1].split(), names[1], hours_ago=0, doc_type="contract")
+
+
+def test_521_exactly_80_percent_of_the_text_alone_is_suggested(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    new = _pair(api, db, signed, _extended(80, 20), ("Lease deed Shinde.pdf", "Scan 0001.pdf"))
+    _spot(db, signed.customer_id, new)
+    assert [row[2:4] for row in _suggestions(db, signed.customer_id)] == [("suggested", "pending")]
+    assert _stored(db, signed.customer_id) == [(0.8, True)]
+    banner = signed.client.get(f"/api/documents/{new}").json()["version_suggestion"]
+    assert (banner["reasons"], banner["text_overlap_estimated"]) == ("80% the same text", False)
+
+
+def test_521_79_percent_of_the_text_is_not_suggested_even_with_the_same_name(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    new = _pair(api, db, signed, _extended(79, 21), ("Lease deed Shinde.pdf", "Lease deed Shinde.pdf"))
+    with db.customer(signed.customer_id) as conn:
+        assert versions_sql.spot(conn, signed.customer_id, new) == "none"  # found by its name, not enough
+    assert _suggestions(db, signed.customer_id) == []
+
+
+def test_521_an_estimate_of_83_with_77_counted_exactly_is_not_suggested(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    new = _pair(api, db, signed, _extended(77, 23), ("Lease deed Shinde.pdf", "Lease deed Shinde.pdf"))
+    monkeypatch.setattr(versions, "overlap", lambda *_: 0.83)
+    with db.customer(signed.customer_id) as conn:
+        assert versions_sql.spot(conn, signed.customer_id, new) == "none"
+    assert _suggestions(db, signed.customer_id) == []
+
+
+def test_521_an_estimate_of_77_with_83_counted_exactly_is_suggested(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    new = _pair(api, db, signed, _extended(83, 17), ("Lease deed Shinde.pdf", "Lease deed Shinde.pdf"))
+    monkeypatch.setattr(versions, "overlap", lambda *_: 0.77)
+    with db.customer(signed.customer_id) as conn:
+        assert versions_sql.spot(conn, signed.customer_id, new) == "suggested"
+    assert _stored(db, signed.customer_id) == [(0.83, True)]
+    banner = signed.client.get(f"/api/documents/{new}").json()["version_suggestion"]
+    assert banner["reasons"] == "83% the same text"
+
+
+def test_521_over_the_compare_limits_the_estimate_decides_and_is_shown_as_one(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(versions, "MAX_COMPARE_TOTAL", 250)  # the Satbaras have 300 and 335 words
+    api = Api(db)
+    signed = api.new_signed()
+    _, new = _satbaras(api, db, signed)
+    _spot(db, signed.customer_id, new)
+    assert _stored(db, signed.customer_id) == [(0.8281, False)]  # 53 of the 64 values (84% counted)
+    banner = signed.client.get(f"/api/documents/{new}").json()["version_suggestion"]
+    assert (banner["reasons"], banner["text_overlap_estimated"]) == ("about 82% the same text", True)
+
+
+def test_521_a_copy_in_another_organisation_is_never_suggested(db: Database) -> None:
+    api = Api(db)
+    a, b = api.new_signed(), api.new_signed()
+    theirs = _doc(api, a, list(_LONG_LEASE), "Rent Agreement Shinde.pdf", hours_ago=48, doc_type="contract")
+    _old(db, a.customer_id, theirs)
+    copy = [*_LONG_LEASE[:600], "twelve", *_LONG_LEASE[601:]]
+    mine = _doc(api, b, copy, "Rent Agreement Shinde.pdf", hours_ago=0, doc_type="contract")
+    with db.customer(b.customer_id) as conn:
+        assert versions_sql.spot(conn, b.customer_id, mine) == "none"
+    assert _suggestions(db, a.customer_id) == _suggestions(db, b.customer_id) == []
+
+
+# --- #521, the council's three bug fixes -------------------------------------------------------
+
+
+def test_521_a_99_percent_match_under_another_name_wins_over_20_same_named_ones(db: Database) -> None:
+    """Fix 1: the candidates were the first 20 by name, then newest, so a 99% match under another
+    name was dropped behind 20 same-named ones; now up to 200 are ranked by the estimate first."""
+    api = Api(db)
+    signed = api.new_signed()
+    customer = signed.customer_id
+    base = _text(11, 500)
+    for n in range(20):  # 90% the same text, the same name
+        words = list(base)
+        for place in (5 + 7 * n, 150 + 7 * n, 300 + 7 * n):
+            words[place] = f"z{n}x{place}"
+        _old(db, customer, _doc(api, signed, words, "Lease.pdf", hours_ago=48 + n, doc_type="contract"))
+    scan = _doc(api, signed, [*base[:200], "twelve", *base[201:]], "Scan 7.pdf", hours_ago=100)
+    _old(db, customer, scan)
+    new = _doc(api, signed, list(base), "Lease.pdf", hours_ago=0, doc_type="contract")
+    _spot(db, customer, new)
+    assert [row[:2] for row in _suggestions(db, customer)] == [(new, scan)]
+
+
+def test_521_monthly_bills_with_one_name_and_account_number_are_not_suggested(db: Database) -> None:
+    """Fix 2: "Invoice 2025-01" and "Invoice 2025-02", one template, other numbers (44% of the
+    text), the same account number: name and identifier are two signals, but under half the text."""
+    api = Api(db)
+    signed = api.new_signed()
+    customer = signed.customer_id
+    later = [(what, hsn, qty - 3, rate + 5) for what, hsn, qty, rate in _ITEMS]
+    names = ("Invoice 2025-01.pdf", "Invoice 2025-02.pdf")
+    assert _name_similarity(*names) >= versions.NAME_SIGNAL
+    january = _invoice("SHT/2025/0101", "31-01-2025", _ITEMS).split()
+    old = _doc(api, signed, january, names[0], hours_ago=48, doc_type="invoice")
+    _old(db, customer, old)
+    february = _invoice("SHT/2025/0202", "28-02-2025", later).split()
+    new = _doc(api, signed, february, names[1], hours_ago=0, doc_type="invoice")
+    _link(db, customer, old, new, "account_number")
+    with db.customer(customer) as conn:
+        assert versions_sql.spot(conn, customer, new) == "none"
+    assert _suggestions(db, customer) == []
+
+
+def test_521_two_near_copies_of_one_batch_spotted_at_once_are_matched_once(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix 3: the fingerprint is written with Ready, so two spot runs at once see each other's.
+    Changed on purpose (review, 6 Nov 2026): no lock per customer. Both runs meet at the switch
+    check and go on together; each suggests the same pair (the later file as the new version),
+    and the unique pair keeps one, so the second says none."""
+    api = Api(db)
+    signed = api.new_signed()
+    customer = signed.customer_id
+    batch = str(uuid.uuid4())
+    first = _doc(api, signed, list(_SATBARA), "Satbara A.pdf", hours_ago=1, batch_id=batch, status="clean")
+    near = [*_SATBARA[:200], "फेरफार", *_SATBARA[201:]]
+    second = _doc(api, signed, near, "Satbara B.pdf", hours_ago=0.5, batch_id=batch, status="clean")
+    for document in (first, second):
+        PgDocuments(db).mark_ready(customer, document, 1)
+    meet = threading.Barrier(2)
+    switch_on = ai_settings.switch_on
+
+    def waiting(*args: Any) -> bool:
+        with contextlib.suppress(threading.BrokenBarrierError):  # the lock kept the other out
+            meet.wait(timeout=3)
+        return switch_on(*args)
+
+    monkeypatch.setattr(ai_settings, "switch_on", waiting)
+    codes: list[str | None] = []
+
+    def run(document: str) -> None:
+        with db.customer(customer) as conn:
+            codes.append(versions_sql.spot(conn, customer, document))
+
+    threads = [threading.Thread(target=run, args=(document,)) for document in (first, second)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert sorted(code or "" for code in codes) == ["none", "suggested"]
+    pairs = [set(row[:2]) for row in _suggestions(db, customer)]
+    assert pairs == [{first, second}]
+
+
+def test_521_a_fingerprint_that_fails_never_fails_ready(
+    db: Database, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Review fix 6: the fingerprint is written in a savepoint of Ready's transaction; an error
+    there is logged with the ids only, and the document is still ready, with no fingerprint."""
+    api = Api(db)
+    signed = api.new_signed()
+    customer = signed.customer_id
+    document = _doc(api, signed, list(_SATBARA), "Satbara secret name.pdf", hours_ago=0, status="clean")
+
+    def broken(conn: Any, *_args: Any) -> None:
+        conn.execute(text("SELECT 1 / 0"))  # a real SQL error, so the transaction is hit too
+
+    monkeypatch.setattr(versions_sql, "write_fingerprint", broken)
+    with caplog.at_level("WARNING"):
+        PgDocuments(db).mark_ready(customer, document, 1)
+    with db.customer(customer) as conn:
+        status, minhash = conn.execute(
+            text("SELECT status, text_minhash FROM documents WHERE id = :d"), {"d": document}
+        ).one()
+    assert (status, minhash) == ("ready", None)
+    logged = [record for record in caplog.records if record.getMessage() == "fingerprint_failed"]
+    assert len(logged) == 1 and "secret" not in str(logged[0].__dict__)
 
 
 # --- V6 reject, V8 the switch ----------------------------------------------------------------
@@ -553,6 +811,48 @@ def test_v11_compare_a_pending_pair_or_one_family_and_nothing_else(db: Database)
         assert trash.trash_document(conn, customer, old, by=signed.user_id, now=NOW)
     trashed = signed.client.get(f"/api/documents/{old}/compare", params={"with": new})
     assert (trashed.status_code, trashed.json()["error"]["code"]) == (409, "in_trash")
+
+
+def test_521_see_the_differences_of_a_suggested_pair_says_it_in_plain_words(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The suggested pair's compare: the share and the changes in words; another organisation's
+    pair is 404; over the compare limits it says only the first part is compared."""
+    api = Api(db)
+    signed = api.new_signed()
+    customer = signed.customer_id
+    old, new = _satbaras(api, db, signed)
+    _spot(db, customer, new)
+    reply = signed.client.get(f"/api/documents/{new}/compare", params={"with": old})
+    assert reply.status_code == 200, reply.text
+    body = reply.json()
+    assert body["overview"] == "84% the same. 36 words changed on page 1."
+    assert (body["pages"][0]["left_words"], body["pages"][0]["right_words"]) == (300, 335)
+    assert (body["left_pages"], body["right_pages"]) == (1, 1)  # review fix 9: a page each side has
+    other = api.new_signed()
+    assert other.client.get(f"/api/documents/{new}/compare", params={"with": old}).status_code == 404
+    monkeypatch.setattr(versions, "MAX_COMPARE_TOTAL", 100)
+    long = signed.client.get(f"/api/documents/{new}/compare", params={"with": old}).json()
+    assert (long["truncated"], long["overview"]) == (
+        True,
+        "These files are long, so only the first part is compared.",
+    )
+
+
+def test_521_the_same_text_in_other_bytes_is_a_near_match_whose_text_is_the_same(db: Database) -> None:
+    """A re-scan or a re-save: other bytes (not the duplicate), the text counted exactly the same,
+    so the banner may say 100% and the compare says so in words."""
+    api = Api(db)
+    signed = api.new_signed()
+    customer = signed.customer_id
+    old = _doc(api, signed, list(_SATBARA), "Satbara.pdf", hours_ago=48)
+    _old(db, customer, old)
+    new = _doc(api, signed, list(_SATBARA), "Satbara scan.pdf", hours_ago=0)
+    _spot(db, customer, new)
+    banner = signed.client.get(f"/api/documents/{new}").json()["version_suggestion"]
+    assert (banner["reasons"], banner["text_overlap_estimated"]) == ("100% the same text", False)
+    body = signed.client.get(f"/api/documents/{new}/compare", params={"with": old}).json()
+    assert body["overview"] == "The text is the same in both files."
 
 
 # --- V9 the note at upload -----------------------------------------------------------------

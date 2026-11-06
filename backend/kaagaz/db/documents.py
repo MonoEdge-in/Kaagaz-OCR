@@ -102,7 +102,7 @@ _SELECT = (
 # The highest ready version_no is current (PRD 1 F6, PROVISIONAL plan 7.3): is a
 # newer version of this document's family ready already?
 _READY_STATE = (
-    "SELECT d.status, EXISTS (SELECT 1 FROM documents newer WHERE newer.customer_id = :c"
+    "SELECT d.status, d.display_name, EXISTS (SELECT 1 FROM documents newer WHERE newer.customer_id = :c"
     " AND newer.family_id = d.family_id AND newer.status = 'ready'"
     " AND newer.version_no > d.version_no) AS newer_ready"
     " FROM documents d WHERE d.customer_id = :c AND d.id = :d"
@@ -147,7 +147,8 @@ def mark_ready(
     A read again (a run of it was ready before, ``_READ_BEFORE``) keeps ``is_current`` as it
     is, so it never changes which version is current (File management V10).
     With ``run``, finish that run in the same transaction, so a ready document and
-    its finished run commit together. With ``open_run`` instead (Ready first, 16 Oct
+    its finished run commit together. The text's fingerprint and name key (Versions V1) are
+    written with it (#521). With ``open_run`` instead (Ready first, 16 Oct
     2026), the run fence on that run id, which stays open while the run goes on
     understanding the ready document, and the progress it wrote last is kept; otherwise
     the progress is cleared. A document set to be read again meanwhile (``received``)
@@ -187,6 +188,17 @@ def mark_ready(
         conn.execute(text(_OTHERS_NOT_CURRENT), params)
     ready = {"pages": page_count, "current": current, "again": again, "keep": open_run is not None}
     conn.execute(text(_READY), {**params, **ready})
+    # #521 fix 3: the text's fingerprint commits with Ready, so a spotting run that starts after
+    # this one sees it (db/versions.py). In a savepoint: an error there is logged with the ids
+    # and Ready commits without it (spotting writes a missing one; the sweep fills the rest).
+    try:
+        with conn.begin_nested():
+            versions.write_fingerprint(conn, customer_id, document_id, str(state.display_name))
+    except Exception as failed:  # noqa: BLE001 - a fingerprint must never fail Ready
+        _log.warning(
+            "fingerprint_failed",
+            extra={"customer_id": customer_id, "document_id": document_id, "code": type(failed).__name__},
+        )
     if run is not None:
         finish_run(conn, customer_id, run)
 
@@ -282,9 +294,11 @@ _REPROCESSED_LATELY = (
 # Features 26 and 27 (0026): the reading asked for. A mode given replaces read_also too, in
 # the same statement, so the ai_documents_read_mode_models check always sees a pair it
 # allows; a model or mode left out (NULL) keeps the document's (as listing.set_reading).
+# A read again is a new reading, so the reading pause asks again (#520): the day an earlier
+# reading that failed was let in (reading_admitted) is cleared, never a pass past the pause.
 _REPROCESS = (
     "UPDATE documents d SET status = 'received', failure_code = NULL, attempts = 0, max_attempts = NULL,"  # noqa: S608 - a fixed fragment, STUCK
-    " progress = NULL, read_requested_by = CAST(:by AS uuid),"
+    " progress = NULL, read_requested_by = CAST(:by AS uuid), reading_admitted = NULL,"
     " read_model = COALESCE(CAST(:m AS text), read_model),"
     " read_mode = COALESCE(CAST(:mode AS text), read_mode),"
     " read_also = CASE WHEN CAST(:mode AS text) IS NULL THEN read_also ELSE CAST(:also AS text[]) END"

@@ -28,6 +28,8 @@ export const ACTIVITY_WORDS: Record<string, (entry: Entry) => string> = {
   "version.rejected": () => "kept it separate",
   "version.undone": () => "undid the version link",
   "version.make_current": (entry) => `made version ${version(entry, 1)} current`,
+  "document.version_separated": (entry) =>
+    `made version ${typeof entry.details.version_no === "number" ? entry.details.version_no : "…"} a separate file`,
   "document.rename": (entry) => `renamed to ${text(entry.details.to_name) ?? entry.document?.name ?? "…"}`,
   "document.move": (entry) => `moved to ${place(entry) ?? "Not in a folder"}`,
   "document.label_change": (entry) => `changed the label to ${labelName(text(entry.details.to) ?? "…")}`,
