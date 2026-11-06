@@ -2,9 +2,9 @@
 
 Documents and pieces are inserted with plain SQL inside ``db.customer``, with
 the columns from migration 0001 (the vector is halfvec(1024) since 0006, tagged
-``RECIPE``; a Devanagari piece gets production's ``latin_spelling``, as the
-pipeline gives it). Embeddings are hand-made 1024 number vectors:
-``axis(i)`` points one way, so two pieces on different axes mean different
+``RECIPE``; a piece gets production's ``piece_latin``, as the pipeline gives it:
+a Devanagari piece, or one with an Indic digit, its Latin spelling). Embeddings are
+hand-made 1024 number vectors: ``axis(i)`` points one way, so two pieces on different axes mean different
 things. ``add_document`` and ``add_pieces`` are shared with the isolation and
 indexing tests.
 """
@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 from sqlalchemy import text
 
-from kaagaz.chunking.script import is_devanagari, latin_spelling
+from kaagaz.chunking.script import piece_latin
 from kaagaz.db.engine import Database
 from kaagaz.search import hybrid
 from kaagaz.search.hybrid import SearchHit, search, vector_literal
@@ -89,7 +89,7 @@ def add_pieces(
             "text": piece_text,
             "regions": json.dumps([REGION]),
             "label": label,
-            "latin": latin_spelling(piece_text) if is_devanagari(piece_text) else None,
+            "latin": piece_latin(piece_text),
             "v": None if embedding is None else vector_literal(embedding),
             "m": None if embedding is None else model,
         }

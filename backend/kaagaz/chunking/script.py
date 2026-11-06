@@ -24,6 +24,13 @@ of it looks sound, and a Latin spelling of it for search.
   (Devanagari, Gujarati, any category Nd) as its ASCII digit, for checking
   numbers; one character for one. ``fold_digits`` stays Devanagari only:
   ``hinglish.normalise`` uses it, and its output must not change.
+* ``latin_digits`` (#524). The digits of the Indic blocks (U+0900 to U+0DFF: Devanagari,
+  Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam, Sinhala) as
+  ASCII digits, by ``str.translate``; one character for one. Other digits (Arabic-Indic,
+  full-width) are kept. For amounts and search only: the printed text is never changed.
+* ``piece_latin`` (L3, #524): a piece's ``text_latin``, its ``latin_spelling`` when it is
+  Devanagari or holds an Indic digit, with ``latin_digits``; so "940000" finds a page that
+  prints ९४००००.
 * ``spaced_words`` (PRD 5 CX6, M3): the words of a text in any script, split at
   whitespace with the punctuation at their ends removed, for topic terms and the
   memory's quote check.
@@ -99,6 +106,14 @@ _VISARGA = "\u0903"
 _JOINERS = "\u200c\u200d"  # ZWNJ and ZWJ
 
 _DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
+# #524: every decimal digit (Nd) of the Indic blocks, U+0900 to U+0DFF, as its ASCII digit.
+_INDIC_DIGITS = str.maketrans(
+    {
+        chr(c): str(unicodedata.digit(chr(c)))
+        for c in range(0x0900, 0x0E00)
+        if unicodedata.category(chr(c)) == "Nd"
+    }
+)
 # PROVISIONAL: the candra vowels as the plain vowels IAST can spell, ॰ dropped, । and ॥ as ".".
 _BEFORE_IAST = str.maketrans(
     {
@@ -210,6 +225,20 @@ def ascii_digits(text: str) -> str:
     if text.isascii():
         return text
     return _NON_ASCII_DIGIT.sub(lambda match: str(unicodedata.decimal(match[0])), text)
+
+
+def latin_digits(text: str) -> str:
+    """Indic digits (U+0900 to U+0DFF) as ASCII digits; every other character unchanged, so the
+    length is the same. For computing and searching only, never for the text shown (#524)."""
+    return text.translate(_INDIC_DIGITS)
+
+
+def piece_latin(text: str) -> str | None:
+    """A piece's ``text_latin``: its Latin spelling, digits as ASCII, when it is Devanagari (L2)
+    or holds an Indic digit (#524: a page printing ९४०००० is found by "940000"); else None."""
+    if not is_devanagari(text) and latin_digits(text) == text:
+        return None
+    return latin_digits(latin_spelling(text))
 
 
 def spaced_words(text: str) -> list[str]:

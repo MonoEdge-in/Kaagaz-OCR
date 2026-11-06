@@ -61,7 +61,7 @@ from typing import Any
 
 from sqlalchemy import Connection, RowMapping, TextClause, text
 
-from kaagaz.chunking.script import is_devanagari, latin_spelling
+from kaagaz.chunking.script import piece_latin
 from kaagaz.db import audit, value_keys
 from kaagaz.db import review as review_sql
 from kaagaz.db.documents import accept_page
@@ -632,7 +632,7 @@ def _apply(
             ):
                 continue
             new_piece = old.replace(before, after, 1)
-            latin = latin_spelling(new_piece) if is_devanagari(new_piece) else None
+            latin = piece_latin(new_piece)
             conn.execute(_SET_PIECE_TEXT, {**ids, "id": str(piece["id"]), "t": new_piece, "latin": latin})
             written_pieces.append(
                 {"id": str(piece["id"]), "before": old, "latin": piece["text_latin"], "after": new_piece}
