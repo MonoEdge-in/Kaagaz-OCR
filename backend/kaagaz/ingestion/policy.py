@@ -13,11 +13,13 @@ All formats (#522): every kind ``resolve.py`` tells after the virus scan has a s
 group too, so a reader can check a file against its own kind's limit: Word and
 PowerPoint files go with PDFs, a HEIC photo with photos, an old .xls and every text
 kind (TXT, Markdown, JSON, HTML) with spreadsheets and CSV files. An upload is
-checked before the scan, by its sniffed type: a text file with spreadsheets, a zip
-file with spreadsheets too, since this build reads a zip only as an .xlsx (the
-Office files and a zip as a folder widen that). A zip that is a folder of files
-(``resolve.ZIP``) is not read yet; its own limit, the organisation's folder upload
-limit, comes with it.
+checked before the scan, by its sniffed type: a text file with spreadsheets.
+
+A zip (#522 PR 3) has a size group of its own, ``zip``: the organisation's folder upload
+byte limit, or the PDF or sheet limit when larger (``kaagaz/db/upload_policy.py``), since an
+.xlsx, .docx or .pptx is sniffed as a zip too. After the scan the worker checks an Office
+file against its own kind's limit, and unpacks a zip that is a folder of files
+(``resolve.ZIP``), each file inside against its own kind's limit.
 """
 
 from collections.abc import Mapping
@@ -26,7 +28,7 @@ from typing import Literal
 
 from kaagaz.ingestion import resolve, sniff
 
-Kind = Literal["pdf", "image", "sheet"]
+Kind = Literal["pdf", "image", "sheet", "zip"]
 
 # The size group of each sniffed type that has a size limit, and of each kind. Old .xls,
 # .doc and .ppt files (ole2) have none in PRD U2, so they can never be allowed as uploads yet.
@@ -37,7 +39,7 @@ KIND_OF: Mapping[str, Kind] = {
     sniff.TIFF: "image",
     sniff.HEIC: "image",
     sniff.TEXT: "sheet",
-    sniff.ZIP: "sheet",
+    sniff.ZIP: "zip",  # resolve.ZIP too: the same name
     resolve.DOCX: "pdf",
     resolve.DOTX: "pdf",
     resolve.DOC: "pdf",
@@ -55,9 +57,15 @@ KIND_OF: Mapping[str, Kind] = {
 UPLOAD_TYPES = frozenset(KIND_OF.keys() & sniff.KNOWN_TYPES)
 
 
-def limits_by_type(*, pdf: int, image: int, sheet: int) -> dict[str, int]:
-    """A limit for every type and kind in KIND_OF, from the limit of its size group."""
-    by_kind: dict[Kind, int] = {"pdf": pdf, "image": image, "sheet": sheet}
+def limits_by_type(*, pdf: int, image: int, sheet: int, zip: int | None = None) -> dict[str, int]:
+    """A limit for every type and kind in KIND_OF, from the limit of its size group. ``zip``
+    None: the sheet limit, as before a zip was unpacked."""
+    by_kind: dict[Kind, int] = {
+        "pdf": pdf,
+        "image": image,
+        "sheet": sheet,
+        "zip": sheet if zip is None else zip,
+    }
     return {detected: by_kind[kind] for detected, kind in KIND_OF.items()}
 
 

@@ -13,10 +13,10 @@ from kaagaz.ingestion.policy import Kind
 MB = 1024 * 1024
 
 _TOO_LARGE: dict[Kind, str] = {
-    # The server never sends this one: the PDF limit is MAX_UPLOAD_MB (or the
-    # customer's lower one), the largest of all, so an upload over it stops while
-    # it is read, before its type is known (over_every_limit_message). It stays
-    # so the words match the screen's, which checks by the file name.
+    # Changed on purpose (#522 PR 3): sent now. A zip's limit (the organisation's folder
+    # upload limit) is the largest, so a PDF over its own limit is read to the end and
+    # named; past every limit an upload still stops while it is read
+    # (over_every_limit_message). The words match the screen's, which checks by the name.
     "pdf": "PDFs can be up to {limit} MB. This one is {size} MB. Split it or save it smaller and try again.",
     "image": (
         "Photos and scans can be up to {limit} MB. This one is {size} MB."
@@ -25,6 +25,10 @@ _TOO_LARGE: dict[Kind, str] = {
     "sheet": (
         "Spreadsheets, CSV and text files can be up to {limit} MB. This one is {size} MB."
         " Split it into smaller files and try again."
+    ),
+    # #522 PR 3: the organisation's folder upload limit (or the PDF or sheet limit, when larger).
+    "zip": (
+        "Zip files can be up to {limit} MB. This one is {size} MB. Split it into smaller zips and try again."
     ),
 }
 

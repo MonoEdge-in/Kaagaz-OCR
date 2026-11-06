@@ -17,12 +17,13 @@ import pytest
 from PIL import Image
 from sqlalchemy import Connection, event, text
 
-from kaagaz.api.routers.documents import day_start, display_name, upload_policy
+from kaagaz.api.routers.documents import day_start, display_name
 from kaagaz.api.views import document_time_left, in_progress, progress_message, status_message
 from kaagaz.db import folders as folders_sql
 from kaagaz.db.engine import Database
 from kaagaz.db.folders import FolderRow
 from kaagaz.db.pipeline_store import span_to_json
+from kaagaz.db.upload_policy import upload_policy
 from kaagaz.reading import ocr
 from kaagaz.reading.spans import CellLocation, Span
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES
@@ -246,6 +247,29 @@ def test_the_customers_own_limit_only_lowers_the_type_limits() -> None:
     assert upload_policy(settings, customer_max_mb=4).limit_for("pdf") == 4 * MB
     assert upload_policy(settings, customer_max_mb=1).limit_for("png") == 1 * MB
     assert upload_policy(settings, customer_max_mb=None).largest_limit == 5 * MB
+
+
+def test_a_zip_has_the_folder_upload_limit_which_the_customers_own_lowers() -> None:
+    """#522 PR 3: a zip may be as large as the organisation's folder upload limit, or the PDF
+    limit when that is larger (a .docx is sniffed as a zip too); every other type keeps its own."""
+    settings = make_settings()  # PDFs 5 MB, photos 2 MB, sheets 1 MB
+    policy = upload_policy(settings, customer_max_mb=None, folder_bytes=1024 * MB)
+    assert {kind: policy.limit_for(kind) for kind in ("zip", "pdf", "png", "text", "xlsx", "docx")} == {
+        "zip": 1024 * MB,
+        "pdf": 5 * MB,
+        "png": 2 * MB,
+        "text": MB,
+        "xlsx": MB,
+        "docx": 5 * MB,
+    }
+    assert policy.largest_limit == 1024 * MB
+    assert upload_policy(settings, customer_max_mb=None, folder_bytes=MB).limit_for("zip") == 5 * MB
+    lowered = upload_policy(settings, customer_max_mb=3, folder_bytes=1024 * MB)
+    assert (lowered.limit_for("zip"), lowered.limit_for("pdf"), lowered.limit_for("png")) == (
+        3 * MB,
+        3 * MB,
+        2 * MB,
+    )
 
 
 # --- upload ---------------------------------------------------------------------------
@@ -546,10 +570,11 @@ def test_an_exe_renamed_to_pdf_is_refused_by_its_first_bytes(db: Database) -> No
             " Split it into smaller files and try again.",
         ),
         (
-            # The PDF limit is the largest, so a PDF over it is over every limit.
+            # Changed on purpose (#522 PR 3): a zip's limit (the folder upload limit) is the largest
+            # now, so a PDF over its own limit is named as a PDF.
             "bill.pdf",
             _padded(PDF_BYTES, 5 * MB + 1),
-            "Files can be up to 5 MB. This one is larger. Split it or save it smaller and try again.",
+            "PDFs can be up to 5 MB. This one is 6 MB. Split it or save it smaller and try again.",
         ),
     ],
     ids=["photo", "sheet", "pdf"],
@@ -600,12 +625,14 @@ def test_upload_limits_are_the_type_limits_lowered_by_the_customers_own(db: Data
     max_pages = api.settings.max_pages
     readers = ocr.ocr_choices(api.settings)
     # Changed on purpose (#484): the folder upload's limits and sort_available come too
-    # (test_api_folder_upload_files checks them).
+    # (test_api_folder_upload_files checks them). Changed on purpose (#522): a zip's limit is the
+    # organisation's folder upload limit (5 GB by default), lowered by the customer's own.
     folder = {key: reply.json().pop(key, None) for key in ("folder_upload", "sort_available")}
     assert {key: value for key, value in reply.json().items() if key not in folder} == {
         "pdf_bytes": 5 * MB,
         "image_bytes": 2 * MB,
         "sheet_bytes": MB,
+        "zip_bytes": 5 * 1024 * MB,
         "max_pages": max_pages,
         "readers": readers,
     }
@@ -617,6 +644,7 @@ def test_upload_limits_are_the_type_limits_lowered_by_the_customers_own(db: Data
         "pdf_bytes": 4 * MB,
         "image_bytes": 2 * MB,
         "sheet_bytes": MB,
+        "zip_bytes": 4 * MB,
         "max_pages": max_pages,
         "readers": readers,
     }
@@ -787,19 +815,22 @@ def test_a_transfer_encoding_next_to_a_content_length_is_refused(db: Database) -
 
 @pytest.mark.db
 def test_a_declared_size_over_every_limit_is_413_before_the_body_is_read(db: Database) -> None:
-    api = Api(db)  # the largest limit is the PDF limit, 5 MB
+    # Changed on purpose (#522 PR 3): the largest limit is a zip's, the folder upload limit (5 GB
+    # by default), no longer the PDF limit.
+    api = Api(db)
     signed = api.new_signed()
     request = signed.client.build_request(
         "POST", "/api/documents", files={"file": ("a.pdf", PDF_BYTES, "application/pdf")}, headers=CSRF
     )
     # The body is a small PDF the upload would take. Only its declared size is too large,
     # so this reply can only come from the check made before the body is read.
-    request.headers["Content-Length"] = str(5 * MB + 64 * 1024 + 1)
+    request.headers["Content-Length"] = str(5 * 1024 * MB + 64 * 1024 + 1)
     reply = signed.client.send(request)
     assert reply.status_code == 413
     assert reply.json()["error"] == {
         "code": "too_large",
-        "message": "Files can be up to 5 MB. This one is larger. Split it or save it smaller and try again.",
+        "message": "Files can be up to 5120 MB. This one is larger."
+        " Split it or save it smaller and try again.",
     }
     assert api.storage.count() == 0
     assert api.queue.jobs == []

@@ -140,7 +140,7 @@ Why some choices:
 import hashlib
 import math
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import date, datetime, time
@@ -179,7 +179,6 @@ from kaagaz.api.views import (
     page_summary,
     timeline,
 )
-from kaagaz.db import admin as admin_sql
 from kaagaz.db import audit, autofile, listing, reading_days, storage_limits, trash
 from kaagaz.db import chat as chat_sql
 from kaagaz.db import folder_upload_items as items_sql
@@ -187,6 +186,7 @@ from kaagaz.db import folders as folders_sql
 from kaagaz.db import tags as tags_sql
 from kaagaz.db import upload_sessions as upload_sessions_sql
 from kaagaz.db import versions as versions_sql
+from kaagaz.db import zip_unpacks as unpacks_sql
 from kaagaz.db.documents import (
     EnsembleRunning,
     NotInTrash,
@@ -202,11 +202,13 @@ from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.folder_upload_items import ItemRow
 from kaagaz.db.folder_uploads import effective_limits
 from kaagaz.db.folders import MAX_DEPTH
+from kaagaz.db.upload_policy import customer_policy
+from kaagaz.db.zip_unpacks import Unpack
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import RejectCode, UploadRejected
 from kaagaz.ingestion.messages import over_every_limit_message, storage_full_message, too_large_message
 from kaagaz.ingestion.pagecount import goes_express
-from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
+from kaagaz.ingestion.policy import UploadPolicy
 from kaagaz.ingestion.ports import BlobNotFound, Job, JobQueue, StorageRoom, UnknownFamily, UnknownFolder
 from kaagaz.ingestion.service import UploadResult, UploadService
 from kaagaz.jobs.reading_pause import BUDGET, DAILY_LIMIT, pause_reason
@@ -240,7 +242,6 @@ class ResumableUploadStart(BaseModel):
 
 Context = Annotated[AppContext, Depends(get_context)]
 
-MIB = 1024 * 1024
 MAX_SHEET_ROWS = 500
 MAX_TAG_FILTERS = tags_sql.MAX_TAG_FILTERS
 
@@ -397,34 +398,33 @@ def list_documents(
             descending=order == "desc",
         )
         tags = tags_sql.tags_for_documents(conn, customer_id, [str(row["id"]) for row in rows])
+        unpacks = zip_unpacks(conn, customer_id, rows)
     max_pages, now = context.settings.max_pages, context.clock()
     items = [
-        document_summary(row, max_pages=max_pages, tags=tags[str(row["id"])], user=user, now=now)
+        document_summary(
+            row,
+            max_pages=max_pages,
+            tags=tags[str(row["id"])],
+            user=user,
+            now=now,
+            unpack=unpacks.get(str(row["id"])),
+        )
         for row in rows
     ]
     return {"items": items, "total": total}
 
 
-def upload_policy(settings: Settings, customer_max_mb: int | None) -> UploadPolicy:
-    """The limits for one customer's upload (PRD 1, U2): each type's own limit,
-    lowered by the customer's own limit when an admin set one."""
-    max_bytes = settings.max_upload_bytes
-    if customer_max_mb is not None:
-        max_bytes = min(max_bytes, customer_max_mb * MIB)
-    return UploadPolicy(
-        max_bytes=max_bytes,
-        allowed_types=settings.allowed_types,
-        type_limits=limits_by_type(
-            pdf=settings.max_upload_bytes, image=settings.max_image_bytes, sheet=settings.max_sheet_bytes
-        ),
-    )
+def zip_unpacks(conn: Connection, customer_id: str, rows: Sequence[RowMapping]) -> dict[str, Unpack]:
+    """#522 PR 3: the unpacking of each zip among ``rows`` (``DocumentSummary.unpack``); no
+    query when there is none."""
+    zips = [str(row["id"]) for row in rows if row["detected_type"] == "zip"]
+    return unpacks_sql.unpacks(conn, customer_id, zips) if zips else {}
 
 
 def user_upload_policy(context: AppContext, user: CurrentUser) -> UploadPolicy:
+    """This user's organisation's upload limits (``db/upload_policy.py``), a zip's included."""
     with context.db.customer(user.customer_id) as conn:
-        row = admin_sql.get_settings(conn, user.customer_id)
-    customer_max_mb = None if row is None or row["max_upload_mb"] is None else int(row["max_upload_mb"])
-    return upload_policy(context.settings, customer_max_mb)
+        return customer_policy(conn, user.customer_id, context.settings)
 
 
 @router.get("/upload-limits")
@@ -443,7 +443,8 @@ def get_upload_limits(user: User, context: Context) -> dict[str, Any]:
     return {
         "pdf_bytes": policy.limit_for(sniff.PDF),
         "image_bytes": policy.limit_for(sniff.PNG),
-        "sheet_bytes": policy.limit_for(sniff.ZIP),
+        "sheet_bytes": policy.limit_for(sniff.TEXT),
+        "zip_bytes": policy.limit_for(sniff.ZIP),  # #522: the folder upload limit, or a larger type's
         "max_pages": settings.max_pages,
         "readers": readers,
         # Folder upload (#484): its limits, the pace and sends at once its files are taken at,
@@ -1157,11 +1158,17 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         typed = listing.invoice_for(conn, customer_id, target)
         links = listing.document_links(conn, customer_id, target)
         suggestion = versions_sql.for_document(conn, customer_id, target, str(row["family_id"]))
+        unpack = zip_unpacks(conn, customer_id, [row]).get(target)
         audit.record_view(conn, customer_id, actor_user_id=user.user_id, document_id=target)  # A1
     document_date = None if facts is None else facts["document_date"]
     return {
         **document_summary(
-            row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
+            row,
+            max_pages=context.settings.max_pages,
+            tags=tags,
+            user=user,
+            now=context.clock(),
+            unpack=unpack,
         ),
         "pages": [page_summary(page) for page in pages],
         "values": [extracted_value(value) for value in values],
@@ -1195,8 +1202,9 @@ def get_document_summary(document_id: uuid.UUID, user: User, context: Context) -
     with context.db.customer(customer_id) as conn:
         row = _document_or_404(conn, user, document_id)
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
+        unpack = zip_unpacks(conn, customer_id, [row]).get(target)
     return document_summary(
-        row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
+        row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock(), unpack=unpack
     )
 
 

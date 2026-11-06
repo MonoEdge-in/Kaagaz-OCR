@@ -278,7 +278,7 @@ from kaagaz.extraction.understanding import (
 from kaagaz.extraction.values import CARD_RECORD, DocumentFacts, ExtractedValue, InvoiceRow, LinkIdentifier
 from kaagaz.ingestion import resolve, sniff
 from kaagaz.ingestion.errors import BackendUnavailable
-from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, Job
+from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, Job, JobQueue
 from kaagaz.ingestion.resolve import UNSUPPORTED, resolve_kind
 from kaagaz.ingestion.spool import HEAD_SIZE
 from kaagaz.jobs.ports import LeaseLost
@@ -901,6 +901,8 @@ class DocumentProcessor:
         land_on: Callable[[str], bool] | None = None,
         mistral_ready: Callable[[], None] | None = None,
         reading_pause: ReadingAdmission | None = None,
+        unpack: Callable[[Job, DocumentRecord, bytes, Heartbeat], bool] | None = None,
+        kind_limit: Callable[[str, str], int] | None = None,
     ) -> None:
         """``embed(customer_id, document_id, on_batch=...)`` gives the saved pieces their vectors;
         failing with one of ``model_errors`` is logged and skipped, never a failed document.
@@ -944,7 +946,15 @@ class DocumentProcessor:
         ``mistral_ready()`` (#473, ``GeminiEngine.mistral_ready``) is asked at the start of a job
         whose ``Reading`` is on Mistral, and raises BackendUnavailable while Mistral can't read
         here, before anything is drawn; None asks nothing. ``reading_pause(customer_id,
-        document_id)`` (#478) holds the reading, or raises ReadingPaused; None pauses nothing."""
+        document_id)`` (#478) holds the reading, or raises ReadingPaused; None pauses nothing.
+
+        All formats (#522 PR 3), both optional: ``unpack(job, record, data, heartbeat)``
+        (``kaagaz.jobs.unpack.ZipUnpacker``) unpacks a document of kind zip into a folder after
+        its scan, and says whether it did (False: a zip kept as an ordinary file, not read, which
+        is marked needs_reader as before); None unpacks nothing. ``kind_limit(customer_id,
+        kind)``: the organisation's limit for a kind, which an Office file sniffed as a zip at
+        upload (and so checked against the zip's larger limit) must be within once its kind is
+        told; None checks nothing."""
         if runs is not None and (clock is None or timer is None):
             raise ValueError("runs need a clock and a timer")
         if max_check_crops < 0:
@@ -989,6 +999,8 @@ class DocumentProcessor:
         self._index_seconds = index_seconds
         self._mistral_ready = mistral_ready
         self._reading_pause = reading_pause
+        self._unpack = unpack
+        self._kind_limit = kind_limit
 
     def __call__(self, job: Job, heartbeat: Heartbeat) -> None:
         record = self._documents.get(job.customer_id, job.document_id)
@@ -1094,6 +1106,15 @@ class DocumentProcessor:
             raise JobFailed("content_changed", retryable=False)
         record = self._resolved(record, data)
         heartbeat()
+        if (
+            record.detected_type == resolve.ZIP
+            and self._unpack is not None
+            and self._unpack(job, record, data, heartbeat)
+        ):
+            # #522 PR 3: unpacked into a folder, the zip kept there as a file and never read.
+            require_clean(self._statuses, job)
+            self._documents.mark_ready(customer_id, document_id, 0, run=self._finished(run, "ready", None))
+            return
 
         run.rates, run.preparing_started = self._rates(job, record.detected_type), self._timer()
         pictured: set[int] = set()  # the pages whose picture is stored
@@ -1464,6 +1485,10 @@ class DocumentProcessor:
         kind = _or_fail(lambda: resolve_kind(data, sniffed, record.display_name))
         if kind == UNSUPPORTED:
             raise JobFailed("unsupported_type", retryable=False)
+        # #522 PR 3: it came in under the zip's limit; an Office file has its own kind's.
+        limit, office = self._kind_limit, record.detected_type == sniff.ZIP and kind != resolve.ZIP
+        if office and limit is not None and record.size > limit(record.customer_id, kind):
+            raise JobFailed("too_large", retryable=False)
         if kind != record.detected_type:
             self._documents.set_detected_type(record.customer_id, record.document_id, kind)
         return replace(record, detected_type=kind)
@@ -2270,10 +2295,12 @@ def build_processor(
     scanner: Scanner,
     model: "ModelClient | None",
     alert: "Alert | None" = None,
+    queue: JobQueue | None = None,
 ) -> DocumentProcessor:
     """The production processor. The concrete parts are imported here only, so the
     processor itself depends on the ports above and is tested with fakes. ``alert`` (#478)
-    emails the super admin when an organisation's reading pauses."""
+    emails the super admin when an organisation's reading pauses. ``queue`` (#522 PR 3): where
+    the files unpacked from a zip are queued; None unpacks no zip."""
     from sqlalchemy import text
 
     from kaagaz.ai.client import ModelOutputError, ModelUnavailable
@@ -2284,7 +2311,9 @@ def build_processor(
     from kaagaz.db.page_reads import PgPageReads
     from kaagaz.db.pipeline_store import PgPipelineStore
     from kaagaz.db.runs import PgRuns
+    from kaagaz.db.upload_policy import customer_policy
     from kaagaz.jobs.reading_pause import ReadingPause
+    from kaagaz.jobs.unpack import ZipUnpacker
     from kaagaz.preparing.pages import prepare_pages, sheet_pages
     from kaagaz.reading.ocr import GEMINI, MeteredOcrEngine
     from kaagaz.reading.rapid_pool import shared_pool
@@ -2349,6 +2378,10 @@ def build_processor(
         with unavailable(), db.customer(customer_id) as conn:
             return ai_settings.switch_on(conn, "land_facts", customer_id)
 
+    def kind_limit(customer_id: str, kind: str) -> int:
+        with unavailable(), db.customer(customer_id) as conn:
+            return customer_policy(conn, customer_id, settings).limit_for(kind)
+
     return DocumentProcessor(
         gate=ScanGate(storage, scanner, storage, documents),
         statuses=documents,
@@ -2396,6 +2429,8 @@ def build_processor(
         land_on=land_on if model is not None else None,
         # #478: only where AI reads or answers (keyless: nothing to pause, no query a job).
         reading_pause=None if job_reading is None else ReadingPause(db, clock=_utc_now, alert=alert).admit,
+        unpack=None if queue is None else ZipUnpacker(db, storage, queue, scanner, settings),
+        kind_limit=kind_limit,
     )
 
 

@@ -29,7 +29,8 @@ an upload.
   sends of one item end in one state. A send whose document already exists is ``stored`` when
   that document is this item's own (the same uploader, folder, batch and name: an earlier send
   stored it, then died before finishing), else ``duplicate`` (Kaagaz already had the file).
-* ``summaries`` counts the items by state on the index ``folder_upload_items_state``; only one
+* ``summaries`` counts the items by state on the index ``folder_upload_items_state`` (a zip the
+  worker unpacked, #522, is not listed: the zip's own document shows it); only one
   upload's ``progress`` joins documents (reading, ready, a problem), under a statement timeout.
   A stored file the reading pause holds (``documents.reading_held``, #478) is counted ``held``,
   never reading, with why (``held_reason``: the budget first, as ``pause_reason``).
@@ -356,7 +357,8 @@ _UPLOADS = (
     " FROM folder_uploads WHERE customer_id = :c AND user_id = :usr"
 )
 _RECENT = text(
-    _UPLOADS + " AND created_at > now() - make_interval(days => :days) ORDER BY created_at DESC LIMIT :limit"
+    _UPLOADS + " AND zip_document_id IS NULL AND created_at > now() - make_interval(days => :days)"
+    " ORDER BY created_at DESC LIMIT :limit"
 )
 _ONE = text(_UPLOADS + " AND id = :u")
 _STATES = text(
