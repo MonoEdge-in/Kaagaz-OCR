@@ -20,7 +20,8 @@ and a text file (CSV, plain text, Markdown, JSON, HTML) are each one type there.
   ``Workbook`` (or Excel 95's ``Book``) is ``xls``. Streams inside embedded
   objects are never looked at, so a Word file holding a spreadsheet stays
   ``doc``. One with none of them (an Outlook message, an installer) is
-  ``UNSUPPORTED``.
+  ``UNSUPPORTED``. One with an ``EncryptedPackage`` stream is a password-protected
+  .docx, .xlsx or .pptx (MS-OFFCRYPTO): ``ReadError("password_protected")`` (#522 PR 2).
 * A text file: the file name's ending chooses, because every text reader is
   safe for any text: ``.csv``, ``.txt``, ``.md``, ``.json``, ``.html`` or
   ``.htm``; any other ending, or none, is ``txt``. A ``.json`` file must be
@@ -120,6 +121,7 @@ _NO_STREAM = 0xFFFFFFFF
 _END_OF_CHAIN = 0xFFFFFFFE
 _MAX_SECTOR = 0xFFFFFFFA  # a larger number is a marker, never a sector
 _STREAM = 2
+_ENCRYPTED_PACKAGE = "EncryptedPackage"  # a password-protected .docx, .xlsx or .pptx
 _ROOT_STREAMS = (("WordDocument", DOC), ("PowerPoint Document", PPT), ("Workbook", XLS), ("Book", XLS))
 
 Source = bytes | str | os.PathLike[str]
@@ -273,6 +275,8 @@ def _is_template(archive: zipfile.ZipFile, names: set[str]) -> bool:
 
 def _ole2_kind(file: IO[bytes]) -> str:
     names = _Compound(file).root_streams()
+    if _ENCRYPTED_PACKAGE in names:
+        raise ReadError("password_protected")
     for name, kind in _ROOT_STREAMS:
         if name in names:
             return kind

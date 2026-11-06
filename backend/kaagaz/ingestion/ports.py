@@ -138,6 +138,14 @@ class BlobStorage(Protocol):
     def delete(self, customer_id: str, document_id: str) -> None: ...
 
 
+class RenditionStorage(BlobStorage, Protocol):
+    """File storage with a Word or PowerPoint file's PDF rendition beside it (#522 PR 2)."""
+
+    def get_rendition(self, customer_id: str, document_id: str) -> bytes:
+        """The PDF its pages were read from. Raises BlobNotFound before the worker converted it."""
+        ...
+
+
 class JobQueue(Protocol):
     def enqueue(self, job: Job, *, express: bool = False) -> None:
         """Queue ``job``. ``express`` asks for the express lane (PRD 5 Q4); the server

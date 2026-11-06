@@ -49,6 +49,16 @@ FILE_FAILURES = {
         " again."
     ),
 }
+# All formats (#522 PR 2): what an Office file LibreOffice could not open is called, by its kind.
+_OFFICE_FILES = {
+    "docx": "Word file",
+    "dotx": "Word file",
+    "doc": "Word file",
+    "pptx": "PowerPoint file",
+    "ppt": "PowerPoint file",
+    "xls": "Excel file",
+}
+_SPREADSHEETS = ("xlsx", "xls")
 _MONEY_KEY = re.compile(r"usd|price|budget|cost", re.IGNORECASE)
 
 # How far the worker has got (PRD 2 X3), by step. PROVISIONAL wording (plan 3.3).
@@ -137,6 +147,18 @@ def status_message(
             return f"{what} has more than {max_pages} pages. The limit is {max_pages}. Split it into parts."
         split = "Split it into parts and upload each one."
         return f"{what} has {page_count} pages. The limit is {max_pages}. {split}"
+    if status == "failed" and failure_code == "office_unreadable" and detected_type in _OFFICE_FILES:
+        # #522 PR 2: a password, damage, or a conversion that ran out of time.
+        what = _OFFICE_FILES[detected_type]
+        return f"This {what} could not be opened. If it has a password, remove it and upload again."
+    if status == "failed" and failure_code == "password_protected":  # an encrypted .docx, .xlsx or .pptx
+        return "This file has a password, so it can't be opened. Remove the password and upload it again."
+    if status == "failed" and failure_code == "too_large":  # over its kind's own limit, told after the scan
+        if detected_type in _SPREADSHEETS:
+            what = "This spreadsheet is larger than spreadsheets can be."
+        else:
+            what = "This file is larger than files of its kind can be."
+        return f"{what} Split it into smaller files and upload them."
     if status == "failed" and failure_code == "retries_exhausted":
         tries = f"{max_attempts} tries" if max_attempts else "several tries"
         return f"The scan stopped after {tries}. Read it again, or ask your admin to look at it."

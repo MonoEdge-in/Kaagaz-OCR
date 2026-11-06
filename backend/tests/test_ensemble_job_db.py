@@ -32,6 +32,7 @@ from kaagaz.jobs.ensemble import EnsembleRuns
 from kaagaz.reading.ocr import DocumentPages, OcrLine, PageRead
 from tests.db_support import insert_document, new_customer
 from tests.fakes import MemoryStorage
+from tests.pdf_builder import Page, make_pdf
 from tests.settings_factory import make_settings
 from tests.test_api_model_choice import add_model, allow
 from tests.test_word_review_db import scanned
@@ -94,9 +95,10 @@ class FakeReader:
 
 
 @contextlib.contextmanager
-def org(db: Database) -> Iterator[dict[str, Any]]:
+def org(db: Database, *, word_file: bool = False) -> Iterator[dict[str, Any]]:
     """A customer with three usable models and the Ensemble grant, and a ready scan (3 flags on
-    2 pages, test_word_review_db.scanned) whose file is stored."""
+    2 pages, test_word_review_db.scanned) whose file is stored. ``word_file``: a Word file whose
+    two pages were read from its PDF rendition (#522 PR 2), stored beside it."""
     customer, user = new_customer(db)
     lead, second, third = (add_model(db, name=name) for name in ("Lead", "Second", "Third"))
     allow(db, customer, [lead, second, third], default=lead)
@@ -105,16 +107,22 @@ def org(db: Database) -> Iterator[dict[str, Any]]:
             text("INSERT INTO customer_ai_settings (customer_id, ensemble) VALUES (:c, true)"),
             {"c": customer},
         )
-    data = two_pages()
+    data = b"PK\x03\x04 a Word file" if word_file else two_pages()
     with db.customer(customer) as conn:
         document = insert_document(
-            conn, customer, uploaded_by=user, detected_type="tiff", sha256=hashlib.sha256(data).hexdigest()
+            conn,
+            customer,
+            uploaded_by=user,
+            detected_type="docx" if word_file else "tiff",
+            sha256=hashlib.sha256(data).hexdigest(),
         )
     # The word 4,850 marked illegible, so Ensemble on flagged words reads it (#432: an unsure
     # word is a check, which is no review item and not sent).
     PgPipelineStore(db).save(scanned(customer, document, quality="illegible"))
     storage = MemoryStorage()
     storage.put(customer, document, io.BytesIO(data))
+    if word_file:
+        storage.put_rendition(customer, document, make_pdf([Page(), Page()]))
     yield {
         "c": customer,
         "u": user,
@@ -195,6 +203,21 @@ def test_a_run_reads_page_by_page_votes_and_bills_the_asker(db: Database) -> Non
                 text("SELECT DISTINCT kind, user_id FROM model_usage WHERE document_id = :d"), {"d": o["d"]}
             ).all()
         assert [(kind, str(user)) for kind, user in ledger] == [("ensemble_scan", o["u"])]
+
+
+def test_a_word_files_pages_are_drawn_from_its_pdf_rendition(db: Database) -> None:
+    # #522 PR 2: its pages were read from the PDF LibreOffice made, so they are drawn from it.
+    with org(db, word_file=True) as o:
+        run_id = start(db, o)
+        reader = FakeReader(READ_AGAIN)
+        deliver(db, o, reader, run_id)
+        run = run_row(db, o, run_id)
+        assert (run["status"], run["pages_done"], run["error_code"]) == ("done", [1, 2], None)
+        assert readings(db, o)["4,850"] == ("changed", "4,350")
+        o["storage"].renditions.clear()  # gone (never: delete takes it with the original)
+        second = start(db, o)
+        deliver(db, o, FakeReader(READ_AGAIN), second)
+        assert run_row(db, o, second)["status"] == "stopped"
 
 
 def test_stop_keeps_the_finished_pages(db: Database) -> None:

@@ -146,6 +146,7 @@ class MemoryStorage:
     def __init__(self) -> None:
         self._blobs: dict[tuple[str, str], bytes] = {}
         self.quarantined: dict[tuple[str, str], bytes] = {}
+        self.renditions: dict[tuple[str, str], bytes] = {}  # a Word or PowerPoint file's PDF (#522)
         self._lock = threading.Lock()
         self.fail_put = False
         self.fail_delete = False
@@ -171,6 +172,18 @@ class MemoryStorage:
             raise BackendUnavailable("storage down")
         with self._lock:
             self._blobs.pop((customer_id, document_id), None)
+            self.renditions.pop((customer_id, document_id), None)
+
+    def put_rendition(self, customer_id: str, document_id: str, pdf: bytes) -> None:
+        with self._lock:
+            self.renditions[(customer_id, document_id)] = pdf
+
+    def get_rendition(self, customer_id: str, document_id: str) -> bytes:
+        with self._lock:
+            try:
+                return self.renditions[(customer_id, document_id)]
+            except KeyError:
+                raise BlobNotFound(document_id) from None
 
     def count(self) -> int:
         with self._lock:

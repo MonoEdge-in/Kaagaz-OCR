@@ -257,3 +257,37 @@ def test_u1_a_batch_file_says_how_many_values_were_found() -> None:
     (a letter, a photo of a page) is just Ready."""
     documents = _view([_row("ready", values=4), _row("ready")])["documents"]
     assert [item["values_found"] for item in documents] == [4, 0]
+
+
+@pytest.mark.parametrize(
+    ("kind", "words"),
+    [
+        ("docx", "Word file"),
+        ("dotx", "Word file"),
+        ("doc", "Word file"),
+        ("pptx", "PowerPoint file"),
+        ("ppt", "PowerPoint file"),
+        ("xls", "Excel file"),
+    ],
+)
+def test_an_office_file_libreoffice_could_not_open_says_so_and_what_to_do(kind: str, words: str) -> None:
+    # #522 PR 2: a password, damage or a conversion that ran out of time.
+    assert status_message("failed", "office_unreadable", detected_type=kind, max_pages=100) == (
+        f"This {words} could not be opened. If it has a password, remove it and upload again."
+    )
+
+
+def test_a_password_protected_file_says_so() -> None:
+    assert status_message("failed", "password_protected", detected_type="ole2", max_pages=100) == (
+        "This file has a password, so it can't be opened. Remove the password and upload it again."
+    )
+
+
+def test_a_file_over_its_kinds_own_limit_says_so() -> None:
+    # #522 PR 2: a spreadsheet let in at the PDF limit, told after the scan.
+    assert status_message("failed", "too_large", detected_type="xlsx", max_pages=100) == (
+        "This spreadsheet is larger than spreadsheets can be. Split it into smaller files and upload them."
+    )
+    assert status_message("failed", "too_large", detected_type="ole2", max_pages=100) == (
+        "This file is larger than files of its kind can be. Split it into smaller files and upload them."
+    )

@@ -205,6 +205,10 @@ services:
   worker:
     <<: *backend
     command: ["python", "-m", "kaagaz.worker_main"]
+    # An init process as PID 1 (#522): when a LibreOffice conversion runs out of time its whole
+    # process group is killed, and soffice.bin, whose parent died with it, is left to PID 1 to
+    # reap; the worker, as PID 1, never would.
+    init: true
     networks:
       - data
       - scan

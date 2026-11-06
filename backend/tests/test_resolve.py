@@ -102,6 +102,15 @@ def test_an_old_office_file_with_none_of_the_streams_is_unsupported() -> None:
     assert _kind(compound([])) == UNSUPPORTED
 
 
+def test_a_password_protected_word_excel_or_powerpoint_file_is_refused_in_plain_words() -> None:
+    # #522 PR 2: an encrypted .docx, .xlsx or .pptx is an OLE2 file holding its zip encrypted
+    # (MS-OFFCRYPTO): no reader can open it, and its own words say why.
+    with pytest.raises(ReadError) as refused:
+        _kind(compound(["EncryptionInfo", "EncryptedPackage", "\x06DataSpaces"]), "locked.docx")
+    assert refused.value.code == "password_protected"
+    assert refused.value.__context__ is None
+
+
 def test_many_directory_sectors_are_followed() -> None:
     filler = [f"Stream{n}" for n in range(30)]  # 31 entries with the root: 8 sectors
     assert _kind(compound([*filler, "WordDocument"])) == resolve.DOC

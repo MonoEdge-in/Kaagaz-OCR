@@ -13,6 +13,10 @@ socket"). Adding a reader means one new module and one entry here.
   and BLANK_PAGE_STDDEV settings).
 * png, jpeg, tiff, heic -> ImageReader, only with an OCR engine. Without one they
   have no reader, so they are stored and marked needs_reader.
+* docx, dotx, doc, pptx, ppt and xls have no reader of their own: the pipeline converts
+  them with ``build_office_converter``'s LibreOffice first (#522 PR 2), to the PDF the pdf
+  readers read or the XLSX the xlsx reader reads. Where soffice is not installed there is
+  no converter, so they are stored and marked needs_reader.
 * Second readers: pdf -> PdfiumReader. Nothing else has one yet, so every
   other value stays single_reader.
 * Pages in parallel (PRD 5 G8): with OCR_ENGINE=gemini, the PDF and image
@@ -26,6 +30,8 @@ socket"). Adding a reader means one new module and one entry here.
 """
 
 import importlib
+import shutil
+from collections.abc import Callable
 from typing import Any
 
 from kaagaz.db.engine import Database
@@ -36,6 +42,7 @@ from kaagaz.reading.csv_reader import CsvReader
 from kaagaz.reading.image_reader import ImageReader
 from kaagaz.reading.ocr import GEMINI, OcrEngine, PageEngine
 from kaagaz.reading.ocr import build_ocr_engine as _ocr_engine
+from kaagaz.reading.office import OfficeConverter
 from kaagaz.reading.pdf_reader import PdfReader, text_layer_checks
 from kaagaz.reading.pdf_second_reader import PdfiumReader
 from kaagaz.reading.rapid_pool import RapidOcrPool
@@ -146,6 +153,14 @@ def page_pool(settings: Settings, engine: OcrEngine | None) -> PagePool | None:
     if engine is None or settings.ocr_engine != GEMINI or settings.ocr_page_concurrency < 2:
         return None
     return PagePool.threads(settings.ocr_page_concurrency)
+
+
+def build_office_converter() -> Callable[[str, bytes], bytes] | None:
+    """LibreOffice's conversion of a Word, PowerPoint or old Excel file (#522 PR 2,
+    ``kaagaz.reading.office``), or None where ``soffice`` is not on the PATH (a laptop
+    without it; the backend image has it)."""
+    soffice = shutil.which("soffice")
+    return None if soffice is None else OfficeConverter(soffice).convert
 
 
 def build_reader_socket(settings: Settings, ocr: OcrEngine | None) -> ReaderSocket:

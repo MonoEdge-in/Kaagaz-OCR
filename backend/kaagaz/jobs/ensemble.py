@@ -49,7 +49,7 @@ from kaagaz.db.page_reads import PgPageReads
 from kaagaz.db.word_review import Refused
 from kaagaz.extraction.labels import VOTE_INSIDE, inside
 from kaagaz.ingestion.errors import BackendUnavailable
-from kaagaz.ingestion.ports import BlobNotFound, BlobStorage, Job
+from kaagaz.ingestion.ports import BlobNotFound, Job, RenditionStorage
 from kaagaz.jobs.worker import KEY_PROBLEM, RETRIES_EXHAUSTED, Heartbeat
 from kaagaz.pipeline import _check_crop
 from kaagaz.preparing.pages import page_picture
@@ -62,6 +62,7 @@ from kaagaz.reading.ocr import (
     ocr_spans,
     reading_document,
 )
+from kaagaz.reading.office import drawn_from
 from kaagaz.reading.page_quality import ILLEGIBLE_MARK, READ_LOCALLY
 from kaagaz.reading.spans import BoxLocation, Span
 from kaagaz.settings import Settings
@@ -140,7 +141,7 @@ class EnsembleRuns:
     def __init__(
         self,
         db: Database,
-        storage: BlobStorage,
+        storage: RenditionStorage,
         engine: OcrEngine | None,
         *,
         settings: Settings,
@@ -172,18 +173,22 @@ class EnsembleRuns:
                 ensemble_sql.finish(conn, customer_id, run_id, "failed", refused.code, now=self._clock())
                 return
             file = ensemble_sql.document_file(conn, customer_id, document_id)
-        data = None
+        data, drawn = None, ""
         if file is not None and file["ready"]:
             try:
                 data = self._storage.get(customer_id, document_id)
+                if hashlib.sha256(data).hexdigest() != file["sha256"]:
+                    data = None
+                else:  # #522 PR 2: a Word file's pages from its PDF, as they were read
+                    drawn, data = drawn_from(
+                        self._storage, customer_id, document_id, file["detected_type"], data
+                    )
             except BlobNotFound:
                 data = None
-        if file is None or data is None or hashlib.sha256(data).hexdigest() != file["sha256"]:
+        if file is None or data is None:
             self._end(customer_id, run_id, "stopped", DOCUMENT_CHANGED)
             return
-        read = _Reading(
-            job, engine, as_page_engine(engine), reading, str(file["detected_type"]), data, heartbeat
-        )
+        read = _Reading(job, engine, as_page_engine(engine), reading, drawn, data, heartbeat)
         user = str(run["requested_by"])
         with usage_scope(
             self._db, customer_id=customer_id, user_id=user, kind="ensemble_scan", document_id=document_id

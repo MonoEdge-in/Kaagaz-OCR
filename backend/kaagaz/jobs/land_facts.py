@@ -56,11 +56,12 @@ from kaagaz.extraction.values import ExtractedValue
 from kaagaz.pipeline import _DEVANAGARI, HANDED_ON, _check_crop, _line_marks, _points_at, _with_parsed
 from kaagaz.preparing.pages import page_picture
 from kaagaz.reading.ocr import LOCAL_READ_BY, is_word_mark
+from kaagaz.reading.office import drawn_from
 from kaagaz.reading.spans import BoxLocation, Location, Span, location_from_json
 
 if TYPE_CHECKING:
     from kaagaz.extraction.card import ChatModel
-    from kaagaz.ingestion.ports import BlobStorage
+    from kaagaz.ingestion.ports import RenditionStorage
     from kaagaz.pipeline import Checker
     from kaagaz.settings import Settings
 
@@ -182,7 +183,7 @@ def reread(
     *,
     max_usd: float,
     out: TextIO,
-    storage: "BlobStorage",
+    storage: "RenditionStorage",
     checker: "Checker | None",
     sample: int | None = None,
 ) -> None:
@@ -223,7 +224,7 @@ def _one(
     document: str,
     spend: _Spend,
     out: TextIO,
-    storage: "BlobStorage",
+    storage: "RenditionStorage",
     checker: "Checker | None",
 ) -> int:
     """Re-read one document; its characters read (0 when not read). Raises Stop."""
@@ -317,7 +318,7 @@ def _labelled(
     found: list[ExtractedValue],
     stored: _Stored,
     settings: "Settings",
-    storage: "BlobStorage",
+    storage: "RenditionStorage",
     checker: "Checker | None",
 ) -> list[ExtractedValue]:
     """The land values labelled as the pipeline labels them: the checker on each box of a
@@ -332,8 +333,10 @@ def _labelled(
         data = storage.get(customer, document)
         if hashlib.sha256(data).hexdigest() != stored.sha256:
             raise Stop(f"document {document}: its stored file does not match, nothing written")
+        # #522 PR 2: a Word file's pages from its PDF rendition, which they were read from.
+        drawn, data = drawn_from(storage, customer, document, stored.detected_type, data)
         for page_no in sorted({box.page for box in wanted}):
-            with page_picture(stored.detected_type, data, page_no, dpi=settings.page_image_dpi,
+            with page_picture(drawn, data, page_no, dpi=settings.page_image_dpi,
                               max_image_pixels=settings.max_image_pixels) as page:  # fmt: skip
                 for box in (b for b in wanted if b.page == page_no and isinstance(b, BoxLocation)):
                     devanagari = _DEVANAGARI.search(line_texts.get(box, "")) is not None

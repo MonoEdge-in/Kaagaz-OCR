@@ -17,7 +17,10 @@ _TOO_LARGE: dict[Kind, str] = {
     # customer's lower one), the largest of all, so an upload over it stops while
     # it is read, before its type is known (over_every_limit_message). It stays
     # so the words match the screen's, which checks by the file name.
-    "pdf": "PDFs can be up to {limit} MB. This one is {size} MB. Split it or save it smaller and try again.",
+    "pdf": (
+        "PDF, Word and PowerPoint files can be up to {limit} MB. This one is {size} MB."
+        " Split it or save it smaller and try again."
+    ),
     "image": (
         "Photos and scans can be up to {limit} MB. This one is {size} MB."
         " Save it at a lower resolution and try again."

@@ -10,6 +10,10 @@ customer's own prefix:
 
 * ``customers/{customer_id}/documents/{document_id}/original``
 * ``customers/{customer_id}/documents/{document_id}/pages/{page_no}.webp``
+* ``customers/{customer_id}/documents/{document_id}/rendition.pdf``: a Word or
+  PowerPoint file's PDF, which the viewer shows (#522 PR 2); the original stays
+  the download. Under the document's prefix, so delete, purge and the backup
+  take it with the rest.
 * ``quarantine/{customer_id}/{document_id}``: outside every customer prefix,
   so ``get`` cannot reach a quarantined file.
 
@@ -96,6 +100,10 @@ def page_image_key(customer_id: str, document_id: str, page_no: int) -> str:
     if page_no < 1:
         raise ValueError("page numbers start at 1")
     return _document_prefix(customer_id, document_id) + f"pages/{page_no}.webp"
+
+
+def rendition_key(customer_id: str, document_id: str) -> str:
+    return _document_prefix(customer_id, document_id) + "rendition.pdf"
 
 
 def quarantine_key(customer_id: str, document_id: str) -> str:
@@ -316,6 +324,20 @@ class S3Storage:
     def get_page_image(self, customer_id: str, document_id: str, page_no: int) -> bytes:
         """The page's WebP picture. BlobNotFound if this customer has no such page image."""
         return self._get_bytes(page_image_key(customer_id, document_id, page_no), document_id)
+
+    # --- Renditions (#522 PR 2) ----------------------------------------------
+
+    def put_rendition(self, customer_id: str, document_id: str, pdf: bytes) -> None:
+        """Store a Word or PowerPoint file's PDF (the pipeline converts it), beside the original."""
+        key = rendition_key(customer_id, document_id)
+        try:
+            self._client.put_object(Bucket=self._bucket, Key=key, Body=pdf, ContentType="application/pdf")
+        except _ANY_ERROR as error:
+            raise BackendUnavailable("storage") from error
+
+    def get_rendition(self, customer_id: str, document_id: str) -> bytes:
+        """The PDF rendition. BlobNotFound if this customer's document has none (not converted yet)."""
+        return self._get_bytes(rendition_key(customer_id, document_id), document_id)
 
     # --- Health and set-up -------------------------------------------------
 

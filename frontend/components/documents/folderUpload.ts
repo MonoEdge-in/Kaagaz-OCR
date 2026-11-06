@@ -33,7 +33,14 @@ import type {
 import { fileSha256, pathKey, refusedReason } from "./folderPick";
 import type { Manifest, Picked } from "./folderPick";
 import type { NotSentRow } from "./FolderUploadRow";
-import { canSendAgain, limitFor, sessionChangedMessage, uploadErrorText, uploadKind } from "./logic";
+import {
+  UNSUPPORTED_UPLOAD,
+  canSendAgain,
+  limitFor,
+  sessionChangedMessage,
+  uploadErrorText,
+  uploadKind,
+} from "./logic";
 import { createSlots } from "./uploadQueue";
 
 const FOLDER_UPLOADS_AT_ONCE = 4;
@@ -477,7 +484,7 @@ export function itemProblemText(item: FolderUploadItem, limits: UploadLimits): s
       return `Too big: the most is ${Math.floor(limitFor(kind, limits) / MB)} MB.`;
     }
     case "unsupported_type":
-      return "This kind of file can't be uploaded. Use PDF, PNG, JPG, TIFF, HEIC, CSV, XLSX, TXT, MD, JSON or HTML.";
+      return UNSUPPORTED_UPLOAD;
     case "empty_file":
       return "This file is empty.";
     case "folder_gone":

@@ -22,7 +22,18 @@ export const ACCEPTED_EXTENSIONS = [
   "json",
   "html",
   "htm",
+  // #522 PR 2: Word, PowerPoint and old Excel files, which the server converts to read.
+  "xls",
+  "doc",
+  "docx",
+  "dotx",
+  "ppt",
+  "pptx",
 ] as const;
+
+/** Why a file of another kind will not be sent. */
+export const UNSUPPORTED_UPLOAD =
+  "This kind of file can't be uploaded. Use PDF, Word, PowerPoint, PNG, JPG, TIFF, HEIC, CSV, XLSX, XLS, TXT, MD, JSON or HTML.";
 
 /** For the file picker's accept attribute. */
 export const ACCEPT_ATTRIBUTE = ACCEPTED_EXTENSIONS.map((ext) => `.${ext}`).join(",");
@@ -49,6 +60,12 @@ const KIND_OF_EXTENSION: Readonly<Record<AcceptedExtension, UploadKind>> = {
   json: "sheet",
   html: "sheet",
   htm: "sheet",
+  xls: "sheet",
+  doc: "pdf",
+  docx: "pdf",
+  dotx: "pdf",
+  ppt: "pdf",
+  pptx: "pdf",
 };
 
 const MB = 1024 * 1024;
@@ -69,9 +86,9 @@ export const FALLBACK_UPLOAD_LIMITS: Readonly<UploadLimits> = {
 /** The limits in words, shown next to the dropzone. */
 export function uploadLimitsHint(limits: UploadLimits = FALLBACK_UPLOAD_LIMITS): string {
   return (
-    `PDF up to ${Math.floor(limits.pdf_bytes / MB)} MB. ` +
+    `PDF, Word or PowerPoint up to ${Math.floor(limits.pdf_bytes / MB)} MB. ` +
     `PNG, JPG, TIFF or HEIC up to ${Math.floor(limits.image_bytes / MB)} MB. ` +
-    `CSV, XLSX, TXT, MD, JSON or HTML up to ${Math.floor(limits.sheet_bytes / MB)} MB.`
+    `CSV, XLSX, XLS, TXT, MD, JSON or HTML up to ${Math.floor(limits.sheet_bytes / MB)} MB.`
   );
 }
 
@@ -115,7 +132,7 @@ export function tooLargeMessage(kind: UploadKind, sizeBytes: number, limitBytes:
   const size = Math.ceil(sizeBytes / MB);
   switch (kind) {
     case "pdf":
-      return `PDFs can be up to ${limit} MB. This one is ${size} MB. Split it or save it smaller and try again.`;
+      return `PDF, Word and PowerPoint files can be up to ${limit} MB. This one is ${size} MB. Split it or save it smaller and try again.`;
     case "image":
       return `Photos and scans can be up to ${limit} MB. This one is ${size} MB. Save it at a lower resolution and try again.`;
     case "sheet":
@@ -134,7 +151,7 @@ export function validateUpload(
 ): string | null {
   const kind = uploadKind(file.name);
   if (kind === null) {
-    return "This kind of file can't be uploaded. Use PDF, PNG, JPG, TIFF, HEIC, CSV, XLSX, TXT, MD, JSON or HTML.";
+    return UNSUPPORTED_UPLOAD;
   }
   if (file.size === 0) return "This file is empty.";
   const limit = limitFor(kind, limits);

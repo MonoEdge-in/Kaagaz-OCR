@@ -12,3 +12,6 @@
 *.pdf binary
 *.ico binary
 *.woff2 binary
+
+# The Office test files (#522): made by LibreOffice, read as they are.
+backend/tests/fixtures/office/** binary

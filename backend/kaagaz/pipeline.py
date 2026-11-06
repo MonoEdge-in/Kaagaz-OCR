@@ -9,7 +9,11 @@ The steps, in order, for one (customer, document):
    ``customer_disabled``, and the job is not retried.
 2. Scan the file (ScanGate). Nothing below runs unless it is clean, and the
    bytes used below are exactly the bytes that were scanned.
-3. Check the scanned bytes still match the fingerprint taken at upload.
+3. Check the scanned bytes still match the fingerprint taken at upload. Tell the file's
+   kind from them (#522, ``resolve.py``) and check it against its kind's own size limit. A
+   Word or PowerPoint file is converted by LibreOffice (``kaagaz/reading/office.py``) to a
+   PDF, stored beside the original as the viewer's rendition, and an old Excel file to an
+   XLSX; the steps below read those bytes, while the document keeps its own kind.
 4. Prepare the pages: sizes, and a picture of each page (PDFs, photos),
    streamed (council A5b): each page is drawn, made WebP, stored, the
    heartbeat beats, and its picture is dropped before the next page is drawn,
@@ -310,6 +314,8 @@ from kaagaz.reading.ocr import (
     is_word_mark,
     worst_first,
 )
+from kaagaz.reading.office import KINDS as OFFICE_KINDS
+from kaagaz.reading.office import read_as
 from kaagaz.reading.page_quality import (
     ISSUES,
     LOW_RESOLUTION,
@@ -686,6 +692,12 @@ class PageImageStore(Protocol):
     def put_page_image(self, customer_id: str, document_id: str, page_no: int, image: bytes) -> None: ...
 
 
+class RenditionStore(Protocol):
+    def put_rendition(self, customer_id: str, document_id: str, pdf: bytes) -> None:
+        """#522 PR 2: a Word or PowerPoint file's PDF, beside its original, for the viewer."""
+        ...
+
+
 class PipelineStore(Protocol):
     """kaagaz.db.pipeline_store.PgPipelineStore in production."""
 
@@ -768,7 +780,7 @@ class UsageScopes(Protocol):
     ) -> contextlib.AbstractContextManager[object]: ...
 
 
-class ProcessorStorage(BlobStorage, Quarantine, PageImageStore, Protocol):
+class ProcessorStorage(BlobStorage, Quarantine, PageImageStore, RenditionStore, Protocol):
     """What build_processor needs from file storage (kaagaz.adapters.storage.S3Storage)."""
 
 
@@ -903,6 +915,9 @@ class DocumentProcessor:
         land_on: Callable[[str], bool] | None = None,
         mistral_ready: Callable[[], None] | None = None,
         reading_pause: ReadingAdmission | None = None,
+        office: Callable[[str, bytes], bytes] | None = None,
+        renditions: RenditionStore | None = None,
+        kind_limits: Mapping[str, int] | None = None,
     ) -> None:
         """``embed(customer_id, document_id, on_batch=...)`` gives the saved pieces their vectors;
         failing with one of ``model_errors`` is logged and skipped, never a failed document.
@@ -946,13 +961,23 @@ class DocumentProcessor:
         ``mistral_ready()`` (#473, ``GeminiEngine.mistral_ready``) is asked at the start of a job
         whose ``Reading`` is on Mistral, and raises BackendUnavailable while Mistral can't read
         here, before anything is drawn; None asks nothing. ``reading_pause(customer_id,
-        document_id)`` (#478) holds the reading, or raises ReadingPaused; None pauses nothing."""
+        document_id)`` (#478) holds the reading, or raises ReadingPaused; None pauses nothing.
+
+        All formats (#522 PR 2): ``office(kind, data)`` (``office.OfficeConverter.convert``) converts
+        a Word or PowerPoint file to the PDF it is read as, stored by ``renditions`` beside the
+        original for the viewer, and an old Excel file to the XLSX it is read as; None (no
+        LibreOffice) leaves them to no reader, so they need a reader. ``kind_limits`` is each
+        kind's own size limit (``policy.limits_by_type``), checked once the kind is told after
+        the scan: a zip or an old Office file is let in at the PDF limit, so a spreadsheet over
+        its own fails there with ``too_large``; None checks nothing."""
         if runs is not None and (clock is None or timer is None):
             raise ValueError("runs need a clock and a timer")
         if max_check_crops < 0:
             raise ValueError("max_check_crops must be 0 or more")
         if chat is not None and model_budget is None:
             raise ValueError("a chat model needs its model_budget")
+        if office is not None and renditions is None:
+            raise ValueError("an office converter needs a place for its renditions")
         self._gate = gate
         self._statuses = statuses
         self._land_on = land_on
@@ -991,6 +1016,9 @@ class DocumentProcessor:
         self._index_seconds = index_seconds
         self._mistral_ready = mistral_ready
         self._reading_pause = reading_pause
+        self._office = office
+        self._renditions = renditions
+        self._kind_limits = kind_limits
 
     def __call__(self, job: Job, heartbeat: Heartbeat) -> None:
         record = self._documents.get(job.customer_id, job.document_id)
@@ -1095,6 +1123,9 @@ class DocumentProcessor:
         if hashlib.sha256(data).hexdigest() != record.sha256:
             raise JobFailed("content_changed", retryable=False)
         record = self._resolved(record, data)
+        self._check_kind_limit(record)
+        heartbeat()
+        record, data = self._converted(record, data)
         heartbeat()
 
         run.rates, run.preparing_started = self._rates(job, record.detected_type), self._timer()
@@ -1472,6 +1503,28 @@ class DocumentProcessor:
         if kind != record.detected_type:
             self._documents.set_detected_type(record.customer_id, record.document_id, kind)
         return replace(record, detected_type=kind)
+
+    def _check_kind_limit(self, record: DocumentRecord) -> None:
+        """A file over its kind's own limit fails for good (#522 PR 2): a zip or an old Office
+        file is let in at the PDF limit, the largest of the kinds it can be."""
+        limit = None if self._kind_limits is None else self._kind_limits.get(record.detected_type)
+        if limit is not None and record.size > limit:
+            raise JobFailed("too_large", retryable=False)
+
+    def _converted(self, record: DocumentRecord, data: bytes) -> tuple[DocumentRecord, bytes]:
+        """#522 PR 2: a Word or PowerPoint file as the PDF LibreOffice makes of it, stored as its
+        rendition, and an old Excel file as an XLSX; the record says what it is read as (pdf or
+        xlsx) from here on, while the stored kind stays the file's own. Any other kind, or none
+        with no converter, as it is. A file LibreOffice can't open fails with ``office_unreadable``."""
+        kind = record.detected_type
+        if self._office is None or self._renditions is None or kind not in OFFICE_KINDS:
+            return record, data
+        convert = self._office
+        converted = _or_fail(lambda: convert(kind, data))
+        converted_type = read_as(kind)
+        if converted_type == sniff.PDF:
+            self._renditions.put_rendition(record.customer_id, record.document_id, converted)
+        return replace(record, detected_type=converted_type), converted
 
     def _scan(self, job: Job, run: _Run) -> bytes:
         try:
@@ -2289,11 +2342,17 @@ def build_processor(
     from kaagaz.db.page_reads import PgPageReads
     from kaagaz.db.pipeline_store import PgPipelineStore
     from kaagaz.db.runs import PgRuns
+    from kaagaz.ingestion.policy import limits_by_type
     from kaagaz.jobs.reading_pause import ReadingPause
     from kaagaz.preparing.pages import prepare_pages, sheet_pages
     from kaagaz.reading.ocr import GEMINI, MeteredOcrEngine
     from kaagaz.reading.rapid_pool import shared_pool
-    from kaagaz.reading.wiring import build_ocr_engine, build_reader_socket, reader_config
+    from kaagaz.reading.wiring import (
+        build_ocr_engine,
+        build_office_converter,
+        build_reader_socket,
+        reader_config,
+    )
     from kaagaz.search.indexing import embed_pieces
 
     documents = PgDocuments(db)
@@ -2401,6 +2460,12 @@ def build_processor(
         land_on=land_on if model is not None else None,
         # #478: only where AI reads or answers (keyless: nothing to pause, no query a job).
         reading_pause=None if job_reading is None else ReadingPause(db, clock=_utc_now, alert=alert).admit,
+        # #522 PR 2: Word, PowerPoint and old Excel files by LibreOffice, where it is installed.
+        office=build_office_converter(),
+        renditions=storage,
+        kind_limits=limits_by_type(
+            pdf=settings.max_upload_bytes, image=settings.max_image_bytes, sheet=settings.max_sheet_bytes
+        ),
     )
 
 

@@ -24,6 +24,7 @@ _FIRST_BYTES = {
     sniff.TIFF: b"II*\x00",
     sniff.HEIC: b"\x00\x00\x00\x18ftypheic",
     sniff.ZIP: b"PK\x03\x04",
+    sniff.OLE2: b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",  # #522 PR 2: .xls, .doc, .ppt
     sniff.TEXT: b"invoice,amount\n",
 }
 
@@ -275,7 +276,8 @@ class MessageTest(unittest.TestCase):
         )
         self.assertEqual(
             too_large_message("pdf", 62 * MB, 50 * MB),
-            "PDFs can be up to 50 MB. This one is 62 MB. Split it or save it smaller and try again.",
+            "PDF, Word and PowerPoint files can be up to 50 MB. This one is 62 MB."
+            " Split it or save it smaller and try again.",
         )
         self.assertEqual(
             too_large_message("sheet", 14 * MB, 10 * MB),
@@ -394,9 +396,8 @@ class PolicyTest(unittest.TestCase):
             UploadPolicy(
                 max_bytes=10, allowed_types=frozenset({sniff.PDF, sniff.PNG}), type_limits={sniff.PDF: 10}
             )
-        # Old .xls and .doc files (ole2) have no size group in PRD U2, so they cannot be allowed.
-        with self.assertRaises(ValueError):
-            UploadPolicy(max_bytes=10, allowed_types=frozenset({sniff.OLE2}), type_limits={sniff.OLE2: 10})
+        # Changed on purpose (#522 PR 2): old .xls, .doc and .ppt files (ole2) have a limit, the PDF one.
+        UploadPolicy(max_bytes=10, allowed_types=frozenset({sniff.OLE2}), type_limits={sniff.OLE2: 10})
 
     def test_a_type_with_no_limit_is_refused(self) -> None:
         policy = UploadPolicy(max_bytes=10, allowed_types=frozenset({sniff.PDF}), type_limits={sniff.PDF: 10})
@@ -415,7 +416,16 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual({t: roomy.limit_for(t) for t in KIND_OF}, limits)
         self.assertEqual(
             {t: tight.limit_for(t) for t in UPLOAD_TYPES},
-            {"pdf": 1500, "png": 1500, "jpeg": 1500, "tiff": 1500, "heic": 1500, "text": 1000, "zip": 1000},
+            {
+                "pdf": 1500,
+                "png": 1500,
+                "jpeg": 1500,
+                "tiff": 1500,
+                "heic": 1500,
+                "text": 1000,
+                "zip": 1500,  # #522 PR 2: an Office file's limit until the worker tells its kind
+                "ole2": 1500,
+            },
         )
         self.assertEqual((roomy.largest_limit, tight.largest_limit), (5000, 1500))
 
@@ -435,7 +445,8 @@ class PolicyTest(unittest.TestCase):
                 "tiff": 2,
                 "heic": 2,
                 "text": 1,
-                "zip": 1,
+                "zip": 3,
+                "ole2": 3,
                 "docx": 3,
                 "dotx": 3,
                 "doc": 3,
@@ -450,10 +461,8 @@ class PolicyTest(unittest.TestCase):
                 "html": 1,
             },
         )
-        self.assertEqual(KIND_OF.keys(), (resolve.KINDS | sniff.KNOWN_TYPES) - {sniff.OLE2})
-        self.assertEqual(
-            UPLOAD_TYPES, sniff.KNOWN_TYPES - {sniff.OLE2}
-        )  # an old Office file has no limit yet
+        self.assertEqual(KIND_OF.keys(), resolve.KINDS | sniff.KNOWN_TYPES)
+        self.assertEqual(UPLOAD_TYPES, sniff.KNOWN_TYPES)  # an old Office file too (#522 PR 2)
 
 
 class VersionTest(unittest.TestCase):

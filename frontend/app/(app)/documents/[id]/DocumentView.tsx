@@ -72,6 +72,7 @@ import {
   splitAfterDrag,
   splitAfterKey,
   tabsThatFit,
+  viewsAsPdf,
 } from "@/components/viewer/viewer";
 import { CLEAN_COPY } from "@/components/viewer/clearCopy";
 import { ReadClearlyPanel } from "@/components/viewer/ReadClearlyPanel";
@@ -306,7 +307,7 @@ export function DocumentView({
       : initialSelection(shown, pageParam, regionParam);
   // #454: a PDF scrolls through all its pages, so the marks of the pages beside the page shown are
   // loaded too, and every loaded page's marks go to the PDF viewer; the panels keep the page's own.
-  const scroll = shown?.detected_type === "pdf" ? shown.pages.map((p) => p.page_no) : [];
+  const scroll = shown && viewsAsPdf(shown.detected_type) ? shown.pages.map((p) => p.page_no) : [];
   const pageNo = selection ? selection.pageNo : null;
   const words = useViewerWords(documentId, pageNo, scroll);
   const stickyViewer = useMediaQuery(STICKY_VIEWER_QUERY);
@@ -432,7 +433,7 @@ export function DocumentView({
   // #454: a PDF scrolls through every page under one notice, so if any page has it, its room is
   // kept on all of them, hidden where it does not apply: it came and went with the page in view
   // and resized the viewer mid-scroll, which then set its scroll again.
-  const lowRoom = detail.detected_type === "pdf" ? (detail.pages.map(lowNote).find((note) => note !== null) ?? null) : null;
+  const lowRoom = viewsAsPdf(detail.detected_type) ? (detail.pages.map(lowNote).find((note) => note !== null) ?? null) : null;
   const pageFlags = page ? openFlags.filter((flag) => flag.page_no === page.page_no) : [];
   const pageMarks = page ? review.flags.filter((flag) => flag.page_no === page.page_no) : [];
   const toWord = (key: string) => {
@@ -531,7 +532,7 @@ export function DocumentView({
           )}
           {/* SoW 19 Oct 2026: a PDF in extend-hq/ui's viewer, every page in one scroll; photos
               and sheets keep PageViewer. */}
-          {page && detail.detected_type === "pdf" ? (
+          {page && viewsAsPdf(detail.detected_type) ? (
             <div className={styles.pdfPane}>
               {/* #246 A8: a throw in the viewer shows in this pane only, not the whole screen. */}
               <ViewerBoundary key={detail.id} download={download}>
