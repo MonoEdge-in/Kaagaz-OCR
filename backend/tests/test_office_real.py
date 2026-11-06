@@ -452,7 +452,7 @@ class RealConversionTest(unittest.TestCase):
             store=store,
             office=self.converter().convert,
             renditions=storage,
-            kind_limits=limits,
+            kind_limit=lambda _customer, kind: limits[kind],
         )
         for made, kind, name in (
             ("letter", resolve.DOCX, "lease.docx"),

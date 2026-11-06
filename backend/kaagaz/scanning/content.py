@@ -18,6 +18,12 @@ may contain, and refuses the rest, whether or not any signature matches:
   objects, no external templates or links in the package relationships, no
   executables or nested archives inside, and no path traversal (``../``,
   absolute paths).
+* **A plain zip** (none of ``[Content_Types].xml`` and the parts that make a Word,
+  PowerPoint or Excel file, as ``kaagaz/ingestion/resolve.py`` tells them: a folder
+  of files, #522 PR 3): the
+  same, except that a zip inside it, a part with a password and an unsafe path are
+  each refused on their own when it is unpacked (``kaagaz/ingestion/unzip.py``),
+  where every file is checked again by itself, so they don't refuse the whole zip.
 * **Plain text (CSV):** it must be data, not a script or markup: no HTML,
   XML, SVG, RTF, shell or batch scripts, and no spreadsheet formulas that
   run commands (DDE, ``=cmd|...``, ``=WEBSERVICE``).
@@ -585,6 +591,11 @@ _RISKY_EXTENSIONS = re.compile(
     re.IGNORECASE,
 )
 _MAX_RELS_BYTES = 1_000_000
+# Any of these makes a zip an Office package (resolve.py reads it as one by the last three).
+_PACKAGE_PARTS = frozenset(
+    {"[Content_Types].xml", "word/document.xml", "ppt/presentation.xml", "xl/workbook.xml"}
+)
+_NESTED_ZIP = re.compile(r"\.zip$", re.IGNORECASE)  # kept unread in a plain zip (#522 PR 3)
 
 
 def _loads_from_outside(rels: bytes) -> bool:
@@ -605,13 +616,16 @@ def _zip_finding(data: bytes) -> Finding | None:
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             infos = archive.infolist()
+            package = any(info.filename in _PACKAGE_PARTS for info in infos)  # else a folder of files
             for info in infos:
                 name = info.filename.replace("\\", "/")
-                if name.startswith("/") or ".." in name.split("/") or re.match(r"^[A-Za-z]:", name):
+                unsafe = name.startswith("/") or ".." in name.split("/") or re.match(r"^[A-Za-z]:", name)
+                if package and unsafe:
                     return Finding.BLOCKED  # path traversal (Zip Slip)
-                if info.flag_bits & 0x1:
+                if package and info.flag_bits & 0x1:
                     return Finding.UNSCANNABLE  # a password-protected part cannot be checked
-                if _RISKY_PARTS.search(name) or _RISKY_EXTENSIONS.search(name):
+                risky = _RISKY_PARTS.search(name) or _RISKY_EXTENSIONS.search(name)
+                if risky and (package or not _NESTED_ZIP.search(name)):
                     return Finding.BLOCKED
             for info in infos:
                 if not info.filename.lower().endswith(".rels"):

@@ -364,9 +364,11 @@ class OfficePackages(unittest.TestCase):
                 self.assertIs(inspect(with_member(spreadsheet(), name, b"x")), Finding.BLOCKED)
 
     def test_path_traversal(self) -> None:
+        # Changed on purpose (#522 PR 3): an Office package's ([Content_Types].xml); a plain zip's
+        # unsafe paths are refused one by one when it is unpacked (PlainZips below).
         for name in ("../../evil.txt", "/etc/passwd", "C:/Windows/evil.txt", "a/../../b"):
             with self.subTest(name=name):
-                self.assertIs(inspect(zip_bytes({name: b"x"})), Finding.BLOCKED)
+                self.assertIs(inspect(zip_bytes({_TYPES: b"<Types/>", name: b"x"})), Finding.BLOCKED)
 
     def test_a_remote_template(self) -> None:
         rels = (
@@ -379,7 +381,36 @@ class OfficePackages(unittest.TestCase):
         )
 
     def test_a_password_protected_part_cannot_be_checked(self) -> None:
-        self.assertIs(inspect(zip_bytes({"a.xml": b"x"}, encrypted=True)), Finding.UNSCANNABLE)
+        # Changed on purpose (#522 PR 3): an Office package's, as test_path_traversal.
+        packed = zip_bytes({_TYPES: b"<Types/>", "a.xml": b"x"}, encrypted=True)
+        self.assertIs(inspect(packed), Finding.UNSCANNABLE)
+
+
+_TYPES = "[Content_Types].xml"
+
+
+class PlainZips(unittest.TestCase):
+    """#522 PR 3: a zip that is a folder of files is unpacked, and every file in it checked on its
+    own, so a zip inside it, a part with a password and an unsafe path are refused there, one by
+    one, never the whole zip; an executable, a script or a macro file still refuses it whole."""
+
+    def test_a_nested_zip_a_password_and_an_unsafe_path_are_left_to_the_unpacking(self) -> None:
+        inner = zip_bytes({"a.csv": b"a,b\n1,2\n"})
+        self.assertIsNone(inspect(zip_bytes({"inner.zip": inner, "Old/INNER.ZIP": inner})))
+        self.assertIsNone(inspect(zip_bytes({"a.csv": b"x"}, encrypted=True)))
+        for name in ("../../evil.txt", "/etc/passwd", "C:/Windows/evil.txt"):
+            with self.subTest(name=name):
+                self.assertIsNone(inspect(zip_bytes({name: b"x", "ok.csv": b"y"})))
+
+    def test_an_executable_a_script_or_a_macro_file_still_refuses_the_whole_zip(self) -> None:
+        for name in ("run.exe", "a/payload.js", "report.xlsm", "archive.rar", "vbaProject.bin"):
+            with self.subTest(name=name):
+                self.assertIs(inspect(zip_bytes({name: b"x", "ok.csv": b"y"})), Finding.BLOCKED)
+
+    def test_any_office_part_makes_it_a_package_with_every_rule(self) -> None:
+        for part in ("word/document.xml", "ppt/presentation.xml", "xl/workbook.xml"):
+            with self.subTest(part=part):
+                self.assertIs(inspect(zip_bytes({part: b"<x/>", "inner.zip": b"x"})), Finding.BLOCKED)
 
 
 class PlainText(unittest.TestCase):

@@ -282,7 +282,8 @@ from kaagaz.extraction.understanding import (
 from kaagaz.extraction.values import CARD_RECORD, DocumentFacts, ExtractedValue, InvoiceRow, LinkIdentifier
 from kaagaz.ingestion import resolve, sniff
 from kaagaz.ingestion.errors import BackendUnavailable
-from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, Job
+from kaagaz.ingestion.policy import ZIP_MAX_BYTES
+from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, Job, JobQueue
 from kaagaz.ingestion.resolve import UNSUPPORTED, resolve_kind
 from kaagaz.ingestion.spool import HEAD_SIZE
 from kaagaz.jobs.ports import LeaseLost
@@ -917,7 +918,8 @@ class DocumentProcessor:
         reading_pause: ReadingAdmission | None = None,
         office: Callable[[str, bytes], bytes] | None = None,
         renditions: RenditionStore | None = None,
-        kind_limits: Mapping[str, int] | None = None,
+        unpack: Callable[[Job, DocumentRecord, bytes, Heartbeat], bool] | None = None,
+        kind_limit: Callable[[str, str], int] | None = None,
     ) -> None:
         """``embed(customer_id, document_id, on_batch=...)`` gives the saved pieces their vectors;
         failing with one of ``model_errors`` is logged and skipped, never a failed document.
@@ -966,10 +968,16 @@ class DocumentProcessor:
         All formats (#522 PR 2): ``office(kind, data)`` (``office.OfficeConverter.convert``) converts
         a Word or PowerPoint file to the PDF it is read as, stored by ``renditions`` beside the
         original for the viewer, and an old Excel file to the XLSX it is read as; None (no
-        LibreOffice) leaves them to no reader, so they need a reader. ``kind_limits`` is each
-        kind's own size limit (``policy.limits_by_type``), checked once the kind is told after
-        the scan: a zip or an old Office file is let in at the PDF limit, so a spreadsheet over
-        its own fails there with ``too_large``; None checks nothing."""
+        LibreOffice) leaves them to no reader, so they need a reader.
+
+        All formats (#522 PR 3), both optional: ``unpack(job, record, data, heartbeat)``
+        (``kaagaz.jobs.unpack.ZipUnpacker``) unpacks a document of kind zip into a folder after
+        its scan, and says whether it did (False: a zip kept as an ordinary file, not read, which
+        is marked needs_reader as before); None unpacks nothing. ``kind_limit(customer_id,
+        kind)``: the organisation's limit for a kind, which a file let in under its container's
+        limit at upload (an Office file sniffed as a zip, or an old one as ole2 at the PDF
+        limit) must be within once its kind is told, so a spreadsheet over its own fails with
+        ``too_large``; None checks nothing."""
         if runs is not None and (clock is None or timer is None):
             raise ValueError("runs need a clock and a timer")
         if max_check_crops < 0:
@@ -1018,7 +1026,8 @@ class DocumentProcessor:
         self._reading_pause = reading_pause
         self._office = office
         self._renditions = renditions
-        self._kind_limits = kind_limits
+        self._unpack = unpack
+        self._kind_limit = kind_limit
 
     def __call__(self, job: Job, heartbeat: Heartbeat) -> None:
         record = self._documents.get(job.customer_id, job.document_id)
@@ -1118,15 +1127,26 @@ class DocumentProcessor:
 
     def _read_and_save(self, job: Job, record: DocumentRecord, heartbeat: Heartbeat, run: _Run) -> None:
         customer_id, document_id = job.customer_id, job.document_id
+        if record.detected_type == sniff.ZIP and record.size > ZIP_MAX_BYTES:
+            # #522 PR 3: refused before the scan gate loads it into memory (policy.ZIP_MAX_BYTES).
+            raise JobFailed("zip_over_limit", retryable=False)
         self._progress(job, run, "scanning", 0, 1)
         data = self._scan(job, run)
         if hashlib.sha256(data).hexdigest() != record.sha256:
             raise JobFailed("content_changed", retryable=False)
         record = self._resolved(record, data)
-        self._check_kind_limit(record)
         heartbeat()
         record, data = self._converted(record, data)
         heartbeat()
+        if (
+            record.detected_type == resolve.ZIP
+            and self._unpack is not None
+            and self._unpack(job, record, data, heartbeat)
+        ):
+            # #522 PR 3: unpacked into a folder, the zip kept there as a file and never read.
+            require_clean(self._statuses, job)
+            self._documents.mark_ready(customer_id, document_id, 0, run=self._finished(run, "ready", None))
+            return
 
         run.rates, run.preparing_started = self._rates(job, record.detected_type), self._timer()
         pictured: set[int] = set()  # the pages whose picture is stored
@@ -1500,16 +1520,15 @@ class DocumentProcessor:
         kind = _or_fail(lambda: resolve_kind(data, sniffed, record.display_name))
         if kind == UNSUPPORTED:
             raise JobFailed("unsupported_type", retryable=False)
+        # #522: it came in under its container's limit (PR 3: a zip's; PR 2: an old Office file
+        # at the PDF limit); an Office file has its own kind's.
+        container = record.detected_type in (sniff.ZIP, sniff.OLE2)
+        limit, office = self._kind_limit, container and kind != resolve.ZIP
+        if office and limit is not None and record.size > limit(record.customer_id, kind):
+            raise JobFailed("too_large", retryable=False)
         if kind != record.detected_type:
             self._documents.set_detected_type(record.customer_id, record.document_id, kind)
         return replace(record, detected_type=kind)
-
-    def _check_kind_limit(self, record: DocumentRecord) -> None:
-        """A file over its kind's own limit fails for good (#522 PR 2): a zip or an old Office
-        file is let in at the PDF limit, the largest of the kinds it can be."""
-        limit = None if self._kind_limits is None else self._kind_limits.get(record.detected_type)
-        if limit is not None and record.size > limit:
-            raise JobFailed("too_large", retryable=False)
 
     def _converted(self, record: DocumentRecord, data: bytes) -> tuple[DocumentRecord, bytes]:
         """#522 PR 2: a Word or PowerPoint file as the PDF LibreOffice makes of it, stored as its
@@ -2328,10 +2347,12 @@ def build_processor(
     scanner: Scanner,
     model: "ModelClient | None",
     alert: "Alert | None" = None,
+    queue: JobQueue | None = None,
 ) -> DocumentProcessor:
     """The production processor. The concrete parts are imported here only, so the
     processor itself depends on the ports above and is tested with fakes. ``alert`` (#478)
-    emails the super admin when an organisation's reading pauses."""
+    emails the super admin when an organisation's reading pauses. ``queue`` (#522 PR 3): where
+    the files unpacked from a zip are queued; None unpacks no zip."""
     from sqlalchemy import text
 
     from kaagaz.ai.client import ModelOutputError, ModelUnavailable
@@ -2342,8 +2363,9 @@ def build_processor(
     from kaagaz.db.page_reads import PgPageReads
     from kaagaz.db.pipeline_store import PgPipelineStore
     from kaagaz.db.runs import PgRuns
-    from kaagaz.ingestion.policy import limits_by_type
+    from kaagaz.db.upload_policy import customer_policy
     from kaagaz.jobs.reading_pause import ReadingPause
+    from kaagaz.jobs.unpack import ZipUnpacker
     from kaagaz.preparing.pages import prepare_pages, sheet_pages
     from kaagaz.reading.ocr import GEMINI, MeteredOcrEngine
     from kaagaz.reading.rapid_pool import shared_pool
@@ -2413,6 +2435,10 @@ def build_processor(
         with unavailable(), db.customer(customer_id) as conn:
             return ai_settings.switch_on(conn, "land_facts", customer_id)
 
+    def kind_limit(customer_id: str, kind: str) -> int:
+        with unavailable(), db.customer(customer_id) as conn:
+            return customer_policy(conn, customer_id, settings).limit_for(kind)
+
     return DocumentProcessor(
         gate=ScanGate(storage, scanner, storage, documents),
         statuses=documents,
@@ -2463,9 +2489,8 @@ def build_processor(
         # #522 PR 2: Word, PowerPoint and old Excel files by LibreOffice, where it is installed.
         office=build_office_converter(),
         renditions=storage,
-        kind_limits=limits_by_type(
-            pdf=settings.max_upload_bytes, image=settings.max_image_bytes, sheet=settings.max_sheet_bytes
-        ),
+        unpack=None if queue is None else ZipUnpacker(db, storage, queue, scanner, settings),
+        kind_limit=kind_limit,
     )
 
 

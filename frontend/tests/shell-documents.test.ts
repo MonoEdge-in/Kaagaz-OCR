@@ -49,7 +49,7 @@ describe("validateUpload", () => {
   it("accepts every supported kind, in any letter case", () => {
     const office = ["i.docx", "j.DOC", "k.dotx", "l.pptx", "m.ppt", "n.XLS"]; // #522 PR 2
     const text = ["o.heic", "p.HEIF", "q.txt", "r.md", "s.json", "t.html", "u.htm"]; // #522 PR 1
-    for (const name of ["a.pdf", "b.PNG", "c.jpg", "d.JPEG", "e.tif", "f.tiff", "g.csv", "h.xlsx", ...office, ...text]) {
+    for (const name of ["a.pdf", "b.PNG", "c.jpg", "d.JPEG", "e.tif", "f.tiff", "g.csv", "h.xlsx", "i.ZIP", ...office, ...text]) {
       expect(validateUpload({ name, size: 10 })).toBeNull();
     }
   });
@@ -58,7 +58,7 @@ describe("validateUpload", () => {
     expect(validateUpload({ name: "virus.exe", size: 10 })).toMatch(/can't be uploaded/);
     expect(validateUpload({ name: "old.xlsm", size: 10 })).toMatch(/can't be uploaded/);
     expect(validateUpload({ name: "notes.odt", size: 10 })).toBe(
-      "This kind of file can't be uploaded. Use PDF, Word, PowerPoint, PNG, JPG, TIFF, HEIC, CSV, XLSX, XLS, TXT, MD, JSON or HTML.",
+      "This kind of file can't be uploaded. Use PDF, Word, PowerPoint, PNG, JPG, TIFF, HEIC, CSV, XLSX, XLS, TXT, MD, JSON, HTML or ZIP.",
     );
     expect(validateUpload({ name: "README", size: 10 })).toMatch(/can't be uploaded/);
     expect(validateUpload({ name: "invoice.pdf.exe", size: 10 })).toMatch(/can't be uploaded/);
@@ -83,10 +83,10 @@ describe("validateUpload", () => {
   });
 
   it("offers the same kinds in the file picker", () => {
-    // Changed on purpose (#522): HEIC photos, text files, and Word, PowerPoint and old Excel files too.
+    // Changed on purpose (#522): HEIC photos, text files, Word, PowerPoint and old Excel files, and zips.
     expect(ACCEPT_ATTRIBUTE).toBe(
       ".pdf,.png,.jpg,.jpeg,.tif,.tiff,.heic,.heif,.csv,.xlsx,.txt,.md,.json,.html,.htm," +
-        ".xls,.doc,.docx,.dotx,.ppt,.pptx",
+        ".xls,.doc,.docx,.dotx,.ppt,.pptx,.zip",
     );
   });
 });
@@ -96,6 +96,7 @@ describe("upload limits by type (PRD U2)", () => {
     { names: ["a.pdf", "a.docx", "a.dotx", "a.doc", "a.pptx", "a.ppt"], limit: 50 * MB },
     { names: ["a.png", "a.jpg", "a.jpeg", "a.tif", "a.tiff", "IMG_0042.HEIC", "a.heif"], limit: 20 * MB },
     { names: ["a.csv", "a.xlsx", "a.xls", "a.txt", "a.md", "a.json", "a.html", "a.HTM"], limit: 10 * MB },
+    { names: ["a.zip"], limit: 50 * MB }, // #522: the PDF limit until the server says its own
   ];
 
   it("allows each type exactly at its limit and refuses one byte over", () => {
@@ -170,6 +171,7 @@ describe("upload limits by type (PRD U2)", () => {
       pdf_bytes: 50 * MB,
       image_bytes: 20 * MB,
       sheet_bytes: 10 * MB,
+      zip_bytes: 50 * MB,
       max_pages: 100,
       readers: [], // no "Scan with" until the server says which readers it has
     });
@@ -195,10 +197,25 @@ describe("upload limits by type (PRD U2)", () => {
 
   it("tells people each type's limit next to the dropzone", () => {
     expect(uploadLimitsHint()).toBe(
-      "PDF, Word or PowerPoint up to 50 MB. PNG, JPG, TIFF or HEIC up to 20 MB. CSV, XLSX, XLS, TXT, MD, JSON or HTML up to 10 MB.",
+      "PDF, Word or PowerPoint up to 50 MB. PNG, JPG, TIFF or HEIC up to 20 MB. CSV, XLSX, XLS, TXT, MD, JSON or HTML up to 10 MB. ZIP up to 50 MB, unpacked into a folder.",
     );
     expect(uploadLimitsHint(customer)).toBe(
-      "PDF, Word or PowerPoint up to 25 MB. PNG, JPG, TIFF or HEIC up to 20 MB. CSV, XLSX, XLS, TXT, MD, JSON or HTML up to 10 MB.",
+      "PDF, Word or PowerPoint up to 25 MB. PNG, JPG, TIFF or HEIC up to 20 MB. CSV, XLSX, XLS, TXT, MD, JSON or HTML up to 10 MB. ZIP up to 25 MB, unpacked into a folder.",
+    );
+  });
+
+  it("takes a zip up to the server's zip limit, at most 1 GB (#522)", () => {
+    const zips: UploadLimits = { ...customer, zip_bytes: 1024 * MB };
+    expect(uploadKind("Bills 2026.Zip")).toBe("zip");
+    expect(limitFor("zip", zips)).toBe(1024 * MB);
+    expect(limitFor("zip", customer)).toBe(25 * MB); // an older server: as large as an .xlsx or a PDF
+    expect(validateUpload({ name: "Bills.zip", size: 1024 * MB }, zips)).toBeNull();
+    expect(validateUpload({ name: "Bills.zip", size: 1024 * MB + 1 }, zips)).toBe(
+      "Zip files can be up to 1 GB. Unzip it on your computer and upload the folder instead.",
+    );
+    // A limit lowered below 1 GB by the customer's own is named in MB.
+    expect(tooLargeMessage("zip", 30 * MB, 25 * MB)).toBe(
+      "Zip files can be up to 25 MB. Unzip it on your computer and upload the folder instead.",
     );
   });
 });

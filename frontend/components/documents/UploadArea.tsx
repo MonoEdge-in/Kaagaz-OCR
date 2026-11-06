@@ -111,6 +111,8 @@ import type { Followed, UploadEntry } from "./uploadQueue";
 import { NO_TIMES, jobFraction, nextShown, stageOf, valueText } from "./uploadStages";
 import type { Shown, Stage, StageTimes } from "./uploadStages";
 import { WrapName } from "./WrapName";
+import { ZipUnpackNote } from "./ZipUnpackNote";
+import { zipNote } from "./zipUnpack";
 import styles from "./Documents.module.css";
 
 type Start = (onProgress: (fraction: number) => void, onSent: () => void, onWaiting: UploadWaiting) => Promise<UploadResult>;
@@ -808,7 +810,10 @@ function UploadRow({
   const stage = stageOf(state);
   const story = storyTarget(state); // a finished file offers its story section, never a dialog
   const document = state.kind === "done" ? state.document : undefined;
-  const ready = document?.status === "ready" ? document : undefined;
+  // #522: a zip the server unpacks says how far it has got, then what it unpacked and skipped.
+  const current = state.kind === "done" || state.kind === "reading" ? state.document : undefined;
+  const zip = current ? zipNote(current) : null;
+  const ready = document?.status === "ready" && !zip ? document : undefined;
   const unreadable = document?.status === "ready" ? unreadableWords(document, canReread) : null; // U1
   const verified = document ? verifiedWords(document) : null; // U1: only with values
   let icon: "alert" | "eye-alert" | "check-seal" | "file" = "file";
@@ -835,20 +840,21 @@ function UploadRow({
           <p className={`muted ${styles.small}`}>New version of “{entry.versionOf}”</p>
         )}
         {stage !== null && <RowBar entry={entry} stage={stage} />}
-        {state.kind === "reading" && <p className={`muted ${styles.small}`}>{scanPhrase(state.document)}</p>}
+        {state.kind === "reading" && !zip && <p className={`muted ${styles.small}`}>{scanPhrase(state.document)}</p>}
+        {zip && <ZipUnpackNote note={zip} />}
         {unreadable?.detail && <p className={styles.small}>{unreadable.detail}</p>}
         {ready && <p className={styles.small}>{`Scan complete · ${flaggedText(ready)}`}</p>}
         {verified && <p className={`muted ${styles.small}`}>{verified}</p>}
-        {document?.status === "ready" && (
+        {ready && (
           <AutofileNote
-            document={document}
+            document={ready}
             name={entry.name}
-            filed={document.folder_id ? filedText(shortPathLabel(tree, document.folder_id)) : ""}
-            folderHref={document.folder_id ? libraryHref({ ...ALL_DOCUMENTS, folderId: document.folder_id }) : null}
+            filed={ready.folder_id ? filedText(shortPathLabel(tree, ready.folder_id)) : ""}
+            folderHref={ready.folder_id ? libraryHref({ ...ALL_DOCUMENTS, folderId: ready.folder_id }) : null}
             onUndone={onUndone}
           />
         )}
-        {document && document.status !== "ready" && (
+        {document && document.status !== "ready" && !zip && (
           <p className={`error-text ${styles.small}`}>{document.status_message}</p>
         )}
         {state.kind === "done" && (

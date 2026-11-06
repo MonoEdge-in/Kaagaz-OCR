@@ -29,19 +29,20 @@ export const ACCEPTED_EXTENSIONS = [
   "dotx",
   "ppt",
   "pptx",
+  "zip", // #522: unpacked into a folder by the server
 ] as const;
 
 /** Why a file of another kind will not be sent. */
 export const UNSUPPORTED_UPLOAD =
-  "This kind of file can't be uploaded. Use PDF, Word, PowerPoint, PNG, JPG, TIFF, HEIC, CSV, XLSX, XLS, TXT, MD, JSON or HTML.";
+  "This kind of file can't be uploaded. Use PDF, Word, PowerPoint, PNG, JPG, TIFF, HEIC, CSV, XLSX, XLS, TXT, MD, JSON, HTML or ZIP.";
 
 /** For the file picker's accept attribute. */
 export const ACCEPT_ATTRIBUTE = ACCEPTED_EXTENSIONS.map((ext) => `.${ext}`).join(",");
 
 type AcceptedExtension = (typeof ACCEPTED_EXTENSIONS)[number];
 
-/** The size group a file falls in, the same names the server uses ("pdf", "image", "sheet"). */
-export type UploadKind = "pdf" | "image" | "sheet";
+/** The size group a file falls in, the same names the server uses ("pdf", "image", "sheet", "zip"). */
+export type UploadKind = "pdf" | "image" | "sheet" | "zip";
 
 const KIND_OF_EXTENSION: Readonly<Record<AcceptedExtension, UploadKind>> = {
   pdf: "pdf",
@@ -66,6 +67,7 @@ const KIND_OF_EXTENSION: Readonly<Record<AcceptedExtension, UploadKind>> = {
   dotx: "pdf",
   ppt: "pdf",
   pptx: "pdf",
+  zip: "zip",
 };
 
 const MB = 1024 * 1024;
@@ -79,6 +81,7 @@ export const FALLBACK_UPLOAD_LIMITS: Readonly<UploadLimits> = {
   pdf_bytes: 50 * MB,
   image_bytes: 20 * MB,
   sheet_bytes: 10 * MB,
+  zip_bytes: 50 * MB, // the PDF limit until the server says its folder upload limit
   max_pages: 100,
   readers: [], // no "Scan with" until the server says which readers it has
 };
@@ -88,7 +91,8 @@ export function uploadLimitsHint(limits: UploadLimits = FALLBACK_UPLOAD_LIMITS):
   return (
     `PDF, Word or PowerPoint up to ${Math.floor(limits.pdf_bytes / MB)} MB. ` +
     `PNG, JPG, TIFF or HEIC up to ${Math.floor(limits.image_bytes / MB)} MB. ` +
-    `CSV, XLSX, XLS, TXT, MD, JSON or HTML up to ${Math.floor(limits.sheet_bytes / MB)} MB.`
+    `CSV, XLSX, XLS, TXT, MD, JSON or HTML up to ${Math.floor(limits.sheet_bytes / MB)} MB. ` +
+    `ZIP up to ${Math.floor(limitFor("zip", limits) / MB)} MB, unpacked into a folder.`
   );
 }
 
@@ -118,6 +122,8 @@ export function limitFor(kind: UploadKind, limits: UploadLimits = FALLBACK_UPLOA
       return limits.image_bytes;
     case "sheet":
       return limits.sheet_bytes;
+    case "zip":
+      return limits.zip_bytes ?? Math.max(limits.pdf_bytes, limits.sheet_bytes); // an older server: as an .xlsx
   }
 }
 
@@ -137,6 +143,9 @@ export function tooLargeMessage(kind: UploadKind, sizeBytes: number, limitBytes:
       return `Photos and scans can be up to ${limit} MB. This one is ${size} MB. Save it at a lower resolution and try again.`;
     case "sheet":
       return `Spreadsheets, CSV and text files can be up to ${limit} MB. This one is ${size} MB. Split it into smaller files and try again.`;
+    case "zip":
+      // The server's words: at most 1 GB (the scan holds a zip in memory), named in GB when whole GB.
+      return `Zip files can be up to ${limitBytes % (1024 * MB) === 0 ? `${limitBytes / (1024 * MB)} GB` : `${limit} MB`}. Unzip it on your computer and upload the folder instead.`;
   }
 }
 
@@ -227,6 +236,7 @@ export const SECONDS_PER_PAGE: Readonly<Record<UploadKind, number>> = {
   pdf: 35,
   image: 35,
   sheet: 1,
+  zip: 1, // unpacked, not read: each file inside is read as its own document
 };
 
 /**

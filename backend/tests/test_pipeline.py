@@ -140,7 +140,8 @@ def build(
         model_errors=(ModelDown,),
         office=office,
         renditions=storage,
-        kind_limits=kind_limits,
+        # #522: the organisation's limit for a kind told after the scan (``kind_limit``).
+        kind_limit=None if kind_limits is None else (lambda _customer, kind: kind_limits[kind]),
     )
     return System(
         upload,

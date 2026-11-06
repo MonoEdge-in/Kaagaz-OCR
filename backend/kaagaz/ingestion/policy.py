@@ -13,13 +13,17 @@ All formats (#522): every kind ``resolve.py`` tells after the virus scan has a s
 group too, so a reader can check a file against its own kind's limit: Word and
 PowerPoint files go with PDFs, a HEIC photo with photos, an old .xls and every text
 kind (TXT, Markdown, JSON, HTML) with spreadsheets and CSV files. An upload is
-checked before the scan, by its sniffed type: a text file with spreadsheets; a zip
-file (.xlsx, .docx, .dotx, .pptx) and an old Office file (ole2: .xls, .doc, .ppt)
-with PDFs, the largest group of the kinds it can be, since nothing may look inside
-before the scan. The worker then checks the file against its kind's own limit
-(``DocumentProcessor``'s ``kind_limits``), so an .xlsx or .xls over the spreadsheet
-limit fails there (#522 PR 2). A zip that is a folder of files (``resolve.ZIP``) is
-not read yet; its own limit, the organisation's folder upload limit, comes with it.
+checked before the scan, by its sniffed type: a text file with spreadsheets; an old
+Office file (ole2: .xls, .doc, .ppt) with PDFs, the largest group of the kinds it can
+be, since nothing may look inside before the scan.
+
+A zip (#522 PR 3) has a size group of its own, ``zip``: the organisation's folder upload
+byte limit, or the PDF or sheet limit when larger (``kaagaz/db/upload_policy.py``), since an
+.xlsx, .docx, .dotx or .pptx is sniffed as a zip too. After the scan the worker checks a
+file let in under its container's limit (a zip's or an ole2's) against its own kind's
+limit (``DocumentProcessor``'s ``kind_limit``), so an .xlsx or .xls over the spreadsheet
+limit fails there (#522 PR 2), and unpacks a zip that is a folder of files
+(``resolve.ZIP``), each file inside against its own kind's limit.
 """
 
 from collections.abc import Mapping
@@ -28,7 +32,7 @@ from typing import Literal
 
 from kaagaz.ingestion import resolve, sniff
 
-Kind = Literal["pdf", "image", "sheet"]
+Kind = Literal["pdf", "image", "sheet", "zip"]
 
 # The size group of each sniffed type that has a size limit, and of each kind.
 KIND_OF: Mapping[str, Kind] = {
@@ -38,7 +42,7 @@ KIND_OF: Mapping[str, Kind] = {
     sniff.TIFF: "image",
     sniff.HEIC: "image",
     sniff.TEXT: "sheet",
-    sniff.ZIP: "pdf",  # .xlsx, .docx, .dotx or .pptx: told after the scan (#522)
+    sniff.ZIP: "zip",  # resolve.ZIP too: the same name; an Office file is told after the scan (#522)
     sniff.OLE2: "pdf",  # .xls, .doc or .ppt: told after the scan (#522)
     resolve.DOCX: "pdf",
     resolve.DOTX: "pdf",
@@ -53,13 +57,23 @@ KIND_OF: Mapping[str, Kind] = {
     resolve.JSON: "sheet",
     resolve.HTML: "sheet",
 }
+# The most a zip may be, whatever the organisation's folder upload limit (Tushar, 6 Nov 2026).
+# shortcut: the scan gate holds the whole zip in memory; stream the scan to raise this.
+ZIP_MAX_BYTES = 1024**3
 # The sniffed types an upload can be allowed as (ALLOWED_TYPES): the ones with a size group.
 UPLOAD_TYPES = frozenset(KIND_OF.keys() & sniff.KNOWN_TYPES)
 
 
-def limits_by_type(*, pdf: int, image: int, sheet: int) -> dict[str, int]:
-    """A limit for every type and kind in KIND_OF, from the limit of its size group."""
-    by_kind: dict[Kind, int] = {"pdf": pdf, "image": image, "sheet": sheet}
+def limits_by_type(*, pdf: int, image: int, sheet: int, zip: int | None = None) -> dict[str, int]:
+    """A limit for every type and kind in KIND_OF, from the limit of its size group. ``zip``
+    None: the larger of the PDF and sheet limits, as before a zip was unpacked, when a zip
+    upload was an .xlsx, .docx, .dotx or .pptx (#522 PR 2)."""
+    by_kind: dict[Kind, int] = {
+        "pdf": pdf,
+        "image": image,
+        "sheet": sheet,
+        "zip": max(pdf, sheet) if zip is None else zip,
+    }
     return {detected: by_kind[kind] for detected, kind in KIND_OF.items()}
 
 

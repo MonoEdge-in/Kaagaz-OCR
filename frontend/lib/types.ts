@@ -185,6 +185,29 @@ export interface DocumentSummary {
   department?: { id: string; name: string } | null;
   // "new": this document may be a new version of another; "candidate": a newer one waits on this family.
   pending_suggestion?: { id: string; role: "new" | "candidate" } | null;
+  // #522: a zip only: where it was unpacked, null until it is (or when it is kept as a file).
+  // Its status_message already says "Unpacked: 120 files into folder "X", 3 skipped (...)".
+  unpack?: ZipUnpack | null;
+}
+
+/** #522: a zip upload unpacked into a folder by the server: its files counted, and the first
+ * skipped ones, each with why in plain words. */
+export interface ZipUnpack {
+  folder_upload_id: string;
+  folder_id: string | null; // null once that folder is deleted
+  folder_name: string;
+  files: number; // every file in the zip but a Mac's own (__MACOSX, .DS_Store)
+  unpacked: number;
+  already_in: number; // duplicates: already in Kaagaz, nothing new stored
+  skipped: number;
+  waiting: number; // still to unpack
+  skipped_files: ZipSkippedFile[]; // the first 20, in the zip's order
+}
+
+export interface ZipSkippedFile {
+  name: string;
+  code: string;
+  reason: string; // plain words, safe to show as is
 }
 
 /** The four sensitivity labels (O2). They inform; they restrict nothing. */
@@ -612,6 +635,7 @@ export interface UploadLimits {
   pdf_bytes: number;
   image_bytes: number;
   sheet_bytes: number;
+  zip_bytes?: number; // #522: the folder upload limit; left out by an older server
   max_pages: number; // for a PDF's pages and a TIFF's frames
   readers: UploadReader[]; // the scan readers an upload may choose, the server's default first
   // #484: this organisation's folder upload limits; left out by an older server (no folder upload).

@@ -21,7 +21,9 @@ from kaagaz.db.folder_upload_items import ItemRow
 from kaagaz.db.folders import FolderRow
 from kaagaz.db.listing import CLEAR_COPY_LINES, CLEAR_COPY_TEXT, MAX_READING_LINES, MAX_READING_TEXT
 from kaagaz.db.tags import TagRow
+from kaagaz.db.zip_unpacks import Unpack
 from kaagaz.eta import time_left
+from kaagaz.ingestion.unzip import REASONS, SHORT_REASONS, ZIP_FAILURES
 from kaagaz.jobs.reading_pause import BUDGET, CODES, DAILY_LIMIT
 from kaagaz.jobs.worker import KEY_PROBLEMS
 from kaagaz.reading.page_quality import ILLEGIBLE_WORDS, READERS_DISAGREE, UNPINNED, fix, says
@@ -168,6 +170,12 @@ def status_message(
     if status == "failed" and failure_code == "ocr_failed":
         # The scan reader failed on a page of this file (kaagaz/reading/ocr.py): not an outage.
         return "A page of this file needs another read. Read it again, or upload a clearer scan."
+    if status == "failed" and failure_code == "too_large":
+        # #522 PR 3: an Office file that came in under a zip's limit, past its own kind's.
+        return (
+            "This file is larger than Kaagaz takes for its kind."
+            " Split it or save it smaller and upload it again."
+        )
     if status == "failed" and failure_code == "customer_disabled":
         # The worker came to it while the organisation was turned off (0014): nothing was read.
         return "This file was not read because your organisation was turned off. Read it again."
@@ -281,12 +289,20 @@ def newer_version(newer: Mapping[str, Any] | None, *, max_pages: int) -> dict[st
 
 
 def document_summary(
-    row: RowMapping, *, max_pages: int, tags: Sequence[TagRow], user: CurrentUser, now: datetime
+    row: RowMapping,
+    *,
+    max_pages: int,
+    tags: Sequence[TagRow],
+    user: CurrentUser,
+    now: datetime,
+    unpack: Unpack | None = None,
 ) -> dict[str, Any]:
     """``DocumentSummary``. ``max_pages`` is passed on to ``status_message``;
     ``tags`` are the document's own, from one ``tags_for_documents`` call per page;
-    ``user`` decides ``can_delete``; ``now`` is the request's one clock reading."""
-    return {
+    ``user`` decides ``can_delete``; ``now`` is the request's one clock reading. A zip
+    (#522 PR 3) also has ``unpack``, its unpacking (``zip_unpacks.unpacks``; null when it
+    wasn't unpacked, or the caller didn't look), whose words are its status message."""
+    summary = {
         "id": str(row["id"]),
         "display_name": row["display_name"],
         "detected_type": row["detected_type"],
@@ -342,6 +358,65 @@ def document_summary(
         "department": row["department"],
         "pending_suggestion": row["pending_suggestion"],
     }
+    if row["detected_type"] == "zip":
+        summary["unpack"] = unpack_view(unpack)
+        summary["status_message"] = (
+            zip_message(row["status"], row["failure_code"], unpack) or summary["status_message"]
+        )
+    return summary
+
+
+def unpack_view(unpack: Unpack | None) -> dict[str, Any] | None:
+    """``ZipUnpack``: where a zip was unpacked (#522 PR 3), its files counted (unpacked, already
+    in Kaagaz, skipped, still waiting) and the first skipped ones, each with why in plain words."""
+    if unpack is None:
+        return None
+    return {
+        "folder_upload_id": unpack.upload_id,
+        "folder_id": unpack.root_folder_id,
+        "folder_name": unpack.root_name,
+        "files": unpack.file_count,
+        "unpacked": unpack.stored,
+        "already_in": unpack.duplicate,
+        "skipped": unpack.failed,
+        "waiting": unpack.waiting,
+        "skipped_files": [
+            {"name": name, "code": code, "reason": REASONS.get(code, "It could not be unpacked.")}
+            for name, code in unpack.skipped
+        ],
+    }
+
+
+def zip_message(status: str, failure_code: str | None, unpack: Unpack | None) -> str | None:
+    """A zip document's words (#522 PR 3): unpacking k of n files, the result line ("Unpacked:
+    120 files into folder "X", 3 skipped (...)"), where it stopped, why it wasn't unpacked, or
+    that it was kept as a file; None for the usual words (waiting, its virus check)."""
+    if unpack is None:
+        if status == "needs_reader":
+            return "Kept as a file, not unpacked: Kaagaz unpacks a zip only when it is uploaded on its own."
+        return ZIP_FAILURES.get(failure_code or "") if status == "failed" else None
+    folder = f'folder "{unpack.root_name}"'
+    if status in _IN_PROGRESS:
+        done = unpack.stored + unpack.duplicate + unpack.failed
+        return f"Unpacking: {done} of {_files(unpack.file_count)} into {folder}…"
+    line = f"{_files(unpack.stored)} into {folder}"
+    if unpack.duplicate:
+        line += f", {unpack.duplicate} already in Kaagaz"
+    if unpack.failed:
+        why = sorted(unpack.reasons.items(), key=lambda item: (-item[1], item[0]))
+        line += (
+            f", {unpack.failed} skipped ("
+            + ", ".join(f"{count} {SHORT_REASONS.get(code, code)}" for code, count in why)
+            + ")"
+        )
+    if status == "failed":
+        stopped = ZIP_FAILURES.get(failure_code or "") or "Unpack it again, or try another copy of the zip."
+        return f"Unpacking stopped after {line}. {stopped}"
+    return f"Unpacked: {line}."
+
+
+def _files(count: int) -> str:
+    return f"{count} file" if count == 1 else f"{count} files"
 
 
 _FAILED = ("failed", "rejected", "needs_reader")  # as the operator's health counts them (0020)
@@ -356,6 +431,7 @@ def batch_view(
     user: CurrentUser,
     now: datetime,
     max_active: int,
+    unpacks: Mapping[str, Unpack] | None = None,
 ) -> dict[str, Any]:
     """``BatchView`` (PRD 5 Q1, U1): the uploader's own files of one drop, in upload
     order (``listing.batch_rows``), each a ``DocumentSummary`` with its first unreadable
@@ -408,7 +484,14 @@ def batch_view(
         "id": batch_id,
         "documents": [
             {
-                **document_summary(row, max_pages=max_pages, tags=tags[str(row["id"])], user=user, now=now),
+                **document_summary(
+                    row,
+                    max_pages=max_pages,
+                    tags=tags[str(row["id"])],
+                    user=user,
+                    now=now,
+                    unpack=(unpacks or {}).get(str(row["id"])),
+                ),
                 "first_unreadable": first_unreadable(row["first_unreadable"]),
                 "values_found": int(row["values_found"]),  # U1: "All values verified" needs some
             }
