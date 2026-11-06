@@ -20,6 +20,7 @@ from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.reading_pause import BUDGET, DAILY_LIMIT, ReadingPaused, release_held
 from kaagaz.scanning.gate import DocumentStatus
 from tests.db_support import new_customer
+from tests.fakes import MemoryStorage
 from tests.pdf_builder import make_pdf
 from tests.test_api_page_fixes import read_again, scanned
 from tests.test_api_reprocess import reprocess
@@ -28,6 +29,7 @@ from tests.test_api_usage import add_spend
 from tests.test_api_usage import set_budget as set_budget_usd
 from tests.test_migration_0023_db import as_owner
 from tests.test_model_choice_pipeline import _Reading
+from tests.test_pipeline import FakeConverter
 from tests.test_pipeline_gemini import (
     MODEL,
     SCANNED,
@@ -40,6 +42,7 @@ from tests.test_pipeline_gemini import (
 )
 from tests.test_reading_pause_db import NIGHT, counter, document, gate, held, mine, set_budget, set_limit
 from tests.test_reading_pause_review_db import count_today, hold
+from tests.xlsx_builder import make_zip
 
 pytestmark = pytest.mark.db
 
@@ -194,3 +197,46 @@ def test_a_retried_mistral_page_gives_its_claim_back(db: Database) -> None:
     system.processor(job, beat)  # the retry that day: let in again with no claim, read to its end
     assert system.status(job) == DocumentStatus.READY
     assert counter(db, customer, NIGHT) == (1, Decimal(0))
+
+
+# --- #522: a Word file at the daily limit ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("name", "upload"),
+    [
+        ("a 3-page Word file", make_zip({"word/document.xml": b"<w/>"})),
+        ("a 3-page PDF", make_pdf([SCANNED, SCANNED, SCANNED])),
+    ],
+    ids=["word", "pdf"],
+)
+def test_an_organisation_at_its_daily_limit_holds_a_word_file_as_it_holds_a_pdf(
+    db: Database, name: str, upload: bytes
+) -> None:
+    """#522: a .docx is sniffed as a zip, as an .xlsx is, so it was let in as a spreadsheet,
+    past the daily page limit. Once its kind is told and LibreOffice made its 3-page PDF, it is
+    asked as that PDF is: held, nothing drawn or read, and no page claimed."""
+    customer, _ = new_customer(db)
+    set_limit(db, customer, 1)
+    count_today(db, customer, NIGHT, 1)  # the day's pages are read
+    started = document(db, customer)
+    pause = gate(db, NIGHT)
+
+    def admit(_customer: str, _document: str, *, ai_pages: bool = True) -> Any:
+        return pause.admit(customer, started, ai_pages=ai_pages)  # the rig's job is this document
+
+    reader = ScriptedReader({page: page_read(TOTAL) for page in (1, 2, 3)})
+    rendition = make_pdf([SCANNED, SCANNED, SCANNED])
+    system = rig(
+        reader,
+        checker=FakeChecker(),
+        reading_pause=admit,
+        office=FakeConverter(rendition),
+        renditions=MemoryStorage(),
+    )
+    job = system.job(upload)
+    system.processor(job, beat)
+    assert held(db, customer, started) == DAILY_LIMIT, name
+    assert reader.opened == [] and system.pages(job) == []
+    assert system.totals(job).error_code == "paused_daily_limit"
+    assert counter(db, customer, NIGHT) == (1, Decimal(0))  # nothing claimed past the limit

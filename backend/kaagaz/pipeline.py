@@ -369,6 +369,9 @@ _PHOTO_TYPES = frozenset({sniff.PNG, sniff.JPEG, sniff.TIFF, sniff.HEIC})
 # Read from their cells, never by AI (kaagaz/reading/wiring.py): the daily page limit never holds
 # them. The sniffed text and zip types too: a new upload's, before the worker tells its kind (#522).
 _SHEET_TYPES = frozenset({sniff.TEXT, sniff.ZIP, resolve.XLSX, resolve.XLS, *resolve.TEXT_KINDS})
+# A zip (.docx, .pptx, .xlsx or a folder) or an old Office file (.doc, .ppt, .xls): what it is read
+# as is told only after the scan, so the reading pause is asked then (#522, _read_and_save).
+_TOLD_AFTER_SCAN = frozenset({sniff.ZIP, sniff.OLE2})
 # The text kinds read as lines on pages (the text reader), not as a sheet's cells (#522).
 _TEXT_LINE_KINDS = resolve.TEXT_KINDS - {resolve.CSV}
 
@@ -1111,10 +1114,14 @@ class DocumentProcessor:
             model for model in (run.model, *(agent.model for agent in extra if agent is not None)) if model
         )
         upgrade = self._job_reading is not None and run.user_id is None  # the upgrade sweep's
+        # QA P1: an upgrade never holds a ready document.
+        pause = None if upgrade else self._reading_pause
+        # #522: a zip or an old Office file is asked once its kind is told (_read_and_save).
+        told_later = record.detected_type in _TOLD_AFTER_SCAN
         admitted = (
             contextlib.nullcontext()
-            if self._reading_pause is None or upgrade  # QA P1: an upgrade never holds a ready document
-            else self._reading_pause(  # #478: or ReadingPaused
+            if pause is None or told_later
+            else pause(  # #478: or ReadingPaused
                 job.customer_id, job.document_id, ai_pages=record.detected_type not in _SHEET_TYPES
             )
         )
@@ -1123,9 +1130,23 @@ class DocumentProcessor:
             self._billed(job, run, "scan" if run.user_id is not None else "upgrade"),
             pages_at_once(at_once),
         ):
-            self._read_and_save(job, record, heartbeat, run)
+            self._read_and_save(job, record, heartbeat, run, pause=pause if told_later else None)
 
-    def _read_and_save(self, job: Job, record: DocumentRecord, heartbeat: Heartbeat, run: _Run) -> None:
+    def _read_and_save(
+        self,
+        job: Job,
+        record: DocumentRecord,
+        heartbeat: Heartbeat,
+        run: _Run,
+        *,
+        pause: ReadingAdmission | None = None,
+    ) -> None:
+        """Scan, tell the kind, convert, then ``_read_told``. ``pause`` (#522): the reading pause
+        for a file whose kind is told only after the scan (a zip, an old Office file), asked
+        here once it is told and converted, by what it is read as, as for any other file: a
+        Word or PowerPoint file's PDF has pages for AI, a spreadsheet none (QA P4), so an
+        organisation at its daily page limit holds a Word file as it holds a PDF. Nothing of
+        it is drawn or read before."""
         customer_id, document_id = job.customer_id, job.document_id
         if record.detected_type == sniff.ZIP and record.size > ZIP_MAX_BYTES:
             # #522 PR 3: refused before the scan gate loads it into memory (policy.ZIP_MAX_BYTES).
@@ -1138,6 +1159,16 @@ class DocumentProcessor:
         heartbeat()
         record, data = self._converted(record, data)
         heartbeat()
+        if pause is None:
+            self._read_told(job, record, data, heartbeat, run)
+            return
+        with pause(customer_id, document_id, ai_pages=record.detected_type not in _SHEET_TYPES):
+            self._read_told(job, record, data, heartbeat, run)
+
+    def _read_told(self, job: Job, record: DocumentRecord, data: bytes, heartbeat: Heartbeat, run: _Run) -> None:
+        """The scanned file of a told kind (``record``), read as ``data``: unpacked if a zip,
+        else its pages drawn and read, and everything saved."""
+        customer_id, document_id = job.customer_id, job.document_id
         if (
             record.detected_type == resolve.ZIP
             and self._unpack is not None
