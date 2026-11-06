@@ -328,6 +328,8 @@ class S3Storage:
     # --- Renditions (#522 PR 2) ----------------------------------------------
 
     def put_rendition(self, customer_id: str, document_id: str, pdf: bytes) -> None:
+        # Not counted towards the storage limit: derived from the original, like the page
+        # images (kaagaz/db/storage_limits.py).
         """Store a Word or PowerPoint file's PDF (the pipeline converts it), beside the original."""
         key = rendition_key(customer_id, document_id)
         try:

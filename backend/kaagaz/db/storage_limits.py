@@ -6,7 +6,8 @@ and how much it holds now.
   them (``kaagaz_op_set_storage_limit``, 0061d), 1 to ``MOST_STORAGE_GB``.
 * **The bytes used**: the sum of the organisation's ``documents.size_bytes``: every uploaded
   file, every version, and the Trash until it is purged (a purge deletes the row). Page images
-  are not counted.
+  are not counted, nor is a Word or PowerPoint file's PDF rendition (#522,
+  ``kaagaz/reading/office.py``): both are derived from the original, which is counted.
 * A new upload past the limit is refused ``storage_full`` (the upload service, after its
   duplicate check, and the folder upload plan); nothing already stored is touched.
 
