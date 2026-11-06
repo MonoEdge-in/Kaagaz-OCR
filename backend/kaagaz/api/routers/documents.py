@@ -210,8 +210,8 @@ from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
 from kaagaz.ingestion.ports import BlobNotFound, Job, JobQueue, StorageRoom, UnknownFamily, UnknownFolder
 from kaagaz.ingestion.service import UploadResult, UploadService
 from kaagaz.jobs.reading_pause import BUDGET, DAILY_LIMIT, pause_reason
-from kaagaz.reading import office
 from kaagaz.reading.ocr import GEMINI
+from kaagaz.reading.office import PDF_KINDS as OFFICE_PDF_KINDS
 from kaagaz.search import page_words
 from kaagaz.settings import Settings
 
@@ -1615,7 +1615,7 @@ def get_file(document_id: uuid.UUID, user: User, context: Context, download: boo
             _viewed(conn, user, document_id, "file")
     if row["status"] not in _SERVABLE:
         raise ApiError(404, "not_found")
-    rendition = not download and row["detected_type"] in office.PDF_KINDS
+    rendition = not download and row["detected_type"] in OFFICE_PDF_KINDS
     try:
         if rendition:
             data = context.storage.get_rendition(user.customer_id, str(document_id))

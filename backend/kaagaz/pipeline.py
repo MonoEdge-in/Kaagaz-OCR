@@ -290,7 +290,6 @@ from kaagaz.jobs.reading_pause import CODES as PAUSE_CODES
 from kaagaz.jobs.reading_pause import ReadingPaused
 from kaagaz.jobs.worker import KEY_PROBLEMS, Heartbeat, JobFailed, Superseded
 from kaagaz.preparing.page_checks import PageCheck
-from kaagaz.reading import office
 from kaagaz.reading.mistral_ocr import (
     DEFAULT_MISTRAL_MODEL,
     MISTRAL,
@@ -315,6 +314,8 @@ from kaagaz.reading.ocr import (
     is_word_mark,
     worst_first,
 )
+from kaagaz.reading.office import KINDS as OFFICE_KINDS
+from kaagaz.reading.office import read_as
 from kaagaz.reading.page_quality import (
     ISSUES,
     LOW_RESOLUTION,
@@ -1511,14 +1512,14 @@ class DocumentProcessor:
         xlsx) from here on, while the stored kind stays the file's own. Any other kind, or none
         with no converter, as it is. A file LibreOffice can't open fails with ``office_unreadable``."""
         kind = record.detected_type
-        if self._office is None or self._renditions is None or kind not in office.KINDS:
+        if self._office is None or self._renditions is None or kind not in OFFICE_KINDS:
             return record, data
         convert = self._office
         converted = _or_fail(lambda: convert(kind, data))
-        read_as = office.read_as(kind)
-        if read_as == sniff.PDF:
+        converted_type = read_as(kind)
+        if converted_type == sniff.PDF:
             self._renditions.put_rendition(record.customer_id, record.document_id, converted)
-        return replace(record, detected_type=read_as), converted
+        return replace(record, detected_type=converted_type), converted
 
     def _scan(self, job: Job, run: _Run) -> bytes:
         try:

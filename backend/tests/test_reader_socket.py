@@ -395,7 +395,11 @@ class NoDirectReaderCallsTest(unittest.TestCase):
     # stay behind the socket, gemini_ocr).
     # Changed on purpose (#488, 4 Nov 2026): ``cli measure-compact`` runs the compact reply's
     # encoder and decoder offline (pure functions, no client, no page read).
+    # Changed on purpose (#522 PR 2): the pipeline converts a Word, PowerPoint or old Excel file
+    # before the readers read it, so it, the file download and the page drawing (Ensemble, land
+    # facts) name the converted kinds; the converter itself is built by the wiring only.
     CONSTANTS: ClassVar[dict[str, set[str]]] = {
+        "kaagaz.reading.office": {"KINDS", "PDF_KINDS", "read_as", "drawn_from"},
         "kaagaz.reading.compact": {"encode_compact", "decode_compact"},
         "kaagaz.reading.mistral_ocr": {
             "MISTRAL",
