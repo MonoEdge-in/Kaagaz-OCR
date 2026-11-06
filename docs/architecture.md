@@ -98,19 +98,22 @@ A new upload that looks like a new version of a file already there (Phase 2 PRD 
 
 Signals, for each candidate (this customer's current, ready documents out of Trash in other families, at most 20 scored):
 
-* **Text overlap**: MinHash of the first reader's text (5-word shingles, 64 hashes, LSH in 16 bands of 4); no fingerprint under 20 words.
+* **Text overlap**: the share of the first reader's text in common, in 5-word shingles. MinHash (64 hashes, LSH in 16 bands of 4) finds the candidates; the overlap that decides, and is shown, is then counted exactly (the Jaccard of the two texts' shingles), because 64 hashes estimate 0.8 only to about 0.05 either way. A text with a page over 5,000 words or over 30,000 in all (Compare's limits) keeps the estimate, stored and shown as one ("about 83%"). No fingerprint under 20 words.
 * **Name similarity**: pg_trgm similarity of the name keys (lower case, no extension, dates, version markers or punctuation).
 * **Shared identifier**: a related-documents link of the same type (survey number, agreement number and so on). Never enough on its own.
 
-Starting values (V4; to be tuned on the bulk test, then recorded here again):
+The rule (V4 as Tushar set it on 6 Nov 2026, #521):
 
 | Outcome | Rule |
 |---|---|
-| auto (linked at once, with Undo) | name 0.8 or more, text 0.95 or more, same type and same folder |
-| suggested (a banner a person answers) | text 0.9 or more alone, or two of: text 0.8 or more, name 0.6 or more, a shared identifier |
+| suggested (a banner a person answers) | text 0.8 or more alone, or two of: text 0.8 or more, name 0.6 or more, a shared identifier |
 | nothing | anything less |
 
-The best candidate wins (auto over suggested, then text, then name, then the newest). Accept makes the upload the family's next, current version; Keep separate means the pair is never suggested again; Undo puts it back alone in its old folder.
+Nothing is linked on its own: every match is a suggestion that a person accepts or keeps separate. Until #521 a near-exact copy (name 0.8, text 0.95, same type and folder) was linked at once; those links stay as they are (`outcome` 'auto'), with Undo, and the schema still allows 'auto' for them. The banner says why: `This looks like a new version of "X" (86% the same text).`, or for a name- or identifier-led suggestion the reason in words, `(same name and same survey number)` (NB-17).
+
+Two invoices of one template are not suggested when their numbers differ (number, date, quantities, rates: 44% of the shingles in common); a repeat bill with the same goods and quantities and only its number and date changed is 90% the same and is suggested (it was at the old 0.9 line too).
+
+The best candidate wins (text, then name, then the newest). Accept makes the upload the family's next, current version; Keep separate means the pair is never suggested again; Undo puts it back alone in its old folder.
 
 ## Data and customer separation
 
