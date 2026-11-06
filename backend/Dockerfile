@@ -54,5 +54,12 @@ USER app
 ARG KAAGAZ_COMMIT=local
 ENV KAAGAZ_COMMIT=$KAAGAZ_COMMIT
 
+# uvicorn takes the client's address from X-Forwarded-For (it reads this variable; the compose
+# command and CMD below both use it), so each visitor has their own rate bucket, not Caddy's one
+# (production QA S2). Safe because only Caddy reaches this port on the server
+# (docker-compose.prod.yml publishes no API port) and Caddy, with no trusted_proxies set, replaces
+# any X-Forwarded-For a visitor sends with the address it saw.
+ENV FORWARDED_ALLOW_IPS="*"
+
 EXPOSE 8000
 CMD ["uvicorn", "kaagaz.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
