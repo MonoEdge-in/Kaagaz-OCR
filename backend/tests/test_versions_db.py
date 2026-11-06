@@ -489,7 +489,7 @@ def test_521_over_the_compare_limits_the_estimate_decides_and_is_shown_as_one(
     _spot(db, signed.customer_id, new)
     assert _stored(db, signed.customer_id) == [(0.8281, False)]  # 53 of the 64 values (84% counted)
     banner = signed.client.get(f"/api/documents/{new}").json()["version_suggestion"]
-    assert (banner["reasons"], banner["text_overlap_estimated"]) == ("about 83% the same text", True)
+    assert (banner["reasons"], banner["text_overlap_estimated"]) == ("about 82% the same text", True)
 
 
 def test_521_a_copy_in_another_organisation_is_never_suggested(db: Database) -> None:
@@ -786,6 +786,47 @@ def test_v11_compare_a_pending_pair_or_one_family_and_nothing_else(db: Database)
         assert trash.trash_document(conn, customer, old, by=signed.user_id, now=NOW)
     trashed = signed.client.get(f"/api/documents/{old}/compare", params={"with": new})
     assert (trashed.status_code, trashed.json()["error"]["code"]) == (409, "in_trash")
+
+
+def test_521_see_the_differences_of_a_suggested_pair_says_it_in_plain_words(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The suggested pair's compare: the share and the changes in words; another organisation's
+    pair is 404; over the compare limits it says only the first part is compared."""
+    api = Api(db)
+    signed = api.new_signed()
+    customer = signed.customer_id
+    old, new = _satbaras(api, db, signed)
+    _spot(db, customer, new)
+    reply = signed.client.get(f"/api/documents/{new}/compare", params={"with": old})
+    assert reply.status_code == 200, reply.text
+    body = reply.json()
+    assert body["overview"] == "84% the same. 36 words changed on page 1."
+    assert (body["pages"][0]["left_words"], body["pages"][0]["right_words"]) == (300, 335)
+    other = api.new_signed()
+    assert other.client.get(f"/api/documents/{new}/compare", params={"with": old}).status_code == 404
+    monkeypatch.setattr(versions, "MAX_COMPARE_TOTAL", 100)
+    long = signed.client.get(f"/api/documents/{new}/compare", params={"with": old}).json()
+    assert (long["truncated"], long["overview"]) == (
+        True,
+        "These files are long, so only the first part is compared.",
+    )
+
+
+def test_521_the_same_text_in_other_bytes_is_a_near_match_whose_text_is_the_same(db: Database) -> None:
+    """A re-scan or a re-save: other bytes (not the duplicate), the text counted exactly the same,
+    so the banner may say 100% and the compare says so in words."""
+    api = Api(db)
+    signed = api.new_signed()
+    customer = signed.customer_id
+    old = _doc(api, signed, list(_SATBARA), "Satbara.pdf", hours_ago=48)
+    _old(db, customer, old)
+    new = _doc(api, signed, list(_SATBARA), "Satbara scan.pdf", hours_ago=0)
+    _spot(db, customer, new)
+    banner = signed.client.get(f"/api/documents/{new}").json()["version_suggestion"]
+    assert (banner["reasons"], banner["text_overlap_estimated"]) == ("100% the same text", False)
+    body = signed.client.get(f"/api/documents/{new}/compare", params={"with": old}).json()
+    assert body["overview"] == "The text is the same in both files."
 
 
 # --- V9 the note at upload -----------------------------------------------------------------

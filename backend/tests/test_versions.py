@@ -5,6 +5,7 @@ list's row (V12) and the one-time fingerprint sweep's worker wrapper. The SQL: t
 """
 
 import random
+import struct
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -344,6 +345,20 @@ def test_v6_nb17_the_reason_is_the_share_of_text_else_the_name_and_identifier_in
     assert reasons(0.79, 0.2, None) == ""
 
 
+def test_521_the_share_is_rounded_down_and_100_only_when_counted_exactly_the_same() -> None:
+    """The council's Pattern A, with Tushar's change of 6 Nov: the whole percent below (86.9% is
+    86%), never 100% for a near match, unless the text was counted exactly the same (a re-scan or
+    a re-save: other bytes, the same text); never from the estimate. The overlap comes back from
+    the database as a 4-byte real, so 0.83 reads 0.8299999833: still 83%."""
+    reasons = versions.reasons
+    assert reasons(0.869, None, None) == "86% the same text"
+    assert reasons(struct.unpack("f", struct.pack("f", 0.83))[0], None, None) == "83% the same text"
+    assert reasons(0.996, None, None) == "99% the same text"
+    assert reasons(1.0, None, None) == "100% the same text"
+    assert reasons(1.0, None, None, estimated=True) == "about 99% the same text"
+    assert reasons(0.828125, None, None, estimated=True) == "about 82% the same text"
+
+
 def test_v6_a_suggestion_says_which_side_this_document_is() -> None:
     row: dict[str, Any] = {
         "id": "s1",
@@ -393,6 +408,39 @@ def test_v11_compare_gives_runs_of_same_added_and_removed_page_by_page() -> None
     assert versions.compare(left, left, max_pages=10)["summary"] == "No changes"
     assert versions.compare({1: "a b"}, {1: "a c"}, max_pages=10)["summary"] == "1 change on page 1"
     assert versions.compare(left, right, max_pages=10)["truncated"] is False
+
+
+def test_521_compare_counts_the_words_changed_and_each_sides_words_page_by_page() -> None:
+    found = versions.compare({1: "a b c d", 2: "x"}, {1: "a z z d e", 3: "new page"}, max_pages=10)
+    counts = [(page["words_changed"], page["left_words"], page["right_words"]) for page in found["pages"]]
+    assert counts == [(3, 4, 5), (1, 1, 0), (2, 0, 2)]  # "b c" for "z z", then "e"; page 2 gone
+
+
+def test_521_the_overview_says_the_share_the_words_changed_and_the_pages_new_or_gone() -> None:
+    """See the differences: the summary line in plain words."""
+
+    def page(no: int, changed: int, left: int = 10, right: int = 10) -> dict[str, int]:
+        return {
+            "page_no": no,
+            "words_changed": changed,
+            "left_words": left,
+            "right_words": right,
+            "changes": 1,
+        }
+
+    pages = [page(1, 0), page(2, 30), page(3, 0), page(4, 0), page(5, 8), page(6, 12, left=0, right=12)]
+    assert versions.overview(pages, 0.94) == "94% the same. 38 words changed on pages 2 and 5. Page 6 is new."
+    assert versions.overview([page(1, 1), page(2, 3, right=0)], 0.869) == (
+        "86% the same. 1 word changed on page 1. Page 2 is gone."
+    )
+    three = [page(2, 1), page(4, 1), page(7, 1)]
+    assert versions.overview(three, 0.8).endswith("3 words changed on pages 2, 4 and 7.")
+    assert versions.overview(pages, 1.0) == "The text is the same in both files."  # a re-scan or re-save
+    assert (
+        versions.overview(pages, 0.9, truncated=True)
+        == "These files are long, so only the first part is compared."
+    )
+    assert versions.overview(pages[:2], None) == "30 words changed on page 2."  # under 20 words: no share
 
 
 def test_v11_compare_caps_words_per_page_and_across_pages(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -16,6 +16,7 @@ hashlib and difflib only (the PRD: no new library).
 """
 
 import hashlib
+import math
 import re
 import unicodedata
 from collections.abc import Mapping
@@ -156,9 +157,8 @@ def reasons(
     when only estimated) when the text led; else the name and identifier in plain words, "same
     name and same survey number"; "" when nothing counted."""
     if text_overlap is not None and text_overlap >= TEXT_ALONE:
-        percent = round(text_overlap * 100)
-        percent = 99 if percent == 100 and text_overlap < 1 else percent  # never "100%" unless all
-        return f"{'about ' if estimated else ''}{percent}% the same text"
+        about = "about " if estimated else ""
+        return f"{about}{share_percent(text_overlap, estimated=estimated)}% the same text"
     parts = []
     if name_similarity is not None and name_similarity >= NAME_SIGNAL:
         parts.append("same name" if name_similarity >= 1 else "similar name")
@@ -167,13 +167,24 @@ def reasons(
     return " and ".join(parts)
 
 
+def share_percent(text_overlap: float, *, estimated: bool) -> int:
+    """#521: the whole percent below the overlap (86.9% is 86), at most 99, and 100 only when it
+    was counted exactly the same (never from the estimate). The overlap is stored as a 4-byte
+    real, so it is first rounded to 4 places of the percent (0.83 reads 0.8299999833: 83)."""
+    percent = math.floor(round(text_overlap * 100, 4))
+    if percent >= 100:
+        return 100 if text_overlap >= 1 and not estimated else 99
+    return percent
+
+
 # --- V11 -------------------------------------------------------------------------------
 
 
 def compare(left: Mapping[int, str], right: Mapping[int, str], *, max_pages: int) -> dict[str, Any]:
     """Page by page (at most ``max_pages``), the words of ``left`` against ``right``: runs of
     ``same``, ``removed`` (only in left) and ``added`` (only in right), each page's count of
-    changes, and a summary ("2 changes on page 2"). O(w^2) worst case per page of w words."""
+    changes, words changed (a replacement counts its longer side) and words on each side, and a
+    summary ("2 changes on page 2"). O(w^2) worst case per page of w words."""
     last = min(max([*left, *right], default=0), max_pages)
     pages = []
     budget = MAX_COMPARE_TOTAL
@@ -184,17 +195,28 @@ def compare(left: Mapping[int, str], right: Mapping[int, str], *, max_pages: int
         a, b = a[:cap], b[:cap]
         budget -= max(len(a), len(b))
         runs: list[dict[str, str]] = []
-        changes = 0
+        changes = changed = 0
         for op, i1, i2, j1, j2 in SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
             if op == "equal":
                 runs.append({"kind": "same", "text": " ".join(a[i1:i2])})
                 continue
             changes += 1
+            changed += max(i2 - i1, j2 - j1)
             if i2 > i1:
                 runs.append({"kind": "removed", "text": " ".join(a[i1:i2])})
             if j2 > j1:
                 runs.append({"kind": "added", "text": " ".join(b[j1:j2])})
-        pages.append({"page_no": page_no, "changes": changes, "truncated": cut, "runs": runs})
+        pages.append(
+            {
+                "page_no": page_no,
+                "changes": changes,
+                "words_changed": changed,
+                "left_words": len(a),
+                "right_words": len(b),
+                "truncated": cut,
+                "runs": runs,
+            }
+        )
     truncated = any(page["truncated"] for page in pages)
     return {"pages": pages, "summary": summary(pages), "truncated": truncated}
 
@@ -209,3 +231,34 @@ def summary(pages: list[dict[str, Any]]) -> str:
     if len(changed) == 1:
         return f"{total} {noun} on page {changed[0]['page_no']}"
     return f"{total} {noun} on {len(changed)} pages"
+
+
+def _page_list(numbers: list[int]) -> str:
+    """ "page 2", "pages 2 and 5", "pages 2, 4 and 7"."""
+    if len(numbers) == 1:
+        return f"page {numbers[0]}"
+    return "pages " + ", ".join(map(str, numbers[:-1])) + f" and {numbers[-1]}"
+
+
+def overview(pages: list[dict[str, Any]], overlap: float | None, *, truncated: bool = False) -> str:
+    """#521, See the differences: the compare in one line of plain words. "94% the same. 38
+    words changed on pages 2 and 5. Page 6 is new." The share is the exact overlap (None: a
+    text under MIN_WORDS words, no share said); 1.0, or no change at all, is "The text is the
+    same in both files." Over V11's limits (``truncated``) only that is said."""
+    if truncated:
+        return "These files are long, so only the first part is compared."
+    if (overlap is not None and overlap >= 1) or not any(page["words_changed"] for page in pages):
+        return "The text is the same in both files."
+    said = [] if overlap is None else [f"{share_percent(overlap, estimated=False)}% the same."]
+    new = [page["page_no"] for page in pages if not page["left_words"] and page["right_words"]]
+    gone = [page["page_no"] for page in pages if page["left_words"] and not page["right_words"]]
+    changed = [page for page in pages if page["words_changed"] and page["page_no"] not in new + gone]
+    if changed:
+        words = sum(page["words_changed"] for page in changed)
+        noun = "word" if words == 1 else "words"
+        said.append(f"{words} {noun} changed on {_page_list([page['page_no'] for page in changed])}.")
+    for numbers, what in ((new, "new"), (gone, "gone")):
+        if numbers:
+            verb = "is" if len(numbers) == 1 else "are"
+            said.append(f"{_page_list(numbers)[0].upper()}{_page_list(numbers)[1:]} {verb} {what}.")
+    return " ".join(said)
