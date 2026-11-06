@@ -319,7 +319,7 @@ class ZipUnpacker:
             data = unzip.read_file(archive, entry, limit_for=limit_for, budget=budget)
         except unzip.FileRefused as refused:
             self._fail(customer_id, row.id, refused.code)
-            return 0
+            return refused.inflated  # what it unpacked to before it stopped counts too
         code = self._refusal(data, row.name, policy)
         if code is not None:
             self._fail(customer_id, row.id, code)
@@ -370,10 +370,15 @@ class ZipUnpacker:
             raise JobFailed("scanner_unavailable", retryable=True) from None
         if verdict is not Verdict.CLEAN:
             return _VERDICTS.get(verdict, "unscannable") if isinstance(verdict, Verdict) else "unscannable"
+        decoding_failed = False
         try:
             kind = resolve_kind(data, detect_type(data[:HEAD_SIZE]), name)
         except ReadError:
             return None  # damaged inside: its own job fails it with plain words, as any upload
+        except unzip.DECODE_ERRORS:  # any other reader's or decoder's: this file's, never the zip's
+            decoding_failed = True
+        if decoding_failed:
+            return unzip.DAMAGED
         if kind == UNSUPPORTED:
             return "unsupported_type"
         return "too_large" if kind in KIND_OF and len(data) > policy.limit_for(kind) else None

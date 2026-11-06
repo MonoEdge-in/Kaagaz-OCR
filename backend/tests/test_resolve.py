@@ -242,6 +242,32 @@ def test_a_damaged_zip_is_corrupt(data: bytes) -> None:
     assert refused.value.code == "corrupt_file"
 
 
+def lzma_word_file() -> bytes:
+    """A Word file whose [Content_Types].xml is packed with LZMA (zip method 14), its packed
+    bytes damaged: Python's lzma raises its own LZMAError, which is no OSError."""
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as archive:
+        archive.writestr("word/document.xml", b"<w/>")
+        info = zipfile.ZipInfo("[Content_Types].xml")
+        info.compress_type = zipfile.ZIP_LZMA
+        archive.writestr(info, b"<Types>" + b"x" * 2000 + b"</Types>")
+    data = bytearray(out.getvalue())
+    with zipfile.ZipFile(io.BytesIO(bytes(data))) as archive:
+        part = archive.getinfo("[Content_Types].xml")
+    name, extra = struct.unpack_from("<HH", data, part.header_offset + 26)
+    start = part.header_offset + 30 + name + extra
+    for at in range(start + 4, start + part.compress_size):
+        data[at] ^= 0xFF
+    return bytes(data)
+
+
+def test_a_damaged_lzma_part_is_corrupt_never_a_crash() -> None:
+    # Security review (6 Nov 2026): lzma.LZMAError escaped the damaged-zip errors.
+    with pytest.raises(ReadError) as refused:
+        resolve_kind(lzma_word_file(), sniff.ZIP, "letter.docx")
+    assert refused.value.code == "corrupt_file"
+
+
 def test_a_damaged_content_types_part_is_corrupt() -> None:
     data = bytearray(make_zip({"[Content_Types].xml": _DOTX_TYPES * 50, "word/document.xml": b"<w/>"}))
     start = data.find(b"[Content_Types].xml") + len("[Content_Types].xml")

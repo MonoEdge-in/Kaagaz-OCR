@@ -133,8 +133,9 @@ _UTF8 = 0x800  # general purpose flag bit 11: the name is UTF-8
 _REPARSE_POINT = 0x400  # a Windows link (FILE_ATTRIBUTE_REPARSE_POINT)
 _DRIVE = re.compile(r"^[A-Za-z]:")
 _MAC_FOLDER, _MAC_FILE = "__MACOSX", ".DS_Store"
-# What zipfile and its decompressors raise for a part they can't unpack.
-_DAMAGED = (
+# What zipfile and its decompressors raise for a part they can't unpack (DECODE_ERRORS: the
+# unpacker's, for any reader of one file).
+_DAMAGED = DECODE_ERRORS = (
     zipfile.BadZipFile,
     zipfile.LargeZipFile,
     OSError,
@@ -157,11 +158,13 @@ class ZipRefused(Exception):
 
 
 class FileRefused(Exception):
-    """One file is not unpacked; ``code`` says why (module notes)."""
+    """One file is not unpacked; ``code`` says why (module notes). ``inflated``: the bytes
+    unpacked before it stopped, which still count against the zip's budget."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, inflated: int = 0) -> None:
         super().__init__(code)
         self.code = code
+        self.inflated = inflated
 
 
 @dataclass(frozen=True, slots=True)
@@ -339,17 +342,18 @@ def read_file(
                 if limit is None and (len(data) >= HEAD_SIZE or not chunk):
                     limit = limit_for(detect_type(bytes(data[:HEAD_SIZE])))
                     if limit is None:
-                        raise FileRefused(UNSUPPORTED_TYPE if data else EMPTY_FILE)
+                        raise FileRefused(UNSUPPORTED_TYPE if data else EMPTY_FILE, len(data))
                 if limit is not None and len(data) > limit:
-                    raise FileRefused(TOO_LARGE)
+                    raise FileRefused(TOO_LARGE, len(data))
                 if len(data) > most:
-                    raise FileRefused(TOO_COMPRESSED)
+                    raise FileRefused(TOO_COMPRESSED, len(data))
                 if not chunk:
                     break
     except _DAMAGED:
         failed = True
     if failed or len(data) != info.file_size:
-        raise FileRefused(DAMAGED)  # outside the except block: zipfile's words are never chained
+        # Outside the except block: zipfile's words are never chained.
+        raise FileRefused(DAMAGED, len(data))
     if not data:
         raise FileRefused(EMPTY_FILE)
     return bytes(data)

@@ -4,6 +4,9 @@ the duplicate rule, every unsafe file refused with its reason, the limits refusi
 before anything is made, and the result line on the zip's own document. Customer separation:
 test_isolation_unpack_db."""
 
+import lzma
+import os
+import struct
 import uuid
 from collections.abc import Iterator
 from typing import Any
@@ -20,10 +23,13 @@ from kaagaz.db.folder_uploads import FolderUploadLimits
 from kaagaz.ingestion import unzip
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import StorageRoom
+from kaagaz.ingestion.resolve import resolve_kind
 from kaagaz.jobs import unpack as unpack_module
 from kaagaz.jobs.worker import JobFailed
 from kaagaz.scanning.gate import ScannerError
+from tests import zip_builder
 from tests.db_support import insert_folder, new_customer
+from tests.test_resolve import lzma_word_file
 from tests.unpack_support import Unpacking
 from tests.zip_builder import make_zip, make_zip_with, mark_encrypted, with_link
 
@@ -346,6 +352,71 @@ def test_a_zip_s_unpack_is_not_listed_with_a_person_s_folder_uploads(unpacking: 
         assert items_sql.summaries(conn, unpacking.customer_id, user_id=unpacking.user_id) == []
         upload = zip_unpacks.unpack_id(record.document_id)
         assert items_sql.owned(conn, unpacking.customer_id, upload, user_id=unpacking.user_id)
+
+
+def test_one_file_a_decoder_can_t_read_never_stops_the_others(
+    unpacking: Unpacking, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Security review (6 Nov 2026): a damaged file in a zip is that file's refusal, whatever
+    reader or decoder fails on it: before, an LZMA part's error stopped the whole unpack."""
+    data = make_zip([("letter.docx", lzma_word_file()), ("a.csv", b"a,b\n1,2\n"), ("b.csv", b"c\n3\n")])
+    record = unpacking.upload(data)
+    assert unpacking.unpack(record, data) is True
+    found = unpacking.result(record)
+    assert found is not None and (found.stored, found.failed) == (3, 0)  # its own job says why
+
+    real = resolve_kind
+
+    def failing(data: bytes, sniffed: str | None, name: str) -> str:
+        if name == "a.csv":
+            raise lzma.LZMAError("Corrupt input data")  # any decoder's error, as resolve missed one
+        return real(data, sniffed, name)
+
+    monkeypatch.setattr("kaagaz.jobs.unpack.resolve_kind", failing)
+    other = make_zip([("a.csv", b"a,b\n5,6\n"), ("c.csv", b"e\n7\n")])
+    record = unpacking.upload(other, "Other.zip")
+    assert unpacking.unpack(record, other) is True
+    found = unpacking.result(record)
+    assert found is not None
+    assert (found.stored, found.failed, found.skipped) == (1, 1, [("a.csv", unzip.DAMAGED)])
+
+
+def test_a_refused_file_s_unpacked_bytes_count_against_the_zip_s_budget(
+    unpacking: Unpacking, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nice to have (security review, 6 Nov 2026): a file refused once unpacked (damaged, too
+    large, too compressed) was charged nothing, so every file after it was given the zip's whole
+    budget again; what it was unpacked to now counts."""
+    charged: list[int] = []
+    real = unzip.read_file
+
+    def noting(archive: Any, entry: Any, *, limit_for: Any, budget: int) -> bytes:
+        charged.append(budget)
+        return real(archive, entry, limit_for=limit_for, budget=budget)
+
+    monkeypatch.setattr(unzip, "read_file", noting)
+    # Three PDFs of 600 KB that pack no smaller; the first two with a wrong CRC, which zipfile
+    # finds only once it has unpacked the whole file.
+    files = [(name, b"%PDF-1.7\n" + os.urandom(600 * 1024)) for name in ("a.pdf", "b.pdf", "c.pdf")]
+    data = make_zip(files)
+    for name in ("a.pdf", "b.pdf"):
+        data = with_wrong_crc(data, name)
+    record = unpacking.upload(data)
+    assert unpacking.unpack(record, data) is True
+    found = unpacking.result(record)
+    assert found is not None
+    assert found.skipped == [("a.pdf", unzip.DAMAGED), ("b.pdf", unzip.DAMAGED)]
+    # Each was unpacked (all but its last chunk) before it was refused: the next is given that less.
+    assert charged[0] - charged[1] > 500 * 1024 and charged[1] - charged[2] > 500 * 1024
+
+
+def with_wrong_crc(data: bytes, name: str) -> bytes:
+    """``name``'s CRC-32, in both its headers, one off."""
+    out = bytearray(data)
+    for at in (zip_builder._local_at(data, name) + 14, zip_builder._central_at(data, name) + 16):
+        (crc,) = struct.unpack_from("<I", out, at)
+        struct.pack_into("<I", out, at, (crc + 1) & 0xFFFFFFFF)
+    return bytes(out)
 
 
 def test_a_zip_of_at_most_1_mb_is_never_too_compressed(unpacking: Unpacking) -> None:

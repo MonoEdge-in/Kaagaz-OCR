@@ -41,6 +41,7 @@ chains, O(sectors) bounded by the file size; a text file, O(n) for a ``.json``
 
 import io
 import json
+import lzma
 import os
 import re
 import struct
@@ -110,6 +111,7 @@ _ZIP_DAMAGED = (
     NotImplementedError,
     RuntimeError,
     zlib.error,
+    lzma.LZMAError,  # an LZMA part's (zip method 14): no OSError (security review, 6 Nov 2026)
     struct.error,
 )
 
