@@ -102,7 +102,7 @@ _SELECT = (
 # The highest ready version_no is current (PRD 1 F6, PROVISIONAL plan 7.3): is a
 # newer version of this document's family ready already?
 _READY_STATE = (
-    "SELECT d.status, EXISTS (SELECT 1 FROM documents newer WHERE newer.customer_id = :c"
+    "SELECT d.status, d.display_name, EXISTS (SELECT 1 FROM documents newer WHERE newer.customer_id = :c"
     " AND newer.family_id = d.family_id AND newer.status = 'ready'"
     " AND newer.version_no > d.version_no) AS newer_ready"
     " FROM documents d WHERE d.customer_id = :c AND d.id = :d"
@@ -147,7 +147,8 @@ def mark_ready(
     A read again (a run of it was ready before, ``_READ_BEFORE``) keeps ``is_current`` as it
     is, so it never changes which version is current (File management V10).
     With ``run``, finish that run in the same transaction, so a ready document and
-    its finished run commit together. With ``open_run`` instead (Ready first, 16 Oct
+    its finished run commit together. The text's fingerprint and name key (Versions V1) are
+    written with it (#521). With ``open_run`` instead (Ready first, 16 Oct
     2026), the run fence on that run id, which stays open while the run goes on
     understanding the ready document, and the progress it wrote last is kept; otherwise
     the progress is cleared. A document set to be read again meanwhile (``received``)
@@ -187,6 +188,17 @@ def mark_ready(
         conn.execute(text(_OTHERS_NOT_CURRENT), params)
     ready = {"pages": page_count, "current": current, "again": again, "keep": open_run is not None}
     conn.execute(text(_READY), {**params, **ready})
+    # #521 fix 3: the text's fingerprint commits with Ready, so a spotting run that starts after
+    # this one sees it (db/versions.py). In a savepoint: an error there is logged with the ids
+    # and Ready commits without it (spotting writes a missing one; the sweep fills the rest).
+    try:
+        with conn.begin_nested():
+            versions.write_fingerprint(conn, customer_id, document_id, str(state.display_name))
+    except Exception as failed:  # noqa: BLE001 - a fingerprint must never fail Ready
+        _log.warning(
+            "fingerprint_failed",
+            extra={"customer_id": customer_id, "document_id": document_id, "code": type(failed).__name__},
+        )
     if run is not None:
         finish_run(conn, customer_id, run)
 

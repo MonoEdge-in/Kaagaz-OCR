@@ -269,7 +269,7 @@ def test_logout_ends_this_browsers_session_at_once_and_only_it(db: Database) -> 
     assert again.get("/api/auth/me").status_code == 200
 
 
-def test_a_cookie_from_before_0076_without_a_session_id_is_refused(db: Database) -> None:
+def test_a_cookie_from_before_0077a_without_a_session_id_is_refused(db: Database) -> None:
     api = Api(db)
     signed = api.new_signed()
     now = int(api.clock().timestamp())

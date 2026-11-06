@@ -12,8 +12,8 @@ The held runs are found on 0030's index of the active runs (``status IN ('queued
 The downgrade puts 0066's body and comment back. A run held then stays queued until someone
 stops it (Stop works on a queued run), as nothing looks for it.
 
-Revision ID: 0076a
-Revises: 0076 (ended sessions)
+Revision ID: 0077b
+Revises: 0077a (ended sessions)
 """
 
 import importlib.util
@@ -22,8 +22,8 @@ from types import ModuleType
 
 from alembic import op
 
-revision = "0076a"
-down_revision = "0076"
+revision = "0077b"
+down_revision = "0077a"
 branch_labels = None
 depends_on = None
 

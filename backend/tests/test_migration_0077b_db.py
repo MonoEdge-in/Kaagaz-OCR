@@ -1,4 +1,4 @@
-"""Migration 0076a (#520, Tushar, 6 Nov 2026): Ensemble held by the reading pause. Only the body and
+"""Migration 0077b (#520, Tushar, 6 Nov 2026): Ensemble held by the reading pause. Only the body and
 comment of ``kaagaz_customer_ids_held()`` change: it gives the organisations with a held queued
 Ensemble run too, still owner rights, the empty search path and the app's alone; down puts 0066's
 back exactly; up, down, up."""
@@ -15,7 +15,7 @@ from tests.test_migration_0066_db import _bodies
 
 pytestmark = pytest.mark.db
 fresh = base.fresh
-PREVIOUS = "0076"
+PREVIOUS = "0077a"
 _HELD = text("SELECT t.id::text FROM kaagaz_customer_ids_held() AS t (id)")
 
 
@@ -38,11 +38,11 @@ def test_a_held_ensemble_run_brings_its_organisation_to_the_release_sweep(
         assert _held(db) == []
 
 
-def test_down_up_restores_0076_exactly(fresh: tuple[str, Database]) -> None:
+def test_down_up_restores_0077a_exactly(fresh: tuple[str, Database]) -> None:
     url, db = fresh
     migrate(url, PREVIOUS)
     at_0076, bodies_0076_before = base._schema(db), _bodies(db)
-    migrate(url, "0076a")
+    migrate(url, "0077b")
     at_0076a, bodies_0076a = base._schema(db), _bodies(db)
     [(_, body, comment, acl)] = [row for row in bodies_0076a if row[0] == "kaagaz_customer_ids_held"]
     assert "ensemble_runs" in body and "SECURITY DEFINER" in body and "SET search_path TO ''" in body
@@ -53,6 +53,6 @@ def test_down_up_restores_0076_exactly(fresh: tuple[str, Database]) -> None:
     base._downgrade(url, PREVIOUS)
     assert base._schema(db) == at_0076
     assert _bodies(db) == bodies_0076_before
-    migrate(url, "0076a")
+    migrate(url, "0077b")
     assert base._schema(db) == at_0076a
     assert _bodies(db) == bodies_0076a

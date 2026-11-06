@@ -22,8 +22,8 @@ until its own expiry (the behaviour before 0076).
 
 from alembic import op
 
-revision = "0076"
-down_revision = "0075"
+revision = "0077a"
+down_revision = "0077"
 branch_labels = None
 depends_on = None
 
