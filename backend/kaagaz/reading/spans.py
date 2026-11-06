@@ -176,8 +176,10 @@ _LINE_BREAK = re.compile(r"\r\n|[\n\r\u2028\u2029]")
 
 
 def text_lines(raw: str) -> list[tuple[int, int]]:
-    """Where each written line of ``raw`` that has text starts and ends in it, its edge spaces
-    left out, in order (#523). One entry for text with no breaks. O(len(raw))."""
+    """Where each written line of ``raw`` starts and ends in it, its edge spaces left out, in
+    order (#523): one band each. A blank line between two lines of text takes its own band
+    (empty, where it sits), as it takes its own room on the page; blank lines before the first
+    line of text or after the last are left out. One entry for text with no breaks. O(len(raw))."""
     lines: list[tuple[int, int]] = []
     start = 0
     for found in [*_LINE_BREAK.finditer(raw), None]:
@@ -185,8 +187,12 @@ def text_lines(raw: str) -> list[tuple[int, int]]:
         part = raw[start:end]
         if part.strip():
             lines.append((start + len(part) - len(part.lstrip()), start + len(part.rstrip())))
+        elif lines:
+            lines.append((start, start))  # a blank line: kept only if text follows it (below)
         if found is not None:
             start = found.end()
+    while lines and lines[-1][0] == lines[-1][1]:
+        lines.pop()
     return lines
 
 

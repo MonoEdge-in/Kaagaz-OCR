@@ -28,7 +28,8 @@ from kaagaz.extraction.quotes import (
     reader_text,
 )
 from kaagaz.extraction.values import ExtractedValue, QuoteMatch
-from kaagaz.reading.spans import BoxLocation, CellLocation, Location, Span
+from kaagaz.reading.ocr import OcrLine, is_word_mark, ocr_spans
+from kaagaz.reading.spans import BoxLocation, CellLocation, Location, Span, text_lines
 
 NBSP = "\N{NO-BREAK SPACE}"
 ZWJ, ZWNJ = "\N{ZERO WIDTH JOINER}", "\N{ZERO WIDTH NON-JOINER}"
@@ -329,6 +330,21 @@ class LineBandTest(unittest.TestCase):
         self.assertAlmostEqual(box.y0, 0.45)  # line 6 of 10 (from 1) ...
         self.assertAlmostEqual(box.y1, 0.55)  # ... to line 7
         self.assertEqual((box.x0, box.x1), (0.1, 0.9))
+
+    def test_a_blank_line_takes_its_own_band_for_the_highlight_and_the_marks_alike(self) -> None:
+        """#523 review: "a\\n\\nb" is three bands, the blank line's room on the page kept; blank
+        lines at either end are not. The word marks cut the block the same way (``text_lines``)."""
+        self.assertEqual(text_lines("a\n\nb"), [(0, 1), (2, 2), (3, 4)])
+        self.assertEqual(text_lines("\n a \n\n"), [(2, 3)])
+        span = Span("Rs 10 Rs 45000", "Rs 10\n\nRs 45000", BoxLocation(1, 0.1, 0.1, 0.9, 0.4))
+        found = find_quote(reader_text([span]), "Rs 45000")
+        assert found is not None and isinstance(found.location, BoxLocation)
+        self.assertAlmostEqual(found.location.y0, 0.3)  # the third band of three
+        self.assertAlmostEqual(found.location.y1, 0.4)
+        block = OcrLine("Rs 10\n\nRs 45000", 100, 100, 900, 400, None, "paragraph", None, ("45000",), "found")
+        (mark,) = [s.location for s in ocr_spans([block], 1, 1000, 1000) if is_word_mark(s)]
+        assert isinstance(mark, BoxLocation)
+        self.assertEqual((round(mark.y0, 6), round(mark.y1, 6)), (0.3, 0.4))
 
     def test_a_one_line_span_keeps_its_box(self) -> None:
         span = Span("Total Rs 45000", "Total  Rs 45000", BoxLocation(1, 0.1, 0.1, 0.9, 0.2))

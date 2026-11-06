@@ -116,9 +116,6 @@ INR_PER_USD = 88  # shortcut: a fixed rate; make it a platform setting if the ru
 LOCAL_READ_BY = "rapidocr"
 # PRD 5 F3: the span qualities that mark one word of a line, not the line.
 WORD_MARK_QUALITIES = frozenset({"unsure", "illegible"})
-# #523: a line's box taller than this many of its characters' widths holds several written lines
-# (one line is about 1 to 3; ten lines of a paragraph, well over 100). PROVISIONAL: tune on scans.
-SEVERAL_LINES = 8.0
 # #463 review: pages.read_pass, the pass that produced a page's text (0064's CHECK).
 FIRST_PASS, AGAIN_PASS = "first", "again"
 # Features 26 and 27 (council 15 Oct 2026, C5, C6): at most this many pages of a document are
@@ -880,10 +877,10 @@ def ocr_spans(lines: list[OcrLine], page_no: int, width_px: int, height_px: int)
     split in proportion to the word's character position (approximate, so the
     viewer draws it dashed). #523: a block whose text keeps the breaks of several
     written lines is cut into that many equal bands first, and the word split
-    across its own line's band, never a strip the block's whole height; a block
-    clearly several lines tall with no breaks (``SEVERAL_LINES``) gives its marks
-    its own box, as their spot in it can't be told (the viewer leaves so tall a
-    mark undrawn; it stays listed). ``is_word_mark`` tells them apart, so they are kept
+    across its own line's band, never a strip the block's whole height. A block
+    several lines tall with no breaks can't tell the word's line, so its marks are
+    split across as before; the viewer's shape guard leaves so tall and narrow a
+    strip undrawn, and it stays listed. ``is_word_mark`` tells them apart, so they are kept
     out of pieces and values in one place. An unsure word not found in its line
     has no spot, so it gets no mark.
 
@@ -990,13 +987,10 @@ def _word_marks(line: OcrLine, page_no: int, width: int, height: int) -> list[Sp
     marks: list[Span] = []
     rows = text_lines(text)
     if len(rows) <= 1:
-        rows = [(0, len(text))]
-    # #523: no breaks to tell the word's line in a box several lines tall: the block's own box.
-    unplaced = len(rows) == 1 and _several_lines_tall(line)
+        rows = [(0, len(text))]  # one line, or no breaks to tell the lines by: across, as before
     for start, end, quality in sorted(found):
         raw = text[start:end]
-        pixels = (line.x0, line.y0, line.x1, line.y1) if unplaced else _word_pixels(line, rows, start, end)
-        box = _page_box(page_no, pixels, width, height)
+        box = _page_box(page_no, _word_pixels(line, rows, start, end), width, height)
         if box.is_valid():
             marks.append(
                 Span(
@@ -1023,13 +1017,6 @@ def _word_pixels(line: OcrLine, rows: list[tuple[int, int]], start: int, end: in
     bottom = line.y1 if row + 1 == len(rows) else line.y0 + down * (row + 1)
     x0 = line.x0 + across * (start - row_start)
     return x0, line.y0 + down * row, line.x0 + across * (min(end, row_end) - row_start), bottom
-
-
-def _several_lines_tall(line: OcrLine) -> bool:
-    """Whether the line's box is clearly several written lines tall (#523): taller than
-    ``SEVERAL_LINES`` of its characters' widths."""
-    across = line.x1 - line.x0
-    return across > 0 and (line.y1 - line.y0) * len(line.text) > SEVERAL_LINES * across
 
 
 def _find_word(text: str, word: str, cursor: int) -> int | None:

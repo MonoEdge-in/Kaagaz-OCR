@@ -758,16 +758,21 @@ class WordMarksTest(unittest.TestCase):
             self.assertAlmostEqual(mark.x0, (100 + 10 * first) / 1000)  # 10 pixels a character
             self.assertAlmostEqual(mark.x1, (100 + 10 * (first + 4)) / 1000)
 
-    def test_a_block_of_several_lines_with_no_breaks_gives_no_guessed_strip(self) -> None:
-        """#523: a block clearly several lines tall whose text has no line breaks: the word's
-        line can't be told, so its mark stays listed (it still sends a value to review) with
-        the block's own box, never a made-up strip; the viewer leaves such a tall mark undrawn."""
+    def test_a_block_of_several_lines_with_no_breaks_is_split_across_as_before(self) -> None:
+        """#523 review: a block several lines tall whose text has no line breaks: the word's line
+        can't be told, so its mark is split across as before (the block's height, the word's
+        share of its width), never the block's whole box, which would underline a paragraph and
+        stack every such mark in one place. It stays listed (it still sends a value to review);
+        the viewer's shape guard leaves so tall and narrow a strip undrawn."""
         text = " ".join(["aaaa bbbb cccc dddd"] * 9) + " WORD"  # 184 characters, one line of text
-        block = OcrLine(text, 100, 0, 290, 200, None, "paragraph", None, ("WORD",), "found")
+        block = OcrLine(text, 100, 0, 284, 200, None, "paragraph", None, ("WORD",), "found")
         spans = ocr_spans([block], 1, 1000, 1000)
         (mark,) = [s for s in spans if is_word_mark(s)]
         self.assertEqual((mark.text, mark.quality), ("WORD", "unsure"))
-        self.assertEqual(mark.location, spans[0].location)
+        box = box_of(mark)
+        self.assertEqual((box.y0, box.y1), (0.0, 0.2))
+        self.assertAlmostEqual(box.x0, 0.28)  # characters 180 to 184 of 184, a pixel each
+        self.assertAlmostEqual(box.x1, 0.284)
 
     def test_lines_without_marks_give_spans_as_before(self) -> None:
         line = OcrLine("Tax Invoice", 20, 5, 100, 15, None, "heading")
