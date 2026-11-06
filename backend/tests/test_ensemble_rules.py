@@ -29,6 +29,7 @@ from kaagaz.extraction.values import ExtractedValue
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.ensemble import aligned, reading_of
 from kaagaz.pipeline import _check_crop
+from kaagaz.reading.ocr import OcrLine, ocr_spans
 from kaagaz.reading.spans import BoxLocation, Span, location_to_json
 from kaagaz.worker_main import MarkExhausted, RecordAttempt, dispatch
 from tests.settings_factory import make_settings
@@ -151,6 +152,35 @@ def test_a_model_unsure_there_has_no_reading() -> None:
     assert reading_of([line, elsewhere], LINE_BOX, mark) == "4,350"
 
 
+def test_a_spot_on_one_line_of_a_block_is_read_in_the_block_holding_it() -> None:
+    """#523: a value placed on one written line's band of a block; another model that gave the
+    block whole has no line inside the band, so the line holding the band is read, its words
+    lined up with the value's."""
+    band = BoxLocation(1, 0.1, 0.30, 0.9, 0.35)
+    value = ensemble_sql.Target(flag(LINE, band, "Rs 4,850"), "Rs 4,850", True, False,
+                                location_to_json(band), "Rs 4,850", (0, 2))  # fmt: skip
+    block = Span("dear sir the loan of Rs 4,850 is paid", "", BoxLocation(1, 0.1, 0.1, 0.9, 0.6), None,
+                 "paragraph", "ocr")  # fmt: skip
+    assert reading_of([block], band, value) == "Rs 4,850"
+    own_line = Span("Rs 4,350", "", band, None, "paragraph", "ocr")
+    assert reading_of([block, own_line], band, value) == "Rs 4,350"  # a line at the spot comes first
+    away = Span("Rs 4,850", "", BoxLocation(1, 0.1, 0.8, 0.9, 0.85), None, "paragraph", "ocr")
+    assert reading_of([away], band, value) is None
+
+
+def test_a_model_unsure_on_that_line_of_its_block_has_no_reading() -> None:
+    """#523 review: the other model gave the block whole and marked "4,850" unsure on the band's
+    line; the block is read for the spot, and its mark there still takes its vote away."""
+    band = BoxLocation(1, 0.1, 0.30, 0.9, 0.35)
+    value = ensemble_sql.Target(flag(LINE, band, "Rs 4,850"), "Rs 4,850", True, False,
+                                location_to_json(band), "Rs 4,850", (0, 2))  # fmt: skip
+    block = Span("dear sir the loan of Rs 4,850 is paid", "", BoxLocation(1, 0.1, 0.1, 0.9, 0.6), None,
+                 "paragraph", "ocr")  # fmt: skip
+    unsure = Span("4,850", "", BoxLocation(1, 0.5, 0.30, 0.6, 0.35), None, origin="ocr", quality="unsure")
+    assert reading_of([block], band, value) == "Rs 4,850"
+    assert reading_of([block, unsure], band, value) is None
+
+
 # --- where a word is read ------------------------------------------------------------------
 
 
@@ -163,6 +193,33 @@ def test_a_word_mark_is_read_on_its_line_and_found_by_position() -> None:
     assert ensemble_sql.word_at("a [?] b [?]", "[?]", 0.1) == 1
     assert ensemble_sql.word_at("Total Rs 4,850.", "4,850", 0.6) == 2
     assert ensemble_sql.word_at("Total", "4,850", 0.5) is None
+
+
+def test_a_word_mark_on_one_line_of_a_block_is_found_on_that_line() -> None:
+    """#523: in a block of written lines a mark is placed on its own line's band, across by its
+    place in that line (ocr._word_marks); the word is looked for at that place in the block's
+    text, the lines' own lengths counted (review: they are seldom equal), so the word repeated
+    on another line is never the one compared."""
+    for raw, unsure, tokens in (
+        ("on monday he paid 4,850\n4,850 more", ("4,850", "4,850"), [4, 5]),
+        (
+            "paid 4,850 to him\nand 4,850 more but much later on in the week\n4,850",
+            ("4,850",) * 3,
+            [1, 5, 14],
+        ),
+        ("4,850 paid\n\nthen a very long line indeed before 4,850", ("4,850", "4,850"), [0, 9]),
+    ):
+        text = " ".join(raw.split())
+        block = OcrLine(raw, 100, 100, 900, 400, None, "paragraph", None, unsure, "found")
+        spans = ocr_spans([block], 1, 1000, 1000)
+        region = location_to_json(spans[0].location)
+        lines = [cast(RowMapping, {"page_no": 1, "text": text, "raw": raw, "region": region})]
+        marks = [span for span in spans if span.quality == "unsure"]
+        assert len(marks) == len(tokens), raw
+        for mark, token in zip(marks, tokens, strict=True):
+            assert isinstance(mark.location, BoxLocation)
+            spot = ensemble_sql._spot(flag(MARK, mark.location, "4,850"), "4,850", lines)
+            assert spot[2] == (token, token + 1), (raw, token)
 
 
 def test_the_crop_is_the_spot_grown_by_the_checkers_margin() -> None:

@@ -773,6 +773,7 @@ const ACTION_WORDS: Record<string, string> = {
   "version.rejected": "Kept a document separate",
   "version.undone": "Undid a version link",
   "version.make_current": "Made a version current",
+  "document.version_separated": "Made a version a separate file",
   "audit.export": "Exported the activity",
   // #482 and #481 (3 Nov 2026): reads logged since, and the super admin's two-step rule.
   "search.run": "Searched inside documents",

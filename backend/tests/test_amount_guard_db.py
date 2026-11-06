@@ -1,11 +1,10 @@
 """The amount safety layer (#524) on PostgreSQL: search finds a page's Devanagari digits by
 their ASCII number, Ask adds up the numbers read from Indic digits and keeps an amount in review
 out of its total (listed, marked "not verified yet", as before), the review queue lists each
-amount reason with the text as read, and migration 0081 adds the reasons and refuses to go down
-while a value carries one. The rules themselves: tests/test_amount_guard.py."""
+amount reason with the text as read. Migration 0077c: tests/test_migration_0077c_db.py; the rules
+themselves: tests/test_amount_guard.py."""
 
 import json
-import subprocess
 import uuid
 from dataclasses import replace
 from typing import Any
@@ -22,17 +21,14 @@ from kaagaz.extraction.land import value_number
 from kaagaz.extraction.parsing import parse_date
 from kaagaz.extraction.values import ExtractedValue
 from kaagaz.reading.spans import BoxLocation, Span, location_to_json
-from tests import test_migration_0002_db as m0002
-from tests.db_support import insert_document, migrate, new_customer
+from tests.db_support import insert_document, new_customer
 from tests.settings_factory import make_settings
 from tests.test_answering_fixed_queries_db import NOW, add_document, add_values
-from tests.test_migration_0004_db import _BOX, _INSERT_VALUE, _current, _head
 from tests.test_review_queue_db import _with_pages
 from tests.test_search_db import add_document as add_search_document
 from tests.test_search_db import add_pieces, run
 
 pytestmark = pytest.mark.db
-fresh = m0002.fresh  # the fixture, by its name
 AMOUNT_REASONS = ("mixed_digits", "amount_commas", "amount_mark", "amount_outlier")
 TOTAL = "What is the total amount?"
 
@@ -158,29 +154,3 @@ def test_the_review_queue_lists_each_amount_reason_with_the_text_as_read(db: Dat
         "amount_mark": ["115000001-"],
         "amount_outlier": ["11,500"],
     }
-
-
-def test_0081_adds_the_amount_reasons_and_its_downgrade_refuses_while_one_is_used(
-    fresh: tuple[str, Database],
-) -> None:
-    url, database = fresh
-    migrate(url, "0075")
-    at_0075 = m0002._schema(database)
-    migrate(url, "0081")
-    at_0081 = m0002._schema(database)
-    customer, _ = new_customer(database)
-    with database.customer(customer) as conn:
-        doc = insert_document(conn, customer)
-        for reason in AMOUNT_REASONS:
-            conn.execute(_INSERT_VALUE, {"c": customer, "d": doc, "r": _BOX, "reason": reason})
-
-    with pytest.raises(subprocess.CalledProcessError) as refused:
-        m0002._downgrade(url, "0075")
-    assert b"values labelled with an amount reason exist" in refused.value.stderr
-    assert _current(url) == _head()  # the whole downgrade is one transaction
-    with database.customer(customer) as conn:
-        conn.execute(text("DELETE FROM extracted_values WHERE customer_id = :c"), {"c": customer})
-    m0002._downgrade(url, "0075")
-    assert m0002._schema(database) == at_0075
-    migrate(url, "0081")
-    assert m0002._schema(database) == at_0081

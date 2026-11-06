@@ -79,7 +79,7 @@ from kaagaz.reading.rapid_pool import (
     devanagari_params,
     shared_pool,
 )
-from kaagaz.reading.spans import BOX_SOURCES, BoxLocation, ReadError, Span
+from kaagaz.reading.spans import BOX_SOURCES, BoxLocation, ReadError, Span, text_lines
 from kaagaz.settings import Settings, SettingsError
 
 if TYPE_CHECKING:
@@ -875,7 +875,12 @@ def ocr_spans(lines: list[OcrLine], page_no: int, width_px: int, height_px: int)
     becomes a span of its own after the line's, with quality "unsure" or
     "illegible", the line's box source, no kind, and a sub-box: the line's box
     split in proportion to the word's character position (approximate, so the
-    viewer draws it dashed). ``is_word_mark`` tells them apart, so they are kept
+    viewer draws it dashed). #523: a block whose text keeps the breaks of several
+    written lines is cut into that many equal bands first, and the word split
+    across its own line's band, never a strip the block's whole height. A block
+    several lines tall with no breaks can't tell the word's line, so its marks are
+    split across as before; the viewer's shape guard leaves so tall and narrow a
+    strip undrawn, and it stays listed. ``is_word_mark`` tells them apart, so they are kept
     out of pieces and values in one place. An unsure word not found in its line
     has no spot, so it gets no mark.
 
@@ -980,11 +985,12 @@ def _word_marks(line: OcrLine, page_no: int, width: int, height: int) -> list[Sp
         found.append((start, start + len(ILLEGIBLE_MARK), "illegible"))
         start = text.find(ILLEGIBLE_MARK, start + len(ILLEGIBLE_MARK))
     marks: list[Span] = []
-    step = (line.x1 - line.x0) / len(text) if text else 0.0
+    rows = text_lines(text)
+    if len(rows) <= 1:
+        rows = [(0, len(text))]  # one line, or no breaks to tell the lines by: across, as before
     for start, end, quality in sorted(found):
         raw = text[start:end]
-        pixels = (line.x0 + step * start, line.y0, line.x0 + step * end, line.y1)
-        box = _page_box(page_no, pixels, width, height)
+        box = _page_box(page_no, _word_pixels(line, rows, start, end), width, height)
         if box.is_valid():
             marks.append(
                 Span(
@@ -998,6 +1004,19 @@ def _word_marks(line: OcrLine, page_no: int, width: int, height: int) -> list[Sp
                 )
             )
     return marks
+
+
+def _word_pixels(line: OcrLine, rows: list[tuple[int, int]], start: int, end: int) -> PixelBox:
+    """Where the word at ``start:end`` of the line's text sits (#523): the band of its own
+    written line (``rows``, from ``text_lines``; the box cut into equal bands), split across in
+    proportion to its characters' place in that line. One row: the whole box, split across."""
+    row = next((index for index, (_, row_end) in enumerate(rows) if start < row_end), len(rows) - 1)
+    row_start, row_end = rows[row]
+    across = (line.x1 - line.x0) / max(1, row_end - row_start)
+    down = (line.y1 - line.y0) / len(rows)
+    bottom = line.y1 if row + 1 == len(rows) else line.y0 + down * (row + 1)
+    x0 = line.x0 + across * (start - row_start)
+    return x0, line.y0 + down * row, line.x0 + across * (min(end, row_end) - row_start), bottom
 
 
 def _find_word(text: str, word: str, cursor: int) -> int | None:

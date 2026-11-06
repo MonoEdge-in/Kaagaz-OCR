@@ -52,6 +52,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from kaagaz.db import customer_purge
 from kaagaz.db import upload_sessions as upload_sessions_sql
+from kaagaz.db import users as users_sql
 from kaagaz.db.documents import delete_forever
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.trash import customer_ids_with_trash, purge_next_family
@@ -114,6 +115,13 @@ def purge_upload_sessions(db: Database, storage: CustomerStorage, clock: Callabl
             upload_sessions_sql.delete_expired(conn, str(row["customer_id"]), str(row["id"]), now)
         removed += 1
     return removed
+
+
+def sweep_ended_sessions(db: Database, clock: Callable[[], datetime]) -> int:
+    """Forget the sessions ended by logout (0076) whose cookie has expired since: such a cookie
+    is refused by its own expiry now. Every organisation in one statement; how many."""
+    with db.system() as conn:
+        return users_sql.sweep_ended_sessions(conn, clock())
 
 
 def _purge_one_family(db: Database, storage: BlobStorage, customer_id: str, before: datetime) -> bool:

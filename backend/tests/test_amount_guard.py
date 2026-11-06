@@ -5,7 +5,8 @@ reason (kaagaz/extraction/parsing.py ``amount_problem``, kaagaz/extraction/label
 ``label_amounts``). The real examples: amount-1.png (11500000/-) and amount-2.png (९४0000/-).
 
 Every expected value is a literal written by hand. The same rules on PostgreSQL (search, Ask's
-total, the review queue, migration 0081) are in tests/test_amount_guard_db.py.
+total, the review queue) are in tests/test_amount_guard_db.py, migration 0077c in
+tests/test_migration_0077c_db.py.
 """
 
 import unittest

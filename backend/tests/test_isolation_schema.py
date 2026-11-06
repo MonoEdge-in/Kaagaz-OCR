@@ -188,6 +188,9 @@ FROM_0071 = {
 }
 # Storage limit (0061d): a column grant only, the operator writes.
 FROM_0061D = {"org_storage_limits": (False, False, False, False)}
+# Logout ends this browser's session (0076, #502): the app adds and reads ended sessions only;
+# the worker's sweep deletes them through kaagaz_sweep_ended_sessions.
+FROM_0076 = {"ended_sessions": (True, True, False, False)}
 UPDATES_0030 = {
     "word_changes": {"applied", "undone_at", "undone_by"},
     "ensemble_runs": {
@@ -253,6 +256,8 @@ OWNER_RIGHTS = {
         "TABLE(customer_id uuid, id uuid, storage_key text, storage_upload_id text)",
         EMPTY_PATH,
     ),
+    # 0076, the worker's sweep of ended sessions whose cookie expired: a count only.
+    "kaagaz_sweep_ended_sessions": ("integer", EMPTY_PATH),
     # 0046, the shared scheduler's single admission function.
     "kaagaz_model_rate_slot": ("double precision", EMPTY_PATH),
     # 0061, email: a clicked link found by its hash (ids, purpose and times), and self sign-up
@@ -615,6 +620,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0068)
         | set(FROM_0071)
         | set(FROM_0061D)
+        | set(FROM_0076)
     )
 
     with db.system() as conn:
@@ -693,6 +699,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0068
         | FROM_0071
         | FROM_0061D
+        | FROM_0076
     ).items():
         assert granted[table] == expected, table
 
@@ -887,6 +894,7 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
         | set(FROM_0061)
         | set(FROM_0062)
         | {"folder_upload_folders", "folder_upload_items"}  # 0071
+        | set(FROM_0076)
         | {"pages", "model_usage", "documents"}  # documents.owner_id (0041)
     )
     for name, _table, _parent, columns, parent_columns in between:

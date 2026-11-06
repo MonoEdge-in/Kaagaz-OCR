@@ -1115,7 +1115,10 @@ def run_json(conn: Connection, customer_id: str, run: RowMapping) -> dict[str, A
         "failed_pages": failed,
         "started_at": _iso(run["started_at"]),
         "finished_at": _iso(run["finished_at"]),
-        "error": None if code is None else {"code": code, "message": error_message(code, failed, done)},
+        # #520: a run held by the reading pause says so, in a held document's words.
+        "error": None
+        if code is None
+        else {"code": code, "message": _PAUSE_WORDS.get(code) or error_message(code, failed, done)},
     }
 
 

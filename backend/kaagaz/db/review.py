@@ -49,7 +49,7 @@ _ITEM = (
     " WHERE v.customer_id = :c"
 )
 
-# Every label_reason the extracted_values CHECK allows (migrations 0004, 0021 and 0081): the
+# Every label_reason the extracted_values CHECK allows (migrations 0004, 0021 and 0077c): the
 # reasons bound when the queue is not filtered, so the reason filter is never a catch-all.
 EVERY_REASON = (
     "direct_cell",

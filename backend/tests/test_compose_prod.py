@@ -99,6 +99,15 @@ def test_the_prod_file_covers_every_service_and_adds_only_caddy() -> None:
     assert re.search(r"^volumes:\n  caddy-data:\n  caddy-config:\n\Z", text, re.MULTILINE)
 
 
+def test_the_laptops_api_port_is_reachable_from_the_laptop_only() -> None:
+    """Review of #520: the image trusts X-Forwarded-For (backend/Dockerfile), so an API port open
+    to the network would let anyone on it pick their own address, and rate bucket. The laptop
+    stack publishes it on 127.0.0.1 only; on the server no API port is published at all."""
+    api = service("api")
+    published = re.findall(r'^      - "(.*)"$', api[api.index("    ports:") :], re.MULTILINE)
+    assert published[:1] == ["127.0.0.1:8000:8000"]
+
+
 def test_only_caddy_publishes_ports_and_only_80_and_443() -> None:
     """Every service that publishes a port in the base file has it cleared by this one,
     so caddy's are the only ports left."""

@@ -136,6 +136,9 @@ VOTE_INSIDE = 0.5
 # None when that model failed on the page)]).
 PageVotes = tuple[str, Sequence[tuple[str, Sequence[Span] | None]]]
 
+# A stored box is rounded to 6 places (spans.location_to_json): a band of it may be that far out.
+_ROUNDING = 1e-6
+
 # The rupee sign (U+20B9), and Rs / INR standing as words.
 _CURRENCY = re.compile(r"₹|(?<![a-z])(?:rs\.?|inr)(?![a-z])")
 _SPACES = re.compile(r"\s+")
@@ -391,15 +394,16 @@ def label_reading_marks(
     the reading model handed to its local reader, by their issues), then
     ``unsure_text`` when the value has ``[?]`` or a word of its line's unsure words (V4),
     then ``box_unanchored`` when its line is unpinned (G5). ``lines`` are the marks by the
-    line's box, the value's own location. A card value and every value with none of these
-    keep their label. O(v x u) for v values and u unsure words of a line."""
+    line's box, the value's own location or the box holding it (``at_line``). A card value
+    and every value with none of these keep their label. O(v x u) for v values and u unsure
+    words of a line."""
     labelled = []
     for value in values:
         box = value.location
         if not isinstance(box, BoxLocation) or not _is_ocr(value) or value.label_reason == "model_chosen":
             labelled.append(value)
             continue
-        marks = lines.get(box, LineMarks())
+        marks = at_line(box, lines) or LineMarks()
         reason: str | None = None
         if box.page in local_pages:
             reason = LOCAL_READER
@@ -452,6 +456,24 @@ def _outliers(values: Sequence[ExtractedValue]) -> set[int]:
         if len(amounts) > 1 and amounts[0][0] > OUTLIER_TIMES * amounts[1][0]:
             found.add(amounts[0][1])
     return found
+
+
+def at_line[T](box: BoxLocation, by_line: Mapping[BoxLocation, T]) -> T | None:
+    """What ``by_line`` keeps for the line at ``box``: the entry under ``box`` itself, else
+    under the line whose box holds it at its whole width (#523: a value placed on one written
+    line's band of a block, ``quotes``). None when no line holds it. O(1), else O(lines)."""
+    if box in by_line:
+        return by_line[box]
+    for line, kept in by_line.items():
+        if (
+            line.page == box.page
+            and abs(line.x0 - box.x0) <= _ROUNDING
+            and abs(line.x1 - box.x1) <= _ROUNDING
+            and line.y0 - _ROUNDING <= box.y0
+            and box.y1 <= line.y1 + _ROUNDING
+        ):
+            return kept
+    return None
 
 
 def _has_unsure_word(text: str, unsure: Sequence[str]) -> bool:

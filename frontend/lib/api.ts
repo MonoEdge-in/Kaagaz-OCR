@@ -434,6 +434,12 @@ export const rejectSuggestion = (id: string) =>
 export const undoVersionLink = (id: string) => request<DocumentSummary>("POST", `${doc(id)}/version-undo`);
 /** V10: this ready version becomes the one search and chat use. */
 export const makeCurrent = (id: string) => request<DocumentSummary>("POST", `${doc(id)}/make-current`);
+/** #521 Make it a separate file: this version leaves its family under `name`; family_id is the family it left. */
+export const separateVersion = (id: string, name: string) =>
+  request<{ document: DocumentSummary; family_id: string }>("POST", `${doc(id)}/separate`, { name });
+/** #521: Undo of Make it a separate file, back in `familyId` as its newest version, with `name` again. */
+export const undoSeparate = (id: string, familyId: string, name?: string) =>
+  request<DocumentSummary>("POST", `${doc(id)}/separate/undo`, { family_id: familyId, name });
 /** V11: the reader text of `withId` (left) against `id` (right), page by page. */
 export const compareDocuments = (id: string, withId: string) =>
   request<DocumentCompare>("GET", `${doc(id)}/compare${query({ with: withId })}`);

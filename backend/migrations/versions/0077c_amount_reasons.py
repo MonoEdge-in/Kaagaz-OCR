@@ -13,18 +13,17 @@ The CHECK is dropped and added again: PostgreSQL reads extracted_values once to 
 with no rewrite. The downgrade refuses while a value carries one of these reasons, as 0004's and
 0021's do: no older reason tells the truth about it.
 
-Numbered 0081 because other branches hold 0076 to 0080; it follows this branch's head, 0075.
-Whichever of them merges first, this file's ``down_revision`` becomes the last of them, so the
-line keeps one head (tests/test_migration_heads.py).
+It follows the guard rails' 0077b on one line, so the line keeps one head
+(tests/test_migration_heads.py).
 
-Revision ID: 0081
-Revises: 0075 (the storage limit's merge)
+Revision ID: 0077c
+Revises: 0077b (Ensemble held by the reading pause)
 """
 
 from alembic import op
 
-revision = "0081"
-down_revision = "0075"
+revision = "0077c"
+down_revision = "0077b"
 branch_labels = None
 depends_on = None
 

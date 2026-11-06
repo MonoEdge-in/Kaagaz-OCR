@@ -82,7 +82,8 @@ def test_0075_is_a_merge_alone_and_down_and_up_again(fresh: tuple[str, Database]
     parents = _state(db)
     assert base._names(parents, "functions") >= FUNCTIONS
     migrate(url, "0075")
-    # Changed on purpose (#524, 6 Nov 2026): 0081 follows 0075, so this test stops at 0075, not head.
+    # Changed on purpose (#521, 6 Nov 2026): 0077 follows 0075 now, so "head" is 0077 and this
+    # test goes up to 0075 by name.
     assert _current(url) == "0075"
     after = _state(db)
     assert after == parents  # a merge: nothing added

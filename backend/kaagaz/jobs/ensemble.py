@@ -9,6 +9,11 @@ of 16 Oct 2026, PR 5): one run of ``ensemble_runs``, read page by page.
 * The stored file must still hash to the document's sha256 and the document be ready,
   current and out of Trash, else the run stops (``document_changed``), finished pages kept.
 * Every model call is billed to the person who asked, as ``ensemble_scan`` (SP1).
+* **The reading pause** (#520, Tushar, 6 Nov 2026; kaagaz/jobs/reading_pause.py): a queued run
+  picked up while its organisation is past its daily page limit or monthly budget is held, never
+  read: it stays queued with the pause's code (``ensemble.hold``), the job is done, and the
+  release sweep queues it again once the pause ends. A run already running (a delivery that
+  lost its lease) is read to its end, as a document let in is.
 * Each page not done yet, in order: a Stop asked for ends the run (finished pages stay);
   the page is drawn again losslessly (``preparing.pages.page_picture``); a run on words
   reads a crop of each word's spot (a word mark's line, shared by the marks on it), grown by
@@ -39,17 +44,18 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from PIL import Image
-from sqlalchemy import RowMapping
+from sqlalchemy import Connection, RowMapping
 
 from kaagaz.ai.usage import usage_scope
 from kaagaz.db import ensemble as ensemble_sql
-from kaagaz.db import models
+from kaagaz.db import models, reading_days
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.page_reads import PgPageReads
 from kaagaz.db.word_review import Refused
 from kaagaz.extraction.labels import VOTE_INSIDE, inside
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobNotFound, BlobStorage, Job
+from kaagaz.jobs.reading_pause import CODES, pause_reason
 from kaagaz.jobs.worker import KEY_PROBLEM, RETRIES_EXHAUSTED, Heartbeat
 from kaagaz.pipeline import _check_crop
 from kaagaz.preparing.pages import page_picture
@@ -116,8 +122,9 @@ def aligned(stored: str, read: str, words: tuple[int, int]) -> str | None:
 
 def reading_of(spans: Sequence[Span], box: BoxLocation | None, target: ensemble_sql.Target) -> str | None:
     """What one model read at ``target``: its lines (inside ``box`` by VOTE_INSIDE of their
-    own box, or every line of a crop) joined, lined up with the target's words. None when it
-    read nothing there, or marked a word of it unsure or unreadable (no vote)."""
+    own box, else the lines holding ``box`` by as much of it, #523; or every line of a crop)
+    joined, lined up with the target's words. None when it read nothing there, or marked a
+    word of it unsure or unreadable (no vote)."""
     here = [
         span
         for span in spans
@@ -125,6 +132,16 @@ def reading_of(spans: Sequence[Span], box: BoxLocation | None, target: ensemble_
         or (isinstance(span.location, BoxLocation) and span.location.page == box.page
             and inside(span.location, box) >= VOTE_INSIDE)
     ]  # fmt: skip
+    if box is not None and all(is_word_mark(span) for span in here):
+        # #523: a spot on one written line of a block another model gave whole: the line holding
+        # it, with the marks already found at the spot, so a model unsure there still has no vote.
+        holding = [
+            span
+            for span in spans
+            if isinstance(span.location, BoxLocation) and span.location.page == box.page
+            and not is_word_mark(span) and inside(box, span.location) >= VOTE_INSIDE
+        ]  # fmt: skip
+        here = [*holding, *here]
     lines = [span.text for span in here if not is_word_mark(span)]
     words = aligned(target.spot_text, " ".join(lines), target.words) if lines else None
     if words is None or ILLEGIBLE_MARK in words:
@@ -160,6 +177,8 @@ class EnsembleRuns:
         ids = {"customer_id": customer_id, "document_id": document_id}
         engine = self._engine
         with unavailable(), self._db.customer(customer_id) as conn:
+            if self._held(conn, customer_id, document_id, run_id):
+                return
             run = ensemble_sql.claim(conn, customer_id, document_id, run_id, now=self._clock())
             if run is None:
                 logger.info("duplicate delivery skipped", extra={**ids, "code": "ensemble_settled"})
@@ -191,6 +210,22 @@ class EnsembleRuns:
             status, code = self._pages(read, run)
         self._end(customer_id, run_id, status, code)
         logger.info("ensemble run ended", extra={**ids, "outcome": status, "code": code or status})
+
+    def _held(self, conn: Connection, customer_id: str, document_id: str, run_id: str) -> bool:
+        """#520: a queued run of a paused organisation is held (the module notes); True then.
+        Two statements, one more to hold it."""
+        found = ensemble_sql.get_run(conn, customer_id, document_id, run_id)
+        if found is None or found["status"] != "queued":
+            return False
+        reason = pause_reason(reading_days.state(conn, customer_id, reading_days.india_day(self._clock())))
+        if reason is None:
+            return False
+        ensemble_sql.hold(conn, customer_id, run_id, CODES[reason])
+        logger.warning(
+            "ensemble run held",
+            extra={"customer_id": customer_id, "document_id": document_id, "code": CODES[reason]},
+        )
+        return True
 
     def record_attempt(self, customer_id: str, run_id: str, attempt: int) -> None:
         """The worker's try number, on the run (never the document)."""
