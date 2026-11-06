@@ -15,6 +15,7 @@ export const ACCEPTED_EXTENSIONS = [
   "tiff",
   "csv",
   "xlsx",
+  "zip", // #522: unpacked into a folder by the server
 ] as const;
 
 /** For the file picker's accept attribute. */
@@ -22,8 +23,8 @@ export const ACCEPT_ATTRIBUTE = ACCEPTED_EXTENSIONS.map((ext) => `.${ext}`).join
 
 type AcceptedExtension = (typeof ACCEPTED_EXTENSIONS)[number];
 
-/** The size group a file falls in, the same names the server uses ("pdf", "image", "sheet"). */
-export type UploadKind = "pdf" | "image" | "sheet";
+/** The size group a file falls in, the same names the server uses ("pdf", "image", "sheet", "zip"). */
+export type UploadKind = "pdf" | "image" | "sheet" | "zip";
 
 const KIND_OF_EXTENSION: Readonly<Record<AcceptedExtension, UploadKind>> = {
   pdf: "pdf",
@@ -34,6 +35,7 @@ const KIND_OF_EXTENSION: Readonly<Record<AcceptedExtension, UploadKind>> = {
   tiff: "image",
   csv: "sheet",
   xlsx: "sheet",
+  zip: "zip",
 };
 
 const MB = 1024 * 1024;
@@ -47,6 +49,7 @@ export const FALLBACK_UPLOAD_LIMITS: Readonly<UploadLimits> = {
   pdf_bytes: 50 * MB,
   image_bytes: 20 * MB,
   sheet_bytes: 10 * MB,
+  zip_bytes: 50 * MB, // the PDF limit until the server says its folder upload limit
   max_pages: 100,
   readers: [], // no "Scan with" until the server says which readers it has
 };
@@ -56,7 +59,8 @@ export function uploadLimitsHint(limits: UploadLimits = FALLBACK_UPLOAD_LIMITS):
   return (
     `PDF up to ${Math.floor(limits.pdf_bytes / MB)} MB. ` +
     `PNG, JPG or TIFF up to ${Math.floor(limits.image_bytes / MB)} MB. ` +
-    `CSV or XLSX up to ${Math.floor(limits.sheet_bytes / MB)} MB.`
+    `CSV or XLSX up to ${Math.floor(limits.sheet_bytes / MB)} MB. ` +
+    `ZIP up to ${Math.floor(limitFor("zip", limits) / MB)} MB, unpacked into a folder.`
   );
 }
 
@@ -86,6 +90,8 @@ export function limitFor(kind: UploadKind, limits: UploadLimits = FALLBACK_UPLOA
       return limits.image_bytes;
     case "sheet":
       return limits.sheet_bytes;
+    case "zip":
+      return limits.zip_bytes ?? Math.max(limits.pdf_bytes, limits.sheet_bytes); // an older server: as an .xlsx
   }
 }
 
@@ -105,6 +111,8 @@ export function tooLargeMessage(kind: UploadKind, sizeBytes: number, limitBytes:
       return `Photos and scans can be up to ${limit} MB. This one is ${size} MB. Save it at a lower resolution and try again.`;
     case "sheet":
       return `Spreadsheets, CSV and text files can be up to ${limit} MB. This one is ${size} MB. Split it into smaller files and try again.`;
+    case "zip":
+      return `Zip files can be up to ${limit} MB. This one is ${size} MB. Split it into smaller zips and try again.`;
   }
 }
 
@@ -119,7 +127,7 @@ export function validateUpload(
 ): string | null {
   const kind = uploadKind(file.name);
   if (kind === null) {
-    return "This kind of file can't be uploaded. Use PDF, PNG, JPG, TIFF, CSV or XLSX.";
+    return "This kind of file can't be uploaded. Use PDF, PNG, JPG, TIFF, CSV, XLSX or ZIP.";
   }
   if (file.size === 0) return "This file is empty.";
   const limit = limitFor(kind, limits);
@@ -195,6 +203,7 @@ export const SECONDS_PER_PAGE: Readonly<Record<UploadKind, number>> = {
   pdf: 35,
   image: 35,
   sheet: 1,
+  zip: 1, // unpacked, not read: each file inside is read as its own document
 };
 
 /**

@@ -47,7 +47,7 @@ const MB = 1024 * 1024;
 
 describe("validateUpload", () => {
   it("accepts every supported kind, in any letter case", () => {
-    for (const name of ["a.pdf", "b.PNG", "c.jpg", "d.JPEG", "e.tif", "f.tiff", "g.csv", "h.xlsx"]) {
+    for (const name of ["a.pdf", "b.PNG", "c.jpg", "d.JPEG", "e.tif", "f.tiff", "g.csv", "h.xlsx", "i.ZIP"]) {
       expect(validateUpload({ name, size: 10 })).toBeNull();
     }
   });
@@ -78,7 +78,7 @@ describe("validateUpload", () => {
   });
 
   it("offers the same kinds in the file picker", () => {
-    expect(ACCEPT_ATTRIBUTE).toBe(".pdf,.png,.jpg,.jpeg,.tif,.tiff,.csv,.xlsx");
+    expect(ACCEPT_ATTRIBUTE).toBe(".pdf,.png,.jpg,.jpeg,.tif,.tiff,.csv,.xlsx,.zip"); // #522: .zip
   });
 });
 
@@ -87,6 +87,7 @@ describe("upload limits by type (PRD U2)", () => {
     { names: ["a.pdf"], limit: 50 * MB },
     { names: ["a.png", "a.jpg", "a.jpeg", "a.tif", "a.tiff"], limit: 20 * MB },
     { names: ["a.csv", "a.xlsx"], limit: 10 * MB },
+    { names: ["a.zip"], limit: 50 * MB }, // #522: the PDF limit until the server says its own
   ];
 
   it("allows each type exactly at its limit and refuses one byte over", () => {
@@ -161,6 +162,7 @@ describe("upload limits by type (PRD U2)", () => {
       pdf_bytes: 50 * MB,
       image_bytes: 20 * MB,
       sheet_bytes: 10 * MB,
+      zip_bytes: 50 * MB,
       max_pages: 100,
       readers: [], // no "Scan with" until the server says which readers it has
     });
@@ -186,10 +188,21 @@ describe("upload limits by type (PRD U2)", () => {
 
   it("tells people each type's limit next to the dropzone", () => {
     expect(uploadLimitsHint()).toBe(
-      "PDF up to 50 MB. PNG, JPG or TIFF up to 20 MB. CSV or XLSX up to 10 MB.",
+      "PDF up to 50 MB. PNG, JPG or TIFF up to 20 MB. CSV or XLSX up to 10 MB. ZIP up to 50 MB, unpacked into a folder.",
     );
     expect(uploadLimitsHint(customer)).toBe(
-      "PDF up to 25 MB. PNG, JPG or TIFF up to 20 MB. CSV or XLSX up to 10 MB.",
+      "PDF up to 25 MB. PNG, JPG or TIFF up to 20 MB. CSV or XLSX up to 10 MB. ZIP up to 25 MB, unpacked into a folder.",
+    );
+  });
+
+  it("takes a zip up to the organisation's folder upload limit (#522)", () => {
+    const zips: UploadLimits = { ...customer, zip_bytes: 5 * 1024 * MB };
+    expect(uploadKind("Bills 2026.Zip")).toBe("zip");
+    expect(limitFor("zip", zips)).toBe(5 * 1024 * MB);
+    expect(limitFor("zip", customer)).toBe(25 * MB); // an older server: as large as an .xlsx or a PDF
+    expect(validateUpload({ name: "Bills.zip", size: 3 * 1024 * MB }, zips)).toBeNull();
+    expect(validateUpload({ name: "Bills.zip", size: 5 * 1024 * MB + 1 }, zips)).toBe(
+      "Zip files can be up to 5120 MB. This one is 5121 MB. Split it into smaller zips and try again.",
     );
   });
 });
