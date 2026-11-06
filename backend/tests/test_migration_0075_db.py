@@ -82,7 +82,9 @@ def test_0075_is_a_merge_alone_and_down_and_up_again(fresh: tuple[str, Database]
     parents = _state(db)
     assert base._names(parents, "functions") >= FUNCTIONS
     migrate(url, "0075")
-    assert _heads(url) == ["0075"]  # changed on purpose (#522): 0075 is no longer the head
+    # Changed on purpose (#521, 6 Nov 2026): 0077 follows 0075 now, so "head" is 0077 and this
+    # test goes up to 0075 by name.
+    assert _current(url) == "0075"
     after = _state(db)
     assert after == parents  # a merge: nothing added
     customer, size = _limited_with_rows(db)
@@ -98,7 +100,7 @@ def test_0075_is_a_merge_alone_and_down_and_up_again(fresh: tuple[str, Database]
     assert _heads(url) == ["0061c", "0070"]
     assert "org_storage_limits" not in base._names(_state(db), "relations")
     migrate(url, "0075")
-    assert _heads(url) == ["0075"]
+    assert _current(url) == "0075"
     assert _state(db) == after
     assert _rows(db, customer) == (size, None, None)  # the limits went with 0061d's downgrade
 

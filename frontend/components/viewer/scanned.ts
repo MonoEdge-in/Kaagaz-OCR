@@ -177,7 +177,9 @@ export function lineMarked(line: Pick<ReadLine, "region">, region: Region | null
   const x = (x0 + x1) / 2;
   const y = (y0 + y1) / 2;
   const e = 1e-6;
-  return x >= rx0 - e && x <= rx1 + e && y >= ry0 - e && y <= ry1 + e;
+  const centred = x >= rx0 - e && x <= rx1 + e && y >= ry0 - e && y <= ry1 + e;
+  // #523: a value cited on one written line's band of a block lies inside the block's box.
+  return centred || (rx0 >= x0 - e && rx1 <= x1 + e && ry0 >= y0 - e && ry1 <= y1 + e);
 }
 
 // The reader's mark for a part of a line it could not read (page_quality.ILLEGIBLE_MARK).

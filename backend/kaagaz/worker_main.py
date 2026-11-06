@@ -139,6 +139,7 @@ from kaagaz.jobs.purge import (
     purge_deleted_customers,
     purge_expired,
     purge_upload_sessions,
+    sweep_ended_sessions,
     sweep_purged_customers,
 )
 from kaagaz.jobs.reading_pause import ReleaseHeld, pause_alert, release_held
@@ -684,6 +685,7 @@ def _purge(db: Database, storage: CustomerStorage, trash_days: int) -> int:
     audit rows 365 days later (0068, #482; logged here)."""
     families = purge_expired(db, storage, _utc_now, trash_days)
     logger.info("abandoned uploads removed: %d", purge_upload_sessions(db, storage, _utc_now))
+    logger.info("ended sessions swept: %d", sweep_ended_sessions(db, _utc_now))
     logger.info("deleted organisations: %d families", purge_deleted_customers(db, storage, _utc_now))
     logger.info("purged organisations swept again: %d", sweep_purged_customers(db, storage, _utc_now))
     logger.info("kept audit rows of deleted organisations removed: %d", forget_kept_audit(db, _utc_now))

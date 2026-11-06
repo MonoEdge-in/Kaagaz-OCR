@@ -66,7 +66,7 @@ import json
 import secrets
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from functools import cache
 from typing import Annotated, Any
@@ -170,6 +170,9 @@ class SessionClaims:
     session_version: int
     expires_at: int  # seconds since the epoch
     capped: bool = False  # given the 24-hour cap while idle hours were set (0040): "cap": true
+    # This browser's session (0076, #502): logout writes it to ended_sessions, which every
+    # request checks. Random, so a cookie can't name another browser's session.
+    session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -192,7 +195,7 @@ class ConfirmClaims:
 _SESSION_PURPOSE = b"session"
 _ENROL_PURPOSE = b"enrol"
 _CONFIRM_PURPOSE = b"confirm"
-_SESSION_FIELDS = frozenset({"uid", "cid", "role", "scope", "ver", "exp"})
+_SESSION_FIELDS = frozenset({"uid", "cid", "role", "scope", "ver", "exp", "sid"})
 _ENROL_FIELDS = frozenset({"uid", "cid", "ver", "sec", "exp"})
 _CONFIRM_FIELDS = frozenset({"uid", "cid", "ver", "exp"})
 _OPERATOR_PURPOSE = b"operator"
@@ -253,6 +256,7 @@ def sign_session(claims: SessionClaims, secret: str) -> str:
             "scope": claims.scope,
             "ver": claims.session_version,
             "exp": claims.expires_at,
+            "sid": claims.session_id,
             **({"cap": True} if claims.capped else {}),  # left out otherwise: older cookies stay valid
         },
         _SESSION_PURPOSE,
@@ -601,8 +605,9 @@ def _verified(token: str, purpose: bytes, secret: str) -> Any:
 
 
 def _claims(data: Any, now: int) -> SessionClaims | None:
-    """Strict: exactly the six fields, each of its type, and "cap" (only ever true, 0040);
-    scope "admin" needs role "admin"."""
+    """Strict: exactly the seven fields, each of its type, and "cap" (only ever true, 0040);
+    scope "admin" needs role "admin". A cookie from before 0076 has no "sid": refused, so its
+    browser signs in once more."""
     if (
         not isinstance(data, dict)
         or set(data) - {"cap"} != _SESSION_FIELDS
@@ -610,8 +615,8 @@ def _claims(data: Any, now: int) -> SessionClaims | None:
     ):
         return None
     uid, cid, role, scope = data["uid"], data["cid"], data["role"], data["scope"]
-    ver, exp = data["ver"], data["exp"]
-    if not (isinstance(uid, str) and isinstance(cid, str) and isinstance(role, str)):
+    ver, exp, sid = data["ver"], data["exp"], data["sid"]
+    if not (isinstance(uid, str) and isinstance(cid, str) and isinstance(role, str) and isinstance(sid, str)):
         return None
     if not isinstance(scope, str) or scope not in SCOPES or role not in ROLES:
         return None
@@ -619,7 +624,7 @@ def _claims(data: Any, now: int) -> SessionClaims | None:
         return None
     if not (_is_version(ver) and _is_int(exp)) or exp <= now:
         return None
-    if not (_is_uuid(uid) and _is_uuid(cid)):
+    if not (_is_uuid(uid) and _is_uuid(cid) and _is_uuid(sid)):
         return None
     return SessionClaims(
         user_id=uid,
@@ -629,6 +634,7 @@ def _claims(data: Any, now: int) -> SessionClaims | None:
         session_version=ver,
         expires_at=exp,
         capped="cap" in data,
+        session_id=sid,
     )
 
 
@@ -830,7 +836,9 @@ def _signed_in(request: Request) -> CurrentUser:
     claims = session_claims(request, context.settings, int(now.timestamp()))
     if claims is None:
         raise ApiError(401, "not_signed_in")
-    user = load_user(context.db, claims.customer_id, claims.user_id, scope=claims.scope)
+    user = load_user(
+        context.db, claims.customer_id, claims.user_id, scope=claims.scope, session_id=claims.session_id
+    )
     if user is None or user.role != claims.role or user.session_version != claims.session_version:
         raise ApiError(401, "not_signed_in")
     if user.role == "admin" and claims.scope != "admin":
@@ -848,12 +856,15 @@ def _signed_in(request: Request) -> CurrentUser:
     return user
 
 
-def load_user(db: Database, customer_id: str, user_id: str, *, scope: str) -> CurrentUser | None:
+def load_user(
+    db: Database, customer_id: str, user_id: str, *, scope: str, session_id: str | None = None
+) -> CurrentUser | None:
     """The enabled user with this id in this customer, or None (also while the
-    customer is not active, 0014). ``scope`` is the session's (at sign-in, the
-    one being started). One indexed query."""
+    customer is not active, 0014, and while ``session_id``, a request's session, was ended
+    by logout, 0076). ``scope`` is the session's (at sign-in, the one being started). One
+    indexed query."""
     with db.customer(customer_id) as conn:
-        row = users_sql.session_user(conn, customer_id, user_id)
+        row = users_sql.session_user(conn, customer_id, user_id, session_id=session_id)
     if row is None or row["disabled"]:
         return None
     return CurrentUser(

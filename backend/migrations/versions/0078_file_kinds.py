@@ -21,16 +21,17 @@ row level security does not hold (no FORCE), so it sees every customer's rows.
 The downgrade puts every kind back to the sniffed type it came from (a HEIC photo, which
 before 0078 had none, to ``ole2``: kept and never read), then 0001's CHECK and 0007's comment.
 
-Merges after the versioning PR (#521), whose 0077 comes first; this changes nothing of it.
+Merges after the versioning PR (#521, 0077) and the guard-rails PR (#520, 0077a and 0077b), which
+come first; this changes nothing of them.
 
 Revision ID: 0078
-Revises: 0077 (the versioning PR's exact overlap)
+Revises: 0077b (the guard-rails PR's Ensemble reading pause)
 """
 
 from alembic import op
 
 revision = "0078"
-down_revision = "0077"
+down_revision = "0077b"
 branch_labels = None
 depends_on = None
 

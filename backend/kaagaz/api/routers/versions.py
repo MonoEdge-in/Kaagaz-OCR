@@ -29,6 +29,7 @@ from kaagaz import versions
 from kaagaz.api.auth import CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
+from kaagaz.api.names import DOCUMENT_NAME_MAX, upload_name
 from kaagaz.api.routers.documents import clean_note
 from kaagaz.api.views import document_summary
 from kaagaz.db import audit, listing, trash
@@ -126,6 +127,80 @@ def make_current(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         raise ApiError(409, "in_trash", _IN_TRASH) from None
 
 
+class SeparateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+
+
+class JoinAgainBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    family_id: uuid.UUID
+    name: str | None = None  # the name it had, given back by Undo
+
+
+def _document_name(name: str) -> str:
+    """The name rule of a folder upload's file (``api/names.upload_name``): no hidden or bidi
+    characters, 1 to DOCUMENT_NAME_MAX characters; 400 otherwise."""
+    cleaned = upload_name(name, max_length=DOCUMENT_NAME_MAX)
+    if cleaned is None:
+        raise ApiError(
+            400,
+            "bad_request",
+            f"Enter a name of 1 to {DOCUMENT_NAME_MAX} characters, with no hidden characters.",
+        )
+    return cleaned
+
+
+@router.post("/documents/{document_id}/separate")
+def separate_version(
+    document_id: uuid.UUID, body: SeparateBody, user: User, context: Context
+) -> dict[str, Any]:
+    """Make it a separate file (#521): ``{document, family_id}``, the family it left. 409
+    ``name_taken`` (a file of that name in the folder), ``first_version``, ``only_version`` or
+    ``in_trash``."""
+    name = _document_name(body.name)
+    customer_id, document = user.customer_id, str(document_id)
+    try:
+        with context.db.customer(customer_id) as conn:
+            family = versions_sql.separate(conn, customer_id, document, name=name, by=user.user_id)
+            listing.rename_document(conn, customer_id, document, name=name)
+            return {"document": _summary(conn, context, user, document), "family_id": family}
+    except versions_sql.Refused as refused:
+        if refused.code == "name_taken":
+            raise ApiError(409, "name_taken", f'A file named "{name}" is already in this folder.') from None
+        if refused.code == "first_version":
+            raise ApiError(
+                409,
+                "first_version",
+                "The first version can't be made a separate file. Make the newer versions separate instead.",
+            ) from None
+        if refused.code == "only_version":
+            raise ApiError(
+                409, "only_version", "This is the only version, so it is its own file already."
+            ) from None
+        raise _refused(refused) from None
+    except trash.InTrash:
+        raise ApiError(409, "in_trash", _IN_TRASH) from None
+
+
+@router.post("/documents/{document_id}/separate/undo")
+def join_again(document_id: uuid.UUID, body: JoinAgainBody, user: User, context: Context) -> dict[str, Any]:
+    """Undo of Make it a separate file (#521): back in the family as its newest version (Accept),
+    with the name it had when given; the summary. 404 when that pair was not kept apart."""
+    name = None if body.name is None else _document_name(body.name)
+    customer_id, document = user.customer_id, str(document_id)
+    try:
+        with context.db.customer(customer_id) as conn:
+            versions_sql.join_again(conn, customer_id, document, str(body.family_id), by=user.user_id)
+            if name is not None:
+                listing.rename_document(conn, customer_id, document, name=name)
+            return _summary(conn, context, user, document)
+    except versions_sql.Refused as refused:
+        raise _refused(refused) from None
+
+
 @router.get("/documents/{document_id}/compare")
 def compare(
     document_id: uuid.UUID,
@@ -134,7 +209,9 @@ def compare(
     other: Annotated[uuid.UUID, Query(alias="with")],
 ) -> dict[str, Any]:
     """Compare (V11): ``{left_id, right_id, pages: [{page_no, changes, truncated, runs: [{kind,
-    text}]}], summary}``, kind same, removed (only in ``with``) or added (only in ``id``)."""
+    text}]}], summary, overview}``, kind same, removed (only in ``with``) or added (only in
+    ``id``); each page also counts its words changed and each side's words, and ``overview``
+    says it all in plain words (#521, See the differences)."""
     customer_id, right, left = user.customer_id, str(document_id), str(other)
     with context.db.customer(customer_id) as conn:
         rows = [listing.get_document(conn, customer_id, each) for each in (left, right)]
@@ -147,4 +224,7 @@ def compare(
             audit.record_view(conn, customer_id, actor_user_id=user.user_id, document_id=each, via="compare")
     # The diff runs after the transaction, so no pooled connection waits on it.
     found = versions.compare(*texts, max_pages=context.settings.max_pages)
-    return {"left_id": left, "right_id": right, **found}
+    share = versions.exact_overlap(*texts)  # #521: See the differences' summary line
+    said = versions.overview(found["pages"], share, truncated=found["truncated"])
+    counts = {"left_pages": rows[0]["page_count"], "right_pages": rows[1]["page_count"]}  # type: ignore[index]
+    return {"left_id": left, "right_id": right, **found, "overview": said, **counts}

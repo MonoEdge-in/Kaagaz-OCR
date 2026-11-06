@@ -192,8 +192,10 @@ services:
     networks:
       - data
       - edge
+    # This laptop only (#520 review): the image trusts X-Forwarded-For (backend/Dockerfile), so a
+    # port open to the network would let anyone on it choose their own address and rate bucket.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     healthcheck:
       # The image has no curl. urlopen raises on a 503, so a degraded
       # /api/health fails the check.

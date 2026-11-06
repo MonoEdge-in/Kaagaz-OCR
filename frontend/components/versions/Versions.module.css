@@ -24,6 +24,34 @@
   overflow-wrap: anywhere;
 }
 
+/* Issue 521: a near match's question, in the banner, the upload tray's row and the compare screen. */
+.choiceBlock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+/* Issue 521: the compare screen's + and − before each change, so colour is never the only sign. */
+.removed > [aria-hidden="true"],
+.added > [aria-hidden="true"] {
+  font-weight: 700;
+  margin-inline-end: 0.15em;
+}
+
+/* Issue 521: a page with little text (a scan): the two page images side by side. */
+.pageImages {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.pageImages img {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+}
+
 .bannerButtons {
   display: flex;
   flex-wrap: wrap;

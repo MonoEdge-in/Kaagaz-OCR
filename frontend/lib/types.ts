@@ -230,6 +230,7 @@ export interface VersionSuggestion {
   candidate: { family_id: string; id: string; name: string }; // id: the family's current version
   next_version_no: number; // "Make it version N"
   text_overlap: number | null;
+  text_overlap_estimated?: boolean; // #521: true when text_overlap is the estimate, not counted exactly
   name_similarity: number | null;
   shared_identifier: string | null; // its kind, such as "survey_number"
   reasons?: string | string[] | null;
@@ -296,7 +297,20 @@ export interface DocumentCompare {
   left_id: string;
   right_id: string;
   summary: string; // "2 changes on page 2"
-  pages: { page_no: number; changes: number; truncated: boolean; runs: CompareRun[] }[];
+  pages: {
+    page_no: number;
+    changes: number;
+    truncated: boolean;
+    runs: CompareRun[];
+    // #521: the words changed (a replacement counts its longer side) and each side's words.
+    words_changed?: number;
+    left_words?: number;
+    right_words?: number;
+  }[];
+  truncated?: boolean; // over the compare limits: only the first part is compared
+  overview?: string; // #521: "94% the same. 38 words changed on pages 2 and 5. Page 6 is new."
+  left_pages?: number | null; // #521 review: each side's page count, for its page images
+  right_pages?: number | null;
 }
 
 /** An active person of this company, for the owner picker and the filters. */

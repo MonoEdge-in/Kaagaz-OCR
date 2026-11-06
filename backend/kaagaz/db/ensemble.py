@@ -21,6 +21,11 @@ a connection from ``Database.customer(customer_id)`` and filters on ``customer_i
   CONFLICT DO NOTHING, so a page delivered again writes nothing twice), an agreed flagged
   word's ``resolve`` change, then the page in ``pages_done``. A word whose latest change in
   force is a person's is ``skipped_user_edit``: user edits always win.
+* **Held by the reading pause** (#520, Tushar, 6 Nov 2026): a queued run picked up while its
+  organisation's reading is paused stays queued with the pause's code in ``error_code``
+  (``hold``, HELD_CODES); the release sweep finds it (``held_runs``, and 0076's
+  ``kaagaz_customer_ids_held``), queues its job again and ends the hold (``unhold``). A claim, or
+  a Stop of the queued run, ends the hold too.
 * **Keep, Revert, Keep all**: Keep is ``word_review.change_word`` with the reading, written
   into values and pieces like an edit but never Verifying; 409 ``changed_since`` when a
   person changed the word since, or its text is no longer the reading's ``before_text``.
@@ -42,7 +47,7 @@ from kaagaz.db import audit, word_review
 from kaagaz.db.word_review import Refused
 from kaagaz.extraction.flags import LINE, MARK, READINGS_DIFFER, REVIEW, Flag, overlaps, word_key
 from kaagaz.extraction.labels import majority
-from kaagaz.reading.spans import BoxLocation, location_from_json
+from kaagaz.reading.spans import BoxLocation, location_from_json, text_lines
 
 SCOPES = ("word", "words", "flagged", "document")
 ACTIVE = ("queued", "running")
@@ -52,6 +57,9 @@ RUNS_PER_HOUR = 30
 OTHERS = 2  # the models that read again (models.resolve_ensemble)
 # ponytail: a fixed guess a model read takes, for the estimate; the ledger's own times if it misleads.
 SECONDS_PER_READ = 8
+# kaagaz.jobs.reading_pause.CODES: a queued run held by the reading pause has one in error_code.
+HELD_CODES = ("paused_daily_limit", "paused_budget")
+_HELD = "status = 'queued' AND error_code IN ('paused_daily_limit', 'paused_budget')"
 _EDGES = string.punctuation + "\u0964\u0965"  # Latin and Devanagari punctuation at a word's ends
 
 # A run's row is every column of ensemble_runs (0030, 0032).
@@ -81,16 +89,25 @@ _INSERT_RUN = text(
 # A queued run stops at once; a running one when its worker next looks (between pages).
 _STOP = text(
     "UPDATE ensemble_runs SET stop_requested_at = coalesce(stop_requested_at, :now),"
+    " error_code = CASE WHEN status = 'queued' THEN NULL ELSE error_code END,"
     " status = CASE WHEN status = 'queued' THEN 'stopped' ELSE status END,"
     " finished_at = CASE WHEN status = 'queued' THEN CAST(:now AS timestamptz) ELSE finished_at END"
     " WHERE customer_id = :c AND document_id = :d AND id = :r AND status IN ('queued', 'running')"
     " RETURNING id"
 )
 _CLAIM = text(
-    "UPDATE ensemble_runs SET status = 'running', started_at = coalesce(started_at, :now)"
+    "UPDATE ensemble_runs SET status = 'running', started_at = coalesce(started_at, :now), error_code = NULL"
     " WHERE customer_id = :c AND document_id = :d AND id = :r AND status IN ('queued', 'running')"
     " RETURNING *"
 )
+_HOLD = text(
+    "UPDATE ensemble_runs SET error_code = :code WHERE customer_id = :c AND id = :r AND status = 'queued'"
+)
+_HELD_RUNS = text(
+    f"SELECT document_id, id FROM ensemble_runs WHERE customer_id = :c AND {_HELD}"  # noqa: S608 - fixed
+    " ORDER BY created_at, id LIMIT :n"
+)
+_UNHOLD = text(f"UPDATE ensemble_runs SET error_code = NULL WHERE customer_id = :c AND id = :r AND {_HELD}")  # noqa: S608 - fixed
 _STOP_ASKED = text(
     "SELECT stop_requested_at IS NOT NULL FROM ensemble_runs WHERE customer_id = :c AND id = :r"
 )
@@ -118,7 +135,7 @@ _SCANNED = text(
 # The first reader's OCR lines of some pages (word marks left out), in reading order.
 _LINES = text(
     "SELECT CAST(e.span -> 'region' ->> 'page' AS integer) AS page_no, e.span ->> 'text' AS text,"
-    " e.span -> 'region' AS region"
+    " e.span ->> 'raw' AS raw, e.span -> 'region' AS region"
     " FROM reader_outputs ro"
     " CROSS JOIN LATERAL jsonb_array_elements(ro.output) WITH ORDINALITY AS e(span, ord)"
     " WHERE ro.customer_id = :c AND ro.document_id = :d AND ro.role = 'first'"
@@ -280,11 +297,27 @@ def _spot(
         )
         mark, box = box_of(flag.region), None if line is None else box_of(line["region"])
         if line is not None and mark is not None and box is not None and box.x1 > box.x0:
-            share = (mark.x0 - box.x0) / (box.x1 - box.x0)
-            start = word_at(str(line["text"]), flag.as_read, share)
+            raw = line.get("raw") or str(line["text"])
+            start = word_at(str(line["text"]), flag.as_read, _share(mark, box, str(raw)))
             if start is not None:
                 return line["region"], str(line["text"]), (start, start + len(flag.as_read.split()))
     return flag.region, now, (0, len(now.split()))
+
+
+def _share(mark: BoxLocation, line: BoxLocation, raw: str) -> float:
+    """How far into its line's text a word mark is, from 0 to 1, by its box, as ocr._word_marks
+    placed it: across the line. #523: in a block whose raw text keeps its written lines
+    (``text_lines``, one band each), the mark's band names its line, and the share is the
+    characters of the lines before it plus its place across that line's own length, over them
+    all (the lines are seldom of equal length). Approximate, as the marks are."""
+    across = (mark.x0 - line.x0) / (line.x1 - line.x0)
+    rows = text_lines(raw)
+    if len(rows) < 2 or line.y1 <= line.y0:
+        return across
+    band = (line.y1 - line.y0) / len(rows)
+    row = min(len(rows) - 1, max(0, int(((mark.y0 + mark.y1) / 2 - line.y0) / band)))
+    lengths = [end - start for start, end in rows]
+    return (sum(lengths[:row]) + across * lengths[row]) / (sum(lengths) or 1)
 
 
 def word_at(line: str, word: str, share: float) -> int | None:
@@ -450,6 +483,23 @@ def claim(
     (a duplicate delivery)."""
     params = {"c": customer_id, "d": document_id, "r": run_id, "now": now}
     return conn.execute(_CLAIM, params).mappings().first()
+
+
+def hold(conn: Connection, customer_id: str, run_id: str, code: str) -> None:
+    """The queued run waits for its organisation's reading pause to end (``code``, one of
+    HELD_CODES). One statement."""
+    conn.execute(_HOLD, {"c": customer_id, "r": run_id, "code": code})
+
+
+def held_runs(conn: Connection, customer_id: str, most: int) -> list[tuple[str, str]]:
+    """At most ``most`` of the organisation's held runs, oldest first: (document id, run id).
+    One statement on the active runs' index."""
+    return [(str(d), str(r)) for d, r in conn.execute(_HELD_RUNS, {"c": customer_id, "n": most})]
+
+
+def unhold(conn: Connection, customer_id: str, run_id: str) -> None:
+    """The run is no longer held (its job is queued again). One statement."""
+    conn.execute(_UNHOLD, {"c": customer_id, "r": run_id})
 
 
 def document_file(conn: Connection, customer_id: str, document_id: str) -> RowMapping | None:

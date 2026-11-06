@@ -113,8 +113,8 @@ class Asked:
 
 
 def test_an_upgrade_run_is_never_held_so_its_ready_document_stays_in_search() -> None:
-    """QA P1 (4 Nov 2026): the upgrade sweep's read again (no one asked) is counted, never paused,
-    as Ensemble's runs after the scan; a reading someone asked for is asked."""
+    """QA P1 (4 Nov 2026): the upgrade sweep's read again (no one asked) is counted, never paused;
+    a reading someone asked for is asked. (Ensemble after the scan is paused since #520.)"""
     pause = Asked(paused=True)
     upgrade = rig(
         ScriptedReader({1: page_read(TOTAL)}),

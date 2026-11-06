@@ -48,7 +48,7 @@ from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore, _insert_values, span_from_json
 from kaagaz.db.trash import lock_family
 from kaagaz.extraction.invoice import WindowSettings
-from kaagaz.extraction.labels import label_quoted, label_reading_marks, spot_unsure
+from kaagaz.extraction.labels import at_line, label_quoted, label_reading_marks, spot_unsure
 from kaagaz.extraction.land import LAND_PROMPT_HASH, read_land, without_owners
 from kaagaz.extraction.learned import apply_learned
 from kaagaz.extraction.quotes import reader_text
@@ -339,7 +339,7 @@ def _labelled(
             with page_picture(drawn, data, page_no, dpi=settings.page_image_dpi,
                               max_image_pixels=settings.max_image_pixels) as page:  # fmt: skip
                 for box in (b for b in wanted if b.page == page_no and isinstance(b, BoxLocation)):
-                    devanagari = _DEVANAGARI.search(line_texts.get(box, "")) is not None
+                    devanagari = _DEVANAGARI.search(at_line(box, line_texts) or "") is not None
                     with _check_crop(page, box) as crop:
                         reading = checker.read_crop(crop, devanagari=devanagari).strip() if checker else ""
                     if reading:
