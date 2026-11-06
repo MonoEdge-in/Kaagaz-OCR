@@ -57,9 +57,12 @@ KIND_OF: Mapping[str, Kind] = {
     resolve.JSON: "sheet",
     resolve.HTML: "sheet",
 }
-# The most a zip may be, whatever the organisation's folder upload limit (Tushar, 6 Nov 2026).
+# The most a zip may be, whatever the organisation's folder upload limit (Tushar, 6 Nov 2026;
+# 500 MiB from 1 GiB after the security review: the content check's child process holds it
+# within its 1.5 GiB, and clamd's StreamMaxLength, MaxFileSize and MaxScanSize in
+# docker-compose.yml are at least this, tests/test_clamav_settings.py).
 # shortcut: the scan gate holds the whole zip in memory; stream the scan to raise this.
-ZIP_MAX_BYTES = 1024**3
+ZIP_MAX_BYTES = 500 * 1024**2
 # The sniffed types an upload can be allowed as (ALLOWED_TYPES): the ones with a size group.
 UPLOAD_TYPES = frozenset(KIND_OF.keys() & sniff.KNOWN_TYPES)
 

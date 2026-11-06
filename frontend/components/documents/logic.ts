@@ -144,7 +144,7 @@ export function tooLargeMessage(kind: UploadKind, sizeBytes: number, limitBytes:
     case "sheet":
       return `Spreadsheets, CSV and text files can be up to ${limit} MB. This one is ${size} MB. Split it into smaller files and try again.`;
     case "zip":
-      // The server's words: at most 1 GB (the scan holds a zip in memory), named in GB when whole GB.
+      // The server's words: at most 500 MB (the scan holds a zip in memory), in GB when whole GB.
       return `Zip files can be up to ${limitBytes % (1024 * MB) === 0 ? `${limitBytes / (1024 * MB)} GB` : `${limit} MB`}. Unzip it on your computer and upload the folder instead.`;
   }
 }

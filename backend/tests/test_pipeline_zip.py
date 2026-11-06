@@ -93,8 +93,8 @@ class ZipInThePipelineTest(unittest.TestCase):
         doc = run(system, unpack, workbook, "book.xlsx", kind_limit=len(workbook))
         self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.READY)
 
-    def test_a_zip_over_1_gb_is_refused_before_the_scan_loads_it(self) -> None:
-        """A fake size: the record says 1 GB and a byte; the worker never reads the file."""
+    def test_a_zip_over_500_mb_is_refused_before_the_scan_loads_it(self) -> None:
+        """A fake size: the record says 500 MB and a byte; the worker never reads the file."""
         system, unpack = build(), Unpacker()
         doc = system.upload.accept(CUSTOMER, io.BytesIO(FOLDER_ZIP), display_name="Huge.zip").document_id
         record = system.repo.get(CUSTOMER, doc)
@@ -104,7 +104,7 @@ class ZipInThePipelineTest(unittest.TestCase):
             processor(system, unpack)(Job(customer_id=CUSTOMER, document_id=doc), lambda: None)
         self.assertEqual((failed.exception.code, failed.exception.retryable), ("zip_over_limit", False))
         self.assertEqual((system.scanner.scanned, unpack.calls), ([], []))
-        self.assertEqual(ZIP_MAX_BYTES, 1024**3)
+        self.assertEqual(ZIP_MAX_BYTES, 500 * 1024**2)  # #522 security review: was 1 GiB
 
     def test_a_zip_of_exactly_1_gb_goes_on(self) -> None:
         system, unpack = build(), Unpacker()

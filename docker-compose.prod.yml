@@ -57,7 +57,7 @@ services:
     ports: !reset []
     restart: unless-stopped
     logging: *logging
-    mem_limit: 4g
+    mem_limit: 4g # signatures (#522: its zip limits are disk, docker-compose.yml)
 
   # One-shot: it runs once per deploy and exits, so it gets no restart policy.
   # The storage admin key from the server's .env, never the laptop's (#477).

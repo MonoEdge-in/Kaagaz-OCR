@@ -110,7 +110,8 @@ ZIP_FAILURES = {
     " organisation's lower limit. Split it into smaller zips and upload each.",
     "zip_too_many_folders": "This zip holds more folders than your organisation's folder upload limit."
     " Split it into smaller zips and upload each.",
-    "zip_over_limit": "Zip files can be up to 1 GB. Unzip it on your computer and upload the folder instead.",
+    "zip_over_limit": "Zip files can be up to 500 MB. Unzip it on your computer and upload the folder"
+    " instead.",
     "zip_too_large": "This zip unpacks to more than your organisation's folder upload limit. Split it into"
     " smaller zips and upload each.",
     "zip_too_compressed": "This zip unpacks to more than 100 times its own size, as a zip bomb does, so it"

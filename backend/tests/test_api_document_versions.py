@@ -177,7 +177,7 @@ def test_the_version_route_has_the_upload_size_checks(db: Database) -> None:
     # Changed on purpose (#522 PR 3): the largest limit is a zip's, the folder upload limit (5 GB by
     # default), no longer the PDF limit (5 MB here).
     api = Api(db)
-    largest = 1024 * MB  # capped at 1 GB
+    largest = 500 * MB  # capped at 500 MB (#522 security review)
     signed = api.new_signed()
     first = api.add_document(signed.customer_id)
     request = signed.client.build_request(

@@ -4,7 +4,7 @@ of a zip (#522 PR 3), so both check one policy.
 * Each type's own limit: MAX_UPLOAD_MB for PDFs (and Word and PowerPoint files), MAX_IMAGE_MB,
   MAX_SHEET_MB; a zip's is the organisation's folder upload byte limit
   (``folder_uploads.effective_limits``), or the PDF or sheet limit when that is larger, since an
-  .xlsx, .docx or .pptx is sniffed as a zip too, and never more than ``ZIP_MAX_BYTES`` (1 GB: the
+  .xlsx, .docx or .pptx is sniffed as a zip too, and never more than ``ZIP_MAX_BYTES`` (500 MB: the
   scan gate holds the whole zip in memory).
 * The customer's own limit (``customers.max_upload_mb``, an admin's) lowers every type's, never
   raises one.

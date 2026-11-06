@@ -358,5 +358,5 @@ def test_a_zip_of_at_most_1_mb_is_never_too_compressed(unpacking: Unpacking) -> 
     found = unpacking.result(record)
     assert found is not None and (found.stored, found.failed) == (3, 0)
     assert zip_message("failed", "zip_over_limit", None) == (
-        "Zip files can be up to 1 GB. Unzip it on your computer and upload the folder instead."
+        "Zip files can be up to 500 MB. Unzip it on your computer and upload the folder instead."
     )

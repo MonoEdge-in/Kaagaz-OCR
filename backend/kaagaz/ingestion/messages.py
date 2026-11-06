@@ -31,7 +31,7 @@ _TOO_LARGE: dict[Kind, str] = {
         " Split it into smaller files and try again."
     ),
     # #522 PR 3: the organisation's folder upload limit (or the PDF or sheet limit, when larger).
-    # #522 PR 3: at most ZIP_MAX_BYTES (1 GB), named in GB when it is whole GB.
+    # #522 PR 3: at most ZIP_MAX_BYTES (500 MB), named in GB when it is whole GB.
     "zip": "Zip files can be up to {limit}. Unzip it on your computer and upload the folder instead.",
 }
 
