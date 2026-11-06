@@ -45,8 +45,10 @@ import lzma
 import os
 import re
 import struct
+import sys
 import zipfile
 import zlib
+from array import array
 from typing import IO
 
 from kaagaz.ingestion import sniff
@@ -305,7 +307,7 @@ class _Compound:
         if major not in (3, 4) or byte_order != 0xFFFE or shift not in (9, 12):
             raise ReadError("corrupt_file")
         self._sector = 1 << shift
-        self._fat = self._read_fat(header)
+        self._fat = self._read_fat(header)  # O(file size / 128) bytes at most
         (self._directory_start,) = struct.unpack_from("<I", header, 0x30)
 
     def root_streams(self) -> set[str]:
@@ -348,11 +350,15 @@ class _Compound:
             raise ReadError("corrupt_file")
         return directory, count
 
-    def _read_fat(self, header: bytes) -> list[int]:
-        """The FAT: every sector's next sector. Its own sectors are listed in the header's
-        DIFAT, then in the DIFAT sector chain."""
+    def _read_fat(self, header: bytes) -> "array[int]":
+        """The FAT: every sector's next sector, as 32-bit numbers (4 bytes each, not a Python
+        int each). Its own sectors are listed in the header's DIFAT, then in the DIFAT sector
+        chain; neither may count more sectors than the file holds, checked before any is read."""
         (fat_sectors,) = struct.unpack_from("<I", header, 0x2C)
         difat_start, difat_count = struct.unpack_from("<II", header, 0x44)
+        in_file = self._size // self._sector
+        if fat_sectors > in_file or difat_count > in_file:
+            raise ReadError("corrupt_file")
         listed = list(struct.unpack_from(f"<{_HEADER_DIFAT}I", header, 0x4C))
         per_sector = self._sector // 4
         seen: set[int] = set()
@@ -367,9 +373,11 @@ class _Compound:
         listed = listed[:fat_sectors]
         if len(listed) != fat_sectors or len(set(listed)) != fat_sectors:
             raise ReadError("corrupt_file")
-        fat: list[int] = []
+        fat = array("I")
         for number in listed:
-            fat += struct.unpack(f"<{per_sector}I", self._read_sector(number))
+            fat.frombytes(self._read_sector(number))
+        if sys.byteorder == "big":
+            fat.byteswap()  # the file's numbers are little-endian
         return fat
 
     def _chain(self, start: int) -> list[int]:

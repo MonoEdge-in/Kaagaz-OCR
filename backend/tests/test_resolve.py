@@ -4,6 +4,7 @@ old Office file's root streams, and a text file's name, each read as little as i
 import io
 import struct
 import zipfile
+from array import array
 from collections.abc import Callable
 from pathlib import Path
 
@@ -132,6 +133,31 @@ def test_a_damaged_old_office_file_is_corrupt(damage: Callable[[bytes], bytes]) 
     with pytest.raises(ReadError) as refused:
         resolve_kind(data, sniff.OLE2, "a.doc")
     assert refused.value.code == "corrupt_file"
+
+
+def test_a_fat_larger_than_the_file_is_corrupt_before_any_of_it_is_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Security review (6 Nov 2026, nice to have): the header's FAT sector count is checked
+    against the file's size before any FAT sector is read, and the FAT is an array of 32-bit
+    numbers, not a list of Python ints (a 50 MB file's FAT was 12.5 million of them)."""
+    data = bytearray(compound(["WordDocument"]))
+    struct.pack_into("<I", data, 0x2C, 100)  # 100 FAT sectors, in a file of 3
+    struct.pack_into("<100I", data, 0x4C, *range(100))
+    reads: list[int] = []
+    real = resolve._Compound._read_sector
+
+    def counting(self: object, number: int) -> bytes:
+        reads.append(number)
+        return real(self, number)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(resolve._Compound, "_read_sector", counting)
+    with pytest.raises(ReadError) as refused:
+        resolve_kind(bytes(data), sniff.OLE2, "a.doc")
+    assert refused.value.code == "corrupt_file" and reads == []
+    monkeypatch.setattr(resolve._Compound, "_read_sector", real)
+    compound_file = resolve._Compound(io.BytesIO(compound(["WordDocument"])))
+    assert isinstance(compound_file._fat, array) and compound_file._fat.itemsize == 4
 
 
 def test_a_root_whose_children_loop_is_corrupt() -> None:
