@@ -259,7 +259,8 @@ _CONTENT_TYPES = {
     "png": ("image/png", "png"),
     "jpeg": ("image/jpeg", "jpg"),
     "tiff": ("image/tiff", "tif"),
-    "zip": ("application/octet-stream", "xlsx"),  # only a spreadsheet passes the read
+    # #522 PR 3: a zip is a folder of files now, kept as one (an .xlsx is told "xlsx" once scanned).
+    "zip": ("application/zip", "zip"),
     "ole2": ("application/octet-stream", "bin"),
     "text": ("text/plain; charset=utf-8", "csv"),
 }

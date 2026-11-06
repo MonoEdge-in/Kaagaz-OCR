@@ -174,16 +174,19 @@ def test_a_family_moved_to_trash_just_after_the_check_is_404_and_the_stored_file
 
 
 def test_the_version_route_has_the_upload_size_checks(db: Database) -> None:
-    api = Api(db)  # PDFs 5 MB (the largest limit), sheets 1 MB
+    # Changed on purpose (#522 PR 3): the largest limit is a zip's, the folder upload limit (5 GB by
+    # default), no longer the PDF limit (5 MB here).
+    api = Api(db)
+    largest = 5 * 1024 * MB
     signed = api.new_signed()
     first = api.add_document(signed.customer_id)
     request = signed.client.build_request(
         "POST", f"/api/documents/{first}/versions", files={"file": ("a.pdf", V2_BYTES, "application/pdf")}
     )
-    request.headers.update({**CSRF, "Content-Length": str(5 * MB + 64 * 1024 + 1)})
+    request.headers.update({**CSRF, "Content-Length": str(largest + 64 * 1024 + 1)})
     declared = signed.client.send(request)  # refused on its declared size, before the body is read
     assert declared.status_code == 413
-    assert declared.json()["error"] == {"code": "too_large", "message": over_every_limit_message(5 * MB)}
+    assert declared.json()["error"] == {"code": "too_large", "message": over_every_limit_message(largest)}
 
     sheet = b"invoice,amount\n" + b"0" * MB  # over the sheet limit, counted by the upload service
     counted = _version(signed, first, sheet, name="register.csv")
