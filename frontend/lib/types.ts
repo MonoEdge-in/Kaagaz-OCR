@@ -28,7 +28,11 @@ export type LabelReason =
   | "check_failed" // PRD 2, K3: a check on its invoice failed, even if the readers agreed
   | "unsure_text" // PRD 5 V4: it holds a word the reader was unsure of, or [?]
   | "box_unanchored" // PRD 5 G5: its spot on the page couldn't be confirmed
-  | "local_reader"; // PRD 5 Q7: read by the backup reader while the main reader was down
+  | "local_reader" // PRD 5 Q7: read by the backup reader while the main reader was down
+  | "mixed_digits" // #524: an amount's digits are of two scripts (९४0000/-)
+  | "amount_commas" // #524: an amount's commas fit no grouping (1,15,0000)
+  | "amount_mark" // #524: a mark inside an amount, or "/-" read as a 1 (115000001-)
+  | "amount_outlier"; // #524: a total more than ten times the page's other total
 
 /** "admin" only for an admin's session (from /login, always with two-step since 16 Oct 2026). */
 export type SessionScope = "app" | "admin";
@@ -1084,7 +1088,7 @@ export interface ReviewItem {
   check_reasons: string[]; // why its document's invoice check failed (PRD 3 Y5); [] otherwise
 }
 
-/** The review queue's reason filter (PRD 3 Y5; PRD 5 U6 adds the last four). */
+/** The review queue's reason filter (PRD 3 Y5; PRD 5 U6 adds four, then #524's amount four). */
 export type ReviewReason =
   | "check_failed"
   | "readers_disagree"
@@ -1093,7 +1097,11 @@ export type ReviewReason =
   | "unsure_text"
   | "box_unanchored"
   | "local_reader"
-  | "ocr_script";
+  | "ocr_script"
+  | "mixed_digits"
+  | "amount_commas"
+  | "amount_mark"
+  | "amount_outlier";
 
 /** A row of the admin's Failed jobs tab (PRD 3 Z1). */
 export interface FailedDocument {

@@ -142,7 +142,8 @@ describe("who can review", () => {
 });
 
 describe("the reason filter", () => {
-  it("offers the eight reasons the server accepts", () => {
+  // Changed on purpose (#524, 6 Nov 2026): twelve, with the four amount reasons.
+  it("offers the twelve reasons the server accepts", () => {
     expect(REASON_FILTERS.map((choice) => choice.value)).toEqual([
       "check_failed",
       "readers_disagree",
@@ -152,7 +153,20 @@ describe("the reason filter", () => {
       "box_unanchored",
       "local_reader",
       "ocr_script",
+      "mixed_digits",
+      "amount_commas",
+      "amount_mark",
+      "amount_outlier",
     ]);
+  });
+
+  it("names the amount reasons in plain words (#524)", () => {
+    const text = Object.fromEntries(REASON_FILTERS.map((choice) => [choice.value, choice.text]));
+    expect(text.mixed_digits).toBe("Mixed Marathi and English digits");
+    expect(text.amount_commas).toBe("The amount's commas look wrong");
+    expect(text.amount_mark).toBe("A mark in the amount looks wrong");
+    expect(text.amount_outlier).toBe("Much bigger than the other total");
+    expect(parseReason("mixed_digits")).toBe("mixed_digits");
   });
 
   it("names PRD 5's reasons in the words of viewer/labels.ts (U6)", () => {

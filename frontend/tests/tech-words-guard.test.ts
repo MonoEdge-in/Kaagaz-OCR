@@ -62,6 +62,10 @@ const REASONS = Object.keys({
   unsure_text: 1,
   box_unanchored: 1,
   local_reader: 1,
+  mixed_digits: 1,
+  amount_commas: 1,
+  amount_mark: 1,
+  amount_outlier: 1,
 } satisfies Record<LabelReason, 1>) as LabelReason[];
 const ISSUES = Object.keys({
   blurry: 1,

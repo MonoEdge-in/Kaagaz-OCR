@@ -56,6 +56,10 @@ const REASONS: Record<LabelReason, string> = {
   unsure_text: "Part of this value was hard to read. Check it against the page.",
   box_unanchored: "Check the exact spot of this value against the page.",
   local_reader: "Read by the backup reader while the main reader was down. It will be read again automatically.",
+  mixed_digits: "This amount mixes Marathi or Hindi digits with English ones. Check each digit against the page.",
+  amount_commas: "The commas in this amount fit no usual grouping. Check each digit against the page.",
+  amount_mark: "A mark in this amount may be misread, such as a /- read as 1. Check each digit against the page.",
+  amount_outlier: "This total is more than ten times the other total on its page. Check each digit against the page.",
 };
 
 export function reasonText(reason: LabelReason): string {
@@ -80,12 +84,17 @@ export function voteText(votes: ValueVotes): string {
   return `The readers did not agree: ${reads.join("; ")}. Check it against the page.`;
 }
 
-/** The review queue's short names for PRD 5's reasons (U6), as its reason filter lists them. */
+/** The review queue's short names for PRD 5's reasons (U6) and #524's amount reasons, as its
+ * reason filter lists them. */
 export const REASON_FILTER_TEXT = {
   unsure_text: "Hard to read",
   box_unanchored: "Spot not confirmed",
   local_reader: "Read by the backup reader",
   ocr_script: "Read from Hindi or Marathi script",
+  mixed_digits: "Mixed Marathi and English digits",
+  amount_commas: "The amount's commas look wrong",
+  amount_mark: "A mark in the amount looks wrong",
+  amount_outlier: "Much bigger than the other total",
 } as const satisfies Partial<Record<LabelReason, string>>;
 
 /** Tax and bank short forms, kept in capitals the way people write them. */
