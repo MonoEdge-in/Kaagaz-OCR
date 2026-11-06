@@ -415,6 +415,83 @@ def undo(conn: Connection, customer_id: str, document_id: str, *, by: str) -> No
     )
 
 
+# --- #521: make it a separate file ----------------------------------------------------------
+_SEPARATE_STATE = text(
+    "SELECT d.id = d.family_id AS first, d.is_current, d.folder_id, d.version_no,"
+    " (SELECT count(*) FROM documents o WHERE o.customer_id = :c AND o.family_id = :f) AS versions,"
+    " (SELECT o.id FROM documents o WHERE o.customer_id = :c AND o.family_id = :f AND o.id <> :d"
+    " ORDER BY o.version_no LIMIT 1) AS next_id,"
+    " EXISTS (SELECT 1 FROM documents o WHERE o.customer_id = :c AND o.id <> :d AND o.deleted_at IS NULL"
+    " AND o.folder_id IS NOT DISTINCT FROM d.folder_id AND lower(o.display_name) = lower(:name)) AS taken"
+    " FROM documents d WHERE d.customer_id = :c AND d.id = :d"
+)
+_REKEY = text("UPDATE documents SET family_id = :rest WHERE customer_id = :c AND family_id = :f AND id <> :d")
+_ON_ITS_OWN = text(
+    "UPDATE documents SET family_id = id, version_no = 1, is_current = (status = 'ready')"
+    " WHERE customer_id = :c AND id = :d"
+)
+# Keep separate's row for the pair (V6): spotting never suggests it again, and Undo is its Accept.
+_KEPT_APART = text(
+    "INSERT INTO version_suggestions (customer_id, document_id, candidate_family_id, outcome, status,"
+    " decided_by, decided_at) VALUES (:c, :d, :rest, 'suggested', 'rejected', :by, now())"
+    " ON CONFLICT (document_id, candidate_family_id) DO UPDATE SET status = 'rejected',"
+    " decided_by = :by, decided_at = now()"
+)
+_KEPT_APART_AGAIN = text(
+    "UPDATE version_suggestions SET status = 'pending', decided_by = NULL, decided_at = NULL"
+    " WHERE customer_id = :c AND document_id = :d AND candidate_family_id = :f AND status = 'rejected'"
+    " RETURNING id"
+)
+
+
+def separate(conn: Connection, customer_id: str, document_id: str, *, name: str, by: str) -> str:
+    """Make it a separate file (#521): this version leaves its family as its own document, version
+    1, in the same folder (the family's), current when ready; its reading, values and pieces are
+    not touched, so nothing is read again. Version 1's id is its family's, so the versions left
+    take the next one's id. The highest ready version left is current when this one was. The
+    pair is kept apart (the keep-separate row, never suggested again), and one
+    ``document.version_separated`` row names the family and number. The caller renames it
+    (``listing.rename_document``) in this transaction. Returns the family left. Raises Refused:
+    not_found, only_version, name_taken; trash.InTrash in Trash. O(v log D)."""
+    family = lock_live_family(conn, customer_id, document_id)
+    if family is None:
+        raise Refused("not_found")
+    params = {"c": customer_id, "d": document_id, "f": family, "name": name}
+    state = conn.execute(_SEPARATE_STATE, params).mappings().one()
+    if state["versions"] < 2:
+        raise Refused("only_version")
+    if state["taken"]:
+        raise Refused("name_taken")
+    rest = str(state["next_id"]) if state["first"] else family
+    audit.record(  # before the split, so the row is on the family's timeline (A5)
+        conn,
+        customer_id,
+        actor_user_id=by,
+        action="document.version_separated",
+        target_type="document",
+        target_id=document_id,
+        details={"family_id": family, "version_no": int(state["version_no"])},
+    )
+    if state["first"]:
+        conn.execute(_REKEY, {**params, "rest": rest})
+    conn.execute(_ON_ITS_OWN, params)
+    if state["is_current"]:
+        conn.execute(_HIGHEST_READY_CURRENT, {**params, "f": rest})
+    conn.execute(_KEPT_APART, {**params, "rest": rest, "by": by})
+    return rest
+
+
+def join_again(conn: Connection, customer_id: str, document_id: str, family_id: str, *, by: str) -> str:
+    """Undo of Make it a separate file (#521): the pair kept apart is asked again and accepted at
+    once (``link``), so the document is its family's newest, current version again. Raises
+    Refused: not_found (no such pair kept apart), and ``link``'s refusals."""
+    params = {"c": customer_id, "d": document_id, "f": family_id}
+    suggestion = conn.execute(_KEPT_APART_AGAIN, params).scalar()
+    if suggestion is None:
+        raise Refused("not_found")
+    return link(conn, customer_id, str(suggestion), by=by)
+
+
 # --- V10: make current ------------------------------------------------------------------
 _STATE = text("SELECT status, is_current, version_no FROM documents WHERE customer_id = :c AND id = :d")
 # The others first, then this one: the unique index documents_current is checked row by row.
