@@ -15,3 +15,5 @@
 
 # The Office test files (#522): made by LibreOffice, read as they are.
 backend/tests/fixtures/office/** binary
+# The HEIC test photos (#522): made once by pillow-heif's encoder, read as they are.
+backend/tests/fixtures/heic/** binary

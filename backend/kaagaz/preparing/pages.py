@@ -60,7 +60,7 @@ from kaagaz.reading.spans import CellLocation, PageInfo, ReadError, Span, TooMan
 
 _IMAGE_TYPES = frozenset({sniff.PNG, sniff.JPEG, sniff.TIFF, sniff.HEIC})
 _IMAGE_FORMATS = ("PNG", "JPEG", "TIFF")  # Pillow never tries any other format
-_HEIF_FORMATS = ("HEIF",)  # a HEIC or HEIF photo, by pillow-heif's opener only
+_HEIF_FORMATS = ("HEIF",)  # a HEIC or HEIF photo, by pi-heif's opener only
 _POINTS_PER_INCH = 72.0
 
 # Errors Pillow raises for a damaged or refused image. Pillow reports a file it
@@ -289,10 +289,11 @@ def _open_image(data: bytes) -> Image.Image:
 
 @functools.cache
 def _heif_opener() -> None:
-    """pillow-heif's opener for Pillow (#522), set up on the first HEIC photo only, so a worker
+    """pi-heif's opener for Pillow (#522), set up on the first HEIC photo only, so a worker
     that never sees one never loads libheif. Pillow's own decompression bomb check runs on its
-    header as on any other format's."""
-    importlib.import_module("pillow_heif").register_heif_opener()
+    header as on any other format's. pi-heif is pillow-heif's decode-only build (the same
+    authors and API), so there is no GPL x265 encoder in the image."""
+    importlib.import_module("pi_heif").register_heif_opener()
 
 
 def _frame_count(image: Image.Image) -> int:
