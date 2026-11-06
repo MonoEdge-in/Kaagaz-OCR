@@ -1,31 +1,33 @@
 // #527 (Tushar, 7 Nov 2026): a reviewer or an admin corrects a line of the clean copy. The call
-// (POST lines/{key}/edit, Undo through the word review's undo), the words, the label and its
-// Undo, the errors in plain words, Enter and Esc, focus back on the line, and who sees Edit.
+// (POST lines/{key}/edit; Undo is the word review's, tested in word-review.test.ts), the words,
+// the text box's first text, the label and its Undo, the errors in plain words; and the panel
+// itself, rendered with react-dom in a small fake DOM (tests/fake-dom.ts) and pressed: who sees
+// Edit, Enter and Esc, focus back on the line, the toast, Undo, and Open wide.
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { createElement } from "react";
+import { act, createElement } from "react";
+import type { Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { canReview } from "@/components/review/review";
+import { NOT_SENT } from "@/components/review/wordReview";
+import { Corrected, ReadClearlyPanel } from "@/components/viewer/ReadClearlyPanel";
 import {
   LINE_CHANGED,
   LINE_SAVED,
+  LINE_SAVED_HERE,
   LINE_UNDONE,
   MAX_LINE,
   STILL_READING,
   correctedText,
   lineFailure,
+  oneLine,
   parts,
   readAsText,
   replaceLine,
 } from "@/components/viewer/clearCopy";
-import { Corrected } from "@/components/viewer/ReadClearlyPanel";
-import { NOT_SENT } from "@/components/review/wordReview";
-import { ApiError, editLine, undoChange } from "@/lib/api";
-import type { ClearCopy, LineCorrection, ReadLine } from "@/lib/types";
-
-const ROOT = join(__dirname, "..");
-const read = (path: string) => readFileSync(join(ROOT, path), "utf8");
+import { ApiError, editLine } from "@/lib/api";
+import type { ClearCopy, LineCorrection, LineSaved, ReadLine } from "@/lib/types";
+import { FakeDocument, FakeElement, fire, install } from "./fake-dom";
 
 const KEY = "ab".repeat(32);
 const correction: LineCorrection = { before_text: "Total 1180", by: "Ravi Sharma", at: "2026-11-07T05:00:00Z", change_id: "c1" };
@@ -60,13 +62,6 @@ describe("the calls", () => {
     expect(calls).toEqual([
       { url: `/api/documents/d1/lines/${KEY}/edit`, method: "POST", body: { text: "Total 1180", expected_text: "Total 1100" } },
     ]);
-  });
-
-  it("undoes through the word review's own undo", async () => {
-    const calls = answer({ id: "c1" });
-    await undoChange("d1", "c1");
-    expect(calls).toEqual([{ url: "/api/documents/d1/changes/c1/undo", method: "POST", body: undefined }]);
-    expect(read("components/viewer/ReadClearlyPanel.tsx")).toMatch(/undoChange\(documentId, correction\.change_id\)/);
   });
 
   it("puts the saved line in place of the old one, by its key, the rest as they were", () => {
@@ -124,59 +119,235 @@ describe("the label and Undo", () => {
   });
 });
 
-describe("the screen", () => {
-  const panel = read("components/viewer/ReadClearlyPanel.tsx");
-  const css = read("components/viewer/ReadClearly.module.css");
+describe("the text box's first text", () => {
+  it("is the line as one line: breaks and tabs a single space, so no words are glued", () => {
+    expect(oneLine("Ram Kumar\nS/o Shyam")).toBe("Ram Kumar S/o Shyam");
+    expect(oneLine("Ram Kumar\r\n\r\nS/o\tShyam ")).toBe("Ram Kumar S/o Shyam");
+    expect(oneLine("Ram\u2028Kumar")).toBe("Ram Kumar"); // a line separator is a line break
+  });
 
-  it("gives Edit to a reviewer or an admin only, on a document not in the trash", () => {
-    expect(read("app/(app)/documents/[id]/DocumentView.tsx")).toMatch(
-      /<ReadClearlyPanel[\s\S]{0,200}canEdit=\{canReview\(me\.user\.role\) && detail\.deleted_at === null\}/,
+  it("has no hidden or control character, as the server checks (names.clean_name)", () => {
+    expect(oneLine("Ku\u00admar")).toBe("Kumar"); // a soft hyphen
+    expect(oneLine("a\u202eb\u200bc\u0000d\u0085e")).toBe("abcde");
+    expect(oneLine("\u0915\u094d\u200d\u0937")).toBe("\u0915\u094d\u200d\u0937"); // ZWJ stays: Devanagari needs it
+    const scotland = "\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}";
+    expect(oneLine(`Flag ${scotland}`)).toBe(`Flag ${scotland}`);
+  });
+});
+
+// --- The panel, rendered and pressed ---
+
+const RAW = "Ram Kumar\nS/o Shyam"; // as the reader gave it: two written lines
+const NAME_KEY = "cd".repeat(32);
+const named = (changes: Partial<ReadLine> = {}) => line({ key: NAME_KEY, text: RAW, ...changes });
+const copyOf = (...lines: ReadLine[]): ClearCopy => ({ pages: [{ page_no: 1, lines, marks: [] }], truncated: false });
+const fixedLine = () => named({ text: "Ram Kumar S/o Shyam Lal", correction: { ...correction, before_text: RAW } });
+const savedReply = (pieces = 1): LineSaved => ({
+  change_id: "c1",
+  line: fixedLine(),
+  written: { pieces, values: 0 },
+  skipped: { pieces: 1 - pieces, values: 0 },
+});
+
+let doc: FakeDocument;
+let root: Root | null = null;
+let calls: { url: string; method: string; body: unknown }[] = [];
+
+/** fetch answers each "METHOD /path" from `routes`, and records each call. */
+function serve(routes: Record<string, unknown>) {
+  calls = [];
+  vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+    const method = init.method ?? "GET";
+    calls.push({ url, method, body: init.body ? JSON.parse(String(init.body)) : undefined });
+    const reply = routes[`${method} ${url}`];
+    if (reply === undefined) throw new Error(`no route for ${method} ${url}`);
+    return new Response(JSON.stringify(reply), { status: 200, headers: { "Content-Type": "application/json" } });
+  });
+}
+
+async function show(copy: ClearCopy, canEdit: boolean, routes: Record<string, unknown> = {}) {
+  serve({ "GET /api/documents/d1/clear-copy": copy, ...routes });
+  const container = doc.body.appendChild(doc.createElement("div")) as FakeElement;
+  // Loaded once the fake DOM is in place: react-dom looks for a DOM as it loads (fake-dom.ts).
+  const { createRoot } = await import("react-dom/client");
+  root = createRoot(container as unknown as Element);
+  const props = { documentId: "d1", active: null, onShow: () => undefined, canEdit };
+  await act(async () => root!.render(createElement(ReadClearlyPanel, props)));
+  return container;
+}
+
+async function unmount() {
+  await act(async () => root?.unmount());
+  root = null;
+}
+
+const all = (within: FakeElement) => within.all();
+const labelled = (within: FakeElement, start: string) =>
+  all(within).filter((element) => element.getAttribute("aria-label")?.startsWith(start));
+const byLabel = (within: FakeElement, label: string) => all(within).find((element) => element.getAttribute("aria-label") === label) ?? null;
+const byText = (within: FakeElement, tag: string, text: string) =>
+  all(within).find((element) => element.tagName === tag && element.textContent.trim() === text) ?? null;
+/** The reader's line button that reads `text`. */
+const lineButton = (within: FakeElement, text: string) =>
+  all(within).find((element) => element.getAttribute("aria-pressed") !== null && element.textContent === text) ?? null;
+const textBox = (within: FakeElement) => all(within).find((element) => element.tagName === "INPUT") ?? null;
+const press = (element: FakeElement | null) => act(async () => void fire(element!, "click", { button: 0 }));
+const key = (element: FakeElement | null, name: string) => act(async () => void fire(element!, "keydown", { key: name }));
+async function type(box: FakeElement | null, text: string) {
+  box!.value = text;
+  await act(async () => void fire(box!, "input"));
+}
+
+beforeEach(() => {
+  doc = install();
+});
+
+afterEach(unmount);
+
+describe("the panel: who sees Edit", () => {
+  it("gives Edit to a reviewer and an admin, never to a member", async () => {
+    for (const role of ["reviewer", "admin", "member"] as const) {
+      const panel = await show(copyOf(line(), named()), canReview(role));
+      const edits = labelled(panel, "Edit line").map((element) => element.getAttribute("aria-label"));
+      expect([role, edits]).toEqual([role, role === "member" ? [] : ["Edit line 1", "Edit line 2"]]);
+      await unmount();
+    }
+  });
+
+  it("draws a member's line as before: no row around it, no key on it", async () => {
+    const panel = await show(copyOf(line()), false);
+    const button = lineButton(panel, "Total 1100")!;
+    expect((button.parentNode as FakeElement).tagName).toBe("P");
+    expect(button.getAttribute("data-line")).toBeNull();
+    expect(button.getAttribute("aria-describedby")).toBeNull();
+  });
+});
+
+describe("the panel: correcting a line", () => {
+  const edit = `POST /api/documents/d1/lines/${NAME_KEY}/edit`;
+
+  it("opens a labelled text box with the line as one line, focused", async () => {
+    const panel = await show(copyOf(named()), true);
+    await press(byLabel(panel, "Edit line 1"));
+    const box = textBox(panel)!;
+    expect([box.value, box.getAttribute("aria-label"), box.getAttribute("maxLength")]).toEqual([
+      "Ram Kumar S/o Shyam",
+      "Correct line 1",
+      String(MAX_LINE),
+    ]);
+    expect(doc.activeElement).toBe(box);
+  });
+
+  it("saves on Enter: the text typed and the text seen go, the line reads anew, focus goes back to it", async () => {
+    const panel = await show(copyOf(named()), true, { [edit]: savedReply() });
+    await press(byLabel(panel, "Edit line 1"));
+    await type(textBox(panel), "Ram Kumar S/o Shyam Lal ");
+    await key(textBox(panel), "Enter");
+
+    expect(calls.at(-1)).toEqual({
+      url: `/api/documents/d1/lines/${NAME_KEY}/edit`,
+      method: "POST",
+      body: { text: "Ram Kumar S/o Shyam Lal", expected_text: RAW },
+    });
+    expect(textBox(panel)).toBeNull();
+    expect(doc.activeElement).toBe(lineButton(panel, "Ram Kumar S/o Shyam Lal"));
+    expect(panel.textContent).toContain(LINE_SAVED);
+    expect(panel.textContent).toContain("Corrected by Ravi Sharma, 7 Nov 2026");
+    expect(byLabel(panel, "Undo the correction to line 1")).not.toBeNull();
+    expect(byText(panel, "SPAN", `Read as: ${RAW}`)).not.toBeNull();
+  });
+
+  it("says so when no search piece could take the new text", async () => {
+    const panel = await show(copyOf(named()), true, { [edit]: savedReply(0) });
+    await press(byLabel(panel, "Edit line 1"));
+    await type(textBox(panel), "Ram Kumar S/o Shyam Lal");
+    await press(byText(panel, "BUTTON", "Save"));
+    expect(panel.textContent).toContain(LINE_SAVED_HERE);
+    expect(panel.textContent).not.toContain(LINE_SAVED);
+  });
+
+  it("sends nothing when the text is the line as it reads", async () => {
+    const panel = await show(copyOf(named()), true);
+    await press(byLabel(panel, "Edit line 1"));
+    await key(textBox(panel), "Enter");
+    expect(calls.map((call) => call.method)).toEqual(["GET"]);
+    expect(textBox(panel)).toBeNull();
+    expect(doc.activeElement).toBe(lineButton(panel, RAW));
+  });
+
+  it("cancels on Esc or Cancel, sending nothing, and focus goes back to the line", async () => {
+    const panel = await show(copyOf(named()), true);
+    for (const close of [() => key(textBox(panel), "Escape"), () => press(byText(panel, "BUTTON", "Cancel"))]) {
+      await press(byLabel(panel, "Edit line 1"));
+      await type(textBox(panel), "something else");
+      await close();
+      expect(textBox(panel)).toBeNull();
+      expect(doc.activeElement).toBe(lineButton(panel, RAW));
+    }
+    expect(calls.map((call) => call.method)).toEqual(["GET"]);
+  });
+
+  it("shows a refusal in plain words and keeps the box open", async () => {
+    const panel = await show(copyOf(named()), true);
+    const refusal = { error: { code: "changed_since", message: "x" } };
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify(refusal), { status: 409, headers: { "Content-Type": "application/json" } }));
+    await press(byLabel(panel, "Edit line 1"));
+    await type(textBox(panel), "Ram Kumar S/o Shyam Lal");
+    await key(textBox(panel), "Enter");
+    expect(textBox(panel)).not.toBeNull();
+    expect(all(panel).find((element) => element.getAttribute("role") === "alert")?.textContent).toBe(LINE_CHANGED);
+  });
+});
+
+describe("the panel: a corrected line", () => {
+  it("says who corrected it, with Undo, which puts the line back and focus on it", async () => {
+    const panel = await show(copyOf(fixedLine()), true);
+    expect(panel.textContent).toContain("Corrected by Ravi Sharma, 7 Nov 2026");
+    serve({ "POST /api/documents/d1/changes/c1/undo": { id: "c1" }, "GET /api/documents/d1/clear-copy": copyOf(named()) });
+
+    await press(byLabel(panel, "Undo the correction to line 1"));
+
+    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      "POST /api/documents/d1/changes/c1/undo",
+      "GET /api/documents/d1/clear-copy",
+    ]);
+    expect(panel.textContent).toContain(LINE_UNDONE);
+    expect(panel.textContent).not.toContain("Corrected by");
+    expect(doc.activeElement).toBe(lineButton(panel, RAW));
+  });
+
+  it("shows a member the note without Undo", async () => {
+    const panel = await show(copyOf(fixedLine()), false);
+    expect(panel.textContent).toContain("Corrected by Ravi Sharma, 7 Nov 2026");
+    expect(byText(panel, "BUTTON", "Undo")).toBeNull();
+  });
+});
+
+describe("the panel: Open wide", () => {
+  it("shows the table again without Edit, Undo or the lines' ids", async () => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(private readonly changed: () => void) {}
+        observe(element: object) {
+          Object.assign(element, { scrollWidth: 900, clientWidth: 300 }); // wider than the panel
+          this.changed();
+        }
+        disconnect() {}
+      },
     );
-    expect(panel).toMatch(/const lineKey = tools && canEdit \? \(each\.key \?\? null\) : null;/);
-    expect(panel).toMatch(/\{lineKey !== null && \(\s*<button[\s\S]{0,120}aria-label=\{`Edit line \$\{n\}`\}/);
-    expect(panel).toMatch(/onUndo=\{lineKey !== null \?/); // a member sees the label, never Undo
-  });
+    const cell = (col: number, changes: Partial<ReadLine> = {}) =>
+      line({ key: String(col).repeat(64), text: `cell ${col}`, kind: "table_cell", table: { id: "t1", row: 0, col, header: false }, ...changes });
+    const panel = await show(copyOf(cell(1), cell(2, { correction })), true);
+    expect(labelled(panel, "Edit line")).toHaveLength(2);
 
-  it("shows Edit on hover and focus only, and always where there is no hover", () => {
-    expect(css).toMatch(/\.row \.edit \{[^}]*opacity: 0;/);
-    expect(css).toMatch(/\.row:hover \.edit,\s*\.row:focus-within \.edit \{[^}]*opacity: 1;/);
-    expect(css).toMatch(/@media \(hover: none\) \{\s*\.row \.edit \{\s*opacity: 1;/);
-  });
+    await press(byText(panel, "BUTTON", "Open wide"));
 
-  it("opens a labelled text box: Enter saves, Esc cancels, never mid-word in an Indian keyboard", () => {
-    expect(panel).toMatch(/aria-label=\{`Correct line \$\{n\}`\}/);
-    expect(panel).toMatch(/event\.key === "Enter" && !event\.nativeEvent\.isComposing/);
-    expect(panel).toMatch(/event\.key === "Escape"/);
-    expect(panel).toMatch(/maxLength=\{MAX_LINE\}/);
-    expect(panel).toMatch(/className="btn btn-primary"[\s\S]{0,200}>\s*Save\s*</);
-    expect(panel).toMatch(/className="btn"[\s\S]{0,120}>\s*Cancel\s*</);
-    expect(panel).toMatch(/className="error-text" role="alert"/);
-  });
-
-  it("sends the trimmed text and the text the person saw, and toasts the spec's words", () => {
-    expect(panel).toMatch(/const text = draft\.trim\(\);\s*if \(text === each\.text\.trim\(\)\) return close\(line\);/); // unchanged: nothing sent
-    expect(panel).toMatch(/editLine\(documentId, line, text, each\.text\)/);
-    expect(panel).toMatch(/setToast\(LINE_SAVED\)/);
-    expect(panel).toMatch(/setToast\(LINE_UNDONE\)/);
-    expect(panel).toMatch(/lineFailure\(caught\)/);
-  });
-
-  it("returns focus to the line after Save, Cancel and Undo", () => {
-    // Save and Cancel (its button and Esc) close through close(), which marks the line.
-    expect(panel).toMatch(/const close = \(line: string\) => \{\s*focusLine\.current = line;/);
-    expect(panel).toMatch(/setToast\(LINE_SAVED\);\s*close\(line\);/);
-    expect(panel).toMatch(/onClick=\{\(\) => close\(at\)\}>\s*Cancel/);
-    expect(panel).toMatch(/event\.key === "Escape" && !busy\) \{\s*event\.preventDefault\(\);\s*event\.stopPropagation\(\);[^\n]*\s*close\(at\);/);
-    expect(panel).toMatch(/await undoChange\(documentId, correction\.change_id\);\s*focusLine\.current = line;/);
-    expect(panel).toMatch(/querySelector<HTMLElement>\(`\[data-line="\$\{line\}"\]`\)\?\.focus\(\)/);
-    expect(panel).toMatch(/data-line=\{tools \? each\.key : undefined\}/); // the reader's line, not the printed copy's
-  });
-
-  it("prints and copies the text alone, without Edit or Undo", () => {
-    expect(panel).toContain("createPortal(<div className={`print-copy ${styles.copy}`}>{copyOf(false)}</div>, document.body)");
-  });
-
-  it("keeps the label small and secondary, in theme colours", () => {
-    expect(css).toMatch(/\.corrected \{[^}]*color: var\(--text-secondary\);[^}]*font-size: var\(--fs-sm\);/);
+    const dialog = all(panel).find((element) => element.tagName === "DIALOG")!;
+    expect(dialog.textContent).toContain("cell 1");
+    expect(dialog.textContent).toContain("Corrected by Ravi Sharma, 7 Nov 2026");
+    expect([...labelled(dialog, "Edit line"), ...labelled(dialog, "Undo")]).toEqual([]);
+    const ids = all(dialog).filter((element) => element.getAttribute("data-line") !== null || element.getAttribute("id")?.startsWith("read-as"));
+    expect(ids).toEqual([]);
   });
 });

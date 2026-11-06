@@ -853,6 +853,8 @@ export interface LineCorrection {
 export interface LineSaved {
   change_id: string;
   line: ReadLine;
+  written: { pieces: number; values: number }; // the search pieces and values that took the new text
+  skipped: { pieces: number; values: number }; // those over the line that did not (not there exactly once)
 }
 
 /** GET /documents/{id}/clear-copy (Read clearly): every page's main reader lines, in order. */

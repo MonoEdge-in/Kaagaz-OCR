@@ -142,9 +142,12 @@
   font-weight: 500;
 }
 
-/* Correct a line (issue 527): the line, then Edit (seen on hover or focus, always where there is
-   no hover), then a small "Corrected by ..." note under it with Undo. Theme colours only. */
+/* Correct a line (issue 527): the line, then Edit over its end (seen on hover or focus, always
+   where there is no hover; it takes no room, so a table cell keeps its width), then a small
+   "Corrected by ..." note under it with Undo. Only a line with Edit or a correction is in a row.
+   Theme colours only. */
 .row {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
@@ -158,9 +161,14 @@
 }
 
 .row .edit {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-end: 0;
+  z-index: 1;
   height: 1.75rem;
   min-width: 1.75rem;
   padding: 0;
+  background: var(--bg-surface);
   opacity: 0;
 }
 

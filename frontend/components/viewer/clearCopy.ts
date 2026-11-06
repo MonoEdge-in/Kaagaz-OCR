@@ -164,6 +164,22 @@ export function dataText(copy: ClearCopy, values: readonly Pick<ExtractedValue, 
 
 export const MAX_LINE = 5000; // the API's MAX_TEXT (routers/word_review.py)
 export const LINE_SAVED = "Line corrected. Search and answers use the new text.";
+export const LINE_SAVED_HERE = "Line corrected here, but search could not be updated for it."; // no piece took it
+// The server's rule for a typed line (routers/word_review.py, names.one_line and clean_name):
+// each run of line breaks or tabs a single space, control and hidden characters removed (ZWNJ,
+// ZWJ and a flag emoji's tags kept), trimmed.
+const BREAKS = /(?:\r\n|[\n\r\u2028\u2029\t])+/g;
+const FLAG = /(\u{1F3F4}[\u{E0020}-\u{E007E}]+\u{E007F})/u;
+const HIDDEN = /[\x00-\x1f\x7f-\x9f]|(?![\u200c\u200d])[\p{Cf}\p{Zl}\p{Zp}]/gu;
+
+/** A line's text as one typed line: what its text box starts with, so nothing glued or invisible is saved. */
+export const oneLine = (text: string) =>
+  text
+    .replace(BREAKS, " ")
+    .split(FLAG)
+    .map((part, index) => (index % 2 ? part : part.replace(HIDDEN, "")))
+    .join("")
+    .trim();
 export const LINE_UNDONE = "Undone. The line reads as before.";
 export const LINE_CHANGED = "This line changed since you opened it. Reload and try again.";
 export const STILL_READING = "The document is still being read.";

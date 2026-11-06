@@ -11,7 +11,7 @@
 // like the spot on the page, with "The line you opened". A label line keeps its label and
 // value in two columns. A table keeps whole words, scrolls sideways in its own frame (an edge
 // and a note say so) and opens wide in a dialog.
-// Correct a line (#527, Tushar, 7 Nov 2026): a reviewer or an admin sees Edit beside a line on
+// Correct a line (#527, Tushar, 7 Nov 2026): a reviewer or an admin sees Edit over a line's end on
 // hover or focus; it opens a text box (Enter saves, Esc cancels). A corrected line says
 // "Corrected by {name}, {date}" with Undo, and "Read as: ..." on hover or focus. Focus goes
 // back to the line after Save, Cancel or Undo. The printed copy has neither Edit nor Undo.
@@ -30,6 +30,7 @@ import {
   COPY_BLOCKED,
   LEFT_OUT,
   LINE_SAVED,
+  LINE_SAVED_HERE,
   LINE_UNDONE,
   MAX_LINE,
   NOT_SURE_TIP,
@@ -39,6 +40,7 @@ import {
   copyText,
   correctedText,
   lineFailure,
+  oneLine,
   pageTitle,
   pairParts,
   parts,
@@ -100,12 +102,12 @@ export function ReadClearlyPanel({ documentId, active, onShow, canEdit }: ReadCl
 
   async function save(each: ReadLine, line: string, draft: string) {
     const text = draft.trim();
-    if (text === each.text.trim()) return close(line); // nothing changed: nothing to send
+    if (text === oneLine(each.text)) return close(line); // nothing changed: nothing to send
     setEditing({ key: line, draft, busy: true, error: null });
     try {
       const saved = await editLine(documentId, line, text, each.text);
       setLoaded((now) => (now && "copy" in now ? { key: now.key, copy: replaceLine(now.copy, saved.line) } : now));
-      setToast(LINE_SAVED);
+      setToast(saved.written.pieces === 0 ? LINE_SAVED_HERE : LINE_SAVED); // no piece took it: search keeps the old
       close(line);
     } catch (caught) {
       setEditing({ key: line, draft, busy: false, error: lineFailure(caught) });
@@ -143,7 +145,8 @@ export function ReadClearlyPanel({ documentId, active, onShow, canEdit }: ReadCl
     );
 
   // A "Label: value" line keeps its label and value in two columns. `tools`: Edit and Undo,
-  // left out of the printed copy.
+  // left out of the printed copy and of Open wide. A line with neither Edit nor a correction is
+  // drawn as before #527, with no row around it.
   const line = (each: ReadLine, n: number, shown: Part[], tools: boolean) => {
     const pressed = active !== null && sameRegion(active, each.region);
     const label = shown.filter((part) => part.label);
@@ -201,14 +204,14 @@ export function ReadClearlyPanel({ documentId, active, onShow, canEdit }: ReadCl
         </span>
       );
     }
-    return (
-      <span className={styles.row}>
+    const read = (
+      <>
         <button
           type="button"
           className={label.length > 0 ? `${styles.line} ${styles.pair}` : styles.line}
           aria-pressed={pressed}
           aria-describedby={readAsId}
-          data-line={tools ? each.key : undefined}
+          data-line={lineKey ?? undefined}
           onClick={() => onShow({ name: `line ${n}`, region: each.region, label: null })}
         >
           {label.length > 0 ? (
@@ -223,6 +226,12 @@ export function ReadClearlyPanel({ documentId, active, onShow, canEdit }: ReadCl
           )}
         </button>
         {pressed && <span className={styles.opened}>{OPENED_NOTE}</span>}
+      </>
+    );
+    if (lineKey === null && !correction) return read;
+    return (
+      <span className={styles.row}>
+        {read}
         {lineKey !== null && (
           <button
             type="button"
@@ -230,7 +239,7 @@ export function ReadClearlyPanel({ documentId, active, onShow, canEdit }: ReadCl
             aria-label={`Edit line ${n}`}
             title="Edit"
             disabled={editing?.busy}
-            onClick={() => setEditing({ key: lineKey, draft: each.text, busy: false, error: null })}
+            onClick={() => setEditing({ key: lineKey, draft: oneLine(each.text), busy: false, error: null })}
           >
             <PencilIcon size={16} aria-hidden="true" />
           </button>
@@ -251,7 +260,7 @@ export function ReadClearlyPanel({ documentId, active, onShow, canEdit }: ReadCl
   const copyOf = (tools: boolean) => pages.map((page) => {
     const marks = page.marks;
     let n = 0;
-    const plain = (each: ReadLine) => line(each, ++n, parts(each, marks), tools);
+    const plain = (each: ReadLine, withTools = tools) => line(each, ++n, parts(each, marks), withTools);
     return (
       <section key={page.page_no} className={styles.page} data-page={page.page_no}>
         <h3 className={styles.pageTitle}>{pageTitle(page.page_no, pages.length)}</h3>
@@ -271,20 +280,26 @@ export function ReadClearlyPanel({ documentId, active, onShow, canEdit }: ReadCl
               </ul>
             );
           }
+          const table = (withTools: boolean) => (
+            <table className={styles.table}>
+              <tbody>
+                {block.rows.map((row, r) => (
+                  <tr key={r}>
+                    {row.map((cell, c) => {
+                      const Cell = cell.some((each) => each.table?.header) ? "th" : "td";
+                      return <Cell key={c}>{cell.map((each, at) => <Fragment key={at}>{plain(each, withTools)}</Fragment>)}</Cell>;
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          );
+          const first = n;
+          const inPanel = table(tools);
+          n = first; // Open wide's copy has the same line numbers, and no Edit, Undo or ids
           return (
-            <TableFrame key={index} title={`Table, ${pageTitle(page.page_no, pages.length).toLowerCase()}`}>
-              <table className={styles.table}>
-                <tbody>
-                  {block.rows.map((row, r) => (
-                    <tr key={r}>
-                      {row.map((cell, c) => {
-                        const Cell = cell.some((each) => each.table?.header) ? "th" : "td";
-                        return <Cell key={c}>{cell.map((each, at) => <Fragment key={at}>{plain(each)}</Fragment>)}</Cell>;
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <TableFrame key={index} title={`Table, ${pageTitle(page.page_no, pages.length).toLowerCase()}`} wide={table(false)}>
+              {inPanel}
             </TableFrame>
           );
         })}
@@ -399,9 +414,10 @@ export function Corrected({
 /**
  * A table in its own frame, which alone scrolls sideways. Wider than the panel, it shows an
  * edge, says "Scroll sideways to see all columns", takes the keyboard's arrows (a named,
- * focusable region) and offers Open wide: the same table in a wide dialog.
+ * focusable region) and offers Open wide: the same table (`wide`, without Edit or Undo) in a
+ * wide dialog.
  */
-function TableFrame({ title, children }: { title: string; children: ReactNode }) {
+function TableFrame({ title, wide: wideTable, children }: { title: string; wide: ReactNode; children: ReactNode }) {
   const frame = useRef<HTMLDivElement>(null);
   const [wide, setWide] = useState(false);
   const [open, setOpen] = useState(false);
@@ -434,7 +450,7 @@ function TableFrame({ title, children }: { title: string; children: ReactNode })
       )}
       {open && (
         <ActionDialog title={title} onClose={() => setOpen(false)}>
-          <div className={`${styles.tableBox} ${styles.wideTable}`}>{children}</div>
+          <div className={`${styles.tableBox} ${styles.wideTable}`}>{wideTable}</div>
         </ActionDialog>
       )}
     </div>
