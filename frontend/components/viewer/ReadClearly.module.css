@@ -142,6 +142,100 @@
   font-weight: 500;
 }
 
+/* Correct a line (issue 527): the line, then Edit (seen on hover or focus, always where there is
+   no hover), then a small "Corrected by ..." note under it with Undo. Theme colours only. */
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  column-gap: var(--space-1);
+  min-width: 0;
+}
+
+.row > .pair {
+  flex: 1;
+  min-width: 0;
+}
+
+.row .edit {
+  height: 1.75rem;
+  min-width: 1.75rem;
+  padding: 0;
+  opacity: 0;
+}
+
+.row:hover .edit,
+.row:focus-within .edit {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .row .edit {
+    opacity: 1;
+  }
+}
+
+.corrected {
+  position: relative;
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+
+.corrected .undo {
+  height: auto;
+  min-height: 1.5rem;
+  padding: 0 var(--space-2);
+  font-size: inherit;
+}
+
+/* "Read as: ...": over the next line on hover or focus, so nothing below moves. */
+.readAs {
+  position: absolute;
+  inset-block-start: 100%;
+  inset-inline-start: 0;
+  z-index: 1;
+  display: none;
+  max-width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--k-r-1);
+  background: var(--bg-surface);
+  box-shadow: var(--e-1);
+  color: var(--text-primary);
+}
+
+.row:hover .readAs,
+.row:focus-within .readAs {
+  display: block;
+}
+
+.editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.editor input {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.editActions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.editor [role="alert"] {
+  flex-basis: 100%;
+}
+
 .unsure {
   text-decoration: underline dotted;
   text-decoration-thickness: 2px;
