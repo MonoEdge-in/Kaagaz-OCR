@@ -554,6 +554,7 @@ export function DocumentView({
                   onFlag={pressFlag}
                   wordBoxes={wordBoxes}
                   wordHits={wordHits}
+                  role={me.user.role}
                 />
               </ViewerBoundary>
             </div>
@@ -577,6 +578,7 @@ export function DocumentView({
               onFlag={pressFlag}
               wordBoxes={wordBoxes}
               wordHits={wordHits}
+              role={me.user.role}
             />
           ) : (
             <p className={styles.noPages}>No pages to show yet.</p>

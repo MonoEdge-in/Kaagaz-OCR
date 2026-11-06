@@ -19,9 +19,13 @@
 // work (selecting text) is left out through its exclusion rule (data-no-interaction); a mark on
 // the page is still pressed as before. Off, the pages select text as they did. The scroll follows
 // the pointer once a frame (#454), never animated; the keys scroll the pages either way.
+//
+// #523: "Show words to check", a toolbar switch, on at first for a reviewer or an admin: the word
+// marks and word flags follow it, each page as PageViewer does (wordMarkView: a chip on a page over
+// WORD_MARK_CAP, never a mark far taller than a word).
 
 import "@/components/extend/extend.css";
-import { DownloadIcon, HandIcon, HighlighterIcon, PrinterIcon } from "lucide-react";
+import { DownloadIcon, HandIcon, HighlighterIcon, PrinterIcon, SpellCheckIcon } from "lucide-react";
 import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { PDFViewer } from "@/components/extend/pdf-viewer";
 import type { PDFViewerHandle, PDFViewerPageOverlayProps } from "@/components/extend/pdf-viewer";
@@ -33,8 +37,16 @@ import type { Marker } from "@/components/words/spots";
 import { fileUrl } from "@/lib/api";
 import { MOTION_MS, play } from "@/lib/motion";
 import type { Frame } from "@/lib/motion";
-import type { ReadingMark, Region, WordFlag } from "@/lib/types";
-import { markChecked, markName, marksOnPage } from "./readingMarks";
+import type { ReadingMark, Region, Role, WordFlag } from "@/lib/types";
+import {
+  isWordMark,
+  markChecked,
+  markName,
+  marksOnPage,
+  showWordsByDefault,
+  wordMarkView,
+  wordsChipText,
+} from "./readingMarks";
 import styles from "./PageViewer.module.css";
 import { centredScroll, mostVisiblePage, panTo } from "./viewer";
 import { wordColour } from "./YourWords";
@@ -71,6 +83,8 @@ export interface PdfDocumentViewerProps {
   wordBoxes?: Region[];
   /** For each of wordBoxes, its word: the colour it is drawn in. */
   wordHits?: readonly number[];
+  /** #523: the viewer's role, for "Show words to check" at first (on unless a member). */
+  role?: Role;
 }
 
 /**
@@ -134,9 +148,12 @@ export function PdfDocumentViewer({
   onFlag,
   wordBoxes = NO_WORDS,
   wordHits = NO_HITS,
+  role,
 }: PdfDocumentViewerProps) {
   const viewer = useRef<PDFViewerHandle>(null);
   const [showHighlights, setShowHighlights] = useState(true);
+  const [showWords, setShowWords] = useState(() => showWordsByDefault(role));
+  const [crowdedOpen, setCrowdedOpen] = useState<readonly number[]>([]); // pages whose chip was pressed
   const [hand, setHand] = useState(false); // #419: a drag moves the pages
   const [printing, setPrinting] = useState(false);
   const [printFailed, setPrintFailed] = useState(false);
@@ -260,6 +277,7 @@ export function PdfDocumentViewer({
         return { left: px.left, top: px.top, width: px.width, height: px.height };
       };
       const problems = marksOnPage(readingMarks, pageNumber);
+      const words = wordMarkView(problems, showWords, crowdedOpen.includes(pageNumber));
       // The marks of pages beside the screen's come too (#454); a hot mark (DD7) is a number on
       // the screen's page, as the Needs attention panel counts them.
       const here = pageNumber === pageNo;
@@ -306,8 +324,19 @@ export function PdfDocumentViewer({
                 </div>
               ) : null,
             )}
+          {showHighlights && words.capped ? (
+            <button
+              type="button"
+              className={`${styles.wordsChip} ${styles.pageChip}`}
+              onClick={() => setCrowdedOpen((pages) => [...pages, pageNumber])}
+            >
+              {wordsChipText(words.total)}
+              <span className="visually-hidden">: show their marks</span>
+            </button>
+          ) : null}
           {flags.map((flag) => {
             if (flag.region.kind !== "box" || flag.page_no !== pageNumber) return null;
+            if (flag.kind === "mark" && flag.word_key !== activeFlag && !words.drawn(flag.region)) return null;
             const name = markLabel(flag);
             return (
               <button
@@ -327,7 +356,7 @@ export function PdfDocumentViewer({
           })}
           {showHighlights &&
             problems.map((mark, index) => {
-              if (mark.region.kind !== "box") return null;
+              if (mark.region.kind !== "box" || (isWordMark(mark) && !words.drawn(mark.region))) return null;
               const checked = markChecked(mark, flags);
               const name = markName(mark, index, problems.length, checked);
               return (
@@ -350,7 +379,7 @@ export function PdfDocumentViewer({
         </>
       );
     },
-    [showHighlights, wordBoxes, wordHits, highlights, marks, activeMark, flags, activeFlag, onFlag, readingMarks, pageNo, hotMark, onHotMark, onMark],
+    [showHighlights, showWords, crowdedOpen, wordBoxes, wordHits, highlights, marks, activeMark, flags, activeFlag, onFlag, readingMarks, pageNo, hotMark, onHotMark, onMark],
   );
 
   return (
@@ -389,6 +418,20 @@ export function PdfDocumentViewer({
             >
               <HighlighterIcon />
             </Button>
+            {readingMarks?.some(isWordMark) ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                role="switch"
+                aria-checked={showWords}
+                aria-label="Show words to check"
+                title={showWords ? "Hide words to check" : "Show words to check"}
+                onClick={() => setShowWords((on) => !on)}
+              >
+                <SpellCheckIcon />
+              </Button>
+            ) : null}
             <Button
               type="button"
               variant="ghost"

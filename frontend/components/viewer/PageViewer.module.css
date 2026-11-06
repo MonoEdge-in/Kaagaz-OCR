@@ -82,10 +82,11 @@
 }
 
 /* The highlight: amber, then a paper ring and an ink ring, so it stands out
-   (3:1 or more, 1.4.11) on white paper, dark print and the frame alike. */
+   (3:1 or more, 1.4.11) on white paper, dark print and the frame alike. Issue 523: an outline with a
+   light tint (--hl-tint, 12%), so the writing under it stays readable: it points, never hides. */
 .box {
   position: absolute;
-  background: var(--hl-fill);
+  background: var(--hl-tint);
   border: 2px solid var(--hl-border);
   border-radius: var(--k-r-2);
   box-shadow: 0 0 0 2px var(--paper), 0 0 0 4px var(--hl-halo);
@@ -413,9 +414,13 @@
   outline-offset: 2px;
 }
 
+/* Issue 523: an unsure word is a thin dashed underline under the word, in the paper-fixed warning
+   colour, with no box or fill over the writing. */
 .problem[data-quality="unsure"],
 .swatch[data-quality="unsure"] {
-  border: 2px dashed var(--hl-border);
+  border: 0;
+  border-bottom: 2px dashed var(--warning-on-paper);
+  border-radius: 0;
 }
 
 /* A double edge and a light fill (no hatch: MonoEdge has no gradients), still unlike the
@@ -500,6 +505,37 @@
    swatch keeps its own light fill). */
 .legend .swatch:not([data-quality="illegible"]) {
   background-color: var(--paper);
+}
+
+/* Issue 523: "Show words to check", a toolbar switch; pressed, the selected look of the toggle above. */
+.wordsSwitch[aria-checked="true"] {
+  background: var(--bg-selected);
+  border-color: var(--border-strong);
+}
+
+/* Issue 523: a page with more word marks than are drawn: a chip that shows them. On the page in the
+   PDF viewer, at its top left, on paper. */
+.wordsChip {
+  min-height: var(--control-min);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--warning-on-paper);
+  border-radius: var(--k-r-4);
+  background: var(--paper);
+  color: var(--warning-on-paper);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.wordsChip:focus-visible {
+  outline: 2px solid var(--mine-on-paper);
+  outline-offset: 2px;
+}
+
+.pageChip {
+  position: absolute;
+  top: var(--space-2);
+  left: var(--space-2);
+  z-index: 1;
 }
 
 /* Words flagged for review (scan review UX rules, section 2): Check a dotted underline and
