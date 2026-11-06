@@ -49,7 +49,7 @@ _ITEM = (
     " WHERE v.customer_id = :c"
 )
 
-# Every label_reason the extracted_values CHECK allows (migrations 0004 and 0021): the
+# Every label_reason the extracted_values CHECK allows (migrations 0004, 0021 and 0081): the
 # reasons bound when the queue is not filtered, so the reason filter is never a catch-all.
 EVERY_REASON = (
     "direct_cell",
@@ -65,6 +65,10 @@ EVERY_REASON = (
     "unsure_text",
     "box_unanchored",
     "local_reader",
+    "mixed_digits",
+    "amount_commas",
+    "amount_mark",
+    "amount_outlier",
 )
 
 # One definition of a value still waiting to be verified (QA #366): labelled needs review,

@@ -24,6 +24,13 @@ The reasons (the ``label_reason`` column):
   while it was down or after it declined the page (the page's issues say
   read_locally or reader_refused, never its ``read_by``: a page read with no key is
   not one). Needs review, and the page is read again later.
+* ``mixed_digits``, ``amount_commas``, ``amount_mark`` (#524, ``label_amounts``): an
+  amount whose digits are of two scripts (९४0000/-), whose commas fit no grouping
+  (1,15,0000), or with a mark inside its digits or a "/-" that may have been read as a 1
+  (115000001-), as ``parsing.amount_problem`` says. Needs review; the number is never
+  guessed.
+* ``amount_outlier`` (#524): an invoice's total or subtotal more than OUTLIER_TIMES the
+  largest other one on its page. Needs review.
 
 PRD 5's checker (V1 to V4): on a page the reading model read, the pipeline crops
 each value's box and RapidOCR reads it (``checked``, the boxes it read). V2's
@@ -96,10 +103,12 @@ import string
 from collections import Counter
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from decimal import Decimal
 from typing import Any
 
 from kaagaz.chunking.script import has_devanagari_letters, ocr_script_suspect
-from kaagaz.extraction.labelled import value_after_label
+from kaagaz.extraction.labelled import AMOUNT_FIELDS, value_after_label
+from kaagaz.extraction.parsing import amount_problem
 from kaagaz.extraction.quotes import find_quote, normalise_quote, reader_text
 from kaagaz.extraction.values import CARD_RECORD, NEEDS_REVIEW, VERIFIED, ExtractedValue
 from kaagaz.reading.ocr import is_word_mark
@@ -113,6 +122,12 @@ MIN_OVERLAP = 0.5
 UNSURE_TEXT = "unsure_text"
 BOX_UNANCHORED = "box_unanchored"
 LOCAL_READER = "local_reader"
+# #524 (Tushar, 6 Nov 2026): an invoice's whole-bill amounts, and how many times the largest
+# other one on its page a misread may make one (an extra digit, or "/-" read as 1).
+AMOUNT_OUTLIER = "amount_outlier"
+OUTLIER_TIMES = 10
+WHOLE_AMOUNTS = frozenset({"total_amount", "subtotal"})
+_BY_A_PERSON = frozenset({"corrected", "learned_correction"})
 # Ensemble (F27, Tushar 15 Oct 2026): another reader's lines at a value's spot are those with
 # at least this share of their own box inside the value's box, so a line it split in two
 # still counts, and a much longer line it joined does not.
@@ -394,6 +409,49 @@ def label_reading_marks(
             reason = BOX_UNANCHORED
         labelled.append(value if reason is None else _needs_review(value, reason, value.second_reading))
     return labelled
+
+
+def label_amounts(values: Iterable[ExtractedValue]) -> list[ExtractedValue]:
+    """#524: the amounts the rules doubt go to review, after every other label and with their
+    numbers parsed (``value_number``), so a misread never silently reaches a total. An amount
+    is a value of an amount field (labelled.AMOUNT_FIELDS) or any value with a number. Its
+    reason is ``parsing.amount_problem``'s (mixed_digits, amount_commas, amount_mark), else
+    ``amount_outlier`` (``_outliers``). A card value and a value a person fixed (corrected,
+    learned_correction) keep their label; any other reason is replaced, the second reading
+    kept. The text is never changed. O(v log v) for v values."""
+    values = list(values)
+    outliers = _outliers(values)
+    labelled = []
+    for index, value in enumerate(values):
+        reason = None
+        if value.record_key != CARD_RECORD and value.label_reason not in _BY_A_PERSON:
+            if value.field in AMOUNT_FIELDS or value.value_number is not None:
+                reason = amount_problem(value.value_text)
+            if reason is None and index in outliers:
+                reason = AMOUNT_OUTLIER
+        labelled.append(value if reason is None else _needs_review(value, reason, value.second_reading))
+    return labelled
+
+
+def _outliers(values: Sequence[ExtractedValue]) -> set[int]:
+    """The indexes of the whole-bill amounts (WHOLE_AMOUNTS, a positive number, read from a
+    page, not the card) more than OUTLIER_TIMES the largest other one on the same page.
+    Conservative (#524): only the page's largest can be, a page with one such amount never is,
+    and a tax, a line or another page is never compared (a total is rightly many times its
+    5% tax, and a scan may hold many invoices). Known false flag: a page whose only other whole
+    amount is a small balance due ("Amount Payable 5,000" under "Total 1,00,000")."""
+    pages: dict[int, list[tuple[Decimal, int]]] = {}
+    for index, value in enumerate(values):
+        number, box = value.value_number, value.location
+        whole = value.field in WHOLE_AMOUNTS and value.record_key != CARD_RECORD
+        if whole and isinstance(box, BoxLocation) and number is not None and number > 0:
+            pages.setdefault(box.page, []).append((number, index))
+    found = set()
+    for amounts in pages.values():
+        amounts.sort(reverse=True)
+        if len(amounts) > 1 and amounts[0][0] > OUTLIER_TIMES * amounts[1][0]:
+            found.add(amounts[0][1])
+    return found
 
 
 def _has_unsure_word(text: str, unsure: Sequence[str]) -> bool:

@@ -71,4 +71,7 @@ def test_productions_0061d_is_a_branch_off_0061c_that_0075_merges() -> None:
     assert scripts.get_revision("0075").down_revision == ("0074", "0061d")
     merge = (VERSIONS / "0075_org_storage_limit_merge.py").read_text(encoding="utf-8")
     assert "op.execute" not in merge
-    assert scripts.get_heads() == ["0075"]
+    # Changed on purpose (#524, 6 Nov 2026): the amount reasons' 0081 (other branches hold 0076
+    # to 0080) follows 0075 on this branch, and is the one head.
+    assert scripts.get_revision("0081").down_revision == "0075"
+    assert scripts.get_heads() == ["0081"]

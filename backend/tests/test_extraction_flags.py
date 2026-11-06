@@ -64,6 +64,11 @@ VALUE_TABLE: dict[str, tuple[str, str] | None] = {
     "unsure_text": None,  # its word marks are the flags
     "box_unanchored": None,  # its unpinned line is the flag
     "local_reader": None,  # its backup-read lines are the flags
+    # #524: an amount the rules doubt is verified in the review queue, never by word flags.
+    "mixed_digits": None,
+    "amount_commas": None,
+    "amount_mark": None,
+    "amount_outlier": None,
 }
 
 
