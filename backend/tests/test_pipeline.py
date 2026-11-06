@@ -18,10 +18,11 @@ from kaagaz.ingestion.ports import DocumentRecord, Job
 from kaagaz.ingestion.service import UploadService
 from kaagaz.jobs.worker import RETRY_FIRST_SECONDS, RETRY_MOST_SECONDS, Handler, JobFailed, Worker
 from kaagaz.pipeline import DocumentProcessor, OnPicture, ReadingSocket
+from kaagaz.reading import office
 from kaagaz.reading.csv_reader import CsvReader
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import ReaderSocket
-from kaagaz.reading.spans import BoxLocation, CellLocation, PageInfo, Span, TooManyPages
+from kaagaz.reading.spans import BoxLocation, CellLocation, PageInfo, ReadError, Span, TooManyPages
 from kaagaz.reading.xlsx_reader import XlsxLimits, XlsxReader
 from kaagaz.scanning.gate import DocumentStatus, ScanGate, Verdict
 from tests.fakes import (
@@ -50,7 +51,7 @@ CSV_NAME = "register.csv"
 # Real .xlsx files are a few KB, so the pipeline tests allow more than TEST_POLICY.
 PIPELINE_POLICY = UploadPolicy(
     max_bytes=100_000,
-    allowed_types=TEST_POLICY.allowed_types,
+    allowed_types=TEST_POLICY.allowed_types | {sniff.OLE2},  # #522: old Office files too
     type_limits=limits_by_type(pdf=100_000, image=100_000, sheet=100_000),
 )
 XLSX_LIMITS = XlsxLimits(
@@ -111,6 +112,8 @@ def build(
     socket: ReadingSocket | None = None,
     preparer: FakePreparer | None = None,
     embed: FakeEmbedder | None = None,
+    office: Callable[[str, bytes], bytes] | None = None,
+    kind_limits: dict[str, int] | None = None,
 ) -> System:
     clock = FakeClock()
     queue = LeaseQueue(clock, lease_seconds=LEASE_SECONDS, max_attempts=MAX_ATTEMPTS + 3)
@@ -135,6 +138,9 @@ def build(
         store=store,
         embed=embed,
         model_errors=(ModelDown,),
+        office=office,
+        renditions=storage,
+        kind_limits=kind_limits,
     )
     return System(
         upload,
@@ -163,6 +169,54 @@ def processor_with(system: System, socket: ReadingSocket) -> DocumentProcessor:
         sheet_pages=fake_sheet_pages,
         page_images=system.page_images,
         store=system.store,
+    )
+
+
+RENDITION = b"%PDF-1.7 the rendition"
+_DOTX = b"application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml"
+
+
+class FakeConverter:
+    """Stands in for ``office.OfficeConverter.convert``: gives ``output`` (or raises it)."""
+
+    def __init__(self, output: bytes | ReadError) -> None:
+        self.output = output
+        self.calls: list[tuple[str, bytes]] = []
+
+    def __call__(self, kind: str, data: bytes) -> bytes:
+        self.calls.append((kind, data))
+        if isinstance(self.output, ReadError):
+            raise self.output
+        return self.output
+
+
+class RecordingSocket(PresetSocket):
+    """A PresetSocket that keeps the type and bytes of each first reading."""
+
+    def __init__(self, first: dict[str, list[Span] | ReadError]) -> None:
+        super().__init__(first)
+        self.reads: list[tuple[str, bytes]] = []
+
+    def read(
+        self,
+        detected_type: str,
+        data: bytes,
+        *,
+        on_page: Callable[[RouteDecision | None], None] | None = None,
+    ) -> list[Span]:
+        self.reads.append((detected_type, data))
+        return super().read(detected_type, data, on_page=on_page)
+
+
+def _pictured(*, pages: int) -> FakePrepared:
+    """Pages of a PDF, each with a small white picture to store."""
+    from PIL import Image
+
+    picture = io.BytesIO()
+    Image.new("RGB", (8, 8), "white").save(picture, "PNG")
+    return FakePrepared(
+        [PageInfo(n, 612.0, 792.0, "pt") for n in range(1, pages + 1)],
+        {n: picture.getvalue() for n in range(1, pages + 1)},
     )
 
 
@@ -260,6 +314,92 @@ class PipelineTest(unittest.TestCase):
         self.assertIs(system.statuses.get_status(CUSTOMER, "old"), DocumentStatus.FAILED)
         self.assertEqual(system.repo.failure_codes[(CUSTOMER, "old")], "unsupported_type")
         self.assertEqual(stored_type(system, "old"), sniff.OLE2)
+
+    def test_a_word_or_powerpoint_file_is_read_as_its_pdf_rendition_kept_beside_it(self) -> None:
+        # #522 PR 2: LibreOffice converts it; the PDF pipeline reads the PDF; the original stays.
+        dotx = make_zip({"word/document.xml": b"<w/>", "[Content_Types].xml": _DOTX})
+        for name, data, kind in (
+            ("letter.docx", make_zip({"word/document.xml": b"<w/>"}), resolve.DOCX),
+            ("form.dotx", dotx, resolve.DOTX),
+            ("old letter.doc", compound(["WordDocument", "1Table"]), resolve.DOC),
+            ("slides.pptx", make_zip({"ppt/presentation.xml": b"<p/>"}), resolve.PPTX),
+            ("old slides.ppt", compound(["PowerPoint Document"]), resolve.PPT),
+        ):
+            with self.subTest(kind):
+                converter = FakeConverter(RENDITION)
+                socket = RecordingSocket({sniff.PDF: [_direct("Rent: 5000", page=1, top=0.1)]})
+                system = build(
+                    socket=socket, preparer=FakePreparer({sniff.PDF: _pictured(pages=1)}), office=converter
+                )
+                doc = system.upload.accept(CUSTOMER, io.BytesIO(data), display_name=name).document_id
+                system.worker.run_once()
+                self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.READY)
+                self.assertEqual(stored_type(system, doc), kind)  # never "pdf": it is a Word file still
+                self.assertEqual(converter.calls, [(kind, data)])
+                self.assertEqual(socket.reads, [(sniff.PDF, RENDITION)])
+                self.assertEqual(system.storage.renditions, {(CUSTOMER, doc): RENDITION})
+                self.assertEqual(system.storage.get(CUSTOMER, doc), data)  # downloadable as it was
+                self.assertEqual([p.text for p in system.store.for_document(CUSTOMER, doc)], ["Rent: 5000"])
+                self.assertEqual(list(system.page_images.images), [(CUSTOMER, doc, 1)])  # the PDF's page
+
+    def test_an_old_excel_file_is_read_as_its_xlsx_with_no_rendition(self) -> None:
+        workbook = make_xlsx(
+            [("Sales", sheet_xml('<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1"><v>250</v></c></row>'))],
+            shared_strings=["INV-2"],
+        )
+        converter = FakeConverter(workbook)
+        system = build(office=converter)
+        data = compound(["Workbook"])
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(data), display_name="ledger.xls").document_id
+        system.worker.run_once()
+        self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.READY)
+        self.assertEqual(stored_type(system, doc), resolve.XLS)
+        self.assertEqual(converter.calls, [(resolve.XLS, data)])
+        self.assertEqual([p.text for p in system.store.for_document(CUSTOMER, doc)], ["A: INV-2 | B: 250"])
+        self.assertEqual(system.storage.renditions, {})
+        self.assertEqual(system.storage.get(CUSTOMER, doc), data)
+
+    def test_a_file_libreoffice_cannot_open_fails_for_good_with_its_code(self) -> None:
+        converter = FakeConverter(ReadError(office.UNREADABLE))
+        system = build(socket=RecordingSocket({sniff.PDF: []}), office=converter)
+        doc = system.upload.accept(
+            CUSTOMER, io.BytesIO(make_zip({"word/document.xml": b"<w/>"})), display_name="locked.docx"
+        ).document_id
+        system.worker.run_once()
+        self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.FAILED)
+        self.assertEqual(system.repo.failure_codes[(CUSTOMER, doc)], "office_unreadable")
+        self.assertEqual(stored_type(system, doc), resolve.DOCX)  # so its words say "Word file"
+        self.assertEqual(system.storage.renditions, {})
+        self.assertEqual(len(converter.calls), 1)  # never tried again
+
+    def test_with_no_libreoffice_an_office_file_is_kept_and_needs_a_reader(self) -> None:
+        system = build()
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(compound(["WordDocument"])), display_name="a.doc")
+        system.worker.run_once()
+        self.assertIs(system.statuses.get_status(CUSTOMER, doc.document_id), DocumentStatus.NEEDS_READER)
+        self.assertEqual(stored_type(system, doc.document_id), resolve.DOC)
+
+    def test_a_file_over_its_own_kinds_limit_fails_after_the_scan_never_converted(self) -> None:
+        # A zip or an old Office file is let in at the PDF limit, the largest of its kinds (#522);
+        # once its kind is told, a spreadsheet must be within the spreadsheet limit.
+        converter = FakeConverter(RENDITION)
+        limits = limits_by_type(pdf=100_000, image=100_000, sheet=50)
+        system = build(socket=RecordingSocket({sniff.PDF: []}), office=converter, kind_limits=limits)
+        ids = [
+            system.upload.accept(CUSTOMER, io.BytesIO(data), display_name=name).document_id
+            for name, data in (
+                ("a.xlsx", make_xlsx([("S", sheet_xml(""))])),
+                ("b.xls", compound(["Workbook"])),
+                ("c.docx", make_zip({"word/document.xml": b"<w/>"})),
+            )
+        ]
+        while system.worker.run_once():
+            pass
+        for doc in ids[:2]:
+            self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.FAILED)
+            self.assertEqual(system.repo.failure_codes[(CUSTOMER, doc)], "too_large")
+        self.assertIs(system.statuses.get_status(CUSTOMER, ids[2]), DocumentStatus.READY)
+        self.assertEqual([kind for kind, _ in converter.calls], [resolve.DOCX])  # the Word file only
 
     def test_pdf_is_marked_needs_a_reader_and_the_job_ends_normally(self) -> None:
         system = build()

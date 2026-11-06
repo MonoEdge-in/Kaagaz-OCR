@@ -13,11 +13,13 @@ All formats (#522): every kind ``resolve.py`` tells after the virus scan has a s
 group too, so a reader can check a file against its own kind's limit: Word and
 PowerPoint files go with PDFs, a HEIC photo with photos, an old .xls and every text
 kind (TXT, Markdown, JSON, HTML) with spreadsheets and CSV files. An upload is
-checked before the scan, by its sniffed type: a text file with spreadsheets, a zip
-file with spreadsheets too, since this build reads a zip only as an .xlsx (the
-Office files and a zip as a folder widen that). A zip that is a folder of files
-(``resolve.ZIP``) is not read yet; its own limit, the organisation's folder upload
-limit, comes with it.
+checked before the scan, by its sniffed type: a text file with spreadsheets; a zip
+file (.xlsx, .docx, .dotx, .pptx) and an old Office file (ole2: .xls, .doc, .ppt)
+with PDFs, the largest group of the kinds it can be, since nothing may look inside
+before the scan. The worker then checks the file against its kind's own limit
+(``DocumentProcessor``'s ``kind_limits``), so an .xlsx or .xls over the spreadsheet
+limit fails there (#522 PR 2). A zip that is a folder of files (``resolve.ZIP``) is
+not read yet; its own limit, the organisation's folder upload limit, comes with it.
 """
 
 from collections.abc import Mapping
@@ -28,8 +30,7 @@ from kaagaz.ingestion import resolve, sniff
 
 Kind = Literal["pdf", "image", "sheet"]
 
-# The size group of each sniffed type that has a size limit, and of each kind. Old .xls,
-# .doc and .ppt files (ole2) have none in PRD U2, so they can never be allowed as uploads yet.
+# The size group of each sniffed type that has a size limit, and of each kind.
 KIND_OF: Mapping[str, Kind] = {
     sniff.PDF: "pdf",
     sniff.PNG: "image",
@@ -37,7 +38,8 @@ KIND_OF: Mapping[str, Kind] = {
     sniff.TIFF: "image",
     sniff.HEIC: "image",
     sniff.TEXT: "sheet",
-    sniff.ZIP: "sheet",
+    sniff.ZIP: "pdf",  # .xlsx, .docx, .dotx or .pptx: told after the scan (#522)
+    sniff.OLE2: "pdf",  # .xls, .doc or .ppt: told after the scan (#522)
     resolve.DOCX: "pdf",
     resolve.DOTX: "pdf",
     resolve.DOC: "pdf",
