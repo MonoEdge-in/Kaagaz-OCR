@@ -89,6 +89,7 @@ import type {
   PlatformFolderLimits,
   PlatformHealth,
   LearnedDocument,
+  LineSaved,
   QualityReply,
   ReasonCode,
   ReviewChoice,
@@ -1153,6 +1154,9 @@ export const confirmWord = (id: string, key: string, expectedText: string) =>
   request<WordFlag>("POST", `${word(id, key)}/confirm`, { expected_text: expectedText });
 export const editWord = (id: string, key: string, text: string, expectedText: string) =>
   request<WordFlag>("POST", `${word(id, key)}/edit`, { text, expected_text: expectedText });
+/** #527: a reviewer or an admin corrects a whole line of the clean copy; `expectedText` as editWord's. */
+export const editLine = (id: string, key: string, text: string, expectedText: string) =>
+  request<LineSaved>("POST", `${doc(id)}/lines/${encodeURIComponent(key)}/edit`, { text, expected_text: expectedText });
 export const listChanges = (
   id: string,
   params: { source?: "person" | "ensemble"; limit?: number; before?: string } = {},
