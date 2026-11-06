@@ -159,7 +159,7 @@ from starlette.datastructures import FormData, UploadFile
 from kaagaz.api.auth import CanDeleteForever, CurrentUser, Reviewer, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
-from kaagaz.api.names import CONTROL_CHARACTERS, DOCUMENT_NAME_MAX, clean_document_name
+from kaagaz.api.names import CONTROL_CHARACTERS, DOCUMENT_NAME_MAX, clean_document_name, without_hidden
 from kaagaz.api.readers import SINGLE, ReadingChoice, check_reading, check_shape, offer
 from kaagaz.api.upload_guard import check_upload_request
 from kaagaz.api.views import (
@@ -290,11 +290,12 @@ _REJECT_STATUS = {
 
 
 def display_name(filename: str | None) -> str:
-    """The name shown for an upload: path stripped, control characters removed,
-    at most 255 characters, "document" if nothing is left."""
+    """The name shown for an upload: path stripped, control and hidden characters removed
+    (``names.without_hidden``, #520), at most 255 characters, "document" if nothing, "." or
+    ".." is left."""
     name = (filename or "").replace("\\", "/").rsplit("/", 1)[-1]
-    name = CONTROL_CHARACTERS.sub("", name).strip()[:DOCUMENT_NAME_MAX].strip()
-    return name or "document"
+    name = without_hidden(CONTROL_CHARACTERS.sub("", name)).strip()[:DOCUMENT_NAME_MAX].strip()
+    return name if name not in ("", ".", "..") else "document"
 
 
 def day_start(day: str, timezone: str) -> datetime:
