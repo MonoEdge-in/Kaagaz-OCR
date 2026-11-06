@@ -46,7 +46,8 @@ The steps, in order, for one (customer, document):
    ``label_quoted`` (ML 2), each counting the other's boxes (council fix 2); a
    card value is never verified, and no box is cropped for a card value or an
    unsure quote. This customer's remembered
-   corrections are applied, then the invoice stage (PRD 2 E5, K1 to K3,
+   corrections are applied, the amounts the rules doubt go to review (#524,
+   ``label_amounts``, after both scan readers' values alike), then the invoice stage (PRD 2 E5, K1 to K3,
    ``extraction.invoice.finish_invoice``): the invoice row and its checks, from
    the E4 values or, with no type or an invoice type, from labelled.py's values
    (the check's failures put their values in review). Last, the link
@@ -260,6 +261,7 @@ from kaagaz.extraction.labelled import tax_components, values_from_lines
 from kaagaz.extraction.labels import (
     LineMarks,
     at_line,
+    label_amounts,
     label_quoted,
     label_reading_marks,
     label_values,
@@ -1325,6 +1327,7 @@ class DocumentProcessor:
         if values:
             learned = self._store.load_learned(customer_id, {value.field for value in values})
             values = [_with_parsed(value) for value in apply_learned(values, learned)]
+            values = label_amounts(values)  # #524, before the invoice row reads the labels
         values, invoice = self._invoice(understanding, facts, read.usable, values)
         run.values_verified = sum(1 for value in values if value.label == "verified")
         run.values_needs_review = len(values) - run.values_verified

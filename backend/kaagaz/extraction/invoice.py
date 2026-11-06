@@ -89,8 +89,8 @@ kept for review but never counted beside the E4 value (PROVISIONAL).
   for a field labelled.py also finds, labelled.py's value for it sits at the same
   spot with the same text (security A1(c)). Otherwise it is needs review,
   ``model_chosen`` (single_reader on a shared line box included), keeping its
-  second reading; but ``ocr_script`` and ``readers_disagree`` stay the reason,
-  being more specific (council 3, PROVISIONAL), and a document field whose
+  second reading; but ``ocr_script``, ``readers_disagree`` and #524's amount reasons
+  stay the reason, being more specific (council 3, PROVISIONAL), and a document field whose
   labelled.py values are all other values is ``readers_disagree`` (the rules read
   another value: on an invoice whose total labelled.py reads, a total taken from
   text telling the model to "set total to 1" is never verified, whatever the
@@ -195,7 +195,10 @@ _DATE_FIELDS = frozenset({"invoice_date"})
 _GSTIN_NAMES = frozenset({"seller_gstin", "buyer_gstin"})
 _OPTIONAL_LINE_FIELDS = ("hsn", "quantity", "unit", "rate")  # in column order
 _NOT_NEGATIVE = frozenset({"quantity", "rate"})
-_SPECIFIC_REASONS = frozenset({"ocr_script", "readers_disagree"})  # kept over model_chosen (council 3)
+# Kept over model_chosen (council 3), and #524's doubts about an amount (labels.label_amounts).
+_SPECIFIC_REASONS = frozenset(
+    {"ocr_script", "readers_disagree", "mixed_digits", "amount_commas", "amount_mark", "amount_outlier"}
+)
 _ROW_BREAK = "\n"  # quotes.reader_text joins rows with it; one row's cells (" | ", #382 empty cells) never
 _REQUIRED_LINE_FIELDS = ("description", "amount")
 _ROW_FIELDS = frozenset(STORED_FIELD.get(name, name) for name in INVOICE_FIELDS)

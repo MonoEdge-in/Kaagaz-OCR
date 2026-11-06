@@ -82,4 +82,13 @@ def test_guard_rails_0077a_and_0077b_follow_0077_and_0077b_is_the_one_head() -> 
     scripts = _scripts()
     assert scripts.get_revision("0077a").down_revision == "0077"
     assert scripts.get_revision("0077b").down_revision == "0077a"
-    assert scripts.get_heads() == ["0077b"]
+    # Changed on purpose (#524, 6 Nov 2026): the amount reasons' 0077c follows 0077b (below).
+    assert scripts.get_revision("0077c").down_revision == "0077b"
+
+
+def test_the_amount_reasons_0077c_follow_0077b_and_are_the_one_head() -> None:
+    """#524 (Tushar, 6 Nov 2026): the amount safety layer's label reasons follow the guard
+    rails' 0077b, on the same line."""
+    scripts = _scripts()
+    assert scripts.get_revision("0077c").down_revision == "0077b"
+    assert scripts.get_heads() == ["0077c"]

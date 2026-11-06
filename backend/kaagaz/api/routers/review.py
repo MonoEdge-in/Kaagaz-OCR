@@ -44,6 +44,10 @@ QueueReason = Literal[
     "box_unanchored",
     "local_reader",
     "ocr_script",
+    "mixed_digits",  # #524: the amounts the rules doubt
+    "amount_commas",
+    "amount_mark",
+    "amount_outlier",
 ]
 
 MAX_VALUE_LENGTH = 500
