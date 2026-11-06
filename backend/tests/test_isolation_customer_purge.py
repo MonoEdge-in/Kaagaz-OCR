@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError
 
-from kaagaz.adapters.storage import original_key, page_image_key, quarantine_key, resumable_key
+from kaagaz.adapters.storage import original_key, page_image_key, quarantine_key, rendition_key, resumable_key
 from kaagaz.api import totp
 from kaagaz.db.engine import Database, OperatorDatabase
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -92,6 +92,12 @@ class KeyStorage:
     def get(self, customer_id: str, document_id: str) -> bytes:
         try:
             return self.objects[original_key(customer_id, document_id)]
+        except KeyError:
+            raise BlobNotFound(document_id) from None
+
+    def get_rendition(self, customer_id: str, document_id: str) -> bytes:
+        try:
+            return self.objects[rendition_key(customer_id, document_id)]
         except KeyError:
             raise BlobNotFound(document_id) from None
 

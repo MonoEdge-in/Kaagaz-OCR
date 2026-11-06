@@ -202,7 +202,7 @@ from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.folder_upload_items import ItemRow
 from kaagaz.db.folder_uploads import effective_limits
 from kaagaz.db.folders import MAX_DEPTH
-from kaagaz.ingestion import sniff
+from kaagaz.ingestion import resolve, sniff
 from kaagaz.ingestion.errors import RejectCode, UploadRejected
 from kaagaz.ingestion.messages import over_every_limit_message, storage_full_message, too_large_message
 from kaagaz.ingestion.pagecount import goes_express
@@ -210,6 +210,7 @@ from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
 from kaagaz.ingestion.ports import BlobNotFound, Job, JobQueue, StorageRoom, UnknownFamily, UnknownFolder
 from kaagaz.ingestion.service import UploadResult, UploadService
 from kaagaz.jobs.reading_pause import BUDGET, DAILY_LIMIT, pause_reason
+from kaagaz.reading import office
 from kaagaz.reading.ocr import GEMINI
 from kaagaz.search import page_words
 from kaagaz.settings import Settings
@@ -260,6 +261,13 @@ _CONTENT_TYPES = {
     "tiff": ("image/tiff", "tif"),
     "zip": ("application/octet-stream", "xlsx"),  # only a spreadsheet passes the read
     "ole2": ("application/octet-stream", "bin"),
+    # #522 PR 2: Word, PowerPoint and old Excel files, downloaded as they were uploaded.
+    "docx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docx"),
+    "dotx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.template", "dotx"),
+    "doc": ("application/msword", "doc"),
+    "pptx": ("application/vnd.openxmlformats-officedocument.presentationml.presentation", "pptx"),
+    "ppt": ("application/vnd.ms-powerpoint", "ppt"),
+    "xls": ("application/vnd.ms-excel", "xls"),
     "text": ("text/plain; charset=utf-8", "csv"),
 }
 _REPROCESS_LIMITED = {
@@ -443,7 +451,7 @@ def get_upload_limits(user: User, context: Context) -> dict[str, Any]:
     return {
         "pdf_bytes": policy.limit_for(sniff.PDF),
         "image_bytes": policy.limit_for(sniff.PNG),
-        "sheet_bytes": policy.limit_for(sniff.ZIP),
+        "sheet_bytes": policy.limit_for(resolve.XLSX),  # a zip upload is let in at the PDF limit (#522)
         "max_pages": settings.max_pages,
         "readers": readers,
         # Folder upload (#484): its limits, the pace and sends at once its files are taken at,
@@ -1598,15 +1606,21 @@ def undo_autofile(document_id: uuid.UUID, user: User, context: Context) -> dict[
 @router.get("/documents/{document_id}/file")
 def get_file(document_id: uuid.UUID, user: User, context: Context, download: bool = False) -> Response:
     """The original file. File management A2: the Download button asks ``download=1``, which
-    logs ``document.download`` once the file is found; the viewer's own fetch is a view (#482)."""
+    logs ``document.download`` once the file is found; the viewer's own fetch is a view (#482).
+    #522 PR 2: the viewer's fetch of a Word or PowerPoint file gets its PDF rendition, which the
+    worker stored when it converted it (404 until then); Download gets the original."""
     with context.db.customer(user.customer_id) as conn:
         row = _readable_or_409(conn, user, document_id)
         if not download and row["status"] in _SERVABLE:
             _viewed(conn, user, document_id, "file")
     if row["status"] not in _SERVABLE:
         raise ApiError(404, "not_found")
+    rendition = not download and row["detected_type"] in office.PDF_KINDS
     try:
-        data = context.storage.get(user.customer_id, str(document_id))
+        if rendition:
+            data = context.storage.get_rendition(user.customer_id, str(document_id))
+        else:
+            data = context.storage.get(user.customer_id, str(document_id))
     except BlobNotFound:
         raise ApiError(404, "not_found") from None
     if download:
@@ -1619,7 +1633,8 @@ def get_file(document_id: uuid.UUID, user: User, context: Context, download: boo
                 target_type="document",
                 target_id=str(document_id),
             )
-    content_type, extension = _CONTENT_TYPES.get(row["detected_type"], ("application/octet-stream", "bin"))
+    detected = sniff.PDF if rendition else row["detected_type"]
+    content_type, extension = _CONTENT_TYPES.get(detected, ("application/octet-stream", "bin"))
     # The user's own name with the file's true extension, percent-encoded (RFC 6266), so no
     # quote or line break reaches the header; "document.<ext>" for browsers without filename*.
     name = quote(f"{splitext(row['display_name'] or '')[0] or 'document'}.{extension}", safe="")

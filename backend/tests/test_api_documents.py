@@ -227,7 +227,8 @@ def test_the_shipped_settings_give_every_allowed_type_its_limit() -> None:
         "jpeg": 20 * MB,
         "tiff": 20 * MB,
         "text": 10 * MB,
-        "zip": 10 * MB,
+        "zip": 50 * MB,  # #522: a zip or an old Office file at the PDF limit; its kind's after the scan
+        "ole2": 50 * MB,
     }
     assert (settings.max_pages, settings.max_image_pixels) == (100, 40_000_000)
 
@@ -1196,6 +1197,57 @@ def test_the_download_keeps_the_users_name_with_the_true_extension(
     fallback, star = disposition.split("; filename*=UTF-8''")
     assert fallback.startswith('attachment; filename="document.') and encoded in star
     assert "\r" not in disposition and "\n" not in disposition and '"' not in star
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("detected_type", "content_type", "extension"),
+    [
+        ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docx"),
+        ("dotx", "application/vnd.openxmlformats-officedocument.wordprocessingml.template", "dotx"),
+        ("doc", "application/msword", "doc"),
+        ("pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "pptx"),
+        ("ppt", "application/vnd.ms-powerpoint", "ppt"),
+    ],
+)
+def test_a_word_or_powerpoint_file_is_viewed_as_its_pdf_and_downloaded_as_itself(
+    db: Database, detected_type: str, content_type: str, extension: str
+) -> None:
+    # #522 PR 2: the viewer's fetch gets the PDF LibreOffice made; Download gets the original.
+    api = Api(db)
+    signed = api.new_signed()
+    original = b"PK\x03\x04 the user's own file"
+    document_id = api.add_document(
+        signed.customer_id, detected_type=detected_type, name="Lease", data=original
+    )
+    api.storage.put_rendition(signed.customer_id, document_id, b"%PDF-1.7 its rendition")
+    viewed = signed.client.get(f"/api/documents/{document_id}/file")
+    assert viewed.status_code == 200
+    assert viewed.content == b"%PDF-1.7 its rendition"
+    assert viewed.headers["content-type"] == "application/pdf"
+    assert viewed.headers["content-disposition"].endswith("''Lease.pdf")
+    assert viewed.headers["content-security-policy"] == "sandbox"
+    downloaded = signed.client.get(f"/api/documents/{document_id}/file?download=1")
+    assert downloaded.status_code == 200
+    assert downloaded.content == original
+    assert downloaded.headers["content-type"] == content_type
+    assert downloaded.headers["content-disposition"].endswith(f"''Lease.{extension}")
+
+
+@pytest.mark.db
+def test_an_old_excel_file_is_downloaded_as_itself_and_one_not_yet_converted_is_not_viewed(
+    db: Database,
+) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    xls = api.add_document(
+        signed.customer_id, detected_type="xls", name="ledger.xls", data=b"\xd0\xcf\x11\xe0"
+    )
+    reply = signed.client.get(f"/api/documents/{xls}/file")  # no rendition: its cells are shown
+    assert (reply.content, reply.headers["content-type"]) == (b"\xd0\xcf\x11\xe0", "application/vnd.ms-excel")
+    docx = api.add_document(signed.customer_id, detected_type="docx", status="clean")
+    assert signed.client.get(f"/api/documents/{docx}/file").status_code == 404  # not converted yet
+    assert signed.client.get(f"/api/documents/{docx}/file?download=1").content == PDF_BYTES
 
 
 @pytest.mark.db
