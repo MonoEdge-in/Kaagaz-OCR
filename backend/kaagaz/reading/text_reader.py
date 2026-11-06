@@ -208,6 +208,14 @@ class _HtmlText(HTMLParser):
         if tag == "pre":
             self._pre += 1
 
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """``<script/>``: a browser takes it as a start tag (a self-closing slash means nothing
+        on a tag that is not void), so all up to ``</script>`` stays hidden; any other is opened
+        and closed, as html.parser does."""
+        self.handle_starttag(tag, attrs)
+        if tag not in _HIDDEN:
+            self.handle_endtag(tag)
+
     def handle_endtag(self, tag: str) -> None:
         if tag in _HIDDEN:
             self._hidden = max(0, self._hidden - 1)

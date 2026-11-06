@@ -150,6 +150,14 @@ def test_html_whose_head_is_never_closed_still_gives_its_body() -> None:
     assert html_text("<head><title>First</title><title>Second</title></head><p>x</p>") == "First\nx"
 
 
+def test_a_self_closed_script_still_hides_everything_up_to_its_end_tag() -> None:
+    # Security review (6 Nov 2026): a browser takes <script/> as a start tag, so what follows is
+    # script up to </script>; html.parser called it opened and closed, and kept "x()" as words.
+    assert html_text("<p>a</p><script/>x()</script><p>b</p>") == "a\nb"
+    assert html_text("<p>a</p><style/>p{}</style><noscript/>n</noscript><p>b</p>") == "a\nb"
+    assert html_text("<p>a<br/>b</p>") == "a\nb"  # any other self-closed tag is as before
+
+
 def test_html_left_inside_an_unclosed_script_is_dropped() -> None:
     assert html_text("<p>kept</p><script>never closed <p>dropped</p>") == "kept"
 
