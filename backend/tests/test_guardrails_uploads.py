@@ -28,6 +28,7 @@ from kaagaz.adapters.scanner import EICAR, ClamdScanner, EicarDevScanner, Layere
 from kaagaz.api.names import clean_name
 from kaagaz.api.routers.documents import display_name
 from kaagaz.db.engine import Database
+from kaagaz.ingestion.policy import ZIP_MAX_BYTES
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.worker import JobFailed
 from kaagaz.reading import pdf_signals
@@ -188,7 +189,9 @@ def test_a_resumable_upload_never_takes_more_than_it_declared_or_than_the_limit(
     storage = ResumableStorage()
     api = Api(db, storage=storage)
     signed = api.new_signed()
-    largest = 5 * MIB  # make_settings: the PDF limit, the largest
+    # Changed on purpose (#522): a zip may be up to ZIP_MAX_BYTES, so that is now the most a start
+    # may declare; the complete still holds each file to its own type's limit (the next test).
+    largest = ZIP_MAX_BYTES
     for size in (largest + 1, 0, -1):
         assert _error(_start(signed, size)) == (413, "too_large"), size
 
