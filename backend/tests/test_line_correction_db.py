@@ -17,6 +17,7 @@ from sqlalchemy import text
 
 from kaagaz.answering import ready
 from kaagaz.answering.service import AnswerService
+from kaagaz.api import views
 from kaagaz.chunking.piece import Piece
 from kaagaz.db import word_review
 from kaagaz.db.engine import Database
@@ -25,6 +26,7 @@ from kaagaz.extraction.flags import word_key
 from kaagaz.extraction.values import ExtractedValue
 from kaagaz.pipeline import DocumentContent, PageRecord, ReaderOutput
 from kaagaz.reading.spans import BoxLocation, CellLocation, PageInfo, Span, location_to_json
+from tests import test_word_review_db as word_tests
 from tests.db_support import insert_document, new_customer
 from tests.settings_factory import make_settings
 from tests.test_answering_neighbours_db import DraftModel
@@ -254,6 +256,8 @@ def test_a_read_again_keeps_the_correction_while_the_line_is_on_the_page(db: Dat
         (f"Paid {TOTAL} of {TOTAL}", True),
     ]
     assert rows(db, customer, VALUES, document) == [("1500000", Decimal("1500000"), "verified", "corrected")]
+    skipped = "SELECT applied -> 'skipped' FROM word_changes WHERE document_id = :d"
+    assert rows(db, customer, skipped, document) == [({"pieces": 1, "values": 0},)]  # the same counts
     with db.customer(customer) as conn:
         assert key in word_review.on_page(
             conn, customer, document, word_review.load(conn, customer, document)
@@ -314,3 +318,66 @@ def test_a_spreadsheet_cell_is_corrected_in_its_piece_and_value(db: Database) ->
 
     assert rows(db, customer, PIECES, document) == [("A: 1500000", True)]
     assert rows(db, customer, VALUES, document) == [("1500000", Decimal("1500000"), "verified", "corrected")]
+
+
+def test_a_correction_after_a_word_edit_in_the_line_goes_into_the_piece(db: Database) -> None:
+    """#527 review (B1): the piece holds the line as the word edit left it, as the clean copy shows."""
+    customer, user, document = word_tests.saved(db)
+    as_read, edited = "Total Rs 4,850 paid [?]", "Total Rs 4,350 paid [?]"
+    word = word_tests.key(word_tests.load(db, customer, document), "mark", "4,850")
+    word_tests.change(db, customer, document, word, "4,850", "4,350", user)
+    key = line_key(word_tests.LINE, as_read)
+    with db.customer(customer) as conn:
+        row = word_review.lines(conn, customer, document)[key]
+        assert views.clear_line(row, word_review.in_force(conn, customer, document))["text"] == edited
+
+    fixed = "Total Rs 4,350 paid in full"
+    change_id = correct(db, customer, document, key, edited, fixed, user, T0 + timedelta(minutes=1))
+
+    assert [piece for piece, _ in rows(db, customer, PIECES, document)] == [
+        f"{fixed}\nBill to Patil Stores",
+        "Paid 4,850 of 4,850",  # the line is not in it
+    ]
+    history = "SELECT before_text, applied -> 'skipped' FROM word_changes WHERE id = :d"
+    # The second piece is over the line, and so is the total, which the change falls outside of.
+    assert rows(db, customer, history, change_id) == [(edited, {"pieces": 1, "values": 1})]
+
+
+def test_a_correction_leaves_a_value_on_the_next_line_as_it_is(db: Database) -> None:
+    """#527 review (B2): the plot number's box reaches a few pixels into the survey line; only a
+    value inside the line (or its centre) takes a part of the line's change."""
+    customer, user = new_customer(db)
+    with db.customer(customer) as conn:
+        document = insert_document(conn, customer, uploaded_by=user, detected_type="jpeg")
+    PgPipelineStore(db).save(word_tests.survey(customer, document))
+
+    correct(db, customer, document, line_key(word_tests.SURVEY_BOX, "Survey No. 12"), "Survey No. 12",
+            "Survey No. 13", user)  # fmt: skip
+
+    assert rows(db, customer, "SELECT value_text FROM extracted_values WHERE document_id = :d", document) == [
+        ("12",)
+    ]
+    assert rows(db, customer, PIECES, document) == [("Survey No. 13\nPlot 12", True)]
+
+
+def test_homes_ready_answers_stay_after_a_change_that_changes_no_text(db: Database) -> None:
+    """#527 review (B5): a Confirm or Ensemble's resolve writes nothing, so it costs no model call."""
+    customer, user, document = saved(db)
+    with db.customer(customer) as conn:
+        before = ready.stamp(conn, customer)
+        sql = (
+            "INSERT INTO word_changes (customer_id, document_id, word_key, kind, page_no, region,"
+            " as_read, action, before_text, after_text, user_id) VALUES (:c, :d, :k, 'line', 1,"
+            " CAST(:r AS jsonb), :t, 'confirm', :t, :t, :u)"
+        )
+        region = json.dumps(location_to_json(TOTAL_BOX))
+        params = {
+            "c": customer,
+            "d": document,
+            "k": line_key(TOTAL_BOX, TOTAL),
+            "r": region,
+            "t": TOTAL,
+            "u": user,
+        }
+        conn.execute(text(sql), params)
+        assert ready.stamp(conn, customer) == before

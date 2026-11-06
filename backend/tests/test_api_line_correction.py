@@ -12,8 +12,11 @@ import pytest
 from sqlalchemy import text
 
 from kaagaz.api.routers.word_review import MAX_TEXT
+from kaagaz.chunking.piece import Piece
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
+from kaagaz.pipeline import DocumentContent, PageRecord, ReaderOutput
+from kaagaz.reading.spans import PageInfo, Span
 from tests.test_api_support import CSRF, Api, Signed
 from tests.test_line_correction_db import BILL, BILL_BOX, FIXED, TOTAL, TOTAL_BOX, bill, line_key
 
@@ -65,7 +68,8 @@ def test_a_reviewer_corrects_a_line_and_undoes_it(db: Database, role: str) -> No
     assert datetime.fromisoformat(correction.pop("at")).tzinfo is not None
     assert correction == {"before_text": TOTAL, "by": f"Test {role}", "change_id": change_id}
     assert (body["line"]["text"], body["line"]["key"]) == (FIXED, key)
-    assert set(body) == {"change_id", "line"}
+    # The first piece holds the total once; the second twice, so it is left as it is (#527 review).
+    assert (body["written"], body["skipped"]) == ({"pieces": 1, "values": 1}, {"pieces": 1, "values": 0})
     shown = clean_copy(reviewer, document_id)[0]
     assert shown == body["line"]
     history = reviewer.client.get(f"/api/documents/{document_id}/changes").json()["items"]
@@ -134,3 +138,70 @@ def test_the_word_edits_409s(db: Database) -> None:
         conn.execute(text(sql), {"d": document_id, "at": datetime(2026, 11, 7, tzinfo=UTC)})
     binned = edit(reviewer, document_id, key, {"text": FIXED, "expected_text": TOTAL})
     assert (binned.status_code, binned.json()["error"]["code"]) == (409, "in_trash")
+
+
+def test_the_reply_says_when_no_piece_could_take_the_correction(db: Database) -> None:
+    """#527 review (B1): the only piece over the line holds it twice, so search keeps the old text."""
+    api = Api(db)
+    reviewer = api.new_signed("reviewer")
+    document_id = scan(api, reviewer.customer_id)
+    with db.customer(reviewer.customer_id) as conn:
+        conn.execute(text("DELETE FROM pieces WHERE document_id = :d AND seq = 0"), {"d": document_id})
+
+    reply = edit(reviewer, document_id, line_key(TOTAL_BOX, TOTAL), {"text": FIXED, "expected_text": TOTAL})
+
+    assert reply.status_code == 200, reply.text
+    assert (reply.json()["written"], reply.json()["skipped"]) == (
+        {"pieces": 0, "values": 1},
+        {"pieces": 1, "values": 0},
+    )
+
+
+def test_a_correction_back_to_the_text_as_read_still_shows_with_its_undo(db: Database) -> None:
+    """#527 review (B3)."""
+    api = Api(db)
+    reviewer = api.new_signed("reviewer")
+    document_id = scan(api, reviewer.customer_id)
+    key = line_key(TOTAL_BOX, TOTAL)
+    assert edit(reviewer, document_id, key, {"text": FIXED, "expected_text": TOTAL}).status_code == 200
+
+    back = edit(reviewer, document_id, key, {"text": TOTAL, "expected_text": FIXED})
+
+    assert back.status_code == 200, back.text
+    line = clean_copy(reviewer, document_id)[0]
+    assert (line["text"], line["correction"]["change_id"]) == (TOTAL, back.json()["change_id"])
+    assert line == back.json()["line"]
+
+
+NAME_BOX = TOTAL_BOX
+NAME, NAME_RAW = "Ram Kumar S/o Shyam", "Ram  Kumar\nS/o Shyam"  # as read, and as the reader gave it
+
+
+def test_unchanged_only_when_the_line_already_reads_that_way(db: Database) -> None:
+    """#527 review (B4): the typed text is compared with the line as shown, made one line."""
+    api = Api(db)
+    reviewer = api.new_signed("reviewer")
+    customer_id = reviewer.customer_id
+    document_id = api.add_document(customer_id, detected_type="jpeg")
+    spans = (Span(NAME, NAME_RAW, NAME_BOX, 0.97, "paragraph", "ocr", quality="ok", box_source="found"),)
+    PgPipelineStore(db).save(
+        DocumentContent(
+            customer_id,
+            document_id,
+            [PageRecord(PageInfo(1, 595.0, 842.0, "pt"), True, "ocr")],
+            [ReaderOutput("first", "google/gemini-3.1-pro-preview", "1", spans)],
+            [Piece(customer_id, document_id, NAME, (NAME_BOX,), "verified")],
+            [],
+            reader="gemini",
+        )
+    )
+    key = line_key(NAME_BOX, NAME)
+    assert clean_copy(reviewer, document_id)[0]["text"] == NAME_RAW
+
+    same = edit(reviewer, document_id, key, {"text": "Ram  Kumar S/o Shyam", "expected_text": NAME_RAW})
+    assert (same.status_code, same.json()["error"]["message"]) == (400, "The line already reads that way.")
+
+    one_space = edit(reviewer, document_id, key, {"text": NAME, "expected_text": NAME_RAW})
+    assert one_space.status_code == 200, one_space.text
+    assert one_space.json()["line"]["text"] == NAME
+    assert one_space.json()["line"]["correction"]["before_text"] == NAME_RAW

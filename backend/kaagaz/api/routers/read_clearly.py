@@ -44,6 +44,6 @@ def clear_copy(document_id: uuid.UUID, user: User, context: Context) -> dict[str
         _readable(conn, customer_id, document_id)
         pages = [page["page_no"] for page in listing.list_pages(conn, customer_id, target)]
         lines, marks = listing.clear_copy(conn, customer_id, target)
-        latest = word_review.latest_changes(conn, customer_id, target)  # #527: the corrections
+        live = word_review.in_force(conn, customer_id, target)  # #527: the corrections
         audit.record_view(conn, customer_id, actor_user_id=user.user_id, document_id=target, via="clear_copy")
-    return views.clear_copy(pages, lines, marks, latest)
+    return views.clear_copy(pages, lines, marks, live)

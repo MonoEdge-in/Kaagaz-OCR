@@ -18,9 +18,11 @@ reviewer's Confirm and Edit, the history and Undo.
 * ``GET /documents/{id}/changes`` and ``POST .../changes/{change_id}/undo``: the history,
   newest first (``source`` person or ensemble), and Undo of the latest change.
 * ``POST /documents/{id}/lines/{line_key}/edit`` (#527): a reviewer or an admin corrects a
-  line of the clean copy, flagged or not, with Edit's body; the reply is the change's id and
-  the line as the clean copy now shows it. The text is 1 to MAX_TEXT characters once
-  trimmed, with no control or hidden character (``names.clean_name``'s rule), and changed.
+  line of the clean copy, flagged or not, with Edit's body; the reply is the change's id, the
+  line as the clean copy now shows it, and how many pieces and values over the line took the
+  text (``written``) or did not (``skipped``: not there exactly once). The text is 1 to
+  MAX_TEXT characters once trimmed, with no control or hidden character (``names.clean_name``'s
+  rule), and not the line as shown, made one line (``names.one_line``).
 
 Every lookup runs as the signed-in customer, so another customer's document, word or
 change is 404, as is a rejected file (like the page readings). The rules live in
@@ -339,8 +341,14 @@ def edit_line(
                 raise ApiError(400, "bad_request", MESSAGES["unchanged"]) from None
             raise _refused(error) from None
         row = word_review.lines(conn, customer_id, target)[line_key]
-        latest = word_review.latest_changes(conn, customer_id, target)
-    return {"change_id": change_id, "line": views.clear_line(row, latest)}
+        live = word_review.in_force(conn, customer_id, target)
+    applied = next(change for change in live if str(change["id"]) == change_id)["applied"]
+    return {
+        "change_id": change_id,
+        "line": views.clear_line(row, live),
+        "written": {"pieces": len(applied["pieces"]), "values": len(applied["values"])},
+        "skipped": applied["skipped"],
+    }
 
 
 def _history(review: word_review.Review, keys: set[str], user: CurrentUser) -> list[dict[str, Any]]:

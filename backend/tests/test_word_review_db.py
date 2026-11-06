@@ -417,3 +417,41 @@ def test_a_line_ensemble_read_differently_on_a_page_with_no_problem_code_waits_f
     change(db, customer, document, key(review, "mark", "[?]"), "[?]", None, user)
     change(db, customer, document, line, "Total Rs 4,850 paid [?]", None, user, T0 + timedelta(minutes=1))
     assert rows(db, customer, KEPT, document) == []
+
+
+SURVEY_BOX = BoxLocation(1, 0.1, 0.1, 0.9, 0.15)
+PLOT_BOX = BoxLocation(1, 0.1, 0.147, 0.9, 0.2)  # the next line, a few pixels into the survey line
+PLOT_NUMBER_BOX = BoxLocation(1, 0.2, 0.147, 0.3, 0.2)
+
+
+def survey(customer_id: str, document_id: str, box_source: str = "found") -> DocumentContent:
+    """Line 1 "Survey No. 12", and line 2 "Plot 12", whose plot number (a value) reaches a few
+    pixels into line 1. ``box_source`` "model" makes line 1 a flag (spot unconfirmed)."""
+    spans = (
+        Span("Survey No. 12", "Survey No. 12", SURVEY_BOX, 0.97, "paragraph", "ocr", quality="ok",
+             box_source=box_source),
+        Span("Plot 12", "Plot 12", PLOT_BOX, 0.97, "paragraph", "ocr", quality="ok", box_source="found"),
+    )  # fmt: skip
+    pages = [PageRecord(PageInfo(1, 595.0, 842.0, "pt"), True, "ocr")]
+    pieces = [Piece(customer_id, document_id, "Survey No. 12\nPlot 12", (SURVEY_BOX, PLOT_BOX), "verified")]
+    plot = ExtractedValue(
+        "document", "plot", "12", "12", PLOT_NUMBER_BOX, 0.97, None, "verified", "readers_agree"
+    )
+    outputs = [ReaderOutput("first", "google/gemini-3.1-pro-preview", "1", spans)]
+    return DocumentContent(customer_id, document_id, pages, outputs, pieces, [plot], reader="gemini")
+
+
+def test_an_edit_of_a_flagged_line_leaves_a_value_on_the_next_line_as_it_is(db: Database) -> None:
+    # #527 review (B2): a value whose box only touches the line's edge is on another line.
+    customer, user = new_customer(db)
+    with db.customer(customer) as conn:
+        document = insert_document(conn, customer, uploaded_by=user, detected_type="jpeg")
+    PgPipelineStore(db).save(survey(customer, document, box_source="model"))
+    line = key(load(db, customer, document), "line", "Survey No. 12")
+
+    change(db, customer, document, line, "Survey No. 12", "Survey No. 13", user)
+
+    assert rows(db, customer, "SELECT value_text FROM extracted_values WHERE document_id = :d", document) == [
+        ("12",)
+    ]
+    assert rows(db, customer, PIECES, document) == [("Survey No. 13\nPlot 12", True)]
