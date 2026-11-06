@@ -47,6 +47,19 @@ by one space, and the file's own signals for the page
   engine finds nothing at a lowered DPI is read once more at the ceiling.
   ``fixed`` (the default) draws every page at the ceiling, as before.
 
+A Word or PowerPoint file's PDF rendition (#522, ``pdfium_text``): LibreOffice made it from
+the file's own text, but gives some Devanagari glyphs their text only by /ActualText, which
+pdfplumber skips, so it reads Marathi and Hindi with "(cid:N)" gaps and letters out of order,
+and the route check would send the page to OCR, paid. PDFium reads /ActualText. So on a
+rendition's page, PDFium's reading of the text layer (``pdf_second_reader.page_spans``, split
+at word gaps) is taken instead of pdfplumber's when pdfplumber's fails the route check or
+its letters differ from PDFium's (NFKC, spaces left out), and the same check, with the same
+signals, passes PDFium's: route ``text_layer``, reason ``pdfium_text``, headings found as for
+any page. Otherwise the page is read as a PDF's: a Latin page both read alike keeps
+pdfplumber's reading, so the second reader still reads it independently; a page neither can
+read (a picture of text in the Word file) goes to OCR. A PDF upload is never read so: nothing
+says how it was made. ``version`` counts the pages (``;pdfium_text=N``).
+
 ``on_page`` (if given) is called after every page, text pages too, so the
 worker's heartbeat and the progress move once per page (PRD 2 X3).
 
@@ -81,6 +94,7 @@ import io
 import math
 import statistics
 import struct
+import unicodedata
 import zlib
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -108,8 +122,9 @@ from kaagaz.reading.ocr_dpi import (
     line_height_px,
     probe_dpi,
 )
+from kaagaz.reading.pdf_second_reader import page_spans as pdfium_page_spans
 from kaagaz.reading.pdf_signals import page_signals, shown_crop, words_left_visible
-from kaagaz.reading.route import RouteDecision
+from kaagaz.reading.route import PDFIUM_TEXT, RouteDecision
 from kaagaz.reading.socket import NoReader, OnPage, PagePool, PagesInOrder
 from kaagaz.reading.spans import BoxLocation, ReadError, Span
 from kaagaz.reading.text_quality import (
@@ -180,7 +195,10 @@ class PdfReader:
         blank_stddev: float,
         dpi_rule: str = FIXED,
         pages: PagePool | None = None,
+        pdfium_text: bool = False,
     ) -> None:
+        """``pdfium_text``: the reader of a Word or PowerPoint file's PDF rendition (#522, the
+        module notes)."""
         # No defaults: limits are Vrushit's decision (PRD section 6).
         if min(max_pages, dpi, max_image_pixels) < 1:
             raise ValueError("every limit must be at least 1")
@@ -200,23 +218,27 @@ class PdfReader:
         self._rereads = 0  # its pages read again at the ceiling
         self._rules = rules
         self._blank_stddev = blank_stddev
+        self._pdfium_text = pdfium_text
+        self._pdfium_pages = 0  # the last read's pages read from PDFium's text (#522)
 
     @property
     def version(self) -> str:
         """Asked for after reading, so the engine is named as it was, with the DPI when a
         page had to be drawn lower to fit the pixel limits and, with the text-height rule,
-        the lowest DPI it chose (``;text_dpi=``) and the pages read again (``;ocr_reread=``)."""
+        the lowest DPI it chose (``;text_dpi=``) and the pages read again (``;ocr_reread=``);
+        a rendition's pages read from PDFium's text (``;pdfium_text=``, #522)."""
         version = str(pdfplumber.__version__)
+        pdfium = f";pdfium_text={self._pdfium_pages}" if self._pdfium_pages else ""
         if self._ocr is None:
-            return version
+            return version + pdfium
         marks = "" if self._lowered_dpi is None else f";ocr_dpi={self._lowered_dpi}"
         marks += "" if self._rule_dpi is None else f";text_dpi={self._rule_dpi}"
         marks += f";ocr_reread={self._rereads}" if self._rereads else ""
-        return f"{version}+{self._ocr.name}-{self._ocr.version}{marks}"
+        return f"{version}+{self._ocr.name}-{self._ocr.version}{marks}{pdfium}"
 
     def read(self, data: bytes, *, on_page: OnPage | None = None) -> list[Span]:
         self._lowered_dpi = self._rule_dpi = None
-        self._rereads = 0
+        self._rereads = self._pdfium_pages = 0
         spans: list[Span] = []
 
         def finish(page: _PageResult) -> None:
@@ -249,8 +271,12 @@ class PdfReader:
         for a page the engine must read, the page drawn for it (``_read_scan``)."""
         pdfium_page = pdf_page(document, number - 1)
         try:
-            rules = self._rules
-            text_spans, decision, signals = _parsed(lambda: _text_layer(pdf, pdfium_page, number, rules))
+            rules, rendition = self._rules, self._pdfium_text
+            text_spans, decision, signals = _parsed(
+                lambda: _text_layer(pdf, pdfium_page, number, rules, pdfium_text=rendition)
+            )
+            if decision.reason == PDFIUM_TEXT:
+                self._pdfium_pages += 1
             if decision.route == "text_layer":
                 return text_spans, decision
             if self._ocr is None:  # kept as before; a page with no text was not read
@@ -391,16 +417,51 @@ def _for_each_page(
 
 
 def _text_layer(
-    pdf: Any, pdfium_page: Any, number: int, rules: TextLayerRules
+    pdf: Any, pdfium_page: Any, number: int, rules: TextLayerRules, *, pdfium_text: bool = False
 ) -> tuple[list[Span], RouteDecision, PageSignals]:
-    """One page's text-layer spans, what R2 says about them, and the signals it saw."""
+    """One page's text-layer spans, what R2 says about them, and the signals it saw;
+    ``pdfium_text``: a rendition's page, PDFium's reading of it when that is the one to take
+    (the module notes)."""
     page = pdf.pages[number - 1]
     try:
         signals = page_signals(page, pdfium_page)
         spans = _page_spans(page, number, signals.hidden_boxes)
+        decision = text_layer_ok(_joined(spans), signals, rules)
+        if pdfium_text:
+            spans, decision = _rendition_text(page, pdfium_page, number, (spans, decision), signals, rules)
     finally:
         page.close()  # release this page's parsed objects
-    return spans, text_layer_ok(" ".join(span.text for span in spans), signals, rules), signals
+    return spans, decision, signals
+
+
+def _rendition_text(
+    page: Any,
+    pdfium_page: Any,
+    number: int,
+    plumbers: tuple[list[Span], RouteDecision],
+    signals: PageSignals,
+    rules: TextLayerRules,
+) -> tuple[list[Span], RouteDecision]:
+    """A rendition's page (#522): PDFium's reading, split at word gaps and with its headings,
+    when pdfplumber's (``plumbers``) fails the route check or reads other letters, and the
+    check passes PDFium's; else pdfplumber's, as for any PDF. O(characters)."""
+    spans, decision = plumbers
+    pdfiums = pdfium_page_spans(pdfium_page, number, word_gaps=True)
+    pdfiums = _with_kinds(pdfiums, page.chars, shown_crop(page))
+    if decision.route == "text_layer" and _letters(spans) == _letters(pdfiums):
+        return plumbers
+    if text_layer_ok(_joined(pdfiums), signals, rules).route != "text_layer":
+        return plumbers
+    return pdfiums, RouteDecision("text_layer", PDFIUM_TEXT)
+
+
+def _joined(spans: list[Span]) -> str:
+    return " ".join(span.text for span in spans)
+
+
+def _letters(spans: list[Span]) -> str:
+    """The spans' text without its spaces, NFKC: what two readings of one page must share."""
+    return "".join(unicodedata.normalize("NFKC", _joined(spans)).split())
 
 
 def _kept(decision: RouteDecision) -> RouteDecision:

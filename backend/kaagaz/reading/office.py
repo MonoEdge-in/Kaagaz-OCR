@@ -7,10 +7,16 @@ rendition, stored beside the original for the viewer (``put_rendition``). An old
 (``xls``) is converted to an XLSX, which the XLSX reader reads; it has no rendition, since
 its cells are shown, not a page.
 
-Marathi and Hindi survive into the PDF (the image has Noto Sans Devanagari, and pdfium reads
-the text exactly), but LibreOffice gives some Devanagari glyphs their text only by
-/ActualText, which the PDF reader's pdfplumber skips: such a page reads with "(cid:N)" gaps,
-so its route check sends it to OCR (right, at a page's OCR cost), never keeps the gaps.
+Marathi and Hindi survive into the PDF (the image has Noto Sans Devanagari), but LibreOffice
+gives some Devanagari glyphs their text only by /ActualText, which pdfplumber skips: such a
+page reads with "(cid:N)" gaps, and its route check would send it to OCR, at a page's cost.
+So the pipeline reads a rendition through its own key, ``RENDITION``, whose reader takes
+PDFium's reading of such a page (it reads /ActualText) with no OCR or AI cost
+(``kaagaz/reading/pdf_reader.py``, ``pdfium_text``); a PDF upload is read as before.
+
+The rendition is derived from the original, like the page pictures, so it never counts
+towards the organisation's storage limit (``kaagaz/db/storage_limits.py``: the documents'
+``size_bytes``, the originals' sizes), and it is deleted with its document.
 
 Each conversion runs ``soffice --headless --norestore --nolockcheck --convert-to`` once:
 
@@ -67,6 +73,9 @@ _log = logging.getLogger(__name__)
 
 PDF_KINDS = frozenset({resolve.DOCX, resolve.DOTX, resolve.DOC, resolve.PPTX, resolve.PPT})
 KINDS = PDF_KINDS | {resolve.XLS}
+# The reader socket's key for a Word or PowerPoint file's PDF rendition (kaagaz/reading/wiring.py):
+# read as a PDF is, with PDFium's text where pdfplumber can't read it (the module notes).
+RENDITION = "rendition"
 UNREADABLE = "office_unreadable"  # the failure code (kaagaz/api/views.py says it in words)
 TIMEOUT_SECONDS = 60
 OUTPUT_MAX_BYTES = 512 * 1024 * 1024  # more than any PDF the page limit lets through

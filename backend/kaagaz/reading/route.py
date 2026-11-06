@@ -3,7 +3,9 @@
 PRD 2 PR 3. A route is stored in ``pages.route``:
 
 * ``cells``: a spreadsheet page, read cell by cell;
-* ``text_layer``: a PDF page read from the text it carries;
+* ``text_layer``: a PDF page read from the text it carries (reason ``pdfium_text``: a
+  Word or PowerPoint file's PDF page read from PDFium's reading of it, #522,
+  ``kaagaz/reading/pdf_reader.py``);
 * ``ocr``: a page read by the OCR engine (or sent to it, with nothing found);
 * ``blank``: no text, and a blank picture (R3).
 
@@ -29,7 +31,9 @@ Reason = Literal[
     "malformed_devanagari",
     "blank",
     "ok",
+    "pdfium_text",
 ]
+PDFIUM_TEXT: Reason = "pdfium_text"
 
 
 @dataclass(frozen=True, slots=True)

@@ -14,9 +14,12 @@ socket"). Adding a reader means one new module and one entry here.
 * png, jpeg, tiff, heic -> ImageReader, only with an OCR engine. Without one they
   have no reader, so they are stored and marked needs_reader.
 * docx, dotx, doc, pptx, ppt and xls have no reader of their own: the pipeline converts
-  them with ``build_office_converter``'s LibreOffice first (#522 PR 2), to the PDF the pdf
-  readers read or the XLSX the xlsx reader reads. Where soffice is not installed there is
-  no converter, so they are stored and marked needs_reader.
+  them with ``build_office_converter``'s LibreOffice first (#522 PR 2), to the PDF the
+  rendition readers read or the XLSX the xlsx reader reads. Where soffice is not installed
+  there is no converter, so they are stored and marked needs_reader.
+* office.RENDITION, a Word or PowerPoint file's PDF -> PdfReader with ``pdfium_text``: as a
+  PDF, but a page pdfplumber can't read (LibreOffice's Devanagari) is read from PDFium's
+  text, with no OCR (#522); its second reader is the PDFs'.
 * Second readers: pdf -> PdfiumReader. Nothing else has one yet, so every
   other value stays single_reader.
 * Pages in parallel (PRD 5 G8): with OCR_ENGINE=gemini, the PDF and image
@@ -42,7 +45,7 @@ from kaagaz.reading.csv_reader import CsvReader
 from kaagaz.reading.image_reader import ImageReader
 from kaagaz.reading.ocr import GEMINI, OcrEngine, PageEngine
 from kaagaz.reading.ocr import build_ocr_engine as _ocr_engine
-from kaagaz.reading.office import OfficeConverter
+from kaagaz.reading.office import RENDITION, OfficeConverter
 from kaagaz.reading.pdf_reader import PdfReader, text_layer_checks
 from kaagaz.reading.pdf_second_reader import PdfiumReader
 from kaagaz.reading.rapid_pool import RapidOcrPool
@@ -177,16 +180,20 @@ def build_reader_socket(settings: Settings, ocr: OcrEngine | None) -> ReaderSock
                 max_text_chars=settings.xlsx_max_text_chars,
             )
         ),
-        sniff.PDF: PdfReader(
-            ocr,
-            max_pages=settings.max_pages,
-            dpi=settings.ocr_dpi,
-            max_image_pixels=settings.max_image_pixels,
-            rules=text_layer_rules(settings),
-            blank_stddev=settings.blank_page_stddev,
-            dpi_rule=settings.ocr_dpi_rule,
-            pages=pages,
-        ),
+        **{
+            kind: PdfReader(
+                ocr,
+                max_pages=settings.max_pages,
+                dpi=settings.ocr_dpi,
+                max_image_pixels=settings.max_image_pixels,
+                rules=text_layer_rules(settings),
+                blank_stddev=settings.blank_page_stddev,
+                dpi_rule=settings.ocr_dpi_rule,
+                pages=pages,
+                pdfium_text=kind == RENDITION,
+            )
+            for kind in (sniff.PDF, RENDITION)
+        },
     }
     if ocr is not None:
         images = ImageReader(
@@ -199,5 +206,6 @@ def build_reader_socket(settings: Settings, ocr: OcrEngine | None) -> ReaderSock
             pages=pages,
         )
         readers.update({sniff.PNG: images, sniff.JPEG: images, sniff.TIFF: images, sniff.HEIC: images})
-    second_readers: dict[str, Reader] = {sniff.PDF: PdfiumReader(max_pages=settings.max_pages)}
+    second = PdfiumReader(max_pages=settings.max_pages)
+    second_readers: dict[str, Reader] = {sniff.PDF: second, RENDITION: second}
     return ReaderSocket(readers, second_readers)

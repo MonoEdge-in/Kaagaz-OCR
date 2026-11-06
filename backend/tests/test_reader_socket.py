@@ -409,7 +409,7 @@ class NoDirectReaderCallsTest(unittest.TestCase):
     # before the readers read it, so it, the file download and the page drawing (Ensemble, land
     # facts) name the converted kinds; the converter itself is built by the wiring only.
     CONSTANTS: ClassVar[dict[str, set[str]]] = {
-        "kaagaz.reading.office": {"KINDS", "PDF_KINDS", "read_as", "drawn_from"},
+        "kaagaz.reading.office": {"KINDS", "PDF_KINDS", "RENDITION", "read_as", "drawn_from"},
         "kaagaz.reading.compact": {"encode_compact", "decode_compact"},
         "kaagaz.reading.mistral_ocr": {
             "MISTRAL",

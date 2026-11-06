@@ -316,7 +316,7 @@ from kaagaz.reading.ocr import (
     worst_first,
 )
 from kaagaz.reading.office import KINDS as OFFICE_KINDS
-from kaagaz.reading.office import read_as
+from kaagaz.reading.office import RENDITION, read_as
 from kaagaz.reading.page_quality import (
     ISSUES,
     LOW_RESOLUTION,
@@ -325,7 +325,7 @@ from kaagaz.reading.page_quality import (
     READERS_DISAGREE,
     grade,
 )
-from kaagaz.reading.route import RouteDecision
+from kaagaz.reading.route import PDFIUM_TEXT, RouteDecision
 from kaagaz.reading.socket import NoReader, OnPage, pages_at_once, pages_in_flight, waiting
 from kaagaz.reading.spans import (
     DIRECT_ORIGINS,
@@ -1157,17 +1157,31 @@ class DocumentProcessor:
             raise JobFailed("content_changed", retryable=False)
         record = self._resolved(record, data)
         heartbeat()
-        record, data = self._converted(record, data)
+        converted, data = self._converted(record, data)
+        # #522: a Word or PowerPoint file's PDF is read by the rendition's readers.
+        reading = RENDITION if converted.detected_type == sniff.PDF != record.detected_type else None
+        record = converted
         heartbeat()
         if pause is None:
-            self._read_told(job, record, data, heartbeat, run)
+            self._read_told(job, record, data, heartbeat, run, reading=reading)
             return
         with pause(customer_id, document_id, ai_pages=record.detected_type not in _SHEET_TYPES):
-            self._read_told(job, record, data, heartbeat, run)
+            self._read_told(job, record, data, heartbeat, run, reading=reading)
 
-    def _read_told(self, job: Job, record: DocumentRecord, data: bytes, heartbeat: Heartbeat, run: _Run) -> None:
+    def _read_told(
+        self,
+        job: Job,
+        record: DocumentRecord,
+        data: bytes,
+        heartbeat: Heartbeat,
+        run: _Run,
+        *,
+        reading: str | None = None,
+    ) -> None:
         """The scanned file of a told kind (``record``), read as ``data``: unpacked if a zip,
-        else its pages drawn and read, and everything saved."""
+        else its pages drawn and read, and everything saved. ``reading``: the reader socket's
+        key when it is not the record's type (``office.RENDITION``, #522)."""
+        reads_as = record.detected_type if reading is None else reading
         customer_id, document_id = job.customer_id, job.document_id
         if (
             record.detected_type == resolve.ZIP
@@ -1216,7 +1230,7 @@ class DocumentProcessor:
             # Closed before anything else, whatever happened; the heartbeat beats while a page
             # is being read (fast scan: a page may make several slow calls in a row).
             with self._reading_document(job, run, page_count=len(pages)), waiting(heartbeat):
-                spans = _or_fail(lambda: self._socket.read(record.detected_type, data, on_page=on_page))
+                spans = _or_fail(lambda: self._socket.read(reads_as, data, on_page=on_page))
         except NoReader:
             require_clean(self._statuses, job)
             pages = _with_routes(pages, reads, prepared.checks)  # a blank page is blank still
@@ -1230,7 +1244,7 @@ class DocumentProcessor:
             return
         if self._ocr_meter is not None:
             run.page_reads = self._ocr_meter.take_page_reads()
-            spans = self._read_carefully(job, record, data, heartbeat, run, spans)
+            spans = self._read_carefully(job, reads_as, data, heartbeat, run, spans)
         run.reading_ended = self._timer()
 
         if not pages:
@@ -1241,7 +1255,7 @@ class DocumentProcessor:
         unreadable = self._count_unreadable(run, _with_results(pages, run.page_reads, Counter()))
 
         self._progress(job, run, "understanding", 0, 2)  # read: the time left is now until ready
-        second = self._read_second(job, record.detected_type, data)
+        second = self._read_second(job, reads_as, data)
         heartbeat()
 
         # The socket already refuses spans without a real location; this keeps the
@@ -1254,11 +1268,11 @@ class DocumentProcessor:
         # CX1: a page whose sentence goes on onto the next one, as its reader said.
         continued = {page_no for page_no, read in run.page_reads.items() if read.continues_on_next_page}
         pieces += pieces_from_lines(customer_id, document_id, usable, continues=continued)
-        reader, version = self._socket.reader_id(record.detected_type)
+        reader, version = self._socket.reader_id(reads_as)
         run.version_marks = version_marks(version)
         outputs = [ReaderOutput("first", reader, version, tuple(spans))]
         if second is not None:
-            second_reader, second_version = self._socket.reader_id(record.detected_type, second=True)
+            second_reader, second_version = self._socket.reader_id(reads_as, second=True)
             outputs.append(ReaderOutput("second", second_reader, second_version, tuple(second)))
         marks, line_texts = _line_marks(spans)
         read = _Read(
@@ -1266,7 +1280,7 @@ class DocumentProcessor:
             pages=pages,
             usable=usable,
             # The raw second reading is kept as read; only the labels leave pages out.
-            compared=None if second is None else _without_unread_pages(second, pages),
+            compared=None if second is None else _without_unread_pages(second, pages, reads),
             pieces=pieces,
             marks=marks,
             line_texts=line_texts,
@@ -1790,7 +1804,7 @@ class DocumentProcessor:
     def _read_carefully(
         self,
         job: Job,
-        record: DocumentRecord,
+        reads_as: str,
         data: bytes,
         heartbeat: Heartbeat,
         run: _Run,
@@ -1828,7 +1842,7 @@ class DocumentProcessor:
         escalate = frozenset(page["page"] for page in chosen)
         reading_again = self._reading_document(job, run, escalate=escalate)
         with self._timed(run, "careful"), reading_again, waiting(heartbeat):
-            spans = _or_fail(lambda: self._socket.read(record.detected_type, data, on_page=beat))
+            spans = _or_fail(lambda: self._socket.read(reads_as, data, on_page=beat))
         run.page_reads = {**run.page_reads, **meter.take_page_reads()}
         _note_tokens(run)
         return spans
@@ -2296,12 +2310,19 @@ def _line_marks(spans: Sequence[Span]) -> tuple[dict[BoxLocation, LineMarks], di
     return marks, texts
 
 
-def _without_unread_pages(second: list[Span], pages: Sequence[PageRecord]) -> list[Span]:
+def _without_unread_pages(
+    second: list[Span], pages: Sequence[PageRecord], reads: Sequence[RouteDecision | None] = ()
+) -> list[Span]:
     """The second reading without the pages that were read by OCR or are blank: a
     second reader reads text layers only, so there it could only agree with a
     text layer the route check threw out, such as a scan's hidden OCR layer
-    (ML 4). PROVISIONAL (plan 4.1, step 7). O(spans + pages)."""
+    (ML 4). PROVISIONAL (plan 4.1, step 7). Nor the pages the first reader read from
+    PDFium's text (``reads``, in page order: a rendition's ``pdfium_text`` pages, #522): the
+    second reader is PDFium too, so there it would only agree with itself, never check
+    the first. O(spans + pages)."""
     left_out = {page.info.page for page in pages if page.route in ("ocr", "blank")}
+    pdfium = {page for page, read in enumerate(reads, 1) if read is not None and read.reason == PDFIUM_TEXT}
+    left_out |= pdfium
     return [span for span in second if span.location.page not in left_out]
 
 

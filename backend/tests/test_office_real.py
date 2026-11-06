@@ -38,7 +38,9 @@ from kaagaz.ingestion.service import UploadService
 from kaagaz.pipeline import DocumentProcessor, OnPicture
 from kaagaz.preparing.pages import PreparedPages, prepare_pages, sheet_pages
 from kaagaz.reading import office
+from kaagaz.reading.ocr import OcrLine
 from kaagaz.reading.office import OfficeConverter
+from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.spans import CellLocation, ReadError
 from kaagaz.reading.wiring import build_reader_socket, pdf_text_layer_checks
 from kaagaz.reading.xlsx_reader import XlsxLimits, XlsxReader
@@ -198,6 +200,20 @@ def _soffice_processes() -> list[int]:
             if Path(program.decode(errors="replace")).name in _LIBREOFFICE and state != "Z":
                 found.append(int(entry.name))
     return found
+
+
+class _CountingOcr:
+    """An OCR engine that notes every page it is asked to read."""
+
+    name = "counting-ocr"
+    version = "1"
+
+    def __init__(self) -> None:
+        self.pages = 0
+
+    def read(self, image: object) -> list[OcrLine]:
+        self.pages += 1
+        return []
 
 
 class _Requests(http.server.BaseHTTPRequestHandler):
@@ -481,16 +497,69 @@ class RealConversionTest(unittest.TestCase):
                 self.assertTrue(storage.get_rendition("cust-a", doc).startswith(b"%PDF-"))
                 self.assertIn(("cust-a", doc, 1), pictures.images)  # its page drawn for the screens
 
-    def test_a_marathi_word_page_goes_to_ocr_as_its_text_layer_reads_with_gaps(self) -> None:
-        # Known (#522 PR 2): the PDF holds the Marathi exactly (pdfium reads it, as above), but
-        # LibreOffice gives some Devanagari glyphs their text only by /ActualText, which the PDF
-        # reader's pdfplumber skips, so it reads "(cid:N)" gaps. Its route check sends such a page
-        # to OCR, which reads it right, at a page's OCR cost. Reading it free needs pdfium's text.
+    def test_a_marathi_word_page_is_read_from_its_text_layer_with_no_ocr(self) -> None:
+        # Changed on purpose (#522): LibreOffice gives some Devanagari glyphs their text only by
+        # /ActualText, which pdfplumber skips ("(cid:N)" gaps), so the page went to OCR, paid. The
+        # rendition's reader takes PDFium's reading (kaagaz/reading/pdf_reader.py): every word, no
+        # OCR. As a PDF upload, the same file still goes to OCR.
         pdf = self.converter().convert(resolve.DOCX, self.made["marathi"])
-        letters = unicodedata.normalize("NFC", "".join(pdf_text(pdf).split()))
-        self.assertIn("".join(MARATHI.split()), letters)  # pdfium drops a few spaces after a matra
         [(decision, _signals)] = pdf_text_layer_checks(make_settings(), pdf)
-        self.assertEqual(decision.route, "ocr")
+        self.assertEqual(decision.route, "ocr")  # pdfplumber's reading, as for any PDF
+        ocr = _CountingOcr()
+        routes: list[RouteDecision | None] = []
+        spans = build_reader_socket(make_settings(), ocr).read(office.RENDITION, pdf, on_page=routes.append)
+        self.assertEqual((ocr.pages, routes), (0, [RouteDecision("text_layer", "pdfium_text")]))
+        words = unicodedata.normalize("NFC", " ".join(span.text for span in spans)).split()
+        self.assertEqual(words, (" ".join([MARATHI] * 4)).split())
+
+    def test_a_marathi_word_file_reaches_ready_through_the_pipeline_with_no_ocr_or_ai_call(self) -> None:
+        settings = make_settings()
+        statuses, storage, queue = MemoryStatuses(), MemoryStorage(), MemoryQueue()
+        documents, store, pictures = MemoryDocuments(statuses), MemoryPipelineStore(), MemoryPageImages()
+        limits = limits_by_type(pdf=50_000_000, image=20_000_000, sheet=10_000_000)
+        upload = UploadService(
+            UploadPolicy(max_bytes=50_000_000, allowed_types=UPLOAD_TYPES, type_limits=limits),
+            documents,
+            storage,
+            queue,
+            new_id=SeqIds(),
+        )
+        ocr = _CountingOcr()  # the AI reader or RapidOCR: any page sent to either is counted
+
+        def prepare(detected_type: str, data: bytes, on_picture: OnPicture) -> PreparedPages:
+            return prepare_pages(
+                detected_type,
+                data,
+                on_picture,
+                dpi=settings.page_image_dpi,
+                max_pages=settings.max_pages,
+                max_image_pixels=settings.max_image_pixels,
+                blank_stddev=settings.blank_page_stddev,
+                low_res_dpi=settings.low_res_dpi,
+            )
+
+        processor = DocumentProcessor(
+            gate=ScanGate(storage, FakeScanner(Verdict.CLEAN), storage, statuses),
+            statuses=statuses,
+            documents=documents,
+            socket=build_reader_socket(settings, ocr),
+            prepare=prepare,
+            sheet_pages=sheet_pages,
+            page_images=pictures,
+            store=store,
+            office=self.converter().convert,
+            renditions=storage,
+        )
+        data = self.made["marathi"]
+        doc = upload.accept("cust-a", io.BytesIO(data), display_name="भाडेकरार.docx").document_id
+        processor(Job("cust-a", doc), lambda: None)
+        self.assertIs(statuses.get_status("cust-a", doc), DocumentStatus.READY)
+        self.assertEqual(ocr.pages, 0)
+        [page] = store.pages_for("cust-a", doc)
+        self.assertEqual(page.route, "text_layer")
+        text = " ".join(piece.text for piece in store.for_document("cust-a", doc))
+        text = unicodedata.normalize("NFC", text)
+        self.assertLessEqual(set(MARATHI.split()), set(text.split()))
 
     def test_nothing_is_left_in_the_temporary_folder(self) -> None:
         before = {p.name for p in Path(tempfile.gettempdir()).glob("lo-*")}

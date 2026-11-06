@@ -328,7 +328,8 @@ class PipelineTest(unittest.TestCase):
         ):
             with self.subTest(kind):
                 converter = FakeConverter(RENDITION)
-                socket = RecordingSocket({sniff.PDF: [_direct("Rent: 5000", page=1, top=0.1)]})
+                # Changed on purpose (#522): read through the rendition's own readers.
+                socket = RecordingSocket({office.RENDITION: [_direct("Rent: 5000", page=1, top=0.1)]})
                 system = build(
                     socket=socket, preparer=FakePreparer({sniff.PDF: _pictured(pages=1)}), office=converter
                 )
@@ -337,7 +338,7 @@ class PipelineTest(unittest.TestCase):
                 self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.READY)
                 self.assertEqual(stored_type(system, doc), kind)  # never "pdf": it is a Word file still
                 self.assertEqual(converter.calls, [(kind, data)])
-                self.assertEqual(socket.reads, [(sniff.PDF, RENDITION)])
+                self.assertEqual(socket.reads, [(office.RENDITION, RENDITION)])
                 self.assertEqual(system.storage.renditions, {(CUSTOMER, doc): RENDITION})
                 self.assertEqual(system.storage.get(CUSTOMER, doc), data)  # downloadable as it was
                 self.assertEqual([p.text for p in system.store.for_document(CUSTOMER, doc)], ["Rent: 5000"])
@@ -385,7 +386,7 @@ class PipelineTest(unittest.TestCase):
         # once its kind is told, a spreadsheet must be within the spreadsheet limit.
         converter = FakeConverter(RENDITION)
         limits = limits_by_type(pdf=100_000, image=100_000, sheet=50)
-        system = build(socket=RecordingSocket({sniff.PDF: []}), office=converter, kind_limits=limits)
+        system = build(socket=RecordingSocket({office.RENDITION: []}), office=converter, kind_limits=limits)
         ids = [
             system.upload.accept(CUSTOMER, io.BytesIO(data), display_name=name).document_id
             for name, data in (
