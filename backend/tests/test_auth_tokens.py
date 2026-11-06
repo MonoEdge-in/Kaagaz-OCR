@@ -10,6 +10,7 @@ import base64
 import hashlib
 import hmac
 import json
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,7 @@ from tests.test_api_support import ApiFakeStorage
 SECRET = "a-test-secret-that-is-long-enough-000000"
 UID = "11111111-1111-4111-8111-111111111111"
 CID = "22222222-2222-4222-8222-222222222222"
+SID = "33333333-3333-4333-8333-333333333333"  # Changed on purpose (#502, 0076): the session id
 NOW = 1_800_000_000
 SEALED = "v1:bm90LWEtcmVhbC1zZWFsZWQtc2VjcmV0LWJ1dC13ZWxsLWZvcm1lZA=="
 ENV_EXAMPLE = Path(__file__).resolve().parents[2] / ".env.example"
@@ -65,6 +67,7 @@ def _session(**changes: Any) -> SessionClaims:
         "scope": "app",
         "session_version": 3,
         "expires_at": NOW + 3600,
+        "session_id": SID,
     }
     return SessionClaims(**{**fields, **changes})
 
@@ -99,6 +102,7 @@ def _signed(payload: dict[str, Any], purpose: bytes, secret: str = SECRET) -> st
 def _session_payload(**changes: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {"uid": UID, "cid": CID, "role": "admin", "scope": "app", "ver": 3}
     payload["exp"] = NOW + 3600
+    payload["sid"] = SID
     payload.update(changes)
     return payload
 
@@ -119,6 +123,7 @@ def test_session_payload_is_exactly_the_agreed_json() -> None:
         "scope": "admin",
         "ver": 3,
         "exp": NOW + 3600,
+        "sid": SID,  # Changed on purpose (#502, 0076)
     }
 
 
@@ -235,16 +240,21 @@ def test_session_seconds_by_scope() -> None:
 
 @pytest.mark.parametrize(("scope", "seconds"), [("app", 12 * 3600), ("admin", 60 * 60)])
 def test_new_session_expires_after_its_scopes_lifetime(scope: str, seconds: int) -> None:
-    claims = new_session(
-        user_id=UID,
-        customer_id=CID,
-        role="admin",
-        scope=scope,
-        session_version=3,
-        settings=make_settings(),
-        now=NOW,
-    )
-    assert claims == _session(scope=scope, expires_at=NOW + seconds)
+    def started() -> SessionClaims:
+        return new_session(
+            user_id=UID,
+            customer_id=CID,
+            role="admin",
+            scope=scope,
+            session_version=3,
+            settings=make_settings(),
+            now=NOW,
+        )
+
+    claims, other = started(), started()
+    assert claims == _session(scope=scope, expires_at=NOW + seconds, session_id=claims.session_id)
+    # Changed on purpose (#502, 0076): each session has its own random id, so logout ends one.
+    assert str(uuid.UUID(claims.session_id)) == claims.session_id != other.session_id
 
 
 @pytest.mark.parametrize(("scope", "seconds"), [("app", 12 * 3600), ("admin", 60 * 60)])
@@ -531,7 +541,9 @@ def _client(
     Each lookup's (customer_id, user_id, scope) is added to ``seen``."""
     lookups: Lookups = [] if seen is None else seen
 
-    def load_user(db: Database, customer_id: str, user_id: str, *, scope: str) -> CurrentUser | None:
+    def load_user(
+        db: Database, customer_id: str, user_id: str, *, scope: str, session_id: str | None = None
+    ) -> CurrentUser | None:
         lookups.append((customer_id, user_id, scope))
         if stored is None:
             return None

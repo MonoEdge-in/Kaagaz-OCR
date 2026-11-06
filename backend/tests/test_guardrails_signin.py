@@ -6,23 +6,27 @@
     sign-in's own code) and is refused once its 30-second window is over. Two-step sign-in
     itself: test_api_two_step, test_api_admin_sign_in, test_isolation_admin_two_step_required.
 13. Every cookie the API sets is HttpOnly, SameSite and, with COOKIE_SECURE, Secure, and only
-    kaagaz/api/auth.py sets one. Logout ending the session on the server: OPEN (#502), xfail.
+    kaagaz/api/auth.py sets one. Logout ends this browser's session on the server (0076, #502):
+    a copied cookie at once, other devices kept, the rows swept, one query; the operator's too.
 14. A Google-only account's right password never opens a session, whatever the e-mail's case
     or spaces, and no reply sets a session cookie.
 15. The signed-out rate bucket per visitor: test_api_auth (ported from production, 6fa3a7df).
 """
 
 import re
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import httpx2 as httpx
 import pytest
 from fastapi import Response
+from sqlalchemy import event, text
+from sqlalchemy.exc import DBAPIError
 
 from kaagaz.api import auth
 from kaagaz.api.auth import (
+    OPERATOR_COOKIE,
     SESSION_COOKIE,
     CurrentUser,
     FlowClaims,
@@ -30,7 +34,10 @@ from kaagaz.api.auth import (
     PendingClaims,
     SessionClaims,
 )
+from kaagaz.db import users as users_sql
 from kaagaz.db.engine import Database
+from kaagaz.db.sqlstate import sqlstate
+from kaagaz.jobs.purge import sweep_ended_sessions
 from tests import test_api_google_rules as google_rules
 from tests.oidc_fake import FakeGoogle
 from tests.settings_factory import make_settings
@@ -214,21 +221,147 @@ def test_only_the_auth_module_sets_a_cookie() -> None:
     assert setters == {"api/auth.py"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="OPEN #502 item 1: logout only clears this browser's cookie; a copied session cookie"
-    " works until it expires (SESSION_HOURS). Ending it on the server means every browser of the"
-    " user (bump session_version, as sign out everywhere) or a server-side session row: a decision",
-)
-def test_a_copied_session_cookie_stops_working_after_logout(db: Database) -> None:
+def _cookie(client: TestClient) -> str:
+    value = client.cookies.get(SESSION_COOKIE)
+    assert value
+    return value
+
+
+def _with(api: Api, cookie: str) -> TestClient:
+    other = api.client()
+    other.cookies.set(SESSION_COOKIE, cookie)
+    return other
+
+
+def _ended(db: Database, customer_id: str) -> list[tuple[Any, ...]]:
+    with db.customer(customer_id) as conn:
+        rows = conn.execute(text("SELECT session_id::text, user_id::text, expires_at FROM ended_sessions"))
+        return [tuple(row) for row in rows]
+
+
+def _refused(reply: httpx.Response) -> None:
+    assert (reply.status_code, reply.json()["error"]["code"]) == (401, "not_signed_in"), reply.text
+
+
+def test_logout_ends_this_browsers_session_at_once_and_only_it(db: Database) -> None:
+    """#502 item 1 (Tushar, 6 Nov 2026): a copied cookie stops working at once; the user's other
+    browsers stay signed in."""
+    api = Api(db)
+    laptop = api.new_signed()
+    phone = api.client()
+    assert _login(phone, laptop.email).status_code == 200
+    copied = _cookie(laptop.client)
+    claims = auth.read_session(copied, api.settings.session_secret, int(api.clock().timestamp()))
+    assert claims is not None
+
+    assert laptop.client.post("/api/auth/logout", headers=CSRF).status_code == 204
+    thief = _with(api, copied)
+    _refused(thief.get("/api/auth/me"))
+    _refused(thief.get("/api/documents"))
+    _refused(thief.post("/api/auth/logout", headers=CSRF))
+    assert phone.get("/api/auth/me").status_code == 200  # another device: still signed in
+    assert _ended(db, laptop.customer_id) == [
+        (claims.session_id, laptop.user_id, datetime.fromtimestamp(claims.expires_at, UTC))
+    ]
+    again = api.client()
+    assert _login(again, laptop.email).status_code == 200  # a new sign-in is a new session
+    assert _cookie(again) != copied
+    assert again.get("/api/auth/me").status_code == 200
+
+
+def test_a_cookie_from_before_0076_without_a_session_id_is_refused(db: Database) -> None:
     api = Api(db)
     signed = api.new_signed()
-    copied = signed.client.cookies.get(SESSION_COOKIE)
-    assert copied
+    now = int(api.clock().timestamp())
+    claims = auth.read_session(_cookie(signed.client), api.settings.session_secret, now)
+    assert claims is not None
+    old = {
+        "uid": claims.user_id,
+        "cid": claims.customer_id,
+        "role": claims.role,
+        "scope": claims.scope,
+        "ver": claims.session_version,
+        "exp": claims.expires_at,
+    }
+    token = auth._sign(old, auth._SESSION_PURPOSE, api.settings.session_secret)
+    _refused(_with(api, token).get("/api/auth/me"))
+
+
+def test_an_ended_session_is_swept_once_its_cookie_has_expired(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    copied = _cookie(signed.client)
     assert signed.client.post("/api/auth/logout", headers=CSRF).status_code == 204
-    thief = api.client()
-    thief.cookies.set(SESSION_COOKIE, copied)
-    assert thief.get("/api/auth/me").status_code == 401
+    [(_, _, expires_at)] = _ended(db, signed.customer_id)
+
+    sweep_ended_sessions(db, lambda: expires_at - timedelta(seconds=1))
+    assert len(_ended(db, signed.customer_id)) == 1  # its cookie is still live: kept
+    _refused(_with(api, copied).get("/api/auth/me"))
+    assert sweep_ended_sessions(db, lambda: expires_at) >= 1
+    assert _ended(db, signed.customer_id) == []
+    api.clock.advance((expires_at - api.clock()).total_seconds())
+    _refused(_with(api, copied).get("/api/auth/me"))  # swept, and refused by its own expiry
+
+
+def test_the_operators_logout_ends_a_copied_operator_cookie(db: Database) -> None:
+    """The operator's sessions are their own (``session_version``, 0015): logout ends them all."""
+    api = Api(db)
+    operator = _Operator(api)
+    client = api.client()
+    assert operator.login(client).status_code == 200
+    copied = {"Cookie": f"{OPERATOR_COOKIE}={client.cookies.get(OPERATOR_COOKIE)}"}
+    assert api.client().get("/api/operator/me", headers=copied).status_code == 200
+    assert client.post("/api/operator/logout", headers=CSRF).status_code == 204
+    _refused(api.client().get("/api/operator/me", headers=copied))
+
+
+_FOREIGN_ROW = (
+    "INSERT INTO ended_sessions (customer_id, session_id, user_id, expires_at) VALUES (:c, :s, :u, :e)"
+)
+
+
+def test_one_customer_never_sees_or_ends_another_customers_session(db: Database) -> None:
+    api = Api(db)
+    a, b = api.new_signed(), api.new_signed()
+    b_laptop = api.client()
+    assert _login(b_laptop, b.email).status_code == 200
+    assert b.client.post("/api/auth/logout", headers=CSRF).status_code == 204
+    now = int(api.clock().timestamp())
+    b_live = auth.read_session(_cookie(b_laptop), api.settings.session_secret, now)
+    assert b_live is not None
+    assert _ended(db, a.customer_id) == []  # B's ended session is not A's to see
+    later = api.clock() + timedelta(hours=1)
+    row = {"c": b.customer_id, "s": b_live.session_id, "u": b.user_id, "e": later}
+    with pytest.raises(DBAPIError) as written, db.customer(a.customer_id) as conn:
+        conn.execute(text(_FOREIGN_ROW), row)  # an ended row in B's name, from A
+    assert sqlstate(written.value) == "42501"
+    with pytest.raises(DBAPIError) as keyed, db.customer(a.customer_id) as conn:  # A's, naming B's user
+        users_sql.end_session(conn, a.customer_id, b.user_id, b_live.session_id, expires_at=later)
+    assert sqlstate(keyed.value) == "23503"
+    with db.customer(a.customer_id) as conn:  # A's own user and B's session id: A's row only
+        users_sql.end_session(conn, a.customer_id, a.user_id, b_live.session_id, expires_at=later)
+    assert b_laptop.get("/api/auth/me").status_code == 200  # B's session is untouched
+    assert a.client.get("/api/auth/me").status_code == 200
+
+
+def test_the_ended_check_costs_no_query_of_its_own(db: Database) -> None:
+    """One request reads the user once, and that one statement probes ended_sessions too."""
+    api = Api(db)
+    signed = api.new_signed()
+    statements: list[str] = []
+
+    def seen(_conn: Any, _cursor: Any, statement: str, *_: Any) -> None:
+        statements.append(statement)
+
+    event.listen(db.engine, "before_cursor_execute", seen)
+    try:
+        assert signed.client.get("/api/auth/me").status_code == 200
+    finally:
+        event.remove(db.engine, "before_cursor_execute", seen)
+    probing = [statement for statement in statements if "ended_sessions" in statement]
+    reading = [statement for statement in statements if "FROM users u JOIN customers" in statement]
+    assert len(probing) == len(reading) == 1
+    assert probing == reading
 
 
 # --- 14. Google only --------------------------------------------------------------------------
