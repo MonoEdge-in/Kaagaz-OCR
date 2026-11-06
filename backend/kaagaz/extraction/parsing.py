@@ -23,10 +23,11 @@ Amounts (``parse_amount``):
 
 Why an amount needs a person's eyes (``amount_problem``, #524), never a guess at
 the number: its digits are of two scripts (``MIXED_DIGITS``); its commas fit
-neither grouping, "1,15,0000" or "11,500,00" (``AMOUNT_COMMAS``); or a mark sits
-inside its digits ("1O,000"), or it ends in "1-" or "/1", where "/-" may have been
-read as a 1 ("115000001-": 11500000/- or 115000001?), ``AMOUNT_MARK``. Text that is
-not one amount ("12 pcs", "9% 900.00": a space inside) has no problem: it is no amount.
+neither grouping, "1,15,0000" or "11,500,00" (``AMOUNT_COMMAS``); or a letter sits
+inside its digits ("1O,000"), or it ends in "1-" or "/1" after three digits or more,
+where "/-" may have been read as a 1 ("115000001-": 11500000/- or 115000001?),
+``AMOUNT_MARK``. Text that is not one amount has no problem: a space inside ("12 pcs",
+"9% 900.00"), or a "/", "-" or ":" inside the digits (12/03/2024, 45/2, 98765-43210).
 
 Dates (``parse_date``), day before month as India writes them:
 
@@ -76,8 +77,9 @@ _FRAME = re.compile(
 )
 # An end mark read with a 1 in it: "115000001-" (from "11500000/-"), "11500000/1".
 _ONE_FOR_MARK = re.compile(r"[0-9](?:1\s*[-=]|\s*/\s*1\s*[-=]?)$")
+_ONE_MIN_DIGITS = 3  # digits before it: "12/1" or "45/1" is a number of a record, not an amount
 _GROUPED = re.compile(r"(?P<whole>[0-9][0-9,]*)(?:\.[0-9]+)?")
-_MAX_STRAYS = 2  # more marks than this inside the digits, and the text is not one amount
+_MAX_STRAYS = 2  # more letters than this inside the digits, and the text is not one amount
 _PLAIN = re.compile(r"0|[1-9][0-9]*")
 _INDIAN = re.compile(r"[1-9][0-9]?(?:,[0-9]{2})*,[0-9]{3}")
 _WESTERN = re.compile(r"[1-9][0-9]{0,2}(?:,[0-9]{3})+")
@@ -157,17 +159,21 @@ def _shape_problem(text: str) -> str | None:
     if text.startswith("(") and text.endswith(")"):
         text = text[1:-1].strip()
     one = _ONE_FOR_MARK.search(text)
-    if one is not None and _FRAME.fullmatch(text[: one.start() + 1]):
-        return AMOUNT_MARK
+    if one is not None:
+        before = text[: one.start() + 1]
+        if len(_ASCII_DIGIT.findall(before)) >= _ONE_MIN_DIGITS and _FRAME.fullmatch(before):
+            return AMOUNT_MARK
     frame = _FRAME.fullmatch(text)
     if frame is None:
         return None
     core = frame["core"]
-    strays = sum(ch not in "0123456789,." for ch in core)
-    if 0 < strays <= _MAX_STRAYS:
+    marks = [ch for ch in core if ch not in "0123456789,."]
+    if not all(ch.isalpha() for ch in marks):
+        return None  # a "/", "-" or ":" inside: a date, a ratio, a phone number, never an amount
+    if 0 < len(marks) <= _MAX_STRAYS:
         return AMOUNT_MARK
-    if strays or ("," not in core and core.count(".") < 2):
-        return None  # too many marks to be one amount, or refused for another reason (Cr, 007)
+    if marks or ("," not in core and core.count(".") < 2):
+        return None  # too many letters to be one amount, or refused for another reason (Cr, 007)
     grouped = _GROUPED.fullmatch(core)
     return None if grouped is not None and _grouped(grouped["whole"]) else AMOUNT_COMMAS
 

@@ -107,6 +107,7 @@ from decimal import Decimal
 from typing import Any
 
 from kaagaz.chunking.script import has_devanagari_letters, ocr_script_suspect
+from kaagaz.extraction.flags import COVERED_REASONS
 from kaagaz.extraction.labelled import AMOUNT_FIELDS, value_after_label
 from kaagaz.extraction.parsing import amount_problem
 from kaagaz.extraction.quotes import find_quote, normalise_quote, reader_text
@@ -420,15 +421,18 @@ def label_amounts(values: Iterable[ExtractedValue]) -> list[ExtractedValue]:
     numbers parsed (``value_number``), so a misread never silently reaches a total. An amount
     is a value of an amount field (labelled.AMOUNT_FIELDS) or any value with a number. Its
     reason is ``parsing.amount_problem``'s (mixed_digits, amount_commas, amount_mark), else
-    ``amount_outlier`` (``_outliers``). A card value and a value a person fixed (corrected,
-    learned_correction) keep their label; any other reason is replaced, the second reading
-    kept. The text is never changed. O(v log v) for v values."""
+    ``amount_outlier`` (``_outliers``). A card value, a value a person fixed (corrected,
+    learned_correction) and a value already in review for a reason the scan review flags
+    (flags.COVERED_REASONS: readers_disagree, unsure_text...) keep their label, so "Readings
+    differ" and confirming its words still work; any other reason is replaced, the second
+    reading kept. The text is never changed. O(v log v) for v values."""
     values = list(values)
     outliers = _outliers(values)
     labelled = []
     for index, value in enumerate(values):
         reason = None
-        if value.record_key != CARD_RECORD and value.label_reason not in _BY_A_PERSON:
+        flagged = value.label == NEEDS_REVIEW and value.label_reason in COVERED_REASONS
+        if value.record_key != CARD_RECORD and value.label_reason not in _BY_A_PERSON and not flagged:
             if value.field in AMOUNT_FIELDS or value.value_number is not None:
                 reason = amount_problem(value.value_text)
             if reason is None and index in outliers:
@@ -439,8 +443,10 @@ def label_amounts(values: Iterable[ExtractedValue]) -> list[ExtractedValue]:
 
 def _outliers(values: Sequence[ExtractedValue]) -> set[int]:
     """The indexes of the whole-bill amounts (WHOLE_AMOUNTS, a positive number, read from a
-    page, not the card) more than OUTLIER_TIMES the largest other one on the same page.
-    Conservative (#524): only the page's largest can be, a page with one such amount never is,
+    page, not the card) more than OUTLIER_TIMES the largest smaller one on the same page: every
+    copy of the page's largest (a total printed again as Amount Payable), never compared with
+    its own copy. Conservative (#524): only the page's largest can be, a page with one such
+    amount never is,
     and a tax, a line or another page is never compared (a total is rightly many times its
     5% tax, and a scan may hold many invoices). Known false flag: a page whose only other whole
     amount is a small balance due ("Amount Payable 5,000" under "Total 1,00,000")."""
@@ -452,9 +458,10 @@ def _outliers(values: Sequence[ExtractedValue]) -> set[int]:
             pages.setdefault(box.page, []).append((number, index))
     found = set()
     for amounts in pages.values():
-        amounts.sort(reverse=True)
-        if len(amounts) > 1 and amounts[0][0] > OUTLIER_TIMES * amounts[1][0]:
-            found.add(amounts[0][1])
+        top = max(number for number, _ in amounts)
+        smaller = [number for number, _ in amounts if number < top]
+        if smaller and top > OUTLIER_TIMES * max(smaller):
+            found |= {index for number, index in amounts if number == top}
     return found
 
 

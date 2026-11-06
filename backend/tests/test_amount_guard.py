@@ -15,6 +15,7 @@ from decimal import Decimal
 
 from kaagaz.chunking.script import latin_digits, piece_latin
 from kaagaz.extraction.checks import PASSED, CheckResult
+from kaagaz.extraction.flags import COVERED_REASONS
 from kaagaz.extraction.invoice import _settle
 from kaagaz.extraction.labelled import tax_components, values_from_lines
 from kaagaz.extraction.labels import (
@@ -133,6 +134,16 @@ class NotAnAmountTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIsNone(amount_problem(text))
 
+    def test_a_date_a_ratio_or_a_phone_number_is_no_amount(self) -> None:
+        """#524 review: only a letter inside the digits is a misread mark ("1O,000"); a "/", "-"
+        or ":" there means the text is something else, never an amount to doubt."""
+        for text in ("12/03/2024", "45/2", "24/7", "3/4", "98765-43210", "2024-11", "12/1", "10:30"):
+            with self.subTest(text=text):
+                self.assertIsNone(amount_problem(text))
+        for text in ("115000001-", "11500000/1", "1O,000"):
+            with self.subTest(text=text):
+                self.assertEqual(amount_problem(text), AMOUNT_MARK)
+
     def test_an_identifier_or_a_date_with_no_number_is_left_alone(self) -> None:
         values = [
             amount("INV-1042", field="invoice_number"),
@@ -164,9 +175,24 @@ class WhoKeepsTheirLabelTest(unittest.TestCase):
             ["model_chosen", "corrected", "learned_correction"],
         )
 
-    def test_another_reason_is_replaced_and_the_second_reading_is_kept(self) -> None:
+    def test_a_reason_the_scan_review_flags_by_is_kept(self) -> None:
+        """Changed on purpose (#524 review, 6 Nov 2026): a value already in review for a reason
+        the scan review screen flags (flags.COVERED_REASONS) keeps it, so "Readings differ",
+        values_disputed and confirming its words still work; it is in review already."""
         disagreeing = replace(amount("९४0000/-", reason="readers_disagree"), second_reading="३४0000/-")
         (value,) = label_amounts([disagreeing])
+        self.assertEqual(
+            (value.label, value.label_reason, value.second_reading),
+            ("needs_review", "readers_disagree", "३४0000/-"),
+        )
+        for reason in sorted(COVERED_REASONS):
+            with self.subTest(reason=reason):
+                (kept,) = label_amounts([amount("1,15,0000", reason=reason)])
+                self.assertEqual(kept.label_reason, reason)
+
+    def test_another_reason_is_replaced_and_the_second_reading_is_kept(self) -> None:
+        single = replace(amount("९४0000/-", reason="single_reader"), second_reading="३४0000/-")
+        (value,) = label_amounts([single])
         self.assertEqual((value.label_reason, value.second_reading), (MIXED_DIGITS, "३४0000/-"))
 
 
@@ -179,11 +205,13 @@ class UnsureDigitTest(unittest.TestCase):
         marked = label_reading_marks([value], {BOX: LineMarks(unsure=("11500000/-",))}, ())
         self.assertEqual(guarded(*marked), [("11500000/-", "needs_review", "unsure_text", Decimal(11500000))])
 
-    def test_a_mixed_amount_with_an_unsure_word_names_the_mix(self) -> None:
+    def test_a_mixed_amount_with_an_unsure_word_keeps_unsure_text(self) -> None:
+        """Changed on purpose (#524 review): unsure_text is one of the scan review's reasons, so
+        the word stays confirmable there; the amount is in review all the same."""
         value = amount("९४0000/-")
         marked = label_reading_marks([value], {BOX: LineMarks(unsure=("९४0000/-",))}, ())
         self.assertEqual(marked[0].label_reason, "unsure_text")
-        self.assertEqual(label_amounts(marked)[0].label_reason, MIXED_DIGITS)
+        self.assertEqual(guarded(*marked), [("९४0000/-", "needs_review", "unsure_text", Decimal(940000))])
 
 
 class SanityBoundTest(unittest.TestCase):
@@ -194,6 +222,19 @@ class SanityBoundTest(unittest.TestCase):
         self.assertEqual(
             [(v.field, v.label_reason) for v in label_amounts(values)],
             [("subtotal", "readers_agree"), ("total_amount", AMOUNT_OUTLIER)],
+        )
+
+    def test_every_copy_of_the_top_amount_goes_to_review(self) -> None:
+        """#524 review: the top amount printed twice is compared with the largest smaller one,
+        never with its own copy."""
+        third = BoxLocation(1, 0.1, 0.60, 0.9, 0.62)
+        values = [
+            amount("97,45,763", field="subtotal", box=OTHER),  # Sub Total
+            amount("115000001"),  # Total
+            amount("115000001", record_key="page:1:line:3", box=third),  # Amount Payable
+        ]
+        self.assertEqual(
+            [v.label_reason for v in label_amounts(values)], ["readers_agree", AMOUNT_OUTLIER, AMOUNT_OUTLIER]
         )
 
     def test_exactly_ten_times_or_less_is_not_flagged(self) -> None:
@@ -233,6 +274,16 @@ class LabelledLinesTest(unittest.TestCase):
         self.assertEqual(found, [("total_amount", "९४0000/-"), ("subtotal", "1,15,0000")])
         # "9% 900.00" is no labelled tax amount, as before; the tax component is its 900.00.
         self.assertEqual([v.value_text for v in tax_components(spans)], ["900.00"])
+
+    def test_a_date_after_total_never_takes_the_documents_total(self) -> None:
+        """#524 review: "Total: 12/03/2024" is no amount, so the real grand total stays the
+        document's total and no page record is made for it."""
+        spans = [
+            Span(text, text, BoxLocation(1, 0.1, 0.1 * k, 0.9, 0.1 * k + 0.05), origin="ocr")
+            for k, text in enumerate(["Total: 12/03/2024", "Grand Total: 1,18,000"], start=1)
+        ]
+        found = [(v.record_key, v.field, v.value_text) for v in values_from_lines(spans)]
+        self.assertEqual(found, [("document", "total_amount", "1,18,000")])
 
     def test_the_invoice_stage_keeps_the_amount_reason_over_model_chosen(self) -> None:
         value = label_amounts([amount("९४0000/-")])[0]
