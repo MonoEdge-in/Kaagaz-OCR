@@ -18,6 +18,7 @@ dependencies = [
     "pdfplumber>=0.11.10",     # MIT, PDF text with positions (first reader)
     "pypdfium2>=5.13",         # Apache-2.0 / BSD-3-Clause, PDF page images and second reader
     "pillow>=12.3",            # MIT-CMU, page images
+    "pi-heif>=1.4",            # BSD-3-Clause (its libheif and libde265 LGPL-3.0), HEIC and HEIF photos, decode only: no GPL x265 encoder (#522)
     "cryptography>=46",        # Apache-2.0 OR BSD-3-Clause, approved in PRD 1 section 9
     "indic-transliteration==2.3.82",  # MIT, Latin spellings of Devanagari text (PRD 2 L3)
 ]

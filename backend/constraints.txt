@@ -17,6 +17,10 @@ toml==0.10.2
 tqdm==4.70.1  # MPL-2.0 AND MIT
 typer==0.27.2
 
+# pi-heif (#522), HEIC and HEIF photos: pillow-heif's decode-only build, so no GPL x265
+# encoder. BSD-3-Clause; its wheel bundles libheif and libde265, LGPL-3.0. Checked 6 Nov 2026.
+pi-heif==1.4.0
+
 # pdfminer.six, already a dependency (PDF content inspection, kaagaz/scanning/content.py),
 # pinned to the version the content check's read budget was measured on (4 Nov 2026): a
 # new pdfminer can read a file differently and refuse ordinary PDFs as unscannable.

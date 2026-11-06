@@ -864,7 +864,7 @@ def _serve(settings: Settings) -> None:
     model = worker_model(settings, db)
     alert = pause_alert(settings)  # #478: the super admin's email when an organisation's reading pauses
     processor = build_processor(
-        settings=settings, db=db, storage=storage, scanner=scanner, model=model, alert=alert
+        settings=settings, db=db, storage=storage, scanner=scanner, model=model, alert=alert, queue=queue
     )
     # Ensemble after the scan reads with a scan reader of its own (the same gate and pool).
     reader = build_ocr_engine(settings, db=db) if settings.ocr_engine == GEMINI else None

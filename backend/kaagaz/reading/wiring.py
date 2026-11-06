@@ -4,13 +4,22 @@ Application code (the pipeline) calls ``build_reader_socket`` and then only
 ever talks to the socket, never to a reader (CLAUDE.md "The reader plug
 socket"). Adding a reader means one new module and one entry here.
 
-* text -> CsvReader, zip -> XlsxReader, pdf -> PdfReader (text layer, and OCR
+* Readers are chosen by the kind ``kaagaz/ingestion/resolve.py`` tells after the
+  virus scan (#522): csv -> CsvReader; txt, md, json and html -> TextReader (each
+  file's text as lines on pages, no AI); xlsx -> XlsxReader; pdf -> PdfReader (text layer, and OCR
   for pages whose text layer fails the route check when an engine is set up,
   drawn at OCR_DPI or, by OCR_DPI_RULE, at the DPI its text needs with OCR_DPI
   as the ceiling; PRD 2 R2 and R3 with the TEXT_LAYER_*, SCAN_IMAGE_COVERAGE
   and BLANK_PAGE_STDDEV settings).
-* png, jpeg, tiff -> ImageReader, only with an OCR engine. Without one they
+* png, jpeg, tiff, heic -> ImageReader, only with an OCR engine. Without one they
   have no reader, so they are stored and marked needs_reader.
+* docx, dotx, doc, pptx, ppt and xls have no reader of their own: the pipeline converts
+  them with ``build_office_converter``'s LibreOffice first (#522 PR 2), to the PDF the
+  rendition readers read or the XLSX the xlsx reader reads. Where soffice is not installed
+  there is no converter, so they are stored and marked needs_reader.
+* office.RENDITION, a Word or PowerPoint file's PDF -> PdfReader with ``pdfium_text``: as a
+  PDF, but a page pdfplumber can't read (LibreOffice's Devanagari) is read from PDFium's
+  text, with no OCR (#522); its second reader is the PDFs'.
 * Second readers: pdf -> PdfiumReader. Nothing else has one yet, so every
   other value stays single_reader.
 * Pages in parallel (PRD 5 G8): with OCR_ENGINE=gemini, the PDF and image
@@ -24,22 +33,27 @@ socket"). Adding a reader means one new module and one entry here.
 """
 
 import importlib
+import shutil
+from collections.abc import Callable
 from typing import Any
 
 from kaagaz.db.engine import Database
-from kaagaz.ingestion import sniff
+from kaagaz.ingestion import resolve, sniff
 from kaagaz.preparing import page_checks
 from kaagaz.reading import ocr_dpi, text_quality
 from kaagaz.reading.csv_reader import CsvReader
 from kaagaz.reading.image_reader import ImageReader
 from kaagaz.reading.ocr import GEMINI, OcrEngine, PageEngine
 from kaagaz.reading.ocr import build_ocr_engine as _ocr_engine
+from kaagaz.reading.office import RENDITION, OfficeConverter
 from kaagaz.reading.pdf_reader import PdfReader, text_layer_checks
 from kaagaz.reading.pdf_second_reader import PdfiumReader
 from kaagaz.reading.rapid_pool import RapidOcrPool
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import PagePool, Reader, ReaderSocket
 from kaagaz.reading.text_quality import PageSignals, TextLayerRules
+from kaagaz.reading.text_reader import KINDS as TEXT_KINDS
+from kaagaz.reading.text_reader import TextReader
 from kaagaz.reading.xlsx_reader import XlsxLimits, XlsxReader
 from kaagaz.settings import Settings
 
@@ -144,11 +158,20 @@ def page_pool(settings: Settings, engine: OcrEngine | None) -> PagePool | None:
     return PagePool.threads(settings.ocr_page_concurrency)
 
 
+def build_office_converter() -> Callable[[str, bytes], bytes] | None:
+    """LibreOffice's conversion of a Word, PowerPoint or old Excel file (#522 PR 2,
+    ``kaagaz.reading.office``), or None where ``soffice`` is not on the PATH (a laptop
+    without it; the backend image has it)."""
+    soffice = shutil.which("soffice")
+    return None if soffice is None else OfficeConverter(soffice).convert
+
+
 def build_reader_socket(settings: Settings, ocr: OcrEngine | None) -> ReaderSocket:
     pages = page_pool(settings, ocr)
     readers: dict[str, Reader] = {
-        sniff.TEXT: CsvReader(max_cells=settings.csv_max_cells),
-        sniff.ZIP: XlsxReader(
+        resolve.CSV: CsvReader(max_cells=settings.csv_max_cells),
+        **{kind: TextReader(kind, max_lines=settings.csv_max_cells) for kind in sorted(TEXT_KINDS)},
+        resolve.XLSX: XlsxReader(
             XlsxLimits(
                 max_entries=settings.xlsx_max_entries,
                 max_member_bytes=settings.xlsx_max_member_bytes,
@@ -157,16 +180,20 @@ def build_reader_socket(settings: Settings, ocr: OcrEngine | None) -> ReaderSock
                 max_text_chars=settings.xlsx_max_text_chars,
             )
         ),
-        sniff.PDF: PdfReader(
-            ocr,
-            max_pages=settings.max_pages,
-            dpi=settings.ocr_dpi,
-            max_image_pixels=settings.max_image_pixels,
-            rules=text_layer_rules(settings),
-            blank_stddev=settings.blank_page_stddev,
-            dpi_rule=settings.ocr_dpi_rule,
-            pages=pages,
-        ),
+        **{
+            kind: PdfReader(
+                ocr,
+                max_pages=settings.max_pages,
+                dpi=settings.ocr_dpi,
+                max_image_pixels=settings.max_image_pixels,
+                rules=text_layer_rules(settings),
+                blank_stddev=settings.blank_page_stddev,
+                dpi_rule=settings.ocr_dpi_rule,
+                pages=pages,
+                pdfium_text=kind == RENDITION,
+            )
+            for kind in (sniff.PDF, RENDITION)
+        },
     }
     if ocr is not None:
         images = ImageReader(
@@ -178,6 +205,7 @@ def build_reader_socket(settings: Settings, ocr: OcrEngine | None) -> ReaderSock
             dpi_rule=settings.ocr_dpi_rule,
             pages=pages,
         )
-        readers.update({sniff.PNG: images, sniff.JPEG: images, sniff.TIFF: images})
-    second_readers: dict[str, Reader] = {sniff.PDF: PdfiumReader(max_pages=settings.max_pages)}
+        readers.update({sniff.PNG: images, sniff.JPEG: images, sniff.TIFF: images, sniff.HEIC: images})
+    second = PdfiumReader(max_pages=settings.max_pages)
+    second_readers: dict[str, Reader] = {sniff.PDF: second, RENDITION: second}
     return ReaderSocket(readers, second_readers)

@@ -14,6 +14,7 @@ from sqlalchemy import text
 from kaagaz.db.engine import Database
 from kaagaz.db.folder_upload_items import batch_for
 from tests.folder_upload_support import path_key
+from tests.settings_factory import make_settings
 from tests.test_api_support import CSRF, Api, Signed
 from tests.test_operator_auth_db import _owner
 
@@ -186,7 +187,10 @@ def test_past_the_planned_count_or_bytes_is_refused_and_a_folder_not_planned_is_
 
 
 def test_a_file_kaagaz_cant_take_is_registered_failed_with_its_reason(db: Database) -> None:
-    api = Api(db)
+    # Changed on purpose (#522 PR 3): with zip uploads allowed, the largest limit is a zip's (the
+    # folder upload limit, the most a plan may hold), so a file is too large here only without them.
+    settings = make_settings(allowed_types=frozenset({"pdf", "png", "jpeg", "tiff", "text"}))
+    api = Api(db, settings=settings)
     signed = api.new_signed()
     planned = plan(signed, file_count=3, total_bytes=10**9).json()
     a = planned["folder_ids"][0]

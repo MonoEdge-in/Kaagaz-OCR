@@ -20,6 +20,7 @@ from kaagaz.db.engine import Database
 from kaagaz.db.storage_limits import DEFAULT_STORAGE_GB, GIB, storage_room
 from kaagaz.ingestion.ports import StorageRoom
 from tests.db_support import insert_document, new_customer
+from tests.settings_factory import make_settings
 from tests.support import TEXT_BYTES
 from tests.test_api_folder_upload_files import ResumableStorage, _fingerprint, planned, send
 from tests.test_api_folder_uploads import TREE, item, plan, register
@@ -278,7 +279,9 @@ def test_an_add_new_files_only_plan_and_its_already_in_files_cost_no_storage(db:
 
 
 def test_a_re_plan_does_not_count_its_failed_files_which_are_never_stored(db: Database) -> None:
-    api = Api(db)
+    # Changed on purpose (#522 PR 3): without zip uploads, so a file over the PDF limit is over every
+    # limit (with them the largest is a zip's, the folder upload limit itself).
+    api = Api(db, settings=make_settings(allowed_types=frozenset({"pdf", "png", "jpeg", "tiff", "text"})))
     signed = api.new_signed()
     huge = api.settings.max_upload_bytes + 1  # registered failed too_large
     total = len(PDF_BYTES) + huge

@@ -6,7 +6,7 @@ from typing import ClassVar, cast
 
 from PIL import Image
 
-from kaagaz.ingestion import sniff
+from kaagaz.ingestion import resolve, sniff
 from kaagaz.reading.csv_reader import CsvReader
 from kaagaz.reading.ocr import OcrLine, ocr_spans
 from kaagaz.reading.route import RouteDecision
@@ -137,7 +137,7 @@ class ReaderSocketTest(unittest.TestCase):
         socket = build_reader_socket(make_settings(), FakeOcr())
         workbook = make_xlsx([("S", sheet_xml('<row r="1"><c r="A1"><v>7</v></c></row>'))])
         pdf = make_pdf([Page(texts=[Text(72, 700, "typed")])])
-        for kind, data in ((sniff.TEXT, b"a,b\n"), (sniff.ZIP, workbook), (sniff.PDF, pdf)):
+        for kind, data in ((resolve.CSV, b"a,b\n"), (resolve.XLSX, workbook), (sniff.PDF, pdf)):
             with self.subTest(kind):
                 self.assertEqual(socket.read(kind, data, on_page=lambda _read: None), socket.read(kind, data))
 
@@ -329,18 +329,29 @@ class SpanValidationTest(unittest.TestCase):
 
 class WiringTest(unittest.TestCase):
     def test_without_ocr_scans_and_photos_need_a_reader(self) -> None:
+        # Changed on purpose (#522): readers are chosen by the kind resolve.py tells, csv and xlsx.
         socket = build_reader_socket(make_settings(), None)
-        self.assertEqual(socket.reader_id(sniff.TEXT), ("csv", "1"))
-        self.assertEqual(socket.reader_id(sniff.ZIP), ("xlsx", "1"))
+        self.assertEqual(socket.reader_id(resolve.CSV), ("csv", "1"))
+        self.assertEqual(socket.reader_id(resolve.XLSX), ("xlsx", "1"))
         self.assertEqual(socket.reader_id(sniff.PDF)[0], "pdfplumber")
         self.assertEqual(socket.reader_id(sniff.PDF, second=True)[0], "pdfium")
-        for kind in (sniff.PNG, sniff.JPEG, sniff.TIFF):
+        for kind in (sniff.PNG, sniff.JPEG, sniff.TIFF, sniff.HEIC):
+            with self.subTest(kind), self.assertRaises(NoReader):
+                socket.read(kind, b"")
+
+    def test_the_text_kinds_have_the_text_reader_and_the_office_kinds_none_yet(self) -> None:
+        # #522 PR 1: Word, PowerPoint, old Office files and a zip as a folder are stored, not read.
+        socket = build_reader_socket(make_settings(), FakeOcr())
+        for kind in ("txt", "md", "json", "html"):
+            with self.subTest(kind):
+                self.assertEqual(socket.reader_id(kind), (f"text-{kind}", "1"))
+        for kind in ("docx", "dotx", "doc", "pptx", "ppt", "xls", "zip"):
             with self.subTest(kind), self.assertRaises(NoReader):
                 socket.read(kind, b"")
 
     def test_with_ocr_photos_are_read_and_the_pdf_version_names_the_engine(self) -> None:
         socket = build_reader_socket(make_settings(), FakeOcr())
-        for kind in (sniff.PNG, sniff.JPEG, sniff.TIFF):
+        for kind in (sniff.PNG, sniff.JPEG, sniff.TIFF, sniff.HEIC):
             with self.subTest(kind):
                 self.assertEqual(socket.reader_id(kind), ("fake-ocr", "0"))
         self.assertTrue(socket.reader_id(sniff.PDF)[1].endswith("+fake-ocr-0"))
@@ -349,21 +360,21 @@ class WiringTest(unittest.TestCase):
         socket = build_reader_socket(make_settings(), None)
         pdf = make_pdf([Page(texts=[Text(72, 700, "typed page")])])
         workbook = make_xlsx([("S", sheet_xml('<row r="1"><c r="A1"><v>7</v></c></row>'))])
-        self.assertEqual([s.origin for s in socket.read(sniff.TEXT, b"a,b\n")], ["cell", "cell"])
-        self.assertEqual([s.origin for s in socket.read(sniff.ZIP, workbook)], ["cell"])
+        self.assertEqual([s.origin for s in socket.read(resolve.CSV, b"a,b\n")], ["cell", "cell"])
+        self.assertEqual([s.origin for s in socket.read(resolve.XLSX, workbook)], ["cell"])
         self.assertEqual([s.origin for s in socket.read(sniff.PDF, pdf)], ["text_layer"])
         self.assertEqual([s.origin for s in socket.read_second(sniff.PDF, pdf) or []], ["text_layer"])
 
     def test_only_pdf_has_a_second_reader(self) -> None:
         socket = build_reader_socket(make_settings(), FakeOcr())
-        for kind in (sniff.TEXT, sniff.ZIP, sniff.PNG, sniff.JPEG, sniff.TIFF):
+        for kind in (resolve.CSV, resolve.XLSX, sniff.PNG, sniff.JPEG, sniff.TIFF):
             with self.subTest(kind):
                 self.assertIsNone(socket.read_second(kind, b""))
 
     def test_the_readers_get_their_limits_from_the_settings(self) -> None:
         socket = build_reader_socket(make_settings(csv_max_cells=2), None)
         with self.assertRaises(ReadError) as ctx:
-            socket.read(sniff.TEXT, b"a,b,c\n")
+            socket.read(resolve.CSV, b"a,b,c\n")
         self.assertEqual(ctx.exception.code, "too_many_cells")
 
 
@@ -394,7 +405,11 @@ class NoDirectReaderCallsTest(unittest.TestCase):
     # stay behind the socket, gemini_ocr).
     # Changed on purpose (#488, 4 Nov 2026): ``cli measure-compact`` runs the compact reply's
     # encoder and decoder offline (pure functions, no client, no page read).
+    # Changed on purpose (#522 PR 2): the pipeline converts a Word, PowerPoint or old Excel file
+    # before the readers read it, so it, the file download and the page drawing (Ensemble, land
+    # facts) name the converted kinds; the converter itself is built by the wiring only.
     CONSTANTS: ClassVar[dict[str, set[str]]] = {
+        "kaagaz.reading.office": {"KINDS", "PDF_KINDS", "RENDITION", "read_as", "drawn_from"},
         "kaagaz.reading.compact": {"encode_compact", "decode_compact"},
         "kaagaz.reading.mistral_ocr": {
             "MISTRAL",

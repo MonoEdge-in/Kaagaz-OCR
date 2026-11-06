@@ -71,24 +71,26 @@ def test_productions_0061d_is_a_branch_off_0061c_that_0075_merges() -> None:
     assert scripts.get_revision("0075").down_revision == ("0074", "0061d")
     merge = (VERSIONS / "0075_org_storage_limit_merge.py").read_text(encoding="utf-8")
     assert "op.execute" not in merge
-    # Changed on purpose (#521, 6 Nov 2026): 0077 (the exact overlap) follows it and is the head;
-    # the line has no 0076 (Tushar dropped confirmed copies; the formats branches chain 0078 on 0077).
+    # Changed on purpose (#521, 6 Nov 2026): 0077 (the exact overlap) follows it;
+    # the line has no 0076 (Tushar dropped confirmed copies).
     assert scripts.get_revision("0077").down_revision == "0075"
 
 
-def test_guard_rails_0077a_and_0077b_follow_0077_and_0077b_is_the_one_head() -> None:
+def test_guard_rails_0077a_and_0077b_follow_0077() -> None:
     """#502, #520 (Tushar, 6 Nov 2026): logout's ended sessions (0077a) and Ensemble held by the
-    reading pause (0077b) follow versioning's 0077, on one line."""
+    reading pause (0077b) follow versioning's 0077, on one line. Changed on purpose (#522): the
+    file kinds' 0078 follows 0077b, so 0077b is no longer the head."""
     scripts = _scripts()
     assert scripts.get_revision("0077a").down_revision == "0077"
     assert scripts.get_revision("0077b").down_revision == "0077a"
-    # Changed on purpose (#524, 6 Nov 2026): the amount reasons' 0077c follows 0077b (below).
+    # Changed on purpose (#524, 6 Nov 2026): the amount reasons' 0077c follows 0077b.
     assert scripts.get_revision("0077c").down_revision == "0077b"
 
 
-def test_the_amount_reasons_0077c_follow_0077b_and_are_the_one_head() -> None:
-    """#524 (Tushar, 6 Nov 2026): the amount safety layer's label reasons follow the guard
-    rails' 0077b, on the same line."""
+def test_the_file_kinds_0078_and_the_zip_unpack_s_0080_follow_and_0080_is_the_one_head() -> None:
+    """#522 (6 Nov 2026): 0078 (the file kinds) after the amount reasons' 0077c, then 0080 (a zip
+    unpacked into a folder; no 0079 when it was written)."""
     scripts = _scripts()
-    assert scripts.get_revision("0077c").down_revision == "0077b"
-    assert scripts.get_heads() == ["0077c"]
+    assert scripts.get_revision("0078").down_revision == "0077c"
+    assert scripts.get_revision("0080").down_revision == "0078"
+    assert scripts.get_heads() == ["0080"]

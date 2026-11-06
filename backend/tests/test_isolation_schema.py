@@ -852,11 +852,13 @@ def _columns(db: Database, table: str) -> set[str]:
 
 def test_a_folder_upload_keeps_counts_and_never_the_browsers_hash_of_a_file(db: Database) -> None:
     """0072 (#484, "Add new files only"): ``items_counted``, the files registered that weren't
-    already in, is what the limit is checked against; no column keeps a file's SHA-256."""
+    already in, is what the limit is checked against; no column keeps a file's SHA-256. Changed on
+    purpose (#522 PR 3, 0080): ``zip_document_id``, the zip an upload the worker made is from."""
     assert _columns(db, "folder_uploads") == {
         "id", "customer_id", "user_id", "target", "parent_folder_id", "root_folder_id", "source_name",
         "root_name", "merge", "file_count", "total_bytes", "skipped_count", "folders_created",
         "items_registered", "items_counted", "bytes_registered", "created_at", "updated_at",
+        "zip_document_id",
     }  # fmt: skip
     assert _columns(db, "folder_upload_items") == {
         "id", "customer_id", "folder_upload_id", "seq", "path_key", "name", "folder_id", "size_bytes",

@@ -28,7 +28,7 @@ from tests.fakes import MemoryQueue
 from tests.settings_factory import make_settings
 from tests.test_api_review import _named_database
 from tests.test_api_support import CSRF, Api, ApiFakeQueue, Signed
-from tests.test_pipeline import CSV, PIPELINE_POLICY
+from tests.test_pipeline import CSV, CSV_NAME, PIPELINE_POLICY
 from tests.test_pipeline_db import with_runs
 from tests.test_pipeline_store_db import new_session
 
@@ -303,7 +303,7 @@ def test_trash_waiting_behind_reprocess_leaves_it_in_trash_after_the_job(db: Dat
         admin = trash_api.sign_in(c, "admin")
         doc = (
             UploadService(PIPELINE_POLICY, PgDocuments(db), api.storage, MemoryQueue())
-            .accept(c, io.BytesIO(CSV))
+            .accept(c, io.BytesIO(CSV), display_name=CSV_NAME)
             .document_id
         )
         with_runs(db, api.storage)(Job(c, doc), lambda: None)  # read: ready
@@ -505,7 +505,7 @@ def test_407_a_retry_while_its_run_is_still_open_never_makes_two_runs(db: Databa
     reviewer = api.new_signed("reviewer")
     c = reviewer.customer_id
     doc = UploadService(PIPELINE_POLICY, PgDocuments(db), api.storage, MemoryQueue()).accept(
-        c, io.BytesIO(CSV)
+        c, io.BytesIO(CSV), display_name=CSV_NAME
     )
     params = {"c": c, "d": doc.document_id}
     with db.customer(c) as conn:

@@ -125,6 +125,11 @@ describe("failureFix", () => {
     expect(failureFix("failed", "unreadable")).toBe("Upload a sharper scan.");
     expect(failureFix("failed", "ocr_failed")).toBe("Read it again, or upload a clearer scan.");
     expect(failureFix("failed", "customer_disabled")).toBe("Read it again.");
+    expect(failureFix("failed", "office_unreadable")).toBe(
+      "Remove its password, or save it again and upload that copy.",
+    );
+    expect(failureFix("failed", "password_protected")).toBe("Remove the password and upload it again.");
+    expect(failureFix("failed", "too_large")).toBe("Split it into smaller files and upload them.");
     expect(failureFix("rejected", "virus_found")).toBe("Upload a clean copy of the file.");
     expect(failureFix("rejected", "unscannable")).toBe("Save it again and upload that copy.");
     expect(failureFix("rejected", "blocked_content")).toBe(

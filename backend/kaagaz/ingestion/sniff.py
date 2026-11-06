@@ -4,16 +4,17 @@ The type is never taken from the file name or from what the browser says,
 because both are easy to fake. Only the first bytes ("magic numbers") are
 compared. Nothing inside the file is parsed here: the virus scan (#15) must
 run before any step opens a file, so telling an .xlsx from a .docx (both are
-zip files) waits until after the scan.
+zip files), or a CSV from other text, waits until after the scan
+(``kaagaz/ingestion/resolve.py``, #522).
 
 Time is O(len(head)): a fixed number of prefix comparisons plus one scan and
 one decode of the head for the text check. Callers pass at most HEAD_SIZE
 (4 KiB) bytes, so in practice it is a small constant.
 
-PROVISIONAL: every UTF-8 text file is tagged TEXT, and the only text reader so
-far is the CSV reader, so a .txt, JSON or HTML file would be read as CSV.
-Telling CSV from other text (after the scan) is an open question for Vrushit;
-until then markup could reach pieces, which must be fixed before real use.
+Every UTF-8 text file is tagged TEXT here; after the scan, resolve.py lets the
+file name choose between the text readers (CSV, plain text, Markdown, JSON,
+HTML), all safe for any text, so a .txt, JSON or HTML file is no longer read as
+CSV (#522).
 """
 
 import codecs
@@ -23,11 +24,12 @@ PDF = "pdf"
 PNG = "png"
 JPEG = "jpeg"
 TIFF = "tiff"
-ZIP = "zip"  # .xlsx, .docx and other zip containers; the xlsx reader tells them apart after the scan
-OLE2 = "ole2"  # old .xls and .doc, not told apart
+HEIC = "heic"  # HEIC and HEIF photos (ISO-BMFF), the iPhone's own format
+ZIP = "zip"  # .xlsx, .docx and other zip containers; resolve.py tells them apart after the scan
+OLE2 = "ole2"  # old .xls, .doc and .ppt; resolve.py tells them apart after the scan
 TEXT = "text"  # CSV and other plain UTF-8 text
 
-KNOWN_TYPES = frozenset({PDF, PNG, JPEG, TIFF, ZIP, OLE2, TEXT})
+KNOWN_TYPES = frozenset({PDF, PNG, JPEG, TIFF, HEIC, ZIP, OLE2, TEXT})
 
 # (prefix, type). Each prefix must appear at offset 0.
 _MAGIC: tuple[tuple[bytes, str], ...] = (
@@ -40,12 +42,20 @@ _MAGIC: tuple[tuple[bytes, str], ...] = (
     (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", OLE2),
 )
 
+# HEIC and HEIF (#522): an ISO-BMFF file starts with its ``ftyp`` box, the box's size in its
+# first 4 bytes, then "ftyp" at offset 4 and the major brand at offset 8. Only these brands
+# are HEIC or HEIF photos (an AVIF or an MP4 has another brand).
+_FTYP = b"ftyp"
+HEIC_BRANDS = frozenset({b"heic", b"heix", b"hevc", b"heif", b"mif1", b"msf1"})
+
 
 def detect_type(head: bytes) -> str | None:
     """Return one of KNOWN_TYPES, or None when the type is not recognised."""
     for prefix, kind in _MAGIC:
         if head.startswith(prefix):
             return kind
+    if head[4:8] == _FTYP and head[8:12] in HEIC_BRANDS:  # at offset 4, not 0: its own check
+        return HEIC
     if _looks_like_utf8_text(head):
         return TEXT
     return None

@@ -140,7 +140,7 @@ Why some choices:
 import hashlib
 import math
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import date, datetime, time
@@ -179,7 +179,6 @@ from kaagaz.api.views import (
     page_summary,
     timeline,
 )
-from kaagaz.db import admin as admin_sql
 from kaagaz.db import audit, autofile, listing, reading_days, storage_limits, trash
 from kaagaz.db import chat as chat_sql
 from kaagaz.db import folder_upload_items as items_sql
@@ -187,6 +186,7 @@ from kaagaz.db import folders as folders_sql
 from kaagaz.db import tags as tags_sql
 from kaagaz.db import upload_sessions as upload_sessions_sql
 from kaagaz.db import versions as versions_sql
+from kaagaz.db import zip_unpacks as unpacks_sql
 from kaagaz.db.documents import (
     EnsembleRunning,
     NotInTrash,
@@ -202,15 +202,18 @@ from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.folder_upload_items import ItemRow
 from kaagaz.db.folder_uploads import effective_limits
 from kaagaz.db.folders import MAX_DEPTH
-from kaagaz.ingestion import sniff
+from kaagaz.db.upload_policy import customer_policy
+from kaagaz.db.zip_unpacks import Unpack
+from kaagaz.ingestion import resolve, sniff
 from kaagaz.ingestion.errors import RejectCode, UploadRejected
 from kaagaz.ingestion.messages import over_every_limit_message, storage_full_message, too_large_message
 from kaagaz.ingestion.pagecount import goes_express
-from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
+from kaagaz.ingestion.policy import UploadPolicy
 from kaagaz.ingestion.ports import BlobNotFound, Job, JobQueue, StorageRoom, UnknownFamily, UnknownFolder
 from kaagaz.ingestion.service import UploadResult, UploadService
 from kaagaz.jobs.reading_pause import BUDGET, DAILY_LIMIT, pause_reason
 from kaagaz.reading.ocr import GEMINI
+from kaagaz.reading.office import PDF_KINDS as OFFICE_PDF_KINDS
 from kaagaz.search import page_words
 from kaagaz.settings import Settings
 
@@ -240,12 +243,15 @@ class ResumableUploadStart(BaseModel):
 
 Context = Annotated[AppContext, Depends(get_context)]
 
-MIB = 1024 * 1024
 MAX_SHEET_ROWS = 500
 MAX_TAG_FILTERS = tags_sql.MAX_TAG_FILTERS
 
 DocumentStatusParam = Literal["received", "clean", "rejected", "needs_reader", "ready", "failed"]
-DetectedTypeParam = Literal["pdf", "png", "jpeg", "tiff", "zip", "ole2", "text"]
+# The sniffed types, then the kinds the worker tells after the scan (#522, kaagaz/ingestion/resolve.py).
+DetectedTypeParam = Literal[
+    "pdf", "png", "jpeg", "tiff", "heic", "zip", "ole2", "text",
+    "xlsx", "xls", "csv", "docx", "dotx", "doc", "pptx", "ppt", "txt", "md", "json", "html",
+]  # fmt: skip
 IsoDay = Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")]
 SortParam = Literal[
     "name", "doc_type", "owner", "sensitivity", "version", "document_date", "updated_at", "created_at"
@@ -258,10 +264,43 @@ _CONTENT_TYPES = {
     "png": ("image/png", "png"),
     "jpeg": ("image/jpeg", "jpg"),
     "tiff": ("image/tiff", "tif"),
-    "zip": ("application/octet-stream", "xlsx"),  # only a spreadsheet passes the read
+    "heic": ("image/heic", "heic"),
+    # #522: an old Office file not told yet, then the kinds. A zip is a folder of files now, kept as
+    # one (PR 3; an .xlsx is told "xlsx" once scanned, and a ready one before 0078 is xlsx). Text
+    # of any kind is sent as plain text, never as a page to render.
+    "zip": ("application/zip", "zip"),
     "ole2": ("application/octet-stream", "bin"),
-    "text": ("text/plain; charset=utf-8", "csv"),
+    "text": ("text/plain; charset=utf-8", "txt"),
+    "xlsx": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"),
+    "xls": ("application/vnd.ms-excel", "xls"),
+    "docx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docx"),
+    "dotx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.template", "dotx"),
+    "doc": ("application/msword", "doc"),
+    "pptx": ("application/vnd.openxmlformats-officedocument.presentationml.presentation", "pptx"),
+    "ppt": ("application/vnd.ms-powerpoint", "ppt"),
+    "csv": ("text/plain; charset=utf-8", "csv"),
+    "txt": ("text/plain; charset=utf-8", "txt"),
+    "md": ("text/plain; charset=utf-8", "md"),
+    "json": ("text/plain; charset=utf-8", "json"),
+    "html": ("text/plain; charset=utf-8", "html"),
 }
+# #522: 0078 told only ready documents' kinds, so one not read since (needs_reader, failed)
+# keeps its sniffed type until it is read again. Its name's ending chooses among the kinds that
+# type can be, for Download only (the reader tells the kind from the bytes): all a zip's are
+# Office packages or a zip, all text's are sent as plain text, so no name can make it run.
+_KINDS_BY_ENDING = {
+    sniff.ZIP: {"xlsx": "xlsx", "docx": "docx", "dotx": "dotx", "pptx": "pptx", "zip": "zip"},
+    sniff.TEXT: {"csv": "csv", "txt": "txt", "md": "md", "json": "json", "html": "html", "htm": "html"},
+}
+
+
+def served_type(detected_type: str, display_name: str | None) -> str:
+    """What a document downloads as: its kind, or for one still of its sniffed zip or text type,
+    the kind its name's ending names among that type's (``_KINDS_BY_ENDING``)."""
+    kinds = _KINDS_BY_ENDING.get(detected_type, {})
+    return kinds.get(resolve.ending(display_name or ""), detected_type)
+
+
 _REPROCESS_LIMITED = {
     "hourly": "Too many documents were sent to be read again in the last hour. Please try again later.",
     "cooldown": (
@@ -398,34 +437,33 @@ def list_documents(
             descending=order == "desc",
         )
         tags = tags_sql.tags_for_documents(conn, customer_id, [str(row["id"]) for row in rows])
+        unpacks = zip_unpacks(conn, customer_id, rows)
     max_pages, now = context.settings.max_pages, context.clock()
     items = [
-        document_summary(row, max_pages=max_pages, tags=tags[str(row["id"])], user=user, now=now)
+        document_summary(
+            row,
+            max_pages=max_pages,
+            tags=tags[str(row["id"])],
+            user=user,
+            now=now,
+            unpack=unpacks.get(str(row["id"])),
+        )
         for row in rows
     ]
     return {"items": items, "total": total}
 
 
-def upload_policy(settings: Settings, customer_max_mb: int | None) -> UploadPolicy:
-    """The limits for one customer's upload (PRD 1, U2): each type's own limit,
-    lowered by the customer's own limit when an admin set one."""
-    max_bytes = settings.max_upload_bytes
-    if customer_max_mb is not None:
-        max_bytes = min(max_bytes, customer_max_mb * MIB)
-    return UploadPolicy(
-        max_bytes=max_bytes,
-        allowed_types=settings.allowed_types,
-        type_limits=limits_by_type(
-            pdf=settings.max_upload_bytes, image=settings.max_image_bytes, sheet=settings.max_sheet_bytes
-        ),
-    )
+def zip_unpacks(conn: Connection, customer_id: str, rows: Sequence[RowMapping]) -> dict[str, Unpack]:
+    """#522 PR 3: the unpacking of each zip among ``rows`` (``DocumentSummary.unpack``); no
+    query when there is none."""
+    zips = [str(row["id"]) for row in rows if row["detected_type"] == "zip"]
+    return unpacks_sql.unpacks(conn, customer_id, zips) if zips else {}
 
 
 def user_upload_policy(context: AppContext, user: CurrentUser) -> UploadPolicy:
+    """This user's organisation's upload limits (``db/upload_policy.py``), a zip's included."""
     with context.db.customer(user.customer_id) as conn:
-        row = admin_sql.get_settings(conn, user.customer_id)
-    customer_max_mb = None if row is None or row["max_upload_mb"] is None else int(row["max_upload_mb"])
-    return upload_policy(context.settings, customer_max_mb)
+        return customer_policy(conn, user.customer_id, context.settings)
 
 
 @router.get("/upload-limits")
@@ -444,7 +482,8 @@ def get_upload_limits(user: User, context: Context) -> dict[str, Any]:
     return {
         "pdf_bytes": policy.limit_for(sniff.PDF),
         "image_bytes": policy.limit_for(sniff.PNG),
-        "sheet_bytes": policy.limit_for(sniff.ZIP),
+        "sheet_bytes": policy.limit_for(resolve.XLSX),
+        "zip_bytes": policy.limit_for(sniff.ZIP),  # #522: the folder upload limit, or a larger type's
         "max_pages": settings.max_pages,
         "readers": readers,
         # Folder upload (#484): its limits, the pace and sends at once its files are taken at,
@@ -1158,11 +1197,17 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         typed = listing.invoice_for(conn, customer_id, target)
         links = listing.document_links(conn, customer_id, target)
         suggestion = versions_sql.for_document(conn, customer_id, target, str(row["family_id"]))
+        unpack = zip_unpacks(conn, customer_id, [row]).get(target)
         audit.record_view(conn, customer_id, actor_user_id=user.user_id, document_id=target)  # A1
     document_date = None if facts is None else facts["document_date"]
     return {
         **document_summary(
-            row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
+            row,
+            max_pages=context.settings.max_pages,
+            tags=tags,
+            user=user,
+            now=context.clock(),
+            unpack=unpack,
         ),
         "pages": [page_summary(page) for page in pages],
         "values": [extracted_value(value) for value in values],
@@ -1196,8 +1241,9 @@ def get_document_summary(document_id: uuid.UUID, user: User, context: Context) -
     with context.db.customer(customer_id) as conn:
         row = _document_or_404(conn, user, document_id)
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
+        unpack = zip_unpacks(conn, customer_id, [row]).get(target)
     return document_summary(
-        row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
+        row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock(), unpack=unpack
     )
 
 
@@ -1605,15 +1651,21 @@ def undo_autofile(document_id: uuid.UUID, user: User, context: Context) -> dict[
 @router.get("/documents/{document_id}/file")
 def get_file(document_id: uuid.UUID, user: User, context: Context, download: bool = False) -> Response:
     """The original file. File management A2: the Download button asks ``download=1``, which
-    logs ``document.download`` once the file is found; the viewer's own fetch is a view (#482)."""
+    logs ``document.download`` once the file is found; the viewer's own fetch is a view (#482).
+    #522 PR 2: the viewer's fetch of a Word or PowerPoint file gets its PDF rendition, which the
+    worker stored when it converted it (404 until then); Download gets the original."""
     with context.db.customer(user.customer_id) as conn:
         row = _readable_or_409(conn, user, document_id)
         if not download and row["status"] in _SERVABLE:
             _viewed(conn, user, document_id, "file")
     if row["status"] not in _SERVABLE:
         raise ApiError(404, "not_found")
+    rendition = not download and row["detected_type"] in OFFICE_PDF_KINDS
     try:
-        data = context.storage.get(user.customer_id, str(document_id))
+        if rendition:
+            data = context.storage.get_rendition(user.customer_id, str(document_id))
+        else:
+            data = context.storage.get(user.customer_id, str(document_id))
     except BlobNotFound:
         raise ApiError(404, "not_found") from None
     if download:
@@ -1626,7 +1678,8 @@ def get_file(document_id: uuid.UUID, user: User, context: Context, download: boo
                 target_type="document",
                 target_id=str(document_id),
             )
-    content_type, extension = _CONTENT_TYPES.get(row["detected_type"], ("application/octet-stream", "bin"))
+    detected = sniff.PDF if rendition else served_type(row["detected_type"], row["display_name"])
+    content_type, extension = _CONTENT_TYPES.get(detected, ("application/octet-stream", "bin"))
     # The user's own name with the file's true extension, percent-encoded (RFC 6266), so no
     # quote or line break reaches the header; "document.<ext>" for browsers without filename*.
     name = quote(f"{splitext(row['display_name'] or '')[0] or 'document'}.{extension}", safe="")

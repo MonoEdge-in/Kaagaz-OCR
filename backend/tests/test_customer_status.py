@@ -13,7 +13,7 @@ from kaagaz.jobs.worker import JobFailed
 from kaagaz.pipeline import DocumentProcessor
 from kaagaz.scanning.gate import DocumentStatus
 from tests.fakes import FakeEmbedder, FakePreparer, fake_sheet_pages
-from tests.test_pipeline import CSV, CUSTOMER, System, build, make_worker, real_socket
+from tests.test_pipeline import CSV, CSV_NAME, CUSTOMER, System, build, make_worker, real_socket
 
 OTHER = "cust-b"
 
@@ -44,7 +44,7 @@ class DisabledCustomerJobTest(unittest.TestCase):
         system, embed = build(), FakeEmbedder()
         asked: list[str] = []
         processor = _processor(system, asked, embed)
-        doc = system.upload.accept(CUSTOMER, io.BytesIO(CSV)).document_id
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(CSV), display_name=CSV_NAME).document_id
 
         with self.assertRaises(JobFailed) as failed:
             processor(Job(CUSTOMER, doc), lambda: None)
@@ -61,8 +61,8 @@ class DisabledCustomerJobTest(unittest.TestCase):
         system, embed = build(), FakeEmbedder()
         asked: list[str] = []
         worker = make_worker(system.queue, _processor(system, asked, embed), system.repo)
-        disabled = system.upload.accept(CUSTOMER, io.BytesIO(CSV)).document_id
-        other = system.upload.accept(OTHER, io.BytesIO(CSV)).document_id
+        disabled = system.upload.accept(CUSTOMER, io.BytesIO(CSV), display_name=CSV_NAME).document_id
+        other = system.upload.accept(OTHER, io.BytesIO(CSV), display_name=CSV_NAME).document_id
 
         worker.run_once()
         worker.run_once()

@@ -122,7 +122,7 @@ describe("the manifest", () => {
   });
 
   it("leaves a file of a kind Kaagaz can't take out of the bytes: it is never sent (#516)", () => {
-    const pick = fromFileList([picked("A/a.pdf", 5), picked("A/notes.docx", 100), picked("A/b.csv", 7)]);
+    const pick = fromFileList([picked("A/a.pdf", 5), picked("A/notes.odt", 100), picked("A/b.csv", 7)]);
     if (!pick) throw new Error("no pick");
     const manifest = buildManifest(pick);
     expect(manifest.fileCount).toBe(3);

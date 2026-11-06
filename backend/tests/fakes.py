@@ -146,6 +146,7 @@ class MemoryStorage:
     def __init__(self) -> None:
         self._blobs: dict[tuple[str, str], bytes] = {}
         self.quarantined: dict[tuple[str, str], bytes] = {}
+        self.renditions: dict[tuple[str, str], bytes] = {}  # a Word or PowerPoint file's PDF (#522)
         self._lock = threading.Lock()
         self.fail_put = False
         self.fail_delete = False
@@ -171,6 +172,18 @@ class MemoryStorage:
             raise BackendUnavailable("storage down")
         with self._lock:
             self._blobs.pop((customer_id, document_id), None)
+            self.renditions.pop((customer_id, document_id), None)
+
+    def put_rendition(self, customer_id: str, document_id: str, pdf: bytes) -> None:
+        with self._lock:
+            self.renditions[(customer_id, document_id)] = pdf
+
+    def get_rendition(self, customer_id: str, document_id: str) -> bytes:
+        with self._lock:
+            try:
+                return self.renditions[(customer_id, document_id)]
+            except KeyError:
+                raise BlobNotFound(document_id) from None
 
     def count(self) -> int:
         with self._lock:
@@ -217,7 +230,7 @@ class FakeScanner:
         self._error = error
         self.scanned: list[bytes] = []
 
-    def scan(self, data: bytes) -> Any:
+    def scan(self, data: bytes, *, name: str | None = None) -> Any:
         self.scanned.append(data)
         if self._error:
             raise ScannerError("scanner down")
@@ -271,6 +284,17 @@ class MemoryDocuments(MemoryRepository):
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None:
         if self.get(customer_id, document_id) is not None:
             self.page_counts[(customer_id, document_id)] = page_count
+
+    def set_detected_type(self, customer_id: str, document_id: str, detected_type: str) -> None:
+        """#522: the kind resolve.py told, on the record (and its fingerprint's)."""
+        with self._lock:
+            record = self._by_id.get((customer_id, document_id))
+            if record is None:
+                return
+            resolved = replace(record, detected_type=detected_type)
+            self._by_id[(customer_id, document_id)] = resolved
+            if self._by_fingerprint.get((customer_id, record.sha256)) == record:
+                self._by_fingerprint[(customer_id, record.sha256)] = resolved
 
     def mark_ready(
         self,

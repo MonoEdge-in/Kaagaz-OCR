@@ -161,7 +161,8 @@ describe("the document screen's marks and notice (#454)", () => {
     expect(pageViewer).toContain("readingMarks={readingMarks}");
     expect(view).toContain("marks={readingMarks}"); // the Needs attention panel, numbered per page as before
     expect(view).toContain("const readingMarks = (pageNo !== null && marksByPage.get(pageNo)) || NO_MARKS;");
-    expect(view).toContain('const scroll = shown?.detected_type === "pdf" ? shown.pages.map((p) => p.page_no) : [];');
+    // #522 PR 2: a Word or PowerPoint file's PDF rendition scrolls the same way.
+    expect(view).toContain("const scroll = shown && viewsAsPdf(shown.detected_type) ? shown.pages.map((p) => p.page_no) : [];");
   });
 
   it("lights a hot mark (DD7) only on the screen's page, as the panel numbers them", () => {
@@ -171,6 +172,6 @@ describe("the document screen's marks and notice (#454)", () => {
   });
 
   it("keeps the low-resolution notice's room on every page of a PDF that has one", () => {
-    expect(view).toContain("const lowRoom = detail.detected_type === \"pdf\" ? (detail.pages.map(lowNote).find((note) => note !== null) ?? null) : null;");
+    expect(view).toContain("const lowRoom = viewsAsPdf(detail.detected_type) ? (detail.pages.map(lowNote).find((note) => note !== null) ?? null) : null;");
     expect(view).toMatch(/\{\(lowResolution \?\? lowRoom\) && \(\s*<p className=\{styles\.trashNotice\} role="note" style=\{lowResolution \? undefined : \{ visibility: "hidden" \}\}>/);  });
 });

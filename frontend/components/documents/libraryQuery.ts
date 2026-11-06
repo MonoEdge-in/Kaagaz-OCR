@@ -133,7 +133,19 @@ export const MAX_PARTY_LENGTH = 200;
 export const MAX_PROPERTY_LENGTH = 64;
 
 /** The kinds the Type filter offers: the ones Kaagaz takes in (logic.ts ACCEPTED_EXTENSIONS). */
-export const FILTER_TYPES: readonly DetectedType[] = ["pdf", "png", "jpeg", "tiff", "zip", "text"];
+export const FILTER_TYPES: readonly DetectedType[] = [
+  "pdf",
+  "png",
+  "jpeg",
+  "tiff",
+  "heic",
+  "xlsx",
+  "csv",
+  "txt",
+  "md",
+  "json",
+  "html",
+];
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;

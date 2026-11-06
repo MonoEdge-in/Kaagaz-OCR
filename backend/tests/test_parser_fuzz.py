@@ -286,7 +286,7 @@ class FakeOcr:
 class CleanScanner:
     """A virus scanner that finds nothing: only our content check is under test."""
 
-    def scan(self, data: bytes) -> Verdict:
+    def scan(self, data: bytes, *, name: str | None = None) -> Verdict:
         return Verdict.CLEAN
 
 

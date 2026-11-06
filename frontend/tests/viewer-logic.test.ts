@@ -12,6 +12,7 @@ import {
   focusZoom,
   pageMode,
   sheetRowWindow,
+  viewsAsPdf,
   stepZoom,
   visibleRect,
 } from "@/components/viewer/viewer";
@@ -229,6 +230,18 @@ describe("pageMode", () => {
     expect(pageMode({ detected_type: "pdf" }, pdfPage, false)).toBe("pdf");
     expect(pageMode({ detected_type: "pdf" }, pdfPage, true)).toBe("image");
     expect(pageMode({ detected_type: "pdf" }, { ...pdfPage, has_image: false }, true)).toBe("none");
+  });
+
+  it("draws a Word or PowerPoint file's PDF rendition with PDF.js (#522)", () => {
+    for (const detected_type of ["docx", "dotx", "doc", "pptx", "ppt"] as const) {
+      expect(pageMode({ detected_type }, pdfPage, false)).toBe("pdf");
+      expect(pageMode({ detected_type }, pdfPage, true)).toBe("image");
+      expect(viewsAsPdf(detected_type)).toBe(true);
+    }
+    expect(viewsAsPdf("pdf")).toBe(true);
+    expect(viewsAsPdf("xls")).toBe(false);
+    expect(viewsAsPdf("png")).toBe(false);
+    expect(pageMode({ detected_type: "xls" }, sheetPage, false)).toBe("sheet");
   });
 
   it("shows images and sheets their own way", () => {

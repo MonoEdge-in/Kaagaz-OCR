@@ -995,6 +995,15 @@ class PgDocuments:
                 {"n": page_count, "c": customer_id, "d": document_id},
             )
 
+    def set_detected_type(self, customer_id: str, document_id: str, detected_type: str) -> None:
+        """#522: the kind resolve.py told after the virus scan, in place of the sniffed type
+        (0078's CHECK holds both). One indexed statement."""
+        with unavailable(), self._db.customer(customer_id) as conn:
+            conn.execute(
+                text("UPDATE documents SET detected_type = :t WHERE customer_id = :c AND id = :d"),
+                {"t": detected_type, "c": customer_id, "d": document_id},
+            )
+
     # --- used by the worker ---------------------------------------------------
 
     def record_attempt(self, customer_id: str, document_id: str, attempt: int, max_attempts: int) -> None:

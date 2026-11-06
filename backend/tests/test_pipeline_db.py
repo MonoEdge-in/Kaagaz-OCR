@@ -54,7 +54,7 @@ from tests.pdf_builder import Page, Text, make_pdf
 from tests.test_api_review import _named_database
 from tests.test_extraction_card import fact as card_fact
 from tests.test_extraction_card import reply as card_reply
-from tests.test_pipeline import PIPELINE_POLICY, real_socket
+from tests.test_pipeline import CSV_NAME, PIPELINE_POLICY, real_socket
 from tests.test_pipeline_runs import SCANNED, SETTINGS, TimedOcr, Timer
 from tests.test_pipeline_store_db import counts, new_session
 
@@ -89,7 +89,7 @@ def one(db: Database, customer: str, sql: str, doc: str) -> tuple[object, ...]:
 def test_a_csv_becomes_ready_with_pages_pieces_and_values_as_read(db: Database) -> None:
     customer, _ = new_customer(db)
     upload, processor, _ = setup(db)
-    doc = upload.accept(customer, io.BytesIO(CSV)).document_id
+    doc = upload.accept(customer, io.BytesIO(CSV), display_name=CSV_NAME).document_id
     processor(Job(customer, doc), lambda: None)
     processor(Job(customer, doc), lambda: None)  # a redelivery replaces
 
@@ -128,7 +128,7 @@ def test_a_csv_becomes_ready_with_pages_pieces_and_values_as_read(db: Database) 
 def test_a_broken_file_is_marked_failed_with_its_code(db: Database) -> None:
     customer, _ = new_customer(db)
     upload, processor, _ = setup(db)
-    doc = upload.accept(customer, io.BytesIO(b'a,"never closed\n')).document_id
+    doc = upload.accept(customer, io.BytesIO(b'a,"never closed\n'), display_name=CSV_NAME).document_id
     with pytest.raises(JobFailed):
         processor(Job(customer, doc), lambda: None)
     assert one(db, customer, "SELECT status, failure_code FROM documents WHERE id = :d", doc) == (
@@ -140,7 +140,7 @@ def test_a_broken_file_is_marked_failed_with_its_code(db: Database) -> None:
 def test_an_infected_file_is_rejected_with_its_reason_kept(db: Database) -> None:
     customer, _ = new_customer(db)
     upload, processor, scanner = setup(db, Verdict.INFECTED)
-    doc = upload.accept(customer, io.BytesIO(CSV)).document_id
+    doc = upload.accept(customer, io.BytesIO(CSV), display_name=CSV_NAME).document_id
     with pytest.raises(JobFailed):
         processor(Job(customer, doc), lambda: None)
     with pytest.raises(JobFailed):
@@ -163,7 +163,7 @@ def test_a_learned_correction_in_the_database_is_applied(db: Database) -> None:
             {"c": customer, "u": user},
         )
     upload, processor, _ = setup(db)
-    doc = upload.accept(customer, io.BytesIO(CSV)).document_id
+    doc = upload.accept(customer, io.BytesIO(CSV), display_name=CSV_NAME).document_id
     processor(Job(customer, doc), lambda: None)
     assert one(
         db,
@@ -177,7 +177,7 @@ def test_a_learned_correction_in_the_database_is_applied(db: Database) -> None:
 def test_status_after_needs_reader(db: Database) -> None:
     customer, _ = new_customer(db)
     upload, processor, _ = setup(db)
-    doc = upload.accept(customer, io.BytesIO(b"%PDF-1.7\n" + b"0" * 200)).document_id
+    doc = upload.accept(customer, io.BytesIO(b"%PDF-1.7\n" + b"0" * 200), display_name=CSV_NAME).document_id
     processor(Job(customer, doc), lambda: None)
     assert PgDocuments(db).get_status(customer, doc) is DocumentStatus.NEEDS_READER
 
@@ -199,10 +199,12 @@ def _as_version(db: Database, customer: str, document: str, *, of: str, number: 
 def test_a_new_version_takes_over_once_ready_and_a_failed_one_changes_nothing(db: Database) -> None:
     customer, _ = new_customer(db)
     upload, processor, _ = setup(db)
-    first = upload.accept(customer, io.BytesIO(CSV)).document_id
+    first = upload.accept(customer, io.BytesIO(CSV), display_name=CSV_NAME).document_id
     processor(Job(customer, first), lambda: None)
-    second = upload.accept(customer, io.BytesIO(CSV + b"Gupta Stores,90,\n")).document_id
-    broken = upload.accept(customer, io.BytesIO(b'a,"never closed\n')).document_id
+    second = upload.accept(
+        customer, io.BytesIO(CSV + b"Gupta Stores,90,\n"), display_name=CSV_NAME
+    ).document_id
+    broken = upload.accept(customer, io.BytesIO(b'a,"never closed\n'), display_name=CSV_NAME).document_id
     _as_version(db, customer, second, of=first, number=2)
     _as_version(db, customer, broken, of=first, number=3)
 
@@ -313,7 +315,7 @@ def test_reprocess_makes_a_new_run_and_replaces_every_table(db: Database) -> Non
         )
     storage = MemoryStorage()
     upload = UploadService(PIPELINE_POLICY, PgDocuments(db), storage, MemoryQueue())
-    doc = upload.accept(customer, io.BytesIO(CSV)).document_id
+    doc = upload.accept(customer, io.BytesIO(CSV), display_name=CSV_NAME).document_id
     processor = with_runs(db, storage)
     processor(Job(customer, doc), lambda: None)
     with db.customer(customer) as conn:  # a reviewer's fix on one of the values
@@ -355,7 +357,7 @@ def test_ocr_down_on_page_2_then_retry_leaves_one_set_and_two_runs(db: Database)
     customer, _ = new_customer(db)
     storage = MemoryStorage()
     upload = UploadService(PIPELINE_POLICY, PgDocuments(db), storage, MemoryQueue())
-    doc = upload.accept(customer, io.BytesIO(make_pdf([SCANNED, SCANNED]))).document_id
+    doc = upload.accept(customer, io.BytesIO(make_pdf([SCANNED, SCANNED])), display_name=CSV_NAME).document_id
     engine = TimedOcr(Timer(), down_on_call=2)
     processor = with_runs(db, storage, build_reader_socket(SETTINGS, MeteredOcrEngine(engine, timer=Timer())))
 
@@ -393,7 +395,7 @@ def test_two_deliveries_overlapping_leave_one_set_of_rows(db: Database) -> None:
     customer, _ = new_customer(db)
     storage = MemoryStorage()
     upload = UploadService(PIPELINE_POLICY, PgDocuments(db), storage, MemoryQueue())
-    doc = upload.accept(customer, io.BytesIO(CSV)).document_id
+    doc = upload.accept(customer, io.BytesIO(CSV), display_name=CSV_NAME).document_id
     names = new_session(), new_session()
     first_db, second_db = _named_database(names[0]), _named_database(names[1])
     first, second = GatedSocket(real_socket()), GatedSocket(real_socket())
@@ -436,7 +438,7 @@ def test_a_stale_delivery_after_a_reprocess_does_not_fail_the_document(db: Datab
     customer, _ = new_customer(db)
     storage = MemoryStorage()
     upload = UploadService(PIPELINE_POLICY, PgDocuments(db), storage, MemoryQueue())
-    doc = upload.accept(customer, io.BytesIO(CSV)).document_id
+    doc = upload.accept(customer, io.BytesIO(CSV), display_name=CSV_NAME).document_id
     held = GatedSocket(real_socket())
     with ThreadPoolExecutor(max_workers=1) as pool:
         stale = pool.submit(with_runs(db, storage, held), Job(customer, doc), lambda: None)
@@ -465,7 +467,7 @@ class GatedScanner(FakeScanner):
         super().__init__(Verdict.CLEAN)
         self.entered, self.release = threading.Event(), threading.Event()
 
-    def scan(self, data: bytes) -> Any:
+    def scan(self, data: bytes, *, name: str | None = None) -> Any:
         self.entered.set()
         assert self.release.wait(timeout=10), "the test never released the scan"
         return super().scan(data)
@@ -476,7 +478,7 @@ def test_a_stale_scan_never_moves_a_ready_document_back_to_clean(db: Database) -
     customer, _ = new_customer(db)
     storage = MemoryStorage()
     upload = UploadService(PIPELINE_POLICY, PgDocuments(db), storage, MemoryQueue())
-    doc = upload.accept(customer, io.BytesIO(CSV)).document_id
+    doc = upload.accept(customer, io.BytesIO(CSV), display_name=CSV_NAME).document_id
     scanner = GatedScanner()
     with ThreadPoolExecutor(max_workers=1) as pool:
         stale = pool.submit(with_runs(db, storage, scanner=scanner), Job(customer, doc), lambda: None)
@@ -527,7 +529,7 @@ def test_a_card_its_facts_and_its_links_are_saved_with_a_fake_model(db: Database
     budget = ModelBudget(card_max_chars=12000, card_max_tokens=1024, num_ctx=8192, invoice_windows=None)
     docs = []
     for delivery in ("Cotton cloth delivered to the Pune shop in August", "Silk delivered in August too"):
-        doc = upload.accept(customer, io.BytesIO(_receipt(delivery))).document_id
+        doc = upload.accept(customer, io.BytesIO(_receipt(delivery)), display_name=CSV_NAME).document_id
         processor = with_runs(
             db, storage, build_reader_socket(SETTINGS, None), chat=FakeChat(RECEIPT_CARD), model_budget=budget
         )
@@ -589,7 +591,7 @@ def test_the_model_off_twin_saves_no_card_and_no_links(db: Database) -> None:
     storage = MemoryStorage()
     upload = UploadService(PIPELINE_POLICY, PgDocuments(db), storage, MemoryQueue())
     docs = [
-        upload.accept(customer, io.BytesIO(_receipt(delivery))).document_id
+        upload.accept(customer, io.BytesIO(_receipt(delivery)), display_name=CSV_NAME).document_id
         for delivery in ("Cotton cloth delivered to the Pune shop in August", "Silk delivered in August too")
     ]
     for doc in docs:

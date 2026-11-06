@@ -147,7 +147,7 @@ describe("a folder upload's run", () => {
   });
 
   it("registers only a kind Kaagaz can't take as refused; the server judges size and emptiness", async () => {
-    const pick = fromFileList([picked("A/notes.docx"), picked("A/bill.pdf"), picked("A/zero.pdf", 0)]);
+    const pick = fromFileList([picked("A/notes.odt"), picked("A/bill.pdf"), picked("A/zero.pdf", 0)]);
     if (!pick) throw new Error("empty");
     const server = fakeServer();
     await startFolderUpload(
@@ -159,11 +159,11 @@ describe("a folder upload's run", () => {
     expect(server.registers[0]?.map((each) => each.refused)).toEqual(["unsupported_type", undefined, undefined]);
     expect(server.sentIds).toHaveLength(2);
     expect(refusedReason({ name: "big.pdf" })).toBeUndefined();
-    expect(refusedReason({ name: "notes.docx" })).toBe("unsupported_type");
+    expect(refusedReason({ name: "notes.odt" })).toBe("unsupported_type");
   });
 
   it("plans only the bytes it will send, and still registers a refused file with its size (#516)", async () => {
-    const pick = fromFileList([picked("A/notes.docx", 100), picked("A/bill.pdf", 5)]);
+    const pick = fromFileList([picked("A/notes.odt", 100), picked("A/bill.pdf", 5)]);
     if (!pick) throw new Error("empty");
     const server = fakeServer();
     const plans: FolderUploadPlanBody[] = [];
@@ -552,7 +552,7 @@ describe("adding new files only", () => {
     const locked = filled("A/locked.pdf", "secret");
     Object.defineProperty(locked, "arrayBuffer", { value: () => Promise.reject(new Error("NotReadableError")) });
     const files = [
-      filled("A/notes.docx", "words"), // a kind Kaagaz can't take
+      filled("A/notes.odt", "words"), // a kind Kaagaz can't take
       filled("A/zero.pdf", ""), // empty
       filled("A/big.pdf", "x".repeat(60)), // over the PDF limit below
       locked, // the browser can't read it
@@ -570,7 +570,7 @@ describe("adding new files only", () => {
     await startFolderUpload(server.api, { id: "h2", userId: "me", source: sourceOf(files), target, merge: true, limits, onlyNew: true }, () => undefined, never);
     expect(bodies[0]?.only_new).toBe(true);
     expect(server.registers[0]?.map((each) => [each.name, each.sha256])).toEqual([
-      ["notes.docx", undefined],
+      ["notes.odt", undefined],
       ["zero.pdf", undefined],
       ["big.pdf", undefined],
       ["locked.pdf", undefined],

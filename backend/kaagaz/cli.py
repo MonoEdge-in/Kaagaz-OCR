@@ -181,6 +181,8 @@ from kaagaz.db.engine import Database, make_engine
 from kaagaz.extraction.checks import GSTIN_FIELDS, gstin_valid
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
+from kaagaz.ingestion.ports import RenditionStorage
+from kaagaz.ingestion.resolve import UNSUPPORTED, resolve_kind
 from kaagaz.ingestion.spool import HEAD_SIZE
 from kaagaz.jobs import catalog, land_facts
 from kaagaz.jobs.purge import CustomerStorage, purge_customer
@@ -256,6 +258,11 @@ class FileBackup(Protocol):
     def write_tar(self, out: IO[bytes]) -> int: ...
 
     def read_tar(self, source: IO[bytes]) -> int: ...
+
+
+class CliStorage(CustomerStorage, RenditionStorage, Protocol):
+    """What the commands need of file storage (``S3Storage``): purge's calls, and land facts'
+    renditions of Word and PowerPoint files (#522 PR 2)."""
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -646,7 +653,7 @@ def _land_facts(
     args: argparse.Namespace,
     settings: Settings,
     model: ModelClient | None,
-    storage: CustomerStorage | None,
+    storage: CliStorage | None,
     out: TextIO,
 ) -> None:
     """land-facts: the mode's checks, then ``kaagaz.jobs.land_facts``."""
@@ -1092,8 +1099,11 @@ def _measure(
         data = path.read_bytes()
     except OSError:
         raise CliError("the file cannot be opened") from None
-    detected = sniff.detect_type(data[:HEAD_SIZE])
-    if detected is None:
+    try:  # its kind, as the worker tells it after the scan (#522)
+        detected = resolve_kind(data, sniff.detect_type(data[:HEAD_SIZE]), path.name)
+    except ReadError as error:
+        raise CliError(f"the file cannot be read ({error.code})") from None
+    if detected == UNSUPPORTED:
         raise CliError("this kind of file is not supported")
     engine = build_ocr_engine(settings)
     meter = None if engine is None else MeteredOcrEngine(engine, timer=timer)
@@ -1438,7 +1448,7 @@ def main(
     timer: Callable[[], float] = time.perf_counter,
     model: ModelClient | None = None,
     settings: Settings | None = None,
-    storage: CustomerStorage | None = None,
+    storage: CliStorage | None = None,
     file_store: FileBackup | None = None,
     binary_in: IO[bytes] | None = None,
     binary_out: IO[bytes] | None = None,

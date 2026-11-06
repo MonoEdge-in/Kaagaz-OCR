@@ -124,12 +124,21 @@ describe("source cards", () => {
     expect(sourcePlace(citation({ detected_type: "jpeg" }))).toBe("Page 3");
     expect(sourcePlace(citation({ detected_type: "zip" }))).toBe("Sheet 3");
     expect(sourcePlace(citation({ detected_type: "ole2" }))).toBe("Sheet 3");
-    expect(sourcePlace(citation({ detected_type: "text" }))).toBe("Sheet 3");
+    // Changed on purpose (#522): a CSV is csv once read, and a text file has pages.
+    expect(sourcePlace(citation({ detected_type: "csv" }))).toBe("Sheet 3");
+    expect(sourcePlace(citation({ detected_type: "xlsx" }))).toBe("Sheet 3");
+    expect(sourcePlace(citation({ detected_type: "txt" }))).toBe("Page 3");
+    expect(sourcePlace(citation({ detected_type: "html" }))).toBe("Page 3");
+    expect(sourcePlace(citation({ detected_type: "heic" }))).toBe("Page 3");
+    expect(sourcePlace(citation({ detected_type: "xls" }))).toBe("Sheet 3");
+    expect(sourcePlace(citation({ detected_type: "docx" }))).toBe("Page 3");
   });
 
   it("writes the meta line as place and file kind", () => {
     expect(sourceMeta(citation())).toBe("Page 3 · PDF");
-    expect(sourceMeta(citation({ detected_type: "zip", page_no: 2 }))).toBe("Sheet 2 · Spreadsheet");
+    // Changed on purpose (#522): a read spreadsheet is xlsx.
+    expect(sourceMeta(citation({ detected_type: "xlsx", page_no: 2 }))).toBe("Sheet 2 · Spreadsheet");
+    expect(sourceMeta(citation({ detected_type: "md", page_no: 2 }))).toBe("Page 2 · Markdown");
   });
 
   // Changed on purpose (Tushar, 16 Oct 2026: no Needs review in Ask): every source

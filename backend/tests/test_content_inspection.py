@@ -26,6 +26,7 @@ from kaagaz.scanning.content import Finding, inspect
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES, REJECTION_CODES, Verdict
 from tests.pdf_builder import Page, Picture, Text, make_objstm_pdf, make_pdf
 from tests.picture_support import text_like_picture
+from tests.test_resolve import compound
 from tests.xlsx_builder import make_xlsx, sheet_xml
 
 WINDOWS_PROGRAM = b"MZ" + b"\x90" * 62 + b"This program cannot be run in DOS mode.\r\r\n$" + b"\x00" * 64
@@ -358,15 +359,53 @@ class OfficePackages(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIs(inspect(with_member(spreadsheet(), name, b"x")), Finding.BLOCKED)
 
+    def test_a_chart_s_workbook_or_a_picture_may_be_embedded_nothing_else(self) -> None:
+        """#522, security review (6 Nov 2026): a chart in a PowerPoint or Word file keeps its
+        data as an embedded .xlsx (ClamAV looks inside it too), and a picture may be embedded;
+        an OLE object, any .bin package, a program, a script or a macro-enabled file may not."""
+        slides = zip_bytes({"ppt/presentation.xml": b"<p/>", _TYPES: b"<Types/>"})
+        letter = zip_bytes({"word/document.xml": b"<w/>", _TYPES: b"<Types/>"})
+        allowed = (
+            "ppt/embeddings/Microsoft_Excel_Worksheet.xlsx",
+            "word/embeddings/Microsoft_Excel_Worksheet1.XLSX",
+            "word/embeddings/Microsoft_Word_Document.docx",
+            "ppt/embeddings/Microsoft_PowerPoint_Presentation.pptx",
+            "ppt/embeddings/image1.png",
+            "word/embeddings/image2.jpeg",
+            "word/embeddings/image3.emf",
+        )
+        for name in allowed:
+            with self.subTest(name=name):
+                self.assertIsNone(inspect(with_member(slides, name, b"x")))
+        refused = (
+            "word/embeddings/oleObject1.bin",
+            "word/embeddings/Microsoft_Excel_Worksheet.bin",
+            "ppt/embeddings/package.bin",
+            "word/embeddings/run.exe",
+            "word/embeddings/hook.dll",
+            "word/embeddings/x.js",
+            "word/embeddings/x.vbs",
+            "word/embeddings/book.xlsm",
+            "word/embeddings/letter.docm",
+            "word/embeddings/vbaProject.bin",
+            "word/embeddings/picture.svg",
+            "word/embeddings/notes",
+        )
+        for name in refused:
+            with self.subTest(name=name):
+                self.assertIs(inspect(with_member(letter, name, b"x")), Finding.BLOCKED)
+
     def test_an_executable_or_archive_inside(self) -> None:
         for name in ("xl/media/run.exe", "docs/payload.js", "inner.zip", "report.xlsm"):
             with self.subTest(name=name):
                 self.assertIs(inspect(with_member(spreadsheet(), name, b"x")), Finding.BLOCKED)
 
     def test_path_traversal(self) -> None:
+        # Changed on purpose (#522 PR 3): an Office package's ([Content_Types].xml); a plain zip's
+        # unsafe paths are refused one by one when it is unpacked (PlainZips below).
         for name in ("../../evil.txt", "/etc/passwd", "C:/Windows/evil.txt", "a/../../b"):
             with self.subTest(name=name):
-                self.assertIs(inspect(zip_bytes({name: b"x"})), Finding.BLOCKED)
+                self.assertIs(inspect(zip_bytes({_TYPES: b"<Types/>", name: b"x"})), Finding.BLOCKED)
 
     def test_a_remote_template(self) -> None:
         rels = (
@@ -379,10 +418,83 @@ class OfficePackages(unittest.TestCase):
         )
 
     def test_a_password_protected_part_cannot_be_checked(self) -> None:
-        self.assertIs(inspect(zip_bytes({"a.xml": b"x"}, encrypted=True)), Finding.UNSCANNABLE)
+        # Changed on purpose (#522 PR 3): an Office package's, as test_path_traversal.
+        packed = zip_bytes({_TYPES: b"<Types/>", "a.xml": b"x"}, encrypted=True)
+        self.assertIs(inspect(packed), Finding.UNSCANNABLE)
+
+
+_TYPES = "[Content_Types].xml"
+
+
+class PlainZips(unittest.TestCase):
+    """#522 PR 3: a zip that is a folder of files is unpacked, and every file in it checked on its
+    own, so a zip inside it, a part with a password and an unsafe path are refused there, one by
+    one, never the whole zip; an executable, a script or a macro file still refuses it whole."""
+
+    def test_a_nested_zip_a_password_and_an_unsafe_path_are_left_to_the_unpacking(self) -> None:
+        inner = zip_bytes({"a.csv": b"a,b\n1,2\n"})
+        self.assertIsNone(inspect(zip_bytes({"inner.zip": inner, "Old/INNER.ZIP": inner})))
+        self.assertIsNone(inspect(zip_bytes({"a.csv": b"x"}, encrypted=True)))
+        for name in ("../../evil.txt", "/etc/passwd", "C:/Windows/evil.txt"):
+            with self.subTest(name=name):
+                self.assertIsNone(inspect(zip_bytes({name: b"x", "ok.csv": b"y"})))
+
+    def test_an_executable_a_script_or_a_macro_file_still_refuses_the_whole_zip(self) -> None:
+        for name in ("run.exe", "a/payload.js", "report.xlsm", "archive.rar", "vbaProject.bin"):
+            with self.subTest(name=name):
+                self.assertIs(inspect(zip_bytes({name: b"x", "ok.csv": b"y"})), Finding.BLOCKED)
+
+    def test_any_office_part_makes_it_a_package_with_every_rule(self) -> None:
+        for part in ("word/document.xml", "ppt/presentation.xml", "xl/workbook.xml"):
+            with self.subTest(part=part):
+                self.assertIs(inspect(zip_bytes({part: b"<x/>", "inner.zip": b"x"})), Finding.BLOCKED)
+
+
+class NewFormats(unittest.TestCase):
+    """#522, security review (6 Nov 2026): a HEIC photo is allowed as the other photos are; an
+    old Office file (OLE2) is checked, not refused whole."""
+
+    def test_a_heic_photo_is_allowed_as_png_jpeg_and_tiff_are(self) -> None:
+        self.assertIsNone(inspect((Path(__file__).with_name("fixtures") / "heic" / "one.heic").read_bytes()))
+
+    def test_an_old_word_excel_or_powerpoint_file_is_allowed(self) -> None:
+        for streams in (["WordDocument", "1Table"], ["Workbook"], ["Book"], ["PowerPoint Document"]):
+            with self.subTest(streams=streams):
+                self.assertIsNone(inspect(compound(streams)))
+
+    def test_macros_embedded_objects_or_a_password_refuse_an_old_office_file(self) -> None:
+        for streams, storages in (
+            (["WordDocument"], {"Macros": ["PROJECT", "dir"]}),  # Word's macros
+            (["Workbook"], {"_VBA_PROJECT_CUR": ["PROJECT"]}),  # Excel's
+            (["Workbook", "_VBA_PROJECT"], {}),
+            (["PowerPoint Document"], {"VBA": ["dir"]}),
+            (["WordDocument"], {"ObjectPool": ["_1234"]}),  # an embedded OLE object
+            (["EncryptedPackage", "EncryptionInfo"], {}),  # a password-protected .docx
+        ):
+            with self.subTest(streams=streams, storages=storages):
+                self.assertIs(inspect(compound(streams, storages)), Finding.BLOCKED)
+
+    def test_a_damaged_old_office_file_cannot_be_checked(self) -> None:
+        self.assertIs(inspect(compound(["WordDocument"])[:600]), Finding.UNSCANNABLE)
 
 
 class PlainText(unittest.TestCase):
+    def test_markup_is_only_text_in_html_markdown_and_json(self) -> None:
+        # Changed on purpose (#522, security review 6 Nov 2026): the text reader never renders an
+        # HTML, Markdown or JSON file, and Download sends it as plain text, an attachment, with
+        # nosniff; so markup there is text. A .txt or .csv file, or one with no name, keeps the rule.
+        page = b"<html><head><script>alert(1)</script></head><body>Rent</body></html>"
+        self.assertIsNone(inspect(page, "page.html"))
+        self.assertIsNone(inspect(page, "PAGE.HTM"))
+        self.assertIsNone(inspect(b"# Rent\n<iframe src='x'></iframe>\n", "notes.md"))
+        self.assertIsNone(inspect(b'{"a": "<script>x()</script>"}', "data.json"))
+        for name in ("page.txt", "page.csv", "page", ""):
+            with self.subTest(name=name):
+                self.assertIs(inspect(page, name), Finding.BLOCKED)
+        self.assertIs(inspect(b"<not json>", "data.json"), Finding.BLOCKED)  # read as a .txt
+        # Everything else still holds: no hidden program, no formula that runs a command.
+        self.assertIs(inspect(b"<p>x</p>\nA,=cmd|' /C calc'!A0\n", "page.html"), Finding.BLOCKED)
+
     def test_markup_and_scripts_are_refused(self) -> None:
         samples = [
             "<html><body>hi</body></html>",
@@ -415,7 +527,7 @@ class RecordingScanner:
     def __init__(self) -> None:
         self.calls = 0
 
-    def scan(self, data: bytes) -> Verdict:
+    def scan(self, data: bytes, *, name: str | None = None) -> Verdict:
         self.calls += 1
         return Verdict.CLEAN
 
@@ -555,9 +667,12 @@ class SecurityReviewFailClosed(unittest.TestCase):
             with self.subTest(data=data[:12]):
                 self.assertIs(inspect(data), Finding.BLOCKED)
 
-    def test_a_type_with_no_check_is_blocked(self) -> None:
+    def test_an_old_office_file_that_cant_be_read_is_never_called_safe(self) -> None:
+        # Changed on purpose (#522, security review 6 Nov 2026): an old Office file has a check of
+        # its own now (NewFormats), so it is no longer refused for having none; one whose
+        # directory can't be read is unscannable, never let through.
         old_xls = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 504
-        self.assertIs(inspect(old_xls), Finding.BLOCKED)
+        self.assertIs(inspect(old_xls), Finding.UNSCANNABLE)
 
 
 GOLDEN = Path(__file__).parent / "golden"
