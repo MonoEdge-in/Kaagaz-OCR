@@ -46,6 +46,7 @@ import type { BoxRegion, CropView, FractionRect } from "@/lib/regions";
 import type { DocumentSummary, PageSummary, ReadingMark, Region, Role, WordFlag } from "@/lib/types";
 import {
   MARK_WORDS,
+  focusFirstWord,
   isWordMark,
   legend,
   markChecked,
@@ -203,7 +204,7 @@ export function PageViewer({
   const marksKey = `${document.id}:${page.page_no}`;
   const showProblems =
     problemsChoice && problemsChoice.key === marksKey ? problemsChoice.on : showByDefault(page);
-  const words = wordMarkView(problems, showWords, crowdedOpen === marksKey);
+  const words = wordMarkView(problems, showWords, crowdedOpen === marksKey, 1 / aspect);
   const spot = isCrop ? undefined : boxes[0];
   const spotKey = spot ? `${marksKey}:${spot.box.join(",")}` : null;
   let spotZoom = 1;
@@ -253,6 +254,14 @@ export function PageViewer({
   }, [spotKey, zoom, box, fill]);
 
   // A new page with no spot to show starts at its top-left, even zoomed in.
+  // #523: the chip pressed, focus goes to the first word mark it showed, not to the page's body.
+  const focusWords = useRef(false);
+  useEffect(() => {
+    if (!focusWords.current) return;
+    focusWords.current = false;
+    focusFirstWord(stageRef.current);
+  }, [crowdedOpen]);
+
   const toPageStart = useEffectEvent(() => {
     if (!spotKey) frameRef.current?.scrollTo(0, 0);
   });
@@ -465,6 +474,7 @@ export function PageViewer({
                 type="button"
                 className={styles.problem}
                 data-quality={mark.quality}
+                data-word-mark={isWordMark(mark) ? "" : undefined}
                 data-state={checked ? "checked" : undefined}
                 data-hot={hotMark === index ? "true" : undefined}
                 aria-label={name}
@@ -698,7 +708,14 @@ export function PageViewer({
       ) : null}
       {words.capped && canZoom ? (
         <p className={styles.note}>
-          <button type="button" className={styles.wordsChip} onClick={() => setCrowdedOpen(marksKey)}>
+          <button
+            type="button"
+            className={styles.wordsChip}
+            onClick={() => {
+              focusWords.current = true;
+              setCrowdedOpen(marksKey);
+            }}
+          >
             {wordsChipText(words.total)}
             <span className="visually-hidden">: show their marks</span>
           </button>

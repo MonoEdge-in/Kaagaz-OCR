@@ -39,6 +39,7 @@ import { MOTION_MS, play } from "@/lib/motion";
 import type { Frame } from "@/lib/motion";
 import type { ReadingMark, Region, Role, WordFlag } from "@/lib/types";
 import {
+  focusFirstWord,
   isWordMark,
   markChecked,
   markName,
@@ -154,6 +155,14 @@ export function PdfDocumentViewer({
   const [showHighlights, setShowHighlights] = useState(true);
   const [showWords, setShowWords] = useState(() => showWordsByDefault(role));
   const [crowdedOpen, setCrowdedOpen] = useState<readonly number[]>([]); // pages whose chip was pressed
+  // #523: the chip pressed, focus goes to the first word mark it showed on its page.
+  const focusPage = useRef<number | null>(null);
+  useEffect(() => {
+    const page = focusPage.current;
+    focusPage.current = null;
+    if (page === null) return;
+    focusFirstWord(viewer.current?.getViewportElement()?.querySelector(`[data-pdf-viewer-page="${page}"]`));
+  }, [crowdedOpen]);
   const [hand, setHand] = useState(false); // #419: a drag moves the pages
   const [printing, setPrinting] = useState(false);
   const [printFailed, setPrintFailed] = useState(false);
@@ -277,7 +286,9 @@ export function PdfDocumentViewer({
         return { left: px.left, top: px.top, width: px.width, height: px.height };
       };
       const problems = marksOnPage(readingMarks, pageNumber);
-      const words = wordMarkView(problems, showWords, crowdedOpen.includes(pageNumber));
+      // The marks' boxes are of the page as shown (turned): its height over its width, so.
+      const aspect = fileRotation % 180 === 0 ? pageHeight / pageWidth : pageWidth / pageHeight;
+      const words = wordMarkView(problems, showWords, crowdedOpen.includes(pageNumber), aspect);
       // The marks of pages beside the screen's come too (#454); a hot mark (DD7) is a number on
       // the screen's page, as the Needs attention panel counts them.
       const here = pageNumber === pageNo;
@@ -328,7 +339,10 @@ export function PdfDocumentViewer({
             <button
               type="button"
               className={`${styles.wordsChip} ${styles.pageChip}`}
-              onClick={() => setCrowdedOpen((pages) => [...pages, pageNumber])}
+              onClick={() => {
+                focusPage.current = pageNumber;
+                setCrowdedOpen((pages) => [...pages, pageNumber]);
+              }}
             >
               {wordsChipText(words.total)}
               <span className="visually-hidden">: show their marks</span>
@@ -365,6 +379,7 @@ export function PdfDocumentViewer({
                   type="button"
                   className={styles.problem}
                   data-quality={mark.quality}
+                  data-word-mark={isWordMark(mark) ? "" : undefined}
                   data-state={checked ? "checked" : undefined}
                   data-hot={here && hotMark === index ? "true" : undefined}
                   aria-label={name}

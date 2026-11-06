@@ -205,6 +205,14 @@ describe("lineMarked", () => {
     expect(lineMarked(line(null, box(2, [0.1, 0.2, 0.9, 0.25])), null)).toBe(false);
   });
 
+  it("marks the block a cited line's band lies in (#523: a value on line 1 of a 10-line block)", () => {
+    const block = line(null, box(2, [0.1, 0.2, 0.9, 0.7]));
+    expect(lineMarked(block, box(2, [0.1, 0.2, 0.9, 0.25]))).toBe(true);
+    expect(lineMarked(block, box(2, [0.1, 0.65, 0.9, 0.7]))).toBe(true);
+    expect(lineMarked(block, box(2, [0.1, 0.75, 0.9, 0.8]))).toBe(false); // below the block
+    expect(lineMarked(block, box(1, [0.1, 0.2, 0.9, 0.25]))).toBe(false);
+  });
+
   it("marks the same cell, never another cell or a box", () => {
     expect(lineMarked(line(null, cell(1, 3, 2)), cell(1, 3, 2))).toBe(true);
     expect(lineMarked(line(null, cell(1, 3, 1)), cell(1, 3, 2))).toBe(false);

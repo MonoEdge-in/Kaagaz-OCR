@@ -70,9 +70,11 @@ export function markRect(mark: ReadingMark, width: number, height: number): Pixe
 
 /** #523: more word marks than this on a page are not drawn; a chip says how many instead. */
 export const WORD_MARK_CAP = 40;
-/** #523: a word mark is drawn only up to this many times the page's usual word height ... */
+/** #523: a word mark narrower than it is tall by this much (in pixels) is a strip ... */
+export const STRIP_RATIO = 2;
+/** ... and is not drawn when taller than this many times the page's usual word height ... */
 export const TALL_TIMES = 2.5;
-/** ... or this share of the page's height, whichever is larger. */
+/** ... or, with no usual word on the page to go by, than this share of the page's height. */
 export const TALL_SHARE = 0.06;
 
 /** A mark on one word (PRD 5 F3): unsure, or couldn't read. A spot not confirmed is a line's. */
@@ -94,21 +96,30 @@ function heightOf(region: Region): number | null {
   return region.kind === "box" ? region.box[3] - region.box[1] : null;
 }
 
+/** A stored strip's shape (#523): taller than STRIP_RATIO times its width, in pixels of a page
+ * `aspect` (its height over its width) times as tall as it is wide. A word is wider than tall. */
+function stripShaped(region: Region, aspect: number): boolean {
+  if (region.kind !== "box") return false;
+  const [x0, y0, x1, y1] = region.box;
+  return (y1 - y0) * aspect > STRIP_RATIO * (x1 - x0);
+}
+
 /**
- * The tallest a word mark on this page is drawn, as a share of the page's height (#523): TALL_TIMES
- * the median height of its word marks, or TALL_SHARE, whichever is larger. The median is taken over
- * the marks no taller than TALL_SHARE, so a page whose marks are all stored strips never raises its
- * own limit. O(n log n).
+ * How tall a strip-shaped word mark may be and still be drawn, as a share of the page's height
+ * (#523): TALL_TIMES the median height of the page's word-shaped marks, or TALL_SHARE when it has
+ * none. Only the shape names a strip, so a close-up page of big writing keeps its marks, and a
+ * page of stored strips never raises its own limit. O(n log n).
  */
-export function tallLimit(marks: readonly ReadingMark[]): number {
+export function tallLimit(marks: readonly ReadingMark[], aspect: number): number {
   const heights = marks
-    .filter(isWordMark)
+    .filter((mark) => isWordMark(mark) && !stripShaped(mark.region, aspect))
     .map((mark) => heightOf(mark.region))
-    .filter((height): height is number => height !== null && height <= TALL_SHARE)
+    .filter((height): height is number => height !== null)
     .sort((a, b) => a - b);
+  if (heights.length === 0) return TALL_SHARE;
   const half = Math.floor(heights.length / 2);
-  const median = heights.length % 2 ? heights[half]! : ((heights[half - 1] ?? 0) + (heights[half] ?? 0)) / 2;
-  return Math.max(TALL_TIMES * median, TALL_SHARE);
+  const median = heights.length % 2 ? heights[half]! : (heights[half - 1]! + heights[half]!) / 2;
+  return TALL_TIMES * median;
 }
 
 export interface WordMarkView {
@@ -121,14 +132,23 @@ export interface WordMarkView {
 }
 
 /** Which of a page's word marks are drawn (#523): none while "Show words to check" is off (`on`),
- * none over WORD_MARK_CAP until the chip is pressed (`opened`), and never one over tallLimit. */
-export function wordMarkView(marks: readonly ReadingMark[], on: boolean, opened: boolean): WordMarkView {
+ * none over WORD_MARK_CAP until the chip is pressed (`opened`), and never a strip-shaped one over
+ * tallLimit. `aspect` is the page's height over its width. */
+export function wordMarkView(
+  marks: readonly ReadingMark[],
+  on: boolean,
+  opened: boolean,
+  aspect: number,
+): WordMarkView {
   const words = marks.filter(isWordMark);
-  const limit = tallLimit(words);
+  const limit = tallLimit(words, aspect);
   const capped = on && !opened && words.length > WORD_MARK_CAP;
-  return {
-    total: words.length,
-    capped,
-    drawn: (region) => on && !capped && (heightOf(region) ?? 0) <= limit,
-  };
+  const strip = (region: Region) => stripShaped(region, aspect) && (heightOf(region) ?? 0) > limit;
+  return { total: words.length, capped, drawn: (region) => on && !capped && !strip(region) };
+}
+
+/** After the chip shows a crowded page's marks (#523): focus goes to the first one drawn
+ * (`data-word-mark`), not back to the page's body. */
+export function focusFirstWord(root: ParentNode | null | undefined): void {
+  root?.querySelector<HTMLElement>("[data-word-mark]")?.focus();
 }

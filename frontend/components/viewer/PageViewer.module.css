@@ -526,7 +526,8 @@
   cursor: pointer;
 }
 
-.wordsChip:focus-visible {
+/* On the page (paper white in both themes), a paper-fixed ring; in the toolbar, the theme's own. */
+.pageChip:focus-visible {
   outline: 2px solid var(--mine-on-paper);
   outline-offset: 2px;
 }

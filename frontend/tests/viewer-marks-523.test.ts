@@ -11,6 +11,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import {
   WORD_MARK_CAP,
+  focusFirstWord,
   showWordsByDefault,
   tallLimit,
   wordMarkView,
@@ -22,12 +23,14 @@ vi.mock("@/components/viewer/useObservedBox", () => ({
   useObservedBox: () => ({ ref: () => undefined, box: { width: 800, height: 1000 }, near: true }),
 }));
 
-/** A word mark `tall` of the page high, the `n`-th on its line of marks. */
-const word = (n: number, tall = 0.02, quality: ReadingMark["quality"] = "unsure"): ReadingMark => ({
+/** A word mark `tall` of the page high and `wide` of it wide, the `n`-th on its line of marks. */
+const word = (n: number, tall = 0.02, quality: ReadingMark["quality"] = "unsure", wide = 0.03): ReadingMark => ({
   quality,
-  region: { kind: "box", page: 1, box: [0.05 + (n % 20) * 0.04, 0.1, 0.08 + (n % 20) * 0.04, 0.1 + tall] },
+  region: { kind: "box", page: 1, box: [0.05 + (n % 20) * 0.04, 0.1, 0.05 + (n % 20) * 0.04 + wide, 0.1 + tall] },
   text: `w${n}`,
 });
+/** The test page's height over its width, in pixels (595 x 842). */
+const ASPECT = 842 / 595;
 
 const page: PageSummary = {
   page_no: 1,
@@ -119,44 +122,87 @@ describe("a page crowded with word marks (#523)", () => {
   it("draws up to 40, and over 40 shows a chip that turns them on for the page instead", async () => {
     expect(WORD_MARK_CAP).toBe(40);
     const forty = Array.from({ length: 40 }, (_, n) => word(n));
-    expect(wordMarkView(forty, true, false).capped).toBe(false);
+    expect(wordMarkView(forty, true, false, ASPECT).capped).toBe(false);
     expect(drawnWords(await render(forty, "admin"))).toHaveLength(40);
 
     const many = Array.from({ length: 41 }, (_, n) => word(n));
-    const view = wordMarkView(many, true, false);
+    const view = wordMarkView(many, true, false, ASPECT);
     expect([view.total, view.capped, view.drawn(many[0]!.region)]).toEqual([41, true, false]);
-    expect(wordMarkView(many, true, true).drawn(many[0]!.region)).toBe(true); // the chip pressed
+    expect(wordMarkView(many, true, true, ASPECT).drawn(many[0]!.region)).toBe(true); // the chip pressed
     expect(wordsChipText(41)).toBe("41 words to check on this page");
     const html = await render(many, "admin");
     expect(drawnWords(html)).toHaveLength(0);
     expect(html).toMatch(/<button type="button" class="[^"]*"[^>]*>41 words to check on this page/);
     // Switched off, there is nothing to count: no chip.
-    expect(wordMarkView(many, false, false).capped).toBe(false);
+    expect(wordMarkView(many, false, false, ASPECT).capped).toBe(false);
   });
 });
 
 describe("the guard for stored word marks (#523)", () => {
-  it("never draws a mark over 2.5 times the page's usual word height, or 6% of the page if more", () => {
+  // Changed on purpose (#523 review): a strip is told by its shape (in pixels, taller than twice
+  // its width) as well as its height, so a close-up page of big writing keeps its marks.
+  it("never draws a narrow strip over 2.5 times the page's usual word height", () => {
     const usual = Array.from({ length: 6 }, (_, n) => word(n, 0.02));
-    expect(tallLimit(usual)).toBeCloseTo(0.06); // 2.5 x 0.02 is under 6%: 6% it is
+    expect(tallLimit(usual, ASPECT)).toBeCloseTo(0.05);
     const strip = word(9, 0.45); // a stored strip the height of the paragraph
-    const tall = word(10, 0.055); // a big written word: kept
-    const view = wordMarkView([...usual, strip, tall], true, false);
+    const big = word(10, 0.055, "unsure", 0.12); // a big written word: wide, kept
+    const digit = word(11, 0.025, "unsure", 0.008); // one narrow digit at a usual height: kept
+    const view = wordMarkView([...usual, strip, big, digit], true, false, ASPECT);
     expect(view.drawn(strip.region)).toBe(false);
-    expect(view.drawn(tall.region)).toBe(true);
+    expect(view.drawn(big.region)).toBe(true);
+    expect(view.drawn(digit.region)).toBe(true);
     expect(view.drawn(usual[0]!.region)).toBe(true);
-    expect(view.total).toBe(8); // still counted and listed: only not drawn
+    expect(view.total).toBe(9); // still counted and listed: only not drawn
   });
 
-  it("is not raised by a page whose marks are all strips", () => {
-    const strips = Array.from({ length: 5 }, (_, n) => word(n, 0.3 + n * 0.02));
-    expect(tallLimit(strips)).toBeCloseTo(0.06);
-    expect(strips.some((mark) => wordMarkView(strips, true, false).drawn(mark.region))).toBe(false);
+  it("keeps every mark of a close-up page, its words 8% of the page high", () => {
+    const close = Array.from({ length: 8 }, (_, n) => word(n, 0.08, "unsure", 0.2));
+    const view = wordMarkView(close, true, false, ASPECT);
+    expect(close.every((mark) => view.drawn(mark.region))).toBe(true);
+  });
+
+  it("hides the screenshot's strips, beside its heading words or alone", () => {
+    const heading = Array.from({ length: 4 }, (_, n) => word(n, 0.035, "unsure", 0.08));
+    const strips = Array.from({ length: 30 }, (_, n) => word(n + 4, 0.45, "unsure", 0.02));
+    const view = wordMarkView([...heading, ...strips], true, false, ASPECT);
+    expect(strips.some((mark) => view.drawn(mark.region))).toBe(false);
+    expect(heading.every((mark) => view.drawn(mark.region))).toBe(true);
+    const alone = wordMarkView(strips, true, false, ASPECT); // no usual word: 6% of the page
+    expect(tallLimit(strips, ASPECT)).toBeCloseTo(0.06);
+    expect(strips.some((mark) => alone.drawn(mark.region))).toBe(false);
   });
 
   it("leaves a stored tall mark off the page as drawn", async () => {
     const html = await render([word(1), word(2, 0.45)], "reviewer");
     expect(drawnWords(html)).toHaveLength(1);
     expect(drawnWords(html)[0]).toContain("&#x27;w1&#x27;");
+  });
+});
+
+describe("after the chip is pressed (#523 review)", () => {
+  const viewer = readFileSync(join(process.cwd(), "components/viewer/PageViewer.tsx"), "utf8");
+  const pdf = readFileSync(join(process.cwd(), "components/viewer/PdfDocumentViewer.tsx"), "utf8");
+
+  it("focuses the first word mark in the page it is given", () => {
+    const focus = vi.fn();
+    const root = { querySelector: vi.fn(() => ({ focus })) };
+    focusFirstWord(root as unknown as ParentNode);
+    expect(root.querySelector).toHaveBeenCalledWith("[data-word-mark]");
+    expect(focus).toHaveBeenCalledOnce();
+    expect(() => focusFirstWord({ querySelector: () => null } as unknown as ParentNode)).not.toThrow();
+  });
+
+  it("moves focus to the first word mark drawn, never leaving it on the page's body", () => {
+    for (const source of [viewer, pdf]) {
+      expect(source).toMatch(/focusFirstWord\(/);
+    }
+    expect(viewer).toMatch(/data-word-mark=/);
+    expect(pdf).toMatch(/data-word-mark=/);
+  });
+
+  it("rings the chip in the toolbar with the theme's focus colour, and only the chip on paper with the paper ring", () => {
+    const css = readFileSync(join(process.cwd(), "components/viewer/PageViewer.module.css"), "utf8");
+    expect(css).not.toMatch(/\.wordsChip:focus-visible/);
+    expect(css).toMatch(/\.pageChip:focus-visible \{[^}]*outline: 2px solid var\(--mine-on-paper\)/);
   });
 });
