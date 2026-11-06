@@ -19,10 +19,12 @@ at its daily page limit, and for the month at its monthly budget; Ask keeps work
   job is acked: the document is held in the database (``documents.reading_held``), not in
   the queue, so the server can still switch itself off at night (infra/ec2/idle-stop.sh).
 * **Released by a sweep.** ``ReleaseHeld`` runs ``release_held`` every RELEASE_EVERY between
-  jobs under the sweep lock: each active organisation with held documents and no pause now (a
-  new India day, a raised limit or budget, a new month) has its waiting documents queued again,
+  jobs under the sweep lock: each active organisation with held documents or held Ensemble runs
+  and no pause now (a new India day, a raised limit or budget, a new month) has its waiting
+  documents queued again,
   oldest first, only as many as the pages left today (one page each at least) and at most
-  RELEASE_PER_PASS, never one in the Trash. Each hold ends only once its job is queued, so a
+  RELEASE_PER_PASS, never one in the Trash, then its held Ensemble runs (at most
+  RELEASE_PER_PASS, oldest first). Each hold ends only once its job is queued, so a
   queue that is down keeps every hold it did not queue; its end is audited
   (``document.reading_released``) and its "waiting" progress cleared (``reading_days.unhold``).
   A disabled or deleting organisation's holds are kept (QA T1, 4 Nov 2026). One
@@ -33,7 +35,10 @@ at its daily page limit, and for the month at its monthly budget; Ask keeps work
   day is noted only once the email is sent, so one that failed is tried at the next pause. A
   failure is logged, never raised; alerts that are off are said once, when the worker starts.
 * The operator's accuracy checks never count (kaagaz.ai.usage) and are never paused (their own
-  job); Ensemble's runs after the scan are counted, not paused.
+  job). Ensemble after the scan is paused too (#520, Tushar, 6 Nov 2026): starting or retrying a
+  run while paused is 409 ``reading_paused`` (kaagaz/api/routers/ensemble.py), and a queued run
+  picked up while paused is held on the run (kaagaz/jobs/ensemble.py) and released here; its
+  pages are counted as they are read.
 
 Logs hold ids and codes only.
 """
@@ -47,6 +52,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from kaagaz import ops_alert
 from kaagaz.adapters.email import Mailer
+from kaagaz.db import ensemble as ensemble_sql
 from kaagaz.db import reading_days
 from kaagaz.db.customers import is_active
 from kaagaz.db.engine import Database, unavailable
@@ -209,8 +215,8 @@ def release_held(db: Database, send: Send, *, now: datetime) -> list[Job]:
     """Queue the waiting documents of every organisation no longer paused at ``now`` (the
     module notes); the jobs sent. One organisation's database or queue error is logged with its
     id and the next one goes on. One statement for the organisations with holds; then, for
-    each, one transaction of 1 to 4 statements, and a send and a transaction of 1 or 2 statements
-    per document queued."""
+    each, one transaction of 1 to 5 statements, and a send and a transaction of 1 or 2 statements
+    per document or Ensemble run queued."""
     day = india_day(now)
     with db.system() as conn:
         customers = reading_days.held_customers(conn)
@@ -237,12 +243,19 @@ def _release(db: Database, send: Send, customer: str, day: date, sent: list[Job]
         room = RELEASE_PER_PASS if org.page_limit is None else org.page_limit - org.pages_today
         reading_days.end_stale_holds(conn, customer)
         waiting = reading_days.waiting(conn, customer, min(room, RELEASE_PER_PASS))
+        runs = ensemble_sql.held_runs(conn, customer, RELEASE_PER_PASS)
     for document in waiting:
         job = Job(customer, document)
         send(job)  # first: a queue that is down keeps this hold and the rest
         sent.append(job)
         with unavailable(), db.customer(customer) as conn:
             reading_days.unhold(conn, customer, document)
+    for document, run in runs:  # #520: Ensemble runs held on the run, the same way
+        job = Job(customer, document, run_id=run)
+        send(job)
+        sent.append(job)
+        with unavailable(), db.customer(customer) as conn:
+            ensemble_sql.unhold(conn, customer, run)
 
 
 class ReleaseHeld:

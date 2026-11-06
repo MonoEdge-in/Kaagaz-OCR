@@ -1348,9 +1348,15 @@ def _refuse_while_paused(conn: Connection, customer_id: str, previous: str | Non
     """409 ``reading_paused`` for a document that was ready while its organisation's reading is
     paused (the module notes); the caller's transaction rolls back. One statement for a ready one."""
     if previous == "ready":
-        reason = pause_reason(reading_days.state(conn, customer_id, reading_days.india_day(now)))
-        if reason is not None:
-            raise ApiError(409, "reading_paused", _READING_PAUSED[reason])
+        refuse_while_paused(conn, customer_id, now)
+
+
+def refuse_while_paused(conn: Connection, customer_id: str, now: datetime) -> None:
+    """409 ``reading_paused``, in Read again's words, while the organisation's reading is paused
+    (also Ensemble's start and retry, #520). One statement."""
+    reason = pause_reason(reading_days.state(conn, customer_id, reading_days.india_day(now)))
+    if reason is not None:
+        raise ApiError(409, "reading_paused", _READING_PAUSED[reason])
 
 
 def _read_again_express(context: AppContext, row: RowMapping) -> bool:

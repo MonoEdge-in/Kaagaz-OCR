@@ -282,9 +282,11 @@ _REPROCESSED_LATELY = (
 # Features 26 and 27 (0026): the reading asked for. A mode given replaces read_also too, in
 # the same statement, so the ai_documents_read_mode_models check always sees a pair it
 # allows; a model or mode left out (NULL) keeps the document's (as listing.set_reading).
+# A read again is a new reading, so the reading pause asks again (#520): the day an earlier
+# reading that failed was let in (reading_admitted) is cleared, never a pass past the pause.
 _REPROCESS = (
     "UPDATE documents d SET status = 'received', failure_code = NULL, attempts = 0, max_attempts = NULL,"  # noqa: S608 - a fixed fragment, STUCK
-    " progress = NULL, read_requested_by = CAST(:by AS uuid),"
+    " progress = NULL, read_requested_by = CAST(:by AS uuid), reading_admitted = NULL,"
     " read_model = COALESCE(CAST(:m AS text), read_model),"
     " read_mode = COALESCE(CAST(:mode AS text), read_mode),"
     " read_also = CASE WHEN CAST(:mode AS text) IS NULL THEN read_also ELSE CAST(:also AS text[]) END"

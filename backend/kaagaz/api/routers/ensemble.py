@@ -11,6 +11,10 @@ sections 5 and 6; the council plan of 16 Oct 2026, PR 6).
   on the pages it did not finish) and ``.../keep-all`` (``{kept, skipped}``).
 * ``POST .../ensemble/readings/{reading_id}/keep`` and ``.../revert``: one change.
 
+While the organisation's reading is paused (its daily page limit or monthly budget reached,
+#478), a start or a retry is 409 ``reading_paused`` in Read again's words, nothing queued (#520,
+Tushar, 6 Nov 2026); a queued run the worker picks up then is held (kaagaz/jobs/ensemble.py).
+
 Reads are for every signed-in user. Writes are for reviewers and admins (the Reviewer check
 until the new roles ship, spec decision of 16 Oct 2026) of an organisation with the
 Ensemble grant (403 ``ensemble_not_allowed``); Stop needs no grant, so a run can always be
@@ -32,6 +36,7 @@ from kaagaz.api.auth import CurrentUser, Reviewer, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.routers import word_review as review_router
+from kaagaz.api.routers.documents import refuse_while_paused
 from kaagaz.api.views import latest_run_json, run_json
 from kaagaz.db import ai_settings, listing
 from kaagaz.db import ensemble as ensemble_sql
@@ -144,6 +149,7 @@ def start_run(
     with context.db.customer(customer_id) as conn:
         _document(conn, user, document_id)
         others = _others(conn, context, user, document_id)
+        refuse_while_paused(conn, customer_id, context.clock())
         try:
             run, made = ensemble_sql.start(
                 conn, customer_id, target, scope=body.scope, word_keys=body.word_keys, models=others,
@@ -192,6 +198,7 @@ def retry_run(document_id: uuid.UUID, run_id: uuid.UUID, user: Reviewer, context
     with context.db.customer(customer_id) as conn:
         _document(conn, user, document_id)
         others = _others(conn, context, user, document_id)
+        refuse_while_paused(conn, customer_id, context.clock())
         try:
             run = ensemble_sql.retry(
                 conn, customer_id, target, str(run_id), models=others, user_id=user.user_id
