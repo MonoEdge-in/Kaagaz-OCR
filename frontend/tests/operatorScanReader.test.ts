@@ -420,3 +420,82 @@ describe("the accuracy check while Mistral reads", () => {
     );
   });
 });
+
+// #528 (test server, 6 Nov 2026): the first change to Scanning (Mistral OCR, Ultra low cost or any
+// other) added "Reset section" as a new box of the section's <fieldset> while the cost-per-page
+// size container inside it changed too, and Chrome then laid the container out 0 px tall: only
+// the header and Reset section showed. Reproduced on the production build in Chrome 156; never
+// in a <div>, never without the container, never when the fieldset's own children stay the same.
+// So the fieldset's children are the same whether or not the section has changed: its legend and
+// one box that holds Reset section and the fields.
+describe("#528 the Scanning section keeps its fields after a change", () => {
+  // The direct children of the fieldset whose legend starts with `title`, as "tag.class".
+  const sectionChildren = (html: string, title: string) => {
+    const start = html.search(new RegExp(`<fieldset[^>]*><legend>${title}`));
+    const tags = [...html.slice(start).matchAll(/<(\/?)([a-z0-9]+)([^>]*?)(\/?)>/g)];
+    const children: string[] = [];
+    let depth = 0;
+    for (const [, close, tag = "", attrs = "", selfClose] of tags) {
+      if (close) depth -= 1;
+      else {
+        if (depth === 1) children.push(`${tag}.${attrs.match(/class="([^"]*)"/)?.[1] ?? ""}`);
+        if (!selfClose && !["input", "br", "img", "hr"].includes(tag)) depth += 1;
+      }
+      if (depth === 0) break;
+    }
+    return children;
+  };
+  const render = (draft: Partial<AiValues>, props: { platform?: boolean; env?: AiEnv } = {}) =>
+    renderToStaticMarkup(
+      createElement(AiFields, {
+        platform: props.platform ?? false,
+        customerId: props.platform ? null : "org-1",
+        catalogue: [],
+        saved: values(),
+        defaults: values(),
+        env: props.env ?? env(),
+        maxAgents: 3,
+        draft: draftOf(values(draft)),
+        errors: {},
+        busy: false,
+        onChange: () => undefined,
+      }),
+    );
+  // The Scanning fieldset's markup, from its legend to the Answering fieldset.
+  const scanning = (html: string) => html.slice(html.search(/<legend>Scanning/), html.search(/<fieldset[^>]*><legend>Answering/));
+
+  it("an organisation choosing Mistral OCR: the reader and the Mistral model, in the same box as before", () => {
+    const before = render({});
+    const after = render({ scan_reader: "mistral" });
+    expect(scanning(after)).toContain("Reset section");
+    expect(sectionChildren(after, "Scanning")).toEqual(sectionChildren(before, "Scanning"));
+    expect(sectionChildren(after, "Scanning")).toHaveLength(2); // the legend and one box
+    expect(scanning(after)).toContain('<select id="ai-scan-reader"');
+    expect(scanning(after)).toContain('<select id="ai-mistral-model"');
+  });
+
+  it("an organisation choosing Ultra low cost: the ceiling and the model, in the same box as before", () => {
+    const before = render({});
+    const after = render({ scan_reader: "ultra_low_cost" });
+    expect(scanning(after)).toContain("Reset section");
+    expect(sectionChildren(after, "Scanning")).toEqual(sectionChildren(before, "Scanning"));
+    expect(scanning(after)).toContain('<input id="ai-ulc-ceiling-paise"');
+    expect(scanning(after)).toContain('<select id="ai-ulc-model"');
+  });
+
+  it("the platform defaults: Mistral's model list and Ultra low cost's ceiling and model show", () => {
+    const before = render({}, { platform: true });
+    const mistral = render({ scan_reader: "mistral" }, { platform: true });
+    const ulc = render({ scan_reader: "ultra_low_cost" }, { platform: true });
+    for (const html of [mistral, ulc]) expect(sectionChildren(html, "Scanning")).toEqual(sectionChildren(before, "Scanning"));
+    expect(scanning(mistral)).toContain('<select id="ai-mistral-model"');
+    expect(scanning(ulc)).toContain('<input id="ai-ulc-ceiling-paise"');
+    expect(scanning(ulc)).toContain('<select id="ai-ulc-model"');
+  });
+
+  it("Mistral not set up: the reader with Mistral off and why, never an empty section", () => {
+    const html = scanning(render({ scan_reader: "openrouter" }, { env: env({ mistral_ready: false, mistral_missing: "key" }) }));
+    expect(html).toContain('<option value="mistral" disabled="">Mistral OCR (not set up on this server)</option>');
+    expect(html).toContain("Mistral can&#x27;t be chosen yet: the server has no Mistral key.");
+  });
+});

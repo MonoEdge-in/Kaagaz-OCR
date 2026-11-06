@@ -523,23 +523,27 @@ function SectionBox(props: {
         {title}
         {!platform && <span className={styles.sectionTag}>{same ? "Same as platform default" : "Changed from platform default"}</span>}
       </legend>
-      {!platform && !same && (
-        <div className={styles.sectionTools}>
-          <button
-            type="button"
-            className="btn"
-            aria-label={`Reset section: ${title}`}
-            onClick={(event) => {
-              // The button goes once the section is back: the focus moves to its first field.
-              event.currentTarget.closest("fieldset")?.querySelector<HTMLElement>("input, select")?.focus();
-              onChange(resetSection(draft, section));
-            }}
-          >
-            Reset section
-          </button>
-        </div>
-      )}
-      {children}
+      {/* #528: one box for Reset section and the fields, so the fieldset's own children never
+          change. Chrome lays Scanning's size container out 0 px tall when they do. */}
+      <div className={styles.sectionBody}>
+        {!platform && !same && (
+          <div className={styles.sectionTools}>
+            <button
+              type="button"
+              className="btn"
+              aria-label={`Reset section: ${title}`}
+              onClick={(event) => {
+                // The button goes once the section is back: the focus moves to its first field.
+                event.currentTarget.closest("fieldset")?.querySelector<HTMLElement>("input, select")?.focus();
+                onChange(resetSection(draft, section));
+              }}
+            >
+              Reset section
+            </button>
+          </div>
+        )}
+        {children}
+      </div>
     </fieldset>
   );
 }
