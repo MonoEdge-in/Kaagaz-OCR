@@ -24,8 +24,10 @@ cell.
 Like the CSV reader: the file must be UTF-8 (a byte order mark is allowed), or it fails with
 ``not_utf8``; control characters other than tab, line feed, form feed and carriage return fail
 with ``not_text``, checked over the whole file. A file with no text at all fails with
-``no_text``. Errors are raised outside any ``except`` block, so nothing that quotes the file
-is chained on.
+``no_text``. A file of more than ``max_lines`` lines with text (CSV_MAX_CELLS, as the CSV
+reader's cells; security review, 6 Nov 2026) fails whole with ``too_large``, before any is
+read: a 10 MB file of one-letter lines would be 5 million spans to store and search. Errors are
+raised outside any ``except`` block, so nothing that quotes the file is chained on.
 
 Time and memory are O(n) in the file size, bounded by the upload size limit.
 """
@@ -53,10 +55,15 @@ class TextReader:
     # version is this module's own: raise it when what it reads changes.
     version = "1"
 
-    def __init__(self, kind: str) -> None:
+    def __init__(self, kind: str, *, max_lines: int) -> None:
+        """``max_lines``: the most lines with text a file may have (no default: limits are
+        Vrushit's decision, PRD section 6)."""
         if kind not in KINDS:
             raise ValueError(f"not a text kind: {kind!r}")
+        if max_lines < 1:
+            raise ValueError("max_lines must be at least 1")
         self._kind = kind
+        self._max_lines = max_lines
 
     @property
     def name(self) -> str:
@@ -64,9 +71,11 @@ class TextReader:
 
     def read(self, data: bytes, *, on_page: OnPage | None = None) -> Iterator[Span]:
         # on_page is ignored: the file is read whole, like a CSV (kaagaz/reading/socket.py).
-        text = _plain(self._kind, data)
+        paged = pages(_plain(self._kind, data))
+        if sum(1 for page in paged for line in page if line.strip()) > self._max_lines:
+            raise ReadError("too_large")
         found = False
-        for page_no, page in enumerate(pages(text), start=1):
+        for page_no, page in enumerate(paged, start=1):
             for row, line in enumerate(page, start=1):
                 cleaned = line.strip()
                 if cleaned:
@@ -126,12 +135,14 @@ def pages(text: str) -> list[list[str]]:
 
 
 def _lines(text: str) -> Iterator[str]:
+    """Each line, a long one cut by position (never by slicing the rest again: O(n))."""
     for line in text.splitlines():
-        while len(line) > LINE_CHARS:
-            cut = line.rfind(" ", LINE_CHARS // 2, LINE_CHARS) + 1 or LINE_CHARS
-            yield line[:cut]
-            line = line[cut:]
-        yield line
+        start = 0
+        while len(line) - start > LINE_CHARS:
+            cut = line.rfind(" ", start + LINE_CHARS // 2, start + LINE_CHARS) + 1 or start + LINE_CHARS
+            yield line[start:cut]
+            start = cut
+        yield line[start:]
 
 
 # --- HTML ---------------------------------------------------------------------------------------

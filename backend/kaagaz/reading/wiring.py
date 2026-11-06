@@ -170,7 +170,7 @@ def build_reader_socket(settings: Settings, ocr: OcrEngine | None) -> ReaderSock
     pages = page_pool(settings, ocr)
     readers: dict[str, Reader] = {
         resolve.CSV: CsvReader(max_cells=settings.csv_max_cells),
-        **{kind: TextReader(kind) for kind in sorted(TEXT_KINDS)},
+        **{kind: TextReader(kind, max_lines=settings.csv_max_cells) for kind in sorted(TEXT_KINDS)},
         resolve.XLSX: XlsxReader(
             XlsxLimits(
                 max_entries=settings.xlsx_max_entries,

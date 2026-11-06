@@ -2,16 +2,20 @@
 3,000 characters, each line a cell of a one-column sheet, with no AI."""
 
 import json
+import time
 
 import pytest
 
+from kaagaz.api.views import status_message
 from kaagaz.ingestion import resolve
 from kaagaz.reading.spans import CellLocation, ReadError, Span
 from kaagaz.reading.text_reader import LINE_CHARS, PAGE_CHARS, TextReader, html_text, pages
+from kaagaz.reading.wiring import build_reader_socket
+from tests.settings_factory import make_settings
 
 
-def read(kind: str, data: bytes) -> list[Span]:
-    return list(TextReader(kind).read(data))
+def read(kind: str, data: bytes, max_lines: int = 100_000) -> list[Span]:
+    return list(TextReader(kind, max_lines=max_lines).read(data))
 
 
 def lines(kind: str, data: bytes) -> list[str]:
@@ -166,7 +170,7 @@ def test_html_with_no_words_has_no_text() -> None:
 
 
 def test_only_the_text_kinds_have_a_text_reader_each_named_for_its_kind() -> None:
-    assert {TextReader(kind).name for kind in ("txt", "md", "json", "html")} == {
+    assert {TextReader(kind, max_lines=1).name for kind in ("txt", "md", "json", "html")} == {
         "text-txt",
         "text-md",
         "text-json",
@@ -174,4 +178,35 @@ def test_only_the_text_kinds_have_a_text_reader_each_named_for_its_kind() -> Non
     }
     for kind in (resolve.CSV, resolve.PDF, "text"):
         with pytest.raises(ValueError):
-            TextReader(kind)
+            TextReader(kind, max_lines=1)
+    with pytest.raises(ValueError):
+        TextReader(resolve.TXT, max_lines=0)
+
+
+def test_a_text_file_of_more_lines_than_a_csv_has_cells_is_too_large_in_plain_words() -> None:
+    """Security review (6 Nov 2026): a 10 MB text file of one-letter lines would be 5 million
+    lines to store and search. The reader takes at most CSV_MAX_CELLS lines with text (the
+    wiring gives it the setting), as the CSV reader takes cells, and refuses the rest whole."""
+    settings = make_settings()
+    huge = b"a\n" * (5 * 1024 * 1024)  # 10 MB
+    paragraphs = b"<p>a</p>\n" * (settings.csv_max_cells + 1)  # HTML runs its spaces together
+    for kind, data in (("txt", huge), ("md", huge), ("html", paragraphs)):
+        with pytest.raises(ReadError) as refused:
+            build_reader_socket(settings, None).read(kind, data)
+        assert refused.value.code == "too_large", kind
+    pretty = json.dumps(list(range(settings.csv_max_cells))).encode()  # one value to a line
+    with pytest.raises(ReadError) as refused:
+        build_reader_socket(settings, None).read("json", pretty)
+    assert refused.value.code == "too_large"
+    assert len(read("txt", b"a\n" * 3, max_lines=3)) == 3  # at the cap: read
+    with pytest.raises(ReadError):
+        read("txt", b"a\n" * 4, max_lines=3)
+    # Found on the way (6 Nov 2026): a long line was cut by slicing the rest again each time,
+    # O(n^2): a 10 MB line (an HTML file's text runs its spaces together) took minutes. Cut by
+    # position now, so it is read in about a second; 20 s leaves room for a loaded machine.
+    started = time.monotonic()
+    assert len(read("html", huge)) == -(-len(huge) // LINE_CHARS)
+    assert time.monotonic() - started < 20
+    assert status_message("failed", "too_large", detected_type="txt", max_pages=100) == (
+        "This file is larger than files of its kind can be. Split it into smaller files and upload them."
+    )

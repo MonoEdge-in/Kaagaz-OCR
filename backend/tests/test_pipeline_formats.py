@@ -20,7 +20,7 @@ SOCKET = ReaderSocket(
     {
         resolve.CSV: CsvReader(max_cells=10_000),
         resolve.XLSX: XlsxReader(XLSX_LIMITS),
-        **{kind: TextReader(kind) for kind in ("txt", "md", "json", "html")},
+        **{kind: TextReader(kind, max_lines=10_000) for kind in ("txt", "md", "json", "html")},
     }
 )
 CSV_LIKE = b"invoice,amount\nINV-1,100\nINV-2,250\n"
