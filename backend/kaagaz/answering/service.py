@@ -196,6 +196,7 @@ from kaagaz.answering.draft import (
 )
 from kaagaz.answering.evidence import (
     CAPPED,
+    INSTRUCTION_NOTE,
     Context,
     Evidence,
     Gate,
@@ -212,6 +213,7 @@ from kaagaz.answering.evidence import (
     looks_like_instructions,
     number_evidence,
     numbers_asked,
+    reads_like_instructions,
     related_documents,
     valid_regions,
     word_text,
@@ -1475,7 +1477,18 @@ class AnswerService:
             # Ensemble (features 25-27, C7): the other models not confirming adds Needs review, only.
             or (team is not None and team.agreement == "not_confirmed")
         )
-        verified = all(c.label == "verified" for c in citations) and not (on_neighbours or unchecked or hard)
+        # #520 (Tushar, 6 Nov 2026): a line of the evidence drafted from (the model's, or every piece
+        # the quote chose from) that reads as if addressed to the model stays evidence, but the
+        # answer is never verified, and says why.
+        addressed = any(
+            reads_like_instructions(f"{item.hit.context_header}\n{item.hit.text}") for item in seen
+        )
+        if addressed:
+            _log.info("answer needs review", extra={"code": "instruction_like_source"})
+        verified = all(c.label == "verified" for c in citations) and not (
+            on_neighbours or unchecked or hard or addressed
+        )
+        notes = [note for note, said in ((HARD_TO_READ_NOTE, hard), (INSTRUCTION_NOTE, addressed)) if said]
         return Answer(
             status="answered",
             label="verified" if verified else "needs_review",
@@ -1485,7 +1498,7 @@ class AnswerService:
             route="search",
             normalized_question=shown,
             model_used=model_used,
-            reading_note=HARD_TO_READ_NOTE if hard else None,
+            reading_note=" ".join(notes) or None,
             team=team,
             backing={new: by_n[old].hit.text for old, new in renumber.items()},
             related_documents=(
