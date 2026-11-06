@@ -4,6 +4,7 @@ turns macros and link updates off, the clean-up, and every failure in plain word
 
 The real conversions run where ``soffice`` is (the backend image): test_office_real.py."""
 
+import ast
 import os
 import subprocess
 import sys
@@ -211,6 +212,24 @@ def _alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     return Path(f"/proc/{pid}").exists() and "Z" not in Path(f"/proc/{pid}/stat").read_text().split()[2]
+
+
+class ChildSetUpTest(unittest.TestCase):
+    def test_the_child_s_set_up_imports_nothing(self) -> None:
+        """Security review (6 Nov 2026, nice to have): the function run in the child between fork
+        and exec may only call setrlimit: an import there can wait forever on a lock another
+        thread of the worker held when it forked. ``resource`` is imported with the module."""
+        tree = ast.parse(Path(office.__file__).read_text(encoding="utf-8"))
+        [run] = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "run_limited"
+        ]
+        inner = [node for node in ast.walk(run) if isinstance(node, ast.FunctionDef) and node is not run]
+        self.assertEqual([node.name for node in inner], ["limits"])
+        self.assertEqual([n for n in ast.walk(inner[0]) if isinstance(n, ast.Import | ast.ImportFrom)], [])
+        if sys.platform != "win32":
+            self.assertIn("resource", vars(office))
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "process groups and rlimits: Linux only")

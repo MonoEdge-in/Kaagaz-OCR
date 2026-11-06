@@ -67,6 +67,9 @@ from pathlib import Path
 
 from kaagaz.ingestion import resolve, sniff
 from kaagaz.ingestion.ports import RenditionStorage
+
+if sys.platform != "win32":  # the worker's Linux; a Windows laptop has no rlimits
+    import resource
 from kaagaz.reading.spans import ReadError
 
 _log = logging.getLogger(__name__)
@@ -146,9 +149,7 @@ def run_limited(
     the worker never runs (laptops only)."""
     if sys.platform != "win32":
 
-        def limits() -> None:  # in the child, before soffice starts: setrlimit only
-            import resource
-
+        def limits() -> None:  # in the child, before soffice starts: setrlimit only, no import
             resource.setrlimit(resource.RLIMIT_CPU, (_CPU_SECONDS, _CPU_SECONDS))
             resource.setrlimit(resource.RLIMIT_FSIZE, (max_file_bytes, max_file_bytes))
             resource.setrlimit(resource.RLIMIT_AS, (_ADDRESS_SPACE_BYTES, _ADDRESS_SPACE_BYTES))
