@@ -66,18 +66,47 @@ def test_the_current_version_made_separate_leaves_the_highest_ready_one_current(
     ]
 
 
-def test_version_1_made_separate_leaves_the_rest_one_family_under_version_2(db: Database) -> None:
-    """Version 1's id is its family's: the versions left take version 2's id as theirs."""
+def test_version_1_is_refused_as_its_id_is_its_familys(db: Database) -> None:
+    """Review fix 1 (#521): version 1's id is its family's (stories, suggestions and the family
+    lock key on it), so it can't be made separate; the newer ones can."""
     api = Api(db)
     signed = api.new_signed()
     customer = signed.customer_id
-    folder, first, second, third = _family_of_three(api, signed)
+    _, first, second, third = _family_of_three(api, signed)
     reply = _separate(signed, first, "Lease 2025.pdf")
-    assert reply.status_code == 200, reply.text
-    assert reply.json()["family_id"] == second
-    assert _row(db, customer, first) == ("Lease 2025.pdf", first, 1, True, folder)
-    assert _row(db, customer, second)[1:4] == (second, 2, False)
-    assert _row(db, customer, third)[1:4] == (second, 3, True)  # still current
+    assert (reply.status_code, reply.json()["error"]["code"]) == (409, "first_version")
+    assert reply.json()["error"]["message"] == (
+        "The first version can't be made a separate file. Make the newer versions separate instead."
+    )
+    assert [_row(db, customer, each)[1:3] for each in (first, second, third)] == [
+        (first, 1),
+        (first, 2),
+        (first, 3),
+    ]
+
+
+def test_a_version_not_ready_made_separate_is_current_on_its_own_and_the_family_keeps_one(
+    db: Database,
+) -> None:
+    """Review fix 2: a document on its own is current, ready or not (as 0002), so it stays in the
+    lists; the family left keeps a current one, its newest when none is ready."""
+    api = Api(db)
+    signed = api.new_signed()
+    customer, user = signed.customer_id, signed.user_id
+    first = api.add_document(customer, uploaded_by=user, name="Bill.pdf")  # ready, current
+    failed = api.add_document(
+        customer, uploaded_by=user, name="Bill v2.pdf", family_id=first, version_no=2, is_current=False,
+        status="failed",
+    )  # fmt: skip
+    assert _separate(signed, failed, "Bill scan.pdf").status_code == 200
+    assert _row(db, customer, failed)[1:4] == (failed, 1, True)
+    assert _row(db, customer, first)[3] is True  # v1 stays current
+
+    other = api.add_document(customer, uploaded_by=user, name="Deed.pdf", status="failed", is_current=False)
+    ready = api.add_document(customer, uploaded_by=user, name="Deed v2.pdf", family_id=other, version_no=2)
+    assert _separate(signed, ready, "Deed copy.pdf").status_code == 200
+    assert _row(db, customer, ready)[1:4] == (ready, 1, True)
+    assert _row(db, customer, other)[3] is True  # none ready is left: the newest is current
 
 
 def test_a_name_clash_a_bad_name_and_a_single_version_are_refused(db: Database) -> None:
@@ -91,10 +120,27 @@ def test_a_name_clash_a_bad_name_and_a_single_version_are_refused(db: Database) 
     for bad in ("", "   ", "Lease‮gnp.pdf", "x" * 256):
         refused = _separate(signed, third, bad)
         assert (refused.status_code, refused.json()["error"]["code"]) == (400, "bad_request"), bad
+    # Review fix 7: only a current file, or one of this family, takes the name in the folder: an
+    # older version of another family named so does not.
+    folder = _row(db, signed.customer_id, third)[4]
+    old = api.add_document(
+        signed.customer_id,
+        uploaded_by=signed.user_id,
+        name="Old name.pdf",
+        is_current=False,
+        folder_id=folder,
+    )
+    api.add_document(
+        signed.customer_id, uploaded_by=signed.user_id, name="New name.pdf", family_id=old, version_no=2,
+        folder_id=folder,
+    )  # fmt: skip
+    taken = _separate(signed, third, "New name.pdf")
+    assert (taken.status_code, taken.json()["error"]["code"]) == (409, "name_taken")
     alone = api.add_document(signed.customer_id, uploaded_by=signed.user_id, name="Alone.pdf")
     only = _separate(signed, alone, "Alone 2.pdf")
     assert (only.status_code, only.json()["error"]["code"]) == (409, "only_version")
     assert _row(db, signed.customer_id, third)[1:3] == (first, 3)  # nothing changed
+    assert _separate(signed, third, "Old name.pdf").status_code == 200
 
 
 def test_the_pair_is_never_suggested_again_and_undo_puts_it_back_as_the_newest(db: Database) -> None:

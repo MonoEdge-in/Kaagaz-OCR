@@ -158,7 +158,8 @@ def separate_version(
     document_id: uuid.UUID, body: SeparateBody, user: User, context: Context
 ) -> dict[str, Any]:
     """Make it a separate file (#521): ``{document, family_id}``, the family it left. 409
-    ``name_taken`` (a file of that name in the folder), ``only_version`` or ``in_trash``."""
+    ``name_taken`` (a file of that name in the folder), ``first_version``, ``only_version`` or
+    ``in_trash``."""
     name = _document_name(body.name)
     customer_id, document = user.customer_id, str(document_id)
     try:
@@ -169,6 +170,12 @@ def separate_version(
     except versions_sql.Refused as refused:
         if refused.code == "name_taken":
             raise ApiError(409, "name_taken", f'A file named "{name}" is already in this folder.') from None
+        if refused.code == "first_version":
+            raise ApiError(
+                409,
+                "first_version",
+                "The first version can't be made a separate file. Make the newer versions separate instead.",
+            ) from None
         if refused.code == "only_version":
             raise ApiError(
                 409, "only_version", "This is the only version, so it is its own file already."
@@ -219,4 +226,5 @@ def compare(
     found = versions.compare(*texts, max_pages=context.settings.max_pages)
     share = versions.exact_overlap(*texts)  # #521: See the differences' summary line
     said = versions.overview(found["pages"], share, truncated=found["truncated"])
-    return {"left_id": left, "right_id": right, **found, "overview": said}
+    counts = {"left_pages": rows[0]["page_count"], "right_pages": rows[1]["page_count"]}  # type: ignore[index]
+    return {"left_id": left, "right_id": right, **found, "overview": said, **counts}

@@ -105,11 +105,6 @@ _ME = text(
     " AND r.status = 'ready') AS ready_runs, d.text_minhash IS NULL AS unprinted"
     " FROM documents d WHERE d.customer_id = :c AND d.id = :d"
 )
-# #521 fix 3: one customer's spotting runs one at a time, so two near copies spotted at once
-# never miss each other or are suggested both ways.
-_SPOT_LOCK = text(
-    "SELECT pg_advisory_xact_lock(hashtextextended('kaagaz.version_spotting:' || CAST(:c AS uuid)::text, 0))"
-)
 # The candidates (V3): every arm of the OR names one of the two indexes or the links' key.
 _CANDIDATES = text(
     "SELECT d.id, d.family_id, d.created_at > me.created_at AS later, d.text_minhash,"
@@ -148,11 +143,11 @@ def spot(conn: Connection, customer_id: str, document_id: str) -> str | None:
     none (``mark_ready`` writes them, #521); then, on its first ready only (module notes), the
     best candidate's suggestion, audited as ``version.suggested`` (no actor); never linked on
     its own (#521). Returns a code for the log (off, none, suggested) or None when there was
-    nothing to spot. The customer's spotting lock, then the family lock. O(D) for this
+    nothing to spot. The family lock comes first. Two runs at once suggest a pair once: each
+    suggests the later file as the new version, and the pair is unique. O(D) for this
     customer's D documents at worst (RLS may keep the GIN indexes out of the plan), plus
     MAX_FETCHED ranked by the estimate and MAX_CANDIDATES of them read and counted exactly
     (O(w) for their w words)."""
-    conn.execute(_SPOT_LOCK, {"c": customer_id})
     if lock_family(conn, customer_id, document_id) is None:
         return None
     params = {"c": customer_id, "d": document_id}
@@ -416,19 +411,26 @@ def undo(conn: Connection, customer_id: str, document_id: str, *, by: str) -> No
 
 
 # --- #521: make it a separate file ----------------------------------------------------------
+# The name is taken by a file of the folder that is listed (current) or of this family.
 _SEPARATE_STATE = text(
     "SELECT d.id = d.family_id AS first, d.is_current, d.folder_id, d.version_no,"
     " (SELECT count(*) FROM documents o WHERE o.customer_id = :c AND o.family_id = :f) AS versions,"
-    " (SELECT o.id FROM documents o WHERE o.customer_id = :c AND o.family_id = :f AND o.id <> :d"
-    " ORDER BY o.version_no LIMIT 1) AS next_id,"
     " EXISTS (SELECT 1 FROM documents o WHERE o.customer_id = :c AND o.id <> :d AND o.deleted_at IS NULL"
+    " AND (o.is_current OR o.family_id = :f)"
     " AND o.folder_id IS NOT DISTINCT FROM d.folder_id AND lower(o.display_name) = lower(:name)) AS taken"
     " FROM documents d WHERE d.customer_id = :c AND d.id = :d"
 )
-_REKEY = text("UPDATE documents SET family_id = :rest WHERE customer_id = :c AND family_id = :f AND id <> :d")
+# A document on its own is current, ready or not (as 0002), so it stays in every list.
 _ON_ITS_OWN = text(
-    "UPDATE documents SET family_id = id, version_no = 1, is_current = (status = 'ready')"
+    "UPDATE documents SET family_id = id, version_no = 1, is_current = true"
     " WHERE customer_id = :c AND id = :d"
+)
+# The family left with no ready version: its newest is current, so the family stays listed.
+_NEWEST_CURRENT = text(
+    "UPDATE documents SET is_current = true WHERE customer_id = :c AND id = (SELECT v.id FROM documents v"
+    " WHERE v.customer_id = :c AND v.family_id = :f ORDER BY v.version_no DESC LIMIT 1)"
+    " AND NOT EXISTS (SELECT 1 FROM documents x WHERE x.customer_id = :c AND x.family_id = :f"
+    " AND x.is_current)"
 )
 # Keep separate's row for the pair (V6): spotting never suggests it again, and Undo is its Accept.
 _KEPT_APART = text(
@@ -446,13 +448,14 @@ _KEPT_APART_AGAIN = text(
 
 def separate(conn: Connection, customer_id: str, document_id: str, *, name: str, by: str) -> str:
     """Make it a separate file (#521): this version leaves its family as its own document, version
-    1, in the same folder (the family's), current when ready; its reading, values and pieces are
-    not touched, so nothing is read again. Version 1's id is its family's, so the versions left
-    take the next one's id. The highest ready version left is current when this one was. The
-    pair is kept apart (the keep-separate row, never suggested again), and one
-    ``document.version_separated`` row names the family and number. The caller renames it
-    (``listing.rename_document``) in this transaction. Returns the family left. Raises Refused:
-    not_found, only_version, name_taken; trash.InTrash in Trash. O(v log D)."""
+    1, in the same folder (the family's), current (ready or not); its reading, values and pieces
+    are not touched, so nothing is read again. Version 1 is refused: its id is its family's, which
+    stories, suggestions and the family lock key on. The highest ready version left is current
+    when this one was, else the newest left. The pair is kept apart (the keep-separate row, never
+    suggested again), and one ``document.version_separated`` row names the family and number.
+    The caller renames it (``listing.rename_document``) in this transaction. Returns the family
+    left. Raises Refused: not_found, only_version, first_version, name_taken; trash.InTrash in
+    Trash. O(v log D)."""
     family = lock_live_family(conn, customer_id, document_id)
     if family is None:
         raise Refused("not_found")
@@ -460,9 +463,11 @@ def separate(conn: Connection, customer_id: str, document_id: str, *, name: str,
     state = conn.execute(_SEPARATE_STATE, params).mappings().one()
     if state["versions"] < 2:
         raise Refused("only_version")
+    if state["first"]:
+        raise Refused("first_version")
     if state["taken"]:
         raise Refused("name_taken")
-    rest = str(state["next_id"]) if state["first"] else family
+    rest = family
     audit.record(  # before the split, so the row is on the family's timeline (A5)
         conn,
         customer_id,
@@ -472,11 +477,10 @@ def separate(conn: Connection, customer_id: str, document_id: str, *, name: str,
         target_id=document_id,
         details={"family_id": family, "version_no": int(state["version_no"])},
     )
-    if state["first"]:
-        conn.execute(_REKEY, {**params, "rest": rest})
     conn.execute(_ON_ITS_OWN, params)
     if state["is_current"]:
-        conn.execute(_HIGHEST_READY_CURRENT, {**params, "f": rest})
+        conn.execute(_HIGHEST_READY_CURRENT, params)
+        conn.execute(_NEWEST_CURRENT, params)
     conn.execute(_KEPT_APART, {**params, "rest": rest, "by": by})
     return rest
 

@@ -189,8 +189,16 @@ def mark_ready(
     ready = {"pages": page_count, "current": current, "again": again, "keep": open_run is not None}
     conn.execute(text(_READY), {**params, **ready})
     # #521 fix 3: the text's fingerprint commits with Ready, so a spotting run that starts after
-    # this one sees it (db/versions.py).
-    versions.write_fingerprint(conn, customer_id, document_id, str(state.display_name))
+    # this one sees it (db/versions.py). In a savepoint: an error there is logged with the ids
+    # and Ready commits without it (spotting writes a missing one; the sweep fills the rest).
+    try:
+        with conn.begin_nested():
+            versions.write_fingerprint(conn, customer_id, document_id, str(state.display_name))
+    except Exception as failed:  # noqa: BLE001 - a fingerprint must never fail Ready
+        _log.warning(
+            "fingerprint_failed",
+            extra={"customer_id": customer_id, "document_id": document_id, "code": type(failed).__name__},
+        )
     if run is not None:
         finish_run(conn, customer_id, run)
 

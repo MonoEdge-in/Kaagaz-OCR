@@ -549,10 +549,10 @@ def test_521_monthly_bills_with_one_name_and_account_number_are_not_suggested(db
 def test_521_two_near_copies_of_one_batch_spotted_at_once_are_matched_once(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Fix 3: the fingerprint is written with Ready, and spotting holds a lock per customer, so
-    two spot runs at once neither miss each other (fingerprints not yet committed) nor suggest
-    the pair both ways. Each run waits for the other at the switch check, for up to 3 seconds:
-    with the lock the second only gets there once the first has committed."""
+    """Fix 3: the fingerprint is written with Ready, so two spot runs at once see each other's.
+    Changed on purpose (review, 6 Nov 2026): no lock per customer. Both runs meet at the switch
+    check and go on together; each suggests the same pair (the later file as the new version),
+    and the unique pair keeps one, so the second says none."""
     api = Api(db)
     signed = api.new_signed()
     customer = signed.customer_id
@@ -585,6 +585,31 @@ def test_521_two_near_copies_of_one_batch_spotted_at_once_are_matched_once(
     assert sorted(code or "" for code in codes) == ["none", "suggested"]
     pairs = [set(row[:2]) for row in _suggestions(db, customer)]
     assert pairs == [{first, second}]
+
+
+def test_521_a_fingerprint_that_fails_never_fails_ready(
+    db: Database, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Review fix 6: the fingerprint is written in a savepoint of Ready's transaction; an error
+    there is logged with the ids only, and the document is still ready, with no fingerprint."""
+    api = Api(db)
+    signed = api.new_signed()
+    customer = signed.customer_id
+    document = _doc(api, signed, list(_SATBARA), "Satbara secret name.pdf", hours_ago=0, status="clean")
+
+    def broken(conn: Any, *_args: Any) -> None:
+        conn.execute(text("SELECT 1 / 0"))  # a real SQL error, so the transaction is hit too
+
+    monkeypatch.setattr(versions_sql, "write_fingerprint", broken)
+    with caplog.at_level("WARNING"):
+        PgDocuments(db).mark_ready(customer, document, 1)
+    with db.customer(customer) as conn:
+        status, minhash = conn.execute(
+            text("SELECT status, text_minhash FROM documents WHERE id = :d"), {"d": document}
+        ).one()
+    assert (status, minhash) == ("ready", None)
+    logged = [record for record in caplog.records if record.getMessage() == "fingerprint_failed"]
+    assert len(logged) == 1 and "secret" not in str(logged[0].__dict__)
 
 
 # --- V6 reject, V8 the switch ----------------------------------------------------------------
@@ -803,6 +828,7 @@ def test_521_see_the_differences_of_a_suggested_pair_says_it_in_plain_words(
     body = reply.json()
     assert body["overview"] == "84% the same. 36 words changed on page 1."
     assert (body["pages"][0]["left_words"], body["pages"][0]["right_words"]) == (300, 335)
+    assert (body["left_pages"], body["right_pages"]) == (1, 1)  # review fix 9: a page each side has
     other = api.new_signed()
     assert other.client.get(f"/api/documents/{new}/compare", params={"with": old}).status_code == 404
     monkeypatch.setattr(versions, "MAX_COMPARE_TOTAL", 100)
