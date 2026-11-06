@@ -286,6 +286,50 @@ def test_devanagari_joiners_stay_in_both_names() -> None:
     assert clean_name(marathi, max_length=100) == marathi
 
 
+# Review of #520: the name rule's gaps.
+SCOTLAND = "\U0001f3f4\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f"  # a flag emoji: tags
+
+
+@pytest.mark.parametrize("c1", ["\x85", "\x80", "\x9b", "\x9f"], ids=["NEL", "PAD", "CSI", "APC"])
+def test_a_c1_control_character_goes_from_both_names(c1: str) -> None:
+    assert clean_name(f"GST{c1} 2026/27", max_length=100) == "GST 2026/27"
+    assert clean_name(c1, max_length=100) is None
+    assert display_name(f"invoice{c1}.pdf") == "invoice.pdf"
+
+
+@pytest.mark.parametrize("joiners", ["\u200c", "\u200d", "\u200d\u200c", " \u200c \u200d ", "\u200b\u200d"])
+def test_a_name_of_joiners_alone_is_refused_as_an_empty_name(joiners: str) -> None:
+    assert clean_name(joiners, max_length=100) is None
+
+
+def test_a_flag_emojis_tags_stay_and_a_lone_tag_goes() -> None:
+    assert clean_name(f"Scotland {SCOTLAND}", max_length=100) == f"Scotland {SCOTLAND}"
+    assert display_name(f"Trip {SCOTLAND}.pdf") == f"Trip {SCOTLAND}.pdf"
+    hidden = "\U000e0065\U000e0078\U000e0065"  # "exe" in tag characters, which draw nothing
+    assert clean_name(f"invoice{hidden}.pdf", max_length=100) == "invoice.pdf"
+    unended = f"invoice\U0001f3f4{hidden}.pdf"  # no cancel tag: no flag, the tags go
+    assert clean_name(unended, max_length=100) == "invoice\U0001f3f4.pdf"
+    assert clean_name(f"{SCOTLAND}{hidden}\U000e007f", max_length=100) == SCOTLAND  # a flag, then lone tags
+    assert clean_name("\U000e007f", max_length=100) is None
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "\u092e\u0930\u093e\u0920\u0940\u200c\u092b\u093e\u0907\u0932",  # Devanagari with ZWNJ
+        "\u0915\u094d\u200d\u0937",  # Devanagari with ZWJ
+        "\u0641\u0627\u062a\u0648\u0631\u0629 \u0662\u0660\u0662\u0666",  # Arabic
+        "\u0631\u0633\u06cc\u062f\u200c\u06c1\u0627",  # Urdu with ZWNJ
+        "Team \U0001f469\u200d\U0001f4bb",  # a ZWJ emoji sequence
+        "\U0001f468\u200d\U0001f469\u200d\U0001f467",
+    ],
+    ids=["devanagari zwnj", "devanagari zwj", "arabic", "urdu zwnj", "zwj emoji", "family emoji"],
+)
+def test_other_scripts_and_joined_emoji_stay_as_typed(name: str) -> None:
+    assert clean_name(name, max_length=100) == name
+    assert display_name(f"{name}.pdf") == f"{name}.pdf"
+
+
 @pytest.mark.parametrize(
     ("given", "shown"),
     [
