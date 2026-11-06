@@ -6,17 +6,18 @@ import { formatNumber } from "@/lib/format";
 import type { DocumentDetail, DocumentVersion, VersionSuggestion } from "@/lib/types";
 
 export const VERSION_TEXT = {
-  // V6, V7: the banner.
-  makeIt: (n: number) => `Make it version ${n}`,
-  keepSeparate: "Keep separate",
-  compareFirst: "Compare first",
+  // V6, V7: the banner, the upload tray's row and the compare screen (#521: two buttons).
+  asVersion: "Upload as a new version",
+  asFile: "Upload as a new file",
+  seeDifferences: "See the differences",
   undo: "Undo",
   noteLabel: "Note for this version (optional)",
   notePlaceholder: "e.g. Mutation 1234 added",
-  linked: (n: number, name: string) => `Linked as version ${n} of ${name}.`,
+  linked: (n: number, name: string) => `Saved as version ${n} of "${name}".`,
   linkedOnItsOwn: (n: number, name: string) => `Kaagaz linked this as version ${n} of ${name}, as it is almost the same.`,
-  kept: "Kept as its own document. Kaagaz will not suggest this pair again.",
+  kept: "Kept as its own file. Kaagaz won't ask about these two again.",
   undone: "Undone. This is its own document again.",
+  reverted: "Undone.", // #521: the toast's Undo after a choice or Make it a separate file
   notNewest: "A later version was uploaded since, so this link stays.",
   working: "Saving…",
   // V5: the upload tray.
@@ -38,9 +39,17 @@ export const VERSION_TEXT = {
   noteSaved: "Note saved.",
   noteTooLong: "Write a note of at most 200 characters.",
   onlyOne: "This is the only version.",
+  // #521: Make it a separate file.
+  separate: "Make it a separate file",
+  separateTitle: (n: number) => `Make version ${n} a separate file`,
+  separateNote: (family: string) =>
+    `It keeps its reading, words you fixed, and history. Kaagaz won't suggest it as a version of "${family}" again.`,
+  separateButton: "Make separate file",
+  separated: (n: number, name: string) => `Version ${n} is now its own file, "${name}".`,
+  nameLabel: "Name",
   // V11: the Compare view.
   compareTitle: "Compare versions",
-  nextChange: "Next change",
+  nextChange: "Jump to next change",
   noChanges: "The text is the same in both.",
   removed: "Removed",
   added: "Added",
@@ -50,6 +59,8 @@ export const VERSION_TEXT = {
   page: (n: number) => `Page ${n}`,
   before: "The version compared with",
   after: "This version",
+  yours: (name: string) => `The file you have, "${name}"`, // #521: a suggested pair's left side
+  upload: (name: string) => `The new upload, "${name}"`,
   truncated: "This page is long, so only its first part is compared.",
 };
 
@@ -86,6 +97,24 @@ const joinAnd = (parts: readonly string[]) =>
 // The lines of kaagaz/versions.py (TEXT_ALONE, NAME_SIGNAL), for a reply without the server's words.
 const TEXT_LINE = 0.8;
 const NAME_LINE = 0.6;
+// #521: the name this alike or more highlights Upload as a new version, else Upload as a new file.
+const SAME_NAME = 0.8;
+
+/**
+ * The whole percent below (86.9% is 86), at most 99, and 100 only when counted exactly the same,
+ * never from the estimate (kaagaz/versions.py share_percent). The overlap was a 4-byte real, so
+ * it is first rounded to 4 places of the percent (0.83 reads 0.8299999833: 83).
+ */
+function sharePercent(overlap: number, estimated: boolean): number {
+  const percent = Math.floor(Math.round(overlap * 100 * 10_000) / 10_000);
+  if (percent >= 100) return overlap >= 1 && !estimated ? 100 : 99;
+  return percent;
+}
+
+/** #521: Upload as a new version is the highlighted choice for the same name, else Upload as a new file. */
+export function highlightVersion(suggestion: Pick<VersionSuggestion, "name_similarity">): boolean {
+  return (suggestion.name_similarity ?? 0) >= SAME_NAME;
+}
 
 /**
  * Why Kaagaz thinks so, in plain words (V6, NB-17, #521): "86% the same text" ("about" when only
@@ -97,8 +126,8 @@ export function reasonsText(scores: Scores): string {
   if (Array.isArray(scores.reasons) && scores.reasons.length > 0) return joinAnd(scores.reasons);
   const text = scores.text_overlap;
   if (text !== null && text >= TEXT_LINE) {
-    const percent = Math.round(text * 100);
-    return `${scores.text_overlap_estimated ? "about " : ""}${percent === 100 && text < 1 ? 99 : percent}% the same text`;
+    const estimated = scores.text_overlap_estimated === true;
+    return `${estimated ? "about " : ""}${sharePercent(text, estimated)}% the same text`;
   }
   const reasons: string[] = [];
   const name = scores.name_similarity;
@@ -158,4 +187,30 @@ export function cleanNote(note: string): { note: string | null; problem: string 
   const clean = note.split(/\s+/).filter(Boolean).join(" ");
   if (clean.length > NOTE_MAX) return { note: clean, problem: VERSION_TEXT.noteTooLong };
   return { note: clean === "" ? null : clean, problem: null };
+}
+
+/**
+ * #521, Make it a separate file: the name it is offered. Its own upload name when that differs
+ * from the family's; else the family's with "(version n)" before the extension.
+ */
+export function separateDefaultName(ownName: string, familyName: string, versionNo: number): string {
+  if (ownName.trim() !== "" && ownName !== familyName) return ownName;
+  const dot = familyName.lastIndexOf(".");
+  const [stem, extension] = dot > 0 ? [familyName.slice(0, dot), familyName.slice(dot)] : [familyName, ""];
+  return `${stem} (version ${versionNo})${extension}`;
+}
+
+// The server's rule for a typed file name (api/names.py upload_name): no control, format (bidi,
+// zero-width), private-use or unassigned character, nor a line or paragraph separator; ZWNJ and
+// ZWJ stay (Devanagari needs them).
+const HIDDEN = /[\p{Cc}\p{Co}\p{Cn}\p{Zl}\p{Zp}]|(?![\u200c\u200d])\p{Cf}/u;
+const NAME_MAX = 255;
+
+/** Why the name can't be used, or null: empty, hidden characters, or too long. */
+export function separateNameProblem(name: string): string | null {
+  const trimmed = name.trim();
+  if (trimmed === "") return "Enter a name.";
+  if (HIDDEN.test(name)) return "Remove the hidden characters from the name.";
+  if (trimmed.length > NAME_MAX) return `Use at most ${NAME_MAX} characters.`;
+  return null;
 }

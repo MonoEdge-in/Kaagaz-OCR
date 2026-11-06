@@ -37,6 +37,8 @@ import Link from "next/link";
 import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
 import type { DragEvent, ReactNode } from "react";
 import { InStatusBar } from "@/components/shell/StatusBar";
+import { VersionChoice } from "@/components/versions/VersionChoice";
+import type { Chosen } from "@/components/versions/VersionChoice";
 import { VERSION_TEXT, suggestionsText } from "@/components/versions/words";
 import { Icon } from "@/components/ui/Icon";
 import { beingRead } from "@/components/viewer/reprocess";
@@ -59,7 +61,14 @@ import type { ShownProgress } from "@/lib/progress";
 import { useSession } from "@/lib/session";
 import { leavingPage } from "@/lib/sessionChannel";
 import { useTick } from "@/lib/tick";
-import type { BatchView, DocumentSummary, UploadLimits, UploadReader, UploadResult } from "@/lib/types";
+import type {
+  BatchView,
+  DocumentSummary,
+  UploadLimits,
+  UploadReader,
+  UploadResult,
+  VersionSuggestion,
+} from "@/lib/types";
 import { usePoll } from "@/lib/usePoll";
 import {
   NOT_FILED_TEXT,
@@ -658,10 +667,11 @@ export function BatchTray({
     if (entry.batchId) batches.set(entry.batchId, [...(batches.get(entry.batchId) ?? []), entry]);
     else loose.push(entry);
   }
-  const row = (entry: UploadEntry) => (
+  const row = (entry: UploadEntry, suggestions?: ReadonlyMap<string, VersionSuggestion>) => (
     <UploadRow
       key={entry.key}
       entry={entry}
+      suggestion={suggestions?.get(rowDocument(entry) ?? "")}
       onRestore={onRestore}
       onRetry={onRetry}
       tree={tree}
@@ -702,6 +712,12 @@ export function BatchTray({
         const versions = suggestionsText(view?.version_suggestion_count ?? view?.version_suggestions?.length ?? 0);
         const found = view?.version_suggestions?.[0];
         const first = found ? { document_id: found.document.id, display_name: found.document.name } : undefined;
+        // #521: each file that looks like a new version gets the choice on its own row.
+        const asked = new Map(
+          (view?.version_suggestions ?? [])
+            .filter((each) => each.status === "pending" && each.outcome === "suggested")
+            .map((each) => [each.document.id, each] as const),
+        );
         return (
           <div key={id} className={styles.batch}>
             <div className={styles.batchHead}>
@@ -725,11 +741,11 @@ export function BatchTray({
               </p>
             )}
             {busy && <BatchBar view={view} rows={rows} />}
-            <ul className={styles.uploads}>{rows.map(row)}</ul>
+            <ul className={styles.uploads}>{rows.map((entry) => row(entry, asked))}</ul>
           </div>
         );
       })}
-      {loose.length > 0 && <ul className={styles.uploads}>{loose.map(row)}</ul>}
+      {loose.length > 0 && <ul className={styles.uploads}>{loose.map((entry) => row(entry))}</ul>}
     </section>
   );
 }
@@ -783,8 +799,35 @@ function RowBar({ entry, stage }: { entry: UploadEntry; stage: Stage }) {
   );
 }
 
+/** The stored document of a row (being read, or done), else null. */
+function rowDocument(entry: UploadEntry): string | null {
+  return entry.state.kind === "reading" || entry.state.kind === "done" ? entry.state.documentId : null;
+}
+
+/** #521: a tray row's near match, asked on the row; then what was done, with Undo after a version. */
+function TrayChoice({ suggestion }: { suggestion: VersionSuggestion }) {
+  const [done, setDone] = useState<Chosen | null>(null);
+  const [undone, setUndone] = useState(false);
+  if (done === null) return <VersionChoice suggestion={suggestion} onDone={setDone} />;
+  return (
+    <p className={styles.small} role="status">
+      {undone ? VERSION_TEXT.reverted : done.message}{" "}
+      {done.undo && !undone && (
+        <button
+          type="button"
+          className={`btn btn-quiet ${styles.inlineAction}`}
+          onClick={() => void done.undo?.().then(() => setUndone(true), () => undefined)}
+        >
+          {VERSION_TEXT.undo}
+        </button>
+      )}
+    </p>
+  );
+}
+
 function UploadRow({
   entry,
+  suggestion,
   onRestore,
   onRetry,
   tree,
@@ -792,6 +835,7 @@ function UploadRow({
   canReread,
 }: {
   entry: UploadEntry;
+  suggestion?: VersionSuggestion;
   onRestore: (key: string, documentId: string, existingName: string) => void;
   onRetry: (key: string) => void;
   tree: FolderTree;
@@ -897,6 +941,7 @@ function UploadRow({
             </Link>
           </p>
         )}
+        {suggestion && <TrayChoice suggestion={suggestion} />}
         {state.kind === "error" && <p className={`error-text ${styles.small}`}>{state.message}</p>}
         {state.kind === "error" && state.retry && (
           <button type="button" className={`btn ${styles.inlineAction}`} onClick={() => onRetry(entry.key)}>

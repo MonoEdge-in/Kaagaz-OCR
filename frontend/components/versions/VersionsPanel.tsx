@@ -3,23 +3,34 @@
 // The document page's Versions (File management V12, V9, V10): every version of the family,
 // newest first, each with its number, note (editable), who uploaded it and when, how it
 // joined (uploaded, or linked from a suggestion), a Current chip, and View, Compare and
-// Make current. Notes are plain text.
+// Make current. Notes are plain text. With two versions or more, each row's ⋯ menu offers Make
+// it a separate file (#521, SeparateDialog).
 
 import Link from "next/link";
 import { useId, useState } from "react";
 import type { FormEvent } from "react";
+import { RowMenu } from "@/components/admin/RowMenu";
 import { sortedVersions } from "@/components/viewer/versions";
 import { ApiError, makeCurrent, updateDocument } from "@/lib/api";
 import { withFrom } from "@/lib/backLink";
 import { formatDateTime } from "@/lib/format";
 import type { DocumentDetail, DocumentVersion } from "@/lib/types";
-import { compareHref } from "./VersionBanner";
+import { SeparateDialog } from "./SeparateDialog";
+import { compareHref } from "./VersionChoice";
 import { NOTE_MAX, VERSION_TEXT, canMakeCurrent, cleanNote, joinedText } from "./words";
 import styles from "./Versions.module.css";
 
-export function VersionsPanel({ detail, onChanged }: { detail: DocumentDetail; onChanged(message: string): void }) {
+export function VersionsPanel({
+  detail,
+  onChanged,
+}: {
+  detail: DocumentDetail;
+  onChanged(message: string, undo?: () => Promise<unknown>): void;
+}) {
   const versions = sortedVersions(detail.versions).reverse();
   const inTrash = detail.deleted_at !== null;
+  const familyName = versions.find((version) => version.is_current)?.display_name ?? detail.display_name;
+  const [separating, setSeparating] = useState<DocumentVersion | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
@@ -104,6 +115,13 @@ export function VersionsPanel({ detail, onChanged }: { detail: DocumentDetail; o
                   <span className="visually-hidden">{` for version ${version.version_no}`}</span>
                 </button>
               )}
+              {!inTrash && versions.length > 1 && (
+                <RowMenu
+                  compact
+                  name={`version ${version.version_no}`}
+                  items={[{ label: VERSION_TEXT.separate, onSelect: () => setSeparating(version) }]}
+                />
+              )}
             </div>
           </li>
         ))}
@@ -112,6 +130,17 @@ export function VersionsPanel({ detail, onChanged }: { detail: DocumentDetail; o
         <p className="error-text" role="alert">
           {error}
         </p>
+      )}
+      {separating && (
+        <SeparateDialog
+          version={separating}
+          familyName={familyName}
+          onClose={() => setSeparating(null)}
+          onDone={(done) => {
+            setSeparating(null);
+            onChanged(done.message, done.undo);
+          }}
+        />
       )}
     </section>
   );

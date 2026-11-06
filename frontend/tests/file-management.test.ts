@@ -240,7 +240,7 @@ describe("the new-version banner (V6, V7)", () => {
     expect(reasonsText({ text_overlap: 0.8, name_similarity: null, shared_identifier: null })).toBe("80% the same text");
     expect(
       reasonsText({ text_overlap: 0.828125, text_overlap_estimated: true, name_similarity: null, shared_identifier: null }),
-    ).toBe("about 83% the same text");
+    ).toBe("about 82% the same text"); // #521: rounded down
     expect(reasonsText({ text_overlap: 0.79, name_similarity: 1, shared_identifier: "survey_number" })).toBe(
       "same name and same survey number",
     );
@@ -290,8 +290,10 @@ describe("the new-version banner (V6, V7)", () => {
       }),
     );
     expect(byName).toContain("This looks like a new version of &quot;7/12 Survey 44 Wakad.pdf&quot; (same name and same survey number).");
-    expect(ask).toContain("Make it version 2");
-    expect(ask).toContain("Keep separate");
+    // Changed on purpose (#521, Tushar's council): the two buttons and See the differences.
+    expect(ask).toContain(">Upload as a new version<");
+    expect(ask).toContain(">Upload as a new file<");
+    expect(ask).toContain(">See the differences<");
     expect(ask).toContain('href="/documents/d3/compare?with=d1"');
     expect(ask).toContain("Note for this version (optional)");
     const linked = render(
@@ -440,7 +442,7 @@ describe("Compare (V11)", () => {
       }),
     );
     expect(html).toContain("2 changes on page 2");
-    expect(html).toContain("Next change");
+    expect(html).toContain("Jump to next change"); // #521
     expect(html).toMatch(/<del[^>]*data-change="0"[^>]*>.*old &lt;b&gt;owner&lt;\/b&gt;/);
     expect(html).toMatch(/<ins[^>]*data-change="1"[^>]*>.*mutation 1234/);
     expect(html).toContain("The version compared with");

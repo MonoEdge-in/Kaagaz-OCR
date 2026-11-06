@@ -109,8 +109,16 @@ import { QUESTIONS_TEXT, QuestionsPanel } from "@/components/files/QuestionsPane
 import { FILES_TEXT } from "@/components/files/words";
 import { VersionBanner } from "@/components/versions/VersionBanner";
 import { VersionsPanel } from "@/components/versions/VersionsPanel";
+import { takeFlash } from "@/components/versions/flash";
 import { VERSION_TEXT } from "@/components/versions/words";
-import { documentActivity, getDocument, getDocumentSummary, getPageReadings, lostConnection } from "@/lib/api";
+import {
+  documentActivity,
+  getDocument,
+  getDocumentSummary,
+  getPageReadings,
+  lostConnection,
+  undoVersionLink,
+} from "@/lib/api";
 import { formatDate, formatDateTime, statusChip, typeLabel } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
 import { progressSignature } from "@/lib/poll";
@@ -194,6 +202,20 @@ export function DocumentView({
   const [readAgainKey, setReadAgainKey] = useState(0); // Read again picked from the menu: its question
   const [announcement, setAnnouncement] = useState("");
   const [toast, setToast] = useState<string | null>(null); // "Owner saved.", "Download started."
+  // #521: Undo in the toast after a version choice or Make it a separate file.
+  const [toastUndo, setToastUndo] = useState<(() => Promise<unknown>) | null>(null);
+  // #521: the words of a choice made on the compare screen, shown here once.
+  useEffect(() => {
+    // After the first paint (the store is the browser's), once.
+    const timer = setTimeout(() => {
+      const flash = takeFlash();
+      if (flash === null) return;
+      const linked = flash.undoLinkOf;
+      setToast(flash.message);
+      setToastUndo(() => (linked ? () => undoVersionLink(linked) : null));
+    }, 0);
+    return () => clearTimeout(timer);
+  }, []);
   const [moreOpen, setMoreOpen] = useState(false); // the status line's More details
   const viewerRef = useRef<HTMLElement>(null);
   // Set when a poll sees reading end: the next detail says what was found ("again": after Read again).
@@ -510,8 +532,9 @@ export function DocumentView({
   const highlightNote = highlighted
     ? `Highlighted: ${fieldText(highlighted.field)}${fromLink ? FROM_LINK : ""}`
     : undefined;
-  const reloadWith = (message: string) => {
+  const reloadWith = (message: string, undo?: () => Promise<unknown>) => {
     setToast(message); // its own live region reads it out
+    setToastUndo(() => undo ?? null);
     setReloads((n) => n + 1);
   };
 
@@ -520,7 +543,22 @@ export function DocumentView({
       <p className="visually-hidden" aria-live="polite">
         {announcement}
       </p>
-      <Toast message={toast} onClose={() => setToast(null)} />
+      <Toast
+        message={toast}
+        onUndo={
+          toastUndo
+            ? () =>
+                void toastUndo().then(
+                  () => reloadWith(VERSION_TEXT.reverted),
+                  () => setToast("It could not be undone. Check your connection, then try again."),
+                )
+            : undefined
+        }
+        onClose={() => {
+          setToast(null);
+          setToastUndo(null);
+        }}
+      />
       <div ref={layoutRef} className={styles.layout} style={{ "--split": `${split}%` } as CSSProperties}>
         <section ref={viewerRef} id="document-page" className={styles.viewer} aria-label="Page">
           {(lowResolution ?? lowRoom) && (
