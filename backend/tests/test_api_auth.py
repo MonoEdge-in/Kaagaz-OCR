@@ -304,7 +304,7 @@ def test_signed_out_visitors_behind_caddy_each_have_their_own_bucket() -> None:
     dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
     assert re.findall(r"^ENV FORWARDED_ALLOW_IPS=(.+)$", dockerfile, re.MULTILINE) == ['"*"']
     app = _offline_client(rate_limit_per_minute=2).app
-    client = TestClient(ProxyHeadersMiddleware(app, trusted_hosts="*"))
+    client = TestClient(ProxyHeadersMiddleware(app, trusted_hosts="*"))  # type: ignore[arg-type]  # ASGI types differ
     first, second = {"X-Forwarded-For": "203.0.113.7"}, {"X-Forwarded-For": "198.51.100.9"}
     for _ in range(2):
         assert client.get("/api/auth/me", headers=first).status_code == 401
