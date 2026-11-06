@@ -11,7 +11,7 @@ from sqlalchemy import text
 from kaagaz.db.engine import Database
 from tests import test_migration_0002_db as m0002
 from tests.db_support import insert_document, migrate, new_customer
-from tests.test_migration_0004_db import _BOX, _INSERT_VALUE, _current, _head
+from tests.test_migration_0004_db import _BOX, _INSERT_VALUE, _current
 
 pytestmark = pytest.mark.db
 fresh = m0002.fresh  # the fixture, by its name
@@ -35,7 +35,8 @@ def test_0077c_adds_the_amount_reasons_and_its_downgrade_refuses_while_one_is_us
     with pytest.raises(subprocess.CalledProcessError) as refused:
         m0002._downgrade(url, "0077b")
     assert b"values labelled with an amount reason exist" in refused.value.stderr
-    assert _current(url) == _head()  # the whole downgrade is one transaction
+    # Changed on purpose (#522): 0078 and 0080 follow 0077c now, so it is named, not "head".
+    assert _current(url) == "0077c"  # the whole downgrade is one transaction
     with database.customer(customer) as conn:
         conn.execute(text("DELETE FROM extracted_values WHERE customer_id = :c"), {"c": customer})
     m0002._downgrade(url, "0077b")
