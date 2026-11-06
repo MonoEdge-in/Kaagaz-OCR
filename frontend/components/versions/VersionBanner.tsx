@@ -1,7 +1,8 @@
 "use client";
 
-// The new-version banner on a document (File management V6, V7): "This looks like a new
-// version of <name>" with the reasons in plain words, an optional note (V9), and Make it
+// The new-version banner on a document (File management V6, V7): 'This looks like a new
+// version of "<name>" (86% the same text).', or the name and identifier in plain words when
+// they led (NB-17, #521), an optional note (V9), and Make it
 // version N, Keep separate and Compare first. After a link (by a person or on its own) it
 // says so, with Undo while this is still the family's newest version; a refused Undo (409
 // not_newest) is said calmly. The states are worked out in words.ts (bannerState).
@@ -92,13 +93,11 @@ export function VersionBanner({
     );
   }
 
-  const reasons = reasonsText(suggestion);
   return (
     <div className={styles.banner} role="region" aria-labelledby={`${id}-title`}>
       <p id={`${id}-title`} className={styles.bannerTitle}>
-        {bannerTitle(suggestion.candidate.name)}
+        {bannerTitle(suggestion.candidate.name, reasonsText(suggestion))}
       </p>
-      {reasons && <p className={styles.bannerText}>{`${reasons.charAt(0).toUpperCase()}${reasons.slice(1)}.`}</p>}
       <div className="field">
         <label htmlFor={`${id}-note`}>{VERSION_TEXT.noteLabel}</label>
         <input

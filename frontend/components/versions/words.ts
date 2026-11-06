@@ -78,31 +78,38 @@ export function identifierWords(kind: string): string {
 }
 
 type Scores = Pick<VersionSuggestion, "text_overlap" | "name_similarity" | "shared_identifier"> &
-  Partial<Pick<VersionSuggestion, "reasons">>;
+  Partial<Pick<VersionSuggestion, "reasons" | "text_overlap_estimated">>;
 
 const joinAnd = (parts: readonly string[]) =>
   parts.length <= 1 ? parts.join("") : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
 
+// The lines of kaagaz/versions.py (TEXT_ALONE, NAME_SIGNAL), for a reply without the server's words.
+const TEXT_LINE = 0.8;
+const NAME_LINE = 0.6;
+
 /**
- * Why Kaagaz thinks so, in plain words (V6): "91% of the text is the same and the agreement
- * number matches". The server's own words when it sends them; else each signal that counted,
- * in this order; "" when none did.
+ * Why Kaagaz thinks so, in plain words (V6, NB-17, #521): "86% the same text" ("about" when only
+ * estimated) when the text led; else "same name and same survey number". The server's own
+ * words when it sends them; "" when nothing counted.
  */
 export function reasonsText(scores: Scores): string {
   if (typeof scores.reasons === "string" && scores.reasons.trim() !== "") return scores.reasons.trim();
   if (Array.isArray(scores.reasons) && scores.reasons.length > 0) return joinAnd(scores.reasons);
-  const reasons: string[] = [];
-  if (scores.text_overlap !== null && scores.text_overlap >= 0.5) {
-    reasons.push(`${Math.round(scores.text_overlap * 100)}% of the text is the same`);
+  const text = scores.text_overlap;
+  if (text !== null && text >= TEXT_LINE) {
+    const percent = Math.round(text * 100);
+    return `${scores.text_overlap_estimated ? "about " : ""}${percent === 100 && text < 1 ? 99 : percent}% the same text`;
   }
-  if (scores.name_similarity !== null && scores.name_similarity >= 0.6) reasons.push("the names are alike");
-  if (scores.shared_identifier) reasons.push(`the ${identifierWords(scores.shared_identifier)} matches`);
+  const reasons: string[] = [];
+  const name = scores.name_similarity;
+  if (name !== null && name >= NAME_LINE) reasons.push(name >= 1 ? "same name" : "similar name");
+  if (scores.shared_identifier) reasons.push(`same ${identifierWords(scores.shared_identifier)}`);
   return joinAnd(reasons);
 }
 
-/** "This looks like a new version of 7/12 Survey 44 Wakad.pdf". */
-export function bannerTitle(candidateName: string): string {
-  return `This looks like a new version of ${candidateName}`;
+/** 'This looks like a new version of "7/12 Survey 44 Wakad.pdf" (86% the same text).' */
+export function bannerTitle(candidateName: string, reason: string): string {
+  return `This looks like a new version of "${candidateName}"${reason ? ` (${reason})` : ""}.`;
 }
 
 export type BannerState =

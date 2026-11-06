@@ -183,6 +183,7 @@ export interface VersionSuggestion {
   candidate: { family_id: string; id: string; name: string }; // id: the family's current version
   next_version_no: number; // "Make it version N"
   text_overlap: number | null;
+  text_overlap_estimated?: boolean; // #521: true when text_overlap is the estimate, not counted exactly
   name_similarity: number | null;
   shared_identifier: string | null; // its kind, such as "survey_number"
   reasons?: string | string[] | null;
