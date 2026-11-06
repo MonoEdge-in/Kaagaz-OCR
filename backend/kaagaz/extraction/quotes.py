@@ -81,6 +81,7 @@ practice (CPython's ``str.find``); a labelled search is O(k * (LABEL_WINDOW + m)
 for k label matches; mapping a match back is O(log S) plus its spans.
 """
 
+import re
 import unicodedata
 from array import array
 from bisect import bisect_left, bisect_right
@@ -92,7 +93,7 @@ from itertools import groupby
 from kaagaz.chunking.lines import running_spans
 from kaagaz.chunking.script import fold_digits, has_devanagari_letters
 from kaagaz.extraction.values import ExtractedValue, QuoteMatch
-from kaagaz.reading.spans import BoxLocation, CellLocation, Location, Span
+from kaagaz.reading.spans import BoxLocation, CellLocation, Location, Span, line_band, text_lines
 
 LABEL_WINDOW = 300  # D2: a value_quote within 300 characters after its label_quote
 MAX_QUOTE_CHARS = 300  # security A7: longer quotes, and longer reader text at a match, are dropped
@@ -100,6 +101,7 @@ MAX_CHECKS = 512  # council fix 8: candidate spots one item's search checks, ove
 MAX_LABEL_MATCHES = 64  # council fix 8: label matches one labelled item tries
 MAX_EMPTY_CELLS = 30  # #382: empty cells kept in a row of an OCR table, a bound on the joins
 _CELL_JOIN = " | "
+_RAW_WORD = re.compile(r"\S+")  # #523: a word of a span's raw text, as str.split() splits it
 
 _DEVANAGARI_FIRST, _DEVANAGARI_LAST = chr(0x0900), chr(0x097F)
 
@@ -141,7 +143,7 @@ class Found:
     start: int  # norm offsets, for order and dedupe
     end: int
     text: str  # the reader's text at the match; our joins become one space
-    location: Location  # the union box on the first matched span's page, or the first cell
+    location: Location  # the union box on the first span's page (#523: its lines' band), or the first cell
     confidence: float | None  # the lowest of the matched spans
     origin: str | None  # "ocr" when any matched span is OCR, else the first span's
     loose: bool = False  # found only by the loose pass
@@ -465,14 +467,15 @@ def _kept(reader: ReaderText, j0: int, j1: int, loose: bool) -> Found | None:
         return None  # it ends inside one of our joins
     pieces: list[str] = []
     matched: list[Span] = []
+    places: list[Location] = []
     for k in range(first, last + 1):
         span, span_start = reader.spans[k], reader.span_starts[k]
-        piece = span.text[
-            max(begin, span_start) - span_start : min(finish, span_start + len(span.text)) - span_start
-        ]
+        low, high = max(begin, span_start) - span_start, min(finish, span_start + len(span.text)) - span_start
+        piece = span.text[low:high]
         if piece:
             pieces.append(piece)
             matched.append(span)
+            places.append(_lines_holding(span, low, high))
     text = " ".join(pieces)
     if len(text) > MAX_QUOTE_CHARS:
         return None
@@ -482,7 +485,7 @@ def _kept(reader: ReaderText, j0: int, j1: int, loose: bool) -> Found | None:
         start=j0,
         end=j1,
         text=text,
-        location=_location(matched),
+        location=_location(places),
         confidence=min(confidences) if confidences else None,
         origin="ocr" if "ocr" in origins else origins[0],
         loose=loose,
@@ -492,16 +495,12 @@ def _kept(reader: ReaderText, j0: int, j1: int, loose: bool) -> Found | None:
     )
 
 
-def _location(matched: list[Span]) -> Location:
+def _location(places: list[Location]) -> Location:
     """The first span's cell, or the union of the matched boxes on the first span's page."""
-    head = matched[0].location
+    head = places[0]
     if not isinstance(head, BoxLocation):
         return head
-    boxes = [
-        span.location
-        for span in matched
-        if isinstance(span.location, BoxLocation) and span.location.page == head.page
-    ]
+    boxes = [place for place in places if isinstance(place, BoxLocation) and place.page == head.page]
     return BoxLocation(
         head.page,
         min(box.x0 for box in boxes),
@@ -509,6 +508,27 @@ def _location(matched: list[Span]) -> Location:
         max(box.x1 for box in boxes),
         max(box.y1 for box in boxes),
     )
+
+
+def _lines_holding(span: Span, start: int, end: int) -> Location:
+    """Where ``span.text[start:end]`` sits (#523): the band of the written lines holding it when
+    the span is a block of several lines whose raw text keeps their breaks (the Gemini reader's
+    handwritten paragraph, ``text`` its words joined by spaces), else the span's own box. The
+    k-th word of ``text`` is the k-th of ``raw``, which gives each end its raw line. O(len(raw))."""
+    box = span.location
+    rows = text_lines(span.raw)
+    if not isinstance(box, BoxLocation) or len(rows) < 2:
+        return box
+    words = [found.start() for found in _RAW_WORD.finditer(span.raw)]
+    if span.text != " ".join(span.raw.split()) or len(words) != span.text.count(" ") + 1:
+        return box  # not a block joined from its raw text: nothing to line up
+
+    def row_of(at: int) -> int:
+        word = span.text.count(" ", 0, at)
+        raw_at = words[word] + at - (span.text.rfind(" ", 0, at) + 1)
+        return next((index for index, (_, row_end) in enumerate(rows) if raw_at < row_end), len(rows) - 1)
+
+    return line_band(box, len(rows), row_of(start), row_of(end - 1))
 
 
 def _cells_in_column_order(spans: list[Span]) -> tuple[Span, ...]:
