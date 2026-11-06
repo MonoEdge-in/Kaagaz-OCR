@@ -230,6 +230,18 @@ def test_v4_the_table_at_its_edges() -> None:
     assert outcome(None, 1.0, False) is None
 
 
+def test_521_monthly_bills_name_and_identifier_need_half_the_text_when_both_have_one() -> None:
+    """The council's bug fix 2: "Invoice 2025-01" and "Invoice 2025-02" share the name key and an
+    account number, but little text; the two-of rule then needs 0.5 of the text too."""
+    outcome = versions.outcome
+    assert versions.TEXT_FLOOR == 0.5
+    assert outcome(0.44, 1.0, True) is None  # two bills of one template (test_521_two_invoices_...)
+    assert outcome(0.49, 1.0, True) is None
+    assert outcome(0.5, 1.0, True) == versions.SUGGESTED
+    assert outcome(0.0, 0.6, True) is None
+    assert outcome(None, 0.6, True) == versions.SUGGESTED  # no fingerprint: the rule as before
+
+
 # --- #521: the exact overlap -----------------------------------------------------------------
 
 

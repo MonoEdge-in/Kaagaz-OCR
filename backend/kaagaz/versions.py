@@ -37,6 +37,9 @@ _BAND_SALTS = tuple((HASHES + band).to_bytes(16, "big") for band in range(BANDS)
 # V4 as Tushar set it on 6 Nov 2026 (#521; docs/architecture.md): 80% of the text alone, or
 # two signals, suggest; nothing is ever linked on its own (rows linked so before stay "auto").
 TEXT_SIGNAL, NAME_SIGNAL, TEXT_ALONE = 0.8, 0.6, 0.8
+# Name and identifier also need this much of the text when both have a fingerprint (monthly
+# bills: one name key and account number, other text).
+TEXT_FLOOR = 0.5
 SUGGESTED = "suggested"
 
 # V11: a page longer than this is compared on its first words only, and the pages together on
@@ -131,9 +134,13 @@ def name_key(display_name: str) -> str:
 
 def outcome(text_overlap: float | None, name_similarity: float | None, shared_identifier: bool) -> str | None:
     """V4 (#521): ``suggested`` or None (nothing); a person always decides. A shared identifier
-    alone is never enough."""
+    alone is never enough, and two signals without the text need TEXT_FLOOR of it when there is
+    a text overlap (None: a text under MIN_WORDS words)."""
     text, name = text_overlap or 0.0, name_similarity or 0.0
-    if text >= TEXT_ALONE or (text >= TEXT_SIGNAL) + (name >= NAME_SIGNAL) + shared_identifier >= 2:
+    if text >= TEXT_ALONE:
+        return SUGGESTED
+    signals = (text >= TEXT_SIGNAL) + (name >= NAME_SIGNAL) + shared_identifier
+    if signals >= 2 and (text_overlap is None or text >= TEXT_FLOOR):
         return SUGGESTED
     return None
 

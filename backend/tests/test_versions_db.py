@@ -7,6 +7,8 @@ never linked on its own. Without a database:
 test_versions.py.
 """
 
+import contextlib
+import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -15,7 +17,7 @@ import pytest
 from sqlalchemy import text
 
 from kaagaz import versions
-from kaagaz.db import autofile, trash
+from kaagaz.db import ai_settings, autofile, trash
 from kaagaz.db import versions as versions_sql
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database
@@ -26,7 +28,16 @@ from tests.test_autofile_db import organisation, upload
 from tests.test_file_management import _migration
 from tests.test_file_management_db import _department, _land, _place, _read
 from tests.test_operator_auth_db import _owner
-from tests.test_versions import _ENGLISH, _MARATHI, _SATBARA, _extended, _text
+from tests.test_versions import (
+    _ENGLISH,
+    _ITEMS,
+    _MARATHI,
+    _SATBARA,
+    _extended,
+    _invoice,
+    _name_similarity,
+    _text,
+)
 
 pytestmark = pytest.mark.db
 
@@ -491,6 +502,89 @@ def test_521_a_copy_in_another_organisation_is_never_suggested(db: Database) -> 
     with db.customer(b.customer_id) as conn:
         assert versions_sql.spot(conn, b.customer_id, mine) == "none"
     assert _suggestions(db, a.customer_id) == _suggestions(db, b.customer_id) == []
+
+
+# --- #521, the council's three bug fixes -------------------------------------------------------
+
+
+def test_521_a_99_percent_match_under_another_name_wins_over_20_same_named_ones(db: Database) -> None:
+    """Fix 1: the candidates were the first 20 by name, then newest, so a 99% match under another
+    name was dropped behind 20 same-named ones; now up to 200 are ranked by the estimate first."""
+    api = Api(db)
+    signed = api.new_signed()
+    customer = signed.customer_id
+    base = _text(11, 500)
+    for n in range(20):  # 90% the same text, the same name
+        words = list(base)
+        for place in (5 + 7 * n, 150 + 7 * n, 300 + 7 * n):
+            words[place] = f"z{n}x{place}"
+        _old(db, customer, _doc(api, signed, words, "Lease.pdf", hours_ago=48 + n, doc_type="contract"))
+    scan = _doc(api, signed, [*base[:200], "twelve", *base[201:]], "Scan 7.pdf", hours_ago=100)
+    _old(db, customer, scan)
+    new = _doc(api, signed, list(base), "Lease.pdf", hours_ago=0, doc_type="contract")
+    _spot(db, customer, new)
+    assert [row[:2] for row in _suggestions(db, customer)] == [(new, scan)]
+
+
+def test_521_monthly_bills_with_one_name_and_account_number_are_not_suggested(db: Database) -> None:
+    """Fix 2: "Invoice 2025-01" and "Invoice 2025-02", one template, other numbers (44% of the
+    text), the same account number: name and identifier are two signals, but under half the text."""
+    api = Api(db)
+    signed = api.new_signed()
+    customer = signed.customer_id
+    later = [(what, hsn, qty - 3, rate + 5) for what, hsn, qty, rate in _ITEMS]
+    names = ("Invoice 2025-01.pdf", "Invoice 2025-02.pdf")
+    assert _name_similarity(*names) >= versions.NAME_SIGNAL
+    january = _invoice("SHT/2025/0101", "31-01-2025", _ITEMS).split()
+    old = _doc(api, signed, january, names[0], hours_ago=48, doc_type="invoice")
+    _old(db, customer, old)
+    february = _invoice("SHT/2025/0202", "28-02-2025", later).split()
+    new = _doc(api, signed, february, names[1], hours_ago=0, doc_type="invoice")
+    _link(db, customer, old, new, "account_number")
+    with db.customer(customer) as conn:
+        assert versions_sql.spot(conn, customer, new) == "none"
+    assert _suggestions(db, customer) == []
+
+
+def test_521_two_near_copies_of_one_batch_spotted_at_once_are_matched_once(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix 3: the fingerprint is written with Ready, and spotting holds a lock per customer, so
+    two spot runs at once neither miss each other (fingerprints not yet committed) nor suggest
+    the pair both ways. Each run waits for the other at the switch check, for up to 3 seconds:
+    with the lock the second only gets there once the first has committed."""
+    api = Api(db)
+    signed = api.new_signed()
+    customer = signed.customer_id
+    batch = str(uuid.uuid4())
+    first = _doc(api, signed, list(_SATBARA), "Satbara A.pdf", hours_ago=1, batch_id=batch, status="clean")
+    near = [*_SATBARA[:200], "फेरफार", *_SATBARA[201:]]
+    second = _doc(api, signed, near, "Satbara B.pdf", hours_ago=0.5, batch_id=batch, status="clean")
+    for document in (first, second):
+        PgDocuments(db).mark_ready(customer, document, 1)
+    meet = threading.Barrier(2)
+    switch_on = ai_settings.switch_on
+
+    def waiting(*args: Any) -> bool:
+        with contextlib.suppress(threading.BrokenBarrierError):  # the lock kept the other out
+            meet.wait(timeout=3)
+        return switch_on(*args)
+
+    monkeypatch.setattr(ai_settings, "switch_on", waiting)
+    codes: list[str | None] = []
+
+    def run(document: str) -> None:
+        with db.customer(customer) as conn:
+            codes.append(versions_sql.spot(conn, customer, document))
+
+    threads = [threading.Thread(target=run, args=(document,)) for document in (first, second)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert sorted(code or "" for code in codes) == ["none", "suggested"]
+    pairs = [set(row[:2]) for row in _suggestions(db, customer)]
+    assert pairs == [{first, second}]
 
 
 # --- V6 reject, V8 the switch ----------------------------------------------------------------

@@ -47,6 +47,9 @@ from kaagaz.db.visibility import LIVE_SUGGESTION
 
 FEATURE = "version_spotting"
 MAX_CANDIDATES = 20
+# #521 fix 1: this many candidates are fetched and ranked by the estimate, before the best
+# MAX_CANDIDATES are counted exactly, so a close text under another name is never dropped.
+MAX_FETCHED = 200
 
 
 class Refused(Exception):
@@ -99,8 +102,13 @@ _ME = text(
     " (SELECT count(*) FROM documents o WHERE o.customer_id = d.customer_id AND o.family_id = d.family_id)"
     " AS versions,"
     " (SELECT count(*) FROM processing_runs r WHERE r.customer_id = d.customer_id AND r.document_id = d.id"
-    " AND r.status = 'ready') AS ready_runs"
+    " AND r.status = 'ready') AS ready_runs, d.text_minhash IS NULL AS unprinted"
     " FROM documents d WHERE d.customer_id = :c AND d.id = :d"
+)
+# #521 fix 3: one customer's spotting runs one at a time, so two near copies spotted at once
+# never miss each other or are suggested both ways.
+_SPOT_LOCK = text(
+    "SELECT pg_advisory_xact_lock(hashtextextended('kaagaz.version_spotting:' || CAST(:c AS uuid)::text, 0))"
 )
 # The candidates (V3): every arm of the OR names one of the two indexes or the links' key.
 _CANDIDATES = text(
@@ -136,32 +144,35 @@ _SUGGEST = text(
 
 
 def spot(conn: Connection, customer_id: str, document_id: str) -> str | None:
-    """V1 to V5 for a document just made ready: its fingerprint and name key always; then,
-    on its first ready only (module notes), the best candidate's suggestion, audited as
-    ``version.suggested`` (no actor); never linked on its own (#521). Returns a code for the
-    log (off, none, suggested) or None when there was nothing to spot. The family lock comes
-    first. O(D) for this customer's D documents at worst (RLS may keep the GIN indexes out of
-    the plan), plus MAX_CANDIDATES scored, each with a fingerprint read and counted exactly
-    (O(w) for its w words)."""
+    """V1 to V5 for a document just made ready: its fingerprint and name key when Ready left
+    none (``mark_ready`` writes them, #521); then, on its first ready only (module notes), the
+    best candidate's suggestion, audited as ``version.suggested`` (no actor); never linked on
+    its own (#521). Returns a code for the log (off, none, suggested) or None when there was
+    nothing to spot. The customer's spotting lock, then the family lock. O(D) for this
+    customer's D documents at worst (RLS may keep the GIN indexes out of the plan), plus
+    MAX_FETCHED ranked by the estimate and MAX_CANDIDATES of them read and counted exactly
+    (O(w) for their w words)."""
+    conn.execute(_SPOT_LOCK, {"c": customer_id})
     if lock_family(conn, customer_id, document_id) is None:
         return None
     params = {"c": customer_id, "d": document_id}
     me = conn.execute(_ME, params).mappings().one()
     if me["status"] != "ready":
         return None
-    write_fingerprint(conn, customer_id, document_id, str(me["display_name"]))
+    if me["unprinted"]:
+        write_fingerprint(conn, customer_id, document_id, str(me["display_name"]))
     if me["in_trash"] or me["versions"] != 1 or me["ready_runs"] > 1:
         return None  # in Trash, already in a family, or a read again
     if not ai_settings.switch_on(conn, FEATURE, customer_id):
         return "off"
     minhash, family_id = conn.execute(_MY_MINHASH, params).one()
-    candidates = conn.execute(
-        _CANDIDATES, {**params, "name": versions.NAME_SIGNAL, "n": MAX_CANDIDATES}
-    ).mappings()
+    fetched = conn.execute(_CANDIDATES, {**params, "name": versions.NAME_SIGNAL, "n": MAX_FETCHED}).mappings()
+    estimated = [(versions.overlap(minhash, row["text_minhash"]), row) for row in fetched]
+    estimated.sort(key=lambda pair: pair[0] or 0.0, reverse=True)  # stable: then name, then newest
     mine: dict[int, str] | None = None
     best: tuple[tuple[Any, ...], RowMapping, float | None, bool | None] | None = None
-    for row in candidates:
-        overlap, exact = versions.overlap(minhash, row["text_minhash"]), None
+    for overlap, row in estimated[:MAX_CANDIDATES]:
+        exact = None
         if overlap is not None:  # both have a fingerprint: count it exactly when within the limits
             mine = page_texts(conn, customer_id, document_id) if mine is None else mine
             counted = versions.exact_overlap(mine, page_texts(conn, customer_id, str(row["id"])))
