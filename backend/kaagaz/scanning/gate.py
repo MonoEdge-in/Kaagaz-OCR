@@ -60,7 +60,10 @@ class ScannerError(Exception):
 
 
 class Scanner(Protocol):
-    def scan(self, data: bytes) -> Verdict: ...
+    def scan(self, data: bytes, *, name: str | None = None) -> Verdict:
+        """``name``: the file's name (None: not known), which may only choose between text
+        kinds the content check treats alike for safety (#522)."""
+        ...
 
 
 class Quarantine(Protocol):
@@ -111,10 +114,11 @@ class ScanGate:
         self._quarantine = quarantine
         self._statuses = statuses
 
-    def check(self, job: Job, *, run_id: str | None = None) -> bytes:
+    def check(self, job: Job, *, run_id: str | None = None, name: str | None = None) -> bytes:
         """Scan the job's file and return the scanned bytes, only if clean. With
         ``run_id``, the CLEAN write is fenced by that run: a stale delivery's scan
-        can never move a document read since back to clean."""
+        can never move a document read since back to clean. ``name``: the file's name, for
+        the scanner (#522: it only chooses between text kinds)."""
         customer_id, document_id = job.customer_id, job.document_id
         if self._statuses.get_status(customer_id, document_id) is DocumentStatus.REJECTED:
             raise JobFailed("rejected", retryable=False)
@@ -125,7 +129,7 @@ class ScanGate:
             # Includes a job naming another customer's document: nothing read.
             raise JobFailed("document_missing", retryable=False)
 
-        verdict = _scan(self._scanner, data)
+        verdict = _scan(self._scanner, data, name)
         if verdict is _SCANNER_FAILED:
             raise JobFailed("scanner_unavailable", retryable=True)
 
@@ -154,10 +158,10 @@ def _get_or_none(storage: BlobStorage, customer_id: str, document_id: str) -> by
 _SCANNER_FAILED = object()
 
 
-def _scan(scanner: Scanner, data: bytes) -> object:
+def _scan(scanner: Scanner, data: bytes, name: str | None) -> object:
     """The scanner's answer, or _SCANNER_FAILED if it could not give one."""
     try:
-        return scanner.scan(data)
+        return scanner.scan(data, name=name)
     except ScannerError:
         return _SCANNER_FAILED
 

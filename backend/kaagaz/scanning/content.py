@@ -24,9 +24,19 @@ may contain, and refuses the rest, whether or not any signature matches:
   same, except that a zip inside it, a part with a password and an unsafe path are
   each refused on their own when it is unpacked (``kaagaz/ingestion/unzip.py``),
   where every file is checked again by itself, so they don't refuse the whole zip.
-* **Plain text (CSV):** it must be data, not a script or markup: no HTML,
+* **Old Office files (OLE2: .doc, .xls, .ppt, #522):** no macros (a ``Macros``,
+  ``_VBA_PROJECT...`` or ``VBA`` storage or stream, anywhere), no embedded OLE objects
+  (``ObjectPool``) and no password (``EncryptedPackage``: an encrypted .docx, .xlsx or
+  .pptx, which can't be checked). Read with ``resolve.py``'s bounded directory reader. A
+  PowerPoint 97 file keeps its macros and objects inside its own stream, out of this
+  check's sight: ClamAV's OLE2 parser looks there.
+* **Plain text:** it must be data, not a script or markup: no HTML,
   XML, SVG, RTF, shell or batch scripts, and no spreadsheet formulas that
-  run commands (DDE, ``=cmd|...``, ``=WEBSERVICE``).
+  run commands (DDE, ``=cmd|...``, ``=WEBSERVICE``). The markup rule is left out
+  for a file the name makes HTML, Markdown or JSON (#522, ``resolve.py``'s text
+  kinds): the text reader never renders one, and Download sends it as plain
+  text, an attachment, with nosniff. A .txt or .csv file keeps it (a spreadsheet
+  may open a .csv), and so does a file with no name.
 * **Every file:** no hidden program inside (a Windows or Linux executable
   header), and no zip archive glued onto a PDF or an image (a polyglot file).
 
@@ -72,7 +82,9 @@ from pdfminer.pdftypes import PDFObjRef, PDFStream
 from pdfminer.psexceptions import PSEOF, PSException
 from pdfminer.psparser import KWD, PSBaseParser, PSKeyword, PSLiteral
 
-from kaagaz.ingestion.sniff import JPEG, PDF, PNG, TEXT, TIFF, ZIP, detect_type
+from kaagaz.ingestion import resolve
+from kaagaz.ingestion.sniff import HEIC, JPEG, OLE2, PDF, PNG, TEXT, TIFF, ZIP, detect_type
+from kaagaz.reading.spans import ReadError
 
 
 class Finding(Enum):
@@ -672,13 +684,18 @@ _DANGEROUS_FORMULA = re.compile(
 _DDE_CALL = re.compile(r"[A-Za-z0-9_.]+\s*\|\s*'[^'\n\r]*'\s*!", re.IGNORECASE)
 
 
-def _text_finding(data: bytes) -> Finding | None:
+# The text kinds whose reader never renders their markup (#522): HTML, Markdown and JSON.
+_MARKUP_IS_TEXT = frozenset({resolve.HTML, resolve.MD, resolve.JSON})
+
+
+def _text_finding(data: bytes, name: str) -> Finding | None:
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         return Finding.UNSCANNABLE
     text = text.removeprefix(_BOM)
-    if _MARKUP_OR_SCRIPT_START.match(text) or _SCRIPT_ANYWHERE.search(text):
+    markup_is_text = resolve.resolve_kind(data, TEXT, name) in _MARKUP_IS_TEXT
+    if not markup_is_text and (_MARKUP_OR_SCRIPT_START.match(text) or _SCRIPT_ANYWHERE.search(text)):
         return Finding.BLOCKED
     if _DANGEROUS_FORMULA.search(text) or _DDE_CALL.search(text):
         return Finding.BLOCKED
@@ -688,11 +705,28 @@ def _text_finding(data: bytes) -> Finding | None:
 # --- the check ----------------------------------------------------------------------
 
 
-def inspect(data: bytes) -> Finding | None:
+# OLE2 entries a business document must not carry (#522): macros, embedded OLE objects, and a
+# password (an encrypted .docx, .xlsx or .pptx, which nothing can look inside).
+_OLE2_MACROS = re.compile(r"^(Macros|_VBA_PROJECT.*|VBA)$", re.IGNORECASE)
+_OLE2_REFUSED = frozenset({"objectpool", "encryptedpackage"})
+
+
+def _ole2_finding(data: bytes) -> Finding | None:
+    try:
+        names = resolve.ole2_entry_names(data)
+    except ReadError:
+        return Finding.UNSCANNABLE
+    if any(_OLE2_MACROS.match(name) or name.lower() in _OLE2_REFUSED for name in names):
+        return Finding.BLOCKED
+    return None
+
+
+def inspect(data: bytes, name: str = "") -> Finding | None:
     """Why this file must be refused, or None if nothing risky was found.
 
     The type is worked out again from the bytes (never from a name), so the
-    check cannot be fooled by an extension.
+    check cannot be fooled by an extension. ``name``, the file's name, only chooses
+    between text kinds that are all read as text (#522: the markup rule).
     """
     kind = detect_type(data[:4096])
     if kind is None:
@@ -710,5 +744,7 @@ def inspect(data: bytes) -> Finding | None:
     if kind == ZIP:
         return _zip_finding(data)
     if kind == TEXT:
-        return _text_finding(data)
-    return None if kind in (PNG, JPEG, TIFF) else Finding.BLOCKED  # deny by default (old OLE2)
+        return _text_finding(data, name)
+    if kind == OLE2:
+        return _ole2_finding(data)
+    return None if kind in (PNG, JPEG, TIFF, HEIC) else Finding.BLOCKED  # deny by default

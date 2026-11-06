@@ -1152,7 +1152,7 @@ class DocumentProcessor:
             # #522 PR 3: refused before the scan gate loads it into memory (policy.ZIP_MAX_BYTES).
             raise JobFailed("zip_over_limit", retryable=False)
         self._progress(job, run, "scanning", 0, 1)
-        data = self._scan(job, run)
+        data = self._scan(job, run, record.display_name)
         if hashlib.sha256(data).hexdigest() != record.sha256:
             raise JobFailed("content_changed", retryable=False)
         record = self._resolved(record, data)
@@ -1590,9 +1590,9 @@ class DocumentProcessor:
             self._renditions.put_rendition(record.customer_id, record.document_id, converted)
         return replace(record, detected_type=converted_type), converted
 
-    def _scan(self, job: Job, run: _Run) -> bytes:
+    def _scan(self, job: Job, run: _Run, name: str) -> bytes:
         try:
-            return self._gate.check(job, run_id=run.run_id)
+            return self._gate.check(job, run_id=run.run_id, name=name)
         except JobFailed as failure:
             if failure.code in REJECTION_CODES:
                 # A file rejected on a later scan (new signatures) must not

@@ -230,7 +230,7 @@ class FakeScanner:
         self._error = error
         self.scanned: list[bytes] = []
 
-    def scan(self, data: bytes) -> Any:
+    def scan(self, data: bytes, *, name: str | None = None) -> Any:
         self.scanned.append(data)
         if self._error:
             raise ScannerError("scanner down")

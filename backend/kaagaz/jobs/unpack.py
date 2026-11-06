@@ -365,7 +365,7 @@ class ZipUnpacker:
         """The file's own virus check, then its kind's limit (told after the scan); None: clean
         and within it. JobFailed (retryable) when the scanner gives no answer."""
         try:
-            verdict = self._scanner.scan(data)
+            verdict = self._scanner.scan(data, name=name)
         except ScannerError:
             raise JobFailed("scanner_unavailable", retryable=True) from None
         if verdict is not Verdict.CLEAN:

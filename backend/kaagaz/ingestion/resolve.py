@@ -120,6 +120,7 @@ _ENTRY_SIZE = 128
 _NO_STREAM = 0xFFFFFFFF
 _END_OF_CHAIN = 0xFFFFFFFE
 _MAX_SECTOR = 0xFFFFFFFA  # a larger number is a marker, never a sector
+_STORAGE = 1
 _STREAM = 2
 _ENCRYPTED_PACKAGE = "EncryptedPackage"  # a password-protected .docx, .xlsx or .pptx
 _ROOT_STREAMS = (("WordDocument", DOC), ("PowerPoint Document", PPT), ("Workbook", XLS), ("Book", XLS))
@@ -273,6 +274,13 @@ def _is_template(archive: zipfile.ZipFile, names: set[str]) -> bool:
     return len(data) <= CONTENT_TYPES_MAX_BYTES and _DOTX_TYPE in data
 
 
+def ole2_entry_names(data: bytes) -> set[str]:
+    """The names of every storage and stream in the OLE2 compound file ``data``, at any depth,
+    for the content check (kaagaz/scanning/content.py: macros, embedded objects, a password).
+    Raises ReadError("corrupt_file") when its directory can't be read. O(directory)."""
+    return _Compound(io.BytesIO(data)).entry_names()
+
+
 def _ole2_kind(file: IO[bytes]) -> str:
     names = _Compound(file).root_streams()
     if _ENCRYPTED_PACKAGE in names:
@@ -300,10 +308,7 @@ class _Compound:
 
     def root_streams(self) -> set[str]:
         """The names of the streams directly in the root storage."""
-        directory = b"".join(self._read_sector(n) for n in self._chain(self._directory_start))
-        count = len(directory) // _ENTRY_SIZE
-        if count == 0 or directory[0x42] != 5:  # entry 0 must be the root
-            raise ReadError("corrupt_file")
+        directory, count = self._directory()
         names: set[str] = set()
         (child,) = struct.unpack_from("<I", directory, 0x4C)
         stack, seen = [child], set()
@@ -321,6 +326,25 @@ class _Compound:
                 names.add(directory[at : at + length - 2].decode("utf-16-le", errors="replace"))
             stack += (left, right)
         return names
+
+    def entry_names(self) -> set[str]:
+        """The names of every storage and stream in the directory, wherever it is (an entry
+        no storage links to is counted too: a check must not miss what a reader might find)."""
+        directory, count = self._directory()
+        names: set[str] = set()
+        for at in range(_ENTRY_SIZE, count * _ENTRY_SIZE, _ENTRY_SIZE):
+            length, kind = struct.unpack_from("<HB", directory, at + 0x40)
+            if kind in (_STORAGE, _STREAM) and 2 <= length <= 64 and length % 2 == 0:
+                names.add(directory[at : at + length - 2].decode("utf-16-le", errors="replace"))
+        return names
+
+    def _directory(self) -> tuple[bytes, int]:
+        """The directory's bytes and its number of entries; entry 0 must be the root."""
+        directory = b"".join(self._read_sector(n) for n in self._chain(self._directory_start))
+        count = len(directory) // _ENTRY_SIZE
+        if count == 0 or directory[0x42] != 5:
+            raise ReadError("corrupt_file")
+        return directory, count
 
     def _read_fat(self, header: bytes) -> list[int]:
         """The FAT: every sector's next sector. Its own sectors are listed in the header's

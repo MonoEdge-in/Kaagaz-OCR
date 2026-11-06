@@ -65,7 +65,7 @@ EXPLAIN = {
 class MarkerScanner:
     """Stand-in scanner: files containing the fake marker count as infected."""
 
-    def scan(self, data: bytes) -> Verdict:
+    def scan(self, data: bytes, *, name: str | None = None) -> Verdict:
         return Verdict.INFECTED if FAKE_VIRUS_MARKER in data else Verdict.CLEAN
 
 

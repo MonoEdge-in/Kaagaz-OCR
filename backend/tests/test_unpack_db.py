@@ -323,7 +323,7 @@ def test_the_scanner_down_is_tried_again_and_a_renamed_zip_keeps_its_folder(unpa
     record = unpacking.upload(data)
 
     class Down:
-        def scan(self, data: bytes) -> Any:
+        def scan(self, data: bytes, *, name: str | None = None) -> Any:
             raise ScannerError("down")
 
     scanner = unpacking.scanner

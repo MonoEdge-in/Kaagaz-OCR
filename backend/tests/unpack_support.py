@@ -27,7 +27,7 @@ class EicarScanner:
     def __init__(self) -> None:
         self.scanned: list[bytes] = []
 
-    def scan(self, data: bytes) -> Verdict:
+    def scan(self, data: bytes, *, name: str | None = None) -> Verdict:
         self.scanned.append(data)
         return Verdict.INFECTED if EICAR in data else Verdict.CLEAN
 

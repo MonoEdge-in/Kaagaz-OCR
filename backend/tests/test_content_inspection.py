@@ -26,6 +26,7 @@ from kaagaz.scanning.content import Finding, inspect
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES, REJECTION_CODES, Verdict
 from tests.pdf_builder import Page, Picture, Text, make_objstm_pdf, make_pdf
 from tests.picture_support import text_like_picture
+from tests.test_resolve import compound
 from tests.xlsx_builder import make_xlsx, sheet_xml
 
 WINDOWS_PROGRAM = b"MZ" + b"\x90" * 62 + b"This program cannot be run in DOS mode.\r\r\n$" + b"\x00" * 64
@@ -413,7 +414,51 @@ class PlainZips(unittest.TestCase):
                 self.assertIs(inspect(zip_bytes({part: b"<x/>", "inner.zip": b"x"})), Finding.BLOCKED)
 
 
+class NewFormats(unittest.TestCase):
+    """#522, security review (6 Nov 2026): a HEIC photo is allowed as the other photos are; an
+    old Office file (OLE2) is checked, not refused whole."""
+
+    def test_a_heic_photo_is_allowed_as_png_jpeg_and_tiff_are(self) -> None:
+        self.assertIsNone(inspect((Path(__file__).with_name("fixtures") / "heic" / "one.heic").read_bytes()))
+
+    def test_an_old_word_excel_or_powerpoint_file_is_allowed(self) -> None:
+        for streams in (["WordDocument", "1Table"], ["Workbook"], ["Book"], ["PowerPoint Document"]):
+            with self.subTest(streams=streams):
+                self.assertIsNone(inspect(compound(streams)))
+
+    def test_macros_embedded_objects_or_a_password_refuse_an_old_office_file(self) -> None:
+        for streams, storages in (
+            (["WordDocument"], {"Macros": ["PROJECT", "dir"]}),  # Word's macros
+            (["Workbook"], {"_VBA_PROJECT_CUR": ["PROJECT"]}),  # Excel's
+            (["Workbook", "_VBA_PROJECT"], {}),
+            (["PowerPoint Document"], {"VBA": ["dir"]}),
+            (["WordDocument"], {"ObjectPool": ["_1234"]}),  # an embedded OLE object
+            (["EncryptedPackage", "EncryptionInfo"], {}),  # a password-protected .docx
+        ):
+            with self.subTest(streams=streams, storages=storages):
+                self.assertIs(inspect(compound(streams, storages)), Finding.BLOCKED)
+
+    def test_a_damaged_old_office_file_cannot_be_checked(self) -> None:
+        self.assertIs(inspect(compound(["WordDocument"])[:600]), Finding.UNSCANNABLE)
+
+
 class PlainText(unittest.TestCase):
+    def test_markup_is_only_text_in_html_markdown_and_json(self) -> None:
+        # Changed on purpose (#522, security review 6 Nov 2026): the text reader never renders an
+        # HTML, Markdown or JSON file, and Download sends it as plain text, an attachment, with
+        # nosniff; so markup there is text. A .txt or .csv file, or one with no name, keeps the rule.
+        page = b"<html><head><script>alert(1)</script></head><body>Rent</body></html>"
+        self.assertIsNone(inspect(page, "page.html"))
+        self.assertIsNone(inspect(page, "PAGE.HTM"))
+        self.assertIsNone(inspect(b"# Rent\n<iframe src='x'></iframe>\n", "notes.md"))
+        self.assertIsNone(inspect(b'{"a": "<script>x()</script>"}', "data.json"))
+        for name in ("page.txt", "page.csv", "page", ""):
+            with self.subTest(name=name):
+                self.assertIs(inspect(page, name), Finding.BLOCKED)
+        self.assertIs(inspect(b"<not json>", "data.json"), Finding.BLOCKED)  # read as a .txt
+        # Everything else still holds: no hidden program, no formula that runs a command.
+        self.assertIs(inspect(b"<p>x</p>\nA,=cmd|' /C calc'!A0\n", "page.html"), Finding.BLOCKED)
+
     def test_markup_and_scripts_are_refused(self) -> None:
         samples = [
             "<html><body>hi</body></html>",
@@ -446,7 +491,7 @@ class RecordingScanner:
     def __init__(self) -> None:
         self.calls = 0
 
-    def scan(self, data: bytes) -> Verdict:
+    def scan(self, data: bytes, *, name: str | None = None) -> Verdict:
         self.calls += 1
         return Verdict.CLEAN
 
@@ -586,9 +631,12 @@ class SecurityReviewFailClosed(unittest.TestCase):
             with self.subTest(data=data[:12]):
                 self.assertIs(inspect(data), Finding.BLOCKED)
 
-    def test_a_type_with_no_check_is_blocked(self) -> None:
+    def test_an_old_office_file_that_cant_be_read_is_never_called_safe(self) -> None:
+        # Changed on purpose (#522, security review 6 Nov 2026): an old Office file has a check of
+        # its own now (NewFormats), so it is no longer refused for having none; one whose
+        # directory can't be read is unscannable, never let through.
         old_xls = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 504
-        self.assertIs(inspect(old_xls), Finding.BLOCKED)
+        self.assertIs(inspect(old_xls), Finding.UNSCANNABLE)
 
 
 GOLDEN = Path(__file__).parent / "golden"

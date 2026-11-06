@@ -1903,3 +1903,25 @@ def test_the_summary_is_the_details_own_summary_in_fewer_statements(db: Database
     asked = _statements(db, lambda: signed.client.get(f"/api/documents/{document_id}/summary"))
     whole = _statements(db, lambda: signed.client.get(f"/api/documents/{document_id}"))
     assert asked < whole
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(("detected_type", "extension"), [("html", "html"), ("md", "md"), ("json", "json")])
+def test_an_html_markdown_or_json_original_downloads_as_plain_text_never_run(
+    db: Database, detected_type: str, extension: str
+) -> None:
+    """#522 (security review, 6 Nov 2026): the content check lets markup through in these files
+    (the text reader never renders it), so Download must never let a browser run it: plain
+    text, an attachment, nosniff, and a sandbox, whether the viewer or Download asks."""
+    api = Api(db)
+    signed = api.new_signed()
+    page = b"<html><script>alert(document.cookie)</script></html>"
+    document_id = api.add_document(signed.customer_id, detected_type=detected_type, name="page", data=page)
+    for asked in ("", "?download=1"):
+        reply = signed.client.get(f"/api/documents/{document_id}/file{asked}")
+        assert reply.status_code == 200 and reply.content == page
+        assert reply.headers["content-type"] == "text/plain; charset=utf-8"
+        assert reply.headers["content-disposition"].startswith("attachment;")
+        assert reply.headers["content-disposition"].endswith(f"''page.{extension}")
+        assert reply.headers["x-content-type-options"] == "nosniff"
+        assert reply.headers["content-security-policy"] == "sandbox"

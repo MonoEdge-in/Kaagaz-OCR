@@ -467,7 +467,7 @@ class GatedScanner(FakeScanner):
         super().__init__(Verdict.CLEAN)
         self.entered, self.release = threading.Event(), threading.Event()
 
-    def scan(self, data: bytes) -> Any:
+    def scan(self, data: bytes, *, name: str | None = None) -> Any:
         self.entered.set()
         assert self.release.wait(timeout=10), "the test never released the scan"
         return super().scan(data)
