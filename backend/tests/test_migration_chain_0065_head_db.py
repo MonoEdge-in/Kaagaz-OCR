@@ -6,7 +6,9 @@ document stays received on the way down. Every later migration joins the chain o
 
 Changed on purpose (#484, 4 Nov 2026): production's 0061c (folder upload) is a branch off 0061b
 that 0071 merges, so a downgrade to 0065 leaves it, its tables and their rows: 0065's state is
-taken with 0061c applied, and a folder upload made at head is still there at 0065."""
+taken with 0061c applied, and a folder upload made at head is still there at 0065.
+Changed on purpose (#516, 5 Nov 2026): production's 0061d (the storage limit) is a branch off
+0061c that 0075 merges, so 0065's state is taken with 0061d too, and a limit set at head stays."""
 
 from typing import Any
 
@@ -36,7 +38,7 @@ def _state(db: Database) -> tuple[dict[str, list[tuple[Any, ...]]], list[tuple[A
 def test_head_down_to_0065_and_up_again_with_rows(fresh: tuple[str, Database]) -> None:
     url, db = fresh
     migrate(url, "0065")
-    migrate(url, "0061c")
+    migrate(url, "0061d")
     at_0065 = _state(db)
     migrate(url, "head")
     at_head = _state(db)
@@ -74,9 +76,14 @@ def test_head_down_to_0065_and_up_again_with_rows(fresh: tuple[str, Database]) -
         {},
     )
 
+    as_owner(db, "INSERT INTO org_storage_limits (customer_id, storage_gb) VALUES (:c, 7)", {"c": customer})
+
     base._downgrade(url, "0065")
     assert _state(db) == at_0065
     assert as_owner(db, "SELECT status FROM documents WHERE id = :d", {"d": held}) == [("received",)]
     assert as_owner(db, "SELECT count(*) FROM folder_uploads WHERE id = :u", {"u": upload}) == [(1,)]
+    assert as_owner(
+        db, "SELECT storage_gb FROM org_storage_limits WHERE customer_id = :c", {"c": customer}
+    ) == [(7,)]
     migrate(url, "head")
     assert _state(db) == at_head

@@ -9,7 +9,9 @@ an upload.
 
 * ``register_items``: a page of at most 1,000 files, idempotent by ``path_key`` (an item
   already there comes back as it is). The counts registered are kept on the upload row, so
-  the limits are checked in O(1) a page, never by counting the items again. A file Kaagaz
+  the limits are checked in O(1) a page, never by counting the items again; the bytes leave out
+  a file refused for its type (by the browser, which leaves it out of the plan's bytes too) or
+  its unsafe name (#516). A file Kaagaz
   can't take (empty, too large, a type the browser refused, or ``bad_name``: an unsafe name, or
   the name of another file of its folder once NFC) is registered ``failed`` with its code, so
   nothing is dropped. Item ``seq`` goes into batch ``seq // cap`` (``batch_for``), so a batch
@@ -238,7 +240,9 @@ def _register_new(
         already = {str(k): str(d) for k, d in conn.execute(_ALREADY_IN, {**params, **hashes})}
     sent = [item for item in new if item.path_key not in already]
     count, counted = registered + len(new), counted + len(sent)
-    counted_bytes += sum(item.size for item in sent)
+    # A file refused here by its type or name is never sent, and the browser leaves the files it
+    # refused out of the plan's bytes (#516), so their bytes are not counted.
+    counted_bytes += sum(item.size for item in sent if item.refused is None)
     if count > file_count or counted > limits.max_files:
         raise ItemsRefused("too_many_files")
     if counted_bytes > min(total_bytes, limits.max_bytes):
@@ -325,6 +329,25 @@ def finish_item(
 def fail_item(conn: Connection, customer_id: str, item_id: str, code: str) -> None:
     """A waiting item failed for good with ``code`` (FAILURE_CODES). One statement, O(log n)."""
     conn.execute(_FAIL, {"c": customer_id, "i": item_id, "code": code})
+
+
+_SENT = text(
+    "SELECT coalesce(sum(i.size_bytes), 0) FROM folder_upload_items i"
+    " JOIN folder_uploads u ON u.customer_id = i.customer_id AND u.id = i.folder_upload_id"
+    " WHERE i.customer_id = :c AND i.folder_upload_id = :u AND u.user_id = :usr"
+    " AND i.state IN ('stored', 'duplicate', 'failed')"
+)
+
+
+def sent_bytes(conn: Connection, customer_id: str, upload_id: str, *, user_id: str) -> int:
+    """#516: the bytes of this user's upload no longer to be sent (stored, a duplicate, or failed);
+    0 for a new upload. A re-plan ("Continue upload") checks only the rest against the storage
+    limit, so the files it sent are not counted twice and a failed one, never stored, not at all.
+    shortcut: a file the browser refused is failed too, though the plan's bytes left it out, so a
+    re-plan can pass by its bytes; the upload service still refuses each file past the limit. Mark
+    the browser's refusals apart if that matters. O(k) for its k items, on
+    ``folder_upload_items_state``."""
+    return int(conn.execute(_SENT, {"c": customer_id, "u": upload_id, "usr": user_id}).scalar_one())
 
 
 _UPLOADS = (

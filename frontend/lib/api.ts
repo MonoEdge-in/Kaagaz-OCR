@@ -14,6 +14,7 @@ import type {
   AddedUser,
   AdminChange,
   AdminCreated,
+  AdminStorage,
   AdminUser,
   AiDefaults,
   AiSettings,
@@ -107,6 +108,7 @@ import type {
   Speed,
   SpeedName,
   Stats,
+  StorageLimit,
   Tag,
   TaskLevel,
   TestModel,
@@ -165,6 +167,11 @@ export const FEATURE_OFF = "This is turned off for now.";
 
 /** A refusal because the super admin switched the feature off for everyone. */
 export const isFeatureOff = (caught: unknown) => caught instanceof ApiError && caught.code === "feature_off";
+
+/** An upload refused because it would take the organisation past its storage limit (#516). Its
+ * message is the API's own words, shown as they are; it is never sent again by itself, whatever
+ * its status, as more room comes only from deleting files or a higher limit. */
+export const isStorageFull = (caught: unknown) => caught instanceof ApiError && caught.code === "storage_full";
 
 async function errorFrom(response: Response): Promise<ApiError> {
   const waitHeader = Number(response.headers.get("Retry-After") ?? "");
@@ -612,6 +619,7 @@ async function retryWhileOffline<T>(
     await turn();
     try { return await work(); }
     catch (error) {
+      if (isStorageFull(error)) throw error; // never again by itself, even as a 5xx (#516)
       const paced = rateLimitWait(error, delay);
       if (paced !== null) {
         await waitForNetwork(paced);
@@ -964,6 +972,8 @@ export const resetUser2fa = (id: string) =>
 export const setDeleteForever = (id: string, allowed: boolean) =>
   request<AdminUser>("PUT", `/admin/users/${id}/delete-forever`, { allowed });
 export const getSettings = () => request<CustomerSettings>("GET", "/admin/settings");
+/** What this organisation has stored, Trash included, and its storage limit (#516). */
+export const getAdminStorage = () => request<AdminStorage>("GET", "/admin/storage");
 /** "Approve new sign-in connections automatically" (#457 phase 1); nothing else changes. */
 export const setAutoApprove = (on: boolean) =>
   request<CustomerSettings>("PATCH", "/admin/settings", { auto_approve_connections: on });
@@ -1213,6 +1223,15 @@ export const setFolderUploadLimits = (limits: FolderLimits, code: string) =>
 export const getOrgFolderUploadLimits = (orgId: string) => request<OrgFolderLimits>("GET", folderLimitsPath(orgId));
 export const setOrgFolderUploadLimits = (orgId: string, limits: FolderLimits, code: string) =>
   request<OrgFolderLimits>("PUT", folderLimitsPath(orgId), { ...limits, code });
+
+/** Operator: the storage limit (#516), the platform's default (no orgId) or one organisation's. */
+const storageLimitPath = (orgId?: string | null) =>
+  orgId ? `/operator/orgs/${encodeURIComponent(orgId)}/storage-limit` : "/operator/storage-limit";
+export const getStorageLimit = (orgId?: string) => request<StorageLimit>("GET", storageLimitPath(orgId));
+/** Save it with a fresh code (step-up). null orgId: the platform's default; null storageGb: an
+ * organisation follows the platform, the platform goes back to the default (50 GB). */
+export const setStorageLimit = (orgId: string | null, storageGb: number | null, code: string) =>
+  request<StorageLimit>("PUT", storageLimitPath(orgId), { storage_gb: storageGb, code });
 
 /** Operator: the speed controls (package S, 0053); saving needs a fresh code, null: the server's setting. */
 export const getSpeed = () => request<Speed>("GET", "/operator/speed");

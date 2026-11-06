@@ -56,8 +56,19 @@ def test_0071_is_the_merge_alone_and_0072_adds_after_it() -> None:
 
 def test_googles_0074_comes_after_0073() -> None:
     """#507's Google sign-in was 0072 on its own branch; with folder upload's 0072 and Ultra low
-    cost's 0073 first (5 Nov 2026), it is 0074, the head."""
+    cost's 0073 first (5 Nov 2026), it is 0074. Changed on purpose (#516): the head is now 0075,
+    the merge of 0074 with production's 0061d."""
     scripts = _scripts()
     assert scripts.get_revision("0073").down_revision == "0072"
     assert scripts.get_revision("0074").down_revision == "0073"
-    assert scripts.get_heads() == ["0074"]
+
+
+def test_productions_0061d_is_a_branch_off_0061c_that_0075_merges() -> None:
+    """Production ran the storage limit's 0061d (#516, 5 Nov 2026), so Alembic must find it; 0075
+    merges it with 0074 and adds nothing (as 0071), so the line still has one head."""
+    scripts = _scripts()
+    assert scripts.get_revision("0061d").down_revision == "0061c"
+    assert scripts.get_revision("0075").down_revision == ("0074", "0061d")
+    merge = (VERSIONS / "0075_org_storage_limit_merge.py").read_text(encoding="utf-8")
+    assert "op.execute" not in merge
+    assert scripts.get_heads() == ["0075"]

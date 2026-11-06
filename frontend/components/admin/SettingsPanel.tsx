@@ -15,6 +15,8 @@
 // refusal about them (the lock-out among them) shows there and takes focus. While the super
 // admin has Google sign-in off for the organisation, it says so instead; nothing shows while
 // Google sign-in is off for the product (the reply leaves it out).
+// Under the workspace's name, one line says what the organisation has stored of its storage
+// limit (#516, GET /admin/storage), loaded on its own so the settings never wait for it.
 
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
@@ -22,11 +24,12 @@ import { flushSync } from "react-dom";
 import libraryStyles from "@/components/documents/Library.module.css";
 import { LoadFailed } from "@/components/operator/LoadFailed";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
-import { getSettings, setAutoApprove, updateSettings } from "@/lib/api";
+import { getAdminStorage, getSettings, setAutoApprove, updateSettings } from "@/lib/api";
 import { clearDraft, readDraft, saveDraftSoon } from "@/lib/drafts";
 import { errorWords } from "@/lib/errorWords";
+import { storageUsedText } from "@/lib/format";
 import { useSession } from "@/lib/session";
-import type { CustomerSettings, GoogleRules } from "@/lib/types";
+import type { AdminStorage, CustomerSettings, GoogleRules } from "@/lib/types";
 import {
   DOMAINS_HINT,
   DOMAINS_LABEL,
@@ -77,6 +80,19 @@ export function SettingsPanel({
   const [saved, setSaved] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const [storage, setStorage] = useState<AdminStorage | null>(null);
+  const [storageFailed, setStorageFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getAdminStorage().then(
+      (result) => !cancelled && setStorage(result),
+      () => !cancelled && setStorageFailed(true),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -185,6 +201,7 @@ export function SettingsPanel({
           <p className={styles.customer}>
             Workspace: <strong>{settings.customer_name}</strong>
           </p>
+          <StorageLine storage={storage} failed={storageFailed} />
           <fieldset className={styles.settingsGroup}>
             <legend className={styles.settingsLegend}>Uploads</legend>
             <div className="field">
@@ -417,6 +434,20 @@ function AutoApproveSwitch({
         <p>{warning}</p>
       </ConfirmDialog>
     </fieldset>
+  );
+}
+
+/** "Storage: 12.4 GB of 50 GB used" (#516); while loading, or when it could not be loaded, it says so. */
+export function StorageLine({ storage, failed }: { storage: AdminStorage | null; failed: boolean }) {
+  return (
+    <p className={styles.customer}>
+      Storage:{" "}
+      {storage ? (
+        <strong>{storageUsedText(storage.used_bytes, storage.limit_gb)}</strong>
+      ) : (
+        <span className="muted">{failed ? "Could not load it. Reload the page to try again." : "Loading…"}</span>
+      )}
+    </p>
   );
 }
 

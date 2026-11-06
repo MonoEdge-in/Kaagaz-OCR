@@ -162,6 +162,26 @@ describe("a folder upload's run", () => {
     expect(refusedReason({ name: "notes.docx" })).toBe("unsupported_type");
   });
 
+  it("plans only the bytes it will send, and still registers a refused file with its size (#516)", async () => {
+    const pick = fromFileList([picked("A/notes.docx", 100), picked("A/bill.pdf", 5)]);
+    if (!pick) throw new Error("empty");
+    const server = fakeServer();
+    const plans: FolderUploadPlanBody[] = [];
+    const plan = server.api.plan;
+    server.api.plan = (body) => (plans.push(body), plan(body));
+    await startFolderUpload(
+      server.api,
+      { id: "u2b", userId: "me", source: { picked: pick, manifest: buildManifest(pick) }, target: { kind: "folder", parentId: null }, merge: true },
+      () => undefined,
+      never,
+    );
+    expect(plans.map((body) => [body.file_count, body.total_bytes])).toEqual([[2, 5]]);
+    expect(server.registers[0]?.map((each) => [each.size, each.refused])).toEqual([
+      [100, "unsupported_type"],
+      [5, undefined],
+    ]);
+  });
+
   it("waits the server's Retry-After while another plan of the organisation is built, then plans", async () => {
     const pick = pickOf(["A/a.pdf"]);
     const server = fakeServer();

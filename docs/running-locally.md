@@ -786,6 +786,11 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 - Tests: `test_api_folder_uploads.py`, `test_api_folder_upload_files.py`, `test_folder_uploads_plan_db.py`, `test_folder_upload_reading_pause_db.py`, `test_isolation_*folder_uploads.py`.
 - Load test (not in CI, hours). Laptop stack only, without `OPENROUTER_API_KEY`; never run it on the test server. Make two organisations for it (`python -m kaagaz.cli create-customer`, then `create-user` for a member of each): the second one's member is the probe. From `backend/` (`.venv/Scripts/python.exe` on Windows, `.venv/bin/python` elsewhere): `LOADTEST_PASSWORD=... PROBE_PASSWORD=... .venv/Scripts/python.exe -m scripts.load_folder_upload --email <member> --password-env LOADTEST_PASSWORD --probe-email <member of the second organisation> --probe-password-env PROBE_PASSWORD`. It prints PASS or FAIL for each bar. Clean-up: delete both organisations in the operator console, then `python -m kaagaz.cli purge-customer --customer-id <id> --now` for each.
 
+**14c. Storage limit per organisation (#516)**
+- Check (API): as the operator, `PUT $API/operator/orgs/<id>/storage-limit` with `{"storage_gb": 1, "code": "<a fresh code>"}`; as that organisation's admin, `GET $API/admin/storage`; then upload files until it is full.
+- Expect: `{used_bytes, limit_bytes, limit_gb}` for the admin; the first file past 1 GB is 413 `storage_full` with its words and `details`, at the upload (a resumable one at its complete) or the folder upload plan; the same file again (a duplicate) is still answered; emptying the Trash (delete forever) makes room. `{"storage_gb": null}` follows the platform (`/api/operator/storage-limit`, null: 50 GB).
+- Tests: `test_api_storage_limit.py`, `test_upload_storage_limit.py`, `test_operator_storage_limit_db.py`, `test_migration_0061d_db.py`, `test_isolation_storage_limits.py`.
+
 **15. Document viewer**
 - Check (screen): open a PDF, click a value in "Values found"; open p.csv.
 - Expect: the viewer jumps to the value's page and draws a highlight box on it; zoom works from 50% to 300%. A spreadsheet shows a cell grid with the value's cell highlighted, 200 rows at a time. Page images and cells come from `/documents/<id>/pages/<n>/image` and `/cells`.

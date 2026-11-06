@@ -10,7 +10,12 @@ batches and duplicates stay exactly as for any upload.
   department" is an admin's. Every folder and file name follows ``names.upload_name``. Audited
   once (``folder.upload``, counts and ids only) on the first plan and on a re-plan that made
   folders. One upload sends at a time per organisation (409 ``upload_in_progress``) and one plan
-  is built at a time (429 ``plan_busy``, ``Retry-After: 2``).
+  is built at a time (429 ``plan_busy``, ``Retry-After: 2``). A plan whose bytes would take the
+  organisation past its storage limit is 413 ``storage_full`` before any folder is made (#516,
+  ``documents.storage_full``); a re-plan counts only the bytes it still has to send (not a file
+  stored, a duplicate or failed), the browser leaves out the files it refuses, and "Add new
+  files only" is not checked there (its bytes hold the files already in Kaagaz, which cost
+  nothing): each new file is, as it is sent.
 * ``POST /folder-uploads/{id}/items``: a page of at most 1,000 files; each gets its folder and
   batch now (``db/folder_upload_items.py``). A file with an unsafe name is registered failed
   ``bad_name``, never a 400 for the page.
@@ -40,7 +45,7 @@ from kaagaz.api.auth import CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import DOCUMENT_NAME_MAX, FOLDER_NAME_MAX, shown_upload_name, upload_name
-from kaagaz.api.routers.documents import same_user, user_upload_policy
+from kaagaz.api.routers.documents import same_user, storage_full, user_upload_policy
 from kaagaz.api.views import folder_upload_item, held_message, iso
 from kaagaz.db import audit
 from kaagaz.db import folder_upload_items as items_sql
@@ -57,6 +62,7 @@ from kaagaz.db.folder_uploads import (
     plan_folders,
 )
 from kaagaz.db.folders import MAX_DEPTH, FolderError
+from kaagaz.db.storage_limits import storage_room
 
 router = APIRouter()
 
@@ -161,6 +167,13 @@ def _plan(context: AppContext, user: CurrentUser, body: PlanBody) -> dict[str, A
     try:
         with context.db.customer(customer_id) as conn:
             limits = effective_limits(conn, customer_id)
+            if not body.only_new:  # #516: the bytes not sent yet must fit (module notes)
+                room = storage_room(conn, customer_id)
+                unsent = body.total_bytes - items_sql.sent_bytes(
+                    conn, customer_id, str(body.id), user_id=user.user_id
+                )
+                if room.used_bytes + unsent > room.limit_bytes:
+                    raise storage_full(room)
             plan = _plan_and_audit(conn, user, body, folders, parent, limits)
     except FolderError as refused:  # out of the block first: the plan is rolled back
         if refused.code == "not_found":

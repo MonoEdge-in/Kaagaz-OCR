@@ -63,6 +63,9 @@ app reads, adds and updates, never deletes (they go with the customer); an organ
 limits it reads in four columns only, written by the operator's two functions (step-up).
 "Add new files only" (#484, 0072): the upload counts the files it sends
 (``items_counted``); the browser's SHA-256 of a file is never kept, on the upload or its items.
+
+Storage limit per organisation (0061d, merged by 0075, #516): an organisation's own limit the app
+reads in two columns only, written by the operator's two functions (step-up).
 """
 
 import re
@@ -183,6 +186,8 @@ FROM_0071 = {
     "folder_upload_items": (True, True, True, False),
     "org_upload_limits": (False, False, False, False),
 }
+# Storage limit (0061d): a column grant only, the operator writes.
+FROM_0061D = {"org_storage_limits": (False, False, False, False)}
 UPDATES_0030 = {
     "word_changes": {"applied", "undone_at", "undone_by"},
     "ensemble_runs": {
@@ -523,6 +528,12 @@ OPERATOR_RIGHTS = {
         EMPTY_PATH,
     ),
     "kaagaz_op_set_google_signin": ("text", EMPTY_PATH),
+    # 0061d, #516: the storage limits (numbers and the bytes used only), and their write (step-up).
+    "kaagaz_op_storage_limit": (
+        "TABLE(org_storage_gb integer, platform_storage_gb integer, used_bytes bigint)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_set_storage_limit": ("text", EMPTY_PATH),
     # 0046: operator-only read/write for customer and user RPM overrides.
     "kaagaz_op_model_rates": (
         "TABLE(org_rpm integer, user_id uuid, email text, user_rpm integer)",
@@ -603,6 +614,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0066)
         | set(FROM_0068)
         | set(FROM_0071)
+        | set(FROM_0061D)
     )
 
     with db.system() as conn:
@@ -651,7 +663,10 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         # Changed on purpose (0040): and its sign-in idle timeout.
         # Changed on purpose (#482, 0068): and a deleted organisation's kept audit rows.
         # Changed on purpose (#484, 0071): and an organisation's folder upload limits.
-        if table not in FROM_0023 | FROM_0026 | FROM_0039 | FROM_0040 | FROM_0043 | FROM_0068 | FROM_0071:
+        # Changed on purpose (#516, 0061d): and an organisation's storage limit.
+        if table not in (
+            FROM_0023 | FROM_0026 | FROM_0039 | FROM_0040 | FROM_0043 | FROM_0068 | FROM_0071 | FROM_0061D
+        ):
             assert (select, insert) == (True, True), table
     for table in FROM_0002:
         assert granted[table] == (True, True, True, True), table
@@ -677,6 +692,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0066
         | FROM_0068
         | FROM_0071
+        | FROM_0061D
     ).items():
         assert granted[table] == expected, table
 

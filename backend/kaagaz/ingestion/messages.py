@@ -1,4 +1,5 @@
-"""What a customer is told when an upload is too large (PRD 1, U2).
+"""What a customer is told when an upload is too large (PRD 1, U2), or would take the
+organisation past its storage limit (#516, ``storage_full_message``).
 
 Each message names the limit and the fix. 1 MB is 1024 x 1024 bytes, as the
 settings count it. The size is rounded up and the limit down, so a file even
@@ -38,4 +39,12 @@ def over_every_limit_message(limit: int) -> str:
     ``limit`` is the largest limit, in bytes."""
     return (
         f"Files can be up to {limit // MB} MB. This one is larger. Split it or save it smaller and try again."
+    )
+
+
+def storage_full_message(limit_gb: int) -> str:
+    """A new file past the organisation's storage limit, ``limit_gb`` whole GB (#516)."""
+    return (
+        f"This organisation has used its {limit_gb} GB of storage. Delete files forever from the Trash"
+        " to free space, or ask Kaagaz to raise the limit."
     )

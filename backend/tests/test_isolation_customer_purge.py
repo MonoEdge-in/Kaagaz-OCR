@@ -225,6 +225,8 @@ def _organisation(api: Api, storage: KeyStorage, label: str) -> tuple[str, str, 
         )
     _owner(api.db, "INSERT INTO org_upload_limits (customer_id, max_files) VALUES (:c, 7)", {"c": customer})
     put(api.db, customer, admin, first, f"The papers of {label}")
+    # 0061d: its own storage limit, which goes with the customers row (ON DELETE CASCADE).
+    _owner(api.db, "INSERT INTO org_storage_limits (customer_id, storage_gb) VALUES (:c, 7)", {"c": customer})
     documents = [first, second, trashed, held]
     for document in documents:
         storage.put(customer, document, io.BytesIO(f"{label} {document}".encode()))
