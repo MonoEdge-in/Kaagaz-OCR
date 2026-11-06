@@ -83,12 +83,14 @@ def test_guard_rails_0077a_and_0077b_follow_0077() -> None:
     scripts = _scripts()
     assert scripts.get_revision("0077a").down_revision == "0077"
     assert scripts.get_revision("0077b").down_revision == "0077a"
+    # Changed on purpose (#524, 6 Nov 2026): the amount reasons' 0077c follows 0077b.
+    assert scripts.get_revision("0077c").down_revision == "0077b"
 
 
 def test_the_file_kinds_0078_and_the_zip_unpack_s_0080_follow_and_0080_is_the_one_head() -> None:
-    """#522 (6 Nov 2026): 0078 (the file kinds) after the guard rails' 0077b, then 0080 (a zip
+    """#522 (6 Nov 2026): 0078 (the file kinds) after the amount reasons' 0077c, then 0080 (a zip
     unpacked into a folder; no 0079 when it was written)."""
     scripts = _scripts()
-    assert scripts.get_revision("0078").down_revision == "0077b"
+    assert scripts.get_revision("0078").down_revision == "0077c"
     assert scripts.get_revision("0080").down_revision == "0078"
     assert scripts.get_heads() == ["0080"]

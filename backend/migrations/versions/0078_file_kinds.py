@@ -25,13 +25,13 @@ Merges after the versioning PR (#521, 0077) and the guard-rails PR (#520, 0077a 
 come first; this changes nothing of them.
 
 Revision ID: 0078
-Revises: 0077b (the guard-rails PR's Ensemble reading pause)
+Revises: 0077c (amount reasons)
 """
 
 from alembic import op
 
 revision = "0078"
-down_revision = "0077b"
+down_revision = "0077c"
 branch_labels = None
 depends_on = None
 

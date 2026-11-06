@@ -44,6 +44,18 @@ class ParseAmountTest(unittest.TestCase):
             "10,00,00,000.00": "100000000.00",
             "₹ १,२३,४५६.७८": "123456.78",  # Devanagari digits (L4)
             "१२,३४५": "12345",
+            # #524: an end mark is never a digit, and Indic digits are read as ASCII ones.
+            "11500000/-": "11500000",
+            "1,15,00,000/-": "11500000",
+            "Rs. 9,40,000/=": "940000",
+            "9,40,000 / -": "940000",
+            "940000-/-": "940000",
+            "940000/": "940000",
+            "940000।": "940000",
+            "९४००००॥": "940000",
+            "३४०००० ": "340000",
+            "૯૪૦૦૦૦": "940000",  # Gujarati digits
+            "१2,3४5": "12345",  # mixed: read, and the value goes to review (labels.label_amounts)
         }
         for text, expected in cases.items():
             with self.subTest(text=text):
@@ -76,10 +88,11 @@ class ParseAmountTest(unittest.TestCase):
             "(1,234) Dr",
             "12/08/2026",
             "Aug 2026",
-            "١٢٣",  # Arabic-Indic digits: only ASCII and Devanagari digits count
-            "१2,3४5",  # ASCII and Devanagari digits mixed: never guessed (council)
-            "1२,345",
-            "12३.5४",
+            "١٢٣",  # Arabic-Indic digits: only ASCII and Indic digits count
+            # Changed on purpose (#524, Tushar 6 Nov 2026): ASCII and Devanagari digits mixed
+            # are read now, and the value goes to review (test_amount_guard.py).
+            "115000001-",  # "/-" read as "1-": never guessed (#524)
+            "11500000/1",
             "1" * 70,  # longer than any single amount
             "1,234 only",
         ]

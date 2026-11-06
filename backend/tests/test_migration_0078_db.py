@@ -36,8 +36,8 @@ def _types(db: Database, ids: dict[str, str]) -> dict[str, tuple[Any, ...]]:
 
 
 def test_the_revision_follows_0077_and_names_every_sniffed_type_and_kind() -> None:
-    # Changed on purpose (#522): after the guard-rails PR's 0077b, which follows versioning's 0077.
-    assert (M0078.revision, M0078.down_revision) == ("0078", "0077b")
+    # Changed on purpose (#522): after the amount reasons' 0077c (#524), which follows the guard rails' 0077b.
+    assert (M0078.revision, M0078.down_revision) == ("0078", "0077c")
     assert set(M0078.SNIFFED) == sniff.KNOWN_TYPES - {sniff.HEIC}  # 0001's
     assert set(M0078.SNIFFED) | set(M0078.KINDS) == sniff.KNOWN_TYPES | resolve.KINDS
     assert set(M0078.KINDS.values()) <= set(M0078.SNIFFED)  # each goes back to a type 0001 takes
@@ -47,7 +47,7 @@ def test_up_tells_ready_documents_down_puts_the_sniffed_types_back_and_up_again(
     fresh: tuple[str, Database],
 ) -> None:
     url, db = fresh
-    migrate(url, "0077b")
+    migrate(url, "0077c")
     at_0077 = _state(db)
     customer, _ = new_customer(db)
     with db.customer(customer) as conn:
@@ -83,7 +83,7 @@ def test_up_tells_ready_documents_down_puts_the_sniffed_types_back_and_up_again(
     for name, kind in (("pdf", "heic"), ("waiting", "txt"), ("word", "docx"), ("failed_zip", "doc")):
         as_owner(db, _SET, {"t": kind, "d": ids[name]})
 
-    base._downgrade(url, "0077b")
+    base._downgrade(url, "0077c")
     assert _state(db) == at_0077
     assert {name: row[0] for name, row in _types(db, ids).items()} == {
         "sheet": "zip",

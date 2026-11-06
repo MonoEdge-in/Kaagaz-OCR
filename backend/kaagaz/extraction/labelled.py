@@ -12,7 +12,8 @@ nothing else is recognised, and no field is ever guessed from layout.
   it is split before each later label that is followed by a colon, so one
   value never swallows the next.
 * An amount field (total_amount, subtotal, tax_amount) is kept only if its
-  text reads as an amount, and invoice_date only if it reads as a date
+  text reads as an amount, or as one the rules doubt (#524, ``parsing.amount_problem``:
+  "1,15,0000", "115000001-", kept for review), and invoice_date only if it reads as a date
   (kaagaz.extraction.parsing). "Total Items 5" is not a total amount.
   PROVISIONAL: this check is ours, beyond the written rule, so a label on a
   line of prose does not become a wrong value.
@@ -39,7 +40,7 @@ import re
 from collections.abc import Iterable
 from itertools import pairwise
 
-from kaagaz.extraction.parsing import parse_amount, parse_date
+from kaagaz.extraction.parsing import amount_problem, parse_amount, parse_date
 from kaagaz.extraction.values import ExtractedValue
 from kaagaz.reading.spans import BoxLocation, Span
 
@@ -198,8 +199,8 @@ def _pair(segment: str) -> tuple[str, str] | None:
 
 
 def _fits(field: str, value: str) -> bool:
-    if field in AMOUNT_FIELDS:
-        return parse_amount(value) is not None
+    if field in AMOUNT_FIELDS:  # #524: an amount the rules doubt is kept, for review (labels.label_amounts)
+        return parse_amount(value) is not None or amount_problem(value) is not None
     if field in DATE_FIELDS:
         return parse_date(value) is not None
     return True
