@@ -112,7 +112,7 @@ import { VersionBanner } from "@/components/versions/VersionBanner";
 import { VersionsPanel } from "@/components/versions/VersionsPanel";
 import { VERSION_TEXT } from "@/components/versions/words";
 import { documentActivity, getDocument, getDocumentSummary, getPageReadings, lostConnection } from "@/lib/api";
-import { formatDate, formatDateTime, statusChip, typeLabel } from "@/lib/format";
+import { fileTypeLabel, formatDate, formatDateTime, statusChip } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
 import { progressSignature } from "@/lib/poll";
 import { markReceived } from "@/lib/timeLeft";
@@ -675,7 +675,7 @@ export function DocumentView({
             )}
             <div id={DETAILS_ID} className={styles.status} hidden={!moreOpen && detail.status !== "rejected"}>
               <span className={styles.meta}>
-                {typeLabel(detail.detected_type)}
+                {fileTypeLabel(detail.detected_type, detail.display_name)}
                 {/* The count line after it starts with the pages: said once ("PDF · 3 pages 3 pages · 180 words", QA pass, 25 Oct 2026). */}
                 {!review.status?.summary && <span className="mono">{pagesText}</span>}
               </span>

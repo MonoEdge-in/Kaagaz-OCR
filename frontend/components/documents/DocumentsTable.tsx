@@ -54,7 +54,7 @@ import {
   restoreDocument,
 } from "@/lib/api";
 import { useSession } from "@/lib/session";
-import { docTypeLabel, formatBytes, formatDate, formatDateTime, formatRelative, typeLabel } from "@/lib/format";
+import { docTypeLabel, fileTypeLabel, formatBytes, formatDate, formatDateTime, formatRelative } from "@/lib/format";
 import type { DocumentSummary, Me, Tag } from "@/lib/types";
 import { ActionDialog } from "./ActionDialog";
 import { EditDialog, MoveDialog, RowMenu } from "./DocumentActions";
@@ -800,7 +800,10 @@ const DocumentRow = memo(function DocumentRow({
   // F5: "v1 · newer?" while a newer version of this family waits to be confirmed.
   const newer = document.pending_suggestion?.role === "candidate";
   const owner = document.owner?.name ?? null;
-  const typeWords = [typeLabel(document.detected_type), document.doc_type && docTypeLabel(document.doc_type)]
+  const typeWords = [
+    fileTypeLabel(document.detected_type, document.display_name),
+    document.doc_type && docTypeLabel(document.doc_type),
+  ]
     .filter(Boolean)
     .join(" · ");
   const folderPath = !inTrash && document.folder_id && tree.byId.has(document.folder_id) ? pathLabel(tree, document.folder_id) : null;
@@ -939,7 +942,7 @@ const DocumentRow = memo(function DocumentRow({
       {/* Issue 452: "PDF · Land record" on the first line, the size on the second, on every row. */}
       <td role="cell" className={`${styles.meta} ${styles.typeCell}`}>
         <span className={styles.typeLine} title={typeWords}>
-          {typeLabel(document.detected_type)}
+          {fileTypeLabel(document.detected_type, document.display_name)}
           {document.doc_type && <span className={styles.docType}>{docTypeLabel(document.doc_type)}</span>}
         </span>
         <span className={`${styles.bandSize} tabular`}>{formatBytes(document.size_bytes)}</span>

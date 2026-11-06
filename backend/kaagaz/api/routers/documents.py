@@ -284,6 +284,23 @@ _CONTENT_TYPES = {
     "json": ("text/plain; charset=utf-8", "json"),
     "html": ("text/plain; charset=utf-8", "html"),
 }
+# #522: 0078 told only ready documents' kinds, so one not read since (needs_reader, failed)
+# keeps its sniffed type until it is read again. Its name's ending chooses among the kinds that
+# type can be, for Download only (the reader tells the kind from the bytes): all a zip's are
+# Office packages or a zip, all text's are sent as plain text, so no name can make it run.
+_KINDS_BY_ENDING = {
+    sniff.ZIP: {"xlsx": "xlsx", "docx": "docx", "dotx": "dotx", "pptx": "pptx", "zip": "zip"},
+    sniff.TEXT: {"csv": "csv", "txt": "txt", "md": "md", "json": "json", "html": "html", "htm": "html"},
+}
+
+
+def served_type(detected_type: str, display_name: str | None) -> str:
+    """What a document downloads as: its kind, or for one still of its sniffed zip or text type,
+    the kind its name's ending names among that type's (``_KINDS_BY_ENDING``)."""
+    kinds = _KINDS_BY_ENDING.get(detected_type, {})
+    return kinds.get(resolve.ending(display_name or ""), detected_type)
+
+
 _REPROCESS_LIMITED = {
     "hourly": "Too many documents were sent to be read again in the last hour. Please try again later.",
     "cooldown": (
@@ -1654,7 +1671,7 @@ def get_file(document_id: uuid.UUID, user: User, context: Context, download: boo
                 target_type="document",
                 target_id=str(document_id),
             )
-    detected = sniff.PDF if rendition else row["detected_type"]
+    detected = sniff.PDF if rendition else served_type(row["detected_type"], row["display_name"])
     content_type, extension = _CONTENT_TYPES.get(detected, ("application/octet-stream", "bin"))
     # The user's own name with the file's true extension, percent-encoded (RFC 6266), so no
     # quote or line break reaches the header; "document.<ext>" for browsers without filename*.

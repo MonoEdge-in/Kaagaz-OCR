@@ -1906,6 +1906,53 @@ def test_the_summary_is_the_details_own_summary_in_fewer_statements(db: Database
 
 
 @pytest.mark.db
+@pytest.mark.parametrize(
+    ("detected_type", "name", "content_type", "served_name"),
+    [
+        (
+            "zip",
+            "Lease.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "Lease.docx",
+        ),
+        (
+            "zip",
+            "Slides.PPTX",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "Slides.pptx",
+        ),
+        ("zip", "Bills.zip", "application/zip", "Bills.zip"),
+        ("zip", "notes", "application/zip", "notes.zip"),  # no ending: its sniffed type's
+        ("text", "rent.csv", "text/plain; charset=utf-8", "rent.csv"),
+        ("text", "page.htm", "text/plain; charset=utf-8", "page.html"),
+        ("text", "notes.exe", "text/plain; charset=utf-8", "notes.txt"),  # never a kind text can't be
+        ("pdf", "bill.docx", "application/pdf", "bill.pdf"),  # a told type: its own, whatever the name
+    ],
+)
+def test_a_document_not_read_since_0078_downloads_by_its_name_s_ending_among_its_type_s_kinds(
+    db: Database, detected_type: str, name: str, content_type: str, served_name: str
+) -> None:
+    """#522 (security review, 6 Nov 2026): 0078 told only ready documents' kinds; one that was
+    not read (needs_reader, failed) keeps its sniffed type until it is read again, so a Word file
+    kept unread downloaded as "Lease.zip". Its name's ending chooses among the kinds that type
+    can be, for Download and the label only; the reader tells the kind from the bytes."""
+    api = Api(db)
+    signed = api.new_signed()
+    document_id = api.add_document(
+        signed.customer_id,
+        detected_type=detected_type,
+        name=name,
+        data=b"PK\x03\x04 x",
+        status="needs_reader",
+    )
+    reply = signed.client.get(f"/api/documents/{document_id}/file?download=1")
+    assert reply.status_code == 200
+    assert reply.headers["content-type"] == content_type
+    assert reply.headers["content-disposition"].endswith("''" + served_name)
+    assert reply.headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.db
 @pytest.mark.parametrize(("detected_type", "extension"), [("html", "html"), ("md", "md"), ("json", "json")])
 def test_an_html_markdown_or_json_original_downloads_as_plain_text_never_run(
     db: Database, detected_type: str, extension: str

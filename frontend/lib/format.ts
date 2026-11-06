@@ -145,6 +145,23 @@ export function typeLabel(type: DetectedType): string {
   return TYPE_LABELS[type];
 }
 
+// #522: a file not read since the kinds came keeps its sniffed type (zip, text) until it is read
+// again; its name's ending chooses among the kinds that type can be, for the words only (as the
+// server's Download does, documents.py served_type).
+const KINDS_BY_ENDING: Partial<Record<DetectedType, Readonly<Record<string, DetectedType>>>> = {
+  zip: { xlsx: "xlsx", docx: "docx", dotx: "dotx", pptx: "pptx", zip: "zip" },
+  text: { csv: "csv", txt: "txt", md: "md", json: "json", html: "html", htm: "html" },
+};
+
+/** A document's kind in words: ``typeLabel``, or for a zip or text file not read since #522,
+ * the kind its name's ending names. */
+export function fileTypeLabel(type: DetectedType, name: string | null | undefined): string {
+  const dot = (name ?? "").trim().lastIndexOf(".");
+  const ending = dot < 0 ? "" : (name ?? "").trim().slice(dot + 1).toLowerCase();
+  const kinds = KINDS_BY_ENDING[type];
+  return typeLabel((kinds && Object.hasOwn(kinds, ending) ? kinds[ending] : undefined) ?? type);
+}
+
 const DOC_TYPE_LABELS: Record<DocType, string> = {
   invoice: "Invoice",
   receipt: "Receipt",

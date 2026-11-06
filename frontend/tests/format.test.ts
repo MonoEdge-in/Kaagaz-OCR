@@ -10,6 +10,7 @@ import {
   formatUsd,
   statusChip,
   typeLabel,
+  fileTypeLabel,
 } from "@/lib/format";
 import type { DetectedType, DocType, DocumentStatus } from "@/lib/types";
 
@@ -74,6 +75,22 @@ describe("formatNumber", () => {
   it("groups digits the Indian way", () => {
     expect(formatNumber(120000)).toBe("1,20,000");
     expect(formatNumber(12345678)).toBe("1,23,45,678");
+  });
+});
+
+describe("fileTypeLabel", () => {
+  it("names a file not read since #522 by its name's ending among its sniffed type's kinds", () => {
+    // Before 0078 a file not read kept its sniffed type (zip, text) until it is read again.
+    expect(fileTypeLabel("zip", "Lease.docx")).toBe("Word document");
+    expect(fileTypeLabel("zip", "Book.XLSX")).toBe("Spreadsheet");
+    expect(fileTypeLabel("zip", "Bills.zip")).toBe("ZIP file");
+    expect(fileTypeLabel("zip", "notes")).toBe("ZIP file");
+    expect(fileTypeLabel("text", "rent.csv")).toBe("CSV");
+    expect(fileTypeLabel("text", "page.htm")).toBe("Web page (HTML)");
+    expect(fileTypeLabel("text", "notes.pdf")).toBe("Text file"); // never a kind text can't be
+    // A told type is its own, whatever the name says.
+    expect(fileTypeLabel("pdf", "bill.docx")).toBe("PDF");
+    expect(fileTypeLabel("docx", "letter.zip")).toBe("Word document");
   });
 });
 

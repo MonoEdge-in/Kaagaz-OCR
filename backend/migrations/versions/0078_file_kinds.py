@@ -11,7 +11,10 @@ it, for an upload not read yet. Its comment says so.
 Every document read before this was read by its sniffed type's one reader, so a ready one is
 told here: a ready ``zip`` was read as a spreadsheet (``xlsx``) and a ready ``text`` file as CSV
 (``csv``). Any other one keeps its sniffed type until it is read again (a zip that was not a
-spreadsheet is ``needs_reader``). The touch trigger is off for this, as in 0002, so
+spreadsheet is ``needs_reader``): its file is in storage, which a migration does not read, so
+it is told when it is read again; until then Download and its label take its name's ending
+among the kinds of its sniffed type (security review, 6 Nov 2026: ``served_type`` in
+kaagaz/api/routers/documents.py, ``fileTypeLabel`` in frontend/lib/format.ts). The touch trigger is off for this, as in 0002, so
 ``updated_at`` keeps each row's real last change. It runs as the table owner, which documents'
 row level security does not hold (no FORCE), so it sees every customer's rows.
 
