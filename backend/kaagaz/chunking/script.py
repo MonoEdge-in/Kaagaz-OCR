@@ -28,9 +28,10 @@ of it looks sound, and a Latin spelling of it for search.
   Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam, Sinhala) as
   ASCII digits, by ``str.translate``; one character for one. Other digits (Arabic-Indic,
   full-width) are kept. For amounts and search only: the printed text is never changed.
-* ``piece_latin`` (L3, #524): a piece's ``text_latin``, its ``latin_spelling`` when it is
-  Devanagari or holds an Indic digit, with ``latin_digits``; so "940000" finds a page that
-  prints ९४००००.
+* ``piece_latin`` (L3, #524): a piece's ``text_latin``: a Devanagari piece's
+  ``latin_spelling`` with ``latin_digits``; another piece's words holding an Indic digit only,
+  in ASCII, line by line; so "940000" finds a page that prints ९४००००, and no English word
+  counts twice.
 * ``spaced_words`` (PRD 5 CX6, M3): the words of a text in any script, split at
   whitespace with the punctuation at their ends removed, for topic terms and the
   memory's quote check.
@@ -234,11 +235,19 @@ def latin_digits(text: str) -> str:
 
 
 def piece_latin(text: str) -> str | None:
-    """A piece's ``text_latin``: its Latin spelling, digits as ASCII, when it is Devanagari (L2)
-    or holds an Indic digit (#524: a page printing ९४०००० is found by "940000"); else None."""
-    if not is_devanagari(text) and latin_digits(text) == text:
+    """A piece's ``text_latin``: when it is Devanagari (L2), its Latin spelling with its digits
+    as ASCII; else, when it holds an Indic digit (#524: a page printing ९४०००० is found by
+    "940000"), only the words holding one, as ASCII, line by line, so its lines still pair with
+    its regions and none of its words counts twice in search; else None. O(n)."""
+    if is_devanagari(text):
+        return latin_digits(latin_spelling(text))
+    if latin_digits(text) == text:
         return None
-    return latin_digits(latin_spelling(text))
+    lines = (
+        " ".join(latin_digits(word) for word in line.split() if latin_digits(word) != word)
+        for line in text.split("\n")
+    )
+    return "\n".join(lines)
 
 
 def spaced_words(text: str) -> list[str]:

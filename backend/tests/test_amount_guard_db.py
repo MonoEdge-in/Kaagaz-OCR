@@ -96,6 +96,22 @@ def test_search_finds_940000_on_a_page_printing_it_in_devanagari_digits(db: Data
         assert list(shown) == printed  # the text shown is as read
 
 
+def test_indic_digits_never_make_a_pieces_words_count_twice(db: Database) -> None:
+    """#524 review: "grand total" scores the piece printing ९४०००० no higher than the one
+    printing 9,40,000; only its number is added for search, never its words again."""
+    customer, _ = new_customer(db)
+    document = add_search_document(db, customer)
+    latin, devanagari = add_pieces(
+        db, customer, document, [("Grand Total 9,40,000", None), ("Grand Total ९४००००/-", None)]
+    )
+
+    scores = {hit.piece_id: hit.word_score for hit in run(db, customer, "grand total")}
+
+    printed_latin, printed_devanagari = scores[latin], scores[devanagari]
+    assert printed_latin is not None and printed_devanagari is not None
+    assert printed_latin >= printed_devanagari
+
+
 def test_an_ask_total_adds_the_numbers_read_from_indic_digits(db: Database) -> None:
     customer, _ = new_customer(db)
     add_bill(db, customer, "bill-a.pdf", "Invoice No: A-1", "Grand Total: ९४००००/-")

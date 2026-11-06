@@ -121,8 +121,12 @@ class DigitsTest(unittest.TestCase):
         self.assertEqual(amount_problem("९४,0000"), MIXED_DIGITS)  # its commas are wrong too: the mix first
         self.assertIsNone(amount_problem("९४0000-"))  # a trailing minus: no amount, so no doubt
 
-    def test_a_piece_with_an_indic_digit_gets_a_latin_spelling_for_search(self) -> None:
-        self.assertEqual(piece_latin("Total ९४००००/-"), "total 940000/-")
+    def test_a_piece_with_an_indic_digit_gets_its_numbers_in_ascii_for_search(self) -> None:
+        """Changed on purpose (#524 review): a piece that is not Devanagari gets only its Indic
+        digit tokens, in ASCII, line by line (its lines still pair with its regions), never its
+        words again, so no word of it counts twice in search."""
+        self.assertEqual(piece_latin("Grand Total ९४००००/-"), "940000/-")
+        self.assertEqual(piece_latin("Bill 17\nTotal ९४0000 and ३४,५६७\nPaid"), "\n940000 34,567\n")
         self.assertEqual(piece_latin("९४0000"), "940000")
         self.assertEqual(piece_latin("एकूण ९४००००"), "ekun 940000")  # Devanagari, as before
         self.assertIsNone(piece_latin("Total 940000/-"))  # nothing to spell: as before
