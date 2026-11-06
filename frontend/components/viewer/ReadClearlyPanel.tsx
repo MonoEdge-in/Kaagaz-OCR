@@ -155,8 +155,11 @@ export function ReadClearlyPanel({ documentId, active, onShow, canEdit }: ReadCl
       const { key: at, draft, busy, error } = open;
       return (
         <span className={styles.editor}>
+          {/* shortcut: one line of text box, as the reader gives one line; a very long line scrolls inside it. */}
           <input
             className="input"
+            type="text"
+            autoComplete="off"
             aria-label={`Correct line ${n}`}
             aria-invalid={error !== null || undefined}
             aria-describedby={error ? "line-edit-error" : undefined}
@@ -171,6 +174,7 @@ export function ReadClearlyPanel({ documentId, active, onShow, canEdit }: ReadCl
                 if (!busy && draft.trim()) void save(each, at, draft);
               } else if (event.key === "Escape" && !busy) {
                 event.preventDefault();
+                event.stopPropagation(); // Esc closes the box only, as the word edit's does
                 close(at);
               }
             }}

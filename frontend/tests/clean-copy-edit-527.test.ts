@@ -166,7 +166,7 @@ describe("the screen", () => {
     expect(panel).toMatch(/const close = \(line: string\) => \{\s*focusLine\.current = line;/);
     expect(panel).toMatch(/setToast\(LINE_SAVED\);\s*close\(line\);/);
     expect(panel).toMatch(/onClick=\{\(\) => close\(at\)\}>\s*Cancel/);
-    expect(panel).toMatch(/event\.key === "Escape" && !busy\) \{\s*event\.preventDefault\(\);\s*close\(at\);/);
+    expect(panel).toMatch(/event\.key === "Escape" && !busy\) \{\s*event\.preventDefault\(\);\s*event\.stopPropagation\(\);[^\n]*\s*close\(at\);/);
     expect(panel).toMatch(/await undoChange\(documentId, correction\.change_id\);\s*focusLine\.current = line;/);
     expect(panel).toMatch(/querySelector<HTMLElement>\(`\[data-line="\$\{line\}"\]`\)\?\.focus\(\)/);
     expect(panel).toMatch(/data-line=\{tools \? each\.key : undefined\}/); // the reader's line, not the printed copy's
