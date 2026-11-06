@@ -71,6 +71,7 @@ def test_productions_0061d_is_a_branch_off_0061c_that_0075_merges() -> None:
     assert scripts.get_revision("0075").down_revision == ("0074", "0061d")
     merge = (VERSIONS / "0075_org_storage_limit_merge.py").read_text(encoding="utf-8")
     assert "op.execute" not in merge
-    # Changed on purpose (#521, 6 Nov 2026): 0076 (the exact overlap) follows it and is the head.
-    assert scripts.get_revision("0076").down_revision == "0075"
-    assert scripts.get_heads() == ["0076"]
+    # Changed on purpose (#521, 6 Nov 2026): 0077 (the exact overlap) follows it and is the head;
+    # the line has no 0076 (Tushar dropped confirmed copies; the formats branches chain 0078 on 0077).
+    assert scripts.get_revision("0077").down_revision == "0075"
+    assert scripts.get_heads() == ["0077"]
