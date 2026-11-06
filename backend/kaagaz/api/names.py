@@ -1,7 +1,8 @@
 """The rule for a name a person types: a folder, a tag or a document's new name.
 
 Why one rule: control characters are removed (they can break a screen or a
-log line) and the ends are trimmed. Nothing else changes, so "GST 2026/27"
+log line), and so are hidden ones (``without_hidden``, #520), and the ends are
+trimmed. Nothing else changes, so "GST 2026/27"
 stays as typed; there is no path strip. A name that is empty after that, or
 longer than its limit, is refused, never cut, so nobody gets a name they did
 not type. The limits match the database checks (migration 0002).
@@ -18,12 +19,26 @@ TAG_NAME_MAX = 40
 DOCUMENT_NAME_MAX = 255
 
 CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
+# #520: a format character (a bidi override or isolate, a direction mark, a zero-width space, a
+# byte order mark, a soft hyphen) or a line or paragraph separator hides or reorders what a name
+# shows: "invoice<U+202E>fdp.exe" shows as "invoiceexe.pdf". ZWNJ and ZWJ (U+200C, U+200D) stay:
+# Devanagari needs them. A folder upload's names (``upload_name``) refuse the same ones.
+_HIDDEN_CATEGORIES = frozenset({"Cf", "Zl", "Zp"})
+
+
+def without_hidden(name: str) -> str:
+    """``name`` without the hidden characters above. O(len(name))."""
+    return "".join(
+        char
+        for char in name
+        if unicodedata.category(char) not in _HIDDEN_CATEGORIES or char in "\u200c\u200d"
+    )
 
 
 def clean_name(name: str, *, max_length: int) -> str | None:
-    """``name`` without control characters and trimmed; None when that leaves
-    nothing or more than ``max_length`` characters. O(len(name))."""
-    cleaned = CONTROL_CHARACTERS.sub("", name).strip()
+    """``name`` without control or hidden characters and trimmed; None when that
+    leaves nothing or more than ``max_length`` characters. O(len(name))."""
+    cleaned = without_hidden(CONTROL_CHARACTERS.sub("", name)).strip()
     return cleaned if 1 <= len(cleaned) <= max_length else None
 
 

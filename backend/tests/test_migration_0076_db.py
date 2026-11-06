@@ -1,58 +1,60 @@
-"""Migration 0076 (#520, Tushar, 6 Nov 2026): Ensemble held by the reading pause. Only the body and
-comment of ``kaagaz_customer_ids_held()`` change: it gives the organisations with a held queued
-Ensemble run too, still owner rights, the empty search path and the app's alone; down puts 0066's
-back exactly; up, down, up."""
+"""Migration 0076 (#502, logout ends this browser's session) on PostgreSQL: up, down (0075's
+schema exactly, with an ended session written) and up again, with the app's rights. The logout,
+the check, the sweep and customer separation: test_guardrails_signin; the policy, grants and
+owner-rights function: test_isolation_schema."""
+
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import text
 
+from kaagaz.db import users as users_sql
 from kaagaz.db.engine import Database
 from tests import test_migration_0002_db as base
-from tests.db_support import migrate
-from tests.test_ensemble_job_db import org, start
+from tests.db_support import APP_ROLE, migrate, new_customer
 from tests.test_migration_0023_db import as_owner
-from tests.test_migration_0066_db import _bodies
+from tests.test_migration_0037 import _load
 
 pytestmark = pytest.mark.db
 fresh = base.fresh
-PREVIOUS = "0075"
-_HELD = text("SELECT t.id::text FROM kaagaz_customer_ids_held() AS t (id)")
+M0076 = _load("0076_ended_sessions.py")
+SESSION = "6b0e5f4c-1d2a-4c3b-9e8f-0a1b2c3d4e5f"
+# What the app may do: read and add ended sessions, never change or delete one; run the sweep.
+_RIGHTS = (
+    "SELECT has_table_privilege(:r, 'ended_sessions', 'SELECT'),"
+    " has_table_privilege(:r, 'ended_sessions', 'INSERT'),"
+    " has_table_privilege(:r, 'ended_sessions', 'UPDATE'),"
+    " has_table_privilege(:r, 'ended_sessions', 'DELETE'),"
+    " has_function_privilege(:r, 'kaagaz_sweep_ended_sessions(timestamptz)', 'EXECUTE'),"
+    " has_function_privilege('public', 'kaagaz_sweep_ended_sessions(timestamptz)', 'EXECUTE')"
+)
 
 
-def _held(db: Database) -> list[str]:
-    with db.system() as conn:
-        return [str(row[0]) for row in conn.execute(_HELD)]
-
-
-def test_a_held_ensemble_run_brings_its_organisation_to_the_release_sweep(
-    fresh: tuple[str, Database],
-) -> None:
+def test_0076_up_down_up_with_an_ended_session_and_the_apps_rights(fresh: tuple[str, Database]) -> None:
     url, db = fresh
-    migrate(url, "head")
-    with org(db) as o:
-        run_id = start(db, o, scope="document")
-        assert o["c"] not in _held(db)
-        as_owner(db, "UPDATE ensemble_runs SET error_code = 'paused_budget' WHERE id = :r", {"r": run_id})
-        assert _held(db) == [o["c"]]
-        as_owner(db, "UPDATE ensemble_runs SET error_code = NULL WHERE id = :r", {"r": run_id})
-        assert _held(db) == []
+    assert (M0076.revision, M0076.down_revision) == ("0076", "0075")
+    migrate(url, "0075")
+    before = base._schema(db)
 
+    migrate(url, "0076")
+    after = base._schema(db)
+    assert base._names(after, "relations") - base._names(before, "relations") == {
+        "ended_sessions",
+        "ended_sessions_pkey",
+        "ended_sessions_expiry",
+        "ended_sessions_user",
+    }
+    assert base._names(after, "functions") - base._names(before, "functions") == {
+        "kaagaz_sweep_ended_sessions"
+    }
+    assert as_owner(db, _RIGHTS, {"r": APP_ROLE}) == [(True, True, False, False, True, False)]
+    customer, user = new_customer(db)
+    with db.customer(customer) as conn:  # as the app writes it at logout
+        users_sql.end_session(conn, customer, user, SESSION, expires_at=datetime(2026, 11, 6, 22, tzinfo=UTC))
+        assert conn.execute(text("SELECT count(*) FROM ended_sessions")).scalar_one() == 1
 
-def test_down_up_restores_0075_exactly(fresh: tuple[str, Database]) -> None:
-    url, db = fresh
-    migrate(url, PREVIOUS)
-    at_0075, bodies_0075 = base._schema(db), _bodies(db)
+    base._downgrade(url, "0075")
+    assert base._schema(db) == before
     migrate(url, "0076")
-    at_0076, bodies_0076 = base._schema(db), _bodies(db)
-    [(_, body, comment, acl)] = [row for row in bodies_0076 if row[0] == "kaagaz_customer_ids_held"]
-    assert "ensemble_runs" in body and "SECURITY DEFINER" in body and "SET search_path TO ''" in body
-    assert "Ensemble" in comment and "kaagaz_app=X" in acl and "kaagaz_operator" not in acl
-    assert [row for row in bodies_0076 if row[0] != "kaagaz_customer_ids_held"] == [
-        row for row in bodies_0075 if row[0] != "kaagaz_customer_ids_held"
-    ]
-    base._downgrade(url, PREVIOUS)
-    assert base._schema(db) == at_0075
-    assert _bodies(db) == bodies_0075
-    migrate(url, "0076")
-    assert base._schema(db) == at_0076
-    assert _bodies(db) == bodies_0076
+    assert base._schema(db) == after
+    assert as_owner(db, "SELECT count(*) FROM ended_sessions", {}) == [(0,)]  # the rows went with the table

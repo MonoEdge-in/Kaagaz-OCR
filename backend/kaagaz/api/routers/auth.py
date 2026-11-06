@@ -47,8 +47,10 @@
 * ``POST /auth/confirm-password`` {password}: only for a member or reviewer an
   admin allowed to delete forever; the password, counted like a sign-in, then a
   5-minute confirm cookie (kaagaz/api/auth.py) for Delete forever. 204.
-* ``POST /auth/logout``, ``POST /auth/logout-everywhere`` (the limited session too, #507
-  review), ``GET /auth/me``.
+* ``POST /auth/logout``: ends this browser's session on the server (0076, #502, Tushar 6 Nov
+  2026): its id goes to ``ended_sessions``, so a copied cookie stops working at once, and the
+  user's other browsers stay signed in. ``POST /auth/logout-everywhere`` (the limited session
+  too, #507 review) ends every one (``session_version``). ``GET /auth/me``.
 * ``GET /auth/session`` (issue 378): the app's first look, 200 either way: ``{signed_in:
   false, providers}`` with no session (one ``/auth/me`` would refuse with 401; ``providers``:
   those switched on, #457), else ``{signed_in: true, me}``, the same checks and reply as
@@ -107,7 +109,7 @@ Why the sign-in looks the way it does (council record 29 Sep, WP1.3):
 import dataclasses
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
@@ -445,8 +447,12 @@ def confirm_password(body: CurrentPasswordBody, user: User, context: Context) ->
 
 
 @router.post("/auth/logout", status_code=204)
-def logout(user: UserAllowPasswordChange, context: Context) -> Response:
+def logout(request: Request, user: UserAllowPasswordChange, context: Context) -> Response:
+    claims = session_claims(request, context.settings, _unix(context.clock()))
     with context.db.customer(user.customer_id) as conn:
+        if claims is not None:  # always: ``user`` was read from these claims
+            ends = datetime.fromtimestamp(claims.expires_at, UTC)
+            users_sql.end_session(conn, user.customer_id, user.user_id, claims.session_id, expires_at=ends)
         _record(conn, user.customer_id, "auth.logout", actor=user.user_id, target=user.user_id)
     response = Response(status_code=204)
     clear_session_cookie(response, context.settings)
