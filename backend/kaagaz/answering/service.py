@@ -1477,11 +1477,12 @@ class AnswerService:
             # Ensemble (features 25-27, C7): the other models not confirming adds Needs review, only.
             or (team is not None and team.agreement == "not_confirmed")
         )
-        # #520 (Tushar, 6 Nov 2026): a line of the evidence drafted from (the model's, or every piece
-        # the quote chose from) that reads as if addressed to the model stays evidence, but the
-        # answer is never verified, and says why.
+        # #520 (Tushar, 6 Nov 2026): a line of a cited piece that reads as if addressed to the model
+        # stays evidence, but the answer is never verified, and says why. Only the cited pieces
+        # (review of #520): one the answer does not rest on never marks it.
         addressed = any(
-            reads_like_instructions(f"{item.hit.context_header}\n{item.hit.text}") for item in seen
+            reads_like_instructions(f"{by_n[old].hit.context_header}\n{by_n[old].hit.text}")
+            for old in renumber
         )
         if addressed:
             _log.info("answer needs review", extra={"code": "instruction_like_source"})

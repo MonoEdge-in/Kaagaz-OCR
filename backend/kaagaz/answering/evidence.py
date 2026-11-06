@@ -171,12 +171,19 @@ _INSTRUCTION_LIKE = (
 # #520 (Tushar, 6 Nov 2026): a line that reads as if addressed to the model, though no phrase of
 # _INSTRUCTION_LIKE: "Answer: ...", "The answer is ...", "Reveal ...", "Ignore ...", "System:".
 # Kept as evidence (a FAQ or a policy may say so), never dropped; the answer is Needs review
-# (``reads_like_instructions``, the service's INSTRUCTION_NOTE).
-_ADDRESSED_LIKE = (
-    re.compile(r"^\s*(?:final\s+|correct\s+)?answer\s*:", re.IGNORECASE | re.MULTILINE),
-    re.compile(r"\bthe\s+(?:final\s+|correct\s+)?answer\s+is\b", re.IGNORECASE),
-    re.compile(r"^\s*(?:reveal|ignore|disregard|forget|override)\b", re.IGNORECASE | re.MULTILINE),
-    re.compile(r"^\s*(?:system|assistant|user)\s*:", re.IGNORECASE | re.MULTILINE),
+# (``reads_like_instructions``, the service's INSTRUCTION_NOTE) when the answer cites the piece.
+# Review of #520: each at a line's start only, after any bullet, number or markdown ("- ", "1. ",
+# "**", "## ", "> "), so a form's "If the answer is 'Yes', give details" is never one, nor an ERP
+# printout's "User: RKUMAR" (no "user:").
+_LINE_START = r"^[\s\-*•#>_\d.)]*"
+_ADDRESSED_LIKE = tuple(
+    re.compile(_LINE_START + pattern, re.IGNORECASE | re.MULTILINE)
+    for pattern in (
+        r"(?:final\s+|correct\s+)?answer[\s*_]*:",
+        r"the\s+(?:final\s+|correct\s+)?answer\s+is\b",
+        r"(?:reveal|ignore|disregard|forget|override)\b",
+        r"(?:system|assistant)[\s*_]*:",
+    )
 )
 INSTRUCTION_NOTE = "A source line reads like an instruction."
 
