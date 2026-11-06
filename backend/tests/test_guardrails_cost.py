@@ -16,11 +16,14 @@ from sqlalchemy.exc import DBAPIError
 
 from kaagaz.api.app import create_app
 from kaagaz.api.auth import CurrentUser, current_user
+from kaagaz.api.views import held_message, run_json
+from kaagaz.db import ensemble as ensemble_sql
 from kaagaz.db import reading_days
 from kaagaz.db.documents import mark_for_reprocess
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.db.models import Agent, Reading
-from kaagaz.jobs.reading_pause import BUDGET, DAILY_LIMIT, ReadingPaused
+from kaagaz.ingestion.ports import Job
+from kaagaz.jobs.reading_pause import BUDGET, CODES, DAILY_LIMIT, ReadingPaused, release_held
 from kaagaz.pipeline import JobReading
 from tests.db_support import new_customer
 from tests.pdf_builder import make_pdf
@@ -29,10 +32,15 @@ from tests.test_api_ensemble import ready, start
 from tests.test_api_page_fixes import read_again, scanned
 from tests.test_api_reprocess import reprocess
 from tests.test_api_support import CSRF, Api, ApiFakeQueue, ApiFakeStorage, FakeAnswers
+from tests.test_api_word_review import post
 from tests.test_dynamic_reading import CAREFUL, STANDARD, TOTAL_BOX, ModelClient, engine
+from tests.test_ensemble_job_db import READ_AGAIN, T0, FakeReader, deliver, run_row
+from tests.test_ensemble_job_db import org as ensemble_org
+from tests.test_ensemble_job_db import start as ensemble_start
 from tests.test_gemini_ocr import line, reply, value
 from tests.test_pipeline_gemini import SHARP, beat, rig
 from tests.test_reading_pause_db import NIGHT, counter, document, gate, held, set_budget, set_limit
+from tests.test_reading_pause_qa_db import READING_PAUSED
 from tests.test_reading_pause_review_db import count_today
 
 # --- Rail 11: the reading pause -------------------------------------------------------------------
@@ -136,30 +144,100 @@ def test_rail11_a_careful_reading_of_a_paused_organisation_calls_no_model() -> N
     assert system.totals(job).error_code == "paused_budget"
 
 
-@pytest.mark.db
-@pytest.mark.xfail(
-    strict=True,
-    reason="OPEN #520/#495: Ensemble after the scan is counted, never paused (kaagaz/jobs/reading_pause.py,"
-    " 'Ensemble's runs after the scan are counted, not paused'); refusing it past the budget is a product"
-    " decision",
-)
-@pytest.mark.parametrize("reason", [DAILY_LIMIT, BUDGET])
-def test_rail11_ensemble_after_the_scan_is_refused_while_reading_is_paused(db: Database, reason: str) -> None:
-    api, reviewer, document_id = ready(db)
-    customer = reviewer.customer_id
+def _pause(db: Database, customer: str, reason: str, at: datetime) -> None:
+    """The organisation's reading paused at ``at``: its daily page limit reached, or its budget."""
     if reason == DAILY_LIMIT:
         set_limit(db, customer, 1)
-        count_today(db, customer, api.clock(), 1)
+        count_today(db, customer, at, 1)
     else:
         set_budget(db, customer, "1.00")
         with db.customer(customer) as conn:
-            reading_days.count(conn, customer, reading_days.india_day(api.clock()), pages=0, cost_usd=5.0)
+            reading_days.count(conn, customer, reading_days.india_day(at), pages=0, cost_usd=5.0)
 
-    refused = start(reviewer, document_id, scope="document")
 
-    assert refused.status_code == 409, refused.text  # today: 202, the run queued and read
-    assert refused.json()["error"]["code"] == "reading_paused"
-    assert api.queue.jobs == []
+@pytest.mark.db
+@pytest.mark.parametrize("reason", [DAILY_LIMIT, BUDGET])
+@pytest.mark.parametrize("scope", ["document", "flagged"])
+def test_rail11_ensemble_start_and_retry_are_refused_while_reading_is_paused(
+    db: Database, reason: str, scope: str
+) -> None:
+    """Tushar, 6 Nov 2026 (#520): starting or retrying an Ensemble run while the organisation is
+    paused is 409 reading_paused, in Read again's words; nothing is queued or audited. Stop works."""
+    api, reviewer, document_id = ready(db)
+    customer = reviewer.customer_id
+    first = start(reviewer, document_id, scope=scope)
+    assert first.status_code == 202, first.text
+    run_id = first.json()["id"]
+    assert post(reviewer, f"/api/documents/{document_id}/ensemble/{run_id}/stop").status_code == 200
+    queued = len(api.queue.jobs)
+    _pause(db, customer, reason, api.clock())
+
+    for refused in (
+        start(reviewer, document_id, scope=scope),
+        post(reviewer, f"/api/documents/{document_id}/ensemble/{run_id}/retry"),
+    ):
+        assert refused.status_code == 409, refused.text
+        assert refused.json() == {"error": {"code": "reading_paused", "message": READING_PAUSED[reason]}}
+    assert len(api.queue.jobs) == queued
+    with db.customer(customer) as conn:
+        runs = conn.execute(
+            text("SELECT count(*) FROM ensemble_runs WHERE document_id = :d"), {"d": document_id}
+        )
+        assert runs.scalar_one() == 1
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("reason", [DAILY_LIMIT, BUDGET])
+def test_rail11_a_queued_ensemble_run_picked_up_while_paused_is_held_then_released(
+    db: Database, reason: str
+) -> None:
+    """Queued before the pause, picked up during it: held (still queued, nothing read, its words
+    say why), the job done; the release sweep queues it again once the pause ends, and it reads."""
+    with ensemble_org(db) as o:
+        run_id = ensemble_start(db, o, scope="document")
+        _pause(db, o["c"], reason, T0)
+        reader = FakeReader(READ_AGAIN)
+
+        deliver(db, o, reader, run_id)
+
+        held_run = run_row(db, o, run_id)
+        assert (held_run["status"], held_run["error_code"], reader.reads) == ("queued", CODES[reason], [])
+        with db.customer(o["c"]) as conn:
+            error = run_json(conn, o["c"], held_run)["error"]
+        assert error == {"code": CODES[reason], "message": held_message(reason)}
+        sent: list[Job] = []
+        assert [job for job in release_held(db, sent.append, now=T0) if job.customer_id == o["c"]] == []
+
+        if reason == DAILY_LIMIT:
+            set_limit(db, o["c"], None)
+        else:
+            set_budget(db, o["c"], None)
+        released = [job for job in release_held(db, sent.append, now=T0) if job.customer_id == o["c"]]
+
+        assert released == [Job(o["c"], o["d"], run_id=run_id)]
+        assert run_row(db, o, run_id)["error_code"] is None
+        deliver(db, o, reader, run_id)
+        assert run_row(db, o, run_id)["status"] == "done" and reader.reads
+
+
+@pytest.mark.db
+def test_rail11_a_held_ensemble_run_can_be_stopped_and_a_running_one_is_read_to_its_end(db: Database) -> None:
+    with ensemble_org(db) as o:
+        held_id = ensemble_start(db, o, scope="document")
+        _pause(db, o["c"], BUDGET, T0)
+        deliver(db, o, FakeReader(READ_AGAIN), held_id)
+        with db.customer(o["c"]) as conn:
+            ensemble_sql.stop(conn, o["c"], o["d"], held_id, user_id=o["u"], now=T0)
+        assert (run_row(db, o, held_id)["status"], run_row(db, o, held_id)["error_code"]) == ("stopped", None)
+
+    with ensemble_org(db) as o:
+        running = ensemble_start(db, o, scope="document")
+        with db.customer(o["c"]) as conn:  # a delivery started it, then lost its lease
+            ensemble_sql.claim(conn, o["c"], o["d"], running, now=T0)
+        _pause(db, o["c"], BUDGET, T0)
+        reader = FakeReader(READ_AGAIN)
+        deliver(db, o, reader, running)  # let in already: read to its end, never held half read
+        assert run_row(db, o, running)["status"] == "done" and reader.reads
 
 
 # --- Rail 12: the rate limits --------------------------------------------------------------------
