@@ -11,27 +11,39 @@
 // like the spot on the page, with "The line you opened". A label line keeps its label and
 // value in two columns. A table keeps whole words, scrolls sideways in its own frame (an edge
 // and a note say so) and opens wide in a dialog.
+// Correct a line (#527, Tushar, 7 Nov 2026): a reviewer or an admin sees Edit beside a line on
+// hover or focus; it opens a text box (Enter saves, Esc cancels). A corrected line says
+// "Corrected by {name}, {date}" with Undo, and "Read as: ..." on hover or focus. Focus goes
+// back to the line after Save, Cancel or Undo. The printed copy has neither Edit nor Undo.
 
 import { Fragment, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { PencilIcon } from "lucide-react";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { Toast } from "@/components/ui/Toast";
-import { getClearCopy } from "@/lib/api";
-import type { ClearCopy, ReadLine, Region } from "@/lib/types";
+import { editLine, getClearCopy, undoChange } from "@/lib/api";
+import type { ClearCopy, LineCorrection, ReadLine, Region } from "@/lib/types";
 import {
   CLEAN_COPY,
   COPIED,
   COPY_BLOCKED,
   LEFT_OUT,
+  LINE_SAVED,
+  LINE_UNDONE,
+  MAX_LINE,
   NOT_SURE_TIP,
   OPENED_NOTE,
   WIDE_NOTE,
   blocks,
   copyText,
+  correctedText,
+  lineFailure,
   pageTitle,
   pairParts,
   parts,
+  readAsText,
+  replaceLine,
 } from "./clearCopy";
 import type { Part } from "./clearCopy";
 import type { Spot } from "./panels";
@@ -42,15 +54,21 @@ export interface ReadClearlyPanelProps {
   documentId: string;
   active: Region | null; // the spot highlighted now
   onShow: (spot: Spot) => void;
+  canEdit: boolean; // a reviewer or an admin, the document not in the trash (#527)
 }
 
 type Loaded = { key: string; copy: ClearCopy } | { key: string; failed: true };
+/** The one line being corrected: its key, the text typed, and a refusal to show. */
+type Editing = { key: string; draft: string; busy: boolean; error: string | null };
 
-export function ReadClearlyPanel({ documentId, active, onShow }: ReadClearlyPanelProps) {
+export function ReadClearlyPanel({ documentId, active, onShow, canEdit }: ReadClearlyPanelProps) {
   const [attempt, setAttempt] = useState(0);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [editing, setEditing] = useState<Editing | null>(null);
+  const [undoing, setUndoing] = useState<string | null>(null); // the change being undone
   const reader = useRef<HTMLDivElement>(null);
+  const focusLine = useRef<string | null>(null); // the line to focus once it is drawn again
   const key = `${documentId}:${attempt}`;
 
   useEffect(() => {
@@ -64,8 +82,53 @@ export function ReadClearlyPanel({ documentId, active, onShow }: ReadClearlyPane
     };
   }, [documentId, key]);
 
+  // After Save, Cancel or Undo: focus back on the line (the reader's own, not the printed copy's).
+  useEffect(() => {
+    const line = focusLine.current;
+    if (line === null) return;
+    focusLine.current = null;
+    reader.current?.querySelector<HTMLElement>(`[data-line="${line}"]`)?.focus();
+  });
+
   const current = loaded && loaded.key === key ? loaded : null;
   const pages = current && "copy" in current ? current.copy.pages : [];
+
+  const close = (line: string) => {
+    focusLine.current = line;
+    setEditing(null);
+  };
+
+  async function save(each: ReadLine, line: string, draft: string) {
+    const text = draft.trim();
+    if (text === each.text.trim()) return close(line); // nothing changed: nothing to send
+    setEditing({ key: line, draft, busy: true, error: null });
+    try {
+      const saved = await editLine(documentId, line, text, each.text);
+      setLoaded((now) => (now && "copy" in now ? { key: now.key, copy: replaceLine(now.copy, saved.line) } : now));
+      setToast(LINE_SAVED);
+      close(line);
+    } catch (caught) {
+      setEditing({ key: line, draft, busy: false, error: lineFailure(caught) });
+    }
+  }
+
+  // An earlier correction may be in force again after Undo, so the copy is asked for again.
+  async function undo(line: string, correction: LineCorrection) {
+    setUndoing(correction.change_id);
+    try {
+      await undoChange(documentId, correction.change_id);
+      focusLine.current = line;
+      setToast(LINE_UNDONE);
+      await getClearCopy(documentId).then(
+        (copy) => setLoaded({ key, copy }),
+        () => setLoaded({ key, failed: true }),
+      );
+    } catch (caught) {
+      setToast(lineFailure(caught));
+    } finally {
+      setUndoing(null);
+    }
+  }
 
   const text = (shown: Part[]) =>
     shown.map((part, index) =>
@@ -79,16 +142,69 @@ export function ReadClearlyPanel({ documentId, active, onShow }: ReadClearlyPane
       ),
     );
 
-  // A "Label: value" line keeps its label and value in two columns.
-  const line = (each: ReadLine, n: number, shown: Part[]) => {
+  // A "Label: value" line keeps its label and value in two columns. `tools`: Edit and Undo,
+  // left out of the printed copy.
+  const line = (each: ReadLine, n: number, shown: Part[], tools: boolean) => {
     const pressed = active !== null && sameRegion(active, each.region);
     const label = shown.filter((part) => part.label);
+    const lineKey = tools && canEdit ? (each.key ?? null) : null; // only a line with a key can be corrected
+    const correction = each.correction ?? null;
+    const readAsId = tools && each.key && correction ? `read-as-${each.key}` : undefined;
+    const open = lineKey !== null && editing?.key === lineKey ? editing : null;
+    if (open) {
+      const { key: at, draft, busy, error } = open;
+      return (
+        <span className={styles.editor}>
+          <input
+            className="input"
+            aria-label={`Correct line ${n}`}
+            aria-invalid={error !== null || undefined}
+            aria-describedby={error ? "line-edit-error" : undefined}
+            maxLength={MAX_LINE}
+            value={draft}
+            readOnly={busy}
+            autoFocus
+            onChange={(event) => setEditing({ ...open, draft: event.target.value })}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                event.preventDefault(); // Enter saves; never mid-word in a Hindi or Marathi keyboard
+                if (!busy && draft.trim()) void save(each, at, draft);
+              } else if (event.key === "Escape" && !busy) {
+                event.preventDefault();
+                close(at);
+              }
+            }}
+          />
+          <span className={styles.editActions}>
+            <button type="button" className="btn" disabled={busy} onClick={() => close(at)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              aria-busy={busy || undefined}
+              disabled={busy || !draft.trim()}
+              onClick={() => void save(each, at, draft)}
+            >
+              Save
+            </button>
+          </span>
+          {error && (
+            <span id="line-edit-error" className="error-text" role="alert">
+              {error}
+            </span>
+          )}
+        </span>
+      );
+    }
     return (
-      <>
+      <span className={styles.row}>
         <button
           type="button"
           className={label.length > 0 ? `${styles.line} ${styles.pair}` : styles.line}
           aria-pressed={pressed}
+          aria-describedby={readAsId}
+          data-line={tools ? each.key : undefined}
           onClick={() => onShow({ name: `line ${n}`, region: each.region, label: null })}
         >
           {label.length > 0 ? (
@@ -103,14 +219,35 @@ export function ReadClearlyPanel({ documentId, active, onShow }: ReadClearlyPane
           )}
         </button>
         {pressed && <span className={styles.opened}>{OPENED_NOTE}</span>}
-      </>
+        {lineKey !== null && (
+          <button
+            type="button"
+            className={`btn btn-quiet ${styles.edit}`}
+            aria-label={`Edit line ${n}`}
+            title="Edit"
+            disabled={editing?.busy}
+            onClick={() => setEditing({ key: lineKey, draft: each.text, busy: false, error: null })}
+          >
+            <PencilIcon size={16} aria-hidden="true" />
+          </button>
+        )}
+        {correction && (
+          <Corrected
+            correction={correction}
+            id={readAsId}
+            n={n}
+            busy={undoing === correction.change_id}
+            onUndo={lineKey !== null ? () => void undo(lineKey, correction) : undefined}
+          />
+        )}
+      </span>
     );
   };
 
-  const copy = pages.map((page) => {
+  const copyOf = (tools: boolean) => pages.map((page) => {
     const marks = page.marks;
     let n = 0;
-    const plain = (each: ReadLine) => line(each, ++n, parts(each, marks));
+    const plain = (each: ReadLine) => line(each, ++n, parts(each, marks), tools);
     return (
       <section key={page.page_no} className={styles.page} data-page={page.page_no}>
         <h3 className={styles.pageTitle}>{pageTitle(page.page_no, pages.length)}</h3>
@@ -119,7 +256,7 @@ export function ReadClearlyPanel({ documentId, active, onShow }: ReadClearlyPane
           if (block.type === "heading") return <h4 key={index}>{plain(block.line)}</h4>;
           if (block.type === "paragraph") return <p key={index}>{plain(block.line)}</p>;
           if (block.type === "pair") {
-            return <p key={index}>{line(block.line, ++n, pairParts(block.line, marks, block.label))}</p>;
+            return <p key={index}>{line(block.line, ++n, pairParts(block.line, marks, block.label), tools)}</p>;
           }
           if (block.type === "list") {
             return (
@@ -204,13 +341,54 @@ export function ReadClearlyPanel({ documentId, active, onShow }: ReadClearlyPane
             </button>
           </p>
         ) : (
-          <div className={styles.copy}>{copy}</div>
+          <div className={styles.copy}>{copyOf(true)}</div>
         )}
       </div>
       {current && "copy" in current && current.copy.truncated && <p className={styles.note}>{LEFT_OUT}</p>}
       {current && "copy" in current && typeof document !== "undefined" &&
-        createPortal(<div className={`print-copy ${styles.copy}`}>{copy}</div>, document.body)}
+        createPortal(<div className={`print-copy ${styles.copy}`}>{copyOf(false)}</div>, document.body)}
     </section>
+  );
+}
+
+/**
+ * A corrected line's small note: "Corrected by Ravi Sharma, 7 Nov 2026", Undo for a reviewer
+ * (`onUndo`), and "Read as: ..." (`id`: the line's description) on hover or focus.
+ */
+export function Corrected({
+  correction,
+  id,
+  n,
+  busy,
+  onUndo,
+}: {
+  correction: LineCorrection;
+  id: string | undefined;
+  n: number;
+  busy: boolean;
+  onUndo?: () => void;
+}) {
+  return (
+    <span className={styles.corrected}>
+      {correctedText(correction)}
+      {onUndo && (
+        <button
+          type="button"
+          className={`btn btn-quiet ${styles.undo}`}
+          aria-label={`Undo the correction to line ${n}`}
+          aria-busy={busy || undefined}
+          disabled={busy}
+          onClick={onUndo}
+        >
+          Undo
+        </button>
+      )}
+      {id && (
+        <span id={id} className={styles.readAs}>
+          {readAsText(correction)}
+        </span>
+      )}
+    </span>
   );
 }
 
