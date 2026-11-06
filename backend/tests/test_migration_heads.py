@@ -71,4 +71,10 @@ def test_productions_0061d_is_a_branch_off_0061c_that_0075_merges() -> None:
     assert scripts.get_revision("0075").down_revision == ("0074", "0061d")
     merge = (VERSIONS / "0075_org_storage_limit_merge.py").read_text(encoding="utf-8")
     assert "op.execute" not in merge
-    assert scripts.get_heads() == ["0075"]
+
+
+def test_0076_ended_sessions_follows_the_merge_and_is_the_one_head() -> None:
+    """#502 (Tushar, 6 Nov 2026): logout's ended sessions come after 0075, on one line."""
+    scripts = _scripts()
+    assert scripts.get_revision("0076").down_revision == "0075"
+    assert scripts.get_heads() == ["0076"]
