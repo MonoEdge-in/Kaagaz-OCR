@@ -94,9 +94,11 @@ Land facts (PRD 6 D2, `extraction/land.py`): after the card, a land record or a 
 
 ## Version spotting
 
-A new upload that looks like a new version of a file already there (Phase 2 PRD 1, V1 to V8; `kaagaz/versions.py`, `kaagaz/db/versions.py`). It runs in the worker right after filing, once, on the document's first ready, while it is alone in its family, and only with the `version_spotting` switch on for the platform and the organisation.
+A new upload that looks like a new version of a file already there (Phase 2 PRD 1, V1 to V8; `kaagaz/versions.py`, `kaagaz/db/versions.py`). It runs in the worker right after filing, once, on the document's first ready, while it is alone in its family, and only with the `version_spotting` switch on for the platform and the organisation. The text's fingerprint is written with Ready, in its transaction, and one customer's spotting runs one at a time (an advisory lock), so two near copies of one batch read at once are matched once (#521).
 
-Signals, for each candidate (this customer's current, ready documents out of Trash in other families, at most 20 scored):
+A file with the same bytes (sha256) as one the organisation has is not a near match: the upload replies "uploaded before as X, nothing new stored", as before (Open, and Restore when it is in Trash). The same text in other bytes (a re-scan or a re-save) is a near match.
+
+Signals, for each candidate (this customer's current, ready documents out of Trash in other families; up to 200 are fetched, ranked by the MinHash estimate, and the best 20 scored):
 
 * **Text overlap**: the share of the first reader's text in common, in 5-word shingles. MinHash (64 hashes, LSH in 16 bands of 4) finds the candidates; the overlap that decides, and is shown, is then counted exactly (the Jaccard of the two texts' shingles), because 64 hashes estimate 0.8 only to about 0.05 either way. A text with a page over 5,000 words or over 30,000 in all (Compare's limits) keeps the estimate, stored and shown as one ("about 83%"). No fingerprint under 20 words.
 * **Name similarity**: pg_trgm similarity of the name keys (lower case, no extension, dates, version markers or punctuation).
@@ -106,10 +108,12 @@ The rule (V4 as Tushar set it on 6 Nov 2026, #521):
 
 | Outcome | Rule |
 |---|---|
-| suggested (a banner a person answers) | text 0.8 or more alone, or two of: text 0.8 or more, name 0.6 or more, a shared identifier |
+| suggested (a banner a person answers) | text 0.8 or more alone, or two of: text 0.8 or more, name 0.6 or more, a shared identifier; name and identifier also need text 0.5 or more when both have a fingerprint (monthly bills) |
 | nothing | anything less |
 
-Nothing is linked on its own: every match is a suggestion that a person accepts or keeps separate. Until #521 a near-exact copy (name 0.8, text 0.95, same type and folder) was linked at once; those links stay as they are (`outcome` 'auto'), with Undo, and the schema still allows 'auto' for them. The banner says why: `This looks like a new version of "X" (86% the same text).`, or for a name- or identifier-led suggestion the reason in words, `(same name and same survey number)` (NB-17).
+Nothing is linked on its own: every match is a suggestion that a person accepts or keeps separate. Until #521 a near-exact copy (name 0.8, text 0.95, same type and folder) was linked at once; those links stay as they are (`outcome` 'auto'), with Undo, and the schema still allows 'auto' for them. The banner, and each such file's row in the upload tray, says why: `This looks like a new version of "X" (86% the same text).` (the whole percent below, at most 99%, and 100% only when the text was counted exactly the same), or for a name- or identifier-led suggestion the reason in words, `(same name and same survey number)` (NB-17). Its buttons are **Upload as a new version** (Accept) and **Upload as a new file** (Keep separate), the first highlighted for the same name (0.8 or more), the second otherwise, with **See the differences**: the compare screen for the pair, with its summary in plain words (`94% the same. 38 words changed on pages 2 and 5. Page 6 is new.`), the two texts side by side (+ added, − removed), the two page images for a page with little text, Jump to next change, and the same decision at the bottom.
+
+**Make it a separate file** (#521): any version of a family of two or more can leave it as its own document (POST `/api/documents/{id}/separate`), in the family's folder, under a new name (not one already in that folder). Its reading, values and pieces stay, so nothing is read again; if it was current, the highest ready version left is. The pair is then kept apart like Keep separate; Undo accepts it back as the family's newest version.
 
 Two invoices of one template are not suggested when their numbers differ (number, date, quantities, rates: 44% of the shingles in common); a repeat bill with the same goods and quantities and only its number and date changed is 90% the same and is suggested (it was at the old 0.9 line too).
 
