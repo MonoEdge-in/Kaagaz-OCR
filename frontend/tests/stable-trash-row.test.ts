@@ -440,3 +440,34 @@ describe("Delete forever on a folder in Trash, after the reviews", () => {
     expect(doc.body.textContent).not.toContain("connection");
   });
 });
+
+// --- The coordinator's touch-ups on the screenshots ---
+
+describe("the Trash list's touch-ups", () => {
+  const css = () => readFileSync(join(__dirname, "../components/documents/Documents.module.css"), "utf8");
+  /** A column's width at the widest container query that sets it, in rem. */
+  const widthOf = (text: string, column: string) =>
+    Math.max(...[...text.matchAll(new RegExp(`\\.${column} \\{\\s*width: ([\\d.]+)rem;`, "g"))].map((match) => Number(match[1])));
+
+  it("never breaks a column's name inside a word, and gives each column room for its name and sort arrow", () => {
+    const text = css();
+    // Headers may still wrap between words where a column is narrow (tests/layout-guards.test.ts),
+    // but a word is never cut ("Versio / n"); at full width each name is one line.
+    expect(text).toMatch(/table\.docs thead th \{[^}]*overflow-wrap: normal;/);
+    expect(text).not.toMatch(/table\.docs thead th \{[^}]*white-space: nowrap;/);
+    // Measured in Chrome at 16px (7 Nov 2026): the name, the ↓ when it is the sort, and 24px of
+    // padding: "Version ↓" 88px, "Last updated ↓" 124px, "Document date" 122px, "Updated by" 98px.
+    const needs: Record<string, number> = { versionColumn: 5.5, uploadedColumn: 7.75, docDateColumn: 7.625, byColumn: 6.125 };
+    for (const [column, rem] of Object.entries(needs)) expect(widthOf(text, column), column).toBeGreaterThanOrEqual(rem);
+  });
+
+  it("separates where a folder was from what it holds on a phone's card too", async () => {
+    serve({});
+    await show(admin(true), [round2]);
+    const facts = cells(rowOf("folder:f1"))[1]!.all().find((element) => element.getAttribute("title")?.startsWith("Was in"))!;
+    expect(classOf(facts)).toMatch(/folderFacts/);
+    // The table's facts get their dots from the 36rem query; a card's from this rule.
+    const card = css().slice(css().indexOf("@container docs-list (max-width: 35.98rem)"));
+    expect(card).toMatch(/\.folderFacts > \* \+ \*::before \{\s*content: "·";\s*content: "·" \/ "";/);
+  });
+});

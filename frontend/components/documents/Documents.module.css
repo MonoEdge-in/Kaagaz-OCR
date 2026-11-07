@@ -1080,6 +1080,8 @@ table.docs > tbody > tr {
     background: var(--bg-surface);
     border-bottom: 1px solid var(--border);
     vertical-align: middle; /* the labels on the select-all box's line */
+    /* A column's name may wrap between words where its column is narrow, never inside one ("Versio / n"). */
+    overflow-wrap: normal;
   }
 
   table.docs thead th:first-child {
@@ -1260,7 +1262,7 @@ table.docs > tbody > tr {
 
 @container docs-list (min-width: 80rem) {
   .docDateColumn {
-    width: 7rem;
+    width: 8rem; /* "Document date" on one line */
   }
 
   .factDate {
@@ -1270,8 +1272,14 @@ table.docs > tbody > tr {
 
 /* The full table: "Updated by" heads its column, so the cell's own words are hidden. */
 @container docs-list (min-width: 72rem) {
+  /* Each name on one line, its sort arrow too (stability pass, measured 7 Nov 2026): "Version ↓"
+     and "Last updated ↓"; Updated by gives the room ("Updated by" needs about 6.2rem). */
   .versionColumn {
-    width: 4.5rem;
+    width: 5.5rem;
+  }
+
+  .uploadedColumn {
+    width: 7.75rem;
   }
 
   .factVersion {
@@ -1279,7 +1287,7 @@ table.docs > tbody > tr {
   }
 
   .byColumn {
-    width: 8rem;
+    width: 7.25rem;
   }
 
   .byName {
@@ -1372,6 +1380,14 @@ table.docs > tbody > tr {
   /* A folder in Trash has no status (its dash is for the table's column): no line of its own. */
   .statusCell[data-empty] {
     display: none;
+  }
+
+  /* Its facts ("Was in: Top level · 9 files, 26 folders") keep the table's dot between them; both
+     always show, so no fact before them is hidden. */
+  .folderFacts > * + *::before {
+    content: "·";
+    content: "·" / "";
+    margin-inline-end: var(--space-2);
   }
 
   .statusContent {

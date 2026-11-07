@@ -214,7 +214,7 @@ export function TrashFolderRow({
             {folder.name}
           </span>
         </button>
-        <span className={styles.facts} title={facts.join(" · ")}>
+        <span className={`${styles.facts} ${styles.folderFacts}`} title={facts.join(" · ")}>
           {facts.map((fact) => (
             <span key={fact}>{fact}</span>
           ))}
