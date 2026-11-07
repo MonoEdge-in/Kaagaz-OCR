@@ -512,6 +512,7 @@ class FusedPiece:
 
 
 Ranked = Sequence[tuple[str, float]]
+Lists = tuple[Ranked, Ranked, Ranked]  # a text's word, fuzzy and meaning lists (``_lists``)
 _KINDS = ("word", "fuzzy", "meaning")
 
 
@@ -646,7 +647,8 @@ def search_translated(
     ef_search: int,
     scope: Scope = EVERYTHING,
     expansion: Expansion = NO_EXPANSION,
-) -> tuple[list[SearchHit], dict[str, float | None]]:
+    asked: Lists | None = None,
+) -> tuple[list[SearchHit], dict[str, float | None], Lists]:
     """``search`` for the question and for each (text, embedding) of ``translations``, every
     list fused (the module docstring), and each piece a list of the question itself found,
     with its own meaning score (None: no meaning list of the question found it). The
@@ -655,27 +657,31 @@ def search_translated(
     SEARCH_FAN_OUT at once (Ask speed, 24 Oct 2026), so no connection is shared across threads;
     they are fused in the texts' order, the question's first, so the ranking is the one they
     give one after another. The details, in one more. O(t) times ``search``'s cost for t
-    translations, over about t / SEARCH_FAN_OUT of its time."""
+    translations, over about t / SEARCH_FAN_OUT of its time. Also the question's own lists;
+    ``asked``, those lists from an earlier search of the same question, text, vector, words and
+    scope, which are then not searched again (#535): fused as they are, the result is the same."""
     if not 1 <= limit <= MAX_LIMIT:
         raise ValueError("limit must be between 1 and 100")
     if scope.matches_nothing:
-        return [], {}
+        return [], {}, ([], [], [])
     texts = [(query_text, embedding, expansion), *((t, v, NO_EXPANSION) for t, v in translations)]
+    todo = texts if asked is None else texts[1:]
 
-    def lists(text_: str, vector: list[float] | None, words: Expansion) -> tuple[Ranked, Ranked, Ranked]:
+    def lists(text_: str, vector: list[float] | None, words: Expansion) -> Lists:
         with begin() as conn:
             return _lists(conn, customer_id, text_, vector, recipe, ef_search, scope, words, {})
 
-    with ThreadPoolExecutor(min(SEARCH_FAN_OUT, len(texts))) as pool:
-        futures = [pool.submit(lists, *each) for each in texts]
-    found = [future.result() for future in futures]  # the first failure in the texts' order is raised
+    with ThreadPoolExecutor(max(1, min(SEARCH_FAN_OUT, len(todo)))) as pool:
+        futures = [pool.submit(lists, *each) for each in todo]
+    # The first failure in the texts' order is raised.
+    found = ([] if asked is None else [asked]) + [future.result() for future in futures]
     asked = found[0]
     meaning = dict(asked[2])
     original = {piece_id: meaning.get(piece_id) for ranked in asked for piece_id, _ in ranked}
     fused = fuse_lists([pair for ranked in found for pair in zip(_KINDS, ranked, strict=True)])
     with begin() as conn:
         conn.execute(_SET_SEARCH, {"ms": str(STATEMENT_TIMEOUT_MS)})
-        return _hits(conn, customer_id, fused[:limit]), original
+        return _hits(conn, customer_id, fused[:limit]), original, asked
 
 
 @dataclass(frozen=True, slots=True)

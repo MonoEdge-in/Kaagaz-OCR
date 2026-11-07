@@ -155,7 +155,8 @@ def test_cx6_with_no_whole_document_the_aspects_and_the_leave_topic_find_pages_4
 
     assert (answer["status"], [s["text"] for s in answer["sentences"]]) == ("answered", list(QUOTES[LEAVES]))
     assert {c["page_no"] for c in answer["citations"]} == set(OFFER_LEAVE_PAGES.values())
-    assert len(model.rewrites) == 1 and [len(texts) for texts in searched] == [len(ASPECTS[LEAVES])]
+    # Changed on purpose (#535): the early search of the question (no other text), then the aspects.
+    assert len(model.rewrites) == 1 and [len(texts) for texts in searched] == [0, len(ASPECTS[LEAVES])]
     (prompt,) = model.drafts
     assert len(blocks(prompt)) < len(typed.pieces())  # searched, not the whole letter
     # _TOPIC_PIECES: the question's own words name the saved topic "leave", which holds the

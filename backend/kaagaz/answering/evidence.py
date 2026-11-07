@@ -237,13 +237,19 @@ class Retriever(Protocol):
         ...
 
 
+# A text's word, fuzzy and meaning lists of (piece id, raw score), each best first (search/hybrid.py).
+Lists = tuple[Sequence[tuple[str, float]], Sequence[tuple[str, float]], Sequence[tuple[str, float]]]
+
+
 @dataclass(frozen=True, slots=True)
 class Translated:
     """A translated search's hits, and the pieces a list of the question itself found, with
-    their own meaning score (a piece not in ``original`` only the translation found)."""
+    their own meaning score (a piece not in ``original`` only the translation found); ``lists``:
+    the question's own lists, to fuse again with other texts without searching it twice (#535)."""
 
     hits: Sequence[Hit]
     original: Mapping[str, float | None]
+    lists: Lists | None = None
 
 
 class TranslatedSearch(Protocol):
@@ -256,8 +262,11 @@ class TranslatedSearch(Protocol):
         limit: int,
         scope: Scope,
         expansion: Expansion = NO_EXPANSION,
+        asked: Lists | None = None,
     ) -> Translated:
-        """``Retriever.search`` for the question and each (text, embedding) translation, fused."""
+        """``Retriever.search`` for the question and each (text, embedding) translation, fused.
+        ``asked``: the question's lists from an earlier search of it (``Translated.lists``), used
+        instead of searching it again (#535)."""
         ...
 
 
@@ -358,10 +367,11 @@ class PgRetriever:
         limit: int,
         scope: Scope,
         expansion: Expansion = NO_EXPANSION,
+        asked: Lists | None = None,
     ) -> Translated:
         from kaagaz.search.hybrid import search_translated
 
-        hits, original = search_translated(
+        hits, original, lists = search_translated(
             partial(self._db.customer, customer_id),  # a transaction for each text, as each thread's
             customer_id=customer_id,
             query_text=text,
@@ -372,8 +382,9 @@ class PgRetriever:
             ef_search=self._ef_search,
             scope=scope,
             expansion=expansion,
+            asked=asked,
         )
-        return Translated(hits, original)
+        return Translated(hits, original, lists)
 
     def neighbours(self, customer_id: str, hits: Sequence[Hit], scope: Scope) -> Sequence[Hit]:
         from kaagaz.search.hybrid import neighbours

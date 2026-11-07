@@ -15,7 +15,7 @@ from typing import Any
 from kaagaz.ai.client import estimate_tokens, estimate_tokens_cautiously
 from kaagaz.answering import draft, rewrite
 from kaagaz.answering.draft import DraftSentence, card_line, fit_cards, fit_evidence, user_prompt
-from kaagaz.answering.evidence import Translated, number_evidence
+from kaagaz.answering.evidence import Lists, Translated, number_evidence
 from kaagaz.answering.expansion import NO_EXPANSION, Expansion
 from kaagaz.answering.service import AnswerService, topic_terms
 from kaagaz.answering.verify import verify
@@ -67,12 +67,14 @@ LEAVE_POLICY = page(3, "Leave policy: how many leaves you get is set out below."
 
 class Fused(FakeRetriever):
     """``Retriever`` and ``TranslatedSearch``: the question's hits, then each extra text's,
-    fused by first appearance; ``fused`` records the extra texts of each call."""
+    fused by first appearance; ``fused`` records the extra texts of each call. The question's
+    "lists" are its hits' ids and scores (#535): given back as ``asked``, they stand for its search."""
 
     def __init__(self, pieces: list[FakeHit]) -> None:
         super().__init__({A: pieces})
         self.fused: list[list[tuple[str, list[float] | None]]] = []
         self.near: list[FakeHit] = []
+        self.found: dict[str, FakeHit] = {}
 
     def search_translated(
         self,
@@ -83,12 +85,19 @@ class Fused(FakeRetriever):
         limit: int,
         scope: Scope,
         expansion: Expansion = NO_EXPANSION,
+        asked: Lists | None = None,
     ) -> Translated:
         self.fused.append(list(translations))
-        hits = list(self.search(customer_id, text, embedding, limit, scope, expansion))
+        if asked is None:
+            own = list(self.search(customer_id, text, embedding, limit, scope, expansion))
+        else:
+            own = [self.found[piece_id] for piece_id, _ in asked[0]]
+        self.found.update((hit.piece_id, hit) for hit in own)
+        hits = list(own)
         for other, vector in translations:
             hits += [h for h in self.search(customer_id, other, vector, limit, scope) if h not in hits]
-        return Translated(hits[:limit], {hit.piece_id: hit.meaning_score for hit in hits})
+        lists: Lists = ([(hit.piece_id, hit.score) for hit in own], [], [])
+        return Translated(hits[:limit], {hit.piece_id: hit.meaning_score for hit in hits}, lists)
 
     def neighbours(self, customer_id: str, hits: Sequence[Any], scope: Scope) -> list[FakeHit]:
         given = {hit.piece_id for hit in hits}
@@ -349,10 +358,12 @@ def test_cx6_aspects_are_asked_on_a_first_question_and_searched_with_it_in_one_e
     assert prompt.endswith("Aspects: at most 6.") and "<memory>" not in prompt
     # One embed call: the question and its aspects, each as plain text. Changed on purpose (Ask
     # speed, 24 Oct 2026): the question alone first, beside the plan call (service step 19), and
-    # unused, as the call listed aspects.
+    # unused, as the call listed aspects. Changed on purpose (#535): that early search is used, its
+    # lists fused with the aspects', so only the aspects are embedded and searched after it.
     texts = ["how many leaves do i get", "holidays", "casual leave", "maternity leave"]  # normalised
-    assert model.embedded == [texts[:1], texts]
-    (extra,) = retriever.fused
+    assert model.embedded == [texts[:1], texts[1:]]
+    early, extra = retriever.fused
+    assert early == []
     assert [text for text, _ in extra] == ["holidays", "casual leave", "maternity leave"]
     assert all(vector is not None for _, vector in extra)
 
@@ -365,7 +376,7 @@ def test_cx6_at_most_query_aspects_max_aspects() -> None:
     answers(retriever, context, model, settings).answer(A, "How many leaves do I get?")
 
     assert model.rewrites[0].endswith("Aspects: at most 2.")
-    assert [text for text, _ in retriever.fused[0]] == ["holidays", "casual leave"]
+    assert [text for text, _ in retriever.fused[-1]] == ["holidays", "casual leave"]  # after the early one
 
 
 def test_cx6_a_rewrite_the_guard_refuses_still_gives_its_aspects() -> None:
@@ -376,7 +387,7 @@ def test_cx6_a_rewrite_the_guard_refuses_still_gives_its_aspects() -> None:
     answer = answers(retriever, context, model, SEARCH_ONLY).answer(A, "How many leaves do I get?")
 
     assert answer.rewritten_question is None  # "Gupta" is in neither the question nor a memory
-    assert [text for text, _ in retriever.fused[0]] == ["holidays", "casual leave"]
+    assert [text for text, _ in retriever.fused[-1]] == ["holidays", "casual leave"]
 
 
 def test_cx6_order_is_hits_then_topic_and_section_pieces_then_neighbours() -> None:

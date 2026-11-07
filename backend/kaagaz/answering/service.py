@@ -202,6 +202,7 @@ from kaagaz.answering.evidence import (
     Evidence,
     Gate,
     Hit,
+    Lists,
     PgRetriever,
     Retriever,
     Translated,
@@ -472,13 +473,15 @@ _TIMING: ContextVar[_Timing | None] = ContextVar("answer_timing", default=None)
 @dataclass(frozen=True, slots=True)
 class _Early:
     """Step 19's early search (``AnswerService._early``): the asker's words, the question's
-    vector and hits, whether the model was down for the vector (KZ-006), and how long it took."""
+    vector and hits, whether the model was down for the vector (KZ-006), and how long it took;
+    ``lists``, the question's own lists when aspects may come, to fuse with theirs (#535)."""
 
     expansion: Expansion
     vector: list[float] | None
     hits: Sequence[Hit]
     degraded: bool
     ms: float
+    lists: Lists | None = None
 
 
 def _timing() -> _Timing:
@@ -679,7 +682,7 @@ class AnswerService:
                 deadline=time.monotonic() + plan_time if first else None,
             )
             if first and whole is None:
-                done, early = self._overlapped(rewriting, customer_id, question, scope, user_id)
+                done, early = self._overlapped(rewriting, customer_id, question, scope, user_id, most > 0)
             else:
                 done = rewriting()
             if not (recent or remembered or most):
@@ -703,32 +706,46 @@ class AnswerService:
         question: str,
         scope: Scope,
         user_id: str | None,
+        fused: bool = False,
     ) -> tuple[Rewritten, Future[_Early]]:
         """Step 19: the rewrite and plan call, with ``_early`` beside it on a thread of its own,
         in a copy of the context (billing, the rate scope, the limiter's waits, as ``_ensemble``);
         both are done when this returns. The early search's failure is raised only where it is
-        used (``_answer``), as the same step would raise it there."""
+        used (``_answer``), as the same step would raise it there. ``fused``: aspects may come."""
         with ThreadPoolExecutor(max_workers=1) as pool:  # leaving it joins the thread
-            early = pool.submit(copy_context().run, self._early, customer_id, question, scope, user_id)
+            early = pool.submit(copy_context().run, self._early, customer_id, question, scope, user_id, fused)
             done = rewriting()
         if early.exception() is None:
             _timing().overlap_ms = early.result().ms
         return done, early
 
-    def _early(self, customer_id: str, question: str, scope: Scope, user_id: str | None) -> _Early:
+    def _early(
+        self, customer_id: str, question: str, scope: Scope, user_id: str | None, fused: bool = False
+    ) -> _Early:
         """Step 19: the asker's words (``_expansion``), then the question's vector and hits as
         ``_search_answer`` gets them with no aspects; nothing with nothing to search. On its own
-        thread: its own timing, so the answer's laps are the answer thread's only."""
+        thread: its own timing, so the answer's laps are the answer thread's only. ``fused``
+        (aspects may come, #535): searched as the fused search searches it with no other text (the
+        same hits), keeping its lists, so the aspects' search fuses them rather than search it again."""
         start = time.monotonic()
         _TIMING.set(_Timing(start, start))  # this thread's copy of the context only
         expansion = self._expansion(customer_id, question, scope, user_id)
         _, query_text, spoken = _searched_as(question, normalise(question))
         vector: list[float] | None = None
         hits: Sequence[Hit] = ()
+        lists: Lists | None = None
         if query_text:
             vector = self._embed_all([spoken])[0]
-            hits = self._hits(customer_id, query_text, vector, [], scope, expansion)
-        return _Early(expansion, vector, hits, _timing().degraded, (time.monotonic() - start) * 1000)
+            if fused and self._translated is not None:
+                limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
+                found = self._translated.search_translated(
+                    customer_id, query_text, vector, [], limit, scope, expansion
+                )
+                hits, lists = found.hits, found.lists
+            else:
+                hits = self._hits(customer_id, query_text, vector, [], scope, expansion)
+        took = (time.monotonic() - start) * 1000
+        return _Early(expansion, vector, hits, _timing().degraded, took, lists)
 
     def _step_answer(
         self,
@@ -1354,6 +1371,17 @@ class AnswerService:
                 timing = _timing()
                 timing.degraded, timing.overlap = timing.degraded or early.degraded, True
                 timing.lap("embed")
+            elif early is not None and early.lists is not None and early.vector is not None:
+                # #535: the question's vector and lists from step 19's early search; only its
+                # aspects (CX6) are embedded and searched, fused with them as the search fuses.
+                vector, meanings = early.vector, self._embed_all(aspects)
+                timing = _timing()
+                timing.degraded, timing.overlap = timing.degraded or early.degraded, True
+                timing.lap("embed")
+                extra = [
+                    (_search_text(text), meaning) for text, meaning in zip(aspects, meanings, strict=True)
+                ]
+                hits = self._hits(customer_id, query_text, vector, extra, scope, expansion, early.lists)
             else:
                 # Its aspects (CX6) are embedded with the question, in one call.
                 vector, *meanings = self._embed_all([spoken, *aspects])
@@ -1595,12 +1623,14 @@ class AnswerService:
         extra: Sequence[tuple[str, list[float] | None]],
         scope: Scope,
         expansion: Expansion,
+        asked: Lists | None = None,
     ) -> Sequence[Hit]:
-        """The search's hits: the question's, fused with its aspects' (CX6) when it has any."""
+        """The search's hits: the question's, fused with its aspects' (CX6) when it has any;
+        ``asked``: the question's lists already found (#535), not searched again."""
         limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
         if extra and self._translated is not None:
             fused = self._translated.search_translated
-            return fused(customer_id, query_text, vector, extra, limit, scope, expansion).hits
+            return fused(customer_id, query_text, vector, extra, limit, scope, expansion, asked).hits
         return self._retriever.search(customer_id, query_text, vector, limit, scope, expansion)
 
     def _widened(
