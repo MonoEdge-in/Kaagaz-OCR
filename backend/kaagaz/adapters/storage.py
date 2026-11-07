@@ -327,7 +327,6 @@ class S3Storage:
         try:
             self._client.head_bucket(Bucket=self._bucket)
         except _ANY_ERROR as error:
-            print(f"storage ping failed: {error}")
             raise BackendUnavailable("storage") from error
 
     def ensure_bucket(self) -> None:
