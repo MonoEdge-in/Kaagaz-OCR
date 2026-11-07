@@ -52,6 +52,7 @@ export const NO_PROGRESS: StreamProgress = { stage: null, reached: [], sources: 
 
 /** The progress after one event. A sentence out of order (or again) is dropped: `done` has it if it belongs. */
 export function progressAfter(progress: StreamProgress, event: StreamEvent): StreamProgress {
+  if (event.type === "started") return progress; // where it lands: askStore keeps it
   if (event.type === "stage") {
     const reached = progress.reached.includes(event.stage) ? progress.reached : [...progress.reached, event.stage];
     return { ...progress, stage: event.stage, reached };

@@ -5,7 +5,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { askErrorText } from "@/components/chat/logic";
-import { ApiError, askStream, RECOVER_EVERY_MS, RECOVER_FOR_MS, STILL_SAVING } from "@/lib/api";
+import { ApiError, askStream, IDLE_MS, RECOVER_FOR_MS, RECOVER_STEPS_MS, STILL_SAVING } from "@/lib/api";
 import { sseParser, streamEvent } from "@/lib/askStream";
 import type { StreamEvent } from "@/lib/askStream";
 import type { ChatResponse } from "@/lib/types";
@@ -19,6 +19,7 @@ const REPLY = {
 } as unknown as ChatResponse;
 
 const sse = (name: string, data: unknown) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 const FULL = [
   ": ping\n\n",
@@ -120,6 +121,11 @@ describe("reading the event stream (lib/askStream.ts)", () => {
     expect(streamEvent("sentence", { index: 0, text: "   ", citations: [] })).toBeNull();
     expect(streamEvent("sentence", { text: "No index." })).toBeNull();
     expect(streamEvent("ping", {})).toBeNull();
+    expect(streamEvent("started", { conversation_id: "c1", question_id: "q1" })).toEqual({
+      type: "started",
+      landing: { conversationId: "c1", questionId: "q1" },
+    });
+    expect(streamEvent("started", { conversation_id: "c1" })).toBeNull();
   });
 });
 
@@ -136,7 +142,19 @@ describe("askStream (lib/api.ts)", () => {
       question: "Total?",
       conversation_id: "c1",
       scope: { document_ids: ["d1"] },
+      question_id: expect.stringMatching(UUID),
     });
+  });
+
+  it("names the question's id itself and sends the same one with the /api/chat fallback (never saved twice)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const calls = server(new TypeError("Failed to fetch"), json(REPLY));
+    await run();
+    const [streamBody, fallbackBody] = calls.map((call) => JSON.parse(String(call.init.body)) as { question_id: string });
+    expect(streamBody?.question_id).toMatch(UUID);
+    expect(fallbackBody?.question_id).toBe(streamBody?.question_id);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("asking POST /api/chat"), "no_connection");
+    warn.mockRestore();
   });
 
   it.each([1, 3, 7, 64])("hands on every event in order and returns done's reply, %i bytes at a time", async (size) => {
@@ -300,7 +318,7 @@ describe("a broken stream after started (Tushar, 16 Oct 2026: the answer is alwa
 
   afterEach(() => vi.useRealTimers());
 
-  it("fetches the saved answer from its conversation every 2 s, never asking again", async () => {
+  it("hands on where the answer will land, then fetches it from that conversation, never asking again", async () => {
     vi.useFakeTimers();
     const calls = server(
       streamed(body(STARTED + sse("stage", { stage: "writing" }), 4096, { failAfter: 1 })),
@@ -309,9 +327,10 @@ describe("a broken stream after started (Tushar, 16 Oct 2026: the answer is alwa
       conversation({ ...ANSWER, id: "older", text: "An older answer." }, QUESTION, ANSWER),
     );
     const pending = run();
-    await vi.advanceTimersByTimeAsync(2 * RECOVER_EVERY_MS);
-    const { reply } = await pending;
+    await vi.advanceTimersByTimeAsync(RECOVER_STEPS_MS[0]! + RECOVER_STEPS_MS[1]!);
+    const { reply, events } = await pending;
     expect(reply).toEqual({ conversation_id: "c9", question: QUESTION, answer: ANSWER });
+    expect(events[0]).toEqual({ type: "started", landing: { conversationId: "c9", questionId: "q9" } });
     expect(calls.map((call) => [call.init.method, call.url])).toEqual([
       ["POST", "/api/chat/stream"],
       ["GET", "/api/conversations/c9"],
@@ -320,17 +339,28 @@ describe("a broken stream after started (Tushar, 16 Oct 2026: the answer is alwa
     ]);
   });
 
-  it("says the answer is still on its way after RECOVER_FOR_MS of looking (past the server's 180 s cap), and never asks again", async () => {
+  it("looks again with backoff (2, 4, 8, 16, 30, 30... s) for up to 190 s, then says so honestly", async () => {
     vi.useFakeTimers();
-    const calls = server(
-      streamed(body(STARTED, 4096, { failAfter: 1 })),
-      ...Array.from({ length: 120 }, () => conversation(QUESTION)),
-    );
+    expect(RECOVER_STEPS_MS).toEqual([2_000, 4_000, 8_000, 16_000, 30_000]); // the last again and again
+    expect(RECOVER_FOR_MS).toBe(190_000);
+    const at: number[] = [];
+    const calls = server(streamed(body(STARTED, 4096, { failAfter: 1 })));
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      if (url === "/api/chat/stream") return streamed(body(STARTED, 4096, { failAfter: 1 }));
+      at.push(Date.now());
+      return conversation(QUESTION);
+    });
     const caught = run().catch((error: unknown) => error);
-    await vi.advanceTimersByTimeAsync(RECOVER_FOR_MS + RECOVER_EVERY_MS);
-    expect(await caught).toMatchObject({ code: "answer_pending", message: STILL_SAVING });
+    await vi.advanceTimersByTimeAsync(RECOVER_FOR_MS + 30_000);
+    const error = await caught;
+    expect(error).toMatchObject({ code: "answer_pending", message: STILL_SAVING, details: { conversation_id: "c9" } });
+    expect(STILL_SAVING).toBe("Couldn't get the answer yet. Open this conversation again in a minute.");
+    expect(askErrorText(error as ApiError)).toBe(STILL_SAVING); // its code first, never "busy" for its 503
+    const gaps = at.slice(1).map((time, i) => time - at[i]!);
+    expect(gaps.slice(0, 6)).toEqual([2_000, 4_000, 8_000, 16_000, 30_000, 30_000]);
+    expect(at.at(-1)! - at[0]!).toBeLessThanOrEqual(RECOVER_FOR_MS);
     expect(calls.filter((call) => call.url === "/api/chat")).toHaveLength(0);
-    expect(calls.length - 1).toBeLessThanOrEqual(RECOVER_FOR_MS / RECOVER_EVERY_MS + 1);
   });
 
   it("Stop while looking stops looking, with no second ask", async () => {
@@ -338,16 +368,43 @@ describe("a broken stream after started (Tushar, 16 Oct 2026: the answer is alwa
     const controller = new AbortController();
     const calls = server(streamed(body(STARTED, 4096, { failAfter: 1 })), conversation(QUESTION), conversation(QUESTION));
     const caught = run(controller.signal).catch((error: unknown) => error);
-    await vi.advanceTimersByTimeAsync(RECOVER_EVERY_MS / 2);
+    await vi.advanceTimersByTimeAsync(RECOVER_STEPS_MS[0]! / 2);
     controller.abort();
     expect(await caught).toMatchObject({ name: "AbortError" });
     expect(calls.map((call) => call.url)).toEqual(["/api/chat/stream", "/api/conversations/c9"]);
   });
 
-  it("a stream cut before started asks POST /api/chat once instead", async () => {
+  it("a stream cut before started asks POST /api/chat once instead, and says why", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const calls = server(streamed(body(sse("stage", { stage: "understanding" }), 16, { failAfter: 1 })), json(REPLY));
     const { reply } = await run();
     expect(reply).toEqual(REPLY);
     expect(calls.map((call) => call.url)).toEqual(["/api/chat/stream", "/api/chat"]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("asking POST /api/chat"), "stream_broken");
+    warn.mockRestore();
+  });
+
+  it.each([
+    ["after started: it looks in the conversation", STARTED, "/api/conversations/c9"],
+    ["before started: it asks POST /api/chat", "", "/api/chat"],
+  ])("a stream with no byte for IDLE_MS is given up (the server pings every 10 s); %s", async (_why, first, next) => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let cancelled = false;
+    const quiet = new ReadableStream<Uint8Array>({
+      start(c) {
+        if (first) c.enqueue(new TextEncoder().encode(first));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const calls = server(streamed(quiet), next === "/api/chat" ? json(REPLY) : conversation(QUESTION, ANSWER));
+    const pending = run();
+    await vi.advanceTimersByTimeAsync(IDLE_MS);
+    await pending;
+    expect(IDLE_MS).toBe(30_000);
+    expect(cancelled).toBe(true);
+    expect(calls.map((call) => call.url)).toEqual(["/api/chat/stream", next]);
   });
 });

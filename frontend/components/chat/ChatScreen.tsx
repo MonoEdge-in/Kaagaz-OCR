@@ -58,7 +58,9 @@ import {
   listConversations,
   listDocuments,
   renameConversation,
+  savedAnswer,
 } from "@/lib/api";
+import type { Landing } from "@/lib/askStream";
 import { MODE_TEXTS, modeLockedText, readMode, saveMode, sendPlan, startMode, STORY_SEARCH_LIMIT } from "@/lib/chatMode";
 import { DRAFT_KEPT, readDraft, saveDraft, saveDraftSoon } from "@/lib/drafts";
 import { useSession } from "@/lib/session";
@@ -80,6 +82,7 @@ import {
   LOADED_STATUS,
   questionsByAnswer,
   restoreAfterFailure,
+  STOPPED_LANDING_STATUS,
   STOPPED_STATUS,
 } from "./answer";
 import { AnswerSettings } from "./AnswerSettings";
@@ -620,6 +623,15 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
 
   /** `only`: ask about these documents this once (A4 "Search all documents", A5's examples).
    * `chose`: the clarify choices tapped; typed words answer the open clarify too (PRD 6 B2). */
+  /** #535: open the conversation a streamed answer lands in (after Stop, or a stream broken
+   * after `started`), with the list refreshed so a new one shows there. */
+  const showLanding = (landing: Landing) => {
+    if (activeId === landing.conversationId) return;
+    setActiveId(landing.conversationId);
+    showInUrl(landing.conversationId);
+    void refreshList();
+  };
+
   const sendQuestion = async (question: string, only?: ChosenScope, chose?: ClarifyReply): Promise<boolean> => {
     const plan = sendPlan(mode);
     if (!plan.chat) return searchStories(question);
@@ -686,10 +698,31 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       // The error is its own alert; the story cards stay, at the end of the log.
       updateSlot({ type: "failed", token });
       if (entry.stopped) {
+        if (entry.landing) {
+          // #535: the server finishes and saves it (Tushar, 16 Oct 2026): its conversation opens,
+          // the box is cleared (Tushar's call), and the answer shows there once it is saved.
+          const request = openRequest.current;
+          showLanding(entry.landing);
+          setStatus(STOPPED_LANDING_STATUS);
+          savedAnswer(entry.landing).then(
+            (saved) => {
+              if (!alive.current || openRequest.current !== request) return; // another conversation is open
+              setMessages((current) =>
+                current.some((message) => message.id === saved.answer.id) ? current : [...current, saved.question, saved.answer],
+              );
+            },
+            (failed: unknown) => {
+              if (alive.current && openRequest.current === request) setAskError(errorText(failed));
+            },
+          );
+          return true;
+        }
         setStatus(STOPPED_STATUS); // no error: the question is back in the box to change or send
         return false;
       }
       setStatus("");
+      // #535: its answer is not in its conversation yet: that conversation opens, with the words.
+      if (error instanceof ApiError && error.code === "answer_pending" && entry.landing) showLanding(entry.landing);
       setAskError(errorText(error));
       return false;
     } finally {

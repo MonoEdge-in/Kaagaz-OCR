@@ -10,7 +10,7 @@
 // #535 (7 Nov 2026): the answer streams; its progress so far (stream.ts) is kept here too, so
 // a chat screen opened while it is on its way shows how far it has got (listenAsk).
 
-import type { StreamEvent } from "@/lib/askStream";
+import type { Landing, StreamEvent } from "@/lib/askStream";
 import type { ChatResponse } from "@/lib/types";
 import { conversationFromSearch, documentFromSearch } from "./logic";
 import { NO_PROGRESS, progressAfter } from "./stream";
@@ -29,6 +29,8 @@ export interface InFlight {
   stopped?: boolean;
   /** The streamed stages, sources and verified sentences so far. */
   progress: StreamProgress;
+  /** #535: where the answer will land, once the stream said so (`started`); null before. */
+  landing: Landing | null;
   listeners: Set<() => void>;
 }
 
@@ -41,8 +43,9 @@ export function startAsk(
   send: (signal: AbortSignal, onEvent: (event: StreamEvent) => void) => Promise<ChatResponse>,
 ): InFlight {
   const controller = new AbortController();
-  const entry = { question, conversationId, controller, progress: NO_PROGRESS, listeners: new Set() } as InFlight;
+  const entry = { question, conversationId, controller, progress: NO_PROGRESS, listeners: new Set(), landing: null } as InFlight;
   entry.done = send(controller.signal, (event) => {
+    if (event.type === "started") entry.landing = event.landing;
     entry.progress = progressAfter(entry.progress, event);
     entry.listeners.forEach((listener) => listener());
   });

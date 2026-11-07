@@ -19,7 +19,15 @@ export interface StreamSentence {
   citations: number[];
 }
 
+/** Where the server said the answer will land (`started`, sent before any work): its
+ * conversation, and the question's id it is saved as. */
+export interface Landing {
+  conversationId: string;
+  questionId: string;
+}
+
 export type StreamEvent =
+  | { type: "started"; landing: Landing }
   | { type: "stage"; stage: Stage }
   | { type: "sources"; sources: StreamSources }
   | { type: "sentence"; sentence: StreamSentence };
@@ -76,6 +84,11 @@ function citationNumber(value: unknown): number | null {
 /** The progress event `name` carries, checked; null for anything else or anything malformed. */
 export function streamEvent(name: string, data: unknown): StreamEvent | null {
   if (!isRecord(data)) return null;
+  if (name === "started") {
+    const { conversation_id, question_id } = data;
+    if (typeof conversation_id !== "string" || typeof question_id !== "string") return null;
+    return { type: "started", landing: { conversationId: conversation_id, questionId: question_id } };
+  }
   if (name === "stage") {
     const stage = STAGES.find((each) => each === data.stage);
     return stage ? { type: "stage", stage } : null;

@@ -212,7 +212,9 @@ const GENERIC_MESSAGE = "Something went wrong.";
  * What a failed question says, from the error's HTTP status and message (null
  * when the server could not be reached). The typed question always stays in the box.
  */
-export function askErrorText(error: { status: number; message: string } | null): string {
+export function askErrorText(error: { status: number; message: string; code?: string } | null): string {
+  // #535: a streamed answer not found in its conversation yet: its own honest words, before its 503.
+  if (error?.code === "answer_pending") return error.message;
   if (error === null || error.status === 0) {
     return "Could not reach Kaagaz. Check your internet connection, then try again.";
   }

@@ -32,9 +32,12 @@ export const MAX_QUESTION_LENGTH = 1000;
 
 // The chat's one status line for screen readers; the log itself stays quiet.
 export const ASKING_STATUS = "Looking through your documents…";
-/** Stop was pressed (24 Oct 2026): said once. #535: Stop only stops the display; the server
- * finishes the answer and saves it in the conversation (Tushar, 16 Oct 2026). */
-export const STOPPED_STATUS = "Stopped. The answer will be saved in this conversation.";
+/** Stop was pressed (24 Oct 2026) before the answer had a place: said once, the question back
+ * in the box. */
+export const STOPPED_STATUS = "Stopped. Your question is back in the box.";
+/** #535: Stop after `started`: the server finishes and saves the answer (Tushar, 16 Oct 2026), so
+ * the chat opens that conversation, the box is cleared, and the answer shows there when saved. */
+export const STOPPED_LANDING_STATUS = "Stopped. The answer will appear in this conversation.";
 export const LOADED_STATUS = "Conversation loaded.";
 export const NO_ANSWER_STATUS = "No answer found in your documents.";
 export const MAX_REASON_LENGTH = 500;
