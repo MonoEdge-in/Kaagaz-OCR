@@ -52,6 +52,7 @@ import type {
   FolderItemView,
   FolderItemsPage,
   FolderLimits,
+  FolderSummary,
   GoogleRulesChange,
   FolderUploadItem,
   FolderUploadPlan,
@@ -841,6 +842,17 @@ export const updateFolder = (
   changes: { name?: string; parent_id?: string | null; sort_order?: number | null },
 ) => request<Folder>("PATCH", `/folders/${id}`, changes);
 export const deleteFolder = (id: string) => request<void>("DELETE", `/folders/${id}`);
+/** #537, an admin's: move what is inside to `to` (null: the top level) or send it all to Trash,
+ * then delete the folder. The reply: what moved, or the files that went to Trash. */
+export const deleteFolderWithContents = (
+  id: string,
+  what: { contents: "keep"; to: string | null } | { contents: "trash" },
+) =>
+  request<{ files: number; folders: number }>(
+    "DELETE",
+    `/folders/${id}${query({ contents: what.contents, to: what.contents === "keep" ? (what.to ?? undefined) : undefined })}`,
+  );
+export const folderSummary = (id: string) => request<FolderSummary>("GET", `/folders/${id}/summary`);
 export const listTags = () => request<{ items: Tag[] }>("GET", "/tags");
 export const createTag = (name: string) => request<Tag>("POST", "/tags", { name });
 
