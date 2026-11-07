@@ -502,43 +502,55 @@ def _timing() -> _Timing:
 
 def _timed[**P](answer: Callable[P, Answer]) -> Callable[P, Answer]:
     """``answer`` with the timing line logged after it. The last stretch is "verify"
-    after a draft, else "search" (a fixed query, or the gate's not found)."""
+    after a draft, else "search" (a fixed query, or the gate's not found). An answer that raised
+    still writes it (review of #535), its route and status "-" and its outcome the error's code
+    (``answer_timeout`` for the stream's cap) or type."""
 
     @wraps(answer)
     def timed(*args: P.args, **kwargs: P.kwargs) -> Answer:
         now = time.monotonic()
         timing = _Timing(now, now, streamed=stream.EVENTS.get() is not None)
         token, waits = _TIMING.set(timing), LIMITER_WAIT.set([0.0])
+        result: Answer | None = None
+        failed = "-"
         try:
             result = answer(*args, **kwargs)
+            return result
+        except Exception as error:
+            failed = str(getattr(error, "code", None) or type(error).__name__)
+            raise
+        finally:
             timing.lap("verify" if "draft" in timing.ms else "search")
             waited = LIMITER_WAIT.get() or [0.0]
-        finally:
             _TIMING.reset(token)
             LIMITER_WAIT.reset(waits)
-        _timing_log.info(
-            "answer timing route=%s status=%s outcome=%s whole=%d aspects=%d pinned=%d overlap=%d %s"
-            " overlap_ms=%.0f limiter_wait_ms=%.0f total_ms=%.0f parts=%d redrafts=%d"
-            " streamed=%d first_sentence_ms=%.0f",
-            result.route,
-            result.status,
-            timing.reason or result.label,
-            timing.whole,
-            timing.aspects,
-            timing.pinned,
-            timing.overlap,
-            " ".join(f"{stage}_ms={timing.ms.get(stage, 0.0):.0f}" for stage in _STAGES),
-            timing.overlap_ms,
-            waited[0] * 1000,
-            (timing.last - timing.start) * 1000,
-            timing.parts,
-            timing.redrafts,
-            timing.streamed,
-            timing.first_sentence_ms,
-        )
-        return result
+            _log_timing(timing, waited[0], result, failed)
 
     return timed
+
+
+def _log_timing(timing: _Timing, waited: float, result: Answer | None, failed: str) -> None:
+    """The timing line (the module docstring); ``failed``: the outcome of an answer that raised."""
+    _timing_log.info(
+        "answer timing route=%s status=%s outcome=%s whole=%d aspects=%d pinned=%d overlap=%d %s"
+        " overlap_ms=%.0f limiter_wait_ms=%.0f total_ms=%.0f parts=%d redrafts=%d"
+        " streamed=%d first_sentence_ms=%.0f",
+        "-" if result is None else result.route,
+        "-" if result is None else result.status,
+        failed if result is None else timing.reason or result.label,
+        timing.whole,
+        timing.aspects,
+        timing.pinned,
+        timing.overlap,
+        " ".join(f"{stage}_ms={timing.ms.get(stage, 0.0):.0f}" for stage in _STAGES),
+        timing.overlap_ms,
+        waited * 1000,
+        (timing.last - timing.start) * 1000,
+        timing.parts,
+        timing.redrafts,
+        timing.streamed,
+        timing.first_sentence_ms,
+    )
 
 
 class AnswerService:
@@ -1478,20 +1490,8 @@ class AnswerService:
             why = why if draft.status != "answered" else "notfound_verify_dropped_all"
             return _not_found("search", shown, closest(), model_used=model_used, reason=why)
 
-        renumber: dict[int, int] = {}
-        for sentence in kept:
-            for n in sentence.evidence:
-                renumber.setdefault(n, len(renumber) + 1)
         by_n = {item.n: item for item in evidence}
-        # Ranked sources: a hit's evidence number is its place in the fused search order, after
-        # the Most relevant picks' lift.
-        citations = [
-            replace(
-                _piece_citation(new, by_n[old], [s.text for s in kept if old in s.evidence]),
-                rank=None if whole is not None else old,
-            )
-            for old, new in renumber.items()
-        ]
+        renumber, citations = _citations(kept, by_n, whole is not None)
         # F6: the cited text is the whole piece, every line of it.
         lines = {new: by_n[old].regions for old, new in renumber.items()}
         citations = self._marked(customer_id, citations, lines)
@@ -1960,6 +1960,28 @@ def _unsupported(
     return voice.unsupported(text, allowed)
 
 
+def _citations(
+    kept: Sequence[DraftSentence], by_n: dict[int, Evidence], whole: bool
+) -> tuple[dict[int, int], list[Citation]]:
+    """The answer's citations of ``kept`` (``_search_answer``, and step 21's preview alike): each
+    evidence id cited, numbered from 1 in the order the sentences cite them, with the lines of the
+    sentences citing it (``_focus``); ranked sources (16 Oct 2026): a hit's evidence number is its
+    place in the fused search order, after the Most relevant picks' lift (None for CX5's
+    ``whole``). The renumbering (evidence id: citation number) and the citations, in order."""
+    renumber: dict[int, int] = {}
+    for sentence in kept:
+        for n in sentence.evidence:
+            renumber.setdefault(n, len(renumber) + 1)
+    citations = [
+        replace(
+            _piece_citation(new, by_n[old], [s.text for s in kept if old in s.evidence]),
+            rank=None if whole else old,
+        )
+        for old, new in renumber.items()
+    ]
+    return renumber, citations
+
+
 def _sources(seen: Sequence[Evidence]) -> dict[str, Any]:
     """Step 21's ``sources`` event: the documents of the evidence the draft reads, best first, each
     once with its name (the customer's own, as the search found them under RLS), and how many
@@ -1984,8 +2006,7 @@ class _Preview:
     seen: Sequence[Evidence]
     whole: bool
     events: Events
-    numbered: dict[int, int] = field(default_factory=dict)  # evidence id: citation number
-    said: list[str] = field(default_factory=list)
+    sent: list[DraftSentence] = field(default_factory=list)
 
     def offer(self, raw: object) -> None:
         try:
@@ -1994,31 +2015,25 @@ class _Preview:
             return  # a sentence the answer's parse refuses is never sent
         texts = _texts(self.seen)
         kept = _kept(draft, texts)
-        if not kept or kept[0].text in self.said:
+        if not kept or kept[0].text in {s.text for s in self.sent}:
             return
         sentence = kept[0]
         by_n = {item.n: item for item in self.seen}
-        numbered = dict(self.numbered)
-        for n in sentence.evidence:
-            numbered.setdefault(n, len(numbered) + 1)
-        citations = [
-            replace(_piece_citation(numbered[n], by_n[n], [sentence.text]), rank=None if self.whole else n)
-            for n in sentence.evidence
-        ]
+        numbered, every = _citations([*self.sent, sentence], by_n, self.whole)
+        citations = [every[numbered[n] - 1] for n in sentence.evidence]
         backing = {numbered[n]: by_n[n].hit.text for n in sentence.evidence}
         if _unsupported(sentence.text, citations, voice.numbers(self.question), backing) is not None:
             return
         # shortcut: a preview citation is never marked hard_to_read (one more statement a
         # sentence); the answer that follows marks it, and replaces the preview.
-        self.numbered = numbered
-        self.said.append(sentence.text)
+        self.sent.append(sentence)
         timing = _timing()
         if not timing.first_sentence_ms:
             timing.first_sentence_ms = (time.monotonic() - timing.start) * 1000
         self.events.send(
             "sentence",
             {
-                "index": len(self.said) - 1,
+                "index": len(self.sent) - 1,
                 "text": sentence.text,
                 "citations": [citation.to_json() for citation in citations],
             },

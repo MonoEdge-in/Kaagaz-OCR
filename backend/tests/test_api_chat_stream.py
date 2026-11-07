@@ -14,15 +14,17 @@ import json
 import logging
 import threading
 import time
+import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from sqlalchemy import text
 
 from kaagaz.ai.openrouter import ModelGate, OpenRouterClient
 from kaagaz.answering.service import AnswerService
+from kaagaz.answering.stream import Events
 from kaagaz.api.auth import CurrentUser
 from kaagaz.api.context import AppContext
 from kaagaz.api.routers import chat as chat_router
@@ -76,10 +78,15 @@ class World:
         assert reply.headers["cache-control"] == "no-cache" and reply.headers["x-accel-buffering"] == "no"
         return events(reply.text)
 
-    def plain(self, question: str = SEARCH, signed: Signed | None = None) -> dict[str, Any]:
-        reply = (signed or self.signed).client.post("/api/chat", json={"question": question}, headers=CSRF)
+    def plain(self, question: str = SEARCH, signed: Signed | None = None, **body: Any) -> dict[str, Any]:
+        reply = self.post(question, signed, **body)
         assert reply.status_code == 200, reply.text
         return dict(reply.json())
+
+    def post(self, question: str = SEARCH, signed: Signed | None = None, **body: Any) -> Any:
+        return (signed or self.signed).client.post(
+            "/api/chat", json={"question": question, **body}, headers=CSRF
+        )
 
     def conversations(self) -> list[Any]:
         return list(self.signed.client.get("/api/conversations").json()["items"])
@@ -134,9 +141,9 @@ def world(db: Database, fake: OpenRouterFake, **settings: Any) -> World:
 
 
 def _stopped() -> None:
-    """Every streamed answer's thread has ended (a stopped one at its next check)."""
+    """Every streamed answer's work has ended (a stopped one at its next check)."""
     ends = time.monotonic() + 10
-    while any(thread.name == "answer-stream" for thread in threading.enumerate()):
+    while any(not done.done() for done in list(chat_router.RUNNING)):
         assert time.monotonic() < ends, "a streamed answer never stopped"
         time.sleep(0.02)
 
@@ -175,6 +182,9 @@ def test_the_events_come_in_order_sources_first_and_only_checked_sentences(
         for spot in ("regions", "page_no", "hard_to_read"):
             streamed.pop(spot), cited.pop(spot)
         assert streamed == cited
+    # One citation builder for both (review of #535): the last sentence sent has seen every
+    # sentence the answer has, so its citations are the answer's, field for field.
+    assert sentences[-1]["citations"] == done["citations"]
     assert fake.bodies()[-1]["stream"] is True
     assert len(w.conversations()) == 1  # saved as POST /api/chat saves it
     # started named where it landed: the conversation and the question, before the draft.
@@ -236,6 +246,30 @@ def test_past_the_time_cap_it_says_so_in_plain_words_and_saves_nothing(
     _stopped()
     assert slow.stream is not None and slow.sent < len(slow.stream)  # the model's stream was closed
     assert w.conversations() == []
+
+
+def test_the_cap_logs_its_code_writes_the_timing_line_and_bills_the_partial_draft(
+    db: Database, fake: OpenRouterFake, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Review of #535: a capped answer still writes its timing line (outcome=answer_timeout), a
+    warning with the code, and a ledger row at the worst case for the draft it stopped."""
+    w = world(db, fake, answer_stream_max_seconds=1.0)
+    fake.script("completions", json_stream(DRAFT, size=2, every=0.1))
+    caplog.set_level(logging.INFO)
+
+    assert w.stream()[-1][0] == "error"
+    _stopped()
+
+    timing = [r.getMessage() for r in caplog.records if r.name == "kaagaz.answering.timing"]
+    assert len(timing) == 1 and " outcome=answer_timeout " in f"{timing[0]} "
+    assert any(
+        getattr(r, "code", None) == "answer_timeout" and r.levelno == logging.WARNING for r in caplog.records
+    )
+    with db.customer(w.signed.customer_id) as conn:
+        drafted = conn.execute(
+            text("SELECT count(*) FROM model_usage WHERE kind = 'chat' AND output_tokens > 0")
+        ).scalar_one()
+    assert drafted == 1  # never missing: the stopped draft is billed at its worst case
 
 
 def test_a_client_that_goes_away_stops_the_events_but_the_answer_is_finished_and_saved(
@@ -348,7 +382,9 @@ def test_the_timing_line_says_streamed_and_when_the_first_sentence_went(
 def test_an_error_keeps_the_code_and_words_post_api_chat_gives(db: Database, fake: OpenRouterFake) -> None:
     w = world(db, fake)
     found = w.stream("   ")
-    assert found == [("error", {"code": "bad_request", "message": "Type a question first."})]
+    # started first (review of #535: before any work), then /api/chat's own error.
+    assert names(found) == ["started", "error"]
+    assert found[-1] == ("error", {"code": "bad_request", "message": "Type a question first."})
 
 
 def test_a_repeated_question_on_the_stream_is_done_at_once_from_its_stored_answer(
@@ -440,3 +476,108 @@ def test_precision_reads_in_parts_then_a_slow_steady_draft_is_never_cut(
     assert (len(slow.stream) - 1) * 0.3 > 0.5  # longer than MODEL_TIMEOUT_SECONDS in all
     (line,) = [r.getMessage() for r in caplog.records if r.name == "kaagaz.answering.timing"]
     assert " parts=1 " in line and " streamed=1 " in line
+
+
+def test_started_comes_before_any_database_work_with_the_clients_question_id(
+    db: Database, fake: OpenRouterFake
+) -> None:
+    """Review of #535: the ids are named at the very start, before the rate limit, so even a
+    refused question says where it would have landed first."""
+    w = world(db, fake, chat_questions_per_minute=1)
+    fake.script("completions", json_stream(DRAFT))
+    mine = str(uuid.uuid4())
+
+    first = w.stream(question_id=mine)
+    refused = w.stream(question_id=str(uuid.uuid4()))
+
+    assert first[0] == (
+        "started",
+        {"conversation_id": first[-1][1]["reply"]["conversation_id"], "question_id": mine},
+    )
+    assert first[-1][1]["reply"]["question"]["id"] == mine  # the client's id is the question's
+    assert names(refused) == ["started", "error"] and refused[-1][1]["code"] == "rate_limited"
+
+
+def test_a_question_id_already_saved_returns_that_answer_with_no_second_model_call(
+    db: Database, fake: OpenRouterFake
+) -> None:
+    w = world(db, fake)
+    fake.script("completions", json_stream(DRAFT))
+    mine = str(uuid.uuid4())
+    streamed = w.stream(question_id=mine)[-1][1]["reply"]
+
+    again = w.plain(question_id=mine)  # the client's fallback with the same id
+
+    assert again == streamed
+    assert len(fake.bodies()) == 1 and len(w.conversations()) == 1
+
+
+def test_a_question_id_still_in_progress_is_waited_for_never_answered_twice(
+    db: Database, fake: OpenRouterFake
+) -> None:
+    w = world(db, fake)
+    fake.script("completions", json_stream(DRAFT, size=4, every=0.05))
+    mine = str(uuid.uuid4())
+    streamed: list[Any] = []
+    first = threading.Thread(target=lambda: streamed.append(w.stream(question_id=mine)))
+    first.start()
+    ends = time.monotonic() + 10
+    while not fake.bodies():  # the stream's draft has started
+        assert time.monotonic() < ends
+        time.sleep(0.02)
+
+    again = w.plain(question_id=mine)
+
+    first.join()
+    assert again == streamed[0][-1][1]["reply"]
+    assert len(fake.bodies()) == 1  # one model call for both
+
+
+def test_another_users_question_id_or_a_bad_one_is_refused_and_says_nothing(
+    db: Database, fake: OpenRouterFake
+) -> None:
+    w = world(db, fake)
+    fake.script("completions", json_stream(DRAFT))
+    mine = str(uuid.uuid4())
+    w.stream(question_id=mine)
+    other = w.api.sign_in(w.signed.customer_id)  # the same organisation, another person
+
+    theirs = w.post(signed=other, question_id=mine)
+    bad = w.post(question_id="not-a-uuid")
+
+    assert (theirs.status_code, theirs.json()["error"]["code"]) == (409, "conflict")
+    assert GOOD not in theirs.text and mine not in theirs.text
+    assert (bad.status_code, bad.json()["error"]["code"]) == (400, "bad_request")
+    assert len(fake.bodies()) == 1
+
+
+def test_a_failing_background_task_is_its_own_log_and_the_broad_catch_names_the_ids(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Review of #535: after the save the answer is done (``done`` goes out) whatever its memory
+    task does; a failure of the answer itself is logged with where it would have landed."""
+    caplog.set_level(logging.INFO)
+    sent: list[tuple[str, Any]] = []
+    ids = {"conversation_id": "c-1", "question_id": "q-1"}
+
+    def saved(**kwargs: Any) -> dict[str, Any]:
+        kwargs["background"].add_task(lambda: 1 / 0)
+        return {"conversation_id": "c-1"}
+
+    def broken(**kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("boom")
+
+    events = Events(lambda name, data: sent.append((name, data)))
+    events.send("started", ids)  # as ask sends it first
+    chat_router._work(saved, cast(AppContext, None), events, lambda n, d: sent.append((n, d)))
+    chat_router._work(broken, cast(AppContext, None), events, lambda n, d: sent.append((n, d)))
+
+    assert [name for name, _ in sent] == ["started", "done", "error"]
+    background = [r for r in caplog.records if r.getMessage() == "background task failed"]
+    failed = [r for r in caplog.records if r.getMessage() == "streamed answer failed"]
+    assert len(background) == 1 and getattr(background[0], "code", None) == "ZeroDivisionError"
+    assert len(failed) == 1
+    assert (getattr(failed[0], "conversation_id", None), getattr(failed[0], "question_id", None)) == (
+        "c-1",
+        "q-1",
+    )

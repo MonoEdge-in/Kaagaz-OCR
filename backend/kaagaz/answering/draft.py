@@ -253,13 +253,16 @@ def model_draft(
     thinking: str | None = None,
     provider: str | None = None,
     deadline: float | None = None,
+    first: Callable[..., dict[str, Any]] | None = None,
 ) -> Draft:
     """Ask the model for a reply of at most ``max_tokens``. Raises ModelUnavailable, or
     ModelOutputError for a reply of the wrong shape. ``cards``: M2's lines, never cited.
     ``chat_model``, ``thinking``, ``provider`` and ``deadline`` go to ``chat_json``
     (features 25-27, C7). T7: a reply with a sentence over MAX_SENTENCE_CHARS (a model
     sent the schema without maxLength) is cut at its sentence ends (#535, ``_split``); one that
-    cannot be cut so is asked for once more, and a second one is ``answer_shape``."""
+    cannot be cut so is asked for once more, and a second one is ``answer_shape``. ``first``: the
+    first call in ``chat_json``'s place, with the same options (streaming Ask's
+    ``chat_json_stream``, #535); the repair is always ``chat_json``."""
     user = user_prompt(question, evidence, cards)
     call = partial(
         model.chat_json,
@@ -271,19 +274,13 @@ def model_draft(
         provider=provider,
         deadline=deadline,
     )
-    return drafted(call(user=user), partial(call, user=f"{user}\n\n{LONG_SENTENCE_REPAIR}"))
-
-
-def drafted(reply: dict[str, Any], again: Callable[[], dict[str, Any]]) -> Draft:
-    """A model's reply as the answer's ``Draft`` (T7, #535), streamed or not alike: a sentence over
-    MAX_SENTENCE_CHARS is cut at its sentence ends (``_split``); a reply that cannot be cut so is
-    asked for once more (``again``, with the repair), and a second bad one is ``answer_shape``."""
+    reply = call(user=user) if first is None else partial(first, **call.keywords)(user=user)
     if not _too_long(reply):
         return _parse(reply)
     cut = _split(reply)
     if cut is not None:
         return cut
-    return replace(_parse(again()), redrafts=1)
+    return replace(_parse(call(user=f"{user}\n\n{LONG_SENTENCE_REPAIR}")), redrafts=1)
 
 
 def _split(reply: dict[str, Any]) -> Draft | None:

@@ -14,40 +14,42 @@ model's text raise ``StreamCancelled``: the model's stream is closed and the ans
 saved. ``Events.detach`` (the client went away) only stops the events: the answer is finished
 and saved, as ``POST /api/chat``'s is (Tushar, 16 Oct 2026).
 
-``draft_streamed``: ``draft.model_draft`` with the model's reply streamed
+``Events.saving`` holds the save: the cap waits while the answer is written, and once it is
+committed the answer is finished (``done`` goes out, its background tasks run); a cancelled
+answer is never written.
+
+``draft_streamed``: ``draft.model_draft`` itself with its first call streamed
 (``OpenRouterClient.chat_json_stream``); ``SentenceParser`` reads the draft's ``sentences``
-array as it comes, and each complete sentence object of the first MAX_SENTENCES goes to
-``offer``. The whole reply then becomes the draft as an unstreamed one does (``draft.drafted``:
-a sentence too long is cut in code, with no second call), and every sentence of the draft is
-offered (``offer`` sends each once, so only a cut one is new). A reply that is not the draft's
-JSON is drafted once more without streaming (``model_draft``), after ``stage: checking``.
+array as it comes, and each complete sentence object goes to ``offer`` (none after one too long,
+so the preview keeps the answer's order); then every sentence of the draft is offered (``offer``
+sends each once). A reply that is not the draft's JSON is drafted once more without streaming,
+after ``stage: checking``.
 
 Time: O(n) over the reply's text; nothing here touches the database.
 """
 
 import json
+import logging
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import replace
 from functools import partial
 from typing import Any, Protocol, runtime_checkable
 
 from kaagaz.ai.client import ModelClient, ModelOutputError
-from kaagaz.answering.draft import (
-    ANSWER_SCHEMA,
-    LONG_SENTENCE_REPAIR,
-    MAX_SENTENCES,
-    SYSTEM_PROMPT,
-    Draft,
-    drafted,
-    model_draft,
-    user_prompt,
-)
+from kaagaz.answering.draft import MAX_SENTENCE_CHARS, MAX_SENTENCES, Draft, model_draft
 from kaagaz.answering.evidence import Evidence
+
+_log = logging.getLogger(__name__)
 
 
 class StreamCancelled(Exception):
-    """The streamed answer was stopped: the client went away or it took too long."""
+    """The streamed answer was stopped: past ANSWER_STREAM_MAX_SECONDS (its timing line's
+    outcome, ``answer_timeout``)."""
+
+    code = "answer_timeout"
 
 
 class Events:
@@ -60,10 +62,27 @@ class Events:
         self._cancelled = threading.Event()
         self._detached = threading.Event()
         self._stage: str | None = None
+        self._lock = threading.Lock()  # held from the save's check to its commit (``saving``)
+        self._saved = False
+        self.landing: dict[str, str] = {}  # the ``started`` event's ids, for the logs
 
-    def cancel(self) -> None:
-        """Stop the answer: nothing more is worked out, sent or saved."""
-        self._cancelled.set()
+    def cancel(self) -> bool:
+        """Stop the answer: nothing more is worked out, sent or saved. False when it is too late:
+        the answer is saved (it waits while a save is under way), so it is finished."""
+        with self._lock:
+            if self._saved:
+                return False
+            self._cancelled.set()
+            return True
+
+    @contextmanager
+    def saving(self) -> Iterator[None]:
+        """Around the answer's save transaction: ``StreamCancelled`` at its start once cancelled,
+        and no cancel until it ends; ended without an error, the answer is saved for good."""
+        with self._lock:
+            self.check()
+            yield
+            self._saved = True
 
     def detach(self) -> None:
         """Stop the events only: the client has gone; the answer is finished and saved."""
@@ -76,6 +95,8 @@ class Events:
 
     def send(self, name: str, data: dict[str, Any]) -> None:
         self.check()
+        if name == "started":
+            self.landing = {key: str(value) for key, value in data.items()}
         if self._detached.is_set():
             return
         if name == "stage":
@@ -93,6 +114,17 @@ def emit(name: str, data: dict[str, Any]) -> None:
     events = EVENTS.get()
     if events is not None:
         events.send(name, data)
+
+
+@contextmanager
+def saving() -> Iterator[None]:
+    """``Events.saving`` when the answer is streamed; nothing otherwise."""
+    events = EVENTS.get()
+    if events is None:
+        yield
+        return
+    with events.saving():
+        yield
 
 
 @runtime_checkable
@@ -174,6 +206,10 @@ class SentenceParser:
         self._count += 1
 
 
+class _NotJson(Exception):
+    """The streamed reply was not the draft's JSON (``draft_streamed``'s fallback)."""
+
+
 def draft_streamed(
     model: StreamingModel,
     question: str,
@@ -187,44 +223,60 @@ def draft_streamed(
     provider: str | None = None,
     deadline: float | None = None,
 ) -> Draft:
-    """``model_draft`` (the same prompt, schema and arguments) with the reply streamed: each
-    complete sentence object of the first MAX_SENTENCES goes to ``offer`` while the reply comes;
-    then the reply becomes the draft as ``model_draft``'s does (``drafted``: a sentence too long
-    is cut in code), and every sentence of the draft is offered in order (``offer`` sends each
-    once). A reply that is not the draft's JSON is drafted once more without streaming, after
-    ``stage: checking``. Raises as ``model_draft`` does, and ``StreamCancelled`` once the answer
-    is stopped."""
-    parser = SentenceParser(lambda place, raw: offer(raw) if place < MAX_SENTENCES else None)
+    """``model_draft`` itself, its first call streamed (``chat_json_stream``): the same prompt,
+    options, cut of a sentence too long and repair. While the reply comes, each complete sentence
+    object of the first MAX_SENTENCES goes to ``offer``, until one is too long (it is cut in code
+    once the reply is whole, so a later sentence must not go before its parts); then every
+    sentence of the draft is offered in order (``offer`` sends each once). A reply that is not the
+    draft's JSON is drafted once more without streaming, after ``stage: checking``, logged
+    (``stream_invalid_output``) and counted in ``redrafts``. Raises as ``model_draft`` does, and
+    ``StreamCancelled`` once the answer is stopped."""
     events = EVENTS.get()
+    held = False
+
+    def found(place: int, raw: object) -> None:
+        nonlocal held
+        text = raw.get("text") if isinstance(raw, dict) else None
+        held = held or (isinstance(text, str) and len(text) > MAX_SENTENCE_CHARS)
+        if not held and place < MAX_SENTENCES:
+            offer(raw)
+
+    parser = SentenceParser(found)
 
     def heard(text: str) -> None:
         if events is not None:
             events.check()  # stopped: the client's connection to the model is closed at once
         parser.feed(text)
 
-    user = user_prompt(question, evidence, cards)
-    options: dict[str, Any] = {"model": chat_model, "thinking": thinking, "provider": provider}
-    options |= {"schema": ANSWER_SCHEMA, "max_tokens": max_tokens, "deadline": deadline}
-    try:
-        reply = model.chat_json_stream(system=SYSTEM_PROMPT, user=user, on_text=heard, **options)
-    except ModelOutputError as error:
-        if error.code != "invalid_output":
+    def first(**options: Any) -> dict[str, Any]:
+        try:
+            return model.chat_json_stream(on_text=heard, **options)
+        except ModelOutputError as error:
+            if error.code == "invalid_output":
+                raise _NotJson from None
             raise
-        emit("stage", {"stage": "checking"})
-        draft = model_draft(
-            model,
-            question,
-            evidence,
-            max_tokens=max_tokens,
-            cards=cards,
-            chat_model=chat_model,
-            thinking=thinking,
-            provider=provider,
-            deadline=deadline,
+
+    drafting = partial(
+        model_draft,
+        model,
+        question,
+        evidence,
+        max_tokens=max_tokens,
+        cards=cards,
+        chat_model=chat_model,
+        thinking=thinking,
+        provider=provider,
+        deadline=deadline,
+    )
+    try:
+        draft = drafting(first=first)
+    except _NotJson:
+        _log.warning(
+            "streamed draft not JSON, drafted again unstreamed", extra={"code": "stream_invalid_output"}
         )
-    else:
-        repair = f"{user}\n\n{LONG_SENTENCE_REPAIR}"
-        draft = drafted(reply, partial(model.chat_json, system=SYSTEM_PROMPT, user=repair, **options))
+        emit("stage", {"stage": "checking"})
+        again = drafting()
+        draft = replace(again, redrafts=again.redrafts + 1)
     for sentence in draft.sentences:
         offer({"text": sentence.text, "evidence": sentence.evidence})
     return draft

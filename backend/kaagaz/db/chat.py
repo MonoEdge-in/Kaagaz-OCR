@@ -286,6 +286,44 @@ def repeated_answer(conn: Connection, customer_id: str, key: str) -> dict[str, A
     return None if found is None else dict(found)
 
 
+def saved_turn(
+    conn: Connection, customer_id: str, question_id: str
+) -> tuple[str, RowMapping, RowMapping | None] | None:
+    """#535 (streaming Ask's ``question_id``): the question message with this id, as
+    ``add_message`` returns it, its conversation's owner, and the answer saved with it (the first
+    assistant message of its conversation from its time on: both are written in one
+    transaction); None when this customer has no such message (row level security hides any
+    other's). Two statements by primary key and the conversation's messages."""
+    question = (
+        conn.execute(
+            text(
+                "SELECT q.id, q.role, q.text, q.answer, q.scope, q.created_at, q.conversation_id,"
+                " c.user_id AS owner FROM messages q JOIN conversations c"
+                " ON c.id = q.conversation_id AND c.customer_id = q.customer_id"
+                " WHERE q.customer_id = :c AND q.id = CAST(:id AS uuid)"
+            ),
+            {"c": customer_id, "id": question_id},
+        )
+        .mappings()
+        .first()
+    )
+    if question is None:
+        return None
+    answer = (
+        conn.execute(
+            text(
+                "SELECT id, role, text, answer, scope, created_at FROM messages"
+                " WHERE customer_id = :c AND conversation_id = :conv AND role = 'assistant'"
+                " AND created_at >= :at ORDER BY created_at, id LIMIT 1"
+            ),
+            {"c": customer_id, "conv": question["conversation_id"], "at": question["created_at"]},
+        )
+        .mappings()
+        .first()
+    )
+    return str(question["owner"]), question, answer
+
+
 def newest_message(conn: Connection, customer_id: str, conversation_id: str) -> str | None:
     """The conversation's newest message id, read after locking the conversation's row for the
     rest of the transaction, so concurrent replies to one clarify are taken one at a time."""

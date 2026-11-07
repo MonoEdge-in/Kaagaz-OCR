@@ -2,6 +2,7 @@
 streams in, the streamed draft and its one unstreamed fallback, and the outlet's rules."""
 
 import json
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -117,7 +118,7 @@ def test_bad_json_is_drafted_once_more_unstreamed_after_saying_checking() -> Non
     drafted, offered, sent = _drafted(model)
     assert model.calls == ["stream", "plain"]
     assert sent == [("stage", {"stage": "checking"})]
-    assert drafted == draft.checked(REPLY)
+    assert drafted.sentences == draft.checked(REPLY).sentences and drafted.redrafts == 1
     assert offered == REPLY["sentences"]  # the final draft's, offered in turn
 
 
@@ -136,8 +137,8 @@ def test_a_long_sentence_is_cut_in_code_with_no_second_call_and_its_parts_offere
     assert len(drafted.sentences) == 2 and all(
         len(s.text) <= draft.MAX_SENTENCE_CHARS for s in drafted.sentences
     )
-    # The long one as it streamed (the preview's shape check refuses it), then its parts.
-    assert offered == [sentence, *({"text": s.text, "evidence": [1]} for s in drafted.sentences)]
+    # Not the long one as it streamed (review of #535: held until cut), then its parts.
+    assert offered == [{"text": s.text, "evidence": [1]} for s in drafted.sentences]
 
 
 def test_a_long_sentence_that_cannot_be_cut_is_asked_for_once_more_as_unstreamed() -> None:
@@ -181,3 +182,42 @@ def test_a_stage_is_sent_once_when_it_changes_and_nothing_is_sent_without_a_stre
     finally:
         EVENTS.reset(token)
     assert [data["stage"] for _, data in sent] == ["searching", "writing", "checking"]
+
+
+def test_the_unstreamed_redraft_after_bad_json_is_logged_and_counted(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING)
+    model = StreamModel('{"status": "answered", "sentences": [{"text": "cut', fallback=REPLY)
+    drafted, _, _ = _drafted(model)
+    assert drafted.redrafts == 1
+    assert any(getattr(r, "code", None) == "stream_invalid_output" for r in caplog.records)
+
+
+def test_after_a_sentence_too_long_nothing_more_is_offered_until_the_draft_is_whole() -> None:
+    """Review of #535: a long sentence is cut in code after the stream, so a later sentence must
+    not be sent before its parts: the preview keeps the answer's order."""
+    long = {"text": "The total is Rs. 1,20,000 for the work. " * 9, "evidence": [1]}
+    short = {"text": "It was paid in March.", "evidence": [1]}
+    model = StreamModel(json.dumps({"status": "answered", "sentences": [REPLY["sentences"][1], long, short]}))
+    drafted, offered, _ = _drafted(model)
+    final = [{"text": s.text, "evidence": s.evidence} for s in drafted.sentences]
+    assert len(final) > 3 and final[-1] == short
+    assert offered == [REPLY["sentences"][1], *final]  # the first as it streamed, then the draft in order
+
+
+def test_the_cap_never_lands_between_the_last_check_and_the_commit() -> None:
+    """Review of #535: while an answer is being saved the cap waits; once saved it is too late to
+    cancel, and a cancelled answer is never saved."""
+    events, _ = _events()
+    with events.saving():
+        pass
+    assert events.cancel() is False  # saved: the answer is finished, the stream sends done
+    events, _ = _events()
+    assert events.cancel() is True
+    with pytest.raises(StreamCancelled), events.saving():
+        raise AssertionError("never reached")
+    events, _ = _events()
+    with pytest.raises(RuntimeError), events.saving():
+        raise RuntimeError("the save failed")
+    assert events.cancel() is True  # not saved: the cap still stops it

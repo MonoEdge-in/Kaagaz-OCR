@@ -6,6 +6,7 @@ limiter, breaker and deadline as ever; no repair turn, and nothing sent twice on
 """
 
 import json
+import logging
 import time
 from collections.abc import Iterator
 from typing import Any
@@ -17,6 +18,7 @@ from kaagaz.ai import usage as ledger
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.ai.openrouter import CHAT_THINKING_TOKENS, STRICT_SCHEMA, Usage
 from tests.openrouter_fake import (
+    SECRET,
     OpenRouterFake,
     error_reply,
     json_stream,
@@ -197,3 +199,70 @@ def test_a_stream_ends_by_answer_stream_max_seconds_however_steady(fake: OpenRou
     with pytest.raises(ModelUnavailable) as caught:
         _stream(_client(fake.url, model_timeout_seconds=5.0, answer_stream_max_seconds=0.4), [])
     assert caught.value.code == "timeout"
+
+
+def _ledger(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
+    calls: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(ledger, "record_call", lambda *args, **kwargs: calls.append(args))
+    return calls
+
+
+def test_a_stream_the_caller_stops_is_billed_at_its_worst_case(
+    fake: OpenRouterFake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of #535: the cap stops a draft mid-stream; its tokens were spent, so the ledger gets
+    a row at the worst case (never 0, never missing)."""
+    calls = _ledger(monkeypatch)
+    fake.script("completions", json_stream(GOOD, size=2, every=0.05))
+
+    class Stop(Exception):
+        pass
+
+    def heard(text: str) -> None:
+        if text:
+            raise Stop
+
+    with pytest.raises(Stop):
+        _client(fake.url, Clock()).chat_json_stream(system="s", user="u", schema=SCHEMA, on_text=heard)
+    body = fake.bodies()[0]
+    assert len(calls) == 1
+    model, provider, said, output, thinking, cost = calls[0]
+    assert (model, provider, cost) == (PRO, None, None)
+    assert said == len(json.dumps(body["messages"], ensure_ascii=False).encode())
+    assert output == body["max_completion_tokens"] and thinking == output - len(b'{"')
+
+
+@pytest.mark.parametrize(
+    ("reply", "code"),
+    [
+        (json_stream(GOOD, size=2, every=0.6), "timeout"),  # tokens, then quiet past the idle limit
+        (stream_reply(['{"status": ', "data: not json"]), "bad_response"),
+    ],
+)
+def test_a_stream_that_fails_part_way_is_billed_at_its_worst_case(
+    fake: OpenRouterFake, monkeypatch: pytest.MonkeyPatch, reply: Any, code: str
+) -> None:
+    calls = _ledger(monkeypatch)
+    if code == "bad_response":
+        assert reply.stream is not None
+        reply.stream[2:2] = [b"data: {not json\n\n"]
+    fake.script("completions", reply)
+    with pytest.raises(ModelUnavailable) as caught:
+        _stream(_client(fake.url, model_timeout_seconds=0.3), [])
+    assert caught.value.code == code
+    assert len(calls) == 1 and calls[0][3] == fake.bodies()[0]["max_completion_tokens"]
+
+
+def test_an_error_chunk_is_logged_with_its_codes_never_its_words(
+    fake: OpenRouterFake, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Review of #535 asked for the provider's message in the log; the module's rule (G6) keeps
+    page text out of every log, so its code, error_type and provider_name are logged instead."""
+    reply = stream_reply(['{"status": '], error=True)
+    fake.script("completions", reply)
+    caplog.set_level(logging.WARNING)
+    with pytest.raises(ModelUnavailable):
+        _stream(_client(fake.url, Clock()), [])
+    (record,) = [r for r in caplog.records if r.getMessage() == "streamed reply failed part way"]
+    assert (getattr(record, "code", None), getattr(record, "error_code", None)) == ("server_error", "502")
+    assert SECRET not in caplog.text

@@ -795,7 +795,7 @@ def _read_until(response: Any, ends: float, limit: int) -> bytes | None:
 
 
 def _read_stream(
-    response: Any, ends: float, limit: int, on_text: Callable[[str], None]
+    response: Any, ends: float, limit: int, on_text: Callable[[str], None], texts: list[str]
 ) -> dict[str, Any] | str:
     """#535: a streamed reply (server-sent events), each ``delta.content`` handed to ``on_text``
     as it comes ("" for a line with none: a keep-alive comment or an event's blank line, so the
@@ -803,8 +803,11 @@ def _read_stream(
     gives: its text, ``refusal``, finish reasons, ``id``, ``model``, ``provider`` and the last
     ``usage``. An ``error`` chunk is a reply that failed part way (finish_reason error). A
     failure code instead: "timeout" once ``ends`` has passed, "response_too_large" past
-    ``limit`` bytes, "bad_response" for a chunk that is not a JSON object. O(body)."""
-    texts: list[str] = []
+    ``limit`` bytes, "bad_response" for a chunk that is not a JSON object. ``texts`` gets each
+    piece of text as it comes, so a reply that fails part way still says how much it gave (the
+    ledger's worst case, ``OpenRouterClient._bill_partial``). An error chunk is logged with its
+    codes only (``code``, ``error_type``, ``provider_name``): its message can hold page text (the
+    module docstring, G6), so it is never read. O(body)."""
     reply: dict[str, Any] = {}
     choice: dict[str, Any] = {"index": 0, "finish_reason": None}
     refusal: object = None
@@ -846,6 +849,7 @@ def _read_stream(
             )
             if "error" in chunk:
                 choice["finish_reason"] = "error"
+                _log_error_chunk(chunk["error"])
         on_text(text)
     choice["message"] = {"role": "assistant", "content": "".join(texts), "refusal": refusal}
     return {**reply, "choices": [choice]}
@@ -866,6 +870,22 @@ def _worst_usage(body: Mapping[str, Any], content: str) -> dict[str, Any]:
         "completion_tokens": output,
         "completion_tokens_details": {"reasoning_tokens": output - text},
     }
+
+
+def _log_error_chunk(error: object) -> None:
+    """#535: a streamed reply's error chunk, logged by its short codes only (``_read_stream``)."""
+    found = error if isinstance(error, dict) else {}
+    metadata = found.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    _log.warning(
+        "streamed reply failed part way",
+        extra={
+            "code": "server_error",
+            "error_code": _code(str(found.get("code"))) if found.get("code") is not None else None,
+            "error_type": _code(metadata.get("error_type")),
+            "provider_name": _code(metadata.get("provider_name")),
+        },
+    )
 
 
 @dataclass(slots=True)
@@ -1688,6 +1708,17 @@ class OpenRouterClient:
             if cost is not None:
                 self._cost = cost if self._cost is None else self._cost + cost
 
+    def _bill_partial(self, body: Mapping[str, Any] | None, texts: list[str]) -> None:
+        """#535 (review): a streamed reply that ended part way (stopped by the cap, timed out, cut
+        off, malformed or too large) was billed for what it generated, with no usage to say how
+        much: one ledger row at its worst case (``_worst_usage``), never 0, never missing."""
+        if body is None:
+            return
+        _log.warning(
+            "streamed reply ended part way, billed at its worst case", extra={"code": "stream_partial"}
+        )
+        self._count({"usage": _worst_usage(body, "".join(texts))}, str(body["model"]))
+
     def _send(
         self,
         path: str,
@@ -1720,10 +1751,16 @@ class OpenRouterClient:
                 request, timeout=timeout if idle is None else min(idle, timeout)
             ) as response:
                 if on_text is not None and response.headers.get_content_type() == "text/event-stream":
-                    streamed = _read_stream(response, ends, replies.MAX_RESPONSE_BYTES, on_text)
-                    if streamed == "timeout":
-                        return _Reply(0, None, None, "timeout")
+                    texts: list[str] = []
+                    try:
+                        streamed = _read_stream(response, ends, replies.MAX_RESPONSE_BYTES, on_text, texts)
+                    except BaseException:  # the caller stopped it (the cap), or the socket failed
+                        self._bill_partial(body, texts)
+                        raise
                     if isinstance(streamed, str):
+                        self._bill_partial(body, texts)
+                        if streamed == "timeout":
+                            return _Reply(0, None, None, "timeout")
                         return _Reply(response.status, response.headers, None, streamed)
                     if body is not None and not _says_usage(streamed):
                         _log.warning("streamed reply without usage", extra={"code": "stream_usage_missing"})
