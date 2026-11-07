@@ -1192,6 +1192,8 @@ def test_each_answer_logs_one_timing_line_of_codes_and_numbers(caplog: pytest.Lo
     stages = r" overlap=0 rewrite_ms=\d+ embed_ms=\d+ search_ms=\d+ widen_ms=\d+ draft_ms=\d+ verify_ms=\d+"
     # Changed on purpose (#381, 27 Oct 2026): parts, how many the evidence was read in (0: none).
     stages += r" overlap_ms=0 limiter_wait_ms=\d+ total_ms=\d+ parts=0"
+    # Changed on purpose (#535, 7 Nov 2026): streamed and first_sentence_ms (POST /api/chat/stream).
+    stages += " streamed=0 first_sentence_ms=0"
     expected = [
         r"route=search status=answered outcome=(verified|needs_review)",
         "route=search status=not_found outcome=notfound_model",

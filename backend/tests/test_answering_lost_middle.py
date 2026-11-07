@@ -150,7 +150,7 @@ def test_precision_reads_every_part_and_finds_and_cites_the_fact_in_the_middle(
     (cited,) = answer.citations
     assert (cited.page_no, cited.ref_id) == (5, PAGES[4].piece_id)
     (line,) = [r.getMessage() for r in caplog.records if r.name == "kaagaz.answering.timing"]
-    assert line.endswith(" parts=3")
+    assert line.endswith(" parts=3 streamed=0 first_sentence_ms=0")  # #535 added the last two
 
 
 def test_the_parts_never_number_more_than_answer_parts_max() -> None:
