@@ -49,7 +49,12 @@ arrives, and is put back together as the reply ``stream: false`` would have give
 reasons, ``provider`` and the last chunk's ``usage``), so every check, the ledger, the limiter, the
 breaker, the latch and the deadline are the same code. Two differences: no repair turn (a reply that
 does not follow the schema is ``invalid_output``; the caller drafts again without streaming), and a
-reply that already handed out text is never sent again: a failure after it raises at once.
+reply that already handed out text is never sent again: a failure after it raises at once. The
+ledger is never told 0: the request asks for the usage (``usage: {include: true}``, OpenRouter's
+usage accounting, given in the last chunk); a stream that still ends without it is counted at its
+worst case (``_worst_usage``: its input at most its UTF-8 bytes, its whole output limit), with no
+cost, so the ledger prices those tokens and marks the cost estimated (db/usage.py), and logs
+``stream_usage_missing``.
 
 **Usage** (G9). Input tokens are ``usage.prompt_tokens``; output tokens are
 ``usage.completion_tokens``; ``completion_tokens_details.reasoning_tokens`` is the thinking
@@ -546,6 +551,8 @@ def chat_request(
         "stream": stream,
         "provider": provider(provider_slug),
     }
+    if stream:
+        body["usage"] = {"include": True}  # the tokens and cost in the last chunk (the module docstring)
     if thinking != NO_THINKING:
         body["reasoning"] = reasoning(thinking)
     if max_output_tokens is not None:
@@ -837,6 +844,23 @@ def _read_stream(
         on_text(text)
     choice["message"] = {"role": "assistant", "content": "".join(texts), "refusal": refusal}
     return {**reply, "choices": [choice]}
+
+
+def _worst_usage(body: Mapping[str, Any], content: str) -> dict[str, Any]:
+    """#535: a streamed reply's usage when it gave none, at its worst case (as #488 charges a call
+    with no usage): the input at most the UTF-8 bytes of its messages, the output its whole
+    ``max_completion_tokens``, of which all but ``content``'s bytes count as thinking (so the
+    caller's own reply budget is checked on the text alone). No cost: the ledger prices them."""
+    messages = body.get("messages")
+    said = json.dumps(messages, ensure_ascii=False) if isinstance(messages, list) else ""
+    limit = _whole(body.get("max_completion_tokens"))
+    text = len(content.encode("utf-8"))
+    output = max(limit, text)
+    return {
+        "prompt_tokens": len(said.encode("utf-8")),
+        "completion_tokens": output,
+        "completion_tokens_details": {"reasoning_tokens": output - text},
+    }
 
 
 @dataclass(slots=True)
@@ -1680,6 +1704,10 @@ class OpenRouterClient:
                         return _Reply(0, None, None, "timeout")
                     if isinstance(streamed, str):
                         return _Reply(response.status, response.headers, None, streamed)
+                    if body is not None and not _says_usage(streamed):
+                        _log.warning("streamed reply without usage", extra={"code": "stream_usage_missing"})
+                        content = streamed["choices"][0]["message"]["content"]
+                        streamed["usage"] = _worst_usage(body, content)
                     return _Reply(response.status, response.headers, streamed)
                 raw = _read_until(response, ends, replies.MAX_RESPONSE_BYTES + 1)
                 if raw is None:

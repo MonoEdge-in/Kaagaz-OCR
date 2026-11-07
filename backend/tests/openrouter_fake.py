@@ -398,11 +398,12 @@ def stream_reply(
     counts: dict[str, Any] | None = None,
     every: float = 0.0,
     error: bool = False,
+    with_usage: bool = True,
 ) -> Reply:
     """#535: a streamed /chat/completions reply as OpenRouter sends it: a keep-alive comment, one
     chunk a piece of ``parts`` (``delta.content``), then the finish reasons with the usage, then
     ``[DONE]``. ``finish`` None: the stream just stops after the text. ``error``: the last chunk is
-    a mid-stream error (finish_reason error)."""
+    a mid-stream error (finish_reason error). ``with_usage`` False: the last chunk has no usage."""
     head = {"id": "gen-made-up", "object": "chat.completion.chunk", "model": "google/gemini-3.1-pro-preview"}
     chunks = [b": OPENROUTER PROCESSING\n\n"]
     for part in parts:
@@ -415,7 +416,8 @@ def stream_reply(
         last = {"index": 0, "delta": {"content": ""}, "finish_reason": finish}
         if native is not None:
             last["native_finish_reason"] = native
-        chunks.append(_event({**head, "provider": "Google", "choices": [last], "usage": counts or usage()}))
+        tail = {"usage": counts or usage()} if with_usage else {}
+        chunks.append(_event({**head, "provider": "Google", "choices": [last], **tail}))
         chunks.append(b"data: [DONE]\n\n")
     return Reply(200, stream=chunks, every=every)
 

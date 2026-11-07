@@ -55,6 +55,7 @@ def test_the_stream_asks_as_chat_json_does_with_stream_on_and_hands_out_every_pi
         "model": PRO,
         "messages": [{"role": "system", "content": "rules"}, {"role": "user", "content": "question"}],
         "stream": True,
+        "usage": {"include": True},  # the tokens and cost in the last chunk, asked for explicitly
         "reasoning": {"effort": "low", "exclude": True},
         "max_completion_tokens": 512 + CHAT_THINKING_TOKENS["low"],
         "provider": THE_PROVIDER_BLOCK,
@@ -76,6 +77,25 @@ def test_the_stream_is_billed_on_the_ledger_with_its_provider(
     _stream(_client(fake.url, Clock()), [])
 
     assert calls == [(PRO, "Google", 10, 20, 5, 0.5)]
+
+
+def test_a_stream_without_usage_is_counted_at_its_worst_case_never_as_nothing(
+    fake: OpenRouterFake, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    calls: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(ledger, "record_call", lambda *args, **kwargs: calls.append(args))
+    fake.script("completions", json_stream(GOOD, with_usage=False))
+
+    assert _stream(_client(fake.url, Clock()), []) == GOOD  # the reply itself is fine
+
+    body = fake.bodies()[0]
+    said = len(json.dumps(body["messages"], ensure_ascii=False).encode())
+    text = len(json.dumps(GOOD).encode())
+    limit = body["max_completion_tokens"]
+    # No cost: the ledger prices these tokens at the catalogue's and marks it estimated (db/usage.py).
+    assert calls == [(PRO, "Google", said, limit, limit - text, None)]
+    assert said > 0 and limit > 0
+    assert any(getattr(r, "code", None) == "stream_usage_missing" for r in caplog.records)
 
 
 def test_a_reply_that_is_not_the_schema_is_invalid_with_no_repair_turn(fake: OpenRouterFake) -> None:

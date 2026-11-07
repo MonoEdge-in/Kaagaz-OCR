@@ -20,6 +20,7 @@ from typing import Any
 
 import pytest
 from fastapi import BackgroundTasks
+from sqlalchemy import text
 
 from kaagaz.ai.openrouter import ModelGate, OpenRouterClient
 from kaagaz.answering.service import AnswerService
@@ -350,3 +351,33 @@ def test_a_repeated_question_on_the_stream_is_done_at_once_from_its_stored_answe
     assert again[-1][1]["reply"]["answer"]["answer"] == first[-1][1]["reply"]["answer"]["answer"]
     (line,) = [r.getMessage() for r in caplog.records if r.name == "kaagaz.answering.timing"]
     assert " cached=1 " in line and line.endswith(" streamed=1")
+
+
+def test_a_stream_without_usage_is_priced_on_the_ledger_and_marked_estimated(
+    db: Database, fake: OpenRouterFake
+) -> None:
+    priced = "google/stream-ledger-test"  # its own catalogue row (prices per million tokens)
+    with db.engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO model_catalog (id, name, price_in_usd_per_m, price_out_usd_per_m)"
+                " VALUES (:m, 'Stream ledger test', 2, 12) ON CONFLICT (id) DO NOTHING"
+            ),
+            {"m": priced},
+        )
+    w = world(db, fake, model_chat=priced)
+    fake.script("completions", json_stream(DRAFT, with_usage=False))
+
+    assert w.stream()[-1][0] == "done"
+
+    with db.customer(w.signed.customer_id) as conn:
+        rows = conn.execute(
+            text(
+                "SELECT input_tokens, output_tokens, cost_usd, cost_estimated FROM model_usage"
+                " WHERE kind = 'chat'"
+            )
+        ).all()
+    drafts = [row for row in rows if row.output_tokens > 0]  # the embedding's row has no output
+    assert len(drafts) == 1
+    (row,) = drafts
+    assert row.input_tokens > 0 and row.cost_usd > 0 and row.cost_estimated  # never 0, never unmarked
