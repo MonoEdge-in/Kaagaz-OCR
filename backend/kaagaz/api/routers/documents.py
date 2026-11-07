@@ -180,6 +180,9 @@ from kaagaz.api.views import (
     page_summary,
     timeline,
 )
+from kaagaz.api.views import (
+    folder as folder_view,
+)
 from kaagaz.db import audit, autofile, listing, reading_days, storage_limits, trash
 from kaagaz.db import chat as chat_sql
 from kaagaz.db import folder_upload_items as items_sql
@@ -392,8 +395,9 @@ def list_documents(
     so it filters nothing. At most five data queries, whatever the page size:
     the folder's and the department's subtrees, the page, the count and the page's
     tags (one batch). File management Q3 and Q4: the new filters and the sort. #542: Trash's
-    loose files leave out those inside a folder in Trash; ``trashed_folder_id`` lists one's
-    (404 for a folder not in this customer's Trash)."""
+    loose files leave out those inside a folder in Trash unless a search or filter is set;
+    ``trashed_folder_id`` lists one's (with ``trashed`` only; 404 for a folder not in this
+    customer's Trash)."""
     zone = context.settings.timezone
     try:
         start = None if uploaded_from is None else day_start(uploaded_from, zone)
@@ -415,6 +419,8 @@ def list_documents(
         if tag_ids and tags_sql.count_existing(conn, customer_id, tag_ids) != len(set(tag_ids)):
             raise ApiError(404, "not_found")  # a tag this customer does not have
         in_trashed = None if trashed_folder_id is None else str(trashed_folder_id)
+        if in_trashed is not None and not trashed:
+            raise ApiError(400, "bad_request", "A folder in Trash is listed with trashed=true.")
         if in_trashed is not None and not trashed_sql.exists(conn, customer_id, in_trashed):
             raise ApiError(404, "not_found")
         rows, total = listing.list_documents(
@@ -1844,8 +1850,16 @@ def restore_document(document_id: uuid.UUID, user: User, context: Context) -> di
     with context.db.customer(customer_id) as conn:
         _may_trash(user, _document_or_404(conn, user, document_id))
         try:
-            found, chain = trashed_sql.restore_document(conn, customer_id, target)
-        except folders_sql.FolderError as error:  # its folders could not come back: nothing changed
+            found, chain = trashed_sql.restore_document(conn, customer_id, target, admin=user.role == "admin")
+        except trashed_sql.DepartmentAdminOnly:  # its folders could not come back: nothing changed
+            raise ApiError(
+                403, "forbidden", "Its folder is a department, which only an admin can restore."
+            ) from None
+        except folders_sql.FolderNameTaken:
+            raise ApiError(
+                409, "folder_names_taken", "Its folder can't come back: too many folders there have its name."
+            ) from None
+        except folders_sql.FolderError as error:
             raise ApiError(404 if error.code == "not_found" else 409, error.code) from None
         if not found:
             raise ApiError(404, "not_found")
@@ -1869,9 +1883,21 @@ def restore_document(document_id: uuid.UUID, user: User, context: Context) -> di
         )
         row = _document_or_404(conn, user, document_id)
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
-    return document_summary(
+    summary = document_summary(
         row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
     )
+    # #542: the folders that came back with it, so the screen can say where (null: none did).
+    summary["restored_folder"] = (
+        None
+        if chain is None
+        else {
+            "folder": folder_view(chain.folder),
+            "location": list(chain.location),
+            "renamed": chain.renamed,
+            "relocated": chain.relocated,
+        }
+    )
+    return summary
 
 
 @router.delete("/documents/{document_id}/permanent", status_code=204)

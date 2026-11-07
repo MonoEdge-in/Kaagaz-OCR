@@ -243,6 +243,7 @@ def delete_folder(
 
 
 # --- a folder in Trash (#542) -------------------------------------------------------------------
+NAMES_TAKEN = "Too many folders there already have this name. Rename one first."
 # Under /documents/trash, beside a document's Trash routes, so the typed password's cookie
 # (auth.CONFIRM_PATH, /api/documents) reaches delete forever as it does a document's.
 
@@ -279,15 +280,15 @@ def restore_trashed_folder(folder_id: uuid.UUID, user: User, context: Context) -
     upload every version of every file in it is 403."""
     target = str(folder_id)
     with _refused(), context.db.customer(user.customer_id) as conn:
-        found = trashed_sql.contents(conn, user.customer_id, target)[0]
+        found = trashed_sql.one(conn, user.customer_id, target)
         if not uploaded_every_version(found.uploaders, user):
             raise ApiError(403, "forbidden")
         try:
-            restored = trashed_sql.restore_folder(conn, user.customer_id, target)
+            restored = trashed_sql.restore_folder(conn, user.customer_id, target, admin=user.role == "admin")
+        except trashed_sql.DepartmentAdminOnly:
+            raise ApiError(403, "forbidden", "Only an admin can restore a department.") from None
         except folders_sql.FolderNameTaken:
-            raise ApiError(
-                409, "folder_names_taken", "Too many folders there already have this name. Rename one first."
-            ) from None
+            raise ApiError(409, "folder_names_taken", NAMES_TAKEN) from None
         _audit(conn, user, "folder.restore", target, trashed_sql.audit_details(restored))
     return {
         "folder": folder(restored.folder),
@@ -302,23 +303,37 @@ def restore_trashed_folder(folder_id: uuid.UUID, user: User, context: Context) -
 @router.delete("/documents/trash/folders/{folder_id}/permanent", status_code=204)
 def delete_trashed_folder_forever(folder_id: uuid.UUID, user: CanDeleteForever, context: Context) -> Response:
     """Delete a folder in Trash for good: every file that went with it (rows and files, every
-    version) and its folders. Delete forever's own rule (``require_delete_forever``), and its
-    audit marks (``by_grant``, ``by_password``). Another customer's is 404."""
-    target = str(folder_id)
-    with context.db.customer(user.customer_id) as conn:
-        deleted = trashed_sql.delete_forever(conn, context.storage, user.customer_id, target)
-        if deleted is None:
-            raise ApiError(404, "not_found")
-        details: dict[str, audit.DetailValue] = {
-            "trash_id": deleted.trash_id,
-            "folders": deleted.folders,
-            "files": deleted.files,
-        }
-        if user.role != "admin":
-            details["by_grant"] = True
-        elif deletes_forever_by_password(user):
-            details["by_password"] = True
-        _audit(conn, user, "folder.delete_forever", target, details)
+    version), one family per transaction as the purge does, so a storage failure part way keeps
+    every other file whole in Trash and a retry goes on; then its folders, once none of their
+    files is left. Delete forever's own rule (``require_delete_forever``), and its audit marks
+    (``by_grant``, ``by_password``); a run stopped part way is audited with ``finished: false``
+    and the files it deleted. Another customer's is 404."""
+    target, customer_id = str(folder_id), user.customer_id
+    with context.db.customer(customer_id) as conn:
+        found = trashed_sql.families_in(conn, customer_id, target)
+    if found is None:
+        raise ApiError(404, "not_found")
+    trash_id, families = found
+    marks: dict[str, audit.DetailValue] = {}
+    if user.role != "admin":
+        marks["by_grant"] = True
+    elif deletes_forever_by_password(user):
+        marks["by_password"] = True
+    deleted = 0
+    try:
+        for family in families:
+            with context.db.customer(customer_id) as conn:
+                deleted += trashed_sql.delete_family(conn, context.storage, customer_id, family)
+        with _refused(), context.db.customer(customer_id) as conn:
+            gone = trashed_sql.drop_folder(conn, customer_id, target, files=deleted)
+            details = {"trash_id": trash_id, "folders": gone.folders, "files": deleted, **marks}
+            _audit(conn, user, "folder.delete_forever", target, details)
+    except Exception:
+        if deleted:  # what went for good is on record, whatever stopped the rest
+            with context.db.customer(customer_id) as conn:
+                stopped = {"trash_id": trash_id, "files": deleted, "finished": False, **marks}
+                _audit(conn, user, "folder.delete_forever", target, stopped)
+        raise
     return Response(status_code=204)
 
 

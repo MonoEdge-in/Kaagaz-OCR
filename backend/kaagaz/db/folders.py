@@ -580,7 +580,8 @@ def _folder(row: Sequence[Any]) -> FolderRow:
 # nothing is in it: no folder, no document (Trash included: Restore needs it), no accepted
 # version's Undo that would put a document back in it, and no folder whose key names it (a type
 # folder's key holds its department's id, a year folder's its category's: R10 keeps using a moved
-# one). A folder a person made is never deleted.
+# one). #542: nor while a folder in Trash would go back into it, or its key names it. A folder a
+# person made is never deleted.
 _PRUNE = (
     "DELETE FROM folders f WHERE f.customer_id = :c AND f.id = :f"
     " AND NOT EXISTS (SELECT 1 FROM folders ch WHERE ch.customer_id = :c AND ch.parent_id = f.id)"
@@ -589,6 +590,8 @@ _PRUNE = (
     " WHERE s.customer_id = :c AND s.previous_folder_id = f.id)"
     " AND NOT EXISTS (SELECT 1 FROM folders k WHERE k.customer_id = :c"
     " AND k.autofile_key LIKE '%:' || f.id::text)"
+    " AND NOT EXISTS (SELECT 1 FROM trashed_folders t WHERE t.customer_id = :c"
+    " AND (t.parent_id = f.id OR t.autofile_key LIKE '%:' || f.id::text))"
     " AND EXISTS (SELECT 1 FROM audit_log a WHERE a.customer_id = :c AND a.folder_id = f.id"
     " AND a.action = 'folder.create' AND a.details ->> 'auto' = 'true')"
     " RETURNING f.parent_id"
@@ -602,6 +605,8 @@ _EMPTY_MADE = (
     " WHERE s.customer_id = :c AND s.previous_folder_id = f.id)"
     " AND NOT EXISTS (SELECT 1 FROM folders k WHERE k.customer_id = :c"
     " AND k.autofile_key LIKE '%:' || f.id::text)"
+    " AND NOT EXISTS (SELECT 1 FROM trashed_folders t WHERE t.customer_id = :c"
+    " AND (t.parent_id = f.id OR t.autofile_key LIKE '%:' || f.id::text))"
     " AND EXISTS (SELECT 1 FROM audit_log a WHERE a.customer_id = :c AND a.folder_id = f.id"
     " AND a.action = 'folder.create' AND a.details ->> 'auto' = 'true')"
     " ORDER BY f.id"

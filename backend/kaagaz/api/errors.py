@@ -48,6 +48,7 @@ MESSAGES = {
     "folder_not_empty": "This folder isn't empty. Move or delete what is inside it first.",
     "folder_upload_running": "An upload into this folder is still running. Try again when it finishes.",
     "folder_live": "This folder is already in Documents. Refresh the page.",  # #542
+    "folder_not_emptied": "Some files in this folder were not deleted. Try again.",  # #542
     "folder_changed": (
         "Something was added to this folder while it was being deleted. Nothing was deleted. Try again."
     ),

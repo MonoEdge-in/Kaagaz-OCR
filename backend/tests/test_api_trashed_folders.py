@@ -24,6 +24,7 @@ from sqlalchemy import event, text
 
 from kaagaz.db import folders as folders_sql
 from kaagaz.db.engine import Database
+from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.jobs.purge import _purge_trash_of
 from tests.test_api_admin_sign_in import _turned_off
 from tests.test_api_delete_forever_grant import _confirm, _grant
@@ -585,3 +586,142 @@ def _statements(db: Database, run: Callable[[], object]) -> int:
     finally:
         event.remove(db.engine, "before_cursor_execute", counted)
     return count
+
+
+# --- the reviews' findings (#542) -------------------------------------------------------------
+
+
+def test_delete_forever_stopped_by_storage_keeps_every_other_file_whole_and_a_retry_finishes(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api = Api(db)
+    admin = api.new_admin()
+    c = admin.customer_id
+    folder = api.add_folder(c, admin.user_id, "Folder")
+    files = [api.add_document(c, uploaded_by=admin.user_id, folder_id=folder) for _ in range(3)]
+    _trash(admin, folder)
+    real, deletes = api.storage.delete, []
+
+    def falls_over(customer_id: str, document_id: str) -> None:
+        deletes.append(document_id)
+        if len(deletes) == 2:
+            raise BackendUnavailable("storage")
+        real(customer_id, document_id)
+
+    monkeypatch.setattr(api.storage, "delete", falls_over)
+    assert _forever(admin, folder).status_code == 503
+
+    left = _documents(db, c)
+    assert len(left) == 2 and all(row[2] == folder for row in left.values())  # still in the folder in Trash
+    assert all(api.storage.has(c, document) for document in left)  # their files are whole
+    assert set(_trashed(db, c)) == {folder}
+    stopped = [row[3] for row in api.audit_rows(c) if row[0] == "folder.delete_forever"]
+    assert stopped == [{"trash_id": stopped[0]["trash_id"], "files": 1, "finished": False}]
+
+    assert _forever(admin, folder).status_code == 204
+    assert _documents(db, c) == {} and _trashed(db, c) == {}
+    assert not any(api.storage.has(c, document) for document in files)
+
+
+def test_a_folder_kaagaz_made_stays_while_a_folder_inside_it_is_in_trash(db: Database) -> None:
+    api = Api(db)
+    admin = api.new_admin()
+    c = admin.customer_id
+    made = api.add_folder(c, admin.user_id, "Accounts")
+    with db.customer(c) as conn:  # made by auto-filing, as its folder.create row says
+        conn.execute(
+            text(
+                "INSERT INTO audit_log (customer_id, action, target_type, target_id, details, folder_id)"
+                " VALUES (:c, 'folder.create', 'folder', CAST(:f AS text), '{\"auto\": true}',"
+                " CAST(:f AS uuid))"
+            ),
+            {"c": c, "f": made},
+        )
+    inside = api.add_folder(c, admin.user_id, "Invoices", made)
+    api.add_document(c, uploaded_by=admin.user_id, folder_id=inside)
+    _trash(admin, inside)
+
+    assert made in _folders(db, c)  # not pruned: Restore puts Invoices back into it
+    body = _restore(admin, inside).json()
+    assert (body["location"], body["relocated"]) == (["Accounts"], False)
+
+
+def test_only_an_admin_brings_a_department_back_by_either_restore(db: Database) -> None:
+    api = Api(db)
+    admin = api.new_admin()
+    c = admin.customer_id
+    member = api.sign_in(c)
+    made = admin.client.post("/api/folders", json={"name": "Finance", "kind": "department"}, headers=CSRF)
+    department = made.json()["id"]
+    file = api.add_document(c, uploaded_by=member.user_id, folder_id=department)
+    _trash(admin, department)
+
+    refused = [
+        _restore(member, department),
+        member.client.post(f"/api/documents/{file}/restore", headers=CSRF),
+    ]
+    assert [(reply.status_code, reply.json()["error"]["code"]) for reply in refused] == [
+        (403, "forbidden")
+    ] * 2
+    assert department not in _folders(db, c)
+    assert _restore(admin, department).status_code == 200
+
+
+def test_restoring_a_file_says_which_folder_came_back_with_it(db: Database) -> None:
+    api = Api(db)
+    admin = api.new_admin()
+    c = admin.customer_id
+    t = _tree(api, admin)
+    _trash(admin, t["year"])
+    api.add_folder(c, admin.user_id, "2025", t["accounts"])
+
+    came = admin.client.post(f"/api/documents/{t['old_file']}/restore", headers=CSRF).json()[
+        "restored_folder"
+    ]
+    plain = admin.client.post(f"/api/documents/{t['alone']}/restore", headers=CSRF).json()["restored_folder"]
+
+    assert {k: v for k, v in came.items() if k != "folder"} == {
+        "location": ["Accounts"],
+        "renamed": True,
+        "relocated": False,
+    }
+    assert came["folder"] == {**came["folder"], "id": t["year"], "name": "2025 (2)"}
+    assert plain is None
+
+
+def test_a_file_whose_folder_has_no_free_name_says_so(db: Database) -> None:
+    api = Api(db)
+    admin = api.new_admin()
+    c = admin.customer_id
+    t = _tree(api, admin)
+    _trash(admin, t["year"])
+    with db.customer(c) as conn:  # "2025" and "2025 (2)" to "2025 (100)" all taken
+        conn.execute(
+            text(
+                "INSERT INTO folders (customer_id, parent_id, name, created_by) SELECT :c, :p,"
+                " CASE WHEN n = 1 THEN '2025' ELSE '2025 (' || n || ')' END, :u"
+                " FROM generate_series(1, 100) n"
+            ),
+            {"c": c, "p": t["accounts"], "u": admin.user_id},
+        )
+
+    reply = admin.client.post(f"/api/documents/{t['year_file']}/restore", headers=CSRF)
+
+    assert (reply.status_code, reply.json()["error"]) == (
+        409,
+        {
+            "code": "folder_names_taken",
+            "message": "Its folder can't come back: too many folders there have its name.",
+        },
+    )
+
+
+def test_a_search_in_trash_finds_files_inside_its_folders(db: Database) -> None:
+    api = Api(db)
+    admin = api.new_admin()
+    t = _tree(api, admin)
+    _trash(admin, t["year"])
+
+    found = _loose(admin, q="invoice")
+    assert {t["old_file"], t["bill"][0], t["alone"]} <= set(found)
+    assert admin.client.get(f"/api/documents?trashed_folder_id={t['year']}").status_code == 400

@@ -49,9 +49,11 @@ _TRASH_IN_FOLDERS = (
     " WHERE d.customer_id = :c AND d.id = l.id AND d.deleted_at IS NULL RETURNING d.family_id"
 )
 
+# #542: never a family that went to Trash with its folder (trashed_folders.restore_document's).
 _RESTORE = (
     "UPDATE documents d SET deleted_at = NULL, deleted_by = NULL"
     " WHERE d.customer_id = :c AND d.family_id = :f AND d.deleted_at IS NOT NULL"
+    " AND d.trashed_folder_id IS NULL"
 )
 
 _CUSTOMERS_WITH_TRASH = "SELECT t.id FROM kaagaz_customer_ids_with_trash(:before) AS t (id) ORDER BY t.id"

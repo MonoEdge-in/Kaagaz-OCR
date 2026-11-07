@@ -22,9 +22,15 @@ their folders, every version, in one statement however many (locked in family or
 family lock). Restoring one file from inside makes only its chain of folders live: their other
 files stay in Trash, now in a live folder, as a file trashed on its own is.
 
-Delete forever deletes each family for good (``delete_family_forever``: rows and files), then the
-folders. The purge removes a delete's folders past TRASH_DAYS once none of its documents is left
-(``purge_folders``), so no document ever names a trashed folder that is gone.
+Delete forever deletes each family for good in its own transaction, as the purge does (the
+caller, with ``families_in`` and ``drop_folder``), so a storage failure part way leaves the rest
+whole and in Trash, and no tree lock is held across storage calls; the folders go last, only
+once none of their documents is left. The purge removes a delete's folders past TRASH_DAYS once
+none of its documents is left (``purge_folders``), so no document ever names a trashed folder
+that is gone.
+
+Only an admin brings a department back (F1: only an admin creates or changes one), by either
+restore.
 """
 
 from collections.abc import Sequence
@@ -35,7 +41,7 @@ from typing import Any
 from sqlalchemy import Connection, text
 
 from kaagaz.db import trash
-from kaagaz.db.documents import delete_family_forever
+from kaagaz.db.documents import NotInTrash, delete_family_forever
 from kaagaz.db.folders import (
     _FREE,
     MAX_DEPTH,
@@ -58,6 +64,20 @@ class FolderLive(FolderError):
 
     def __init__(self) -> None:
         super().__init__("folder_live")
+
+
+class DepartmentAdminOnly(FolderError):
+    """The restore would bring a department back, and only an admin may (F1)."""
+
+    def __init__(self) -> None:
+        super().__init__("forbidden")
+
+
+class FolderNotEmptied(FolderError):
+    """Delete forever left a file in the folder (one restored, or failed, meanwhile)."""
+
+    def __init__(self) -> None:
+        super().__init__("folder_not_emptied")
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,14 +160,16 @@ _HELD = (
     " UNION ALL SELECT down.item, t.id, t.trash_id, down.depth + 1 FROM down"
     " JOIN trashed_folders t ON t.parent_id = down.id AND t.trash_id = down.trash_id"
     " WHERE t.customer_id = :c AND down.depth < 101),"
-    " filed AS (SELECT down.item, d.family_id, d.uploaded_by FROM down JOIN documents d"
-    " ON d.customer_id = :c AND d.trashed_folder_id = down.id AND d.trash_id = down.trash_id)"
-    " SELECT i.id, i.parent_id, i.name, i.kind, i.deleted_at, u.display_name,"
-    " (SELECT count(*) - 1 FROM down WHERE down.item = i.id),"
-    " (SELECT count(DISTINCT f.family_id) FROM filed f WHERE f.item = i.id),"
-    " (SELECT array_agg(DISTINCT f.uploaded_by) FROM filed f WHERE f.item = i.id),"
+    " held AS (SELECT item, count(*) - 1 AS folders FROM down GROUP BY item),"
+    " filed AS (SELECT down.item, count(DISTINCT d.family_id) AS files,"
+    " array_agg(DISTINCT d.uploaded_by) AS uploaders FROM down JOIN documents d"
+    " ON d.customer_id = :c AND d.trashed_folder_id = down.id AND d.trash_id = down.trash_id"
+    " GROUP BY down.item)"
+    " SELECT i.id, i.parent_id, i.name, i.kind, i.deleted_at, u.display_name, h.folders,"
+    " coalesce(f.files, 0), f.uploaders,"
     " EXISTS (SELECT 1 FROM folders l WHERE l.customer_id = :c AND l.id = i.parent_id)"
-    " FROM item i LEFT JOIN users u ON u.customer_id = :c AND u.id = i.deleted_by"
+    " FROM item i JOIN held h ON h.item = i.id LEFT JOIN filed f ON f.item = i.id"
+    " LEFT JOIN users u ON u.customer_id = :c AND u.id = i.deleted_by"
     " ORDER BY i.deleted_at DESC, lower(i.name), i.id"
 )
 # Each live folder's path, root first (100 levels at most).
@@ -161,7 +183,7 @@ _PATHS = (
 )
 
 _ANY_LIVE = "SELECT EXISTS (SELECT 1 FROM folders WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[])))"
-_TOP = "SELECT parent_id, name, trash_id FROM trashed_folders WHERE customer_id = :c AND id = :f"
+_TOP = "SELECT parent_id, name, trash_id, kind FROM trashed_folders WHERE customer_id = :c AND id = :f"
 # The rows back into folders, the topmost under its new parent and name; an auto-filing key a live
 # folder holds now is dropped (folders_autofile_key keeps one a key).
 _MAKE_LIVE = (
@@ -202,6 +224,10 @@ _FAMILIES_IN = (
     " AND trashed_folder_id = ANY(CAST(:ids AS uuid[])) ORDER BY family_id"
 )
 _EXISTS = "SELECT EXISTS (SELECT 1 FROM trashed_folders WHERE customer_id = :c AND id = :f)"
+_ANY_FILED = (
+    "SELECT EXISTS (SELECT 1 FROM documents WHERE customer_id = :c"
+    " AND trashed_folder_id = ANY(CAST(:ids AS uuid[])))"
+)
 # A delete's folders past TRASH_DAYS once none of its documents is left (they go first).
 _PURGE = (
     "DELETE FROM trashed_folders t WHERE t.customer_id = :c AND t.deleted_at < :before"
@@ -223,9 +249,18 @@ def audit_details(restored: Restored) -> dict[str, str | int | None]:
 
 
 def list_items(conn: Connection, customer_id: str) -> list[TrashedFolder]:
-    """Every item of Trash that is a folder, newest first. Two statements, O(T + n log D) for the
-    T trashed folders and the n documents filed in them, plus O(d) a live parent's path."""
+    """Every item of Trash that is a folder, newest first. Two statements: the walk down from
+    every item and its documents, each grouped once (O(T log T + n log D) for the T trashed
+    folders and the n documents filed in them), and the live parents' paths (O(d) each)."""
     return _items(conn, customer_id, _TOP_ITEMS, {})
+
+
+def one(conn: Connection, customer_id: str, folder_id: str) -> TrashedFolder:
+    """One trashed folder with what it holds. Raises FolderNotFound. Two statements."""
+    found = _items(conn, customer_id, _ONE_ITEM, {"f": folder_id})
+    if not found:
+        raise FolderNotFound()
+    return found[0]
 
 
 def contents(
@@ -233,12 +268,9 @@ def contents(
 ) -> tuple[TrashedFolder, list[tuple[str, str]], list[TrashedFolder]]:
     """A trashed folder as Trash opens it: itself, its path within Trash ((id, name), the item
     first) and the folders directly in it. Raises FolderNotFound. O(subtree) statements' rows."""
-    params = {"f": folder_id}
-    found = _items(conn, customer_id, _ONE_ITEM, params)
-    if not found:
-        raise FolderNotFound()
-    path = [(str(i), str(n)) for i, n in conn.execute(text(_CHAIN), {"c": customer_id, **params})]
-    return found[0], path, _items(conn, customer_id, _CHILD_ITEMS, params)
+    found = one(conn, customer_id, folder_id)
+    path = [(str(i), str(n)) for i, n in conn.execute(text(_CHAIN), {"c": customer_id, "f": folder_id})]
+    return found, path, _items(conn, customer_id, _CHILD_ITEMS, {"f": folder_id})
 
 
 def exists(conn: Connection, customer_id: str, folder_id: str) -> bool:
@@ -246,12 +278,13 @@ def exists(conn: Connection, customer_id: str, folder_id: str) -> bool:
     return bool(conn.execute(text(_EXISTS), {"c": customer_id, "f": folder_id}).scalar())
 
 
-def restore_folder(conn: Connection, customer_id: str, folder_id: str) -> Restored:
+def restore_folder(conn: Connection, customer_id: str, folder_id: str, *, admin: bool) -> Restored:
     """Make the trashed folder live again, with every folder and file of its delete inside it,
     and the folders of its delete above it (with only it in them). Raises FolderNotFound,
-    FolderLive (an id is live already), FolderTooDeep (its live folder moved too deep meanwhile)
-    or FolderNameTaken (no free number up to 100). A fixed number of statements however large:
-    O(s log F + n log D) for the s folders and n documents."""
+    FolderLive (an id is live already), DepartmentAdminOnly (a department, and not ``admin``),
+    FolderTooDeep (its live folder moved too deep meanwhile) or FolderNameTaken (no free number
+    up to 100). A fixed number of statements however large: O(s log F + n log D) for the s
+    folders and n documents."""
     _lock_tree(conn, customer_id)
     chain = [str(i) for i, _ in conn.execute(text(_CHAIN), {"c": customer_id, "f": folder_id})]
     if not chain:
@@ -260,53 +293,72 @@ def restore_folder(conn: Connection, customer_id: str, folder_id: str) -> Restor
     inside = [str(row[0]) for row in subtree]
     above = chain[:-1]
     height = len(above) + max(int(row[1]) for row in subtree)
-    restored = _make_live(conn, customer_id, above + inside, height)
+    restored = _make_live(conn, customer_id, above + inside, height, admin=admin)
     files = len(set(conn.execute(text(_RESTORE_IN), {"c": customer_id, "ids": inside}).scalars()))
     _finish(conn, customer_id, above, above + inside)
     return replace(restored, folders=len(inside) - 1, files=files)
 
 
-def restore_document(conn: Connection, customer_id: str, document_id: str) -> tuple[bool, Restored | None]:
+def restore_document(
+    conn: Connection, customer_id: str, document_id: str, *, admin: bool
+) -> tuple[bool, Restored | None]:
     """Bring the document's family back from Trash (``trash.restore_document``); one that went
     with a folder delete goes back into its folder, which becomes live with its chain of folders
     above it (``restore_folder``'s rules), their other files staying in Trash. (False, None) when
-    there is no such document; the Restored when folders came back. The tree lock comes first,
-    then the family's, as every tree change. O(v log D + d) for v versions, depth d."""
+    there is no such document; the Restored when folders came back. Only such a restore takes the
+    tree lock, before the family's, as every tree change; a document in Trash never gains a
+    trashed folder, so one read with none needs no tree lock. O(v log D + d) for v versions, depth d."""
+    if conn.execute(text(_FILED_IN), {"c": customer_id, "f": document_id}).scalar() is None:
+        return trash.restore_document(conn, customer_id, document_id), None
     _lock_tree(conn, customer_id)
     family_id = trash.lock_family(conn, customer_id, document_id)
     if family_id is None:
         return False, None
     folder = conn.execute(text(_FILED_IN), {"c": customer_id, "f": family_id}).scalar()
-    if folder is None:
+    if folder is None:  # restored meanwhile, under the lock we waited for
         return trash.restore_document(conn, customer_id, document_id), None
     chain = [str(i) for i, _ in conn.execute(text(_CHAIN), {"c": customer_id, "f": folder})]
-    restored = _make_live(conn, customer_id, chain, len(chain)) if chain else None
+    restored = _make_live(conn, customer_id, chain, len(chain), admin=admin) if chain else None
     into = str(folder) if chain else None  # shortcut: its folder missing can't happen; the top level then
     conn.execute(text(_RESTORE_FAMILY), {"c": customer_id, "f": family_id, "into": into})
     _finish(conn, customer_id, chain, chain)
     return True, None if restored is None else replace(restored, folders=len(chain) - 1, files=1)
 
 
-def delete_forever(
-    conn: Connection, storage: BlobStorage, customer_id: str, folder_id: str
-) -> Deleted | None:
-    """Delete the trashed folder for good: every family of its delete in it (rows and files, by
-    ``delete_family_forever``), then its folders. None if there is no such folder. One
-    transaction: a storage error brings every row back (files deleted before it stay deleted, as
-    with one document). O(n) statements and storage calls for the n families.
-
-    shortcut: one request deletes every family in it, so a folder of thousands of files takes as
-    long as deleting each of them forever."""
-    _lock_tree(conn, customer_id)
+def families_in(conn: Connection, customer_id: str, folder_id: str) -> tuple[str, list[str]] | None:
+    """The trash_id of the trashed folder and the families of its delete in it at every depth, for
+    delete forever to delete one per transaction (``delete_family``); None if there is no such
+    folder. Three statements, O(s log T + n log D)."""
     top = conn.execute(text(_TOP), {"c": customer_id, "f": folder_id}).first()
     if top is None:
         return None
     inside = [str(row[0]) for row in conn.execute(text(_SUBTREE), {"c": customer_id, "f": folder_id})]
-    families = [str(f) for f in conn.execute(text(_FAMILIES_IN), {"c": customer_id, "ids": inside}).scalars()]
-    for family in families:
-        delete_family_forever(conn, storage, customer_id, family)
+    families = conn.execute(text(_FAMILIES_IN), {"c": customer_id, "ids": inside}).scalars()
+    return str(top[2]), [str(f) for f in families]
+
+
+def drop_folder(conn: Connection, customer_id: str, folder_id: str, *, files: int) -> Deleted:
+    """Delete forever's last step, once its families are gone: the trashed folder and every one
+    of its delete inside it, under the tree lock. Raises FolderNotFound (gone meanwhile) or
+    FolderNotEmptied (a document still names one of them: none is deleted). Four statements."""
+    _lock_tree(conn, customer_id)
+    top = conn.execute(text(_TOP), {"c": customer_id, "f": folder_id}).first()
+    if top is None:
+        raise FolderNotFound()
+    inside = [str(row[0]) for row in conn.execute(text(_SUBTREE), {"c": customer_id, "f": folder_id})]
+    if conn.execute(text(_ANY_FILED), {"c": customer_id, "ids": inside}).scalar():
+        raise FolderNotEmptied()
     conn.execute(text(_DROP), {"c": customer_id, "ids": inside})
-    return Deleted(str(top[2]), folders=len(inside) - 1, files=len(families))
+    return Deleted(str(top[2]), folders=len(inside) - 1, files=files)
+
+
+def delete_family(conn: Connection, storage: BlobStorage, customer_id: str, family_id: str) -> bool:
+    """One family of a folder being deleted forever, in the caller's own transaction; False if it
+    is no longer in Trash or gone (restored or deleted meanwhile), and nothing is deleted."""
+    try:
+        return delete_family_forever(conn, storage, customer_id, family_id) is not None
+    except NotInTrash:
+        return False
 
 
 def purge_folders(conn: Connection, customer_id: str, *, before: datetime) -> int:
@@ -340,15 +392,20 @@ def _items(conn: Connection, customer_id: str, head: str, params: dict[str, Any]
     ]
 
 
-def _make_live(conn: Connection, customer_id: str, ids: Sequence[str], height: int) -> Restored:
+def _make_live(
+    conn: Connection, customer_id: str, ids: Sequence[str], height: int, *, admin: bool
+) -> Restored:
     """Put the trashed folders ``ids`` (the topmost first, every other one under one of them) back
     into folders; the topmost into its folder when live, else the top level, under the first free
-    name. The caller holds the tree lock and moves the documents. A fixed number of statements."""
+    name. A department (top level only, so only ever the topmost) only for an ``admin``. The
+    caller holds the tree lock and moves the documents. A fixed number of statements."""
     params: dict[str, Any] = {"c": customer_id, "ids": list(ids)}
     if conn.execute(text(_ANY_LIVE), params).scalar():
         raise FolderLive()
     top = ids[0]
-    parent, name, trash_id = conn.execute(text(_TOP), {**params, "f": top}).one()
+    parent, name, trash_id, kind = conn.execute(text(_TOP), {**params, "f": top}).one()
+    if kind == "department" and not admin:
+        raise DepartmentAdminOnly()
     location: tuple[str, ...] = ()
     relocated = False
     if parent is not None:
