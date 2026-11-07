@@ -11,6 +11,17 @@ asked fresh (no conversation, no picked documents, no clarify), by the same pers
 same answer settings, switches and marks, while their documents are unchanged (``stamp``).
 Every other question is answered as before.
 
+Repeated questions (#535, ``repeat_key``): any fresh question (no conversation, no clarify), in any
+scope, asked again by the same person with the same answer settings, switches and marks, the same
+day, on the same running code and answer-shaping settings, while the stamp, a tag scope's
+documents and the words that steer the search are unchanged, is answered from its stored answer
+message (routers/chat.py), with no model call. In the database, so every API process finds it;
+under RLS, the asker's organisation's messages only. Only a found answer (answered or unchecked)
+the model drafted (or a fixed one), never one made while the model or the question's vector was
+down, and never once any answer with its key is rated Not useful.
+shortcut: found by a scan of the organisation's messages of the last day (the
+(customer_id, created_at) index); a jsonb index on the key if a day's messages grow large.
+
 shortcut: one API process (docker-compose runs one uvicorn), so a per-process cache is the
 whole cache; with several API processes each would warm its own, so share it (Postgres or
 Redis) before adding processes. A value changed in place without its ``updated_at`` moving
@@ -18,6 +29,7 @@ is caught only by ``TTL_SECONDS``; a document or value added, removed or re-read
 at once.
 """
 
+import hashlib
 import threading
 import time
 from collections import OrderedDict
@@ -65,16 +77,58 @@ _TYPES = text(
 )
 # What a ready answer was made from: the documents and their values (how many, newest change),
 # and the word and line changes that change text (#527: a correction may change only a search
-# piece; its Undo only ``undone_at``; a Confirm or Ensemble's resolve changes nothing).
-# shortcut: two scans of one customer's rows, fine at today's thousands; an index on
+# piece; its Undo only ``undone_at``; a Confirm or Ensemble's resolve changes nothing), and the
+# pieces still without a vector and the vectors' recipes (#535: a vector filled in by the worker
+# later, or cleared by a line correction, changes what meaning search finds).
+# shortcut: three scans of one customer's rows, fine at today's thousands; an index on
 # (customer_id, updated_at) or a change counter when a customer holds millions.
 _STAMP = text(
     "SELECT (SELECT count(*) || '/' || coalesce(max(updated_at)::text, '') FROM documents"
     " WHERE customer_id = :c) || '|' || (SELECT count(*) || '/' || coalesce(max(updated_at)::text, '')"
     " FROM extracted_values WHERE customer_id = :c) || '|' || (SELECT count(*) || '/'"
     " || coalesce(max(greatest(created_at, undone_at))::text, '') FROM word_changes WHERE customer_id = :c"
-    " AND before_text <> after_text)"
+    " AND before_text <> after_text) || '|' || (SELECT count(*) FILTER (WHERE embedding IS NULL) || '/'"
+    " || coalesce(string_agg(DISTINCT embedding_model, ','), '') FROM pieces WHERE customer_id = :c)"
 )
+# #535: the documents a tag scope holds, with their tags, so a tag put on or taken off moves the key.
+_TAGGED = text(
+    "SELECT document_id::text || ':' || tag_id::text FROM document_tags"
+    " WHERE customer_id = :c AND tag_id = ANY(CAST(:t AS uuid[])) ORDER BY 1"
+)
+# #535: the settings that shape an answer (its evidence, window, models and parts), so a change of
+# one on the same commit makes a repeated question's key another.
+ANSWER_SHAPING = (
+    "model_enabled",
+    "model_chat",
+    "model_embed",
+    "model_answer_max_tokens",
+    "model_context_tokens",
+    "search_ef",
+    "answer_max_evidence",
+    "answer_min_evidence_score",
+    "answer_neighbours",
+    "answer_translate_question",
+    "answer_whole_doc_tokens",
+    "answer_swift_input_tokens",
+    "answer_parts_tokens",
+    "answer_parts_max",
+    "topic_expand_max_pieces",
+    "query_aspects_max",
+    "chat_history_turns",
+    "timezone",
+)
+
+
+# Repeated questions (#535): the words that steer a search besides the documents, the asker's own
+# (My words) and the organisation's approved ones, exactly. ``Database.user``: the asker's own rows.
+_WORDS = text(
+    "SELECT coalesce((SELECT md5(jsonb_agg(jsonb_build_array(word, meaning) ORDER BY word, meaning)::text)"
+    " FROM user_words WHERE customer_id = :c AND user_id = :u), '') || '|' || coalesce((SELECT"
+    " md5(jsonb_agg(jsonb_build_array(word, meaning, document_id) ORDER BY word, meaning, document_id)::text)"
+    " FROM organization_word_suggestions WHERE customer_id = :c AND status = 'approved'), '')"
+)
+REPEAT_KEY = "repeat_key"  # the stored answer's field that holds it; never shown (clarify.without_resume)
+REPEAT_COPY = "repeat_copy"  # a copy served from it: never served itself, its Not useful still counts
 
 
 def same_question(question: str) -> str:
@@ -107,6 +161,31 @@ def key(
     """Everything an answer depends on besides the question: ``inputs`` are the answer
     settings, switches and marks (their reprs are exact), ``made_from`` the ``stamp``."""
     return (customer_id, user_id, same_question(question), *map(repr, inputs), made_from)
+
+
+def tagged(conn: Connection, customer_id: str, tag_ids: Sequence[str] | None) -> list[str]:
+    """#535: "document:tag" for each document holding one of ``tag_ids``, sorted; [] for none. One
+    statement, only with a tag scope."""
+    if not tag_ids:
+        return []
+    return [str(row[0]) for row in conn.execute(_TAGGED, {"c": customer_id, "t": list(tag_ids)})]
+
+
+def shaping(settings: Any) -> tuple[Any, ...]:
+    """#535: the ``ANSWER_SHAPING`` settings' values, in order."""
+    return tuple(getattr(settings, name) for name in ANSWER_SHAPING)
+
+
+def repeat_key(
+    conn: Connection, customer_id: str, user_id: str, question: str, inputs: Sequence[Any], made_from: str
+) -> str:
+    """#535: ``key`` for a repeated question, as a sha256 to store with its answer: ``inputs`` (the
+    caller's: the answer settings, switches, marks, scope and its tagged documents, day, running
+    code and ``shaping``), the ``stamp`` (``made_from``, read once by the caller) and the words that
+    steer the search (``_WORDS``). On a ``Database.user`` connection. One statement."""
+    words = str(conn.execute(_WORDS, {"c": customer_id, "u": user_id}).scalar_one())
+    parts = key(customer_id, user_id, question, inputs, f"{made_from}|{words}")
+    return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()
 
 
 class ReadyAnswers:

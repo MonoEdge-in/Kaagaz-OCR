@@ -145,7 +145,8 @@ stage (rewrite, embed, search, widen, draft, verify; time.monotonic, wall time o
 answer's thread, adding up to the total), of the model limiter's waits (``LIMITER_WAIT``,
 summed over parallel drafts and step 19's overlap) and in all. ``overlap`` is 1 when step
 19's early search was used; ``overlap_ms``, the time it took, used or not, inside
-``rewrite_ms``. Codes and numbers only.
+``rewrite_ms``; ``redrafts``, the draft's model calls made again for a sentence too long to cut
+(#535, draft.py). Codes and numbers only.
 
 Time: one ``available_fields`` query only for a question with an aggregate
 word and no unknown topic word, then either one fixed query or one search
@@ -201,6 +202,7 @@ from kaagaz.answering.evidence import (
     Evidence,
     Gate,
     Hit,
+    Lists,
     PgRetriever,
     Retriever,
     Translated,
@@ -392,6 +394,12 @@ class Answer:
     # #410: a not-found answer's key terms that no document in scope holds (``_missing``); in
     # to_json only when there is one, so answers without it keep their shape.
     missing_words: tuple[str, ...] = ()
+    # #535: the model was down, or the question's (or an aspect's) vector missing, for this answer,
+    # so a repeated question never reuses it (routers/chat.py). Never in to_json.
+    degraded: bool = False
+    # #535 (test-server log, 7 Nov 2026): "timeout" when the outage is a draft that took too long,
+    # so the words say what to do instead of "ask again in a minute"; in to_json only then.
+    outage_reason: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         """The ``Answer`` of frontend/lib/types.ts, exactly; ``agents``, ``agent_ids``,
@@ -438,6 +446,7 @@ class Answer:
             **({"clarify": self.clarify, "resume": self.resume} if self.clarify else {}),
             # KZ-006 (24 Oct 2026): the model was down, so this not found is no answer either way.
             **({"outage": True} if self.unavailable else {}),
+            **({"outage_reason": self.outage_reason} if self.unavailable and self.outage_reason else {}),
         }
 
 
@@ -457,6 +466,9 @@ class _Timing:
     overlap: bool = False  # step 19's early search was used
     overlap_ms: float = 0.0  # the time it took, beside the plan call
     parts: int = 0  # step 20: the parts the evidence was read in (0: one call, as before)
+    redrafts: int = 0  # #535: model calls made again for a sentence too long to cut (draft.py)
+    vectorless: bool = False  # #535: the model on, the question searched without a meaning vector
+    outage: str | None = None  # #535: the code the draft failed with while the model was down
 
     def lap(self, stage: str) -> None:
         now = time.monotonic()
@@ -470,13 +482,15 @@ _TIMING: ContextVar[_Timing | None] = ContextVar("answer_timing", default=None)
 @dataclass(frozen=True, slots=True)
 class _Early:
     """Step 19's early search (``AnswerService._early``): the asker's words, the question's
-    vector and hits, whether the model was down for the vector (KZ-006), and how long it took."""
+    vector and hits, whether the model was down for the vector (KZ-006), and how long it took;
+    ``lists``, the question's own lists when aspects may come, to fuse with theirs (#535)."""
 
     expansion: Expansion
     vector: list[float] | None
     hits: Sequence[Hit]
     degraded: bool
     ms: float
+    lists: Lists | None = None
 
 
 def _timing() -> _Timing:
@@ -502,7 +516,7 @@ def _timed[**P](answer: Callable[P, Answer]) -> Callable[P, Answer]:
             LIMITER_WAIT.reset(waits)
         _timing_log.info(
             "answer timing route=%s status=%s outcome=%s whole=%d aspects=%d pinned=%d overlap=%d %s"
-            " overlap_ms=%.0f limiter_wait_ms=%.0f total_ms=%.0f parts=%d",
+            " overlap_ms=%.0f limiter_wait_ms=%.0f total_ms=%.0f parts=%d redrafts=%d",
             result.route,
             result.status,
             timing.reason or result.label,
@@ -515,6 +529,7 @@ def _timed[**P](answer: Callable[P, Answer]) -> Callable[P, Answer]:
             waited[0] * 1000,
             (timing.last - timing.start) * 1000,
             timing.parts,
+            timing.redrafts,
         )
         return result
 
@@ -676,7 +691,7 @@ class AnswerService:
                 deadline=time.monotonic() + plan_time if first else None,
             )
             if first and whole is None:
-                done, early = self._overlapped(rewriting, customer_id, question, scope, user_id)
+                done, early = self._overlapped(rewriting, customer_id, question, scope, user_id, most > 0)
             else:
                 done = rewriting()
             if not (recent or remembered or most):
@@ -700,32 +715,46 @@ class AnswerService:
         question: str,
         scope: Scope,
         user_id: str | None,
+        fused: bool = False,
     ) -> tuple[Rewritten, Future[_Early]]:
         """Step 19: the rewrite and plan call, with ``_early`` beside it on a thread of its own,
         in a copy of the context (billing, the rate scope, the limiter's waits, as ``_ensemble``);
         both are done when this returns. The early search's failure is raised only where it is
-        used (``_answer``), as the same step would raise it there."""
+        used (``_answer``), as the same step would raise it there. ``fused``: aspects may come."""
         with ThreadPoolExecutor(max_workers=1) as pool:  # leaving it joins the thread
-            early = pool.submit(copy_context().run, self._early, customer_id, question, scope, user_id)
+            early = pool.submit(copy_context().run, self._early, customer_id, question, scope, user_id, fused)
             done = rewriting()
         if early.exception() is None:
             _timing().overlap_ms = early.result().ms
         return done, early
 
-    def _early(self, customer_id: str, question: str, scope: Scope, user_id: str | None) -> _Early:
+    def _early(
+        self, customer_id: str, question: str, scope: Scope, user_id: str | None, fused: bool = False
+    ) -> _Early:
         """Step 19: the asker's words (``_expansion``), then the question's vector and hits as
         ``_search_answer`` gets them with no aspects; nothing with nothing to search. On its own
-        thread: its own timing, so the answer's laps are the answer thread's only."""
+        thread: its own timing, so the answer's laps are the answer thread's only. ``fused``
+        (aspects may come, #535): searched as the fused search searches it with no other text (the
+        same hits), keeping its lists, so the aspects' search fuses them rather than search it again."""
         start = time.monotonic()
         _TIMING.set(_Timing(start, start))  # this thread's copy of the context only
         expansion = self._expansion(customer_id, question, scope, user_id)
         _, query_text, spoken = _searched_as(question, normalise(question))
         vector: list[float] | None = None
         hits: Sequence[Hit] = ()
+        lists: Lists | None = None
         if query_text:
             vector = self._embed_all([spoken])[0]
-            hits = self._hits(customer_id, query_text, vector, [], scope, expansion)
-        return _Early(expansion, vector, hits, _timing().degraded, (time.monotonic() - start) * 1000)
+            if fused and self._translated is not None:
+                limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
+                found = self._translated.search_translated(
+                    customer_id, query_text, vector, [], limit, scope, expansion
+                )
+                hits, lists = found.hits, found.lists
+            else:
+                hits = self._hits(customer_id, query_text, vector, [], scope, expansion)
+        took = (time.monotonic() - start) * 1000
+        return _Early(expansion, vector, hits, _timing().degraded, took, lists)
 
     def _step_answer(
         self,
@@ -759,7 +788,16 @@ class AnswerService:
             answer = self._missing(customer_id, asked, answer, scope)
         answer = self._shaped(customer_id, asked, self._mentioned(customer_id, asked, answer, scope), scope)
         said = [*answer.assumptions, *step.assumptions]
-        return replace(answer, rewritten_question=rewritten, unavailable=unavailable, assumptions=said)
+        degraded = _timing().degraded or _timing().vectorless  # #535: never reused for a repeat
+        reason = "timeout" if unavailable and _timing().outage == "timeout" else None
+        return replace(
+            answer,
+            rewritten_question=rewritten,
+            unavailable=unavailable,
+            assumptions=said,
+            degraded=degraded,
+            outage_reason=reason,
+        )
 
     def _checked(self, answer: Answer, question: str) -> Answer:
         """Decision 2's final check (PRD 6 A, voice.py) over every sentence, whoever wrote it:
@@ -1351,6 +1389,17 @@ class AnswerService:
                 timing = _timing()
                 timing.degraded, timing.overlap = timing.degraded or early.degraded, True
                 timing.lap("embed")
+            elif early is not None and early.lists is not None and early.vector is not None:
+                # #535: the question's vector and lists from step 19's early search; only its
+                # aspects (CX6) are embedded and searched, fused with them as the search fuses.
+                vector, meanings = early.vector, self._embed_all(aspects)
+                timing = _timing()
+                timing.degraded, timing.overlap = timing.degraded or early.degraded, True
+                timing.lap("embed")
+                extra = [
+                    (_search_text(text), meaning) for text, meaning in zip(aspects, meanings, strict=True)
+                ]
+                hits = self._hits(customer_id, query_text, vector, extra, scope, expansion, early.lists)
             else:
                 # Its aspects (CX6) are embedded with the question, in one call.
                 vector, *meanings = self._embed_all([spoken, *aspects])
@@ -1359,6 +1408,8 @@ class AnswerService:
                     (_search_text(text), meaning) for text, meaning in zip(aspects, meanings, strict=True)
                 ]
                 hits = self._hits(customer_id, query_text, vector, extra, scope, expansion)
+            if self._model is not None and (vector is None or any(m is None for _, m in extra)):
+                _timing().vectorless = True  # #535: no outage, but never reused for a repeat
             if hits:  # never stuck (17 Oct 2026): found by words and typos, a missing vector is no outage
                 _timing().degraded = False
             translated = self._translated_search(
@@ -1529,6 +1580,7 @@ class AnswerService:
         down = timing.degraded
         vector = self._embed(spoken)
         timing.degraded = down
+        timing.vectorless = timing.vectorless or vector is None  # #535: another order, never reused
         limit = max(1, min(len(evidence), MAX_LIMIT))
         found = self._retriever.search(customer_id, query_text, vector, limit, scope, expansion)
         place: dict[str, int] = {}
@@ -1592,12 +1644,14 @@ class AnswerService:
         extra: Sequence[tuple[str, list[float] | None]],
         scope: Scope,
         expansion: Expansion,
+        asked: Lists | None = None,
     ) -> Sequence[Hit]:
-        """The search's hits: the question's, fused with its aspects' (CX6) when it has any."""
+        """The search's hits: the question's, fused with its aspects' (CX6) when it has any;
+        ``asked``: the question's lists already found (#535), not searched again."""
         limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
         if extra and self._translated is not None:
             fused = self._translated.search_translated
-            return fused(customer_id, query_text, vector, extra, limit, scope, expansion).hits
+            return fused(customer_id, query_text, vector, extra, limit, scope, expansion, asked).hits
         return self._retriever.search(customer_id, query_text, vector, limit, scope, expansion)
 
     def _widened(
@@ -1679,9 +1733,12 @@ class AnswerService:
             code = "evidence_too_large"  # not even the best piece fits
             if seen and self._in_parts(seen, choice):
                 picked = self._read_in_parts(asked, seen, choice)
-                if picked is not None and not picked:  # every part read, none holds an answer
+                if isinstance(picked, str):  # #535: the parts timed out; all the evidence would too
+                    code, seen = picked, []
+                elif picked is not None and not picked:  # every part read, none holds an answer
                     return Draft("not_found", []), True, seen, "notfound_model", team
-                seen = seen if picked is None else picked
+                else:
+                    seen = seen if picked is None else picked
             if seen:
                 cards = fit_cards(asked, seen, self._cards(customer_id, scope, seen), budget)
                 draft_with = partial(
@@ -1697,11 +1754,13 @@ class AnswerService:
                 else:
                     drafted, team, code = _single(draft_with, self._model.chat_model, choice)
                 if drafted is not None:
+                    _timing().redrafts = drafted.redrafts
                     return drafted, True, seen, "notfound_model", team
             # Quoting the evidence needs no model.
             _log.warning("answer drafted without the model", extra={"code": code})
             if code not in _REPLY_FAULTS:
                 _timing().degraded = True
+                _timing().outage = code  # #535: a timeout says so (``Answer.outage_reason``)
         why = "notfound_no_model" if self._model is None else f"notfound_model_error:{code}"
         if mentions_date(normalised):
             # A quoted line cannot be checked against a date.
@@ -1725,14 +1784,16 @@ class AnswerService:
 
     def _read_in_parts(
         self, asked: str, seen: Sequence[Evidence], choice: ChatChoice | None
-    ) -> list[Evidence] | None:
+    ) -> list[Evidence] | str | None:
         """Step 20 (#381, answering/parts.py): ``seen`` split into at most ANSWER_PARTS_MAX parts,
         each read by the choice's first agent at its level, all at once (each call takes its own
         slot of the model limiter; one deadline, as ``_ensemble``), in a copy of the context
         (billing, the rate scope, the limiter's waits); every thread is joined before this
         returns. The pieces the parts name, in ``seen``'s order ([]: none holds an answer), or
         None when a part failed, logged by its code: the answer is then drafted from all of
-        ``seen`` in one call, as before."""
+        ``seen`` in one call, as before. #535 (test-server log, 7 Nov 2026): "timeout" when a part
+        timed out, as a draft from all of ``seen``, more than any part, would too: none is made, and
+        the answer goes the way a draft that timed out goes."""
         if self._model is None or choice is None or not choice.agents:
             return None
         model, lead = self._model, choice.agents[0]
@@ -1762,10 +1823,10 @@ class AnswerService:
         results = [future.result() for future in futures]
         for result in results:
             if not isinstance(result, list):
-                _log.warning(
-                    "read in parts failed, drafted from all the evidence", extra={"code": result.code}
-                )
-                return None
+                timed_out = isinstance(result, ModelUnavailable) and result.code == "timeout"
+                then = "not drafted again" if timed_out else "drafted from all the evidence"
+                _log.warning(f"read in parts failed, {then}", extra={"code": result.code})
+                return result.code if timed_out else None
         _log.info("read in %d parts by %s with prompt %s", len(groups), lead.model, PARTS_PROMPT_HASH)
         _timing().parts = len(groups)
         named = {n for result in results if isinstance(result, list) for n in result}
@@ -1892,13 +1953,31 @@ def _texts(seen: Sequence[Evidence]) -> dict[int, str]:
 
 def _kept(draft: Draft, texts: dict[int, str]) -> list[DraftSentence]:
     """The draft's sentences, cleaned, that ``verify`` keeps against ``texts``; none for
-    not found."""
+    not found. #535: the parts of a sentence cut in code (``part_of``) stand or fall together, so
+    no part is shown without the rest of its sentence."""
     if draft.status != "answered":
         return []
-    cleaned = [DraftSentence(clean_text(s.text), s.evidence) for s in draft.sentences]
+    cleaned = [DraftSentence(clean_text(s.text), s.evidence, s.part_of) for s in draft.sentences]
+    passed = verify([s for s in cleaned if s.text], texts)
+    # verify keeps its sentences in order, each with its ids once: pair them back with the cleaned.
+    found: list[DraftSentence | None] = []
+    at = 0
+    for sentence in cleaned:
+        same = (
+            bool(sentence.text)
+            and at < len(passed)
+            and passed[at].text == sentence.text
+            and passed[at].evidence == list(dict.fromkeys(sentence.evidence))
+        )
+        found.append(passed[at] if same else None)
+        at += same
+    fallen = {s.part_of for s, f in zip(cleaned, found, strict=True) if f is None and s.part_of is not None}
+    if fallen:
+        _log.info("answer text dropped", extra={"code": "verify:cut_sentence_part"})
     kept: dict[str, DraftSentence] = {}
-    for sentence in verify([s for s in cleaned if s.text], texts):
-        kept.setdefault(sentence.text, sentence)  # a repeated sentence once, the first kept
+    for sentence, verified in zip(cleaned, found, strict=True):
+        if verified is not None and sentence.part_of not in fallen:
+            kept.setdefault(verified.text, verified)  # a repeated sentence once, the first kept
     return list(kept.values())
 
 

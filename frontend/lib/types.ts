@@ -953,6 +953,8 @@ export interface ListedDocument {
 export interface Answer {
   /** KZ-006 (24 Oct 2026): every model was down; said as such, never as "not found". */
   outage?: boolean;
+  /** #535: the outage was a draft that took too long ("timeout"), so asking again won't help. */
+  outage_reason?: "timeout";
   // "unchecked": the figure asked for is only in unchecked card values, so no
   // number is given; closest_documents says where.
   status: "answered" | "not_found" | "unchecked" | "clarify";

@@ -297,7 +297,8 @@ def test_cx6_with_no_whole_document_the_aspects_and_the_leave_topic_find_pages_4
 
     assert [s["text"] for s in answer["sentences"]] == list(QUOTES[LEAVES])
     assert {c["page_no"] for c in answer["citations"]} == set(OFFER_LEAVE_PAGES.values())
-    assert len(model.rewrites) == 1 and [len(texts) for texts in retriever.fused] == [3]
+    # Changed on purpose (#535): the early search of the question (no other text), then the aspects.
+    assert len(model.rewrites) == 1 and [len(texts) for texts in retriever.fused] == [0, 3]
     (prompt,) = model.drafts
     assert len(blocks(prompt)) < len(content.pieces)  # searched, not the whole letter
 

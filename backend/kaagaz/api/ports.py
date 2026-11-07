@@ -58,6 +58,11 @@ class AnswerLike(Protocol):
     @property
     def unavailable(self) -> bool: ...
 
+    @property
+    def degraded(self) -> bool:
+        """#535: the model or the question's vector was down for it, so a repeat never reuses it."""
+        ...
+
 
 class Answers(Protocol):
     def answer(
