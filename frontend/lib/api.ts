@@ -7,6 +7,8 @@
 
 import type { DocumentSearchParams } from "@/components/documents/insideSearch";
 import type { DocumentListParams } from "@/components/documents/libraryQuery";
+import { sseParser, streamEvent } from "./askStream";
+import type { StreamEvent } from "./askStream";
 import type { StoryMatchBody } from "./storyMatches";
 import type {
   AccuracyCheck,
@@ -858,19 +860,138 @@ export const ask = (
   choice?: AnswerChoice,
   reply?: ClarifyReply,
   signal?: AbortSignal,
-) =>
-  request<ChatResponse>(
-    "POST",
-    "/chat",
-    {
-      question,
-      ...(conversationId ? { conversation_id: conversationId } : {}),
-      ...(scope ? { scope } : {}),
-      ...(choice ?? {}),
-      ...(reply ? { reply } : {}),
-    },
-    signal,
-  );
+) => request<ChatResponse>("POST", "/chat", chatBody(question, conversationId, scope, choice, reply), signal);
+
+const chatBody = (
+  question: string,
+  conversationId?: string,
+  scope?: ScopeBody,
+  choice?: AnswerChoice,
+  reply?: ClarifyReply,
+) => ({
+  question,
+  ...(conversationId ? { conversation_id: conversationId } : {}),
+  ...(scope ? { scope } : {}),
+  ...(choice ?? {}),
+  ...(reply ? { reply } : {}),
+});
+
+/** The stream broke before `done` (no connection, no such route, a server failure, a cut
+ * stream, a malformed event): askStream asks POST /chat instead. */
+class StreamFailed extends Error {}
+
+/** An `error` event's code as the status /chat would have answered with, for askErrorText. An
+ * unknown code is a refusal in the server's own words (shown as they are). */
+const STREAM_ERROR_STATUS: Record<string, number> = {
+  bad_request: 400,
+  not_signed_in: 401,
+  feature_off: 403,
+  not_found: 404,
+  conflict: 409,
+  rate_limited: 429,
+  answer_timeout: 400, // ANSWER_STREAM_MAX_SECONDS: its words shown as they are, never asked again
+  internal_error: 500,
+  backend_unavailable: 503,
+};
+
+const isChatResponse = (value: unknown): value is ChatResponse => {
+  const reply = value as Partial<ChatResponse> | null;
+  return typeof reply?.conversation_id === "string" && typeof reply.question?.id === "string" && typeof reply.answer?.id === "string";
+};
+
+/** Reads POST /chat/stream's events until `done` (its reply) or `error` (thrown as /chat's error). */
+async function streamChat(body: unknown, signal: AbortSignal | undefined, onEvent: (event: StreamEvent) => void) {
+  let response: Response;
+  try {
+    response = await fetch("/api/chat/stream", {
+      method: "POST",
+      headers: { ...CSRF_HEADER, "Content-Type": "application/json", Accept: "text/event-stream" },
+      credentials: "same-origin",
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (caught) {
+    if (signal?.aborted) throw caught;
+    throw new StreamFailed();
+  }
+  if (!response.ok) {
+    if (response.status === 404 || response.status === 405 || response.status >= 500) throw new StreamFailed();
+    throw noticeSessionEnd(await errorFrom(response)); // refused as /chat would refuse it: no second ask
+  }
+  if (!response.body) throw new StreamFailed();
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  // Set by the parser's callback, so held in an object TypeScript does not narrow to null.
+  const state: { outcome: { reply: ChatResponse } | { error: ApiError } | { failed: true } | null } = { outcome: null };
+  const parser = sseParser((name, data) => {
+    if (state.outcome !== null) return;
+    let value: unknown;
+    try {
+      value = JSON.parse(data);
+    } catch {
+      state.outcome = { failed: true };
+      return;
+    }
+    if (name === "done") {
+      const reply = (value as { reply?: unknown } | null)?.reply;
+      state.outcome = isChatResponse(reply) ? { reply } : { failed: true };
+    } else if (name === "error") {
+      const { code, message } = (value ?? {}) as { code?: unknown; message?: unknown };
+      const known = typeof code === "string" ? code : "error";
+      const words = typeof message === "string" && message.trim() ? message : "Something went wrong.";
+      state.outcome = { error: noticeSessionEnd(new ApiError(STREAM_ERROR_STATUS[known] ?? 400, known, words)) };
+    } else {
+      const event = streamEvent(name, value);
+      if (event) onEvent(event);
+    }
+  });
+  try {
+    while (state.outcome === null) {
+      const { done, value } = await reader.read();
+      if (done) {
+        parser.push(decoder.decode());
+        parser.end();
+        break;
+      }
+      parser.push(decoder.decode(value, { stream: true }));
+    }
+  } catch (caught) {
+    if (signal?.aborted) throw caught;
+    throw new StreamFailed();
+  }
+  const { outcome } = state;
+  if (outcome === null || "failed" in outcome) throw new StreamFailed();
+  reader.cancel().catch(() => undefined); // anything after done or error is not read
+  if ("error" in outcome) throw outcome.error;
+  return outcome.reply;
+}
+
+/**
+ * #535: ask with the answer streamed (POST /chat/stream, the same body and auth as ask). Each
+ * real stage, the sources found and each verified sentence go to `onEvent` as they come; the
+ * reply is `done`'s, the same as /chat's. On any network or stream failure before `done`, it
+ * asks POST /chat once instead and returns its reply, with no error when that works. Stop
+ * (`signal`) aborts either and never falls back.
+ * shortcut: a stream cut after the server saved the answer but before `done` arrived asks
+ * again, so that question and answer are saved twice; rare, and nothing is lost.
+ */
+export async function askStream(
+  question: string,
+  conversationId: string | undefined,
+  scope: ScopeBody | undefined,
+  choice: AnswerChoice | undefined,
+  reply: ClarifyReply | undefined,
+  signal: AbortSignal | undefined,
+  onEvent: (event: StreamEvent) => void,
+): Promise<ChatResponse> {
+  const body = chatBody(question, conversationId, scope, choice, reply);
+  try {
+    return await streamChat(body, signal, onEvent);
+  } catch (caught) {
+    if (!(caught instanceof StreamFailed) || signal?.aborted) throw caught;
+    return request<ChatResponse>("POST", "/chat", body, signal);
+  }
+}
 /** The answer settings the organisation allows (features 25-27): names and levels, never prices. */
 export const getChatOptions = () => request<ChatOptions>("GET", "/chat/options");
 /**
