@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { askInFlight, resumable, resumedConversation, settleAsk, startAsk, stopAsk } from "@/components/chat/askStore";
-import { STOPPED_STATUS } from "@/components/chat/answer";
+import { STOPPED_LANDING_STATUS, STOPPED_STATUS } from "@/components/chat/answer";
+import type { StreamEvent } from "@/lib/askStream";
 import { STOP_TEXT } from "@/components/chat/QuestionBox";
 import type { ChatResponse } from "@/lib/types";
 
@@ -103,5 +104,26 @@ describe("stopping a question on its way", () => {
     expect(screen).toContain("onStop={busy ? () => asking_.current && stopAsk(asking_.current) : undefined}");
     expect(screen).toContain("if (entry.stopped) {");
     expect(STOPPED_STATUS).toBe("Stopped. Your question is back in the box.");
+    expect(STOPPED_LANDING_STATUS).toBe("Stopped. The answer will appear in this conversation.");
+  });
+
+  it("knows where a stopped answer will land once the stream said so (started)", () => {
+    let send!: (event: StreamEvent) => void;
+    const entry = startAsk("Q", C, (_signal, onEvent) => {
+      send = onEvent;
+      return new Promise<ChatResponse>(() => undefined);
+    });
+    expect(entry.landing).toBeNull();
+    send({ type: "started", landing: { conversationId: D, questionId: "q1" } });
+    expect(entry.landing).toEqual({ conversationId: D, questionId: "q1" });
+    settleAsk(entry);
+  });
+
+  it("Stop with a landing opens that conversation, clears the box and fetches the answer there", () => {
+    const screen = readFileSync(join(__dirname, "..", "components/chat/ChatScreen.tsx"), "utf8");
+    expect(screen).toContain("if (entry.landing) {");
+    expect(screen).toContain("showLanding(entry.landing);");
+    expect(screen).toContain("setStatus(STOPPED_LANDING_STATUS);");
+    expect(screen).toContain("savedAnswer(entry.landing)");
   });
 });

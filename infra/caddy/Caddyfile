@@ -19,6 +19,9 @@
 	# reached, Caddy tries it again every half second for up to 30 s before giving up, so a
 	# request waits through the restart instead of failing at once. Only requests that never
 	# reached it are tried again, so nothing is sent twice.
+	# Streaming Ask (POST /api/chat/stream, #535) replies text/event-stream, which Caddy flushes
+	# as each event comes, so no flush_interval is needed. There is no encode (gzip) directive
+	# here, which would hold the events back.
 	handle /api/* {
 		reverse_proxy api:8000 {
 			lb_try_duration 30s

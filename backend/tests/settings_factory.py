@@ -104,6 +104,7 @@ _BASE: dict[str, Any] = {
     "answer_translate_question": False,
     "model_translate_timeout_seconds": 20.0,
     "answer_plan_timeout_seconds": 4.0,
+    "answer_stream_max_seconds": 180.0,
     "model_context_tokens": 200_000,
     "answer_whole_doc_tokens": 120_000,
     "answer_swift_input_tokens": 30_000,

@@ -379,6 +379,11 @@ class Settings:
     # seconds, 1 to 60; past it the question is answered without its plan and aspects. A
     # follow-up's call keeps MODEL_TIMEOUT_SECONDS. Optional: 4 when unset.
     answer_plan_timeout_seconds: float
+    # Streaming Ask (#535): POST /api/chat/stream gives up after this many seconds, 5 to 600, and
+    # says so ("This answer is taking too long..."); nothing is saved. It is also the streamed draft's
+    # own limit (its idle one is MODEL_TIMEOUT_SECONDS). Optional: 180 when unset (a Precision answer
+    # read in parts took 133 s on the test server, 7 Nov 2026).
+    answer_stream_max_seconds: float
     # PRD 5 context and memory (sections CX and M; council 9 Oct 2026). Optional: unset is
     # the PRD's value, so an older .env keeps working. model_context_tokens is the chat
     # model's context window (M1), the one every budget uses. The chat's documents are given
@@ -761,6 +766,7 @@ class Settings:
             and env.boolean("ANSWER_TRANSLATE_QUESTION"),
             model_translate_timeout_seconds=translate_timeout,
             answer_plan_timeout_seconds=env.number_in("ANSWER_PLAN_TIMEOUT_SECONDS", 1.0, 60.0, default=4.0),
+            answer_stream_max_seconds=env.number_in("ANSWER_STREAM_MAX_SECONDS", 5.0, 600.0, default=180.0),
             model_context_tokens=model_context_tokens,
             answer_whole_doc_tokens=whole_doc_tokens,
             answer_swift_input_tokens=env.at_least("ANSWER_SWIFT_INPUT_TOKENS", 0, default=30_000),
