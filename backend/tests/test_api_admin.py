@@ -12,13 +12,14 @@ from sqlalchemy import RowMapping, text
 
 from kaagaz.api.auth import verify_password
 from kaagaz.api.routers.admin import month_window
+from kaagaz.api.routers.auth import ACCOUNT_MAX_FAILURES
 from kaagaz.api.views import audit_entry
 from kaagaz.db.engine import Database
 from kaagaz.db.runs import PgRuns
 from kaagaz.pipeline import FinishedRun
 from tests.settings_factory import make_settings
 from tests.test_api_model_choice import add_model, allow
-from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, MovingClock, answer_json
+from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, MovingClock, TestClient, answer_json
 from tests.test_api_usage import NOW, THIS_MONTH, add_spend, set_budget
 from tests.test_runs_db import totals
 
@@ -471,9 +472,12 @@ def test_a_run_at_00_30_ist_on_the_1st_counts_in_the_new_month(db: Database) -> 
 
 
 def _lock(api: Api, email: str) -> None:
-    client = api.client()
-    for _ in range(api.settings.login_max_failures):
-        client.post("/api/auth/login", json={"email": email, "password": WRONG}, headers=CSRF)
+    """Changed on purpose (A2, 7 Nov 2026): one address locks only itself, so the account's own
+    lock takes ACCOUNT_MAX_FAILURES from several addresses."""
+    for n in range(ACCOUNT_MAX_FAILURES // api.settings.login_max_failures):
+        client = TestClient(api.app, client=(f"203.0.113.{n}", 50000))
+        for _ in range(api.settings.login_max_failures):
+            client.post("/api/auth/login", json={"email": email, "password": WRONG}, headers=CSRF)
 
 
 @pytest.mark.db

@@ -46,6 +46,11 @@ def _audit_details(db: Database, customer_id: str, action: str) -> list[Any]:
         )
 
 
+def _from(api: Api, address: str) -> TestClient:
+    """A browser at this visitor address (uvicorn takes it from Caddy's X-Forwarded-For)."""
+    return TestClient(api.app, client=(address, 50000))
+
+
 def test_five_wrong_passwords_lock_and_the_sixth_right_password_is_refused(db: Database) -> None:
     api = Api(db)
     customer_id, _ = api.customer()
@@ -54,7 +59,8 @@ def test_five_wrong_passwords_lock_and_the_sixth_right_password_is_refused(db: D
     _fail(api, email, 5)
     state = api.user_state(customer_id, user_id)
     assert state["failed_logins"] == 5
-    assert state["locked_until"] == api.clock() + timedelta(minutes=15)
+    # Changed on purpose (A2, 7 Nov 2026): the lock is this address's, not the account's.
+    assert state["locked_until"] is None
 
     sixth = _login(api.client(), email)
     assert sixth.status_code == 401
@@ -63,6 +69,41 @@ def test_five_wrong_passwords_lock_and_the_sixth_right_password_is_refused(db: D
     # The refused sixth attempt writes nothing: the lock was audited when it started.
     assert api.audit_actions(customer_id) == ["auth.login_failed"] * 5 + ["auth.locked"]
     assert _audit_details(db, customer_id, "auth.login_failed") == [{"reason": "wrong_password"}] * 5
+
+
+def test_a_flood_from_one_address_never_locks_the_person_out_of_their_own(db: Database) -> None:
+    """A2 (stability pass, 7 Nov 2026): wrong passwords lock the account for that address only,
+    and the refused attempts there are not counted toward the account's own cap."""
+    api = Api(db)
+    customer_id, _ = api.customer()
+    user_id, email = api.add_user(customer_id, "member")
+    attacker = _from(api, "203.0.113.7")
+    for _ in range(5):
+        assert _login(attacker, email, WRONG).status_code == 401
+    for _ in range(100):  # refused before anything is counted or checked
+        assert _login(attacker, email, WRONG).status_code == 401
+    assert _login(attacker, email).status_code == 401  # locked here, even the right password
+
+    assert api.user_state(customer_id, user_id)["failed_logins"] == 5
+    assert _login(_from(api, "198.51.100.9"), email).status_code == 200  # the person, at home
+    assert api.audit_actions(customer_id) == ["auth.login_failed"] * 5 + ["auth.locked", "auth.login"]
+
+
+def test_fifty_wrong_passwords_from_anywhere_lock_the_account_everywhere(db: Database) -> None:
+    """A2: the account's own cap, across every address, against a spread-out guesser."""
+    api = Api(db)
+    customer_id, _ = api.customer()
+    user_id, email = api.add_user(customer_id, "member")
+    for n in range(10):
+        client = _from(api, f"203.0.113.{n}")
+        for _ in range(5):
+            assert _login(client, email, WRONG).status_code == 401
+
+    state = api.user_state(customer_id, user_id)
+    assert (state["failed_logins"], state["locked_until"]) == (50, api.clock() + timedelta(minutes=15))
+    assert _login(_from(api, "198.51.100.9"), email).status_code == 401
+    api.clock.advance(15 * 60 + 1)
+    assert _login(_from(api, "198.51.100.9"), email).status_code == 200
 
 
 def test_locked_unknown_wrong_and_disabled_replies_are_identical(db: Database) -> None:
@@ -148,7 +189,8 @@ def test_after_an_expired_lock_the_count_starts_again(db: Database) -> None:
 
     _fail(api, email, 4)
 
-    assert api.user_state(customer_id, user_id)["failed_logins"] == 4
+    # Changed on purpose (A2): the account's count (cap 50) goes on; the address's started again.
+    assert api.user_state(customer_id, user_id)["failed_logins"] == 9
     assert _login(api.client(), email).status_code == 200  # 4 in a row do not lock
 
 
@@ -216,7 +258,12 @@ def test_the_limits_come_from_the_settings(db: Database) -> None:
     _fail(api, email, 2)
     reply = _login(api.client(), email)
 
-    assert api.user_state(customer_id, user_id)["locked_until"] == api.clock() + timedelta(minutes=7)
+    # Changed on purpose (A2): the lock is this address's, for the same 7 minutes.
+    assert reply.status_code == 401 and api.user_state(customer_id, user_id)["locked_until"] is None
+    api.clock.advance(7 * 60 - 1)
+    assert _login(api.client(), email).status_code == 401
+    api.clock.advance(2)
+    assert _login(api.client(), email).status_code == 200
     # Changed on purpose (UI quality council, 15 Oct 2026): one clear message, spelt e-mail.
     assert reply.json()["error"]["message"] == (
         "E-mail or password is wrong, or the account is locked."

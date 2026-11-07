@@ -127,6 +127,50 @@ class RateLimiter:
             del self._buckets[key]
 
 
+class AddressLocks:
+    """Wrong sign-ins in a row per account and visitor address (A2, 7 Nov 2026), in memory (the
+    API is one process): ``limit`` attempts from one address lock that account for that address
+    for ``lock_seconds``, so a flood from one address never locks the person out of their own.
+    As ``users.begin_attempt``: counted before the check, the attempt that reaches the limit
+    still runs, a lock is never extended, and an expired one starts the count again (so does
+    ``lock_seconds`` with no attempt). ``count`` never goes above the account's own count, which
+    a right password, an unlock or a reset link sets back to 0.
+    shortcut: a restart forgets every count; past ``max_keys`` the quiet ones are dropped."""
+
+    def __init__(self, *, max_keys: int = 10_000) -> None:
+        self._held: dict[str, tuple[int, float]] = {}  # key: (count, when the last was counted)
+        self._max_keys = max_keys
+        self._lock = threading.Lock()
+
+    def locked(self, key: str, now: float, limit: int, lock_seconds: float) -> int:
+        """The count while ``key`` is locked, else 0. O(1)."""
+        with self._lock:
+            count, at = self._held.get(key, (0, -math.inf))
+        return count if count >= limit and now - at < lock_seconds else 0
+
+    def count(self, key: str, now: float, lock_seconds: float, ceiling: int) -> int:
+        """Count one attempt for ``key``, at most ``ceiling``; the new count. O(1), and one O(n)
+        pass dropping the quiet keys when ``max_keys`` are held."""
+        with self._lock:
+            count, at = self._held.get(key, (0, -math.inf))
+            if now - at >= lock_seconds:
+                count = 0
+            if key not in self._held and len(self._held) >= self._max_keys:
+                self._held = {k: v for k, v in self._held.items() if now - v[1] < lock_seconds}
+            count = min(count + 1, ceiling)
+            self._held[key] = (count, now)
+            return count
+
+    def clear(self, key: str) -> None:
+        with self._lock:
+            self._held.pop(key, None)
+
+
+def client_address(request: Request) -> str:
+    """The visitor's address: uvicorn takes it from Caddy's X-Forwarded-For (backend/Dockerfile)."""
+    return request.client.host if request.client else "-"
+
+
 class RequestMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: ASGIApp, *, limiter: RateLimiter, folder_limiter: RateLimiter) -> None:
         super().__init__(app)

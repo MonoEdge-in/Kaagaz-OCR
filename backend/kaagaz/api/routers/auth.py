@@ -93,6 +93,12 @@ Why the sign-in looks the way it does (council record 29 Sep, WP1.3):
   check. A right password (or password and code) clears the count
   (``users.attempt_succeeded``); anything else leaves it counted, so wrong
   codes count toward the lockout too.
+* **A sign-in locks per account and address** (A2, 7 Nov 2026): ``login_max_failures``
+  in a row from one address lock the account for that address (``AddressLocks``, in
+  memory), and those refused there are not counted, so a flood from one address never
+  locks the person out of their own. ``ACCOUNT_MAX_FAILURES`` in a row from anywhere
+  lock the account (``users.begin_attempt``). The signed-in checks lock the account at
+  ``login_max_failures``, as before.
 * **The e-mail lookup** is the one SECURITY DEFINER function made for it,
   inside ``db.system()``; everything after it runs as the found customer.
 * **A disabled organisation** (0014) is refused like a disabled user: the
@@ -147,7 +153,7 @@ from kaagaz.api.auth import (
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.emails import email_on, new_link, send
 from kaagaz.api.errors import ApiError
-from kaagaz.api.middleware import RateLimiter
+from kaagaz.api.middleware import AddressLocks, RateLimiter, client_address
 from kaagaz.api.names import ORG_NAME_PROBLEM, org_name_ok
 from kaagaz.api.routers.admin import MAX_PASSWORD, MIN_PASSWORD, valid_email
 from kaagaz.api.secret_box import SecretBoxError
@@ -184,6 +190,12 @@ RECENT_DAYS = 14  # how long the app's "Google connected" banner shows (#457 pha
 SIGNUPS_PER_HOUR = 20
 signup_limits = RateLimiter(SIGNUPS_PER_HOUR, window_seconds=3600)
 TOO_MANY_SIGNUPS = "Too many sign-ups from here. Try again in an hour."
+# A2: a sign-in's cap for the account across every address (each address has
+# login_max_failures, address_locks). shortcut: in a row, not an hour: one address at 5 a lock
+# reaches it in about 2.5 hours unless the person signs in meanwhile. The signed-in checks still
+# lock at login_max_failures, counted on the same column, so after a flood they can lock sooner.
+ACCOUNT_MAX_FAILURES = 50
+address_locks = AddressLocks()
 # Trimmed, then the operator's limits (routers/operator_orgs.py NewOrgBody).
 OrgName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 PersonName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
@@ -238,8 +250,8 @@ class SignupBody(BaseModel):
 
 
 @router.post("/auth/login")
-def login(body: LoginBody, context: Context) -> JSONResponse:
-    attempt = _check_password(context, body.email, body.password)
+def login(body: LoginBody, request: Request, context: Context) -> JSONResponse:
+    attempt = _check_password(context, body.email, body.password, client_address(request))
     return _finish_second_step(context, attempt, body.code)
 
 
@@ -521,7 +533,7 @@ def _recent_connections(context: AppContext, user: CurrentUser) -> list[dict[str
     ]
 
 
-def _check_password(context: AppContext, email: str, password: str) -> AttemptRow:
+def _check_password(context: AppContext, email: str, password: str, address: str) -> AttemptRow:
     """The counted attempt of an enabled user whose password is right, else the one 401.
 
     Exactly one scrypt hash on every path: the dummy one for an unknown e-mail,
@@ -536,7 +548,7 @@ def _check_password(context: AppContext, email: str, password: str) -> AttemptRo
     if found is None:
         spend_password_time(password)
         raise _refused(context)
-    attempt = _begin(context, found.customer_id, found.user_id, context.clock())
+    attempt = _begin(context, found.customer_id, found.user_id, context.clock(), address=address)
     if attempt is None:
         spend_password_time(password)
         raise _refused(context)
@@ -572,18 +584,36 @@ def _google_only(context: AppContext, attempt: AttemptRow) -> bool:
     )
 
 
-def _begin(context: AppContext, customer_id: str, user_id: str, now: datetime) -> AttemptRow | None:
-    """Count one attempt, committed before any check. None: locked."""
+def _begin(
+    context: AppContext, customer_id: str, user_id: str, now: datetime, *, address: str | None = None
+) -> AttemptRow | None:
+    """Count one attempt, committed before any check. None: locked. A sign-in gives the visitor's
+    ``address``: locked per account and address, then per account at ACCOUNT_MAX_FAILURES (A2).
+    Its ``failed_logins`` is then the count that locks, for ``_failed``'s ``auth.locked``."""
     settings = context.settings
+    lock_seconds = settings.login_lock_minutes * 60
+    key = f"{user_id}|{address}"
+    if address is not None and (
+        held := address_locks.locked(key, now.timestamp(), settings.login_max_failures, lock_seconds)
+    ):
+        with context.db.customer(customer_id) as conn:
+            account = users_sql.peek_attempt(conn, customer_id, user_id, now=now)
+        if account is None or account.failed_logins >= held:
+            return None
+        address_locks.clear(key)  # the account's count started again since: a right password, an unlock
     with context.db.customer(customer_id) as conn:
-        return users_sql.begin_attempt(
+        attempt = users_sql.begin_attempt(
             conn,
             customer_id,
             user_id,
             now=now,
-            max_failures=settings.login_max_failures,
+            max_failures=settings.login_max_failures if address is None else ACCOUNT_MAX_FAILURES,
             lock_minutes=settings.login_lock_minutes,
         )
+    if attempt is None or address is None or attempt.failed_logins >= ACCOUNT_MAX_FAILURES:
+        return attempt
+    count = address_locks.count(key, now.timestamp(), lock_seconds, attempt.failed_logins)
+    return dataclasses.replace(attempt, failed_logins=count)
 
 
 def _check_current_password(
