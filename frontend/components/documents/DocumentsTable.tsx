@@ -37,6 +37,7 @@
 import Link from "next/link";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, RefCallback } from "react";
+import { flushSync } from "react-dom";
 import { extensionOf } from "@/components/dashboard/words";
 import { LabelChip } from "@/components/files/LabelChip";
 import { labelName } from "@/components/files/labels";
@@ -316,27 +317,37 @@ export function DocumentsTable({
     setBusyAction(null);
     setDeleteProgress(null);
     const failure = outcome.kind === "password" ? outcome.error : outcome.result.firstError;
-    if (lostTheRight(failure)) refresh();
-    // A refused password deleted nothing: the question stays open, with why.
+    if (lostTheRight(failure)) {
+      refresh();
+      setPasswordAsked(false); // the fresh me decides who types a password
+    }
+    // A refused password deleted nothing: the question stays open, with why, and focus in the box.
     if (outcome.kind === "password") {
-      setError(errorText(failure));
+      flushSync(() => setError(errorText(failure)));
+      window.document.getElementById("bulk-forever-password")?.focus();
       return;
     }
     const { result } = outcome;
     setSelectedIds(new Set(result.failed));
-    // No typed password counted: the question stays open for the failed ones and asks for it.
-    const askAgain = action === "forever" && passwordAgain(result.firstError);
-    if (askAgain) setPasswordAsked(true);
-    else setConfirming(null);
+    // No typed password counted (none was typed, or it ran out partway: then every later one
+    // failed too, so the last failure says it): the question stays open and asks for it.
+    const askAgain = action === "forever" && passwordAgain(result.lastError);
+    if (!askAgain) setConfirming(null);
     if (result.failed.length > 0) {
-      setError(bulkFailedMessage(action, result.failed.length, errorText(result.firstError)));
+      const why = errorText(askAgain ? result.lastError : result.firstError);
+      setError(bulkFailedMessage(action, result.failed.length, why));
     }
     if (result.done.length > 0) {
       // Read again keeps the rows (they are read again); the others leave the list.
       if (action === "read") events.onSaved(bulkDoneMessage(action, result.done.length));
       else onRemoved(bulkDoneMessage(action, result.done.length), undoRemoval(action, result.done));
     }
-    if (askAgain) return; // the question is still open
+    if (askAgain) {
+      // The question is still open: focus waits in the password box, shown now if it was not.
+      flushSync(() => setPasswordAsked(true));
+      window.document.getElementById("bulk-forever-password")?.focus();
+      return;
+    }
     // The buttons pressed are gone now: keep keyboard focus on the select-all box shown.
     selectAll.current.find((input) => input.isConnected && input.offsetParent !== null)?.focus();
   }
@@ -751,13 +762,18 @@ const DocumentRow = memo(function DocumentRow({
       await call(document.id);
       events.onRemoved(message, undo);
     } catch (caught) {
-      if (lostTheRight(caught)) refresh();
+      if (lostTheRight(caught)) {
+        refresh();
+        setPasswordAsked(false); // the fresh me decides who types a password
+      }
       setError(
         caught instanceof ApiError ? caught.message : `${failed} Check your connection, then try again.`,
       );
       setBusy(false);
       if (passwordAgain(caught)) {
-        setPasswordAsked(true); // the dialog stays open, says why, and asks for the password
+        // The dialog stays open, says why, and asks for the password; focus waits in its box.
+        flushSync(() => setPasswordAsked(true));
+        window.document.getElementById(`forever-password-${document.id}`)?.focus();
         return;
       }
       refocusActions.current = true;

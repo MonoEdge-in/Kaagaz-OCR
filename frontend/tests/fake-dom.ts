@@ -214,6 +214,9 @@ export class FakeDocument extends FakeNode {
   createElementNS(namespace: string, tag: string) {
     return new FakeElement(this, tag, namespace);
   }
+  getElementById(id: string) {
+    return this.documentElement.all().find((element) => element.getAttribute("id") === id) ?? null;
+  }
   createTextNode(text: string) {
     const node = new FakeNode(this, 3, "#text");
     node.nodeValue = text;

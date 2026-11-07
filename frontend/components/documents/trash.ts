@@ -175,6 +175,8 @@ export interface BulkResult {
   failed: string[];
   /** The first failure, for its message; undefined if none failed. */
   firstError: unknown;
+  /** The last failure: a password that ran out partway fails every one after it (#538). */
+  lastError: unknown;
 }
 
 /**
@@ -187,13 +189,14 @@ export async function runEach(
   call: (id: string) => Promise<unknown>,
   onProgress?: (handled: number) => void,
 ): Promise<BulkResult> {
-  const result: BulkResult = { done: [], failed: [], firstError: undefined };
+  const result: BulkResult = { done: [], failed: [], firstError: undefined, lastError: undefined };
   for (const [index, id] of ids.entries()) {
     try {
       await call(id);
       result.done.push(id);
     } catch (caught) {
       if (result.failed.length === 0) result.firstError = caught;
+      result.lastError = caught;
       result.failed.push(id);
     }
     onProgress?.(index + 1);

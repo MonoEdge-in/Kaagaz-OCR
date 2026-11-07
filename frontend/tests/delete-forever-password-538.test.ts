@@ -111,14 +111,14 @@ function serve(routes: Record<string, [number, unknown?][]>) {
   });
 }
 
-async function show(me: Me) {
+async function show(me: Me, items: DocumentSummary[] = [binned]) {
   removed = [];
   const container = doc.body.appendChild(doc.createElement("div")) as FakeElement;
   // Loaded once the fake DOM is in place: react-dom looks for a DOM as it loads (fake-dom.ts).
   const { createRoot } = await import("react-dom/client");
   root = createRoot(container as unknown as Element);
   const props = {
-    items: [binned],
+    items,
     inTrash: true,
     me,
     now: Date.parse("2026-11-07T10:00:00Z"),
@@ -188,6 +188,7 @@ describe("an admin without two-step, in Trash", () => {
     expect(removed).toEqual([]);
     const again = passwordBox("forever-password-d1");
     expect(again?.value).toBe("");
+    expect(doc.activeElement).toBe(again); // focus waits in the box, not lost on a disabled button
     expect(all().find((element) => element.tagName === "DIALOG")?.textContent).toContain(AGAIN);
 
     await type(again, "secret");
@@ -211,11 +212,45 @@ describe("an admin without two-step, in Trash", () => {
     expect(removed).toEqual([]);
     expect(doc.body.textContent).toContain(`1 document could not be deleted. ${AGAIN}`);
     expect(passwordBox("bulk-forever-password")?.value).toBe("");
+    expect(doc.activeElement).toBe(passwordBox("bulk-forever-password"));
 
     await type(passwordBox("bulk-forever-password"), "secret");
     await press(button("Delete now"));
     expect(calls.slice(2)).toEqual(["POST /api/auth/confirm-password", "DELETE /api/documents/d1/permanent"]);
     expect(removed).toEqual(["Deleted 1 document for good."]);
+  });
+
+  it("asks again when the password ran out partway, though the first failure was something else", async () => {
+    const second = { ...binned, id: "d2", family_id: "d2", display_name: "Rent.pdf" };
+    const third = { ...binned, id: "d3", family_id: "d3", display_name: "Tax.pdf" };
+    serve({
+      "POST /api/auth/confirm-password": [[204]],
+      "DELETE /api/documents/d1/permanent": [[404, { error: { code: "not_found", message: "Not found." } }]],
+      "DELETE /api/documents/d2/permanent": [[403, { error: { code: "password_confirm_required", message: AGAIN } }]],
+      "DELETE /api/documents/d3/permanent": [[403, { error: { code: "password_confirm_required", message: AGAIN } }]],
+    });
+    await show(admin("admin", false), [binned, second, third]);
+    await tick(byLabel("Select all visible documents"));
+    await press(button("Delete forever (3)"));
+    await type(passwordBox("bulk-forever-password"), "secret");
+    await press(button("Delete now"));
+
+    expect(doc.body.textContent).toContain(`3 documents could not be deleted. ${AGAIN}`);
+    expect(doc.activeElement).toBe(passwordBox("bulk-forever-password")); // the question is still open
+  });
+
+  it("stops asking once the server says the right is gone (an out-of-date screen)", async () => {
+    serve({
+      "DELETE /api/documents/d1/permanent": [[403, { error: { code: "password_confirm_required", message: AGAIN } }]],
+      "POST /api/auth/confirm-password": [[403, { error: { code: "forbidden", message: "You can't do that." } }]],
+    });
+    await show(admin("admin", true));
+    await tick(byLabel("Select Bill.pdf"));
+    await press(button("Delete forever (1)"));
+    await press(button("Delete now"));
+    await type(passwordBox("bulk-forever-password"), "secret");
+    await press(button("Delete now"));
+    expect(passwordBox("bulk-forever-password")).toBeNull(); // asked for again only by the next 403
   });
 
   it("keeps an admin with two-step as before: no password, one call", async () => {

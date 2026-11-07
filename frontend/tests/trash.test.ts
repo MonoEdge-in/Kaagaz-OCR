@@ -162,21 +162,22 @@ describe("acting on a selection", () => {
     );
     expect(seen).toEqual(["a", "b", "c"]);
     expect(progress).toEqual([1, 2, 3]);
-    expect(result).toEqual({ done: ["a", "b", "c"], failed: [], firstError: undefined });
+    expect(result).toEqual({ done: ["a", "b", "c"], failed: [], firstError: undefined, lastError: undefined });
   });
 
-  it("keeps going when one fails, and keeps the first error", async () => {
+  it("keeps going when one fails, and keeps the first error and the last (#538)", async () => {
     const first = new Error("first");
+    const second = new Error("second");
     const progress: number[] = [];
     const result = await runEach(
       ["a", "b", "c", "d"],
       async (id) => {
         if (id === "b") throw first;
-        if (id === "d") throw new Error("second");
+        if (id === "d") throw second;
       },
       (handled) => progress.push(handled),
     );
-    expect(result).toEqual({ done: ["a", "c"], failed: ["b", "d"], firstError: first });
+    expect(result).toEqual({ done: ["a", "c"], failed: ["b", "d"], firstError: first, lastError: second });
     expect(progress).toEqual([1, 2, 3, 4]);
   });
 
@@ -184,7 +185,7 @@ describe("acting on a selection", () => {
     const result = await runEach([], async () => {
       throw new Error("never called");
     });
-    expect(result).toEqual({ done: [], failed: [], firstError: undefined });
+    expect(result).toEqual({ done: [], failed: [], firstError: undefined, lastError: undefined });
   });
 });
 
