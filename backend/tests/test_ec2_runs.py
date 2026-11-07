@@ -320,3 +320,68 @@ def test_the_disk_alert_records_the_day_only_once_sent_and_says_loudly_when_not(
     else:
         assert ran.returncode == 1 and not (tmp_path / "sent").exists()  # tried again next hour
         assert "DISK 91% USED and the alert email was NOT sent" in ran.stderr
+
+
+@whole_runs
+@pytest.mark.parametrize("sends", [True, False], ids=["sent", "not sent"])
+def test_an_alert_records_its_day_only_once_sent_and_the_same_one_goes_once_a_day(
+    tmp_path: Path, sends: bool
+) -> None:
+    """A22: ops-alert.sh in the backend image on the host network, as the disk alert."""
+    assert BASH is not None
+    docker = f'#!/usr/bin/env bash\necho "$1 $2 $3 ${{@: -3:1}} ${{@: -1}}" >>"{tmp_path}/ran"\nexit {int(not sends)}\n'
+    write(tmp_path / "bin" / "docker", docker)
+    (tmp_path / "kaagaz").mkdir()
+    script = copy_with_stand_ins(
+        tmp_path,
+        "ops-alert.sh",
+        {
+            "\nKAAGAZ_DIR=/home/ubuntu/kaagaz\n": f"\nKAAGAZ_DIR={tmp_path}/kaagaz\n",
+            "\nSENT_DIR=/home/ubuntu\n": f"\nSENT_DIR={tmp_path}\n",
+        },
+    )
+
+    def alert(subject: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(  # noqa: S603 - the copied script, with stand-ins
+            [BASH, str(script), "kaagaz-deploy.service", subject, "the text"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+
+    first, again, other = alert("deploy failed"), alert("deploy failed"), alert("dump failed")
+    ran = (tmp_path / "ran").read_text(encoding="utf-8").splitlines()
+    if sends:
+        assert [first.returncode, again.returncode, other.returncode] == [0, 0, 0]
+        assert ran == ["run --rm --network deploy failed the text", "run --rm --network dump failed the text"]
+        assert "already emailed today: deploy failed" in again.stdout
+    else:
+        assert [first.returncode, again.returncode] == [1, 1]  # tried again next time
+        assert len(ran) == 3 and not (tmp_path / ".kaagaz-alert-kaagaz-deploy.service").exists()
+        assert "ALERT NOT SENT: deploy failed" in first.stderr
+
+
+@whole_runs
+@pytest.mark.parametrize("bad", [True, False], ids=["one unhealthy", "all healthy"])
+def test_the_container_check_alerts_only_when_one_is_unhealthy_or_restarting(
+    tmp_path: Path, bad: bool
+) -> None:
+    assert BASH is not None
+    names = "kaagaz-ocr-worker-2" if bad else ""
+    docker = f'#!/usr/bin/env bash\ncase "$*" in *health=unhealthy*) echo "{names}" ;; esac\n'
+    write(tmp_path / "bin" / "docker", docker)
+    write(
+        tmp_path / "infra" / "ec2" / "ops-alert.sh", f'#!/usr/bin/env bash\necho "$@" >"{tmp_path}/alert"\n'
+    )
+    script = copy_with_stand_ins(tmp_path, "containers-alert.sh", {})
+    ran = subprocess.run(  # noqa: S603 - the copied script, with stand-ins
+        [BASH, str(script)], cwd=tmp_path, capture_output=True, text=True, check=False, timeout=120
+    )
+    assert ran.returncode == 0
+    if bad:
+        sent = (tmp_path / "alert").read_text(encoding="utf-8")
+        assert sent.startswith("containers Kaagaz server: not healthy: kaagaz-ocr-worker-2 ")
+    else:
+        assert not (tmp_path / "alert").exists() and ran.stdout == "every container healthy\n"

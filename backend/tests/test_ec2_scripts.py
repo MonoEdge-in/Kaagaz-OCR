@@ -488,3 +488,60 @@ def test_the_disk_alert_emails_over_80_percent_at_most_once_a_day() -> None:
     timer = unit("kaagaz-disk.timer")
     assert section(timer, "Timer") == {"Timer.OnBootSec": "15min", "Timer.OnUnitActiveSec": "1h"}
     assert section(timer, "Install") == {"Install.WantedBy": "timers.target"}
+
+
+# A22 (stability pass, 7 Nov 2026): the same blanks and host network as the disk alert.
+ALERT_RUN = (
+    "if ! docker run --rm --network host --env-file .env \\\n"
+    "  -e POSTGRES_PASSWORD= -e STORAGE_ADMIN_SECRET_KEY= -e DATABASE_URL=none \\\n"
+    "  -e APP_DATABASE_URL= -e OPS_DATABASE_URL= \\\n"
+    '  kaagaz-backend:local python -m kaagaz.cli ops-alert --subject "$subject" --text "$body"; then\n'
+)
+
+
+def test_a_failed_deploy_or_dump_emails_the_operations_address() -> None:
+    """A22: each one's OnFailure= starts the alert unit with its own name; the alert says which
+    failed and where its journal is. Run with stand-ins: tests/test_ec2_runs.py."""
+    for name in ("kaagaz-deploy.service", "kaagaz-pgdump.service"):
+        assert unit(name)["Unit.OnFailure"] == "kaagaz-alert@%n.service", name
+    alert = unit("kaagaz-alert@.service")
+    assert "Unit.OnFailure" not in alert  # an alert that fails never sends another
+    assert section(alert, "Service") == {
+        "Service.Type": "oneshot",
+        "Service.User": "ubuntu",
+        "Service.WorkingDirectory": "/home/ubuntu/kaagaz",
+        "Service.ExecStart": (
+            '/home/ubuntu/kaagaz/infra/ec2/ops-alert.sh %i "Kaagaz server: %i failed"'
+            ' "%i failed on the Kaagaz server. On the server, journalctl -u %i -n 50 says why."'
+        ),
+    }
+
+
+def test_an_alert_is_sent_once_a_day_for_the_same_trouble() -> None:
+    """A22: the deploy is tried every 5 minutes, so a deploy that keeps failing sends one email a
+    day, not 288; different trouble (a new subject) is sent at once."""
+    script = text("ops-alert.sh")
+    assert script.startswith("#!/usr/bin/env bash\n") and "\nset -euo pipefail\n" in script
+    assert "\nSENT_DIR=/home/ubuntu\n" in script
+    assert 'stamp="$(date -u +%Y%m%d) $subject"' in script
+    skip = 'if [[ -f "$sent_file" && "$(cat "$sent_file")" == "$stamp" ]]; then'
+    record = 'printf \'%s\\n\' "$stamp" >"$sent_file"'
+    assert script.index(skip) < script.index(ALERT_RUN) < script.index(record)
+
+
+def test_an_unhealthy_or_restarting_container_is_emailed_every_hour_it_lasts() -> None:
+    """A22: the hourly check, as the disk's; ops-alert.sh keeps it to once a day per set of names."""
+    script = text("containers-alert.sh")
+    assert script.startswith("#!/usr/bin/env bash\n") and "\nset -euo pipefail\n" in script
+    assert "docker ps -a --filter health=unhealthy --format '{{.Names}}'" in script
+    assert "docker ps -a --filter status=restarting --format '{{.Names}}'" in script
+    assert '"$(dirname "$0")/ops-alert.sh" containers "Kaagaz server: not healthy: $names"' in script
+    assert section(unit("kaagaz-containers.service"), "Service") == {
+        "Service.Type": "oneshot",
+        "Service.User": "ubuntu",
+        "Service.WorkingDirectory": "/home/ubuntu/kaagaz",
+        "Service.ExecStart": "/home/ubuntu/kaagaz/infra/ec2/containers-alert.sh",
+    }
+    timer = unit("kaagaz-containers.timer")
+    assert section(timer, "Timer") == {"Timer.OnBootSec": "15min", "Timer.OnUnitActiveSec": "1h"}
+    assert section(timer, "Install") == {"Install.WantedBy": "timers.target"}

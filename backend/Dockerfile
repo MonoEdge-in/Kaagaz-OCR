@@ -76,4 +76,7 @@ ENV KAAGAZ_COMMIT=$KAAGAZ_COMMIT
 ENV FORWARDED_ALLOW_IPS="*"
 
 EXPOSE 8000
-CMD ["uvicorn", "kaagaz.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# No "server: uvicorn" on a reply, and an idle connection kept 75 s, longer than Caddy keeps one
+# (keepalive 60s in infra/caddy/Caddyfile), so Caddy never reuses a connection uvicorn just closed
+# (a 502). docker-compose.yml's api command repeats these flags.
+CMD ["uvicorn", "kaagaz.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-server-header", "--timeout-keep-alive", "75"]

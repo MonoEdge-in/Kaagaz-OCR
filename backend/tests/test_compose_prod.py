@@ -108,6 +108,30 @@ def test_the_laptops_api_port_is_reachable_from_the_laptop_only() -> None:
     assert published[:1] == ["127.0.0.1:8000:8000"]
 
 
+def test_the_laptop_publishes_every_port_on_127_0_0_1_only() -> None:
+    """A21: the stand-ins' ports (the database, storage, the queue, the scanner) and the website
+    are reachable from the laptop itself, never from the network it is on."""
+    for name in services("docker-compose.yml"):
+        block = service(name)
+        if "ports" in keys(block):
+            published = re.findall(r'^      - "(.*)"$', block[block.index("    ports:") :], re.MULTILINE)
+            assert published and all(port.startswith("127.0.0.1:") for port in published), name
+
+
+UVICORN = (
+    '["uvicorn", "kaagaz.api.main:app", "--host", "0.0.0.0", "--port", "8000",'
+    ' "--no-server-header", "--timeout-keep-alive", "75"]'
+)
+
+
+def test_uvicorn_names_no_server_and_keeps_idle_connections_longer_than_caddy() -> None:
+    """A5: no ``server: uvicorn`` header on a reply, and an idle connection kept 75 s, longer
+    than Caddy keeps it (keepalive 60s in the Caddyfile), so Caddy closes it first."""
+    assert has(service("api"), f"command: {UVICORN}")
+    dockerfile = (ROOT / "backend" / "Dockerfile").read_text(encoding="utf-8")
+    assert re.findall(r"^CMD (.*)$", dockerfile, re.MULTILINE) == [UVICORN]
+
+
 def test_only_caddy_publishes_ports_and_only_80_and_443() -> None:
     """Every service that publishes a port in the base file has it cleared by this one,
     so caddy's are the only ports left."""
@@ -187,6 +211,11 @@ def test_the_caddyfile_sends_api_unchanged_to_the_api_and_the_rest_to_the_fronte
         "reverse_proxy api:8000 {",
         "lb_try_duration 30s",
         "lb_try_interval 500ms",
+        # Added on purpose (stability pass, 7 Nov 2026, A5): idle connections end here first,
+        # before uvicorn's 75 s keep-alive, so Caddy never reuses one uvicorn just closed (a 502).
+        "transport http {",
+        "keepalive 60s",
+        "}",
         "}",
         "}",
         "handle {",
@@ -201,10 +230,38 @@ def test_the_caddyfile_sends_api_unchanged_to_the_api_and_the_rest_to_the_fronte
         "}",
         "log {",
         "output stdout",
-        "format json",
+        # Changed on purpose (stability pass, 7 Nov 2026, A18): format json, filtered.
+        "format filter {",
+        "wrap json",
+        "fields {",
+        "request>uri query {",
+        *[f"delete {name}" for name in PRIVATE_QUERY],
+        "}",
+        "request>headers>Referer delete",
+        "}",
+        "}",
         "}",
         "}",
     ]
+
+
+# A18: the query parameters that can carry a question, a search, a document's words or a
+# folder's name: q (/api/search, /api/documents, /api/stories match, and the /search and /chat
+# pages), party (/api/documents), w (/api/documents/{id}/words), source_name
+# (/api/folder-uploads/previous).
+PRIVATE_QUERY = ["q", "party", "w", "source_name"]
+
+
+def test_the_access_log_keeps_no_search_question_or_name() -> None:
+    """A18: Caddy's access log is written with the query parameters above deleted from each
+    address, and without the Referer header, which repeats a page's address (/search?q=...).
+    The idle check (infra/ec2/idle-stop.sh) still reads the path and the Cookie header's name."""
+    text = (ROOT / "infra" / "caddy" / "Caddyfile").read_text(encoding="utf-8")
+    query = text[text.index("request>uri query {") : text.index("}", text.index("request>uri query {"))]
+    assert re.findall(r"delete (\S+)", query) == PRIVATE_QUERY
+    idle = (ROOT / "infra" / "ec2" / "idle-stop.sh").read_text(encoding="utf-8")
+    assert 'path = str(request.get("uri", "")).split("?", 1)[0]' in idle
+    assert 'any(str(name).lower() == "cookie" for name in headers)' in idle
 
 
 def test_seaweedfs_is_healthy_only_once_its_s3_port_answers() -> None:
