@@ -12,6 +12,8 @@ Why some choices:
   level. Pydantic's ``model_fields_set`` tells the two apart.
 * **Any signed-in user of the customer** may change folders (PRD 1 F1). Each
   change writes one audit row with ids only, never a folder name.
+* **A folder that holds files** is deleted by an admin only (#537, Tushar, 7 Nov 2026):
+  ``?contents=keep`` or ``?contents=trash``; without it the delete is today's, for anyone.
 * A refused change raises out of the ``with`` block, so its transaction rolls
   back, audit row included.
 """
@@ -163,14 +165,60 @@ def update_folder(
     return folder(row)
 
 
+@router.get("/folders/{folder_id}/summary")
+def get_folder_summary(folder_id: uuid.UUID, user: User, context: Context) -> dict[str, int]:
+    """#537: ``{files, folders, bytes}`` the folder holds at every depth (live files only), so
+    the Delete dialog can say it before anything is pressed. Another customer's folder is 404."""
+    with _refused(), context.db.customer(user.customer_id) as conn:
+        held = folders_sql.folder_summary(conn, user.customer_id, str(folder_id))
+    return {"files": held.files, "folders": held.folders, "bytes": held.bytes}
+
+
 @router.delete("/folders/{folder_id}", status_code=204)
-def delete_folder(folder_id: uuid.UUID, user: User, context: Context) -> Response:
+def delete_folder(
+    folder_id: uuid.UUID,
+    user: User,
+    context: Context,
+    contents: Literal["keep", "trash"] | None = None,
+    to: uuid.UUID | None = None,
+) -> Response:
+    """Today's delete of an empty folder, for anyone. #537, an admin only: ``contents=keep``
+    moves what is inside into ``to`` (left out: the top level) and deletes the folder;
+    ``contents=trash`` sends every file at every depth to Trash and deletes the folder with
+    every folder inside it (``folders_sql.delete_folder_with_contents``)."""
+    if contents is not None and user.role != "admin":
+        raise ApiError(403, "forbidden", "Only an admin can delete a folder that holds files.")
+    if to is not None and contents != "keep":
+        raise ApiError(400, "bad_request", "Choose where things go only when moving them.")
     target = str(folder_id)
     with _refused(), context.db.customer(user.customer_id) as conn:
         path = folders_sql.folder_path(conn, user.customer_id, target)
         _admin_for_departments(user, path[-1].kind if path else None)
-        folders_sql.delete_folder(conn, user.customer_id, target)
-        _audit(conn, user, "folder.delete", target)
+        if contents is None:
+            folders_sql.delete_folder(conn, user.customer_id, target)
+            _audit(conn, user, "folder.delete", target)
+            return Response(status_code=204)
+        destination = None if to is None else str(to)
+        try:
+            held = folders_sql.delete_folder_with_contents(
+                conn,
+                user.customer_id,
+                target,
+                contents=contents,
+                to=destination,
+                by=user.user_id,
+                now=context.clock(),
+            )
+        except folders_sql.FolderCycle:
+            raise ApiError(400, "bad_request", "Choose a folder outside the one you are deleting.") from None
+        details: dict[str, audit.DetailValue] = {
+            "contents": contents,
+            "files": held.files,
+            "folders": held.folders,
+        }
+        if contents == "keep":
+            details["to"] = destination
+        _audit(conn, user, "folder.delete", target, details)
     return Response(status_code=204)
 
 
