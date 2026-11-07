@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { AnswerView, OUTAGE_TEXT, TRY_THESE } from "@/components/chat/AnswerView";
+import { AnswerView, OUTAGE_TEXT, TIMEOUT_TEXT, TRY_THESE } from "@/components/chat/AnswerView";
 import {
   answerCardId,
   answerStatusText,
@@ -317,5 +317,13 @@ describe("small talk, one-press questions and an outage", () => {
     const html = render(v2(0, { status: "not_found", sentences: [], citations: [], documents: [], outage: true }));
     expect(text(html)).toContain(OUTAGE_TEXT);
     expect(text(html)).not.toContain("Nothing in your documents matches this yet");
+  });
+
+  it("says a question that took too long should go to Swift or fewer documents, never ask again", () => {
+    const empty = { status: "not_found" as const, sentences: [], citations: [], documents: [], outage: true };
+    const html = render(v2(0, { ...empty, outage_reason: "timeout" }));
+    expect(text(html)).toContain(TIMEOUT_TEXT);
+    expect(text(html)).not.toContain(OUTAGE_TEXT);
+    expect(TIMEOUT_TEXT).toBe("This question took too long for the AI. Try Swift, or ask about fewer documents.");
   });
 });

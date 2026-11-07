@@ -23,6 +23,8 @@ import pytest
 from sqlalchemy import text
 
 from kaagaz.ai.openrouter import ModelGate, OpenRouterClient
+from kaagaz.answering import service as service_module
+from kaagaz.answering import stream as stream_module
 from kaagaz.answering.service import AnswerService
 from kaagaz.answering.stream import Events
 from kaagaz.api.auth import CurrentUser
@@ -39,6 +41,7 @@ from tests.openrouter_fake import (
     json_reply,
     json_stream,
     running_fake,
+    slow,
     stream_reply,
 )
 from tests.settings_factory import make_settings
@@ -581,3 +584,79 @@ def test_a_failing_background_task_is_its_own_log_and_the_broad_catch_names_the_
         "c-1",
         "q-1",
     )
+
+
+def _precision(db: Database, fake: OpenRouterFake, monkeypatch: pytest.MonkeyPatch) -> World:
+    """Precision reads in parts, each part's call with a deadline of half a second."""
+    monkeypatch.setattr(service_module, "ENSEMBLE_SLACK_SECONDS", 0.0)
+    w = world(db, fake, model_timeout_seconds=0.5, answer_parts_tokens=1)
+    with db.engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO customer_ai_settings (customer_id, chat_levels, chat_default_level)"
+                " VALUES (:c, ARRAY['low', 'medium', 'high'], 'medium')"
+            ),
+            {"c": w.signed.customer_id},
+        )
+    return w
+
+
+def test_after_the_parts_time_out_the_stream_still_drafts_from_all_the_evidence(
+    db: Database, fake: OpenRouterFake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Agreed with the speed fixes: a streamed draft has the idle limit and the stream's cap, so
+    after the parts time out it still drafts from all the evidence; /api/chat does not."""
+    w = _precision(db, fake, monkeypatch)
+    facts = {"facts": [{"evidence": 1, "quote": "Grand Total: Rs. 1,20,000"}]}
+    fake.script("completions", slow(json_reply(facts), 2.0), json_stream(DRAFT))
+
+    found = w.stream(thinking="high")
+
+    assert [body["stream"] for body in fake.bodies()] == [False, True]
+    assert [s["text"] for s in found[-1][1]["reply"]["answer"]["answer"]["sentences"]] == [GOOD, SELLER]
+
+
+def test_after_the_parts_time_out_post_api_chat_makes_no_second_draft(
+    db: Database, fake: OpenRouterFake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = _precision(db, fake, monkeypatch)
+    facts = {"facts": [{"evidence": 1, "quote": "Grand Total: Rs. 1,20,000"}]}
+    fake.script("completions", slow(json_reply(facts), 2.0))
+
+    answer = w.plain(thinking="high")["answer"]["answer"]
+
+    assert len(fake.bodies()) == 1  # the parts call only: no draft from all the evidence
+    assert answer["model_used"] is False  # the lines found, quoted (the speed fixes' rule)
+
+
+def test_a_stream_that_failed_and_was_quoted_is_degraded_never_reused_for_a_repeat(
+    db: Database, fake: OpenRouterFake
+) -> None:
+    w = world(db, fake)
+    fake.script("completions", stream_reply(['{"status": "answered", "sen'], error=True))
+    answers = w.api.app.state.kaagaz.answers
+    token = stream_module.EVENTS.set(Events(lambda name, data: None))
+    try:
+        answer = answers.answer(w.signed.customer_id, SEARCH)
+    finally:
+        stream_module.EVENTS.reset(token)
+    assert answer.model_used is False and answer.degraded is True  # quoted while the model failed
+
+
+def test_a_repeat_on_the_stream_is_marked_as_a_copy_as_post_api_chat_marks_it(
+    db: Database, fake: OpenRouterFake
+) -> None:
+    w = world(db, fake)
+    fake.script("completions", json_stream(DRAFT))
+    w.stream()
+    w.stream("  what is the GRAND total of inv-1042? ")
+    with db.customer(w.signed.customer_id) as conn:
+        rows = (
+            conn.execute(text("SELECT answer FROM messages WHERE role = 'assistant' ORDER BY created_at"))
+            .scalars()
+            .all()
+        )
+    first, copy = rows
+    assert first.get("repeat_key") and "repeat_copy" not in first
+    assert copy.get("repeat_copy") == first["repeat_key"] and "repeat_key" not in copy
+    assert len(fake.bodies()) == 1

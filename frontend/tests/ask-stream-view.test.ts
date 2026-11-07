@@ -11,7 +11,9 @@ import { act, createElement } from "react";
 import type { Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AnswerView } from "@/components/chat/AnswerView";
+import { AnswerView, OUTAGE_TEXT, TIMEOUT_TEXT } from "@/components/chat/AnswerView";
+import { askErrorText } from "@/components/chat/logic";
+import { ApiError } from "@/lib/api";
 import { listenAsk, settleAsk, startAsk } from "@/components/chat/askStore";
 import {
   advance,
@@ -439,4 +441,24 @@ describe("the chat screen and the final card", () => {
     expect(card("same")).toContain("Rent is ₹12,000.");
     expect(card("same")).toContain("label-mark-verified");
   });
+
+  it("a done reply whose outage is a timeout settles into TIMEOUT_TEXT; the stream's own cap keeps its words", () => {
+    const timedOut = { version: 2, status: "not_found", label: null, outage: true, outage_reason: "timeout" } as const;
+    const answer = finalReply([], timedOut).answer.answer;
+    const message: Message = {
+      id: "a1",
+      role: "assistant",
+      text: "",
+      created_at: "2026-11-07T05:00:00Z",
+      answer,
+      feedback: null,
+    };
+    const card = renderToStaticMarkup(createElement(AnswerView, { message, question: "Rent?", settle: "same" }));
+    expect(card).toContain(TIMEOUT_TEXT);
+    expect(card).not.toContain(OUTAGE_TEXT);
+    // An `error` answer_timeout event is not a reply: it shows the server's words as they are.
+    const capped = new ApiError(400, "answer_timeout", "This answer is taking too long. Try a narrower question or Swift.");
+    expect(askErrorText(capped)).toBe("This answer is taking too long. Try a narrower question or Swift.");
+  });
 });
+

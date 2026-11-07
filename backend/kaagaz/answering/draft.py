@@ -38,11 +38,13 @@ Whatever is drafted still goes through ``verify.py``: a sentence citing
 nothing, or holding a number its evidence does not hold, is dropped.
 
 **The budget** (ML amendment 5). A model reply is at most
-``MODEL_ANSWER_MAX_TOKENS`` tokens, and it is cut to ``MAX_SENTENCES``
-sentences of ``MAX_SENTENCE_CHARS`` characters (about 270 tokens). PRD 6 A (24 Oct 2026): the
+``MODEL_ANSWER_MAX_TOKENS`` tokens; only its first ``MAX_SENTENCES`` sentences are read, each of
+at most ``MAX_SENTENCE_CHARS`` characters (about 270 tokens). PRD 6 A (24 Oct 2026): the
 prompt asks for at most 3 short sentences; code lists the documents under them (voice.py). #535 (Ask
-speed): a sentence over the cap is cut at its own sentence ends (``split_long``), each part citing
-what it cited, so no second model call; only one that cannot be cut so is asked for again (T7).
+speed): a sentence over the cap that cites one source is cut at its own sentence ends
+(``split_long``), each part citing it, so no second model call, while the answer still has at most
+``MAX_SENTENCES`` sentences; any other, or a cut that would pass it, is asked for again (T7), never
+truncated (a part dropped would leave the rest of its sentence without it).
 ``fit_evidence`` keeps the best-ranked evidence whose prompt fits the window
 (``estimate_tokens_cautiously``: a letter of any script but ASCII is a whole token,
 PR C): lower-ranked pieces are left out whole, never cut, and verify checks only the
@@ -144,6 +146,9 @@ ANSWER_PROMPT_HASH = hashlib.sha256(
 class DraftSentence:
     text: str
     evidence: list[int]
+    # #535: the place, in the model's reply, of the sentence this one was cut from (``split_long``);
+    # None for a sentence as the model wrote it. A cut sentence's parts stand or fall together.
+    part_of: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,32 +290,39 @@ def model_draft(
 
 def _split(reply: dict[str, Any]) -> Draft | None:
     """#535: the reply with each sentence over MAX_SENTENCE_CHARS cut by ``split_long``, every part
-    citing the ids the sentence cited (verify then checks each part on its own); None when a
-    sentence cannot be cut so, or the reply is wrong in another way (drafted again, as before)."""
+    citing the one source the sentence cited and marked ``part_of`` it (verify checks each part,
+    and the service drops every part when it drops one, ``service._kept``). None, drafted again
+    as before, when such a sentence cites more than one source (no code can tell which part each
+    backs), cannot be cut so, or the cut passes MAX_SENTENCES, or the reply is wrong in another way."""
     try:
         parsed = _parse(reply, max_chars=None)
     except ModelOutputError:
         return None
     sentences: list[DraftSentence] = []
-    for sentence in parsed.sentences:
-        parts = [sentence.text] if len(sentence.text) <= MAX_SENTENCE_CHARS else split_long(sentence.text)
+    for place, sentence in enumerate(parsed.sentences):
+        if len(sentence.text) <= MAX_SENTENCE_CHARS:
+            sentences.append(sentence)
+            continue
+        parts = split_long(sentence.text) if len(set(sentence.evidence)) == 1 else None
         if parts is None:
             return None
-        sentences += [DraftSentence(part, list(sentence.evidence)) for part in parts]
-    return replace(parsed, sentences=sentences)
+        sentences += [DraftSentence(part, list(sentence.evidence), place) for part in parts]
+    return replace(parsed, sentences=sentences) if len(sentences) <= MAX_SENTENCES else None
 
 
-# #535: where a drafted sentence may be cut: after ".", "!", "?" or the danda, any closing quote or
-# bracket, then a space and a capital letter. Never after an abbreviation, an initial or a dotted
-# word ("Rs.", "Pvt. Ltd.", "R. K.", "e.g."), nor before a month name: "12. August" is one date to
-# verify, and a cut there would leave "12" a bare number its evidence does not hold.
-_SENTENCE_END = re.compile(r"[.!?\u0964][\"'\u201d\u2019)\]]*(?=\s)")
+# #535: where a drafted sentence may be cut: after ".", "!" or "?", any closing quote or bracket,
+# then a space and a capital letter. Never after an abbreviation, an initial, a dotted word or a
+# word with a slash ("Rs.", "Pvt. Ltd.", "R. K.", "e.g.", "M/s.", "Tal.", "Sy. No."), nor before a
+# month name: "12. August" is one date to verify, and a cut there would leave "12" a bare number its
+# evidence does not hold. Never at the danda (no capital follows it): such a sentence is drafted again.
+_SENTENCE_END = re.compile(r"[.!?][\"'\u201d\u2019)\]]*(?=\s)")
 _OPENERS = "\"'\u201c\u2018(["
 _ABBREVIATIONS = frozenset(
     {
         *("mr", "mrs", "ms", "dr", "st", "sr", "jr", "shri", "smt", "sh", "no", "nos", "rs", "inr"),
         *("pvt", "ltd", "co", "corp", "inc", "llp", "vs", "viz", "etc", "approx", "dept", "govt"),
         *("ref", "sec", "cl", "art", "vol", "fig", "mob", "ph", "tel", "rd", "sq", "ft", "kg", "km", "pp"),
+        *("dist", "tal", "ta", "adv", "nr", "opp", "sy", "sau", "kum", "chi", "prof", "hon", "bldg"),
     }
 )
 _MONTH_WORDS = frozenset(
@@ -354,7 +366,7 @@ def _ends(text: str, end: re.Match[str]) -> bool:
     before = text[: end.start()].split()
     token = before[-1].lstrip(_OPENERS) if before else ""
     single = len(token) == 1 and token.isalpha()
-    return not (single or "." in token or token.casefold() in _ABBREVIATIONS)
+    return not (single or "." in token or "/" in token or token.casefold() in _ABBREVIATIONS)
 
 
 def _too_long(reply: dict[str, Any]) -> bool:

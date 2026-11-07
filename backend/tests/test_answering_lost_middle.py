@@ -183,7 +183,8 @@ def test_swift_and_a_short_scope_never_read_in_parts() -> None:
         assert model.parts == [] and len(blocks(model.drafts[0])) == len(PAGES)
 
 
-@pytest.mark.parametrize("error", [ModelUnavailable("timeout"), ModelOutputError("parts_shape")])
+# Changed on purpose (#535, test-server log 7 Nov 2026): a timeout is no longer one of these.
+@pytest.mark.parametrize("error", [ModelUnavailable("server_error"), ModelOutputError("parts_shape")])
 def test_a_part_that_fails_leaves_the_answer_to_all_the_evidence_in_one_call(
     error: Exception, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -198,6 +199,23 @@ def test_a_part_that_fails_leaves_the_answer_to_all_the_evidence_in_one_call(
     assert [s.text for s in answer.sentences] == [SAID]
     codes = [getattr(r, "code", None) for r in caplog.records if "read in parts failed" in r.getMessage()]
     assert isinstance(error, ModelUnavailable | ModelOutputError) and codes == [error.code]
+
+
+def test_parts_that_time_out_make_one_round_of_calls_and_no_draft_from_all_the_evidence(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """#535 (test-server log, 7 Nov 2026: the parts timed out at 70 s, then the whole-evidence draft
+    got 60 s more and timed out too, 133 s in all): when the parts with less evidence time out, the
+    draft from all of it would too, so it is never made; the answer goes the failure way as before."""
+    caplog.set_level(logging.WARNING, logger="kaagaz.answering.service")
+    model = Reader(fail=(PAGES[8].text, ModelUnavailable("timeout")))
+
+    answer = ask(model, PRECISION)
+
+    assert len(model.parts) == 3 and model.drafts == []  # one round of parts, no whole-evidence draft
+    assert answer.model_used is False  # quoted or not found, as when the draft itself timed out
+    codes = [getattr(r, "code", None) for r in caplog.records if r.levelno == logging.WARNING]
+    assert codes == ["timeout", "timeout"]  # the parts' failure, then the draft's
 
 
 def test_no_part_naming_a_piece_is_not_found_without_a_draft() -> None:

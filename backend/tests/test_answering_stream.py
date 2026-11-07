@@ -10,7 +10,10 @@ import pytest
 
 from kaagaz.ai.client import ModelOutputError
 from kaagaz.answering import draft
+from kaagaz.answering.evidence import number_evidence
+from kaagaz.answering.service import _Preview
 from kaagaz.answering.stream import EVENTS, Events, SentenceParser, StreamCancelled, draft_streamed, emit
+from tests.test_answering_golden import piece
 
 REPLY = {
     "status": "answered",
@@ -137,8 +140,8 @@ def test_a_long_sentence_is_cut_in_code_with_no_second_call_and_its_parts_offere
     assert len(drafted.sentences) == 2 and all(
         len(s.text) <= draft.MAX_SENTENCE_CHARS for s in drafted.sentences
     )
-    # Not the long one as it streamed (review of #535: held until cut), then its parts.
-    assert offered == [{"text": s.text, "evidence": [1]} for s in drafted.sentences]
+    # Not the long one as it streamed (review of #535: held until cut), then its parts together.
+    assert offered == [[{"text": s.text, "evidence": [1]} for s in drafted.sentences]]
 
 
 def test_a_long_sentence_that_cannot_be_cut_is_asked_for_once_more_as_unstreamed() -> None:
@@ -199,11 +202,11 @@ def test_after_a_sentence_too_long_nothing_more_is_offered_until_the_draft_is_wh
     not be sent before its parts: the preview keeps the answer's order."""
     long = {"text": "The total is Rs. 1,20,000 for the work. " * 9, "evidence": [1]}
     short = {"text": "It was paid in March.", "evidence": [1]}
-    model = StreamModel(json.dumps({"status": "answered", "sentences": [REPLY["sentences"][1], long, short]}))
+    model = StreamModel(json.dumps({"status": "answered", "sentences": [long, short]}))
     drafted, offered, _ = _drafted(model)
-    final = [{"text": s.text, "evidence": s.evidence} for s in drafted.sentences]
-    assert len(final) > 3 and final[-1] == short
-    assert offered == [REPLY["sentences"][1], *final]  # the first as it streamed, then the draft in order
+    parts = [{"text": s.text, "evidence": s.evidence} for s in drafted.sentences if s.part_of is not None]
+    assert len(parts) == 2 and len(drafted.sentences) == 3
+    assert offered == [parts, short]  # nothing as it streamed; the cut one's parts together, then the next
 
 
 def test_the_cap_never_lands_between_the_last_check_and_the_commit() -> None:
@@ -221,3 +224,43 @@ def test_the_cap_never_lands_between_the_last_check_and_the_commit() -> None:
     with pytest.raises(RuntimeError), events.saving():
         raise RuntimeError("the save failed")
     assert events.cancel() is True  # not saved: the cap still stops it
+
+
+def test_a_cut_sentences_parts_are_offered_together_after_the_stream() -> None:
+    """With the speed fixes (part_of): the parts of a sentence cut in code stand or fall together,
+    so they go to ``offer`` as one group, never one by one."""
+    first = "The total is Rs. 1,20,000 for the work. " * 5
+    second = (
+        "It was paid on 12 August 2026 by cheque from the account of Sharma Traders in Pune,"
+        " and the receipt was signed by the manager on that day."
+    )
+    model = StreamModel(
+        json.dumps({"status": "answered", "sentences": [{"text": first + second, "evidence": [1]}]})
+    )
+    drafted, offered, _ = _drafted(model)
+    assert len(drafted.sentences) == 2
+    assert offered == [[{"text": s.text, "evidence": [1]} for s in drafted.sentences]]
+
+
+def test_the_preview_sends_a_cut_sentences_parts_only_when_every_part_passes() -> None:
+    hit = piece("bill.pdf", "Grand Total: Rs. 1,20,000\nSeller: Sharma Traders")
+    seen = number_evidence([hit])
+    sent: list[tuple[str, dict[str, Any]]] = []
+    events = Events(lambda name, data: sent.append((name, data)))
+    preview = _Preview("What is the total?", seen, False, events)
+
+    preview.offer(
+        [
+            {"text": "The total is Rs. 1,20,000.", "evidence": [1]},
+            {"text": "Tax was Rs. 99.", "evidence": [1]},
+        ]
+    )
+    assert sent == []  # one part is not backed: neither is sent
+    preview.offer(
+        [
+            {"text": "The total is Rs. 1,20,000.", "evidence": [1]},
+            {"text": "Sharma Traders sold it.", "evidence": [1]},
+        ]
+    )
+    assert [data["text"] for _, data in sent] == ["The total is Rs. 1,20,000.", "Sharma Traders sold it."]
+    assert [data["index"] for _, data in sent] == [0, 1]

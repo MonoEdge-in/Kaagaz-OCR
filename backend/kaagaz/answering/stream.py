@@ -227,7 +227,8 @@ def draft_streamed(
     options, cut of a sentence too long and repair. While the reply comes, each complete sentence
     object of the first MAX_SENTENCES goes to ``offer``, until one is too long (it is cut in code
     once the reply is whole, so a later sentence must not go before its parts); then every
-    sentence of the draft is offered in order (``offer`` sends each once). A reply that is not the
+    sentence of the draft is offered in order (``offer`` sends each once; the parts of a sentence
+    cut in code as one list, which stand or fall together). A reply that is not the
     draft's JSON is drafted once more without streaming, after ``stage: checking``, logged
     (``stream_invalid_output``) and counted in ``redrafts``. Raises as ``model_draft`` does, and
     ``StreamCancelled`` once the answer is stopped."""
@@ -277,6 +278,13 @@ def draft_streamed(
         emit("stage", {"stage": "checking"})
         again = drafting()
         draft = replace(again, redrafts=again.redrafts + 1)
+    groups: list[list[Any]] = []  # a sentence cut in code (``part_of``) goes as one list of its parts
     for sentence in draft.sentences:
-        offer({"text": sentence.text, "evidence": sentence.evidence})
+        if sentence.part_of is not None and groups and groups[-1][0].part_of == sentence.part_of:
+            groups[-1].append(sentence)
+        else:
+            groups.append([sentence])
+    for group in groups:
+        raws = [{"text": each.text, "evidence": each.evidence} for each in group]
+        offer(raws if group[0].part_of is not None else raws[0])
     return draft

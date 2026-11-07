@@ -403,6 +403,12 @@ class Answer:
     # #410: a not-found answer's key terms that no document in scope holds (``_missing``); in
     # to_json only when there is one, so answers without it keep their shape.
     missing_words: tuple[str, ...] = ()
+    # #535: the model was down, or the question's (or an aspect's) vector missing, for this answer,
+    # so a repeated question never reuses it (routers/chat.py). Never in to_json.
+    degraded: bool = False
+    # #535 (test-server log, 7 Nov 2026): "timeout" when the outage is a draft that took too long,
+    # so the words say what to do instead of "ask again in a minute"; in to_json only then.
+    outage_reason: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         """The ``Answer`` of frontend/lib/types.ts, exactly; ``agents``, ``agent_ids``,
@@ -449,6 +455,7 @@ class Answer:
             **({"clarify": self.clarify, "resume": self.resume} if self.clarify else {}),
             # KZ-006 (24 Oct 2026): the model was down, so this not found is no answer either way.
             **({"outage": True} if self.unavailable else {}),
+            **({"outage_reason": self.outage_reason} if self.unavailable and self.outage_reason else {}),
         }
 
 
@@ -471,6 +478,8 @@ class _Timing:
     redrafts: int = 0  # #535: model calls made again for a sentence too long to cut (draft.py)
     streamed: bool = False  # step 21: asked through POST /api/chat/stream
     first_sentence_ms: float = 0.0  # step 21: when its first checked sentence was sent (0: none)
+    vectorless: bool = False  # #535: the model on, the question searched without a meaning vector
+    outage: str | None = None  # #535: the code the draft failed with while the model was down
 
     def lap(self, stage: str) -> None:
         now = time.monotonic()
@@ -807,7 +816,16 @@ class AnswerService:
             answer = self._missing(customer_id, asked, answer, scope)
         answer = self._shaped(customer_id, asked, self._mentioned(customer_id, asked, answer, scope), scope)
         said = [*answer.assumptions, *step.assumptions]
-        return replace(answer, rewritten_question=rewritten, unavailable=unavailable, assumptions=said)
+        degraded = _timing().degraded or _timing().vectorless  # #535: never reused for a repeat
+        reason = "timeout" if unavailable and _timing().outage == "timeout" else None
+        return replace(
+            answer,
+            rewritten_question=rewritten,
+            unavailable=unavailable,
+            assumptions=said,
+            degraded=degraded,
+            outage_reason=reason,
+        )
 
     def _checked(self, answer: Answer, question: str) -> Answer:
         """Decision 2's final check (PRD 6 A, voice.py) over every sentence, whoever wrote it:
@@ -1415,6 +1433,8 @@ class AnswerService:
                     (_search_text(text), meaning) for text, meaning in zip(aspects, meanings, strict=True)
                 ]
                 hits = self._hits(customer_id, query_text, vector, extra, scope, expansion)
+            if self._model is not None and (vector is None or any(m is None for _, m in extra)):
+                _timing().vectorless = True  # #535: no outage, but never reused for a repeat
             if hits:  # never stuck (17 Oct 2026): found by words and typos, a missing vector is no outage
                 _timing().degraded = False
             translated = self._translated_search(
@@ -1576,6 +1596,7 @@ class AnswerService:
         down = timing.degraded
         vector = self._embed(spoken)
         timing.degraded = down
+        timing.vectorless = timing.vectorless or vector is None  # #535: another order, never reused
         limit = max(1, min(len(evidence), MAX_LIMIT))
         found = self._retriever.search(customer_id, query_text, vector, limit, scope, expansion)
         place: dict[str, int] = {}
@@ -1732,11 +1753,21 @@ class AnswerService:
             budget = self._evidence_budget if cap is None else min(cap, self._evidence_budget)
             seen = fit_evidence(asked, evidence, budget)
             code = "evidence_too_large"  # not even the best piece fits
+            events = stream.EVENTS.get()
+            alone = choice is None or len(choice.agents) <= 1
+            streaming = events is not None and alone and isinstance(self._model, StreamingModel)
             if seen and self._in_parts(seen, choice):
                 picked = self._read_in_parts(asked, seen, choice)
-                if picked is not None and not picked:  # every part read, none holds an answer
+                if isinstance(picked, str):
+                    # #535: the parts timed out, and a draft from all the evidence would too; but a
+                    # streamed one is only cut when it goes quiet or past the stream's cap, so on
+                    # the stream it is still drafted from all of it (agreed with the speed fixes).
+                    if not streaming:
+                        code, seen = picked, []
+                elif picked is not None and not picked:  # every part read, none holds an answer
                     return Draft("not_found", []), True, seen, "notfound_model", team
-                seen = seen if picked is None else picked
+                elif picked is not None:
+                    seen = picked
             if seen:
                 stream.emit("sources", _sources(seen))
                 cards = fit_cards(asked, seen, self._cards(customer_id, scope, seen), budget)
@@ -1749,9 +1780,7 @@ class AnswerService:
                     max_tokens=self._settings.model_answer_max_tokens,
                     cards=cards,
                 )
-                events = stream.EVENTS.get()
-                alone = choice is None or len(choice.agents) <= 1
-                if events is not None and alone and isinstance(self._model, StreamingModel):
+                if streaming and events is not None and isinstance(self._model, StreamingModel):
                     preview = _Preview(question, seen, whole, events)
                     draft_with = partial(
                         draft_streamed,
@@ -1773,6 +1802,7 @@ class AnswerService:
             _log.warning("answer drafted without the model", extra={"code": code})
             if code not in _REPLY_FAULTS:
                 _timing().degraded = True
+                _timing().outage = code  # #535: a timeout says so (``Answer.outage_reason``)
         why = "notfound_no_model" if self._model is None else f"notfound_model_error:{code}"
         if mentions_date(normalised):
             # A quoted line cannot be checked against a date.
@@ -1796,14 +1826,16 @@ class AnswerService:
 
     def _read_in_parts(
         self, asked: str, seen: Sequence[Evidence], choice: ChatChoice | None
-    ) -> list[Evidence] | None:
+    ) -> list[Evidence] | str | None:
         """Step 20 (#381, answering/parts.py): ``seen`` split into at most ANSWER_PARTS_MAX parts,
         each read by the choice's first agent at its level, all at once (each call takes its own
         slot of the model limiter; one deadline, as ``_ensemble``), in a copy of the context
         (billing, the rate scope, the limiter's waits); every thread is joined before this
         returns. The pieces the parts name, in ``seen``'s order ([]: none holds an answer), or
         None when a part failed, logged by its code: the answer is then drafted from all of
-        ``seen`` in one call, as before."""
+        ``seen`` in one call, as before. #535 (test-server log, 7 Nov 2026): "timeout" when a part
+        timed out, as a draft from all of ``seen``, more than any part, would too: none is made, and
+        the answer goes the way a draft that timed out goes."""
         if self._model is None or choice is None or not choice.agents:
             return None
         model, lead = self._model, choice.agents[0]
@@ -1833,10 +1865,10 @@ class AnswerService:
         results = [future.result() for future in futures]
         for result in results:
             if not isinstance(result, list):
-                _log.warning(
-                    "read in parts failed, drafted from all the evidence", extra={"code": result.code}
-                )
-                return None
+                timed_out = isinstance(result, ModelUnavailable) and result.code == "timeout"
+                then = "not drafted again" if timed_out else "drafted from all the evidence"
+                _log.warning(f"read in parts failed, {then}", extra={"code": result.code})
+                return result.code if timed_out else None
         _log.info("read in %d parts by %s with prompt %s", len(groups), lead.model, PARTS_PROMPT_HASH)
         _timing().parts = len(groups)
         named = {n for result in results if isinstance(result, list) for n in result}
@@ -2009,35 +2041,48 @@ class _Preview:
     sent: list[DraftSentence] = field(default_factory=list)
 
     def offer(self, raw: object) -> None:
-        try:
-            draft = checked({"status": "answered", "sentences": [raw]})
-        except ModelOutputError:
-            return  # a sentence the answer's parse refuses is never sent
+        """One raw sentence, or a list: the parts of a sentence cut in code (``part_of``), which
+        stand or fall together as in ``_kept``: one that fails, and none of them is sent."""
         texts = _texts(self.seen)
-        kept = _kept(draft, texts)
-        if not kept or kept[0].text in {s.text for s in self.sent}:
+        said = {s.text for s in self.sent}
+        ready: list[DraftSentence] = []
+        for each in raw if isinstance(raw, list) else [raw]:
+            try:
+                draft = checked({"status": "answered", "sentences": [each]})
+            except ModelOutputError:
+                return  # a sentence the answer's parse refuses is never sent
+            kept = _kept(draft, texts)
+            if not kept:
+                return
+            if kept[0].text not in said and kept[0].text not in {s.text for s in ready}:
+                ready.append(kept[0])
+        if not ready:
             return
-        sentence = kept[0]
         by_n = {item.n: item for item in self.seen}
-        numbered, every = _citations([*self.sent, sentence], by_n, self.whole)
-        citations = [every[numbered[n] - 1] for n in sentence.evidence]
-        backing = {numbered[n]: by_n[n].hit.text for n in sentence.evidence}
-        if _unsupported(sentence.text, citations, voice.numbers(self.question), backing) is not None:
-            return
+        numbered, every = _citations([*self.sent, *ready], by_n, self.whole)
+        asked = voice.numbers(self.question)
+        cited: list[list[Citation]] = []
+        for sentence in ready:
+            citations = [every[numbered[n] - 1] for n in sentence.evidence]
+            backing = {numbered[n]: by_n[n].hit.text for n in sentence.evidence}
+            if _unsupported(sentence.text, citations, asked, backing) is not None:
+                return
+            cited.append(citations)
         # shortcut: a preview citation is never marked hard_to_read (one more statement a
         # sentence); the answer that follows marks it, and replaces the preview.
-        self.sent.append(sentence)
         timing = _timing()
         if not timing.first_sentence_ms:
             timing.first_sentence_ms = (time.monotonic() - timing.start) * 1000
-        self.events.send(
-            "sentence",
-            {
-                "index": len(self.sent) - 1,
-                "text": sentence.text,
-                "citations": [citation.to_json() for citation in citations],
-            },
-        )
+        for sentence, citations in zip(ready, cited, strict=True):
+            self.sent.append(sentence)
+            self.events.send(
+                "sentence",
+                {
+                    "index": len(self.sent) - 1,
+                    "text": sentence.text,
+                    "citations": [citation.to_json() for citation in citations],
+                },
+            )
 
 
 def _outage(result: object) -> bool:
@@ -2057,13 +2102,31 @@ def _texts(seen: Sequence[Evidence]) -> dict[int, str]:
 
 def _kept(draft: Draft, texts: dict[int, str]) -> list[DraftSentence]:
     """The draft's sentences, cleaned, that ``verify`` keeps against ``texts``; none for
-    not found."""
+    not found. #535: the parts of a sentence cut in code (``part_of``) stand or fall together, so
+    no part is shown without the rest of its sentence."""
     if draft.status != "answered":
         return []
-    cleaned = [DraftSentence(clean_text(s.text), s.evidence) for s in draft.sentences]
+    cleaned = [DraftSentence(clean_text(s.text), s.evidence, s.part_of) for s in draft.sentences]
+    passed = verify([s for s in cleaned if s.text], texts)
+    # verify keeps its sentences in order, each with its ids once: pair them back with the cleaned.
+    found: list[DraftSentence | None] = []
+    at = 0
+    for sentence in cleaned:
+        same = (
+            bool(sentence.text)
+            and at < len(passed)
+            and passed[at].text == sentence.text
+            and passed[at].evidence == list(dict.fromkeys(sentence.evidence))
+        )
+        found.append(passed[at] if same else None)
+        at += same
+    fallen = {s.part_of for s, f in zip(cleaned, found, strict=True) if f is None and s.part_of is not None}
+    if fallen:
+        _log.info("answer text dropped", extra={"code": "verify:cut_sentence_part"})
     kept: dict[str, DraftSentence] = {}
-    for sentence in verify([s for s in cleaned if s.text], texts):
-        kept.setdefault(sentence.text, sentence)  # a repeated sentence once, the first kept
+    for sentence, verified in zip(cleaned, found, strict=True):
+        if verified is not None and sentence.part_of not in fallen:
+            kept.setdefault(verified.text, verified)  # a repeated sentence once, the first kept
     return list(kept.values())
 
 

@@ -268,20 +268,27 @@ def openings(conn: Connection, customer_id: str, conversation_id: str) -> list[s
     )
 
 
-def repeated_answer(conn: Connection, customer_id: str, key: str) -> dict[str, Any] | None:
+def repeated_answer(conn: Connection, customer_id: str, user_id: str, key: str) -> dict[str, Any] | None:
     """#535 (answering/ready.py ``repeat_key``): the newest stored answer of the last day saved with
-    ``key``, found (answered or unchecked) and not rated Not useful; None when there is none. The
-    key holds the asker, so it is theirs. One statement over the (customer_id, created_at) index."""
+    ``key`` (``repeat_key``), found (answered or unchecked), while no answer saved with it, the
+    first or a copy served from it (``repeat_copy``), is rated Not useful; None when there is none.
+    Only ``user_id``'s own conversations of the last day are read (the key holds the asker too),
+    through their indexes (conversations_user, messages_conversation), so only their answers'
+    JSON is opened. One statement."""
     found = conn.execute(
         text(
-            "SELECT m.answer FROM messages m WHERE m.customer_id = :c AND m.role = 'assistant'"
-            " AND m.created_at > now() - interval '1 day' AND m.answer ->> 'repeat_key' = :k"
-            " AND m.answer ->> 'status' IN ('answered', 'unchecked') AND m.answer -> 'outage' IS NULL"
-            " AND NOT EXISTS (SELECT 1 FROM feedback f WHERE f.customer_id = m.customer_id"
-            " AND f.message_id = m.id AND f.rating = 'down')"
-            " ORDER BY m.created_at DESC LIMIT 1"
+            "WITH mine AS (SELECT m.id, m.answer, m.created_at FROM conversations c"
+            " JOIN messages m ON m.conversation_id = c.id AND m.customer_id = c.customer_id"
+            " WHERE c.customer_id = :c AND c.user_id = :u AND c.created_at > now() - interval '1 day'"
+            " AND m.role = 'assistant' AND m.created_at > now() - interval '1 day'"
+            " AND (m.answer ->> 'repeat_key' = :k OR m.answer ->> 'repeat_copy' = :k))"
+            " SELECT answer FROM mine WHERE answer ->> 'repeat_key' = :k"
+            " AND answer ->> 'status' IN ('answered', 'unchecked') AND answer -> 'outage' IS NULL"
+            " AND NOT EXISTS (SELECT 1 FROM mine r JOIN feedback f ON f.customer_id = :c"
+            " AND f.message_id = r.id WHERE f.rating = 'down')"
+            " ORDER BY created_at DESC LIMIT 1"
         ),
-        {"c": customer_id, "k": key},
+        {"c": customer_id, "u": user_id, "k": key},
     ).scalar()
     return None if found is None else dict(found)
 

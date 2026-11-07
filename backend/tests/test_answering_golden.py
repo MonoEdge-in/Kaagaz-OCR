@@ -532,7 +532,7 @@ def assert_well_formed(answer: Answer) -> None:
     """The properties every answer keeps, answered or not (no source, no answer)."""
     data = answer.to_json()
     # Changed on purpose (24 Oct 2026): an outage adds ``outage`` (KZ-006, never "busy").
-    assert set(data) - {"outage"} == ANSWER_KEYS
+    assert set(data) - {"outage", "outage_reason"} == ANSWER_KEYS  # #535: a timeout says so
     assert data.get("outage", True) is True and ("outage" in data) == answer.unavailable
     assert data["route"] in {"fixed_query", "search"}
     # PRD 6 A: v2, the opening is the API's, nothing assumed yet; at most 10 documents listed,
@@ -1146,6 +1146,26 @@ def test_not_found_while_the_model_is_down_is_unavailable() -> None:
         assert "unavailable" not in answer.to_json()
     for answer in (ask([], FakeModel()), ask([], FakeModel(embed_error=ModelOutputError("embedding_dim")))):
         assert (answer.status, answer.unavailable) == ("not_found", False)
+
+
+def test_an_outage_from_a_draft_that_timed_out_says_timeout_and_no_other_does() -> None:
+    """#535 (test-server log, 7 Nov 2026): asking again in a minute times out the same way, so a
+    draft that timed out says so (``outage_reason``); every other outage, and a timed-out question
+    vector, keeps the plain outage."""
+    question = "What is the GST number of INV-1042?"
+
+    def ask(pieces: list[FakeHit], model: FakeModel) -> Answer:
+        return service(pieces=pieces, model=model)[0].answer(A, question)
+
+    timed_out = ask([INVOICE], FakeModel(chat_error=ModelUnavailable("timeout")))
+    assert (timed_out.status, timed_out.unavailable) == ("not_found", True)
+    assert timed_out.to_json()["outage_reason"] == "timeout"
+    assert_well_formed(timed_out)
+    for other in (
+        ask([INVOICE], FakeModel(chat_error=ModelUnavailable("rate_limited"))),
+        ask([], FakeModel(embed_error=ModelUnavailable("timeout"))),
+    ):
+        assert other.unavailable and "outage_reason" not in other.to_json()
 
 
 def test_a_reply_the_model_gave_but_could_not_use_is_no_outage() -> None:

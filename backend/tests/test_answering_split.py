@@ -1,7 +1,10 @@
 """#535 (Ask speed, PR 2): a drafted sentence over MAX_SENTENCE_CHARS is cut at its own sentence
 ends in code (``draft.split_long``), each part citing what the sentence cited, instead of a second
 model call; only a sentence that cannot be cut so is drafted again, as before. Every part still
-goes through verify.py: a part of a sentence verify keeps is kept too."""
+goes through verify.py: a part of a sentence verify keeps is kept too. Review of #535: only a
+sentence citing one source is cut (more than one: drafted again, as no code can tell which part
+each source backs); a cut that would pass the answer's MAX_SENTENCES is drafted again; and when
+verify drops any part, every part goes (``service._kept``), so no part stands without its subject."""
 
 import logging
 import random
@@ -11,13 +14,15 @@ from typing import Any
 import pytest
 
 from kaagaz.ai.client import ModelOutputError
-from kaagaz.answering.draft import MAX_SENTENCE_CHARS, DraftSentence, model_draft, split_long
+from kaagaz.answering.draft import MAX_SENTENCE_CHARS, Draft, DraftSentence, model_draft, split_long
 from kaagaz.answering.evidence import number_evidence
+from kaagaz.answering.service import _kept
 from kaagaz.answering.verify import verify
 from tests.test_answering_golden import INVOICE, QUESTION, A, FakeModel, evidence_blocks, service
 
 EVIDENCE = number_evidence([INVOICE])
 TEXTS = {1: INVOICE.text}
+TEXTS_TWO = {**TEXTS, 2: "Payment terms: payment due within 30 days of the invoice date."}
 
 # Each verify keeps on its own over INVOICE; each under 120 characters; abbreviations, initials,
 # amounts, dates and ids that a careless cut would break.
@@ -60,6 +65,18 @@ def test_a_long_sentence_is_cut_at_its_sentence_ends_into_the_fewest_parts_that_
         "worth Rs. Twelve lakh",  # a currency word before a capital
         "paid on 12. August 2026",  # a date verify reads whole
         "see e.g. The terms",  # a dotted abbreviation
+        # Review of #535: Indian abbreviations, and any token with a slash.
+        "paid to M/s. Shree Ganesh Traders",
+        "at Tal. Haveli, Dist. Pune",
+        "signed by Adv. Patil",
+        "the plot Sy. No. 45/2 Kothrud",
+        "near Opp. Station Road",
+        "Sau. Sunita and Chi. Rahul",
+        "in the A/C. Holder name",
+        "Nr. Bus Stand, Bldg. Two",
+        "for Prof. Joshi and Hon. Court",
+        "Kum. Asha of Ta. Mulshi",
+        "\u092a\u0942\u0930\u094d\u0923\u0964 Then",  # the danda is never a cut
     ],
 )
 def test_no_cut_where_a_full_stop_is_not_a_sentence_end(joint: str) -> None:
@@ -77,32 +94,59 @@ def test_a_sentence_with_no_end_to_cut_at_cannot_be_cut() -> None:
 
 def test_every_part_of_a_sentence_verify_keeps_is_kept_by_verify() -> None:
     """The proof, over many joins of the short sentences: each long sentence verify keeps whole
-    (verify has no length rule) is cut, and verify keeps every part, citing the same source."""
+    (verify has no length rule) and citing one source is cut with no second call, and verify keeps
+    every part, citing that source; one citing two sources is drafted again, never cut."""
     pick = random.Random(535)  # noqa: S311 - a fixed seed picks test sentences, not a secret
-    checked = 0
+    checked = {1: 0, 2: 0}
+    good = answered(("The grand total is Rs. 1,20,000.", [1]))
     for _ in range(300):
         chosen = pick.sample(SHORT, k=pick.randint(4, len(SHORT)))
         text = " ".join(chosen)
         if len(text) <= MAX_SENTENCE_CHARS:
             continue
-        assert verify([DraftSentence(text, [1])], TEXTS), text
+        cited = pick.choice([[1], [1, 2]])
+        assert verify([DraftSentence(text, cited)], TEXTS_TWO), text
+        model = replies(answered((text, cited)), good)
+        draft = model_draft(model, QUESTION, EVIDENCE, max_tokens=512)
+        checked[len(cited)] += 1
+        if len(cited) > 1:
+            assert (len(model.prompts), draft.redrafts) == (2, 1)
+            continue
         parts = split_long(text)
-        assert parts is not None, text
+        assert parts is not None and len(model.prompts) == 1, text
+        assert [s.text for s in draft.sentences] == parts
         kept = verify([DraftSentence(part, [1]) for part in parts], TEXTS)
         assert [s.text for s in kept] == parts
         assert all(s.evidence == [1] for s in kept)
-        checked += 1
-    assert checked > 200
+        assert [s.text for s in _kept(draft, TEXTS)] == parts
+    assert min(checked.values()) > 100
 
 
-def test_a_part_verify_cannot_back_is_dropped_on_its_own() -> None:
+def test_when_verify_drops_one_part_every_part_of_that_sentence_goes() -> None:
     wrong = "It also says the tax is Rs. 99,999."  # no such amount in the evidence
     text = long_sentence([*SHORT[:5], wrong])
     assert verify([DraftSentence(text, [1])], TEXTS) == []  # whole: dropped
-    parts = split_long(text)
-    assert parts is not None
-    kept = [s.text for s in verify([DraftSentence(part, [1]) for part in parts], TEXTS)]
-    assert kept and all("99,999" not in part for part in kept)
+    short = ("The grand total is Rs. 1,20,000.", [1])
+    draft = model_draft(replies(answered((text, [1]), short)), QUESTION, EVIDENCE, max_tokens=512)
+    assert len(draft.sentences) == 3  # cut in two, then the short one
+    assert verify(draft.sentences[:2], TEXTS) != []  # verify alone would keep a part
+    assert [s.text for s in _kept(draft, TEXTS)] == [short[0]]
+    # A part of one sentence never takes another's down: two cut sentences, one wrong.
+    good = DraftSentence(short[0], [1], part_of=0)
+    bad = DraftSentence("The tax is Rs. 99,999.", [1], part_of=1)
+    other = DraftSentence("Its sub total is Rs. 1,00,000.", [1], part_of=1)
+    assert [s.text for s in _kept(Draft("answered", [good, bad, other]), TEXTS)] == [good.text]
+
+
+def test_the_service_drops_every_part_of_a_sentence_one_part_of_which_fails() -> None:
+    text = long_sentence([*SHORT[:5], "It also says the tax is Rs. 99,999."])
+
+    def reply(system: str, user: str) -> dict[str, Any]:
+        (n,) = [n for n, block in evidence_blocks(user).items() if "Grand Total" in block]
+        return answered((text, [n]), ("The grand total is Rs. 1,20,000.", [n]))
+
+    answer = service(model=FakeModel(reply))[0].answer(A, QUESTION)
+    assert [s.text for s in answer.sentences] == ["The grand total is Rs. 1,20,000."]
 
 
 def replies(*answers: dict[str, Any]) -> FakeModel:
@@ -114,9 +158,9 @@ def answered(*sentences: tuple[str, list[int]]) -> dict[str, Any]:
     return {"status": "answered", "sentences": [{"text": t, "evidence": e} for t, e in sentences]}
 
 
-def test_a_long_sentence_is_split_with_no_second_model_call() -> None:
+def test_a_long_sentence_citing_one_source_is_split_with_no_second_model_call() -> None:
     text = long_sentence(SHORT[:6])
-    model = replies(answered(("The grand total is Rs. 1,20,000.", [1]), (text, [1, 2])))
+    model = replies(answered(("The grand total is Rs. 1,20,000.", [1]), (text, [1, 1])))
 
     draft = model_draft(model, QUESTION, EVIDENCE, max_tokens=512)
 
@@ -125,7 +169,26 @@ def test_a_long_sentence_is_split_with_no_second_model_call() -> None:
         "The grand total is Rs. 1,20,000.",
         *(split_long(text) or []),
     ]
-    assert all(s.evidence == [1, 2] for s in draft.sentences[1:])  # each part cites what it cited
+    assert all(s.evidence == [1, 1] and s.part_of == 1 for s in draft.sentences[1:])
+    assert draft.sentences[0].part_of is None
+
+
+def test_a_long_sentence_citing_two_sources_is_drafted_again() -> None:
+    good = answered(("The grand total is Rs. 1,20,000.", [1]))
+    model = replies(answered((long_sentence(SHORT[:6]), [1, 2])), good)
+    draft = model_draft(model, QUESTION, EVIDENCE, max_tokens=512)
+    assert (len(model.prompts), draft.redrafts) == (2, 1)
+    assert [s.text for s in draft.sentences] == ["The grand total is Rs. 1,20,000."]
+
+
+def test_a_cut_past_the_answers_sentence_cap_is_drafted_again() -> None:
+    short = ("The grand total is Rs. 1,20,000.", [1])
+    good = answered(short)
+    fits = replies(answered(short, (long_sentence(SHORT[:6]), [1])), good)  # 1 + 2 parts: 3
+    assert model_draft(fits, QUESTION, EVIDENCE, max_tokens=512).redrafts == 0
+    over = replies(answered(short, (long_sentence(SHORT[:6]), [1]), short), good)  # 1 + 2 + 1: 4
+    draft = model_draft(over, QUESTION, EVIDENCE, max_tokens=512)
+    assert (len(over.prompts), draft.redrafts, len(draft.sentences)) == (2, 1, 1)
 
 
 def test_only_a_sentence_that_cannot_be_cut_is_drafted_again_as_before() -> None:
