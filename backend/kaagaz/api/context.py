@@ -33,6 +33,8 @@ class AppContext:
     mailer: Mailer | None = None
     # Folder upload (#484): the files this process is taking at once (upload_guard.SendSlots).
     sends: SendSlots = field(default_factory=SendSlots)
+    # A6: the settings unsafe on a server found at start-up (kaagaz.api.app.unsafe_config).
+    unsafe_config: list[str] = field(default_factory=list)
 
 
 def get_operator_db(request: Request) -> OperatorDatabase:

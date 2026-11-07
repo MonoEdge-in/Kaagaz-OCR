@@ -14,11 +14,15 @@ route to anyone who asks, and the frontend does not need them.
 
 At start-up (uvicorn's lifespan, never with a test's ``db``) the operator's login is tried once
 (``check_operator_login``, QA W1): one that cannot switch into kaagaz_operator stops the API with
-one plain log line, instead of a console that fails while /api/health stays green.
+one plain log line, instead of a console that fails while /api/health stays green. Then the
+settings unsafe on a server (``unsafe_config``, A6, 7 Nov 2026) are logged at error level, sent as
+one ops alert and kept for the operator's Health page; the API starts all the same, since a
+refusal could take the server down on a deploy.
 """
 
 import logging
 import sys
+import threading
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -27,6 +31,7 @@ from fastapi import Depends, FastAPI
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 
+from kaagaz import ops_alert
 from kaagaz.adapters.email import Mailer
 from kaagaz.ai.client import ModelClient
 from kaagaz.api import errors
@@ -77,6 +82,15 @@ DATABASE_UNREACHABLE = (
     "the API cannot reach the database: check that postgres is running and on the api's network"
     " (docs/running-locally.md, The closed lines and the storage keys)"
 )
+# A6: the settings unsafe on a server, by code, in the order they are checked.
+UNSAFE_SAID = {
+    "cookie_not_secure": "APP_URL is https but COOKIE_SECURE is false: set COOKIE_SECURE=true",
+    "eicar_scanner": "SCANNER is eicar_dev, the laptop's stand-in: uploads are not scanned for viruses",
+    "superuser_login": (
+        "the API's database login is a superuser, so it could leave the app role and reach every"
+        " organisation's rows: use the limited login (docs/running-locally.md, Limited database logins)"
+    ),
+}
 
 
 def _utc_now() -> datetime:
@@ -128,6 +142,8 @@ def create_app(
         try:
             if owns_db:
                 check_operator_login(operator_db)
+                context.unsafe_config.extend(unsafe_config(settings, database))
+                report_unsafe_config(settings, context.unsafe_config)
             yield
         finally:  # a refused start too: its connections are closed, never left to the collector
             if owns_db:
@@ -205,6 +221,49 @@ def check_operator_login(operator_db: OperatorDatabase) -> None:
         )
         _log.critical("%s (%s)", said, why or type(error).__name__, extra={"code": code})
         raise RuntimeError(said) from None
+
+
+def unsafe_config(settings: Settings, database: Database) -> list[str]:
+    """A6: the codes (UNSAFE_SAID) of the settings unsafe on a server. One short read of whether
+    the login is a superuser; should that fail, it is logged and that check is skipped, never
+    raised: the start goes on."""
+    superuser = False
+    try:
+        with database.system() as conn:
+            row = conn.execute(text("SELECT rolsuper FROM pg_roles WHERE rolname = session_user")).scalar()
+        superuser = bool(row)
+    except SQLAlchemyError as error:
+        _log.error(
+            "the superuser check could not run (%s)", type(error).__name__, extra={"code": "unsafe_config"}
+        )
+    found = {
+        "cookie_not_secure": (settings.app_url or "").startswith("https://") and not settings.cookie_secure,
+        "eicar_scanner": settings.scanner == "eicar_dev",
+        "superuser_login": superuser,
+    }
+    return [code for code, unsafe in found.items() if unsafe]
+
+
+def report_unsafe_config(
+    settings: Settings, found: list[str], *, mailer: Mailer | None = None
+) -> threading.Thread | None:
+    """A6: each of ``found`` logged at error level, then one ops alert naming them all, on a thread
+    of its own so the start never waits on SES. The thread (tests join it), or None for none."""
+    for code in found:
+        _log.error(UNSAFE_SAID[code], extra={"code": "unsafe_config"})
+    if not found:
+        return None
+    said = (
+        "".join(f"{UNSAFE_SAID[code]}\n" for code in found) + "\nThe operator's Health page lists them too.\n"
+    )
+    sending = threading.Thread(
+        target=ops_alert.send_ops_alert,
+        args=(settings, "Kaagaz server: unsafe settings", said),
+        kwargs={"purpose": "unsafe_config", "mailer": mailer},
+        daemon=True,
+    )
+    sending.start()
+    return sending
 
 
 def configure_logging(level: str) -> None:

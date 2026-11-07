@@ -20,7 +20,7 @@ x-backend: &backend
   build:
     context: ./backend
     args:
-      # The commit the image is built from, shown by /api/health (#246 O1).
+      # The commit the image is built from, shown on the operator's Health page (#246 O1).
       KAAGAZ_COMMIT: ${KAAGAZ_TAG:-local}
   env_file: .env
   environment: &backend-env

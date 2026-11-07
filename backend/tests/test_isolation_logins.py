@@ -368,6 +368,25 @@ def test_the_api_refuses_to_start_when_its_operator_login_cannot_switch(
     _start_api(_owner_url(), _owner_url())  # release day, the owner's for both: it starts
 
 
+def test_unsafe_settings_never_stop_the_start_and_the_operator_sees_them(
+    db: Database, logins: dict[str, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """A6 (stability pass, 7 Nov 2026): at start-up a setting unsafe on a server is logged and
+    alerted, and the operator's Health page shows it; the API starts all the same (a refusal could
+    take the test server down on a deploy). The limited app login is no superuser; the owner is."""
+    for url, expected in (
+        (logins[API], ["eicar_scanner"]),
+        (_owner_url(), ["eicar_scanner", "superuser_login"]),
+    ):
+        settings = make_settings(database_url=url, ops_database_url=logins[OPS], scanner="eicar_dev")
+        app = create_app(settings, storage=ApiFakeStorage(), queue=ApiFakeQueue(), answers=FakeAnswers())
+        with caplog.at_level(logging.ERROR), TestClient(app) as client:
+            assert client.get("/api/health").json() == {"status": "ok"}
+            assert app.state.kaagaz.unsafe_config == expected
+    said = [r for r in caplog.records if getattr(r, "code", None) == "unsafe_config"]
+    assert len(said) == 3
+
+
 def test_a_database_it_cannot_reach_is_said_as_such_never_as_a_login_to_fix(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
