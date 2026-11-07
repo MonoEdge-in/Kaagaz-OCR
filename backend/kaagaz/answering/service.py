@@ -394,6 +394,9 @@ class Answer:
     # #410: a not-found answer's key terms that no document in scope holds (``_missing``); in
     # to_json only when there is one, so answers without it keep their shape.
     missing_words: tuple[str, ...] = ()
+    # #535: the model was down, or the question's (or an aspect's) vector missing, for this answer,
+    # so a repeated question never reuses it (routers/chat.py). Never in to_json.
+    degraded: bool = False
 
     def to_json(self) -> dict[str, Any]:
         """The ``Answer`` of frontend/lib/types.ts, exactly; ``agents``, ``agent_ids``,
@@ -460,6 +463,7 @@ class _Timing:
     overlap_ms: float = 0.0  # the time it took, beside the plan call
     parts: int = 0  # step 20: the parts the evidence was read in (0: one call, as before)
     redrafts: int = 0  # #535: model calls made again for a sentence too long to cut (draft.py)
+    vectorless: bool = False  # #535: the model on, the question searched without a meaning vector
 
     def lap(self, stage: str) -> None:
         now = time.monotonic()
@@ -779,7 +783,10 @@ class AnswerService:
             answer = self._missing(customer_id, asked, answer, scope)
         answer = self._shaped(customer_id, asked, self._mentioned(customer_id, asked, answer, scope), scope)
         said = [*answer.assumptions, *step.assumptions]
-        return replace(answer, rewritten_question=rewritten, unavailable=unavailable, assumptions=said)
+        degraded = _timing().degraded or _timing().vectorless  # #535: never reused for a repeat
+        return replace(
+            answer, rewritten_question=rewritten, unavailable=unavailable, assumptions=said, degraded=degraded
+        )
 
     def _checked(self, answer: Answer, question: str) -> Answer:
         """Decision 2's final check (PRD 6 A, voice.py) over every sentence, whoever wrote it:
@@ -1390,6 +1397,8 @@ class AnswerService:
                     (_search_text(text), meaning) for text, meaning in zip(aspects, meanings, strict=True)
                 ]
                 hits = self._hits(customer_id, query_text, vector, extra, scope, expansion)
+            if self._model is not None and (vector is None or any(m is None for _, m in extra)):
+                _timing().vectorless = True  # #535: no outage, but never reused for a repeat
             if hits:  # never stuck (17 Oct 2026): found by words and typos, a missing vector is no outage
                 _timing().degraded = False
             translated = self._translated_search(
@@ -1560,6 +1569,7 @@ class AnswerService:
         down = timing.degraded
         vector = self._embed(spoken)
         timing.degraded = down
+        timing.vectorless = timing.vectorless or vector is None  # #535: another order, never reused
         limit = max(1, min(len(evidence), MAX_LIMIT))
         found = self._retriever.search(customer_id, query_text, vector, limit, scope, expansion)
         place: dict[str, int] = {}

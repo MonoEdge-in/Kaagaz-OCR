@@ -259,15 +259,18 @@ def openings(conn: Connection, customer_id: str, conversation_id: str) -> list[s
 
 def repeated_answer(conn: Connection, customer_id: str, key: str) -> dict[str, Any] | None:
     """#535 (answering/ready.py ``repeat_key``): the newest stored answer of the last day saved with
-    ``key``, found (answered or unchecked) and not rated Not useful; None when there is none. The
-    key holds the asker, so it is theirs. One statement over the (customer_id, created_at) index."""
+    ``key``, found (answered or unchecked), while no answer saved with it (the first or a copy)
+    is rated Not useful; None when there is none. The key holds the asker, so it is theirs. One
+    statement over the (customer_id, created_at) index."""
     found = conn.execute(
         text(
             "SELECT m.answer FROM messages m WHERE m.customer_id = :c AND m.role = 'assistant'"
             " AND m.created_at > now() - interval '1 day' AND m.answer ->> 'repeat_key' = :k"
             " AND m.answer ->> 'status' IN ('answered', 'unchecked') AND m.answer -> 'outage' IS NULL"
-            " AND NOT EXISTS (SELECT 1 FROM feedback f WHERE f.customer_id = m.customer_id"
-            " AND f.message_id = m.id AND f.rating = 'down')"
+            " AND NOT EXISTS (SELECT 1 FROM messages r JOIN feedback f ON f.customer_id = r.customer_id"
+            " AND f.message_id = r.id WHERE r.customer_id = :c AND r.role = 'assistant'"
+            " AND r.created_at > now() - interval '1 day' AND r.answer ->> 'repeat_key' = :k"
+            " AND f.rating = 'down')"
             " ORDER BY m.created_at DESC LIMIT 1"
         ),
         {"c": customer_id, "k": key},

@@ -162,6 +162,7 @@ def answer_json(*, status: str = "answered", label: str | None = "verified") -> 
 class _FixedAnswer:
     data: dict[str, Any]
     unavailable: bool = False
+    degraded: bool = False
 
     def to_json(self) -> dict[str, Any]:
         return dict(self.data)
@@ -179,6 +180,7 @@ class FakeAnswers:
     pins: list[list[Pin]] = field(default_factory=list)  # the Most relevant picks each question got
     histories: list[list[Turn]] = field(default_factory=list)  # the earlier turns each question got
     unavailable: bool = False  # KZ-006: not found while the model was down
+    degraded: bool = False  # #535: the model or the question's vector was down (never reused)
     resumed: list[Pending] = field(default_factory=list)  # PRD 6 B1: each clarify answered
     clarifies: list[bool] = field(default_factory=list)  # PRD 6 (0052): the nlq_clarify switch each got
     cited: list[list[str]] = field(default_factory=list)  # PRD 6 B: the earlier answers' documents each got
@@ -207,7 +209,7 @@ class FakeAnswers:
         self.scopes.append(scope)
         self.memories.append(memory)
         self.resumed += [pending] if pending is not None else []
-        return _FixedAnswer(self.reply, self.unavailable)
+        return _FixedAnswer(self.reply, self.unavailable, self.degraded)
 
     def remember(self, turns: Sequence[Turn], memory: Memory, cited: Sequence[str]) -> Memory | None:
         self.summarised.append((list(turns), memory, list(cited)))

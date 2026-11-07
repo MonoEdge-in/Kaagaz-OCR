@@ -300,25 +300,24 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
         # "hi", "thanks", "what can you do" (answering/small_talk.py): answered here, no search.
         talk = small_talk.kind(question) if answering is None else None
         examples = [text for text, _ in ready.questions(conn, user.customer_id, user.user_id)] if talk else []
+        # #535: a fresh question (no conversation, no clarify), in any scope, may be a repeat.
+        repeatable = conversation_id is None and answering is None and talk is None
+        made_from = ready.stamp(conn, user.customer_id) if repeatable else ""
+        tagged = ready.tagged(conn, user.customer_id, scope.tag_ids) if repeatable else []
         ready_key = (
-            ready.key(
-                user.customer_id,
-                user.user_id,
-                question,
-                (pins, switched, choice),
-                ready.stamp(conn, user.customer_id),
-            )
+            ready.key(user.customer_id, user.user_id, question, (pins, switched, choice), made_from)
             if fresh and talk is None
             else None
         )
     repeat_key, repeated, started = None, None, time.monotonic()
-    if conversation_id is None and answering is None and talk is None:
+    if repeatable:
         # #535 (answering/ready.py): a fresh question asked again by this person, with these same
         # inputs, today, on this code, while nothing it reads changed: its stored answer, at once.
         today = context.clock().astimezone(ZoneInfo(context.settings.timezone)).date()
-        inputs = (pins, switched, choice, scope, today, running_commit())
+        shaped = ready.shaping(context.settings)
+        inputs = (pins, switched, choice, scope, tagged, today, running_commit(), shaped)
         with context.db.user(user.customer_id, user.user_id) as conn:  # the asker's own words too
-            repeat_key = ready.repeat_key(conn, user.customer_id, user.user_id, question, inputs)
+            repeat_key = ready.repeat_key(conn, user.customer_id, user.user_id, question, inputs, made_from)
             repeated = chat_sql.repeated_answer(conn, user.customer_id, repeat_key)
     saved = None if chosen is None else chosen.model_dump(mode="json")
     # json.dumps writes ", " and ": " as jsonb's text does, so this is the CHECK's length.
@@ -333,6 +332,7 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
         kind="chat",
         conversation_id=conversation_id,
     ) as spend:
+        degraded = False  # #535: the model or the question's vector was down for this answer
         if talk is not None:
             answer = small_talk.answer(talk, question, first_name(user.display_name), examples)
         else:
@@ -356,7 +356,7 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             )
             # KZ-006: an outage is never "not found": the reply says the AI is not responding
             # (``outage``, OUTAGE_LINE) and lists the closest documents; never a "busy" error.
-            answer = reply.to_json()
+            answer, degraded = reply.to_json(), reply.degraded
             if reply.unavailable:
                 answer["outage"] = True
             # A clarifying question shows no opening (ClarifyView), so it never spends the greeting.
@@ -386,8 +386,8 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
                     for text, _ in ready.questions(conn, user.customer_id, user.user_id)
                     if ready.same_question(text) != ready.same_question(question)
                 ][:3]
-            if repeat_key is not None and answer.get("status") in ("answered", "unchecked"):
-                answer[ready.REPEAT_KEY] = repeat_key  # #535: found again by a repeat (not an outage)
+            if repeat_key is not None and _reusable(answer, degraded):
+                answer[ready.REPEAT_KEY] = repeat_key  # #535: found again by a repeat
             asked = chat_sql.add_message(
                 conn,
                 user.customer_id,
@@ -442,9 +442,18 @@ class _Stored:
 
     found: dict[str, Any]
     unavailable: bool = False  # only a found answer is stored for a repeat (db/chat.py)
+    degraded: bool = False  # nor one made while the model or a vector was down (``_reusable``)
 
     def to_json(self) -> dict[str, Any]:
         return without_resume(self.found)  # no key; the opening is written again for now
+
+
+def _reusable(answer: dict[str, Any], degraded: bool) -> bool:
+    """#535: whether a repeat may be answered with ``answer``: found (answered or unchecked), drafted
+    by the model or by a fixed query (never quoted while the model was down or off), and made with
+    the model and the question's vector up (``degraded`` False)."""
+    found = answer.get("status") in ("answered", "unchecked")
+    return found and not degraded and (bool(answer.get("model_used")) or answer.get("route") != "search")
 
 
 def _stored(found: dict[str, Any] | None, started: float) -> _Stored | None:
