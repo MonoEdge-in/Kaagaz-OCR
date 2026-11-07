@@ -124,7 +124,10 @@ def trash_in_folders(
     files, #537), in one statement instead of two a family: every version of a family shares
     its folder, so each family goes whole, and one already in Trash keeps its first time.
     Returns how many families went to Trash now. O(n log D) time and O(n) space for the n
-    documents filed there."""
+    documents filed there.
+
+    shortcut: the caller writes one folder.delete audit row with the count (#537's rule), no
+    document.trash row a family, so a family's own timeline does not show this trash."""
     params = {"c": customer_id, "folders": list(folder_ids), "by": by, "now": now}
     return len(set(conn.execute(text(_TRASH_IN_FOLDERS), params).scalars()))
 

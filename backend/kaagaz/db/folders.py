@@ -42,6 +42,8 @@ from kaagaz.db.sqlstate import CHECK_VIOLATION, FOREIGN_KEY_VIOLATION, UNIQUE_VI
 MAX_DEPTH = 100  # Tushar, 3 Nov 2026 (#484): was 5
 NAME_MAX = 100  # folders.name's CHECK (0002)
 # #537: a folder upload with nothing sent or registered this long is not running (a closed tab).
+# shortcut: a guess; an upload left open that long and continued after the delete sends its
+# files into folders that are gone, which fail folder_gone (or a re-plan makes them again).
 UPLOAD_QUIET_HOURS = 1
 
 
