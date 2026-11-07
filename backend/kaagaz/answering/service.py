@@ -1722,9 +1722,12 @@ class AnswerService:
             code = "evidence_too_large"  # not even the best piece fits
             if seen and self._in_parts(seen, choice):
                 picked = self._read_in_parts(asked, seen, choice)
-                if picked is not None and not picked:  # every part read, none holds an answer
+                if isinstance(picked, str):  # #535: the parts timed out; all the evidence would too
+                    code, seen = picked, []
+                elif picked is not None and not picked:  # every part read, none holds an answer
                     return Draft("not_found", []), True, seen, "notfound_model", team
-                seen = seen if picked is None else picked
+                else:
+                    seen = seen if picked is None else picked
             if seen:
                 cards = fit_cards(asked, seen, self._cards(customer_id, scope, seen), budget)
                 draft_with = partial(
@@ -1769,14 +1772,16 @@ class AnswerService:
 
     def _read_in_parts(
         self, asked: str, seen: Sequence[Evidence], choice: ChatChoice | None
-    ) -> list[Evidence] | None:
+    ) -> list[Evidence] | str | None:
         """Step 20 (#381, answering/parts.py): ``seen`` split into at most ANSWER_PARTS_MAX parts,
         each read by the choice's first agent at its level, all at once (each call takes its own
         slot of the model limiter; one deadline, as ``_ensemble``), in a copy of the context
         (billing, the rate scope, the limiter's waits); every thread is joined before this
         returns. The pieces the parts name, in ``seen``'s order ([]: none holds an answer), or
         None when a part failed, logged by its code: the answer is then drafted from all of
-        ``seen`` in one call, as before."""
+        ``seen`` in one call, as before. #535 (test-server log, 7 Nov 2026): "timeout" when a part
+        timed out, as a draft from all of ``seen``, more than any part, would too: none is made, and
+        the answer goes the way a draft that timed out goes."""
         if self._model is None or choice is None or not choice.agents:
             return None
         model, lead = self._model, choice.agents[0]
@@ -1806,10 +1811,10 @@ class AnswerService:
         results = [future.result() for future in futures]
         for result in results:
             if not isinstance(result, list):
-                _log.warning(
-                    "read in parts failed, drafted from all the evidence", extra={"code": result.code}
-                )
-                return None
+                timed_out = isinstance(result, ModelUnavailable) and result.code == "timeout"
+                then = "not drafted again" if timed_out else "drafted from all the evidence"
+                _log.warning(f"read in parts failed, {then}", extra={"code": result.code})
+                return result.code if timed_out else None
         _log.info("read in %d parts by %s with prompt %s", len(groups), lead.model, PARTS_PROMPT_HASH)
         _timing().parts = len(groups)
         named = {n for result in results if isinstance(result, list) for n in result}
