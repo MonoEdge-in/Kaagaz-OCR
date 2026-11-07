@@ -725,3 +725,17 @@ def test_a_search_in_trash_finds_files_inside_its_folders(db: Database) -> None:
     found = _loose(admin, q="invoice")
     assert {t["old_file"], t["bill"][0], t["alone"]} <= set(found)
     assert admin.client.get(f"/api/documents?trashed_folder_id={t['year']}").status_code == 400
+
+
+def test_trash_at_the_top_level_with_a_filter_never_shows_a_trashed_folder_s_files_as_loose(
+    db: Database,
+) -> None:
+    """A11 (stability pass, 7 Nov 2026): a file that went to Trash with its folder has no folder
+    of its own any more, but it is not a loose file at the top level: it is inside that folder."""
+    api = Api(db)
+    admin = api.new_admin()
+    t = _tree(api, admin)
+    _trash(admin, t["year"])
+
+    assert _loose(admin, folder_id="root") == [t["alone"]]
+    assert _loose(admin, folder_id="root", detected_type="pdf") == [t["alone"]]
