@@ -324,6 +324,35 @@ def test_a_failure_part_way_leaves_the_tree_with_its_line_and_a_run_again_finish
     assert len(unpacking.queue.jobs) == jobs and len(_documents(unpacking)) == 4
 
 
+def test_a_run_again_after_a_file_was_stored_but_not_marked_counts_it_stored_never_a_duplicate(
+    unpacking: Unpacking, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A14 (stability pass, 7 Nov 2026): the worker stopped between storing a file and marking its
+    item (a restart). Run again, the file this unpack made is its own, not "already in Kaagaz"; it
+    is audited once, as an upload."""
+    data = make_zip(THREE_LEVELS)
+    record = unpacking.upload(data)
+    real = items_sql.finish_item
+
+    def stops_after_the_first(*args: Any, **kwargs: Any) -> None:
+        raise BackendUnavailable("database")
+
+    monkeypatch.setattr(items_sql, "finish_item", stops_after_the_first)
+    with pytest.raises(BackendUnavailable):
+        unpacking.unpack(record, data)
+    monkeypatch.setattr(items_sql, "finish_item", real)
+
+    assert unpacking.unpack(record, data) is True
+    found = unpacking.result(record)
+    assert found is not None and (found.stored, found.duplicate, found.waiting) == (3, 0, 0)
+    uploads = unpacking.rows(
+        "SELECT target_id FROM audit_log WHERE customer_id = :c AND action = 'document.upload'"
+        " AND details ->> 'zip_document_id' = :z",
+        z=record.document_id,
+    )
+    assert len(uploads) == len(set(uploads)) == 3
+
+
 def test_the_scanner_down_is_tried_again_and_a_renamed_zip_keeps_its_folder(unpacking: Unpacking) -> None:
     data = make_zip(THREE_LEVELS)
     record = unpacking.upload(data)

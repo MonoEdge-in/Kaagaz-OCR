@@ -305,6 +305,11 @@ def item(conn: Connection, customer_id: str, item_id: str, *, user_id: str) -> I
 
 # The document is the item's own copy when an earlier send stored it (same uploader, folder,
 # batch and name) and then died before it was finished: stored, not a duplicate of itself.
+_OWN = text(
+    "SELECT d.id FROM folder_upload_items i JOIN documents d ON d.customer_id = i.customer_id"
+    " AND d.uploaded_by = :usr AND d.folder_id = i.folder_id AND d.batch_id = i.batch_id"
+    " AND d.display_name = i.name WHERE i.customer_id = :c AND i.id = :i ORDER BY d.created_at, d.id LIMIT 1"
+)
 _FINISH = text(
     "UPDATE folder_upload_items i SET document_id = :d, updated_at = now(),"
     " state = CASE WHEN NOT :dup OR EXISTS (SELECT 1 FROM documents d WHERE d.customer_id = :c"
@@ -325,6 +330,13 @@ def finish_item(
     notes). An item no longer waiting is left as it is. One statement, O(log n)."""
     params = {"c": customer_id, "i": item_id, "d": document_id, "dup": duplicate, "usr": user_id}
     conn.execute(_FINISH, params)
+
+
+def own_document(conn: Connection, customer_id: str, item_id: str, *, user_id: str) -> str | None:
+    """A14: the document an earlier run stored for this item (``_FINISH``'s rule) before it stopped
+    short of finishing it; None for none. One statement, on the batch's documents."""
+    found = conn.execute(_OWN, {"c": customer_id, "i": item_id, "usr": user_id}).scalar()
+    return None if found is None else str(found)
 
 
 def fail_item(conn: Connection, customer_id: str, item_id: str, code: str) -> None:
