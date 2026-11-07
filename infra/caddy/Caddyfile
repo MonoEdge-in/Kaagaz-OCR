@@ -54,7 +54,8 @@
 	# search, a question, a document's words or a folder's name (A18): these query
 	# parameters are deleted from each logged address (q: /api/search, /api/documents,
 	# the stories match, the /search and /chat pages; party: /api/documents; w: a page's
-	# words; source_name: a folder upload's name), and the Referer header, which repeats
+	# words; source_name: a folder upload's name; property: a survey number read from a document;
+	# code and state: a Google sign-in's), and the Referer header, which repeats
 	# a page's address, is not logged. The idle check reads only the path and the Cookie
 	# header's name.
 	log {
@@ -67,6 +68,9 @@
 					delete party
 					delete w
 					delete source_name
+					delete property
+					delete code
+					delete state
 				}
 				request>headers>Referer delete
 			}

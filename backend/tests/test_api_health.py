@@ -3,9 +3,13 @@ stability pass, 7 Nov 2026): anyone may ask, so it says ``{status}`` only; which
 the running commit are on the operator's Health page (GET /api/operator/health)."""
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import cast
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import Connection, create_engine, text
+from sqlalchemy.exc import OperationalError
 
 from kaagaz.adapters.email import MemoryMailer
 from kaagaz.api import app as app_module
@@ -143,3 +147,33 @@ def test_each_unsafe_setting_is_logged_and_one_ops_alert_says_them_all(
         app_module.UNSAFE_SAID["eicar_scanner"] in body and app_module.UNSAFE_SAID["superuser_login"] in body
     )
     assert app_module.report_unsafe_config(settings, [], mailer=mailer) is None and len(mailer.sent) == 1
+
+
+class _NoLoginDatabase(Database):
+    """Its transactions fail as a database refusing the read would."""
+
+    @contextmanager
+    def system(self) -> Iterator[Connection]:
+        raise OperationalError("SELECT", {}, Exception("refused"))
+        yield cast(Connection, None)
+
+
+def test_a_superuser_check_that_could_not_run_is_said_never_read_as_safe(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A6 review: no answer is not "not a superuser": the operator sees the check did not run."""
+    broken = _NoLoginDatabase(make_engine("postgresql://unused@localhost:1/unused"), "kaagaz_app")
+    with caplog.at_level(logging.ERROR):
+        assert app_module.unsafe_config(make_settings(scanner="clamav"), broken) == ["superuser_unchecked"]
+    assert "superuser_unchecked" in app_module.UNSAFE_SAID
+
+
+def test_an_unsafe_settings_alert_that_was_not_sent_says_so(caplog: pytest.LogCaptureFixture) -> None:
+    """A6 review: with OPS_ALERT_EMAIL unset (or SES refusing), the log says the alert never went."""
+    settings = make_settings(ops_alert_email=None, email_from=None)
+    with caplog.at_level(logging.ERROR):
+        sending = app_module.report_unsafe_config(settings, ["eicar_scanner"], mailer=MemoryMailer())
+        assert sending is not None
+        sending.join(10)
+    said = [r.getMessage() for r in caplog.records if getattr(r, "code", None) == "unsafe_config"]
+    assert any("OPS_ALERT_EMAIL" in line for line in said)

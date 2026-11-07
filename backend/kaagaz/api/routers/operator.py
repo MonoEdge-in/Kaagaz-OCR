@@ -50,7 +50,7 @@ from kaagaz.api.context import AppContext, get_context, get_operator_db
 from kaagaz.api.errors import ApiError
 from kaagaz.api.middleware import client_address
 from kaagaz.api.routers.admin import MAX_PASSWORD
-from kaagaz.api.routers.auth import ACCOUNT_MAX_FAILURES, MAX_CODE, address_locks
+from kaagaz.api.routers.auth import ACCOUNT_LOCK_MINUTES, ACCOUNT_MAX_FAILURES, MAX_CODE, address_locks
 from kaagaz.api.secret_box import SecretBoxError
 from kaagaz.api.twostep import box, digits, refused, unix
 from kaagaz.db import operators as operators_sql
@@ -117,6 +117,7 @@ def login(body: OperatorLoginBody, request: Request, db: OperatorDb, context: Co
             version = operators_sql.login_succeeded(conn, attempt.operator_id, step, now)
     if version is None:
         raise _failed(db, context, attempt)
+    address_locks.clear(_address_key(body.email, client_address(request)))  # the count starts again
     return _start_session(context, attempt, version, now)
 
 
@@ -238,19 +239,29 @@ def _begin_from(
     """A sign-in's counted attempt, as ``routers/auth.py``'s ``_begin`` with an address (A2):
     locked per operator and address, then per operator at ACCOUNT_MAX_FAILURES; ``failed_logins``
     is the count that locks. shortcut: no read of the operator's count without counting it, so the
-    CLI's unlock-operator does not end an address's lock; it ends after login_lock_minutes."""
+    CLI's unlock-operator does not end an address's lock; it ends after login_lock_minutes (a
+    right password from that address does, ``login``)."""
     settings = context.settings
-    lock_seconds = settings.login_lock_minutes * 60
-    key = f"op:{email.strip().lower()}|{address}"
-    if address_locks.locked(key, now.timestamp(), settings.login_max_failures, lock_seconds):
+    key = _address_key(email, address)
+    count = address_locks.take(
+        key, now.timestamp(), settings.login_max_failures, settings.login_lock_minutes * 60
+    )
+    if count is None:
         return None
     with db.operator() as conn:
-        lock_end = now + timedelta(minutes=settings.login_lock_minutes)
+        lock_end = now + timedelta(minutes=ACCOUNT_LOCK_MINUTES)
         attempt = operators_sql.begin_login(conn, email, now, ACCOUNT_MAX_FAILURES, lock_end)
-    if attempt is None or attempt.failed_logins >= ACCOUNT_MAX_FAILURES:
+    if attempt is None:
+        if count == 1:  # an unknown e-mail (or a locked operator) leaves nothing held
+            address_locks.clear(key)
+        return None
+    if attempt.failed_logins >= ACCOUNT_MAX_FAILURES:
         return attempt
-    count = address_locks.count(key, now.timestamp(), lock_seconds, attempt.failed_logins)
     return dataclasses.replace(attempt, failed_logins=count)
+
+
+def _address_key(email: str, address: str) -> str:
+    return f"op:{email.strip().lower()}|{address}"
 
 
 def _failed(db: OperatorDatabase, context: AppContext, attempt: OperatorAttempt) -> ApiError:

@@ -24,6 +24,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 
 from kaagaz import worker_main
+from kaagaz.api import app as app_module
 from kaagaz.api.app import create_app
 from kaagaz.cli import main
 from kaagaz.db.engine import Database, OperatorDatabase, make_engine
@@ -383,7 +384,7 @@ def test_unsafe_settings_never_stop_the_start_and_the_operator_sees_them(
         with caplog.at_level(logging.ERROR), TestClient(app) as client:
             assert client.get("/api/health").json() == {"status": "ok"}
             assert app.state.kaagaz.unsafe_config == expected
-    said = [r for r in caplog.records if getattr(r, "code", None) == "unsafe_config"]
+    said = [r for r in caplog.records if r.getMessage() in app_module.UNSAFE_SAID.values()]
     assert len(said) == 3
 
 

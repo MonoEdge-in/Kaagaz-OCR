@@ -248,8 +248,9 @@ def test_the_caddyfile_sends_api_unchanged_to_the_api_and_the_rest_to_the_fronte
 # A18: the query parameters that can carry a question, a search, a document's words or a
 # folder's name: q (/api/search, /api/documents, /api/stories match, and the /search and /chat
 # pages), party (/api/documents), w (/api/documents/{id}/words), source_name
-# (/api/folder-uploads/previous).
-PRIVATE_QUERY = ["q", "party", "w", "source_name"]
+# (/api/folder-uploads/previous); review: property (/api/documents, a survey number read from a
+# document), and a Google sign-in's code and state (/api/auth/oidc/google/callback).
+PRIVATE_QUERY = ["q", "party", "w", "source_name", "property", "code", "state"]
 
 
 def test_the_access_log_keeps_no_search_question_or_name() -> None:

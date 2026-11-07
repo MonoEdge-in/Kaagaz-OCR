@@ -33,6 +33,7 @@ Why:
   parser error document text.
 """
 
+import ipaddress
 import json
 import logging
 import math
@@ -131,35 +132,45 @@ class AddressLocks:
     """Wrong sign-ins in a row per account and visitor address (A2, 7 Nov 2026), in memory (the
     API is one process): ``limit`` attempts from one address lock that account for that address
     for ``lock_seconds``, so a flood from one address never locks the person out of their own.
-    As ``users.begin_attempt``: counted before the check, the attempt that reaches the limit
-    still runs, a lock is never extended, and an expired one starts the count again (so does
-    ``lock_seconds`` with no attempt). ``count`` never goes above the account's own count, which
-    a right password, an unlock or a reset link sets back to 0.
+    As ``users.begin_attempt``: counted before the check, in one step with the lock's check (so
+    a burst sent at once can't slip past it), the attempt that reaches the limit still runs, a
+    lock is never extended, and an expired one starts the count again (so does ``lock_seconds``
+    with no attempt). ``saw`` keeps the account's own count after each counted attempt; a locked
+    address reads ``seen`` first, then the account's count: lower means it went back since (a
+    right password, an unlock or a reset link set it to 0), and the caller clears the address.
     shortcut: a restart forgets every count; past ``max_keys`` the quiet ones are dropped."""
 
     def __init__(self, *, max_keys: int = 10_000) -> None:
-        self._held: dict[str, tuple[int, float]] = {}  # key: (count, when the last was counted)
+        # key: (count, when the last was counted, the account's count last seen after one)
+        self._held: dict[str, tuple[int, float, int]] = {}
         self._max_keys = max_keys
         self._lock = threading.Lock()
 
-    def locked(self, key: str, now: float, limit: int, lock_seconds: float) -> int:
-        """The count while ``key`` is locked, else 0. O(1)."""
+    def take(self, key: str, now: float, limit: int, lock_seconds: float) -> int | None:
+        """Count one attempt for ``key``: the new count, or None while ``key`` is locked (nothing
+        counted). O(1), and one O(n) pass dropping the quiet keys when ``max_keys`` are held."""
         with self._lock:
-            count, at = self._held.get(key, (0, -math.inf))
-        return count if count >= limit and now - at < lock_seconds else 0
-
-    def count(self, key: str, now: float, lock_seconds: float, ceiling: int) -> int:
-        """Count one attempt for ``key``, at most ``ceiling``; the new count. O(1), and one O(n)
-        pass dropping the quiet keys when ``max_keys`` are held."""
-        with self._lock:
-            count, at = self._held.get(key, (0, -math.inf))
+            count, at, seen = self._held.get(key, (0, -math.inf, 0))
+            if count >= limit and now - at < lock_seconds:
+                return None
             if now - at >= lock_seconds:
                 count = 0
             if key not in self._held and len(self._held) >= self._max_keys:
                 self._held = {k: v for k, v in self._held.items() if now - v[1] < lock_seconds}
-            count = min(count + 1, ceiling)
-            self._held[key] = (count, now)
-            return count
+            self._held[key] = (count + 1, now, seen)
+            return count + 1
+
+    def saw(self, key: str, account: int) -> None:
+        """The account's count after an attempt ``key`` took. O(1)."""
+        with self._lock:
+            count, at, seen = self._held.get(key, (0, 0.0, 0))
+            self._held[key] = (count, at, max(seen, account))
+
+    def seen(self, key: str) -> int:
+        """The account's count ``key`` last saw: read it before the account's own, so a burst in
+        flight, whose counts only go up, never reads as a reset. O(1)."""
+        with self._lock:
+            return self._held.get(key, (0, 0.0, 0))[2]
 
     def clear(self, key: str) -> None:
         with self._lock:
@@ -167,8 +178,14 @@ class AddressLocks:
 
 
 def client_address(request: Request) -> str:
-    """The visitor's address: uvicorn takes it from Caddy's X-Forwarded-For (backend/Dockerfile)."""
-    return request.client.host if request.client else "-"
+    """The visitor's address: uvicorn takes it from Caddy's X-Forwarded-For (backend/Dockerfile).
+    An IPv6 address counts as its /64 (A2 review): whoever holds one has endless addresses."""
+    host = request.client.host if request.client else "-"
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    return str(ipaddress.ip_network(f"{host}/64", strict=False)) if address.version == 6 else host
 
 
 class RequestMiddleware(BaseHTTPMiddleware):
@@ -188,7 +205,7 @@ class RequestMiddleware(BaseHTTPMiddleware):
         if operator_id:
             key = f"op:{operator_id}"
         else:
-            key = f"user:{user_id}" if user_id else f"ip:{request.client.host if request.client else '-'}"
+            key = f"user:{user_id}" if user_id else f"ip:{client_address(request)}"
         path = request.url.path
         upload = path == UPLOAD_PATH or path.startswith(UPLOAD_PATH + "/")
         folder = request.method == "POST" and path == FOLDER_FILE_PATH and FOLDER_ITEM in request.query_params

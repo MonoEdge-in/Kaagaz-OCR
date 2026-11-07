@@ -90,6 +90,7 @@ UNSAFE_SAID = {
         "the API's database login is a superuser, so it could leave the app role and reach every"
         " organisation's rows: use the limited login (docs/running-locally.md, Limited database logins)"
     ),
+    "superuser_unchecked": "whether the API's database login is a superuser could not be read at start-up",
 }
 
 
@@ -225,9 +226,9 @@ def check_operator_login(operator_db: OperatorDatabase) -> None:
 
 def unsafe_config(settings: Settings, database: Database) -> list[str]:
     """A6: the codes (UNSAFE_SAID) of the settings unsafe on a server. One short read of whether
-    the login is a superuser; should that fail, it is logged and that check is skipped, never
-    raised: the start goes on."""
-    superuser = False
+    the login is a superuser; should that fail, it is ``superuser_unchecked`` (its error's type
+    logged), never raised: the start goes on."""
+    superuser: bool | None = None
     try:
         with database.system() as conn:
             row = conn.execute(text("SELECT rolsuper FROM pg_roles WHERE rolname = session_user")).scalar()
@@ -239,7 +240,8 @@ def unsafe_config(settings: Settings, database: Database) -> list[str]:
     found = {
         "cookie_not_secure": (settings.app_url or "").startswith("https://") and not settings.cookie_secure,
         "eicar_scanner": settings.scanner == "eicar_dev",
-        "superuser_login": superuser,
+        "superuser_login": superuser is True,
+        "superuser_unchecked": superuser is None,
     }
     return [code for code, unsafe in found.items() if unsafe]
 
@@ -256,12 +258,16 @@ def report_unsafe_config(
     said = (
         "".join(f"{UNSAFE_SAID[code]}\n" for code in found) + "\nThe operator's Health page lists them too.\n"
     )
-    sending = threading.Thread(
-        target=ops_alert.send_ops_alert,
-        args=(settings, "Kaagaz server: unsafe settings", said),
-        kwargs={"purpose": "unsafe_config", "mailer": mailer},
-        daemon=True,
-    )
+
+    def send() -> None:
+        sent = ops_alert.send_ops_alert(
+            settings, "Kaagaz server: unsafe settings", said, purpose="unsafe_config", mailer=mailer
+        )
+        if not sent:  # SES's own refusal is logged by ops_alert; a missing setting is said here
+            why = ops_alert.missing(settings) or "SES refused it"
+            _log.error("the unsafe settings alert was not sent: %s", why, extra={"code": "unsafe_config"})
+
+    sending = threading.Thread(target=send, daemon=True)
     sending.start()
     return sending
 

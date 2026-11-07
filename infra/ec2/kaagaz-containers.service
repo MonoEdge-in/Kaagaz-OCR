@@ -5,6 +5,8 @@
 Description=Kaagaz: email when a container is unhealthy or restarting
 Wants=docker.service
 After=docker.service
+# A check that cannot run (dockerd down) emails too, as a failed deploy does.
+OnFailure=kaagaz-alert@%n.service
 
 [Service]
 Type=oneshot

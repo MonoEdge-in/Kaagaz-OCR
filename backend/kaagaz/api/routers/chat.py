@@ -70,6 +70,7 @@ from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from pydantic import (
@@ -282,9 +283,10 @@ ANSWERING_ALREADY = "That question is still being answered. Open this conversati
 # (db/engine.py: POOL_SIZE 10 + MAX_OVERFLOW 5), and a request waits at most POOL_TIMEOUT_SECONDS
 # (10) for one. So STREAM_WORKERS (5) streamed and POSTED_ANSWERS (2) posted answers at once hold
 # at most 2 x 7 = 14, and every other request always finds one. Past them an answer waits its turn
-# instead of failing: a stream in the stream pool's queue (pings keep it open; its time cap counts
-# the wait), a POST for a free slot. At 10 to 20 seconds an answer, the last of 20 people asking at
-# once starts within about a minute, inside ANSWER_STREAM_MAX_SECONDS (180).
+# instead of failing, for up to ANSWER_STREAM_MAX_SECONDS (180), and its own time cap starts only
+# once it runs: a stream in the stream pool's queue (pings keep it open), a POST for a free slot
+# (waiting off the threadpool every route shares). At 10 to 45 seconds an answer, the last of 20
+# people asking at once starts within about two minutes.
 # One person has at most ANSWERS_PER_USER answers being written, streamed and posted together.
 ANSWERS_PER_USER = 2
 POSTED_ANSWERS = 2
@@ -320,19 +322,30 @@ def _new_answer(body: "AskBody", user: CurrentUser) -> str | None:
     return user.user_id
 
 
+POSTED_POLL_SECONDS = 0.25
+
+
 @router.post("/chat")
-def ask_posted(body: AskBody, user: User, context: Context, background: BackgroundTasks) -> dict[str, Any]:
-    """``ask`` within the asker's turns and the process's POSTED_ANSWERS (A3)."""
+async def ask_posted(
+    body: AskBody, user: User, context: Context, background: BackgroundTasks
+) -> dict[str, Any]:
+    """``ask`` (on the threadpool) within the asker's turns and the process's POSTED_ANSWERS (A3).
+    The wait for a slot is here, on the event loop, so waiting answers hold no pool thread; one
+    that finds none in ANSWER_STREAM_MAX_SECONDS is 503, logged ``posted_answers_full``."""
     turn = _new_answer(body, user)
     if turn is None:
-        return ask(body, user, context, background)
+        return await run_in_threadpool(ask, body, user, context, background)
     if not _take_turn(turn):
         raise ApiError(429, "rate_limited", TOO_MANY_RUNNING, headers={"Retry-After": "10"})
     try:
-        if not _POSTED.acquire(timeout=context.settings.answer_stream_max_seconds):
-            raise ApiError(503, "backend_unavailable")
+        gives_up = time.monotonic() + context.settings.answer_stream_max_seconds
+        while not _POSTED.acquire(blocking=False):
+            if time.monotonic() >= gives_up:
+                logger.warning("no slot for a posted answer", extra={"code": "posted_answers_full"})
+                raise ApiError(503, "backend_unavailable")
+            await asyncio.sleep(POSTED_POLL_SECONDS)
         try:
-            return ask(body, user, context, background)
+            return await run_in_threadpool(ask, body, user, context, background)
         finally:
             _POSTED.release()
     finally:
@@ -720,13 +733,15 @@ async def stream_answer(
     ``stream.EVENTS`` set so the answer sends its events (``started`` first); each event as it
     comes, ": ping" after ``heartbeat`` seconds (HEARTBEAT_SECONDS) with none, then ``done`` with
     its reply or ``error`` with its code and words (an ``ApiError``'s, else what the app's handlers
-    would send). Past ``cap`` seconds: ``error`` "answer_timeout" (TOO_SLOW, logged with that
-    code), and the answer is stopped (``Events.cancel``: its model stream closed at the next check,
-    nothing saved), unless it is being saved or saved already: it is finished then, and ``done``
-    follows. A client that goes away before ``done`` only stops the events (``Events.detach``):
-    the answer is finished and saved, as ``POST /api/chat``'s is (Tushar, 16 Oct 2026).
-    ``turn``: the asker whose turn (A3) it takes from here until the work ends; none left, an
-    ``error`` "rate_limited" (the route has said 429 already, unless another came in between)."""
+    would send). Past ``cap`` seconds from when it starts: ``error`` "answer_timeout" (TOO_SLOW,
+    logged with that code), and the answer is stopped (``Events.cancel``: its model stream closed
+    at the next check, nothing saved), unless it is being saved or saved already: it is finished
+    then, and ``done`` follows. A client that goes away before ``done`` only stops the events
+    (``Events.detach``): the answer is finished and saved, as ``POST /api/chat``'s is (Tushar, 16 Oct 2026).
+    ``turn``: the asker whose turn (A3) it takes from here until the reply is sent (not the
+    memory's write after it); none left, an ``error`` "rate_limited" (the route has said 429
+    already, unless another came in between). Still waiting for the stream pool after ``cap``
+    seconds (A3): it never runs, and the error is the busy words, logged ``answer_queue_full``."""
     if turn is not None and not _take_turn(turn):
         yield sse("error", {"code": "rate_limited", "message": TOO_MANY_RUNNING})
         return
@@ -737,19 +752,36 @@ async def stream_answer(
         with contextlib.suppress(RuntimeError):  # the stream's loop is gone
             loop.call_soon_threadsafe(inbox.put_nowait, (name, data))
 
-    events = Events(post)
+    def replied() -> None:
+        if turn is not None:
+            _end_turn(turn)
+
+    events, started = Events(post), threading.Event()
     # The request's context, and the events, on the pool's thread. submit, not run_in_executor:
     # the work goes on after the stream ends, with no asyncio future left behind on a closed loop.
-    running = _STREAMS.submit(contextvars.copy_context().run, _work, work, context, events, post)
-    if turn is not None:
-        running.add_done_callback(lambda _: _end_turn(turn))
+    running = _STREAMS.submit(
+        contextvars.copy_context().run, _work, work, context, events, post, started, replied
+    )
     RUNNING.add(running)
     running.add_done_callback(RUNNING.discard)
-    ends = loop.time() + cap
+    queued_until: float | None = loop.time() + cap
+    ends = math.inf
     every = HEARTBEAT_SECONDS if heartbeat is None else heartbeat
     try:
         while True:
-            left = ends - loop.time()
+            if queued_until is not None and started.is_set():
+                queued_until, ends = None, loop.time() + cap  # it runs: its own time starts
+            left = (ends if queued_until is None else queued_until) - loop.time()
+            if left <= 0 and queued_until is not None:
+                if running.cancel():  # never started: the pool was full the whole time
+                    replied()
+                    logger.warning("streamed answer never started", extra={"code": "answer_queue_full"})
+                    yield sse(
+                        "error", {"code": "backend_unavailable", "message": MESSAGES["backend_unavailable"]}
+                    )
+                    return
+                queued_until, ends = None, loop.time() + cap  # it started just now
+                continue
             if left <= 0:
                 # A9: off the loop: it waits while a save holds the answer's lock.
                 if await asyncio.to_thread(events.cancel):
@@ -763,7 +795,7 @@ async def stream_answer(
             try:
                 name, data = await asyncio.wait_for(inbox.get(), min(every, left))
             except TimeoutError:
-                if loop.time() < ends:
+                if loop.time() < (ends if queued_until is None else queued_until):
                     yield ": ping\n\n"
                 continue
             yield sse(name, data)
@@ -778,12 +810,16 @@ def _work(
     context: AppContext,
     events: Events,
     post: Callable[[str, dict[str, Any]], None],
+    started: threading.Event,
+    replied: Callable[[], None],
 ) -> None:
-    """``stream_answer``'s work: the answer, then ``done`` or ``error``; nothing once stopped by
-    the cap. Once saved the answer is finished: ``done`` goes out (if anyone still listens) and its
-    background tasks (the memory, ``ask``'s) run here, each in its own try, whether the client
-    stayed or not. A failure is logged with where the answer would have landed."""
+    """``stream_answer``'s work: ``started`` set, the answer, ``replied()`` (the asker's turn back,
+    A3), then ``done`` or ``error``; nothing once stopped by the cap. Once saved the answer is
+    finished: ``done`` goes out (if anyone still listens) and its background tasks (the memory,
+    ``ask``'s) run here, each in its own try, whether the client stayed or not. A failure is logged
+    with where the answer would have landed."""
     token = stream.EVENTS.set(events)
+    started.set()
     background = BackgroundTasks()
     try:
         try:
@@ -800,6 +836,8 @@ def _work(
             logger.error("streamed answer failed", extra={"code": type(error).__name__, **events.landing})
             post("error", {"code": "internal_error", "message": MESSAGES["internal_error"]})
             return
+        finally:
+            replied()
         post("done", {"reply": jsonable_encoder(reply)})
         for task in background.tasks:
             try:

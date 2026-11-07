@@ -8,6 +8,7 @@ very same reply. The clock is the app's own, moved forward by the test.
 """
 
 import hashlib
+import threading
 from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
@@ -90,7 +91,8 @@ def test_a_flood_from_one_address_never_locks_the_person_out_of_their_own(db: Da
 
 
 def test_fifty_wrong_passwords_from_anywhere_lock_the_account_everywhere(db: Database) -> None:
-    """A2: the account's own cap, across every address, against a spread-out guesser."""
+    """A2: the account's own cap, across every address, against a spread-out guesser: 50 an hour
+    (review: a 15-minute lock let a guesser with many addresses try 200 an hour)."""
     api = Api(db)
     customer_id, _ = api.customer()
     user_id, email = api.add_user(customer_id, "member")
@@ -100,10 +102,39 @@ def test_fifty_wrong_passwords_from_anywhere_lock_the_account_everywhere(db: Dat
             assert _login(client, email, WRONG).status_code == 401
 
     state = api.user_state(customer_id, user_id)
-    assert (state["failed_logins"], state["locked_until"]) == (50, api.clock() + timedelta(minutes=15))
+    assert (state["failed_logins"], state["locked_until"]) == (50, api.clock() + timedelta(minutes=60))
     assert _login(_from(api, "198.51.100.9"), email).status_code == 401
-    api.clock.advance(15 * 60 + 1)
+    api.clock.advance(60 * 60 - 1)
+    assert _login(_from(api, "198.51.100.9"), email).status_code == 401
+    api.clock.advance(2)
     assert _login(_from(api, "198.51.100.9"), email).status_code == 200
+
+
+def test_a_burst_of_parallel_guesses_from_one_address_counts_only_five(db: Database) -> None:
+    """A2 review: the address's count is taken before the check, in one step, so 30 guesses sent
+    at once from one address can't all slip past it onto the account's count."""
+    api = Api(db)
+    customer_id, _ = api.customer()
+    user_id, email = api.add_user(customer_id, "member")
+    attacker = _from(api, "203.0.113.7")
+    threads = [threading.Thread(target=_login, args=(attacker, email, WRONG)) for _ in range(30)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(60)
+    assert api.user_state(customer_id, user_id)["failed_logins"] == 5
+    assert _login(_from(api, "198.51.100.9"), email).status_code == 200
+
+
+def test_one_ipv6_network_is_one_address(db: Database) -> None:
+    """A2 review: anyone holding a /64 has endless IPv6 addresses, so its addresses count as one."""
+    api = Api(db)
+    customer_id, _ = api.customer()
+    _, email = api.add_user(customer_id, "member")
+    for n in range(5):
+        assert _login(_from(api, f"2001:db8:1:2::{n + 1}"), email, WRONG).status_code == 401
+    assert _login(_from(api, "2001:db8:1:2::99"), email).status_code == 401  # the same /64
+    assert _login(_from(api, "2001:db8:1:3::1"), email).status_code == 200  # another one
 
 
 def test_locked_unknown_wrong_and_disabled_replies_are_identical(db: Database) -> None:

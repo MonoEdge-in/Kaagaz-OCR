@@ -166,6 +166,7 @@ from kaagaz.db import audit, identities
 from kaagaz.db import email_links as links_sql
 from kaagaz.db import users as users_sql
 from kaagaz.db.users import AttemptRow
+from kaagaz.settings import Settings
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -191,10 +192,13 @@ SIGNUPS_PER_HOUR = 20
 signup_limits = RateLimiter(SIGNUPS_PER_HOUR, window_seconds=3600)
 TOO_MANY_SIGNUPS = "Too many sign-ups from here. Try again in an hour."
 # A2: a sign-in's cap for the account across every address (each address has
-# login_max_failures, address_locks). shortcut: in a row, not an hour: one address at 5 a lock
-# reaches it in about 2.5 hours unless the person signs in meanwhile. The signed-in checks still
-# lock at login_max_failures, counted on the same column, so after a flood they can lock sooner.
+# login_max_failures, address_locks), locked for an hour: at most 50 an hour from anywhere.
+# shortcut: in a row, not an hour: one address at 5 a lock reaches it in about 2.5 hours unless
+# the person signs in meanwhile, and the one 401's words still say login_lock_minutes. The
+# signed-in checks still lock at login_max_failures, counted on the same column, so after a flood
+# they can lock sooner.
 ACCOUNT_MAX_FAILURES = 50
+ACCOUNT_LOCK_MINUTES = 60
 address_locks = AddressLocks()
 # Trimmed, then the operator's limits (routers/operator_orgs.py NewOrgBody).
 OrgName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
@@ -333,7 +337,7 @@ def _signup_on(context: AppContext) -> bool:
 def signup(body: SignupBody, request: Request, context: Context) -> JSONResponse:
     if not context.settings.self_signup_enabled:
         raise ApiError(404, "not_found")
-    if not signup_limits.allow(request.client.host if request.client else "-"):
+    if not signup_limits.allow(client_address(request)):
         raise ApiError(429, "rate_limited", TOO_MANY_SIGNUPS, headers={"Retry-After": "3600"})
     email = valid_email(body.email)
     if not org_name_ok(body.organisation_name):
@@ -594,16 +598,18 @@ def _begin(
     ``address``: locked per account and address, then per account at ACCOUNT_MAX_FAILURES (A2).
     Its ``failed_logins`` is then the count that locks, for ``_failed``'s ``auth.locked``."""
     settings = context.settings
-    lock_seconds = settings.login_lock_minutes * 60
-    key = f"{user_id}|{address}"
-    if address is not None and (
-        held := address_locks.locked(key, now.timestamp(), settings.login_max_failures, lock_seconds)
-    ):
-        with context.db.customer(customer_id) as conn:
-            account = users_sql.peek_attempt(conn, customer_id, user_id, now=now)
-        if account is None or account.failed_logins >= held:
-            return None
-        address_locks.clear(key)  # the account's count started again since: a right password, an unlock
+    key, count = f"{user_id}|{address}", 0
+    if address is not None:
+        taken = _take(key, now, settings)
+        if taken is None:
+            seen = address_locks.seen(key)  # before the read (AddressLocks.seen)
+            with context.db.customer(customer_id) as conn:
+                account = users_sql.peek_attempt(conn, customer_id, user_id, now=now)
+            if account is None or account.failed_logins >= seen:
+                return None
+            address_locks.clear(key)  # the account's count started again since: a right password, an unlock
+            taken = _take(key, now, settings)
+        count = taken or 1
     with context.db.customer(customer_id) as conn:
         attempt = users_sql.begin_attempt(
             conn,
@@ -611,12 +617,19 @@ def _begin(
             user_id,
             now=now,
             max_failures=settings.login_max_failures if address is None else ACCOUNT_MAX_FAILURES,
-            lock_minutes=settings.login_lock_minutes,
+            lock_minutes=settings.login_lock_minutes if address is None else ACCOUNT_LOCK_MINUTES,
         )
     if attempt is None or address is None or attempt.failed_logins >= ACCOUNT_MAX_FAILURES:
         return attempt
-    count = address_locks.count(key, now.timestamp(), lock_seconds, attempt.failed_logins)
+    address_locks.saw(key, attempt.failed_logins)
     return dataclasses.replace(attempt, failed_logins=count)
+
+
+def _take(key: str, now: datetime, settings: Settings) -> int | None:
+    """``address_locks.take`` with the sign-in's limit and lock."""
+    return address_locks.take(
+        key, now.timestamp(), settings.login_max_failures, settings.login_lock_minutes * 60
+    )
 
 
 def _check_current_password(

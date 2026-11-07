@@ -536,6 +536,8 @@ def test_an_unhealthy_or_restarting_container_is_emailed_every_hour_it_lasts() -
     assert "docker ps -a --filter health=unhealthy --format '{{.Names}}'" in script
     assert "docker ps -a --filter status=restarting --format '{{.Names}}'" in script
     assert '"$(dirname "$0")/ops-alert.sh" containers "Kaagaz server: not healthy: $names"' in script
+    # Review: a check that cannot run (dockerd down) is the trouble to hear about.
+    assert unit("kaagaz-containers.service")["Unit.OnFailure"] == "kaagaz-alert@%n.service"
     assert section(unit("kaagaz-containers.service"), "Service") == {
         "Service.Type": "oneshot",
         "Service.User": "ubuntu",

@@ -822,3 +822,20 @@ def test_a_folder_deleted_keeping_its_contents_hands_its_trashed_folders_to_wher
     assert _trashed(db, c)[child][0] == destination
     assert _restore(admin, child).status_code == 200
     assert _folders(db, c)[child][0] == destination
+
+
+def test_a_part_that_deletes_nothing_stops_instead_of_asking_again_for_ever(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A12 review: were every file of a part skipped (gone from Trash meanwhile), a 202 with the same
+    count would make the screen ask again for ever; it ends as a folder not emptied (409)."""
+    monkeypatch.setattr(folders_router, "FOREVER_FAMILIES", 2)
+    monkeypatch.setattr(folders_router.trashed_sql, "delete_family", lambda *args: False)
+    api = Api(db)
+    admin = api.new_admin()
+    folder = api.add_folder(admin.customer_id, admin.user_id, "Folder")
+    for _ in range(3):
+        api.add_document(admin.customer_id, uploaded_by=admin.user_id, folder_id=folder)
+    _trash(admin, folder)
+    reply = _forever(admin, folder)
+    assert (reply.status_code, reply.json()["error"]["code"]) == (409, "folder_not_emptied")

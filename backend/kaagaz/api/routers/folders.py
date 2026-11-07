@@ -333,11 +333,17 @@ def delete_trashed_folder_forever(folder_id: uuid.UUID, user: CanDeleteForever, 
             with context.db.customer(customer_id) as conn:
                 deleted += trashed_sql.delete_family(conn, context.storage, customer_id, family)
         if len(families) > FOREVER_FAMILIES:
-            if deleted:
-                with context.db.customer(customer_id) as conn:
-                    part = {"trash_id": trash_id, "files": deleted, "finished": False, **marks}
-                    _audit(conn, user, "folder.delete_forever", target, part)
-            return JSONResponse({"remaining": len(families) - FOREVER_FAMILIES}, status_code=202)
+            with context.db.customer(customer_id) as conn:
+                left = trashed_sql.families_in(conn, customer_id, target)
+            remaining = 0 if left is None else len(left[1])
+            # Fewer left (this part, or another request at once): ask again. None gone at all
+            # (never seen, but never a 202 for ever): drop_folder below says folder_not_emptied.
+            if 0 < remaining < len(families):
+                if deleted:
+                    with context.db.customer(customer_id) as conn:
+                        part = {"trash_id": trash_id, "files": deleted, "finished": False, **marks}
+                        _audit(conn, user, "folder.delete_forever", target, part)
+                return JSONResponse({"remaining": remaining}, status_code=202)
         with _refused(), context.db.customer(customer_id) as conn:
             gone = trashed_sql.drop_folder(conn, customer_id, target, files=deleted)
             details = {"trash_id": trash_id, "folders": gone.folders, "files": deleted, **marks}
