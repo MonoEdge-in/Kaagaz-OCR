@@ -82,10 +82,10 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
   const [folders, setFolders] = useState<Folder[]>([]);
   const tree = useMemo(() => buildTree(folders), [folders]);
   const [folderUploadsChanged, setFolderUploadsChanged] = useState(0);
-  // #536: a folder upload made its folders or finished, Kaagaz filed a read file (feature 28),
-  // or a drop settled. Each part only goes up, so the sum does too.
-  // shortcut: the last file of a drop, seen Ready in the moment before its filing commits, is
-  // never seen filed (the following stops); its drop settling asks at that same moment, as before.
+  // #536: a folder upload made its folders or ended, Kaagaz filed a read file (feature 28), or a
+  // drop settled. Each part only goes up, so the sum does too.
+  // shortcut: a file is followed until it is understood; seen in the moment between that and its
+  // filing committing, it is never seen filed, and the list waits for the next change or a visit.
   const foldersChanged = uploads.settled + uploads.filed + folderUploadsChanged;
 
   // The folders, for "Filed into Invoices" in the tray, "In Tax" in a folder upload's rows and

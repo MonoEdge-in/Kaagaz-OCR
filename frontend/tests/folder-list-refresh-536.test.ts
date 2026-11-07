@@ -240,6 +240,31 @@ describe("the shell's folder list asks again as soon as new folders exist (#536)
     expect(api.listFolders).toHaveBeenCalledTimes(2);
   });
 
+  it("asks when a single file is filed after Ready first, while its card was still coming", async () => {
+    // The server marks it Ready, understands it (model calls), then files it (pipeline.py).
+    api.uploadDocument.mockResolvedValueOnce({ document: document("d1"), duplicate: false, in_trash: false });
+    api.getBatch.mockResolvedValue(batchOf([ready("d1", { understanding: true })]));
+    await mountShell();
+    await act(() => shared!.uploads.addFiles([new File(["abc"], "d1.pdf")]));
+    await flush();
+    expect(shared!.uploads.settled).toBe(1); // Ready: the drop is summed up
+    const asked = api.listFolders.mock.calls.length;
+    api.getBatch.mockResolvedValue(batchOf([filed("d1")]));
+    await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)));
+    expect(api.listFolders.mock.calls.length).toBe(asked + 1);
+    const rounds = api.getBatch.mock.calls.length;
+    await act(async () => void (await vi.advanceTimersByTimeAsync(60_000)));
+    expect(api.getBatch.mock.calls.length).toBe(rounds); // filed and understood: no more asking
+  });
+
+  it("asks when a folder upload's plan is refused, as its reply may be lost after the folders were made", async () => {
+    api.planFolderUpload.mockRejectedValue(new TypeError("network"));
+    const container = await mountShell();
+    await pickFolder(container);
+    expect(api.planFolderUpload).toHaveBeenCalledTimes(1);
+    expect(api.listFolders).toHaveBeenCalledTimes(2);
+  });
+
   it("does not ask while nothing changes", async () => {
     await mountShell();
     await act(async () => void (await vi.advanceTimersByTimeAsync(60_000)));
@@ -247,9 +272,9 @@ describe("the shell's folder list asks again as soon as new folders exist (#536)
   });
 });
 
-describe("the documents screen's folder tree asks again with the shell's count (#536)", () => {
-  it("reloads its folders when foldersChanged goes up", () => {
-    const source = readFileSync(join(__dirname, "../components/documents/DocumentsView.tsx"), "utf8");
+describe("the screens' folder lists ask again with the shell's count (#536)", () => {
+  it.each(["documents/DocumentsView.tsx", "dashboard/Dashboard.tsx"])("%s reloads its folders when foldersChanged goes up", (file) => {
+    const source = readFileSync(join(__dirname, "../components", file), "utf8");
     const effect = /listFolders\(\)\.then\([\s\S]*?\}, \[([^\]]*)\]\);/.exec(source);
     expect(effect?.[1]).toContain("foldersChanged");
   });

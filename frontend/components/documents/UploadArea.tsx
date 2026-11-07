@@ -188,10 +188,14 @@ export function useUploads(onUploaded: () => void) {
     dispatch({ type: "change", key, change: { state } });
   }
 
-  // The batches with a file still being read, and the drops from before a reload not seen yet.
+  // The batches with a file still being read, or Ready and still understood (then filed, feature 28:
+  // #536 hears of a folder Kaagaz made), and the drops from before a reload not seen yet.
   const following = useMemo(() => {
     const ids = new Set<string>();
-    for (const entry of queue.entries) if (entry.batchId && entry.state.kind === "reading") ids.add(entry.batchId);
+    for (const entry of queue.entries) {
+      const understood = entry.state.kind === "done" && entry.state.document?.understanding === true;
+      if (entry.batchId && (entry.state.kind === "reading" || understood)) ids.add(entry.batchId);
+    }
     for (const batch of stored) if (restored.has(batch.id) && !views[batch.id]) ids.add(batch.id);
     return [...ids];
   }, [queue.entries, stored, views, restored]);
@@ -214,7 +218,7 @@ export function useUploads(onUploaded: () => void) {
     again: (round) =>
       round.skipped ||
       (round.failed && failedRounds.current < MAX_FAILED_ROUNDS) ||
-      round.views.some((view) => view.documents.some((document) => beingRead(document.status))),
+      round.views.some((view) => view.documents.some((document) => beingRead(document.status) || document.understanding === true)),
     signature: (round) => JSON.stringify(round.views.map((view) => [view.id, progressSignature(view.documents)])),
   });
   // Driven by the list, not by send(): the poll reads the task of the last render, so it

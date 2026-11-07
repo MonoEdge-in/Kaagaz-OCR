@@ -64,7 +64,7 @@ export function Dashboard() {
   const [question, setQuestion] = useState("");
   const [questions, setQuestions] = useState<ReadyQuestion[] | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const { uploads, setTrayOpen } = useSharedUploads(() => setAttempt((n) => n + 1));
+  const { uploads, setTrayOpen, foldersChanged } = useSharedUploads(() => setAttempt((n) => n + 1));
   const departments = useMemo(() => departmentsOf(folders), [folders]);
   const chosen = department === undefined ? lastDepartment(departments) : department;
 
@@ -97,7 +97,7 @@ export function Dashboard() {
     return () => {
       cancelled = true;
     };
-  }, [attempt, reviewer]);
+  }, [attempt, reviewer, foldersChanged]); // foldersChanged (#536): a department Kaagaz made shows at once
 
   // Home's questions; their answers are made just after the first reply, so Home looks again
   // at READY_LOOKS until every one is ready, and offers each only once it is.
