@@ -129,17 +129,17 @@ describe("an admin who turned two-step off", () => {
     expect(appGate(me("admin", false))).toBe("set_two_step"); // reset or new, not turned off
   });
 
-  it("is told where to turn it on before deleting forever", () => {
-    expect(read("components/documents/DocumentsView.tsx")).toContain(
-      "To delete forever, turn on two-step sign-in in Account.",
-    );
+  // Changed on purpose (#538, Tushar, 7 Nov 2026): they delete forever by typing their password
+  // again (delete-forever-password-538.test.ts), so Trash no longer sends them to Account.
+  it("is no longer told to turn it on before deleting forever", () => {
+    expect(read("components/documents/DocumentsView.tsx")).not.toContain("turn on two-step sign-in in Account");
   });
 
   it("keeps the server's own words when Delete forever is refused", async () => {
-    const words = "Turn on two-step sign-in in Account to do this.";
+    const words = "Type your password again to delete forever.";
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response(JSON.stringify({ error: { code: "two_step_required", message: words } }), { status: 403 })),
+      vi.fn(async () => new Response(JSON.stringify({ error: { code: "password_confirm_required", message: words } }), { status: 403 })),
     );
     await expect(deleteDocumentForever("d1")).rejects.toMatchObject({ status: 403, message: words });
     vi.unstubAllGlobals();

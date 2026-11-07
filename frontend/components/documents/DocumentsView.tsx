@@ -603,11 +603,6 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                   Only admins, and people an admin allows, can delete documents forever.
                 </p>
               )}
-              {library.trash && foreverNeeds(me) === "two_step" && (
-                <p className={libraryStyles.placeHint}>
-                  To delete forever, turn on two-step sign-in in Account.
-                </p>
-              )}
             </div>
             {canUpload && (
               <div className={styles.uploadControls}>
