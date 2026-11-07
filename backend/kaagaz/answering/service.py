@@ -145,7 +145,8 @@ stage (rewrite, embed, search, widen, draft, verify; time.monotonic, wall time o
 answer's thread, adding up to the total), of the model limiter's waits (``LIMITER_WAIT``,
 summed over parallel drafts and step 19's overlap) and in all. ``overlap`` is 1 when step
 19's early search was used; ``overlap_ms``, the time it took, used or not, inside
-``rewrite_ms``. Codes and numbers only.
+``rewrite_ms``; ``redrafts``, the draft's model calls made again for a sentence too long to cut
+(#535, draft.py). Codes and numbers only.
 
 Time: one ``available_fields`` query only for a question with an aggregate
 word and no unknown topic word, then either one fixed query or one search
@@ -457,6 +458,7 @@ class _Timing:
     overlap: bool = False  # step 19's early search was used
     overlap_ms: float = 0.0  # the time it took, beside the plan call
     parts: int = 0  # step 20: the parts the evidence was read in (0: one call, as before)
+    redrafts: int = 0  # #535: model calls made again for a sentence too long to cut (draft.py)
 
     def lap(self, stage: str) -> None:
         now = time.monotonic()
@@ -502,7 +504,7 @@ def _timed[**P](answer: Callable[P, Answer]) -> Callable[P, Answer]:
             LIMITER_WAIT.reset(waits)
         _timing_log.info(
             "answer timing route=%s status=%s outcome=%s whole=%d aspects=%d pinned=%d overlap=%d %s"
-            " overlap_ms=%.0f limiter_wait_ms=%.0f total_ms=%.0f parts=%d",
+            " overlap_ms=%.0f limiter_wait_ms=%.0f total_ms=%.0f parts=%d redrafts=%d",
             result.route,
             result.status,
             timing.reason or result.label,
@@ -515,6 +517,7 @@ def _timed[**P](answer: Callable[P, Answer]) -> Callable[P, Answer]:
             waited[0] * 1000,
             (timing.last - timing.start) * 1000,
             timing.parts,
+            timing.redrafts,
         )
         return result
 
@@ -1697,6 +1700,7 @@ class AnswerService:
                 else:
                     drafted, team, code = _single(draft_with, self._model.chat_model, choice)
                 if drafted is not None:
+                    _timing().redrafts = drafted.redrafts
                     return drafted, True, seen, "notfound_model", team
             # Quoting the evidence needs no model.
             _log.warning("answer drafted without the model", extra={"code": code})

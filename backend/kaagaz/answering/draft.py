@@ -40,7 +40,9 @@ nothing, or holding a number its evidence does not hold, is dropped.
 **The budget** (ML amendment 5). A model reply is at most
 ``MODEL_ANSWER_MAX_TOKENS`` tokens, and it is cut to ``MAX_SENTENCES``
 sentences of ``MAX_SENTENCE_CHARS`` characters (about 270 tokens). PRD 6 A (24 Oct 2026): the
-prompt asks for at most 3 short sentences; code lists the documents under them (voice.py).
+prompt asks for at most 3 short sentences; code lists the documents under them (voice.py). #535 (Ask
+speed): a sentence over the cap is cut at its own sentence ends (``split_long``), each part citing
+what it cited, so no second model call; only one that cannot be cut so is asked for again (T7).
 ``fit_evidence`` keeps the best-ranked evidence whose prompt fits the window
 (``estimate_tokens_cautiously``: a letter of any script but ASCII is a whole token,
 PR C): lower-ranked pieces are left out whole, never cut, and verify checks only the
@@ -58,9 +60,10 @@ Time is O(e * t) for e pieces of evidence of t characters.
 
 import hashlib
 import json
+import re
 import unicodedata
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any, Literal
 
@@ -147,6 +150,7 @@ class DraftSentence:
 class Draft:
     status: Literal["answered", "not_found"]
     sentences: list[DraftSentence]
+    redrafts: int = 0  # #535: model calls made again for a sentence too long to cut (the timing line)
 
 
 def edges[T](ranked: Sequence[T]) -> list[T]:
@@ -254,8 +258,8 @@ def model_draft(
     ModelOutputError for a reply of the wrong shape. ``cards``: M2's lines, never cited.
     ``chat_model``, ``thinking``, ``provider`` and ``deadline`` go to ``chat_json``
     (features 25-27, C7). T7: a reply with a sentence over MAX_SENTENCE_CHARS (a model
-    sent the schema without maxLength) is asked for once more; a second one is
-    ``answer_shape``."""
+    sent the schema without maxLength) is cut at its sentence ends (#535, ``_split``); one that
+    cannot be cut so is asked for once more, and a second one is ``answer_shape``."""
     user = user_prompt(question, evidence, cards)
     call = partial(
         model.chat_json,
@@ -268,9 +272,86 @@ def model_draft(
         deadline=deadline,
     )
     reply = call(user=user)
-    if _too_long(reply):
-        reply = call(user=f"{user}\n\n{LONG_SENTENCE_REPAIR}")
-    return _parse(reply)
+    if not _too_long(reply):
+        return _parse(reply)
+    cut = _split(reply)
+    if cut is not None:
+        return cut
+    return replace(_parse(call(user=f"{user}\n\n{LONG_SENTENCE_REPAIR}")), redrafts=1)
+
+
+def _split(reply: dict[str, Any]) -> Draft | None:
+    """#535: the reply with each sentence over MAX_SENTENCE_CHARS cut by ``split_long``, every part
+    citing the ids the sentence cited (verify then checks each part on its own); None when a
+    sentence cannot be cut so, or the reply is wrong in another way (drafted again, as before)."""
+    try:
+        parsed = _parse(reply, max_chars=None)
+    except ModelOutputError:
+        return None
+    sentences: list[DraftSentence] = []
+    for sentence in parsed.sentences:
+        parts = [sentence.text] if len(sentence.text) <= MAX_SENTENCE_CHARS else split_long(sentence.text)
+        if parts is None:
+            return None
+        sentences += [DraftSentence(part, list(sentence.evidence)) for part in parts]
+    return replace(parsed, sentences=sentences)
+
+
+# #535: where a drafted sentence may be cut: after ".", "!", "?" or the danda, any closing quote or
+# bracket, then a space and a capital letter. Never after an abbreviation, an initial or a dotted
+# word ("Rs.", "Pvt. Ltd.", "R. K.", "e.g."), nor before a month name: "12. August" is one date to
+# verify, and a cut there would leave "12" a bare number its evidence does not hold.
+_SENTENCE_END = re.compile(r"[.!?\u0964][\"'\u201d\u2019)\]]*(?=\s)")
+_OPENERS = "\"'\u201c\u2018(["
+_ABBREVIATIONS = frozenset(
+    {
+        *("mr", "mrs", "ms", "dr", "st", "sr", "jr", "shri", "smt", "sh", "no", "nos", "rs", "inr"),
+        *("pvt", "ltd", "co", "corp", "inc", "llp", "vs", "viz", "etc", "approx", "dept", "govt"),
+        *("ref", "sec", "cl", "art", "vol", "fig", "mob", "ph", "tel", "rd", "sq", "ft", "kg", "km", "pp"),
+    }
+)
+_MONTH_WORDS = frozenset(
+    {
+        *("january", "february", "march", "april", "may", "june", "july", "august", "september"),
+        *("october", "november", "december", "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep"),
+        *("sept", "oct", "nov", "dec"),
+    }
+)
+
+
+def split_long(text: str) -> list[str] | None:
+    """#535: ``text`` cut at its sentence ends (``_SENTENCE_END``) into the fewest parts of at most
+    MAX_SENTENCE_CHARS each, in order; only the spaces at the cuts are lost. None when no such
+    cut exists (a stretch with no sentence end longer than the cap). O(n)."""
+    parts: list[str] = []
+    start, last = 0, None
+    for cut in [*(m.end() for m in _SENTENCE_END.finditer(text) if _ends(text, m)), len(text)]:
+        if len(text[start:cut].strip()) > MAX_SENTENCE_CHARS:
+            if last is None:
+                return None
+            parts.append(text[start:last].strip())
+            start = last
+            if len(text[start:cut].strip()) > MAX_SENTENCE_CHARS:
+                return None
+        last = cut
+    parts.append(text[start:].strip())
+    return [part for part in parts if part]
+
+
+def _ends(text: str, end: re.Match[str]) -> bool:
+    """Whether the mark ``end`` matched ends a sentence (``_SENTENCE_END``'s comment)."""
+    following = text[end.end() :].lstrip().lstrip(_OPENERS)
+    if not following[:1].isupper():
+        return False
+    word = re.match("[A-Za-z]+", following)
+    if word is not None and word[0].casefold() in _MONTH_WORDS:
+        return False
+    if end[0][0] != ".":
+        return True
+    before = text[: end.start()].split()
+    token = before[-1].lstrip(_OPENERS) if before else ""
+    single = len(token) == 1 and token.isalpha()
+    return not (single or "." in token or token.casefold() in _ABBREVIATIONS)
 
 
 def _too_long(reply: dict[str, Any]) -> bool:
@@ -336,7 +417,9 @@ def checked(reply: dict[str, Any]) -> Draft:
     return _parse(reply)
 
 
-def _parse(reply: dict[str, Any]) -> Draft:
+def _parse(reply: dict[str, Any], max_chars: int | None = MAX_SENTENCE_CHARS) -> Draft:
+    """The reply as a ``Draft``, else ModelOutputError("answer_shape"); ``max_chars`` None takes a
+    sentence of any length (``_split`` cuts it)."""
     status = reply.get("status")
     raw_sentences = reply.get("sentences")
     if status not in {"answered", "not_found"} or not isinstance(raw_sentences, list):
@@ -353,7 +436,7 @@ def _parse(reply: dict[str, Any]) -> Draft:
         # bool is an int in Python; a true/false id is not an id.
         numbers = [n for n in ids if isinstance(n, int) and not isinstance(n, bool)]
         # T7: the length cap holds for every model, maxLength sent or not.
-        if len(numbers) != len(ids) or len(sentence_text) > MAX_SENTENCE_CHARS:
+        if len(numbers) != len(ids) or (max_chars is not None and len(sentence_text) > max_chars):
             raise ModelOutputError("answer_shape")
         sentences.append(DraftSentence(text=sentence_text, evidence=numbers))
     return Draft("answered", sentences)
