@@ -108,7 +108,10 @@ UPGRADE = [
     " WHERE trashed_folder_id IS NOT NULL",
     "CREATE INDEX documents_trash_id ON documents (customer_id, trash_id) WHERE trash_id IS NOT NULL",
     f"COMMENT ON TABLE trashed_folders IS {_literal(TABLE_COMMENT)}",
-    *[f"COMMENT ON COLUMN trashed_folders.{column} IS {_literal(c)}" for column, c in COLUMN_COMMENTS.items()],
+    *[
+        f"COMMENT ON COLUMN trashed_folders.{column} IS {_literal(c)}"
+        for column, c in COLUMN_COMMENTS.items()
+    ],
     *[f"COMMENT ON COLUMN documents.{column} IS {_literal(c)}" for column, c in DOCUMENT_COMMENTS.items()],
     f"GRANT SELECT, INSERT, DELETE ON trashed_folders TO {APP_ROLE}",
     "ALTER TABLE trashed_folders ENABLE ROW LEVEL SECURITY",

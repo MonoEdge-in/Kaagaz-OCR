@@ -14,6 +14,11 @@ Why some choices:
   change writes one audit row with ids only, never a folder name.
 * **A folder that holds files** is deleted by an admin only (#537, Tushar, 7 Nov 2026):
   ``?contents=keep`` or ``?contents=trash``; without it the delete is today's, for anyone.
+* **A folder in Trash** (#542) keeps its structure: Trash lists it as one item and opens it read
+  only (anyone of the customer); Restore puts it back where it was (an admin, or who uploaded
+  every version of every file in it: a document's restore rule); delete forever has a document's
+  delete forever rule (``CanDeleteForever``). The live tree never holds one
+  (``kaagaz.db.trashed_folders``).
 * A refused change raises out of the ``with`` block, so its transaction rolls
   back, audit row included.
 """
@@ -28,14 +33,15 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection
 
-from kaagaz.api.auth import CurrentUser, User
+from kaagaz.api.auth import CanDeleteForever, CurrentUser, User, deletes_forever_by_password
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import FOLDER_NAME_MAX, clean_name
 from kaagaz.api.routers.documents import ActivityCursor, ActivityLimit
-from kaagaz.api.views import folder, timeline
+from kaagaz.api.views import folder, timeline, trashed_folder, uploaded_every_version
 from kaagaz.db import audit
 from kaagaz.db import folders as folders_sql
+from kaagaz.db import trashed_folders as trashed_sql
 
 router = APIRouter()
 
@@ -230,8 +236,90 @@ def delete_folder(
         }
         if contents == "keep":
             details["to"] = destination
-        _audit(conn, user, "folder.delete", target, details)
+        else:
+            details["trash_id"] = held.trash_id  # #542: the folder is in Trash, restorable
+        _audit(conn, user, "folder.delete" if contents == "keep" else "folder.trash", target, details)
     return JSONResponse({"files": held.files, "folders": held.folders})
+
+
+# --- a folder in Trash (#542) -------------------------------------------------------------------
+# Under /documents/trash, beside a document's Trash routes, so the typed password's cookie
+# (auth.CONFIRM_PATH, /api/documents) reaches delete forever as it does a document's.
+
+
+@router.get("/documents/trash/folders")
+def list_trashed_folders(user: User, context: Context) -> dict[str, Any]:
+    """``{items: [TrashedFolder]}``: Trash's folders, newest first; their files are not loose
+    items of Trash (``GET /documents?trashed=true`` leaves them out)."""
+    with context.db.customer(user.customer_id) as conn:
+        rows = trashed_sql.list_items(conn, user.customer_id)
+    return {"items": [trashed_folder(row, user) for row in rows]}
+
+
+@router.get("/documents/trash/folders/{folder_id}")
+def get_trashed_folder(folder_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
+    """A folder in Trash opened, read only: ``{folder, path: [{id, name}] (Trash's item first),
+    folders: [TrashedFolder]}``; its files come from ``GET /documents?trashed=true&trashed_folder_id=``.
+    One not in Trash, or another customer's, is 404."""
+    with _refused(), context.db.customer(user.customer_id) as conn:
+        row, path, children = trashed_sql.contents(conn, user.customer_id, str(folder_id))
+    return {
+        "folder": trashed_folder(row, user),
+        "path": [{"id": each, "name": name} for each, name in path],
+        "folders": [trashed_folder(child, user) for child in children],
+    }
+
+
+@router.post("/documents/trash/folders/{folder_id}/restore")
+def restore_trashed_folder(folder_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
+    """Put a folder in Trash back where it was, with everything that went to Trash with it:
+    ``{folder, location, renamed, relocated, files, folders}``. ``location`` is the path it went
+    into ([] the top level); ``relocated``: its folder was gone, so the top level; ``renamed``: a
+    live folder there had its name, so "Name (n)". Another customer's is 404; a member who did not
+    upload every version of every file in it is 403."""
+    target = str(folder_id)
+    with _refused(), context.db.customer(user.customer_id) as conn:
+        found = trashed_sql.contents(conn, user.customer_id, target)[0]
+        if not uploaded_every_version(found.uploaders, user):
+            raise ApiError(403, "forbidden")
+        try:
+            restored = trashed_sql.restore_folder(conn, user.customer_id, target)
+        except folders_sql.FolderNameTaken:
+            raise ApiError(
+                409, "folder_names_taken", "Too many folders there already have this name. Rename one first."
+            ) from None
+        _audit(conn, user, "folder.restore", target, trashed_sql.audit_details(restored))
+    return {
+        "folder": folder(restored.folder),
+        "location": list(restored.location),
+        "renamed": restored.renamed,
+        "relocated": restored.relocated,
+        "files": restored.files,
+        "folders": restored.folders,
+    }
+
+
+@router.delete("/documents/trash/folders/{folder_id}/permanent", status_code=204)
+def delete_trashed_folder_forever(folder_id: uuid.UUID, user: CanDeleteForever, context: Context) -> Response:
+    """Delete a folder in Trash for good: every file that went with it (rows and files, every
+    version) and its folders. Delete forever's own rule (``require_delete_forever``), and its
+    audit marks (``by_grant``, ``by_password``). Another customer's is 404."""
+    target = str(folder_id)
+    with context.db.customer(user.customer_id) as conn:
+        deleted = trashed_sql.delete_forever(conn, context.storage, user.customer_id, target)
+        if deleted is None:
+            raise ApiError(404, "not_found")
+        details: dict[str, audit.DetailValue] = {
+            "trash_id": deleted.trash_id,
+            "folders": deleted.folders,
+            "files": deleted.files,
+        }
+        if user.role != "admin":
+            details["by_grant"] = True
+        elif deletes_forever_by_password(user):
+            details["by_password"] = True
+        _audit(conn, user, "folder.delete_forever", target, details)
+    return Response(status_code=204)
 
 
 @router.get("/folders/{folder_id}/activity")

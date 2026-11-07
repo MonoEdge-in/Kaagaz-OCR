@@ -28,6 +28,7 @@ unusable and must end (leave the ``with`` block). The other errors are raised
 before anything is written. The caller checks the name (1 to 100 characters).
 """
 
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -126,6 +127,7 @@ class FolderSummary:
     files: int  # live document families (a file with three versions is one)
     folders: int  # the folders inside it
     bytes: int  # every live version's size
+    trash_id: str | None = None  # #542: the delete that sent it to Trash, with contents=trash
 
 
 class DepartmentNotTopLevel(FolderError):
@@ -287,6 +289,14 @@ _MOVE_RENAMED = (
     "UPDATE folders SET parent_id = CAST(:p AS uuid), name = :name WHERE customer_id = :c AND id = :id"
 )
 _DELETE_ALL = "DELETE FROM folders WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
+# #542: the subtree into Trash as it is, every column folders has, under one trash_id; :f is the root.
+_TRASH_TREE = (
+    "INSERT INTO trashed_folders (id, customer_id, parent_id, name, kind, sort_order, autofile_key,"
+    " created_by, created_at, trash_id, root, deleted_at, deleted_by)"
+    " SELECT f.id, f.customer_id, f.parent_id, f.name, f.kind, f.sort_order, f.autofile_key, f.created_by,"
+    " f.created_at, CAST(:trash AS uuid), f.id = :f, :now, :by"
+    " FROM folders f WHERE f.customer_id = :c AND f.id = ANY(CAST(:ids AS uuid[]))"
+)
 # The first candidate name no sibling has, compared as folders_sibling_name compares (lower()), NFC.
 _FREE = (
     "SELECT w.n FROM unnest(CAST(:names AS text[])) WITH ORDINALITY AS w (n, i)"
@@ -453,9 +463,11 @@ def delete_folder_with_contents(
     them, move into ``to`` (None: the top level), checked as ``move_folder`` checks a move; a
     folder of the same name there is never merged: the moved one becomes "Name (2)", or the
     first free number. ``trash``: every family in the folder and below it goes to Trash
-    (``trash.trash_in_folders``: all versions, restorable, purged after TRASH_DAYS) and to the
-    top level, as a deleted folder's trashed documents always have; then the folder and every
-    folder inside it go. A document still being read goes too, as with a single delete.
+    (``trash.trash_in_folders``: all versions, restorable, purged after TRASH_DAYS), and the
+    folder and every folder inside it go to ``trashed_folders`` under one new ``trash_id``
+    (#542: restored as they were by ``kaagaz.db.trashed_folders``); a family already in Trash
+    goes to the top level, as a deleted folder's trashed documents always have. A document still
+    being read goes too, as with a single delete.
 
     Raises FolderNotFound, DestinationNotFound (``to``), FolderCycle (``to`` is the folder or
     inside it), FolderTooDeep, FolderUploadRunning (a folder upload into what is deleted still has
@@ -463,7 +475,8 @@ def delete_folder_with_contents(
     its folders only move), FolderNameTaken (no free number up to 100) or FolderChanged (a file
     arrived meanwhile: a document insert or move takes no tree lock). Nothing is written before
     the checks; a refusal after a write leaves the caller's transaction to roll back. ``files``
-    in what it returns is, with trash, the families that went to Trash now. O(s log F + n log D)
+    in what it returns is, with trash, the families that went to Trash now, and ``trash_id`` is set.
+    O(s log F + n log D)
     for the s folders and n documents of the subtree, in a fixed number of statements plus two a
     clashing name.
     """
@@ -486,8 +499,11 @@ def delete_folder_with_contents(
     if contents == "keep":
         _move_contents(conn, params)
     else:
-        held = replace(held, files=trash.trash_in_folders(conn, customer_id, gone, by=by, now=now))
+        trash_id = str(uuid.uuid4())
+        files = trash.trash_in_folders(conn, customer_id, gone, by=by, now=now, trash_id=trash_id)
+        held = replace(held, files=files, trash_id=trash_id)
         conn.execute(text(_DETACH_TRASHED), {**params, "ids": gone})
+        conn.execute(text(_TRASH_TREE), {**params, "ids": gone, "trash": trash_id, "now": now, "by": by})
     try:
         conn.execute(text(_DELETE_ALL), {**params, "ids": gone})
     except IntegrityError as error:

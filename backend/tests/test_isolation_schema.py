@@ -191,7 +191,7 @@ FROM_0071 = {
 }
 # Storage limit (0061d): a column grant only, the operator writes.
 FROM_0061D = {"org_storage_limits": (False, False, False, False)}
-# A folder in Trash (0081, #542): read, added and deleted (restored, deleted forever or purged), never updated.
+# A folder in Trash (0081, #542): read, added and deleted (restored, forever, purged), never updated.
 FROM_0081 = {"trashed_folders": (True, True, False, True)}
 # Logout ends this browser's session (0076, #502): the app adds and reads ended sessions only;
 # the worker's sweep deletes them through kaagaz_sweep_ended_sessions.

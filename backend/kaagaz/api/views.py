@@ -21,6 +21,7 @@ from kaagaz.db.folder_upload_items import ItemRow
 from kaagaz.db.folders import FolderRow
 from kaagaz.db.listing import CLEAR_COPY_LINES, CLEAR_COPY_TEXT, MAX_READING_LINES, MAX_READING_TEXT
 from kaagaz.db.tags import TagRow
+from kaagaz.db.trashed_folders import TrashedFolder
 from kaagaz.db.zip_unpacks import Unpack
 from kaagaz.eta import time_left
 from kaagaz.ingestion.unzip import REASONS, SHORT_REASONS, ZIP_FAILURES
@@ -256,9 +257,14 @@ def can_delete(row: RowMapping, user: CurrentUser) -> bool:
     """May ``user`` move this document's family to Trash, or bring it back? Both act
     on every version, so: an admin, or the one user who uploaded every version.
     ``family_uploaders`` comes from db/listing.py's _COLUMNS."""
+    return uploaded_every_version(row["family_uploaders"] or [], user)
+
+
+def uploaded_every_version(uploaders: Sequence[object], user: CurrentUser) -> bool:
+    """``can_delete``'s rule over these versions' uploaders: an admin, or the one user who
+    uploaded every one of them (#542: every file of a folder in Trash too)."""
     if user.role == "admin":
         return True
-    uploaders = row["family_uploaders"] or []
     return bool(uploaders) and all(
         uploader is not None and str(uploader) == user.user_id for uploader in uploaders
     )
@@ -550,6 +556,23 @@ def folder(row: FolderRow) -> dict[str, Any]:
         "created_at": iso(row.created_at),
         "kind": row.kind,  # File management F1
         "sort_order": row.sort_order,
+    }
+
+
+def trashed_folder(row: TrashedFolder, user: CurrentUser) -> dict[str, Any]:
+    """``TrashedFolder`` (#542): a folder in Trash with what it holds at every depth, the live
+    folder it goes back into (``was_in``, root first: [] the top level, null gone), and whether
+    this user may restore it (``can_delete``'s rule over every version of every file in it)."""
+    return {
+        "id": row.id,
+        "name": row.name,
+        "kind": row.kind,
+        "was_in": None if row.was_in is None else list(row.was_in),
+        "files": row.files,
+        "folders": row.folders,
+        "deleted_at": iso(row.deleted_at),
+        "deleted_by_name": row.deleted_by_name,
+        "can_restore": uploaded_every_version(row.uploaders, user),
     }
 
 
