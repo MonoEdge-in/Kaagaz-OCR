@@ -18,6 +18,7 @@ from sqlalchemy import text
 from kaagaz.ai.client import ModelUnavailable
 from kaagaz.answering import ready
 from kaagaz.answering.words_text import check_meaning, check_word
+from kaagaz.db import chat as chat_sql
 from kaagaz.db import user_words
 from kaagaz.db.engine import Database
 from kaagaz.search.hybrid import vector_literal
@@ -271,6 +272,33 @@ def test_an_answer_marks_a_missing_vector_or_outage_as_degraded() -> None:
     without = down.answer(A, GOLDEN_QUESTION)  # found by words: answered, never an outage
     assert (up.status, up.degraded) == ("answered", False)
     assert (without.status, without.unavailable, without.degraded) == ("answered", False, True)
+
+
+def test_a_copy_served_from_the_cache_is_marked_never_keyed_and_only_the_askers_answers_match(
+    db: Database,
+) -> None:
+    """A copy served from the cache carries only ``repeat_copy`` (never served itself, its Not
+    useful still counts); the lookup reads the asker's own conversations only, so another person's
+    answer never matches even under the very same key."""
+    api, signed, _ = library(db)
+    original, copy = ask(signed), ask(signed)
+    assert len(api.answers.asked) == 1
+    with db.customer(signed.customer_id) as conn:
+        stored = {
+            str(row[0]): row[1]
+            for row in conn.execute(text("SELECT id, answer FROM messages WHERE role = 'assistant'"))
+        }
+    key = stored[original["answer"]["id"]]["repeat_key"]
+    assert "repeat_key" not in stored[copy["answer"]["id"]]
+    assert stored[copy["answer"]["id"]]["repeat_copy"] == key
+    shown = signed.client.get(f"/api/conversations/{copy['conversation_id']}").json()
+    assert "repeat_copy" not in str(shown) and "repeat_copy" not in str(copy)
+
+    colleague = api.sign_in(signed.customer_id)
+    with db.user(signed.customer_id, colleague.user_id) as conn:
+        assert chat_sql.repeated_answer(conn, signed.customer_id, colleague.user_id, key) is None
+    with db.user(signed.customer_id, signed.user_id) as conn:
+        assert chat_sql.repeated_answer(conn, signed.customer_id, signed.user_id, key) is not None
 
 
 def test_the_stored_key_is_never_shown(db: Database) -> None:

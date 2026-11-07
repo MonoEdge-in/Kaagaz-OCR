@@ -38,11 +38,13 @@ Whatever is drafted still goes through ``verify.py``: a sentence citing
 nothing, or holding a number its evidence does not hold, is dropped.
 
 **The budget** (ML amendment 5). A model reply is at most
-``MODEL_ANSWER_MAX_TOKENS`` tokens, and it is cut to ``MAX_SENTENCES``
-sentences of ``MAX_SENTENCE_CHARS`` characters (about 270 tokens). PRD 6 A (24 Oct 2026): the
+``MODEL_ANSWER_MAX_TOKENS`` tokens; only its first ``MAX_SENTENCES`` sentences are read, each of
+at most ``MAX_SENTENCE_CHARS`` characters (about 270 tokens). PRD 6 A (24 Oct 2026): the
 prompt asks for at most 3 short sentences; code lists the documents under them (voice.py). #535 (Ask
 speed): a sentence over the cap that cites one source is cut at its own sentence ends
-(``split_long``), each part citing it, so no second model call; any other is asked for again (T7).
+(``split_long``), each part citing it, so no second model call, while the answer still has at most
+``MAX_SENTENCES`` sentences; any other, or a cut that would pass it, is asked for again (T7), never
+truncated (a part dropped would leave the rest of its sentence without it).
 ``fit_evidence`` keeps the best-ranked evidence whose prompt fits the window
 (``estimate_tokens_cautiously``: a letter of any script but ASCII is a whole token,
 PR C): lower-ranked pieces are left out whole, never cut, and verify checks only the

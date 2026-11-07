@@ -128,6 +128,7 @@ _WORDS = text(
     " FROM organization_word_suggestions WHERE customer_id = :c AND status = 'approved'), '')"
 )
 REPEAT_KEY = "repeat_key"  # the stored answer's field that holds it; never shown (clarify.without_resume)
+REPEAT_COPY = "repeat_copy"  # a copy served from it: never served itself, its Not useful still counts
 
 
 def same_question(question: str) -> str:

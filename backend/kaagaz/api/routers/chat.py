@@ -321,7 +321,7 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
         inputs = (pins, switched, choice, scope, tagged, today, running_commit(), shaped)
         with context.db.user(user.customer_id, user.user_id) as conn:  # the asker's own words too
             repeat_key = ready.repeat_key(conn, user.customer_id, user.user_id, question, inputs, made_from)
-            repeated = chat_sql.repeated_answer(conn, user.customer_id, repeat_key)
+            repeated = chat_sql.repeated_answer(conn, user.customer_id, user.user_id, repeat_key)
     saved = None if chosen is None else chosen.model_dump(mode="json")
     # json.dumps writes ", " and ": " as jsonb's text does, so this is the CHECK's length.
     if saved is not None and len(json.dumps(saved).encode()) > MAX_SCOPE_BYTES:
@@ -335,7 +335,7 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
         kind="chat",
         conversation_id=conversation_id,
     ) as spend:
-        degraded = False  # #535: the model or the question's vector was down for this answer
+        degraded = copied = False  # #535: the model or a vector was down; served from the cache
         if talk is not None:
             answer = small_talk.answer(talk, question, first_name(user.display_name), examples)
         else:
@@ -359,7 +359,7 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             )
             # KZ-006: an outage is never "not found": the reply says the AI is not responding
             # (``outage``, OUTAGE_LINE) and lists the closest documents; never a "busy" error.
-            answer, degraded = reply.to_json(), reply.degraded
+            answer, degraded, copied = reply.to_json(), reply.degraded, isinstance(reply, _Stored)
             if reply.unavailable:
                 answer["outage"] = True
             # A clarifying question shows no opening (ClarifyView), so it never spends the greeting.
@@ -390,7 +390,9 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
                     if ready.same_question(text) != ready.same_question(question)
                 ][:3]
             if repeat_key is not None and _reusable(answer, degraded):
-                answer[ready.REPEAT_KEY] = repeat_key  # #535: found again by a repeat
+                # #535: found again by a repeat; a copy served from the cache only marks it, so its
+                # Not useful still counts (db/chat.py), and is never itself served.
+                answer[ready.REPEAT_COPY if copied else ready.REPEAT_KEY] = repeat_key
             asked = chat_sql.add_message(
                 conn,
                 user.customer_id,
