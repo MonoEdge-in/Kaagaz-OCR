@@ -1,7 +1,10 @@
 // A small DOM for rendering a component in node with react-dom's own createRoot and act()
 // (there is no DOM library here, and none is to be added): elements, text, attributes, focus,
 // "[attr=value]" lookups, and events that capture and bubble, enough for clicks, typing and
-// keys. Used by clean-copy-edit-527.test.ts; install() stubs `document` and `window`, which must
+// keys. Used by clean-copy-edit-527.test.ts and delete-forever-password-538.test.ts; install()
+// stubs `document` and `window`, which must be in place before react-dom/client is first
+// imported (it looks for a DOM as it loads).
+// keys. Used by clean-copy-edit-527.test.ts and folder-delete-537.test.ts; install() stubs `document` and `window`, which must
 // be in place before react-dom/client is first imported (it looks for a DOM as it loads).
 
 import { vi } from "vitest";
@@ -87,6 +90,16 @@ export class FakeNode {
     for (let at = node; at; at = at.parentNode) if (at === this) return true;
     return false;
   }
+  /** Only `input[name="x"][type="radio"]`: react-dom asks it for a radio's group when one is checked (#537). */
+  querySelectorAll(selector: string): FakeElement[] {
+    const group = /^input\[name="([^"]*)"\]\[type="radio"\]$/.exec(selector);
+    if (!group) throw new Error(`fake-dom: no selector ${selector}`);
+    const walk = (node: FakeNode): FakeElement[] =>
+      node.childNodes.flatMap((child) => (child instanceof FakeElement ? [child, ...walk(child)] : []));
+    return walk(this).filter(
+      (element) => element.tagName === "INPUT" && element.type === "radio" && element.getAttribute("name") === group[1],
+    );
+  }
   addEventListener(type: string, fn: (event: FakeEvent) => void, options?: boolean | { capture?: boolean }) {
     const capture = typeof options === "boolean" ? options : Boolean(options?.capture);
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), { fn, capture }]);
@@ -132,6 +145,7 @@ export class FakeElement extends FakeNode {
     readonly namespaceURI: string,
   ) {
     super(ownerDocument, 1, tagName);
+    if (tagName === "INPUT") this.type = "text"; // a browser's default, so react-dom sees a text box
   }
   setAttribute(name: string, value: unknown) {
     this.attributes.set(name, String(value));
@@ -167,16 +181,32 @@ export class FakeElement extends FakeNode {
   all(): FakeElement[] {
     return this.childNodes.flatMap((child) => (child instanceof FakeElement ? [child, ...child.all()] : []));
   }
-  /** `[name="value"]`, `[name]` or a list of tag names ("input, select") only: what the code here asks for. */
+  /** A list of `tag`, `[name]` or `[name=value]` (the value bare or quoted): what the code here asks for. */
+  matches(selector: string): boolean {
+    return selector.split(",").some((part) => {
+      const one = part.trim();
+      const found = /^\[([\w-]+)(?:=["']?([^"'\]]*)["']?)?\]$/.exec(one);
+      if (found) {
+        const [, name = "", value] = found;
+        return this.getAttribute(name) !== null && (value === undefined || this.getAttribute(name) === value);
+      }
+      if (!/^[a-z]+$/i.test(one)) throw new Error(`fake-dom: no selector ${selector}`);
+      return this.tagName === one.toUpperCase();
+    });
+  }
   querySelector(selector: string): FakeElement | null {
-    const found = /^\[([\w-]+)(?:="([^"]*)")?\]$/.exec(selector);
-    if (found) {
-      const [, name = "", value] = found;
-      return this.all().find((element) => element.getAttribute(name) !== null && (value === undefined || element.getAttribute(name) === value)) ?? null;
-    }
-    const tags = selector.split(",").map((tag) => tag.trim().toUpperCase());
-    if (!tags.every((tag) => /^[A-Z]+$/.test(tag))) throw new Error(`fake-dom: no selector ${selector}`);
-    return this.all().find((element) => tags.includes(element.tagName)) ?? null;
+    return this.all().find((element) => element.matches(selector)) ?? null;
+  }
+  querySelectorAll(selector: string): FakeElement[] {
+    return this.all().filter((element) => element.matches(selector));
+  }
+  closest(selector: string): FakeElement | null {
+    if (this.matches(selector)) return this;
+    return this.parentNode instanceof FakeElement ? this.parentNode.closest(selector) : null;
+  }
+  // No layout here: every box is empty at the top left (a menu's place, RowMenu).
+  getBoundingClientRect() {
+    return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0 };
   }
 }
 
@@ -196,6 +226,9 @@ export class FakeDocument extends FakeNode {
   }
   createElementNS(namespace: string, tag: string) {
     return new FakeElement(this, tag, namespace);
+  }
+  getElementById(id: string) {
+    return this.documentElement.all().find((element) => element.getAttribute("id") === id) ?? null;
   }
   createTextNode(text: string) {
     const node = new FakeNode(this, 3, "#text");

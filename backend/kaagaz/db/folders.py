@@ -29,17 +29,22 @@ before anything is written. The caller checks the name (1 to 100 characters).
 """
 
 from collections.abc import Sequence
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Any
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
+from typing import Any, Literal
 
 from sqlalchemy import Connection, CursorResult, text
 from sqlalchemy.exc import IntegrityError
 
-from kaagaz.db import audit
+from kaagaz.db import audit, trash
 from kaagaz.db.sqlstate import CHECK_VIOLATION, FOREIGN_KEY_VIOLATION, UNIQUE_VIOLATION, sqlstate
 
 MAX_DEPTH = 100  # Tushar, 3 Nov 2026 (#484): was 5
+NAME_MAX = 100  # folders.name's CHECK (0002)
+# #537: a folder upload with nothing sent or registered this long is not running (a closed tab).
+# shortcut: a guess; an upload left open that long and continued after the delete sends its
+# files into folders that are gone, which fail folder_gone (or a re-plan makes them again).
+UPLOAD_QUIET_HOURS = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +98,34 @@ class FolderNotEmpty(FolderError):
 
     def __init__(self) -> None:
         super().__init__("folder_not_empty")
+
+
+class FolderUploadRunning(FolderError):
+    """A folder upload into the folder or one inside it still has files waiting (#537)."""
+
+    def __init__(self) -> None:
+        super().__init__("folder_upload_running")
+
+
+class FolderChanged(FolderError):
+    """A file or folder arrived in the folder while it was being deleted with its contents (#537);
+    nothing was deleted."""
+
+    def __init__(self) -> None:
+        super().__init__("folder_changed")
+
+
+class DestinationNotFound(FolderNotFound):
+    """The folder chosen to take what is inside is not there for this customer (#537)."""
+
+
+@dataclass(frozen=True, slots=True)
+class FolderSummary:
+    """What a folder holds, at every depth (#537)."""
+
+    files: int  # live document families (a file with three versions is one)
+    folders: int  # the folders inside it
+    bytes: int  # every live version's size
 
 
 class DepartmentNotTopLevel(FolderError):
@@ -196,13 +229,70 @@ _MOVE_CHECK = (
 # Kaagaz filed there is no longer "filed" and its Undo is refused.
 _DETACH_TRASHED = (
     "UPDATE documents d SET folder_id = NULL, autofile = NULL FROM ("
-    " SELECT id FROM documents WHERE customer_id = :c AND folder_id = :f AND deleted_at IS NOT NULL"
+    " SELECT id FROM documents WHERE customer_id = :c AND folder_id = ANY(CAST(:ids AS uuid[]))"
+    " AND deleted_at IS NOT NULL"
     " ORDER BY family_id, (id <> family_id), id FOR NO KEY UPDATE) AS l"
     " WHERE d.customer_id = :c AND d.id = l.id AND d.deleted_at IS NOT NULL"
 )
 
 _DELETE = "DELETE FROM folders WHERE customer_id = :c AND id = :f RETURNING id, parent_id"
 _PARENT = "SELECT parent_id FROM folders WHERE customer_id = :c AND id = :f"
+
+# --- a folder deleted with what is inside it (#537) ---
+# The subtree's size: the folders in it (the folder itself too), its live files (families) and
+# their bytes (every live version), on documents_folder.
+_SUMMARY = (
+    "WITH RECURSIVE down (id, depth) AS ("
+    " SELECT f.id, 1 FROM folders f WHERE f.customer_id = :c AND f.id = :f"
+    " UNION ALL"
+    " SELECT f.id, down.depth + 1 FROM down"
+    " JOIN folders f ON f.parent_id = down.id"
+    " WHERE f.customer_id = :c AND down.depth < 101),"
+    " live AS (SELECT d.family_id, d.size_bytes FROM documents d WHERE d.customer_id = :c"
+    " AND d.deleted_at IS NULL AND d.folder_id IN (SELECT id FROM down))"
+    " SELECT (SELECT count(*) FROM down), (SELECT count(DISTINCT family_id) FROM live),"
+    " (SELECT coalesce(sum(size_bytes), 0) FROM live)"
+)
+# A folder upload (a zip the worker unpacks too) whose plan holds one of :ids, that still has a
+# file waiting, and that planned, registered or sent something since :since: the uploads with
+# one waiting first, on folder_upload_items_state, then their plan on folder_upload_folders_folder.
+_UPLOAD_RUNNING = (
+    "SELECT EXISTS (SELECT 1 FROM folder_uploads u WHERE u.customer_id = :c"
+    " AND EXISTS (SELECT 1 FROM folder_upload_items i WHERE i.customer_id = :c"
+    " AND i.folder_upload_id = u.id AND i.state = 'waiting')"
+    " AND (u.updated_at > :since OR EXISTS (SELECT 1 FROM folder_upload_items r WHERE r.customer_id = :c"
+    " AND r.folder_upload_id = u.id AND r.updated_at > :since))"
+    " AND EXISTS (SELECT 1 FROM folder_upload_folders m WHERE m.customer_id = :c"
+    " AND m.folder_upload_id = u.id AND m.folder_id = ANY(CAST(:ids AS uuid[]))))"
+)
+# The deleted folder steps out of its siblings' names first, so a folder inside it may take its
+# name where they meet. Its id is its name only inside this transaction (36 characters).
+_NAME_AWAY = "UPDATE folders SET name = id::text WHERE customer_id = :c AND id = :f"
+# Every document directly in :f, Trash included, into :p; locked in family order as
+# _DETACH_TRASHED, and the auto-filing state cleared as every write of folder_id does.
+_MOVE_DOCUMENTS = (
+    "UPDATE documents d SET folder_id = CAST(:p AS uuid), autofile = NULL FROM ("
+    " SELECT id FROM documents WHERE customer_id = :c AND folder_id = :f"
+    " ORDER BY family_id, (id <> family_id), id FOR NO KEY UPDATE) AS l"
+    " WHERE d.customer_id = :c AND d.id = l.id"
+)
+# The folders directly in :f whose name nothing at :p has (as _FREE compares), in one statement.
+_MOVE_FREE = (
+    "UPDATE folders ch SET parent_id = CAST(:p AS uuid) WHERE ch.customer_id = :c AND ch.parent_id = :f"
+    " AND NOT EXISTS (SELECT 1 FROM folders f WHERE f.customer_id = :c AND {where}"
+    " AND lower(normalize(f.name, NFC)) = lower(normalize(ch.name, NFC)))"
+)
+_LEFT = "SELECT id, name FROM folders WHERE customer_id = :c AND parent_id = :f ORDER BY lower(name), id"
+_MOVE_RENAMED = (
+    "UPDATE folders SET parent_id = CAST(:p AS uuid), name = :name WHERE customer_id = :c AND id = :id"
+)
+_DELETE_ALL = "DELETE FROM folders WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
+# The first candidate name no sibling has, compared as folders_sibling_name compares (lower()), NFC.
+_FREE = (
+    "SELECT w.n FROM unnest(CAST(:names AS text[])) WITH ORDINALITY AS w (n, i)"
+    " WHERE NOT EXISTS (SELECT 1 FROM folders f WHERE f.customer_id = :c AND {where}"
+    " AND lower(normalize(f.name, NFC)) = lower(normalize(w.n, NFC))) ORDER BY w.i LIMIT 1"
+)
 
 
 def _lock_tree(conn: Connection, customer_id: str) -> None:
@@ -326,7 +416,7 @@ def delete_folder(conn: Connection, customer_id: str, folder_id: str) -> None:
     """
     _lock_tree(conn, customer_id)
     params = {"c": customer_id, "f": folder_id}
-    conn.execute(text(_DETACH_TRASHED), params)
+    conn.execute(text(_DETACH_TRASHED), {**params, "ids": [folder_id]})
     try:
         deleted = conn.execute(text(_DELETE), params).first()
     except IntegrityError as error:
@@ -336,6 +426,92 @@ def delete_folder(conn: Connection, customer_id: str, folder_id: str) -> None:
     if deleted is None:
         raise FolderNotFound()
     prune_empty(conn, customer_id, [None if deleted[1] is None else str(deleted[1])])
+
+
+def folder_summary(conn: Connection, customer_id: str, folder_id: str) -> FolderSummary:
+    """What the folder holds at every depth (FolderSummary). Raises FolderNotFound.
+    One statement, O(s log F + n log D) for the s folders and n documents of its subtree."""
+    count, files, size = conn.execute(text(_SUMMARY), {"c": customer_id, "f": folder_id}).one()
+    if not count:
+        raise FolderNotFound()
+    return FolderSummary(files=int(files), folders=int(count) - 1, bytes=int(size))
+
+
+def delete_folder_with_contents(
+    conn: Connection,
+    customer_id: str,
+    folder_id: str,
+    *,
+    contents: Literal["keep", "trash"],
+    to: str | None,
+    by: str,
+    now: datetime,
+) -> FolderSummary:
+    """Delete a folder that may hold files and folders (#537); returns what it held.
+
+    ``keep``: the documents directly in it (Trash included) and its folders, with all inside
+    them, move into ``to`` (None: the top level), checked as ``move_folder`` checks a move; a
+    folder of the same name there is never merged: the moved one becomes "Name (2)", or the
+    first free number. ``trash``: every family in the folder and below it goes to Trash
+    (``trash.trash_in_folders``: all versions, restorable, purged after TRASH_DAYS) and to the
+    top level, as a deleted folder's trashed documents always have; then the folder and every
+    folder inside it go. A document still being read goes too, as with a single delete.
+
+    Raises FolderNotFound, DestinationNotFound (``to``), FolderCycle (``to`` is the folder or
+    inside it), FolderTooDeep, FolderUploadRunning (a folder upload into what is deleted still has
+    files waiting and was active in the last UPLOAD_QUIET_HOURS: with keep, the folder itself, as
+    its folders only move), FolderNameTaken (no free number up to 100) or FolderChanged (a file
+    arrived meanwhile: a document insert or move takes no tree lock). Nothing is written before
+    the checks; a refusal after a write leaves the caller's transaction to roll back. ``files``
+    in what it returns is, with trash, the families that went to Trash now. O(s log F + n log D)
+    for the s folders and n documents of the subtree, in a fixed number of statements plus two a
+    clashing name.
+    """
+    _lock_tree(conn, customer_id)
+    held = folder_summary(conn, customer_id, folder_id)
+    params: dict[str, Any] = {"c": customer_id, "f": folder_id, "p": to}
+    if contents == "keep" and to is not None:
+        target_depth, cycle, height = conn.execute(text(_MOVE_CHECK), params).one()
+        if target_depth is None:
+            raise DestinationNotFound()
+        if cycle:
+            raise FolderCycle()
+        if int(target_depth) + int(height) - 1 > MAX_DEPTH:  # its folders land just below ``to``
+            raise FolderTooDeep()
+    gone = [folder_id] if contents == "keep" else descendant_ids(conn, customer_id, folder_id)
+    since = now - timedelta(hours=UPLOAD_QUIET_HOURS)
+    if conn.execute(text(_UPLOAD_RUNNING), {**params, "ids": gone, "since": since}).scalar_one():
+        raise FolderUploadRunning()
+    parent = conn.execute(text(_PARENT), params).scalar()
+    if contents == "keep":
+        _move_contents(conn, params)
+    else:
+        held = replace(held, files=trash.trash_in_folders(conn, customer_id, gone, by=by, now=now))
+        conn.execute(text(_DETACH_TRASHED), {**params, "ids": gone})
+    try:
+        conn.execute(text(_DELETE_ALL), {**params, "ids": gone})
+    except IntegrityError as error:
+        if sqlstate(error) == FOREIGN_KEY_VIOLATION:
+            raise FolderChanged() from None
+        raise
+    prune_empty(conn, customer_id, [None if parent is None else str(parent)])
+    return held
+
+
+def _move_contents(conn: Connection, params: dict[str, Any]) -> None:
+    """Everything directly in folder ``f`` into ``p`` (``delete_folder_with_contents``): the
+    documents, and the folders whose names are free there, in one statement each; then each
+    clashing folder under its first free "Name (n)". The caller holds the tree lock."""
+    sibling = "parent_id IS NULL" if params["p"] is None else "parent_id = CAST(:p AS uuid)"
+    conn.execute(text(_NAME_AWAY), params)
+    conn.execute(text(_MOVE_DOCUMENTS), params)
+    _write_named(conn, _MOVE_FREE.format(where=sibling), params)
+    for folder, name in conn.execute(text(_LEFT), params).all():
+        names = [_numbered(str(name), n) for n in range(2, 101)]
+        free = conn.execute(text(_FREE.format(where=sibling)), {**params, "names": names}).scalar()
+        if free is None:
+            raise FolderNameTaken()
+        _write_named(conn, _MOVE_RENAMED, {**params, "id": folder, "name": free})
 
 
 def folder_path(conn: Connection, customer_id: str, folder_id: str) -> list[FolderRow]:
@@ -364,6 +540,12 @@ def _write_named(conn: Connection, statement: str, params: dict[str, Any]) -> Cu
         if sqlstate(error) == CHECK_VIOLATION:
             raise DepartmentNotTopLevel() from None
         raise
+
+
+def _numbered(name: str, n: int) -> str:
+    """``Name (n)``, the name cut so the whole fits 100 characters. O(len(name))."""
+    suffix = f" ({n})"
+    return name[: NAME_MAX - len(suffix)].rstrip() + suffix
 
 
 def _folder(row: Sequence[Any]) -> FolderRow:

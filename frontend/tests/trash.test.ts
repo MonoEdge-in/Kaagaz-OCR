@@ -42,9 +42,11 @@ const granted = (role: Role, scope: SessionScope = "app"): Me => {
 };
 
 describe("who may delete for good", () => {
-  it("is an admin session with two-step sign-in on only (PRD 1, F5); the server checks it again", () => {
+  // Changed on purpose (#538, Tushar, 7 Nov 2026): an admin session without two-step too, with
+  // a typed password (delete-forever-password-538.test.ts).
+  it("is an admin session (PRD 1, F5); the server checks it again", () => {
     expect(canDeleteForever(me("admin", "admin"))).toBe(true);
-    expect(canDeleteForever(me("admin", "admin", false))).toBe(false);
+    expect(canDeleteForever(me("admin", "admin", false))).toBe(true);
     expect(canDeleteForever(me("admin", "app"))).toBe(false);
     expect(canDeleteForever(me("member"))).toBe(false);
     expect(canDeleteForever(me("reviewer"))).toBe(false);
@@ -52,7 +54,7 @@ describe("who may delete for good", () => {
 
   it("tells an admin what to do first, and nobody else", () => {
     expect(foreverNeeds(me("admin", "app"))).toBe("admin_sign_in");
-    expect(foreverNeeds(me("admin", "admin", false))).toBe("two_step");
+    expect(foreverNeeds(me("admin", "admin", false))).toBeNull(); // #538: types their password instead
     expect(foreverNeeds(me("admin", "admin"))).toBeNull();
     expect(foreverNeeds(me("member"))).toBe("not_allowed");
     expect(foreverNeeds(me("reviewer"))).toBe("not_allowed");
@@ -160,21 +162,22 @@ describe("acting on a selection", () => {
     );
     expect(seen).toEqual(["a", "b", "c"]);
     expect(progress).toEqual([1, 2, 3]);
-    expect(result).toEqual({ done: ["a", "b", "c"], failed: [], firstError: undefined });
+    expect(result).toEqual({ done: ["a", "b", "c"], failed: [], firstError: undefined, lastError: undefined });
   });
 
-  it("keeps going when one fails, and keeps the first error", async () => {
+  it("keeps going when one fails, and keeps the first error and the last (#538)", async () => {
     const first = new Error("first");
+    const second = new Error("second");
     const progress: number[] = [];
     const result = await runEach(
       ["a", "b", "c", "d"],
       async (id) => {
         if (id === "b") throw first;
-        if (id === "d") throw new Error("second");
+        if (id === "d") throw second;
       },
       (handled) => progress.push(handled),
     );
-    expect(result).toEqual({ done: ["a", "c"], failed: ["b", "d"], firstError: first });
+    expect(result).toEqual({ done: ["a", "c"], failed: ["b", "d"], firstError: first, lastError: second });
     expect(progress).toEqual([1, 2, 3, 4]);
   });
 
@@ -182,7 +185,7 @@ describe("acting on a selection", () => {
     const result = await runEach([], async () => {
       throw new Error("never called");
     });
-    expect(result).toEqual({ done: [], failed: [], firstError: undefined });
+    expect(result).toEqual({ done: [], failed: [], firstError: undefined, lastError: undefined });
   });
 });
 

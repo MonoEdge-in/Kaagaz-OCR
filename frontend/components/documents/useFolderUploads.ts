@@ -43,11 +43,13 @@ export function useFolderUploads({
   limits,
   reading,
   onStored,
+  onFolders,
 }: {
   userId: string;
   limits: UploadLimits;
   reading: UploadReading | undefined;
   onStored(): void;
+  onFolders(): void; // #536: its folders are made (planned), or it ended
 }) {
   const [state, dispatch] = useReducer(folderUploadsReducer, EMPTY_FOLDER_UPLOADS);
   const sources = useRef(new Map<string, FolderSource>());
@@ -101,6 +103,9 @@ export function useFolderUploads({
     }
     if (event.type === "phase" && event.phase === "sending") listed.current.add(event.id);
     if (event.type === "sent" && event.outcome !== "failed") onStored();
+    // Ended too: a refused plan's reply may be lost after its folders were made.
+    const ended = event.type === "phase" && (event.phase === "done" || event.phase === "stopped" || event.phase === "refused");
+    if (event.type === "planned" || ended) onFolders();
     dispatch(event);
   }
 

@@ -910,8 +910,9 @@ AdminSession = Annotated[CurrentUser, Depends(require_admin_session)]
 
 
 def require_admin_with_two_step(user: AdminSession) -> CurrentUser:
-    """For what can't be undone (deleting a document forever, deleting a tag): an
-    admin session whose admin has two-step sign-in on, else 403
+    """For what can't be undone (deleting a tag; ``require_delete_forever`` lets an admin
+    without two-step type their password instead, #538): an admin session whose admin has
+    two-step sign-in on, else 403
     ``two_step_required``. ``current_user`` lets through only an admin with two-step
     sign-in on or one who turned it off themselves (0061b), whom this refuses."""
     if not user.totp_enabled:
@@ -922,17 +923,28 @@ def require_admin_with_two_step(user: AdminSession) -> CurrentUser:
 AdminWithTwoStep = Annotated[CurrentUser, Depends(require_admin_with_two_step)]
 
 
-def require_delete_forever(request: Request, user: User) -> CurrentUser:
-    """For deleting a document forever (council 4 Oct 2026). An admin needs what
-    they always did: an admin session with two-step sign-in on; a grant never
-    counts for an admin, so a password-only admin can't route round two-step.
-    Anyone else needs an admin's grant (403 ``forbidden``) and a confirm token
-    from typing their password in the last CONFIRM_SECONDS, for this user and
-    session version (403 ``password_confirm_required``). The grant is read
-    again on every request, so stopping it works at once."""
+def deletes_forever_by_password(user: CurrentUser) -> bool:
+    """Who types their password again to delete forever (``require_delete_forever``): a member
+    or reviewer an admin allowed, or an admin in an admin session without two-step sign-in on
+    (never while the organisation requires it)."""
     if user.role == "admin":
-        return require_admin_with_two_step(require_admin_session(user))
-    if not user.delete_forever_allowed:
+        return user.scope == "admin" and not user.totp_enabled and not user.two_step_required
+    return user.delete_forever_allowed
+
+
+def require_delete_forever(request: Request, user: User) -> CurrentUser:
+    """For deleting a document forever (council 4 Oct 2026; #538, Tushar, 7 Nov 2026). An admin
+    needs an admin session (403 ``admin_session_required``): with two-step sign-in on, nothing
+    more; without it, a confirm token, as below. A grant never counts for an admin. While the
+    organisation requires two-step for its admins (0068, #481) one without it is refused as
+    before (403 ``two_step_required``; ``current_user`` already refuses that state). Anyone else
+    needs an admin's grant (403 ``forbidden``). The confirm token comes from typing the password
+    in the last CONFIRM_SECONDS, for this user and session version (403
+    ``password_confirm_required``). The grant is read again on every request, so stopping it
+    works at once."""
+    if user.role == "admin" and not deletes_forever_by_password(require_admin_session(user)):
+        return require_admin_with_two_step(user)
+    if not deletes_forever_by_password(user):
         raise ApiError(403, "forbidden")
     context = get_context(request)
     token = request.cookies.get(CONFIRM_COOKIE) or ""

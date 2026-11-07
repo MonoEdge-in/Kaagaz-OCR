@@ -150,10 +150,11 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const [tagsVersion, setTagsVersion] = useState(0);
   const [newFolderAsk, setNewFolderAsk] = useState(0); // D12: the folder column's "+", the one New folder
   const [dropError, setDropError] = useState<string | null>(null);
-  // undone: the words once Undo worked ("Moved back.", "Restored from Trash.").
-  const [toast, setToast] = useState<{ message: string; undo: () => Promise<void>; undone: string } | null>(null);
+  // undone: the words once Undo worked ("Moved back.", "Restored from Trash."). No undo: a note only (#537).
+  const [toast, setToast] = useState<{ message: string; undo?: () => Promise<void>; undone?: string } | null>(null);
+  const toastUndo = toast?.undo;
   // The shell's one upload queue and tray (D-12); this screen adds files into the folder shown.
-  const { uploads, setTrayOpen, folders: folderPicking } = useSharedUploads(() => setReload((n) => n + 1));
+  const { uploads, setTrayOpen, folders: folderPicking, foldersChanged } = useSharedUploads(() => setReload((n) => n + 1));
   const filtered = isFiltered(library);
   // File management: the people for the Owner filter, List or Grid (per person, F5), the
   // department picked for uploads outside any folder (F2), and the file waiting for its note (V9).
@@ -181,8 +182,6 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const [heardBatches, setHeardBatches] = useState(0);
   if (uploads.settled !== heardBatches) {
     setHeardBatches(uploads.settled);
-    setFoldersVersion((n) => n + 1); // a folder Kaagaz made for them (feature 28) shows in the tree
-
     if (uploads.finished) setAnnouncement(uploadsFinishedText(uploads.finished, q !== "" || filtered));
   }
 
@@ -201,7 +200,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
     return () => {
       cancelled = true;
     };
-  }, [foldersVersion]);
+  }, [foldersVersion, foldersChanged]); // foldersChanged (#536): a folder upload's or Kaagaz's new folders show at once
 
   useEffect(() => {
     let cancelled = false;
@@ -417,8 +416,9 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
     );
   }
 
-  function afterFolderChange(message: string, goTo?: { folderId: string | null }) {
-    setAnnouncement(message);
+  function afterFolderChange(message: string, goTo?: { folderId: string | null }, asToast = false) {
+    if (asToast) setToast({ message });
+    else setAnnouncement(message);
     setFoldersVersion((n) => n + 1);
     if (goTo) {
       show({ ...library, folderId: goTo.folderId, subfolders: goTo.folderId !== null && library.subfolders });
@@ -603,11 +603,6 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                   Only admins, and people an admin allows, can delete documents forever.
                 </p>
               )}
-              {library.trash && foreverNeeds(me) === "two_step" && (
-                <p className={libraryStyles.placeHint}>
-                  To delete forever, turn on two-step sign-in in Account.
-                </p>
-              )}
             </div>
             {canUpload && (
               <div className={styles.uploadControls}>
@@ -633,6 +628,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                 tree={tree}
                 current={current}
                 onChanged={afterFolderChange}
+                admin={me?.user.role === "admin"}
                 askNew={newFolderAsk}
                 suggestions={nameSuggestions}
               />
@@ -953,7 +949,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
 
       <Toast
         message={toast?.message ?? null}
-        onUndo={toast ? () => undoMove(toast.undo, toast.undone) : undefined}
+        onUndo={toastUndo ? () => undoMove(toastUndo, toast?.undone ?? "") : undefined}
         onClose={() => setToast(null)}
       />
       {versionFile && (

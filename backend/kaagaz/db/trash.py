@@ -37,6 +37,15 @@ _TRASH = (
     " WHERE d.customer_id = :c AND d.family_id = :f AND d.deleted_at IS NULL"
 )
 
+# #537: _TRASH for every family filed in these folders at once. The rows are locked in family
+# order (each family's first version, then by id, as _LOCK_FAMILY), every family together.
+_TRASH_IN_FOLDERS = (
+    "UPDATE documents d SET deleted_at = :now, deleted_by = :by FROM ("
+    " SELECT id FROM documents WHERE customer_id = :c AND folder_id = ANY(CAST(:folders AS uuid[]))"
+    " ORDER BY family_id, (id <> family_id), id FOR NO KEY UPDATE) AS l"
+    " WHERE d.customer_id = :c AND d.id = l.id AND d.deleted_at IS NULL RETURNING d.family_id"
+)
+
 _RESTORE = (
     "UPDATE documents d SET deleted_at = NULL, deleted_by = NULL"
     " WHERE d.customer_id = :c AND d.family_id = :f AND d.deleted_at IS NOT NULL"
@@ -106,6 +115,21 @@ def trash_document(conn: Connection, customer_id: str, document_id: str, *, by: 
         return False
     conn.execute(text(_TRASH), {"c": customer_id, "f": family_id, "by": by, "now": now})
     return True
+
+
+def trash_in_folders(
+    conn: Connection, customer_id: str, folder_ids: Sequence[str], *, by: str, now: datetime
+) -> int:
+    """``trash_document`` for every family filed in ``folder_ids`` (a folder deleted with its
+    files, #537), in one statement instead of two a family: every version of a family shares
+    its folder, so each family goes whole, and one already in Trash keeps its first time.
+    Returns how many families went to Trash now. O(n log D) time and O(n) space for the n
+    documents filed there.
+
+    shortcut: the caller writes one folder.delete audit row with the count (#537's rule), no
+    document.trash row a family, so a family's own timeline does not show this trash."""
+    params = {"c": customer_id, "folders": list(folder_ids), "by": by, "now": now}
+    return len(set(conn.execute(text(_TRASH_IN_FOLDERS), params).scalars()))
 
 
 def restore_document(conn: Connection, customer_id: str, document_id: str) -> bool:
