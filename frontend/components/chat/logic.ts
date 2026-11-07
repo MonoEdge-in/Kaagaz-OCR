@@ -206,7 +206,8 @@ export function openText(citation: Pick<Citation, "detected_type" | "page_no">):
 
 // --- Sending a question ---------------------------------------------------------
 
-const GENERIC_MESSAGE = "Something went wrong.";
+// The server's catch-all words ("Something went wrong.", "... on our side."): never shown (B14).
+const GENERIC_MESSAGE = /^something went wrong\b/i;
 
 /**
  * What a failed question says, from the error's HTTP status and message (null
@@ -221,7 +222,7 @@ export function askErrorText(error: { status: number; message: string; code?: st
   if (error.status === 429) return "Too many questions at once. Wait a minute, then try again.";
   if (error.status === 503) return "Kaagaz is busy right now. Try again in a minute."; // the AI service is down
   const message = error.message.trim();
-  if (error.status >= 400 && error.status < 500 && message && message !== GENERIC_MESSAGE) {
+  if (error.status >= 400 && error.status < 500 && message && !GENERIC_MESSAGE.test(message)) {
     return message;
   }
   return "Could not get an answer right now. Try again in a minute.";

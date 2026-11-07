@@ -124,6 +124,6 @@ describe("stopping a question on its way", () => {
     expect(screen).toContain("if (entry.landing) {");
     expect(screen).toContain("showLanding(entry.landing);");
     expect(screen).toContain("setStatus(STOPPED_LANDING_STATUS);");
-    expect(screen).toContain("savedAnswer(entry.landing)");
+    expect(screen).toContain("savedAnswer(entry.landing, wait.signal)"); // B2: cancelled by open, New and leaving
   });
 });

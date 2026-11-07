@@ -319,11 +319,12 @@ describe("small talk, one-press questions and an outage", () => {
     expect(text(html)).not.toContain("Nothing in your documents matches this yet");
   });
 
-  it("says a question that took too long should go to Swift or fewer documents, never ask again", () => {
+  it("says a question that took too long should ask about fewer documents, never ask again", () => {
     const empty = { status: "not_found" as const, sentences: [], citations: [], documents: [], outage: true };
     const html = render(v2(0, { ...empty, outage_reason: "timeout" }));
     expect(text(html)).toContain(TIMEOUT_TEXT);
     expect(text(html)).not.toContain(OUTAGE_TEXT);
-    expect(TIMEOUT_TEXT).toBe("This question took too long for the AI. Try Swift, or ask about fewer documents.");
+    // B13: neutral; "Swift answers faster." follows only after Precision (stable-chat-screen.test.ts).
+    expect(TIMEOUT_TEXT).toBe("This question took too long for the AI. Ask about fewer documents, then try again.");
   });
 });

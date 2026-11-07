@@ -263,7 +263,8 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const [search, setSearch] = useState<StorySearchState>({ kind: "idle" });
   const [searchRequests] = useState(latestOnly);
   const searchAbort = useRef<AbortController | null>(null);
-  const asking_ = useRef<InFlight | null>(null); // the question on its way, for Stop
+  // The question on its way, for Stop; B7: a picked-up one still on its way too.
+  const asking_ = useRef<InFlight | null>(waiting ? resumed : null);
   // #535: the question whose stream the pending card shows, its progress, done's reply while
   // the card finishes revealing it, and who waits for it to settle (sendQuestion).
   const [streaming, setStreaming] = useState<InFlight | null>(() => (waiting ? resumed : null));
@@ -274,6 +275,13 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const [settledIn, setSettledIn] = useState<ReadonlyMap<string, "same" | "changed">>(() => new Map());
   // A streamed answer just settled: the thread stays where it is.
   const streamedIn = useRef(false);
+  // B1: a question stopped after `started`: shown with STOPPED_LANDING_STATUS until its saved answer comes.
+  const [stopped, setStopped] = useState<string | null>(null);
+  // B2: the wait for that saved answer, cancelled by open, startNew and leaving the screen.
+  const savedWait = useRef<AbortController | null>(null);
+  // B13: the answers this screen asked with Precision: a timeout suggests Swift for them only.
+  const [preciseAnswers, setPreciseAnswers] = useState<ReadonlySet<string>>(() => new Set());
+  const markPrecise = (answerId: string) => setPreciseAnswers((current) => new Set(current).add(answerId));
   // The drawer is open for the path it was opened on, so any route change closes it.
   const [listOpenOn, setListOpenOn] = useState<string | null>(null);
   const listOpen = listOpenOn !== null && listOpenOn === pathname;
@@ -306,6 +314,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     return () => {
       alive.current = false;
       settleWait.current?.(false); // nothing waits for a card that is gone
+      savedWait.current?.abort();
     };
   }, []);
   const threadRef = useRef<HTMLElement>(null);
@@ -433,10 +442,26 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
           if (cancelled) return;
           settleAsk(resumed);
           waitingNow.current = null;
-          typedNow.current = restoreAfterFailure(typedNow.current, resumed.question);
-          keepDraft();
           setPending(null);
           setAskError(errorText(error));
+          // B8: its answer is not in its conversation yet: that conversation opens, with the words
+          // (as sendQuestion does); the box is not refilled, since the question was asked.
+          if (error instanceof ApiError && error.code === "answer_pending" && resumed.landing) {
+            const { conversationId } = resumed.landing;
+            keepDraft();
+            setActiveId(conversationId);
+            showInUrl(conversationId);
+            setThreadState("loading");
+            listConversations()
+              .then((list) => {
+                if (!cancelled) setConversations(list.items);
+              })
+              .catch(() => undefined);
+            load(conversationId);
+            return;
+          }
+          typedNow.current = restoreAfterFailure(typedNow.current, resumed.question);
+          keepDraft();
           setDraft(resumed.question);
         },
       );
@@ -527,12 +552,19 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     nearBottom.current = true;
   }, [pending]);
 
-  /** #535: keep the end of a streaming answer in view, only while the person is at the bottom. */
+  /** #535: keep the end of a streaming answer in view, only while the person is at the bottom.
+   * B10: once a frame, so the thread's height is not read (a forced layout) on every word. */
+  const followFrame = useRef(0);
   const follow = () => {
-    const thread = threadRef.current;
-    if (!nearBottom.current || !thread) return;
-    thread.scrollTop = thread.scrollHeight;
+    if (followFrame.current !== 0) return;
+    followFrame.current = requestAnimationFrame(() => {
+      followFrame.current = 0;
+      const thread = threadRef.current;
+      if (!nearBottom.current || !thread) return;
+      thread.scrollTop = thread.scrollHeight;
+    });
   };
+  useEffect(() => () => cancelAnimationFrame(followFrame.current), []);
 
   /** #535: hand done's reply to the streamed card; resolves once it has finished revealing it and
    * settles ("changed": the reply differs from the preview), or at once on Stop (`stop`). */
@@ -549,9 +581,17 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       setFinal(reply);
     });
 
+  /** B1, B2: forget a stopped question and stop waiting for its saved answer. */
+  const forgetStopped = () => {
+    savedWait.current?.abort();
+    savedWait.current = null;
+    setStopped(null);
+  };
+
   const open = async (id: string) => {
     const request = ++openRequest.current;
     forgetStories();
+    forgetStopped();
     chooseMode("documents");
     setListOpenOn(null);
     setActiveId(id);
@@ -581,6 +621,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const startNew = () => {
     openRequest.current += 1;
     forgetStories();
+    forgetStopped();
     setListOpenOn(null);
     setActiveId(null);
     showInUrl(null);
@@ -638,6 +679,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     const answering = chose ?? (asking && answersClarify(question) ? { message_id: asking.id, choice_ids: [] } : undefined);
     const asked = only ? chooseScope(scope, only) : scope;
     if (only) setScope(asked);
+    forgetStopped();
     setPending(question);
     setAskError(null);
     setStatus(ASKING_STATUS);
@@ -656,12 +698,14 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       });
     }
     // Kept outside this screen (askStore.ts), so leaving Ask never drops it.
+    const choice = choiceBody(chatOptions, answerPick);
+    const precise = choice?.thinking === "high"; // B13: Precision
     const entry = startAsk(question, activeId, (signal, onEvent) =>
       askStream(
         question,
         activeId ?? undefined,
         sentScope(asked),
-        choiceBody(chatOptions, answerPick),
+        choice,
         answering,
         signal,
         onEvent,
@@ -676,6 +720,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       if (!alive.current) return true; // left while it revealed: the next chat screen shows it
       settleAsk(entry);
       streamedIn.current = true;
+      if (precise) markPrecise(reply.answer.id);
       setSettledIn((current) => new Map(current).set(reply.answer.id, how));
       setMessages((current) => [...current, reply.question, reply.answer]);
       // Only after a tapped choice does focus move, to the reply; typing keeps it in the box.
@@ -700,19 +745,27 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       if (entry.stopped) {
         if (entry.landing) {
           // #535: the server finishes and saves it (Tushar, 16 Oct 2026): its conversation opens,
-          // the box is cleared (Tushar's call), and the answer shows there once it is saved.
+          // the box is cleared (Tushar's call), and the answer shows there once it is saved. B1: until
+          // then the question stays on screen with STOPPED_LANDING_STATUS, never the welcome screen.
           const request = openRequest.current;
           showLanding(entry.landing);
           setStatus(STOPPED_LANDING_STATUS);
-          savedAnswer(entry.landing).then(
+          setStopped(question);
+          const wait = new AbortController();
+          savedWait.current = wait;
+          savedAnswer(entry.landing, wait.signal).then(
             (saved) => {
               if (!alive.current || openRequest.current !== request) return; // another conversation is open
+              if (precise) markPrecise(saved.answer.id);
+              setStopped(null);
               setMessages((current) =>
                 current.some((message) => message.id === saved.answer.id) ? current : [...current, saved.question, saved.answer],
               );
             },
             (failed: unknown) => {
-              if (alive.current && openRequest.current === request) setAskError(errorText(failed));
+              if (!alive.current || openRequest.current !== request || wait.signal.aborted) return;
+              setStopped(null);
+              setAskError(errorText(failed));
             },
           );
           return true;
@@ -796,7 +849,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     slot?.matches ? (
       <StoryMatches matches={slot.matches} note={STORY_NOTE_CHAT} headingLevel={2} question={question} />
     ) : null;
-  const empty = messages.length === 0 && threadState === "idle" && !busy;
+  const empty = messages.length === 0 && threadState === "idle" && !busy && stopped === null;
   // A4: the newest answer, when it found nothing in fewer than every document, offers them all.
   const last = messages.at(-1);
   const askAllFor =
@@ -981,6 +1034,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
                           onAskAll={message === askAllFor ? askAll : undefined}
                           onAskQuestion={busy ? undefined : (text) => void onAsk(text)}
                           settle={settledIn.get(message.id)}
+                          precise={preciseAnswers.has(message.id)}
                         />
                       )}
                     </div>
@@ -988,6 +1042,15 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
                   </Fragment>
                 ),
               )}
+              {stopped !== null && pending === null ? (
+                <>
+                  <div className={styles.question}>
+                    <span className="visually-hidden">You asked: </span>
+                    <p className={styles.plain}>{stopped}</p>
+                  </div>
+                  <p className={styles.threadStatus}>{STOPPED_LANDING_STATUS}</p>
+                </>
+              ) : null}
               {pending !== null ? (
                 <>
                   <div className={styles.question}>

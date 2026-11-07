@@ -187,7 +187,9 @@ const CLOSEST_SHOWN = 3;
 /** KZ-006 (24 Oct 2026): every model was down; as routers/chat.py OUTAGE_LINE. */
 export const OUTAGE_TEXT = "The AI is not responding right now, so this is not a written answer. Ask again in a minute."
 /** #535: the outage was a draft that took too long; as routers/chat.py TIMEOUT_LINE. */
-export const TIMEOUT_TEXT = "This question took too long for the AI. Try Swift, or ask about fewer documents."
+export const TIMEOUT_TEXT = "This question took too long for the AI. Ask about fewer documents, then try again."
+/** B13: added only when this screen asked it with Precision (high thinking), which it knows. */
+export const SWIFT_FASTER = " Swift answers faster."
 /** A search answer the AI did not write (off on this server, or not answering): the lines that
  * matched, quoted. It read as a written answer before (QA pass, 25 Oct 2026). */
 export const QUOTED_TEXT =
@@ -200,6 +202,7 @@ export const AnswerView = memo(function AnswerView({
   onAskQuestion,
   readOnly = false,
   settle,
+  precise = false,
 }: {
   message: Message;
   question: string | null;
@@ -212,6 +215,8 @@ export const AnswerView = memo(function AnswerView({
    * without rising, and what the preview did not have (the label, the sources) fades in;
    * "changed", its sentences too, as they differ from the preview. */
   settle?: "same" | "changed";
+  /** B13: this screen asked it with Precision; a timeout then suggests Swift. */
+  precise?: boolean;
 }) {
   // The source a chip is pointed at or focused: its card lights up (UI quality council, 15 Oct 2026).
   const [hot, setHot] = useState<number | null>(null);
@@ -367,7 +372,7 @@ export const AnswerView = memo(function AnswerView({
           <p className={styles.plain}>
             {answer.outage
               ? answer.outage_reason === "timeout"
-                ? TIMEOUT_TEXT
+                ? `${TIMEOUT_TEXT}${precise ? SWIFT_FASTER : ""}`
                 : OUTAGE_TEXT
               : notFoundText(closest, answer.missing_words ?? [])}
           </p>

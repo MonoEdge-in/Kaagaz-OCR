@@ -3,7 +3,8 @@
 // (StreamingAnswer.tsx) rendered with react-dom in the small fake DOM (tests/fake-dom.ts),
 // its frames driven by hand: real stages and sources, sentences word by word in order, done
 // handing over to the final card, reduced motion showing it all at once, and the live region
-// saying each sentence once. Then how the chat screen and the answer card use them.
+// saying the stages (never the sentences: the settled card reads them, stability pass B9).
+// Then how the chat screen and the answer card use them.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -297,20 +298,19 @@ describe("the streamed answer card (StreamingAnswer.tsx)", () => {
     expect(frames.size).toBe(0);
   });
 
-  it("says each sentence once in a polite live region, and the stage; the moving words are hidden from it", async () => {
+  it("says the stage in a polite live region, never the sentences; the moving words are hidden from it", async () => {
     let progress = progressOf(stage("writing"), sentence(0, "Rent is ₹12,000.", [1]));
     const card = await show({ progress, final: null });
     await frame(0);
     expect(find(card, "[data-preview]")?.getAttribute("aria-hidden")).toBe("true");
     const region = live(card);
-    expect(region.childNodes.map((p) => p.textContent)).toEqual(["Writing the answer…", "Rent is ₹12,000."]);
+    expect(region.childNodes.map((p) => p.textContent)).toEqual(["Writing the answer…"]);
     progress = progressAfter(progressAfter(progress, stage("checking")), sentence(1, "Due on the 5th."));
     await update({ progress, final: null });
     await frame(10);
     await frame(20);
-    expect(live(card).childNodes.map((p) => p.textContent)).toEqual(["Checking the answer…", "Rent is ₹12,000.", "Due on the 5th."]);
-    // Nothing is said word by word: the live region holds whole sentences only.
-    expect(live(card).childNodes.filter((p) => p.textContent === "Due ")).toHaveLength(0);
+    // B9: the answer is heard once, from the settled card, which takes focus.
+    expect(live(card).childNodes.map((p) => p.textContent)).toEqual(["Checking the answer…"]);
   });
 
   it("on done: finishes the reveal, every stage checked, then a beat, then settles into the final card", async () => {
@@ -347,7 +347,7 @@ describe("the streamed answer card (StreamingAnswer.tsx)", () => {
     const card = await show({ progress: NO_PROGRESS, final });
     await frame(0);
     expect(card.textContent).toMatch(/^Here's what I found\.The /);
-    expect(live(card).textContent).toContain("Here's what I found.");
+    expect(live(card).textContent).not.toContain("Here's what I found."); // B9: the settled card says it
   });
 
   it("settles at once, as changed, when the final answer dropped a streamed sentence", async () => {
