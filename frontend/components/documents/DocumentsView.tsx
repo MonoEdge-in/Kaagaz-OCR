@@ -28,7 +28,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import { DepartmentPicker } from "@/components/files/DepartmentPicker";
-import { departmentsOf, lastDepartment, rememberDepartment } from "@/components/files/departments";
+import { chosenDepartment, departmentsOf, rememberDepartment } from "@/components/files/departments";
 import { DocumentsGrid } from "@/components/files/DocumentsGrid";
 import { FolderTiles } from "@/components/files/FolderTiles";
 import { readViewMode, saveViewMode } from "@/components/files/viewMode";
@@ -180,7 +180,9 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   } | null>(null);
   const toastUndo = toast?.undo;
   // The shell's one upload queue and tray (D-12); this screen adds files into the folder shown.
-  const { uploads, setTrayOpen, folders: folderPicking, foldersChanged } = useSharedUploads(() => setReload((n) => n + 1));
+  const { uploads, setTrayOpen, folders: folderPicking, foldersChanged, foldersEdited } = useSharedUploads(() =>
+    setReload((n) => n + 1),
+  );
   const filtered = isFiltered(library);
   // File management: the people for the Owner filter, List or Grid (per person, F5), the
   // department picked for uploads outside any folder (F2), and the file waiting for its note (V9).
@@ -351,7 +353,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const uploadInto = library.folderId ?? undefined;
   // F2: outside any folder, the files go into the department picked (the last one used).
   const departments = useMemo(() => departmentsOf(folders ?? []), [folders]);
-  const department = departmentChoice === undefined ? lastDepartment(departments) : departmentChoice;
+  const department = chosenDepartment(departmentChoice, departments);
 
   const openPicker = () => inputRef.current?.click();
   // #484: a whole folder (picked or dropped) keeps its structure, inside the folder shown at first.
@@ -442,7 +444,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   function afterRemoved(message: string, undo?: RemovalUndo) {
     if (undo) setToast({ message, undo: undo.run, undone: undo.done });
     else setAnnouncement(message);
-    if (library.trash) setFoldersVersion((n) => n + 1); // #542: a restore may bring folders back
+    if (library.trash) foldersEdited(); // #542: a restore may bring folders back; B4: the shell's list too
     headingRef.current?.focus();
     const nextOffset = offsetAfterDelete(offset, shown?.list.items.length ?? 0, PAGE_SIZE);
     if (nextOffset !== offset) turnPage(nextOffset);
@@ -470,7 +472,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   // #542: a folder in Trash restored or deleted for good from its row: said in the toast.
   function afterTrashFolder(message: string) {
     setToast({ message });
-    setFoldersVersion((n) => n + 1);
+    foldersEdited(); // B4: this screen's folder list and the shell's ask again
     setReload((n) => n + 1);
     headingRef.current?.focus();
   }
@@ -483,7 +485,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   function afterFolderChange(message: string, goTo?: { folderId: string | null }, asToast = false) {
     if (asToast) setToast({ message });
     else setAnnouncement(message);
-    setFoldersVersion((n) => n + 1);
+    foldersEdited(); // B4: this screen's folder list and the shell's ask again
     if (goTo) {
       show({ ...library, folderId: goTo.folderId, subfolders: goTo.folderId !== null && library.subfolders });
       headingRef.current?.focus();
@@ -668,17 +670,17 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
               )}
               {opened && (
                 <p className={libraryStyles.placeHint}>
-                  This folder is in Trash, so it can only be looked at. Restore it from Trash to use it again.
+                  Restore single files here, or the whole folder from Trash.
                 </p>
               )}
               {library.trash && foreverNeeds(me) === "admin_sign_in" && (
                 <p className={libraryStyles.placeHint}>
-                  To delete forever, <Link href="/login">sign in again</Link>.
+                  To delete for good, <Link href="/login">sign in again</Link>.
                 </p>
               )}
               {library.trash && foreverNeeds(me) === "not_allowed" && (
                 <p className={libraryStyles.placeHint}>
-                  Only admins, and people an admin allows, can delete documents forever.
+                  Only admins, and people an admin allows, can delete documents for good.
                 </p>
               )}
             </div>
@@ -996,7 +998,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                       inTrash={library.trash}
                       suggestions={nameSuggestions}
                       movedLeaves={library.folderId !== null}
-                      onFolderCreated={() => setFoldersVersion((n) => n + 1)}
+                      onFolderCreated={foldersEdited}
                       onRemoved={afterRemoved}
                       onSaved={afterSave}
                       onFocusList={() => headingRef.current?.focus()}
