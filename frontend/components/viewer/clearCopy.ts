@@ -3,7 +3,10 @@
 // reader's, as read and in order; nothing is added or changed, only grouped: headings,
 // "Label: value" lines, lists, table cells back in a grid by row and column, and paragraphs.
 
-import type { ClearCopy, ExtractedValue, ReadLine, ReadingMark } from "@/lib/types";
+import { failureText } from "@/components/review/wordReview";
+import { ApiError } from "@/lib/api";
+import { formatDate } from "@/lib/format";
+import type { ClearCopy, ExtractedValue, LineCorrection, ReadLine, ReadingMark } from "@/lib/types";
 import { fieldText } from "./labels";
 import { lineMarked, notSure, visibleText } from "./scanned";
 
@@ -97,6 +100,8 @@ export function pairParts(line: ReadLine, marks: readonly ReadingMark[], label: 
  */
 export function parts(line: ReadLine, marks: readonly ReadingMark[]): Part[] {
   const text = line.text;
+  // #527: a person set a corrected line's words, so none of it is "not read for sure".
+  if (line.correction) return [{ text: visibleText(text), unsure: false }];
   if (notSure(line.confidence)) return [{ text: visibleText(text), unsure: true }];
   const spans: [number, number][] = [];
   let cursor = 0;
@@ -154,3 +159,49 @@ export function dataText(copy: ClearCopy, values: readonly Pick<ExtractedValue, 
     ...(found.length > 0 ? [["Values found", ...found].join("\n")] : []),
   ].join("\n\n");
 }
+
+// --- Correct a line (#527, Tushar, 7 Nov 2026): a reviewer or an admin edits a line ---
+
+export const MAX_LINE = 5000; // the API's MAX_TEXT (routers/word_review.py)
+export const LINE_SAVED = "Line corrected. Search and answers use the new text.";
+export const LINE_SAVED_HERE = "Line corrected here, but search could not be updated for it."; // no piece took it
+// The server's rule for a typed line (routers/word_review.py, names.one_line and clean_name):
+// each run of line breaks or tabs a single space, control and hidden characters removed (ZWNJ,
+// ZWJ and a flag emoji's tags kept), trimmed.
+const BREAKS = /(?:\r\n|[\n\r\u2028\u2029\t])+/g;
+const FLAG = /(\u{1F3F4}[\u{E0020}-\u{E007E}]+\u{E007F})/u;
+const HIDDEN = /[\x00-\x1f\x7f-\x9f]|(?![\u200c\u200d])[\p{Cf}\p{Zl}\p{Zp}]/gu;
+
+/** A line's text as one typed line: what its text box starts with, so nothing glued or invisible is saved. */
+export const oneLine = (text: string) =>
+  text
+    .replace(BREAKS, " ")
+    .split(FLAG)
+    .map((part, index) => (index % 2 ? part : part.replace(HIDDEN, "")))
+    .join("")
+    .trim();
+export const LINE_UNDONE = "Undone. The line reads as before.";
+export const LINE_CHANGED = "This line changed since you opened it. Reload and try again.";
+export const STILL_READING = "The document is still being read.";
+
+/** "Corrected by Ravi Sharma, 7 Nov 2026". */
+export const correctedText = (correction: LineCorrection) => `Corrected by ${correction.by}, ${formatDate(correction.at)}`;
+
+/** "Read as: Total 1180": the text the correction replaced, hidden characters shown. */
+export const readAsText = (correction: LineCorrection) => `Read as: ${visibleText(correction.before_text)}`;
+
+/** A refused save or Undo in plain words; any other refusal as the word edit says it. */
+export function lineFailure(caught: unknown): string {
+  if (caught instanceof ApiError && caught.code === "changed_since") return LINE_CHANGED;
+  if (caught instanceof ApiError && caught.code === "not_ready") return STILL_READING;
+  return failureText(caught);
+}
+
+/** The copy with `saved` in place of the line with its key; nothing else changes. */
+export const replaceLine = (copy: ClearCopy, saved: ReadLine): ClearCopy => ({
+  ...copy,
+  pages: copy.pages.map((page) => ({
+    ...page,
+    lines: page.lines.map((line) => (line.key === saved.key ? { ...line, ...saved } : line)),
+  })),
+});

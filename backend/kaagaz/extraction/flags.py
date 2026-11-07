@@ -221,6 +221,15 @@ def overlaps(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
     )
 
 
+def centre_in(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
+    """Box ``a``'s centre is in box ``b`` on the same page (a box inside ``b`` too; a cell never)."""
+    inner, outer = _box(a), _box(b)
+    if inner is None or outer is None or inner.page != outer.page:
+        return False
+    x, y = (inner.x0 + inner.x1) / 2, (inner.y0 + inner.y1) / 2
+    return outer.x0 <= x <= outer.x1 and outer.y0 <= y <= outer.y1
+
+
 def occurrences(text: str, part: str) -> int:
     """How many times ``part`` is in ``text``, overlapping ones too ("aa" is twice in "aaa"),
     so "exactly once" means one place only."""

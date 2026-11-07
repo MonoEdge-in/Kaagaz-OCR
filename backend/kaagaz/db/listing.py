@@ -781,6 +781,7 @@ _CLEAR_COPY = text(
     " left(e.span ->> 'raw', :max_chars) AS text, length(e.span ->> 'raw') > :max_chars AS cut,"
     " CAST(e.span ->> 'confidence' AS double precision) AS confidence,"
     " e.span ->> 'origin' AS origin, e.span ->> 'kind' AS kind, e.span -> 'region' AS region,"
+    " e.span ->> 'text' AS as_read,"
     " e.span ->> 'table_id' AS table_id, CAST(e.span ->> 'row' AS integer) AS table_row,"
     " CAST(e.span ->> 'col' AS integer) AS table_col, CAST(e.span ->> 'header' AS boolean) AS table_header,"
     " sum(length(left(e.span ->> 'raw', :max_chars)))"
@@ -819,10 +820,24 @@ def clear_copy(
         "d": document_id,
         "max_lines": CLEAR_COPY_LINES,
         "max_chars": MAX_READING_CHARS,
+    }
+    lines = clear_copy_lines(conn, customer_id, document_id)
+    return lines, conn.execute(_CLEAR_COPY_MARKS, params).mappings().all()
+
+
+def clear_copy_lines(conn: Connection, customer_id: str, document_id: str) -> Sequence[RowMapping]:
+    """``clear_copy``'s lines alone, with each one's text as read (``as_read``, the span's
+    cleaned text, which a line's word key and the search pieces hold), under no timeout of its
+    own: a line correction (#527) finds its line here, in a save's transaction too. One
+    statement. O(spans of the document)."""
+    params = {
+        "c": customer_id,
+        "d": document_id,
+        "max_lines": CLEAR_COPY_LINES,
+        "max_chars": MAX_READING_CHARS,
         "max_text": CLEAR_COPY_TEXT,
     }
-    lines = conn.execute(_CLEAR_COPY, params).mappings().all()
-    return lines, conn.execute(_CLEAR_COPY_MARKS, params).mappings().all()
+    return conn.execute(_CLEAR_COPY, params).mappings().all()
 
 
 def rename_document(conn: Connection, customer_id: str, document_id: str, *, name: str) -> None:

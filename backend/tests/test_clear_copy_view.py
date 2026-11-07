@@ -17,6 +17,7 @@ def row(page_no: int, text: str, **extra: Any) -> RowMapping:
     found = {
         "page_no": page_no,
         "text": text,
+        "as_read": text,
         "cut": False,
         "confidence": None,
         "origin": "ocr",
@@ -34,7 +35,7 @@ def row(page_no: int, text: str, **extra: Any) -> RowMapping:
 def test_lines_and_marks_go_to_their_pages_in_order() -> None:
     mark = cast(RowMapping, {"page_no": 2, "quality": "unsure", "region": REGION, "text": "1180"})
     rows = [row(1, "a"), row(2, "b", table_id="t1", table_row=0, table_col=1, table_header=True)]
-    body = clear_copy([1, 2, 3], rows, [mark])
+    body = clear_copy([1, 2, 3], rows, [mark], [])
     assert body["truncated"] is False
     assert [[line["text"] for line in page["lines"]] for page in body["pages"]] == [["a"], ["b"], []]
     assert body["pages"][1]["lines"][0]["table"] == {"id": "t1", "row": 0, "col": 1, "header": True}
@@ -43,17 +44,17 @@ def test_lines_and_marks_go_to_their_pages_in_order() -> None:
 
 def test_the_whole_document_stops_at_the_line_cap() -> None:
     rows = [row(1 + n // 1000, "x") for n in range(CLEAR_COPY_LINES + 1)]
-    body = clear_copy(list(range(1, 22)), rows, [])
+    body = clear_copy(list(range(1, 22)), rows, [], [])
     assert body["truncated"] is True
     assert sum(len(page["lines"]) for page in body["pages"]) == CLEAR_COPY_LINES
 
 
 def test_the_whole_document_stops_at_the_character_cap() -> None:
     half = "y" * (CLEAR_COPY_TEXT // 2)
-    body = clear_copy([1, 2], [row(1, half), row(2, half), row(2, "one more")], [])
+    body = clear_copy([1, 2], [row(1, half), row(2, half), row(2, "one more")], [], [])
     assert body["truncated"] is True
     assert [len(page["lines"]) for page in body["pages"]] == [1, 1]
 
 
 def test_a_line_cut_in_sql_says_truncated() -> None:
-    assert clear_copy([1], [row(1, "long", cut=True)], [])["truncated"] is True
+    assert clear_copy([1], [row(1, "long", cut=True)], [], [])["truncated"] is True

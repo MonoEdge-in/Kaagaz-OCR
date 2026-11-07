@@ -15,7 +15,7 @@ from sqlalchemy import Connection, RowMapping
 from kaagaz.answering.clarify import without_resume
 from kaagaz.answering.hard_to_read import FlaggedPage, not_found_note
 from kaagaz.api.auth import CurrentUser, needs_google_link
-from kaagaz.db import audit
+from kaagaz.db import audit, word_review
 from kaagaz.db import ensemble as ensemble_sql
 from kaagaz.db.folder_upload_items import ItemRow
 from kaagaz.db.folders import FolderRow
@@ -776,11 +776,15 @@ def page_readings(
 
 
 def clear_copy(
-    page_numbers: Sequence[int], rows: Sequence[RowMapping], marks: Sequence[RowMapping]
+    page_numbers: Sequence[int],
+    rows: Sequence[RowMapping],
+    marks: Sequence[RowMapping],
+    live: Sequence[RowMapping],
 ) -> dict[str, Any]:
     """``ClearCopy`` (Read clearly, 19 Oct 2026): every page with its lines and marks, from
-    ``listing.clear_copy``. The lines stop at CLEAR_COPY_LINES or CLEAR_COPY_TEXT for the
-    whole document, or after a line cut in SQL; then ``truncated``. O(lines + marks)."""
+    ``listing.clear_copy``, each line as ``clear_line`` with ``live`` (the changes in force,
+    oldest first). The lines stop at CLEAR_COPY_LINES or CLEAR_COPY_TEXT for the whole
+    document, or after a line cut in SQL; then ``truncated``. O(lines + marks)."""
     pages: dict[int, dict[str, Any]] = {n: {"page_no": n, "lines": [], "marks": []} for n in page_numbers}
     truncated, used, count = False, 0, 0
     for row in rows:
@@ -790,13 +794,32 @@ def clear_copy(
         used, count = used + len(row["text"]), count + 1
         truncated = truncated or bool(row["cut"])
         if row["page_no"] in pages:
-            pages[row["page_no"]]["lines"].append(_line(row))
+            pages[row["page_no"]]["lines"].append(clear_line(row, live))
     for mark in marks:
         if mark["page_no"] in pages:
             pages[mark["page_no"]]["marks"].append(
                 {"quality": mark["quality"], "region": mark["region"], "text": mark["text"]}
             )
     return {"pages": list(pages.values()), "truncated": truncated}
+
+
+def clear_line(row: RowMapping, live: Sequence[RowMapping]) -> dict[str, Any]:
+    """A clean copy's ``ReadLine`` (#527): with its ``key`` and the ``correction`` in force (who
+    and when, and ``before_text``, the line as first shown); ``text`` is the line's text now
+    when a change in force touches it (``word_review.line_text``). O(changes)."""
+    change = word_review.line_correction(row, live)
+    text_now = word_review.line_text(row, live)
+    line = {**_line(row), "key": word_review.line_key(row), "correction": None}
+    if text_now is not None:
+        line["text"] = text_now
+    if change is not None:
+        line["correction"] = {
+            "before_text": row["text"],
+            "by": change["user_name"] or "",
+            "at": iso(change["created_at"]),
+            "change_id": str(change["id"]),
+        }
+    return line
 
 
 def _line(row: RowMapping) -> dict[str, Any]:

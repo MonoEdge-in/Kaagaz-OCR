@@ -3,7 +3,8 @@
 * ``GET /documents/{id}/clear-copy``: every page's lines as read, in order, with each
   line's kind, table place and region, and the page's reading marks: the main reader's
   lines of the Scanned text panel, capped for the whole document (``views.clear_copy``,
-  a top-level ``truncated``).
+  a top-level ``truncated``). Each line has its key and the correction in force (#527:
+  ``views.clear_line``; a reviewer corrects a line through word review's routes).
   Who may see it is who may see the scanned text. No model call. A view of the document
   (#482: ``document.view``, at most once per person per document every half hour).
 
@@ -20,7 +21,7 @@ from kaagaz.api import views
 from kaagaz.api.auth import User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
-from kaagaz.db import audit, listing
+from kaagaz.db import audit, listing, word_review
 
 router = APIRouter()
 Context = Annotated[AppContext, Depends(get_context)]
@@ -43,5 +44,6 @@ def clear_copy(document_id: uuid.UUID, user: User, context: Context) -> dict[str
         _readable(conn, customer_id, document_id)
         pages = [page["page_no"] for page in listing.list_pages(conn, customer_id, target)]
         lines, marks = listing.clear_copy(conn, customer_id, target)
+        live = word_review.in_force(conn, customer_id, target)  # #527: the corrections
         audit.record_view(conn, customer_id, actor_user_id=user.user_id, document_id=target, via="clear_copy")
-    return views.clear_copy(pages, lines, marks)
+    return views.clear_copy(pages, lines, marks, live)

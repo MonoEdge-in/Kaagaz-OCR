@@ -837,6 +837,24 @@ export interface ReadLine {
   kind: string | null; // a layout block kind, when the reader gives one
   region: Region;
   table?: { id: string; row: number; col: number; header: boolean } | null; // a table cell's place
+  key?: string; // #527: the clean copy's lines only, the line's stable key (a flag's word_key)
+  correction?: LineCorrection | null; // #527: the clean copy's lines only; `text` is then the corrected text
+}
+
+/** #527: the correction in force for a clean copy line; `before_text` is the text it replaced. */
+export interface LineCorrection {
+  before_text: string;
+  by: string; // the person's name
+  at: string;
+  change_id: string; // for Undo (POST changes/{id}/undo)
+}
+
+/** POST /documents/{id}/lines/{key}/edit (#527): the change and the line as it now reads. */
+export interface LineSaved {
+  change_id: string;
+  line: ReadLine;
+  written: { pieces: number; values: number }; // the search pieces and values that took the new text
+  skipped: { pieces: number; values: number }; // those over the line that did not (not there exactly once)
 }
 
 /** GET /documents/{id}/clear-copy (Read clearly): every page's main reader lines, in order. */

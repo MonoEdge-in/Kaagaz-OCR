@@ -907,6 +907,7 @@ export function DocumentView({
                   documentId={detail.id}
                   active={selection?.region ?? null}
                   onShow={showLine}
+                  canEdit={canReview(me.user.role) && detail.deleted_at === null}
                 />
               ) : shownTab === "questions" ? (
                 <QuestionsPanel documentId={detail.id} />

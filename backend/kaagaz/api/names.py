@@ -54,6 +54,17 @@ def clean_name(name: str, *, max_length: int) -> str | None:
     return cleaned if len(cleaned) <= max_length else None
 
 
+# #527: a line break (as reading.spans reads one) or a tab, or a run of them.
+_BREAKS = re.compile(r"(?:\r\n|[\n\r\u2028\u2029\t])+")
+
+
+def one_line(text: str) -> str:
+    """``text`` as one typed line (#527, a clean copy line's text box starts with it; the
+    frontend's ``oneLine`` mirrors it): each run of line breaks or tabs a single space, then
+    ``clean_name``'s control and hidden characters removed, trimmed. O(len(text))."""
+    return without_hidden(CONTROL_CHARACTERS.sub("", _BREAKS.sub(" ", text))).strip()
+
+
 def clean_document_name(name: str) -> str | None:
     """A document's new name (PATCH): the same rule, 1 to 255 characters. O(len(name))."""
     return clean_name(name, max_length=DOCUMENT_NAME_MAX)
