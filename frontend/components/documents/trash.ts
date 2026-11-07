@@ -114,6 +114,7 @@ export function folderBackMessage(back: FolderBack): string {
 
 /** Asked before a folder in Trash is deleted for good, with every file in it, in foreverQuestion's words. */
 export function folderForeverQuestion(folder: Pick<TrashedFolder, "name" | "files">): string {
+  if (folder.files === 0) return `Delete “${folder.name}” for good? It can't be brought back.`; // no zero count
   const gone = folder.files === 1 ? "It can't be brought back." : "They can't be brought back.";
   return `Delete “${folder.name}” and its ${counted(folder.files, "file")} for good? ${gone}`;
 }

@@ -168,3 +168,21 @@ describe("B19: the sign-in page's server-side calls", () => {
     expect(page).toContain("await signInOptions(fetch, visitorIp(await headers()))");
   });
 });
+
+describe("the sign-in page's server-side calls, after the reviews", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("log a refusal or no answer, so Google sign-in missing from the page leaves a trace", async () => {
+    const { signInOptions } = await import("@/app/login/signInOptions");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const busy = (async () => new Response("{}", { status: 503 })) as typeof fetch;
+    expect(await signInOptions(busy)).toEqual({ providers: [], emailOn: false });
+    expect(warn.mock.calls.map((call) => String(call[0]))).toEqual(
+      expect.arrayContaining([expect.stringContaining("/auth/session"), expect.stringContaining("503")]),
+    );
+    warn.mockClear();
+    const off = (async (url: string) => new Response("{}", { status: url.endsWith("/auth/email") ? 404 : 200 })) as typeof fetch;
+    await signInOptions(off);
+    expect(warn).not.toHaveBeenCalled(); // email off (404) is an answer, not a problem
+  });
+});

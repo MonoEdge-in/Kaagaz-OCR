@@ -12,11 +12,13 @@ import { pageLink } from "@/lib/regions";
 import type {
   AnswerChoice,
   ChatOptions,
+  ChatResponse,
   Citation,
   ConversationSummary,
   DetectedType,
   DocType,
   DocumentSummary,
+  Message,
   Region,
   ThinkingLevel,
 } from "@/lib/types";
@@ -226,6 +228,21 @@ export function askErrorText(error: { status: number; message: string; code?: st
     return message;
   }
   return "Could not get an answer right now. Try again in a minute.";
+}
+
+/** B1: a question stopped after `started`, in the thread under the id the server saves it with,
+ * until its saved answer takes its place (withSavedAnswer). */
+export function stoppedQuestion(id: string, text: string): Message {
+  return { id, role: "user", text, created_at: new Date().toISOString(), answer: null, feedback: null };
+}
+
+/** The thread with a stopped question's saved answer: in the question's place (so a question asked
+ * since stays after it), or at the end when the question is not there; unchanged if already in. */
+export function withSavedAnswer(messages: readonly Message[], saved: ChatResponse): Message[] {
+  if (messages.some((message) => message.id === saved.answer.id)) return [...messages];
+  const at = messages.findIndex((message) => message.id === saved.question.id);
+  if (at < 0) return [...messages, saved.question, saved.answer];
+  return [...messages.slice(0, at), saved.question, saved.answer, ...messages.slice(at + 1)];
 }
 
 /** Why a conversation did not load, and what to do (issue 468): Try again sits beside it. */

@@ -89,11 +89,12 @@ export function TrashFolderRow({
   }, []);
   // The question shut because it worked: the list takes focus (onDone), not the menu button.
   const shutDone = useRef(false);
+  const foreverButton = useRef<HTMLButtonElement | null>(null);
 
   /** Shut the question and the busy state now, before the list hears it (B11). */
   function finish(message: string) {
     flushSync(() => {
-      shutDone.current = true;
+      shutDone.current = asking; // a Restore opened no question: nothing to skip
       setAsking(false);
       setBusy(null);
       setLeft(null);
@@ -128,7 +129,8 @@ export function TrashFolderRow({
         flushSync(() => {
           if (again) setPasswordAsked(true);
         });
-        window.document.getElementById(passwordId)?.focus();
+        // Focus waits in the password box, or on Delete forever to go on from where it stopped.
+        (window.document.getElementById(passwordId) ?? foreverButton.current)?.focus();
         return;
       }
       refocusMenu.current = kind === "restore";
@@ -160,6 +162,12 @@ export function TrashFolderRow({
   }
 
   function cancel() {
+    // Stopped part way: some files are gone, so the list is asked for again and the toast says
+    // how many are left, instead of the row's old counts with no trace of it.
+    if (left !== null && busy === null) {
+      finish(foreverStoppedText(left));
+      return;
+    }
     setAsking(false);
     setError(null);
   }
@@ -301,6 +309,7 @@ export function TrashFolderRow({
               </p>
               <div className={library.formButtons}>
                 <button
+                  ref={foreverButton}
                   type="button"
                   className={`btn btn-danger ${library.apart}`}
                   onClick={deleteForever}

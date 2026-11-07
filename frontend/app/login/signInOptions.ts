@@ -24,8 +24,13 @@ async function ask(path: string, get: typeof fetch, visitor: string | null): Pro
     // B19: the backend counts these calls per visitor (A7), not all as the frontend's own address.
     const headers: Record<string, string> = visitor ? { "X-Forwarded-For": visitor } : {};
     const reply = await get(`${backend}/api${path}`, { cache: "no-store", headers, signal: AbortSignal.timeout(WAIT_MS) });
-    return reply.ok ? ((await reply.json()) as Record<string, unknown>) : null;
-  } catch {
+    if (reply.ok) return (await reply.json()) as Record<string, unknown>;
+    // Email off is a 404, an answer; anything else is logged on the server, since the page then
+    // quietly shows the email and password form alone (review, stability pass).
+    if (reply.status !== 404) console.warn(`Sign-in options: ${path} answered ${reply.status}`);
+    return null;
+  } catch (caught) {
+    console.warn(`Sign-in options: ${path} did not answer:`, caught);
     return null; // no answer: the email and password form alone, as with both off
   }
 }

@@ -684,6 +684,8 @@ const BULK_CALLS: Record<BulkAction, (id: string) => Promise<unknown>> = {
   read: reprocessDocument,
 };
 // #542: a folder in Trash is only ever restored or deleted for good from a selection.
+// shortcut: a big folder's Delete forever repeats per part (B18) here too, but the selection's
+// progress counts whole items, so it waits on one item without saying how many files are left.
 const NO_FOLDERS: readonly TrashedFolder[] = [];
 const notForFolders = () => Promise.reject(new Error("not for a folder in Trash"));
 const FOLDER_CALLS: Record<BulkAction, (id: string) => Promise<unknown>> = {

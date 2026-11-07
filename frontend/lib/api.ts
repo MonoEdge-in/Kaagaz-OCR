@@ -882,13 +882,13 @@ export async function deleteTrashedFolderForever(id: string, onLeft?: (remaining
   let left = Number.POSITIVE_INFINITY;
   let stuck = 0;
   for (;;) {
-    const reply = await request<{ remaining?: unknown } | undefined>("DELETE", `/documents/trash/folders/${id}/permanent`);
+    const reply = await request<{ remaining?: unknown } | null | undefined>("DELETE", `/documents/trash/folders/${id}/permanent`);
     if (reply === undefined) return; // 204: all gone
-    const remaining = typeof reply.remaining === "number" ? reply.remaining : left;
+    const remaining = typeof reply?.remaining === "number" ? reply.remaining : left; // no count: no progress
     stuck = remaining < left ? 0 : stuck + 1;
     left = remaining;
     if (Number.isFinite(left)) onLeft?.(left);
-    if (stuck >= STUCK_REPLIES) throw new ApiError(500, "error", "Deleting made no progress. Try again in a minute.");
+    if (stuck >= STUCK_REPLIES) throw new ApiError(409, "no_progress", "Deleting made no progress. Try again in a minute.");
   }
 }
 export const listTags = () => request<{ items: Tag[] }>("GET", "/tags");

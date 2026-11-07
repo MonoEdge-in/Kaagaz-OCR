@@ -153,6 +153,7 @@ async function showChat(search: string) {
 
 const flush = () => act(async () => void (await vi.advanceTimersByTimeAsync(0)));
 const text = () => doc.body.textContent;
+const log = () => doc.body.all().find((element) => element.getAttribute("role") === "log")!.textContent;
 const buttonByText = (words: string) =>
   doc.body.all().find((element) => element.tagName === "BUTTON" && element.textContent.trim() === words) ?? null;
 const press = (element: FakeElement | null) => act(async () => void fire(element!, "click", { button: 0 }));
@@ -280,5 +281,131 @@ describe("B13: a question that took too long", () => {
     await askWith("medium");
     expect(text()).toContain(NEUTRAL);
     expect(text()).not.toContain("Swift answers faster");
+  });
+});
+
+// --- The reviews' findings ---
+
+describe("Stop on a picked-up question shows what Stop shows, never an error (review)", () => {
+  async function pickUp() {
+    const { startAsk } = await import("@/components/chat/askStore");
+    let send!: (event: StreamEvent) => void;
+    const entry = startAsk("Rent?", null, (signal, onEvent) => {
+      send = onEvent;
+      return new Promise<ChatResponse>((_resolve, reject) =>
+        signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError"))),
+      );
+    });
+    entry.done.catch(() => undefined);
+    return { entry, send: (event: StreamEvent) => send(event) };
+  }
+
+  it("before the answer started: the question is back in the box, with no error", async () => {
+    await pickUp();
+    await showChat("");
+    await press(buttonByText("Stop"));
+    await flush();
+    expect(text()).not.toContain("Could not reach Kaagaz");
+    expect(doc.body.all().find((element) => element.tagName === "TEXTAREA")!.value).toBe("Rent?");
+  });
+
+  it("after it started: the question stays with the stopped line until the saved answer comes", async () => {
+    api.savedAnswer.mockImplementation(() => new Promise<ChatResponse>(() => undefined));
+    const picked = await pickUp();
+    await showChat("");
+    picked.send({ type: "started", landing });
+    await press(buttonByText("Stop"));
+    await flush();
+    expect(text()).not.toContain("Could not reach Kaagaz");
+    expect(text()).toContain("Rent?");
+    expect(text()).toContain(STOPPED_LINE);
+    expect(text()).not.toContain(WELCOME);
+    expect(api.savedAnswer).toHaveBeenCalledWith(landing, expect.anything());
+  });
+});
+
+describe("after Stop, the stopped question's answer is never lost (review)", () => {
+  async function typeAndSend(words: string) {
+    const box = doc.body.all().find((element) => element.tagName === "TEXTAREA")!;
+    box.value = words;
+    await act(async () => void fire(box, "input"));
+    const send = box.closest("form")!.all().find((element) => /btn-primary/.test(element.getAttribute("class") ?? ""));
+    await press(send ?? null);
+  }
+
+  it("a question asked meanwhile keeps the wait, and the answer lands under its own question", async () => {
+    let saved!: (value: ChatResponse) => void;
+    api.savedAnswer.mockImplementation(
+      (_landing: Landing, signal: AbortSignal) =>
+        new Promise<ChatResponse>((resolve, reject) => {
+          saved = resolve;
+          signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+        }),
+    );
+    await showChat("?q=Rent%3F&send=1");
+    await act(async () => asked[0]!.send({ type: "started", landing }));
+    await press(buttonByText("Stop"));
+    await flush();
+    await typeAndSend("Deposit?");
+    const second: ChatResponse = {
+      conversation_id: "c9",
+      question: message("q10", "user", "Deposit?"),
+      answer: message("a10", "assistant", "", answered(["The deposit is ₹50,000."])),
+    };
+    await act(async () => asked[1]!.resolve(second));
+    await act(async () => void (await vi.advanceTimersByTimeAsync(2000)));
+    await act(async () => saved(reply(answered(["Rent is ₹12,000."]))));
+    await flush();
+    const all = log();
+    expect(all).toContain("The deposit is ₹50,000.");
+    expect(all).toContain("Rent is ₹12,000.");
+    expect(all.indexOf("Rent?")).toBeLessThan(all.indexOf("Rent is ₹12,000."));
+    expect(all.indexOf("Rent is ₹12,000.")).toBeLessThan(all.indexOf("Deposit?"));
+    expect(all).not.toContain(STOPPED_LINE);
+  });
+
+  it("if the saved answer never comes, the question stays and the box says why: no welcome screen", async () => {
+    const { ApiError } = await import("@/lib/api");
+    let fail!: (error: unknown) => void;
+    api.savedAnswer.mockImplementation(() => new Promise<ChatResponse>((_resolve, reject) => (fail = reject)));
+    await showChat("?q=Rent%3F&send=1");
+    await act(async () => asked[0]!.send({ type: "started", landing }));
+    await press(buttonByText("Stop"));
+    await flush();
+    await act(async () => fail(new ApiError(503, "answer_pending", "Your answer is still being saved.")));
+    await flush();
+    expect(text()).not.toContain(WELCOME);
+    expect(log()).toContain("Rent?");
+    expect(text()).toContain("Your answer is still being saved.");
+    expect(text()).not.toContain(STOPPED_LINE); // nor in the status line
+  });
+
+  it("a picked-up question whose conversation is not there after all goes back in the box", async () => {
+    const { ApiError } = await import("@/lib/api");
+    api.getConversation.mockRejectedValue(new ApiError(404, "not_found", "We couldn't find that."));
+    const { startAsk } = await import("@/components/chat/askStore");
+    let send!: (event: StreamEvent) => void;
+    let fail!: (error: unknown) => void;
+    const entry = startAsk("Rent?", null, (_signal, onEvent) => {
+      send = onEvent;
+      return new Promise<ChatResponse>((_resolve, reject) => (fail = reject));
+    });
+    entry.done.catch(() => undefined);
+    await showChat("");
+    send({ type: "started", landing });
+    await act(async () => fail(new ApiError(503, "answer_pending", "Your answer is still being saved.")));
+    await flush();
+    expect(doc.body.all().find((element) => element.tagName === "TEXTAREA")!.value).toBe("Rent?");
+  });
+
+  it("puts a saved answer in its question's place, before anything asked since (withSavedAnswer)", async () => {
+    const { stoppedQuestion, withSavedAnswer } = await import("@/components/chat/logic");
+    const later = [message("q10", "user", "Deposit?"), message("a10", "assistant", "")];
+    const thread = [stoppedQuestion("q9", "Rent?"), ...later];
+    const saved = reply(answered(["Rent is ₹12,000."]));
+    expect(withSavedAnswer(thread, saved).map((each) => each.id)).toEqual(["q9", "a9", "q10", "a10"]);
+    expect(withSavedAnswer(later, saved).map((each) => each.id)).toEqual(["q10", "a10", "q9", "a9"]);
+    const once = withSavedAnswer(thread, saved);
+    expect(withSavedAnswer(once, saved).map((each) => each.id)).toEqual(["q9", "a9", "q10", "a10"]);
   });
 });

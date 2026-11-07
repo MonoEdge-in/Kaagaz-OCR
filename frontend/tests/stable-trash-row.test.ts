@@ -374,3 +374,69 @@ describe("B14: the select-all box in Trash", () => {
     expect(byLabel("Select all visible documents")).toBeNull();
   });
 });
+
+// --- The reviews' findings ---
+
+describe("Delete forever on a folder in Trash, after the reviews", () => {
+  const cancelButton = () =>
+    dialog()?.all().find((element) => element.tagName === "BUTTON" && element.textContent === "Cancel") ?? null;
+
+  it("asks about an empty folder with no zero count", () => {
+    expect(folderForeverQuestion({ name: "Old", files: 0 })).toBe("Delete “Old” for good? It can't be brought back.");
+  });
+
+  it("says in its own words that deleting made no progress", async () => {
+    serve({ "DELETE /api/documents/trash/folders/f1/permanent": Array.from({ length: 5 }, () => [202, { remaining: 50 }] as Reply) });
+    await show(admin(true), [round2]);
+    await askForever("folder Round 2");
+    await press(foreverButton());
+    expect(dialog()!.textContent).toContain("Deleting made no progress. Try again in a minute.");
+  });
+
+  it("puts focus on Delete forever when it stopped part way and no password is asked", async () => {
+    serve({
+      "DELETE /api/documents/trash/folders/f1/permanent": [[202, { remaining: 300 }], [500, { error: { code: "internal_error" } }]],
+    });
+    await show(admin(true), [round2]);
+    await askForever("folder Round 2");
+    await press(foreverButton());
+    expect(doc.activeElement).toBe(foreverButton());
+  });
+
+  it("on Cancel after it stopped part way, says how many are left and asks for the list again", async () => {
+    serve({
+      "DELETE /api/documents/trash/folders/f1/permanent": [[202, { remaining: 300 }], [500, { error: { code: "internal_error" } }]],
+    });
+    await show(admin(true), [round2]);
+    await askForever("folder Round 2");
+    await press(foreverButton());
+    await press(cancelButton());
+    expect(dialog()).toBeNull();
+    expect(done).toEqual(["Deleting stopped with 300 files still in Trash."]);
+  });
+
+  it("hands focus back to the menu on Cancel, even after a Restore that worked", async () => {
+    serve({
+      "POST /api/documents/trash/folders/f1/restore": [
+        [200, { folder: { id: "f1", name: "Round 2", parent_id: null, created_at: "" }, location: [], renamed: false, relocated: false, files: 9, folders: 26 }],
+      ],
+    });
+    await show(admin(true), [round2]);
+    await press(byLabel("More actions for folder Round 2"));
+    await press(byLabel("Restore"));
+    expect(done).toEqual(["Folder restored to Top level."]);
+    await askForever("folder Round 2");
+    await press(cancelButton());
+    expect(doc.activeElement).toBe(byLabel("More actions for folder Round 2"));
+  });
+
+  it("stops on a 202 with no count instead of failing as a lost connection", async () => {
+    serve({ "DELETE /api/documents/trash/folders/f1/permanent": Array.from({ length: 5 }, () => [202, null] as Reply) });
+    await show(admin(true), [round2]);
+    await askForever("folder Round 2");
+    await press(foreverButton());
+    // Nothing was deleted, so the question closes and the row says why.
+    expect(rowOf("folder:f1").textContent).toContain("Deleting made no progress.");
+    expect(doc.body.textContent).not.toContain("connection");
+  });
+});

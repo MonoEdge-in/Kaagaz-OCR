@@ -122,8 +122,9 @@ describe("stopping a question on its way", () => {
   it("Stop with a landing opens that conversation, clears the box and fetches the answer there", () => {
     const screen = readFileSync(join(__dirname, "..", "components/chat/ChatScreen.tsx"), "utf8");
     expect(screen).toContain("if (entry.landing) {");
-    expect(screen).toContain("showLanding(entry.landing);");
+    expect(screen).toContain("waitForSaved(question, entry.landing, precise);");
+    expect(screen).toContain("showLanding(landing);");
     expect(screen).toContain("setStatus(STOPPED_LANDING_STATUS);");
-    expect(screen).toContain("savedAnswer(entry.landing, wait.signal)"); // B2: cancelled by open, New and leaving
+    expect(screen).toContain("savedAnswer(landing, wait.signal)"); // B2: cancelled by open, New and leaving
   });
 });

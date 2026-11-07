@@ -112,7 +112,9 @@ import {
   savePick,
   settleWaitingDraft,
   starterQuestions,
+  stoppedQuestion,
   usablePick,
+  withSavedAnswer,
 } from "./logic";
 import type { AnswerPick, Starter } from "./logic";
 import { ModeSwitch } from "./ModeSwitch";
@@ -275,10 +277,17 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const [settledIn, setSettledIn] = useState<ReadonlyMap<string, "same" | "changed">>(() => new Map());
   // A streamed answer just settled: the thread stays where it is.
   const streamedIn = useRef(false);
-  // B1: a question stopped after `started`: shown with STOPPED_LANDING_STATUS until its saved answer comes.
-  const [stopped, setStopped] = useState<string | null>(null);
-  // B2: the wait for that saved answer, cancelled by open, startNew and leaving the screen.
-  const savedWait = useRef<AbortController | null>(null);
+  // B1: the questions stopped after `started` (by the id the server saves them with), each in the
+  // thread with STOPPED_LANDING_STATUS under it until its saved answer takes its place.
+  const [stopped, setStopped] = useState<ReadonlySet<string>>(() => new Set());
+  const unstop = (id: string) =>
+    setStopped((current) => {
+      const next = new Set(current);
+      next.delete(id);
+      return next;
+    });
+  // B2: the waits for those saved answers, cancelled by open, startNew and leaving the screen.
+  const savedWaits = useRef(new Set<AbortController>());
   // B13: the answers this screen asked with Precision: a timeout suggests Swift for them only.
   const [preciseAnswers, setPreciseAnswers] = useState<ReadonlySet<string>>(() => new Set());
   const markPrecise = (answerId: string) => setPreciseAnswers((current) => new Set(current).add(answerId));
@@ -311,10 +320,11 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const alive = useRef(false);
   useEffect(() => {
     alive.current = true;
+    const waits = savedWaits.current; // one Set for the screen's life
     return () => {
       alive.current = false;
       settleWait.current?.(false); // nothing waits for a card that is gone
-      savedWait.current?.abort();
+      waits.forEach((wait) => wait.abort());
     };
   }, []);
   const threadRef = useRef<HTMLElement>(null);
@@ -379,13 +389,57 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     };
   }, []);
 
+  /** #535: open the conversation a streamed answer lands in (after Stop, or a stream broken
+   * after `started`), with the list refreshed so a new one shows there. */
+  const showLanding = (landing: Landing) => {
+    if (activeId === landing.conversationId) return;
+    setActiveId(landing.conversationId);
+    showInUrl(landing.conversationId);
+    void refreshList();
+  };
+
+  /** Stop after `started`: the conversation opens and the question stays in the thread with
+   * STOPPED_LANDING_STATUS under it (B1, never the welcome screen) until its saved answer takes
+   * its place, even after newer questions. Cancelled by open, startNew and leaving (B2); if it
+   * never comes, the question stays and the box says why. */
+  const waitForSaved = (question: string, landing: Landing, precise: boolean) => {
+    const request = openRequest.current;
+    const id = landing.questionId;
+    showLanding(landing);
+    setStatus(STOPPED_LANDING_STATUS);
+    setStopped((current) => new Set(current).add(id));
+    setMessages((current) => (current.some((message) => message.id === id) ? current : [...current, stoppedQuestion(id, question)]));
+    const wait = new AbortController();
+    savedWaits.current.add(wait);
+    savedAnswer(landing, wait.signal)
+      .then(
+        (saved) => {
+          if (!alive.current || openRequest.current !== request) return; // another conversation is open
+          if (precise) markPrecise(saved.answer.id);
+          unstop(id);
+          setMessages((current) => withSavedAnswer(current, saved));
+          setStatus(answerStatusText(saved.answer.answer)); // said: it arrives while the person may be elsewhere
+        },
+        (failed: unknown) => {
+          if (!alive.current || openRequest.current !== request || wait.signal.aborted) return;
+          unstop(id);
+          setStatus(""); // the box's alert says why
+          setAskError(errorText(failed));
+        },
+      )
+      .finally(() => savedWaits.current.delete(wait));
+  };
+  // B7: the same for a question picked up from before Ask was left (asked with the org's choice).
+  const stoppedResumed = useEffectEvent((question: string, landing: Landing) => waitForSaved(question, landing, false));
+
   // Reopen the conversation from the URL. One that is gone or not this person's
   // (the server says 404) quietly becomes the empty chat. A picked-up question
   // still on its way stays pending; once answered (and saved), the conversation
   // loads again with it. `loaded` runs when that load ends, whichever way.
   useEffect(() => {
     let cancelled = false;
-    const load = (id: string, loaded?: () => void) => {
+    // `gone`: the conversation is not there (404), after the screen became the empty chat.
+    const load = (id: string, loaded?: () => void, gone?: () => void) => {
       const request = ++openRequest.current;
       getConversation(id)
         .then((conversation) => {
@@ -403,6 +457,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
             setScope(startScope(null));
             setThreadState("idle");
             showInUrl(null);
+            gone?.();
           } else {
             setThreadError(conversationLoadText(error));
             setThreadState("error");
@@ -412,24 +467,30 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
           if (!cancelled) loaded?.();
         });
     };
+    /** A conversation new to this screen: shown, and the list asked for again to have it. */
+    const openNew = (id: string) => {
+      setActiveId(id);
+      showInUrl(id);
+      setThreadState("loading");
+      listConversations()
+        .then((list) => {
+          if (!cancelled) setConversations(list.items);
+        })
+        .catch(() => undefined); // the list keeps what it had; Refresh asks again
+    };
     if (restoreId) load(restoreId);
     if (resumed && !waiting) settleAsk(resumed);
     else if (resumed) {
+      const refill = () => {
+        typedNow.current = restoreAfterFailure(typedNow.current, resumed.question);
+        keepDraft();
+        setDraft(resumed.question);
+      };
       resumed.done.then(
         (reply) => {
           if (cancelled) return;
           settleAsk(resumed);
-          if (!restoreId) {
-            // A new conversation: its answer made it.
-            setActiveId(reply.conversation_id);
-            showInUrl(reply.conversation_id);
-            setThreadState("loading");
-            listConversations()
-              .then((list) => {
-                if (!cancelled) setConversations(list.items);
-              })
-              .catch(() => undefined);
-          }
+          if (!restoreId) openNew(reply.conversation_id); // a new conversation: its answer made it
           waitingNow.current = null;
           keepDraft();
           load(reply.conversation_id, () => {
@@ -443,33 +504,35 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
           settleAsk(resumed);
           waitingNow.current = null;
           setPending(null);
-          setAskError(errorText(error));
-          // B8: its answer is not in its conversation yet: that conversation opens, with the words
-          // (as sendQuestion does); the box is not refilled, since the question was asked.
-          if (error instanceof ApiError && error.code === "answer_pending" && resumed.landing) {
-            const { conversationId } = resumed.landing;
-            keepDraft();
-            setActiveId(conversationId);
-            showInUrl(conversationId);
-            setThreadState("loading");
-            listConversations()
-              .then((list) => {
-                if (!cancelled) setConversations(list.items);
-              })
-              .catch(() => undefined);
-            load(conversationId);
+          // B7: Stopped here, as sendQuestion's Stop: after `started` it waits for the saved answer;
+          // before, the question is back in the box. No error either way.
+          if (resumed.stopped) {
+            if (resumed.landing) {
+              keepDraft();
+              stoppedResumed(resumed.question, resumed.landing);
+            } else {
+              setStatus(STOPPED_STATUS);
+              refill();
+            }
             return;
           }
-          typedNow.current = restoreAfterFailure(typedNow.current, resumed.question);
-          keepDraft();
-          setDraft(resumed.question);
+          setAskError(errorText(error));
+          // B8: its answer is not in its conversation yet: that conversation opens, with the words
+          // (as sendQuestion does); the box is refilled only if that conversation is not there.
+          if (error instanceof ApiError && error.code === "answer_pending" && resumed.landing) {
+            keepDraft();
+            openNew(resumed.landing.conversationId);
+            load(resumed.landing.conversationId, undefined, refill);
+            return;
+          }
+          refill();
         },
       );
     }
     return () => {
       cancelled = true;
     };
-  }, [restoreId, resumed, waiting, keepDraft]);
+  }, [restoreId, resumed, waiting, keepDraft]); // stoppedResumed: an Effect Event
 
   // One small call tells the empty screen whether there is anything to ask about.
   useEffect(() => {
@@ -583,9 +646,9 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
 
   /** B1, B2: forget a stopped question and stop waiting for its saved answer. */
   const forgetStopped = () => {
-    savedWait.current?.abort();
-    savedWait.current = null;
-    setStopped(null);
+    savedWaits.current.forEach((wait) => wait.abort());
+    savedWaits.current.clear();
+    setStopped(new Set());
   };
 
   const open = async (id: string) => {
@@ -664,22 +727,12 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
 
   /** `only`: ask about these documents this once (A4 "Search all documents", A5's examples).
    * `chose`: the clarify choices tapped; typed words answer the open clarify too (PRD 6 B2). */
-  /** #535: open the conversation a streamed answer lands in (after Stop, or a stream broken
-   * after `started`), with the list refreshed so a new one shows there. */
-  const showLanding = (landing: Landing) => {
-    if (activeId === landing.conversationId) return;
-    setActiveId(landing.conversationId);
-    showInUrl(landing.conversationId);
-    void refreshList();
-  };
-
   const sendQuestion = async (question: string, only?: ChosenScope, chose?: ClarifyReply): Promise<boolean> => {
     const plan = sendPlan(mode);
     if (!plan.chat) return searchStories(question);
     const answering = chose ?? (asking && answersClarify(question) ? { message_id: asking.id, choice_ids: [] } : undefined);
     const asked = only ? chooseScope(scope, only) : scope;
     if (only) setScope(asked);
-    forgetStopped();
     setPending(question);
     setAskError(null);
     setStatus(ASKING_STATUS);
@@ -745,29 +798,8 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       if (entry.stopped) {
         if (entry.landing) {
           // #535: the server finishes and saves it (Tushar, 16 Oct 2026): its conversation opens,
-          // the box is cleared (Tushar's call), and the answer shows there once it is saved. B1: until
-          // then the question stays on screen with STOPPED_LANDING_STATUS, never the welcome screen.
-          const request = openRequest.current;
-          showLanding(entry.landing);
-          setStatus(STOPPED_LANDING_STATUS);
-          setStopped(question);
-          const wait = new AbortController();
-          savedWait.current = wait;
-          savedAnswer(entry.landing, wait.signal).then(
-            (saved) => {
-              if (!alive.current || openRequest.current !== request) return; // another conversation is open
-              if (precise) markPrecise(saved.answer.id);
-              setStopped(null);
-              setMessages((current) =>
-                current.some((message) => message.id === saved.answer.id) ? current : [...current, saved.question, saved.answer],
-              );
-            },
-            (failed: unknown) => {
-              if (!alive.current || openRequest.current !== request || wait.signal.aborted) return;
-              setStopped(null);
-              setAskError(errorText(failed));
-            },
-          );
+          // the box is cleared (Tushar's call), and the answer shows there once it is saved.
+          waitForSaved(question, entry.landing, precise);
           return true;
         }
         setStatus(STOPPED_STATUS); // no error: the question is back in the box to change or send
@@ -849,7 +881,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     slot?.matches ? (
       <StoryMatches matches={slot.matches} note={STORY_NOTE_CHAT} headingLevel={2} question={question} />
     ) : null;
-  const empty = messages.length === 0 && threadState === "idle" && !busy && stopped === null;
+  const empty = messages.length === 0 && threadState === "idle" && !busy;
   // A4: the newest answer, when it found nothing in fewer than every document, offers them all.
   const last = messages.at(-1);
   const askAllFor =
@@ -1011,10 +1043,13 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
             >
               {messages.map((message) =>
                 message.role === "user" ? (
-                  <div key={message.id} className={styles.question}>
-                    <span className="visually-hidden">You asked: </span>
-                    <p className={styles.plain}>{message.text}</p>
-                  </div>
+                  <Fragment key={message.id}>
+                    <div className={styles.question}>
+                      <span className="visually-hidden">You asked: </span>
+                      <p className={styles.plain}>{message.text}</p>
+                    </div>
+                    {stopped.has(message.id) ? <p className={styles.threadStatus}>{STOPPED_LANDING_STATUS}</p> : null}
+                  </Fragment>
                 ) : (
                   <Fragment key={message.id}>
                     <div className={styles.answerWrap} id={answerDomId(message.id)} tabIndex={-1}>
@@ -1042,15 +1077,6 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
                   </Fragment>
                 ),
               )}
-              {stopped !== null && pending === null ? (
-                <>
-                  <div className={styles.question}>
-                    <span className="visually-hidden">You asked: </span>
-                    <p className={styles.plain}>{stopped}</p>
-                  </div>
-                  <p className={styles.threadStatus}>{STOPPED_LANDING_STATUS}</p>
-                </>
-              ) : null}
               {pending !== null ? (
                 <>
                   <div className={styles.question}>
