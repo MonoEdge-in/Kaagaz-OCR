@@ -403,7 +403,11 @@ def test_a_repeated_question_on_the_stream_is_done_at_once_from_its_stored_answe
 
     assert names(again) == ["started", "done"]  # no stage, no draft: the stored answer at once
     assert len(fake.bodies()) == 1  # no second model call
-    assert again[-1][1]["reply"]["answer"]["answer"] == first[-1][1]["reply"]["answer"]["answer"]
+    copy, fresh = again[-1][1]["reply"]["answer"]["answer"], first[-1][1]["reply"]["answer"]["answer"]
+    # Changed on purpose (A10, 7 Nov 2026): a copy says what became of each source, as a
+    # conversation does; all still here.
+    assert [citation.pop("source_state") for citation in copy["citations"]] == ["live"]
+    assert copy == fresh
     (line,) = [r.getMessage() for r in caplog.records if r.name == "kaagaz.answering.timing"]
     assert " cached=1 " in line and line.endswith(" streamed=1")
 

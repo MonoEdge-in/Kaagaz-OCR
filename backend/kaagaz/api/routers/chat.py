@@ -540,7 +540,12 @@ def _ask(
         background.add_task(
             _remember, context, user.customer_id, user.user_id, conversation_id, summary_turn, turns + 1
         )
-    return {"conversation_id": conversation_id, "question": message(asked), "answer": message(answered)}
+    shown = message(answered)
+    if copied and shown["answer"]:  # A10: a stored copy is shown as a conversation shows it
+        with context.db.customer(user.customer_id) as conn:
+            states = chat_sql.document_states(conn, user.customer_id, cited_document_ids(shown["answer"]))
+        shown["answer"] = answer_with_source_states(shown["answer"], states)
+    return {"conversation_id": conversation_id, "question": message(asked), "answer": shown}
 
 
 def _save(
