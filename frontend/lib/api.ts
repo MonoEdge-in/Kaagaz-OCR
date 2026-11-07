@@ -894,7 +894,9 @@ class StreamFailed extends Error {
 
 /** How often, and for how long, a broken stream's saved answer is looked for after `started`. */
 export const RECOVER_EVERY_MS = 2_000;
-export const RECOVER_FOR_MS = 60_000;
+// The server may work on an answer for ANSWER_STREAM_MAX_SECONDS (180 s by default), so look that
+// long and a little more.
+export const RECOVER_FOR_MS = 190_000;
 /** Said when the saved answer has not appeared in RECOVER_FOR_MS: it is still on its way. */
 export const STILL_SAVING = "The answer is taking a while. It will be saved in this conversation.";
 

@@ -320,11 +320,11 @@ describe("a broken stream after started (Tushar, 16 Oct 2026: the answer is alwa
     ]);
   });
 
-  it("says the answer is still on its way after 60 s of looking, and never asks again", async () => {
+  it("says the answer is still on its way after RECOVER_FOR_MS of looking (past the server's 180 s cap), and never asks again", async () => {
     vi.useFakeTimers();
     const calls = server(
       streamed(body(STARTED, 4096, { failAfter: 1 })),
-      ...Array.from({ length: 40 }, () => conversation(QUESTION)),
+      ...Array.from({ length: 120 }, () => conversation(QUESTION)),
     );
     const caught = run().catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(RECOVER_FOR_MS + RECOVER_EVERY_MS);
