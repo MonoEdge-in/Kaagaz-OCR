@@ -51,15 +51,22 @@ is made only after the answer); the memory's to the same user, kind ``memory``
 (``usage_scope``).
 """
 
+import asyncio
+import contextlib
+import contextvars
 import functools
 import json
 import logging
+import threading
 import uuid
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Callable, Sequence
+from dataclasses import dataclass, replace
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import StreamingResponse
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -70,22 +77,25 @@ from pydantic import (
     model_validator,
 )
 from sqlalchemy import Connection, RowMapping
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.ai.usage import usage_scope
-from kaagaz.answering import ready, small_talk
+from kaagaz.answering import ready, small_talk, stream
 from kaagaz.answering.clarify import MAX_CHOICES, Pending, answers_clarify, latin_key, reply_to
 from kaagaz.answering.memory import NO_MEMORY, Memory, from_row, live
 from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
+from kaagaz.answering.stream import Events, StreamCancelled
 from kaagaz.answering.voice import SOFT_NOTHING, first_name, numbers, opening, soft_line, unsupported
 from kaagaz.answering.words_text import WordTextError, check_meaning, check_word
 from kaagaz.api.auth import FEATURE_OFF, CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
-from kaagaz.api.errors import ApiError
+from kaagaz.api.errors import MESSAGES, ApiError
 from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.names import clean_name
+from kaagaz.api.ports import AnswerLike, Answers
 from kaagaz.api.views import answer_with_source_states, cited_document_ids, conversation_summary, message
 from kaagaz.db import ai_settings, audit, organization_words
 from kaagaz.db import chat as chat_sql
@@ -406,6 +416,129 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             _remember, context, user.customer_id, user.user_id, conversation_id, summary_turn, turns + 1
         )
     return {"conversation_id": conversation_id, "question": message(asked), "answer": message(answered)}
+
+
+# Streaming Ask (#535): what the stream sends while it waits, and its plain words.
+HEARTBEAT_SECONDS = 10.0
+TOO_SLOW = "This answer is taking too long. Try a narrower question or Swift."
+STREAM_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+
+@router.post("/chat/stream")
+def ask_stream(body: AskBody, user: User, context: Context) -> StreamingResponse:
+    """``POST /api/chat`` streamed (#535): the same body, auth and work, sent as server-sent
+    events (``stream_answer``): ``stage``, ``sources`` and each checked ``sentence`` while the
+    answer is worked out, then ``done`` with exactly the reply ``POST /api/chat`` gives (``ask``
+    itself, saved the same way), or ``error`` with its code and words. The memory's background
+    task runs after the stream, as after ``ask``'s reply."""
+    background = BackgroundTasks()
+    return StreamingResponse(
+        stream_answer(
+            functools.partial(ask, body, user, background=background),
+            context,
+            cap=context.settings.answer_stream_max_seconds,
+        ),
+        media_type="text/event-stream",
+        headers=STREAM_HEADERS,
+        background=background,
+    )
+
+
+def sse(name: str, data: dict[str, Any]) -> str:
+    """One server-sent event; the JSON as FastAPI writes a reply's (one line)."""
+    text = json.dumps(data, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    return f"event: {name}\ndata: {text}\n\n"
+
+
+@dataclass
+class _Watched:
+    """The answer service, with one more check once an answer is worked out: a stream stopped
+    meanwhile raises ``StreamCancelled`` there, so ``ask`` saves nothing."""
+
+    inner: Answers
+    events: Events
+
+    def answer(self, *args: Any, **kwargs: Any) -> AnswerLike:
+        reply = self.inner.answer(*args, **kwargs)
+        self.events.check()
+        return reply
+
+    def remember(self, turns: Sequence[Turn], memory: Memory, cited: Sequence[str]) -> Memory | None:
+        return self.inner.remember(turns, memory, cited)
+
+
+async def stream_answer(
+    work: Callable[..., dict[str, Any]],
+    context: AppContext,
+    *,
+    cap: float,
+    heartbeat: float | None = None,
+) -> AsyncGenerator[str]:
+    """#535: ``work(context=...)`` (``ask``) on a thread of its own, with ``stream.EVENTS`` set so
+    the answer sends its events; each event as it comes, ": ping" after ``heartbeat`` seconds
+    (HEARTBEAT_SECONDS) with none, then ``done`` with its reply or ``error`` with its code and
+    words (an ``ApiError``'s, else what the app's handlers would send). Past ``cap`` seconds:
+    ``error`` "answer_timeout" (TOO_SLOW). The answer is stopped, its model stream closed and
+    nothing saved, once the stream ends before ``done`` (the client went away, or the cap):
+    ``Events.cancel``; ``work``'s thread then ends at its next check."""
+    loop = asyncio.get_running_loop()
+    inbox: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
+
+    def post(name: str, data: dict[str, Any]) -> None:
+        with contextlib.suppress(RuntimeError):  # the stream's loop is gone
+            loop.call_soon_threadsafe(inbox.put_nowait, (name, data))
+
+    events = Events(post)
+    watched = replace(context, answers=_Watched(context.answers, events))
+    run = contextvars.copy_context().run  # the request's context, and the events, on the thread
+    threading.Thread(
+        target=run, args=(_work, work, watched, events, post), name="answer-stream", daemon=True
+    ).start()
+    ends = loop.time() + cap
+    every = HEARTBEAT_SECONDS if heartbeat is None else heartbeat
+    try:
+        while True:
+            left = ends - loop.time()
+            if left <= 0:
+                events.cancel()
+                yield sse("error", {"code": "answer_timeout", "message": TOO_SLOW})
+                return
+            try:
+                name, data = await asyncio.wait_for(inbox.get(), min(every, left))
+            except TimeoutError:
+                if loop.time() < ends:
+                    yield ": ping\n\n"
+                continue
+            yield sse(name, data)
+            if name in ("done", "error"):
+                return
+    finally:
+        events.cancel()  # after done: nothing is left to stop
+
+
+def _work(
+    work: Callable[..., dict[str, Any]],
+    context: AppContext,
+    events: Events,
+    post: Callable[[str, dict[str, Any]], None],
+) -> None:
+    """``stream_answer``'s thread: the answer, then ``done`` or ``error``; nothing once stopped."""
+    token = stream.EVENTS.set(events)
+    try:
+        reply = work(context=context)
+        events.check()
+        post("done", {"reply": jsonable_encoder(reply)})
+    except StreamCancelled:
+        return  # stopped: the stream has ended already
+    except ApiError as error:
+        post("error", {"code": error.code, "message": error.message})
+    except (BackendUnavailable, OperationalError, PoolTimeout):
+        post("error", {"code": "backend_unavailable", "message": MESSAGES["backend_unavailable"]})
+    except Exception as error:  # noqa: BLE001 - the stream's boundary, as ErrorMiddleware's
+        logger.error("streamed answer failed", extra={"code": type(error).__name__})
+        post("error", {"code": "internal_error", "message": MESSAGES["internal_error"]})
+    finally:
+        stream.EVENTS.reset(token)
 
 
 def _inputs(

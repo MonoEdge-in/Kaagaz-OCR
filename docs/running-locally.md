@@ -71,6 +71,9 @@ unset) also searches an English or Romanised question in the script of its scans
 one model call that times out after `MODEL_TRANSLATE_TIMEOUT_SECONDS` (20, PROVISIONAL).
 `ANSWER_PLAN_TIMEOUT_SECONDS` (4 when unset, 1 to 60): a first question's rewrite and plan
 call ends by then, and the question is answered without its plan (code `plan_timeout`).
+`ANSWER_STREAM_MAX_SECONDS` (45 when unset, 5 to 600): `POST /api/chat/stream` (#535) gives
+up after this long. It says "This answer is taking too long. Try a narrower question or Swift."
+and saves nothing.
 One more (council 5 Oct 2026, PROVISIONAL): `OCR_DPI_RULE` (`fixed` when unset) draws each
 scan page at `OCR_DPI`; `text_height` draws it at the DPI its text needs, `OCR_DPI` at most;
 `text_height_no_scan_cap` is the same without the scan cap, for the accuracy test.

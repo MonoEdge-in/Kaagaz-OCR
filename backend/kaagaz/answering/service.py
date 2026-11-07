@@ -130,6 +130,13 @@ The steps (docs/architecture.md):
     for the facts that answer the question (answering/parts.py), and drafted from the pieces
     they name only; none named is not found, and a part that fails leaves the draft to all the
     evidence in one call, as before (``_read_in_parts``). The timing line's ``parts``: how many.
+21. Streaming Ask (#535, answering/stream.py): when ``POST /api/chat/stream`` asks, the answer
+    sends its real stages, the ``sources`` the draft reads (before the draft), and one model's draft
+    streamed. Each of its sentences is sent once it passes the checks the answer will run on it
+    (``_Preview``: the draft's shape, ``verify``, then decision 2's final check), with the answer's
+    own citations. Everything above still runs in full after it, and that answer is the truth. An
+    Ensemble's or a quoted draft sends no sentence. The timing line's ``streamed`` and
+    ``first_sentence_ms``.
 
 No source, no answer: an answered result always has at least one sentence,
 every sentence cites at least one source (but step 13's count, which sums up its cited
@@ -180,15 +187,17 @@ from kaagaz.ai.client import (
 )
 from kaagaz.ai.openrouter import LIMITER_WAIT
 from kaagaz.ai.usage import billed_as
-from kaagaz.answering import glossary, voice
+from kaagaz.answering import glossary, stream, voice
 from kaagaz.answering.clarify import Pending, PgVocabulary, Step, Vocabulary, after_reply, first_step
 from kaagaz.answering.dates import date_range, describe_range, mentions_date
 from kaagaz.answering.draft import (
     ANSWER_PROMPT_HASH,
+    MAX_SENTENCES,
     SYSTEM_PROMPT,
     Draft,
     DraftSentence,
     card_line,
+    checked,
     extractive_draft,
     fit_cards,
     fit_evidence,
@@ -254,6 +263,7 @@ from kaagaz.answering.rewrite import MAX_QUESTION, Rewritten, Turn, rewrite_and_
 from kaagaz.answering.rewrite import MAX_REPLY_TOKENS as REWRITE_REPLY_TOKENS
 from kaagaz.answering.rewrite import SYSTEM_PROMPT as REWRITE_PROMPT
 from kaagaz.answering.sanitize import clean_snippet, clean_text
+from kaagaz.answering.stream import Events, StreamingModel, draft_streamed
 from kaagaz.answering.totals import tell
 from kaagaz.answering.translate import target_scripts, translate
 from kaagaz.answering.unchecked import PgUncheckedValues, UncheckedValues, unchecked_sentence
@@ -457,6 +467,8 @@ class _Timing:
     overlap: bool = False  # step 19's early search was used
     overlap_ms: float = 0.0  # the time it took, beside the plan call
     parts: int = 0  # step 20: the parts the evidence was read in (0: one call, as before)
+    streamed: bool = False  # step 21: asked through POST /api/chat/stream
+    first_sentence_ms: float = 0.0  # step 21: when its first checked sentence was sent (0: none)
 
     def lap(self, stage: str) -> None:
         now = time.monotonic()
@@ -491,7 +503,7 @@ def _timed[**P](answer: Callable[P, Answer]) -> Callable[P, Answer]:
     @wraps(answer)
     def timed(*args: P.args, **kwargs: P.kwargs) -> Answer:
         now = time.monotonic()
-        timing = _Timing(now, now)
+        timing = _Timing(now, now, streamed=stream.EVENTS.get() is not None)
         token, waits = _TIMING.set(timing), LIMITER_WAIT.set([0.0])
         try:
             result = answer(*args, **kwargs)
@@ -502,7 +514,8 @@ def _timed[**P](answer: Callable[P, Answer]) -> Callable[P, Answer]:
             LIMITER_WAIT.reset(waits)
         _timing_log.info(
             "answer timing route=%s status=%s outcome=%s whole=%d aspects=%d pinned=%d overlap=%d %s"
-            " overlap_ms=%.0f limiter_wait_ms=%.0f total_ms=%.0f parts=%d",
+            " overlap_ms=%.0f limiter_wait_ms=%.0f total_ms=%.0f parts=%d"
+            " streamed=%d first_sentence_ms=%.0f",
             result.route,
             result.status,
             timing.reason or result.label,
@@ -515,6 +528,8 @@ def _timed[**P](answer: Callable[P, Answer]) -> Callable[P, Answer]:
             waited[0] * 1000,
             (timing.last - timing.start) * 1000,
             timing.parts,
+            timing.streamed,
+            timing.first_sentence_ms,
         )
         return result
 
@@ -638,6 +653,7 @@ class AnswerService:
         cited: Sequence[str] = (),
     ) -> Answer:
         """``answer``'s work, timed by it."""
+        stream.emit("stage", {"stage": "understanding"})  # step 21: the rewrite and plan, when any
         if scope.matches_nothing:
             return _not_found("search", question.strip(), [], model_used=False, reason="notfound_empty_scope")
         whole = self._whole(customer_id, scope, self._input_cap(choice))
@@ -747,6 +763,7 @@ class AnswerService:
         if step.clarify is not None:  # no search, no draft
             asking = Answer("clarify", None, [], [], [], "search", asked, True, rewritten)
             return replace(asking, clarify=step.clarify, resume=step.resume)
+        stream.emit("stage", {"stage": "searching"})  # step 21: every route's lookup starts here
         answer = self._checked(
             self._answer(customer_id, asked, scope, user_id, whole, aspects, choice, pins, early), asked
         )
@@ -773,11 +790,8 @@ class AnswerService:
         by_n = {citation.n: citation for citation in answer.citations}
         kept: list[AnswerSentence] = []
         for sentence in answer.sentences:
-            allowed = set(asked)
-            for c in (by_n[n] for n in sentence.citations if n in by_n):
-                allowed |= voice.numbers(f"{answer.backing.get(c.n, c.snippet)}\n{c.document_name}")
-                allowed |= {str(page) for page in (c.page_no, *range(c.page_from, c.page_to + 1))}
-            reason = voice.unsupported(sentence.text, allowed)
+            sources = [by_n[n] for n in sentence.citations if n in by_n]
+            reason = _unsupported(sentence.text, sources, asked, answer.backing)
             if reason is None:
                 kept.append(sentence)
             else:
@@ -1422,8 +1436,11 @@ class AnswerService:
             evidence = self._ranked(customer_id, query_text, spoken, scope, expansion, evidence)
             _timing().lap("widen")
 
-        drafted = self._draft(customer_id, scope, question, normalised, evidence, expansion, choice)
+        drafted = self._draft(
+            customer_id, scope, question, normalised, evidence, expansion, choice, whole=whole is not None
+        )
         _timing().lap("draft")
+        stream.emit("stage", {"stage": "checking"})  # step 21: verify, the labels, the final check
         draft, model_used, seen, why, team = drafted
         texts = _texts(seen)
         kept = _kept(draft, texts)
@@ -1662,6 +1679,8 @@ class AnswerService:
         evidence: Sequence[Evidence],
         expansion: Expansion = NO_EXPANSION,
         choice: ChatChoice | None = None,
+        *,
+        whole: bool = False,
     ) -> tuple[Draft, bool, Sequence[Evidence], str, Team | None]:
         """The model's draft (and True), or the extractive one (and False), with the
         evidence it was drafted from: for the model, the best pieces that fit its window,
@@ -1669,9 +1688,13 @@ class AnswerService:
         (features 25-27, C7), None without one.
         The model sees the question, the evidence and its documents' cards (M2, while they
         fit) only, never a user's word or meaning; ``expansion`` helps the extractive draft
-        choose its lines."""
+        choose its lines. Step 21 (streamed): the ``sources`` the draft reads, then one model's
+        draft is streamed and its checked sentences sent (``_Preview``; ``whole``: CX5's, whose
+        citations have no rank); an Ensemble's, or a quoted one, sends none."""
         team: Team | None = None
-        if self._model is not None:
+        if self._model is None:
+            stream.emit("sources", _sources(evidence))
+        else:
             asked = f"{question} (in English: {normalised.english})" if normalised.hinglish else question
             cap = self._input_cap(choice)
             budget = self._evidence_budget if cap is None else min(cap, self._evidence_budget)
@@ -1683,7 +1706,9 @@ class AnswerService:
                     return Draft("not_found", []), True, seen, "notfound_model", team
                 seen = seen if picked is None else picked
             if seen:
+                stream.emit("sources", _sources(seen))
                 cards = fit_cards(asked, seen, self._cards(customer_id, scope, seen), budget)
+                stream.emit("stage", {"stage": "writing"})
                 draft_with = partial(
                     model_draft,
                     self._model,
@@ -1692,6 +1717,19 @@ class AnswerService:
                     max_tokens=self._settings.model_answer_max_tokens,
                     cards=cards,
                 )
+                events = stream.EVENTS.get()
+                alone = choice is None or len(choice.agents) <= 1
+                if events is not None and alone and isinstance(self._model, StreamingModel):
+                    preview = _Preview(question, seen, whole, events)
+                    draft_with = partial(
+                        draft_streamed,
+                        self._model,
+                        asked,
+                        seen,
+                        max_tokens=self._settings.model_answer_max_tokens,
+                        cards=cards,
+                        offer=preview.offer,
+                    )
                 if choice is not None and len(choice.agents) > 1:
                     drafted, team, code = self._ensemble(draft_with, seen, choice)
                 else:
@@ -1873,6 +1911,87 @@ def _single(
         _log.info("answer drafted by %s with prompt %s", agent.model, ANSWER_PROMPT_HASH)
         return draft, Team((agent.name,), (agent.model,), 1, None, choice.thinking), ""
     return None, None, code
+
+
+def _unsupported(
+    text: str, cited: Sequence[Citation], asked: set[str], backing: dict[int, str]
+) -> str | None:
+    """Decision 2's final check of one sentence (``_checked``): why a number or fraction word in
+    ``text`` is none of ``asked`` (the question's, and a fixed query's), a page of a source it
+    cites, or in the full text (``backing``, else the snippet) or name of one; None when every
+    one is."""
+    allowed = set(asked)
+    for c in cited:
+        allowed |= voice.numbers(f"{backing.get(c.n, c.snippet)}\n{c.document_name}")
+        allowed |= {str(page) for page in (c.page_no, *range(c.page_from, c.page_to + 1))}
+    return voice.unsupported(text, allowed)
+
+
+def _sources(seen: Sequence[Evidence]) -> dict[str, Any]:
+    """Step 21's ``sources`` event: the documents of the evidence the draft reads, best first, each
+    once with its name (the customer's own, as the search found them under RLS), and how many
+    passages."""
+    names: dict[str, str] = {}
+    for item in seen:
+        names.setdefault(item.hit.document_id, item.hit.document_name)
+    return {"documents": [{"id": d, "name": n} for d, n in names.items()], "passages": len(seen)}
+
+
+@dataclass
+class _Preview:
+    """Step 21: the draft's sentences as they stream in (``stream.draft_streamed``), each sent once
+    it passes what the answer will check it with: the draft's shape (``draft.checked``) and its
+    first MAX_SENTENCES, ``verify`` (``_kept``), the same text once, then decision 2's final check
+    (``_unsupported``). Its citations are the answer's own (``_piece_citation``, numbered from 1 in
+    the order the sentences sent cite them, a hit's ``rank``), so the preview is the answer's
+    sentences unless a later step drops one; the answer itself is still worked out in full and is
+    the truth. O(e + t) a sentence."""
+
+    question: str
+    seen: Sequence[Evidence]
+    whole: bool
+    events: Events
+    numbered: dict[int, int] = field(default_factory=dict)  # evidence id: citation number
+    said: list[str] = field(default_factory=list)
+
+    def offer(self, place: int, raw: object) -> None:
+        if place >= MAX_SENTENCES:
+            return
+        try:
+            draft = checked({"status": "answered", "sentences": [raw]})
+        except ModelOutputError:
+            return  # a sentence the answer's parse refuses is never sent
+        texts = _texts(self.seen)
+        kept = _kept(draft, texts)
+        if not kept or kept[0].text in self.said:
+            return
+        sentence = kept[0]
+        by_n = {item.n: item for item in self.seen}
+        numbered = dict(self.numbered)
+        for n in sentence.evidence:
+            numbered.setdefault(n, len(numbered) + 1)
+        citations = [
+            replace(_piece_citation(numbered[n], by_n[n], [sentence.text]), rank=None if self.whole else n)
+            for n in sentence.evidence
+        ]
+        backing = {numbered[n]: by_n[n].hit.text for n in sentence.evidence}
+        if _unsupported(sentence.text, citations, voice.numbers(self.question), backing) is not None:
+            return
+        # shortcut: a preview citation is never marked hard_to_read (one more statement a
+        # sentence); the answer that follows marks it, and replaces the preview.
+        self.numbered = numbered
+        self.said.append(sentence.text)
+        timing = _timing()
+        if not timing.first_sentence_ms:
+            timing.first_sentence_ms = (time.monotonic() - timing.start) * 1000
+        self.events.send(
+            "sentence",
+            {
+                "index": len(self.said) - 1,
+                "text": sentence.text,
+                "citations": [citation.to_json() for citation in citations],
+            },
+        )
 
 
 def _outage(result: object) -> bool:
