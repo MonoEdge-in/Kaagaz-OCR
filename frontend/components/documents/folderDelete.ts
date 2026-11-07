@@ -27,12 +27,13 @@ export function trashButton(files: number, noun: FolderNoun): string {
 }
 
 /** The toast once what was inside has moved; `place` null is the top level. */
-export function keptMessage(noun: FolderNoun, place: string | null): string {
-  return `${capital(noun)} deleted. Its files moved to ${place ?? "the top level"}.`;
+export function keptMessage(noun: FolderNoun, place: string | null, files: number): string {
+  return `${capital(noun)} deleted. ${files > 0 ? "Its files" : "What was inside"} moved to ${place ?? "the top level"}.`;
 }
 
+/** The toast once the files went to Trash: as many as the server says it moved. */
 export function trashedMessage(noun: FolderNoun, files: number): string {
-  return `${capital(noun)} deleted. ${count(files, "file")} moved to Trash.`;
+  return files === 0 ? `${capital(noun)} deleted.` : `${capital(noun)} deleted. ${count(files, "file")} moved to Trash.`;
 }
 
 /** A member or reviewer, before any Delete: only an admin deletes a folder that holds files. */

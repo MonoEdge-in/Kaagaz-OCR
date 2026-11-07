@@ -24,6 +24,7 @@ from contextlib import contextmanager
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection
 
@@ -185,7 +186,8 @@ def delete_folder(
     """Today's delete of an empty folder, for anyone. #537, an admin only: ``contents=keep``
     moves what is inside into ``to`` (left out: the top level) and deletes the folder;
     ``contents=trash`` sends every file at every depth to Trash and deletes the folder with
-    every folder inside it (``folders_sql.delete_folder_with_contents``)."""
+    every folder inside it (``folders_sql.delete_folder_with_contents``). Those two reply 200
+    with ``{files, folders}``: what moved, or the files that went to Trash."""
     if contents is not None and user.role != "admin":
         raise ApiError(403, "forbidden", "Only an admin can delete a folder that holds files.")
     if to is not None and contents != "keep":
@@ -211,6 +213,16 @@ def delete_folder(
             )
         except folders_sql.FolderCycle:
             raise ApiError(400, "bad_request", "Choose a folder outside the one you are deleting.") from None
+        except folders_sql.DestinationNotFound:
+            raise ApiError(
+                404, "not_found", "The folder you chose isn't there any more. Choose another."
+            ) from None
+        except folders_sql.FolderNameTaken:
+            raise ApiError(
+                409,
+                "folder_names_taken",
+                "The folder you chose already has too many folders with these names. Choose another.",
+            ) from None
         details: dict[str, audit.DetailValue] = {
             "contents": contents,
             "files": held.files,
@@ -219,7 +231,7 @@ def delete_folder(
         if contents == "keep":
             details["to"] = destination
         _audit(conn, user, "folder.delete", target, details)
-    return Response(status_code=204)
+    return JSONResponse({"files": held.files, "folders": held.folders})
 
 
 @router.get("/folders/{folder_id}/activity")

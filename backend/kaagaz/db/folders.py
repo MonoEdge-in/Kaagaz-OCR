@@ -29,8 +29,8 @@ before anything is written. The caller checks the name (1 to 100 characters).
 """
 
 from collections.abc import Sequence
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from sqlalchemy import Connection, CursorResult, text
@@ -41,6 +41,8 @@ from kaagaz.db.sqlstate import CHECK_VIOLATION, FOREIGN_KEY_VIOLATION, UNIQUE_VI
 
 MAX_DEPTH = 100  # Tushar, 3 Nov 2026 (#484): was 5
 NAME_MAX = 100  # folders.name's CHECK (0002)
+# #537: a folder upload with nothing sent or registered this long is not running (a closed tab).
+UPLOAD_QUIET_HOURS = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +103,18 @@ class FolderUploadRunning(FolderError):
 
     def __init__(self) -> None:
         super().__init__("folder_upload_running")
+
+
+class FolderChanged(FolderError):
+    """A file or folder arrived in the folder while it was being deleted with its contents (#537);
+    nothing was deleted."""
+
+    def __init__(self) -> None:
+        super().__init__("folder_changed")
+
+
+class DestinationNotFound(FolderNotFound):
+    """The folder chosen to take what is inside is not there for this customer (#537)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,13 +251,15 @@ _SUMMARY = (
     " SELECT (SELECT count(*) FROM down), (SELECT count(DISTINCT family_id) FROM live),"
     " (SELECT coalesce(sum(size_bytes), 0) FROM live)"
 )
-# A folder upload (a zip the worker unpacks too) whose plan holds one of :ids and that still has
-# a file waiting: the uploads with one waiting first, on folder_upload_items_state, then their
-# plan on folder_upload_folders_folder.
+# A folder upload (a zip the worker unpacks too) whose plan holds one of :ids, that still has a
+# file waiting, and that planned, registered or sent something since :since: the uploads with
+# one waiting first, on folder_upload_items_state, then their plan on folder_upload_folders_folder.
 _UPLOAD_RUNNING = (
     "SELECT EXISTS (SELECT 1 FROM folder_uploads u WHERE u.customer_id = :c"
     " AND EXISTS (SELECT 1 FROM folder_upload_items i WHERE i.customer_id = :c"
     " AND i.folder_upload_id = u.id AND i.state = 'waiting')"
+    " AND (u.updated_at > :since OR EXISTS (SELECT 1 FROM folder_upload_items r WHERE r.customer_id = :c"
+    " AND r.folder_upload_id = u.id AND r.updated_at > :since))"
     " AND EXISTS (SELECT 1 FROM folder_upload_folders m WHERE m.customer_id = :c"
     " AND m.folder_upload_id = u.id AND m.folder_id = ANY(CAST(:ids AS uuid[]))))"
 )
@@ -273,7 +289,7 @@ _DELETE_ALL = "DELETE FROM folders WHERE customer_id = :c AND id = ANY(CAST(:ids
 _FREE = (
     "SELECT w.n FROM unnest(CAST(:names AS text[])) WITH ORDINALITY AS w (n, i)"
     " WHERE NOT EXISTS (SELECT 1 FROM folders f WHERE f.customer_id = :c AND {where}"
-    " AND lower(normalize(f.name, NFC)) = lower(w.n)) ORDER BY w.i LIMIT 1"
+    " AND lower(normalize(f.name, NFC)) = lower(normalize(w.n, NFC))) ORDER BY w.i LIMIT 1"
 )
 
 
@@ -439,12 +455,15 @@ def delete_folder_with_contents(
     top level, as a deleted folder's trashed documents always have; then the folder and every
     folder inside it go. A document still being read goes too, as with a single delete.
 
-    Raises FolderNotFound (the folder, or ``to``), FolderCycle (``to`` is the folder or inside
-    it), FolderTooDeep, FolderUploadRunning (a folder upload into it still has files waiting),
-    FolderNameTaken (no free number up to 100), DepartmentNotTopLevel or FolderNotEmpty (a file
-    or folder arrived meanwhile). Nothing is written before the checks; a refusal after a write
-    leaves the caller's transaction to roll back. O(s log F + n log D) for the s folders and n
-    documents of the subtree, in a fixed number of statements plus two a clashing name.
+    Raises FolderNotFound, DestinationNotFound (``to``), FolderCycle (``to`` is the folder or
+    inside it), FolderTooDeep, FolderUploadRunning (a folder upload into what is deleted still has
+    files waiting and was active in the last UPLOAD_QUIET_HOURS: with keep, the folder itself, as
+    its folders only move), FolderNameTaken (no free number up to 100) or FolderChanged (a file
+    arrived meanwhile: a document insert or move takes no tree lock). Nothing is written before
+    the checks; a refusal after a write leaves the caller's transaction to roll back. ``files``
+    in what it returns is, with trash, the families that went to Trash now. O(s log F + n log D)
+    for the s folders and n documents of the subtree, in a fixed number of statements plus two a
+    clashing name.
     """
     _lock_tree(conn, customer_id)
     held = folder_summary(conn, customer_id, folder_id)
@@ -452,27 +471,26 @@ def delete_folder_with_contents(
     if contents == "keep" and to is not None:
         target_depth, cycle, height = conn.execute(text(_MOVE_CHECK), params).one()
         if target_depth is None:
-            raise FolderNotFound()
+            raise DestinationNotFound()
         if cycle:
             raise FolderCycle()
         if int(target_depth) + int(height) - 1 > MAX_DEPTH:  # its folders land just below ``to``
             raise FolderTooDeep()
-    subtree = descendant_ids(conn, customer_id, folder_id)
-    if conn.execute(text(_UPLOAD_RUNNING), {**params, "ids": subtree}).scalar_one():
+    gone = [folder_id] if contents == "keep" else descendant_ids(conn, customer_id, folder_id)
+    since = now - timedelta(hours=UPLOAD_QUIET_HOURS)
+    if conn.execute(text(_UPLOAD_RUNNING), {**params, "ids": gone, "since": since}).scalar_one():
         raise FolderUploadRunning()
     parent = conn.execute(text(_PARENT), params).scalar()
-    gone = [folder_id]
     if contents == "keep":
         _move_contents(conn, params)
     else:
-        gone = subtree
-        trash.trash_in_folders(conn, customer_id, subtree, by=by, now=now)
-        conn.execute(text(_DETACH_TRASHED), {**params, "ids": subtree})
+        held = replace(held, files=trash.trash_in_folders(conn, customer_id, gone, by=by, now=now))
+        conn.execute(text(_DETACH_TRASHED), {**params, "ids": gone})
     try:
         conn.execute(text(_DELETE_ALL), {**params, "ids": gone})
     except IntegrityError as error:
         if sqlstate(error) == FOREIGN_KEY_VIOLATION:
-            raise FolderNotEmpty() from None
+            raise FolderChanged() from None
         raise
     prune_empty(conn, customer_id, [None if parent is None else str(parent)])
     return held

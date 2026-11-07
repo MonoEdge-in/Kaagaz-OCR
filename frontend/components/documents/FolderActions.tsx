@@ -77,6 +77,7 @@ export function FolderActions({ tree, current, onChanged, askNew = 0, suggestion
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const opener = useRef<HTMLButtonElement | null>(null);
+  const opened = useRef(0); // counts the forms opened, so a late summary answer is dropped (#537)
   const formId = useId();
   const fieldId = `${formId}-field`;
   const errorId = `${formId}-error`;
@@ -109,12 +110,17 @@ export function FolderActions({ tree, current, onChanged, askNew = 0, suggestion
     setName(next === "rename" && current ? current.folder.name : "");
     setTarget(parentId);
     setSummary(null);
+    const asked = ++opened.current;
     if (next === "delete" && current) {
-      folderSummary(current.folder.id).then(setSummary, (caught: unknown) => setError(libraryErrorText(caught, "folder")));
+      folderSummary(current.folder.id).then(
+        (held) => asked === opened.current && setSummary(held),
+        (caught: unknown) => asked === opened.current && setError(libraryErrorText(caught, "folder")),
+      );
     }
   }
 
   function close() {
+    opened.current += 1;
     setMode(null);
     setError(null);
   }

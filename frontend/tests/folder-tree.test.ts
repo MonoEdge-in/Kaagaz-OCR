@@ -132,6 +132,13 @@ describe("validMoveTargets", () => {
     expect(targets).toContain("C");
   });
 
+  it("lets what is inside a folder go one level deeper than the folder itself (#537)", () => {
+    // A's two levels inside it land just below the target: under L98 they reach level 100.
+    const targets = names(validMoveTargets(tree, "A", true));
+    expect(targets).toContain("L98");
+    expect(targets).not.toContain("A1");
+  });
+
   it("lets a single folder go under any folder above the 100th level, in tree order", () => {
     expect(names(validMoveTargets(tree, "A11")).slice(0, 4)).toEqual(["A", "A1", "C", "L1"]);
     expect(names(validMoveTargets(tree, "A11"))).toContain("L98");

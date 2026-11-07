@@ -8,11 +8,11 @@
 
 import { useId, useState } from "react";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
-import { deleteFolder } from "@/lib/api";
+import { deleteFolderWithContents } from "@/lib/api";
 import type { FolderSummary } from "@/lib/types";
 import { RESTORE_DAYS, heldLine, keptMessage, trashButton, trashedMessage } from "./folderDelete";
 import type { FolderNoun } from "./folderDelete";
-import { validMoveTargets } from "./folderTree";
+import { pathLabel, validMoveTargets } from "./folderTree";
 import type { FolderNode, FolderTree } from "./folderTree";
 import { FolderPicker } from "./FolderPicker";
 import { libraryErrorText } from "./library";
@@ -35,25 +35,30 @@ export function DeleteFolderDialog({ tree, node, summary, onDeleted, onCancel }:
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [targets] = useState(() => new Set(validMoveTargets(tree, node.folder.id).map((each) => each.folder.id)));
+  const [targets] = useState(() => new Set(validMoveTargets(tree, node.folder.id, true).map((each) => each.folder.id)));
+  // A name typed on Windows is NFC; one a Mac made may be stored decomposed.
+  const typedRight = typed.normalize("NFC") === name.normalize("NFC");
   const formId = useId();
   const confirmId = `${formId}-confirm`;
 
   async function confirm() {
     setBusy(true);
     setError(null);
+    let message: string;
     try {
       if (choice === "keep") {
-        await deleteFolder(node.folder.id, { contents: "keep", to: to || null });
-        onDeleted(keptMessage(noun, to ? (tree.byId.get(to)?.folder.name ?? null) : null));
+        const moved = await deleteFolderWithContents(node.folder.id, { contents: "keep", to: to || null });
+        message = keptMessage(noun, to ? pathLabel(tree, to) : null, moved.files);
       } else {
-        await deleteFolder(node.folder.id, { contents: "trash" });
-        onDeleted(trashedMessage(noun, summary.files));
+        const trashed = await deleteFolderWithContents(node.folder.id, { contents: "trash" });
+        message = trashedMessage(noun, trashed.files);
       }
     } catch (caught) {
       setError(libraryErrorText(caught, noun));
       setBusy(false);
+      return;
     }
+    onDeleted(message); // outside the try: the screen's own work after it is not a failed delete
   }
 
   return (
@@ -62,7 +67,7 @@ export function DeleteFolderDialog({ tree, node, summary, onDeleted, onCancel }:
       title={`Delete “${name}”?`}
       confirmLabel={choice === "keep" ? `Move and delete ${noun}` : trashButton(summary.files, noun)}
       busy={busy}
-      confirmDisabled={choice === "trash" && typed !== name}
+      confirmDisabled={choice === "trash" && !typedRight}
       error={error}
       onConfirm={confirm}
       onCancel={onCancel}

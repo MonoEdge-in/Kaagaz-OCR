@@ -49,7 +49,14 @@ def test_b_gets_404_on_the_summary_and_both_delete_modes_with_a_s_folder(db: Dat
         b.client.delete(f"/api/folders/{own}?contents=keep&to={folder}", headers=CSRF),
     ]
 
-    assert [(reply.status_code, reply.json()) for reply in replies] == [(404, NOT_FOUND)] * 4
+    # The same words as for a folder that never existed: nothing says A has it.
+    gone = {
+        "error": {
+            "code": "not_found",
+            "message": "The folder you chose isn't there any more. Choose another.",
+        }
+    }
+    assert [(reply.status_code, reply.json()) for reply in replies] == [(404, NOT_FOUND)] * 3 + [(404, gone)]
     assert _state(db, a.customer_id) == before
     assert _state(db, b.customer_id) == b_before
 
@@ -58,4 +65,7 @@ def test_b_gets_404_on_the_summary_and_both_delete_modes_with_a_s_folder(db: Dat
         "folders": 1,
         "bytes": len(PDF_BYTES),
     }
-    assert a.client.delete(f"/api/folders/{folder}?contents=trash", headers=CSRF).status_code == 204
+    assert a.client.delete(f"/api/folders/{folder}?contents=trash", headers=CSRF).json() == {
+        "files": 1,
+        "folders": 1,
+    }

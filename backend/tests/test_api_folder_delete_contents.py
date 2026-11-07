@@ -15,10 +15,12 @@ from typing import Any
 
 import httpx2 as httpx
 import pytest
-from sqlalchemy import text
+from sqlalchemy import Connection, text
 
+from kaagaz.db import trash
 from kaagaz.db.engine import Database
 from kaagaz.jobs.purge import _purge_one_family
+from tests.db_support import insert_document
 from tests.folder_upload_support import new_folder_upload, path_key
 from tests.test_api_support import CSRF, Api, Signed
 
@@ -97,7 +99,7 @@ def test_keep_moves_the_documents_and_subfolders_to_the_parent_and_trashes_nothi
         c, uploaded_by=admin.user_id, folder_id=folder, deleted_at=gone_at, deleted_by=admin.user_id
     )
 
-    assert _delete(admin, folder, "keep", to=top).status_code == 204
+    assert _delete(admin, folder, "keep", to=top).status_code == 200
 
     folders = _folders(db, c)
     assert set(folders) == {top, sub}
@@ -120,8 +122,8 @@ def test_keep_moves_to_a_folder_elsewhere_in_the_tree_or_to_the_top_level(db: Da
     moved = [api.add_folder(c, admin.user_id, "Sub", folder) for folder in (first, second)]
     files = [api.add_document(c, uploaded_by=admin.user_id, folder_id=folder) for folder in (first, second)]
 
-    assert _delete(admin, first, "keep", to=target).status_code == 204
-    assert _delete(admin, second, "keep").status_code == 204  # no ``to``: the top level
+    assert _delete(admin, first, "keep", to=target).status_code == 200
+    assert _delete(admin, second, "keep").status_code == 200  # no ``to``: the top level
 
     folders = _folders(db, c)
     assert (folders[moved[0]], folders[moved[1]]) == ((target, "Sub", "custom"), (None, "Sub", "custom"))
@@ -147,7 +149,10 @@ def test_keep_into_the_folder_itself_or_one_inside_it_is_400_and_changes_nothing
             {"code": "bad_request", "message": "Choose a folder outside the one you are deleting."},
         )
     unknown = _delete(admin, folder, "keep", to="7a0f6f0e-5b9e-4c55-9a39-5f0e0e0e0e0e")
-    assert unknown.status_code == 404
+    assert (unknown.status_code, unknown.json()["error"]) == (
+        404,
+        {"code": "not_found", "message": "The folder you chose isn't there any more. Choose another."},
+    )
     assert _delete(admin, folder, "trash", to=inside).status_code == 400  # ``to`` is for keep only
     assert (_folders(db, c), _documents(db, c)) == (folders, documents)
 
@@ -171,8 +176,8 @@ def test_keep_names_a_clashing_subfolder_with_the_next_free_number(db: Database)
     second = api.add_folder(c, admin.user_id, "Second")
     taxes = api.add_folder(c, admin.user_id, "TAXES", second)
 
-    assert _delete(admin, folder, "keep").status_code == 204
-    assert _delete(admin, second, "keep", to=chosen).status_code == 204
+    assert _delete(admin, folder, "keep").status_code == 200
+    assert _delete(admin, second, "keep", to=chosen).status_code == 200
 
     folders = _folders(db, c)
     assert folder not in folders
@@ -182,6 +187,61 @@ def test_keep_names_a_clashing_subfolder_with_the_next_free_number(db: Database)
     assert folders[long] == (None, "X" * 96 + " (2)", "custom")  # the 100-character cap holds
     assert folders[archive] == (None, "archive (2)", "custom")
     assert folders[taxes] == (chosen, "TAXES (2)", "custom")  # a clash in a chosen folder too
+
+
+def test_keep_compares_names_as_one_whatever_their_unicode_form(db: Database) -> None:
+    api = Api(db)
+    admin = api.new_admin()
+    c = admin.customer_id
+    nfd = "Cafe\u0301"  # "Café" as a Mac writes it
+    for name in (nfd, f"{nfd} (2)"):
+        api.add_folder(c, admin.user_id, name)
+    folder = api.add_folder(c, admin.user_id, "Folder")
+    moved = api.add_folder(c, admin.user_id, nfd, folder)
+
+    assert _delete(admin, folder, "keep").status_code == 200
+
+    assert _folders(db, c)[moved] == (None, f"{nfd} (3)", "custom")
+
+
+def test_keep_with_no_free_number_left_is_409_and_changes_nothing(db: Database) -> None:
+    api = Api(db)
+    admin = api.new_admin()
+    c = admin.customer_id
+    for name in ("A", *(f"A ({n})" for n in range(2, 101))):
+        api.add_folder(c, admin.user_id, name)
+    folder = api.add_folder(c, admin.user_id, "Folder")
+    api.add_folder(c, admin.user_id, "a", folder)
+    folders = _folders(db, c)
+
+    reply = _delete(admin, folder, "keep")
+
+    assert (reply.status_code, reply.json()["error"]) == (
+        409,
+        {
+            "code": "folder_names_taken",
+            "message": "The folder you chose already has too many folders with these names. Choose another.",
+        },
+    )
+    assert _folders(db, c) == folders
+
+
+def test_keep_lets_the_folders_inside_land_down_to_level_100_and_no_deeper(db: Database) -> None:
+    api = Api(db)
+    admin = api.new_admin()
+    c = admin.customer_id
+    chain: list[str] = []
+    for level in range(1, 100):
+        chain.append(api.add_folder(c, admin.user_id, f"L{level}", chain[-1] if chain else None))
+    two = api.add_folder(c, admin.user_id, "Two levels")
+    inner = api.add_folder(c, admin.user_id, "Inner", two)
+    three = api.add_folder(c, admin.user_id, "Three levels")
+    api.add_folder(c, admin.user_id, "Deeper", api.add_folder(c, admin.user_id, "Inner", three))
+
+    too_deep = _delete(admin, three, "keep", to=chain[-1])  # its Deeper would be at level 101
+    assert (too_deep.status_code, too_deep.json()["error"]["code"]) == (409, "folder_too_deep")
+    assert _delete(admin, two, "keep", to=chain[-1]).status_code == 200  # Inner lands at level 100
+    assert _folders(db, c)[inner][0] == chain[-1]
 
 
 def test_keep_of_a_department_puts_its_folders_at_the_top_level_with_their_kinds(db: Database) -> None:
@@ -198,7 +258,7 @@ def test_keep_of_a_department_puts_its_folders_at_the_top_level_with_their_kinds
     inner = api.add_folder(c, admin.user_id, "Inner", category)
     filed = api.add_document(c, uploaded_by=admin.user_id, folder_id=department)
 
-    assert _delete(admin, department, "keep").status_code == 204
+    assert _delete(admin, department, "keep").status_code == 200
 
     folders = _folders(db, c)
     assert department not in folders
@@ -241,7 +301,8 @@ def test_trash_sends_every_family_of_the_subtree_to_trash_and_removes_its_folder
     c = admin.customer_id
     tree = _deep_tree(api, admin)
 
-    assert _delete(admin, tree["folder"], "trash").status_code == 204
+    reply = _delete(admin, tree["folder"], "trash")
+    assert (reply.status_code, reply.json()) == (200, {"files": 3, "folders": 4})
 
     assert set(_folders(db, c)) == {tree["parent"]}
     documents = _documents(db, c)
@@ -260,7 +321,7 @@ def test_a_family_trashed_with_its_folder_is_restored_at_the_top_level(db: Datab
     api = Api(db)
     admin = api.new_admin()
     tree = _deep_tree(api, admin)
-    assert _delete(admin, tree["folder"], "trash").status_code == 204
+    assert _delete(admin, tree["folder"], "trash").status_code == 200
 
     first, second = tree["deep_family"]
     assert admin.client.post(f"/api/documents/{second}/restore", headers=CSRF).status_code == 200
@@ -274,7 +335,7 @@ def test_the_trash_purge_deletes_them_for_good_once_their_time_is_up(db: Databas
     admin = api.new_admin()
     c = admin.customer_id
     tree = _deep_tree(api, admin)
-    assert _delete(admin, tree["folder"], "trash").status_code == 204
+    assert _delete(admin, tree["folder"], "trash").status_code == 200
 
     def purge(before: datetime) -> int:
         purged = 0
@@ -353,7 +414,23 @@ def _waiting_item(
         )
 
 
-def test_both_modes_are_409_while_a_folder_upload_into_the_subtree_has_files_waiting(db: Database) -> None:
+def _quiet(db: Database, customer_id: str, upload_id: str, since: datetime) -> None:
+    """Nothing planned, registered or sent in this upload since ``since`` (a closed tab)."""
+    with db.customer(customer_id) as conn:
+        params = {"c": customer_id, "u": upload_id, "t": since}
+        conn.execute(
+            text("UPDATE folder_uploads SET updated_at = :t WHERE customer_id = :c AND id = :u"), params
+        )
+        conn.execute(
+            text(
+                "UPDATE folder_upload_items SET updated_at = :t"
+                " WHERE customer_id = :c AND folder_upload_id = :u"
+            ),
+            params,
+        )
+
+
+def test_trash_is_409_while_a_folder_upload_into_a_subfolder_has_files_waiting(db: Database) -> None:
     api = Api(db)
     admin = api.new_admin()
     c = admin.customer_id
@@ -369,10 +446,27 @@ def test_both_modes_are_409_while_a_folder_upload_into_the_subtree_has_files_wai
     _waiting_item(db, c, other, elsewhere)
     folders, documents = _folders(db, c), _documents(db, c)
 
+    reply = _delete(admin, folder, "trash")
+    assert (reply.status_code, reply.json()["error"]) == (409, UPLOAD_RUNNING)
+    assert (_folders(db, c), _documents(db, c)) == (folders, documents)
+
+    # Keep deletes only the folder: the subfolder moves with its id, and its upload carries on.
+    assert _delete(admin, folder, "keep").status_code == 200
+    assert _folders(db, c)[sub] == (None, "Uploaded", "custom")
+
+
+def test_keep_is_409_while_a_folder_upload_into_the_folder_itself_has_files_waiting(db: Database) -> None:
+    api = Api(db)
+    admin = api.new_admin()
+    c = admin.customer_id
+    folder = api.add_folder(c, admin.user_id, "Folder")
+    api.add_document(c, uploaded_by=admin.user_id, folder_id=folder)
+    running = new_folder_upload(db, c, admin.user_id, folder_ids=[folder])
+    _waiting_item(db, c, running, folder)
+
     for contents in ("keep", "trash"):
         reply = _delete(admin, folder, contents)
         assert (reply.status_code, reply.json()["error"]) == (409, UPLOAD_RUNNING)
-    assert (_folders(db, c), _documents(db, c)) == (folders, documents)
 
     with db.customer(c) as conn:
         conn.execute(
@@ -382,7 +476,22 @@ def test_both_modes_are_409_while_a_folder_upload_into_the_subtree_has_files_wai
             ),
             {"c": c, "u": running},
         )
-    assert _delete(admin, folder, "trash").status_code == 204
+    assert _delete(admin, folder, "trash").status_code == 200
+
+
+def test_an_upload_quiet_for_over_an_hour_no_longer_blocks_the_delete(db: Database) -> None:
+    api = Api(db)
+    admin = api.new_admin()
+    c = admin.customer_id
+    folder = api.add_folder(c, admin.user_id, "Folder")
+    api.add_document(c, uploaded_by=admin.user_id, folder_id=folder)
+    upload = new_folder_upload(db, c, admin.user_id, folder_ids=[folder])
+    _waiting_item(db, c, upload, folder)
+
+    _quiet(db, c, upload, api.clock() - timedelta(minutes=59))
+    assert _delete(admin, folder, "trash").status_code == 409  # still within the hour
+    _quiet(db, c, upload, api.clock() - timedelta(minutes=61))  # the tab was closed
+    assert _delete(admin, folder, "trash").status_code == 200
 
 
 def test_the_audit_row_holds_ids_and_counts_only_never_a_name(db: Database) -> None:
@@ -393,7 +502,7 @@ def test_the_audit_row_holds_ids_and_counts_only_never_a_name(db: Database) -> N
     api.add_folder(c, admin.user_id, "Secret sub", folder)
     api.add_document(c, uploaded_by=admin.user_id, folder_id=folder, name="secret.pdf")
 
-    assert _delete(admin, folder, "trash").status_code == 204
+    assert _delete(admin, folder, "trash").status_code == 200
 
     assert _folder_audit(api, c) == [
         ("folder.delete", "folder", folder, {"contents": "trash", "files": 1, "folders": 1})
@@ -423,6 +532,35 @@ def test_the_summary_counts_the_live_files_folders_and_bytes_of_the_whole_subtre
     assert admin.client.get(f"/api/folders/{empty}/summary").json() == {"files": 0, "folders": 0, "bytes": 0}
     unknown = admin.client.get("/api/folders/7a0f6f0e-5b9e-4c55-9a39-5f0e0e0e0e0e/summary")
     assert unknown.status_code == 404
+
+
+def test_a_file_arriving_while_the_folder_is_deleted_is_409_and_changes_nothing(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api = Api(db)
+    admin = api.new_admin()
+    c = admin.customer_id
+    tree = _deep_tree(api, admin)
+    folders, documents = _folders(db, c), _documents(db, c)
+    real = trash.trash_in_folders
+
+    def and_an_upload_lands(conn: Connection, customer_id: str, ids: list[str], **when: Any) -> int:
+        trashed = real(conn, customer_id, ids, **when)
+        insert_document(conn, customer_id, folder_id=tree["levels"][-1])  # no tree lock on an upload
+        return trashed
+
+    monkeypatch.setattr("kaagaz.db.trash.trash_in_folders", and_an_upload_lands)
+    reply = _delete(admin, tree["folder"], "trash")
+
+    assert (reply.status_code, reply.json()["error"]) == (
+        409,
+        {
+            "code": "folder_changed",
+            "message": "Something was added to this folder while it was being deleted."
+            " Nothing was deleted. Try again.",
+        },
+    )
+    assert (_folders(db, c), _documents(db, c)) == (folders, documents)
 
 
 def test_a_failure_part_way_changes_nothing(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:

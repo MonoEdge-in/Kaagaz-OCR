@@ -139,11 +139,12 @@ function levelsIn(node: FolderNode): number {
  * Where a folder may move to: any folder except itself and those inside it,
  * and only where its deepest folder stays within MAX_FOLDER_DEPTH levels. The top level is
  * always allowed and is not in this list. In tree order. Time and space O(F).
+ * `contentsOnly` (#537): only what is inside it moves, so it may go one level deeper.
  */
-export function validMoveTargets(tree: FolderTree, folderId: string): FolderNode[] {
+export function validMoveTargets(tree: FolderTree, folderId: string, contentsOnly = false): FolderNode[] {
   const node = tree.byId.get(folderId);
   if (!node) return [];
-  const levels = levelsIn(node);
+  const levels = levelsIn(node) - (contentsOnly ? 1 : 0);
   return preorder(tree.roots, folderId).filter(
     (target) => target.depth + levels <= MAX_FOLDER_DEPTH,
   );

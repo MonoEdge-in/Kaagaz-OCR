@@ -18,7 +18,7 @@ import {
   trashedMessage,
 } from "@/components/documents/folderDelete";
 import { FolderActions } from "@/components/documents/FolderActions";
-import { deleteFolder, folderSummary } from "@/lib/api";
+import { deleteFolder, deleteFolderWithContents, folderSummary } from "@/lib/api";
 import type { Folder, FolderSummary } from "@/lib/types";
 import { FakeDocument, FakeElement, fire, install } from "./fake-dom";
 
@@ -40,6 +40,8 @@ const FOLDERS = [
 const TREE = buildTree(FOLDERS);
 const FULL: FolderSummary = { files: 3, folders: 1, bytes: 1536 };
 const EMPTY: FolderSummary = { files: 0, folders: 0, bytes: 0 };
+const MOVED = { files: 3, folders: 1 }; // the server's reply: what moved, or the files trashed
+const TRASHED = { files: 3, folders: 1 };
 
 describe("the words", () => {
   it("counts what the folder holds, leaving out what it has none of", () => {
@@ -53,10 +55,12 @@ describe("the words", () => {
     expect(trashButton(3, "folder")).toBe("Move 3 files to Trash");
     expect(trashButton(1, "department")).toBe("Move 1 file to Trash");
     expect(trashButton(0, "department")).toBe("Delete department"); // only empty folders inside
-    expect(keptMessage("folder", "Accounts")).toBe("Folder deleted. Its files moved to Accounts.");
-    expect(keptMessage("department", null)).toBe("Department deleted. Its files moved to the top level.");
+    expect(keptMessage("folder", "Accounts", 2)).toBe("Folder deleted. Its files moved to Accounts.");
+    expect(keptMessage("department", null, 2)).toBe("Department deleted. Its files moved to the top level.");
+    expect(keptMessage("folder", "Accounts", 0)).toBe("Folder deleted. What was inside moved to Accounts.");
     expect(trashedMessage("folder", 3)).toBe("Folder deleted. 3 files moved to Trash.");
     expect(trashedMessage("department", 1)).toBe("Department deleted. 1 file moved to Trash.");
+    expect(trashedMessage("folder", 0)).toBe("Folder deleted."); // only empty folders were inside
     expect(notEmptyText("folder")).toBe("This folder isn't empty. Ask an admin to delete it, or move what is inside first.");
     expect(RESTORE_DAYS).toBe(30); // TRASH_DAYS's default; the browser is not told the setting
   });
@@ -75,6 +79,7 @@ function serve(routes: Record<string, unknown>) {
     const reply = routes[`${method} ${url}`];
     if (reply === undefined) throw new Error(`no route for ${method} ${url}`);
     if (reply === null) return new Response(null, { status: 204 });
+    if (reply instanceof Promise) return reply as Promise<Response>;
     const failed = (reply as { error?: unknown }).error !== undefined;
     return new Response(JSON.stringify(reply), { status: failed ? 409 : 200, headers: { "Content-Type": "application/json" } });
   });
@@ -138,16 +143,16 @@ describe("the calls", () => {
   it("asks for the summary, and deletes with what to do with the contents", async () => {
     serve({
       "GET /api/folders/f/summary": FULL,
-      "DELETE /api/folders/f?contents=keep&to=s": null,
-      "DELETE /api/folders/f?contents=keep": null,
-      "DELETE /api/folders/f?contents=trash": null,
+      "DELETE /api/folders/f?contents=keep&to=s": MOVED,
+      "DELETE /api/folders/f?contents=keep": MOVED,
+      "DELETE /api/folders/f?contents=trash": TRASHED,
       "DELETE /api/folders/f": null,
     });
     expect(await folderSummary("f")).toEqual(FULL);
-    await deleteFolder("f", { contents: "keep", to: "s" });
-    await deleteFolder("f", { contents: "keep", to: null }); // the top level
-    await deleteFolder("f", { contents: "trash" });
-    await deleteFolder("f");
+    expect(await deleteFolderWithContents("f", { contents: "keep", to: "s" })).toEqual(MOVED);
+    await deleteFolderWithContents("f", { contents: "keep", to: null }); // the top level
+    expect(await deleteFolderWithContents("f", { contents: "trash" })).toEqual(TRASHED);
+    expect(await deleteFolder("f")).toBeUndefined();
     expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
       "GET /api/folders/f/summary",
       "DELETE /api/folders/f?contents=keep&to=s",
@@ -206,9 +211,23 @@ describe("the screen: by role and by what the folder holds", () => {
   });
 });
 
+describe("the screen: an answer that comes late", () => {
+  it("drops a summary that fails after the person moved on to Rename", async () => {
+    let fail: (reply: Response) => void = () => undefined;
+    const late = new Promise<Response>((resolve) => (fail = resolve));
+    const { screen } = await show("f", true, FULL, { "GET /api/folders/f/summary": late });
+    await press(button(screen, "Rename this folder"));
+    const error = { error: { code: "internal_error", message: "Something went wrong on our side." } };
+    await act(async () => fail(new Response(JSON.stringify(error), { status: 500 })));
+    await settle();
+    expect(all(screen).some((element) => element.getAttribute("role") === "alert")).toBe(false);
+    expect(control(screen, "New name for “Bills”")).not.toBeNull();
+  });
+});
+
 describe("the screen: deleting", () => {
   it("moves what is inside to the folder chosen, then says where", async () => {
-    const { screen, onChanged } = await show("f", true, FULL, { "DELETE /api/folders/f?contents=keep&to=s": null });
+    const { screen, onChanged } = await show("f", true, FULL, { "DELETE /api/folders/f?contents=keep&to=s": MOVED });
     const dialog = all(screen).find((element) => element.tagName === "DIALOG")!;
     await choose(control(dialog, "Suppliers"));
     await press(button(dialog, "Move and delete folder"));
@@ -217,7 +236,7 @@ describe("the screen: deleting", () => {
   });
 
   it("moves to the top level when chosen", async () => {
-    const { screen, onChanged } = await show("f", true, FULL, { "DELETE /api/folders/f?contents=keep": null });
+    const { screen, onChanged } = await show("f", true, FULL, { "DELETE /api/folders/f?contents=keep": MOVED });
     const dialog = all(screen).find((element) => element.tagName === "DIALOG")!;
     await choose(control(dialog, "Top level"));
     await press(button(dialog, "Move and delete folder"));
@@ -226,7 +245,9 @@ describe("the screen: deleting", () => {
   });
 
   it("sends everything to Trash only once the folder's name is typed exactly", async () => {
-    const { screen, onChanged } = await show("f", true, FULL, { "DELETE /api/folders/f?contents=trash": null });
+    // The server trashed 4: one arrived after the dialog opened. The toast says what happened.
+    const four = { files: 4, folders: 1 };
+    const { screen, onChanged } = await show("f", true, FULL, { "DELETE /api/folders/f?contents=trash": four });
     const dialog = all(screen).find((element) => element.tagName === "DIALOG")!;
     await choose(control(dialog, "Delete the folder and everything inside"));
     expect(dialog.textContent).toContain(`Everything inside goes to Trash. You can restore it for ${RESTORE_DAYS} days.`);
@@ -241,11 +262,28 @@ describe("the screen: deleting", () => {
     expect(confirm().getAttribute("disabled")).toBeNull();
     await press(confirm());
     expect(calls.at(-1)).toEqual({ url: "/api/folders/f?contents=trash", method: "DELETE" });
-    expect(onChanged).toHaveBeenCalledWith("Folder deleted. 3 files moved to Trash.", { folderId: "p" }, true);
+    expect(onChanged).toHaveBeenCalledWith("Folder deleted. 4 files moved to Trash.", { folderId: "p" }, true);
+  });
+
+  it("takes the name typed in either Unicode form, as a Mac's folder names come", async () => {
+    const mac = buildTree([folder("m", "Cafe\u0301")]); // "Café", decomposed
+    serve({ "GET /api/folders/m/summary": FULL, "DELETE /api/folders/m?contents=trash": TRASHED });
+    const container = doc.body.appendChild(doc.createElement("div")) as FakeElement;
+    const { createRoot } = await import("react-dom/client");
+    root = createRoot(container as unknown as Element);
+    const props = { tree: mac, current: mac.byId.get("m")!, onChanged: vi.fn(), admin: true };
+    await act(async () => root!.render(createElement(FolderActions, props)));
+    await press(button(container, "Delete this folder"));
+    await settle();
+    const dialog = all(container).find((element) => element.tagName === "DIALOG")!;
+    await choose(control(dialog, "Delete the folder and everything inside"));
+    const box = all(dialog).find((element) => element.tagName === "INPUT" && element.type === "text")!;
+    await type(box, "Caf\u00e9"); // typed on Windows: one character
+    expect(button(dialog, "Move 3 files to Trash")!.getAttribute("disabled")).toBeNull();
   });
 
   it("says department for a department, everywhere", async () => {
-    const { screen, onChanged } = await show("d", true, FULL, { "DELETE /api/folders/d?contents=trash": null });
+    const { screen, onChanged } = await show("d", true, FULL, { "DELETE /api/folders/d?contents=trash": TRASHED });
     const dialog = all(screen).find((element) => element.tagName === "DIALOG")!;
     expect(control(dialog, "Move what’s inside, then delete the department")).not.toBeNull();
     expect(button(dialog, "Move and delete department")).not.toBeNull();
