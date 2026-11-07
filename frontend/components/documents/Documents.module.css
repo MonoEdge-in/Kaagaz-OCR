@@ -807,7 +807,7 @@ table.docs > tbody > tr {
 }
 
 /* issue 542: a folder in Trash is a row too; its name is a button that opens it, its icon in the
-   file icon's 24px, its Restore and Delete forever side by side. */
+   file icon's 24px. Its Restore and Delete forever are a document's ⋯ menu (B16). */
 .folderName {
   border: 0;
   background: none;
@@ -822,12 +822,6 @@ table.docs > tbody > tr {
   flex: none;
   width: 24px;
   color: var(--text-secondary);
-}
-
-.folderActions {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: var(--space-1);
 }
 
 /* The handoff's paper icon (.k-file-ic, 30px tall), centred on the name's line without
@@ -1373,6 +1367,11 @@ table.docs > tbody > tr {
 
   .statusCell {
     flex: 1 1 100%;
+  }
+
+  /* A folder in Trash has no status (its dash is for the table's column): no line of its own. */
+  .statusCell[data-empty] {
+    display: none;
   }
 
   .statusContent {

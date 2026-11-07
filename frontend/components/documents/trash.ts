@@ -90,9 +90,10 @@ export function wasInText(wasIn: TrashedFolder["was_in"]): string {
   return `Was in: ${wasIn.length === 0 ? "Top level" : wasIn.join(" › ")}`;
 }
 
-/** "4 files, 3 folders". */
+/** "4 files, 3 folders"; a part it has none of is left out ("4 files"), and nothing at all is "Empty". */
 export function heldText(folder: Pick<TrashedFolder, "files" | "folders">): string {
-  return `${counted(folder.files, "file")}, ${counted(folder.folders, "folder")}`;
+  const parts = [folder.files > 0 ? counted(folder.files, "file") : "", folder.folders > 0 ? counted(folder.folders, "folder") : ""];
+  return parts.filter(Boolean).join(", ") || "Empty";
 }
 
 /** The toast once a folder is back: where it went, or why it is not where it was. */
@@ -111,9 +112,15 @@ export function folderBackMessage(back: FolderBack): string {
   return `Its folder “${back.folder.name}” is back in ${back.location.length === 0 ? "Top level" : back.location.join(" › ")}.`;
 }
 
-/** Asked before a folder in Trash is deleted for good, with every file in it. */
+/** Asked before a folder in Trash is deleted for good, with every file in it, in foreverQuestion's words. */
 export function folderForeverQuestion(folder: Pick<TrashedFolder, "name" | "files">): string {
-  return `Delete “${folder.name}” and its ${counted(folder.files, "file")} forever? This can't be undone.`;
+  const gone = folder.files === 1 ? "It can't be brought back." : "They can't be brought back.";
+  return `Delete “${folder.name}” and its ${counted(folder.files, "file")} for good? ${gone}`;
+}
+
+/** B18: a folder deleted for good a part at a time stopped part way; why follows. */
+export function foreverStoppedText(left: number): string {
+  return `Deleting stopped with ${counted(left, "file")} still in Trash.`;
 }
 
 /** Trash with nothing in it, or an open folder in Trash with nothing left in it. */

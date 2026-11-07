@@ -868,8 +868,29 @@ export const getTrashedFolder = (id: string) =>
   request<TrashedFolderContents>("GET", `/documents/trash/folders/${id}`);
 export const restoreTrashedFolder = (id: string) =>
   request<FolderRestored>("POST", `/documents/trash/folders/${id}/restore`);
-export const deleteTrashedFolderForever = (id: string) =>
-  request<void>("DELETE", `/documents/trash/folders/${id}/permanent`);
+/** Replies in a row that may leave the count where it was (another tab deleting the same folder)
+ * before deleteTrashedFolderForever stops asking. */
+const STUCK_REPLIES = 3;
+
+/**
+ * B18 (the backend's A12): a folder in Trash is deleted for good a part at a time. While files
+ * remain the server says 202 {remaining}; this asks again, telling `onLeft` how many are left,
+ * until its 204. A count that stops going down for STUCK_REPLIES replies stops it, as an error,
+ * so a stuck server is never asked for ever.
+ */
+export async function deleteTrashedFolderForever(id: string, onLeft?: (remaining: number) => void): Promise<void> {
+  let left = Number.POSITIVE_INFINITY;
+  let stuck = 0;
+  for (;;) {
+    const reply = await request<{ remaining?: unknown } | undefined>("DELETE", `/documents/trash/folders/${id}/permanent`);
+    if (reply === undefined) return; // 204: all gone
+    const remaining = typeof reply.remaining === "number" ? reply.remaining : left;
+    stuck = remaining < left ? 0 : stuck + 1;
+    left = remaining;
+    if (Number.isFinite(left)) onLeft?.(left);
+    if (stuck >= STUCK_REPLIES) throw new ApiError(500, "error", "Deleting made no progress. Try again in a minute.");
+  }
+}
 export const listTags = () => request<{ items: Tag[] }>("GET", "/tags");
 export const createTag = (name: string) => request<Tag>("POST", "/tags", { name });
 

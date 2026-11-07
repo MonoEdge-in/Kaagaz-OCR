@@ -45,7 +45,9 @@ import { documentsCount, runEach } from "./trash";
 import styles from "./Library.module.css";
 
 export interface RowMenuProps {
-  item: DocumentSummary;
+  /** A document; or a folder in Trash (TrashFolderRow), named "folder <name>", whose Restore and
+   * Delete forever are a trashed document's (B16). */
+  item: Pick<DocumentSummary, "id" | "display_name" | "status" | "deleted_at" | "can_delete">;
   canForever: boolean; // Delete forever (canDeleteForever, trash.ts)
   onPick(action: RowAction): void;
   /** The row keeps hold of the menu button, to hand focus back to it. */
