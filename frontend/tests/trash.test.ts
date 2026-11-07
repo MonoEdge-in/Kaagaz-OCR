@@ -42,9 +42,11 @@ const granted = (role: Role, scope: SessionScope = "app"): Me => {
 };
 
 describe("who may delete for good", () => {
-  it("is an admin session with two-step sign-in on only (PRD 1, F5); the server checks it again", () => {
+  // Changed on purpose (#538, Tushar, 7 Nov 2026): an admin session without two-step too, with
+  // a typed password (delete-forever-password-538.test.ts).
+  it("is an admin session (PRD 1, F5); the server checks it again", () => {
     expect(canDeleteForever(me("admin", "admin"))).toBe(true);
-    expect(canDeleteForever(me("admin", "admin", false))).toBe(false);
+    expect(canDeleteForever(me("admin", "admin", false))).toBe(true);
     expect(canDeleteForever(me("admin", "app"))).toBe(false);
     expect(canDeleteForever(me("member"))).toBe(false);
     expect(canDeleteForever(me("reviewer"))).toBe(false);
@@ -52,7 +54,7 @@ describe("who may delete for good", () => {
 
   it("tells an admin what to do first, and nobody else", () => {
     expect(foreverNeeds(me("admin", "app"))).toBe("admin_sign_in");
-    expect(foreverNeeds(me("admin", "admin", false))).toBe("two_step");
+    expect(foreverNeeds(me("admin", "admin", false))).toBeNull(); // #538: types their password instead
     expect(foreverNeeds(me("admin", "admin"))).toBeNull();
     expect(foreverNeeds(me("member"))).toBe("not_allowed");
     expect(foreverNeeds(me("reviewer"))).toBe("not_allowed");

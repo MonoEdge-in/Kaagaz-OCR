@@ -12,8 +12,9 @@
 // own columns and the next row); focus goes to Cancel, and back to the menu button. Restore
 // needs no question: nothing is lost. Ticked rows can be moved to Trash
 // together; in Trash they can be restored together, or deleted forever together
-// by whoever may (canDeleteForever, asked first; a granted member or reviewer
-// types their password in that step). In Trash the list shows when each
+// by whoever may (canDeleteForever, asked first; a granted member or reviewer, or an admin
+// without two-step sign-in, #538, types their password in that step, and again after a 403
+// password_confirm_required, with the question kept open). In Trash the list shows when each
 // document was trashed. Each row is the family's
 // current version; a newer one still being read, or one that failed, gets a
 // line under the name ("Version 3: ..."), linking to it. The Type column
@@ -91,6 +92,7 @@ import {
   foreverNeedsPassword,
   foreverQuestion,
   lostTheRight,
+  passwordAgain,
   restoredMessage,
   runForever,
   selectable,
@@ -209,7 +211,9 @@ export function DocumentsTable({
   }, [items]);
   const { refresh } = useSession();
   const canForever = canDeleteForever(me);
-  const askPassword = foreverNeedsPassword(me);
+  // A 403 password_confirm_required asks for the password from then on (passwordAgain, #538).
+  const [passwordAsked, setPasswordAsked] = useState(false);
+  const askPassword = foreverNeedsPassword(me) || passwordAsked;
   // Read again (PRD 5 U2): a reviewer or an admin, for a document that can be read again.
   const readable = useCallback(
     (item: DocumentSummary) => !inTrash && canReprocess(me.user.role, item),
@@ -320,7 +324,10 @@ export function DocumentsTable({
     }
     const { result } = outcome;
     setSelectedIds(new Set(result.failed));
-    setConfirming(null);
+    // No typed password counted: the question stays open for the failed ones and asks for it.
+    const askAgain = action === "forever" && passwordAgain(result.firstError);
+    if (askAgain) setPasswordAsked(true);
+    else setConfirming(null);
     if (result.failed.length > 0) {
       setError(bulkFailedMessage(action, result.failed.length, errorText(result.firstError)));
     }
@@ -329,6 +336,7 @@ export function DocumentsTable({
       if (action === "read") events.onSaved(bulkDoneMessage(action, result.done.length));
       else onRemoved(bulkDoneMessage(action, result.done.length), undoRemoval(action, result.done));
     }
+    if (askAgain) return; // the question is still open
     // The buttons pressed are gone now: keep keyboard focus on the select-all box shown.
     selectAll.current.find((input) => input.isConnected && input.offsetParent !== null)?.focus();
   }
@@ -681,6 +689,9 @@ const DocumentRow = memo(function DocumentRow({
   const [working, setWorking] = useState(BUSY_WORDS.restore);
   const [error, setError] = useState<string | null>(null);
   const [password, setPassword] = useState("");
+  // A 403 password_confirm_required asks for the password from then on (passwordAgain, #538).
+  const [passwordAsked, setPasswordAsked] = useState(false);
+  const needsPassword = askPassword || passwordAsked;
   const { refresh } = useSession();
   const actionsButton = useRef<HTMLButtonElement | null>(null);
   const refocusActions = useRef(false);
@@ -745,6 +756,10 @@ const DocumentRow = memo(function DocumentRow({
         caught instanceof ApiError ? caught.message : `${failed} Check your connection, then try again.`,
       );
       setBusy(false);
+      if (passwordAgain(caught)) {
+        setPasswordAsked(true); // the dialog stays open, says why, and asks for the password
+        return;
+      }
       refocusActions.current = true;
       setConfirming(null);
     }
@@ -752,8 +767,8 @@ const DocumentRow = memo(function DocumentRow({
 
   function confirm() {
     if (confirming === "forever") {
-      // A granted user's password is checked first: if it is refused, nothing is deleted.
-      const typed = askPassword ? password : null;
+      // A typed password is checked first: if it is refused, nothing is deleted.
+      const typed = needsPassword ? password : null;
       setPassword("");
       void act(
         async (id) => {
@@ -776,6 +791,7 @@ const DocumentRow = memo(function DocumentRow({
   // The dialog hands focus back to the menu button once it is shut (onClosed).
   function cancel() {
     setConfirming(null);
+    setError(null); // a "type your password again" said in the dialog goes with it
   }
 
   // Issue 407: the status cell's Retry is Read again (POST .../reprocess); the row stays and
@@ -1016,7 +1032,7 @@ const DocumentRow = memo(function DocumentRow({
           >
             <div className={library.dialogForm}>
               <p>{question}</p>
-              {confirming === "forever" && askPassword && (
+              {confirming === "forever" && needsPassword && (
                 <PasswordField
                   id={`forever-password-${document.id}`}
                   label="Your password"
@@ -1025,12 +1041,17 @@ const DocumentRow = memo(function DocumentRow({
                   onChange={setPassword}
                 />
               )}
+              {error && (
+                <p className="error-text" role="alert">
+                  {error}
+                </p>
+              )}
               <div className={library.formButtons}>
                 <button
                   type="button"
                   className={`btn btn-danger ${library.apart}`}
                   onClick={confirm}
-                  disabled={busy || (confirming === "forever" && askPassword && password === "")}
+                  disabled={busy || (confirming === "forever" && needsPassword && password === "")}
                 >
                   <BusyLabel
                     busy={busy}
@@ -1045,7 +1066,7 @@ const DocumentRow = memo(function DocumentRow({
             </div>
           </ActionDialog>
         )}
-        {error && (
+        {error && confirming === null && (
           <p className={`error-text ${styles.rowError}`} role="alert">
             {error}
           </p>
