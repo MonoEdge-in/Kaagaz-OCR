@@ -28,6 +28,11 @@
 // A question out when Ask is left (another page of the app) is kept in askStore.ts;
 // back on Ask it shows as pending again, or answered, or failed with the question
 // back in the box (Tushar, 16 Oct 2026).
+// #535 (Tushar, 7 Nov 2026): the answer streams (askStream, lib/api.ts). In the pending card's
+// place, StreamingAnswer.tsx shows the real stages, the documents found and each verified
+// sentence as it comes, the thread following it only while the person is at the bottom. When
+// done's reply is in, its card waits for the reveal to finish (or Stop), then settles in the
+// preview's place (AnswerView's `settle`), with no scroll.
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -46,7 +51,7 @@ import { capChatOptions, effectiveOf, taskOf, useAiSettings } from "@/lib/aiSett
 import {
   ApiError,
   FEATURE_OFF,
-  ask,
+  askStream,
   deleteConversation,
   getChatOptions,
   getConversation,
@@ -67,7 +72,7 @@ import {
   STORY_NOTE_CHAT,
   storyStatusText,
 } from "@/lib/storyMatches";
-import type { ChatOptions, ClarifyReply, ConversationSummary, Message } from "@/lib/types";
+import type { ChatOptions, ChatResponse, ClarifyReply, ConversationSummary, Message } from "@/lib/types";
 import {
   answerCardId,
   answerStatusText,
@@ -84,7 +89,7 @@ import { AnswerView } from "./AnswerView";
 import { answerDomId, answersClarify, chosenAfter, openClarify, pickedText } from "./clarify";
 import { ClarifyView } from "./ClarifyView";
 import { ConversationList } from "./ConversationList";
-import { scrollBehavior } from "./hooks";
+import { scrollBehavior, useAskProgress } from "./hooks";
 import {
   ASK_DRAFT,
   answerScrollTop,
@@ -100,7 +105,6 @@ import {
   hasChoices,
   isNearBottom,
   loadPick,
-  STILL_LOOKING_AFTER_MS,
   questionFromSearch,
   savePick,
   settleWaitingDraft,
@@ -124,6 +128,7 @@ import {
 import { ScopePicker } from "./ScopePicker";
 import type { ChosenScope } from "./scope";
 import { storyPlace, storySlot } from "./storySlot";
+import { StreamingAnswer } from "./StreamingAnswer";
 import type { StorySlot, StorySlotEvent } from "./storySlot";
 import { StorySearchView } from "./StorySearchView";
 import type { StorySearchState } from "./StorySearchView";
@@ -142,27 +147,6 @@ function focusComposerOnDesktop(input: HTMLTextAreaElement | null) {
   if (!input) return;
   if (!window.matchMedia("(min-width: 1024px) and (pointer: fine)").matches) return;
   input.focus({ preventScroll: true });
-}
-
-function PendingAnswer() {
-  const [slow, setSlow] = useState(false);
-  useEffect(() => {
-    const timer = window.setTimeout(() => setSlow(true), STILL_LOOKING_AFTER_MS);
-    return () => window.clearTimeout(timer);
-  }, []);
-  return (
-    <div className={styles.answerCard} aria-busy="true">
-      <p className={styles.pendingText}>
-        <span className="spinner" aria-hidden="true" />
-        {slow ? "Still looking. Long registers take a little longer." : "Looking through your documents…"}
-      </p>
-      <div className={styles.skeletonLines} aria-hidden="true">
-        <span className={`skeleton ${styles.skeletonLine}`} />
-        <span className={`skeleton ${styles.skeletonLine}`} />
-        <span className={`skeleton ${styles.skeletonLine}`} />
-      </div>
-    </div>
-  );
 }
 
 /** The tab's own storage, or null where the browser refuses it. */
@@ -277,6 +261,16 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const [searchRequests] = useState(latestOnly);
   const searchAbort = useRef<AbortController | null>(null);
   const asking_ = useRef<InFlight | null>(null); // the question on its way, for Stop
+  // #535: the question whose stream the pending card shows, its progress, done's reply while
+  // the card finishes revealing it, and who waits for it to settle (sendQuestion).
+  const [streaming, setStreaming] = useState<InFlight | null>(() => (waiting ? resumed : null));
+  const progress = useAskProgress(streaming);
+  const [final, setFinal] = useState<ChatResponse | null>(null);
+  const settleWait = useRef<((changed: boolean) => void) | null>(null);
+  // The answers that settled in a streamed card's place: they fade in rather than rise.
+  const [settledIn, setSettledIn] = useState<ReadonlyMap<string, "same" | "changed">>(() => new Map());
+  // A streamed answer just settled: the thread stays where it is.
+  const streamedIn = useRef(false);
   // The drawer is open for the path it was opened on, so any route change closes it.
   const [listOpenOn, setListOpenOn] = useState<string | null>(null);
   const listOpen = listOpenOn !== null && listOpenOn === pathname;
@@ -308,6 +302,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     alive.current = true;
     return () => {
       alive.current = false;
+      settleWait.current?.(false); // nothing waits for a card that is gone
     };
   }, []);
   const threadRef = useRef<HTMLElement>(null);
@@ -494,6 +489,10 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     const thread = threadRef.current;
     const log = logRef.current;
     if (!thread || !log) return;
+    if (streamedIn.current) {
+      streamedIn.current = false; // it took the streamed card's place: nothing to scroll to
+      return;
+    }
     if (jumpToEnd.current) {
       jumpToEnd.current = false;
       const pin = () => {
@@ -524,6 +523,28 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     thread.scrollTo({ top: thread.scrollHeight, behavior: scrollBehavior() });
     nearBottom.current = true;
   }, [pending]);
+
+  /** #535: keep the end of a streaming answer in view, only while the person is at the bottom. */
+  const follow = () => {
+    const thread = threadRef.current;
+    if (!nearBottom.current || !thread) return;
+    thread.scrollTop = thread.scrollHeight;
+  };
+
+  /** #535: hand done's reply to the streamed card; resolves once it has finished revealing it and
+   * settles ("changed": the reply differs from the preview), or at once on Stop (`stop`). */
+  const settled = (reply: ChatResponse, stop: AbortSignal) =>
+    new Promise<"same" | "changed">((resolve) => {
+      const finish = (changed: boolean) => {
+        settleWait.current = null;
+        stop.removeEventListener("abort", skip);
+        resolve(changed ? "changed" : "same");
+      };
+      const skip = () => finish(false);
+      settleWait.current = finish;
+      stop.addEventListener("abort", skip);
+      setFinal(reply);
+    });
 
   const open = async (id: string) => {
     const request = ++openRequest.current;
@@ -623,14 +644,27 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       });
     }
     // Kept outside this screen (askStore.ts), so leaving Ask never drops it.
-    const entry = startAsk(question, activeId, (signal) =>
-      ask(question, activeId ?? undefined, sentScope(asked), choiceBody(chatOptions, answerPick), answering, signal),
+    const entry = startAsk(question, activeId, (signal, onEvent) =>
+      askStream(
+        question,
+        activeId ?? undefined,
+        sentScope(asked),
+        choiceBody(chatOptions, answerPick),
+        answering,
+        signal,
+        onEvent,
+      ),
     );
     asking_.current = entry;
+    setStreaming(entry);
     try {
       const reply = await entry.done;
       if (!alive.current) return true; // the next chat screen shows it
+      const how = await settled(reply, entry.controller.signal);
+      if (!alive.current) return true; // left while it revealed: the next chat screen shows it
       settleAsk(entry);
+      streamedIn.current = true;
+      setSettledIn((current) => new Map(current).set(reply.answer.id, how));
       setMessages((current) => [...current, reply.question, reply.answer]);
       // Only after a tapped choice does focus move, to the reply; typing keeps it in the box.
       if (chose) requestAnimationFrame(() => document.getElementById(answerDomId(reply.answer.id))?.focus());
@@ -660,6 +694,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       return false;
     } finally {
       setPending(null);
+      setFinal(null);
       if (asking_.current === entry) asking_.current = null;
     }
   };
@@ -912,6 +947,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
                           question={questions.get(message.id) ?? null}
                           onAskAll={message === askAllFor ? askAll : undefined}
                           onAskQuestion={busy ? undefined : (text) => void onAsk(text)}
+                          settle={settledIn.get(message.id)}
                         />
                       )}
                     </div>
@@ -925,7 +961,12 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
                     <span className="visually-hidden">You asked: </span>
                     <p className={styles.plain}>{pending}</p>
                   </div>
-                  <PendingAnswer />
+                  <StreamingAnswer
+                    progress={progress}
+                    final={final}
+                    onSettle={(changed) => settleWait.current?.(changed)}
+                    onGrow={follow}
+                  />
                   {place.at === "pending" ? storyCards() : null}
                 </>
               ) : null}
