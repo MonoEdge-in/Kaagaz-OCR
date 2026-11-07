@@ -19,7 +19,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
-from fastapi import BackgroundTasks
 from sqlalchemy import text
 
 from kaagaz.ai.openrouter import ModelGate, OpenRouterClient
@@ -149,6 +148,7 @@ def test_the_events_come_in_order_sources_first_and_only_checked_sentences(
     found = w.stream()
 
     assert names(found) == [
+        "started",
         "stage:understanding",
         "stage:searching",
         "sources",
@@ -175,6 +175,9 @@ def test_the_events_come_in_order_sources_first_and_only_checked_sentences(
         assert streamed == cited
     assert fake.bodies()[-1]["stream"] is True
     assert len(w.conversations()) == 1  # saved as POST /api/chat saves it
+    # started named where it landed: the conversation and the question, before the draft.
+    started, reply = found[0][1], found[-1][1]["reply"]
+    assert started == {"conversation_id": reply["conversation_id"], "question_id": reply["question"]["id"]}
 
 
 def test_done_is_exactly_the_reply_post_api_chat_gives(db: Database, fake: OpenRouterFake) -> None:
@@ -202,6 +205,7 @@ def test_bad_json_is_drafted_once_more_unstreamed_then_its_checked_sentences_and
     found = w.stream()
 
     assert names(found) == [
+        "started",
         "stage:understanding",
         "stage:searching",
         "sources",
@@ -232,9 +236,11 @@ def test_past_the_time_cap_it_says_so_in_plain_words_and_saves_nothing(
     assert w.conversations() == []
 
 
-def test_a_client_that_goes_away_stops_the_answer_and_nothing_half_done_is_saved(
+def test_a_client_that_goes_away_stops_the_events_but_the_answer_is_finished_and_saved(
     db: Database, fake: OpenRouterFake
 ) -> None:
+    """Tushar, 16 Oct 2026: an answer is always finished and saved, even when the asker leaves (or
+    presses Stop); it lands where ``started`` said."""
     w = world(db, fake)
     slow = json_stream(DRAFT, size=3, every=0.05)
     fake.script("completions", slow)
@@ -255,8 +261,7 @@ def test_a_client_that_goes_away_stops_the_answer_and_nothing_half_done_is_saved
     )
 
     async def leave_after_the_first_sentence() -> list[str]:
-        work = functools.partial(ask, AskBody(question=SEARCH), user, background=BackgroundTasks())
-        stream = stream_answer(work, context, cap=30.0)
+        stream = stream_answer(functools.partial(ask, AskBody(question=SEARCH), user), context, cap=30.0)
         seen = []
         async for chunk in stream:
             seen.append(chunk)
@@ -267,10 +272,18 @@ def test_a_client_that_goes_away_stops_the_answer_and_nothing_half_done_is_saved
 
     seen = asyncio.run(leave_after_the_first_sentence())
 
-    assert seen[-1].startswith("event: sentence")
+    assert seen[0].startswith("event: started") and seen[-1].startswith("event: sentence")
+    started = json.loads(seen[0].split("data: ", 1)[1])
     _stopped()
-    assert slow.stream is not None and slow.sent < len(slow.stream)
-    assert w.conversations() == []
+    assert slow.stream is not None and slow.sent == len(slow.stream)  # the model's reply read to its end
+    (saved,) = w.conversations()
+    assert saved["id"] == started["conversation_id"]
+    messages = w.signed.client.get(f"/api/conversations/{started['conversation_id']}").json()["messages"]
+    assert [(m["role"], m["id"] if m["role"] == "user" else None) for m in messages] == [
+        ("user", started["question_id"]),
+        ("assistant", None),
+    ]
+    assert [s["text"] for s in messages[1]["answer"]["sentences"]] == [GOOD, SELLER]
 
 
 def test_another_organisations_documents_never_appear_in_the_stream(
@@ -297,7 +310,7 @@ def test_a_fixed_calculation_sends_its_stages_then_done_with_no_draft(
 
     found = w.stream(HINGLISH)
 
-    assert names(found) == ["stage:understanding", "stage:searching", "done"]
+    assert names(found) == ["started", "stage:understanding", "stage:searching", "done"]
     answer = found[-1][1]["reply"]["answer"]["answer"]
     assert (answer["status"], answer["route"]) == ("answered", "fixed_query")
     assert fake.bodies() == []  # no model call at all
@@ -346,7 +359,7 @@ def test_a_repeated_question_on_the_stream_is_done_at_once_from_its_stored_answe
 
     again = w.stream("  what is the GRAND total of inv-1042? ")
 
-    assert names(again) == ["done"]  # no stage, no draft: the stored answer at once
+    assert names(again) == ["started", "done"]  # no stage, no draft: the stored answer at once
     assert len(fake.bodies()) == 1  # no second model call
     assert again[-1][1]["reply"]["answer"]["answer"] == first[-1][1]["reply"]["answer"]["answer"]
     (line,) = [r.getMessage() for r in caplog.records if r.name == "kaagaz.answering.timing"]

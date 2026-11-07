@@ -335,6 +335,10 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
         raise ApiError(400, "bad_request", "Choose fewer documents or tags.")
 
     history = _history(recent)
+    # Streaming Ask (#535): where the answer will land, named before it is worked out, so a client
+    # that leaves can find it there (``started``; saved below in one transaction, as ever).
+    landing, question_id = conversation_id or str(uuid.uuid4()), str(uuid.uuid4())
+    stream.emit("started", {"conversation_id": landing, "question_id": question_id})
     with usage_scope(
         context.db,
         customer_id=user.customer_id,
@@ -375,7 +379,7 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
         with context.db.customer(user.customer_id) as conn:
             if conversation_id is None:
                 conversation_id = chat_sql.create_conversation(
-                    conn, user.customer_id, user.user_id, short_title(question)
+                    conn, user.customer_id, user.user_id, short_title(question), conversation_id=landing
                 )
             elif chat_sql.get_conversation(conn, user.customer_id, conversation_id, user.user_id) is None:
                 raise ApiError(404, "not_found")
@@ -406,6 +410,7 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
                 answer=None,
                 scope=saved,
                 rewritten_question=answer.get("rewritten_question"),
+                message_id=question_id,
             )
             answered = chat_sql.add_message(
                 conn,
@@ -480,20 +485,19 @@ STREAM_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 @router.post("/chat/stream")
 def ask_stream(body: AskBody, user: User, context: Context) -> StreamingResponse:
     """``POST /api/chat`` streamed (#535): the same body, auth and work, sent as server-sent
-    events (``stream_answer``): ``stage``, ``sources`` and each checked ``sentence`` while the
-    answer is worked out, then ``done`` with exactly the reply ``POST /api/chat`` gives (``ask``
-    itself, saved the same way), or ``error`` with its code and words. The memory's background
-    task runs after the stream, as after ``ask``'s reply."""
-    background = BackgroundTasks()
+    events (``stream_answer``): ``started`` (where the answer will land), ``stage``, ``sources``
+    and each checked ``sentence`` while the answer is worked out, then ``done`` with exactly the
+    reply ``POST /api/chat`` gives (``ask`` itself, saved the same way), or ``error`` with its
+    code and words. A client that leaves stops the events only: the answer is finished and saved
+    (Tushar, 16 Oct 2026), and the memory's background task runs after it, as after ``ask``'s."""
     return StreamingResponse(
         stream_answer(
-            functools.partial(ask, body, user, background=background),
+            functools.partial(ask, body, user),
             context,
             cap=context.settings.answer_stream_max_seconds,
         ),
         media_type="text/event-stream",
         headers=STREAM_HEADERS,
-        background=background,
     )
 
 
@@ -527,13 +531,14 @@ async def stream_answer(
     cap: float,
     heartbeat: float | None = None,
 ) -> AsyncGenerator[str]:
-    """#535: ``work(context=...)`` (``ask``) on a thread of its own, with ``stream.EVENTS`` set so
-    the answer sends its events; each event as it comes, ": ping" after ``heartbeat`` seconds
-    (HEARTBEAT_SECONDS) with none, then ``done`` with its reply or ``error`` with its code and
-    words (an ``ApiError``'s, else what the app's handlers would send). Past ``cap`` seconds:
-    ``error`` "answer_timeout" (TOO_SLOW). The answer is stopped, its model stream closed and
-    nothing saved, once the stream ends before ``done`` (the client went away, or the cap):
-    ``Events.cancel``; ``work``'s thread then ends at its next check."""
+    """#535: ``work(context=..., background=...)`` (``ask``) on a thread of its own, with
+    ``stream.EVENTS`` set so the answer sends its events; each event as it comes, ": ping" after
+    ``heartbeat`` seconds (HEARTBEAT_SECONDS) with none, then ``done`` with its reply or ``error``
+    with its code and words (an ``ApiError``'s, else what the app's handlers would send). Past
+    ``cap`` seconds: ``error`` "answer_timeout" (TOO_SLOW), and the answer is stopped
+    (``Events.cancel``: its model stream closed at the next check, nothing saved). A client that
+    goes away before ``done`` only stops the events (``Events.detach``): the answer is finished
+    and saved on its thread, as ``POST /api/chat``'s is (Tushar, 16 Oct 2026)."""
     loop = asyncio.get_running_loop()
     inbox: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
 
@@ -566,7 +571,7 @@ async def stream_answer(
             if name in ("done", "error"):
                 return
     finally:
-        events.cancel()  # after done: nothing is left to stop
+        events.detach()  # the client left (or the stream ended): no more events, the answer goes on
 
 
 def _work(
@@ -575,12 +580,17 @@ def _work(
     events: Events,
     post: Callable[[str, dict[str, Any]], None],
 ) -> None:
-    """``stream_answer``'s thread: the answer, then ``done`` or ``error``; nothing once stopped."""
+    """``stream_answer``'s thread: the answer, then ``done`` or ``error``, then its background
+    tasks (the memory, ``ask``'s), which run here so they run whether the client stayed or not;
+    nothing once stopped."""
     token = stream.EVENTS.set(events)
+    background = BackgroundTasks()
     try:
-        reply = work(context=context)
+        reply = work(context=context, background=background)
         events.check()
         post("done", {"reply": jsonable_encoder(reply)})
+        for task in background.tasks:
+            task.func(*task.args, **task.kwargs)  # _remember logs its own failures
     except StreamCancelled:
         return  # stopped: the stream has ended already
     except ApiError as error:

@@ -9,9 +9,10 @@ final check); the full answer, worked out and saved as ``POST /api/chat`` does, 
 ``Events``: one streamed answer's outlet, set in ``EVENTS`` for the thread working it out
 (routers/chat.py). ``emit`` sends an event when there is one, and does nothing otherwise, so
 ``POST /api/chat``, Home's ready answers and every test without it answer exactly as before.
-``Events.cancel`` (the client went away, or ANSWER_STREAM_MAX_SECONDS passed) makes the next
-``emit`` or piece of the model's text raise ``StreamCancelled``: the model's stream is closed
-and the answer is never saved.
+``Events.cancel`` (ANSWER_STREAM_MAX_SECONDS passed) makes the next ``emit`` or piece of the
+model's text raise ``StreamCancelled``: the model's stream is closed and the answer is never
+saved. ``Events.detach`` (the client went away) only stops the events: the answer is finished
+and saved, as ``POST /api/chat``'s is (Tushar, 16 Oct 2026).
 
 ``draft_streamed``: ``draft.model_draft`` with the model's reply streamed
 (``OpenRouterClient.chat_json_stream``); ``SentenceParser`` reads the draft's ``sentences``
@@ -51,16 +52,22 @@ class StreamCancelled(Exception):
 
 class Events:
     """One streamed answer's outlet: ``post(name, data)`` hands an event to the response. A
-    stage is sent once, when it changes. Thread-safe: ``cancel`` comes from the response's
-    side, everything else from the answer's thread."""
+    stage is sent once, when it changes. Thread-safe: ``cancel`` and ``detach`` come from the
+    response's side, everything else from the answer's thread."""
 
     def __init__(self, post: Callable[[str, dict[str, Any]], None]) -> None:
         self._post = post
         self._cancelled = threading.Event()
+        self._detached = threading.Event()
         self._stage: str | None = None
 
     def cancel(self) -> None:
+        """Stop the answer: nothing more is worked out, sent or saved."""
         self._cancelled.set()
+
+    def detach(self) -> None:
+        """Stop the events only: the client has gone; the answer is finished and saved."""
+        self._detached.set()
 
     def check(self) -> None:
         """``StreamCancelled`` once cancelled."""
@@ -69,6 +76,8 @@ class Events:
 
     def send(self, name: str, data: dict[str, Any]) -> None:
         self.check()
+        if self._detached.is_set():
+            return
         if name == "stage":
             if data.get("stage") == self._stage:
                 return

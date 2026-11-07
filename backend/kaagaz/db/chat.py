@@ -56,12 +56,19 @@ def document_questions(
     return conn.execute(_DOCUMENT_QUESTIONS, params).mappings().all()
 
 
-def create_conversation(conn: Connection, customer_id: str, user_id: str, title: str) -> str:
-    conversation_id: object = conn.execute(
-        text("INSERT INTO conversations (customer_id, user_id, title) VALUES (:c, :u, :t) RETURNING id"),
-        {"c": customer_id, "u": user_id, "t": title},
+def create_conversation(
+    conn: Connection, customer_id: str, user_id: str, title: str, *, conversation_id: str | None = None
+) -> str:
+    """A new conversation; ``conversation_id``: the id named for it before (streaming Ask's
+    ``started``, #535), else a new one."""
+    made: object = conn.execute(
+        text(
+            "INSERT INTO conversations (id, customer_id, user_id, title)"
+            " VALUES (COALESCE(CAST(:id AS uuid), gen_random_uuid()), :c, :u, :t) RETURNING id"
+        ),
+        {"id": conversation_id, "c": customer_id, "u": user_id, "t": title},
     ).scalar_one()
-    return str(conversation_id)
+    return str(made)
 
 
 def get_conversation(
@@ -186,15 +193,18 @@ def add_message(
     answer: Mapping[str, Any] | None,
     scope: Mapping[str, Any] | None = None,
     rewritten_question: str | None = None,
+    message_id: str | None = None,
 ) -> RowMapping:
     """Store one message. ``answer`` is set for assistant messages only (a table check);
-    ``scope`` for a question asked inside one, ``rewritten_question`` for a follow-up (H1)."""
+    ``scope`` for a question asked inside one, ``rewritten_question`` for a follow-up (H1);
+    ``message_id`` the id named for it before (streaming Ask's ``started``, #535), else a new one."""
     return (
         conn.execute(
             text(
-                "INSERT INTO messages (customer_id, conversation_id, role, text, answer, scope,"
+                "INSERT INTO messages (id, customer_id, conversation_id, role, text, answer, scope,"
                 " rewritten_question)"
-                " VALUES (:c, :conv, :role, :text, CAST(:answer AS jsonb), CAST(:scope AS jsonb), :rq)"
+                " VALUES (COALESCE(CAST(:id AS uuid), gen_random_uuid()), :c, :conv, :role, :text,"
+                " CAST(:answer AS jsonb), CAST(:scope AS jsonb), :rq)"
                 " RETURNING id, role, text, answer, scope, created_at"
             ),
             {
@@ -205,6 +215,7 @@ def add_message(
                 "answer": None if answer is None else json.dumps(answer),
                 "scope": None if scope is None else json.dumps(scope),
                 "rq": rewritten_question,
+                "id": message_id,
             },
         )
         .mappings()
