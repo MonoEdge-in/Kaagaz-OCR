@@ -27,6 +27,7 @@ from tests.db_support import insert_tag, tag_document
 from tests.settings_factory import make_settings
 from tests.test_answering_golden import QUESTION as GOLDEN_QUESTION
 from tests.test_answering_golden import A, FakeModel, service
+from tests.test_api_chat import _cited_answer
 from tests.test_api_support import CSRF, Api, Signed, answer_json
 from tests.test_operator_auth_db import _owner
 from tests.test_search_db import RECIPE, add_pieces, axis
@@ -311,3 +312,46 @@ def test_the_stored_key_is_never_shown(db: Database) -> None:
     assert len(stored["repeat_key"]) == 64  # a sha256, never the question or the inputs
     shown = signed.client.get(f"/api/conversations/{asked['conversation_id']}").json()
     assert "repeat_key" not in str(shown) and "repeat_key" not in str(asked)
+
+
+def _trash(db: Database, signed: Signed, document: str) -> None:
+    with db.customer(signed.customer_id) as conn:
+        conn.execute(
+            text("UPDATE documents SET deleted_at = now(), deleted_by = :u WHERE id = :d"),
+            {"u": signed.user_id, "d": document},
+        )
+
+
+def test_a_cited_document_put_in_trash_stops_the_repeat_even_when_no_time_moves(db: Database) -> None:
+    """A10 (stability pass, 7 Nov 2026): the stamp counts the documents out of Trash too. Here a
+    newer change elsewhere hides the one Trash makes (a transaction that began earlier, or a clock)."""
+    api, signed, document = library(db)
+    api.answers.reply = {**_cited_answer(document), "model_used": True}
+    later = api.add_document(signed.customer_id, name="later.pdf")
+    with db.engine.begin() as conn:  # as the table's owner: a time no change of today moves past
+        conn.execute(text("ALTER TABLE documents DISABLE TRIGGER documents_touch"))
+        conn.execute(
+            text("UPDATE documents SET updated_at = now() + interval '1 day' WHERE id = :d"), {"d": later}
+        )
+        conn.execute(text("ALTER TABLE documents ENABLE TRIGGER documents_touch"))
+    ask(signed)
+    _trash(db, signed, document)
+    ask(signed)
+    assert len(api.answers.asked) == 2  # answered again, never the stored copy citing it
+
+
+def test_a_stored_copy_shows_a_source_now_in_trash_as_in_trash(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A10: a copy is shown as a conversation shows its saved answers, so a source that went to
+    Trash between the check and the copy (here: a stamp that did not move) shows as in Trash."""
+    api, signed, document = library(db)
+    api.answers.reply = {**_cited_answer(document), "model_used": True}
+    monkeypatch.setattr(ready, "stamp", lambda conn, customer_id: "unchanged")
+    first = ask(signed)
+    _trash(db, signed, document)
+    copy = ask(signed)
+    assert len(api.answers.asked) == 1  # the stored copy
+    assert first["answer"]["answer"]["citations"][0]["snippet"] == "Total 100"
+    [citation] = copy["answer"]["answer"]["citations"]
+    assert (citation["source_state"], citation["snippet"]) == ("in_trash", None)

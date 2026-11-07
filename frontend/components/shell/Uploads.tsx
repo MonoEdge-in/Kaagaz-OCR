@@ -49,6 +49,8 @@ interface SharedUploads {
   folders: FolderPicking;
   /** #536: goes up whenever a folder may be new on the server, for each folder list to ask again. */
   foldersChanged: number;
+  /** B4: a screen made, renamed, moved, deleted or restored folders: foldersChanged goes up. */
+  foldersEdited(): void;
 }
 
 /** The step before a folder upload starts: a dropped folder still being read, or read. */
@@ -190,7 +192,8 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
   }
 
   // useUploads gives a new queue object each render, so this is new each render too.
-  const shared: SharedUploads = { uploads, trayOpen, setTrayOpen, listen, folders: folderPicking, foldersChanged };
+  const foldersEdited = () => setFolderUploadsChanged((n) => n + 1);
+  const shared: SharedUploads = { uploads, trayOpen, setTrayOpen, listen, folders: folderPicking, foldersChanged, foldersEdited };
 
   function onChoose(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []);

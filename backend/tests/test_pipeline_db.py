@@ -26,12 +26,13 @@ from kaagaz.db.documents import PgDocuments, mark_for_reprocess
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.db.runs import PgRuns
-from kaagaz.db.trash import lock_family
+from kaagaz.db.trash import lock_family, restore_document
 from kaagaz.extraction.card import CARD_PROMPT_HASH
 from kaagaz.extraction.understanding import ModelBudget
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.ingestion.service import UploadService
+from kaagaz.jobs.revive import REQUEUED, revive_stuck
 from kaagaz.jobs.worker import JobFailed
 from kaagaz.pipeline import DocumentProcessor, ReadingSocket
 from kaagaz.preparing.pages import prepare_pages
@@ -135,6 +136,38 @@ def test_a_broken_file_is_marked_failed_with_its_code(db: Database) -> None:
         "failed",
         "malformed_csv",
     )
+
+
+def test_a_document_in_trash_is_acknowledged_unread_and_read_once_restored(db: Database) -> None:
+    """A8 (stability pass, 7 Nov 2026): a job for a document someone put in Trash reads nothing
+    and leaves its status alone; once restored, the stuck sweep queues it again and it is read."""
+    customer, admin = new_customer(db)
+    upload, processor, _ = setup(db)
+    doc = upload.accept(customer, io.BytesIO(CSV), display_name=CSV_NAME).document_id
+    with db.customer(customer) as conn:
+        conn.execute(
+            text(
+                "UPDATE documents SET deleted_at = now(), deleted_by = :u WHERE customer_id = :c AND id = :d"
+            ),
+            {"u": admin, "c": customer, "d": doc},
+        )
+
+    processor(Job(customer, doc), lambda: None)  # acknowledged: no error, so no retry
+
+    assert one(db, customer, "SELECT status, page_count FROM documents WHERE id = :d", doc) == (
+        "received",
+        None,
+    )
+    assert one(db, customer, "SELECT count(*) FROM processing_runs WHERE document_id = :d", doc) == (0,)
+    with db.customer(customer) as conn:
+        assert restore_document(conn, customer, doc)
+    sent: list[Job] = []
+    done = revive_stuck(
+        db, lambda job, tries: sent.append(job), lambda c: c != customer, stale_seconds=0, max_attempts=5
+    )
+    assert [(job.document_id, outcome) for job, outcome in done] == [(doc, REQUEUED)]
+    processor(sent[0], lambda: None)
+    assert one(db, customer, "SELECT status FROM documents WHERE id = :d", doc) == ("ready",)
 
 
 def test_an_infected_file_is_rejected_with_its_reason_kept(db: Database) -> None:

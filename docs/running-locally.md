@@ -305,7 +305,7 @@ the old key 35 days to read the backups made before.
    ```
    sudo mkdir -p /etc/kaagaz && sudo touch /etc/kaagaz/no-idle-stop
    sudo cp ~/kaagaz/infra/ec2/*.service ~/kaagaz/infra/ec2/*.timer /etc/systemd/system/
-   sudo systemctl daemon-reload && sudo systemctl enable --now kaagaz-deploy.timer kaagaz-pgdump.timer kaagaz-idle.timer kaagaz-disk.timer
+   sudo systemctl daemon-reload && sudo systemctl enable --now kaagaz-deploy.timer kaagaz-pgdump.timer kaagaz-idle.timer kaagaz-disk.timer kaagaz-containers.timer
    ```
 
 5. The first deploy (several minutes):

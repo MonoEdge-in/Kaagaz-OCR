@@ -334,7 +334,9 @@ def test_trash_waiting_behind_reprocess_leaves_it_in_trash_after_the_job(db: Dat
                 ),
                 {"c": c, "d": doc},
             ).one()
-        assert tuple(row) == ("ready", True)  # read again, and still in Trash
+        # Changed on purpose (A8, 7 Nov 2026): a job for a document in Trash reads nothing; it is
+        # read once restored (tests/test_pipeline_db.py).
+        assert tuple(row) == ("received", True)
     finally:
         trash_db.engine.dispose()
 

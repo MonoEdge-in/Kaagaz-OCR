@@ -344,7 +344,8 @@ def list_documents(
     }
     chosen: list[str] = []
     if top_level_only:
-        chosen.append(_TOP_LEVEL)
+        # A11: in Trash, a file that went with its folder has no folder_id, yet is not loose.
+        chosen.append(_TOP_LEVEL + (_LOOSE_IN_TRASH if trashed else ""))
     elif folder_ids is not None:
         chosen.append(_IN_FOLDERS)
         params["folders"] = list(folder_ids)

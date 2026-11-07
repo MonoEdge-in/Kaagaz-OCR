@@ -157,16 +157,16 @@ describe("Delete forever, granted (council 4 Oct 2026)", () => {
 
   it("asks first, says it covers all of Trash, and shows the chip and the audit words", () => {
     expect(allowForeverQuestion("Ravi")).toBe(
-      "Let Ravi delete documents in Trash forever? This covers every document in Trash, " +
+      "Let Ravi delete documents in Trash for good? This covers every document in Trash, " +
         "not only theirs, and can't be undone. They will type their password each time.",
     );
     expect(userStatus(user({ can_delete_forever: true }), NOW).map((part) => part.text)).toEqual([
       "Active",
       "Two-step: Off",
-      "Can delete forever",
+      "Can delete for good",
     ]);
-    expect(describeAction("user.delete_forever_on")).toBe("Allowed a user to delete forever");
-    expect(describeAction("user.delete_forever_off")).toBe("Stopped a user deleting forever");
+    expect(describeAction("user.delete_forever_on")).toBe("Allowed a user to delete for good");
+    expect(describeAction("user.delete_forever_off")).toBe("Stopped a user deleting for good");
   });
 });
 

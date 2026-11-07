@@ -75,7 +75,8 @@ _TYPES = text(
     "SELECT doc_type FROM documents WHERE customer_id = :c AND is_current AND deleted_at IS NULL"
     " AND doc_type IS NOT NULL GROUP BY doc_type ORDER BY count(*) DESC, doc_type"
 )
-# What a ready answer was made from: the documents and their values (how many, newest change),
+# What a ready answer was made from: the documents (how many, how many out of Trash, A10: a change
+# Trash makes is never hidden by a newer time elsewhere) and their values (how many, newest change),
 # and the word and line changes that change text (#527: a correction may change only a search
 # piece; its Undo only ``undone_at``; a Confirm or Ensemble's resolve changes nothing), and the
 # pieces still without a vector and the vectors' recipes (#535: a vector filled in by the worker
@@ -83,10 +84,11 @@ _TYPES = text(
 # shortcut: three scans of one customer's rows, fine at today's thousands; an index on
 # (customer_id, updated_at) or a change counter when a customer holds millions.
 _STAMP = text(
-    "SELECT (SELECT count(*) || '/' || coalesce(max(updated_at)::text, '') FROM documents"
-    " WHERE customer_id = :c) || '|' || (SELECT count(*) || '/' || coalesce(max(updated_at)::text, '')"
-    " FROM extracted_values WHERE customer_id = :c) || '|' || (SELECT count(*) || '/'"
-    " || coalesce(max(greatest(created_at, undone_at))::text, '') FROM word_changes WHERE customer_id = :c"
+    "SELECT (SELECT count(*) || '/' || count(*) FILTER (WHERE deleted_at IS NULL) || '/'"
+    " || coalesce(max(updated_at)::text, '') FROM documents WHERE customer_id = :c) || '|' || (SELECT"
+    " count(*) || '/' || coalesce(max(updated_at)::text, '') FROM extracted_values WHERE customer_id = :c)"
+    " || '|' || (SELECT count(*) || '/' || coalesce(max(greatest(created_at, undone_at))::text, '')"
+    " FROM word_changes WHERE customer_id = :c"
     " AND before_text <> after_text) || '|' || (SELECT count(*) FILTER (WHERE embedding IS NULL) || '/'"
     " || coalesce(string_agg(DISTINCT embedding_model, ','), '') FROM pieces WHERE customer_id = :c)"
 )

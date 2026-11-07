@@ -311,6 +311,11 @@ class ZipUnpacker:
     ) -> int:
         """One file (step 5); the bytes it unpacked to."""
         customer_id = job.customer_id
+        with unavailable(), self._db.customer(customer_id) as conn:
+            made = items_sql.own_document(conn, customer_id, row.id, user_id=uploader)
+        if made is not None:  # A14: stored by a run that stopped before it was marked: its own
+            self._finish(job, uploader, row, made, duplicate=False)
+            return 0
 
         def limit_for(sniffed: str | None) -> int | None:
             return policy.limit_for(sniffed) if sniffed in policy.allowed_types else None
@@ -340,26 +345,27 @@ class ZipUnpacker:
         except UnknownFolder:  # deleted since it was planned
             self._fail(customer_id, row.id, "folder_gone")
             return len(data)
-        with unavailable(), self._db.customer(customer_id) as conn:
+        self._finish(job, uploader, row, result.document_id, duplicate=result.duplicate)
+        return len(data)
+
+    def _finish(
+        self, job: Job, uploader: str, row: items_sql.ItemRow, document_id: str, *, duplicate: bool
+    ) -> None:
+        """The item stored (audited as an upload) or a duplicate, in one transaction."""
+        with unavailable(), self._db.customer(job.customer_id) as conn:
             items_sql.finish_item(
-                conn,
-                customer_id,
-                row.id,
-                document_id=result.document_id,
-                duplicate=result.duplicate,
-                user_id=uploader,
+                conn, job.customer_id, row.id, document_id=document_id, duplicate=duplicate, user_id=uploader
             )
-            if not result.duplicate:
+            if not duplicate:
                 audit.record(
                     conn,
-                    customer_id,
+                    job.customer_id,
                     actor_user_id=uploader,
                     action="document.upload",
                     target_type="document",
-                    target_id=result.document_id,
+                    target_id=document_id,
                     details={"zip_document_id": job.document_id},
                 )
-        return len(data)
 
     def _refusal(self, data: bytes, name: str, policy: UploadPolicy) -> str | None:
         """The file's own virus check, then its kind's limit (told after the scan); None: clean

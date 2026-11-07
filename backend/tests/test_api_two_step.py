@@ -166,7 +166,7 @@ def test_a_member_with_codes_types_the_code_and_wrong_codes_lead_to_the_lock(db:
 
     assert right.status_code == 401  # locked
     state = api.user_state(customer_id, member.user_id)
-    assert state["locked_until"] is not None
+    assert state["locked_until"] is None  # changed on purpose (A2): this address's lock, in memory
     assert "auth.locked" in api.audit_actions(customer_id)
     reasons = {details.get("reason") for action, _, _, details in api.audit_rows(customer_id)}
     assert {"code_required", "wrong_code"} <= reasons

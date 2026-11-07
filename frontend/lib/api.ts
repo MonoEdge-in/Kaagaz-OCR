@@ -868,8 +868,29 @@ export const getTrashedFolder = (id: string) =>
   request<TrashedFolderContents>("GET", `/documents/trash/folders/${id}`);
 export const restoreTrashedFolder = (id: string) =>
   request<FolderRestored>("POST", `/documents/trash/folders/${id}/restore`);
-export const deleteTrashedFolderForever = (id: string) =>
-  request<void>("DELETE", `/documents/trash/folders/${id}/permanent`);
+/** Replies in a row that may leave the count where it was (another tab deleting the same folder)
+ * before deleteTrashedFolderForever stops asking. */
+const STUCK_REPLIES = 3;
+
+/**
+ * B18 (the backend's A12): a folder in Trash is deleted for good a part at a time. While files
+ * remain the server says 202 {remaining}; this asks again, telling `onLeft` how many are left,
+ * until its 204. A count that stops going down for STUCK_REPLIES replies stops it, as an error,
+ * so a stuck server is never asked for ever.
+ */
+export async function deleteTrashedFolderForever(id: string, onLeft?: (remaining: number) => void): Promise<void> {
+  let left = Number.POSITIVE_INFINITY;
+  let stuck = 0;
+  for (;;) {
+    const reply = await request<{ remaining?: unknown } | null | undefined>("DELETE", `/documents/trash/folders/${id}/permanent`);
+    if (reply === undefined) return; // 204: all gone
+    const remaining = typeof reply?.remaining === "number" ? reply.remaining : left; // no count: no progress
+    stuck = remaining < left ? 0 : stuck + 1;
+    left = remaining;
+    if (Number.isFinite(left)) onLeft?.(left);
+    if (stuck >= STUCK_REPLIES) throw new ApiError(409, "no_progress", "Deleting made no progress. Try again in a minute.");
+  }
+}
 export const listTags = () => request<{ items: Tag[] }>("GET", "/tags");
 export const createTag = (name: string) => request<Tag>("POST", "/tags", { name });
 
@@ -1085,6 +1106,20 @@ export async function savedAnswer(landing: Landing, signal?: AbortSignal): Promi
 }
 
 /**
+ * A random version 4 uuid. crypto.randomUUID exists only in a secure context (https or
+ * localhost); elsewhere (a server reached over plain http) it is built from getRandomValues,
+ * which every browser has (B15).
+ */
+export function randomId(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40; // version 4
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80; // the RFC 4122 variant
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/**
  * #535: ask with the answer streamed (POST /chat/stream, the same body and auth as ask). Each
  * real stage, the sources found and each verified sentence go to `onEvent` as they come; the
  * reply is `done`'s, the same as /chat's. The question's id is chosen here (a uuid) and sent
@@ -1104,7 +1139,7 @@ export async function askStream(
   signal: AbortSignal | undefined,
   onEvent: (event: StreamEvent) => void,
 ): Promise<ChatResponse> {
-  const body = chatBody(question, conversationId, scope, choice, reply, crypto.randomUUID());
+  const body = chatBody(question, conversationId, scope, choice, reply, randomId());
   try {
     return await streamChat(body, signal, onEvent);
   } catch (caught) {

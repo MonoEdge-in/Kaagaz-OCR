@@ -150,7 +150,7 @@ describe("the documents grid's cards (issue 452)", () => {
     const html = renderToStaticMarkup(createElement(DocumentsGrid, { items: [doc({ owner: { id: "u-v", name: owner } })], label: "Documents" }));
     expect(html).toContain(`title="${owner}"`);
     expect(html).toMatch(/<span title="Land record">Land record<\/span><\/span>/); // the facts line's last child
-    expect(html).toContain('title="For the people who work on it.'); // the chip's own description (LabelChip)
+    expect(html).toContain('title="A label for sensitive papers.'); // the chip's own description (LabelChip)
   });
 });
 

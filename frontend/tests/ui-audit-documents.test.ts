@@ -208,7 +208,7 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
 
   it("D9: heads the select column with Select all; the bar shows only for a selection, stuck below", () => {
     const head = table.slice(table.indexOf("<thead"), table.indexOf("</thead>"));
-    expect(head).toContain('allBox("Select all visible documents")');
+    expect(head).toContain('allBox("Select all visible")');
     expect(table.indexOf("</table>")).toBeLessThan(table.indexOf("className={styles.selectionBar}"));
     expect(docs).toMatch(/\.selectionBar \{[^}]*position:\s*sticky;\s*bottom:\s*0;/);
     expect(docs).toMatch(/@container docs-list \(min-width: 36rem\)[\s\S]*?\.selectionBar\[data-idle\] \{\s*display:\s*none;/);
@@ -284,7 +284,7 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
   it("shows Uploaded as one short line, the exact date in its title and read out", () => {
     const now = Date.parse("2026-10-16T12:00:00Z");
     const before = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
-    expect(shortWhen(before(0), now)).toBe("now");
+    expect(shortWhen(before(0), now)).toBe("Just now");
     expect(shortWhen(before(5), now)).toBe("5m ago");
     expect(shortWhen(before(120), now)).toBe("2h ago");
     expect(shortWhen(before(60 * 26), now)).toBe("1d ago");

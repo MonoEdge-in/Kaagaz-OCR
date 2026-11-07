@@ -503,9 +503,36 @@ def test_the_site_wide_callback_limit_counts_only_callbacks_with_the_right_state
         )
         assert _error(reply) == "expired"
 
+    cancelled = api.client()  # A1: a callback with no code to exchange is not counted either
+    state = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(_start(cancelled)).query))["state"]
+    reply = cancelled.get(
+        "/api/auth/oidc/google/callback",
+        params={"state": state, "error": "access_denied"},
+        follow_redirects=False,
+    )
+    assert _error(reply) == "cancelled"
+
     assert _sign_in_at_google(api, google, api.client(), subject).headers["location"] == "/documents"
     busy = _sign_in_at_google(api, google, api.client(), subject)
     assert _error(busy) == "busy"  # a redirect the sign-in page explains, never raw 429 JSON
+
+
+def test_callbacks_are_limited_per_visitor_well_below_the_site(
+    db: Database, google: FakeGoogle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A1 (stability pass, 7 Nov 2026): 30 an hour a visitor address; the site's cap is 5x that of
+    old, so one visitor cannot use up everyone's sign-ins."""
+    assert (oidc_router.CALLBACKS_PER_HOUR_ADDRESS, oidc_router.CALLBACKS_PER_HOUR) == (30, 3000)
+    monkeypatch.setattr(oidc_router, "callback_address_limits", RateLimiter(1, window_seconds=3600))
+    api = _api(db)
+    customer_id, _ = api.customer()
+    member_id, _ = api.add_user(customer_id, "member")
+    subject = _connect(api, customer_id, member_id)
+    first, second = ("203.0.113.7", 50000), ("198.51.100.9", 50000)
+    assert _sign_in_at_google(api, google, TestClient(api.app, client=first), subject).status_code == 303
+    assert _error(_sign_in_at_google(api, google, TestClient(api.app, client=first), subject)) == "busy"
+    home = _sign_in_at_google(api, google, TestClient(api.app, client=second), subject)
+    assert home.headers["location"] == "/documents"
 
 
 def test_callback_has_no_referrer_header(db: Database, google: FakeGoogle) -> None:

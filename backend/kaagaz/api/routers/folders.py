@@ -300,14 +300,22 @@ def restore_trashed_folder(folder_id: uuid.UUID, user: User, context: Context) -
     }
 
 
+# A12 (stability pass, 7 Nov 2026): the files one delete forever request deletes at most.
+FOREVER_FAMILIES = 200
+
+
 @router.delete("/documents/trash/folders/{folder_id}/permanent", status_code=204)
 def delete_trashed_folder_forever(folder_id: uuid.UUID, user: CanDeleteForever, context: Context) -> Response:
     """Delete a folder in Trash for good: every file that went with it (rows and files, every
     version), one family per transaction as the purge does, so a storage failure part way keeps
     every other file whole in Trash and a retry goes on; then its folders, once none of their
-    files is left. Delete forever's own rule (``require_delete_forever``), and its audit marks
-    (``by_grant``, ``by_password``); a run stopped part way is audited with ``finished: false``
-    and the files it deleted. Another customer's is 404."""
+    files is left. At most FOREVER_FAMILIES files a request (A12): while more are left the reply
+    is 202 ``{remaining}`` and the client asks again; the last part is 204. Two at once are safe:
+    a family deleted by the other is skipped, and the folders go once, under the tree lock.
+    Delete forever's own rule (``require_delete_forever``), and its audit marks (``by_grant``,
+    ``by_password``); each request writes one row with the files it deleted: ``finished: false``
+    while files are left (or it stopped part way), the folders too on the last. Another
+    customer's is 404."""
     target, customer_id = str(folder_id), user.customer_id
     with context.db.customer(customer_id) as conn:
         found = trashed_sql.families_in(conn, customer_id, target)
@@ -321,9 +329,21 @@ def delete_trashed_folder_forever(folder_id: uuid.UUID, user: CanDeleteForever, 
         marks["by_password"] = True
     deleted = 0
     try:
-        for family in families:
+        for family in families[:FOREVER_FAMILIES]:
             with context.db.customer(customer_id) as conn:
                 deleted += trashed_sql.delete_family(conn, context.storage, customer_id, family)
+        if len(families) > FOREVER_FAMILIES:
+            with context.db.customer(customer_id) as conn:
+                left = trashed_sql.families_in(conn, customer_id, target)
+            remaining = 0 if left is None else len(left[1])
+            # Fewer left (this part, or another request at once): ask again. None gone at all
+            # (never seen, but never a 202 for ever): drop_folder below says folder_not_emptied.
+            if 0 < remaining < len(families):
+                if deleted:
+                    with context.db.customer(customer_id) as conn:
+                        part = {"trash_id": trash_id, "files": deleted, "finished": False, **marks}
+                        _audit(conn, user, "folder.delete_forever", target, part)
+                return JSONResponse({"remaining": remaining}, status_code=202)
         with _refused(), context.db.customer(customer_id) as conn:
             gone = trashed_sql.drop_folder(conn, customer_id, target, files=deleted)
             details = {"trash_id": trash_id, "folders": gone.folders, "files": deleted, **marks}

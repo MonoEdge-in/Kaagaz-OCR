@@ -22,7 +22,9 @@ import httpx2 as httpx
 import pytest
 from sqlalchemy import event, text
 
+from kaagaz.api.routers import folders as folders_router
 from kaagaz.db import folders as folders_sql
+from kaagaz.db import trashed_folders as trashed_folders_sql
 from kaagaz.db.engine import Database
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.jobs.purge import _purge_trash_of
@@ -725,3 +727,116 @@ def test_a_search_in_trash_finds_files_inside_its_folders(db: Database) -> None:
     found = _loose(admin, q="invoice")
     assert {t["old_file"], t["bill"][0], t["alone"]} <= set(found)
     assert admin.client.get(f"/api/documents?trashed_folder_id={t['year']}").status_code == 400
+
+
+def test_trash_at_the_top_level_with_a_filter_never_shows_a_trashed_folder_s_files_as_loose(
+    db: Database,
+) -> None:
+    """A11 (stability pass, 7 Nov 2026): a file that went to Trash with its folder has no folder
+    of its own any more, but it is not a loose file at the top level: it is inside that folder."""
+    api = Api(db)
+    admin = api.new_admin()
+    t = _tree(api, admin)
+    _trash(admin, t["year"])
+
+    assert _loose(admin, folder_id="root") == [t["alone"]]
+    assert _loose(admin, folder_id="root", detected_type="pdf") == [t["alone"]]
+
+
+def test_delete_forever_goes_in_parts_of_200_saying_how_many_are_left(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A12 (stability pass, 7 Nov 2026): at most FOREVER_FAMILIES files a request, then 202
+    ``{remaining}``; the screen asks again until the 204. Each part writes its own audit row:
+    ``finished: false`` until the last, which also counts the folders."""
+    assert folders_router.FOREVER_FAMILIES == 200
+    monkeypatch.setattr(folders_router, "FOREVER_FAMILIES", 2)
+    api = Api(db)
+    admin = api.new_admin()
+    c = admin.customer_id
+    folder = api.add_folder(c, admin.user_id, "Folder")
+    inside = api.add_folder(c, admin.user_id, "Inside", folder)
+    files = [api.add_document(c, uploaded_by=admin.user_id, folder_id=f) for f in (folder, folder, inside)]
+    _family(api, admin, inside)
+    _trash(admin, folder)
+    trash_id = next(iter(_trashed(db, c).values()))[2]
+
+    first = _forever(admin, folder)
+    assert (first.status_code, first.json()) == (202, {"remaining": 2})
+    assert _documents(db, c) and set(_trashed(db, c)) == {folder, inside}
+    last = _forever(admin, folder)
+    assert last.status_code == 204, last.text
+    assert _documents(db, c) == {} and _trashed(db, c) == {}
+    assert not any(api.storage.has(c, document) for document in files)
+    audit = [row[3] for row in api.audit_rows(c) if row[0] == "folder.delete_forever"]
+    assert audit == [
+        {"trash_id": trash_id, "files": 2, "finished": False},
+        {"trash_id": trash_id, "folders": 1, "files": 2},
+    ]
+
+
+def test_two_deletes_forever_of_one_folder_at_once_finish_it_once(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A12: two browsers (or a double click) delete the same folder in parts at the same time."""
+    monkeypatch.setattr(folders_router, "FOREVER_FAMILIES", 2)
+    api = Api(db)
+    admin = api.new_admin()
+    c = admin.customer_id
+    folder = api.add_folder(c, admin.user_id, "Folder")
+    files = [api.add_document(c, uploaded_by=admin.user_id, folder_id=folder) for _ in range(5)]
+    _trash(admin, folder)
+    replies: list[int] = []
+
+    def until_done() -> None:
+        while True:
+            reply = _forever(admin, folder)
+            replies.append(reply.status_code)
+            if reply.status_code != 202:
+                return
+
+    threads = [threading.Thread(target=until_done) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(30)
+    assert set(replies) <= {202, 204, 404} and 204 in replies
+    assert _documents(db, c) == {} and _trashed(db, c) == {}
+    assert not any(api.storage.has(c, document) for document in files)
+
+
+def test_a_folder_deleted_keeping_its_contents_hands_its_trashed_folders_to_where_they_went(
+    db: Database,
+) -> None:
+    """A13 (stability pass, 7 Nov 2026): F holds a folder in Trash; F is deleted with
+    ``contents=keep&to=X``, so that folder's Restore lands in X, where F's other contents went."""
+    api = Api(db)
+    admin = api.new_admin()
+    c, u = admin.customer_id, admin.user_id
+    destination = api.add_folder(c, u, "X")
+    parent = api.add_folder(c, u, "F")
+    child = api.add_folder(c, u, "Old", parent)
+    _trash(admin, child)
+    gone = admin.client.delete(f"/api/folders/{parent}?contents=keep&to={destination}", headers=CSRF)
+    assert gone.status_code == 200, gone.text
+
+    assert _trashed(db, c)[child][0] == destination
+    assert _restore(admin, child).status_code == 200
+    assert _folders(db, c)[child][0] == destination
+
+
+def test_a_part_that_deletes_nothing_stops_instead_of_asking_again_for_ever(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A12 review: were every file of a part skipped (gone from Trash meanwhile), a 202 with the same
+    count would make the screen ask again for ever; it ends as a folder not emptied (409)."""
+    monkeypatch.setattr(folders_router, "FOREVER_FAMILIES", 2)
+    monkeypatch.setattr(trashed_folders_sql, "delete_family", lambda *args: False)
+    api = Api(db)
+    admin = api.new_admin()
+    folder = api.add_folder(admin.customer_id, admin.user_id, "Folder")
+    for _ in range(3):
+        api.add_document(admin.customer_id, uploaded_by=admin.user_id, folder_id=folder)
+    _trash(admin, folder)
+    reply = _forever(admin, folder)
+    assert (reply.status_code, reply.json()["error"]["code"]) == (409, "folder_not_emptied")

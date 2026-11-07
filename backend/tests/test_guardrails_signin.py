@@ -74,7 +74,8 @@ def test_the_lockout_counts_every_spelling_of_the_email_and_lasts_exactly_15_min
     for spelled in _variants(email):  # five wrong passwords, each spelled differently
         assert _login(client, spelled, WRONG).status_code == 401
     state = api.user_state(customer_id, user_id)
-    assert (state["failed_logins"], state["locked_until"]) == (5, api.clock() + timedelta(minutes=15))
+    # Changed on purpose (A2, 7 Nov 2026): the lock is this address's, held in memory.
+    assert (state["failed_logins"], state["locked_until"]) == (5, None)
 
     for spelled in _variants(email):  # the right password, any spelling: still locked
         reply = _login(client, spelled)
@@ -179,7 +180,7 @@ def test_every_cookie_the_api_sets_or_clears_is_httponly_samesite_and_secure_whe
         settings = make_settings(cookie_secure=secure)
         response = Response()
         auth.set_session_cookie(response, session, settings, now=now)
-        auth.set_confirm_cookie(response, user, settings, now=now)
+        auth.set_confirm_cookie(response, user, settings, now=now, session_id="s")
         auth.set_operator_cookie(
             response, OperatorClaims(operator_id="o", session_version=1, expires_at=later), settings, now=now
         )

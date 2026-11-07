@@ -94,7 +94,7 @@ WAITING_FOR_READER = {"step": "waiting"}
 
 _SELECT = (
     "SELECT customer_id, id, sha256, size_bytes, detected_type, display_name, uploaded_by,"
-    " folder_id, family_id, version_no, ocr_choice"
+    " folder_id, family_id, version_no, ocr_choice, deleted_at IS NOT NULL"
     " FROM documents WHERE customer_id = :c"
 )
 
@@ -630,6 +630,7 @@ def _record(row: Sequence[Any]) -> DocumentRecord:
         family_id=str(row[8]),
         version_no=int(str(row[9])),
         ocr_choice=None if row[10] is None else str(row[10]),
+        in_trash=bool(row[11]),
     )
 
 

@@ -278,6 +278,10 @@ _MOVE_DOCUMENTS = (
     " ORDER BY family_id, (id <> family_id), id FOR NO KEY UPDATE) AS l"
     " WHERE d.customer_id = :c AND d.id = l.id"
 )
+# A13: the trashed folders that were directly in :f now restore into :p (0082's column grant).
+_REPARENT_TRASHED = (
+    "UPDATE trashed_folders SET parent_id = CAST(:p AS uuid) WHERE customer_id = :c AND parent_id = :f"
+)
 # The folders directly in :f whose name nothing at :p has (as _FREE compares), in one statement.
 _MOVE_FREE = (
     "UPDATE folders ch SET parent_id = CAST(:p AS uuid) WHERE ch.customer_id = :c AND ch.parent_id = :f"
@@ -460,7 +464,8 @@ def delete_folder_with_contents(
     """Delete a folder that may hold files and folders (#537); returns what it held.
 
     ``keep``: the documents directly in it (Trash included) and its folders, with all inside
-    them, move into ``to`` (None: the top level), checked as ``move_folder`` checks a move; a
+    them, move into ``to`` (None: the top level), and a folder of it in Trash is restored there
+    (A13), checked as ``move_folder`` checks a move; a
     folder of the same name there is never merged: the moved one becomes "Name (2)", or the
     first free number. ``trash``: every family in the folder and below it goes to Trash
     (``trash.trash_in_folders``: all versions, restorable, purged after TRASH_DAYS), and the
@@ -521,6 +526,7 @@ def _move_contents(conn: Connection, params: dict[str, Any]) -> None:
     sibling = "parent_id IS NULL" if params["p"] is None else "parent_id = CAST(:p AS uuid)"
     conn.execute(text(_NAME_AWAY), params)
     conn.execute(text(_MOVE_DOCUMENTS), params)
+    conn.execute(text(_REPARENT_TRASHED), params)
     _write_named(conn, _MOVE_FREE.format(where=sibling), params)
     for folder, name in conn.execute(text(_LEFT), params).all():
         names = [_numbered(str(name), n) for n in range(2, 101)]
