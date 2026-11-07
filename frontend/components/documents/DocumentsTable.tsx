@@ -61,7 +61,7 @@ import {
 } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { docTypeLabel, fileTypeLabel, formatBytes, formatDate, formatDateTime, formatRelative } from "@/lib/format";
-import type { DocumentSummary, Me, Tag, TrashedFolder } from "@/lib/types";
+import type { DocumentSummary, FolderBack, FolderRestored, Me, Tag, TrashedFolder } from "@/lib/types";
 import { ActionDialog } from "./ActionDialog";
 import { EditDialog, MoveDialog, RowMenu } from "./DocumentActions";
 import { DOCUMENT_DRAG } from "./FolderNav";
@@ -95,10 +95,12 @@ import {
   bulkTrashQuestion,
   canDeleteForever,
   deletedForeverMessage,
+  folderBackMessage,
   folderKey,
   folderOf,
   foreverNeedsPassword,
   isFolderKey,
+  folderRestoredMessage,
   foreverQuestion,
   lostTheRight,
   passwordAgain,
@@ -338,7 +340,25 @@ export function DocumentsTable({
     setDeleteProgress({ done: 0, total: ids.length });
     setError(null);
     const typed = action === "forever" && askPassword ? password : null;
-    const call = (key: string) => (isFolderKey(key) ? FOLDER_CALLS[action](folderOf(key)) : BULK_CALLS[action](key));
+    // #542: a restore that put a folder somewhere else, or brought folders back with a file, says so,
+    // and then has no Undo (Undo would send the files back alone).
+    const notes: string[] = [];
+    let foldersBack = false;
+    const call = async (key: string) => {
+      const reply = await (isFolderKey(key) ? FOLDER_CALLS[action](folderOf(key)) : BULK_CALLS[action](key));
+      if (action !== "restore") return reply;
+      if (isFolderKey(key)) {
+        const restored = reply as FolderRestored;
+        if (restored.relocated || restored.renamed) notes.push(folderRestoredMessage(restored));
+      } else {
+        const back = (reply as { restored_folder?: FolderBack | null }).restored_folder;
+        if (back) {
+          foldersBack = true;
+          if (back.relocated || back.renamed) notes.push(folderBackMessage(back));
+        }
+      }
+      return reply;
+    };
     const calls = { confirm: confirmPassword, remove: call };
     const outcome = await runForever(ids, typed, calls, (handled) =>
       setDeleteProgress({ done: handled, total: ids.length }),
@@ -373,9 +393,9 @@ export function DocumentsTable({
       // Read again keeps the rows (they are read again); the others leave the list. A restored
       // folder has no Undo (#542), so a selection with one has none.
       const folders = result.done.filter(isFolderKey).length;
-      const message = bulkDoneMessage(action, result.done.length - folders, folders);
+      const message = [bulkDoneMessage(action, result.done.length - folders, folders), ...notes].join(" ");
       if (action === "read") events.onSaved(message);
-      else onRemoved(message, folders > 0 ? undefined : undoRemoval(action, result.done));
+      else onRemoved(message, folders > 0 || foldersBack ? undefined : undoRemoval(action, result.done));
     }
     if (askAgain) {
       // The question is still open: focus waits in the password box, shown now if it was not.
@@ -791,11 +811,14 @@ const DocumentRow = memo(function DocumentRow({
     }
     if (action === "restore") {
       setWorking(BUSY_WORDS.restore);
+      let back: FolderBack | null = null; // #542: its folder came back with it
       void act(
-        restoreDocument,
-        restoredMessage(document.display_name),
+        async (id) => {
+          back = (await restoreDocument(id)).restored_folder ?? null;
+        },
+        () => (back ? `${restoredMessage(document.display_name)} ${folderBackMessage(back)}` : restoredMessage(document.display_name)),
         "Could not restore this document.",
-        undoRemoval("restore", [document.id]),
+        () => (back ? undefined : undoRemoval("restore", [document.id])),
       );
       return;
     }
@@ -817,12 +840,21 @@ const DocumentRow = memo(function DocumentRow({
   }
 
   // Move to Trash, Restore or Delete forever: the row leaves this list when it works.
-  async function act(call: (id: string) => Promise<unknown>, message: string, failed: string, undo?: RemovalUndo) {
+  // The words and the Undo may depend on the reply (#542), so either may be worked out after the call.
+  async function act(
+    call: (id: string) => Promise<unknown>,
+    message: string | (() => string),
+    failed: string,
+    undo?: RemovalUndo | (() => RemovalUndo | undefined),
+  ) {
     setBusy(true);
     setError(null);
     try {
       await call(document.id);
-      events.onRemoved(message, undo);
+      events.onRemoved(
+        typeof message === "string" ? message : message(),
+        typeof undo === "function" ? undo() : undo,
+      );
     } catch (caught) {
       if (lostTheRight(caught)) {
         refresh();

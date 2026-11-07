@@ -74,6 +74,10 @@ export function TrashFolderRow({
       const message = await run();
       onDone?.(message);
     } catch (caught) {
+      if (caught instanceof ApiError && caught.status === 404) {
+        onDone?.("This folder is no longer in Trash."); // restored or deleted elsewhere: the list is asked for again
+        return;
+      }
       if (lostTheRight(caught)) {
         refresh();
         setPasswordAsked(false);
@@ -146,7 +150,7 @@ export function TrashFolderRow({
             {folder.name}
           </span>
         </button>
-        <span className={styles.facts}>{wasInText(folder.was_in)}</span>
+        {onDone && <span className={styles.facts}>{wasInText(folder.was_in)}</span>}
       </td>
       <td role="cell" className={styles.statusCell}>
         <span className={styles.statusText}>{heldText(folder)}</span>

@@ -52,6 +52,7 @@ import type {
   FolderItemView,
   FolderItemsPage,
   FolderLimits,
+  FolderBack,
   FolderRestored,
   FolderSummary,
   TrashedFolder,
@@ -382,9 +383,10 @@ export const searchDocuments = (params: DocumentSearchParams) =>
   request<DocumentSearch>("GET", `/search${query(params)}`);
 /** Moves the document, with every version of it, to Trash (PRD 1, F5). */
 export const deleteDocument = (id: string) => request<void>("DELETE", `/documents/${id}`);
-/** Brings a document in Trash back, with every version of it. */
+/** Brings a document in Trash back, with every version of it; #542: and the folder that came
+ * back with it, when it went to Trash with its folder (null otherwise). */
 export const restoreDocument = (id: string) =>
-  request<DocumentSummary>("POST", `/documents/${id}/restore`);
+  request<DocumentSummary & { restored_folder?: FolderBack | null }>("POST", `/documents/${id}/restore`);
 /**
  * Read the document again from the start (PRD 2, X1): a reviewer or an admin,
  * for a ready, failed or unreadable document out of Trash (403 forbidden or

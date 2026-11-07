@@ -129,6 +129,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const headingRef = useRef<HTMLHeadingElement>(null);
   // #542: the folder in Trash that is open (read only); Trash's top level when null.
   const [trashOpenChoice, setTrashOpen] = useState<string | null>(null);
+  if (!library.trash && trashOpenChoice !== null) setTrashOpen(null); // left Trash: it opens at its top again
   const trashOpen = library.trash ? trashOpenChoice : null;
   const viewKey = libraryHref(library) + (trashOpen === null ? "" : `|trash:${trashOpen}`);
   // The search box keeps what is typed itself: a key press never re-renders the list.
@@ -174,6 +175,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
     view: string;
     items: TrashedFolder[];
     opened: TrashedFolderContents | null;
+    failed?: string; // they did not load: said, with Try again, never shown as an empty Trash
   } | null>(null);
   const toastUndo = toast?.undo;
   // The shell's one upload queue and tray (D-12); this screen adds files into the folder shown.
@@ -257,8 +259,8 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
       (caught: unknown) => {
         if (cancelled) return;
         // The open folder is no longer in Trash (restored, deleted or purged): back to Trash.
-        if (caught instanceof ApiError && caught.status === 404) setTrashOpen(null);
-        else setTrashFolders({ view, items: [], opened: null }); // the files still show
+        if (trashOpen !== null && caught instanceof ApiError && caught.status === 404) setTrashOpen(null);
+        else setTrashFolders({ view, items: [], opened: null, failed: errorText(caught) }); // the files still show
       },
     );
     return () => {
@@ -517,13 +519,15 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const trashShown = trashFolders && trashFolders.view === viewKey ? trashFolders : null;
   const opened = trashShown?.opened ?? null;
   const folderRows = trashShown && listQ === "" && !filtered && offset === 0 ? trashShown.items : [];
-  const total = list ? list.total + folderRows.length : null;
+  const foldersFailed = trashShown?.failed ?? null;
+  // Trash is empty only once its folders have come too; until then it is still loading.
+  const total = list && (!library.trash || trashShown !== null) ? list.total + folderRows.length : null;
   const view = listView(total, error !== null, listQ, filtered);
   const pages = list ? pageInfo(offset, list.items.length, list.total) : null;
   // Search and filters stay while the next list loads, so an open filter panel stays open.
   const showControls = view === "list" || view === "no-match" || (loaded !== null && !shown);
   const placeName = library.trash
-    ? (opened?.folder.name ?? "Trash")
+    ? (opened?.folder.name ?? (trashOpen === null ? "Trash" : "Folder in Trash"))
     : (current?.folder.name ??
       (library.folderId !== null
         ? "Folder"
@@ -726,8 +730,24 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
             </EmptyState>
           ) : (
             <>
+              {foldersFailed && (
+                <div className={styles.errorBanner} role="alert">
+                  <Icon name="alert" className={styles.errorIcon} />
+                  <div className={styles.errorBody}>
+                    <p className={styles.errorTitle}>
+                      {trashOpen === null ? "Could not load the folders in Trash." : "Could not load this folder in Trash."}
+                    </p>
+                    <p>{foldersFailed}</p>
+                  </div>
+                  <button type="button" className="btn" onClick={() => setReload((n) => n + 1)}>
+                    <Icon name="refresh" />
+                    Try again
+                  </button>
+                </div>
+              )}
               {library.trash ? (
                 view === "empty" &&
+                !foldersFailed &&
                 <EmptyState icon={opened ? "file" : "trash"} title={trashEmpty(opened !== null).title} headingLevel={3}>
                   {trashEmpty(opened !== null).text}
                 </EmptyState>

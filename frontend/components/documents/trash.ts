@@ -5,7 +5,7 @@
 
 import { sessionScope } from "@/components/shell/gate";
 import { ApiError, deleteDocument, restoreDocument } from "@/lib/api";
-import type { DocumentSummary, FolderRestored, Me, TrashedFolder } from "@/lib/types";
+import type { DocumentSummary, FolderBack, FolderRestored, Me, TrashedFolder } from "@/lib/types";
 
 /**
  * Who may delete for good: an admin session (every admin's, from /login), or a member or
@@ -102,6 +102,13 @@ export function folderRestoredMessage(restored: Pick<FolderRestored, "folder" | 
   if (restored.renamed) said.push(`Restored as “${restored.folder.name}”, because a folder with that name already exists.`);
   if (said.length > 0) return said.join(" ");
   return `Folder restored to ${restored.location.length === 0 ? "Top level" : restored.location.join(" › ")}.`;
+}
+
+/** A file restored from a folder in Trash brought its folder back: where, or why not where it was. */
+export function folderBackMessage(back: FolderBack): string {
+  if (back.relocated) return "Its folder is back at Top level, because the folder it was in no longer exists.";
+  if (back.renamed) return `Its folder is back as “${back.folder.name}”, because a folder with that name already exists.`;
+  return `Its folder “${back.folder.name}” is back in ${back.location.length === 0 ? "Top level" : back.location.join(" › ")}.`;
 }
 
 /** Asked before a folder in Trash is deleted for good, with every file in it. */

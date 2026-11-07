@@ -467,6 +467,9 @@ export interface TrashedFolderContents {
   folders: TrashedFolder[];
 }
 
+/** #542: the folder that came back with a file restored from a folder in Trash (restoreDocument's reply). */
+export type FolderBack = Omit<FolderRestored, "files" | "folders">;
+
 /** #542: a restored folder, where it went ([] the top level), and why it is not as it was. */
 export interface FolderRestored {
   folder: Folder;

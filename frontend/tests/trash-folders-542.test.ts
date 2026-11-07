@@ -161,6 +161,7 @@ let doc: FakeDocument;
 let root: Root | null = null;
 let calls: string[] = [];
 let removed: string[] = [];
+let undone: boolean[] = []; // whether each removal offered Undo
 let done: string[] = [];
 let opened: string[] = [];
 
@@ -179,6 +180,7 @@ function serve(routes: Record<string, [number, unknown?][]>) {
 
 async function show(me: Me, folders: TrashedFolder[], items: DocumentSummary[] = [], actions = true) {
   removed = [];
+  undone = [];
   done = [];
   opened = [];
   const container = doc.body.appendChild(doc.createElement("div")) as FakeElement;
@@ -193,7 +195,10 @@ async function show(me: Me, folders: TrashedFolder[], items: DocumentSummary[] =
     tags: [],
     suggestions: [],
     movedLeaves: false,
-    onRemoved: (message: string) => removed.push(message),
+    onRemoved: (message: string, undo?: unknown) => {
+      removed.push(message);
+      undone.push(undo !== undefined);
+    },
     onSaved: () => undefined,
     onFocusList: () => undefined,
     onTagCreated: () => undefined,
@@ -339,5 +344,66 @@ describe("the path above an open folder in Trash", () => {
     await press(button("Trash"));
     await press(button("Accounts"));
     expect(went).toEqual([null, "a"]);
+  });
+});
+
+// --- The reviews' findings (#542) ---
+
+describe("what a restore says when folders are not where they were", () => {
+  it("says a folder restored from a selection went to the top level, with no Undo", async () => {
+    serve({ "POST /api/documents/trash/folders/f1/restore": [[200, restored({ relocated: true, location: [] })]] });
+    await show(admin(true), [year]);
+    await tick(byLabel("Select folder 2025"));
+    await press(button("Restore (1)"));
+    expect(removed).toEqual(["Restored 1 folder. Restored to Top level, because its folder no longer exists."]);
+    expect(undone).toEqual([false]);
+  });
+
+  it("says a file restored from a folder in Trash brought its folder back, with no Undo", async () => {
+    const back = { folder: restored().folder, location: ["Accounts"], renamed: false, relocated: false };
+    serve({ "POST /api/documents/d1/restore": [[200, { ...binned, deleted_at: null, restored_folder: back }]] });
+    await show(admin(true), [], [binned]);
+    await press(byLabel("More actions for Bill.pdf"));
+    await press(byLabel("Restore"));
+    expect(removed).toEqual(["Restored Bill.pdf. Its folder “2025” is back in Accounts."]);
+    expect(undone).toEqual([false]);
+  });
+
+  it("keeps Undo for a file restored on its own", async () => {
+    serve({ "POST /api/documents/d1/restore": [[200, { ...binned, deleted_at: null, restored_folder: null }]] });
+    await show(admin(true), [], [binned]);
+    await press(byLabel("More actions for Bill.pdf"));
+    await press(byLabel("Restore"));
+    expect(removed).toEqual(["Restored Bill.pdf."]);
+    expect(undone).toEqual([true]);
+  });
+});
+
+describe("a folder row that is out of date or inside an open folder", () => {
+  it("says a folder no longer in Trash is gone, and the list is asked for again", async () => {
+    serve({ "POST /api/documents/trash/folders/f1/restore": [[404, { error: { code: "not_found", message: "We couldn't find that." } }]] });
+    await show(admin(true), [year]);
+    await press(byLabel("Restore folder 2025"));
+    expect(done).toEqual(["This folder is no longer in Trash."]);
+  });
+
+  it("does not say where a folder inside an open folder was: the path above says it", async () => {
+    serve({});
+    await show(admin(true), [{ ...year, was_in: null }], [], false);
+    expect(doc.body.textContent).not.toContain("Was in");
+  });
+});
+
+describe("the Trash screen", () => {
+  const view = () => readFileSync(join(__dirname, "../components/documents/DocumentsView.tsx"), "utf8");
+
+  it("says when its folders did not load, with Try again, and never calls Trash empty then", () => {
+    expect(view()).toContain("Could not load the folders in Trash.");
+    expect(view()).toContain("!foldersFailed &&"); // no "Trash is empty" while they are unknown
+    expect(view()).toContain("(!library.trash || trashShown !== null)"); // nor before they have come
+  });
+
+  it("opens at Trash's top again once you leave Trash", () => {
+    expect(view()).toContain("if (!library.trash && trashOpenChoice !== null) setTrashOpen(null);");
   });
 });
