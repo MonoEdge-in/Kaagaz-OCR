@@ -65,9 +65,11 @@ class World:
     ids: dict[str, str]
     fake: OpenRouterFake
 
-    def stream(self, question: str = SEARCH, signed: Signed | None = None) -> list[tuple[str, Any]]:
+    def stream(
+        self, question: str = SEARCH, signed: Signed | None = None, **body: Any
+    ) -> list[tuple[str, Any]]:
         reply = (signed or self.signed).client.post(
-            "/api/chat/stream", json={"question": question}, headers=CSRF
+            "/api/chat/stream", json={"question": question, **body}, headers=CSRF
         )
         assert reply.status_code == 200, reply.text
         assert reply.headers["content-type"].startswith("text/event-stream")
@@ -394,3 +396,47 @@ def test_a_stream_without_usage_is_priced_on_the_ledger_and_marked_estimated(
     assert len(drafts) == 1
     (row,) = drafts
     assert row.input_tokens > 0 and row.cost_usd > 0 and row.cost_estimated  # never 0, never unmarked
+
+
+def test_precision_reads_in_parts_then_a_slow_steady_draft_is_never_cut(
+    db: Database, fake: OpenRouterFake, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test server, 7 Nov 2026: Precision (high thinking, read in parts) timed out at
+    MODEL_TIMEOUT_SECONDS. On the stream the parts step runs (while "searching" shows), then the
+    sources and "writing", and a draft that streams for longer than the model timeout in all,
+    each gap shorter than it, finishes."""
+    w = world(db, fake, model_timeout_seconds=0.5, answer_parts_tokens=1)
+    facts = {"facts": [{"evidence": 1, "quote": "Grand Total: Rs. 1,20,000"}]}
+    slow = json_stream(DRAFT, size=40, every=0.3)
+    fake.script("completions", json_reply(facts), slow)
+    caplog.set_level(logging.INFO, logger="kaagaz.answering.timing")
+
+    with db.engine.begin() as conn:  # the organisation allows Precision (high thinking)
+        conn.execute(
+            text(
+                "INSERT INTO customer_ai_settings (customer_id, chat_levels, chat_default_level)"
+                " VALUES (:c, ARRAY['low', 'medium', 'high'], 'medium')"
+            ),
+            {"c": w.signed.customer_id},
+        )
+
+    found = w.stream(thinking="high")
+
+    assert names(found) == [
+        "started",
+        "stage:understanding",
+        "stage:searching",
+        "sources",
+        "stage:writing",
+        "sentence",
+        "sentence",
+        "stage:checking",
+        "done",
+    ]
+    parts, draft = fake.bodies()
+    assert parts["stream"] is False and parts["reasoning"]["effort"] == "high"  # the part read, at Precision
+    assert draft["stream"] is True
+    assert slow.stream is not None and slow.sent == len(slow.stream)
+    assert (len(slow.stream) - 1) * 0.3 > 0.5  # longer than MODEL_TIMEOUT_SECONDS in all
+    (line,) = [r.getMessage() for r in caplog.records if r.name == "kaagaz.answering.timing"]
+    assert " parts=1 " in line and " streamed=1 " in line

@@ -165,3 +165,35 @@ def test_a_stream_that_outlasts_the_deadline_is_a_timeout(fake: OpenRouterFake) 
     with pytest.raises(ModelUnavailable) as caught:
         _stream(client, [], deadline=time.monotonic() + 0.3)
     assert caught.value.code == "timeout"
+
+
+def test_a_slow_but_steady_stream_runs_past_the_model_timeout_and_is_never_cut(fake: OpenRouterFake) -> None:
+    """Precision on the test server (7 Nov 2026): a draft thinking for 75 s was cut at
+    MODEL_TIMEOUT_SECONDS. A streamed reply's limit is ANSWER_STREAM_MAX_SECONDS; the model timeout
+    is only how long it may go with nothing at all, and a keep-alive comment is something."""
+    keep_alive = [b": OPENROUTER PROCESSING\n\n"] * 6
+    reply = json_stream(GOOD, size=12, every=0.15)
+    assert reply.stream is not None
+    reply.stream[1:1] = keep_alive  # the model thinking: comments only, for a while
+    fake.script("completions", reply)
+    client = _client(fake.url, model_timeout_seconds=0.4)
+    started = time.monotonic()
+
+    assert _stream(client, []) == GOOD
+
+    took = time.monotonic() - started
+    assert took > 2 * 0.4  # longer than the model timeout in all, each gap shorter than it
+
+
+def test_a_stream_that_goes_quiet_for_the_model_timeout_is_a_timeout(fake: OpenRouterFake) -> None:
+    fake.script("completions", json_stream(GOOD, size=12, every=0.8))  # each gap longer than 0.3 s
+    with pytest.raises(ModelUnavailable) as caught:
+        _stream(_client(fake.url, model_timeout_seconds=0.3), [])
+    assert caught.value.code == "timeout"
+
+
+def test_a_stream_ends_by_answer_stream_max_seconds_however_steady(fake: OpenRouterFake) -> None:
+    fake.script("completions", json_stream(GOOD, size=1, every=0.05))
+    with pytest.raises(ModelUnavailable) as caught:
+        _stream(_client(fake.url, model_timeout_seconds=5.0, answer_stream_max_seconds=0.4), [])
+    assert caught.value.code == "timeout"

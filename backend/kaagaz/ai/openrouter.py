@@ -47,7 +47,12 @@ each of these against the live API.
 true``; the reply comes as server-sent events, each ``delta.content`` handed to the caller as it
 arrives, and is put back together as the reply ``stream: false`` would have given (its text, finish
 reasons, ``provider`` and the last chunk's ``usage``), so every check, the ledger, the limiter, the
-breaker, the latch and the deadline are the same code. Two differences: no repair turn (a reply that
+breaker and the latch are the same code. Its time is not one flat timeout: a streamed reply may go
+on while it keeps coming, up to the caller's deadline (else ANSWER_STREAM_MAX_SECONDS), and fails as
+``timeout`` only when nothing at all arrives for MODEL_TIMEOUT_SECONDS (the socket's read timeout;
+OpenRouter's ": OPENROUTER PROCESSING" keep-alive lines count as something). A Precision draft that
+thinks for 75 s while tokens and keep-alives arrive is never cut at 60 s. Two more differences: no
+repair turn (a reply that
 does not follow the schema is ``invalid_output``; the caller drafts again without streaming), and a
 reply that already handed out text is never sent again: a failure after it raises at once. The
 ledger is never told 0: the request asks for the usage (``usage: {include: true}``, OpenRouter's
@@ -1152,6 +1157,7 @@ class OpenRouterClient:
         self._host_path = settings.openrouter_base_url.rstrip("/").split("://", 1)[1]
         self._timeout = settings.model_timeout_seconds
         self._chat_timeout = self._timeout if chat_timeout_seconds is None else chat_timeout_seconds
+        self._stream_timeout = settings.answer_stream_max_seconds  # a streamed reply's own limit (#535)
         self._default_chat_tokens = settings.model_answer_max_tokens
         self._dim = settings.embedding_dim
         self._providers = settings.openrouter_providers
@@ -1276,8 +1282,10 @@ class OpenRouterClient:
         """``chat_json`` streamed (#535, Ask's draft; the module docstring): the same request with
         ``stream: true``, each piece of the reply's text handed to ``on_text`` as it comes (""
         for a line with none, so the caller may stop the reply by raising: the connection is
-        closed and nothing more is read). No repair turn: a reply that does not follow ``schema``
-        raises ``invalid_output``, with its tokens."""
+        closed and nothing more is read). It ends by ``deadline`` (None: ANSWER_STREAM_MAX_SECONDS
+        from now), and fails as ``timeout`` sooner only when nothing arrives for the chat timeout
+        (MODEL_TIMEOUT_SECONDS). No repair turn: a reply that does not follow ``schema`` raises
+        ``invalid_output``, with its tokens."""
         body, output_limit, ends = self._chat_body(
             system, user, schema, max_tokens, model, thinking, provider, deadline, None, stream=True
         )
@@ -1482,8 +1490,10 @@ class OpenRouterClient:
     ) -> tuple[str, tuple[int, int]]:
         """(the reply's text, the tokens billed so far: ``before`` plus this reply's), by
         ``deadline`` on ``now()`` (None: the chat timeout from now). Its
-        ``ModelOutputError`` carries the same tokens. ``on_text``: a streamed reply's (#535)."""
-        ends = self.now() + self._chat_timeout if deadline is None else deadline
+        ``ModelOutputError`` carries the same tokens. ``on_text``: a streamed reply's (#535), whose
+        limit with no ``deadline`` is ANSWER_STREAM_MAX_SECONDS, the chat timeout being its idle one."""
+        whole = self._chat_timeout if on_text is None else self._stream_timeout
+        ends = self.now() + whole if deadline is None else deadline
         reply = self._call(CHAT_PATH, body, ends, on_text=on_text)
         text, _ = _billed_text(reply, before)
         input_tokens, output_tokens = reply_usage(reply)
@@ -1573,7 +1583,13 @@ class OpenRouterClient:
                 gate.release_probe(model)
                 raise ModelUnavailable("timeout")
             try:
-                reply = self._send(path, body, remaining, on_text=None if on_text is None else heard)
+                reply = self._send(
+                    path,
+                    body,
+                    remaining,
+                    on_text=None if on_text is None else heard,
+                    idle=None if on_text is None else self._chat_timeout,
+                )
             except BaseException:  # the caller stopped a streamed reply (#535): no outcome to record
                 gate.release_probe(model)
                 raise
@@ -1680,10 +1696,13 @@ class OpenRouterClient:
         *,
         send_key: bool = True,
         on_text: Callable[[str], None] | None = None,
+        idle: float | None = None,
     ) -> _Reply:
         """One POST (or a GET when ``body`` is None). Never raises for HTTP or the network:
         the outcome is a ``_Reply``. ``on_text``: a reply sent as ``text/event-stream`` is read
-        as it comes (``_read_stream``, #535); whatever ``on_text`` raises goes up."""
+        as it comes (``_read_stream``, #535); whatever ``on_text`` raises goes up. ``idle``: each
+        wait on the socket (connecting, the headers, every read) ends after this long with
+        nothing (a ``timeout``), while ``timeout`` stays the whole exchange's limit."""
         data = None if body is None else json.dumps(body).encode("utf-8")
         headers = {} if body is None else {"Content-Type": "application/json"}
         method = "GET" if body is None else "POST"
@@ -1697,7 +1716,9 @@ class OpenRouterClient:
             request.add_unredirected_header(API_KEY_HEADER, "Bearer " + self._key)
         ends = time.monotonic() + timeout
         try:
-            with self._opener.open(request, timeout=timeout) as response:
+            with self._opener.open(
+                request, timeout=timeout if idle is None else min(idle, timeout)
+            ) as response:
                 if on_text is not None and response.headers.get_content_type() == "text/event-stream":
                     streamed = _read_stream(response, ends, replies.MAX_RESPONSE_BYTES, on_text)
                     if streamed == "timeout":
