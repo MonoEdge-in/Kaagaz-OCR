@@ -81,6 +81,7 @@ def _fresh_limits(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         "forgot_email_limits",
         "resend_site_limits",
         "resend_email_limits",
+        "link_address_limits",
     ):
         limiter = getattr(email_router, name)
         monkeypatch.setattr(email_router, name, RateLimiter(int(limiter._capacity), window_seconds=3600))
@@ -442,10 +443,43 @@ def test_forgot_password_is_limited_by_email(db: Database) -> None:
     assert len(_to(mailer, member.email)) == 3
 
 
-def test_the_site_wide_limits_on_forgot_and_send_again_are_three_hundred_an_hour() -> None:
-    """Behind the proxy every visitor shares one address, so the limit is for the whole site."""
+def test_forgot_and_send_again_are_ten_an_hour_a_visitor_and_fifteen_hundred_for_the_site() -> None:
+    """Changed on purpose (A1, 7 Nov 2026): each visitor has their own address now (uvicorn takes
+    it from Caddy's X-Forwarded-For), so the per-visitor cap does the work and the site's is 5x."""
     for name in ("forgot_site_limits", "resend_site_limits"):
-        assert getattr(email_router, name)._capacity == email_router.LINKS_PER_HOUR_SITE == 300
+        assert getattr(email_router, name)._capacity == email_router.LINKS_PER_HOUR_SITE == 1500
+    assert email_router.link_address_limits._capacity == email_router.LINKS_PER_HOUR_ADDRESS == 10
+
+
+@pytest.mark.db
+def test_forgot_and_send_again_are_limited_per_visitor(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A1: one visitor address, both routes together; another visitor has their own allowance."""
+    api, _ = _email_api(db)
+    monkeypatch.setattr(email_router, "link_address_limits", RateLimiter(2, window_seconds=3600))
+    visitor, other = (
+        TestClient(api.app, client=(address, 50000)) for address in ("203.0.113.7", "198.51.100.9")
+    )
+    replies = [
+        _post(visitor, path, {"email": f"n-{uuid.uuid4().hex[:8]}@example.com"})
+        for path in ("/api/auth/forgot", "/api/auth/email/resend-confirm", "/api/auth/forgot")
+    ]
+    assert [reply.status_code for reply in replies] == [202, 202, 429]
+    assert replies[-1].json()["error"]["code"] == "rate_limited"
+    assert _post(other, "/api/auth/forgot", {"email": "n@example.com"}).status_code == 202
+
+
+@pytest.mark.db
+def test_one_visitor_cannot_use_up_someone_elses_reset_links(db: Database) -> None:
+    """A1: the per-e-mail cap is per e-mail and address, so a stranger asking for a person's
+    links again and again never stops that person getting their own."""
+    api, mailer = _email_api(db)
+    member = api.new_signed("member")
+    stranger = TestClient(api.app, client=("203.0.113.7", 50000))
+    for _ in range(4):
+        assert _post(stranger, "/api/auth/forgot", {"email": member.email}).status_code == 202
+    assert len(_to(mailer, member.email)) == 3
+    _post(TestClient(api.app, client=("198.51.100.9", 50000)), "/api/auth/forgot", {"email": member.email})
+    assert len(_to(mailer, member.email)) == 4
 
 
 @pytest.mark.db
