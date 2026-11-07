@@ -447,6 +447,13 @@ export interface Folder {
   sort_order?: number | null; // a department's place on the dashboard and in the tree
 }
 
+/** #537: what a folder holds at every depth: live files (a file's versions count once), folders, bytes. */
+export interface FolderSummary {
+  files: number;
+  folders: number;
+  bytes: number;
+}
+
 export interface Tag {
   id: string;
   name: string;

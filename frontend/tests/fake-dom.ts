@@ -4,6 +4,8 @@
 // keys. Used by clean-copy-edit-527.test.ts and delete-forever-password-538.test.ts; install()
 // stubs `document` and `window`, which must be in place before react-dom/client is first
 // imported (it looks for a DOM as it loads).
+// keys. Used by clean-copy-edit-527.test.ts and folder-delete-537.test.ts; install() stubs `document` and `window`, which must
+// be in place before react-dom/client is first imported (it looks for a DOM as it loads).
 
 import { vi } from "vitest";
 
@@ -88,6 +90,16 @@ export class FakeNode {
     for (let at = node; at; at = at.parentNode) if (at === this) return true;
     return false;
   }
+  /** Only `input[name="x"][type="radio"]`: react-dom asks it for a radio's group when one is checked (#537). */
+  querySelectorAll(selector: string): FakeElement[] {
+    const group = /^input\[name="([^"]*)"\]\[type="radio"\]$/.exec(selector);
+    if (!group) throw new Error(`fake-dom: no selector ${selector}`);
+    const walk = (node: FakeNode): FakeElement[] =>
+      node.childNodes.flatMap((child) => (child instanceof FakeElement ? [child, ...walk(child)] : []));
+    return walk(this).filter(
+      (element) => element.tagName === "INPUT" && element.type === "radio" && element.getAttribute("name") === group[1],
+    );
+  }
   addEventListener(type: string, fn: (event: FakeEvent) => void, options?: boolean | { capture?: boolean }) {
     const capture = typeof options === "boolean" ? options : Boolean(options?.capture);
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), { fn, capture }]);
@@ -133,6 +145,7 @@ export class FakeElement extends FakeNode {
     readonly namespaceURI: string,
   ) {
     super(ownerDocument, 1, tagName);
+    if (tagName === "INPUT") this.type = "text"; // a browser's default, so react-dom sees a text box
   }
   setAttribute(name: string, value: unknown) {
     this.attributes.set(name, String(value));

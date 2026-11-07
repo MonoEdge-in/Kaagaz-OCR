@@ -43,12 +43,14 @@ from sqlalchemy import Connection, text
 
 from kaagaz.db.folders import (
     _DEPTH,
+    _FREE,
     MAX_DEPTH,
     FolderError,
     FolderNameTaken,
     FolderNotFound,
     FolderTooDeep,
     _lock_tree,
+    _numbered,
 )
 
 GIB = 1024**3
@@ -85,7 +87,6 @@ def effective_limits(conn: Connection, customer_id: str) -> FolderUploadLimits:
 
 
 # --- the plan ---------------------------------------------------------------------------------
-NAME_MAX = 100  # folders.name's CHECK (0002)
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,12 +138,6 @@ _REUSE = text(
 _SAME_NAME = (
     "SELECT id, name FROM folders WHERE customer_id = :c AND lower(normalize(name, NFC)) = lower(:name)"
     " AND {where}"
-)
-# The first candidate name no sibling has, compared as folders_sibling_name compares (lower()), NFC.
-_FREE = (
-    "SELECT w.n FROM unnest(CAST(:names AS text[])) WITH ORDINALITY AS w (n, i)"
-    " WHERE NOT EXISTS (SELECT 1 FROM folders f WHERE f.customer_id = :c AND {where}"
-    " AND lower(normalize(f.name, NFC)) = lower(w.n)) ORDER BY w.i LIMIT 1"
 )
 _INSERT_ROOT = text(
     "INSERT INTO folders (customer_id, parent_id, name, created_by, kind)"
@@ -366,9 +361,3 @@ def _root(
     kind = "department" if target == "department" else "custom"
     made = conn.execute(_INSERT_ROOT, {**named, "name": free, "kind": kind}).scalar_one()
     return str(made), str(free), 1
-
-
-def _numbered(name: str, n: int) -> str:
-    """``Name (n)``, the name cut so the whole fits 100 characters. O(len(name))."""
-    suffix = f" ({n})"
-    return name[: NAME_MAX - len(suffix)].rstrip() + suffix

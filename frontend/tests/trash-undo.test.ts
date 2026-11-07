@@ -45,7 +45,8 @@ describe("the documents screen", () => {
   it("shows a removal that can be undone in its toast, not only to screen readers", () => {
     const view = read("components/documents/DocumentsView.tsx");
     expect(view).toMatch(/function afterRemoved\(message: string, undo\?: RemovalUndo\) \{\s*if \(undo\) setToast\(/);
-    expect(view).toContain("onUndo={toast ? () => undoMove(toast.undo, toast.undone) : undefined}");
+    // Changed on purpose (#537, 7 Nov 2026): a deleted folder's toast is a note with no Undo.
+    expect(view).toContain('onUndo={toastUndo ? () => undoMove(toastUndo, toast?.undone ?? "") : undefined}');
   });
 
   it("gives each row's Move to Trash and Restore, and the selection's, their Undo", () => {
