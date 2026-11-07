@@ -361,11 +361,14 @@ def test_an_enrol_token_with_a_bad_or_extra_field_is_refused(changes: dict[str, 
 
 # --- the confirm token (council 4 Oct 2026) ----------------------------------------------------
 
-CONFIRM = {"uid": UID, "cid": CID, "ver": 3, "exp": NOW + CONFIRM_SECONDS}
+# Changed on purpose (A4, 7 Nov 2026): the browser session too.
+CONFIRM = {"uid": UID, "cid": CID, "ver": 3, "exp": NOW + CONFIRM_SECONDS, "sid": SID}
 
 
 def test_confirm_round_trips_and_lasts_5_minutes() -> None:
-    claims = ConfirmClaims(user_id=UID, customer_id=CID, session_version=3, expires_at=NOW + 300)
+    claims = ConfirmClaims(
+        user_id=UID, customer_id=CID, session_version=3, expires_at=NOW + 300, session_id=SID
+    )
     token = sign_confirm(claims, SECRET)
     assert CONFIRM_SECONDS == 300
     assert _payload(token) == CONFIRM
@@ -388,7 +391,7 @@ def test_a_confirm_token_is_never_a_session_or_an_enrol_token_and_the_reverse() 
 
 def test_a_confirm_token_with_a_missing_bad_or_extra_field_is_refused() -> None:
     payloads = [{key: value for key, value in CONFIRM.items() if key != missing} for missing in CONFIRM]
-    bad = ({"ver": True}, {"ver": 0}, {"exp": "1"}, {"uid": "x"}, {"role": "member"})
+    bad = ({"ver": True}, {"ver": 0}, {"exp": "1"}, {"uid": "x"}, {"sid": "x"}, {"role": "member"})
     for payload in payloads + [{**CONFIRM, **changes} for changes in bad]:
         assert read_confirm(_signed(payload, b"confirm"), SECRET, now=NOW) is None, payload
 

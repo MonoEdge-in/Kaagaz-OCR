@@ -449,15 +449,18 @@ def change_password(
 
 
 @router.post("/auth/confirm-password", status_code=204)
-def confirm_password(body: CurrentPasswordBody, user: User, context: Context) -> Response:
+def confirm_password(body: CurrentPasswordBody, user: User, request: Request, context: Context) -> Response:
     if not deletes_forever_by_password(user):
         raise ApiError(403, "forbidden")  # nothing is counted
     now = context.clock()
+    claims = session_claims(request, context.settings, _unix(now))
+    if claims is None:  # never: ``user`` was read from these claims
+        raise ApiError(401, "not_signed_in")
     _check_current_password(context, user, body.password, now)
     with context.db.customer(user.customer_id) as conn:
         users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
     response = Response(status_code=204)
-    set_confirm_cookie(response, user, context.settings, now=_unix(now))
+    set_confirm_cookie(response, user, context.settings, now=_unix(now), session_id=claims.session_id)
     return response
 
 

@@ -162,7 +162,8 @@ def test_flow_refused_when_expired_tampered_or_signed_for_another_purpose() -> N
     body, signature = token.split(".")
     assert read_flow(body + "x." + signature, SECRET, now=1_000) is None
     confirm = sign_confirm(
-        ConfirmClaims(user_id=UID, customer_id=CID, session_version=3, expires_at=2_000), SECRET
+        ConfirmClaims(user_id=UID, customer_id=CID, session_version=3, expires_at=2_000, session_id=UID),
+        SECRET,
     )
     assert read_flow(confirm, SECRET, now=1_000) is None
     assert read_session(token, SECRET, now=1_000) is None

@@ -180,7 +180,7 @@ def test_every_cookie_the_api_sets_or_clears_is_httponly_samesite_and_secure_whe
         settings = make_settings(cookie_secure=secure)
         response = Response()
         auth.set_session_cookie(response, session, settings, now=now)
-        auth.set_confirm_cookie(response, user, settings, now=now)
+        auth.set_confirm_cookie(response, user, settings, now=now, session_id="s")
         auth.set_operator_cookie(
             response, OperatorClaims(operator_id="o", session_version=1, expires_at=later), settings, now=now
         )
