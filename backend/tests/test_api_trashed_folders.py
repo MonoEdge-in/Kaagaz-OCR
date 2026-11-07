@@ -24,6 +24,7 @@ from sqlalchemy import event, text
 
 from kaagaz.api.routers import folders as folders_router
 from kaagaz.db import folders as folders_sql
+from kaagaz.db import trashed_folders as trashed_folders_sql
 from kaagaz.db.engine import Database
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.jobs.purge import _purge_trash_of
@@ -830,7 +831,7 @@ def test_a_part_that_deletes_nothing_stops_instead_of_asking_again_for_ever(
     """A12 review: were every file of a part skipped (gone from Trash meanwhile), a 202 with the same
     count would make the screen ask again for ever; it ends as a folder not emptied (409)."""
     monkeypatch.setattr(folders_router, "FOREVER_FAMILIES", 2)
-    monkeypatch.setattr(folders_router.trashed_sql, "delete_family", lambda *args: False)
+    monkeypatch.setattr(trashed_folders_sql, "delete_family", lambda *args: False)
     api = Api(db)
     admin = api.new_admin()
     folder = api.add_folder(admin.customer_id, admin.user_id, "Folder")
