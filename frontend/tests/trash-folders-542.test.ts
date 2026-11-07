@@ -61,7 +61,7 @@ describe("the words for a folder in Trash", () => {
 
   it("counts what it holds", () => {
     expect(heldText(year)).toBe("4 files, 3 folders");
-    expect(heldText({ files: 1, folders: 0 })).toBe("1 file, 0 folders");
+    expect(heldText({ files: 1, folders: 0 })).toBe("1 file"); // no zero counts (stability pass, B14)
   });
 
   it("says where a restored folder went, or why it is not where it was", () => {
@@ -75,9 +75,9 @@ describe("the words for a folder in Trash", () => {
     );
   });
 
-  it("asks before deleting forever with the name and the files", () => {
-    expect(folderForeverQuestion(year)).toBe("Delete “2025” and its 4 files forever? This can't be undone.");
-    expect(folderForeverQuestion({ name: "Old", files: 1 })).toBe("Delete “Old” and its 1 file forever? This can't be undone.");
+  it("asks before deleting for good with the name and the files", () => {
+    expect(folderForeverQuestion(year)).toBe("Delete “2025” and its 4 files for good? They can't be brought back.");
+    expect(folderForeverQuestion({ name: "Old", files: 1 })).toBe("Delete “Old” and its 1 file for good? It can't be brought back.");
   });
 
   it("counts a selection of documents and folders", () => {
@@ -272,7 +272,10 @@ describe("a folder in the Trash list", () => {
     });
     const folders = ["f1", "f2", "f3"].map((id) => ({ ...year, id, name: `Year ${id}` }));
     await show(admin(true), folders);
-    for (const folder of folders) await press(byLabel(`Restore folder ${folder.name}`));
+    for (const folder of folders) {
+      await press(byLabel(`More actions for folder ${folder.name}`)); // the row's ⋯ menu, as a document's (B16)
+      await press(byLabel("Restore"));
+    }
     expect(done).toEqual([
       "Folder restored to Accounts.",
       "Restored to Top level, because its folder no longer exists.",
@@ -283,9 +286,10 @@ describe("a folder in the Trash list", () => {
   it("deletes forever after the question, with the password for an admin without two-step", async () => {
     serve({ "POST /api/auth/confirm-password": [[204]], "DELETE /api/documents/trash/folders/f1/permanent": [[204]] });
     await show(admin(false), [year]);
-    await press(byLabel("Delete folder 2025 forever"));
+    await press(byLabel("More actions for folder 2025"));
+    await press(byLabel("Delete forever"));
     const dialog = all().find((element) => element.tagName === "DIALOG");
-    expect(dialog?.textContent).toContain("Delete “2025” and its 4 files forever? This can't be undone.");
+    expect(dialog?.textContent).toContain("Delete “2025” and its 4 files for good? They can't be brought back.");
     const box = byId("forever-folder-password-f1");
     expect(box).not.toBeNull();
     await type(box, "secret");
@@ -303,7 +307,7 @@ describe("a folder in the Trash list", () => {
       "DELETE /api/documents/d1/permanent": [[204]],
     });
     await show(admin(true), [year], [binned]);
-    await tick(byLabel("Select all visible documents"));
+    await tick(byLabel("Select all visible"));
     await press(button("Restore (2)"));
     expect(calls).toEqual(["POST /api/documents/trash/folders/f1/restore", "POST /api/documents/d1/restore"]);
     expect(removed).toEqual(["Restored 1 document and 1 folder."]);
@@ -320,8 +324,7 @@ describe("a folder in the Trash list", () => {
   it("inside an open folder, its folders only open: no Restore, no Delete forever, no tick", async () => {
     serve({});
     await show(admin(true), [year], [], false);
-    expect(byLabel("Restore folder 2025")).toBeNull();
-    expect(byLabel("Delete folder 2025 forever")).toBeNull();
+    expect(byLabel("More actions for folder 2025")).toBeNull();
     expect(byLabel("Select folder 2025")).toBeNull();
     await press(button("Open folder 2025"));
     expect(opened).toEqual(["f1"]);
@@ -383,7 +386,8 @@ describe("a folder row that is out of date or inside an open folder", () => {
   it("says a folder no longer in Trash is gone, and the list is asked for again", async () => {
     serve({ "POST /api/documents/trash/folders/f1/restore": [[404, { error: { code: "not_found", message: "We couldn't find that." } }]] });
     await show(admin(true), [year]);
-    await press(byLabel("Restore folder 2025"));
+    await press(byLabel("More actions for folder 2025"));
+    await press(byLabel("Restore"));
     expect(done).toEqual(["This folder is no longer in Trash."]);
   });
 

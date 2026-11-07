@@ -10,9 +10,11 @@
 // after another. Once `final` (done's reply) has finished revealing, onSettle hands over to
 // the final answer card (AnswerView's `settle`). Reduced motion: everything at once.
 // Screen readers hear a polite live region instead of the moving text: each stage, the
-// sources, and each sentence once, never word by word.
+// sources and "Still looking" (stability pass, B9: never the sentences, which the settled card,
+// focused, reads once). B10: a sentence already shown is a memoised <Sentence>, so a frame draws
+// only the one being revealed.
 
-import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Icon } from "@/components/ui/Icon/Icon";
 import type { ChatResponse } from "@/lib/types";
@@ -30,6 +32,7 @@ import {
   SETTLE_PAUSE_MS,
   STAGE_TEXT,
   stageList,
+  wordCount,
   wordsOf,
 } from "./stream";
 import type { Reveal, StreamProgress } from "./stream";
@@ -37,6 +40,37 @@ import styles from "./Chat.module.css";
 
 export const STILL_LOOKING = "Still looking. Long registers take a little longer.";
 const DEVANAGARI = /[ऀ-ॿ]/u;
+
+/** One sentence of the preview: its first `shown` words, or all of them with its citation numbers
+ * once whole (`shown` null). Drawn again only when its words, its numbers or `shown` change. */
+export const Sentence = memo(
+  function Sentence({ text, citations, shown, lead }: { text: string; citations: readonly number[]; shown: number | null; lead: boolean }) {
+    const words = wordsOf(text);
+    return (
+      <span>
+        {lead ? " " : null}
+        {(shown === null ? words : words.slice(0, shown)).map((word, at) => (
+          <span key={at} className={styles.word} lang={DEVANAGARI.test(word) ? "mr" : undefined}>
+            {word}
+          </span>
+        ))}
+        {shown === null
+          ? citations.map((n) => (
+              <span key={n} className={`${styles.numberMark} ${styles.streamCite}`}>
+                {n}
+              </span>
+            ))
+          : null}
+      </span>
+    );
+  },
+  // The final reply's sentences are new objects on each render: compare what is drawn.
+  (before, after) =>
+    before.text === after.text &&
+    before.shown === after.shown &&
+    before.lead === after.lead &&
+    before.citations.join() === after.citations.join(),
+);
 
 /** The reveal so far: one requestAnimationFrame loop while words are left to show. */
 function useReveal(counts: readonly number[], instant: boolean): Reveal {
@@ -74,9 +108,8 @@ export function StreamingAnswer({
 }) {
   const reduced = useMediaQuery("(prefers-reduced-motion: reduce)");
   const { sentences, changed } = previewSentences(progress, final);
-  const words = sentences.map((sentence) => wordsOf(sentence.text));
   const reveal = useReveal(
-    words.map((list) => list.length),
+    sentences.map((sentence) => wordCount(sentence.text)),
     reduced,
   );
   const [slow, setSlow] = useState(false);
@@ -122,27 +155,15 @@ export function StreamingAnswer({
       ) : null}
       {shown.length > 0 ? (
         <p className={styles.answerText} aria-hidden="true" data-preview="">
-          {shown.map((sentence, index) => {
-            const whole = index < reveal.sentence;
-            const list = words[index] ?? [];
-            return (
-              <span key={sentence.index}>
-                {index > 0 ? " " : null}
-                {(whole ? list : list.slice(0, reveal.words)).map((word, at) => (
-                  <span key={at} className={styles.word} lang={DEVANAGARI.test(word) ? "mr" : undefined}>
-                    {word}
-                  </span>
-                ))}
-                {whole
-                  ? sentence.citations.map((n) => (
-                      <span key={n} className={`${styles.numberMark} ${styles.streamCite}`}>
-                        {n}
-                      </span>
-                    ))
-                  : null}
-              </span>
-            );
-          })}
+          {shown.map((sentence, index) => (
+            <Sentence
+              key={sentence.index}
+              text={sentence.text}
+              citations={sentence.citations}
+              shown={index < reveal.sentence ? null : reveal.words}
+              lead={index > 0}
+            />
+          ))}
         </p>
       ) : null}
       <ol className={styles.stages} aria-hidden="true">
@@ -178,11 +199,7 @@ export function StreamingAnswer({
       <div className="visually-hidden" aria-live="polite">
         <p>{stageNow}</p>
         {found ? <p>{found}.</p> : null}
-        {opening ? <p>{opening}</p> : null}
         {slow && sentences.length === 0 && final === null ? <p>{STILL_LOOKING}</p> : null}
-        {sentences.map((sentence) => (
-          <p key={sentence.index}>{sentence.text.trim()}</p>
-        ))}
       </div>
     </div>
   );

@@ -74,6 +74,9 @@ export function stageList(progress: StreamProgress, finished: boolean): { stage:
 /** A sentence's words, each with the spaces after it, so the words joined are the sentence. */
 export const wordsOf = (text: string): string[] => text.trim().match(/\S+\s*/g) ?? [];
 
+/** How many words wordsOf finds: the reveal's counts (B10: each sentence splits its own words). */
+export const wordCount = (text: string): number => wordsOf(text).length;
+
 const same = (a: StreamSentence, b: StreamSentence) => a.text.trim() === b.text.trim();
 
 /** The final answer, when its card shows its sentences (an answered answer, not small talk). */

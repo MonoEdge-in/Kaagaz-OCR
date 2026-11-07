@@ -450,7 +450,7 @@ export function DocumentsTable({
           <tr role="row">
             <th scope="col" role="columnheader" className={styles.selectColumn}>
               {tickableKeys.length > 0 ? (
-                <label className={styles.selectHit}>{allBox("Select all visible documents")}</label>
+                <label className={styles.selectHit}>{allBox("Select all visible")}</label>
               ) : (
                 <span className="visually-hidden">Select</span>
               )}
@@ -529,7 +529,7 @@ export function DocumentsTable({
             {allBox()}
             <span>
               {allSelected
-                ? "All visible documents selected"
+                ? "All visible selected"
                 : partiallySelected
                   ? `${selectedCount} selected`
                   : "Select all visible"}
@@ -684,6 +684,8 @@ const BULK_CALLS: Record<BulkAction, (id: string) => Promise<unknown>> = {
   read: reprocessDocument,
 };
 // #542: a folder in Trash is only ever restored or deleted for good from a selection.
+// shortcut: a big folder's Delete forever repeats per part (B18) here too, but the selection's
+// progress counts whole items, so it waits on one item without saying how many files are left.
 const NO_FOLDERS: readonly TrashedFolder[] = [];
 const notForFolders = () => Promise.reject(new Error("not for a folder in Trash"));
 const FOLDER_CALLS: Record<BulkAction, (id: string) => Promise<unknown>> = {
@@ -789,6 +791,8 @@ const DocumentRow = memo(function DocumentRow({
   const actionsButton = useRef<HTMLButtonElement | null>(null);
   const refocusActions = useRef(false);
   const afterEdit = useRef<"actions" | "list">("actions");
+  // B6: Delete forever is checking the typed password; refused, the question stays open.
+  const checkingPassword = useRef(false);
 
   // A stable callback ref, so it runs once when its button appears.
   const holdActions = useCallback((element: HTMLButtonElement | null) => {
@@ -864,7 +868,9 @@ const DocumentRow = memo(function DocumentRow({
         caught instanceof ApiError ? caught.message : `${failed} Check your connection, then try again.`,
       );
       setBusy(false);
-      if (passwordAgain(caught)) {
+      const refused = checkingPassword.current && !lostTheRight(caught);
+      checkingPassword.current = false;
+      if (passwordAgain(caught) || refused) {
         // The dialog stays open, says why, and asks for the password; focus waits in its box.
         flushSync(() => setPasswordAsked(true));
         window.document.getElementById(`forever-password-${document.id}`)?.focus();
@@ -882,7 +888,11 @@ const DocumentRow = memo(function DocumentRow({
       setPassword("");
       void act(
         async (id) => {
-          if (typed !== null) await confirmPassword(typed);
+          if (typed !== null) {
+            checkingPassword.current = true;
+            await confirmPassword(typed);
+            checkingPassword.current = false;
+          }
           await deleteDocumentForever(id);
         },
         deletedForeverMessage(document.display_name),

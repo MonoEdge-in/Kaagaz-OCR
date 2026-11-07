@@ -16,6 +16,7 @@ import {
   listFolderItems,
   listFolderUploads,
   planFolderUpload,
+  randomId,
   registerFolderItems,
   uploadFolderItem,
 } from "@/lib/api";
@@ -112,7 +113,7 @@ export function useFolderUploads({
   const stopped = (id: string) => () => stops.current.has(id);
 
   function start(source: FolderSource, target: FolderTarget, merge: boolean, onlyNew: boolean) {
-    const id = crypto.randomUUID();
+    const id = randomId();
     hold(id, source);
     starts.current.set(id, { target, merge, onlyNew });
     void startFolderUpload(api, { id, userId, source, target, merge, onlyNew, limits }, emit, stopped(id));

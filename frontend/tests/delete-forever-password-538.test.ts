@@ -230,7 +230,7 @@ describe("an admin without two-step, in Trash", () => {
       "DELETE /api/documents/d3/permanent": [[403, { error: { code: "password_confirm_required", message: AGAIN } }]],
     });
     await show(admin("admin", false), [binned, second, third]);
-    await tick(byLabel("Select all visible documents"));
+    await tick(byLabel("Select all visible"));
     await press(button("Delete forever (3)"));
     await type(passwordBox("bulk-forever-password"), "secret");
     await press(button("Delete now"));

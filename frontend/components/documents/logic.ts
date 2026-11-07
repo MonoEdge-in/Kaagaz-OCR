@@ -494,14 +494,14 @@ export function flaggedShort(document: Finished): { shown: string; spoken: strin
 }
 
 /**
- * The list's Uploaded time, short so it stays on one line: "now", "5m ago", "2h ago",
+ * The list's Uploaded time, short so it stays on one line: "Just now", "5m ago", "2h ago",
  * "3d ago", then the date ("9 Oct 2026"). The exact time goes in its title and is read out.
  */
 export function shortWhen(iso: string, now: number): string {
   const at = new Date(iso).getTime();
   if (Number.isNaN(at)) return "";
   const minutes = Math.round((now - at) / 60_000);
-  if (minutes < 1) return "now";
+  if (minutes < 1) return "Just now";
   if (minutes < 60) return `${minutes}m ago`;
   if (minutes < 24 * 60) return `${Math.round(minutes / 60)}h ago`;
   if (minutes < 7 * 24 * 60) return `${Math.round(minutes / (24 * 60))}d ago`;
