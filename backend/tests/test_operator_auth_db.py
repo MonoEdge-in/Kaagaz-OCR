@@ -177,8 +177,24 @@ def test_a_password_and_a_fresh_code_one_401_for_every_failure_and_the_lockout(d
     api.clock.advance(totp.STEP_SECONDS)
     _refused(operator.login(api.client()))  # locked: even a right password and fresh code, and no row
     assert operator.actions() == [FAILED] * 3 + [LOGIN] + [FAILED] * 4 + [(False, "operator.locked")]
+    # Changed on purpose (A2, 7 Nov 2026): the lock is this address's, so another address signs
+    # in; an unlock (the CLI's) does not reach the API's memory, so this one waits it out.
+    assert operator.login(TestClient(api.app, client=("198.51.100.9", 50000))).status_code == 200
     operator.sql(_UNLOCK)
+    api.clock.advance(api.settings.login_lock_minutes * 60)
     assert operator.login(api.client()).status_code == 200
+
+
+def test_a_flood_from_one_address_never_locks_the_operator_out_of_their_own(db: Database) -> None:
+    """A2: as an organisation's users (tests/test_api_lockout.py), with the same caps."""
+    api = Api(db)
+    operator = _Operator(api)
+    attacker = TestClient(api.app, client=("203.0.113.7", 50000))
+    for _ in range(105):
+        _refused(operator.login(attacker, password=WRONG))
+    _refused(operator.login(attacker))
+    assert operator.actions() == [FAILED] * 4 + [(False, "operator.locked")]  # the fifth locks
+    assert operator.login(TestClient(api.app, client=("198.51.100.9", 50000))).status_code == 200
 
 
 def test_disabling_signing_out_and_30_minutes_end_a_session(db: Database) -> None:

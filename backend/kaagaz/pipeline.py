@@ -1047,6 +1047,14 @@ class DocumentProcessor:
                 extra={"customer_id": job.customer_id, "document_id": job.document_id, "code": "settled"},
             )
             return  # acked: no run, nothing read again
+        if record.in_trash:
+            # A8: acked, nothing read and its status left alone. Restored, it is in progress and
+            # untouched, so the stuck sweep (kaagaz.jobs.revive) queues it again.
+            _log.info(
+                "document in trash skipped",
+                extra={"customer_id": job.customer_id, "document_id": job.document_id, "code": "in_trash"},
+            )
+            return
         run = self._start_run(job)
         settled = False  # the run was finished, or is being, on a known path
         try:

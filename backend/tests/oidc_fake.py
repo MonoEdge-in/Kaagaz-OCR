@@ -25,6 +25,8 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from kaagaz.api import oidc
 from kaagaz.api.auth import _b64url as b64url
+from kaagaz.api.middleware import RateLimiter
+from kaagaz.api.routers import oidc as oidc_router
 from kaagaz.settings import Settings
 from tests.settings_factory import make_settings
 
@@ -156,8 +158,10 @@ def _json(value: Any) -> io.BytesIO:
 
 
 def use_google(monkeypatch: pytest.MonkeyPatch, google: FakeGoogle | None = None) -> FakeGoogle:
-    """``google`` (a new one when None) as Google, with an empty key cache."""
+    """``google`` (a new one when None) as Google, with an empty key cache, and room for every
+    callback a test makes from its one address (A1's per-visitor limit is one a process)."""
     google = google or FakeGoogle()
     monkeypatch.setattr(oidc, "_OPENER", google)
     monkeypatch.setattr(oidc, "_cache", {})
+    monkeypatch.setattr(oidc_router, "callback_address_limits", RateLimiter(1000, window_seconds=3600))
     return google

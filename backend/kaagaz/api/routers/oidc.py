@@ -68,8 +68,8 @@ provider's own routes: while that one is off), before anything else is read.
 
 Why the GETs need no CSRF header: start changes nothing, and the callback does nothing
 without the state that only this browser's cookie holds. Start is not limited (it only
-redirects); callbacks with the right state are limited for the whole site
-(``callback_limits``), and past it the reply is the ``busy`` redirect. Logged: the failure's
+redirects); callbacks with the right state and a code to exchange are limited per visitor
+address and for the whole site (A1), and past either the reply is the ``busy`` redirect. Logged: the failure's
 code and the provider only (for the token step, also its own failure and the provider's HTTP
 status), never a code, token, state, nonce, verifier, subject or email. Anything unexpected in
 the callback is logged ``oidc_failed`` {provider, error: its type} and is the ``unavailable``
@@ -116,7 +116,7 @@ from kaagaz.api.auth import (
 )
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
-from kaagaz.api.middleware import RateLimiter
+from kaagaz.api.middleware import RateLimiter, client_address
 from kaagaz.api.oidc import Identity, OidcError, Provider
 from kaagaz.api.routers.admin import GOOGLE_OFF, MAX_PASSWORD, ROLE_REFUSED, tell_admins
 from kaagaz.api.routers.auth import (
@@ -145,11 +145,12 @@ logger = logging.getLogger(__name__)
 
 Context = Annotated[AppContext, Depends(get_context)]
 
-# Callbacks an hour for the whole site (PROVISIONAL), counted only once the state is right, so
-# stray links cannot use it up; sized for real sign-ins. Behind the Next.js proxy every visitor
-# shares the proxy's address (kaagaz/api/middleware.py), as SIGNUPS_PER_HOUR says.
-# ponytail: site-wide cap; per-visitor once X-Forwarded-For is trusted.
-CALLBACKS_PER_HOUR = 600
+# Callbacks an hour (PROVISIONAL), counted only once the state is right and there is a code to
+# exchange, so stray links and cancelled sign-ins cannot use them up: per visitor address (uvicorn
+# takes it from Caddy's X-Forwarded-For, A1, 7 Nov 2026), and for the whole site, 5x what it was.
+CALLBACKS_PER_HOUR_ADDRESS = 30
+CALLBACKS_PER_HOUR = 3000
+callback_address_limits = RateLimiter(CALLBACKS_PER_HOUR_ADDRESS, window_seconds=3600)
 callback_limits = RateLimiter(CALLBACKS_PER_HOUR, window_seconds=3600)
 # Connect starts an hour for one user (PROVISIONAL): each one checks the password.
 CONNECTS_PER_HOUR = 10
@@ -285,8 +286,6 @@ def callback(
             or not hmac.compare_digest(state.encode(), flow.state.encode())
         ):
             raise _Refused("expired")
-        if not callback_limits.allow("site"):
-            raise _Refused("busy")
         identity = _identity(request, context, provider, flow, now)
         if flow.mode == "connect":
             response = _connect(request, context, background, provider, flow, identity)
@@ -438,6 +437,8 @@ def _identity(
     code = request.query_params.get("code", "")
     if "error" in request.query_params or not code:  # cancelled or refused at the provider
         raise _Refused("cancelled")
+    if not callback_address_limits.allow(client_address(request)) or not callback_limits.allow("site"):
+        raise _Refused("busy")
     try:
         token = oidc.id_token_for(provider, context.settings, code, flow.verifier)
         return oidc.verified_identity(provider, context.settings, token, nonce=flow.nonce, now=now)

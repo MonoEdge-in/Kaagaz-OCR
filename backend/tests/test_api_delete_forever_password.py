@@ -10,7 +10,7 @@ tag still needs two-step on. While the organisation requires two-step for its ad
 
 import pytest
 
-from kaagaz.api.auth import CONFIRM_COOKIE
+from kaagaz.api.auth import CONFIRM_COOKIE, CONFIRM_PATH
 from kaagaz.db.engine import Database
 from tests.test_api_admin_sign_in import _turned_off
 from tests.test_api_delete_forever_grant import _confirm, _forever, _grant
@@ -65,6 +65,30 @@ def test_only_a_fresh_token_of_this_admin_and_session_counts(db: Database) -> No
     assert changed.status_code == 200, changed.text  # this browser stays in, on a new session version
     assert _forever(admin, document) == (403, "password_confirm_required")
     assert api.storage.has(admin.customer_id, document)
+
+
+def test_a_confirm_token_works_only_in_the_browser_session_that_typed_the_password(db: Database) -> None:
+    """A4 (stability pass, 7 Nov 2026): the token carries the session's id, so a token copied to
+    another browser of the same person, or kept from before signing out and in again, is refused.
+    It still lasts 5 minutes in its own session (deleting a folder takes several calls)."""
+    api = Api(db)
+    admin = _turned_off(api)
+    document = _binned(api, admin)
+    assert _confirm(admin) == 204
+    token = admin.client.cookies[CONFIRM_COOKIE]
+
+    other = Signed(api.client(), admin.customer_id, admin.user_id, admin.email, "admin")
+    assert api.admin_login(other.client, admin.email).status_code == 200
+    other.client.cookies.set(CONFIRM_COOKIE, token, path=CONFIRM_PATH)
+    assert _forever(other, document) == (403, "password_confirm_required")
+
+    assert admin.client.post("/api/auth/logout", headers=CSRF).status_code == 204
+    assert api.admin_login(admin.client, admin.email).status_code == 200
+    admin.client.cookies.set(CONFIRM_COOKIE, token, path=CONFIRM_PATH)
+    assert _forever(admin, document) == (403, "password_confirm_required")
+    assert _confirm(admin) == 204
+    api.clock.advance(299)
+    assert _forever(admin, document) == (204, None)
 
 
 def test_an_admin_with_two_step_needs_no_token_and_gets_none(db: Database) -> None:

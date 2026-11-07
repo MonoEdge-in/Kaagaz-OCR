@@ -535,7 +535,7 @@ def test_wrong_codes_count_toward_the_lockout(db: Database) -> None:
     assert right.status_code == 401
     state = api.user_state(customer_id, admin.user_id)
     assert state["failed_logins"] == api.settings.login_max_failures
-    assert state["locked_until"] is not None
+    assert state["locked_until"] is None  # changed on purpose (A2): this address's lock, in memory
     assert "auth.locked" in api.audit_actions(customer_id)
 
 

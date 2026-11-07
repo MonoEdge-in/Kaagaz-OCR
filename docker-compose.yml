@@ -7,7 +7,8 @@
 # Only the stand-ins, to run the API and worker on the laptop itself:
 #   docker compose up postgres seaweedfs elasticmq clamav
 #
-# Image versions are pinned; Dependabot proposes updates.
+# Image versions are pinned; Dependabot proposes updates. Every port is published
+# on 127.0.0.1 only: reachable from this laptop, never from its network (A21).
 name: kaagaz-ocr
 
 # Shared by the three backend containers (migrate, api, worker): one image,
@@ -19,7 +20,7 @@ x-backend: &backend
   build:
     context: ./backend
     args:
-      # The commit the image is built from, shown by /api/health (#246 O1).
+      # The commit the image is built from, shown on the operator's Health page (#246 O1).
       KAAGAZ_COMMIT: ${KAAGAZ_TAG:-local}
   env_file: .env
   environment: &backend-env
@@ -55,7 +56,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kaagaz}
       POSTGRES_DB: ${POSTGRES_DB:-kaagaz}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -75,7 +76,7 @@ services:
       - data
     command: server -dir=/data -ip.bind=0.0.0.0 -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
     ports:
-      - "8333:8333"
+      - "127.0.0.1:8333:8333"
     volumes:
       - seaweedfs-data:/data
       - ./infra/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
@@ -94,7 +95,7 @@ services:
     networks:
       - data
     ports:
-      - "9324:9324"
+      - "127.0.0.1:9324:9324"
     volumes:
       - ./infra/elasticmq/elasticmq.conf:/opt/elasticmq.conf:ro
       - elasticmq-data:/data # the stored messages (messages-storage in elasticmq.conf)
@@ -143,7 +144,7 @@ services:
       CLAMD_CONF_HeuristicScanPrecedence: "yes"
       CLAMD_CONF_DetectPUA: "yes"
     ports:
-      - "3310:3310"
+      - "127.0.0.1:3310:3310"
     volumes:
       - clamav-data:/var/lib/clamav
     healthcheck:
@@ -188,7 +189,7 @@ services:
     environment:
       <<: *backend-env
       OPS_DATABASE_URL: ${OPS_DATABASE_URL:-} # the super admin's login (#479), only here
-    command: ["uvicorn", "kaagaz.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["uvicorn", "kaagaz.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-server-header", "--timeout-keep-alive", "75"]
     networks:
       - data
       - edge
@@ -263,7 +264,7 @@ services:
     networks:
       - edge
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     healthcheck:
       # The slim image has no curl or wget (#477, 3 Nov 2026). fetch follows redirects;
       # any answer but 2xx, or none in 5 s, fails the check. infra/ec2/deploy.sh waits for it.

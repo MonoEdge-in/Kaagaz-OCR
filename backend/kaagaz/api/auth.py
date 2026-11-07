@@ -190,6 +190,7 @@ class ConfirmClaims:
     customer_id: str
     session_version: int
     expires_at: int  # seconds since the epoch
+    session_id: str  # the browser session that typed the password (A4, 7 Nov 2026)
 
 
 _SESSION_PURPOSE = b"session"
@@ -197,7 +198,7 @@ _ENROL_PURPOSE = b"enrol"
 _CONFIRM_PURPOSE = b"confirm"
 _SESSION_FIELDS = frozenset({"uid", "cid", "role", "scope", "ver", "exp", "sid"})
 _ENROL_FIELDS = frozenset({"uid", "cid", "ver", "sec", "exp"})
-_CONFIRM_FIELDS = frozenset({"uid", "cid", "ver", "exp"})
+_CONFIRM_FIELDS = frozenset({"uid", "cid", "ver", "exp", "sid"})
 _OPERATOR_PURPOSE = b"operator"
 _OPERATOR_FIELDS = frozenset({"oid", "ver", "exp"})
 _MOVE_PURPOSE = b"operator_move"
@@ -308,6 +309,7 @@ def sign_confirm(claims: ConfirmClaims, secret: str) -> str:
             "cid": claims.customer_id,
             "ver": claims.session_version,
             "exp": claims.expires_at,
+            "sid": claims.session_id,
         },
         _CONFIRM_PURPOSE,
         secret,
@@ -316,16 +318,16 @@ def sign_confirm(claims: ConfirmClaims, secret: str) -> str:
 
 def read_confirm(token: str, secret: str, now: int) -> ConfirmClaims | None:
     """The claims of a genuine, unexpired confirm token, else None. Strict: exactly
-    the four fields, each of its type. Constant-time check."""
+    the five fields, each of its type. Constant-time check."""
     data = _verified(token, _CONFIRM_PURPOSE, secret)
     if not isinstance(data, dict) or set(data) != _CONFIRM_FIELDS:
         return None
-    uid, cid, ver, exp = data["uid"], data["cid"], data["ver"], data["exp"]
-    if not (isinstance(uid, str) and isinstance(cid, str) and _is_uuid(uid) and _is_uuid(cid)):
+    uid, cid, ver, exp, sid = data["uid"], data["cid"], data["ver"], data["exp"], data["sid"]
+    if not all(isinstance(value, str) and _is_uuid(value) for value in (uid, cid, sid)):
         return None
     if not (_is_version(ver) and _is_int(exp)) or exp <= now:
         return None
-    return ConfirmClaims(user_id=uid, customer_id=cid, session_version=ver, expires_at=exp)
+    return ConfirmClaims(user_id=uid, customer_id=cid, session_version=ver, expires_at=exp, session_id=sid)
 
 
 # --- the platform operator's tokens (super admin PR 2, PROVISIONAL): other purposes and
@@ -779,13 +781,16 @@ def touch_due(seen_at: datetime | None, now: datetime) -> bool:
     return seen_at is not None and now - seen_at >= TOUCH_EVERY
 
 
-def set_confirm_cookie(response: Response, user: CurrentUser, settings: Settings, *, now: int) -> None:
-    """A confirm token for this user and session version, CONFIRM_SECONDS long."""
+def set_confirm_cookie(
+    response: Response, user: CurrentUser, settings: Settings, *, now: int, session_id: str
+) -> None:
+    """A confirm token for this user, session version and browser session, CONFIRM_SECONDS long."""
     claims = ConfirmClaims(
         user_id=user.user_id,
         customer_id=user.customer_id,
         session_version=user.session_version,
         expires_at=now + CONFIRM_SECONDS,
+        session_id=session_id,
     )
     response.set_cookie(
         CONFIRM_COOKIE,
@@ -939,7 +944,8 @@ def require_delete_forever(request: Request, user: User) -> CurrentUser:
     organisation requires two-step for its admins (0068, #481) one without it is refused as
     before (403 ``two_step_required``; ``current_user`` already refuses that state). Anyone else
     needs an admin's grant (403 ``forbidden``). The confirm token comes from typing the password
-    in the last CONFIRM_SECONDS, for this user and session version (403
+    in the last CONFIRM_SECONDS, for this user, session version and browser session (its ``sid``,
+    A4: never another browser's, nor one from before signing out and in again; 403
     ``password_confirm_required``). The grant is read again on every request, so stopping it
     works at once."""
     if user.role == "admin" and not deletes_forever_by_password(require_admin_session(user)):
@@ -947,10 +953,21 @@ def require_delete_forever(request: Request, user: User) -> CurrentUser:
     if not deletes_forever_by_password(user):
         raise ApiError(403, "forbidden")
     context = get_context(request)
+    now = int(context.clock().timestamp())
     token = request.cookies.get(CONFIRM_COOKIE) or ""
-    claims = read_confirm(token, context.settings.session_secret, int(context.clock().timestamp()))
-    signed = None if claims is None else (claims.user_id, claims.customer_id, claims.session_version)
-    if signed != (user.user_id, user.customer_id, user.session_version):
+    claims = read_confirm(token, context.settings.session_secret, now)
+    session = session_claims(request, context.settings, now)
+    signed = (
+        None
+        if claims is None
+        else (claims.user_id, claims.customer_id, claims.session_version, claims.session_id)
+    )
+    if session is None or signed != (
+        user.user_id,
+        user.customer_id,
+        user.session_version,
+        session.session_id,
+    ):
         raise ApiError(403, "password_confirm_required")
     return user
 

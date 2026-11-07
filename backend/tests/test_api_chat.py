@@ -276,9 +276,11 @@ def test_an_outage_from_a_timeout_says_the_question_took_too_long(db: Database) 
     timed_out = signed.client.post("/api/chat", json={"question": "total?"}, headers=CSRF).json()["answer"]
     assert timed_out["text"] == chat_router.TIMEOUT_LINE
     assert timed_out["answer"]["outage"] is True and timed_out["answer"]["outage_reason"] == "timeout"
+    # Changed on purpose (B13, 7 Nov 2026): neutral words; the screen adds "Swift answers faster."
+    # only when the question was asked with Precision, which it knows and the server does not.
     assert (
         chat_router.TIMEOUT_LINE
-        == "This question took too long for the AI. Try Swift, or ask about fewer documents."
+        == "This question took too long for the AI. Ask about fewer documents, then try again."
     )
     api.answers.reply = answer_json(status="not_found")
     down = signed.client.post("/api/chat", json={"question": "sum?"}, headers=CSRF).json()["answer"]

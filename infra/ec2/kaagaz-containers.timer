@@ -1,0 +1,10 @@
+# Runs kaagaz-containers.service 15 minutes after boot, then every hour.
+[Unit]
+Description=Kaagaz: check every hour whether a container is unhealthy or restarting
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=1h
+
+[Install]
+WantedBy=timers.target

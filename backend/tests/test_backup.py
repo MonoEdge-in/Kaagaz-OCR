@@ -373,6 +373,17 @@ def test_a_disk_alert_that_fails_says_so_and_is_tried_again_next_hour(
     assert out.getvalue() == "" and "not sent" in capsys.readouterr().err
 
 
+def test_ops_alert_emails_the_subject_and_text_it_is_given() -> None:
+    """A22: infra/ec2/ops-alert.sh sends a failed unit's or an unhealthy container's alert
+    through this command, by the disk alert's one rule."""
+    mailer, out = MemoryMailer(), io.StringIO()
+    argv = ["ops-alert", "--subject", "Kaagaz server: x failed", "--text", "x failed."]
+    assert main(argv, settings=alerting(), mailer=mailer, out=out) == 0
+    assert mailer.sent == [SentEmail("ops@example.com", "Kaagaz server: x failed", "x failed.")]
+    assert out.getvalue() == "alert sent\n"
+    assert main(argv, settings=alerting(email_from=None), mailer=mailer, out=io.StringIO()) == 2
+
+
 def test_a_failed_pause_alert_logs_one_clear_ops_alert_failed_line(caplog: pytest.LogCaptureFixture) -> None:
     """QA W2: a worker that cannot reach the server's role (a bridge network with the instance
     metadata hop limit at 1) has no credentials. One line says so, as the worker prints it: its

@@ -162,7 +162,8 @@ def test_flow_refused_when_expired_tampered_or_signed_for_another_purpose() -> N
     body, signature = token.split(".")
     assert read_flow(body + "x." + signature, SECRET, now=1_000) is None
     confirm = sign_confirm(
-        ConfirmClaims(user_id=UID, customer_id=CID, session_version=3, expires_at=2_000), SECRET
+        ConfirmClaims(user_id=UID, customer_id=CID, session_version=3, expires_at=2_000, session_id=UID),
+        SECRET,
     )
     assert read_flow(confirm, SECRET, now=1_000) is None
     assert read_session(token, SECRET, now=1_000) is None
@@ -310,6 +311,22 @@ def test_signed_out_visitors_behind_caddy_each_have_their_own_bucket() -> None:
         assert client.get("/api/auth/me", headers=first).status_code == 401
     assert client.get("/api/auth/me", headers=first).status_code == 429  # this visitor: used up
     assert client.get("/api/auth/me", headers=second).status_code == 401  # another: their own
+
+
+def test_the_sign_in_pages_server_calls_are_keyed_on_the_visitor_it_forwards() -> None:
+    """A7 (stability pass, 7 Nov 2026): the login page's server side (frontend
+    app/login/signInOptions.ts) calls /auth/session from the frontend container with the visitor's
+    address in X-Forwarded-For, so each visitor keeps their own bucket. From outside the header is
+    never believed: Caddy, with no trusted_proxies, replaces whatever a visitor sent."""
+    caddyfile = (Path(__file__).resolve().parents[2] / "infra" / "caddy" / "Caddyfile").read_text(
+        encoding="utf-8"
+    )
+    assert "trusted_proxies" not in caddyfile
+    app = _offline_client(rate_limit_per_minute=1).app
+    frontend = TestClient(ProxyHeadersMiddleware(app, trusted_hosts="*"), client=("172.18.0.5", 40000))  # type: ignore[arg-type]  # ASGI types differ
+    assert frontend.get("/api/auth/session", headers={"X-Forwarded-For": "203.0.113.7"}).status_code != 429
+    assert frontend.get("/api/auth/session", headers={"X-Forwarded-For": "203.0.113.7"}).status_code == 429
+    assert frontend.get("/api/auth/session", headers={"X-Forwarded-For": "198.51.100.9"}).status_code != 429
 
 
 def test_rate_limiter_retry_after_is_the_wait_for_the_next_token() -> None:

@@ -16,10 +16,11 @@
   and whose organisation is ``pending``.
 * ``POST /auth/forgot`` {email}: always 202 with the same words, so it never shows who has
   an account. The lookup and the email happen after the reply (a background task), so an
-  unknown address takes the same path and time. At most LINKS_PER_HOUR_SITE for the whole
-  site (429) and FORGOTS_PER_HOUR_EMAIL an e-mail (the rest are answered the same and
-  send nothing). Only organisation users are found (``kaagaz_login_lookup``), never an
-  operator, and never a disabled user.
+  unknown address takes the same path and time. At most LINKS_PER_HOUR_ADDRESS a visitor
+  address with ``resend-confirm`` (A1) and LINKS_PER_HOUR_SITE for the whole site (429), and
+  FORGOTS_PER_HOUR_EMAIL an e-mail from one address (the rest are answered the same and send
+  nothing; per address, so a stranger never uses up a person's own links). Only organisation
+  users are found (``kaagaz_login_lookup``), never an operator, and never a disabled user.
 * ``POST /auth/reset`` {token, new_password}: the password from a reset link. It clears a
   temporary password, proves the e-mail, raises the session version (every browser is
   signed out), ends the user's other open links, removes their connected accounts (as an
@@ -45,7 +46,7 @@ from kaagaz.api.auth import User, hash_password
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.emails import email_on, new_link, send, token_hash
 from kaagaz.api.errors import ApiError
-from kaagaz.api.middleware import RateLimiter
+from kaagaz.api.middleware import RateLimiter, client_address
 from kaagaz.api.routers.admin import MAX_PASSWORD, MIN_PASSWORD, valid_email
 from kaagaz.api.routers.auth import _per_user_limit
 from kaagaz.db import audit, identities
@@ -67,14 +68,16 @@ Context = Annotated[AppContext, Depends(get_context)]
 LINK_GONE = "That link has expired or was already used."
 FORGOT_SENT = "If that email has an account, we've sent a link."
 RESEND_SENT = "If that email is waiting to be confirmed, we've sent a new link."
-# PROVISIONAL limits. Behind the Next.js proxy every visitor shares the proxy's address
-# (kaagaz/api/middleware.py), so the address limit is one cap for the whole site, sized for
-# real use. ponytail: site-wide cap; per-visitor once X-Forwarded-For is trusted (as sign-up's).
+# PROVISIONAL limits. Each visitor has their own address (uvicorn takes it from Caddy's
+# X-Forwarded-For, backend/Dockerfile), so the per-address cap does the work (A1, 7 Nov 2026) and
+# the site-wide one, 5x what it was, only stops a spread-out flood.
 CONFIRMS_PER_HOUR = 3
-LINKS_PER_HOUR_SITE = 300
+LINKS_PER_HOUR_ADDRESS = 10  # forgot and resend-confirm together
+LINKS_PER_HOUR_SITE = 1500
 FORGOTS_PER_HOUR_EMAIL = 3
 SITE = "site"  # the one key of the site-wide limits
 confirm_limits = RateLimiter(CONFIRMS_PER_HOUR, window_seconds=3600)
+link_address_limits = RateLimiter(LINKS_PER_HOUR_ADDRESS, window_seconds=3600)
 forgot_site_limits = RateLimiter(LINKS_PER_HOUR_SITE, window_seconds=3600)
 forgot_email_limits = RateLimiter(FORGOTS_PER_HOUR_EMAIL, window_seconds=3600)
 resend_site_limits = RateLimiter(LINKS_PER_HOUR_SITE, window_seconds=3600)
@@ -123,14 +126,20 @@ def send_confirm(user: User, context: Context) -> dict[str, bool]:
 
 
 @router.post("/auth/email/resend-confirm", status_code=202)
-def resend_confirm(body: ForgotBody, background: BackgroundTasks, context: Context) -> dict[str, str]:
-    _link_later(background, context, body.email, "confirm", resend_site_limits, resend_email_limits)
+def resend_confirm(
+    body: ForgotBody, request: Request, background: BackgroundTasks, context: Context
+) -> dict[str, str]:
+    address = client_address(request)
+    _link_later(background, context, body.email, address, "confirm", resend_site_limits, resend_email_limits)
     return {"message": RESEND_SENT}
 
 
 @router.post("/auth/forgot", status_code=202)
-def forgot_password(body: ForgotBody, background: BackgroundTasks, context: Context) -> dict[str, str]:
-    _link_later(background, context, body.email, "reset", forgot_site_limits, forgot_email_limits)
+def forgot_password(
+    body: ForgotBody, request: Request, background: BackgroundTasks, context: Context
+) -> dict[str, str]:
+    address = client_address(request)
+    _link_later(background, context, body.email, address, "reset", forgot_site_limits, forgot_email_limits)
     return {"message": FORGOT_SENT}
 
 
@@ -153,22 +162,25 @@ def _link_later(
     background: BackgroundTasks,
     context: AppContext,
     email: str,
+    address: str,
     purpose: str,
     site_limits: RateLimiter,
     email_limits: RateLimiter,
 ) -> None:
     """Forgot password's and "Send the link again"'s one core, each with its own limiters: the
-    site-wide limit (429), then the lookup and the email after the reply (``_send_link``), so
-    every address takes the same path and time."""
-    if not site_limits.allow(SITE):
+    visitor's and the site-wide limits (429), then the lookup and the email after the reply
+    (``_send_link``), so every e-mail takes the same path and time."""
+    if not link_address_limits.allow(address) or not site_limits.allow(SITE):
         raise ApiError(429, "rate_limited", TOO_MANY_LINKS, headers={"Retry-After": "3600"})
-    emails.after(background, purpose, _send_link, context, valid_email(email), purpose, email_limits)
+    email = valid_email(email)
+    emails.after(background, purpose, _send_link, context, email, purpose, email_limits, f"{email}|{address}")
 
 
-def _send_link(context: AppContext, email: str, purpose: str, email_limits: RateLimiter) -> None:
-    """After the reply, within ``email_limits``: a reset link to an enabled organisation user with
-    this e-mail, or a new confirm link to an enabled, unconfirmed admin of a pending sign-up."""
-    if not email_limits.allow(email):
+def _send_link(context: AppContext, email: str, purpose: str, email_limits: RateLimiter, key: str) -> None:
+    """After the reply, within ``email_limits`` for ``key`` (the e-mail and the visitor's address):
+    a reset link to an enabled organisation user with this e-mail, or a new confirm link to an
+    enabled, unconfirmed admin of a pending sign-up."""
+    if not email_limits.allow(key):
         return
     with context.db.system() as conn:
         found = users_sql.login_lookup(conn, email)

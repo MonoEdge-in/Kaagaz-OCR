@@ -10,12 +10,14 @@ the heartbeat; and the timing line.
 
 import asyncio
 import functools
+import itertools
 import json
 import logging
 import threading
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -29,9 +31,10 @@ from kaagaz.answering.service import AnswerService
 from kaagaz.answering.stream import Events
 from kaagaz.api.auth import CurrentUser
 from kaagaz.api.context import AppContext
+from kaagaz.api.errors import MESSAGES
 from kaagaz.api.routers import chat as chat_router
-from kaagaz.api.routers.chat import TOO_SLOW, AskBody, ask, stream_answer
-from kaagaz.db.engine import Database
+from kaagaz.api.routers.chat import TOO_SLOW, AskBody, ask, sse, stream_answer
+from kaagaz.db.engine import MAX_OVERFLOW, POOL_SIZE, Database
 from tests.openrouter_fake import (
     KEY,
     OpenRouterFake,
@@ -45,7 +48,7 @@ from tests.openrouter_fake import (
     stream_reply,
 )
 from tests.settings_factory import make_settings
-from tests.test_api_support import CSRF, NOW, Api, Signed
+from tests.test_api_support import CSRF, NOW, Api, FakeAnswers, Signed, TestClient
 from tests.test_isolation_answering import HINGLISH, SEARCH, _seed
 
 pytestmark = pytest.mark.db
@@ -141,6 +144,10 @@ def world(db: Database, fake: OpenRouterFake, **settings: Any) -> World:
     api = Api(db, settings=made, model=client, answers=answers)
     signed = api.new_signed()
     return World(api, signed, _seed(db, signed.customer_id), fake)
+
+
+# _work's last two: it started, and the asker's turn back (A3); neither matters here.
+_RAN = (threading.Event(), lambda: None)
 
 
 def _stopped() -> None:
@@ -402,7 +409,11 @@ def test_a_repeated_question_on_the_stream_is_done_at_once_from_its_stored_answe
 
     assert names(again) == ["started", "done"]  # no stage, no draft: the stored answer at once
     assert len(fake.bodies()) == 1  # no second model call
-    assert again[-1][1]["reply"]["answer"]["answer"] == first[-1][1]["reply"]["answer"]["answer"]
+    copy, fresh = again[-1][1]["reply"]["answer"]["answer"], first[-1][1]["reply"]["answer"]["answer"]
+    # Changed on purpose (A10, 7 Nov 2026): a copy says what became of each source, as a
+    # conversation does; all still here.
+    assert [citation.pop("source_state") for citation in copy["citations"]] == ["live"]
+    assert copy == fresh
     (line,) = [r.getMessage() for r in caplog.records if r.name == "kaagaz.answering.timing"]
     assert " cached=1 " in line and line.endswith(" streamed=1")
 
@@ -572,8 +583,8 @@ def test_a_failing_background_task_is_its_own_log_and_the_broad_catch_names_the_
 
     events = Events(lambda name, data: sent.append((name, data)))
     events.send("started", ids)  # as ask sends it first
-    chat_router._work(saved, cast(AppContext, None), events, lambda n, d: sent.append((n, d)))
-    chat_router._work(broken, cast(AppContext, None), events, lambda n, d: sent.append((n, d)))
+    chat_router._work(saved, cast(AppContext, None), events, lambda n, d: sent.append((n, d)), *_RAN)
+    chat_router._work(broken, cast(AppContext, None), events, lambda n, d: sent.append((n, d)), *_RAN)
 
     assert [name for name, _ in sent] == ["started", "done", "error"]
     background = [r for r in caplog.records if r.getMessage() == "background task failed"]
@@ -660,3 +671,199 @@ def test_a_repeat_on_the_stream_is_marked_as_a_copy_as_post_api_chat_marks_it(
     assert first.get("repeat_key") and "repeat_copy" not in first
     assert copy.get("repeat_copy") == first["repeat_key"] and "repeat_key" not in copy
     assert len(fake.bodies()) == 1
+
+
+# --- answers being written at once (A3, A9: stability pass, 7 Nov 2026) ----------------------
+
+
+class _Held(FakeAnswers):
+    """Each answer waits for ``go``; ``started`` counts the answers being written."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.go = threading.Event()
+        self.started = threading.Semaphore(0)
+
+    def answer(self, *args: Any, **kwargs: Any) -> Any:
+        self.started.release()
+        assert self.go.wait(10)
+        return super().answer(*args, **kwargs)
+
+
+def _ask_in_thread(client: TestClient, replies: list[int]) -> threading.Thread:
+    def post() -> None:
+        replies.append(
+            client.post("/api/chat", json={"question": "what is the total?"}, headers=CSRF).status_code
+        )
+
+    thread = threading.Thread(target=post)
+    thread.start()
+    return thread
+
+
+def test_answers_at_once_fit_the_database_pool() -> None:
+    """A3: each answer holds at most two pooled connections at a time; the streamed and posted
+    answers at once never need the whole pool (db/engine.py), so the rest of the app always has one."""
+    assert chat_router.ANSWERS_PER_USER == 2
+    assert 2 * (chat_router.STREAM_WORKERS + chat_router.POSTED_ANSWERS) < POOL_SIZE + MAX_OVERFLOW
+    assert chat_router._STREAMS._max_workers == chat_router.STREAM_WORKERS
+
+
+@pytest.mark.db
+def test_a_person_has_at_most_two_answers_being_written(db: Database) -> None:
+    """A3: a third, posted or streamed, is 429 with plain words; once one is done, they may ask."""
+    held = _Held()
+    api = Api(db, answers=held)
+    signed = api.new_signed()
+    replies: list[int] = []
+    threads = [_ask_in_thread(signed.client, replies) for _ in range(2)]
+    assert held.started.acquire(timeout=10) and held.started.acquire(timeout=10)
+    try:
+        for path in ("/api/chat", "/api/chat/stream"):
+            third = signed.client.post(path, json={"question": "and the seller?"}, headers=CSRF)
+            assert third.status_code == 429, path
+            assert third.json()["error"] == {"code": "rate_limited", "message": chat_router.TOO_MANY_RUNNING}
+        other = api.new_signed()  # someone else asks as usual
+        assert other.client.post("/api/chat/stream", json={"question": "hi"}, headers=CSRF).status_code == 200
+    finally:
+        held.go.set()
+        for thread in threads:
+            thread.join(10)
+    assert replies == [200, 200]
+    assert (
+        signed.client.post("/api/chat", json={"question": "and the seller?"}, headers=CSRF).status_code == 200
+    )
+
+
+@pytest.mark.db
+def test_posted_answers_past_the_process_cap_wait_their_turn(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A3: past POSTED_ANSWERS a question waits for a turn instead of failing."""
+    monkeypatch.setattr(chat_router, "_POSTED", threading.BoundedSemaphore(1))
+    held = _Held()
+    api = Api(db, answers=held)
+    replies: list[int] = []
+    first = _ask_in_thread(api.new_signed().client, replies)
+    assert held.started.acquire(timeout=10)
+    second = _ask_in_thread(api.new_signed().client, replies)
+    assert not held.started.acquire(timeout=0.5)  # waiting for the first
+    held.go.set()
+    first.join(10)
+    second.join(10)
+    assert replies == [200, 200]
+
+
+def test_the_time_cap_never_blocks_the_stream_loop_while_an_answer_is_being_saved() -> None:
+    """A9: past the cap, stopping the answer waits for a save under way; the wait is off the event
+    loop, so every other stream on it goes on."""
+
+    def slow_save(context: AppContext, background: Any) -> dict[str, Any]:
+        stream_module.emit("started", {"conversation_id": "c", "question_id": "q"})
+        with stream_module.saving():
+            time.sleep(1.0)  # the save's transaction holds the events' lock
+        return {"saved": True}
+
+    async def run() -> tuple[list[str], float]:
+        ticks: list[float] = []
+
+        async def tick() -> None:
+            while True:
+                ticks.append(time.monotonic())
+                await asyncio.sleep(0.02)
+
+        ticker = asyncio.create_task(tick())
+        context = cast(AppContext, None)
+        found = [chunk async for chunk in stream_answer(slow_save, context, cap=0.2)]
+        ticker.cancel()
+        ticks.append(time.monotonic())  # the stream ended: the last gap counts too
+        return found, max(b - a for a, b in itertools.pairwise(ticks))
+
+    found, longest_gap = asyncio.run(run())
+    assert found[-1].startswith("event: done")  # saved: finished, and done follows
+    assert longest_gap < 0.5
+
+
+@pytest.mark.db
+def test_a_posted_answer_that_finds_no_turn_in_time_is_busy_and_logged(
+    db: Database, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A3 review: the wait for a turn holds no thread of the pool every route shares, and when it
+    runs out the 503 says why in the log."""
+    monkeypatch.setattr(chat_router, "_POSTED", threading.BoundedSemaphore(1))
+    assert chat_router._POSTED.acquire(blocking=False)  # every turn taken
+    api = Api(db, settings=make_settings(answer_stream_max_seconds=0.3))
+    with caplog.at_level(logging.WARNING):
+        reply = api.new_signed().client.post("/api/chat", json={"question": "total?"}, headers=CSRF)
+    assert (reply.status_code, reply.json()["error"]["code"]) == (503, "backend_unavailable")
+    assert [r.getMessage() for r in caplog.records if getattr(r, "code", None) == "posted_answers_full"]
+
+
+def _blocked(gate: threading.Event, seconds: float = 0.0) -> Callable[..., dict[str, Any]]:
+    """Work that waits for ``gate``, then takes ``seconds``."""
+
+    def work(context: AppContext, background: Any) -> dict[str, Any]:
+        stream_module.emit("started", {"conversation_id": "c", "question_id": "q"})
+        assert gate.wait(10)
+        time.sleep(seconds)
+        return {"ok": True}
+
+    return work
+
+
+def _streamed(work: Callable[..., dict[str, Any]], cap: float, turn: str | None = None) -> list[str]:
+    async def run() -> list[str]:
+        return [chunk async for chunk in stream_answer(work, cast(AppContext, None), cap=cap, turn=turn)]
+
+    return asyncio.run(run())
+
+
+def test_a_queued_stream_gets_its_whole_time_once_it_starts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A3 review: the time cap counts from when the answer starts, not while it waits for the pool."""
+    monkeypatch.setattr(chat_router, "_STREAMS", ThreadPoolExecutor(max_workers=1))
+    first_gate, second_gate = threading.Event(), threading.Event()
+    first = threading.Thread(target=_streamed, args=(_blocked(first_gate), 5.0))
+    first.start()
+    time.sleep(0.1)  # the first holds the pool's one worker
+    threading.Timer(0.5, first_gate.set).start()  # free 0.6 s after the first came
+    second_gate.set()
+    found = _streamed(_blocked(second_gate, 0.5), 0.8)  # waits 0.5, then 0.5 of its own 0.8
+    first.join(10)
+    assert found[-1].startswith("event: done")
+
+
+def test_a_stream_still_queued_at_the_cap_is_busy_never_too_slow_and_frees_its_turn(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A3 review: it never started, so "Try a narrower question" would be wrong; it is the busy
+    words, logged as the queue being full, and the asker's turn comes back."""
+    monkeypatch.setattr(chat_router, "_STREAMS", ThreadPoolExecutor(max_workers=1))
+    gate = threading.Event()
+    first = threading.Thread(target=_streamed, args=(_blocked(gate), 5.0))
+    first.start()
+    time.sleep(0.1)
+    with caplog.at_level(logging.WARNING):
+        found = _streamed(_blocked(gate), 0.3, turn="asker")
+    gate.set()
+    first.join(10)
+    assert found == [
+        sse("error", {"code": "backend_unavailable", "message": MESSAGES["backend_unavailable"]})
+    ]
+    assert [r for r in caplog.records if getattr(r, "code", None) == "answer_queue_full"]
+    assert "asker" not in chat_router._ANSWERING
+
+
+def test_a_streamed_answer_gives_its_turn_back_with_the_reply_before_its_memory_is_written() -> None:
+    """A3 review: the memory's write after ``done`` (a model call) no longer holds the asker's turn."""
+    writing = threading.Event()
+
+    def work(context: AppContext, background: Any) -> dict[str, Any]:
+        background.add_task(writing.wait, 5)
+        return {"ok": True}
+
+    found = _streamed(work, 5.0, turn="asker")
+    try:
+        assert found[-1].startswith("event: done")
+        assert "asker" not in chat_router._ANSWERING
+    finally:
+        writing.set()

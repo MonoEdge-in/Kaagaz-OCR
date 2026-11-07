@@ -13,13 +13,24 @@
 #   - Every long-running service restarts after a crash or a reboot.
 #   - Every service's log is rotated (5 files of 20 MB), so logs never fill the disk.
 #   - SeaweedFS reads its access keys from the server's own file, not from git.
-#   - api, each worker and clamav have a memory limit (#246 A2), so one of them
-#     running away is stopped alone instead of the kernel's OOM killer picking a
-#     process anywhere on the box, postgres included. postgres has none. PROVISIONAL
-#     (Vrushit's budget): generous on purpose, from the 15 GiB server using about
-#     2.2 GiB at idle with 5 workers; clamav needs 1.5 to 3 GiB while it reloads its
-#     signatures. A container over its limit is killed and restarted
-#     (restart: unless-stopped); a worker's job then goes back to the queue.
+#   - Every service but postgres and caddy has a memory limit (#246 A2; A15, 7 Nov
+#     2026), so one of them running away is stopped alone instead of the kernel's
+#     OOM killer picking a process anywhere on the box. memswap_limit equals
+#     mem_limit, so a container at its limit is stopped, not swapped until the whole
+#     server crawls. postgres has none, and oom_score_adj -900 makes it the kernel's
+#     last pick if the server itself runs out. PROVISIONAL (Vrushit's budget): the
+#     16 GB (15 GiB) server uses about 2.2 GiB at idle with 5 workers; clamav needs
+#     1.5 to 3 GiB while it reloads its signatures. The limits are ceilings, not
+#     reservations: with 3 workers they add up to 18.5 GiB (api 3, workers 3 x 3,
+#     clamav 4, frontend 1, seaweedfs 1, elasticmq 0.5), plus postgres (1 GB of
+#     shared_buffers) and caddy. That is above 15 GiB on purpose, since they never
+#     all peak at once; each extra worker adds 3. A container over its limit is
+#     killed and restarted (restart: unless-stopped); a worker's job then goes back
+#     to the queue.
+#   - api, the workers, frontend and migrate drop every Linux capability and can't
+#     gain one through a setuid file (A19): they run as a user on ports above 1024
+#     and need none (LibreOffice, RapidOCR and pi-heif included). clamav, postgres
+#     and caddy start as root and are left as they are.
 #
 # The server's .env sets KAAGAZ_DOMAIN, ACME_EMAIL and SEAWEEDFS_S3_CONFIG (the
 # path of its s3.json); compose stops with the name of any that is missing. It
@@ -38,6 +49,12 @@ services:
     ports: !reset []
     restart: unless-stopped
     logging: *logging
+    oom_score_adj: -900
+    # A17: 1 GB of buffers (the image's default is 128 MB), and /dev/shm above the
+    # default 64 MB, which a parallel query outgrows. The base file sets no command.
+    shm_size: 1g
+    command: ["postgres", "-c", "shared_buffers=1GB", "-c", "maintenance_work_mem=512MB"]
+    stop_grace_period: 60s # a clean shutdown, not Docker's kill after 10 s
 
   seaweedfs:
     ports: !reset []
@@ -47,22 +64,30 @@ services:
       - ${SEAWEEDFS_S3_CONFIG:?set SEAWEEDFS_S3_CONFIG in .env}:/etc/seaweedfs/s3.json:ro
     restart: unless-stopped
     logging: *logging
+    mem_limit: 1g
+    memswap_limit: 1g
 
   elasticmq:
     ports: !reset []
     restart: unless-stopped
     logging: *logging
+    mem_limit: 512m
+    memswap_limit: 512m
+    stop_grace_period: 60s # writes out the stored messages
 
   clamav:
     ports: !reset []
     restart: unless-stopped
     logging: *logging
     mem_limit: 4g # signatures (#522: its zip limits are disk, docker-compose.yml)
+    memswap_limit: 4g
 
   # One-shot: it runs once per deploy and exits, so it gets no restart policy.
   # The storage admin key from the server's .env, never the laptop's (#477).
   migrate:
     logging: *logging
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
     environment:
       STORAGE_ACCESS_KEY: ${STORAGE_ADMIN_ACCESS_KEY:-}
       STORAGE_SECRET_KEY: ${STORAGE_ADMIN_SECRET_KEY:-}
@@ -72,6 +97,11 @@ services:
     restart: unless-stopped
     logging: *logging
     mem_limit: 3g
+    memswap_limit: 3g
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    # A16: an answer being written (POST /api/chat/stream) finishes before api stops.
+    stop_grace_period: 200s
     environment:
       # The number of worker copies below, not docker-compose.yml's laptop "1".
       # OpenRouter RPM is reserved centrally in PostgreSQL across API and worker processes.
@@ -79,7 +109,11 @@ services:
 
   worker:
     logging: *logging # restart: unless-stopped is already in docker-compose.yml
-    mem_limit: 4g # each copy
+    mem_limit: 3g # each copy
+    memswap_limit: 3g
+    cpus: "1.5" # each copy (A20), so the workers never starve api and postgres
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
     # WORKER_REPLICAS controls worker processes only; it does not set model RPM.
     # The lease and run fence keep each document to one copy, and each sweep
     # between jobs takes a Postgres advisory lock, so only one copy runs it.
@@ -92,6 +126,10 @@ services:
     ports: !reset []
     restart: unless-stopped
     logging: *logging
+    mem_limit: 1g
+    memswap_limit: 1g
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
 
   # HTTPS in front of everything (infra/caddy/Caddyfile): the Let's Encrypt
   # certificate for KAAGAZ_DOMAIN, /api/* to api, the rest to frontend.
