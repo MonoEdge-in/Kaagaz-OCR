@@ -249,7 +249,7 @@ class FeedbackBody(BaseModel):
 OUTAGE_LINE = "The AI is not responding right now, so this is not a written answer. Ask again in a minute."
 # #535 (test-server log, 7 Nov 2026): a draft that took too long times out the same way a minute
 # later, so its outage (``outage_reason`` "timeout") says what to do instead.
-TIMEOUT_LINE = "This question took too long for the AI. Try Swift, or ask about fewer documents."
+TIMEOUT_LINE = "This question took too long for the AI. Ask about fewer documents, then try again."
 
 
 def answer_text(answer: dict[str, Any]) -> str:
@@ -276,9 +276,70 @@ _IN_PROGRESS: dict[str, threading.Event] = {}
 _IN_PROGRESS_LOCK = threading.Lock()
 ANSWERING_ALREADY = "That question is still being answered. Open this conversation again in a minute."
 
+# Answers being written at once (A3, stability pass, 7 Nov 2026). One answer holds at most two
+# pooled connections at a time, each only for a short transaction (its own, and step 19's early
+# search beside the plan call), and otherwise waits on the model. The pool is 15 a process
+# (db/engine.py: POOL_SIZE 10 + MAX_OVERFLOW 5), and a request waits at most POOL_TIMEOUT_SECONDS
+# (10) for one. So STREAM_WORKERS (5) streamed and POSTED_ANSWERS (2) posted answers at once hold
+# at most 2 x 7 = 14, and every other request always finds one. Past them an answer waits its turn
+# instead of failing: a stream in the stream pool's queue (pings keep it open; its time cap counts
+# the wait), a POST for a free slot. At 10 to 20 seconds an answer, the last of 20 people asking at
+# once starts within about a minute, inside ANSWER_STREAM_MAX_SECONDS (180).
+# One person has at most ANSWERS_PER_USER answers being written, streamed and posted together.
+ANSWERS_PER_USER = 2
+POSTED_ANSWERS = 2
+TOO_MANY_RUNNING = "You already have answers being written. Wait for one to finish."
+_POSTED = threading.BoundedSemaphore(POSTED_ANSWERS)
+_ANSWERING: dict[str, int] = {}  # user id: answers being written (under _IN_PROGRESS_LOCK)
+
+
+def _take_turn(user_id: str) -> bool:
+    """One of this person's ANSWERS_PER_USER answers at once; False when they are all in use."""
+    with _IN_PROGRESS_LOCK:
+        if _ANSWERING.get(user_id, 0) >= ANSWERS_PER_USER:
+            return False
+        _ANSWERING[user_id] = _ANSWERING.get(user_id, 0) + 1
+        return True
+
+
+def _end_turn(user_id: str) -> None:
+    with _IN_PROGRESS_LOCK:
+        left = _ANSWERING.pop(user_id, 1) - 1
+        if left > 0:
+            _ANSWERING[user_id] = left
+
+
+def _new_answer(body: "AskBody", user: CurrentUser) -> str | None:
+    """Whose turn this question takes: the asker's, unless it is one still being answered here (a
+    client's fallback, which ``ask`` waits for). 429 while the asker has no turn left."""
+    with _IN_PROGRESS_LOCK:
+        if body.question_id is not None and str(body.question_id) in _IN_PROGRESS:
+            return None
+        if _ANSWERING.get(user.user_id, 0) >= ANSWERS_PER_USER:
+            raise ApiError(429, "rate_limited", TOO_MANY_RUNNING, headers={"Retry-After": "10"})
+    return user.user_id
+
 
 @router.post("/chat")
-def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks) -> dict[str, Any]:
+def ask_posted(body: AskBody, user: User, context: Context, background: BackgroundTasks) -> dict[str, Any]:
+    """``ask`` within the asker's turns and the process's POSTED_ANSWERS (A3)."""
+    turn = _new_answer(body, user)
+    if turn is None:
+        return ask(body, user, context, background)
+    if not _take_turn(turn):
+        raise ApiError(429, "rate_limited", TOO_MANY_RUNNING, headers={"Retry-After": "10"})
+    try:
+        if not _POSTED.acquire(timeout=context.settings.answer_stream_max_seconds):
+            raise ApiError(503, "backend_unavailable")
+        try:
+            return ask(body, user, context, background)
+        finally:
+            _POSTED.release()
+    finally:
+        _end_turn(turn)
+
+
+def ask(body: AskBody, user: CurrentUser, context: AppContext, background: BackgroundTasks) -> dict[str, Any]:
     """The answer's ids come first (streaming Ask, #535): the question's (the client's
     ``question_id``, else a new one) and its conversation's (the one asked in, else a new one),
     sent as ``started`` on the stream before any database work. A ``question_id`` this person
@@ -621,6 +682,7 @@ def ask_stream(body: AskBody, user: User, context: Context) -> StreamingResponse
             functools.partial(ask, body, user),
             context,
             cap=context.settings.answer_stream_max_seconds,
+            turn=_new_answer(body, user),
         ),
         media_type="text/event-stream",
         headers=STREAM_HEADERS,
@@ -635,7 +697,8 @@ def sse(name: str, data: dict[str, Any]) -> str:
 
 # #535 (review): every streamed answer's work runs on one bounded pool, never a thread per
 # stream; RUNNING holds the ones not finished yet (a graceful stop, and the tests, wait on them).
-STREAM_WORKERS = 40
+# Its size: A3's note above ``ask_posted``.
+STREAM_WORKERS = 5
 _STREAMS = ThreadPoolExecutor(max_workers=STREAM_WORKERS, thread_name_prefix="answer-stream")
 RUNNING: set[Future[None]] = set()
 
@@ -646,6 +709,7 @@ async def stream_answer(
     *,
     cap: float,
     heartbeat: float | None = None,
+    turn: str | None = None,
 ) -> AsyncGenerator[str]:
     """#535: ``work(context=..., background=...)`` (``ask``) on the stream pool, with
     ``stream.EVENTS`` set so the answer sends its events (``started`` first); each event as it
@@ -655,7 +719,12 @@ async def stream_answer(
     code), and the answer is stopped (``Events.cancel``: its model stream closed at the next check,
     nothing saved), unless it is being saved or saved already: it is finished then, and ``done``
     follows. A client that goes away before ``done`` only stops the events (``Events.detach``):
-    the answer is finished and saved, as ``POST /api/chat``'s is (Tushar, 16 Oct 2026)."""
+    the answer is finished and saved, as ``POST /api/chat``'s is (Tushar, 16 Oct 2026).
+    ``turn``: the asker whose turn (A3) it takes from here until the work ends; none left, an
+    ``error`` "rate_limited" (the route has said 429 already, unless another came in between)."""
+    if turn is not None and not _take_turn(turn):
+        yield sse("error", {"code": "rate_limited", "message": TOO_MANY_RUNNING})
+        return
     loop = asyncio.get_running_loop()
     inbox: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
 
@@ -667,6 +736,8 @@ async def stream_answer(
     # The request's context, and the events, on the pool's thread. submit, not run_in_executor:
     # the work goes on after the stream ends, with no asyncio future left behind on a closed loop.
     running = _STREAMS.submit(contextvars.copy_context().run, _work, work, context, events, post)
+    if turn is not None:
+        running.add_done_callback(lambda _: _end_turn(turn))
     RUNNING.add(running)
     running.add_done_callback(RUNNING.discard)
     ends = loop.time() + cap
@@ -675,7 +746,8 @@ async def stream_answer(
         while True:
             left = ends - loop.time()
             if left <= 0:
-                if events.cancel():
+                # A9: off the loop: it waits while a save holds the answer's lock.
+                if await asyncio.to_thread(events.cancel):
                     logger.warning(
                         "streamed answer too slow", extra={"code": "answer_timeout", **events.landing}
                     )

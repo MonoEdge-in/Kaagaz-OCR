@@ -10,6 +10,7 @@ the heartbeat; and the timing line.
 
 import asyncio
 import functools
+import itertools
 import json
 import logging
 import threading
@@ -31,7 +32,7 @@ from kaagaz.api.auth import CurrentUser
 from kaagaz.api.context import AppContext
 from kaagaz.api.routers import chat as chat_router
 from kaagaz.api.routers.chat import TOO_SLOW, AskBody, ask, stream_answer
-from kaagaz.db.engine import Database
+from kaagaz.db.engine import MAX_OVERFLOW, POOL_SIZE, Database
 from tests.openrouter_fake import (
     KEY,
     OpenRouterFake,
@@ -45,7 +46,7 @@ from tests.openrouter_fake import (
     stream_reply,
 )
 from tests.settings_factory import make_settings
-from tests.test_api_support import CSRF, NOW, Api, Signed
+from tests.test_api_support import CSRF, NOW, Api, FakeAnswers, Signed, TestClient
 from tests.test_isolation_answering import HINGLISH, SEARCH, _seed
 
 pytestmark = pytest.mark.db
@@ -660,3 +661,114 @@ def test_a_repeat_on_the_stream_is_marked_as_a_copy_as_post_api_chat_marks_it(
     assert first.get("repeat_key") and "repeat_copy" not in first
     assert copy.get("repeat_copy") == first["repeat_key"] and "repeat_key" not in copy
     assert len(fake.bodies()) == 1
+
+
+# --- answers being written at once (A3, A9: stability pass, 7 Nov 2026) ----------------------
+
+
+class _Held(FakeAnswers):
+    """Each answer waits for ``go``; ``started`` counts the answers being written."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.go = threading.Event()
+        self.started = threading.Semaphore(0)
+
+    def answer(self, *args: Any, **kwargs: Any) -> Any:
+        self.started.release()
+        assert self.go.wait(10)
+        return super().answer(*args, **kwargs)
+
+
+def _ask_in_thread(client: TestClient, replies: list[int]) -> threading.Thread:
+    def post() -> None:
+        replies.append(
+            client.post("/api/chat", json={"question": "what is the total?"}, headers=CSRF).status_code
+        )
+
+    thread = threading.Thread(target=post)
+    thread.start()
+    return thread
+
+
+def test_answers_at_once_fit_the_database_pool() -> None:
+    """A3: each answer holds at most two pooled connections at a time; the streamed and posted
+    answers at once never need the whole pool (db/engine.py), so the rest of the app always has one."""
+    assert chat_router.ANSWERS_PER_USER == 2
+    assert 2 * (chat_router.STREAM_WORKERS + chat_router.POSTED_ANSWERS) < POOL_SIZE + MAX_OVERFLOW
+    assert chat_router._STREAMS._max_workers == chat_router.STREAM_WORKERS
+
+
+@pytest.mark.db
+def test_a_person_has_at_most_two_answers_being_written(db: Database) -> None:
+    """A3: a third, posted or streamed, is 429 with plain words; once one is done, they may ask."""
+    held = _Held()
+    api = Api(db, answers=held)
+    signed = api.new_signed()
+    replies: list[int] = []
+    threads = [_ask_in_thread(signed.client, replies) for _ in range(2)]
+    assert held.started.acquire(timeout=10) and held.started.acquire(timeout=10)
+    try:
+        for path in ("/api/chat", "/api/chat/stream"):
+            third = signed.client.post(path, json={"question": "and the seller?"}, headers=CSRF)
+            assert third.status_code == 429, path
+            assert third.json()["error"] == {"code": "rate_limited", "message": chat_router.TOO_MANY_RUNNING}
+        other = api.new_signed()  # someone else asks as usual
+        assert other.client.post("/api/chat/stream", json={"question": "hi"}, headers=CSRF).status_code == 200
+    finally:
+        held.go.set()
+        for thread in threads:
+            thread.join(10)
+    assert replies == [200, 200]
+    assert (
+        signed.client.post("/api/chat", json={"question": "and the seller?"}, headers=CSRF).status_code == 200
+    )
+
+
+@pytest.mark.db
+def test_posted_answers_past_the_process_cap_wait_their_turn(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A3: past POSTED_ANSWERS a question waits for a turn instead of failing."""
+    monkeypatch.setattr(chat_router, "_POSTED", threading.BoundedSemaphore(1))
+    held = _Held()
+    api = Api(db, answers=held)
+    replies: list[int] = []
+    first = _ask_in_thread(api.new_signed().client, replies)
+    assert held.started.acquire(timeout=10)
+    second = _ask_in_thread(api.new_signed().client, replies)
+    assert not held.started.acquire(timeout=0.5)  # waiting for the first
+    held.go.set()
+    first.join(10)
+    second.join(10)
+    assert replies == [200, 200]
+
+
+def test_the_time_cap_never_blocks_the_stream_loop_while_an_answer_is_being_saved() -> None:
+    """A9: past the cap, stopping the answer waits for a save under way; the wait is off the event
+    loop, so every other stream on it goes on."""
+
+    def slow_save(context: AppContext, background: Any) -> dict[str, Any]:
+        stream_module.emit("started", {"conversation_id": "c", "question_id": "q"})
+        with stream_module.saving():
+            time.sleep(1.0)  # the save's transaction holds the events' lock
+        return {"saved": True}
+
+    async def run() -> tuple[list[str], float]:
+        ticks: list[float] = []
+
+        async def tick() -> None:
+            while True:
+                ticks.append(time.monotonic())
+                await asyncio.sleep(0.02)
+
+        ticker = asyncio.create_task(tick())
+        context = cast(AppContext, None)
+        found = [chunk async for chunk in stream_answer(slow_save, context, cap=0.2)]
+        ticker.cancel()
+        ticks.append(time.monotonic())  # the stream ended: the last gap counts too
+        return found, max(b - a for a, b in itertools.pairwise(ticks))
+
+    found, longest_gap = asyncio.run(run())
+    assert found[-1].startswith("event: done")  # saved: finished, and done follows
+    assert longest_gap < 0.5
