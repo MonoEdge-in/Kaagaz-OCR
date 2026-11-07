@@ -4,6 +4,7 @@
 // `done` asks POST /api/chat once instead, with no error when that works. Stop aborts both.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { askErrorText } from "@/components/chat/logic";
 import { ApiError, askStream } from "@/lib/api";
 import { sseParser, streamEvent } from "@/lib/askStream";
 import type { StreamEvent } from "@/lib/askStream";
@@ -179,14 +180,77 @@ describe("askStream (lib/api.ts)", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it.each([
+    [400, "bad_request", "Type a question first."],
+    [401, "not_signed_in", "Sign in again."],
+    [403, "csrf_failed", "Refresh the page, then try again."],
+    [422, "validation_error", "Choose fewer documents or tags."],
+  ])("an HTTP %i JSON error before the stream (validation, auth, CSRF) is /chat's error, never a second ask", async (status, code, message) => {
+    const calls = server(json({ error: { code, message } }, status));
+    const caught = await run().catch((error: unknown) => error);
+    expect(caught).toMatchObject({ status, code, message });
+    expect(askErrorText(caught as ApiError)).toBe(message);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("answers with done alone (a Home ready answer, small talk), no stage before it", async () => {
+    const calls = server(streamed(body(sse("done", { reply: REPLY }), 16)));
+    const { reply, events } = await run();
+    expect(reply).toEqual(REPLY);
+    expect(events).toEqual([]);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("a fixed calculation: understanding, searching, then done; no sources, no sentence", async () => {
+    server(streamed(body(sse("stage", { stage: "understanding" }) + sse("stage", { stage: "searching" }) + sse("done", { reply: REPLY }), 16)));
+    const { events } = await run();
+    expect(events).toEqual([
+      { type: "stage", stage: "understanding" },
+      { type: "stage", stage: "searching" },
+    ]);
+  });
+
+  it("takes a sentence's citations as the full Citation objects the server sends, keeping their numbers", async () => {
+    const citation = {
+      n: 1,
+      kind: "piece",
+      ref_id: "p1",
+      document_id: "d1",
+      document_name: "bill.pdf",
+      detected_type: "pdf",
+      page_no: 1,
+      regions: [{ kind: "box", page: 1, box: [0.1, 0.1, 0.5, 0.2] }],
+      snippet: "Grand total Rs. 1,20,000",
+      label: "verified",
+      page_from: 1,
+      page_to: 1,
+      label_page_no: null,
+      label_regions: [],
+      hard_to_read: false,
+      rank: null,
+    };
+    const text =
+      sse("sentence", { index: 0, text: "The grand total of INV-1042 is Rs. 1,20,000.", citations: [citation] }) +
+      sse("sentence", { index: 1, text: "It was paid in March.", citations: [{ ...citation, n: 2, ref_id: "p2" }, citation] }) +
+      sse("done", { reply: REPLY });
+    server(streamed(body(text, 50)));
+    const { events } = await run();
+    expect(events).toEqual([
+      { type: "sentence", sentence: { index: 0, text: "The grand total of INV-1042 is Rs. 1,20,000.", citations: [1] } },
+      { type: "sentence", sentence: { index: 1, text: "It was paid in March.", citations: [2, 1] } },
+    ]);
+  });
+
   it("turns an error event into the same error as /api/chat, with no second ask", async () => {
     const text =
       sse("stage", { stage: "writing" }) +
-      sse("error", { code: "answer_too_slow", message: "This answer is taking too long. Try a narrower question or Swift." });
+      sse("error", { code: "answer_timeout", message: "This answer is taking too long. Try a narrower question or Swift." });
     const calls = server(streamed(body(text, 32)));
     const caught = await run().catch((error: unknown) => error);
     expect(caught).toBeInstanceOf(ApiError);
-    expect(caught).toMatchObject({ message: "This answer is taking too long. Try a narrower question or Swift." });
+    expect(caught).toMatchObject({ code: "answer_timeout" });
+    // Said in plain words, as the server put them; no fallback, which would only wait again.
+    expect(askErrorText(caught as ApiError)).toBe("This answer is taking too long. Try a narrower question or Swift.");
     expect(calls).toHaveLength(1);
     server(streamed(body(sse("error", { code: "rate_limited", message: "Too many." }), 32)));
     await expect(run()).rejects.toMatchObject({ status: 429 });

@@ -356,6 +356,25 @@ describe("the streamed answer card (StreamingAnswer.tsx)", () => {
     expect(onSettle).toHaveBeenCalledExactlyOnceWith(true);
   });
 
+  it("done alone (a Home ready answer, small talk): nothing to reveal, it settles at once", async () => {
+    const onSettle = vi.fn();
+    const card = await show({ progress: NO_PROGRESS, final: finalReply(["Hello!"], { route: "small_talk" }), onSettle });
+    await act(async () => vi.advanceTimersByTime(0));
+    expect(onSettle).toHaveBeenCalledExactlyOnceWith(false);
+    expect(find(card, "[data-preview]")).toBeNull();
+  });
+
+  it("an ensemble or quoted answer (no sentence events): its final sentences reveal, then it settles", async () => {
+    const onSettle = vi.fn();
+    const final = finalReply(["Rent is ₹12,000."], { model_used: false });
+    const card = await show({ progress: progressOf(stage("understanding"), stage("searching")), final, onSettle });
+    await frame(0);
+    await frame(500);
+    expect(preview(card)).toBe("Rent is ₹12,000.1");
+    await act(async () => vi.advanceTimersByTime(SETTLE_PAUSE_MS));
+    expect(onSettle).toHaveBeenCalledExactlyOnceWith(false);
+  });
+
   it("settles with no pause under reduced motion", async () => {
     reduced = true;
     const onSettle = vi.fn();

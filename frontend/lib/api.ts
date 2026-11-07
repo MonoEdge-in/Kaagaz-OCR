@@ -889,6 +889,7 @@ const STREAM_ERROR_STATUS: Record<string, number> = {
   not_found: 404,
   conflict: 409,
   rate_limited: 429,
+  answer_timeout: 400, // ANSWER_STREAM_MAX_SECONDS: its words shown as they are, never asked again
   internal_error: 500,
   backend_unavailable: 503,
 };
