@@ -27,6 +27,8 @@ out outside a transaction (it may wait on the model), then the conversation, bot
 messages (the question with its scope and rewrite) and the audit row are written
 in one transaction.
 The audit row holds only the ids, ``answer.status`` and the models asked and their level.
+A fresh question asked again unchanged is answered from its stored answer in one more short
+transaction (#535, answering/ready.py ``repeat_key``), and saved and audited as any answer.
 
 The asker's own words (My words, A3) may help the answer, which then lists them in
 ``understood_words``; they are never in a message's text, so never in the history.
@@ -54,8 +56,10 @@ is made only after the answer); the memory's to the same user, kind ``memory``
 import functools
 import json
 import logging
+import time
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
@@ -75,7 +79,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.ai.usage import usage_scope
 from kaagaz.answering import ready, small_talk
-from kaagaz.answering.clarify import MAX_CHOICES, Pending, answers_clarify, latin_key, reply_to
+from kaagaz.answering.clarify import (
+    MAX_CHOICES,
+    Pending,
+    answers_clarify,
+    latin_key,
+    reply_to,
+    without_resume,
+)
 from kaagaz.answering.memory import NO_MEMORY, Memory, from_row, live
 from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
@@ -86,6 +97,7 @@ from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.names import clean_name
+from kaagaz.api.routers.health import running_commit
 from kaagaz.api.views import answer_with_source_states, cited_document_ids, conversation_summary, message
 from kaagaz.db import ai_settings, audit, organization_words
 from kaagaz.db import chat as chat_sql
@@ -107,6 +119,7 @@ from kaagaz.settings import MODEL_ID
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+_timing_log = logging.getLogger("kaagaz.answering.timing")  # a repeat's line, as an answer's (#535)
 
 Context = Annotated[AppContext, Depends(get_context)]
 
@@ -298,6 +311,15 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             if fresh and talk is None
             else None
         )
+    repeat_key, repeated, started = None, None, time.monotonic()
+    if conversation_id is None and answering is None and talk is None:
+        # #535 (answering/ready.py): a fresh question asked again by this person, with these same
+        # inputs, today, on this code, while nothing it reads changed: its stored answer, at once.
+        today = context.clock().astimezone(ZoneInfo(context.settings.timezone)).date()
+        inputs = (pins, switched, choice, scope, today, running_commit())
+        with context.db.user(user.customer_id, user.user_id) as conn:  # the asker's own words too
+            repeat_key = ready.repeat_key(conn, user.customer_id, user.user_id, question, inputs)
+            repeated = chat_sql.repeated_answer(conn, user.customer_id, repeat_key)
     saved = None if chosen is None else chosen.model_dump(mode="json")
     # json.dumps writes ", " and ": " as jsonb's text does, so this is the CHECK's length.
     if saved is not None and len(json.dumps(saved).encode()) > MAX_SCOPE_BYTES:
@@ -315,18 +337,22 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             answer = small_talk.answer(talk, question, first_name(user.display_name), examples)
         else:
             kept = None if ready_key is None else ready.READY.get(ready_key)
-            reply = kept or context.answers.answer(
-                user.customer_id,
-                question,
-                scope=scope,
-                history=history,
-                user_id=user.user_id,
-                memory=memory,
-                choice=choice,
-                pins=pins,
-                pending=pending,
-                clarify=switched["nlq_clarify"],
-                cited=_cited(recent),
+            reply = (
+                kept
+                or _stored(repeated, started)
+                or context.answers.answer(
+                    user.customer_id,
+                    question,
+                    scope=scope,
+                    history=history,
+                    user_id=user.user_id,
+                    memory=memory,
+                    choice=choice,
+                    pins=pins,
+                    pending=pending,
+                    clarify=switched["nlq_clarify"],
+                    cited=_cited(recent),
+                )
             )
             # KZ-006: an outage is never "not found": the reply says the AI is not responding
             # (``outage``, OUTAGE_LINE) and lists the closest documents; never a "busy" error.
@@ -360,6 +386,8 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
                     for text, _ in ready.questions(conn, user.customer_id, user.user_id)
                     if ready.same_question(text) != ready.same_question(question)
                 ][:3]
+            if repeat_key is not None and answer.get("status") in ("answered", "unchecked"):
+                answer[ready.REPEAT_KEY] = repeat_key  # #535: found again by a repeat (not an outage)
             asked = chat_sql.add_message(
                 conn,
                 user.customer_id,
@@ -406,6 +434,31 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             _remember, context, user.customer_id, user.user_id, conversation_id, summary_turn, turns + 1
         )
     return {"conversation_id": conversation_id, "question": message(asked), "answer": message(answered)}
+
+
+@dataclass(frozen=True)
+class _Stored:
+    """#535: a repeated question's stored answer, answered as ``AnswerService.answer``'s is."""
+
+    found: dict[str, Any]
+    unavailable: bool = False  # only a found answer is stored for a repeat (db/chat.py)
+
+    def to_json(self) -> dict[str, Any]:
+        return without_resume(self.found)  # no key; the opening is written again for now
+
+
+def _stored(found: dict[str, Any] | None, started: float) -> _Stored | None:
+    """``found`` to answer with, its timing line logged as the answer's (``cached=1``); None for none."""
+    if found is None:
+        return None
+    _timing_log.info(
+        "answer timing route=%s status=%s outcome=%s cached=1 total_ms=%.0f",
+        found.get("route"),
+        found.get("status"),
+        found.get("label"),
+        (time.monotonic() - started) * 1000,
+    )
+    return _Stored(found)
 
 
 def _inputs(

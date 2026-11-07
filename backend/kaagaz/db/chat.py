@@ -257,6 +257,24 @@ def openings(conn: Connection, customer_id: str, conversation_id: str) -> list[s
     )
 
 
+def repeated_answer(conn: Connection, customer_id: str, key: str) -> dict[str, Any] | None:
+    """#535 (answering/ready.py ``repeat_key``): the newest stored answer of the last day saved with
+    ``key``, found (answered or unchecked) and not rated Not useful; None when there is none. The
+    key holds the asker, so it is theirs. One statement over the (customer_id, created_at) index."""
+    found = conn.execute(
+        text(
+            "SELECT m.answer FROM messages m WHERE m.customer_id = :c AND m.role = 'assistant'"
+            " AND m.created_at > now() - interval '1 day' AND m.answer ->> 'repeat_key' = :k"
+            " AND m.answer ->> 'status' IN ('answered', 'unchecked') AND m.answer -> 'outage' IS NULL"
+            " AND NOT EXISTS (SELECT 1 FROM feedback f WHERE f.customer_id = m.customer_id"
+            " AND f.message_id = m.id AND f.rating = 'down')"
+            " ORDER BY m.created_at DESC LIMIT 1"
+        ),
+        {"c": customer_id, "k": key},
+    ).scalar()
+    return None if found is None else dict(found)
+
+
 def newest_message(conn: Connection, customer_id: str, conversation_id: str) -> str | None:
     """The conversation's newest message id, read after locking the conversation's row for the
     rest of the transaction, so concurrent replies to one clarify are taken one at a time."""

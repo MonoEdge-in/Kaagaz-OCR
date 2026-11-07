@@ -164,15 +164,22 @@ def test_only_this_chats_own_answered_answers_give_the_cited_documents(db: Datab
         for user, name in ((signed, "45-2.pdf"), (signed, "gat-118.pdf"), (other, "45-2.pdf"))
     )
 
-    def ask(asker: Any, cites: str | None, conversation: str | None = None, **reply: Any) -> str:
+    def ask(
+        asker: Any,
+        cites: str | None,
+        conversation: str | None = None,
+        question: str = "What is the area?",
+        **reply: Any,
+    ) -> str:
         cited = [] if cites is None else [{"n": 1, "document_id": cites}]
         api.answers.reply = {**answer_json(**reply), "citations": cited}
-        body = {"question": "What is the area?", "conversation_id": conversation}
+        body = {"question": question, "conversation_id": conversation}
         return str(asker.client.post("/api/chat", json=body, headers=CSRF).json()["conversation_id"])
 
     chat = ask(signed, first)
     ask(signed, second, chat, status="not_found")  # a not found cites nothing for the choices
-    elsewhere = ask(signed, second)  # another chat of the same asker
+    # Changed on purpose (#535): another question, as the same one asked fresh again is a repeat.
+    elsewhere = ask(signed, second, question="What is the area of the plot?")  # another chat, same asker
     ask(signed, None, elsewhere)
     ask(other, theirs)  # another company's chat
     ask(signed, None, chat)

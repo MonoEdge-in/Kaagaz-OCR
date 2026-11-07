@@ -11,6 +11,15 @@ asked fresh (no conversation, no picked documents, no clarify), by the same pers
 same answer settings, switches and marks, while their documents are unchanged (``stamp``).
 Every other question is answered as before.
 
+Repeated questions (#535, ``repeat_key``): any fresh question (no conversation, no clarify), in any
+scope, asked again by the same person with the same answer settings, switches and marks, the same
+day, on the same running code, while the stamp and the words that steer the search are unchanged,
+is answered from its stored answer message (routers/chat.py), with no model call. In the database,
+so every API process finds it; under RLS, the asker's organisation's messages only. Only a found
+answer (answered or unchecked, not while the model was down) and never one rated Not useful.
+shortcut: found by a scan of the organisation's messages of the last day (the
+(customer_id, created_at) index); a jsonb index on the key if a day's messages grow large.
+
 shortcut: one API process (docker-compose runs one uvicorn), so a per-process cache is the
 whole cache; with several API processes each would warm its own, so share it (Postgres or
 Redis) before adding processes. A value changed in place without its ``updated_at`` moving
@@ -18,6 +27,7 @@ is caught only by ``TTL_SECONDS``; a document or value added, removed or re-read
 at once.
 """
 
+import hashlib
 import threading
 import time
 from collections import OrderedDict
@@ -77,6 +87,17 @@ _STAMP = text(
 )
 
 
+# Repeated questions (#535): the words that steer a search besides the documents, the asker's own
+# (My words) and the organisation's approved ones, exactly. ``Database.user``: the asker's own rows.
+_WORDS = text(
+    "SELECT coalesce((SELECT md5(jsonb_agg(jsonb_build_array(word, meaning) ORDER BY word, meaning)::text)"
+    " FROM user_words WHERE customer_id = :c AND user_id = :u), '') || '|' || coalesce((SELECT"
+    " md5(jsonb_agg(jsonb_build_array(word, meaning, document_id) ORDER BY word, meaning, document_id)::text)"
+    " FROM organization_word_suggestions WHERE customer_id = :c AND status = 'approved'), '')"
+)
+REPEAT_KEY = "repeat_key"  # the stored answer's field that holds it; never shown (clarify.without_resume)
+
+
 def same_question(question: str) -> str:
     """The form two askings of one question share: case and spacing aside."""
     return " ".join(question.split()).casefold()
@@ -107,6 +128,16 @@ def key(
     """Everything an answer depends on besides the question: ``inputs`` are the answer
     settings, switches and marks (their reprs are exact), ``made_from`` the ``stamp``."""
     return (customer_id, user_id, same_question(question), *map(repr, inputs), made_from)
+
+
+def repeat_key(conn: Connection, customer_id: str, user_id: str, question: str, inputs: Sequence[Any]) -> str:
+    """#535: ``key`` for a repeated question, as a sha256 to store with its answer: ``inputs`` (the
+    caller's: the answer settings, switches, marks, scope, day and running code), the ``stamp``
+    and the words that steer the search (``_WORDS``). On a ``Database.user`` connection. Two
+    statements."""
+    words = str(conn.execute(_WORDS, {"c": customer_id, "u": user_id}).scalar_one())
+    parts = key(customer_id, user_id, question, inputs, f"{stamp(conn, customer_id)}|{words}")
+    return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()
 
 
 class ReadyAnswers:
