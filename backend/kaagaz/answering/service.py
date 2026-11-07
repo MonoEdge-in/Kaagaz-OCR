@@ -1926,13 +1926,31 @@ def _texts(seen: Sequence[Evidence]) -> dict[int, str]:
 
 def _kept(draft: Draft, texts: dict[int, str]) -> list[DraftSentence]:
     """The draft's sentences, cleaned, that ``verify`` keeps against ``texts``; none for
-    not found."""
+    not found. #535: the parts of a sentence cut in code (``part_of``) stand or fall together, so
+    no part is shown without the rest of its sentence."""
     if draft.status != "answered":
         return []
-    cleaned = [DraftSentence(clean_text(s.text), s.evidence) for s in draft.sentences]
+    cleaned = [DraftSentence(clean_text(s.text), s.evidence, s.part_of) for s in draft.sentences]
+    passed = verify([s for s in cleaned if s.text], texts)
+    # verify keeps its sentences in order, each with its ids once: pair them back with the cleaned.
+    found: list[DraftSentence | None] = []
+    at = 0
+    for sentence in cleaned:
+        same = (
+            bool(sentence.text)
+            and at < len(passed)
+            and passed[at].text == sentence.text
+            and passed[at].evidence == list(dict.fromkeys(sentence.evidence))
+        )
+        found.append(passed[at] if same else None)
+        at += same
+    fallen = {s.part_of for s, f in zip(cleaned, found, strict=True) if f is None and s.part_of is not None}
+    if fallen:
+        _log.info("answer text dropped", extra={"code": "verify:cut_sentence_part"})
     kept: dict[str, DraftSentence] = {}
-    for sentence in verify([s for s in cleaned if s.text], texts):
-        kept.setdefault(sentence.text, sentence)  # a repeated sentence once, the first kept
+    for sentence, verified in zip(cleaned, found, strict=True):
+        if verified is not None and sentence.part_of not in fallen:
+            kept.setdefault(verified.text, verified)  # a repeated sentence once, the first kept
     return list(kept.values())
 
 
