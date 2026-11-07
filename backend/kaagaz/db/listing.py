@@ -181,6 +181,9 @@ _FILTERS = (
 )
 
 _TOP_LEVEL = " AND d.folder_id IS NULL"
+# #542: Trash's loose files, not those inside a folder in Trash; or one such folder's files.
+_LOOSE_IN_TRASH = " AND d.trashed_folder_id IS NULL"
+_IN_TRASHED_FOLDER = " AND d.trashed_folder_id = CAST(:trashed_folder AS uuid)"
 _IN_FOLDERS = " AND d.folder_id = ANY(CAST(:folders AS uuid[]))"
 # Every tag must match: the documents holding all :tag_count distinct tags asked for.
 _WITH_TAGS = (
@@ -291,6 +294,7 @@ def list_documents(
     uploaded_from: datetime | None = None,
     uploaded_to: datetime | None = None,
     trashed: bool = False,
+    trashed_folder_id: str | None = None,
     attention: bool = False,
     department_folders: Sequence[str] | None = None,
     outside_departments: bool = False,
@@ -308,7 +312,8 @@ def list_documents(
     and ``descending`` say otherwise, and the total that match.
 
     One row per family: its current version, out of Trash, or with ``trashed``
-    only what is in Trash.
+    only what is in Trash: its loose files (any file once a filter or ``name_contains`` is set),
+    or with ``trashed_folder_id`` the files directly in that folder in Trash (#542).
 
     Filters (each left at its default filters nothing): ``top_level_only`` (in no
     folder), ``folder_ids`` (in one of these folders), ``tag_ids`` (holding every
@@ -372,6 +377,14 @@ def list_documents(
             has_newer_version=has_newer_version,
         )
     )
+    # #542: Trash's own list leaves out the files inside its folders (each folder is one row);
+    # a search or a filter finds them too, wherever they are.
+    narrowed = status is not None or name_contains is not None or any(chosen)
+    if trashed_folder_id is not None:
+        chosen.append(_IN_TRASHED_FOLDER)
+        params["trashed_folder"] = trashed_folder_id
+    elif trashed and not narrowed:
+        chosen.append(_LOOSE_IN_TRASH)
     where = (_TRASH_LIST if trashed else _LIST) + _FILTERS + "".join(chosen)
     way = "DESC" if descending else "ASC"
     nulls = "" if sort == "created_at" else " NULLS LAST"  # created_at: the listing index, as before

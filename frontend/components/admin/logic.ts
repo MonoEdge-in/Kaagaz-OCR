@@ -702,6 +702,9 @@ const ACTION_WORDS: Record<string, string> = {
   "folder.rename": "Renamed a folder",
   "folder.move": "Moved a folder",
   "folder.delete": "Deleted a folder",
+  "folder.trash": "Moved a folder to Trash", // #542: ids and counts only, never a name
+  "folder.restore": "Restored a folder from Trash",
+  "folder.delete_forever": "Deleted a folder forever",
   "folder.upload": "Uploaded a folder", // #484: counts and ids only, never a name
   "folder.upload_check": "Folder upload checked for files already in Kaagaz", // #484: counts only
   "tag.create": "Added a tag",

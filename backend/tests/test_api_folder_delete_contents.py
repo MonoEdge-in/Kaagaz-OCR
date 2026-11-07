@@ -79,7 +79,12 @@ def _family(api: Api, signed: Signed, folder_id: str | None, **columns: Any) -> 
 
 
 def _folder_audit(api: Api, customer_id: str) -> list[tuple[str, str | None, str | None, dict[str, Any]]]:
-    return [row for row in api.audit_rows(customer_id) if row[0] == "folder.delete"]
+    # Changed on purpose (#542): a delete with contents=trash is folder.trash, with its trash_id.
+    return [row for row in api.audit_rows(customer_id) if row[0] in ("folder.delete", "folder.trash")]
+
+
+def _trash_id(api: Api, customer_id: str) -> str:
+    return str(_folder_audit(api, customer_id)[-1][3]["trash_id"])
 
 
 # --- keep: what is inside moves where the admin chose -------------------------------------
@@ -313,11 +318,17 @@ def test_trash_sends_every_family_of_the_subtree_to_trash_and_removes_its_folder
     assert documents[tree["binned"]] == (None, tree["early"], admin.user_id)  # keeps its first time
     assert documents[tree["outside"]] == (tree["parent"], None, None)
     assert _folder_audit(api, c) == [
-        ("folder.delete", "folder", tree["folder"], {"contents": "trash", "files": 3, "folders": 4})
+        (
+            "folder.trash",
+            "folder",
+            tree["folder"],
+            {"contents": "trash", "files": 3, "folders": 4, "trash_id": _trash_id(api, c)},
+        )
     ]
 
 
-def test_a_family_trashed_with_its_folder_is_restored_at_the_top_level(db: Database) -> None:
+def test_a_family_trashed_with_its_folder_is_restored_into_it_with_the_folders_above_it(db: Database) -> None:
+    """Changed on purpose (#542): it went to the top level; its folder comes back with it now."""
     api = Api(db)
     admin = api.new_admin()
     tree = _deep_tree(api, admin)
@@ -327,7 +338,8 @@ def test_a_family_trashed_with_its_folder_is_restored_at_the_top_level(db: Datab
     assert admin.client.post(f"/api/documents/{second}/restore", headers=CSRF).status_code == 200
 
     documents = _documents(db, admin.customer_id)
-    assert [documents[first], documents[second]] == [(None, None, None)] * 2
+    assert [documents[first], documents[second]] == [(tree["levels"][-1], None, None)] * 2
+    assert set(_folders(db, admin.customer_id)) == {tree["parent"], *tree["levels"]}
 
 
 def test_the_trash_purge_deletes_them_for_good_once_their_time_is_up(db: Database) -> None:
@@ -505,7 +517,12 @@ def test_the_audit_row_holds_ids_and_counts_only_never_a_name(db: Database) -> N
     assert _delete(admin, folder, "trash").status_code == 200
 
     assert _folder_audit(api, c) == [
-        ("folder.delete", "folder", folder, {"contents": "trash", "files": 1, "folders": 1})
+        (
+            "folder.trash",
+            "folder",
+            folder,
+            {"contents": "trash", "files": 1, "folders": 1, "trash_id": _trash_id(api, c)},
+        )
     ]
     assert "ecret" not in repr(api.audit_rows(c))
 

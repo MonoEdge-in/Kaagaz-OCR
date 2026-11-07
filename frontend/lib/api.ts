@@ -54,7 +54,11 @@ import type {
   FolderItemView,
   FolderItemsPage,
   FolderLimits,
+  FolderBack,
+  FolderRestored,
   FolderSummary,
+  TrashedFolder,
+  TrashedFolderContents,
   GoogleRulesChange,
   FolderUploadItem,
   FolderUploadPlan,
@@ -381,9 +385,10 @@ export const searchDocuments = (params: DocumentSearchParams) =>
   request<DocumentSearch>("GET", `/search${query(params)}`);
 /** Moves the document, with every version of it, to Trash (PRD 1, F5). */
 export const deleteDocument = (id: string) => request<void>("DELETE", `/documents/${id}`);
-/** Brings a document in Trash back, with every version of it. */
+/** Brings a document in Trash back, with every version of it; #542: and the folder that came
+ * back with it, when it went to Trash with its folder (null otherwise). */
 export const restoreDocument = (id: string) =>
-  request<DocumentSummary>("POST", `/documents/${id}/restore`);
+  request<DocumentSummary & { restored_folder?: FolderBack | null }>("POST", `/documents/${id}/restore`);
 /**
  * Read the document again from the start (PRD 2, X1): a reviewer or an admin,
  * for a ready, failed or unreadable document out of Trash (403 forbidden or
@@ -855,6 +860,16 @@ export const deleteFolderWithContents = (
     `/folders/${id}${query({ contents: what.contents, to: what.contents === "keep" ? (what.to ?? undefined) : undefined })}`,
   );
 export const folderSummary = (id: string) => request<FolderSummary>("GET", `/folders/${id}/summary`);
+/** #542: Trash's folders; one opened (its files: listDocuments with trashed_folder_id); Restore puts
+ * one back where it was; delete forever has a document's rule (an admin with two-step, or a typed
+ * password). Under /documents/trash, where the typed password's cookie is sent. */
+export const listTrashedFolders = () => request<{ items: TrashedFolder[] }>("GET", "/documents/trash/folders");
+export const getTrashedFolder = (id: string) =>
+  request<TrashedFolderContents>("GET", `/documents/trash/folders/${id}`);
+export const restoreTrashedFolder = (id: string) =>
+  request<FolderRestored>("POST", `/documents/trash/folders/${id}/restore`);
+export const deleteTrashedFolderForever = (id: string) =>
+  request<void>("DELETE", `/documents/trash/folders/${id}/permanent`);
 export const listTags = () => request<{ items: Tag[] }>("GET", "/tags");
 export const createTag = (name: string) => request<Tag>("POST", "/tags", { name });
 

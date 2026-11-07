@@ -87,10 +87,12 @@ def test_guard_rails_0077a_and_0077b_follow_0077() -> None:
     assert scripts.get_revision("0077c").down_revision == "0077b"
 
 
-def test_the_file_kinds_0078_and_the_zip_unpack_s_0080_follow_and_0080_is_the_one_head() -> None:
+def test_the_file_kinds_0078_the_zip_unpack_s_0080_and_trashed_folders_0081_follow() -> None:
     """#522 (6 Nov 2026): 0078 (the file kinds) after the amount reasons' 0077c, then 0080 (a zip
-    unpacked into a folder; no 0079 when it was written)."""
+    unpacked into a folder; no 0079 when it was written). Changed on purpose (#542): a folder in
+    Trash's 0081 follows 0080 and is the one head."""
     scripts = _scripts()
     assert scripts.get_revision("0078").down_revision == "0077c"
     assert scripts.get_revision("0080").down_revision == "0078"
-    assert scripts.get_heads() == ["0080"]
+    assert scripts.get_revision("0081").down_revision == "0080"
+    assert scripts.get_heads() == ["0081"]

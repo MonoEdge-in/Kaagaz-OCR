@@ -20,6 +20,9 @@
 // for it at once; the screen is never reloaded.
 // A move to a folder (a row's menu, the selection bar or a drop on a folder) says so in a toast, with Undo; the New
 // folder forms offer names from the kinds of documents listed (folderNameSuggestions).
+// Trash (#542): a folder deleted with everything inside is one row of it; opened, it shows its
+// folders and files read only, under "Trash › Accounts › 2025"; Restore and Delete forever say so
+// in the toast, and the folder tree is asked for again. Search, filters and pages are for files.
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -41,10 +44,12 @@ import { Toast } from "@/components/ui/Toast";
 import { VersionNoteDialog } from "@/components/versions/VersionNoteDialog";
 import {
   ApiError,
+  getTrashedFolder,
   listDocuments,
   listFolders,
   listPeople,
   listTags,
+  listTrashedFolders,
   searchDocuments,
   updateDocument,
 } from "@/lib/api";
@@ -52,10 +57,19 @@ import { progressSignature } from "@/lib/poll";
 import { markReceived } from "@/lib/timeLeft";
 import { useSession } from "@/lib/session";
 import { usePoll } from "@/lib/usePoll";
-import type { DocumentList, DocumentSearch, DocumentSummary, Folder, Person, Tag } from "@/lib/types";
+import type {
+  DocumentList,
+  DocumentSearch,
+  DocumentSummary,
+  Folder,
+  Person,
+  Tag,
+  TrashedFolder,
+  TrashedFolderContents,
+} from "@/lib/types";
 import { DocumentsTable, listScrollKey } from "./DocumentsTable";
 import { FolderActions } from "./FolderActions";
-import { FolderCrumbs, FolderNav } from "./FolderNav";
+import { FolderCrumbs, FolderNav, TrashCrumbs } from "./FolderNav";
 import { buildTree } from "./folderTree";
 import { InsideSearchResults } from "./InsideResults";
 import {
@@ -81,7 +95,7 @@ import {
   shouldPoll,
   uploadsFinishedText,
 } from "./logic";
-import { foreverNeeds } from "./trash";
+import { foreverNeeds, trashEmpty } from "./trash";
 import type { RemovalUndo } from "./trash";
 import { Dropzone, ReaderSelect } from "./UploadArea";
 import styles from "./Documents.module.css";
@@ -113,7 +127,12 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const sortInputRef = useRef<HTMLInputElement>(null);
   const versionOf = useRef<DocumentSummary | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const viewKey = libraryHref(library);
+  // #542: the folder in Trash that is open (read only); Trash's top level when null.
+  // shortcut: not in the address, so Back does not step up a level; the path above the heading does.
+  const [trashOpenChoice, setTrashOpen] = useState<string | null>(null);
+  if (!library.trash && trashOpenChoice !== null) setTrashOpen(null); // left Trash: it opens at its top again
+  const trashOpen = library.trash ? trashOpenChoice : null;
+  const viewKey = libraryHref(library) + (trashOpen === null ? "" : `|trash:${trashOpen}`);
   // The search box keeps what is typed itself: a key press never re-renders the list.
   const searchRef = useRef<HTMLInputElement>(null);
   // The page belongs to the view it was turned in: a new folder or filter starts at page 1.
@@ -152,6 +171,13 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const [dropError, setDropError] = useState<string | null>(null);
   // undone: the words once Undo worked ("Moved back.", "Restored from Trash."). No undo: a note only (#537).
   const [toast, setToast] = useState<{ message: string; undo?: () => Promise<void>; undone?: string } | null>(null);
+  // #542: Trash's folders (top level), or the open one's; with the view they belong to.
+  const [trashFolders, setTrashFolders] = useState<{
+    view: string;
+    items: TrashedFolder[];
+    opened: TrashedFolderContents | null;
+    failed?: string; // they did not load: said, with Try again, never shown as an empty Trash
+  } | null>(null);
   const toastUndo = toast?.undo;
   // The shell's one upload queue and tray (D-12); this screen adds files into the folder shown.
   const { uploads, setTrayOpen, folders: folderPicking, foldersChanged } = useSharedUploads(() => setReload((n) => n + 1));
@@ -219,10 +245,34 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
     };
   }, [tagsVersion]);
 
+  useEffect(() => {
+    if (!library.trash) return;
+    let cancelled = false;
+    const view = viewKey;
+    const asked =
+      trashOpen === null
+        ? listTrashedFolders().then((reply) => ({ view, items: reply.items, opened: null }))
+        : getTrashedFolder(trashOpen).then((opened) => ({ view, items: opened.folders, opened }));
+    asked.then(
+      (result) => {
+        if (!cancelled) setTrashFolders(result);
+      },
+      (caught: unknown) => {
+        if (cancelled) return;
+        // The open folder is no longer in Trash (restored, deleted or purged): back to Trash.
+        if (trashOpen !== null && caught instanceof ApiError && caught.status === 404) setTrashOpen(null);
+        else setTrashFolders({ view, items: [], opened: null, failed: errorText(caught) }); // the files still show
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [library.trash, trashOpen, viewKey, reload]);
+
   // Each answer is kept with the view it was asked for (one request at a time).
   const poll = usePoll<Loaded>({
     load: () =>
-      listDocuments(listParams(library, listQ, offset)).then((list) => {
+      listDocuments({ ...listParams(library, listQ, offset), trashed_folder_id: trashOpen ?? undefined }).then((list) => {
         markReceived(list.items, performance.now());
         return { view: viewKey, list, now: Date.now() };
       }),
@@ -392,6 +442,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   function afterRemoved(message: string, undo?: RemovalUndo) {
     if (undo) setToast({ message, undo: undo.run, undone: undo.done });
     else setAnnouncement(message);
+    if (library.trash) setFoldersVersion((n) => n + 1); // #542: a restore may bring folders back
     headingRef.current?.focus();
     const nextOffset = offsetAfterDelete(offset, shown?.list.items.length ?? 0, PAGE_SIZE);
     if (nextOffset !== offset) turnPage(nextOffset);
@@ -414,6 +465,19 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
         setReload((n) => n + 1);
       },
     );
+  }
+
+  // #542: a folder in Trash restored or deleted for good from its row: said in the toast.
+  function afterTrashFolder(message: string) {
+    setToast({ message });
+    setFoldersVersion((n) => n + 1);
+    setReload((n) => n + 1);
+    headingRef.current?.focus();
+  }
+
+  function openTrashFolder(id: string | null) {
+    setTrashOpen(id);
+    headingRef.current?.focus();
   }
 
   function afterFolderChange(message: string, goTo?: { folderId: string | null }, asToast = false) {
@@ -452,12 +516,20 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   }
 
   const list = shown?.list;
-  const view = listView(list ? list.total : null, error !== null, listQ, filtered);
+  // #542: Trash's folders, while no search or filter narrows the files (they are not files).
+  // shortcut: all of them on the first page, not paged with the files.
+  const trashShown = trashFolders && trashFolders.view === viewKey ? trashFolders : null;
+  const opened = trashShown?.opened ?? null;
+  const folderRows = trashShown && listQ === "" && !filtered && offset === 0 ? trashShown.items : [];
+  const foldersFailed = trashShown?.failed ?? null;
+  // Trash is empty only once its folders have come too; until then it is still loading.
+  const total = list && (!library.trash || trashShown !== null) ? list.total + folderRows.length : null;
+  const view = listView(total, error !== null, listQ, filtered);
   const pages = list ? pageInfo(offset, list.items.length, list.total) : null;
   // Search and filters stay while the next list loads, so an open filter panel stays open.
   const showControls = view === "list" || view === "no-match" || (loaded !== null && !shown);
   const placeName = library.trash
-    ? "Trash"
+    ? (opened?.folder.name ?? (trashOpen === null ? "Trash" : "Folder in Trash"))
     : (current?.folder.name ??
       (library.folderId !== null
         ? "Folder"
@@ -577,6 +649,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
           <div className={libraryStyles.placeHead}>
             <div className={libraryStyles.place}>
               {current && <FolderCrumbs tree={tree} library={library} folderId={current.folder.id} />}
+              {opened && <TrashCrumbs path={opened.path} onOpen={openTrashFolder} />}
               <h2
                 id="place-heading"
                 ref={headingRef}
@@ -588,9 +661,14 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
               {current && (
                 <p className={libraryStyles.placeHint}>Files you upload here go into this folder.</p>
               )}
-              {library.trash && (
+              {library.trash && opened === null && (
                 <p className={libraryStyles.placeHint}>
                   Documents in Trash are left out of search and chat. Restore one to use it again.
+                </p>
+              )}
+              {opened && (
+                <p className={libraryStyles.placeHint}>
+                  This folder is in Trash, so it can only be looked at. Restore it from Trash to use it again.
                 </p>
               )}
               {library.trash && foreverNeeds(me) === "admin_sign_in" && (
@@ -654,12 +732,27 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
             </EmptyState>
           ) : (
             <>
+              {foldersFailed && (
+                <div className={styles.errorBanner} role="alert">
+                  <Icon name="alert" className={styles.errorIcon} />
+                  <div className={styles.errorBody}>
+                    <p className={styles.errorTitle}>
+                      {trashOpen === null ? "Could not load the folders in Trash." : "Could not load this folder in Trash."}
+                    </p>
+                    <p>{foldersFailed}</p>
+                  </div>
+                  <button type="button" className="btn" onClick={() => setReload((n) => n + 1)}>
+                    <Icon name="refresh" />
+                    Try again
+                  </button>
+                </div>
+              )}
               {library.trash ? (
-                view === "empty" && (
-                  <EmptyState icon="trash" title="Trash is empty" headingLevel={3}>
-                    Documents moved to Trash show here, until they are restored or deleted for good.
-                  </EmptyState>
-                )
+                view === "empty" &&
+                !foldersFailed &&
+                <EmptyState icon={opened ? "file" : "trash"} title={trashEmpty(opened !== null).title} headingLevel={3}>
+                  {trashEmpty(opened !== null).text}
+                </EmptyState>
               ) : view === "empty" ? (
                 <Dropzone
                   variant="full"
@@ -887,11 +980,12 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                     />
                   )}
 
-                  {searchKey === null && shown && view === "list" && shown.list.items.length > 0 && viewMode === "grid" && (
+                  {/* #542: Trash's folders are rows of the list, so Trash shows as a list. */}
+                  {searchKey === null && shown && view === "list" && shown.list.items.length > 0 && viewMode === "grid" && folderRows.length === 0 && (
                     <DocumentsGrid items={shown.list.items} label={library.trash ? "Documents in Trash" : "Your documents"} />
                   )}
 
-                  {searchKey === null && shown && view === "list" && shown.list.items.length > 0 && viewMode === "list" && (
+                  {searchKey === null && shown && view === "list" && (shown.list.items.length > 0 || folderRows.length > 0) && (viewMode === "list" || folderRows.length > 0) && (
                     <DocumentsTable
                       sorting={{ sort: library.sort, order: library.order, onSort: sortBy }}
                       items={shown.list.items}
@@ -908,10 +1002,13 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                       onFocusList={() => headingRef.current?.focus()}
                       onTagCreated={() => setTagsVersion((n) => n + 1)}
                       onUploadVersion={chooseVersion}
+                      trashFolders={folderRows}
+                      onOpenFolder={(folder) => openTrashFolder(folder.id)}
+                      onFolderDone={opened ? undefined : afterTrashFolder}
                     />
                   )}
 
-                  {searchKey === null && pages && list && view === "list" && (
+                  {searchKey === null && pages && list && list.total > 0 && view === "list" && (
                     <nav className={styles.pager} aria-label="Document pages">
                       <span className="muted tabular" aria-live="polite">
                         {pages.from}–{pages.to} of {list.total}

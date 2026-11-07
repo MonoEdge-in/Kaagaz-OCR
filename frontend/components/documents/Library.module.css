@@ -359,6 +359,12 @@
   color: var(--text-secondary);
 }
 
+/* issue 542: "Trash › Accounts › 2025". */
+.trashCrumbs li + li::before {
+  content: "›";
+  content: "›" / "";
+}
+
 .folderActions {
   display: flex;
   flex-direction: column;

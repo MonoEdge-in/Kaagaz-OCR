@@ -48,6 +48,7 @@ export type DocumentListParams = {
   uploaded_from?: string; // YYYY-MM-DD, the first day included
   uploaded_to?: string; // YYYY-MM-DD, exclusive: the day after the last one
   trashed?: boolean; // WP1.6: true lists only what is in Trash; left out, only what is not
+  trashed_folder_id?: string; // #542: with trashed, the files directly in this folder in Trash
   attention?: boolean; // PRD 5 U2: true lists only documents with reading problems
   department_id?: string;
   owner_id?: string;

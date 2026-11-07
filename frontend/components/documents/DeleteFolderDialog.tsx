@@ -113,7 +113,7 @@ export function DeleteFolderDialog({ tree, node, summary, onDeleted, onCancel }:
           </li>
           {choice === "trash" && (
             <li>
-              <p className="hint">Everything inside goes to Trash. You can restore it for {RESTORE_DAYS} days.</p>
+              <p className="hint">Everything goes to Trash. You can restore the {noun} for {RESTORE_DAYS} days.</p>
               <div className="field">
                 <label htmlFor={confirmId}>Type {name} to confirm</label>
                 <input

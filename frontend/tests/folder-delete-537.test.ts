@@ -250,7 +250,8 @@ describe("the screen: deleting", () => {
     const { screen, onChanged } = await show("f", true, FULL, { "DELETE /api/folders/f?contents=trash": four });
     const dialog = all(screen).find((element) => element.tagName === "DIALOG")!;
     await choose(control(dialog, "Delete the folder and everything inside"));
-    expect(dialog.textContent).toContain(`Everything inside goes to Trash. You can restore it for ${RESTORE_DAYS} days.`);
+    // Changed on purpose (#542): Trash keeps the folder, so the folder is what comes back.
+    expect(dialog.textContent).toContain(`Everything goes to Trash. You can restore the folder for ${RESTORE_DAYS} days.`);
     const confirm = () => button(dialog, "Move 3 files to Trash")!;
     const box = control(dialog, "Type Bills to confirm");
     expect(confirm().getAttribute("disabled")).not.toBeNull();
