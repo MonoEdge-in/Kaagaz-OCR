@@ -397,6 +397,9 @@ class Answer:
     # #535: the model was down, or the question's (or an aspect's) vector missing, for this answer,
     # so a repeated question never reuses it (routers/chat.py). Never in to_json.
     degraded: bool = False
+    # #535 (test-server log, 7 Nov 2026): "timeout" when the outage is a draft that took too long,
+    # so the words say what to do instead of "ask again in a minute"; in to_json only then.
+    outage_reason: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         """The ``Answer`` of frontend/lib/types.ts, exactly; ``agents``, ``agent_ids``,
@@ -443,6 +446,7 @@ class Answer:
             **({"clarify": self.clarify, "resume": self.resume} if self.clarify else {}),
             # KZ-006 (24 Oct 2026): the model was down, so this not found is no answer either way.
             **({"outage": True} if self.unavailable else {}),
+            **({"outage_reason": self.outage_reason} if self.unavailable and self.outage_reason else {}),
         }
 
 
@@ -464,6 +468,7 @@ class _Timing:
     parts: int = 0  # step 20: the parts the evidence was read in (0: one call, as before)
     redrafts: int = 0  # #535: model calls made again for a sentence too long to cut (draft.py)
     vectorless: bool = False  # #535: the model on, the question searched without a meaning vector
+    outage: str | None = None  # #535: the code the draft failed with while the model was down
 
     def lap(self, stage: str) -> None:
         now = time.monotonic()
@@ -784,8 +789,14 @@ class AnswerService:
         answer = self._shaped(customer_id, asked, self._mentioned(customer_id, asked, answer, scope), scope)
         said = [*answer.assumptions, *step.assumptions]
         degraded = _timing().degraded or _timing().vectorless  # #535: never reused for a repeat
+        reason = "timeout" if unavailable and _timing().outage == "timeout" else None
         return replace(
-            answer, rewritten_question=rewritten, unavailable=unavailable, assumptions=said, degraded=degraded
+            answer,
+            rewritten_question=rewritten,
+            unavailable=unavailable,
+            assumptions=said,
+            degraded=degraded,
+            outage_reason=reason,
         )
 
     def _checked(self, answer: Answer, question: str) -> Answer:
@@ -1749,6 +1760,7 @@ class AnswerService:
             _log.warning("answer drafted without the model", extra={"code": code})
             if code not in _REPLY_FAULTS:
                 _timing().degraded = True
+                _timing().outage = code  # #535: a timeout says so (``Answer.outage_reason``)
         why = "notfound_no_model" if self._model is None else f"notfound_model_error:{code}"
         if mentions_date(normalised):
             # A quoted line cannot be checked against a date.

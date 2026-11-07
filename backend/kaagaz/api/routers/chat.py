@@ -234,6 +234,9 @@ class FeedbackBody(BaseModel):
 
 # KZ-006 (24 Oct 2026): every model was down, so this is no answer and no "not found" either.
 OUTAGE_LINE = "The AI is not responding right now, so this is not a written answer. Ask again in a minute."
+# #535 (test-server log, 7 Nov 2026): a draft that took too long times out the same way a minute
+# later, so its outage (``outage_reason`` "timeout") says what to do instead.
+TIMEOUT_LINE = "This question took too long for the AI. Try Swift, or ask about fewer documents."
 
 
 def answer_text(answer: dict[str, Any]) -> str:
@@ -249,7 +252,7 @@ def answer_text(answer: dict[str, Any]) -> str:
     if answer.get("status") in ("answered", "unchecked") and isinstance(sentences, list):
         texts = [s["text"] for s in sentences if isinstance(s, dict) and isinstance(s.get("text"), str)]
     if answer.get("outage"):
-        return OUTAGE_LINE
+        return TIMEOUT_LINE if answer.get("outage_reason") == "timeout" else OUTAGE_LINE
     missing = answer.get("missing_words")
     words = [word for word in missing if isinstance(word, str)] if isinstance(missing, list) else []
     return " ".join(texts) or soft_line(bool(answer.get("closest_documents")), words)

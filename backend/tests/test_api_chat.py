@@ -266,6 +266,26 @@ def test_a_not_found_while_the_model_is_down_says_so_and_is_never_busy(db: Datab
 
 
 @pytest.mark.db
+def test_an_outage_from_a_timeout_says_the_question_took_too_long(db: Database) -> None:
+    """#535 (test-server log, 7 Nov 2026): "ask again in a minute" times out the same way, so a
+    timeout says what to do instead; every other outage keeps OUTAGE_LINE."""
+    api = Api(db)
+    signed = api.new_signed()
+    api.answers.unavailable = True
+    api.answers.reply = {**answer_json(status="not_found"), "outage_reason": "timeout"}
+    timed_out = signed.client.post("/api/chat", json={"question": "total?"}, headers=CSRF).json()["answer"]
+    assert timed_out["text"] == chat_router.TIMEOUT_LINE
+    assert timed_out["answer"]["outage"] is True and timed_out["answer"]["outage_reason"] == "timeout"
+    assert (
+        chat_router.TIMEOUT_LINE
+        == "This question took too long for the AI. Try Swift, or ask about fewer documents."
+    )
+    api.answers.reply = answer_json(status="not_found")
+    down = signed.client.post("/api/chat", json={"question": "sum?"}, headers=CSRF).json()["answer"]
+    assert down["text"] == chat_router.OUTAGE_LINE and "outage_reason" not in down["answer"]
+
+
+@pytest.mark.db
 def test_follow_up_goes_into_the_same_conversation_in_order(db: Database) -> None:
     api = Api(db)
     signed = api.new_signed()

@@ -186,6 +186,8 @@ export const TRY_THESE = "Try one of these";
 const CLOSEST_SHOWN = 3;
 /** KZ-006 (24 Oct 2026): every model was down; as routers/chat.py OUTAGE_LINE. */
 export const OUTAGE_TEXT = "The AI is not responding right now, so this is not a written answer. Ask again in a minute."
+/** #535: the outage was a draft that took too long; as routers/chat.py TIMEOUT_LINE. */
+export const TIMEOUT_TEXT = "This question took too long for the AI. Try Swift, or ask about fewer documents."
 /** A search answer the AI did not write (off on this server, or not answering): the lines that
  * matched, quoted. It read as a written answer before (QA pass, 25 Oct 2026). */
 export const QUOTED_TEXT =
@@ -357,7 +359,11 @@ export const AnswerView = memo(function AnswerView({
             <Icon name={answer.outage ? "alert" : "search-off"} size={20} />
           </span>
           <p className={styles.plain}>
-            {answer.outage ? OUTAGE_TEXT : notFoundText(closest, answer.missing_words ?? [])}
+            {answer.outage
+              ? answer.outage_reason === "timeout"
+                ? TIMEOUT_TEXT
+                : OUTAGE_TEXT
+              : notFoundText(closest, answer.missing_words ?? [])}
           </p>
         </div>
         {v2 ? <DocumentList answer={answer} terms={terms} shown={CLOSEST_SHOWN} /> : null}
