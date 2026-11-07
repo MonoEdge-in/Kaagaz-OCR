@@ -386,6 +386,7 @@ def _items(conn: Connection, customer_id: str, head: str, params: dict[str, Any]
             folders=int(row[6]),
             files=int(row[7]),
             uploaders=tuple(None if u is None else str(u) for u in row[8] or ()),
+            # shortcut: a parent in Trash from another delete reads as gone; it restores to the top level.
             was_in=() if row[1] is None else (paths.get(str(row[1])) if row[9] else None),
         )
         for row in rows

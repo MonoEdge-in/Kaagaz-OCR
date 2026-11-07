@@ -128,6 +128,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const versionOf = useRef<DocumentSummary | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   // #542: the folder in Trash that is open (read only); Trash's top level when null.
+  // shortcut: not in the address, so Back does not step up a level; the path above the heading does.
   const [trashOpenChoice, setTrashOpen] = useState<string | null>(null);
   if (!library.trash && trashOpenChoice !== null) setTrashOpen(null); // left Trash: it opens at its top again
   const trashOpen = library.trash ? trashOpenChoice : null;
@@ -516,6 +517,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
 
   const list = shown?.list;
   // #542: Trash's folders, while no search or filter narrows the files (they are not files).
+  // shortcut: all of them on the first page, not paged with the files.
   const trashShown = trashFolders && trashFolders.view === viewKey ? trashFolders : null;
   const opened = trashShown?.opened ?? null;
   const folderRows = trashShown && listQ === "" && !filtered && offset === 0 ? trashShown.items : [];
