@@ -329,7 +329,9 @@ def test_an_alert_records_its_day_only_once_sent_and_the_same_one_goes_once_a_da
 ) -> None:
     """A22: ops-alert.sh in the backend image on the host network, as the disk alert."""
     assert BASH is not None
-    docker = f'#!/usr/bin/env bash\necho "$1 $2 $3 ${{@: -3:1}} ${{@: -1}}" >>"{tmp_path}/ran"\nexit {int(not sends)}\n'
+    # The run, the subject and the text (ops-alert --subject S --text T).
+    echo = 'echo "$1 $2 $3 ${@: -3:1} ${@: -1}"'
+    docker = f'#!/usr/bin/env bash\n{echo} >>"{tmp_path}/ran"\nexit {int(not sends)}\n'
     write(tmp_path / "bin" / "docker", docker)
     (tmp_path / "kaagaz").mkdir()
     script = copy_with_stand_ins(

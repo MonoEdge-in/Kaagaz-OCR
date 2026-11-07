@@ -19,8 +19,8 @@
   unknown address takes the same path and time. At most LINKS_PER_HOUR_ADDRESS a visitor
   address with ``resend-confirm`` (A1) and LINKS_PER_HOUR_SITE for the whole site (429), and
   FORGOTS_PER_HOUR_EMAIL an e-mail from one address (the rest are answered the same and send
-  nothing; per address too, so a stranger never uses up a person's own links). Only organisation users are found (``kaagaz_login_lookup``), never an
-  operator, and never a disabled user.
+  nothing; per address, so a stranger never uses up a person's own links). Only organisation
+  users are found (``kaagaz_login_lookup``), never an operator, and never a disabled user.
 * ``POST /auth/reset`` {token, new_password}: the password from a reset link. It clears a
   temporary password, proves the e-mail, raises the session version (every browser is
   signed out), ends the user's other open links, removes their connected accounts (as an
