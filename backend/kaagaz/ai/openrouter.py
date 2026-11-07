@@ -29,7 +29,8 @@ OPENROUTER_PROVIDERS (``ProviderNotAllowed``): a page read's or an answer draft'
 DEFAULT_PROVIDER for any other ``chat_json`` and ``embed`` (the settings require it;
 checked again here).
 
-**The request** (``POST /chat/completions``, ``stream: false``, G2). A system prompt is
+**The request** (``POST /chat/completions``, ``stream: false``, G2; Ask's draft streams, below). A
+system prompt is
 ``messages[0]`` with role system. A picture is a user message whose content is the
 instruction text first, then the image as a ``data:image/png;base64`` URL. The page's
 media resolution goes the way ``MEDIA_RESOLUTION_SHAPE`` says (``image_url.detail``, low or
@@ -41,6 +42,14 @@ call that names one (Ask's question rewrite and translation, 16 Oct 2026), sent 
 model only. A repair turn sends
 the first reply back with role assistant. ``python -m kaagaz.cli verify-models`` checks
 each of these against the live API.
+
+**Streaming** (#535, Ask's draft only: ``chat_json_stream``). The same request with ``stream:
+true``; the reply comes as server-sent events, each ``delta.content`` handed to the caller as it
+arrives, and is put back together as the reply ``stream: false`` would have given (its text, finish
+reasons, ``provider`` and the last chunk's ``usage``), so every check, the ledger, the limiter, the
+breaker, the latch and the deadline are the same code. Two differences: no repair turn (a reply that
+does not follow the schema is ``invalid_output``; the caller drafts again without streaming), and a
+reply that already handed out text is never sent again: a failure after it raises at once.
 
 **Usage** (G9). Input tokens are ``usage.prompt_tokens``; output tokens are
 ``usage.completion_tokens``; ``completion_tokens_details.reasoning_tokens`` is the thinking
@@ -525,14 +534,16 @@ def chat_request(
     max_output_tokens: int | None,
     strict: bool = STRICT_SCHEMA,
     provider_slug: str = DEFAULT_PROVIDER,
+    stream: bool = False,
 ) -> dict[str, Any]:
     """A /chat/completions body: the model, the messages, the thinking effort, the output
     cap, the schema and ``provider(provider_slug)``. ``thinking`` NO_THINKING (a model with
-    no thinking levels, Tushar 18 Oct 2026) sends no ``reasoning`` field at all."""
+    no thinking levels, Tushar 18 Oct 2026) sends no ``reasoning`` field at all. ``stream``:
+    Ask's draft only (#535)."""
     body: dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "stream": False,
+        "stream": stream,
         "provider": provider(provider_slug),
     }
     if thinking != NO_THINKING:
@@ -769,6 +780,63 @@ def _read_until(response: Any, ends: float, limit: int) -> bytes | None:
         chunks.append(chunk)
         size += len(chunk)
     return b"".join(chunks)
+
+
+def _read_stream(
+    response: Any, ends: float, limit: int, on_text: Callable[[str], None]
+) -> dict[str, Any] | str:
+    """#535: a streamed reply (server-sent events), each ``delta.content`` handed to ``on_text``
+    as it comes ("" for a line with none: a keep-alive comment or an event's blank line, so the
+    caller may stop the reply by raising), put back together as the reply ``stream: false``
+    gives: its text, ``refusal``, finish reasons, ``id``, ``model``, ``provider`` and the last
+    ``usage``. An ``error`` chunk is a reply that failed part way (finish_reason error). A
+    failure code instead: "timeout" once ``ends`` has passed, "response_too_large" past
+    ``limit`` bytes, "bad_response" for a chunk that is not a JSON object. O(body)."""
+    texts: list[str] = []
+    reply: dict[str, Any] = {}
+    choice: dict[str, Any] = {"index": 0, "finish_reason": None}
+    refusal: object = None
+    size = 0
+    while True:
+        if time.monotonic() >= ends:
+            return "timeout"
+        line = response.readline(limit + 1 - size)
+        if not line:
+            break
+        size += len(line)
+        if size > limit:
+            return "response_too_large"
+        text = ""
+        if line.startswith(b"data:"):
+            data = line[5:].strip()
+            if data == b"[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+            except (ValueError, RecursionError):
+                return "bad_response"
+            if not isinstance(chunk, dict):
+                return "bad_response"
+            reply.update({key: chunk[key] for key in ("id", "model", "provider", "usage") if key in chunk})
+            choices = chunk.get("choices")
+            first = (
+                choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+            )
+            delta = first.get("delta")
+            delta = delta if isinstance(delta, dict) else {}
+            if isinstance(delta.get("content"), str):
+                text = delta["content"]
+                texts.append(text)
+            if delta.get("refusal") is not None:
+                refusal = delta["refusal"]
+            choice.update(
+                {key: first[key] for key in ("finish_reason", "native_finish_reason") if first.get(key)}
+            )
+            if "error" in chunk:
+                choice["finish_reason"] = "error"
+        on_text(text)
+    choice["message"] = {"role": "assistant", "content": "".join(texts), "refusal": refusal}
+    return {**reply, "choices": [choice]}
 
 
 @dataclass(slots=True)
@@ -1152,6 +1220,66 @@ class OpenRouterClient:
         tries end by then (``timeout`` once it has passed); None, each has the chat
         timeout. ``temperature``: sent only to a model of TEMPERATURE_VENDORS; None, the
         default."""
+        body, output_limit, ends = self._chat_body(
+            system, user, schema, max_tokens, model, thinking, provider, deadline, temperature
+        )
+        messages = body["messages"]
+        content, spent = self._chat_reply(body, output_limit, (0, 0), ends)
+        value, problem = parse_reply(content, schema)
+        if value is not None:
+            return value
+        messages.append({"role": "assistant", "content": content})
+        messages.append({"role": "user", "content": REPAIR.format(problem=problem)})
+        content, spent = self._chat_reply(body, output_limit, spent, ends)
+        value, _ = parse_reply(content, schema)
+        if value is None:
+            raise ModelOutputError("invalid_output", input_tokens=spent[0], output_tokens=spent[1])
+        return value
+
+    def chat_json_stream(
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: dict[str, Any],
+        on_text: Callable[[str], None],
+        max_tokens: int | None = None,
+        model: str | None = None,
+        thinking: str | None = None,
+        provider: str | None = None,
+        deadline: float | None = None,
+    ) -> dict[str, Any]:
+        """``chat_json`` streamed (#535, Ask's draft; the module docstring): the same request with
+        ``stream: true``, each piece of the reply's text handed to ``on_text`` as it comes (""
+        for a line with none, so the caller may stop the reply by raising: the connection is
+        closed and nothing more is read). No repair turn: a reply that does not follow ``schema``
+        raises ``invalid_output``, with its tokens."""
+        body, output_limit, ends = self._chat_body(
+            system, user, schema, max_tokens, model, thinking, provider, deadline, None, stream=True
+        )
+        content, spent = self._chat_reply(body, output_limit, (0, 0), ends, on_text=on_text)
+        value, _ = parse_reply(content, schema)
+        if value is None:
+            raise ModelOutputError("invalid_output", input_tokens=spent[0], output_tokens=spent[1])
+        return value
+
+    def _chat_body(
+        self,
+        system: str,
+        user: str,
+        schema: dict[str, Any],
+        max_tokens: int | None,
+        model: str | None,
+        thinking: str | None,
+        provider: str | None,
+        deadline: float | None,
+        temperature: float | None,
+        *,
+        stream: bool = False,
+    ) -> tuple[dict[str, Any], int, float | None]:
+        """``chat_json``'s request body, the reply's own budget and the deadline on ``now()``
+        (None: each call's chat timeout); ValueError or ``ProviderNotAllowed`` before anything
+        is sent."""
         if model is not None and not valid_model_id(model):
             raise ValueError("a model ID must be an OpenRouter author/slug with no :variant")
         slug = DEFAULT_PROVIDER if provider is None else provider
@@ -1173,20 +1301,11 @@ class OpenRouterClient:
             schema=schema,
             max_output_tokens=output_limit + CHAT_THINKING_TOKENS.get(level, 0),
             provider_slug=slug,
+            stream=stream,
         )
         if temperature is not None and chosen.split("/", 1)[0] in TEMPERATURE_VENDORS:
             body["temperature"] = temperature
-        content, spent = self._chat_reply(body, output_limit, (0, 0), ends)
-        value, problem = parse_reply(content, schema)
-        if value is not None:
-            return value
-        messages.append({"role": "assistant", "content": content})
-        messages.append({"role": "user", "content": REPAIR.format(problem=problem)})
-        content, spent = self._chat_reply(body, output_limit, spent, ends)
-        value, _ = parse_reply(content, schema)
-        if value is None:
-            raise ModelOutputError("invalid_output", input_tokens=spent[0], output_tokens=spent[1])
-        return value
+        return body, output_limit, ends
 
     # The reader's call (G1, G2, G3).
 
@@ -1329,12 +1448,19 @@ class OpenRouterClient:
     # Internals.
 
     def _chat_reply(
-        self, body: dict[str, Any], max_tokens: int | None, before: tuple[int, int], deadline: float | None
+        self,
+        body: dict[str, Any],
+        max_tokens: int | None,
+        before: tuple[int, int],
+        deadline: float | None,
+        *,
+        on_text: Callable[[str], None] | None = None,
     ) -> tuple[str, tuple[int, int]]:
         """(the reply's text, the tokens billed so far: ``before`` plus this reply's), by
         ``deadline`` on ``now()`` (None: the chat timeout from now). Its
-        ``ModelOutputError`` carries the same tokens."""
-        reply = self._call(CHAT_PATH, body, self.now() + self._chat_timeout if deadline is None else deadline)
+        ``ModelOutputError`` carries the same tokens. ``on_text``: a streamed reply's (#535)."""
+        ends = self.now() + self._chat_timeout if deadline is None else deadline
+        reply = self._call(CHAT_PATH, body, ends, on_text=on_text)
         text, _ = _billed_text(reply, before)
         input_tokens, output_tokens = reply_usage(reply)
         spent = (before[0] + input_tokens, before[1] + output_tokens)
@@ -1376,6 +1502,7 @@ class OpenRouterClient:
         sent: tuple[str, str] | None = None,
         budget: PageBudget | None = None,
         tokens_in: int | None = None,
+        on_text: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         """One request with the latch, the body's model's breaker, the limiter and retries
         (G6, G9). Returns the reply object of a 200; raises a coded error otherwise. ``sent``:
@@ -1384,11 +1511,21 @@ class OpenRouterClient:
         or not at all (``cost_ceiling``, a limit hit): never past the page's ceiling; ``tokens_in``
         the request's input at most (None: the page's, ``PageBudget.cap``). #488 review: a call
         that may have been billed with no usage to say so (``_Reply.maybe_billed``, a reply with
-        none) is charged its worst case."""
+        none) is charged its worst case. ``on_text`` (#535): a streamed reply's pieces of text; once
+        one went out, a failure is raised at once, never retried (the text would go out twice), and
+        whatever the caller raises from it releases the breaker's probe and goes up as it is."""
         gate = self.gate
         model = str(body["model"])
         attempt = 0
         worst = 0.0
+        handed_out = False
+
+        def heard(text: str) -> None:
+            nonlocal handed_out
+            handed_out = handed_out or bool(text)
+            if on_text is not None:
+                on_text(text)
+
         while True:
             if budget is not None and attempt:
                 cap = budget.cap(tokens_in)
@@ -1411,7 +1548,11 @@ class OpenRouterClient:
             if remaining <= 0:
                 gate.release_probe(model)
                 raise ModelUnavailable("timeout")
-            reply = self._send(path, body, remaining)
+            try:
+                reply = self._send(path, body, remaining, on_text=None if on_text is None else heard)
+            except BaseException:  # the caller stopped a streamed reply (#535): no outcome to record
+                gate.release_probe(model)
+                raise
             if budget is not None and reply.maybe_billed:
                 budget.charge_unknown(worst)
             code: str | None
@@ -1457,6 +1598,8 @@ class OpenRouterClient:
                 gate.release_probe(model)
                 raise ModelUnavailable("timeout")
             gate.record(model, failed=True)
+            if handed_out:  # #535: never sent again once a streamed reply handed out text
+                raise ModelUnavailable(code)
             wait = gate.random() * min(BACKOFF_MAX_SECONDS, BACKOFF_BASE_SECONDS * 2**attempt)
             asked = _retry_after(reply.headers, gate.wall_clock())
             if asked is not None:
@@ -1506,10 +1649,17 @@ class OpenRouterClient:
                 self._cost = cost if self._cost is None else self._cost + cost
 
     def _send(
-        self, path: str, body: Mapping[str, Any] | None, timeout: float, *, send_key: bool = True
+        self,
+        path: str,
+        body: Mapping[str, Any] | None,
+        timeout: float,
+        *,
+        send_key: bool = True,
+        on_text: Callable[[str], None] | None = None,
     ) -> _Reply:
         """One POST (or a GET when ``body`` is None). Never raises for HTTP or the network:
-        the outcome is a ``_Reply``."""
+        the outcome is a ``_Reply``. ``on_text``: a reply sent as ``text/event-stream`` is read
+        as it comes (``_read_stream``, #535); whatever ``on_text`` raises goes up."""
         data = None if body is None else json.dumps(body).encode("utf-8")
         headers = {} if body is None else {"Content-Type": "application/json"}
         method = "GET" if body is None else "POST"
@@ -1524,6 +1674,13 @@ class OpenRouterClient:
         ends = time.monotonic() + timeout
         try:
             with self._opener.open(request, timeout=timeout) as response:
+                if on_text is not None and response.headers.get_content_type() == "text/event-stream":
+                    streamed = _read_stream(response, ends, replies.MAX_RESPONSE_BYTES, on_text)
+                    if streamed == "timeout":
+                        return _Reply(0, None, None, "timeout")
+                    if isinstance(streamed, str):
+                        return _Reply(response.status, response.headers, None, streamed)
+                    return _Reply(response.status, response.headers, streamed)
                 raw = _read_until(response, ends, replies.MAX_RESPONSE_BYTES + 1)
                 if raw is None:
                     return _Reply(0, None, None, "timeout")

@@ -1,0 +1,226 @@
+"""Streaming Ask (#535): what the answer sends while it is worked out, and its streamed draft.
+
+**The rule above all: no fake or unchecked words.** Nothing here sends the model's raw text. The
+answer sends real stages, the real sources, and only sentences that already passed the checks
+the full answer runs on them (``AnswerService``'s ``_Preview``: ``verify.py``, then decision 2's
+final check); the full answer, worked out and saved as ``POST /api/chat`` does, is the truth
+(``done``), and the streamed sentences only a preview of it.
+
+``Events``: one streamed answer's outlet, set in ``EVENTS`` for the thread working it out
+(routers/chat.py). ``emit`` sends an event when there is one, and does nothing otherwise, so
+``POST /api/chat``, Home's ready answers and every test without it answer exactly as before.
+``Events.cancel`` (the client went away, or ANSWER_STREAM_MAX_SECONDS passed) makes the next
+``emit`` or piece of the model's text raise ``StreamCancelled``: the model's stream is closed
+and the answer is never saved.
+
+``draft_streamed``: ``draft.model_draft`` with the model's reply streamed
+(``OpenRouterClient.chat_json_stream``); ``SentenceParser`` reads the draft's ``sentences``
+array as it comes, and each complete sentence object goes to ``offer``. A reply that is not the
+draft's JSON (or the draft's shape) is drafted once more without streaming (``model_draft``),
+after ``stage: checking``, and its sentences offered in turn.
+
+Time: O(n) over the reply's text; nothing here touches the database.
+"""
+
+import json
+import threading
+from collections.abc import Callable, Sequence
+from contextvars import ContextVar
+from typing import Any, Protocol, runtime_checkable
+
+from kaagaz.ai.client import ModelClient, ModelOutputError
+from kaagaz.answering.draft import (
+    ANSWER_SCHEMA,
+    SYSTEM_PROMPT,
+    Draft,
+    checked,
+    model_draft,
+    user_prompt,
+)
+from kaagaz.answering.evidence import Evidence
+
+# The draft fell back to a second, unstreamed call for these (``draft_streamed``).
+_REDRAFTED = frozenset({"invalid_output", "answer_shape"})
+
+
+class StreamCancelled(Exception):
+    """The streamed answer was stopped: the client went away or it took too long."""
+
+
+class Events:
+    """One streamed answer's outlet: ``post(name, data)`` hands an event to the response. A
+    stage is sent once, when it changes. Thread-safe: ``cancel`` comes from the response's
+    side, everything else from the answer's thread."""
+
+    def __init__(self, post: Callable[[str, dict[str, Any]], None]) -> None:
+        self._post = post
+        self._cancelled = threading.Event()
+        self._stage: str | None = None
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+
+    def check(self) -> None:
+        """``StreamCancelled`` once cancelled."""
+        if self._cancelled.is_set():
+            raise StreamCancelled
+
+    def send(self, name: str, data: dict[str, Any]) -> None:
+        self.check()
+        if name == "stage":
+            if data.get("stage") == self._stage:
+                return
+            self._stage = data.get("stage")
+        self._post(name, data)
+
+
+EVENTS: ContextVar[Events | None] = ContextVar("answer_events", default=None)
+
+
+def emit(name: str, data: dict[str, Any]) -> None:
+    """Send an event when the answer is streamed; nothing otherwise."""
+    events = EVENTS.get()
+    if events is not None:
+        events.send(name, data)
+
+
+@runtime_checkable
+class StreamingModel(ModelClient, Protocol):
+    """A model client that can also stream a JSON reply (``OpenRouterClient``)."""
+
+    def chat_json_stream(
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: dict[str, Any],
+        on_text: Callable[[str], None],
+        max_tokens: int | None = None,
+        model: str | None = None,
+        thinking: str | None = None,
+        provider: str | None = None,
+        deadline: float | None = None,
+    ) -> dict[str, Any]: ...
+
+
+class SentenceParser:
+    """The draft's top-level ``sentences`` array read as the reply streams in: each sentence
+    object, once its closing brace has come, goes to ``found`` with its place in the array, as
+    ``json.loads`` reads it. Strings are skipped with their escapes, so a brace, a bracket or the
+    word "sentences" inside a sentence's text is text; anything before the first brace (a code
+    fence) is ignored. O(n) over the reply."""
+
+    def __init__(self, found: Callable[[int, object], None]) -> None:
+        self._found = found
+        self._text = ""
+        self._at = 0
+        self._depth = 0
+        self._in_string = False
+        self._escaped = False
+        self._string_start = 0
+        self._last_key = ""  # the last string closed at the top level (a key, or a value)
+        self._in_sentences = False
+        self._start = -1  # where the open sentence object starts
+        self._count = 0
+
+    def feed(self, text: str) -> None:
+        self._text += text
+        for i in range(self._at, len(self._text)):
+            ch = self._text[i]
+            if self._in_string:
+                if self._escaped:
+                    self._escaped = False
+                elif ch == "\\":
+                    self._escaped = True
+                elif ch == '"':
+                    self._in_string = False
+                    if self._depth == 1:
+                        self._last_key = self._text[self._string_start : i + 1]
+                continue
+            if ch == '"':
+                self._in_string, self._string_start = True, i
+            elif ch in "{[":
+                self._depth += 1
+                if ch == "[" and self._depth == 2:
+                    self._in_sentences = self._last_key == '"sentences"'
+                elif ch == "{" and self._depth == 3 and self._in_sentences:
+                    self._start = i
+            elif ch in "}]":
+                if ch == "}" and self._depth == 3 and self._start >= 0:
+                    self._sentence(self._text[self._start : i + 1])
+                    self._start = -1
+                elif ch == "]" and self._depth == 2:
+                    self._in_sentences = False
+                self._depth -= 1
+        self._at = len(self._text)
+
+    def _sentence(self, raw: str) -> None:
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            value = None
+        self._found(self._count, value)
+        self._count += 1
+
+
+def draft_streamed(
+    model: StreamingModel,
+    question: str,
+    evidence: Sequence[Evidence],
+    *,
+    max_tokens: int,
+    offer: Callable[[int, object], None],
+    cards: Sequence[str] = (),
+    chat_model: str | None = None,
+    thinking: str | None = None,
+    provider: str | None = None,
+    deadline: float | None = None,
+) -> Draft:
+    """``model_draft`` (the same prompt, schema and arguments) with the reply streamed: each
+    complete sentence object goes to ``offer`` (its place, the object) while the reply comes.
+    A reply that is not the draft's JSON or shape (a sentence over MAX_SENTENCE_CHARS too) is
+    drafted once more without streaming, after ``stage: checking``, and that draft's sentences
+    are offered in turn (``offer`` sends each sentence once). Raises as ``model_draft`` does, and
+    ``StreamCancelled`` once the answer is stopped."""
+    parser = SentenceParser(offer)
+    events = EVENTS.get()
+
+    def heard(text: str) -> None:
+        if events is not None:
+            events.check()  # stopped: the client's connection to the model is closed at once
+        parser.feed(text)
+
+    user = user_prompt(question, evidence, cards)
+    try:
+        reply = model.chat_json_stream(
+            system=SYSTEM_PROMPT,
+            user=user,
+            schema=ANSWER_SCHEMA,
+            on_text=heard,
+            max_tokens=max_tokens,
+            model=chat_model,
+            thinking=thinking,
+            provider=provider,
+            deadline=deadline,
+        )
+        return checked(reply)
+    except ModelOutputError as error:
+        if error.code not in _REDRAFTED:
+            raise
+    emit("stage", {"stage": "checking"})
+    # shortcut: a sentence over MAX_SENTENCE_CHARS costs this second, unstreamed draft (and
+    # model_draft's own repair) until PR 2 splits long sentences in code inside model_draft.
+    draft = model_draft(
+        model,
+        question,
+        evidence,
+        max_tokens=max_tokens,
+        cards=cards,
+        chat_model=chat_model,
+        thinking=thinking,
+        provider=provider,
+        deadline=deadline,
+    )
+    for place, sentence in enumerate(draft.sentences):
+        offer(place, {"text": sentence.text, "evidence": sentence.evidence})
+    return draft
