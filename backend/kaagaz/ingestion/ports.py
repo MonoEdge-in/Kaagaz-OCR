@@ -38,6 +38,8 @@ class DocumentRecord:
     batch_id: str | None = None
     # Folder upload (#484): it stays in folder_id, never auto-filed, even in a department.
     keep_place: bool = False
+    # A8: in Trash when read back (``deleted_at`` set); a new upload never is.
+    in_trash: bool = False
 
 
 @dataclass(frozen=True, slots=True)
