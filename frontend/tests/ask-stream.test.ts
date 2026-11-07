@@ -5,7 +5,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { askErrorText } from "@/components/chat/logic";
-import { ApiError, askStream } from "@/lib/api";
+import { ApiError, askStream, RECOVER_EVERY_MS, RECOVER_FOR_MS, STILL_SAVING } from "@/lib/api";
 import { sseParser, streamEvent } from "@/lib/askStream";
 import type { StreamEvent } from "@/lib/askStream";
 import type { ChatResponse } from "@/lib/types";
@@ -289,5 +289,65 @@ describe("askStream (lib/api.ts)", () => {
     controller.abort();
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe("a broken stream after started (Tushar, 16 Oct 2026: the answer is always saved)", () => {
+  const STARTED = sse("started", { conversation_id: "c9", question_id: "q9" });
+  const QUESTION = { id: "q9", role: "user", text: "Total?", created_at: "t", answer: null, feedback: null };
+  const ANSWER = { id: "a9", role: "assistant", text: "It is 1,200.", created_at: "t", answer: null, feedback: null };
+  const conversation = (...messages: unknown[]) => json({ id: "c9", title: "Total?", messages });
+
+  afterEach(() => vi.useRealTimers());
+
+  it("fetches the saved answer from its conversation every 2 s, never asking again", async () => {
+    vi.useFakeTimers();
+    const calls = server(
+      streamed(body(STARTED + sse("stage", { stage: "writing" }), 4096, { failAfter: 1 })),
+      json({ error: { code: "not_found" } }, 404), // the new conversation is not saved yet
+      conversation(QUESTION), // the question, its answer still on its way
+      conversation({ ...ANSWER, id: "older", text: "An older answer." }, QUESTION, ANSWER),
+    );
+    const pending = run();
+    await vi.advanceTimersByTimeAsync(2 * RECOVER_EVERY_MS);
+    const { reply } = await pending;
+    expect(reply).toEqual({ conversation_id: "c9", question: QUESTION, answer: ANSWER });
+    expect(calls.map((call) => [call.init.method, call.url])).toEqual([
+      ["POST", "/api/chat/stream"],
+      ["GET", "/api/conversations/c9"],
+      ["GET", "/api/conversations/c9"],
+      ["GET", "/api/conversations/c9"],
+    ]);
+  });
+
+  it("says the answer is still on its way after 60 s of looking, and never asks again", async () => {
+    vi.useFakeTimers();
+    const calls = server(
+      streamed(body(STARTED, 4096, { failAfter: 1 })),
+      ...Array.from({ length: 40 }, () => conversation(QUESTION)),
+    );
+    const caught = run().catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(RECOVER_FOR_MS + RECOVER_EVERY_MS);
+    expect(await caught).toMatchObject({ code: "answer_pending", message: STILL_SAVING });
+    expect(calls.filter((call) => call.url === "/api/chat")).toHaveLength(0);
+    expect(calls.length - 1).toBeLessThanOrEqual(RECOVER_FOR_MS / RECOVER_EVERY_MS + 1);
+  });
+
+  it("Stop while looking stops looking, with no second ask", async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const calls = server(streamed(body(STARTED, 4096, { failAfter: 1 })), conversation(QUESTION), conversation(QUESTION));
+    const caught = run(controller.signal).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(RECOVER_EVERY_MS / 2);
+    controller.abort();
+    expect(await caught).toMatchObject({ name: "AbortError" });
+    expect(calls.map((call) => call.url)).toEqual(["/api/chat/stream", "/api/conversations/c9"]);
+  });
+
+  it("a stream cut before started asks POST /api/chat once instead", async () => {
+    const calls = server(streamed(body(sse("stage", { stage: "understanding" }), 16, { failAfter: 1 })), json(REPLY));
+    const { reply } = await run();
+    expect(reply).toEqual(REPLY);
+    expect(calls.map((call) => call.url)).toEqual(["/api/chat/stream", "/api/chat"]);
   });
 });

@@ -876,9 +876,27 @@ const chatBody = (
   ...(reply ? { reply } : {}),
 });
 
+/** Where the server said the answer will land (the `started` event): its conversation, and the
+ * question it answers. */
+interface Landing {
+  conversationId: string;
+  questionId: string;
+}
+
 /** The stream broke before `done` (no connection, no such route, a server failure, a cut
- * stream, a malformed event): askStream asks POST /chat instead. */
-class StreamFailed extends Error {}
+ * stream, a malformed event). With no `landing`, askStream asks POST /chat instead; after
+ * `started`, the server finishes and saves the answer anyway, so askStream fetches it there. */
+class StreamFailed extends Error {
+  constructor(readonly landing: Landing | null = null) {
+    super("stream failed");
+  }
+}
+
+/** How often, and for how long, a broken stream's saved answer is looked for after `started`. */
+export const RECOVER_EVERY_MS = 2_000;
+export const RECOVER_FOR_MS = 60_000;
+/** Said when the saved answer has not appeared in RECOVER_FOR_MS: it is still on its way. */
+export const STILL_SAVING = "The answer is taking a while. It will be saved in this conversation.";
 
 /** An `error` event's code as the status /chat would have answered with, for askErrorText. An
  * unknown code is a refusal in the server's own words (shown as they are). */
@@ -922,7 +940,10 @@ async function streamChat(body: unknown, signal: AbortSignal | undefined, onEven
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   // Set by the parser's callback, so held in an object TypeScript does not narrow to null.
-  const state: { outcome: { reply: ChatResponse } | { error: ApiError } | { failed: true } | null } = { outcome: null };
+  const state: {
+    outcome: { reply: ChatResponse } | { error: ApiError } | { failed: true } | null;
+    landing: Landing | null;
+  } = { outcome: null, landing: null };
   const parser = sseParser((name, data) => {
     if (state.outcome !== null) return;
     let value: unknown;
@@ -932,7 +953,12 @@ async function streamChat(body: unknown, signal: AbortSignal | undefined, onEven
       state.outcome = { failed: true };
       return;
     }
-    if (name === "done") {
+    if (name === "started") {
+      const { conversation_id, question_id } = (value ?? {}) as { conversation_id?: unknown; question_id?: unknown };
+      if (typeof conversation_id === "string" && typeof question_id === "string") {
+        state.landing = { conversationId: conversation_id, questionId: question_id };
+      }
+    } else if (name === "done") {
       const reply = (value as { reply?: unknown } | null)?.reply;
       state.outcome = isChatResponse(reply) ? { reply } : { failed: true };
     } else if (name === "error") {
@@ -957,23 +983,64 @@ async function streamChat(body: unknown, signal: AbortSignal | undefined, onEven
     }
   } catch (caught) {
     if (signal?.aborted) throw caught;
-    throw new StreamFailed();
+    throw new StreamFailed(state.landing);
   }
   const { outcome } = state;
-  if (outcome === null || "failed" in outcome) throw new StreamFailed();
+  if (outcome === null || "failed" in outcome) throw new StreamFailed(state.landing);
   reader.cancel().catch(() => undefined); // anything after done or error is not read
   if ("error" in outcome) throw outcome.error;
   return outcome.reply;
 }
 
+/** Waits `ms`, or rejects as fetch does once `signal` aborts. */
+function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const stopped = () => {
+      clearTimeout(timer);
+      reject(signal?.reason ?? new DOMException("Aborted", "AbortError"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", stopped);
+      resolve();
+    }, ms);
+    if (signal?.aborted) stopped();
+    else signal?.addEventListener("abort", stopped, { once: true });
+  });
+}
+
+/**
+ * The answer the server saved where `started` said: GET /conversations/{id} every
+ * RECOVER_EVERY_MS until the question's answer message is there, for RECOVER_FOR_MS at most
+ * (then STILL_SAVING). Not there yet (a 404 while the new conversation is unsaved, a lost
+ * connection): asked again; any other refusal (the session ended) is its own error.
+ */
+async function savedAnswer(landing: Landing, signal?: AbortSignal): Promise<ChatResponse> {
+  const ends = Date.now() + RECOVER_FOR_MS;
+  for (;;) {
+    try {
+      const { messages } = await request<Conversation>("GET", `/conversations/${landing.conversationId}`, undefined, signal);
+      const at = messages.findIndex((each) => each.id === landing.questionId);
+      const answer = at < 0 ? undefined : messages.slice(at + 1).find((each) => each.role === "assistant");
+      const question = messages[at];
+      if (question && answer) return { conversation_id: landing.conversationId, question, answer };
+    } catch (caught) {
+      if (signal?.aborted) throw caught;
+      const waiting = caught instanceof ApiError && (caught.status === 404 || caught.status === 0);
+      if (!waiting && !lostConnection(caught)) throw caught;
+    }
+    if (Date.now() + RECOVER_EVERY_MS > ends) throw new ApiError(503, "answer_pending", STILL_SAVING);
+    await pause(RECOVER_EVERY_MS, signal);
+  }
+}
+
 /**
  * #535: ask with the answer streamed (POST /chat/stream, the same body and auth as ask). Each
  * real stage, the sources found and each verified sentence go to `onEvent` as they come; the
- * reply is `done`'s, the same as /chat's. On any network or stream failure before `done`, it
- * asks POST /chat once instead and returns its reply, with no error when that works. Stop
- * (`signal`) aborts either and never falls back.
- * shortcut: a stream cut after the server saved the answer but before `done` arrived asks
- * again, so that question and answer are saved twice; rare, and nothing is lost.
+ * reply is `done`'s, the same as /chat's. On a network or stream failure before `done`:
+ * once `started` has come, the server finishes and saves the answer anyway, so it is fetched
+ * from that conversation (savedAnswer), never asked again (it would be saved twice); before
+ * `started`, it asks POST /chat once instead. No error when either works. Stop (`signal`)
+ * aborts any of them and never falls back: the server still saves the answer.
  */
 export async function askStream(
   question: string,
@@ -989,6 +1056,7 @@ export async function askStream(
     return await streamChat(body, signal, onEvent);
   } catch (caught) {
     if (!(caught instanceof StreamFailed) || signal?.aborted) throw caught;
+    if (caught.landing) return savedAnswer(caught.landing, signal);
     return request<ChatResponse>("POST", "/chat", body, signal);
   }
 }

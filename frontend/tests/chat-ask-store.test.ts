@@ -102,6 +102,6 @@ describe("stopping a question on its way", () => {
     const screen = readFileSync(join(__dirname, "..", "components/chat/ChatScreen.tsx"), "utf8");
     expect(screen).toContain("onStop={busy ? () => asking_.current && stopAsk(asking_.current) : undefined}");
     expect(screen).toContain("if (entry.stopped) {");
-    expect(STOPPED_STATUS).toBe("Stopped. Your question is back in the box.");
+    expect(STOPPED_STATUS).toBe("Stopped. The answer will be saved in this conversation.");
   });
 });
