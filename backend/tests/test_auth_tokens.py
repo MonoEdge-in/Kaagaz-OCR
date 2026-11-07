@@ -699,9 +699,17 @@ def _forever(client: TestClient, confirm: dict[str, Any] | None = None) -> tuple
         # A grant never counts for an admin: a password-only admin stays refused.
         ({"delete_forever_allowed": True}, "app", (401, "not_signed_in")),
         ({"delete_forever_allowed": True, "totp_enabled": False}, "admin", (403, "mfa_enrol_required")),
-        # Turned off by the admin (30 Oct 2026): signed in on the password, still refused here.
+        # Changed on purpose (#538, Tushar, 7 Nov 2026): turned off by the admin (30 Oct 2026),
+        # signed in on the password, the typed-password token now counts in an admin session.
         (
             {"delete_forever_allowed": True, "totp_enabled": False, "two_step_turned_off": True},
+            "admin",
+            (200, None),
+        ),
+        ({"totp_enabled": False, "two_step_turned_off": True}, "app", (401, "not_signed_in")),
+        # Required by the organisation (0068) but not set up: refused as before, token or not.
+        (
+            {"totp_enabled": False, "two_step_turned_off": True, "two_step_required": True},
             "admin",
             (403, "two_step_required"),
         ),

@@ -30,8 +30,9 @@
   the password and a current code (both counted like a sign-in, else a 400 that says
   which). Every other browser is signed out, this one is re-signed; audited
   ``auth.totp_off``, a security notice. 409 when it is off. An admin's stays off until they
-  turn it on again (0061b, Tushar, 30 Oct 2026): they sign in with the password alone, and
-  Delete forever and deleting a tag still need it on (``require_admin_with_two_step``). While
+  turn it on again (0061b, Tushar, 30 Oct 2026): they sign in with the password alone,
+  deleting a tag still needs it on (``require_admin_with_two_step``), and Delete forever asks
+  for the password again (#538, ``require_delete_forever``). While
   the super admin requires two-step for the organisation's admins (0068, #481), an admin's
   turning off is 409 ``two_step_required`` before anything is checked, and one already off
   sets it up at the next sign-in (``users.session_user``, ``_ATTEMPT_COLUMNS``). A
@@ -45,7 +46,8 @@
   password may be changed (403 ``google_link_required`` otherwise), so a stolen password
   can't take the account from its owner.
 * ``POST /auth/confirm-password`` {password}: only for a member or reviewer an
-  admin allowed to delete forever; the password, counted like a sign-in, then a
+  admin allowed to delete forever, or an admin in an admin session without two-step sign-in
+  on (#538, ``deletes_forever_by_password``); the password, counted like a sign-in, then a
   5-minute confirm cookie (kaagaz/api/auth.py) for Delete forever. 204.
 * ``POST /auth/logout``: ends this browser's session on the server (0076, #502, Tushar 6 Nov
   2026): its id goes to ``ended_sessions``, so a copied cookie stops working at once, and the
@@ -127,6 +129,7 @@ from kaagaz.api.auth import (
     UserAllowPasswordChange,
     clear_session_cookie,
     current_user_allow_password_change,
+    deletes_forever_by_password,
     feature_on,
     hash_password,
     load_user,
@@ -435,7 +438,7 @@ def change_password(
 
 @router.post("/auth/confirm-password", status_code=204)
 def confirm_password(body: CurrentPasswordBody, user: User, context: Context) -> Response:
-    if user.role == "admin" or not user.delete_forever_allowed:
+    if not deletes_forever_by_password(user):
         raise ApiError(403, "forbidden")  # nothing is counted
     now = context.clock()
     _check_current_password(context, user, body.password, now)

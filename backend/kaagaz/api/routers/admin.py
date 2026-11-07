@@ -463,7 +463,7 @@ def set_delete_forever(
         if row is None:
             if users_sql.role_of(conn, user.customer_id, target) is None:
                 raise ApiError(404, "not_found")
-            raise ApiError(400, "bad_request", "Admins can already delete forever with two-step sign-in.")
+            raise ApiError(400, "bad_request", "Admins can already delete forever.")
         action = "user.delete_forever_on" if body.allowed else "user.delete_forever_off"
         _audit_user(conn, user, action, target)
     return admin_user(row, now=context.clock())
