@@ -40,9 +40,10 @@ export interface UploadQueue {
   batch: string[]; // the keys added since the last batch settled
   finished: UploadCounts | null; // the batch that settled last, until the next starts or Clear
   settled: number; // how many batches have settled
+  filed: number; // #536: files seen filed by Kaagaz (feature 28), which may have made a folder for them
 }
 
-export const EMPTY_QUEUE: UploadQueue = { entries: [], batch: [], finished: null, settled: 0 };
+export const EMPTY_QUEUE: UploadQueue = { entries: [], batch: [], finished: null, settled: 0, filed: 0 };
 
 export type QueueEvent =
   | { type: "add"; entries: UploadEntry[] }
@@ -74,6 +75,9 @@ export function followed(document: DocumentSummary): UploadState {
 const documentOf = (state: UploadState) =>
   state.kind === "reading" || state.kind === "done" ? state.documentId : null;
 
+/** Feature 28: read, then filed by Kaagaz, maybe into a folder it made just then. */
+const isFiled = (state: UploadState) => state.kind === "done" && state.document?.autofile === "filed";
+
 const isDoneBefore = (entry: UploadEntry) =>
   entry.state.kind === "done" || entry.state.kind === "restored";
 
@@ -99,12 +103,15 @@ export function queueReducer(queue: UploadQueue, event: QueueEvent): UploadQueue
     case "batch": {
       const byId = new Map(event.documents.map((document) => [document.id, document]));
       const seen = new Set<string>();
+      let filed = 0;
       const entries = queue.entries.map((entry) => {
         const id = documentOf(entry.state);
         const document = id === null ? undefined : byId.get(id);
         if (!document) return entry;
         seen.add(document.id);
-        return { ...entry, state: followed(document) };
+        const state = followed(document);
+        if (isFiled(state) && !isFiled(entry.state)) filed += 1;
+        return { ...entry, state };
       });
       const added = event.add
         ? event.documents
@@ -118,7 +125,7 @@ export function queueReducer(queue: UploadQueue, event: QueueEvent): UploadQueue
               state: followed(document),
             }))
         : [];
-      return settle({ ...queue, entries: [...entries, ...added] });
+      return settle({ ...queue, entries: [...entries, ...added], filed: queue.filed + filed });
     }
     case "clear":
       return { ...queue, entries: queue.entries.filter(isBusy), finished: null };

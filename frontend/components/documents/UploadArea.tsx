@@ -414,11 +414,12 @@ export function useUploads(onUploaded: () => void) {
     setStored((batches) => batches.filter((batch) => busy.has(batch.id)));
   }
 
-  const { entries, finished, settled } = queue;
+  const { entries, finished, settled, filed } = queue;
   return {
     entries,
     finished,
     settled,
+    filed,
     limits,
     limitsLoaded,
     reader: reader ?? startReader(limits.readers, scanLevel),

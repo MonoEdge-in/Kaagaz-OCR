@@ -153,7 +153,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   // undone: the words once Undo worked ("Moved back.", "Restored from Trash.").
   const [toast, setToast] = useState<{ message: string; undo: () => Promise<void>; undone: string } | null>(null);
   // The shell's one upload queue and tray (D-12); this screen adds files into the folder shown.
-  const { uploads, setTrayOpen, folders: folderPicking } = useSharedUploads(() => setReload((n) => n + 1));
+  const { uploads, setTrayOpen, folders: folderPicking, foldersChanged } = useSharedUploads(() => setReload((n) => n + 1));
   const filtered = isFiltered(library);
   // File management: the people for the Owner filter, List or Grid (per person, F5), the
   // department picked for uploads outside any folder (F2), and the file waiting for its note (V9).
@@ -181,8 +181,6 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const [heardBatches, setHeardBatches] = useState(0);
   if (uploads.settled !== heardBatches) {
     setHeardBatches(uploads.settled);
-    setFoldersVersion((n) => n + 1); // a folder Kaagaz made for them (feature 28) shows in the tree
-
     if (uploads.finished) setAnnouncement(uploadsFinishedText(uploads.finished, q !== "" || filtered));
   }
 
@@ -201,7 +199,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
     return () => {
       cancelled = true;
     };
-  }, [foldersVersion]);
+  }, [foldersVersion, foldersChanged]); // foldersChanged (#536): a folder upload's or Kaagaz's new folders show at once
 
   useEffect(() => {
     let cancelled = false;
