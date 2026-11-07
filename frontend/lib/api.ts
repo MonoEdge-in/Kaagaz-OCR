@@ -52,7 +52,10 @@ import type {
   FolderItemView,
   FolderItemsPage,
   FolderLimits,
+  FolderRestored,
   FolderSummary,
+  TrashedFolder,
+  TrashedFolderContents,
   GoogleRulesChange,
   FolderUploadItem,
   FolderUploadPlan,
@@ -853,6 +856,16 @@ export const deleteFolderWithContents = (
     `/folders/${id}${query({ contents: what.contents, to: what.contents === "keep" ? (what.to ?? undefined) : undefined })}`,
   );
 export const folderSummary = (id: string) => request<FolderSummary>("GET", `/folders/${id}/summary`);
+/** #542: Trash's folders; one opened (its files: listDocuments with trashed_folder_id); Restore puts
+ * one back where it was; delete forever has a document's rule (an admin with two-step, or a typed
+ * password). Under /documents/trash, where the typed password's cookie is sent. */
+export const listTrashedFolders = () => request<{ items: TrashedFolder[] }>("GET", "/documents/trash/folders");
+export const getTrashedFolder = (id: string) =>
+  request<TrashedFolderContents>("GET", `/documents/trash/folders/${id}`);
+export const restoreTrashedFolder = (id: string) =>
+  request<FolderRestored>("POST", `/documents/trash/folders/${id}/restore`);
+export const deleteTrashedFolderForever = (id: string) =>
+  request<void>("DELETE", `/documents/trash/folders/${id}/permanent`);
 export const listTags = () => request<{ items: Tag[] }>("GET", "/tags");
 export const createTag = (name: string) => request<Tag>("POST", "/tags", { name });
 

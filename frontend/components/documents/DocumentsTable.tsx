@@ -33,6 +33,8 @@
 // a row keeps its place (the list is newest first, which a state never changes), and
 // while the pointer is on the list a row not shown yet waits until it leaves
 // (rowsInPlace), so nothing is put in above the pointer.
+// #542: in Trash, its folders are rows above the documents (TrashFolderRow), ticked with them for
+// the selection's Restore and Delete forever (each one call, a folder's to its own route).
 
 import Link from "next/link";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -52,12 +54,14 @@ import {
   confirmPassword,
   deleteDocument,
   deleteDocumentForever,
+  deleteTrashedFolderForever,
   reprocessDocument,
   restoreDocument,
+  restoreTrashedFolder,
 } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { docTypeLabel, fileTypeLabel, formatBytes, formatDate, formatDateTime, formatRelative } from "@/lib/format";
-import type { DocumentSummary, Me, Tag } from "@/lib/types";
+import type { DocumentSummary, Me, Tag, TrashedFolder } from "@/lib/types";
 import { ActionDialog } from "./ActionDialog";
 import { EditDialog, MoveDialog, RowMenu } from "./DocumentActions";
 import { DOCUMENT_DRAG } from "./FolderNav";
@@ -79,6 +83,7 @@ import {
 } from "./logic";
 import { StatusChip } from "./StatusChip";
 import { TimeLeft } from "./TimeLeft";
+import { TrashFolderRow } from "./TrashFolderRow";
 import { WrapName } from "./WrapName";
 import {
   type BulkAction,
@@ -90,7 +95,10 @@ import {
   bulkTrashQuestion,
   canDeleteForever,
   deletedForeverMessage,
+  folderKey,
+  folderOf,
   foreverNeedsPassword,
+  isFolderKey,
   foreverQuestion,
   lostTheRight,
   passwordAgain,
@@ -132,6 +140,12 @@ interface Props extends RowEvents {
   movedLeaves: boolean;
   /** Q4: the list's sort and what a header press does; left out, the headers are words only. */
   sorting?: Sorting;
+  /** #542: Trash's folders, as rows above the documents. */
+  trashFolders?: readonly TrashedFolder[];
+  onOpenFolder?(folder: TrashedFolder): void;
+  /** A folder restored or deleted for good from its row: the toast's words. Left out (inside an
+   * opened folder), its folders only open. */
+  onFolderDone?(message: string): void;
 }
 
 /** The list's sort (Q4) and the header press that changes it. */
@@ -193,6 +207,9 @@ export function DocumentsTable({
   suggestions,
   movedLeaves,
   sorting,
+  trashFolders = NO_FOLDERS,
+  onOpenFolder,
+  onFolderDone,
   ...events
 }: Props) {
   const { onRemoved } = events;
@@ -226,6 +243,12 @@ export function DocumentsTable({
     [inTrash, canForever],
   );
   const deletableItems = useMemo(() => items.filter(tickable), [items, tickable]);
+  // #542: a folder in Trash is ticked by its key (folderKey) beside the documents' ids.
+  const folderTickable = (folder: TrashedFolder) => onFolderDone !== undefined && (folder.can_restore || canForever);
+  const tickableKeys = [
+    ...trashFolders.filter(folderTickable).map((folder) => folderKey(folder.id)),
+    ...deletableItems.map((item) => item.id),
+  ];
   const [moving, setMoving] = useState(false);
   const bulkMoved = useRef(false);
   const [password, setPassword] = useState("");
@@ -238,21 +261,28 @@ export function DocumentsTable({
   const [error, setError] = useState<string | null>(null);
   // Two select-all boxes: the table's header, and the bar's on cards; one shows at a time.
   const selectAll = useRef<HTMLInputElement[]>([]);
-  const visibleIds = useMemo(() => new Set(items.map((item) => item.id)), [items]);
+  const visibleIds = useMemo(
+    () => new Set([...items.map((item) => item.id), ...trashFolders.map((folder) => folderKey(folder.id))]),
+    [items, trashFolders],
+  );
   const visibleSelectedIds = useMemo(
     () => new Set([...selectedIds].filter((id) => visibleIds.has(id))),
     [selectedIds, visibleIds],
   );
   const selectedCount = visibleSelectedIds.size;
   // Restore (and Move to Trash) only for rows with can_delete; Delete forever for every ticked row.
-  const restorableIds = items
-    .filter((item) => item.can_delete && visibleSelectedIds.has(item.id))
-    .map((item) => item.id);
+  const restorableIds = [
+    ...trashFolders
+      .filter((folder) => folder.can_restore && visibleSelectedIds.has(folderKey(folder.id)))
+      .map((folder) => folderKey(folder.id)),
+    ...items.filter((item) => item.can_delete && visibleSelectedIds.has(item.id)).map((item) => item.id),
+  ];
+  const selectedFolders = [...visibleSelectedIds].filter(isFolderKey).length;
   const movable = movableItems(items, visibleSelectedIds);
   const readableIds = items
     .filter((item) => readable(item) && visibleSelectedIds.has(item.id))
     .map((item) => item.id);
-  const allSelected = deletableItems.length > 0 && selectedCount === deletableItems.length;
+  const allSelected = tickableKeys.length > 0 && selectedCount === tickableKeys.length;
   const partiallySelected = selectedCount > 0 && !allSelected;
 
   // Stable, with the row events below, so a poll that changes one row renders only that row.
@@ -287,7 +317,7 @@ export function DocumentsTable({
   }, []);
 
   function toggleAll() {
-    setSelectedIds(allSelected ? new Set() : new Set(deletableItems.map((item) => item.id)));
+    setSelectedIds(allSelected ? new Set() : new Set(tickableKeys));
     setError(null);
   }
 
@@ -308,7 +338,8 @@ export function DocumentsTable({
     setDeleteProgress({ done: 0, total: ids.length });
     setError(null);
     const typed = action === "forever" && askPassword ? password : null;
-    const calls = { confirm: confirmPassword, remove: BULK_CALLS[action] };
+    const call = (key: string) => (isFolderKey(key) ? FOLDER_CALLS[action](folderOf(key)) : BULK_CALLS[action](key));
+    const calls = { confirm: confirmPassword, remove: call };
     const outcome = await runForever(ids, typed, calls, (handled) =>
       setDeleteProgress({ done: handled, total: ids.length }),
     );
@@ -335,12 +366,16 @@ export function DocumentsTable({
     if (!askAgain) setConfirming(null);
     if (result.failed.length > 0) {
       const why = errorText(askAgain ? result.lastError : result.firstError);
-      setError(bulkFailedMessage(action, result.failed.length, why));
+      const folders = result.failed.filter(isFolderKey).length;
+      setError(bulkFailedMessage(action, result.failed.length - folders, why, folders));
     }
     if (result.done.length > 0) {
-      // Read again keeps the rows (they are read again); the others leave the list.
-      if (action === "read") events.onSaved(bulkDoneMessage(action, result.done.length));
-      else onRemoved(bulkDoneMessage(action, result.done.length), undoRemoval(action, result.done));
+      // Read again keeps the rows (they are read again); the others leave the list. A restored
+      // folder has no Undo (#542), so a selection with one has none.
+      const folders = result.done.filter(isFolderKey).length;
+      const message = bulkDoneMessage(action, result.done.length - folders, folders);
+      if (action === "read") events.onSaved(message);
+      else onRemoved(message, folders > 0 ? undefined : undoRemoval(action, result.done));
     }
     if (askAgain) {
       // The question is still open: focus waits in the password box, shown now if it was not.
@@ -394,7 +429,7 @@ export function DocumentsTable({
         <thead role="rowgroup">
           <tr role="row">
             <th scope="col" role="columnheader" className={styles.selectColumn}>
-              {deletableItems.length > 0 ? (
+              {tickableKeys.length > 0 ? (
                 <label className={styles.selectHit}>{allBox("Select all visible documents")}</label>
               ) : (
                 <span className="visually-hidden">Select</span>
@@ -426,6 +461,21 @@ export function DocumentsTable({
           </tr>
         </thead>
         <tbody ref={body} role="rowgroup">
+          {trashFolders.map((folder) => (
+            <TrashFolderRow
+              key={folder.id}
+              folder={folder}
+              whenShort={shortWhen(folder.deleted_at, now)}
+              whenSpoken={whenSpokenAt(folder.deleted_at, now)}
+              onDone={onFolderDone}
+              canForever={canForever}
+              askPassword={askPassword}
+              tickable={folderTickable(folder)}
+              selected={selectedIds.has(folderKey(folder.id))}
+              onToggle={toggle}
+              onOpen={(opened) => onOpenFolder?.(opened)}
+            />
+          ))}
           {items.map((document) => (
             <DocumentRow
               key={document.id}
@@ -448,7 +498,7 @@ export function DocumentsTable({
           ))}
         </tbody>
       </table>
-      {deletableItems.length > 0 && (
+      {tickableKeys.length > 0 && (
         <div
           className={styles.selectionBar}
           role="toolbar"
@@ -528,7 +578,7 @@ export function DocumentsTable({
             >
               <span id="bulk-confirm-question">
                 {confirming === "forever"
-                  ? bulkForeverQuestion(selectedCount)
+                  ? bulkForeverQuestion(selectedCount - selectedFolders, selectedFolders)
                   : confirming === "read"
                     ? bulkReadQuestion(readableIds.length)
                     : bulkTrashQuestion(restorableIds.length)}
@@ -613,6 +663,15 @@ const BULK_CALLS: Record<BulkAction, (id: string) => Promise<unknown>> = {
   forever: deleteDocumentForever,
   read: reprocessDocument,
 };
+// #542: a folder in Trash is only ever restored or deleted for good from a selection.
+const NO_FOLDERS: readonly TrashedFolder[] = [];
+const notForFolders = () => Promise.reject(new Error("not for a folder in Trash"));
+const FOLDER_CALLS: Record<BulkAction, (id: string) => Promise<unknown>> = {
+  trash: notForFolders,
+  restore: restoreTrashedFolder,
+  forever: deleteTrashedFolderForever,
+  read: notForFolders,
+};
 
 const CONFIRM_LABEL: Record<BulkAction, string> = {
   trash: "Confirm moving to Trash",
@@ -655,7 +714,10 @@ const whenOf = (document: DocumentSummary, inTrash: boolean) =>
 // Worked out here, so a row renders again only when its own words change, not on every poll.
 // Shown "2h ago" (shortWhen); read out "2 hours ago, 16 Oct 2026, 2:05 pm".
 function whenSpoken(document: DocumentSummary, inTrash: boolean, now: number): string {
-  const when = whenOf(document, inTrash);
+  return whenSpokenAt(whenOf(document, inTrash), now);
+}
+
+function whenSpokenAt(when: string, now: number): string {
   const relative = formatRelative(when, now);
   return relative === formatDate(when) ? formatDateTime(when) : `${relative}, ${formatDateTime(when)}`;
 }

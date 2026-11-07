@@ -314,6 +314,36 @@ function FindFolder({
 }
 
 /**
+ * #542: the path above an open folder in Trash: Trash, then the folders above it within Trash,
+ * each opening that folder (read only); the open one is the heading below, said as the current page.
+ */
+export function TrashCrumbs({
+  path,
+  onOpen,
+}: {
+  path: readonly { id: string; name: string }[];
+  onOpen(id: string | null): void;
+}) {
+  const crumb = (label: string, id: string | null) => (
+    <button type="button" className="quiet-link" onClick={() => onOpen(id)}>
+      {label}
+    </button>
+  );
+  return (
+    <nav aria-label="Folder path in Trash" className={`${styles.crumbs} ${styles.trashCrumbs}`}>
+      <ol>
+        <li>{crumb("Trash", null)}</li>
+        {path.map((folder, index) => (
+          <li key={folder.id} aria-current={index === path.length - 1 ? "page" : undefined}>
+            {index === path.length - 1 ? folder.name : crumb(folder.name, folder.id)}
+          </li>
+        ))}
+      </ol>
+    </nav>
+  );
+}
+
+/**
  * The folder path above the place heading: All documents, then the folders above this one.
  * Deep down (#484) only the first and the last two show; the ones between fold into
  * "Show 26 more folders", which opens to list them as links.

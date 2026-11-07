@@ -5,7 +5,7 @@
 
 import { sessionScope } from "@/components/shell/gate";
 import { ApiError, deleteDocument, restoreDocument } from "@/lib/api";
-import type { DocumentSummary, Me } from "@/lib/types";
+import type { DocumentSummary, FolderRestored, Me, TrashedFolder } from "@/lib/types";
 
 /**
  * Who may delete for good: an admin session (every admin's, from /login), or a member or
@@ -73,6 +73,57 @@ export function documentsCount(count: number): string {
   return `${count} ${count === 1 ? "document" : "documents"}`;
 }
 
+const counted = (count: number, one: string) => `${count} ${one}${count === 1 ? "" : "s"}`;
+
+/** #542: a selection of documents and folders: "3 documents", "1 folder", "2 documents and 1 folder". */
+export function itemsCount(documents: number, folders = 0): string {
+  if (folders === 0) return documentsCount(documents);
+  if (documents === 0) return counted(folders, "folder");
+  return `${documentsCount(documents)} and ${counted(folders, "folder")}`;
+}
+
+// --- A folder in Trash (#542): one item, opened read only, restored where it was.
+
+/** "Was in: Accounts › 2025", "Was in: Top level", or where it was is gone. */
+export function wasInText(wasIn: TrashedFolder["was_in"]): string {
+  if (wasIn === null) return "Was in: a folder that no longer exists";
+  return `Was in: ${wasIn.length === 0 ? "Top level" : wasIn.join(" › ")}`;
+}
+
+/** "4 files, 3 folders". */
+export function heldText(folder: Pick<TrashedFolder, "files" | "folders">): string {
+  return `${counted(folder.files, "file")}, ${counted(folder.folders, "folder")}`;
+}
+
+/** The toast once a folder is back: where it went, or why it is not where it was. */
+export function folderRestoredMessage(restored: Pick<FolderRestored, "folder" | "location" | "renamed" | "relocated">): string {
+  const said: string[] = [];
+  if (restored.relocated) said.push("Restored to Top level, because its folder no longer exists.");
+  if (restored.renamed) said.push(`Restored as “${restored.folder.name}”, because a folder with that name already exists.`);
+  if (said.length > 0) return said.join(" ");
+  return `Folder restored to ${restored.location.length === 0 ? "Top level" : restored.location.join(" › ")}.`;
+}
+
+/** Asked before a folder in Trash is deleted for good, with every file in it. */
+export function folderForeverQuestion(folder: Pick<TrashedFolder, "name" | "files">): string {
+  return `Delete “${folder.name}” and its ${counted(folder.files, "file")} forever? This can't be undone.`;
+}
+
+/** Trash with nothing in it, or an open folder in Trash with nothing left in it. */
+export function trashEmpty(inFolder: boolean): { title: string; text: string } {
+  return inFolder
+    ? { title: "This folder is empty", text: "Nothing was in it when it was deleted, or what was is back in Documents." }
+    : {
+        title: "Trash is empty",
+        text: "Documents and folders moved to Trash show here, until they are restored or deleted for good.",
+      };
+}
+
+/** A selection's key for a folder in Trash: one set holds documents and folders (#542). */
+export const folderKey = (id: string) => `folder:${id}`;
+export const isFolderKey = (key: string) => key.startsWith("folder:");
+export const folderOf = (key: string) => key.slice("folder:".length);
+
 /** The document by name, with what one action takes with it: “Bill.pdf”, or “Bill.pdf” and its 2
  * earlier versions. The name is said, so a question about a destructive step names its document. */
 function withVersions(document: Pick<DocumentSummary, "version_no" | "display_name">): string {
@@ -114,15 +165,18 @@ export function bulkReadQuestion(count: number): string {
   return `Read ${documentsCount(count)} again? Reviewer fixes come back only if they were saved as remembered fixes, and each one is out of search until it is read.`;
 }
 
-export function bulkForeverQuestion(count: number): string {
+export function bulkForeverQuestion(count: number, folders = 0): string {
+  if (folders > 0) {
+    return `Delete ${itemsCount(count, folders)} for good, with every file and version in them? They can't be brought back.`;
+  }
   return count === 1
     ? "Delete 1 selected document for good, with all its versions? It can't be brought back."
     : `Delete ${count} selected documents for good, with all their versions? They can't be brought back.`;
 }
 
-/** "Restored 3 documents.": what the selection had done to it. */
-export function bulkDoneMessage(action: BulkAction, count: number): string {
-  const documents = documentsCount(count);
+/** "Restored 3 documents.": what the selection had done to it; #542: "and 1 folder". */
+export function bulkDoneMessage(action: BulkAction, count: number, folders = 0): string {
+  const documents = itemsCount(count, folders);
   if (action === "restore") return `Restored ${documents}.`;
   if (action === "forever") return `Deleted ${documents} for good.`;
   if (action === "read") return `Reading ${documents} again.`;
@@ -165,9 +219,9 @@ export function undoRemoval(
   };
 }
 
-/** "2 documents could not be restored. <why>". */
-export function bulkFailedMessage(action: BulkAction, failed: number, reason: string): string {
-  return `${documentsCount(failed)} could not be ${FAILED_TO[action]}. ${reason}`;
+/** "2 documents could not be restored. <why>"; #542: "and 1 folder". */
+export function bulkFailedMessage(action: BulkAction, failed: number, reason: string, folders = 0): string {
+  return `${itemsCount(failed, folders)} could not be ${FAILED_TO[action]}. ${reason}`;
 }
 
 export interface BulkResult {

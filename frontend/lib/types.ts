@@ -447,6 +447,36 @@ export interface Folder {
   sort_order?: number | null; // a department's place on the dashboard and in the tree
 }
 
+/** #542: a folder in Trash, with what it holds at every depth (files: a file's versions count once). */
+export interface TrashedFolder {
+  id: string;
+  name: string;
+  kind: FolderKind;
+  was_in: string[] | null; // the live folder it goes back into, root first; [] the top level; null gone
+  files: number;
+  folders: number;
+  deleted_at: string;
+  deleted_by_name: string | null;
+  can_restore: boolean; // an admin, or who uploaded every version of every file in it
+}
+
+/** #542: a folder in Trash opened: itself, its path within Trash (Trash's item first), its folders. */
+export interface TrashedFolderContents {
+  folder: TrashedFolder;
+  path: { id: string; name: string }[];
+  folders: TrashedFolder[];
+}
+
+/** #542: a restored folder, where it went ([] the top level), and why it is not as it was. */
+export interface FolderRestored {
+  folder: Folder;
+  location: string[];
+  renamed: boolean; // a folder there had its name: it is "Name (2)" now
+  relocated: boolean; // its folder no longer exists: it is at the top level
+  files: number;
+  folders: number;
+}
+
 /** #537: what a folder holds at every depth: live files (a file's versions count once), folders, bytes. */
 export interface FolderSummary {
   files: number;
