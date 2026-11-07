@@ -461,11 +461,12 @@ def _stored(found: dict[str, Any] | None, started: float) -> _Stored | None:
     if found is None:
         return None
     _timing_log.info(
-        "answer timing route=%s status=%s outcome=%s cached=1 total_ms=%.0f",
+        "answer timing route=%s status=%s outcome=%s cached=1 total_ms=%.0f streamed=%d",
         found.get("route"),
         found.get("status"),
         found.get("label"),
         (time.monotonic() - started) * 1000,
+        stream.EVENTS.get() is not None,
     )
     return _Stored(found)
 

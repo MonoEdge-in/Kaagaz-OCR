@@ -74,8 +74,8 @@ class World:
         assert reply.headers["cache-control"] == "no-cache" and reply.headers["x-accel-buffering"] == "no"
         return events(reply.text)
 
-    def plain(self, question: str = SEARCH) -> dict[str, Any]:
-        reply = self.signed.client.post("/api/chat", json={"question": question}, headers=CSRF)
+    def plain(self, question: str = SEARCH, signed: Signed | None = None) -> dict[str, Any]:
+        reply = (signed or self.signed).client.post("/api/chat", json={"question": question}, headers=CSRF)
         assert reply.status_code == 200, reply.text
         return dict(reply.json())
 
@@ -180,7 +180,7 @@ def test_done_is_exactly_the_reply_post_api_chat_gives(db: Database, fake: OpenR
     w = world(db, fake)
     fake.script("completions", json_reply(DRAFT), json_stream(DRAFT))
 
-    plain = w.plain()
+    plain = w.plain(signed=w.api.sign_in(w.signed.customer_id))  # its own asker: no repeat (PR 2)
     streamed = w.stream()[-1][1]["reply"]
 
     assert streamed.keys() == plain.keys() == {"conversation_id", "question", "answer"}
@@ -322,7 +322,7 @@ def test_the_timing_line_says_streamed_and_when_the_first_sentence_went(
     caplog.set_level(logging.INFO, logger="kaagaz.answering.timing")
 
     w.stream()
-    w.plain()
+    w.plain(signed=w.api.sign_in(w.signed.customer_id))  # another asker, so not a repeat
 
     streamed, plain = [r.getMessage() for r in caplog.records if r.name == "kaagaz.answering.timing"]
     assert " streamed=1 first_sentence_ms=" in streamed and "first_sentence_ms=0" not in streamed
@@ -333,3 +333,20 @@ def test_an_error_keeps_the_code_and_words_post_api_chat_gives(db: Database, fak
     w = world(db, fake)
     found = w.stream("   ")
     assert found == [("error", {"code": "bad_request", "message": "Type a question first."})]
+
+
+def test_a_repeated_question_on_the_stream_is_done_at_once_from_its_stored_answer(
+    db: Database, fake: OpenRouterFake, caplog: pytest.LogCaptureFixture
+) -> None:
+    w = world(db, fake)
+    fake.script("completions", json_stream(DRAFT))
+    first = w.stream()
+    caplog.set_level(logging.INFO, logger="kaagaz.answering.timing")
+
+    again = w.stream("  what is the GRAND total of inv-1042? ")
+
+    assert names(again) == ["done"]  # no stage, no draft: the stored answer at once
+    assert len(fake.bodies()) == 1  # no second model call
+    assert again[-1][1]["reply"]["answer"]["answer"] == first[-1][1]["reply"]["answer"]["answer"]
+    (line,) = [r.getMessage() for r in caplog.records if r.name == "kaagaz.answering.timing"]
+    assert " cached=1 " in line and line.endswith(" streamed=1")

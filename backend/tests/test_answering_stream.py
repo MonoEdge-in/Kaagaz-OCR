@@ -93,38 +93,59 @@ def _events() -> tuple[Events, list[tuple[str, dict[str, Any]]]]:
     return Events(lambda name, data: sent.append((name, data))), sent
 
 
-def test_the_streamed_draft_offers_each_sentence_and_gives_the_same_draft_as_unstreamed() -> None:
-    offered: list[tuple[int, object]] = []
-    model = StreamModel(json.dumps(REPLY))
-    drafted = draft_streamed(
-        model, "q", [], max_tokens=100, offer=lambda place, value: offered.append((place, value))
-    )
-    assert drafted == draft.checked(REPLY)
-    assert offered == list(enumerate(REPLY["sentences"])) and model.calls == ["stream"]
-
-
-@pytest.mark.parametrize(
-    "bad",
-    [
-        '{"status": "answered", "sentences": [{"text": "cut',  # not JSON
-        json.dumps({"status": "answered", "sentences": [{"text": "x" * 301, "evidence": [1]}]}),  # too long
-    ],
-)
-def test_bad_json_is_drafted_once_more_unstreamed_after_saying_checking(bad: str) -> None:
+def _drafted(model: "StreamModel") -> tuple[draft.Draft, list[object], list[tuple[str, dict[str, Any]]]]:
     events, sent = _events()
-    offered: list[tuple[int, object]] = []
-    model = StreamModel(bad, fallback=REPLY)
+    offered: list[object] = []
     token = EVENTS.set(events)
     try:
-        drafted = draft_streamed(
-            model, "q", [], max_tokens=100, offer=lambda place, value: offered.append((place, value))
-        )
+        drafted = draft_streamed(model, "q", [], max_tokens=100, offer=offered.append)
     finally:
         EVENTS.reset(token)
+    return drafted, offered, sent
+
+
+def test_the_streamed_draft_offers_each_sentence_as_it_comes_then_the_drafts_in_order() -> None:
+    model = StreamModel(json.dumps(REPLY))
+    drafted, offered, sent = _drafted(model)
+    assert drafted == draft.checked(REPLY) and model.calls == ["stream"] and sent == []
+    final = [{"text": s.text, "evidence": s.evidence} for s in drafted.sentences]
+    assert offered == [*REPLY["sentences"], *final]  # the preview sends each text once
+
+
+def test_bad_json_is_drafted_once_more_unstreamed_after_saying_checking() -> None:
+    model = StreamModel('{"status": "answered", "sentences": [{"text": "cut', fallback=REPLY)
+    drafted, offered, sent = _drafted(model)
     assert model.calls == ["stream", "plain"]
     assert sent == [("stage", {"stage": "checking"})]
     assert drafted == draft.checked(REPLY)
-    assert [value for _, value in offered][-2:] == REPLY["sentences"]  # the final draft's, offered in turn
+    assert offered == REPLY["sentences"]  # the final draft's, offered in turn
+
+
+def test_a_long_sentence_is_cut_in_code_with_no_second_call_and_its_parts_offered() -> None:
+    first = "The total is Rs. 1,20,000 for the work. " * 5
+    second = (
+        "It was paid on 12 August 2026 by cheque from the account of Sharma Traders in Pune,"
+        " and the receipt was signed by the manager on that day."
+    )
+    sentence: dict[str, Any] = {"text": first + second, "evidence": [1]}
+    long = {"status": "answered", "sentences": [sentence]}
+    assert len(sentence["text"]) > draft.MAX_SENTENCE_CHARS
+    model = StreamModel(json.dumps(long))
+    drafted, offered, sent = _drafted(model)
+    assert model.calls == ["stream"] and sent == [] and drafted.redrafts == 0
+    assert len(drafted.sentences) == 2 and all(
+        len(s.text) <= draft.MAX_SENTENCE_CHARS for s in drafted.sentences
+    )
+    # The long one as it streamed (the preview's shape check refuses it), then its parts.
+    assert offered == [sentence, *({"text": s.text, "evidence": [1]} for s in drafted.sentences)]
+
+
+def test_a_long_sentence_that_cannot_be_cut_is_asked_for_once_more_as_unstreamed() -> None:
+    long = json.dumps({"status": "answered", "sentences": [{"text": "x" * 301, "evidence": [1]}]})
+    model = StreamModel(long, fallback=REPLY)
+    drafted, _, sent = _drafted(model)
+    assert model.calls == ["stream", "plain"] and sent == []  # the repair, as model_draft asks it
+    assert drafted.redrafts == 1 and drafted.sentences == draft.checked(REPLY).sentences
 
 
 def test_another_model_failure_is_not_drafted_again() -> None:
@@ -133,7 +154,7 @@ def test_another_model_failure_is_not_drafted_again() -> None:
             raise ModelOutputError("output_truncated")
 
     with pytest.raises(ModelOutputError) as caught:
-        draft_streamed(Truncated("", fallback=REPLY), "q", [], max_tokens=100, offer=lambda *_: None)
+        draft_streamed(Truncated("", fallback=REPLY), "q", [], max_tokens=100, offer=lambda _: None)
     assert caught.value.code == "output_truncated"
 
 
@@ -143,7 +164,7 @@ def test_a_cancelled_answer_stops_the_stream_at_its_next_piece() -> None:
     token = EVENTS.set(events)
     try:
         with pytest.raises(StreamCancelled):
-            draft_streamed(StreamModel(json.dumps(REPLY)), "q", [], max_tokens=100, offer=lambda *_: None)
+            draft_streamed(StreamModel(json.dumps(REPLY)), "q", [], max_tokens=100, offer=lambda _: None)
         with pytest.raises(StreamCancelled):
             emit("stage", {"stage": "writing"})
     finally:

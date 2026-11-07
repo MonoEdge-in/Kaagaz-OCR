@@ -193,7 +193,6 @@ from kaagaz.answering.clarify import Pending, PgVocabulary, Step, Vocabulary, af
 from kaagaz.answering.dates import date_range, describe_range, mentions_date
 from kaagaz.answering.draft import (
     ANSWER_PROMPT_HASH,
-    MAX_SENTENCES,
     SYSTEM_PROMPT,
     Draft,
     DraftSentence,
@@ -1974,8 +1973,8 @@ def _sources(seen: Sequence[Evidence]) -> dict[str, Any]:
 @dataclass
 class _Preview:
     """Step 21: the draft's sentences as they stream in (``stream.draft_streamed``), each sent once
-    it passes what the answer will check it with: the draft's shape (``draft.checked``) and its
-    first MAX_SENTENCES, ``verify`` (``_kept``), the same text once, then decision 2's final check
+    it passes what the answer will check it with: the draft's shape (``draft.checked``),
+    ``verify`` (``_kept``), the same text once, then decision 2's final check
     (``_unsupported``). Its citations are the answer's own (``_piece_citation``, numbered from 1 in
     the order the sentences sent cite them, a hit's ``rank``), so the preview is the answer's
     sentences unless a later step drops one; the answer itself is still worked out in full and is
@@ -1988,9 +1987,7 @@ class _Preview:
     numbered: dict[int, int] = field(default_factory=dict)  # evidence id: citation number
     said: list[str] = field(default_factory=list)
 
-    def offer(self, place: int, raw: object) -> None:
-        if place >= MAX_SENTENCES:
-            return
+    def offer(self, raw: object) -> None:
         try:
             draft = checked({"status": "answered", "sentences": [raw]})
         except ModelOutputError:

@@ -62,7 +62,7 @@ import hashlib
 import json
 import re
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any, Literal
@@ -271,13 +271,19 @@ def model_draft(
         provider=provider,
         deadline=deadline,
     )
-    reply = call(user=user)
+    return drafted(call(user=user), partial(call, user=f"{user}\n\n{LONG_SENTENCE_REPAIR}"))
+
+
+def drafted(reply: dict[str, Any], again: Callable[[], dict[str, Any]]) -> Draft:
+    """A model's reply as the answer's ``Draft`` (T7, #535), streamed or not alike: a sentence over
+    MAX_SENTENCE_CHARS is cut at its sentence ends (``_split``); a reply that cannot be cut so is
+    asked for once more (``again``, with the repair), and a second bad one is ``answer_shape``."""
     if not _too_long(reply):
         return _parse(reply)
     cut = _split(reply)
     if cut is not None:
         return cut
-    return replace(_parse(call(user=f"{user}\n\n{LONG_SENTENCE_REPAIR}")), redrafts=1)
+    return replace(_parse(again()), redrafts=1)
 
 
 def _split(reply: dict[str, Any]) -> Draft | None:

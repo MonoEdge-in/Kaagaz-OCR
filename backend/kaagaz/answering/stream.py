@@ -15,9 +15,11 @@ and the answer is never saved.
 
 ``draft_streamed``: ``draft.model_draft`` with the model's reply streamed
 (``OpenRouterClient.chat_json_stream``); ``SentenceParser`` reads the draft's ``sentences``
-array as it comes, and each complete sentence object goes to ``offer``. A reply that is not the
-draft's JSON (or the draft's shape) is drafted once more without streaming (``model_draft``),
-after ``stage: checking``, and its sentences offered in turn.
+array as it comes, and each complete sentence object of the first MAX_SENTENCES goes to
+``offer``. The whole reply then becomes the draft as an unstreamed one does (``draft.drafted``:
+a sentence too long is cut in code, with no second call), and every sentence of the draft is
+offered (``offer`` sends each once, so only a cut one is new). A reply that is not the draft's
+JSON is drafted once more without streaming (``model_draft``), after ``stage: checking``.
 
 Time: O(n) over the reply's text; nothing here touches the database.
 """
@@ -26,21 +28,21 @@ import json
 import threading
 from collections.abc import Callable, Sequence
 from contextvars import ContextVar
+from functools import partial
 from typing import Any, Protocol, runtime_checkable
 
 from kaagaz.ai.client import ModelClient, ModelOutputError
 from kaagaz.answering.draft import (
     ANSWER_SCHEMA,
+    LONG_SENTENCE_REPAIR,
+    MAX_SENTENCES,
     SYSTEM_PROMPT,
     Draft,
-    checked,
+    drafted,
     model_draft,
     user_prompt,
 )
 from kaagaz.answering.evidence import Evidence
-
-# The draft fell back to a second, unstreamed call for these (``draft_streamed``).
-_REDRAFTED = frozenset({"invalid_output", "answer_shape"})
 
 
 class StreamCancelled(Exception):
@@ -169,7 +171,7 @@ def draft_streamed(
     evidence: Sequence[Evidence],
     *,
     max_tokens: int,
-    offer: Callable[[int, object], None],
+    offer: Callable[[object], None],
     cards: Sequence[str] = (),
     chat_model: str | None = None,
     thinking: str | None = None,
@@ -177,12 +179,13 @@ def draft_streamed(
     deadline: float | None = None,
 ) -> Draft:
     """``model_draft`` (the same prompt, schema and arguments) with the reply streamed: each
-    complete sentence object goes to ``offer`` (its place, the object) while the reply comes.
-    A reply that is not the draft's JSON or shape (a sentence over MAX_SENTENCE_CHARS too) is
-    drafted once more without streaming, after ``stage: checking``, and that draft's sentences
-    are offered in turn (``offer`` sends each sentence once). Raises as ``model_draft`` does, and
-    ``StreamCancelled`` once the answer is stopped."""
-    parser = SentenceParser(offer)
+    complete sentence object of the first MAX_SENTENCES goes to ``offer`` while the reply comes;
+    then the reply becomes the draft as ``model_draft``'s does (``drafted``: a sentence too long
+    is cut in code), and every sentence of the draft is offered in order (``offer`` sends each
+    once). A reply that is not the draft's JSON is drafted once more without streaming, after
+    ``stage: checking``. Raises as ``model_draft`` does, and ``StreamCancelled`` once the answer
+    is stopped."""
+    parser = SentenceParser(lambda place, raw: offer(raw) if place < MAX_SENTENCES else None)
     events = EVENTS.get()
 
     def heard(text: str) -> None:
@@ -191,36 +194,28 @@ def draft_streamed(
         parser.feed(text)
 
     user = user_prompt(question, evidence, cards)
+    options: dict[str, Any] = {"model": chat_model, "thinking": thinking, "provider": provider}
+    options |= {"schema": ANSWER_SCHEMA, "max_tokens": max_tokens, "deadline": deadline}
     try:
-        reply = model.chat_json_stream(
-            system=SYSTEM_PROMPT,
-            user=user,
-            schema=ANSWER_SCHEMA,
-            on_text=heard,
+        reply = model.chat_json_stream(system=SYSTEM_PROMPT, user=user, on_text=heard, **options)
+    except ModelOutputError as error:
+        if error.code != "invalid_output":
+            raise
+        emit("stage", {"stage": "checking"})
+        draft = model_draft(
+            model,
+            question,
+            evidence,
             max_tokens=max_tokens,
-            model=chat_model,
+            cards=cards,
+            chat_model=chat_model,
             thinking=thinking,
             provider=provider,
             deadline=deadline,
         )
-        return checked(reply)
-    except ModelOutputError as error:
-        if error.code not in _REDRAFTED:
-            raise
-    emit("stage", {"stage": "checking"})
-    # shortcut: a sentence over MAX_SENTENCE_CHARS costs this second, unstreamed draft (and
-    # model_draft's own repair) until PR 2 splits long sentences in code inside model_draft.
-    draft = model_draft(
-        model,
-        question,
-        evidence,
-        max_tokens=max_tokens,
-        cards=cards,
-        chat_model=chat_model,
-        thinking=thinking,
-        provider=provider,
-        deadline=deadline,
-    )
-    for place, sentence in enumerate(draft.sentences):
-        offer(place, {"text": sentence.text, "evidence": sentence.evidence})
+    else:
+        repair = f"{user}\n\n{LONG_SENTENCE_REPAIR}"
+        draft = drafted(reply, partial(model.chat_json, system=SYSTEM_PROMPT, user=repair, **options))
+    for sentence in draft.sentences:
+        offer({"text": sentence.text, "evidence": sentence.evidence})
     return draft

@@ -80,7 +80,7 @@ A try that a backend stopped (OCR down or loading) clears its progress, fenced b
 - **The end:** `done` carries `{reply}`, exactly the reply `POST /api/chat` gives, saved the same way. Or `error` carries `{code, message}`, the same codes and words. A `: ping` line is sent after 10 s with no event.
 - **Never the raw draft:** the model's reply is streamed (`OpenRouterClient.chat_json_stream`, with the same ledger, limiter, breaker, provider rules and deadline). Its `sentences` array is read as the reply comes in (`answering/stream.py`), and the full answer is still worked out after it. `done` is the truth.
 - **Answers with no draft:** a fixed-calculation, count or not-found answer sends its stages, then `done`. So do an Ensemble or quoted answer, which also send their `sources`.
-- **Fallbacks:** bad JSON (or a sentence too long) is drafted once more without streaming, after `stage: checking`. Past `ANSWER_STREAM_MAX_SECONDS`, the route sends `error` `answer_timeout`. When the browser leaves (or presses Stop), the model's stream is closed and nothing is saved.
+- **Fallbacks:** bad JSON is drafted once more without streaming, after `stage: checking`. A sentence too long is cut in code (`draft.drafted`, as an unstreamed draft), and its parts are sent once checked. Past `ANSWER_STREAM_MAX_SECONDS`, the route sends `error` `answer_timeout`. When the browser leaves (or presses Stop), the model's stream is closed and nothing is saved.
 - **Caddy:** it flushes event streams as they come. `flush_interval -1` is left out on purpose (`infra/caddy/Caddyfile`).
 - **Timing line:** it adds `streamed` and `first_sentence_ms`.
 
