@@ -675,6 +675,9 @@ describe("libraryErrorText", () => {
     expect(libraryErrorText(taken, "tag")).toBe("A tag with this name already exists.");
   });
 
+  // Changed on purpose (#537, 7 Nov 2026): Delete asks what a folder holds before any press
+  // (folder-delete-537.test.ts), so "isn't empty" now comes back only when a file arrived
+  // meanwhile; an admin's delete of a folder with files can meet an upload still running.
   it("passes the server's own words through for the folder rules", () => {
     const notEmpty = new ApiError(
       409,
@@ -682,6 +685,13 @@ describe("libraryErrorText", () => {
       "This folder isn't empty. Move or delete what is inside it first.",
     );
     expect(libraryErrorText(notEmpty, "folder")).toBe(notEmpty.message);
+    const running = new ApiError(
+      409,
+      "folder_upload_running",
+      "An upload into this folder is still running. Try again when it finishes.",
+    );
+    expect(libraryErrorText(running, "folder")).toBe(running.message);
+    expect(libraryErrorText(running, "department")).toBe(running.message);
   });
 
   it("asks to check the connection when the server was not reached", () => {

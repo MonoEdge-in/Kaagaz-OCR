@@ -52,6 +52,7 @@ import type {
   FolderItemView,
   FolderItemsPage,
   FolderLimits,
+  FolderSummary,
   GoogleRulesChange,
   FolderUploadItem,
   FolderUploadPlan,
@@ -840,7 +841,14 @@ export const updateFolder = (
   id: string,
   changes: { name?: string; parent_id?: string | null; sort_order?: number | null },
 ) => request<Folder>("PATCH", `/folders/${id}`, changes);
-export const deleteFolder = (id: string) => request<void>("DELETE", `/folders/${id}`);
+/** Left out, `what`: today's delete of an empty folder. #537, an admin's: move what is inside to
+ * `to` (null: the top level) or send it all to Trash, then delete the folder. */
+export const deleteFolder = (id: string, what?: { contents: "keep"; to: string | null } | { contents: "trash" }) =>
+  request<void>(
+    "DELETE",
+    `/folders/${id}${what ? query({ contents: what.contents, to: what.contents === "keep" ? (what.to ?? undefined) : undefined }) : ""}`,
+  );
+export const folderSummary = (id: string) => request<FolderSummary>("GET", `/folders/${id}/summary`);
 export const listTags = () => request<{ items: Tag[] }>("GET", "/tags");
 export const createTag = (name: string) => request<Tag>("POST", "/tags", { name });
 

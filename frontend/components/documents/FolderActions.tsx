@@ -10,12 +10,18 @@
 // 2026: no second button here); it opens the New folder form here (`askNew` counts its presses).
 // Suggested names (Tushar, 16 Oct 2026): under the New folder name, up to 4 one-press names from
 // the kinds of documents listed that have no folder yet (folderNameSuggestions, library.ts).
+// #537 (Tushar, 7 Nov 2026): Delete first asks what the folder holds. Empty: the confirm above.
+// Holding files: a member or reviewer is told to ask an admin (no Delete that can only fail);
+// an admin chooses in DeleteFolderDialog where it goes, or Trash.
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, MouseEvent } from "react";
 import { Icon } from "@/components/ui/Icon";
-import { createFolder, deleteFolder, updateFolder } from "@/lib/api";
+import { createFolder, deleteFolder, folderSummary, updateFolder } from "@/lib/api";
+import type { FolderSummary } from "@/lib/types";
 import { BusyLabel } from "./BusyLabel";
+import { DeleteFolderDialog } from "./DeleteFolderDialog";
+import { isEmpty, notEmptyText } from "./folderDelete";
 import { MAX_FOLDER_DEPTH, canAddSubfolder, pathLabel, validMoveTargets } from "./folderTree";
 import type { FolderNode, FolderTree } from "./folderTree";
 import { FolderPicker } from "./FolderPicker";
@@ -27,8 +33,11 @@ type Mode = "new" | "rename" | "move" | "delete";
 export interface FolderActionsProps {
   tree: FolderTree;
   current: FolderNode | null; // null: All documents
-  /** A change was saved. `goTo` is the folder to show next (null: all documents), when it changes. */
-  onChanged(message: string, goTo?: { folderId: string | null }): void;
+  /** A change was saved. `goTo` is the folder to show next (null: all documents), when it changes;
+   * `toast`: say it in a toast, not only to screen readers (#537). */
+  onChanged(message: string, goTo?: { folderId: string | null }, toast?: boolean): void;
+  /** #537: only an admin deletes a folder that holds files. */
+  admin?: boolean;
   askNew?: number;
   /** Names to offer for a new folder (folderNameSuggestions). */
   suggestions?: readonly string[];
@@ -59,8 +68,9 @@ export function NameChips({ names, picked, onPick }: { names: readonly string[];
   );
 }
 
-export function FolderActions({ tree, current, onChanged, askNew = 0, suggestions = [] }: FolderActionsProps) {
+export function FolderActions({ tree, current, onChanged, askNew = 0, suggestions = [], admin = false }: FolderActionsProps) {
   const [mode, setMode] = useState<Mode | null>(null);
+  const [summary, setSummary] = useState<FolderSummary | null>(null); // #537: what Delete would take
   const [heardNew, setHeardNew] = useState(askNew);
   const [name, setName] = useState("");
   const [target, setTarget] = useState(""); // "" is the top level
@@ -98,6 +108,10 @@ export function FolderActions({ tree, current, onChanged, askNew = 0, suggestion
     setError(null);
     setName(next === "rename" && current ? current.folder.name : "");
     setTarget(parentId);
+    setSummary(null);
+    if (next === "delete" && current) {
+      folderSummary(current.folder.id).then(setSummary, (caught: unknown) => setError(libraryErrorText(caught, "folder")));
+    }
   }
 
   function close() {
@@ -207,6 +221,10 @@ export function FolderActions({ tree, current, onChanged, askNew = 0, suggestion
         <p className="hint">Places that would make folders deeper than {MAX_FOLDER_DEPTH} levels can’t be chosen.</p>
       </fieldset>
     );
+  } else if (mode === "delete" && summary === null) {
+    body = error ? null : <p>Checking what is in “{here}”…</p>;
+  } else if (mode === "delete" && !isEmpty(summary!)) {
+    body = <p>{notEmptyText(current?.folder.kind === "department" ? "department" : "folder")}</p>;
   } else if (mode === "delete") {
     body = <p>Delete the folder “{here}”? Only an empty folder can be deleted.</p>;
   }
@@ -217,7 +235,8 @@ export function FolderActions({ tree, current, onChanged, askNew = 0, suggestion
     move: "Move folder",
     delete: "Delete folder",
   };
-  const blocked = mode === "new" && !fits;
+  const choosing = mode === "delete" && admin && summary !== null && !isEmpty(summary);
+  const blocked = (mode === "new" && !fits) || (mode === "delete" && (summary === null || !isEmpty(summary)));
   const unchanged = mode === "move" && target === parentId;
   const submitButton = mode !== null && (
     <button
@@ -261,7 +280,20 @@ export function FolderActions({ tree, current, onChanged, askNew = 0, suggestion
         </div>
       )}
 
-      {mode !== null && (
+      {choosing && current && (
+        <DeleteFolderDialog
+          tree={tree}
+          node={current}
+          summary={summary}
+          onCancel={close}
+          onDeleted={(message) => {
+            opener.current = null; // the screen shows the parent and focuses its heading
+            setMode(null);
+            onChanged(message, { folderId: current.parent?.folder.id ?? null }, true);
+          }}
+        />
+      )}
+      {mode !== null && !choosing && (
         <form className={styles.folderForm} onSubmit={submit} noValidate aria-label={submitWords[mode]}>
           {body}
           {error && (

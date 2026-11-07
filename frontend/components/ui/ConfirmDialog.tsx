@@ -19,6 +19,8 @@ export interface ConfirmDialogProps {
   /** The destructive button's words. */
   confirmLabel: string;
   busy?: boolean;
+  /** The destructive button can't be pressed yet (a name still to type, #537). */
+  confirmDisabled?: boolean;
   error?: string | null;
   onConfirm(): void;
   onCancel(): void;
@@ -30,6 +32,7 @@ export function ConfirmDialog({
   title,
   confirmLabel,
   busy = false,
+  confirmDisabled = false,
   error = null,
   onConfirm,
   onCancel,
@@ -84,7 +87,7 @@ export function ConfirmDialog({
             type="button"
             className="btn btn-destructive"
             onClick={onConfirm}
-            disabled={busy}
+            disabled={busy || confirmDisabled}
             aria-busy={busy || undefined}
           >
             {confirmLabel}

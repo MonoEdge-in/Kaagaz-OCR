@@ -150,8 +150,9 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const [tagsVersion, setTagsVersion] = useState(0);
   const [newFolderAsk, setNewFolderAsk] = useState(0); // D12: the folder column's "+", the one New folder
   const [dropError, setDropError] = useState<string | null>(null);
-  // undone: the words once Undo worked ("Moved back.", "Restored from Trash.").
-  const [toast, setToast] = useState<{ message: string; undo: () => Promise<void>; undone: string } | null>(null);
+  // undone: the words once Undo worked ("Moved back.", "Restored from Trash."). No undo: a note only (#537).
+  const [toast, setToast] = useState<{ message: string; undo?: () => Promise<void>; undone?: string } | null>(null);
+  const toastUndo = toast?.undo;
   // The shell's one upload queue and tray (D-12); this screen adds files into the folder shown.
   const { uploads, setTrayOpen, folders: folderPicking } = useSharedUploads(() => setReload((n) => n + 1));
   const filtered = isFiltered(library);
@@ -417,8 +418,9 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
     );
   }
 
-  function afterFolderChange(message: string, goTo?: { folderId: string | null }) {
-    setAnnouncement(message);
+  function afterFolderChange(message: string, goTo?: { folderId: string | null }, asToast = false) {
+    if (asToast) setToast({ message });
+    else setAnnouncement(message);
     setFoldersVersion((n) => n + 1);
     if (goTo) {
       show({ ...library, folderId: goTo.folderId, subfolders: goTo.folderId !== null && library.subfolders });
@@ -633,6 +635,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                 tree={tree}
                 current={current}
                 onChanged={afterFolderChange}
+                admin={me?.user.role === "admin"}
                 askNew={newFolderAsk}
                 suggestions={nameSuggestions}
               />
@@ -953,7 +956,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
 
       <Toast
         message={toast?.message ?? null}
-        onUndo={toast ? () => undoMove(toast.undo, toast.undone) : undefined}
+        onUndo={toastUndo ? () => undoMove(toastUndo, toast?.undone ?? "") : undefined}
         onClose={() => setToast(null)}
       />
       {versionFile && (
