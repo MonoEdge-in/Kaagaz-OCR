@@ -802,3 +802,23 @@ def test_two_deletes_forever_of_one_folder_at_once_finish_it_once(
     assert set(replies) <= {202, 204, 404} and 204 in replies
     assert _documents(db, c) == {} and _trashed(db, c) == {}
     assert not any(api.storage.has(c, document) for document in files)
+
+
+def test_a_folder_deleted_keeping_its_contents_hands_its_trashed_folders_to_where_they_went(
+    db: Database,
+) -> None:
+    """A13 (stability pass, 7 Nov 2026): F holds a folder in Trash; F is deleted with
+    ``contents=keep&to=X``, so that folder's Restore lands in X, where F's other contents went."""
+    api = Api(db)
+    admin = api.new_admin()
+    c, u = admin.customer_id, admin.user_id
+    destination = api.add_folder(c, u, "X")
+    parent = api.add_folder(c, u, "F")
+    child = api.add_folder(c, u, "Old", parent)
+    _trash(admin, child)
+    gone = admin.client.delete(f"/api/folders/{parent}?contents=keep&to={destination}", headers=CSRF)
+    assert gone.status_code == 200, gone.text
+
+    assert _trashed(db, c)[child][0] == destination
+    assert _restore(admin, child).status_code == 200
+    assert _folders(db, c)[child][0] == destination

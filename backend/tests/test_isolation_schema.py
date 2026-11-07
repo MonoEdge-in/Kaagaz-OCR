@@ -780,6 +780,12 @@ def test_the_app_may_update_only_the_counts_of_a_reading_day(db: Database) -> No
     assert {table: _updatable(db, table) for table in UPDATES_0066} == UPDATES_0066
 
 
+def test_the_app_may_update_only_the_parent_of_a_trashed_folder(db: Database) -> None:
+    """0082 (A13): never a trashed folder's name, kind, delete or owner; only where it would be
+    restored to, when the folder it was in is deleted with its contents kept elsewhere."""
+    assert _updatable(db, "trashed_folders") == {"parent_id"}
+
+
 def test_the_app_may_update_only_the_spellings_of_a_value_key(db: Database) -> None:
     """0049: never a key's value, document, kind or place level, so a key can't be moved to
     another value or document."""
