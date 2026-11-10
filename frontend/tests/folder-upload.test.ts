@@ -427,6 +427,12 @@ describe("what the tray and the status bar say", () => {
     ).toBe("Virus found. Upload a clean copy of the file.");
     const failed = item({ state: "stored", document_id: "d", document: { status: "failed", failure_code: null, folder_id: "f", in_trash: false } });
     expect(itemProblemText(failed, FALLBACK_UPLOAD_LIMITS)).toBe("Failed. Read it again, or try another copy of it.");
+    // #549: a zip in a folder upload is kept as a file by design, never "Failed".
+    const keptZip = { status: "needs_reader" as const, failure_code: null, folder_id: "f", in_trash: false };
+    expect(itemProblemText(item({ name: "Scans.ZIP", state: "stored", document_id: "d", document: keptZip }), FALLBACK_UPLOAD_LIMITS)).toBe(
+      "Kept as a file, not unpacked: Kaagaz unpacks a zip only when it is uploaded on its own.",
+    );
+    expect(itemProblemText(item({ name: "old.doc", state: "stored", document_id: "d", document: keptZip }), FALLBACK_UPLOAD_LIMITS)).not.toMatch(/^Kept/);
     expect(itemProblemText(item({ failure_code: "bad_name" }), FALLBACK_UPLOAD_LIMITS)).toBe(
       "Kaagaz can’t keep this file’s name: it has a hidden character, or another file in its folder has the same name. Rename it, then upload it again.",
     );

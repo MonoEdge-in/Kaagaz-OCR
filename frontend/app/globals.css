@@ -1261,6 +1261,12 @@ td.num {
   animation: spin 900ms linear infinite;
 }
 
+/* #549: kept as it is (a zip not unpacked): quiet, neither done nor wrong. */
+.status-chip[data-tone="neutral"] {
+  color: var(--text-secondary);
+  background: var(--bg-subdued);
+}
+
 .status-chip[data-tone="danger"] {
   border-color: var(--danger-fg);
   color: var(--danger-fg);

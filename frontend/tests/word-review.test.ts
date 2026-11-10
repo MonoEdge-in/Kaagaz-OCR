@@ -11,6 +11,7 @@ import { ReviewPanel } from "@/app/(app)/documents/[id]/ReviewPanel";
 import { ExportDialog, SummaryBar, documentMoreItems } from "@/app/(app)/documents/[id]/WordReview";
 import type { WordReview } from "@/app/(app)/documents/[id]/WordReview";
 import { FlagText } from "@/components/review/FlagText";
+import { K_ICONS } from "@/components/ui/Icon/icons";
 import { readPageAgain } from "@/lib/api";
 import * as words from "@/components/review/wordReview";
 import {
@@ -115,6 +116,7 @@ const bar = (shown: ReviewStatus, more: Partial<Parameters<typeof SummaryBar>[0]
       documentId: "d1",
       review: review(shown),
       scanning: "Scanning page 6 of 14",
+      scanningIcon: "clock",
       reviewing: false,
       reviewRef: { current: null },
       onReview: () => undefined,
@@ -509,6 +511,39 @@ describe("a rejected file", () => {
     expect(view).toMatch(/\{detail\.status !== "rejected" && \(\s*<SummaryBar/);
     const hook = css("app/(app)/documents/[id]/WordReview.tsx");
     expect(hook).toMatch(/useEffect\(\(\) => \{\s*if \(!enabled\) return;\s*let cancelled = false;\s*load\(\)/);
+  });
+});
+
+// #549 (Tushar, 10 Nov 2026): a file not ready said its sentence twice (under the name, then
+// in bold) and the bold one always had a clock, even for a failure.
+describe("a file not ready yet", () => {
+  it("shows the status bar's sentence with the icon it is given", () => {
+    const failed = status({ status: "failed", summary: null, ensemble: { allowed: false, reason: null, run: null } });
+    const html = bar(failed, { scanning: "This file could not be read.", scanningIcon: "alert" });
+    expect(html).toContain("This file could not be read.");
+    expect(html).toContain(K_ICONS.alert.d);
+    expect(html).not.toContain(K_ICONS.clock.d);
+  });
+
+  it("says the sentence under the name only when the status bar doesn't", () => {
+    const view = css("app/(app)/documents/[id]/DocumentView.tsx");
+    // The bar says it exactly when its own status isn't ready (statusLine), so a Read again the
+    // bar hasn't caught up with (its status still ready) keeps the progress under the name.
+    expect(view).toMatch(
+      /const barSaysStatus = detail\.status !== "rejected" && review\.status !== null && review\.status\.status !== "ready";/,
+    );
+    expect(view).toMatch(/\{detail\.status !== "ready" && !barSaysStatus && <span className=\{styles\.meta\}>\{detail\.status_message\}<\/span>\}/);
+    expect(view).toMatch(/scanningIcon=\{STATUS_ICONS\[chip\.tone\]\}/);
+    expect(view).toMatch(/const chip = statusChip\(detail\.status, detail\.detected_type\);/);
+    expect(words.statusLine(status({ status: "failed" }), "Why.").text).toBe("Why.");
+    expect(words.statusLine(status({ status: "ready" }), "Why.").text).not.toBe("Why.");
+  });
+
+  it("passes the file's kind wherever a finished file's chip is drawn", () => {
+    expect(css("components/documents/DocumentsTable.tsx")).toContain(
+      "<StatusChip status={document.status} detectedType={document.detected_type} />",
+    );
+    expect(css("components/search/SearchScreen.tsx")).toContain("statusChip(document.status, document.detected_type)");
   });
 });
 

@@ -515,7 +515,8 @@ export function DocumentView({
       : folder
         ? { href: libraryHref({ ...ALL_DOCUMENTS, folderId: folder.id }), name: folder.name }
         : { href: "/documents", name: "documents" });
-  const chip = statusChip(detail.status);
+  const chip = statusChip(detail.status, detail.detected_type);
+  const barSaysStatus = detail.status !== "rejected" && review.status !== null && review.status.status !== "ready";
   // Trash means deleted: no download from there, only Restore (the Trash view).
   const download = detail.deleted_at === null ? downloadHref(detail) : null;
   const position = versionPosition(detail);
@@ -641,7 +642,9 @@ export function DocumentView({
                 <KIcon name={STATUS_ICONS[chip.tone]} size="sm" />
                 {chip.text}
               </span>
-              {detail.status !== "ready" && <span className={styles.meta}>{detail.status_message}</span>}
+              {/* #549: said once. The status bar says it while its own status isn't ready; here otherwise
+                  (refused: no bar; still loading or failed to load; a Read again the bar hasn't caught up with). */}
+              {detail.status !== "ready" && !barSaysStatus && <span className={styles.meta}>{detail.status_message}</span>}
               {detail.status === "ready" && detail.understanding === true && <span className={styles.meta}>{UNDERSTANDING_TEXT}</span>}
               <TimeLeft document={detail} />
               {/* File management P1: the label, quiet, with a lock when it is kept close. */}
@@ -699,6 +702,7 @@ export function DocumentView({
                 documentId={detail.id}
                 review={review}
                 scanning={detail.status_message}
+                scanningIcon={STATUS_ICONS[chip.tone]}
                 reviewing={reviewing}
                 reviewRef={reviewButton}
                 onReview={() => startReview()}
