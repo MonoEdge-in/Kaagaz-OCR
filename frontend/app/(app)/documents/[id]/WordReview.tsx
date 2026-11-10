@@ -51,6 +51,7 @@ import {
 import { InStatusBar } from "@/components/shell/StatusBar";
 import { Icon } from "@/components/ui/Icon";
 import { Icon as KIcon } from "@/components/ui/Icon/Icon";
+import type { KIconName } from "@/components/ui/Icon/Icon";
 import { effectiveOf, gateEnsemble, useAiSettings } from "@/lib/aiSettings";
 import { dataText } from "@/components/viewer/clearCopy";
 import { getClearCopy, getEnsembleEstimate, getReviewStatus, listFlags } from "@/lib/api";
@@ -244,6 +245,7 @@ export interface SummaryBarProps {
   documentId: string;
   review: WordReview;
   scanning: string; // the document's own status words while it is read
+  scanningIcon: KIconName; // #549: its chip's icon, so a failure isn't drawn with a clock
   reviewing: boolean;
   reviewRef: RefObject<HTMLButtonElement | null>;
   onReview(): void;
@@ -316,7 +318,7 @@ export function SummaryBar(props: SummaryBarProps) {
     <section className={styles.bar} aria-label="Status">
       <div className={styles.statusRow}>
         <p className={styles.status} data-clear={line.clear || undefined} data-changed={changed || undefined}>
-          <KIcon name={line.clear ? "check" : ready ? "eye" : "clock"} className={styles.statusIcon} />
+          <KIcon name={line.clear ? "check" : ready ? "eye" : props.scanningIcon} className={styles.statusIcon} />
           <span className="tabular">{line.text}</span>
         </p>
         {ready && status.remaining > 0 && (

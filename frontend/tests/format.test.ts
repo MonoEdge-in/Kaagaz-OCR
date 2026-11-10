@@ -178,6 +178,15 @@ describe("statusChip", () => {
     expect(statusChip("failed")).toEqual({ text: "Failed", tone: "danger", className: "status-chip" });
     for (const status of all) expect(statusChip(status).className).not.toMatch(/badge/);
   });
+
+  // #549 (Tushar, 10 Nov 2026): a zip Kaagaz keeps as a file (inside a folder upload, or the
+  // zip's own copy after unpacking) is needs_reader, but nothing failed.
+  it("calls a zip kept as a file just that, never Failed", () => {
+    expect(statusChip("needs_reader", "zip")).toEqual({ text: "Kept as a file", tone: "neutral", className: "status-chip" });
+    expect(statusChip("needs_reader", "pdf")).toEqual({ text: "Failed", tone: "danger", className: "status-chip" });
+    expect(statusChip("failed", "zip")).toEqual({ text: "Failed", tone: "danger", className: "status-chip" });
+    expect(statusChip("received", "zip")).toEqual({ text: "Reading", tone: "working", className: "status-chip" });
+  });
 });
 
 // Model choice: AI spend is in US dollars, never shown as $0.00 when something was spent.

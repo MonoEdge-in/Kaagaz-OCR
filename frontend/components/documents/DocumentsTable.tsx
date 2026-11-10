@@ -1287,7 +1287,7 @@ export function StatusCell({
   return (
     <span className={styles.statusContent}>
       <span className={styles.statusLine}>
-        <StatusChip status={document.status} />
+        <StatusChip status={document.status} detectedType={document.detected_type} />
       </span>
       <span className={styles.statusLine}>
         <span className={styles.statusText} title={document.status_message}>

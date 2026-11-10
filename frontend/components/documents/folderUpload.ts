@@ -475,6 +475,8 @@ export function withNotSent(
 }
 
 const MB = 1024 * 1024;
+// The server's own words for it (backend views.zip_message).
+const KEPT_ZIP = "Kept as a file, not unpacked: Kaagaz unpacks a zip only when it is uploaded on its own.";
 
 /** Why an item needs attention, with what to do, in plain words; null when it doesn't. Never retried. */
 export function itemProblemText(item: FolderUploadItem, limits: UploadLimits): string | null {
@@ -495,6 +497,8 @@ export function itemProblemText(item: FolderUploadItem, limits: UploadLimits): s
       break;
   }
   const document = item.document;
+  // #549: a zip in a folder upload is kept as a file by design; say so, never "Failed".
+  if (document?.status === "needs_reader" && uploadKind(item.name) === "zip") return KEPT_ZIP;
   if (document && ["failed", "rejected", "needs_reader"].includes(document.status)) {
     const code = document.status === "needs_reader" ? "needs_reader" : document.failure_code;
     const what = code ? failureWords(code) : documentWords(document.status);

@@ -201,7 +201,12 @@ export interface StatusChip {
 const STATUS_TONES = { reading: "working", failed: "danger" } as const;
 
 /** The words, tone and class for a document status chip. */
-export function statusChip(status: DocumentStatus): StatusChip {
+export function statusChip(status: DocumentStatus, detectedType?: DetectedType): StatusChip {
+  // #549: a zip kept as a file (inside a folder upload, or the zip's own copy once unpacked) is
+  // needs_reader by design, so nothing failed.
+  if (status === "needs_reader" && detectedType === "zip") {
+    return { text: "Kept as a file", tone: "neutral", className: "status-chip" };
+  }
   const state = documentStatus(status);
   return { text: documentWords(status), tone: state === null ? "ready" : STATUS_TONES[state], className: "status-chip" };
 }
