@@ -97,7 +97,8 @@ describe("the ready questions under Ask", () => {
     expect(READY_LOOKS).toEqual([12_000, 40_000]);
     const home = read("components/dashboard/Dashboard.tsx");
     expect(home).toContain("getReadyQuestions()");
-    expect(home).toMatch(/<\/form>\s*<ReadyQuestions questions=\{questions\} \/>\s*<\/section>/);
+    // Changed on purpose (#562): the "Type a question first." line sits right under the box, before them.
+    expect(home).toMatch(/<\/form>\s*\{emptyTried && \([\s\S]*?\)\}\s*<ReadyQuestions questions=\{questions\} \/>\s*<\/section>/);
     expect(home).not.toContain("QuestionsCard");
     expect(read("components/dashboard/words.ts")).not.toContain("What did we upload");
     const text = css(HOME_CSS);
@@ -118,5 +119,21 @@ describe("the welcome's styles", () => {
     expect(text).toMatch(/\.ask \{[^}]*border-radius: var\(--k-r-pill\);[^}]*box-shadow: var\(--k-shadow-2\);/);
     expect(text).toMatch(/\.askInput \{[^}]*flex: 1;[^}]*border: 0;/);
     expect(text).toMatch(/\.ask:focus-within \{[^}]*outline: 3px solid var\(--k-accent-soft\);/);
+  });
+});
+
+// #562 (testers' Excel APP-002, 10 Nov 2026): Ask with an empty box on Home did nothing at all.
+describe("an empty question on Home", () => {
+  it("says to type a question first, in the Ask screen's own words", () => {
+    expect(DASHBOARD_TEXT.askEmpty).toBe("Type a question first.");
+  });
+
+  it("shows the words, marks the box and keeps focus there instead of doing nothing", () => {
+    const view = read("components/dashboard/Dashboard.tsx");
+    expect(view).toMatch(/if \(!text\) \{\s*setEmptyTried\(true\);\s*document\.getElementById\("home-ask"\)\?\.focus\(\);\s*return;\s*\}/);
+    expect(view).toMatch(/aria-invalid=\{emptyTried \|\| undefined\}/);
+    expect(view).toMatch(/aria-describedby=\{emptyTried \? "home-ask-empty" : undefined\}/);
+    expect(view).toMatch(/\{emptyTried && \(\s*<p id="home-ask-empty" className="error-text">\s*\{DASHBOARD_TEXT\.askEmpty\}/);
+    expect(view).toMatch(/if \(emptyTried\) setEmptyTried\(false\);/);
   });
 });
