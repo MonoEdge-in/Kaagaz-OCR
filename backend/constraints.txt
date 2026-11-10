@@ -22,6 +22,10 @@ typer==0.27.2
 # new pdfminer can read a file differently and refuse ordinary PDFs as unscannable.
 pdfminer.six==20260107
 
+# pypdfium2 5.15.1 is yanked (PyPI reason: "Closing of remaining objects on interpreter
+# exit broken due to an oversight"). CI picked it up before the yank; block it here so
+# a fresh install never lands on it. The replay-scan fixture was recorded on 5.14.0.
+pypdfium2!=5.15.1
 # Production QA S3 (5 Nov 2026): the libraries that face the internet or read untrusted files,
 # and their direct dependencies, pinned to the versions the full test run passed on, so an image
 # build never takes a newer one unseen (there is no lock file yet; tests/test_constraints_pins.py).
