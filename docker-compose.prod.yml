@@ -12,7 +12,12 @@
 #     Docker's own networks.
 #   - Every long-running service restarts after a crash or a reboot.
 #   - Every service's log is rotated (5 files of 20 MB), so logs never fill the disk.
-#   - SeaweedFS reads its access keys from the server's own file, not from git.
+#   - Files live in AWS S3 (ap-south-1) through the VPC gateway endpoint, not in
+#     SeaweedFS: STORAGE_ENDPOINT_URL below replaces docker-compose.yml's
+#     http://seaweedfs:8333 for migrate, api and worker. There are no storage keys:
+#     boto3 uses the instance role (IMDSv2, hop limit 2). SeaweedFS is retired: it
+#     starts only with --profile seaweedfs-retired and is kept read-only as a
+#     fallback until <date + 14 days>.
 #   - api, each worker and clamav have a memory limit (#246 A2), so one of them
 #     running away is stopped alone instead of the kernel's OOM killer picking a
 #     process anywhere on the box, postgres included. postgres has none. PROVISIONAL
@@ -21,8 +26,11 @@
 #     signatures. A container over its limit is killed and restarted
 #     (restart: unless-stopped); a worker's job then goes back to the queue.
 #
-# The server's .env sets KAAGAZ_DOMAIN, ACME_EMAIL and SEAWEEDFS_S3_CONFIG (the
-# path of its s3.json); compose stops with the name of any that is missing.
+# The server's .env sets KAAGAZ_DOMAIN, ACME_EMAIL, the bucket name
+# (kaagaz-prod-files) and SEAWEEDFS_S3_CONFIG (until the seaweedfs block below is
+# deleted); compose stops with the name of any that is missing. It must NOT set
+# STORAGE_ACCESS_KEY, its secret, or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY: any
+# of them would replace the instance role.
 
 x-logging: &logging
   driver: json-file
@@ -30,16 +38,24 @@ x-logging: &logging
     max-size: "20m"
     max-file: "5"
 
+# AWS S3 for the three backend services (migrate, api, worker).
+x-s3-env: &s3-env
+  STORAGE_ENDPOINT_URL: https://s3.ap-south-1.amazonaws.com
+  AWS_REGION: ap-south-1
+  AWS_DEFAULT_REGION: ap-south-1
+
 services:
   postgres:
     ports: !reset []
     restart: unless-stopped
     logging: *logging
 
+  # Retired. Kept so its ports stay unpublished and a plain `up` never starts it
+  # with the laptop s3.json. Delete this block (and SEAWEEDFS_S3_CONFIG from .env)
+  # once the fallback period ends and the container and its volume are removed.
   seaweedfs:
+    profiles: ["seaweedfs-retired"]
     ports: !reset []
-    # Same target as docker-compose.yml's ./infra/seaweedfs/s3.json, so this one
-    # takes its place (compose merges volumes by target path).
     volumes:
       - ${SEAWEEDFS_S3_CONFIG:?set SEAWEEDFS_S3_CONFIG in .env}:/etc/seaweedfs/s3.json:ro
     restart: unless-stopped
@@ -57,8 +73,15 @@ services:
     mem_limit: 4g
 
   # One-shot: it runs once per deploy and exits, so it gets no restart policy.
+  # It checks the bucket (ensure_bucket) too, so it needs S3 as well.
   migrate:
     logging: *logging
+    environment:
+      <<: *s3-env
+    # docker-compose.yml's list without seaweedfs. `run migrate` starts these.
+    depends_on: !override
+      postgres:
+        condition: service_healthy
 
   api:
     ports: !reset []
@@ -66,9 +89,16 @@ services:
     logging: *logging
     mem_limit: 3g
     environment:
+      <<: *s3-env
       # The number of worker copies below, not docker-compose.yml's laptop "1".
       # OpenRouter RPM is reserved centrally in PostgreSQL across API and worker processes.
       WORKER_REPLICAS: ${WORKER_REPLICAS:-3}
+    # docker-compose.yml's list without seaweedfs.
+    depends_on: !override
+      migrate:
+        condition: service_completed_successfully
+      elasticmq:
+        condition: service_healthy
 
   worker:
     logging: *logging # restart: unless-stopped is already in docker-compose.yml
@@ -79,7 +109,16 @@ services:
     deploy:
       replicas: ${WORKER_REPLICAS:-3}
     environment:
+      <<: *s3-env
       WORKER_REPLICAS: ${WORKER_REPLICAS:-3}
+    # docker-compose.yml's list without seaweedfs.
+    depends_on: !override
+      migrate:
+        condition: service_completed_successfully
+      elasticmq:
+        condition: service_healthy
+      clamav:
+        condition: service_healthy
 
   frontend:
     ports: !reset []
