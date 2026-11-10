@@ -35,6 +35,7 @@ export const DASHBOARD_TEXT = {
   askLabel: "Ask about your documents",
   askPlaceholder: "Ask anything, e.g. “Kiska bill sabse zyada tha last month?”",
   ask: "Ask",
+  askEmpty: "Type a question first.", // #562: the Ask screen's own words (QuestionBox)
   // Home made clear (24 Oct 2026): what the page is for, then one card per next step.
   lead: "Ask anything about your documents, or start with one of the steps below.",
   yourQuestions: "Your usual questions",

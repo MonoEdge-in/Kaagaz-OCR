@@ -62,6 +62,7 @@ export function Dashboard() {
   const [reviewTotal, setReviewTotal] = useState<number | null>(null);
   const [department, setDepartment] = useState<string | null | undefined>(undefined);
   const [question, setQuestion] = useState("");
+  const [emptyTried, setEmptyTried] = useState(false); // #562: Ask pressed with an empty box
   const [questions, setQuestions] = useState<ReadyQuestion[] | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const { uploads, setTrayOpen, foldersChanged } = useSharedUploads(() => setAttempt((n) => n + 1));
@@ -139,7 +140,12 @@ export function Dashboard() {
   function ask(event: FormEvent) {
     event.preventDefault();
     const text = question.trim();
-    if (text) router.push(askHref(text));
+    if (!text) {
+      setEmptyTried(true);
+      document.getElementById("home-ask")?.focus();
+      return;
+    }
+    router.push(askHref(text));
   }
 
   return (
@@ -163,13 +169,23 @@ export function Dashboard() {
             maxLength={1000}
             placeholder={DASHBOARD_TEXT.askPlaceholder}
             value={question}
-            onChange={(event) => setQuestion(event.target.value)}
+            aria-invalid={emptyTried || undefined}
+            aria-describedby={emptyTried ? "home-ask-empty" : undefined}
+            onChange={(event) => {
+              setQuestion(event.target.value);
+              if (emptyTried) setEmptyTried(false);
+            }}
           />
           <button type="submit" className={`k-btn k-btn--primary ${styles.askButton}`}>
             {DASHBOARD_TEXT.ask}
             <Icon name="external" size="sm" />
           </button>
         </form>
+        {emptyTried && (
+          <p id="home-ask-empty" className="error-text">
+            {DASHBOARD_TEXT.askEmpty}
+          </p>
+        )}
         <ReadyQuestions questions={questions} />
       </section>
 
