@@ -89,10 +89,15 @@ describe("an upload that has to wait says why", () => {
 });
 
 describe("a file not sent because the server was restarting", () => {
-  it("says so, and to retry, for a 502, 503 or 504; other errors keep the server's words", () => {
-    for (const status of [502, 503, 504]) {
+  // Changed on purpose (review of #564): only the proxy's 502 and 504 mean a restart; the API's
+  // own 503 (busy) keeps its words, and a row with no Retry button isn't told to retry.
+  it("says so, and to retry, for a 502 or 504; other errors keep the server's words", () => {
+    for (const status of [502, 504]) {
       expect(uploadErrorText(new ApiError(status, "error", "Something went wrong."), true)).toBe("The server was restarting. Retry.");
+      expect(uploadErrorText(new ApiError(status, "error", "Something went wrong."), true, false)).toBe("The server was restarting.");
     }
+    const busy = "The service is busy right now. Please try again in a minute.";
+    expect(uploadErrorText(new ApiError(503, "backend_unavailable", busy), true)).toBe(busy);
     expect(uploadErrorText(new ApiError(500, "internal_error", "Something went wrong on our side."), true)).toBe(
       "Something went wrong on our side.",
     );

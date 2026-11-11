@@ -160,7 +160,7 @@ export async function startFolderUpload(
       only_new: onlyNew,
     });
   } catch (caught) {
-    emit({ type: "phase", id, phase: "refused", message: uploadErrorText(caught, online()) });
+    emit({ type: "phase", id, phase: "refused", message: uploadErrorText(caught, online(), false) });
     return;
   }
   emit({ type: "planned", id, rootFolderId: plan.root_folder_id });
@@ -198,7 +198,7 @@ export async function startFolderUpload(
       await api.register(id, userId, page);
     }
   } catch (caught) {
-    const why = sessionChangedMessage(caught) ?? `Not every file could be listed. ${uploadErrorText(caught, online())}`;
+    const why = sessionChangedMessage(caught) ?? `Not every file could be listed. ${uploadErrorText(caught, online(), false)}`;
     emit({ type: "phase", id, phase: "stopped", message: why });
     return;
   }
@@ -266,7 +266,7 @@ export async function sendWaiting(
         return;
       }
       const retry = changed === null && canSendAgain(caught);
-      notSent(changed ?? uploadErrorText(caught, online()), retry);
+      notSent(changed ?? uploadErrorText(caught, online(), retry), retry);
     }
   }
 
@@ -280,7 +280,7 @@ export async function sendWaiting(
     }
     emit({ type: "counts", id, summary: await api.summary(id) });
   } catch (caught) {
-    signedOut ??= sessionChangedMessage(caught) ?? `Kaagaz could not list the files still to send. ${uploadErrorText(caught, online())}`;
+    signedOut ??= sessionChangedMessage(caught) ?? `Kaagaz could not list the files still to send. ${uploadErrorText(caught, online(), false)}`;
   }
   const why = signedOut ?? full;
   if (why !== null) emit({ type: "phase", id, phase: "stopped", message: why });

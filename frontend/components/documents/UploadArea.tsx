@@ -301,7 +301,7 @@ export function useUploads(onUploaded: () => void) {
     } catch (caught) {
       stopped.current ??= sessionChangedMessage(caught);
       const retry = stopped.current === null && canSendAgain(caught) && kept.current.has(key);
-      const message = uploadErrorText(caught, navigator.onLine);
+      const message = uploadErrorText(caught, navigator.onLine, retry);
       if (drop && isStorageFull(caught)) drop.full ??= message;
       update(key, { kind: "error", message, retry });
     }

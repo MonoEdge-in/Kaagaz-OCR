@@ -273,6 +273,26 @@ describe("a folder upload's run", () => {
     expect(events.at(-1)).toEqual({ type: "phase", id: "ip", phase: "refused", message: words });
   });
 
+  it("never says Retry on a row with no Retry: a plan or a listing cut off by a server restart", async () => {
+    const pick = pickOf(["A/a.pdf"]);
+    const restart = new ApiError(502, "error", "Something went wrong.");
+    const planning = fakeServer();
+    planning.api.plan = async () => {
+      throw restart;
+    };
+    const planned: FolderEvent[] = [];
+    const args = { userId: "me", source: { picked: pick, manifest: buildManifest(pick) }, target: { kind: "folder", parentId: null }, merge: true } as const;
+    await startFolderUpload(planning.api, { id: "r1", ...args }, run(planned), never);
+    expect(planned.at(-1)).toEqual({ type: "phase", id: "r1", phase: "refused", message: "The server was restarting." });
+    const listing = fakeServer();
+    listing.api.register = async () => {
+      throw restart;
+    };
+    const listed: FolderEvent[] = [];
+    await startFolderUpload(listing.api, { id: "r2", ...args }, run(listed), never);
+    expect(listed.at(-1)).toEqual({ type: "phase", id: "r2", phase: "stopped", message: "Not every file could be listed. The server was restarting." });
+  });
+
   it("stops planning with the server's words when the plan is refused", async () => {
     const pick = pickOf(["A/a.pdf"]);
     const server = fakeServer();
