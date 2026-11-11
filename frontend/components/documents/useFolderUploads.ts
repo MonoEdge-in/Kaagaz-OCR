@@ -71,7 +71,7 @@ export function useFolderUploads({
     plan: planFolderUpload,
     register: registerFolderItems,
     items: listFolderItems,
-    send: (file, item, onProgress) => uploadFolderItem(file, item.id, userId, onProgress, turn, reading),
+    send: (file, item, onProgress, onWaiting) => uploadFolderItem(file, item.id, userId, onProgress, turn, reading, onWaiting),
     summary: getFolderUpload,
   };
 

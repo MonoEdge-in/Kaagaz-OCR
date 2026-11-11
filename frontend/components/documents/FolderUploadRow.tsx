@@ -15,6 +15,7 @@ import { shortPathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
 import { attentionOf, folderLine, itemProblemText, readingLine } from "./folderUpload";
 import type { FolderUploadView } from "./folderUpload";
+import { uploadStateText } from "./logic";
 import styles from "./Documents.module.css";
 
 /** A file this tab could not send, and whether sending it again may help. */
@@ -86,7 +87,9 @@ export function FolderUploadRow({
         <ul className={styles.uploads}>
           {view.sending.map((row) => (
             <li key={row.itemId} className={`muted ${styles.small}`}>
-              Sending {row.name}
+              {row.waiting
+                ? `${row.name}: ${uploadStateText({ kind: "offline", fraction: row.fraction, server: row.waiting === "server" })}`
+                : `Sending ${row.name}`}
             </li>
           ))}
         </ul>
