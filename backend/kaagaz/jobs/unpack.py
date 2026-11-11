@@ -279,7 +279,7 @@ class ZipUnpacker:
         queue = _ReadingQueue(self._db, self._queue, requested_by=uploader, reading=limits.reading)
         service = UploadService(
             limits.policy,
-            PgDocuments(self._db),
+            PgDocuments(self._db, storage=self._storage),
             self._storage,
             queue,
             express_max_pages=self._settings.express_max_pages,

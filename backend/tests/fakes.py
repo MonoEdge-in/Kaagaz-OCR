@@ -173,6 +173,7 @@ class MemoryStorage:
         with self._lock:
             self._blobs.pop((customer_id, document_id), None)
             self.renditions.pop((customer_id, document_id), None)
+            self.quarantined.pop((customer_id, document_id), None)  # as the adapter's delete
 
     def put_rendition(self, customer_id: str, document_id: str, pdf: bytes) -> None:
         with self._lock:

@@ -180,6 +180,18 @@ def test_duplicates_in_the_zip_follow_the_duplicate_rule(unpacking: Unpacking) -
     assert len(unpacking.queue.jobs) == 1  # nothing new stored for a duplicate
 
 
+def test_a_file_whose_only_copy_was_refused_is_stored_again_from_the_zip(unpacking: Unpacking) -> None:
+    """#554: a refused copy alone is not "already in Kaagaz"; the zip's file replaces it."""
+    refused = unpacking.upload(b"refused,once\n1,2\n", "earlier.csv")
+    unpacking.execute("UPDATE documents SET status = 'rejected' WHERE id = :d", d=refused.document_id)
+    data = make_zip([("c.csv", b"refused,once\n1,2\n")])
+    record = unpacking.upload(data)
+    unpacking.unpack(record, data)
+    found = unpacking.result(record)
+    assert found is not None and (found.stored, found.duplicate, found.failed) == (1, 0, 0)
+    assert unpacking.rows("SELECT id FROM documents WHERE id = :d", d=refused.document_id) == []
+
+
 def test_a_second_zip_of_the_same_name_gets_a_folder_of_its_own(unpacking: Unpacking) -> None:
     with unpacking.db.customer(unpacking.customer_id) as conn:
         insert_folder(conn, unpacking.customer_id, unpacking.user_id, "Archive")

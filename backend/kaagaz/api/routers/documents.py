@@ -625,7 +625,7 @@ def _service(
     queue = _ReadingQueue(context.queue, context.db, requested_by=user.user_id, reading=reading)
     return UploadService(
         policy,
-        PgDocuments(context.db),
+        PgDocuments(context.db, storage=context.storage),
         context.storage,
         queue,
         express_max_pages=context.settings.express_max_pages,

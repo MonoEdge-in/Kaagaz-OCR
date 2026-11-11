@@ -45,6 +45,7 @@ from typing import Any, Literal
 from sqlalchemy import Connection, text
 
 from kaagaz.db import audit
+from kaagaz.db.documents import REFUSED_ALONE
 from kaagaz.db.folder_uploads import FolderUploadLimits
 
 FAILURE_CODES = ("too_large", "unsupported_type", "empty_file", "folder_gone", "bad_name")
@@ -141,10 +142,12 @@ _KNOWN_KEYS = text(
     "SELECT path_key FROM folder_upload_items"
     " WHERE customer_id = :c AND folder_upload_id = :u AND path_key = ANY(CAST(:keys AS text[]))"
 )
-# "Add new files only": the document of this organisation each hash and size is, if any.
+# "Add new files only": the document of this organisation each hash and size is, if any; a
+# refused copy alone is not, so the file is sent and replaces it (#554, ``db/documents.py``).
 _ALREADY_IN = text(
-    "SELECT w.k, d.id FROM unnest(CAST(:keys AS text[]), CAST(:hashes AS text[]), CAST(:sizes AS bigint[]))"
+    "SELECT w.k, d.id FROM unnest(CAST(:keys AS text[]), CAST(:hashes AS text[]), CAST(:sizes AS bigint[]))"  # noqa: S608 - a fixed fragment
     " AS w (k, h, s) JOIN documents d ON d.customer_id = :c AND d.sha256 = w.h AND d.size_bytes = w.s"
+    " AND NOT (" + REFUSED_ALONE + ")"
 )
 # Each row: failed with its code, else a duplicate of the document it already is, else waiting.
 _INSERT = text(
