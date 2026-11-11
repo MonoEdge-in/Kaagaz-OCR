@@ -764,8 +764,12 @@ def inspect(data: bytes, name: str = "") -> Finding | None:
         finding = _pdf_finding(data)
         # Either reader finding active content blocks the file.
         finding = Finding.BLOCKED if finding is not Finding.BLOCKED and _pdfium_sees_active(data) else finding
-        if kind == PDF or finding is not None:
+        if kind == PDF:
             return finding
+        if finding is not None:
+            # Review (11 Nov 2026): a zip's PDF view that can't be fully checked stays refused (fail
+            # closed), but never as "has a password": the zip itself has none.
+            return Finding.BLOCKED if finding is Finding.BLOCKED else Finding.UNSCANNABLE
     if kind == ZIP:
         return _zip_finding(data)
     if kind == TEXT:

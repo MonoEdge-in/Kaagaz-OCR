@@ -11,8 +11,8 @@
 makes the decryption key, which pdfminer then checks against the file's /U, so a wrong P can
 never give a key that is accepted: a file that needs a password is still refused.
 
-ponytail: ``uint_value`` is pdfdocument's own name for it (imported there, used only for P);
-if pdfminer renames it, the content check's tests of a /P 0 file fail.
+``uint_value`` is pdfdocument's own name for it (imported there, used only for P). If a pdfminer
+upgrade stops importing it there, this import fails loudly rather than silently patching nothing.
 """
 
 from pdfminer import pdfdocument
@@ -23,4 +23,6 @@ def _uint_value(x: object, n_bits: int) -> int:
     return int_value(x) & ((1 << n_bits) - 1)
 
 
-pdfdocument.uint_value = _uint_value  # type: ignore[attr-defined]  # pdfdocument's own name, see above
+if not hasattr(pdfdocument, "uint_value"):
+    raise ImportError("pdfminer_fix: pdfminer.pdfdocument no longer has uint_value; check the /P 0 fix")
+pdfdocument.uint_value = _uint_value  # pdfdocument's own name, see above

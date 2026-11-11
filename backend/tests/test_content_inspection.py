@@ -503,6 +503,15 @@ class StoredZips(unittest.TestCase):
         # it finds; for a small PDF that is past the read budget (4x the file), so it is refused.
         self.assertIs(inspect(stored_zip([("a.pdf", pdf_with([CATALOG, PAGES, PAGE]))])), Finding.UNSCANNABLE)
 
+    def test_a_stored_zip_is_never_told_it_has_a_password(self) -> None:
+        # Review (11 Nov 2026): a stored zip whose PDF view needs a password was told "This file
+        # has a password" about a zip that has none. Its PDF view can't be fully checked, so it
+        # stays refused (fail closed), as one that could not be checked.
+        locked = make_pdf([Page(texts=[Text(72, 700, "Total 500")])], password_protected=True)
+        # A scan after it, as in the review's probe, so the read budget isn't what refuses it.
+        zipped = stored_zip([("a.pdf", locked), ("b.pdf", scanned_pdf(1, dpi=300))])
+        self.assertIs(inspect(zipped), Finding.UNSCANNABLE)
+
 
 class NewFormats(unittest.TestCase):
     """#522, security review (6 Nov 2026): a HEIC photo is allowed as the other photos are; an
@@ -623,6 +632,15 @@ class TheLayers(unittest.TestCase):
                 inner = RecordingScanner()
                 self.assertIs(LayeredScanner(inner).scan(data), Verdict.ENCRYPTED)
                 self.assertEqual(inner.calls, 0)
+
+    def test_a_finding_with_no_verdict_of_its_own_is_refused_never_scanned_clean(self) -> None:
+        """Review (11 Nov 2026): a content finding the layer doesn't map (one added later) must
+        fail closed, never fall through to the virus scanner and come back clean."""
+        inner = RecordingScanner()
+        unknown = mock.Mock(name="a finding added later")
+        with mock.patch("kaagaz.adapters.scanner.inspect_isolated", return_value=unknown):
+            self.assertIs(LayeredScanner(inner).scan(b"anything"), Verdict.UNSCANNABLE)
+        self.assertEqual(inner.calls, 0)
         self.assertIn("password_protected", REJECTION_CODES)
         self.assertEqual(
             CUSTOMER_MESSAGES["password_protected"],
@@ -849,6 +867,24 @@ class OrdinaryPdfsFitTheReadBudget(unittest.TestCase):
         """#551 (UAT GR-08): pdfminer read ``/P 0`` as 2**32 and crashed packing it, so a
         PDF with every permission off was refused as one that could not be checked."""
         self.assertIsNone(inspect(owner_locked_pdf(permissions=0)))
+
+    def test_the_permission_fix_fails_loudly_if_pdfminer_renames_its_helper(self) -> None:
+        """Review (11 Nov 2026): the /P 0 fix replaces pdfdocument's own ``uint_value``; if a
+        pdfminer upgrade stops importing it there, the patch must not silently do nothing."""
+        import importlib
+
+        from pdfminer import pdfdocument
+
+        from kaagaz import pdfminer_fix
+
+        saved = pdfdocument.uint_value  # type: ignore[attr-defined]
+        try:
+            del pdfdocument.uint_value  # type: ignore[attr-defined]
+            with self.assertRaises(ImportError):
+                importlib.reload(pdfminer_fix)
+        finally:
+            pdfdocument.uint_value = saved  # type: ignore[attr-defined]
+            importlib.reload(pdfminer_fix)
 
     def test_a_pdf_that_needs_a_password_to_open_is_refused_as_one(self) -> None:
         """Nothing in it can be read, so it is not called safe. Changed on purpose (#552, UAT
