@@ -374,6 +374,33 @@ def test_hidden_characters_never_reach_a_stored_name_through_the_api(db: Databas
     assert names == {"documents": ["billfdp.exe", "invoicefdp.exe"], "folders": ["Accounts"], "tags": ["GST"]}
 
 
+# Port of production's b8faa1d3 (#564): a lone surrogate ("\ud800" in JSON) draws nothing and
+# can't be stored; a typed or uploaded name holding one was a 500. It goes, as a hidden one does.
+def test_a_lone_surrogate_goes_from_both_names() -> None:
+    assert clean_name("GST\ud800 2026/27", max_length=100) == "GST 2026/27"
+    assert clean_name("\udfff", max_length=100) is None
+    assert display_name("invoice\ud800.pdf") == "invoice.pdf"
+
+
+@pytest.mark.db
+def test_a_name_with_a_lone_surrogate_is_stored_without_it_never_a_500(db: Database) -> None:
+    signed = Api(db, storage=ResumableStorage()).new_admin()
+    json_headers = {**CSRF, "Content-Type": "application/json"}
+    folder = signed.client.post("/api/folders", content='{"name": "Accounts\\ud800"}', headers=json_headers)
+    tag = signed.client.post("/api/tags", content='{"name": "GST\\udfff"}', headers=json_headers)
+    start = (
+        f'{{"file_name": "bill\\ud800.pdf", "file_size": {len(PDF_BYTES)},'
+        f' "fingerprint": "{_fingerprint(PDF_BYTES)}", "user_id": "{signed.user_id}"}}'
+    )
+    session = signed.client.post("/api/documents/upload-sessions", content=start, headers=json_headers)
+    assert (folder.status_code, tag.status_code, session.status_code) == (201, 201, 200), (
+        folder.text,
+        tag.text,
+        session.text,
+    )
+    assert (folder.json()["name"], tag.json()["name"]) == ("Accounts", "GST")
+
+
 # --- 10. the PDF content limits (#505) ----------------------------------------------------------
 
 
