@@ -423,7 +423,7 @@ class _Land:
     plot: ValueRef | None = None
     khata: ValueRef | None = None
     printed: dict[str, list[tuple[ValueRef, str | None]]] = field(default_factory=dict)  # map values, keys
-    unplaced: set[str] = field(default_factory=set)  # map fields printed only with no usable spot
+    unplaced: set[str] = field(default_factory=set)  # map fields with a value printed with no usable spot
 
     def owning(self) -> list[_Party]:
         return [party for party in self.parties if party.role != "sellers"]
@@ -669,15 +669,29 @@ def _map_lines(land: _Land, ask: OwnerAsk) -> list[tuple[str, Cited]]:
         if refs:
             printed = _and([_printed(ref) for ref in refs])
             lines.append((f"The {word} of {name} {verb} printed as {printed}.", [*named, *refs]))
-        elif stored not in land.unplaced:  # printed with no spot to cite: nothing said of it
+        elif stored in land.unplaced:  # printed, with no spot to cite: never quoted (decision 2)
+            pronoun, quoted = ("them", "they aren't") if verb == "are" else ("it", "it isn't")
+            lines.append(
+                (
+                    f"The {word} of {name} {verb} printed on the map, but Kaagaz can't point to {pronoun}"
+                    f" on the page, so {quoted} quoted. Open the map to read {pronoun}.",
+                    named,
+                )
+            )
+        else:
             lines.append(
                 (f"The {word} of {name} {verb} not printed on the map, so none is worked out.", named)
             )
     if ask.borders:
         sides = [(side, ref) for stored, side in _SIDES.items() for ref, _ in land.printed.get(stored, [])]
+        unplaced = not land.unplaced.isdisjoint(_SIDES)
         if sides:
             listed = _and([f"{_printed(ref)} on the {side}" for side, ref in sides])
             lines.append((f"The neighbours printed for {name}: {listed}.", [*named, *(r for _, r in sides)]))
+            if unplaced:
+                lines.append(_unplaced("neighbours", name, named, others=True))
+        elif unplaced:
+            lines.append(_unplaced("neighbours", name, named, others=False))
         else:
             lines.append((f"No neighbour of {name} is printed by side, so none is worked out.", named))
     if not ask.measures and not ask.borders:  # the map itself
@@ -691,9 +705,29 @@ def _map_lines(land: _Land, ask: OwnerAsk) -> list[tuple[str, Cited]]:
             listed = "; ".join(f"{word} {_and([_printed(r) for r in refs])}" for word, refs in parts)
             cited = [*named, *(ref for _, refs in parts for ref in refs)]
             lines.append((f"The map values printed for {name}: {listed}.", cited))
+            if land.unplaced:
+                lines.append(_unplaced("values", name, named, others=True))
+        elif land.unplaced:
+            lines.append(_unplaced("values", name, named, others=False))
         else:
             lines.append((f"No value is printed on a map of {name}, so none is worked out.", named))
     return lines
+
+
+def _unplaced(what: str, name: str, named: Cited, *, others: bool) -> tuple[str, Cited]:
+    """Review of #564: map ``what`` (values, neighbours) printed with no spot on the page to cite:
+    never quoted (decision 2), never called "not printed". ``others``: some were quoted."""
+    if others:
+        return (
+            f"Other {what} of {name} are printed on the map where Kaagaz can't point to them; open the map"
+            " to read them.",
+            named,
+        )
+    return (
+        f"{what.capitalize()} of {name} are printed on the map, but Kaagaz can't point to them on the page,"
+        " so none is quoted. Open the map to read them.",
+        named,
+    )
 
 
 def _beside_lines(land: _Land, ask: OwnerAsk) -> list[tuple[str, Cited]]:
