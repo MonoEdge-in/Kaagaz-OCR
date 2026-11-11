@@ -15,6 +15,8 @@ import pytest
 from kaagaz.adapters.scanner import ClamdScanner, LayeredScanner
 from kaagaz.db.engine import Database
 from kaagaz.ingestion import resolve
+from kaagaz.ingestion.ports import Job
+from kaagaz.jobs.unpack import ZipUnpacker
 from kaagaz.reading.wiring import build_reader_socket
 from kaagaz.scanning.gate import DocumentStatus, Verdict
 from tests.db_support import new_customer
@@ -138,3 +140,41 @@ def test_each_file_in_a_zip_passes_the_real_scanner_by_its_own_name(
     found = unpacking.result(record)
     assert found is not None
     assert (found.stored, found.failed, found.skipped) == (3, 1, [("notes.txt", "blocked_content")])
+
+
+# #552 (UAT FF-14): an encrypted .docx, .xlsx or .pptx (one OLE2 shape for all three) and a PDF
+# that needs a password to open.
+ENCRYPTED_OFFICE = compound(["EncryptionInfo", "EncryptedPackage"], {"\x06DataSpaces": ["Version"]})
+PASSWORD_FILES = [
+    ("letter.docx", ENCRYPTED_OFFICE),
+    ("book.xlsx", ENCRYPTED_OFFICE),
+    ("slides.pptx", ENCRYPTED_OFFICE),
+    ("statement.pdf", make_pdf([Page(texts=[Text(72, 700, "Total 500")])], password_protected=True)),
+]
+
+
+@pytest.mark.parametrize(("name", "data"), PASSWORD_FILES, ids=[name for name, _ in PASSWORD_FILES])
+def test_a_file_with_a_password_is_rejected_as_one(clamd: ClamdScanner, name: str, data: bytes) -> None:
+    # The content check refuses it as having a password ("password_protected"), never as holding
+    # macros or as one that could not be checked; it is quarantined as any refused file.
+    system = build(scanner=LayeredScanner(clamd), socket=build_reader_socket(make_settings(), None))  # type: ignore[arg-type]
+    doc = system.upload.accept(CUSTOMER, io.BytesIO(data), display_name=name).document_id
+    system.worker.run_once()
+    assert system.statuses.get_status(CUSTOMER, doc) is DocumentStatus.REJECTED
+    assert system.repo.failure_codes[(CUSTOMER, doc)] == "password_protected"
+
+
+@pytest.mark.db
+def test_a_file_with_a_password_in_a_zip_is_skipped_as_one(db: Database, clamd: ClamdScanner) -> None:
+    # #552: the unpacker's own code for it, "encrypted" ("It has a password..."), the rest kept.
+    # Old Office files allowed here, so the file reaches its scan (the test settings allow none).
+    customer, user = new_customer(db)
+    unpacking = Unpacking(db, customer, user)
+    data = make_zip({"letter.docx": ENCRYPTED_OFFICE, "rent.csv": b"Name,Amount\nRent,5000\n"})
+    record = unpacking.upload(data)
+    settings = make_settings(allowed_types=frozenset({"zip", "text", "ole2"}))
+    unpacker = ZipUnpacker(db, unpacking.storage, unpacking.queue, LayeredScanner(clamd), settings)
+    assert unpacker(Job(customer, record.document_id), record, data, lambda: None) is True
+    found = unpacking.result(record)
+    assert found is not None
+    assert (found.stored, found.failed, found.skipped) == (1, 1, [("letter.docx", "encrypted")])

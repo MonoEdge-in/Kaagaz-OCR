@@ -175,6 +175,8 @@ class LayeredScanner:
             return Verdict.BLOCKED
         if finding is Finding.UNSCANNABLE:
             return Verdict.UNSCANNABLE
+        if finding is Finding.ENCRYPTED:
+            return Verdict.ENCRYPTED
         return self.scanner.scan(data)
 
 

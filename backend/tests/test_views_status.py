@@ -281,6 +281,10 @@ def test_a_password_protected_file_says_so() -> None:
     assert status_message("failed", "password_protected", detected_type="ole2", max_pages=100) == (
         "This file has a password, so it can't be opened. Remove the password and upload it again."
     )
+    # #552 (UAT FF-14): the scan refuses it now, so its document is rejected; the same words.
+    assert status_message("rejected", "password_protected", detected_type="pdf", max_pages=100) == (
+        "This file has a password, so it can't be opened. Remove the password and upload it again."
+    )
 
 
 def test_a_file_over_its_kinds_own_limit_says_so() -> None:

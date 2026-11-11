@@ -286,8 +286,11 @@ class DamagedPdfsCannotHideActiveContent(unittest.TestCase):
         self.assertIs(inspect(pdf_with([CATALOG_JS, PAGES, PAGE, JS])), Finding.BLOCKED)
 
     def test_a_damaged_encrypted_pdf_is_unscannable(self) -> None:
+        # Changed on purpose (#552): a file that needs a password to open is refused as one before
+        # its damage is seen, so this is one that opens with no password (an owner password only).
+        self.assertIs(inspect(with_broken_object(owner_locked_pdf(), 3)), Finding.UNSCANNABLE)
         locked = make_pdf([Page(texts=[Text(72, 700, "Total 500")])], password_protected=True)
-        self.assertIs(inspect(with_broken_object(locked, 3)), Finding.UNSCANNABLE)
+        self.assertIs(inspect(with_broken_object(locked, 3)), Finding.ENCRYPTED)
 
     def test_javascript_nested_deeper_than_the_walk_is_blocked(self) -> None:
         """A 70-deep /Next chain ending in JavaScript used to be called safe."""
@@ -462,17 +465,28 @@ class NewFormats(unittest.TestCase):
             with self.subTest(streams=streams):
                 self.assertIsNone(inspect(compound(streams)))
 
-    def test_macros_embedded_objects_or_a_password_refuse_an_old_office_file(self) -> None:
+    def test_macros_or_embedded_objects_refuse_an_old_office_file(self) -> None:
+        # Changed on purpose (#552, UAT FF-14): a password-protected .docx (EncryptedPackage) is no
+        # longer BLOCKED but ENCRYPTED, so it is told it has a password; see the test below.
         for streams, storages in (
             (["WordDocument"], {"Macros": ["PROJECT", "dir"]}),  # Word's macros
             (["Workbook"], {"_VBA_PROJECT_CUR": ["PROJECT"]}),  # Excel's
             (["Workbook", "_VBA_PROJECT"], {}),
             (["PowerPoint Document"], {"VBA": ["dir"]}),
             (["WordDocument"], {"ObjectPool": ["_1234"]}),  # an embedded OLE object
-            (["EncryptedPackage", "EncryptionInfo"], {}),  # a password-protected .docx
         ):
             with self.subTest(streams=streams, storages=storages):
                 self.assertIs(inspect(compound(streams, storages)), Finding.BLOCKED)
+
+    def test_a_password_protected_word_excel_or_powerpoint_file_is_refused_as_one(self) -> None:
+        """#552 (UAT FF-14): an encrypted .docx, .xlsx or .pptx is one OLE2 file of this shape,
+        whichever it is; it is still refused, now as having a password, not as holding macros.
+        One that also holds macros or an embedded object keeps that verdict."""
+        encrypted = ["EncryptionInfo", "EncryptedPackage"]
+        self.assertIs(inspect(compound(encrypted, {"\x06DataSpaces": ["Version"]})), Finding.ENCRYPTED)
+        for storages in ({"Macros": ["PROJECT"]}, {"ObjectPool": ["_1234"]}):
+            with self.subTest(storages=storages):
+                self.assertIs(inspect(compound(encrypted, storages)), Finding.BLOCKED)
 
     def test_a_damaged_old_office_file_cannot_be_checked(self) -> None:
         self.assertIs(inspect(compound(["WordDocument"])[:600]), Finding.UNSCANNABLE)
@@ -549,6 +563,20 @@ class TheLayers(unittest.TestCase):
     def test_blocked_is_a_rejection_with_a_customer_message(self) -> None:
         self.assertIn("blocked_content", REJECTION_CODES)
         self.assertIn("scripts, macros", CUSTOMER_MESSAGES["blocked_content"])
+
+    def test_a_file_with_a_password_never_reaches_the_virus_scanner(self) -> None:
+        """#552 (UAT FF-14): the content check's own verdict, through its child process."""
+        locked_pdf = make_pdf([Page(texts=[Text(72, 700, "Total 500")])], password_protected=True)
+        for data in (compound(["EncryptionInfo", "EncryptedPackage"]), locked_pdf):
+            with self.subTest(data=data[:4]):
+                inner = RecordingScanner()
+                self.assertIs(LayeredScanner(inner).scan(data), Verdict.ENCRYPTED)
+                self.assertEqual(inner.calls, 0)
+        self.assertIn("password_protected", REJECTION_CODES)
+        self.assertEqual(
+            CUSTOMER_MESSAGES["password_protected"],
+            "This file has a password, so it can't be opened. Remove the password and upload it again.",
+        )
 
 
 class SecurityReviewBounds(unittest.TestCase):
@@ -770,11 +798,12 @@ class OrdinaryPdfsFitTheReadBudget(unittest.TestCase):
         PDF with every permission off was refused as one that could not be checked."""
         self.assertIsNone(inspect(owner_locked_pdf(permissions=0)))
 
-    def test_a_pdf_that_needs_a_password_to_open_is_unscannable(self) -> None:
-        """Nothing in it can be read, so it is not called safe: the customer sees the
-        ``unscannable`` message (it cannot be checked)."""
+    def test_a_pdf_that_needs_a_password_to_open_is_refused_as_one(self) -> None:
+        """Nothing in it can be read, so it is not called safe. Changed on purpose (#552, UAT
+        FF-14): it was ``unscannable`` ("could not be checked for viruses"); the customer is now
+        told it has a password."""
         locked = make_pdf([Page(texts=[Text(72, 700, "Total 500")])], password_protected=True)
-        self.assertIs(inspect(locked), Finding.UNSCANNABLE)
+        self.assertIs(inspect(locked), Finding.ENCRYPTED)
 
 
 if __name__ == "__main__":

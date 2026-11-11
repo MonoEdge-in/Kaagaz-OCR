@@ -11,7 +11,8 @@ may contain, and refuses the rest, whether or not any signature matches:
   through it, every object header in the whole file is parsed as well, the way
   a viewer rebuilds a broken index, so damage cannot hide active content from
   the check while a viewer still runs it (council 17 Oct 2026). A damaged
-  encrypted PDF is ``unscannable``. pdfium (Chrome's engine) opens the file too, and
+  encrypted PDF is ``unscannable``; one that needs a password to open is
+  ``password_protected`` (#552). pdfium (Chrome's engine) opens the file too, and
   document JavaScript, an attached file or an XFA form it finds is refused as well:
   either reader finding active content blocks the file.
 * **Office files (zip):** no macros (vbaProject), no ActiveX, no embedded OLE
@@ -28,7 +29,8 @@ may contain, and refuses the rest, whether or not any signature matches:
 * **Old Office files (OLE2: .doc, .xls, .ppt, #522):** no macros (a ``Macros``,
   ``_VBA_PROJECT...`` or ``VBA`` storage or stream, anywhere), no embedded OLE objects
   (``ObjectPool``) and no password (``EncryptedPackage``: an encrypted .docx, .xlsx or
-  .pptx, which can't be checked). Read with ``resolve.py``'s bounded directory reader. A
+  .pptx, which can't be checked; ``password_protected``, #552, unless it holds macros or an
+  object too). Read with ``resolve.py``'s bounded directory reader. A
   PowerPoint 97 file keeps its macros and objects inside its own stream, out of this
   check's sight: ClamAV's OLE2 parser looks there.
 * **Plain text:** it must be data, not a script or markup: no HTML,
@@ -77,7 +79,7 @@ import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
 from pdfminer import pdftypes
 from pdfminer.lzw import LZWDecoder
-from pdfminer.pdfdocument import LITERAL_OBJSTM, PDFDocument, PDFXRefFallback
+from pdfminer.pdfdocument import LITERAL_OBJSTM, PDFDocument, PDFPasswordIncorrect, PDFXRefFallback
 from pdfminer.pdfparser import PDFParser, PDFStreamParser
 from pdfminer.pdftypes import PDFObjRef, PDFStream
 from pdfminer.psexceptions import PSEOF, PSException
@@ -94,6 +96,7 @@ class Finding(Enum):
 
     BLOCKED = "blocked_content"  # active content or a hidden program
     UNSCANNABLE = "unscannable"  # could not be inspected, so not called safe
+    ENCRYPTED = "password_protected"  # needs a password to open, so not called safe (#552)
 
 
 # --- every file -----------------------------------------------------------------
@@ -356,6 +359,8 @@ def _bounded_pdf_finding(data: bytes, bounds: _Bounds) -> Finding | None:
     file = _MeteredFile(data, bounds)
     try:
         document = PDFDocument(PDFParser(file))
+    except PDFPasswordIncorrect:  # no empty user password opens it (#552)
+        return Finding.ENCRYPTED
     except _DAMAGED:
         return Finding.UNSCANNABLE
     # pdfminer's own fallback index stops at the first trailer, so it is no proof of
@@ -716,7 +721,7 @@ def _text_finding(data: bytes, name: str) -> Finding | None:
 # OLE2 entries a business document must not carry (#522): macros, embedded OLE objects, and a
 # password (an encrypted .docx, .xlsx or .pptx, which nothing can look inside).
 _OLE2_MACROS = re.compile(r"^(Macros|_VBA_PROJECT.*|VBA)$", re.IGNORECASE)
-_OLE2_REFUSED = frozenset({"objectpool", "encryptedpackage"})
+_OLE2_REFUSED = frozenset({"objectpool"})
 
 
 def _ole2_finding(data: bytes) -> Finding | None:
@@ -726,6 +731,10 @@ def _ole2_finding(data: bytes) -> Finding | None:
         return Finding.UNSCANNABLE
     if any(_OLE2_MACROS.match(name) or name.lower() in _OLE2_REFUSED for name in names):
         return Finding.BLOCKED
+    # #552 (UAT FF-14): told it has a password, not macros. After the check above, so a file
+    # refused for macros or an object keeps that verdict, whatever else it holds.
+    if any(name.lower() == "encryptedpackage" for name in names):
+        return Finding.ENCRYPTED
     return None
 
 

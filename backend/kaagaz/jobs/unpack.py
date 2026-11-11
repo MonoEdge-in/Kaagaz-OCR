@@ -89,7 +89,11 @@ from kaagaz.settings import Settings
 
 PAGE = 1000  # items registered, and read back, at a time (the folder upload's page)
 FOLDER_NAME_MAX = 100  # folders.name's CHECK
-_VERDICTS = {Verdict.INFECTED: "virus_found", Verdict.BLOCKED: "blocked_content"}
+_VERDICTS = {
+    Verdict.INFECTED: "virus_found",
+    Verdict.BLOCKED: "blocked_content",
+    Verdict.ENCRYPTED: unzip.ENCRYPTED,  # #552: "It has a password..."
+}
 _PLAN_CODES = {
     "too_many_files": "zip_too_many_files",
     "too_large_upload": "zip_too_large",
