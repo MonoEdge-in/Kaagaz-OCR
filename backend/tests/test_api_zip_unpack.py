@@ -23,7 +23,11 @@ from tests.zip_builder import make_zip
 pytestmark = pytest.mark.db
 MB = 1024 * 1024
 GIB = 1024 * MB
-LINE = 'Unpacked: 2 files into folder "Bills", 1 skipped (1 failed the virus check).'
+# #555 (decision A1): the zip itself is kept and still counts toward storage, and its line says so.
+LINE = (
+    'Unpacked: 2 files into folder "Bills", 1 skipped (1 failed the virus check).'
+    " The original zip is kept and counts toward storage. Delete it to free the space."
+)
 
 
 def test_a_zip_is_taken_unpacked_and_its_document_shows_the_result(db: Database) -> None:
