@@ -206,7 +206,7 @@ describe("a folder upload's run", () => {
   it("is refused in the server's words while another folder upload of the organisation still sends", async () => {
     const pick = pickOf(["A/a.pdf"]);
     const server = fakeServer();
-    const words = "Another folder upload is still sending in this organisation. Wait for it to finish, or stop it.";
+    const words = "Another folder upload is still sending in this organisation. Try again in a few minutes.";
     server.api.plan = async () => {
       throw new ApiError(409, "upload_in_progress", words);
     };

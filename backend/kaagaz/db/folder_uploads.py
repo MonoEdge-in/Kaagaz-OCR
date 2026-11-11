@@ -14,8 +14,9 @@ docs/architecture.md).
   - The counts are checked against the limits before the lock; the folders it would make,
     after it (``too_many_folders`` rolls the whole plan back).
   - One plan is built at a time per organisation (``plan_busy`` at once, never a wait: a
-    transaction advisory lock), and a new upload is refused while another of the organisation
-    still has files waiting (``upload_in_progress``); a re-plan of the same upload is not. A zip
+    transaction advisory lock), and a new upload is refused while another user's upload of the
+    organisation still has files waiting and was active in the last 30 minutes
+    (``upload_in_progress``); a re-plan of the same upload, or the same user's new one, is not. A zip
     the worker unpacks (#522, ``alone=False``, ``zip_document_id``) neither waits for a person's
     upload nor holds one up.
   - Merge (the default): a same-name folder already there (any letter case, as
@@ -114,13 +115,18 @@ class PlanRefused(FolderError):
 _PLAN_LOCK = text(
     "SELECT pg_try_advisory_xact_lock(hashtextextended('kaagaz.folder_plan:' || CAST(:c AS uuid)::text, 0))"
 )
-# Another upload of the organisation with a file still waiting, upload by upload on the state index;
+# Another user's upload of the organisation with a file still waiting, upload by upload on the
+# state index, that was active in the last 30 minutes (production QA P1: a stopped or abandoned
+# upload's waiting files blocked the organisation for ever; the browser alone knows it stopped);
 # a zip the worker unpacks (#522) is not one.
 _SENDING = text(
     "SELECT EXISTS (SELECT 1 FROM folder_uploads u WHERE u.customer_id = :c AND u.zip_document_id IS NULL"
-    " AND EXISTS ("
-    "SELECT 1 FROM folder_upload_items i WHERE i.customer_id = :c AND i.folder_upload_id = u.id"
-    " AND i.state = 'waiting'))"
+    " AND u.user_id <> :usr"
+    " AND EXISTS (SELECT 1 FROM folder_upload_items i WHERE i.customer_id = :c"
+    " AND i.folder_upload_id = u.id AND i.state = 'waiting')"
+    " AND (u.updated_at > now() - interval '30 minutes'"
+    " OR EXISTS (SELECT 1 FROM folder_upload_items i WHERE i.customer_id = :c"
+    " AND i.folder_upload_id = u.id AND i.updated_at > now() - interval '30 minutes')))"
 )
 
 
