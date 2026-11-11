@@ -104,6 +104,7 @@ const ENV: AiEnv = {
   // Changed on purpose (#473): the env says the server's reader and whether Mistral is set up.
   scan_reader: "openrouter",
   ulc_ceiling_paise: 40,
+  switch_ceiling_paise: null,
   mistral_model: "mistral-ocr-4-1",
   mistral_ready: true,
   mistral_missing: null,

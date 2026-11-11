@@ -54,7 +54,7 @@ asked for ("Read with", Dynamic, Careful, Save, High and Max); the local reader 
 local reader only. Ensemble is refused (``resolve_ensemble``). Any other reader never reads the
 ceiling, so no organisation that did not choose it reads differently. #564 [V]: production turns it
 on with OCR_ULTRA_LOW_COST; here that switch is the platform's reader while none is saved, and
-OCR_PAGE_CEILING_PAISE the server's ceiling (``effective_settings``).
+the ceiling it reads at is OCR_PAGE_CEILING_PAISE unless one is saved (``with_env_ulc``).
 
 The ledger columns (``ledger_tokens_in``/``_out``) are the average tokens a scanned page
 took in the organisation's own ledger of the last LEDGER_DAYS days (MC3); prices never
@@ -395,16 +395,16 @@ def effective_settings(
 
 def with_env_ulc(values: Mapping[Any, Any], settings: Settings) -> Mapping[Any, Any]:
     """#564 [V]: while production's OCR_ULTRA_LOW_COST is on, it is the ``scan_reader`` where
-    ``values`` (settings after inheritance, or the operator's draft) hold none (logged once), and
-    OCR_PAGE_CEILING_PAISE the ceiling where they hold none (``ulc_ceiling``'s ULC_DEFAULT_PAISE
-    otherwise): read at use, never written at start-up. A saved value always wins. No statement."""
-    if not settings.ocr_ultra_low_cost:
+    ``values`` (settings after inheritance, or the operator's draft) hold none (logged once), read
+    at OCR_PAGE_CEILING_PAISE unless a ceiling is saved: read at use, never written at start-up.
+    A saved reader keeps its own rule, its saved ceiling or ULC_DEFAULT_PAISE (review of #564:
+    a saved setting always wins). No statement."""
+    if not settings.ocr_ultra_low_cost or values["scan_reader"] is not None:
         return values
-    if values["scan_reader"] is None:
-        _env_ulc_noted()
+    _env_ulc_noted()
     return {
         **values,
-        "scan_reader": values["scan_reader"] or ULTRA_LOW_COST,
+        "scan_reader": ULTRA_LOW_COST,
         "ulc_ceiling_paise": values["ulc_ceiling_paise"] or settings.ocr_page_ceiling_paise,
     }
 

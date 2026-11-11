@@ -66,6 +66,7 @@ const env = (overrides: Partial<AiEnv> = {}): AiEnv => ({
   page_max_output_tokens: 65536,
   scan_reader: "openrouter",
   ulc_ceiling_paise: 40,
+  switch_ceiling_paise: null,
   mistral_model: "mistral-ocr-4-1",
   mistral_ready: true,
   mistral_missing: null,

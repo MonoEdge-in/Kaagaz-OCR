@@ -660,7 +660,7 @@ export function AiFields(props: {
                       max="0.55"
                       step="0.01"
                       placeholder={
-                        platform ? `The server's setting (${ceilingText(env.ulc_ceiling_paise)})` : `Platform default (${from("ulc_ceiling_paise")})`
+                        `${platform ? "The server's setting" : "Platform default"} (${ceilingText(ceilingOf({ ...draft, ulc_ceiling: "" }, defaults, env, platform))})`
                       }
                       value={draft.ulc_ceiling}
                       // The wheel scrolls the dialog, never the number: the box lets go of the focus first.

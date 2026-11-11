@@ -425,9 +425,18 @@ export function parseCeiling(text: string): number | null | undefined {
 /** "₹0.40", from paise. */
 export const ceilingText = (inPaise: number) => paise.format(inPaise / 100);
 
-/** The ceiling a scan really has: the draft's own, else the one it follows, else the server's (#564: env). */
-export const ceilingOf = (draft: Pick<AiDraft, "ulc_ceiling">, defaults: AiValues, env: Pick<AiEnv, "ulc_ceiling_paise">, platform: boolean): number =>
-  parseCeiling(draft.ulc_ceiling) ?? (platform ? null : defaults.ulc_ceiling_paise) ?? env.ulc_ceiling_paise;
+type CeilingEnv = Pick<AiEnv, "ulc_ceiling_paise" | "switch_ceiling_paise">;
+
+/** The server's ceiling (#564 [V], review of #564): OCR_PAGE_CEILING_PAISE where the .env switch
+ * supplies the reader (none saved), else ₹0.40 for an Ultra low cost saved with no ceiling. */
+const serverCeiling = (saved: ScanReader | null, env: CeilingEnv): number =>
+  (saved === null ? env.switch_ceiling_paise : null) ?? env.ulc_ceiling_paise;
+
+/** The ceiling a scan really has: the draft's own, else the one it follows, else the server's. */
+export const ceilingOf = (draft: Pick<AiDraft, "ulc_ceiling" | "scan_reader">, defaults: AiValues, env: CeilingEnv, platform: boolean): number =>
+  parseCeiling(draft.ulc_ceiling) ??
+  (platform ? null : defaults.ulc_ceiling_paise) ??
+  serverCeiling(draft.scan_reader ?? (platform ? null : defaults.scan_reader), env);
 
 /** "Pages read today: 1,240 of 2,000 ($0.42)." for the operator, the India day's counter, against
  * the limit in effect when there is one (#478 review, 3 Nov 2026), and that reading is paused once
@@ -589,7 +598,7 @@ export function inheritedText(
     case "daily_page_limit":
       return defaults.daily_page_limit === null ? "no limit" : `${formatNumber(defaults.daily_page_limit)} pages`;
     case "ulc_ceiling_paise":
-      return ceilingText(defaults.ulc_ceiling_paise ?? env.ulc_ceiling_paise);
+      return ceilingText(defaults.ulc_ceiling_paise ?? serverCeiling(defaults.scan_reader, env));
     case "chat_levels":
       return levelText(defaults);
     case "dynamic":

@@ -337,10 +337,10 @@ def test_promotion_the_env_switch_is_the_platform_default_and_a_saved_reader_win
     assert resolved(chose, switched).ulc is None  # the organisation's saved reader wins
     assert [r.getMessage() for r in caplog.records].count("ultra low cost from OCR_ULTRA_LOW_COST") == 1
 
-    for settings, server in ((switched, ("ultra_low_cost", 50)), (SETTINGS, ("openrouter", 40))):
+    for settings, server in ((switched, ("ultra_low_cost", 40, 50)), (SETTINGS, ("openrouter", 40, None))):
         _, client = _signed_in(Api(db, settings=settings))
         env = client.get("/api/operator/ai-defaults").json()["env"]  # the super admin's "server's"
-        assert (env["scan_reader"], env["ulc_ceiling_paise"]) == server
+        assert (env["scan_reader"], env["ulc_ceiling_paise"], env["switch_ceiling_paise"]) == server
         # The platform draft's estimate: a null reader and ceiling are the server's.
         draft = {"scan_reader": None, "ulc_ceiling_paise": None}
         estimate = client.post("/api/operator/scan-cost", json=draft, headers=CSRF).json()["ulc"]
@@ -350,3 +350,29 @@ def test_promotion_the_env_switch_is_the_platform_default_and_a_saved_reader_win
     platform_gemini = dataclasses.replace(NO_DEFAULTS, scan_reader="openrouter")
     assert set_defaults(db, platform, platform_gemini) == "done"
     assert resolved(follows, switched).ulc is None  # the platform's saved reader wins too
+
+
+def test_review_564_a_saved_ultra_low_cost_with_no_ceiling_keeps_40_paise_with_the_switch_on(
+    db: Database, platform: str
+) -> None:
+    """Review of #564: OCR_PAGE_CEILING_PAISE is the ceiling only where the switch supplies the
+    reader. An Ultra low cost the super admin saved (an organisation's or the platform's) with no
+    ceiling keeps the server's 40 paise (ULC_DEFAULT_PAISE), switch on or off."""
+    switched = dataclasses.replace(SETTINGS, ocr_ultra_low_cost=True, ocr_page_ceiling_paise=50)
+    lead = scan_model(db)
+    org, follows = new_customer(db)[0], new_customer(db)[0]
+    ulc = ops.AiChoice([lead], lead, scan_reader="ultra_low_cost")
+    assert set_org(db, platform, org, ulc).code == "done"
+    assert set_org(db, platform, follows, ops.AiChoice([lead], lead)).code == "done"
+
+    def paise(customer: str) -> int | None:
+        with db.customer(customer) as conn:
+            read = models.resolve_scan(conn, customer, insert_document(conn, customer), settings=switched)
+        return None if read.ulc is None else read.ulc.paise
+
+    assert paise(org) == 40
+    assert paise(follows) == 50  # nothing saved: the switch's reader at the switch's ceiling
+    assert (
+        set_defaults(db, platform, dataclasses.replace(NO_DEFAULTS, scan_reader="ultra_low_cost")) == "done"
+    )
+    assert paise(follows) == 40  # the platform's saved reader, with no ceiling saved

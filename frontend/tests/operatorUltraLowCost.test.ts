@@ -80,6 +80,7 @@ const ENV: AiEnv = {
   page_max_output_tokens: 65536,
   scan_reader: "openrouter",
   ulc_ceiling_paise: 40,
+  switch_ceiling_paise: null,
   mistral_model: "mistral-ocr-4-1",
   mistral_ready: true,
   mistral_missing: null,
@@ -325,8 +326,14 @@ describe("ultra low cost: the ceiling field", () => {
     expect(ceilingOf(draftOf(values()), values({ ulc_ceiling_paise: 25 }), ENV, false)).toBe(25);
     expect(ceilingOf(draftOf(values()), values({ ulc_ceiling_paise: 25 }), ENV, true)).toBe(40);
     expect(ceilingOf({ ...draftOf(values()), ulc_ceiling: "9" }, values(), ENV, false)).toBe(40);
-    // #564 [V]: with OCR_ULTRA_LOW_COST on, the server's ceiling is OCR_PAGE_CEILING_PAISE.
-    expect(ceilingOf(draftOf(values()), values(), { ulc_ceiling_paise: 55 }, true)).toBe(55);
+    // #564 [V], review of #564: with OCR_ULTRA_LOW_COST on, OCR_PAGE_CEILING_PAISE is the ceiling only
+    // where no reader is saved; a saved Ultra low cost with no ceiling keeps ₹0.40.
+    const on = { ...ENV, scan_reader: "ultra_low_cost" as const, switch_ceiling_paise: 55 };
+    expect(ceilingOf(draftOf(values()), values(), on, true)).toBe(55);
+    expect(ceilingOf(draftOf(values()), values(), on, false)).toBe(55);
+    expect(ceilingOf(draftOf(ULC), values(), on, true)).toBe(40);
+    expect(ceilingOf(draftOf(values()), ULC, on, false)).toBe(40);
+    expect(ceilingOf(draftOf(ULC), values(), on, false)).toBe(40);
   });
 });
 
@@ -408,7 +415,7 @@ describe("ultra low cost: follow, reset, status and the save bar", () => {
   });
 
   it("names OCR_ULTRA_LOW_COST's reader and ceiling as the server's while nothing is saved (#564 [V])", () => {
-    const env: AiEnv = { ...ENV, scan_reader: "ultra_low_cost", ulc_ceiling_paise: 55 };
+    const env: AiEnv = { ...ENV, scan_reader: "ultra_low_cost", switch_ceiling_paise: 55 };
     const html = renderToStaticMarkup(
       createElement(DefaultsSummary, { reply: { defaults: values(), env, orgs_inheriting: COUNTS }, catalogue: [] }),
     );
@@ -416,6 +423,7 @@ describe("ultra low cost: follow, reset, status and the save bar", () => {
       /<dt[^>]*>Who reads the pages<\/dt><dd>Ultra low cost[\s\S]*<dt[^>]*>Most a page may cost<\/dt><dd>₹0.55<span/,
     );
     expect(inheritedText("scan_reader", values(), ENV, [])).toBe(READER_WORDS.openrouter); // off: as before
+    expect(inheritedText("ulc_ceiling_paise", ULC, env, [])).toBe("₹0.40"); // review of #564: a saved reader's
   });
 
   it("saves the ceiling with the settings, and asks the cost and the check with it", async () => {

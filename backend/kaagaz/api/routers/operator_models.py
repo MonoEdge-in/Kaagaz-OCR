@@ -1559,7 +1559,9 @@ def _env(settings: Settings) -> dict[str, Any]:
     """What the server uses when the platform defaults name no model or scan setting. #473: the
     code's reader and Mistral model, whether Mistral is set up here and what is missing (``key``
     first, else ``zdr``; never the key itself), and the Mistral models with their price a page.
-    #564 [V]: the reader and Ultra low cost's ceiling are OCR_ULTRA_LOW_COST's while it is on."""
+    #564 [V]: the reader is OCR_ULTRA_LOW_COST's while it is on, read at ``switch_ceiling_paise``
+    (OCR_PAGE_CEILING_PAISE; null while off) where no reader is saved; a saved Ultra low cost with
+    no ceiling reads at ``ulc_ceiling_paise`` (ULC_DEFAULT_PAISE), switch or not (review of #564)."""
     missing = "key" if settings.mistral_api_key is None else None if settings.mistral_zdr_approved else "zdr"
     return {
         "scan_model": settings.ocr_model,
@@ -1571,9 +1573,8 @@ def _env(settings: Settings) -> dict[str, Any]:
         "page_max_output_tokens": PAGE_MAX_OUTPUT_TOKENS,
         # #564 [V]: production's OCR_ULTRA_LOW_COST and OCR_PAGE_CEILING_PAISE, while on.
         "scan_reader": ULTRA_LOW_COST if settings.ocr_ultra_low_cost else OPENROUTER,
-        "ulc_ceiling_paise": settings.ocr_page_ceiling_paise
-        if settings.ocr_ultra_low_cost
-        else ULC_DEFAULT_PAISE,
+        "ulc_ceiling_paise": ULC_DEFAULT_PAISE,
+        "switch_ceiling_paise": settings.ocr_page_ceiling_paise if settings.ocr_ultra_low_cost else None,
         "mistral_model": DEFAULT_MISTRAL_MODEL,
         "mistral_ready": settings.mistral_ready,
         "mistral_missing": missing,
