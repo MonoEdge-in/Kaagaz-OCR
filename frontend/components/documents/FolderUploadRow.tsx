@@ -60,8 +60,10 @@ export function FolderUploadRow({
   const checked = view.phase === "registering" ? view.checked : null;
   const meter = checked ?? uploaded;
   const retryable = notSent.rows.some((row) => row.retry);
-  // Production QA (5 Nov 2026): a stopped row, or one to choose again, can be cleared too.
-  const settled = ["done", "refused", "stopped", "needs_pick"].includes(view.phase);
+  // Production QA (5 Nov 2026): a stopped row, or one to choose again, can be cleared too; and
+  // one stopping (review of #564): a file being sent may never finish (offline, a server that
+  // never answers), so the row is never left with no button. Its run's later events are ignored.
+  const settled = ["done", "refused", "stopped", "needs_pick", "stopping"].includes(view.phase);
   const reading = readingLine(view);
   const attention = attentionOf(view);
   // Each button names its folder for a screen reader, as Clear does (production QA, 5 Nov 2026).
@@ -104,7 +106,8 @@ export function FolderUploadRow({
         )}
         {view.phase === "stopping" && (
           <button type="button" className="btn" disabled>
-            Stopping after the files being sent…{named}
+            {view.sending.length > 0 ? "Stopping after the files being sent…" : "Stopping…"}
+            {named}
           </button>
         )}
         {view.phase === "stopped" && held && (

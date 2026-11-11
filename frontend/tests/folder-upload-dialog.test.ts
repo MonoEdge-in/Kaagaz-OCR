@@ -234,9 +234,13 @@ describe("the tray's row for a folder upload", () => {
     phase: "planning" | "registering" | "sending" | "stopping" | "needs_pick" | "stopped",
     held = true,
     notSent: { rows: NotSentRow[]; total: number } = { rows: [], total: 0 },
+    stoppedFrom: "sending" | "planning" = "sending", // "stopping": Stop pressed while a file was sent, or while planning
   ) => {
     let state = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, { type: "start", id: "u", rootName: "A", total: 5000 });
-    if (phase === "stopping") state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "sending" });
+    if (phase === "stopping" && stoppedFrom === "sending") {
+      state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "sending" });
+      state = folderUploadsReducer(state, { type: "sending", id: "u", itemId: "x", name: "a.pdf", fraction: 0.5 });
+    }
     state = folderUploadsReducer(state, { type: "phase", id: "u", phase });
     for (let n = 0; n < 1240; n++) state = folderUploadsReducer(state, { type: "sent", id: "u", itemId: `i${n}`, outcome: "stored" });
     return renderToStaticMarkup(
@@ -339,12 +343,35 @@ describe("the tray's row for a folder upload", () => {
     expect(row("stopped", true)).toContain(`Clear${named}`);
   });
 
-  it("says it is stopping after Stop, with no Stop or Retry, until the files being sent are in", () => {
+  // Changed on purpose (review of #564): Clear while stopping, as a file being sent may never
+  // finish (offline, a server that never answers); the row must never be left with no button.
+  it("says it is stopping after Stop, with no Stop or Retry, and offers Clear meanwhile", () => {
     const html = row("stopping");
     expect(html).toContain('<button type="button" class="btn" disabled="">Stopping after the files being sent…');
     expect(html).not.toContain(">Stop<span");
     expect(html).not.toContain("Retry");
-    expect(html).not.toContain("Clear<span");
+    expect(html).toContain("Clear<span");
+  });
+
+  it("says only Stopping… when Stop was pressed while it made its folders or listed its files", () => {
+    const html = row("stopping", true, { rows: [], total: 0 }, "planning");
+    expect(html).toContain('<button type="button" class="btn" disabled="">Stopping…<span');
+    expect(html).not.toContain("files being sent");
+    expect(html).toContain("Clear<span");
+  });
+
+  it("stays cleared when the run it stopped ends later", () => {
+    let state = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, { type: "start", id: "u", rootName: "A", total: 5 });
+    state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "stopping" });
+    state = folderUploadsReducer(state, { type: "remove", id: "u" });
+    for (const late of [
+      { type: "sending", id: "u", itemId: "i1", name: "a.pdf", fraction: 1 },
+      { type: "sent", id: "u", itemId: "i1", outcome: "stored" },
+      { type: "phase", id: "u", phase: "stopped" },
+    ] as const) {
+      state = folderUploadsReducer(state, late);
+    }
+    expect(state).toEqual({});
   });
 
   it("keeps the files being sent while it stops, and never goes back to stopping once it ended", () => {
@@ -366,12 +393,11 @@ describe("the tray's row for a folder upload", () => {
     expect(row("stopped", false)).toContain("Choose “A” again");
   });
 
-  it("offers Clear on a row stopped or waiting to be chosen again, never while it sends or stops", () => {
+  it("offers Clear on a row stopped or waiting to be chosen again, never while it sends", () => {
     expect(row("stopped", true)).toContain("Clear<span");
     expect(row("stopped", false)).toContain("Clear<span");
     expect(row("needs_pick", false)).toContain("Clear<span");
     expect(row("sending")).not.toContain("Clear<span");
-    expect(row("stopping")).not.toContain("Clear<span");
   });
 
   const settled = (counts: { failed?: number; problem?: number; duplicate?: number; held?: number }, notSent = 0) => {
