@@ -24,10 +24,12 @@ from tests.pdf_builder import Page, Text, make_pdf
 from tests.settings_factory import make_settings
 from tests.support import PDF_BYTES
 from tests.test_adapter_scanner import FakeClamd
+from tests.test_content_inspection import scanned_pdf
 from tests.test_pipeline import CUSTOMER, build, stored_type
 from tests.test_resolve import compound
 from tests.unpack_support import Unpacking
 from tests.xlsx_builder import make_xlsx, make_zip, sheet_xml
+from tests.zip_builder import stored_zip
 
 HEIC = (Path(__file__).with_name("fixtures") / "heic" / "one.heic").read_bytes()
 HTML = (
@@ -178,3 +180,28 @@ def test_a_file_with_a_password_in_a_zip_is_skipped_as_one(db: Database, clamd: 
     found = unpacking.result(record)
     assert found is not None
     assert (found.stored, found.failed, found.skipped) == (1, 1, [("letter.docx", "encrypted")])
+
+
+@pytest.mark.db
+def test_a_zip_of_stored_pdfs_passes_the_real_scanner_and_is_unpacked(
+    db: Database, clamd: ClamdScanner
+) -> None:
+    # #553 (UAT ZP-04/05), the kit's two zips, every file stored, not compressed: its first PDF's
+    # header no longer refuses the zip whole. The path trick's escaping file is still refused on
+    # its own; a zip inside is kept as a file, and passes its own scan.
+    customer, user = new_customer(db)
+    unpacking = Unpacking(db, customer, user)
+    scanner = LayeredScanner(clamd)
+    unpacker = ZipUnpacker(db, unpacking.storage, unpacking.queue, scanner, make_settings())
+    extract, challan = scanned_pdf(1, dpi=300), scanned_pdf(1, dpi=250)  # as the kit's scans are
+    inner = stored_zip([("inner/extract.pdf", extract)])
+    trick = stored_zip([("../../outside.pdf", extract), ("inside/extract.pdf", extract)])
+    nested = stored_zip([("outer/inner.zip", inner), ("outer/challan.pdf", challan)])
+    for data, stored, skipped in ((trick, 1, [("outside.pdf", "unsafe_path")]), (nested, 2, [])):
+        assert scanner.scan(data, name="kit.zip") is Verdict.CLEAN
+        record = unpacking.upload(data, f"kit {stored}.zip")
+        assert unpacker(Job(customer, record.document_id), record, data, lambda: None) is True
+        found = unpacking.result(record)
+        assert found is not None
+        assert (found.stored, found.failed, found.skipped) == (stored, len(skipped), skipped)
+    assert scanner.scan(inner, name="inner.zip") is Verdict.CLEAN

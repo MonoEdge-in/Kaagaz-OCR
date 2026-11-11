@@ -41,7 +41,10 @@ may contain, and refuses the rest, whether or not any signature matches:
   text, an attachment, with nosniff. A .txt or .csv file keeps it (a spreadsheet
   may open a .csv), and so does a file with no name.
 * **Every file:** no hidden program inside (a Windows or Linux executable
-  header), and no zip archive glued onto a PDF or an image (a polyglot file).
+  header), no zip archive glued onto a PDF or an image, and no PDF header in the
+  first 1 KiB of anything but a PDF (polyglot files). A zip with one there (#553: a
+  PDF stored first) is read as a PDF by a viewer, so it gets the whole PDF check, then
+  the zip's own.
 
 It never opens anything that could run: it only reads bytes and names.
 A file it cannot inspect is not called safe: that is ``unscannable``.
@@ -752,12 +755,17 @@ def inspect(data: bytes, name: str = "") -> Finding | None:
         return Finding.BLOCKED
     if kind != ZIP and _has_zip_inside(data):
         return Finding.BLOCKED  # a polyglot: an archive glued onto a document, image or text
-    if kind != PDF and b"%PDF-" in data[:1024]:
+    if kind not in (PDF, ZIP) and b"%PDF-" in data[:1024]:
         return Finding.BLOCKED  # a polyglot: viewers find a PDF header anywhere in 1 KiB
-    if kind == PDF:
+    if kind == PDF or (kind == ZIP and b"%PDF-" in data[:1024]):
+        # #553 (UAT ZP-04/05): a zip whose first file is a PDF stored, not compressed, is read
+        # by a viewer as a PDF, all of it (comments and names too), so that view gets this whole
+        # check, as a PDF upload does (the repair walk reads every object header in the file).
         finding = _pdf_finding(data)
         # Either reader finding active content blocks the file.
-        return Finding.BLOCKED if finding is not Finding.BLOCKED and _pdfium_sees_active(data) else finding
+        finding = Finding.BLOCKED if finding is not Finding.BLOCKED and _pdfium_sees_active(data) else finding
+        if kind == PDF or finding is not None:
+            return finding
     if kind == ZIP:
         return _zip_finding(data)
     if kind == TEXT:

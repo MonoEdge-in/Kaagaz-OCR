@@ -28,6 +28,7 @@ from tests.pdf_builder import Page, Picture, Text, make_objstm_pdf, make_pdf
 from tests.picture_support import text_like_picture
 from tests.test_resolve import compound
 from tests.xlsx_builder import make_xlsx, sheet_xml
+from tests.zip_builder import stored_zip
 
 WINDOWS_PROGRAM = b"MZ" + b"\x90" * 62 + b"This program cannot be run in DOS mode.\r\r\n$" + b"\x00" * 64
 LINUX_PROGRAM = b"\x7fELF\x02\x01\x01" + b"\x00" * 57
@@ -453,6 +454,56 @@ class PlainZips(unittest.TestCase):
                 self.assertIs(inspect(zip_bytes({part: b"<x/>", "inner.zip": b"x"})), Finding.BLOCKED)
 
 
+# An incremental update, which a viewer applies over the PDF before it: the catalog again, now
+# running JavaScript when the file is opened (security lead, council 10 Nov 2026).
+JS_UPDATE = (
+    b"\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R /OpenAction 9 0 R >>\nendobj\n"
+    b"9 0 obj\n<< /S /JavaScript /JS (app.alert(1)) >>\nendobj\n"
+    b"trailer\n<< /Size 10 /Root 1 0 R >>\n%%EOF\n"
+)
+
+
+class StoredZips(unittest.TestCase):
+    """#553 (UAT ZP-04/05): a zip whose first file is a PDF stored, not compressed, has a PDF header
+    in its first 1 KiB, so a viewer reads the whole zip as a PDF. It was refused whole as a
+    polyglot; now that PDF view gets the whole PDF check, as an uploaded PDF does, then the zip
+    gets its own. Every other type keeps the hard rule (test_a_pdf_header_hidden_in_another_type).
+    The PDFs are 300 dpi scans of a page, as the kit's are."""
+
+    def test_a_zip_of_stored_pdfs_passes(self) -> None:
+        extract, challan = scanned_pdf(1, dpi=300), scanned_pdf(1, dpi=250)
+        inner = stored_zip([("inner/extract.pdf", extract)])
+        for data in (
+            stored_zip([("../../outside.pdf", extract), ("inside/extract.pdf", extract)]),  # the path trick
+            stored_zip([("outer/inner.zip", inner), ("outer/challan.pdf", challan)]),  # a zip in a zip
+            inner,  # kept as a file when unpacked, and checked on its own
+        ):
+            with self.subTest(first=zipfile.ZipFile(io.BytesIO(data)).namelist()[0]):
+                self.assertIn(b"%PDF-", data[:1024])
+                self.assertIsNone(inspect(data))
+
+    def test_active_content_a_viewer_finds_in_a_stored_zip_is_blocked(self) -> None:
+        clean = scanned_pdf(1, dpi=300)
+        commented = zipfile.ZipInfo("b.txt")
+        commented.comment = JS_UPDATE
+        name = JS_UPDATE.decode().replace("\n", " ") + ".txt"
+        for where, data in (
+            ("the zip's comment", stored_zip([("a.pdf", clean)], comment=JS_UPDATE)),
+            ("a second stored file", stored_zip([("a.pdf", clean), ("b.txt", JS_UPDATE)])),
+            ("a file's name", stored_zip([("a.pdf", clean), (name, b"hi")])),
+            ("a file's comment", stored_zip([("a.pdf", clean), (commented, b"hi")])),
+            ("the stored pdf itself", stored_zip([("a.pdf", clean + JS_UPDATE)])),
+        ):
+            with self.subTest(where=where):
+                self.assertIsNone(content._zip_finding(data))  # every file in it is harmless alone
+                self.assertIs(inspect(data), Finding.BLOCKED)
+
+    def test_a_stored_zip_whose_pdf_check_cannot_finish_is_not_called_safe(self) -> None:
+        # pdfminer rebuilds the index of a zip read as a PDF from the whole file, a seek per object
+        # it finds; for a small PDF that is past the read budget (4x the file), so it is refused.
+        self.assertIs(inspect(stored_zip([("a.pdf", pdf_with([CATALOG, PAGES, PAGE]))])), Finding.UNSCANNABLE)
+
+
 class NewFormats(unittest.TestCase):
     """#522, security review (6 Nov 2026): a HEIC photo is allowed as the other photos are; an
     old Office file (OLE2) is checked, not refused whole."""
@@ -706,14 +757,15 @@ class SecurityReviewFailClosed(unittest.TestCase):
 GOLDEN = Path(__file__).parent / "golden"
 
 
-def scanned_pdf(pages: int) -> bytes:
-    """A scan as a scanner app saves one: a 150 dpi greyscale picture of text on each A4
+def scanned_pdf(pages: int, dpi: int = 150) -> bytes:
+    """A scan as a scanner app saves one: a ``dpi`` greyscale picture of text on each A4
     page, written by pdfium (one page, one content stream and one picture per page)."""
     document = pdfium.PdfDocument.new()
     for _ in range(pages):
         page = document.new_page(595, 842)
         picture = pdfium.PdfImage.new(document)
-        picture.set_bitmap(pdfium.PdfBitmap.from_pil(text_like_picture(1240, 1754, mode="L")))
+        size = (1240 * dpi // 150, 1754 * dpi // 150)
+        picture.set_bitmap(pdfium.PdfBitmap.from_pil(text_like_picture(*size, mode="L")))
         picture.set_matrix(pdfium.PdfMatrix().scale(595, 842))
         page.insert_obj(picture)
         page.gen_content()
