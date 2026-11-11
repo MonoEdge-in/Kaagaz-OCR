@@ -977,7 +977,14 @@ def resumable_candidates(body: ResumableUploadStart, user: User, context: Contex
     with context.db.customer(user.customer_id) as conn:
         return {
             "candidates": upload_sessions_sql.candidates(
-                conn, user.customer_id, user.user_id, filename, body.file_size, body.fingerprint
+                conn,
+                user.customer_id,
+                user.user_id,
+                filename,
+                body.file_size,
+                body.fingerprint,
+                batch_id=_form_uuid(body.batch_id),
+                item_id=_form_uuid(body.folder_upload_item_id),
             )
         }
 
@@ -985,7 +992,8 @@ def resumable_candidates(body: ResumableUploadStart, user: User, context: Contex
 @router.post("/documents/upload-sessions")
 def create_resumable_session(body: ResumableUploadStart, user: User, context: Context) -> dict[str, Any]:
     """The session (``id``, ``part_size``, ``part_count``); for a folder upload's item already in,
-    the upload reply with the item instead (nothing to send)."""
+    the upload reply with the item instead (nothing to send), and for a finished session resumed,
+    its stored reply."""
     same_user(body.user_id, user)
     policy = user_upload_policy(context, user)
     if body.file_size <= 0 or body.file_size > policy.largest_limit:
@@ -1009,7 +1017,7 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
     if body.resume_session_id:
         session_id = str(uuid.UUID(body.resume_session_id))
         with context.db.customer(user.customer_id) as conn:
-            row = upload_sessions_sql.get(conn, user.customer_id, user.user_id, session_id)
+            row = upload_sessions_sql.get(conn, user.customer_id, user.user_id, session_id, finished=True)
         if (
             row is None
             or row["file_size"] != body.file_size
@@ -1017,6 +1025,9 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
             or cast(dict[str, Any], row["metadata"]).get("fingerprint") != body.fingerprint
         ):
             raise ApiError(404, "not_found")
+        done = cast(dict[str, Any], row["metadata"]).get("completed")
+        if done is not None:  # a Retry after a lost reply: its stored reply (review of #564)
+            return cast(dict[str, Any], done)
         return {"id": session_id, "part_size": _UPLOAD_PART_BYTES, "part_count": count}
 
     folder_id = _form_uuid(body.folder_id) if item is None else item.folder_id

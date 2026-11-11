@@ -64,14 +64,26 @@ def get(
 
 
 def candidates(
-    conn: Connection, customer_id: str, user_id: str, filename: str, size: int, fingerprint: str
+    conn: Connection,
+    customer_id: str,
+    user_id: str,
+    filename: str,
+    size: int,
+    fingerprint: str,
+    *,
+    batch_id: str | None = None,
+    item_id: str | None = None,
 ) -> list[dict[str, object]]:
+    """Sessions of this file to resume. A finished one only for its own drop (``batch_id``) or
+    folder upload item (review of #564): a Retry after a lost reply, which resumes it and gets the
+    stored reply; a new drop of the same file is a new upload."""
     rows = conn.execute(
         text(
             "SELECT id, metadata FROM upload_sessions WHERE customer_id = :customer AND user_id = :user"
             " AND file_size = :size AND metadata->>'filename' = :filename"
             " AND metadata->>'fingerprint' = :fingerprint AND expires_at > now()"
-            " AND metadata -> 'completed' IS NULL"
+            " AND (metadata -> 'completed' IS NULL OR metadata ->> 'batch_id' = :batch"
+            " OR metadata ->> 'folder_upload_item_id' = :item)"
             " ORDER BY created_at DESC LIMIT 5"
         ),
         {
@@ -80,6 +92,8 @@ def candidates(
             "size": size,
             "filename": filename,
             "fingerprint": fingerprint,
+            "batch": batch_id,
+            "item": item_id,
         },
     ).mappings()
     return [{"id": str(row["id"]), "parts": row["metadata"].get("parts", {})} for row in rows]

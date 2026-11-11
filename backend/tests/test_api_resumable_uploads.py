@@ -4,6 +4,7 @@ stored document instead of 404 (the tray showed a stored file as failed), a fold
 too. A folder upload's item otherwise: test_api_folder_upload_files."""
 
 import hashlib
+import uuid
 
 import pytest
 from sqlalchemy import text
@@ -43,11 +44,12 @@ def test_complete_sent_again_after_a_lost_reply_answers_the_stored_document(db: 
     assert again.status_code == 200, again.text
     assert again.json()["document"]["id"] == first.json()["document"]["id"]
     assert len(api.queue.jobs) == queued  # nothing queued again
-    # A finished session is never offered to resume, nor resumed, nor sent to.
+    # A finished session is offered only to its own drop's Retry (below), resumed only as its
+    # stored reply, and never sent to.
     candidates = signed.client.post(f"{SESSIONS}/candidates", json=start, headers=CSRF).json()
     assert candidates == {"candidates": []}
     resumed = signed.client.post(SESSIONS, json={**start, "resume_session_id": session}, headers=CSRF)
-    assert resumed.status_code == 404
+    assert (resumed.status_code, resumed.json()) == (200, first.json())
     sent = signed.client.put(f"{SESSIONS}/{session}/parts/1", content=PDF_BYTES, headers=CSRF)
     assert sent.status_code == 404
     # Cleaned up as an expired session is, a day on.
@@ -78,6 +80,25 @@ def test_a_folder_items_complete_sent_again_after_a_lost_reply_answers_its_uploa
         first.json()["document"]["id"],
         "stored",
     )
+
+
+def test_a_retry_after_a_lost_reply_finds_the_finished_session_and_its_stored_reply(db: Database) -> None:
+    # Review of #564: Retry on a row whose complete's reply was lost hashes the file and asks for
+    # candidates. Its own drop's finished session is offered, with every part saved, so nothing
+    # is sent again and the start answers with the stored reply, never a duplicate. A new drop of
+    # the same file is a new upload.
+    api = Api(db, storage=ResumableStorage())
+    signed = api.new_signed()
+    start = _start(signed, batch_id=str(uuid.uuid4()))
+    session = _sent(signed, start)
+    first = signed.client.post(f"{SESSIONS}/{session}/complete", headers=CSRF)
+    assert first.status_code == 201, first.text
+    found = signed.client.post(f"{SESSIONS}/candidates", json=start, headers=CSRF).json()["candidates"]
+    assert found == [{"id": session, "parts": {"1": hashlib.sha256(PDF_BYTES).hexdigest()}}]
+    resumed = signed.client.post(SESSIONS, json={**start, "resume_session_id": session}, headers=CSRF)
+    assert (resumed.status_code, resumed.json()) == (200, first.json())
+    other = {**start, "batch_id": str(uuid.uuid4())}
+    assert signed.client.post(f"{SESSIONS}/candidates", json=other, headers=CSRF).json() == {"candidates": []}
 
 
 class _PartsStayStorage(ResumableStorage):
