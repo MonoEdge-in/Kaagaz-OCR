@@ -157,7 +157,7 @@ export function createSlots(limit: number): <T>(work: () => Promise<T>) => Promi
 export interface Followed {
   views: BatchView[];
   gone: string[]; // 404: not this person's batch, or none of its files was stored
-  failed: boolean; // a batch did not answer: ask again
+  failed: boolean; // a batch did not answer (no connection, or a server error): ask again
   skipped: boolean; // another followed batch waits for a later round
 }
 
@@ -182,7 +182,11 @@ export async function askBatches(
   } catch (caught) {
     if (caught instanceof ApiError && caught.status === 404) round.gone.push(id);
     else if (caught instanceof ApiError && caught.status === 429) throw caught;
-    else round.failed = true;
+    // Asked again only when it may answer next time (review of #564): a refusal (400, 403, 409)
+    // or a fault in this page would fail the same way every round, for ever.
+    else if (caught instanceof ApiError ? caught.status === 0 || caught.status >= 500 : caught instanceof TypeError) {
+      round.failed = true;
+    }
   }
   return round;
 }

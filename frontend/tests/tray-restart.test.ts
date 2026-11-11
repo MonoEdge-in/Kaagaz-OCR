@@ -5,6 +5,7 @@
 
 import { act, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/lib/api";
 import type { BatchView, DocumentSummary, UploadResult } from "@/lib/types";
 
 const RECEIVED: DocumentSummary = {
@@ -40,7 +41,11 @@ const api = vi.hoisted(() => ({ getBatch: vi.fn(), uploadDocument: vi.fn() }));
 
 vi.mock("@/lib/api", () => ({
   ApiError: class ApiError extends Error {
-    status = 0;
+    status: number;
+    constructor(status = 0) {
+      super();
+      this.status = status;
+    }
   },
   getAiSettings: () => new Promise(() => undefined),
   getBatch: api.getBatch,
@@ -96,7 +101,7 @@ describe("the tray through a server restart", () => {
   it("keeps checking a stored file after a minute of failures, says so, then shows Ready", async () => {
     let down = true;
     api.getBatch.mockImplementation(async (id: string): Promise<BatchView> => {
-      if (down) throw new Error("502 Bad Gateway");
+      if (down) throw new ApiError(502, "error", "Bad gateway."); // the proxy, while the server restarts
       const ready: DocumentSummary = { ...RECEIVED, status: "ready", status_message: "Ready. You can ask about it." };
       return {
         id,
