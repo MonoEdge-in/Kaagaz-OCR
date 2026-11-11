@@ -30,6 +30,7 @@ from tests.test_operator_auth_db import _owner
 pytestmark = pytest.mark.db
 
 SESSIONS = "/api/documents/upload-sessions"
+MB = 1024 * 1024
 _ORG = "INSERT INTO org_storage_limits (customer_id, storage_gb) VALUES (:c, :g)"
 
 
@@ -235,6 +236,21 @@ def test_a_folder_plan_past_the_limit_is_refused_before_any_folder_is_made(db: D
     _refused(plan(signed, TREE, total_bytes=3_001), used=GIB - 3_000)
     assert signed.client.get("/api/folders").json()["items"] == []
     assert plan(signed, TREE, total_bytes=3_000).status_code == 200  # exactly the bytes left
+
+
+def test_with_space_left_the_words_say_the_upload_is_larger_than_it(db: Database) -> None:
+    """#558 (UAT ST-04): about 40 MB was left of 1 GB, yet a 48 MB file was told the 1 GB was
+    used. The space left is named, rounded down; "used its 1 GB" stays for less than 1 MB left.
+    One function words both checks (``documents.storage_full``), so the plan shows it."""
+    api = Api(db)
+    signed = api.new_signed()
+    fill(db, signed.customer_id, left=40 * MB + 512 * 1024)
+    reply = plan(signed, TREE, total_bytes=48 * MB)
+    assert reply.status_code == 413, reply.text
+    assert reply.json()["error"]["message"] == (
+        "This upload is larger than the 40 MB left of your organisation's 1 GB of storage. Delete"
+        " files forever from the Trash to free space, or ask Kaagaz to raise the limit."
+    )
 
 
 def test_a_re_plan_does_not_count_the_files_it_already_sent_twice(db: Database) -> None:

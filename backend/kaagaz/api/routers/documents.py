@@ -520,7 +520,8 @@ def storage_full(room: StorageRoom) -> ApiError:
     """#516: the refusal of a new upload past the organisation's storage limit (module notes)."""
     limit_gb = room.limit_bytes // storage_limits.GIB
     details = {"used_bytes": room.used_bytes, "limit_bytes": room.limit_bytes, "limit_gb": limit_gb}
-    return ApiError(413, RejectCode.STORAGE_FULL.value, storage_full_message(limit_gb), details=details)
+    message = storage_full_message(limit_gb, room.limit_bytes - room.used_bytes)
+    return ApiError(413, RejectCode.STORAGE_FULL.value, message, details=details)
 
 
 def _refused(rejected: UploadRejected, policy: UploadPolicy) -> ApiError:

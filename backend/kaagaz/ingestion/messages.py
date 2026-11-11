@@ -57,9 +57,14 @@ def over_every_limit_message(limit: int) -> str:
     )
 
 
-def storage_full_message(limit_gb: int) -> str:
-    """A new file past the organisation's storage limit, ``limit_gb`` whole GB (#516)."""
-    return (
-        f"This organisation has used its {limit_gb} GB of storage. Delete files forever from the Trash"
-        " to free space, or ask Kaagaz to raise the limit."
-    )
+def storage_full_message(limit_gb: int, left: int) -> str:
+    """A new file past the organisation's storage limit, ``limit_gb`` whole GB (#516), with
+    ``left`` bytes free. With 1 MB or more left, the upload is larger than that, rounded down
+    (#558, UAT ST-04: "used its 1 GB" read wrong with 40 MB still free)."""
+    fix = "Delete files forever from the Trash to free space, or ask Kaagaz to raise the limit."
+    if left >= MB:
+        return (
+            f"This upload is larger than the {_megabytes_or_gigabytes(left)} left of your organisation's"
+            f" {limit_gb} GB of storage. {fix}"
+        )
+    return f"This organisation has used its {limit_gb} GB of storage. {fix}"
