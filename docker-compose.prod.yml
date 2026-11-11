@@ -44,6 +44,15 @@ x-s3-env: &s3-env
   AWS_REGION: ap-south-1
   AWS_DEFAULT_REGION: ap-south-1
 
+# Amazon SQS in place of docker-compose.yml's elasticmq URLs for api and worker.
+# QUEUE_ENDPOINT_URL empty → boto3 uses the real SQS endpoint for QUEUE_REGION
+# (ap-south-1, from .env); credentials are the instance role. The queue URLs carry
+# the account id, so they come from .env, like STORAGE_BUCKET. ElasticMQ is retired.
+x-sqs-env: &sqs-env
+  QUEUE_ENDPOINT_URL: ""
+  QUEUE_URL: ${QUEUE_URL:?set QUEUE_URL in .env}
+  QUEUE_EXPRESS_URL: ${QUEUE_EXPRESS_URL:?set QUEUE_EXPRESS_URL in .env}
+
 services:
   postgres:
     ports: !reset []
@@ -61,7 +70,11 @@ services:
     restart: unless-stopped
     logging: *logging
 
+  # Retired. Kept so its ports stay unpublished and a plain `up` never starts it:
+  # jobs are in Amazon SQS now (api and worker get the SQS URLs above). Delete this
+  # block once the fallback period ends and the container and its volume are removed.
   elasticmq:
+    profiles: ["elasticmq-retired"]
     ports: !reset []
     restart: unless-stopped
     logging: *logging
@@ -89,16 +102,14 @@ services:
     logging: *logging
     mem_limit: 3g
     environment:
-      <<: *s3-env
+      <<: [*s3-env, *sqs-env]
       # The number of worker copies below, not docker-compose.yml's laptop "1".
       # OpenRouter RPM is reserved centrally in PostgreSQL across API and worker processes.
       WORKER_REPLICAS: ${WORKER_REPLICAS:-3}
-    # docker-compose.yml's list without seaweedfs.
+    # docker-compose.yml's list without seaweedfs or elasticmq (jobs are in Amazon SQS).
     depends_on: !override
       migrate:
         condition: service_completed_successfully
-      elasticmq:
-        condition: service_healthy
 
   worker:
     logging: *logging # restart: unless-stopped is already in docker-compose.yml
@@ -109,14 +120,12 @@ services:
     deploy:
       replicas: ${WORKER_REPLICAS:-3}
     environment:
-      <<: *s3-env
+      <<: [*s3-env, *sqs-env]
       WORKER_REPLICAS: ${WORKER_REPLICAS:-3}
-    # docker-compose.yml's list without seaweedfs.
+    # docker-compose.yml's list without seaweedfs or elasticmq (jobs are in Amazon SQS).
     depends_on: !override
       migrate:
         condition: service_completed_successfully
-      elasticmq:
-        condition: service_healthy
       clamav:
         condition: service_healthy
 

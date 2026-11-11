@@ -8,8 +8,8 @@
 #      /api/health) that carried a Cookie header, so nobody signed in used the
 #      app (Caddy logs the header's name with the value "REDACTED");
 #   3. both job queues, kaagaz-jobs and the express lane kaagaz-jobs-express, are
-#      empty: no document is waiting or being read (asked from ElasticMQ itself;
-#      never from the database);
+#      idle: nothing waiting, being read, or waiting to retry (asked from Amazon
+#      SQS through the worker container; never from the database);
 #   4. no deploy is running (/tmp/kaagaz-deploy.lock, infra/ec2/deploy.sh);
 #   5. /etc/kaagaz/no-idle-stop does not exist (touch it to keep the server on).
 # Any check that fails to run keeps the server on. Each run prints one line.
@@ -23,7 +23,6 @@ KAAGAZ_DIR=/home/ubuntu/kaagaz
 KEEP_ON_FILE=/etc/kaagaz/no-idle-stop
 DEPLOY_LOCK=/tmp/kaagaz-deploy.lock
 MIN_UPTIME_SECONDS=1200
-QUEUES="kaagaz-jobs kaagaz-jobs-express"
 
 dry_run=false
 case "${1:-}" in
@@ -67,19 +66,6 @@ for line in sys.stdin:
 print(count)
 '
 
-# Reads ElasticMQ's GetQueueAttributes XML reply and prints the two counts:
-# waiting, then being read. Fails if either is missing.
-QUEUE_COUNTS_PY='
-import sys
-import xml.etree.ElementTree as ET
-values = {}
-for element in ET.fromstring(sys.stdin.read()).iter():
-    if element.tag.rsplit("}", 1)[-1] == "Attribute":
-        fields = {child.tag.rsplit("}", 1)[-1]: (child.text or "") for child in element}
-        values[fields.get("Name")] = fields.get("Value")
-print(int(values["ApproximateNumberOfMessages"]), int(values["ApproximateNumberOfMessagesNotVisible"]))
-'
-
 # 5. The manual switch.
 if [[ -e "$KEEP_ON_FILE" ]]; then
   stay_on "$KEEP_ON_FILE exists"
@@ -119,18 +105,23 @@ if ! cd "$KAAGAZ_DIR"; then
   stay_on "could not enter $KAAGAZ_DIR"
 fi
 
-# 3. Each job queue, asked inside ElasticMQ's own container.
-for name in $QUEUES; do
-  QUEUE="http://127.0.0.1:9324/000000000000/$name"
-  if ! counts="$(dc exec -T elasticmq wget -qO- "$QUEUE?Action=GetQueueAttributes&AttributeName.1=All" 2>/dev/null |
-    python3 -c "$QUEUE_COUNTS_PY" 2>/dev/null)"; then
-    stay_on "could not read the job queue $name"
+# 3. Both job queues, asked from Amazon SQS through the worker container (which
+# holds the queue settings and the instance role), never from the database. The
+# command prints one line a lane, "<lane> <waiting> <in_flight> <delayed>"; any
+# count above zero keeps the server on, so a job being read or a retry waiting is
+# never cut off by a power-off.
+if ! depth="$(dc exec -T worker python -m kaagaz.cli queue-depth 2>/dev/null)"; then
+  stay_on "could not read the job queues"
+fi
+while read -r lane waiting in_flight delayed; do
+  [[ -z "$lane" ]] && continue
+  if [[ ! "$waiting$in_flight$delayed" =~ ^[0-9]+$ ]]; then
+    stay_on "could not read the job queue $lane"
   fi
-  read -r waiting being_read <<<"$counts"
-  if ((waiting > 0 || being_read > 0)); then
-    stay_on "job queue $name busy: $waiting waiting, $being_read being read"
+  if ((waiting > 0 || in_flight > 0 || delayed > 0)); then
+    stay_on "job queue $lane busy: $waiting waiting, $in_flight being read, $delayed delayed"
   fi
-done
+done <<<"$depth"
 
 # 2. Signed-in use in the last 15 minutes.
 if ! signed_in="$(dc logs --since 15m --no-log-prefix caddy 2>/dev/null |
