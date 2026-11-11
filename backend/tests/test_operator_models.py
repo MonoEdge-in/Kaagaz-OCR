@@ -221,6 +221,7 @@ ENV = {
     # Changed on purpose (#473): the server's reader and Mistral model, Mistral not set up here (no
     # key in settings_factory), the Mistral models, and Mistral's status from the runs.
     "scan_reader": "openrouter",
+    "ulc_ceiling_paise": 40,  # #564 [V]: OCR_PAGE_CEILING_PAISE while OCR_ULTRA_LOW_COST is on
     "mistral_model": "mistral-ocr-4-1",
     "mistral_ready": False,
     "mistral_missing": "key",

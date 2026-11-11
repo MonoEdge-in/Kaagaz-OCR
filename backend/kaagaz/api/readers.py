@@ -136,7 +136,7 @@ def offer(conn: Connection, customer_id: str, settings: Settings) -> list[dict[s
     rows = usable(conn, customer_id, settings)
     if not rows:
         return readers(rows, settings)
-    allowed = models_sql.effective_settings(conn, customer_id)
+    allowed = models_sql.effective_settings(conn, customer_id, settings=settings)
     if allowed.get("scan_reader") == models_sql.ULTRA_LOW_COST:  # #488: one way of reading, Standard
         standard = models_sql.pick_tiers(rows)[0]
         return [_tier(standard, STANDARD, STANDARD_HINT, default=standard["is_default_scan"])]
@@ -191,7 +191,7 @@ def check_reading(
         _refuse("model_not_allowed")
     if mode == SINGLE:
         return ReadingChoice(SINGLE, model, note=note)
-    allowed = models_sql.effective_settings(conn, customer_id) if rows else None
+    allowed = models_sql.effective_settings(conn, customer_id, settings=settings) if rows else None
     dynamic = allowed is not None and bool(allowed["dynamic"])
     # #488: a stale Automatic is accepted while Ultra low cost reads (it reads every page its way).
     stale = allowed is not None and allowed.get("scan_reader") == models_sql.ULTRA_LOW_COST

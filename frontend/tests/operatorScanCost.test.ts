@@ -103,6 +103,7 @@ const ENV: AiEnv = {
   page_max_output_tokens: 65536,
   // Changed on purpose (#473): the env says the server's reader and whether Mistral is set up.
   scan_reader: "openrouter",
+  ulc_ceiling_paise: 40,
   mistral_model: "mistral-ocr-4-1",
   mistral_ready: true,
   mistral_missing: null,

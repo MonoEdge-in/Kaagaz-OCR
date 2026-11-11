@@ -79,6 +79,7 @@ const ENV: AiEnv = {
   careful_resolution: "low",
   page_max_output_tokens: 65536,
   scan_reader: "openrouter",
+  ulc_ceiling_paise: 40,
   mistral_model: "mistral-ocr-4-1",
   mistral_ready: true,
   mistral_missing: null,
@@ -320,10 +321,12 @@ describe("ultra low cost: the ceiling field", () => {
   });
 
   it("the panel's ceiling is the draft's own, else the one it follows, else ₹0.40", () => {
-    expect(ceilingOf(draftOf(values({ ulc_ceiling_paise: 30 })), values({ ulc_ceiling_paise: 25 }), false)).toBe(30);
-    expect(ceilingOf(draftOf(values()), values({ ulc_ceiling_paise: 25 }), false)).toBe(25);
-    expect(ceilingOf(draftOf(values()), values({ ulc_ceiling_paise: 25 }), true)).toBe(40);
-    expect(ceilingOf({ ...draftOf(values()), ulc_ceiling: "9" }, values(), false)).toBe(40);
+    expect(ceilingOf(draftOf(values({ ulc_ceiling_paise: 30 })), values({ ulc_ceiling_paise: 25 }), ENV, false)).toBe(30);
+    expect(ceilingOf(draftOf(values()), values({ ulc_ceiling_paise: 25 }), ENV, false)).toBe(25);
+    expect(ceilingOf(draftOf(values()), values({ ulc_ceiling_paise: 25 }), ENV, true)).toBe(40);
+    expect(ceilingOf({ ...draftOf(values()), ulc_ceiling: "9" }, values(), ENV, false)).toBe(40);
+    // #564 [V]: with OCR_ULTRA_LOW_COST on, the server's ceiling is OCR_PAGE_CEILING_PAISE.
+    expect(ceilingOf(draftOf(values()), values(), { ulc_ceiling_paise: 55 }, true)).toBe(55);
   });
 });
 
@@ -402,6 +405,17 @@ describe("ultra low cost: follow, reset, status and the save bar", () => {
     );
     expect(summary(ULC)).toMatch(/<dt[^>]*>Most a page may cost<\/dt><dd>₹0.40<span/);
     expect(summary(values())).not.toContain(">Most a page may cost<");
+  });
+
+  it("names OCR_ULTRA_LOW_COST's reader and ceiling as the server's while nothing is saved (#564 [V])", () => {
+    const env: AiEnv = { ...ENV, scan_reader: "ultra_low_cost", ulc_ceiling_paise: 55 };
+    const html = renderToStaticMarkup(
+      createElement(DefaultsSummary, { reply: { defaults: values(), env, orgs_inheriting: COUNTS }, catalogue: [] }),
+    );
+    expect(html).toMatch(
+      /<dt[^>]*>Who reads the pages<\/dt><dd>Ultra low cost[\s\S]*<dt[^>]*>Most a page may cost<\/dt><dd>₹0.55<span/,
+    );
+    expect(inheritedText("scan_reader", values(), ENV, [])).toBe(READER_WORDS.openrouter); // off: as before
   });
 
   it("saves the ceiling with the settings, and asks the cost and the check with it", async () => {

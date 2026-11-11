@@ -530,3 +530,18 @@ def test_google_client_secret_is_never_in_repr() -> None:
     settings = Settings.from_env(shipped(**GOOGLE_ON))
     assert settings.google_client_secret == "made-up-google-secret"
     assert "made-up-google-secret" not in repr(settings)
+
+
+def test_promotion_ocr_ultra_low_cost_is_off_unless_set_and_needs_gemini() -> None:
+    """#564 [V]: production's Ultra low cost switch (65ee12e3) and its ceiling a page are read here
+    too: the platform's default while the super admin has saved no reader (``db.models``)."""
+    off = Settings.from_env(shipped(OCR_ULTRA_LOW_COST=None, OCR_PAGE_CEILING_PAISE=None))
+    assert (off.ocr_ultra_low_cost, off.ocr_page_ceiling_paise) == (False, 55)
+    gemini = {"OCR_ENGINE": "gemini", "OPENROUTER_API_KEY": KEY}
+    on = Settings.from_env(shipped(**gemini, OCR_ULTRA_LOW_COST="true", OCR_PAGE_CEILING_PAISE="30"))
+    assert (on.ocr_ultra_low_cost, on.ocr_page_ceiling_paise) == (True, 30)
+    with pytest.raises(SettingsError, match="OCR_ULTRA_LOW_COST=true needs OCR_ENGINE=gemini"):
+        Settings.from_env(shipped(OCR_ENGINE="rapidocr", OCR_ULTRA_LOW_COST="true"))
+    for bad in ("19", "56"):
+        with pytest.raises(SettingsError, match="OCR_PAGE_CEILING_PAISE must be between 20 and 55"):
+            Settings.from_env(shipped(OCR_PAGE_CEILING_PAISE=bad))

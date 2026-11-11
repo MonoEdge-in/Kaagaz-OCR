@@ -1699,7 +1699,8 @@ export interface AiEnv {
   careful_thinking: string;
   careful_resolution: string;
   page_max_output_tokens: number;
-  scan_reader: ScanReader;
+  scan_reader: ScanReader; // #564: ultra_low_cost while OCR_ULTRA_LOW_COST is on
+  ulc_ceiling_paise: number; // the server's ceiling: OCR_PAGE_CEILING_PAISE while that is on, else 40
   mistral_model: MistralModelId;
   mistral_ready: boolean;
   mistral_missing: "key" | "zdr" | null;
