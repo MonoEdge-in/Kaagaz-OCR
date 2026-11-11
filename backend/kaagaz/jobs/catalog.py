@@ -469,6 +469,7 @@ def refresh(
     )
 
 
+_CATALOGUE_HELD = text("SELECT EXISTS (SELECT 1 FROM model_catalog)")
 _ENV_MODELS = text("SELECT id, eligible, chat_eligible FROM model_catalog WHERE id = ANY(:ids)")
 
 
@@ -478,12 +479,17 @@ def check_env_models(db: Database, settings: Settings) -> list[tuple[str, str, s
     read scans, and MODEL_CHAT to answer while MODEL_ENABLED. Each is logged at error with its
     model id, so a withdrawn model is named once a refresh sees it, not found 404 by 404.
     After each refresh and at worker start; a database error is logged by its type and checks
-    nothing (never a failed refresh or a worker that won't start). One statement."""
+    nothing (never a failed refresh or a worker that won't start). Review of #564: before the
+    first refresh (no catalogue row at all) nothing is checked, logged once at info, never an
+    ERROR from every replica at start. Two statements."""
     wanted = [("OCR_MODEL", settings.ocr_model, 1)]
     if settings.model_enabled:
         wanted.append(("MODEL_CHAT", settings.model_chat, 2))
     try:
         with unavailable(), db.system() as conn:
+            if not conn.execute(_CATALOGUE_HELD).scalar_one():
+                logger.info("env models not checked", extra={"code": "catalogue_empty"})
+                return []
             ids = [model for _, model, _ in wanted]
             rows = {row[0]: row for row in conn.execute(_ENV_MODELS, {"ids": ids})}
     except (SQLAlchemyError, BackendUnavailable) as error:
