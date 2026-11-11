@@ -40,7 +40,11 @@ The three searches (docs/architecture.md, "Search, in simple terms"):
    "invioce" still finds "invoice" and "shindey" finds "शिंदे". The ``<%``
    cut-off is pg_trgm's ``word_similarity_threshold``, set for this transaction
    only to ``FUZZY_THRESHOLD`` (the default 0.6 misses one swapped letter pair
-   in a seven letter word: "invioce" against "invoice" scores 0.375).
+   in a seven letter word: "invioce" against "invoice" scores 0.375). A word
+   with a digit is never a typo (#556, UAT LC-04: "150000" scored 1.0 against
+   "1500000"): each must be in the piece as written (``number_words``, matched
+   in ``tsv_simple``, so a Marathi ९४०००० is still found by 940000 through its
+   Latin spelling), as on the page (kaagaz/search/page_words.py rule 4).
 3. **Meaning:** cosine distance ``<=>`` between the question's embedding and
    each piece's (V2). Skipped when there is no embedding (no model, or it is
    down): the other two still answer. Only vectors whose ``embedding_model``
@@ -119,7 +123,13 @@ from sqlalchemy.exc import OperationalError
 from kaagaz.answering import glossary
 from kaagaz.answering.expansion import NO_EXPANSION, Expansion, word_query
 from kaagaz.answering.hinglish import DATE_WORDS, STOP_WORDS, normalise
-from kaagaz.chunking.script import SOUND_KEY_MIN, has_devanagari_letters, latin_spelling, sound_keys
+from kaagaz.chunking.script import (
+    SOUND_KEY_MIN,
+    ascii_digits,
+    has_devanagari_letters,
+    latin_spelling,
+    sound_keys,
+)
 from kaagaz.search.scope import EVERYTHING, Scope
 
 if TYPE_CHECKING:
@@ -133,6 +143,7 @@ RRF_K = 60
 MAX_LIMIT = 100
 # pg_trgm word similarity cut-off for the typo tolerant list. PROVISIONAL.
 FUZZY_THRESHOLD = 0.3
+_DIGIT = re.compile(r"\d")  # any decimal digit, Devanagari ones too (number_words)
 # Every search statement is cancelled after this long (PROVISIONAL). A meaning
 # list that runs out of time is dropped; the word and fuzzy lists still answer.
 STATEMENT_TIMEOUT_MS = 3000
@@ -230,6 +241,7 @@ _FUZZY = text(
     " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
     " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
     " AND (:q <% p.text OR :ql <% p.text_latin)"
+    " AND (CAST(:nums AS text) = '' OR p.tsv_simple @@ plainto_tsquery('simple', CAST(:nums AS text)))"
     " ORDER BY score DESC, d.created_at, p.document_id, p.seq, p.id LIMIT :n"
 )
 
@@ -595,6 +607,12 @@ def sound_query(question: str) -> str:
     return " ; ".join(group for group in groups if group)
 
 
+def number_words(question: str) -> str:
+    """#556: the question's words with a digit, digits as ASCII, for the typo list to find as
+    written ("" when it has none). ``plainto_tsquery`` takes any text, so this cannot fail."""
+    return " ".join(ascii_digits(word) for word in question.split() if _DIGIT.search(word))
+
+
 def vector_literal(values: Sequence[float]) -> str:
     """pgvector's text form, ``[0.1,0.2]``, for a bound parameter cast to ``halfvec``."""
     if not values:
@@ -781,6 +799,7 @@ def _lists(
             "g": word_query(asked, expansion),
             "sk": sound_query(latin),
             "ql": latin,
+            "nums": number_words(query_text),
             "n": CANDIDATES,
         }
         word = _ranked(conn.execute(_WORD, {**params, **scope.params()}), owners)

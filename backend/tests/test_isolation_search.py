@@ -21,6 +21,7 @@ from tests.db_support import insert_document, insert_folder, insert_tag, new_cus
 from tests.test_api_support import Api, Signed
 from tests.test_indexing_db import FakeModel
 from tests.test_search_db import EF_SEARCH, RECIPE, add_document, add_pieces, axis, by_sound, run
+from tests.test_search_scope_db import WORDS
 from tests.test_search_scope_db import found as scoped
 
 pytestmark = pytest.mark.db
@@ -132,7 +133,9 @@ def test_a_scope_of_the_other_customers_ids_finds_nothing(db: Database) -> None:
         b_tag = insert_tag(conn, b, b_user, "gst")
         b_document = insert_document(conn, b, folder_id=b_folder)
         tag_document(conn, b, b_document, b_tag)
-    add_pieces(db, b, b_document, [(SECRET, axis(0))])
+    # #556: the words the scope test's questions find as written; its INV-9001 found SECRET's
+    # INV-1042 only by closeness, which a number no longer has.
+    add_pieces(db, b, b_document, [(WORDS, axis(0))])
     (a_piece,) = add_pieces(db, a, add_document(db, a), [(SECRET, axis(0))])
 
     scopes: list[dict[str, Any]] = [
