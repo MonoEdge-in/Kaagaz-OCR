@@ -854,6 +854,29 @@ def test_a_declared_size_over_every_limit_is_413_before_the_body_is_read(db: Dat
 
 
 @pytest.mark.db
+@pytest.mark.parametrize(
+    "route", ["/api/documents/upload-sessions/candidates", "/api/documents/upload-sessions"]
+)
+def test_a_zip_over_its_limit_is_told_the_screens_zip_words_at_the_resumable_start(
+    db: Database, route: str
+) -> None:
+    """#559 (UAT ZP-07): a 1 GB zip was told "Files can be up to 500 MB. This one is larger."
+    while the screen says the zip words; its name says it is a zip, so the server says them too.
+    Any other name keeps the words for every file."""
+    signed = Api(db).new_signed()
+    start = {"file_size": 1024 * MB, "fingerprint": "0" * 64, "user_id": signed.user_id}
+    zipped = signed.client.post(route, json={**start, "file_name": "Kit twice.ZIP"}, headers=CSRF)
+    other = signed.client.post(route, json={**start, "file_name": "big.pdf"}, headers=CSRF)
+    assert (zipped.status_code, other.status_code) == (413, 413)
+    assert zipped.json()["error"]["message"] == (
+        "Zip files can be up to 500 MB. Unzip it on your computer and upload the folder instead."
+    )
+    assert other.json()["error"]["message"] == (
+        "Files can be up to 500 MB. This one is larger. Split it or save it smaller and try again."
+    )
+
+
+@pytest.mark.db
 def test_upload_without_a_file_field_is_400(db: Database) -> None:
     signed = Api(db).new_signed()
     reply = signed.client.post("/api/documents", data={"other": "x"}, headers=CSRF)

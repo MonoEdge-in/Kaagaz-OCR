@@ -953,13 +953,24 @@ async def upload_version(
     return JSONResponse(body, status_code=200 if body["duplicate"] else 201)
 
 
+def _too_large_to_start(body: ResumableUploadStart, policy: UploadPolicy) -> ApiError:
+    """A resumable start of no size or over every limit. #559 (UAT ZP-07): a zip over it (by its
+    name) gets the zip words the upload screen says; any other the words for every file."""
+    zip_name = body.file_name.casefold().endswith(".zip")
+    if zip_name and body.file_size > 0 and sniff.ZIP in policy.allowed_types:
+        return ApiError(
+            413, "too_large", too_large_message("zip", body.file_size, policy.limit_for(sniff.ZIP))
+        )
+    return ApiError(413, "too_large", over_every_limit_message(policy.largest_limit))
+
+
 @router.post("/documents/upload-sessions/candidates")
 def resumable_candidates(body: ResumableUploadStart, user: User, context: Context) -> dict[str, Any]:
     """Find this user's pending same-name, same-size uploads; the browser verifies saved chunks."""
     same_user(body.user_id, user)
     policy = user_upload_policy(context, user)
     if body.file_size <= 0 or body.file_size > policy.largest_limit:
-        raise ApiError(413, "too_large", over_every_limit_message(policy.largest_limit))
+        raise _too_large_to_start(body, policy)
     filename = display_name(body.file_name)
     with context.db.customer(user.customer_id) as conn:
         return {
@@ -976,7 +987,7 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
     same_user(body.user_id, user)
     policy = user_upload_policy(context, user)
     if body.file_size <= 0 or body.file_size > policy.largest_limit:
-        raise ApiError(413, "too_large", over_every_limit_message(policy.largest_limit))
+        raise _too_large_to_start(body, policy)
     count = math.ceil(body.file_size / _UPLOAD_PART_BYTES)
     if count > 10_000:
         raise ApiError(413, "too_large")
