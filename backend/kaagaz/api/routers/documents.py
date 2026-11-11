@@ -287,7 +287,8 @@ _CONTENT_TYPES = {
     "txt": ("text/plain; charset=utf-8", "txt"),
     "md": ("text/plain; charset=utf-8", "md"),
     "json": ("text/plain; charset=utf-8", "json"),
-    "html": ("text/plain; charset=utf-8", "html"),
+    # #557 (UAT FF-12): and saved as text, or the copy on the computer would open as a web page.
+    "html": ("text/plain; charset=utf-8", "txt"),
 }
 # #522: 0078 told only ready documents' kinds, so one not read since (needs_reader, failed)
 # keeps its sniffed type until it is read again. Its name's ending chooses among the kinds that

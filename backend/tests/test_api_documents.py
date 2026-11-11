@@ -1248,7 +1248,7 @@ def test_every_type_and_kind_downloads_with_its_own_media_type_and_ending() -> N
         "txt": "txt",
         "md": "md",
         "json": "json",
-        "html": "html",
+        "html": "txt",  # #557: saved as a page it would open in a browser on the computer
     }
     for kind in resolve.TEXT_KINDS | {sniff.TEXT}:
         assert _CONTENT_TYPES[kind][0] == "text/plain; charset=utf-8", kind
@@ -1263,7 +1263,7 @@ def test_every_type_and_kind_downloads_with_its_own_media_type_and_ending() -> N
         # Changed on purpose (#522): a ready zip is xlsx, and a zip that is a folder of files is a zip.
         ("stock list", "xlsx", "stock%20list.xlsx"),
         ("archive", "zip", "archive.zip"),
-        ("page.htm", "html", "page.html"),
+        ("page.htm", "html", "page.txt"),  # #557: sent as text, so saved as text
         ("IMG_0042.HEIC", "heic", "IMG_0042.heic"),
     ],
 )
@@ -1924,7 +1924,7 @@ def test_the_summary_is_the_details_own_summary_in_fewer_statements(db: Database
         ("zip", "Bills.zip", "application/zip", "Bills.zip"),
         ("zip", "notes", "application/zip", "notes.zip"),  # no ending: its sniffed type's
         ("text", "rent.csv", "text/plain; charset=utf-8", "rent.csv"),
-        ("text", "page.htm", "text/plain; charset=utf-8", "page.html"),
+        ("text", "page.htm", "text/plain; charset=utf-8", "page.txt"),
         ("text", "notes.exe", "text/plain; charset=utf-8", "notes.txt"),  # never a kind text can't be
         ("pdf", "bill.docx", "application/pdf", "bill.pdf"),  # a told type: its own, whatever the name
     ],
@@ -1953,7 +1953,7 @@ def test_a_document_not_read_since_0078_downloads_by_its_name_s_ending_among_its
 
 
 @pytest.mark.db
-@pytest.mark.parametrize(("detected_type", "extension"), [("html", "html"), ("md", "md"), ("json", "json")])
+@pytest.mark.parametrize(("detected_type", "extension"), [("html", "txt"), ("md", "md"), ("json", "json")])
 def test_an_html_markdown_or_json_original_downloads_as_plain_text_never_run(
     db: Database, detected_type: str, extension: str
 ) -> None:
