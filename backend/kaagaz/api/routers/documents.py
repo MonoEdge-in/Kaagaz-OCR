@@ -1123,10 +1123,14 @@ async def upload_resumable_part(
 @router.post("/documents/upload-sessions/{session_id}/complete")
 def complete_resumable_upload(session_id: uuid.UUID, user: User, context: Context) -> JSONResponse:
     with context.db.customer(user.customer_id) as conn:
-        session = upload_sessions_sql.get(conn, user.customer_id, user.user_id, str(session_id))
+        session = upload_sessions_sql.get(
+            conn, user.customer_id, user.user_id, str(session_id), finished=True
+        )
     if session is None:
         raise ApiError(404, "not_found")
     metadata = cast(dict[str, Any], session["metadata"])
+    if metadata.get("completed") is not None:  # sent again after a lost reply (production QA T1)
+        return JSONResponse(metadata["completed"], status_code=200)
     if not context.storage.resumable_complete(str(session["storage_key"])):
         parts = context.storage.resumable_parts(
             str(session["storage_key"]), str(session["storage_upload_id"])
@@ -1189,7 +1193,7 @@ def complete_resumable_upload(session_id: uuid.UUID, user: User, context: Contex
             raise
     context.storage.delete_resumable(str(session["storage_key"]))
     with context.db.customer(user.customer_id) as conn:
-        upload_sessions_sql.delete(conn, user.customer_id, user.user_id, str(session_id))
+        upload_sessions_sql.complete(conn, user.customer_id, user.user_id, str(session_id), result)
     return JSONResponse(result, status_code=status or (200 if result["duplicate"] else 201))
 
 

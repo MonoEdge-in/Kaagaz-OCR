@@ -42,15 +42,20 @@ def create(
     )
 
 
-def get(conn: Connection, customer_id: str, user_id: str, session_id: str) -> dict[str, Any] | None:
+def get(
+    conn: Connection, customer_id: str, user_id: str, session_id: str, *, finished: bool = False
+) -> dict[str, Any] | None:
+    """The session; one already completed (``metadata.completed``, ``complete``) only with
+    ``finished``: it can't be resumed or sent to."""
     row = (
         conn.execute(
             text(
                 "SELECT id, customer_id, user_id, storage_key, storage_upload_id, file_size, part_count,"
                 " metadata FROM upload_sessions WHERE customer_id = :customer AND user_id = :user"
                 " AND id = :id AND expires_at > now()"
+                " AND (CAST(:finished AS boolean) OR metadata -> 'completed' IS NULL)"
             ),
-            {"customer": customer_id, "user": user_id, "id": session_id},
+            {"customer": customer_id, "user": user_id, "id": session_id, "finished": finished},
         )
         .mappings()
         .one_or_none()
@@ -66,6 +71,7 @@ def candidates(
             "SELECT id, metadata FROM upload_sessions WHERE customer_id = :customer AND user_id = :user"
             " AND file_size = :size AND metadata->>'filename' = :filename"
             " AND metadata->>'fingerprint' = :fingerprint AND expires_at > now()"
+            " AND metadata -> 'completed' IS NULL"
             " ORDER BY created_at DESC LIMIT 5"
         ),
         {
@@ -90,6 +96,22 @@ def set_part_hash(
             " WHERE customer_id = :customer AND user_id = :user AND id = :id"
         ),
         {"customer": customer_id, "user": user_id, "id": session_id, "part": str(part), "digest": digest},
+    )
+
+
+def complete(
+    conn: Connection, customer_id: str, user_id: str, session_id: str, reply: dict[str, Any]
+) -> None:
+    """Production QA T1: the session is kept a day after its file is stored, with the reply, so a
+    ``complete`` sent again after a lost reply gets the same document; the expired-session
+    purge (jobs/purge.py) removes it then."""
+    conn.execute(
+        text(
+            "UPDATE upload_sessions SET metadata = jsonb_set(metadata, '{completed}', CAST(:reply AS jsonb)),"
+            " expires_at = now() + interval '1 day'"
+            " WHERE customer_id = :customer AND user_id = :user AND id = :id"
+        ),
+        {"customer": customer_id, "user": user_id, "id": session_id, "reply": json.dumps(reply)},
     )
 
 
