@@ -203,10 +203,63 @@ describe("a folder upload's run", () => {
     expect(events.at(-1)).toEqual({ type: "phase", id: "pb", phase: "done" });
   });
 
+  it("stops between pages of the listing when Stop is pressed, and before listing when pressed while planning", async () => {
+    const pick = pickOf(Array.from({ length: 2500 }, (_, n) => `A/f${n}.pdf`));
+    const source = { picked: pick, manifest: buildManifest(pick) };
+    const listing = fakeServer();
+    const events: FolderEvent[] = [];
+    await startFolderUpload(
+      listing.api,
+      { id: "s1", userId: "me", source, target: { kind: "folder", parentId: null }, merge: true },
+      run(events),
+      () => listing.registers.length >= 1,
+    );
+    expect(listing.registers.map((page) => page.length)).toEqual([1000]);
+    expect(listing.sentIds).toEqual([]);
+    expect(events.at(-1)).toEqual({ type: "phase", id: "s1", phase: "stopped" });
+
+    const planning = fakeServer();
+    const planned: FolderEvent[] = [];
+    await startFolderUpload(
+      planning.api,
+      { id: "s2", userId: "me", source, target: { kind: "folder", parentId: null }, merge: true },
+      run(planned),
+      () => true,
+    );
+    expect(planning.registers).toEqual([]);
+    expect(planned.map((event) => (event.type === "phase" ? event.phase : event.type))).toEqual(["start", "planning", "planned", "stopped"]);
+  });
+
+  it("says a file waits for the connection, or for the server, while it waits, then that it sends again", async () => {
+    const pick = pickOf(["A/a.pdf"]);
+    const server = fakeServer();
+    const send = server.api.send;
+    server.api.send = async (file, item, onProgress, onWaiting) => {
+      onWaiting?.(true, "connection");
+      onWaiting?.(false);
+      onWaiting?.(true, "server");
+      onWaiting?.(false);
+      return send(file, item, onProgress);
+    };
+    const events: FolderEvent[] = [];
+    await startFolderUpload(
+      server.api,
+      { id: "w1", userId: "me", source: { picked: pick, manifest: buildManifest(pick) }, target: { kind: "folder", parentId: null }, merge: true },
+      run(events),
+      never,
+    );
+    const sending = events.flatMap((event) => (event.type === "sending" ? [event.waiting ?? null] : []));
+    expect(sending).toEqual([null, "connection", null, "server", null]);
+    let state = EMPTY_FOLDER_UPLOADS;
+    const upTo = events.findIndex((event) => event.type === "sending" && event.waiting === "connection");
+    for (const event of events.slice(0, upTo + 1)) state = folderUploadsReducer(state, event);
+    expect(state.w1?.sending).toEqual([{ itemId: "i0", name: "a.pdf", fraction: 0, waiting: "connection" }]);
+  });
+
   it("is refused in the server's words while another folder upload of the organisation still sends", async () => {
     const pick = pickOf(["A/a.pdf"]);
     const server = fakeServer();
-    const words = "Another folder upload is still sending in this organisation. Wait for it to finish, or stop it.";
+    const words = "Another person's folder upload is still sending in this organisation. Try again when it has finished.";
     server.api.plan = async () => {
       throw new ApiError(409, "upload_in_progress", words);
     };
@@ -218,6 +271,26 @@ describe("a folder upload's run", () => {
       never,
     );
     expect(events.at(-1)).toEqual({ type: "phase", id: "ip", phase: "refused", message: words });
+  });
+
+  it("never says Retry on a row with no Retry: a plan or a listing cut off by a server restart", async () => {
+    const pick = pickOf(["A/a.pdf"]);
+    const restart = new ApiError(502, "error", "Something went wrong.");
+    const planning = fakeServer();
+    planning.api.plan = async () => {
+      throw restart;
+    };
+    const planned: FolderEvent[] = [];
+    const args = { userId: "me", source: { picked: pick, manifest: buildManifest(pick) }, target: { kind: "folder", parentId: null }, merge: true } as const;
+    await startFolderUpload(planning.api, { id: "r1", ...args }, run(planned), never);
+    expect(planned.at(-1)).toEqual({ type: "phase", id: "r1", phase: "refused", message: "The server was restarting." });
+    const listing = fakeServer();
+    listing.api.register = async () => {
+      throw restart;
+    };
+    const listed: FolderEvent[] = [];
+    await startFolderUpload(listing.api, { id: "r2", ...args }, run(listed), never);
+    expect(listed.at(-1)).toEqual({ type: "phase", id: "r2", phase: "stopped", message: "Not every file could be listed. The server was restarting." });
   });
 
   it("stops planning with the server's words when the plan is refused", async () => {

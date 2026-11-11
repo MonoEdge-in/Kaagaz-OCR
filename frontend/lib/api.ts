@@ -210,8 +210,8 @@ export function rateLimitWait(caught: unknown, fallback: number): number | null 
  * Issue 468: a GET whose answer has not started in this long stops, and fails as a lost
  * connection does (status 0), in these words. Only the wait for the answer to start (its
  * headers) is timed: reading the body is not, so a big answer on a slow link still arrives.
- * Only GETs: Ask's answer, uploads and every change are POST, PUT, PATCH or DELETE, and keep
- * waiting as long as they take.
+ * Only GETs: Ask's answer and every change are POST, PUT, PATCH or DELETE, and keep waiting as
+ * long as they take; an upload's calls have their own, longer bounds (PART_IDLE_MS below).
  */
 export const GET_TIMEOUT_MS = 30_000;
 export const TOO_SLOW = "Kaagaz is taking too long to answer. Check your connection and try again.";
@@ -587,6 +587,48 @@ export type UploadWaiting = (waiting: boolean, why?: "connection" | "server") =>
 /** A failing server (5xx) is asked this many more times, then the row fails with Retry. */
 const SERVER_RETRIES = 4;
 
+// An upload call that never answers (a server restart mid-request) is given up on, then sent
+// again as a failing server's is (noAnswer), so a row never waits for ever (production QA, 5 Nov
+// 2026): after SERVER_RETRIES more it fails with Retry (review of #564).
+/** A part with no progress and no answer for this long. Not the whole part: a slow line takes longer. */
+const PART_IDLE_MS = 120_000;
+/** The upload's JSON calls; `complete` stores and checks the whole file, so it gets longer. */
+const CALL_TIMEOUT_MS = 60_000;
+const COMPLETE_TIMEOUT_MS = 300_000;
+
+/** No answer in time: a 5xx to retryWhileOffline (counted, "server"), Retry on the row, TOO_SLOW its words. */
+const noAnswer = () => new ApiError(504, "timeout", TOO_SLOW);
+
+/** request(), given up after `ms` with no answer (noAnswer), for retryWhileOffline. */
+async function requestInTime<T>(ms: number, method: string, path: string, body?: unknown): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await request<T>(method, path, body, controller.signal);
+  } catch (error) {
+    throw controller.signal.aborted ? noAnswer() : error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Gives up on `xhr` once `wait(ms)` has run out with no new wait or `stop()`: rejected with
+ * noAnswer (so retryWhileOffline sends it again, as a failing server's), then aborted.
+ */
+function giveUpWhenIdle(xhr: XMLHttpRequest, reject: (error: unknown) => void) {
+  let idle: ReturnType<typeof setTimeout> | undefined;
+  const stop = () => clearTimeout(idle);
+  const wait = (ms: number) => {
+    stop();
+    idle = setTimeout(() => {
+      reject(noAnswer());
+      xhr.abort();
+    }, ms);
+  };
+  return { wait, stop };
+}
+
 /**
  * Upload calls from this tab (start, each part, finish): a burst of this many, then this many
  * a minute. The API gives a file's upload calls their own budget of RATE_LIMIT_PER_MINUTE
@@ -657,8 +699,13 @@ function putPart(url: string, body: Blob, onProgress: (loaded: number) => void):
     xhr.open("PUT", url);
     xhr.withCredentials = true;
     xhr.setRequestHeader("X-Requested-With", "kaagaz");
-    xhr.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(event.loaded); };
+    const idle = giveUpWhenIdle(xhr, reject);
+    xhr.upload.onprogress = (event) => {
+      idle.wait(PART_IDLE_MS);
+      if (event.lengthComputable) onProgress(event.loaded);
+    };
     xhr.onload = async () => {
+      idle.stop();
       if (xhr.status >= 200 && xhr.status < 300) resolve();
       else if (xhr.status === 0) reject(new ApiError(0, "network", "Could not reach the server."));
       else reject(noticeSessionEnd(await errorFrom(new Response(xhr.responseText, {
@@ -666,9 +713,16 @@ function putPart(url: string, body: Blob, onProgress: (loaded: number) => void):
         headers: { "Content-Type": "application/json", "Retry-After": xhr.getResponseHeader("Retry-After") ?? "" },
       }))));
     };
-    xhr.onerror = () => reject(new TypeError("Network error"));
-    xhr.onabort = () => reject(new TypeError("Upload interrupted"));
+    xhr.onerror = () => {
+      idle.stop();
+      reject(new TypeError("Network error"));
+    };
+    xhr.onabort = () => {
+      idle.stop();
+      reject(new TypeError("Upload interrupted"));
+    };
     xhr.send(body);
+    idle.wait(PART_IDLE_MS);
   });
 }
 
@@ -692,8 +746,8 @@ async function resumableUpload(
   const fingerprint = await digest(new Blob([partHashes.join("")]));
   const identified = { ...metadata, fingerprint };
   const { candidates } = await retryWhileOffline(
-    () => request<{ candidates: { id: string; parts: Record<string, string> }[] }>(
-      "POST", "/documents/upload-sessions/candidates", identified,
+    () => requestInTime<{ candidates: { id: string; parts: Record<string, string> }[] }>(
+      CALL_TIMEOUT_MS, "POST", "/documents/upload-sessions/candidates", identified,
     ),
     onWaiting,
   );
@@ -709,9 +763,11 @@ async function resumableUpload(
     }
     if (matches) { resumeId = candidate.id; savedParts = candidate.parts; break; }
   }
+  // shortcut: a start whose answer never came is sent again and makes a second session; the
+  // first is never used, and the purge removes it a week on.
   const session = await retryWhileOffline(
-    () => request<{ id: string; part_size: number; part_count: number } | UploadResult>(
-      "POST", "/documents/upload-sessions", { ...identified, resume_session_id: resumeId },
+    () => requestInTime<{ id: string; part_size: number; part_count: number } | UploadResult>(
+      CALL_TIMEOUT_MS, "POST", "/documents/upload-sessions", { ...identified, resume_session_id: resumeId },
     ),
     onWaiting,
   );
@@ -734,7 +790,7 @@ async function resumableUpload(
   }
   onSent?.();
   return retryWhileOffline(
-    () => request<UploadResult>("POST", `/documents/upload-sessions/${session.id}/complete`, {}),
+    () => requestInTime<UploadResult>(COMPLETE_TIMEOUT_MS, "POST", `/documents/upload-sessions/${session.id}/complete`, {}),
     onWaiting,
   );
 }
@@ -761,17 +817,25 @@ export const getPreviousFolderUpload = (sourceName: string) =>
 export const listFolderItems = (id: string, view: FolderItemView, after: number, limit: number) =>
   request<FolderItemsPage>("GET", `${folderUpload(id)}/items${query({ view, after, limit })}`);
 
-/** One multipart POST with upload progress (XHR); the reply is JSON. */
+/**
+ * One multipart POST with upload progress (XHR); the reply is JSON. Never left waiting: given up
+ * on as a part is while it sends, and as a `complete` once all of it has gone (the server then
+ * stores and checks the file); sent again for the same item, which answers once it is in.
+ */
 function postFile(path: string, form: FormData, onProgress: (fraction: number) => void): Promise<UploadResult> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `/api${path}`);
     xhr.withCredentials = true;
     xhr.setRequestHeader("X-Requested-With", "kaagaz");
+    const idle = giveUpWhenIdle(xhr, reject);
     xhr.upload.onprogress = (event) => {
+      const sent = event.lengthComputable && event.loaded >= event.total;
+      idle.wait(sent ? COMPLETE_TIMEOUT_MS : PART_IDLE_MS);
       if (event.lengthComputable && event.total > 0) onProgress(event.loaded / event.total);
     };
     xhr.onload = async () => {
+      idle.stop();
       if (xhr.status === 0) {
         reject(new ApiError(0, "network", "Could not reach the server."));
         return;
@@ -783,9 +847,16 @@ function postFile(path: string, form: FormData, onProgress: (fraction: number) =
       if (xhr.status >= 200 && xhr.status < 300) resolve((await reply.json()) as UploadResult);
       else reject(noticeSessionEnd(await errorFrom(reply)));
     };
-    xhr.onerror = () => reject(new TypeError("Network error"));
-    xhr.onabort = () => reject(new TypeError("Upload interrupted"));
+    xhr.onerror = () => {
+      idle.stop();
+      reject(new TypeError("Network error"));
+    };
+    xhr.onabort = () => {
+      idle.stop();
+      reject(new TypeError("Upload interrupted"));
+    };
     xhr.send(form);
+    idle.wait(PART_IDLE_MS);
   });
 }
 

@@ -131,8 +131,11 @@ type Drop = { full: string | null };
 // The reading picked in "Read with" during this visit; null: the organisation's default.
 let sessionReader: string | null = null;
 
-/** Failed rounds in a row before the tray stops asking about a batch (about 50 s). */
+/** Failed rounds in a row (about 50 s) before the tray says it can't check right now; it keeps asking. */
 const MAX_FAILED_ROUNDS = 10;
+
+/** Said in the tray while the batches can't be asked about (a server restart, say). */
+export const CANT_CHECK_TEXT = "Can’t check right now. Retrying…";
 
 /** The upload queue: add files, watch them go, clear the finished ones. */
 export function useUploads(onUploaded: () => void) {
@@ -200,14 +203,17 @@ export function useUploads(onUploaded: () => void) {
     return [...ids];
   }, [queue.entries, stored, views, restored]);
 
-  // A batch that keeps failing (not a lost connection: the poller waits those out while
-  // offline) is asked at most this many rounds in a row, not every few seconds for ever.
+  // A batch that keeps failing is asked again at the poller's slowest step (5 s) until it
+  // answers, never given up on: after a server restart nothing else would ask again
+  // (production QA, 5 Nov 2026). After MAX_FAILED_ROUNDS in a row the tray says so.
   const failedRounds = useRef(0);
+  const [checkFailing, setCheckFailing] = useState(false);
   const asked = useRef(new Map<string, number>()); // the round each batch was last asked in
   const poll = usePoll<Followed>({
     load: () => askBatches(following, asked.current, getBatch), // one request a round, however many drops
     onResult: ({ views: answers, gone, failed }) => {
       failedRounds.current = failed ? failedRounds.current + 1 : 0;
+      setCheckFailing(failedRounds.current >= MAX_FAILED_ROUNDS);
       for (const view of answers) {
         dispatch({ type: "batch", batchId: view.id, documents: view.documents, add: restored.has(view.id) });
       }
@@ -217,7 +223,7 @@ export function useUploads(onUploaded: () => void) {
     onFailure: () => undefined, // it keeps trying; the rows show what they have
     again: (round) =>
       round.skipped ||
-      (round.failed && failedRounds.current < MAX_FAILED_ROUNDS) ||
+      round.failed ||
       round.views.some((view) => view.documents.some((document) => beingRead(document.status) || document.understanding === true)),
     signature: (round) => JSON.stringify(round.views.map((view) => [view.id, progressSignature(view.documents)])),
   });
@@ -295,7 +301,7 @@ export function useUploads(onUploaded: () => void) {
     } catch (caught) {
       stopped.current ??= sessionChangedMessage(caught);
       const retry = stopped.current === null && canSendAgain(caught) && kept.current.has(key);
-      const message = uploadErrorText(caught, navigator.onLine);
+      const message = uploadErrorText(caught, navigator.onLine, retry);
       if (drop && isStorageFull(caught)) drop.full ??= message;
       update(key, { kind: "error", message, retry });
     }
@@ -430,6 +436,7 @@ export function useUploads(onUploaded: () => void) {
     reading: readingToSend(limits.readers, reader), // what "Read with" sends with the next upload
     views,
     stored,
+    checkFailing,
     chooseReader,
     addFiles,
     addVersion,
@@ -651,6 +658,7 @@ export function BatchTray({
   canReread,
   onHide,
   folderRows = null,
+  checkFailing = false,
 }: {
   entries: UploadEntry[];
   views: Record<string, BatchView>;
@@ -663,6 +671,7 @@ export function BatchTray({
   canReread: boolean; // a reviewer or an admin: may read a document again
   onHide?: () => void;
   folderRows?: ReactNode; // #484: one row a folder upload, above the drops of files
+  checkFailing?: boolean; // the batches have not answered for a while (useUploads)
 }) {
   // #521 review: what was decided on a row, by suggestion id, kept until Clear finished, so a
   // later poll that no longer asks it never takes the words and Undo away.
@@ -721,6 +730,7 @@ export function BatchTray({
         </span>
       </div>
       {folderRows}
+      {checkFailing && entries.length > 0 && <p className={`muted ${styles.small}`}>{CANT_CHECK_TEXT}</p>}
       {storyPrompt && <p className={`muted ${styles.small}`}>{STORY_PROMPT}</p>}
       {[...batches].map(([id, rows]) => {
         const view = views[id] ?? null;
@@ -731,6 +741,8 @@ export function BatchTray({
         // File management V5: the files of this drop that look like new versions, and Review.
         const versions = suggestionsText(view?.version_suggestion_count ?? view?.version_suggestions?.length ?? 0);
         const found = view?.version_suggestions?.[0];
+        // A server restart fails a drop's files one by one: one button sends them all again.
+        const notSentRows = rows.filter((entry) => entry.state.kind === "error" && entry.state.retry);
         const first = found ? { document_id: found.document.id, display_name: found.document.name } : undefined;
         // #521: each file that looks like a new version gets the choice on its own row.
         const asked = trayChoices(view?.version_suggestions ?? [], decided);
@@ -757,6 +769,14 @@ export function BatchTray({
               </p>
             )}
             {busy && <BatchBar view={view} rows={rows} />}
+            {notSentRows.length > 1 && (
+              <div className={styles.uploadsActions}>
+                <button type="button" className="btn" onClick={() => notSentRows.forEach((entry) => onRetry(entry.key))}>
+                  <Icon name="refresh" />
+                  Retry all not sent
+                </button>
+              </div>
+            )}
             <ul className={styles.uploads}>{rows.map((entry) => row(entry, asked))}</ul>
           </div>
         );

@@ -102,7 +102,6 @@ import {
   TOKENS_LOW,
   TOKENS_RANGE,
   TOKENS_UNDER_AVERAGE,
-  ULC_CEILING_PAISE,
   ULC_HIDDEN,
   ULC_HINT,
   ULC_MODEL_LABEL,
@@ -606,7 +605,7 @@ export function AiFields(props: {
                 id={readerId}
                 label="Who reads the pages"
                 platform={platform}
-                inherit={platform ? `The server's reader (${READER_WORDS.openrouter})` : `Platform default (${from("scan_reader")})`}
+                inherit={platform ? `The server's reader (${READER_WORDS[env.scan_reader]})` : `Platform default (${from("scan_reader")})`}
                 value={draft.scan_reader ?? ""}
                 options={READERS.map((value) =>
                   value === "mistral" && !env.mistral_ready
@@ -661,7 +660,7 @@ export function AiFields(props: {
                       max="0.55"
                       step="0.01"
                       placeholder={
-                        platform ? `The server's setting (${ceilingText(ULC_CEILING_PAISE)})` : `Platform default (${from("ulc_ceiling_paise")})`
+                        `${platform ? "The server's setting" : "Platform default"} (${ceilingText(ceilingOf({ ...draft, ulc_ceiling: "" }, defaults, env, platform))})`
                       }
                       value={draft.ulc_ceiling}
                       // The wheel scrolls the dialog, never the number: the box lets go of the focus first.
@@ -829,7 +828,7 @@ export function AiFields(props: {
               draft={draft}
               level={draft.scan_thinking ?? (platform ? null : defaults.scan_thinking) ?? env.scan_thinking}
               reader={reader}
-              ulcCeiling={ulc ? ceilingOf(draft, defaults, platform) : null}
+              ulcCeiling={ulc ? ceilingOf(draft, defaults, env, platform) : null}
               check={check}
             />
           </div>

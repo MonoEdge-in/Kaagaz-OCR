@@ -373,4 +373,18 @@ describe("a 429 is waited out, never hammered", () => {
     };
     await expect(askBatches(["a"], asked, limited)).rejects.toMatchObject({ status: 429, retryAfter: 2 });
   });
+
+  it("asks again after a lost connection or a server error, never after the server refused the batch (review of #564)", async () => {
+    const round = (caught: unknown) =>
+      askBatches(["a"], new Map(), async () => {
+        throw caught;
+      });
+    for (const lost of [new TypeError("Failed to fetch"), new ApiError(0, "timeout", "Too slow."), new ApiError(502, "error", "Bad gateway.")]) {
+      expect(await round(lost)).toMatchObject({ failed: true, gone: [] });
+    }
+    // A 400, 403 or 409, or a fault in this page, would fail the same way every 5 s for ever.
+    for (const refused of [new ApiError(400, "bad_request", "No."), new ApiError(403, "forbidden", "No."), new ApiError(409, "session_changed", "No."), new Error("bug")]) {
+      expect(await round(refused)).toMatchObject({ failed: false, gone: [] });
+    }
+  });
 });

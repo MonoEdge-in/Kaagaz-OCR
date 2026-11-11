@@ -80,12 +80,15 @@ _TYPES = text(
 # and the word and line changes that change text (#527: a correction may change only a search
 # piece; its Undo only ``undone_at``; a Confirm or Ensemble's resolve changes nothing), and the
 # pieces still without a vector and the vectors' recipes (#535: a vector filled in by the worker
-# later, or cleared by a line correction, changes what meaning search finds).
+# later, or cleared by a line correction, changes what meaning search finds). A document not read
+# yet (received or clean) is left out: its progress writes move its updated_at page by page, and
+# each move made Home pay for its answers again (production QA B2).
 # shortcut: three scans of one customer's rows, fine at today's thousands; an index on
 # (customer_id, updated_at) or a change counter when a customer holds millions.
 _STAMP = text(
     "SELECT (SELECT count(*) || '/' || count(*) FILTER (WHERE deleted_at IS NULL) || '/'"
-    " || coalesce(max(updated_at)::text, '') FROM documents WHERE customer_id = :c) || '|' || (SELECT"
+    " || coalesce(max(updated_at)::text, '') FROM documents WHERE customer_id = :c"
+    " AND status NOT IN ('received', 'clean')) || '|' || (SELECT"
     " count(*) || '/' || coalesce(max(updated_at)::text, '') FROM extracted_values WHERE customer_id = :c)"
     " || '|' || (SELECT count(*) || '/' || coalesce(max(greatest(created_at, undone_at))::text, '')"
     " FROM word_changes WHERE customer_id = :c"

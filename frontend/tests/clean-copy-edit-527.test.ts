@@ -129,6 +129,7 @@ describe("the text box's first text", () => {
   it("has no hidden or control character, as the server checks (names.clean_name)", () => {
     expect(oneLine("Ku\u00admar")).toBe("Kumar"); // a soft hyphen
     expect(oneLine("a\u202eb\u200bc\u0000d\u0085e")).toBe("abcde");
+    expect(oneLine("GST\ud800 2026")).toBe("GST 2026"); // a lone surrogate (port of b8faa1d3, #564)
     expect(oneLine("\u0915\u094d\u200d\u0937")).toBe("\u0915\u094d\u200d\u0937"); // ZWJ stays: Devanagari needs it
     const scotland = "\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}";
     expect(oneLine(`Flag ${scotland}`)).toBe(`Flag ${scotland}`);

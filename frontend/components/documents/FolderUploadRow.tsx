@@ -15,6 +15,7 @@ import { shortPathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
 import { attentionOf, folderLine, itemProblemText, readingLine } from "./folderUpload";
 import type { FolderUploadView } from "./folderUpload";
+import { uploadStateText } from "./logic";
 import styles from "./Documents.module.css";
 
 /** A file this tab could not send, and whether sending it again may help. */
@@ -54,13 +55,19 @@ export function FolderUploadRow({
 }) {
   const uploaded = view.stored + view.duplicates;
   const sending = view.phase === "sending";
-  // "Add new files only", while listing: the bar shows the files checked, and Stop stops it.
+  const busy = sending || view.phase === "stopping"; // no Retry until the files being sent are in
+  // "Add new files only", while listing: the bar shows the files checked.
   const checked = view.phase === "registering" ? view.checked : null;
   const meter = checked ?? uploaded;
   const retryable = notSent.rows.some((row) => row.retry);
-  const settled = view.phase === "done" || view.phase === "refused";
+  // Production QA (5 Nov 2026): a stopped row, or one to choose again, can be cleared too; and
+  // one stopping (review of #564): a file being sent may never finish (offline, a server that
+  // never answers), so the row is never left with no button. Its run's later events are ignored.
+  const settled = ["done", "refused", "stopped", "needs_pick", "stopping"].includes(view.phase);
   const reading = readingLine(view);
   const attention = attentionOf(view);
+  // Each button names its folder for a screen reader, as Clear does (production QA, 5 Nov 2026).
+  const named = <span className="visually-hidden">{` folder “${view.rootName}”`}</span>;
   return (
     <div className={styles.batch}>
       <div className={styles.batchHead}>
@@ -84,20 +91,28 @@ export function FolderUploadRow({
         <ul className={styles.uploads}>
           {view.sending.map((row) => (
             <li key={row.itemId} className={`muted ${styles.small}`}>
-              Sending {row.name}
+              {row.waiting
+                ? `${row.name}: ${uploadStateText({ kind: "offline", fraction: row.fraction, server: row.waiting === "server" })}`
+                : `Sending ${row.name}`}
             </li>
           ))}
         </ul>
       )}
       <div className={styles.uploadsActions}>
-        {(sending || checked !== null) && (
+        {(sending || view.phase === "planning" || view.phase === "registering") && (
           <button type="button" className="btn" onClick={actions.stop}>
-            Stop
+            Stop{named}
+          </button>
+        )}
+        {view.phase === "stopping" && (
+          <button type="button" className="btn" disabled>
+            {view.sending.length > 0 ? "Stopping after the files being sent…" : "Stopping…"}
+            {named}
           </button>
         )}
         {view.phase === "stopped" && held && (
           <button type="button" className="btn" onClick={actions.resume}>
-            Continue upload
+            Continue upload{named}
           </button>
         )}
         {(view.phase === "needs_pick" || (view.phase === "stopped" && !held)) && (
@@ -105,14 +120,14 @@ export function FolderUploadRow({
             Choose “{view.rootName}” again
           </button>
         )}
-        {retryable && !sending && held && (
+        {retryable && !busy && held && (
           <button type="button" className="btn" onClick={actions.retryAll}>
-            Retry all failed
+            Retry all failed{named}
           </button>
         )}
         {settled && (
           <button type="button" className="btn btn-quiet" onClick={actions.clear}>
-            Clear<span className="visually-hidden">{` folder “${view.rootName}”`}</span>
+            Clear{named}
           </button>
         )}
       </div>
@@ -124,7 +139,7 @@ export function FolderUploadRow({
                 <span className={styles.fileName}>{row.item.name}</span>
                 <span className={`muted ${styles.small}`}>In {where(tree, row.item.folder_id)}</span>
                 <p className={`error-text ${styles.small}`}>{row.message}</p>
-                {row.retry && held && !sending && (
+                {row.retry && held && !busy && (
                   <button type="button" className={`btn ${styles.inlineAction}`} onClick={() => actions.retry(row.item.id)}>
                     Retry<span className="visually-hidden">{` ${row.item.name}`}</span>
                   </button>

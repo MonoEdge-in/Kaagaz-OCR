@@ -132,4 +132,10 @@ def test_a_map_value_with_no_spot_is_never_quoted_even_a_word() -> None:
         ]
     )
     said = _map_lines(lands[("d1", "land:1")], OwnerAsk(properties=("45",), borders=True))
-    assert [text for text, _ in said] == ["The neighbours printed for Survey 45: 46 on the east."]
+    # Changed on purpose (review of #564): the west neighbour, printed with no spot, is never quoted
+    # but never left out as if not printed either.
+    assert [text for text, _ in said] == [
+        "The neighbours printed for Survey 45: 46 on the east.",
+        "Other neighbours of Survey 45 are printed on the map where Kaagaz can't point to them; open the map"
+        " to read them.",
+    ]

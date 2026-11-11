@@ -365,12 +365,18 @@ export const canSendAgain = (caught: unknown) =>
   !isStorageFull(caught) &&
   (!(caught instanceof ApiError) || caught.status === 0 || caught.status === 429 || caught.status >= 500);
 
-/** The words for an upload that failed permanently. Transient connection loss resumes automatically. */
-export function uploadErrorText(caught: unknown, online: boolean): string {
+/** The words for an upload that failed permanently. Transient connection loss resumes automatically.
+ * `retry`: the row offers Retry, so the words may say so. */
+export function uploadErrorText(caught: unknown, online: boolean, retry = true): string {
   if (isStorageFull(caught)) return (caught as ApiError).message; // the API's words, as they are (#516)
   if (!online) {
     // A failed row: it does not resume by itself (a paused one is the "offline" state instead).
     return "Not uploaded: no internet connection. Choose the file again when you're back online.";
+  }
+  // A 502 or 504 after the retries: the proxy found the server restarting (production QA, 5 Nov
+  // 2026). The API's own 503 (busy) keeps its words, below.
+  if (caught instanceof ApiError && (caught.status === 502 || caught.status === 504)) {
+    return retry ? "The server was restarting. Retry." : "The server was restarting.";
   }
   return caught instanceof ApiError ? caught.message : "Upload failed. Check your connection, then try again.";
 }

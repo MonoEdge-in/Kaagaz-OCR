@@ -170,7 +170,7 @@ export const LINE_SAVED_HERE = "Line corrected here, but search could not be upd
 // ZWJ and a flag emoji's tags kept), trimmed.
 const BREAKS = /(?:\r\n|[\n\r\u2028\u2029\t])+/g;
 const FLAG = /(\u{1F3F4}[\u{E0020}-\u{E007E}]+\u{E007F})/u;
-const HIDDEN = /[\x00-\x1f\x7f-\x9f]|(?![\u200c\u200d])[\p{Cf}\p{Zl}\p{Zp}]/gu;
+const HIDDEN = /[\x00-\x1f\x7f-\x9f]|(?![\u200c\u200d])[\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu;
 
 /** A line's text as one typed line: what its text box starts with, so nothing glued or invisible is saved. */
 export const oneLine = (text: string) =>

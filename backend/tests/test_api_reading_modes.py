@@ -59,7 +59,7 @@ def allowed(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     def usable_models(conn: Connection, customer_id: str, **kwargs: Any) -> Sequence[RowMapping]:
         return ROWS
 
-    def effective_settings(conn: Connection, customer_id: str) -> dict[str, Any]:
+    def effective_settings(conn: Connection, customer_id: str, **kwargs: Any) -> dict[str, Any]:
         switches["asked"] += 1
         return switches
 

@@ -52,7 +52,9 @@ single, the default Gemini model with a known price as lead (else OCR_MODEL), mi
 the ceiling in dollars (``Reading.ulc``) and the note ``ultra_low_cost``, whatever the document
 asked for ("Read with", Dynamic, Careful, Save, High and Max); the local reader only stays the
 local reader only. Ensemble is refused (``resolve_ensemble``). Any other reader never reads the
-ceiling, so no organisation that did not choose it reads differently.
+ceiling, so no organisation that did not choose it reads differently. #564 [V]: production turns it
+on with OCR_ULTRA_LOW_COST; here that switch is the platform's reader while none is saved, and
+the ceiling it reads at is OCR_PAGE_CEILING_PAISE unless one is saved (``with_env_ulc``).
 
 The ledger columns (``ledger_tokens_in``/``_out``) are the average tokens a scanned page
 took in the organisation's own ledger of the last LEDGER_DAYS days (MC3); prices never
@@ -67,6 +69,8 @@ Time: one statement for the area's list (a few rows, each with one range read of
 ledger rows, the model_usage_period index) and one for the settings.
 """
 
+import functools
+import logging
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -80,6 +84,7 @@ from kaagaz.reading.mistral_ocr import DEFAULT_MISTRAL_MODEL, MISTRAL, OPENROUTE
 from kaagaz.reading.ocr import GEMINI, READER_PROMPT_VERSION, UlcCeiling, UlcPrices
 from kaagaz.settings import DEFAULT_PROVIDER, NO_THINKING, Settings
 
+logger = logging.getLogger(__name__)
 # MC3: the days of ledger a page's estimate averages over.
 LEDGER_DAYS = 30
 MODES = ("single", "dynamic", "ensemble")  # documents.read_mode (0026)
@@ -375,12 +380,39 @@ def usable_chat_models(conn: Connection, customer_id: str, *, settings: Settings
     return _usable(conn.execute(_CHAT, params).mappings().all(), settings)
 
 
-def effective_settings(conn: Connection, customer_id: str) -> RowMapping:
+def effective_settings(
+    conn: Connection, customer_id: str, *, settings: Settings | None = None
+) -> Mapping[Any, Any]:
     """The organisation's AI settings after inheritance: scan_thinking (None: the env's),
     chat_levels, chat_default_level (None: low only), scan_resolution, careful_thinking,
     careful_resolution, page_max_output_tokens (#463; None: the env's), dynamic, ensemble, and
-    cost_saving (#463 review: whether the switches let Dynamic on at all)."""
-    return conn.execute(_SETTINGS, {"customer": customer_id}).mappings().one()
+    cost_saving (#463 review: whether the switches let Dynamic on at all), with ``with_env_ulc``
+    (#564 [V]). ``settings`` None: the saved values only, for a caller that reads no scan setting
+    (Ask, the Ensemble grant)."""
+    row = conn.execute(_SETTINGS, {"customer": customer_id}).mappings().one()
+    return row if settings is None else with_env_ulc(row, settings)
+
+
+def with_env_ulc(values: Mapping[Any, Any], settings: Settings) -> Mapping[Any, Any]:
+    """#564 [V]: while production's OCR_ULTRA_LOW_COST is on, it is the ``scan_reader`` where
+    ``values`` (settings after inheritance, or the operator's draft) hold none (logged once), read
+    at OCR_PAGE_CEILING_PAISE unless a ceiling is saved: read at use, never written at start-up.
+    A saved reader keeps its own rule, its saved ceiling or ULC_DEFAULT_PAISE (review of #564:
+    a saved setting always wins). No statement."""
+    if not settings.ocr_ultra_low_cost or values["scan_reader"] is not None:
+        return values
+    _env_ulc_noted()
+    return {
+        **values,
+        "scan_reader": ULTRA_LOW_COST,
+        "ulc_ceiling_paise": values["ulc_ceiling_paise"] or settings.ocr_page_ceiling_paise,
+    }
+
+
+@functools.cache
+def _env_ulc_noted() -> None:
+    """#564: the first time OCR_ULTRA_LOW_COST makes Ultra low cost read, once a process."""
+    logger.info("ultra low cost from OCR_ULTRA_LOW_COST", extra={"code": "env_ultra_low_cost"})
 
 
 def page_cost(row: Mapping[Any, Any]) -> float:
@@ -463,7 +495,7 @@ def resolve_scan(
         if lead_row is not None
         else Agent(settings.ocr_model, DEFAULT_PROVIDER, settings.ocr_model)
     )
-    allowed = effective_settings(conn, customer_id) if allowed is None else allowed
+    allowed = effective_settings(conn, customer_id, settings=settings) if allowed is None else allowed
     thinking, notes = _thinking(allowed["scan_thinking"], lead_row, settings)
     levels = _levels(allowed)
 
@@ -673,7 +705,7 @@ def resolve_ensemble(conn: Connection, customer_id: str, document_id: str, *, se
     starts (S2)."""
     if settings.ocr_engine != GEMINI:
         raise AiNotAllowed("ensemble_not_allowed")
-    allowed = effective_settings(conn, customer_id)  # #463 review: read once
+    allowed = effective_settings(conn, customer_id, settings=settings)  # #463 review: read once
     if not allowed["ensemble"] or allowed["scan_reader"] in (MISTRAL, ULTRA_LOW_COST):
         raise AiNotAllowed("ensemble_not_allowed")
     scan = resolve_scan(conn, customer_id, document_id, settings=settings, allowed=allowed)

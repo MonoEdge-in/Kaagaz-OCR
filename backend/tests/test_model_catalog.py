@@ -600,3 +600,33 @@ def test_the_model_name_pattern_finds_names_and_spares_other_slashes() -> None:
         "image/png",
     ):
         assert not MODEL_NAME.search(kept), kept
+
+
+class _EmptyCatalogue:
+    """A database whose model_catalog holds no row (no refresh has run yet)."""
+
+    @contextmanager
+    def system(self) -> Iterator["_EmptyCatalogue"]:
+        yield self
+
+    def execute(self, statement: Any, params: Any = None) -> Any:
+        class _Result:
+            def scalar_one(self) -> bool:
+                return False
+
+            def __iter__(self) -> Iterator[Any]:
+                return iter([])
+
+        return _Result()
+
+
+def test_review_564_no_env_model_is_called_missing_before_the_first_refresh(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Review of #564: at worker start, before any catalogue refresh, every replica logged an ERROR
+    "env model not usable ... missing". With no catalogue row at all nothing is checked yet."""
+    caplog.set_level(logging.INFO, logger="kaagaz.worker")
+    settings = make_settings(model_enabled=True)
+    assert catalog.check_env_models(cast(Database, _EmptyCatalogue()), settings) == []
+    assert [r.levelname for r in caplog.records if r.getMessage() == "env model not usable"] == []
+    assert [r.getMessage() for r in caplog.records] == ["env models not checked"]

@@ -122,7 +122,7 @@ from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
-from kaagaz.jobs.catalog import RefreshCatalog, Refreshed, last_refreshed, refresh
+from kaagaz.jobs.catalog import RefreshCatalog, Refreshed, check_env_models, last_refreshed, refresh
 from kaagaz.jobs.fair_share import (
     PLATFORM_BUSY,
     FairShare,
@@ -185,7 +185,17 @@ FINGERPRINT_PASS = 50
 # The only extra fields a log line may carry. Anything else passed in
 # ``extra`` is dropped, so a careless call cannot log document data.
 _PACKAGE = os.path.dirname(os.path.abspath(__file__)) + os.sep  # kaagaz/, for crash_site
-_SAFE_FIELDS = ("customer_id", "document_id", "code", "retryable", "outcome", "where", "step", "seconds")
+_SAFE_FIELDS = (
+    "customer_id",
+    "document_id",
+    "code",
+    "retryable",
+    "outcome",
+    "where",
+    "step",
+    "seconds",
+    "model",
+)
 
 
 class JsonFormatter(logging.Formatter):
@@ -927,6 +937,8 @@ def _serve(settings: Settings) -> None:
     upgrades = UpgradeLocalReads(
         vectors, upgrade, lambda: gate.status()[0], _utc_now, copies=settings.worker_replicas, lock=lock
     )
+    if settings.ocr_engine == GEMINI:
+        check_env_models(db, settings)  # production QA L2: a withdrawn OCR_MODEL named at start
     catalog = RefreshCatalog(
         upgrades,
         catalog_refresh(settings, db),

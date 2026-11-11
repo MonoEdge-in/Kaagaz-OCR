@@ -4,6 +4,7 @@ verify-models pass, and a model OpenRouter no longer lists stays, ineligible. Th
 filter rules themselves: ``test_model_catalog.py``."""
 
 import copy
+import logging
 from collections.abc import Iterator
 from datetime import date
 from typing import Any
@@ -131,3 +132,54 @@ def test_0023_refuses_a_model_id_outside_the_pattern(db: Database, model_id: str
             " VALUES (:m, 'x', 1, 1)",
             {"m": model_id},
         )
+
+
+def test_l2_a_refresh_names_each_env_model_the_catalogue_lacks_or_holds_ineligible(
+    db: Database, fake: OpenRouterFake, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Production QA L2: a withdrawn OCR_MODEL showed only as 404s, one page at a time. After
+    each refresh (and at worker start) an ERROR names each model .env sets that the catalogue
+    does not hold, or holds as not eligible for its use: OCR_MODEL to read, MODEL_CHAT to answer."""
+    caplog.set_level(logging.ERROR, logger="kaagaz.worker")
+    gone = "google/gemini-0-withdrawn"
+    settings = make_settings(
+        openrouter_api_key=KEY,
+        openrouter_base_url=fake.url,
+        ocr_model=PRO,
+        model_chat=gone,
+        model_enabled=True,
+    )
+    catalog.refresh(db, OpenRouterClient(settings), settings, today=TODAY, pause=lambda seconds: None)
+    logged = [r for r in caplog.records if r.getMessage() == "env model not usable"]
+    assert [(r.__dict__["where"], r.__dict__["model"], r.__dict__["code"]) for r in logged] == [
+        ("MODEL_CHAT", gone, "missing")
+    ]
+    _owner(db, "UPDATE model_catalog SET eligible = false WHERE id = :m", {"m": PRO})
+    assert catalog.check_env_models(db, settings) == [
+        ("OCR_MODEL", PRO, "not_eligible"),
+        ("MODEL_CHAT", gone, "missing"),
+    ]
+    off = make_settings(ocr_model=SONNET, model_chat=gone, model_enabled=False)
+    assert catalog.check_env_models(db, off) == []  # MODEL_CHAT is not used with AI off
+
+
+def test_review_564_with_the_ulc_switch_on_an_ocr_model_that_cannot_lead_it_is_named(
+    db: Database, fake: OpenRouterFake, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Review of #564: while OCR_ULTRA_LOW_COST is on, OCR_MODEL (Ultra low cost's lead unless a
+    priced Gemini default is chosen) that is not a priced Gemini taking minimal thinking is named
+    at error after each refresh and at worker start (never a start-up that fails)."""
+    settings = make_settings(openrouter_api_key=KEY, openrouter_base_url=fake.url, ocr_model=PRO)
+    catalog.refresh(db, OpenRouterClient(settings), settings, today=TODAY, pause=lambda seconds: None)
+    switched = make_settings(ocr_model=PRO, ocr_ultra_low_cost=True)
+    [(efforts,)] = _owner(db, "SELECT efforts FROM model_catalog WHERE id = :m", {"m": PRO})
+    _owner(db, "UPDATE model_catalog SET efforts = '{low,high}' WHERE id = :m", {"m": PRO})
+    try:
+        caplog.set_level(logging.ERROR, logger="kaagaz.worker")
+        assert catalog.check_env_models(db, switched) == [("OCR_ULTRA_LOW_COST", PRO, "ulc_not_ready")]
+        assert [r.__dict__["code"] for r in caplog.records if r.getMessage() == "env model not usable"] == [
+            "ulc_not_ready"
+        ]
+        assert catalog.check_env_models(db, make_settings(ocr_model=PRO)) == []  # off: not asked
+    finally:
+        _owner(db, "UPDATE model_catalog SET efforts = :e WHERE id = :m", {"e": efforts, "m": PRO})

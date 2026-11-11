@@ -480,6 +480,12 @@ class Settings:
     # Mistral (council 2 Nov 2026); off unless MISTRAL_ZDR_APPROVED=true.
     mistral_api_key: str | None = field(default=None, repr=False)
     mistral_zdr_approved: bool = False
+    # Production's Ultra low cost switch (#488 there, 65ee12e3; #564 [V]): with ocr_ultra_low_cost
+    # (off unless set to true; needs OCR_ENGINE=gemini) Ultra low cost is the platform's reader
+    # while the super admin has saved none, at ocr_page_ceiling_paise a page (20-55, 55 when unset)
+    # unless a ceiling is saved (``db.models.effective_settings``). A saved reader always wins.
+    ocr_ultra_low_cost: bool = False
+    ocr_page_ceiling_paise: int = 55
     # Folder upload (#484, council 3 Nov 2026): a folder upload's file sends have their own rate
     # bucket, folder_upload_calls_per_minute a user; this API process takes at most
     # folder_upload_files_at_once_per_org of one organisation's files at once and
@@ -637,6 +643,10 @@ class Settings:
         mistral_api_key = env.optional("MISTRAL_API_KEY")
         if mistral_api_key is not None and _API_KEY.fullmatch(mistral_api_key) is None:
             raise SettingsError("MISTRAL_API_KEY must be printable ASCII with no spaces")
+        ultra_low_cost = env.optional("OCR_ULTRA_LOW_COST") is not None and env.boolean("OCR_ULTRA_LOW_COST")
+        if ultra_low_cost and ocr_engine != "gemini":
+            raise SettingsError("OCR_ULTRA_LOW_COST=true needs OCR_ENGINE=gemini: no model reads the pages")
+        page_ceiling_paise = env.between_or("OCR_PAGE_CEILING_PAISE", 20, 55, default=55)  # 0073's range
         queue_url = env.text("QUEUE_URL")
         queue_express_url = (
             None if env.optional("QUEUE_EXPRESS_URL") is None else env.url("QUEUE_EXPRESS_URL")
@@ -796,6 +806,8 @@ class Settings:
             mistral_api_key=mistral_api_key,
             mistral_zdr_approved=env.optional("MISTRAL_ZDR_APPROVED") is not None
             and env.boolean("MISTRAL_ZDR_APPROVED"),
+            ocr_ultra_low_cost=ultra_low_cost,
+            ocr_page_ceiling_paise=page_ceiling_paise,
         )
 
 

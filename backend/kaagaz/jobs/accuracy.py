@@ -167,7 +167,7 @@ class AccuracyChecks:
                 logger.info("duplicate delivery skipped", extra={**ids, "code": "check_settled"})
                 return
             rows = models.usable_models(conn, customer_id, settings=self._settings)
-            allowed = dict(models.effective_settings(conn, customer_id))
+            allowed = dict(models.effective_settings(conn, customer_id, settings=self._settings))
             picked = conn.execute(_PAGES, {"c": customer_id, "n": claimed["max_pages"]}).all()
             ulc = ulc_parts(claimed["model"])
             prices = None if ulc is None else models.ulc_prices(conn, ulc[1])

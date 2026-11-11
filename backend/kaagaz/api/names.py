@@ -23,8 +23,10 @@ CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 # #520: a format character (a bidi override or isolate, a direction mark, a zero-width space, a
 # byte order mark, a soft hyphen) or a line or paragraph separator hides or reorders what a name
 # shows: "invoice<U+202E>fdp.exe" shows as "invoiceexe.pdf". ZWNJ and ZWJ (U+200C, U+200D) stay:
-# Devanagari needs them. A folder upload's names (``upload_name``) refuse the same ones.
-_HIDDEN_CATEGORIES = frozenset({"Cf", "Zl", "Zp"})
+# Devanagari needs them. A folder upload's names (``upload_name``) refuse the same ones. A lone
+# surrogate (Cs, "\ud800" in JSON) draws nothing and can't be stored: it goes too, as production's
+# rule refuses it (port of b8faa1d3, #564; it was a 500).
+_HIDDEN_CATEGORIES = frozenset({"Cf", "Cs", "Zl", "Zp"})
 _JOINERS = "\u200c\u200d"
 # #520 review: a flag emoji's tag characters (U+E0020 to U+E007E after the black flag U+1F3F4,
 # ended by the cancel tag U+E007F: Scotland, Wales, England) stay with it; any other tag

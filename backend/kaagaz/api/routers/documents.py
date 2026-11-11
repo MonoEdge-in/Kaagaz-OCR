@@ -139,6 +139,7 @@ Why some choices:
 """
 
 import hashlib
+import logging
 import math
 import uuid
 from collections.abc import Mapping, Sequence
@@ -210,7 +211,7 @@ from kaagaz.db.folders import MAX_DEPTH
 from kaagaz.db.upload_policy import customer_policy
 from kaagaz.db.zip_unpacks import Unpack
 from kaagaz.ingestion import resolve, sniff
-from kaagaz.ingestion.errors import RejectCode, UploadRejected
+from kaagaz.ingestion.errors import BackendUnavailable, RejectCode, UploadRejected
 from kaagaz.ingestion.messages import over_every_limit_message, storage_full_message, too_large_message
 from kaagaz.ingestion.pagecount import goes_express
 from kaagaz.ingestion.policy import UploadPolicy
@@ -223,6 +224,7 @@ from kaagaz.search import page_words
 from kaagaz.settings import Settings
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _UPLOAD_PART_BYTES = 8 * 1024 * 1024
 
@@ -975,7 +977,14 @@ def resumable_candidates(body: ResumableUploadStart, user: User, context: Contex
     with context.db.customer(user.customer_id) as conn:
         return {
             "candidates": upload_sessions_sql.candidates(
-                conn, user.customer_id, user.user_id, filename, body.file_size, body.fingerprint
+                conn,
+                user.customer_id,
+                user.user_id,
+                filename,
+                body.file_size,
+                body.fingerprint,
+                batch_id=_form_uuid(body.batch_id),
+                item_id=_form_uuid(body.folder_upload_item_id),
             )
         }
 
@@ -983,7 +992,8 @@ def resumable_candidates(body: ResumableUploadStart, user: User, context: Contex
 @router.post("/documents/upload-sessions")
 def create_resumable_session(body: ResumableUploadStart, user: User, context: Context) -> dict[str, Any]:
     """The session (``id``, ``part_size``, ``part_count``); for a folder upload's item already in,
-    the upload reply with the item instead (nothing to send)."""
+    the upload reply with the item instead (nothing to send), and for a finished session resumed,
+    its stored reply."""
     same_user(body.user_id, user)
     policy = user_upload_policy(context, user)
     if body.file_size <= 0 or body.file_size > policy.largest_limit:
@@ -1007,7 +1017,7 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
     if body.resume_session_id:
         session_id = str(uuid.UUID(body.resume_session_id))
         with context.db.customer(user.customer_id) as conn:
-            row = upload_sessions_sql.get(conn, user.customer_id, user.user_id, session_id)
+            row = upload_sessions_sql.get(conn, user.customer_id, user.user_id, session_id, finished=True)
         if (
             row is None
             or row["file_size"] != body.file_size
@@ -1015,6 +1025,9 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
             or cast(dict[str, Any], row["metadata"]).get("fingerprint") != body.fingerprint
         ):
             raise ApiError(404, "not_found")
+        done = cast(dict[str, Any], row["metadata"]).get("completed")
+        if done is not None:  # a Retry after a lost reply: its stored reply (review of #564)
+            return cast(dict[str, Any], done)
         return {"id": session_id, "part_size": _UPLOAD_PART_BYTES, "part_count": count}
 
     folder_id = _form_uuid(body.folder_id) if item is None else item.folder_id
@@ -1123,10 +1136,51 @@ async def upload_resumable_part(
 @router.post("/documents/upload-sessions/{session_id}/complete")
 def complete_resumable_upload(session_id: uuid.UUID, user: User, context: Context) -> JSONResponse:
     with context.db.customer(user.customer_id) as conn:
-        session = upload_sessions_sql.get(conn, user.customer_id, user.user_id, str(session_id))
+        session = upload_sessions_sql.get(
+            conn, user.customer_id, user.user_id, str(session_id), finished=True
+        )
     if session is None:
         raise ApiError(404, "not_found")
     metadata = cast(dict[str, Any], session["metadata"])
+    if metadata.get("completed") is not None:  # sent again after a lost reply (production QA T1)
+        return JSONResponse(metadata["completed"], status_code=200)
+    customer_id, user_id, key = user.customer_id, user.user_id, str(session_id)
+    with context.db.customer(customer_id) as conn:
+        claimed = upload_sessions_sql.claim(conn, customer_id, user_id, key)
+        if not claimed:  # finished meanwhile, or another complete is storing it (review of #564)
+            latest = upload_sessions_sql.get(conn, customer_id, user_id, key, finished=True)
+    if not claimed:
+        done = None if latest is None else cast(dict[str, Any], latest["metadata"]).get("completed")
+        if done is not None:
+            return JSONResponse(done, status_code=200)
+        raise ApiError(429, "rate_limited", _STILL_STORING, headers={"Retry-After": "2"})
+    try:
+        result, status = _store_completed(context, user, session_id, session, metadata)
+        with context.db.customer(customer_id) as conn:  # the reply first: a resend gets it
+            upload_sessions_sql.complete(conn, customer_id, user_id, key, result)
+    except BaseException:
+        with context.db.customer(customer_id) as conn:
+            upload_sessions_sql.release(conn, customer_id, user_id, key)
+        raise
+    try:
+        context.storage.delete_resumable(str(session["storage_key"]))
+    except BackendUnavailable as error:  # the purge removes the parts with the session, a day on
+        logger.warning("resumable parts left for the purge", extra={"code": type(error).__name__})
+    return JSONResponse(result, status_code=status or (200 if result["duplicate"] else 201))
+
+
+_STILL_STORING = "This file is still being saved. It is checked again in a moment."
+
+
+def _store_completed(
+    context: AppContext,
+    user: CurrentUser,
+    session_id: uuid.UUID,
+    session: dict[str, Any],
+    metadata: dict[str, Any],
+) -> tuple[dict[str, Any], int | None]:
+    """The claimed session's file stored (or refused, its parts and session removed): the reply
+    and its status (None: by the reply's ``duplicate``)."""
     if not context.storage.resumable_complete(str(session["storage_key"])):
         parts = context.storage.resumable_parts(
             str(session["storage_key"]), str(session["storage_upload_id"])
@@ -1187,10 +1241,7 @@ def complete_resumable_upload(session_id: uuid.UUID, user: User, context: Contex
             with context.db.customer(user.customer_id) as conn:
                 upload_sessions_sql.delete(conn, user.customer_id, user.user_id, str(session_id))
             raise
-    context.storage.delete_resumable(str(session["storage_key"]))
-    with context.db.customer(user.customer_id) as conn:
-        upload_sessions_sql.delete(conn, user.customer_id, user.user_id, str(session_id))
-    return JSONResponse(result, status_code=status or (200 if result["duplicate"] else 201))
+    return result, status
 
 
 def _document_or_404(conn: Connection, user: CurrentUser, document_id: uuid.UUID) -> RowMapping:

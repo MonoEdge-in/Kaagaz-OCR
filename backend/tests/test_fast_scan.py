@@ -96,10 +96,10 @@ class CarefulTest(unittest.TestCase):
 
     def test_inline_careful_chooses_careful_pages_pages_with_the_same_notes(self) -> None:
         answers = {
-            1: reply(value(line("a"), quality="poor", handwritten=True)),
+            1: reply(value(line("a"), quality="poor", handwritten=True, issues=("handwriting_hard",))),
             2: CLEAN,
             3: reply(value(line("b", unsure=("b",)), quality="fair")),
-            4: reply(value(line("c"), handwritten=True)),
+            4: reply(value(line("c"), handwritten=True, issues=("handwriting_hard",))),  # B1
         }
         heights = {1000 + n: n for n in answers}  # each page its own height, so its own answer
         client = ModelClient(
