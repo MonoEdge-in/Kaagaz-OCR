@@ -108,6 +108,7 @@ from pdfminer.psexceptions import PSException
 from pdfplumber.utils.exceptions import MalformedPDFException, PdfminerException
 from PIL import Image
 
+from kaagaz import pdfminer_fix  # noqa: F401  (for its effect: a /P 0 PDF opens, #551)
 from kaagaz.ingestion import sniff
 from kaagaz.preparing.page_checks import is_blank, largest_image_dpi
 from kaagaz.preparing.pages import check_page_count, open_pdf, pdf_page, render_pdf_page

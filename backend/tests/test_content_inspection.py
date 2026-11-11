@@ -713,15 +713,16 @@ def rc4(key: bytes, data: bytes) -> bytes:
     return bytes(out)
 
 
-def owner_locked_pdf() -> bytes:
+def owner_locked_pdf(permissions: int = -44) -> bytes:
     """A one-page PDF encrypted with an owner password only (printing and copying turned
-    off): every reader opens it with no password, as a bank or registry statement often is.
+    off; ``permissions=0`` turns every permission off, #551): every reader opens it with no
+    password, as a bank or registry statement often is.
     PDF 1.7 algorithms 3 (O), 2 (the key) and 4 (U), 40-bit RC4."""
 
     def md5(data: bytes) -> bytes:
         return hashlib.md5(data, usedforsecurity=False).digest()  # what the format uses
 
-    doc_id, permissions = b"\x33" * 16, -44
+    doc_id = b"\x33" * 16
     owner = rc4(md5((b"owner-secret" + PASSWORD_PAD)[:32])[:5], PASSWORD_PAD)
     key = md5(PASSWORD_PAD + owner + struct.pack("<i", permissions) + doc_id)[:5]
     object_4_key = md5(key + b"\x04\x00\x00\x00\x00")[:10]  # object 4, generation 0
@@ -763,6 +764,11 @@ class OrdinaryPdfsFitTheReadBudget(unittest.TestCase):
         locked = owner_locked_pdf()
         self.assertIsNone(inspect(locked))
         self.assertIn(b"/Encrypt", locked)
+
+    def test_a_pdf_locked_with_no_permissions_at_all_passes(self) -> None:
+        """#551 (UAT GR-08): pdfminer read ``/P 0`` as 2**32 and crashed packing it, so a
+        PDF with every permission off was refused as one that could not be checked."""
+        self.assertIsNone(inspect(owner_locked_pdf(permissions=0)))
 
     def test_a_pdf_that_needs_a_password_to_open_is_unscannable(self) -> None:
         """Nothing in it can be read, so it is not called safe: the customer sees the

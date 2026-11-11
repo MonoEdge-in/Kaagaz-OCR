@@ -83,6 +83,7 @@ from pdfminer.pdftypes import PDFObjRef, PDFStream
 from pdfminer.psexceptions import PSEOF, PSException
 from pdfminer.psparser import KWD, PSBaseParser, PSKeyword, PSLiteral
 
+from kaagaz import pdfminer_fix  # noqa: F401  (for its effect: a /P 0 PDF opens, #551)
 from kaagaz.ingestion import resolve
 from kaagaz.ingestion.sniff import HEIC, JPEG, OLE2, PDF, PNG, TEXT, TIFF, ZIP, detect_type
 from kaagaz.reading.spans import ReadError
