@@ -228,14 +228,14 @@ def test_the_shipped_settings_give_every_allowed_type_its_limit() -> None:
     policy = upload_policy(settings, customer_max_mb=None)
     limits = {detected: policy.limit_for(detected) for detected in settings.allowed_types}
     assert limits == {
-        "pdf": 50 * MB,
+        "pdf": 100 * MB,  # Changed on purpose (#569, 11 Nov 2026)
         "png": 20 * MB,
         "jpeg": 20 * MB,
         "tiff": 20 * MB,
         "heic": 20 * MB,  # #522
         "text": 10 * MB,
-        "zip": 50 * MB,  # #522: a zip or an old Office file at the PDF limit; its kind's after the scan
-        "ole2": 50 * MB,
+        "zip": 100 * MB,  # #522: a zip or an old Office file at the PDF limit; its kind's after the scan
+        "ole2": 100 * MB,
     }
     assert (settings.max_pages, settings.max_image_pixels) == (100, 40_000_000)
 
