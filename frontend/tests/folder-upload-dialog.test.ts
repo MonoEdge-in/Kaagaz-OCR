@@ -321,6 +321,14 @@ describe("the tray's row for a folder upload", () => {
     expect(row("stopped", false)).toContain("Choose “A” again");
   });
 
+  it("offers Clear on a row stopped or waiting to be chosen again, never while it sends or stops", () => {
+    expect(row("stopped", true)).toContain("Clear<span");
+    expect(row("stopped", false)).toContain("Clear<span");
+    expect(row("needs_pick", false)).toContain("Clear<span");
+    expect(row("sending")).not.toContain("Clear<span");
+    expect(row("stopping")).not.toContain("Clear<span");
+  });
+
   const settled = (counts: { failed?: number; problem?: number; duplicate?: number; held?: number }, notSent = 0) => {
     let state = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, { type: "start", id: "u", rootName: "A", total: 10 });
     const summary = {

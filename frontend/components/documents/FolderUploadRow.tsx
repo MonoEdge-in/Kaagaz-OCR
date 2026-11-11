@@ -59,7 +59,8 @@ export function FolderUploadRow({
   const checked = view.phase === "registering" ? view.checked : null;
   const meter = checked ?? uploaded;
   const retryable = notSent.rows.some((row) => row.retry);
-  const settled = view.phase === "done" || view.phase === "refused";
+  // Production QA (5 Nov 2026): a stopped row, or one to choose again, can be cleared too.
+  const settled = ["done", "refused", "stopped", "needs_pick"].includes(view.phase);
   const reading = readingLine(view);
   const attention = attentionOf(view);
   return (
