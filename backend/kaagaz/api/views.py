@@ -24,7 +24,7 @@ from kaagaz.db.tags import TagRow
 from kaagaz.db.trashed_folders import TrashedFolder
 from kaagaz.db.zip_unpacks import Unpack
 from kaagaz.eta import time_left
-from kaagaz.ingestion.unzip import REASONS, SHORT_REASONS, ZIP_FAILURES
+from kaagaz.ingestion.unzip import KEPT_ZIP, REASONS, SHORT_REASONS, ZIP_FAILURES
 from kaagaz.jobs.reading_pause import BUDGET, CODES, DAILY_LIMIT
 from kaagaz.jobs.worker import KEY_PROBLEMS
 from kaagaz.reading.page_quality import ILLEGIBLE_WORDS, READERS_DISAGREE, UNPINNED, fix, says
@@ -395,8 +395,9 @@ def unpack_view(unpack: Unpack | None) -> dict[str, Any] | None:
 
 def zip_message(status: str, failure_code: str | None, unpack: Unpack | None) -> str | None:
     """A zip document's words (#522 PR 3): unpacking k of n files, the result line ("Unpacked:
-    120 files into folder "X", 3 skipped (...)"), where it stopped, why it wasn't unpacked, or
-    that it was kept as a file; None for the usual words (waiting, its virus check)."""
+    120 files into folder "X", 3 skipped (...)", then that the zip still counts toward storage,
+    #555), where it stopped, why it wasn't unpacked, or that it was kept as a file; None for the
+    usual words (waiting, its virus check)."""
     if unpack is None:
         if status == "needs_reader":
             return "Kept as a file, not unpacked: Kaagaz unpacks a zip only when it is uploaded on its own."
@@ -418,7 +419,7 @@ def zip_message(status: str, failure_code: str | None, unpack: Unpack | None) ->
     if status == "failed":
         stopped = ZIP_FAILURES.get(failure_code or "") or "Unpack it again, or try another copy of the zip."
         return f"Unpacking stopped after {line}. {stopped}"
-    return f"Unpacked: {line}."
+    return f"Unpacked: {line}. {KEPT_ZIP}"
 
 
 def _files(count: int) -> str:

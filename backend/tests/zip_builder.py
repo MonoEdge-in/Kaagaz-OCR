@@ -39,6 +39,17 @@ def make_zip_with(entries: Iterable[tuple[str | zipfile.ZipInfo, bytes]]) -> byt
     return out.getvalue()
 
 
+def stored_zip(entries: Iterable[tuple[str | zipfile.ZipInfo, bytes]], *, comment: bytes = b"") -> bytes:
+    """A zip whose files are stored, not compressed, as "store" (``zip -0``) makes one (#553),
+    with the zip's own ``comment``."""
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as archive:
+        for entry, data in entries:
+            archive.writestr(entry, data)
+        archive.comment = comment
+    return out.getvalue()
+
+
 def _central_entries(data: bytes) -> list[tuple[int, str]]:
     """(offset, name) of every central directory entry."""
     found, at = [], data.find(_CENTRAL)

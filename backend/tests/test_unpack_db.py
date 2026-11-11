@@ -86,7 +86,9 @@ def test_a_three_level_zip_becomes_a_folder_of_the_same_shape_and_the_zip_is_kep
     found = unpacking.result(record)
     assert found is not None
     assert (found.file_count, found.stored, found.duplicate, found.failed, found.waiting) == (3, 3, 0, 0, 0)
-    assert zip_message("ready", None, found) == 'Unpacked: 3 files into folder "Archive 2026".'
+    assert (
+        zip_message("ready", None, found) == f'Unpacked: 3 files into folder "Archive 2026". {unzip.KEPT_ZIP}'
+    )
     assert unpacking.beats >= 3
 
 
@@ -99,7 +101,7 @@ def test_one_file_the_scanner_flags_is_refused_and_the_rest_kept(unpacking: Unpa
     assert found is not None
     assert (found.stored, found.failed, found.skipped) == (2, 1, [("eicar.txt", "virus_found")])
     assert zip_message("ready", None, found) == (
-        'Unpacked: 2 files into folder "Archive", 1 skipped (1 failed the virus check).'
+        f'Unpacked: 2 files into folder "Archive", 1 skipped (1 failed the virus check). {unzip.KEPT_ZIP}'
     )
     view = unpack_view(found)
     assert view is not None
@@ -137,6 +139,7 @@ def test_unsafe_files_are_refused_each_with_its_reason_and_never_stored(unpackin
     assert (found.stored, found.failed) == (2, 5)
     assert zip_message("ready", None, found) == (
         'Unpacked: 2 files into folder "Archive", 5 skipped (3 unsafe path, 1 password-protected, 1 link).'
+        f" {unzip.KEPT_ZIP}"
     )
     view = unpack_view(found)
     assert view is not None
@@ -176,8 +179,23 @@ def test_duplicates_in_the_zip_follow_the_duplicate_rule(unpacking: Unpacking) -
     found = unpacking.result(record)
     assert found is not None
     assert (found.stored, found.duplicate, found.failed) == (1, 2, 0)
-    assert zip_message("ready", None, found) == 'Unpacked: 1 file into folder "Archive", 2 already in Kaagaz.'
+    assert (
+        zip_message("ready", None, found)
+        == f'Unpacked: 1 file into folder "Archive", 2 already in Kaagaz. {unzip.KEPT_ZIP}'
+    )
     assert len(unpacking.queue.jobs) == 1  # nothing new stored for a duplicate
+
+
+def test_a_file_whose_only_copy_was_refused_is_stored_again_from_the_zip(unpacking: Unpacking) -> None:
+    """#554: a refused copy alone is not "already in Kaagaz"; the zip's file replaces it."""
+    refused = unpacking.upload(b"refused,once\n1,2\n", "earlier.csv")
+    unpacking.execute("UPDATE documents SET status = 'rejected' WHERE id = :d", d=refused.document_id)
+    data = make_zip([("c.csv", b"refused,once\n1,2\n")])
+    record = unpacking.upload(data)
+    unpacking.unpack(record, data)
+    found = unpacking.result(record)
+    assert found is not None and (found.stored, found.duplicate, found.failed) == (1, 0, 0)
+    assert unpacking.rows("SELECT id FROM documents WHERE id = :d", d=refused.document_id) == []
 
 
 def test_a_second_zip_of_the_same_name_gets_a_folder_of_its_own(unpacking: Unpacking) -> None:

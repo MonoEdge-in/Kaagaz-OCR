@@ -15,6 +15,8 @@ import pytest
 from kaagaz.adapters.scanner import ClamdScanner, LayeredScanner
 from kaagaz.db.engine import Database
 from kaagaz.ingestion import resolve
+from kaagaz.ingestion.ports import Job
+from kaagaz.jobs.unpack import ZipUnpacker
 from kaagaz.reading.wiring import build_reader_socket
 from kaagaz.scanning.gate import DocumentStatus, Verdict
 from tests.db_support import new_customer
@@ -22,10 +24,12 @@ from tests.pdf_builder import Page, Text, make_pdf
 from tests.settings_factory import make_settings
 from tests.support import PDF_BYTES
 from tests.test_adapter_scanner import FakeClamd
+from tests.test_content_inspection import scanned_pdf
 from tests.test_pipeline import CUSTOMER, build, stored_type
 from tests.test_resolve import compound
 from tests.unpack_support import Unpacking
 from tests.xlsx_builder import make_xlsx, make_zip, sheet_xml
+from tests.zip_builder import stored_zip
 
 HEIC = (Path(__file__).with_name("fixtures") / "heic" / "one.heic").read_bytes()
 HTML = (
@@ -138,3 +142,66 @@ def test_each_file_in_a_zip_passes_the_real_scanner_by_its_own_name(
     found = unpacking.result(record)
     assert found is not None
     assert (found.stored, found.failed, found.skipped) == (3, 1, [("notes.txt", "blocked_content")])
+
+
+# #552 (UAT FF-14): an encrypted .docx, .xlsx or .pptx (one OLE2 shape for all three) and a PDF
+# that needs a password to open.
+ENCRYPTED_OFFICE = compound(["EncryptionInfo", "EncryptedPackage"], {"\x06DataSpaces": ["Version"]})
+PASSWORD_FILES = [
+    ("letter.docx", ENCRYPTED_OFFICE),
+    ("book.xlsx", ENCRYPTED_OFFICE),
+    ("slides.pptx", ENCRYPTED_OFFICE),
+    ("statement.pdf", make_pdf([Page(texts=[Text(72, 700, "Total 500")])], password_protected=True)),
+]
+
+
+@pytest.mark.parametrize(("name", "data"), PASSWORD_FILES, ids=[name for name, _ in PASSWORD_FILES])
+def test_a_file_with_a_password_is_rejected_as_one(clamd: ClamdScanner, name: str, data: bytes) -> None:
+    # The content check refuses it as having a password ("password_protected"), never as holding
+    # macros or as one that could not be checked; it is quarantined as any refused file.
+    system = build(scanner=LayeredScanner(clamd), socket=build_reader_socket(make_settings(), None))  # type: ignore[arg-type]
+    doc = system.upload.accept(CUSTOMER, io.BytesIO(data), display_name=name).document_id
+    system.worker.run_once()
+    assert system.statuses.get_status(CUSTOMER, doc) is DocumentStatus.REJECTED
+    assert system.repo.failure_codes[(CUSTOMER, doc)] == "password_protected"
+
+
+@pytest.mark.db
+def test_a_file_with_a_password_in_a_zip_is_skipped_as_one(db: Database, clamd: ClamdScanner) -> None:
+    # #552: the unpacker's own code for it, "encrypted" ("It has a password..."), the rest kept.
+    # Old Office files allowed here, so the file reaches its scan (the test settings allow none).
+    customer, user = new_customer(db)
+    unpacking = Unpacking(db, customer, user)
+    data = make_zip({"letter.docx": ENCRYPTED_OFFICE, "rent.csv": b"Name,Amount\nRent,5000\n"})
+    record = unpacking.upload(data)
+    settings = make_settings(allowed_types=frozenset({"zip", "text", "ole2"}))
+    unpacker = ZipUnpacker(db, unpacking.storage, unpacking.queue, LayeredScanner(clamd), settings)
+    assert unpacker(Job(customer, record.document_id), record, data, lambda: None) is True
+    found = unpacking.result(record)
+    assert found is not None
+    assert (found.stored, found.failed, found.skipped) == (1, 1, [("letter.docx", "encrypted")])
+
+
+@pytest.mark.db
+def test_a_zip_of_stored_pdfs_passes_the_real_scanner_and_is_unpacked(
+    db: Database, clamd: ClamdScanner
+) -> None:
+    # #553 (UAT ZP-04/05), the kit's two zips, every file stored, not compressed: its first PDF's
+    # header no longer refuses the zip whole. The path trick's escaping file is still refused on
+    # its own; a zip inside is kept as a file, and passes its own scan.
+    customer, user = new_customer(db)
+    unpacking = Unpacking(db, customer, user)
+    scanner = LayeredScanner(clamd)
+    unpacker = ZipUnpacker(db, unpacking.storage, unpacking.queue, scanner, make_settings())
+    extract, challan = scanned_pdf(1, dpi=300), scanned_pdf(1, dpi=250)  # as the kit's scans are
+    inner = stored_zip([("inner/extract.pdf", extract)])
+    trick = stored_zip([("../../outside.pdf", extract), ("inside/extract.pdf", extract)])
+    nested = stored_zip([("outer/inner.zip", inner), ("outer/challan.pdf", challan)])
+    for data, stored, skipped in ((trick, 1, [("outside.pdf", "unsafe_path")]), (nested, 2, [])):
+        assert scanner.scan(data, name="kit.zip") is Verdict.CLEAN
+        record = unpacking.upload(data, f"kit {stored}.zip")
+        assert unpacker(Job(customer, record.document_id), record, data, lambda: None) is True
+        found = unpacking.result(record)
+        assert found is not None
+        assert (found.stored, found.failed, found.skipped) == (stored, len(skipped), skipped)
+    assert scanner.scan(inner, name="inner.zip") is Verdict.CLEAN

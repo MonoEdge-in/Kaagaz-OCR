@@ -28,6 +28,7 @@ from tests.pdf_builder import Page, Picture, Text, make_objstm_pdf, make_pdf
 from tests.picture_support import text_like_picture
 from tests.test_resolve import compound
 from tests.xlsx_builder import make_xlsx, sheet_xml
+from tests.zip_builder import stored_zip
 
 WINDOWS_PROGRAM = b"MZ" + b"\x90" * 62 + b"This program cannot be run in DOS mode.\r\r\n$" + b"\x00" * 64
 LINUX_PROGRAM = b"\x7fELF\x02\x01\x01" + b"\x00" * 57
@@ -286,8 +287,11 @@ class DamagedPdfsCannotHideActiveContent(unittest.TestCase):
         self.assertIs(inspect(pdf_with([CATALOG_JS, PAGES, PAGE, JS])), Finding.BLOCKED)
 
     def test_a_damaged_encrypted_pdf_is_unscannable(self) -> None:
+        # Changed on purpose (#552): a file that needs a password to open is refused as one before
+        # its damage is seen, so this is one that opens with no password (an owner password only).
+        self.assertIs(inspect(with_broken_object(owner_locked_pdf(), 3)), Finding.UNSCANNABLE)
         locked = make_pdf([Page(texts=[Text(72, 700, "Total 500")])], password_protected=True)
-        self.assertIs(inspect(with_broken_object(locked, 3)), Finding.UNSCANNABLE)
+        self.assertIs(inspect(with_broken_object(locked, 3)), Finding.ENCRYPTED)
 
     def test_javascript_nested_deeper_than_the_walk_is_blocked(self) -> None:
         """A 70-deep /Next chain ending in JavaScript used to be called safe."""
@@ -450,6 +454,65 @@ class PlainZips(unittest.TestCase):
                 self.assertIs(inspect(zip_bytes({part: b"<x/>", "inner.zip": b"x"})), Finding.BLOCKED)
 
 
+# An incremental update, which a viewer applies over the PDF before it: the catalog again, now
+# running JavaScript when the file is opened (security lead, council 10 Nov 2026).
+JS_UPDATE = (
+    b"\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R /OpenAction 9 0 R >>\nendobj\n"
+    b"9 0 obj\n<< /S /JavaScript /JS (app.alert(1)) >>\nendobj\n"
+    b"trailer\n<< /Size 10 /Root 1 0 R >>\n%%EOF\n"
+)
+
+
+class StoredZips(unittest.TestCase):
+    """#553 (UAT ZP-04/05): a zip whose first file is a PDF stored, not compressed, has a PDF header
+    in its first 1 KiB, so a viewer reads the whole zip as a PDF. It was refused whole as a
+    polyglot; now that PDF view gets the whole PDF check, as an uploaded PDF does, then the zip
+    gets its own. Every other type keeps the hard rule (test_a_pdf_header_hidden_in_another_type).
+    The PDFs are 300 dpi scans of a page, as the kit's are."""
+
+    def test_a_zip_of_stored_pdfs_passes(self) -> None:
+        extract, challan = scanned_pdf(1, dpi=300), scanned_pdf(1, dpi=250)
+        inner = stored_zip([("inner/extract.pdf", extract)])
+        for data in (
+            stored_zip([("../../outside.pdf", extract), ("inside/extract.pdf", extract)]),  # the path trick
+            stored_zip([("outer/inner.zip", inner), ("outer/challan.pdf", challan)]),  # a zip in a zip
+            inner,  # kept as a file when unpacked, and checked on its own
+        ):
+            with self.subTest(first=zipfile.ZipFile(io.BytesIO(data)).namelist()[0]):
+                self.assertIn(b"%PDF-", data[:1024])
+                self.assertIsNone(inspect(data))
+
+    def test_active_content_a_viewer_finds_in_a_stored_zip_is_blocked(self) -> None:
+        clean = scanned_pdf(1, dpi=300)
+        commented = zipfile.ZipInfo("b.txt")
+        commented.comment = JS_UPDATE
+        name = JS_UPDATE.decode().replace("\n", " ") + ".txt"
+        for where, data in (
+            ("the zip's comment", stored_zip([("a.pdf", clean)], comment=JS_UPDATE)),
+            ("a second stored file", stored_zip([("a.pdf", clean), ("b.txt", JS_UPDATE)])),
+            ("a file's name", stored_zip([("a.pdf", clean), (name, b"hi")])),
+            ("a file's comment", stored_zip([("a.pdf", clean), (commented, b"hi")])),
+            ("the stored pdf itself", stored_zip([("a.pdf", clean + JS_UPDATE)])),
+        ):
+            with self.subTest(where=where):
+                self.assertIsNone(content._zip_finding(data))  # every file in it is harmless alone
+                self.assertIs(inspect(data), Finding.BLOCKED)
+
+    def test_a_stored_zip_whose_pdf_check_cannot_finish_is_not_called_safe(self) -> None:
+        # pdfminer rebuilds the index of a zip read as a PDF from the whole file, a seek per object
+        # it finds; for a small PDF that is past the read budget (4x the file), so it is refused.
+        self.assertIs(inspect(stored_zip([("a.pdf", pdf_with([CATALOG, PAGES, PAGE]))])), Finding.UNSCANNABLE)
+
+    def test_a_stored_zip_is_never_told_it_has_a_password(self) -> None:
+        # Review (11 Nov 2026): a stored zip whose PDF view needs a password was told "This file
+        # has a password" about a zip that has none. Its PDF view can't be fully checked, so it
+        # stays refused (fail closed), as one that could not be checked.
+        locked = make_pdf([Page(texts=[Text(72, 700, "Total 500")])], password_protected=True)
+        # A scan after it, as in the review's probe, so the read budget isn't what refuses it.
+        zipped = stored_zip([("a.pdf", locked), ("b.pdf", scanned_pdf(1, dpi=300))])
+        self.assertIs(inspect(zipped), Finding.UNSCANNABLE)
+
+
 class NewFormats(unittest.TestCase):
     """#522, security review (6 Nov 2026): a HEIC photo is allowed as the other photos are; an
     old Office file (OLE2) is checked, not refused whole."""
@@ -462,17 +525,28 @@ class NewFormats(unittest.TestCase):
             with self.subTest(streams=streams):
                 self.assertIsNone(inspect(compound(streams)))
 
-    def test_macros_embedded_objects_or_a_password_refuse_an_old_office_file(self) -> None:
+    def test_macros_or_embedded_objects_refuse_an_old_office_file(self) -> None:
+        # Changed on purpose (#552, UAT FF-14): a password-protected .docx (EncryptedPackage) is no
+        # longer BLOCKED but ENCRYPTED, so it is told it has a password; see the test below.
         for streams, storages in (
             (["WordDocument"], {"Macros": ["PROJECT", "dir"]}),  # Word's macros
             (["Workbook"], {"_VBA_PROJECT_CUR": ["PROJECT"]}),  # Excel's
             (["Workbook", "_VBA_PROJECT"], {}),
             (["PowerPoint Document"], {"VBA": ["dir"]}),
             (["WordDocument"], {"ObjectPool": ["_1234"]}),  # an embedded OLE object
-            (["EncryptedPackage", "EncryptionInfo"], {}),  # a password-protected .docx
         ):
             with self.subTest(streams=streams, storages=storages):
                 self.assertIs(inspect(compound(streams, storages)), Finding.BLOCKED)
+
+    def test_a_password_protected_word_excel_or_powerpoint_file_is_refused_as_one(self) -> None:
+        """#552 (UAT FF-14): an encrypted .docx, .xlsx or .pptx is one OLE2 file of this shape,
+        whichever it is; it is still refused, now as having a password, not as holding macros.
+        One that also holds macros or an embedded object keeps that verdict."""
+        encrypted = ["EncryptionInfo", "EncryptedPackage"]
+        self.assertIs(inspect(compound(encrypted, {"\x06DataSpaces": ["Version"]})), Finding.ENCRYPTED)
+        for storages in ({"Macros": ["PROJECT"]}, {"ObjectPool": ["_1234"]}):
+            with self.subTest(storages=storages):
+                self.assertIs(inspect(compound(encrypted, storages)), Finding.BLOCKED)
 
     def test_a_damaged_old_office_file_cannot_be_checked(self) -> None:
         self.assertIs(inspect(compound(["WordDocument"])[:600]), Finding.UNSCANNABLE)
@@ -549,6 +623,29 @@ class TheLayers(unittest.TestCase):
     def test_blocked_is_a_rejection_with_a_customer_message(self) -> None:
         self.assertIn("blocked_content", REJECTION_CODES)
         self.assertIn("scripts, macros", CUSTOMER_MESSAGES["blocked_content"])
+
+    def test_a_file_with_a_password_never_reaches_the_virus_scanner(self) -> None:
+        """#552 (UAT FF-14): the content check's own verdict, through its child process."""
+        locked_pdf = make_pdf([Page(texts=[Text(72, 700, "Total 500")])], password_protected=True)
+        for data in (compound(["EncryptionInfo", "EncryptedPackage"]), locked_pdf):
+            with self.subTest(data=data[:4]):
+                inner = RecordingScanner()
+                self.assertIs(LayeredScanner(inner).scan(data), Verdict.ENCRYPTED)
+                self.assertEqual(inner.calls, 0)
+
+    def test_a_finding_with_no_verdict_of_its_own_is_refused_never_scanned_clean(self) -> None:
+        """Review (11 Nov 2026): a content finding the layer doesn't map (one added later) must
+        fail closed, never fall through to the virus scanner and come back clean."""
+        inner = RecordingScanner()
+        unknown = mock.Mock(name="a finding added later")
+        with mock.patch("kaagaz.adapters.scanner.inspect_isolated", return_value=unknown):
+            self.assertIs(LayeredScanner(inner).scan(b"anything"), Verdict.UNSCANNABLE)
+        self.assertEqual(inner.calls, 0)
+        self.assertIn("password_protected", REJECTION_CODES)
+        self.assertEqual(
+            CUSTOMER_MESSAGES["password_protected"],
+            "This file has a password, so it can't be opened. Remove the password and upload it again.",
+        )
 
 
 class SecurityReviewBounds(unittest.TestCase):
@@ -678,14 +775,15 @@ class SecurityReviewFailClosed(unittest.TestCase):
 GOLDEN = Path(__file__).parent / "golden"
 
 
-def scanned_pdf(pages: int) -> bytes:
-    """A scan as a scanner app saves one: a 150 dpi greyscale picture of text on each A4
+def scanned_pdf(pages: int, dpi: int = 150) -> bytes:
+    """A scan as a scanner app saves one: a ``dpi`` greyscale picture of text on each A4
     page, written by pdfium (one page, one content stream and one picture per page)."""
     document = pdfium.PdfDocument.new()
     for _ in range(pages):
         page = document.new_page(595, 842)
         picture = pdfium.PdfImage.new(document)
-        picture.set_bitmap(pdfium.PdfBitmap.from_pil(text_like_picture(1240, 1754, mode="L")))
+        size = (1240 * dpi // 150, 1754 * dpi // 150)
+        picture.set_bitmap(pdfium.PdfBitmap.from_pil(text_like_picture(*size, mode="L")))
         picture.set_matrix(pdfium.PdfMatrix().scale(595, 842))
         page.insert_obj(picture)
         page.gen_content()
@@ -713,15 +811,16 @@ def rc4(key: bytes, data: bytes) -> bytes:
     return bytes(out)
 
 
-def owner_locked_pdf() -> bytes:
+def owner_locked_pdf(permissions: int = -44) -> bytes:
     """A one-page PDF encrypted with an owner password only (printing and copying turned
-    off): every reader opens it with no password, as a bank or registry statement often is.
+    off; ``permissions=0`` turns every permission off, #551): every reader opens it with no
+    password, as a bank or registry statement often is.
     PDF 1.7 algorithms 3 (O), 2 (the key) and 4 (U), 40-bit RC4."""
 
     def md5(data: bytes) -> bytes:
         return hashlib.md5(data, usedforsecurity=False).digest()  # what the format uses
 
-    doc_id, permissions = b"\x33" * 16, -44
+    doc_id = b"\x33" * 16
     owner = rc4(md5((b"owner-secret" + PASSWORD_PAD)[:32])[:5], PASSWORD_PAD)
     key = md5(PASSWORD_PAD + owner + struct.pack("<i", permissions) + doc_id)[:5]
     object_4_key = md5(key + b"\x04\x00\x00\x00\x00")[:10]  # object 4, generation 0
@@ -764,11 +863,35 @@ class OrdinaryPdfsFitTheReadBudget(unittest.TestCase):
         self.assertIsNone(inspect(locked))
         self.assertIn(b"/Encrypt", locked)
 
-    def test_a_pdf_that_needs_a_password_to_open_is_unscannable(self) -> None:
-        """Nothing in it can be read, so it is not called safe: the customer sees the
-        ``unscannable`` message (it cannot be checked)."""
+    def test_a_pdf_locked_with_no_permissions_at_all_passes(self) -> None:
+        """#551 (UAT GR-08): pdfminer read ``/P 0`` as 2**32 and crashed packing it, so a
+        PDF with every permission off was refused as one that could not be checked."""
+        self.assertIsNone(inspect(owner_locked_pdf(permissions=0)))
+
+    def test_the_permission_fix_fails_loudly_if_pdfminer_renames_its_helper(self) -> None:
+        """Review (11 Nov 2026): the /P 0 fix replaces pdfdocument's own ``uint_value``; if a
+        pdfminer upgrade stops importing it there, the patch must not silently do nothing."""
+        import importlib
+
+        from pdfminer import pdfdocument
+
+        from kaagaz import pdfminer_fix
+
+        saved = pdfdocument.uint_value  # type: ignore[attr-defined]
+        try:
+            del pdfdocument.uint_value  # type: ignore[attr-defined]
+            with self.assertRaises(ImportError):
+                importlib.reload(pdfminer_fix)
+        finally:
+            pdfdocument.uint_value = saved  # type: ignore[attr-defined]
+            importlib.reload(pdfminer_fix)
+
+    def test_a_pdf_that_needs_a_password_to_open_is_refused_as_one(self) -> None:
+        """Nothing in it can be read, so it is not called safe. Changed on purpose (#552, UAT
+        FF-14): it was ``unscannable`` ("could not be checked for viruses"); the customer is now
+        told it has a password."""
         locked = make_pdf([Page(texts=[Text(72, 700, "Total 500")])], password_protected=True)
-        self.assertIs(inspect(locked), Finding.UNSCANNABLE)
+        self.assertIs(inspect(locked), Finding.ENCRYPTED)
 
 
 if __name__ == "__main__":

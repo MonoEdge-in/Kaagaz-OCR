@@ -287,7 +287,8 @@ _CONTENT_TYPES = {
     "txt": ("text/plain; charset=utf-8", "txt"),
     "md": ("text/plain; charset=utf-8", "md"),
     "json": ("text/plain; charset=utf-8", "json"),
-    "html": ("text/plain; charset=utf-8", "html"),
+    # #557 (UAT FF-12): and saved as text, or the copy on the computer would open as a web page.
+    "html": ("text/plain; charset=utf-8", "txt"),
 }
 # #522: 0078 told only ready documents' kinds, so one not read since (needs_reader, failed)
 # keeps its sniffed type until it is read again. Its name's ending chooses among the kinds that
@@ -519,7 +520,8 @@ def storage_full(room: StorageRoom) -> ApiError:
     """#516: the refusal of a new upload past the organisation's storage limit (module notes)."""
     limit_gb = room.limit_bytes // storage_limits.GIB
     details = {"used_bytes": room.used_bytes, "limit_bytes": room.limit_bytes, "limit_gb": limit_gb}
-    return ApiError(413, RejectCode.STORAGE_FULL.value, storage_full_message(limit_gb), details=details)
+    message = storage_full_message(limit_gb, room.limit_bytes - room.used_bytes)
+    return ApiError(413, RejectCode.STORAGE_FULL.value, message, details=details)
 
 
 def _refused(rejected: UploadRejected, policy: UploadPolicy) -> ApiError:
@@ -625,7 +627,7 @@ def _service(
     queue = _ReadingQueue(context.queue, context.db, requested_by=user.user_id, reading=reading)
     return UploadService(
         policy,
-        PgDocuments(context.db),
+        PgDocuments(context.db, storage=context.storage),
         context.storage,
         queue,
         express_max_pages=context.settings.express_max_pages,
@@ -951,13 +953,24 @@ async def upload_version(
     return JSONResponse(body, status_code=200 if body["duplicate"] else 201)
 
 
+def _too_large_to_start(body: ResumableUploadStart, policy: UploadPolicy) -> ApiError:
+    """A resumable start of no size or over every limit. #559 (UAT ZP-07): a zip over it (by its
+    name) gets the zip words the upload screen says; any other the words for every file."""
+    zip_name = body.file_name.casefold().endswith(".zip")
+    if zip_name and body.file_size > 0 and sniff.ZIP in policy.allowed_types:
+        return ApiError(
+            413, "too_large", too_large_message("zip", body.file_size, policy.limit_for(sniff.ZIP))
+        )
+    return ApiError(413, "too_large", over_every_limit_message(policy.largest_limit))
+
+
 @router.post("/documents/upload-sessions/candidates")
 def resumable_candidates(body: ResumableUploadStart, user: User, context: Context) -> dict[str, Any]:
     """Find this user's pending same-name, same-size uploads; the browser verifies saved chunks."""
     same_user(body.user_id, user)
     policy = user_upload_policy(context, user)
     if body.file_size <= 0 or body.file_size > policy.largest_limit:
-        raise ApiError(413, "too_large", over_every_limit_message(policy.largest_limit))
+        raise _too_large_to_start(body, policy)
     filename = display_name(body.file_name)
     with context.db.customer(user.customer_id) as conn:
         return {
@@ -974,7 +987,7 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
     same_user(body.user_id, user)
     policy = user_upload_policy(context, user)
     if body.file_size <= 0 or body.file_size > policy.largest_limit:
-        raise ApiError(413, "too_large", over_every_limit_message(policy.largest_limit))
+        raise _too_large_to_start(body, policy)
     count = math.ceil(body.file_size / _UPLOAD_PART_BYTES)
     if count > 10_000:
         raise ApiError(413, "too_large")

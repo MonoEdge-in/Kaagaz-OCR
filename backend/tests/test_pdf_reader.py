@@ -16,6 +16,7 @@ from kaagaz.reading.spans import BoxLocation, ReadError, Span, location_to_json
 from kaagaz.reading.text_quality import TextLayerRules
 from tests.pdf_builder import Page, Picture, Text, make_pdf
 from tests.picture_support import text_like_picture
+from tests.test_content_inspection import owner_locked_pdf
 
 WIDTH, HEIGHT = 612.0, 792.0
 # PRD 2's values: TEXT_LAYER_MIN_CHARS, TEXT_LAYER_MIN_GOOD_RATIO, SCAN_IMAGE_COVERAGE.
@@ -449,6 +450,10 @@ class RouteTest(unittest.TestCase):
 class RefusalsTest(unittest.TestCase):
     def test_password_protected_file(self) -> None:
         refused_with(self, make_pdf([Page(texts=[Text(72, 700, "x")])], password_protected=True), "encrypted")
+
+    def test_a_file_locked_with_no_permissions_at_all_is_read(self) -> None:
+        """#551 (UAT GR-08): pdfminer read ``/P 0`` as 2**32 and crashed, so it was ``corrupt_file``."""
+        self.assertEqual([span.text for span in read(owner_locked_pdf(permissions=0))], ["Total 500"])
 
     def test_broken_files(self) -> None:
         for data in (b"%PDF-1.7\nnot really a pdf", b"%PDF-", make_pdf([Page()])[:60]):

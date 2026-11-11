@@ -89,7 +89,11 @@ from kaagaz.settings import Settings
 
 PAGE = 1000  # items registered, and read back, at a time (the folder upload's page)
 FOLDER_NAME_MAX = 100  # folders.name's CHECK
-_VERDICTS = {Verdict.INFECTED: "virus_found", Verdict.BLOCKED: "blocked_content"}
+_VERDICTS = {
+    Verdict.INFECTED: "virus_found",
+    Verdict.BLOCKED: "blocked_content",
+    Verdict.ENCRYPTED: unzip.ENCRYPTED,  # #552: "It has a password..."
+}
 _PLAN_CODES = {
     "too_many_files": "zip_too_many_files",
     "too_large_upload": "zip_too_large",
@@ -275,7 +279,7 @@ class ZipUnpacker:
         queue = _ReadingQueue(self._db, self._queue, requested_by=uploader, reading=limits.reading)
         service = UploadService(
             limits.policy,
-            PgDocuments(self._db),
+            PgDocuments(self._db, storage=self._storage),
             self._storage,
             queue,
             express_max_pages=self._settings.express_max_pages,

@@ -86,6 +86,10 @@ def test_a_value_outside_1_to_10000_is_400_before_the_code_is_used_and_an_unknow
         for path in (PLATFORM, _org(api.new_signed().customer_id)):
             reply = client.put(path, json={"storage_gb": wrong, "code": code}, headers=CSRF)
             assert reply.status_code == 400, (wrong, path)
+            if wrong in (0, 10_001, -1):  # #559 (UAT ST-03): the screen's own words
+                assert reply.json()["error"]["message"] == (
+                    "Enter a whole number from 1 to 10,000, or leave it empty."
+                ), (wrong, path)
     missing = client.put(PLATFORM, json={"storage_gb": 5}, headers=CSRF)
     assert missing.status_code == 400  # no code
     with platform_reset(db):  # the same code still works: none was used up

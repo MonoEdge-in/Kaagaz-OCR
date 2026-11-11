@@ -40,7 +40,11 @@ The three searches (docs/architecture.md, "Search, in simple terms"):
    "invioce" still finds "invoice" and "shindey" finds "शिंदे". The ``<%``
    cut-off is pg_trgm's ``word_similarity_threshold``, set for this transaction
    only to ``FUZZY_THRESHOLD`` (the default 0.6 misses one swapped letter pair
-   in a seven letter word: "invioce" against "invoice" scores 0.375).
+   in a seven letter word: "invioce" against "invoice" scores 0.375). A word
+   with a digit is never a typo (#556, UAT LC-04: "150000" scored 1.0 against
+   "1500000"): each must be in the piece as written (``number_words``, matched
+   in ``tsv_simple``, so a Marathi ९४०००० is still found by 940000 through its
+   Latin spelling), as on the page (kaagaz/search/page_words.py rule 4).
 3. **Meaning:** cosine distance ``<=>`` between the question's embedding and
    each piece's (V2). Skipped when there is no embedding (no model, or it is
    down): the other two still answer. Only vectors whose ``embedding_model``
@@ -119,7 +123,13 @@ from sqlalchemy.exc import OperationalError
 from kaagaz.answering import glossary
 from kaagaz.answering.expansion import NO_EXPANSION, Expansion, word_query
 from kaagaz.answering.hinglish import DATE_WORDS, STOP_WORDS, normalise
-from kaagaz.chunking.script import SOUND_KEY_MIN, has_devanagari_letters, latin_spelling, sound_keys
+from kaagaz.chunking.script import (
+    SOUND_KEY_MIN,
+    has_devanagari_letters,
+    latin_spelling,
+    number_words,
+    sound_keys,
+)
 from kaagaz.search.scope import EVERYTHING, Scope
 
 if TYPE_CHECKING:
@@ -215,7 +225,7 @@ _SET_INDEX_SCAN = text(
 
 _FUZZY = text(
     "SELECT p.id, p.document_id, GREATEST(word_similarity(:q, p.text), word_similarity(:ql, p.text_latin))"
-    " AS score"
+    " AS score, p.text, p.text_latin"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
@@ -595,6 +605,13 @@ def sound_query(question: str) -> str:
     return " ; ".join(group for group in groups if group)
 
 
+def _numbers_as_written(rows: Iterable[Sequence[Any]], asked: frozenset[str]) -> list[Sequence[Any]]:
+    """#556: the typo list's rows (id, document, score, text, text_latin) holding every number
+    the question asked as written, by the viewer's own word rule (``number_words``: "1,50,000"
+    is 150000); all of them when it asked none."""
+    return [row for row in rows if asked <= number_words(row[3]) | number_words(row[4] or "")]
+
+
 def vector_literal(values: Sequence[float]) -> str:
     """pgvector's text form, ``[0.1,0.2]``, for a bound parameter cast to ``halfvec``."""
     if not values:
@@ -785,7 +802,8 @@ def _lists(
         }
         word = _ranked(conn.execute(_WORD, {**params, **scope.params()}), owners)
         conn.execute(_SET_FUZZY_THRESHOLD, {"t": str(FUZZY_THRESHOLD)})
-        fuzzy = _ranked(conn.execute(_FUZZY, {**params, **scope.params()}), owners)
+        typo_rows = conn.execute(_FUZZY, {**params, **scope.params()}).all()
+        fuzzy = _ranked(_numbers_as_written(typo_rows, number_words(query_text)), owners)
     if embedding is not None:
         vector = {"c": customer_id, "vec": vector_literal(embedding), "recipe": recipe, "n": CANDIDATES}
         meaning = _meaning(conn, vector | scope.params(), ef_search, owners)

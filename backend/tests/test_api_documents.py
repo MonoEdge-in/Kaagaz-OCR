@@ -854,6 +854,29 @@ def test_a_declared_size_over_every_limit_is_413_before_the_body_is_read(db: Dat
 
 
 @pytest.mark.db
+@pytest.mark.parametrize(
+    "route", ["/api/documents/upload-sessions/candidates", "/api/documents/upload-sessions"]
+)
+def test_a_zip_over_its_limit_is_told_the_screens_zip_words_at_the_resumable_start(
+    db: Database, route: str
+) -> None:
+    """#559 (UAT ZP-07): a 1 GB zip was told "Files can be up to 500 MB. This one is larger."
+    while the screen says the zip words; its name says it is a zip, so the server says them too.
+    Any other name keeps the words for every file."""
+    signed = Api(db).new_signed()
+    start = {"file_size": 1024 * MB, "fingerprint": "0" * 64, "user_id": signed.user_id}
+    zipped = signed.client.post(route, json={**start, "file_name": "Kit twice.ZIP"}, headers=CSRF)
+    other = signed.client.post(route, json={**start, "file_name": "big.pdf"}, headers=CSRF)
+    assert (zipped.status_code, other.status_code) == (413, 413)
+    assert zipped.json()["error"]["message"] == (
+        "Zip files can be up to 500 MB. Unzip it on your computer and upload the folder instead."
+    )
+    assert other.json()["error"]["message"] == (
+        "Files can be up to 500 MB. This one is larger. Split it or save it smaller and try again."
+    )
+
+
+@pytest.mark.db
 def test_upload_without_a_file_field_is_400(db: Database) -> None:
     signed = Api(db).new_signed()
     reply = signed.client.post("/api/documents", data={"other": "x"}, headers=CSRF)
@@ -1248,7 +1271,7 @@ def test_every_type_and_kind_downloads_with_its_own_media_type_and_ending() -> N
         "txt": "txt",
         "md": "md",
         "json": "json",
-        "html": "html",
+        "html": "txt",  # #557: saved as a page it would open in a browser on the computer
     }
     for kind in resolve.TEXT_KINDS | {sniff.TEXT}:
         assert _CONTENT_TYPES[kind][0] == "text/plain; charset=utf-8", kind
@@ -1263,7 +1286,7 @@ def test_every_type_and_kind_downloads_with_its_own_media_type_and_ending() -> N
         # Changed on purpose (#522): a ready zip is xlsx, and a zip that is a folder of files is a zip.
         ("stock list", "xlsx", "stock%20list.xlsx"),
         ("archive", "zip", "archive.zip"),
-        ("page.htm", "html", "page.html"),
+        ("page.htm", "html", "page.txt"),  # #557: sent as text, so saved as text
         ("IMG_0042.HEIC", "heic", "IMG_0042.heic"),
     ],
 )
@@ -1924,7 +1947,7 @@ def test_the_summary_is_the_details_own_summary_in_fewer_statements(db: Database
         ("zip", "Bills.zip", "application/zip", "Bills.zip"),
         ("zip", "notes", "application/zip", "notes.zip"),  # no ending: its sniffed type's
         ("text", "rent.csv", "text/plain; charset=utf-8", "rent.csv"),
-        ("text", "page.htm", "text/plain; charset=utf-8", "page.html"),
+        ("text", "page.htm", "text/plain; charset=utf-8", "page.txt"),
         ("text", "notes.exe", "text/plain; charset=utf-8", "notes.txt"),  # never a kind text can't be
         ("pdf", "bill.docx", "application/pdf", "bill.pdf"),  # a told type: its own, whatever the name
     ],
@@ -1953,7 +1976,7 @@ def test_a_document_not_read_since_0078_downloads_by_its_name_s_ending_among_its
 
 
 @pytest.mark.db
-@pytest.mark.parametrize(("detected_type", "extension"), [("html", "html"), ("md", "md"), ("json", "json")])
+@pytest.mark.parametrize(("detected_type", "extension"), [("html", "txt"), ("md", "md"), ("json", "json")])
 def test_an_html_markdown_or_json_original_downloads_as_plain_text_never_run(
     db: Database, detected_type: str, extension: str
 ) -> None:

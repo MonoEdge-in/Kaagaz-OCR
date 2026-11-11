@@ -97,8 +97,19 @@ class ScanGateTest(unittest.TestCase):
             gate.check(JOB)
         self.assertIs(statuses.get_status(CUSTOMER, DOC), DocumentStatus.REJECTED)
 
+    def test_a_file_with_a_password_is_quarantined_and_rejected_as_one(self) -> None:
+        # #552 (UAT FF-14): refused as before, with its own code, so it is told it has a password.
+        gate, storage, statuses = make_gate(FakeScanner(Verdict.ENCRYPTED))
+        with self.assertRaises(JobFailed) as ctx:
+            gate.check(JOB)
+        self.assertEqual((ctx.exception.code, ctx.exception.retryable), ("password_protected", False))
+        self.assertIs(statuses.get_status(CUSTOMER, DOC), DocumentStatus.REJECTED)
+        self.assertEqual(storage.quarantined[(CUSTOMER, DOC)], CONTENT)
+
     def test_every_rejection_code_has_a_plain_customer_message(self) -> None:
-        self.assertEqual(set(CUSTOMER_MESSAGES), {"virus_found", "blocked_content", "unscannable"})
+        self.assertEqual(
+            set(CUSTOMER_MESSAGES), {"virus_found", "blocked_content", "unscannable", "password_protected"}
+        )
         for message in CUSTOMER_MESSAGES.values():
             self.assertTrue(message.endswith("."))
 

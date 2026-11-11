@@ -6,7 +6,8 @@ ends only the child, never the worker, and the file is ``unscannable`` (fail-clo
 * the parent runs ``python -m kaagaz.scanning.isolated`` with the file on stdin, a wall
   clock of WALL_SECONDS and a minimal environment (none of the app's secrets);
 * the child limits its own memory (MEMORY_BYTES) and CPU time (CPU_SECONDS) first, then
-  prints exactly one word: ``ok``, ``blocked_content`` or ``unscannable``;
+  prints exactly one word: ``ok``, ``blocked_content``, ``unscannable`` or
+  ``password_protected`` (#552);
 * anything else (a non-zero exit, a signal, a timeout, other output) is ``unscannable``,
   logged at WARNING with the reason code only, never the file's content.
 
@@ -33,7 +34,12 @@ _COMMAND = [sys.executable, "-m", "kaagaz.scanning.isolated"]
 _BACKEND = Path(__file__).resolve().parents[2]  # where ``-m kaagaz...`` imports from
 _ENV_KEYS = frozenset({"PATH", "PYTHONPATH", "HOME", "LANG", "SYSTEMROOT"})
 _SAFE_ENDING = re.compile(r"[a-z0-9]{1,10}")
-_ANSWERS = {b"ok": None, b"blocked_content": Finding.BLOCKED, b"unscannable": Finding.UNSCANNABLE}
+_ANSWERS = {
+    b"ok": None,
+    b"blocked_content": Finding.BLOCKED,
+    b"unscannable": Finding.UNSCANNABLE,
+    b"password_protected": Finding.ENCRYPTED,
+}
 
 
 def _child_env() -> dict[str, str]:

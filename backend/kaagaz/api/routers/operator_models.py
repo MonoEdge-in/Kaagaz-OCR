@@ -379,12 +379,13 @@ class FolderLimitsBody(BaseModel):
 
 
 class StorageLimitBody(BaseModel):
-    """The storage limit in whole GB (0061d, #516), 1 to 10,000; null: the default (the
-    platform's) or follow the platform (an organisation's). Strict: 1.5, "3" and true are refused."""
+    """The storage limit in whole GB (0061d, #516), 1 to 10,000 (the routes check it: #559);
+    null: the default (the platform's) or follow the platform (an organisation's). Strict: 1.5,
+    "3" and true are refused."""
 
     model_config = ConfigDict(extra="forbid")
 
-    storage_gb: Annotated[int, Field(strict=True, ge=1, le=MOST_STORAGE_GB)] | None
+    storage_gb: Annotated[int, Field(strict=True)] | None
     code: str = Field(min_length=1, max_length=MAX_CODE)
 
 
@@ -1199,6 +1200,15 @@ def _storage_limit(
     }
 
 
+def _check_storage_gb(body: StorageLimitBody) -> None:
+    """The limit asked is 1 to MOST_STORAGE_GB, checked before the code is used. #559 (UAT ST-03):
+    outside it, the words the screen says (StorageLimit.tsx), not "The request is not valid."."""
+    if body.storage_gb is not None and not 1 <= body.storage_gb <= MOST_STORAGE_GB:
+        raise ApiError(
+            400, "bad_request", f"Enter a whole number from 1 to {MOST_STORAGE_GB:,}, or leave it empty."
+        )
+
+
 @router.get("/storage-limit")
 def get_storage_limit(operator: OperatorSession, db: OperatorDb) -> dict[str, Any]:
     """The platform's storage limit (null: the default)."""
@@ -1210,6 +1220,7 @@ def set_storage_limit(
     body: StorageLimitBody, operator: OperatorSession, db: OperatorDb, context: Context
 ) -> dict[str, Any]:
     """Set it (a fresh code first); every organisation without its own follows at its next upload."""
+    _check_storage_gb(body)
     step_up = _step_up(db, context, operator, body.code)
     with db.operator() as conn:
         outcome = models_sql.set_storage_limit(
@@ -1236,6 +1247,7 @@ def set_org_storage_limit(
     context: Context,
 ) -> dict[str, Any]:
     """Set one organisation's (null: follow the platform), a fresh code first."""
+    _check_storage_gb(body)
     step_up = _step_up(db, context, operator, body.code)
     with db.operator() as conn:
         outcome = models_sql.set_storage_limit(
