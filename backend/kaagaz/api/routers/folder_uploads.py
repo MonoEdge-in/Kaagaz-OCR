@@ -123,8 +123,8 @@ def _words(code: str, limits: FolderUploadLimits) -> str:
         "too_many_folders": f"A folder upload can make at most {limits.max_folders:,} folders.",
         "plan_changed": "This upload was started with a different folder or place. Start a new upload.",
         "folder_too_deep": f"This folder would go deeper than {MAX_DEPTH} levels here.",
-        "upload_in_progress": "Another folder upload is still sending in this organisation."
-        " Try again in a few minutes.",
+        "upload_in_progress": "Another person's folder upload is still sending in this organisation."
+        " Try again when it has finished.",
     }.get(code, "")
 
 

@@ -294,7 +294,9 @@ def test_a_new_upload_waits_while_another_of_the_organisation_still_has_files_wa
     assert _error(plan(colleague)) == (
         409,
         "upload_in_progress",
-        "Another folder upload is still sending in this organisation. Try again in a few minutes.",
+        # Changed on purpose (review of #564): it blocks until the other is done or quiet 30 minutes.
+        "Another person's folder upload is still sending in this organisation."
+        " Try again when it has finished.",
     )
     assert plan(signed, id=first["id"]).status_code == 200  # a re-plan of the same upload
     assert plan(signed).status_code == 200  # the same user's new upload (production QA P1)
