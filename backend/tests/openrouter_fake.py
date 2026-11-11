@@ -290,9 +290,10 @@ def error_reply(
     provider_name: str | None = None,
     reasons: list[str] | None = None,
     headers: dict[str, str] | None = None,
+    message: str = SECRET,
 ) -> Reply:
-    """An error reply like OpenRouter's. Its message, flagged_input and raw hold ``SECRET``:
-    page text that must never be logged, kept or shown."""
+    """An error reply like OpenRouter's. Its message (unless ``message`` is given), flagged_input
+    and raw hold ``SECRET``: page text that must never be logged, kept or shown."""
     metadata: dict[str, Any] = {"flagged_input": SECRET, "raw": {"error": {"message": SECRET}}}
     if error_type is not None:
         metadata["error_type"] = error_type
@@ -301,7 +302,7 @@ def error_reply(
     if reasons is not None:
         metadata["reasons"] = reasons
         metadata["model_slug"] = "google/gemini-3.1-pro-preview"
-    body = {"error": {"code": status, "message": SECRET, "metadata": metadata}}
+    body = {"error": {"code": status, "message": message, "metadata": metadata}}
     return Reply(status, body, headers or {})
 
 

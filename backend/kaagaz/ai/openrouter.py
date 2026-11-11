@@ -86,7 +86,9 @@ at (#463).
 * A 403 refusal or moderation block (``metadata.error_type`` in ``REFUSAL_ERROR_TYPES``, or
   a ``reasons`` list): ``ModelOutputError("blocked")``, no latch.
 * 404: ``ModelUnavailable("model_not_found")`` (a wrong model ID in .env, or a model
-  OpenRouter withdrew), at once, logged at warning with the model id (production QA L2).
+  OpenRouter withdrew), or ``no_endpoints`` when its message says no endpoint passes the
+  provider or data policy (review of #564), at once, logged at warning with the model id
+  (production QA L2).
 * A redirect: ``ModelUnavailable("redirect_refused")``, logged the same way; any other status
   ``http_error``. For OCR_MODEL in a page read (``read_page`` only, an Ultra low cost read
   too, never a chat call naming the same id), either one makes the reader's Health report
@@ -740,17 +742,33 @@ def _code(value: object) -> str | None:
 
 @dataclass(frozen=True, slots=True)
 class _ErrorCodes:
-    """What is kept of an error reply: two short codes and whether it was a moderation block."""
+    """What is kept of an error reply: two short codes, whether it was a moderation block, and
+    whether it said no endpoint passes the provider or data policy (review of #564)."""
 
     error_type: str | None = None
     provider_name: str | None = None
     moderated: bool = False
+    no_endpoints: bool = False
+
+
+# The replies no wait fixes for a model (issue 407), each code with its log line (production QA
+# L2): a 404 for an unknown model, a 404 for no endpoint within the provider or data policy
+# (review of #564), and a redirect.
+UNUSABLE_CODES = {
+    "model_not_found": "model not found",
+    "no_endpoints": "no endpoint for model",
+    "redirect_refused": "model redirected",
+}
+# Review of #564: how OpenRouter's own 404 begins when the model exists but no endpoint passes
+# OPENROUTER_PROVIDERS or the zero data retention policy. Only compared, never kept or logged.
+_NO_ENDPOINT_WORDS = ("No endpoints found", "No allowed providers")
 
 
 def _error_codes(error: urllib.error.HTTPError) -> _ErrorCodes:
-    """The ``metadata.error_type`` and ``provider_name`` codes of an error reply, and whether
-    it holds a moderation ``reasons`` list. The body is read here and dropped: its message,
-    ``flagged_input`` and ``raw`` are never looked at, kept or logged."""
+    """The ``metadata.error_type`` and ``provider_name`` codes of an error reply, whether it
+    holds a moderation ``reasons`` list, and whether its message begins with _NO_ENDPOINT_WORDS.
+    The body is read here and dropped: its message is only compared with those fixed words, and
+    it, ``flagged_input`` and ``raw`` are never kept or logged."""
     try:
         raw = error.read(_ERROR_BODY_BYTES)
     except (OSError, HTTPException):
@@ -762,14 +780,17 @@ def _error_codes(error: urllib.error.HTTPError) -> _ErrorCodes:
     except (ValueError, RecursionError):
         return _ErrorCodes()
     inner = body.get("error") if isinstance(body, dict) else None
+    message = inner.get("message") if isinstance(inner, dict) else None
+    no_endpoints = isinstance(message, str) and message.startswith(_NO_ENDPOINT_WORDS)
     metadata = inner.get("metadata") if isinstance(inner, dict) else None
     if not isinstance(metadata, dict):
-        return _ErrorCodes()
+        return _ErrorCodes(no_endpoints=no_endpoints)
     reasons = metadata.get("reasons")
     return _ErrorCodes(
         _code(metadata.get("error_type")),
         _code(metadata.get("provider_name")),
         isinstance(reasons, list) and bool(reasons),
+        no_endpoints,
     )
 
 
@@ -1069,10 +1090,11 @@ class ModelGate:
         with self._lock:
             self._breakers.setdefault(model, _Breaker()).probing = False
 
-    def record(self, model: str, *, failed: bool, model_found: bool = True) -> None:
+    def record(self, model: str, *, failed: bool, page_read: bool = False) -> None:
         """One request's outcome for ``model``: any reply closes its breaker (and ends a key
-        latch, and OCR_MODEL's own ends ``reader_unfixable`` unless ``model_found`` is False: a
-        404 or redirect, the same fault again); a failure (408, 429, 5xx, a
+        latch, and ends ``reader_unfixable`` when it is OCR_MODEL's page read that answered,
+        ``page_read``: never a chat call naming the same id, nor a 404 or redirect, the same
+        fault again; review of #564); a failure (408, 429, 5xx, a
         mid-reply error, no connection) counts towards
         opening it, unless the one before is more than FAILURE_GAP_SECONDS old (the count
         starts again). Another model's breaker is not touched."""
@@ -1083,7 +1105,7 @@ class ModelGate:
                 breaker.state, breaker.failures, breaker.down_since = _CLOSED, 0, None
                 breaker.last_failure_at = None
                 self._key_latched_at = None
-                if model == self._reader_model and model_found:
+                if model == self._reader_model and page_read:
                     self._reader_unfixable_at = None
                 return
             now = self.clock()
@@ -1491,7 +1513,7 @@ class OpenRouterClient:
         try:
             return self._call(CHAT_PATH, body, deadline, sent=sent, budget=budget, tokens_in=tokens_in)
         except ModelUnavailable as error:
-            if error.code in ("model_not_found", "redirect_refused"):
+            if error.code in UNUSABLE_CODES:
                 self.gate.reader_unfixable(str(body["model"]), error.code)
             raise
 
@@ -1639,12 +1661,13 @@ class OpenRouterClient:
             if budget is not None and reply.maybe_billed:
                 budget.charge_unknown(worst)
             code: str | None
+            page_read = sent is not None  # review of #564: only a page read says the reader works
             if 200 <= reply.status < 300:
                 if reply.body is None:
-                    gate.record(model, failed=False)
+                    gate.record(model, failed=False, page_read=page_read)
                     raise ModelUnavailable(reply.failure or "bad_response")
                 if not failed_mid_reply(reply.body):
-                    gate.record(model, failed=False)
+                    gate.record(model, failed=False, page_read=page_read)
                     self._count(reply.body, model, sent, budget, worst)
                     return reply.body
                 self._count(
@@ -1655,7 +1678,7 @@ class OpenRouterClient:
                 if reply.status == 403 and (
                     reply.codes.moderated or reply.codes.error_type in REFUSAL_ERROR_TYPES
                 ):
-                    gate.record(model, failed=False)
+                    gate.record(model, failed=False, page_read=page_read)
                     raise ModelOutputError("blocked")
                 gate.latch_key(_KEY_STATUSES[reply.status])
                 raise ModelUnavailable("key_rejected")
@@ -1664,23 +1687,19 @@ class OpenRouterClient:
             else:
                 code = _RETRY_STATUSES.get(reply.status) or ("server_error" if reply.status >= 500 else None)
             if code is None:  # the server answered: it is up, but this request is wrong
-                unusable = (
-                    "model_not_found"
-                    if reply.status == 404
-                    else "redirect_refused"
-                    if 300 <= reply.status < 400
-                    else None
-                )
-                gate.record(model, failed=False, model_found=unusable is None)
+                unusable: str | None = None
+                if 300 <= reply.status < 400:
+                    unusable = "redirect_refused"
+                elif reply.status == 404:
+                    unusable = "no_endpoints" if reply.codes.no_endpoints else "model_not_found"
+                gate.record(model, failed=False, page_read=page_read and unusable is None)
                 if reply.status in _BAD_REQUEST_STATUSES:
                     raise ModelOutputError("bad_request")
                 if unusable is not None:
-                    # Production QA L2: which model, so the operator knows what to fix. The reply's
+                    # Production QA L2: which model, so the operator knows what to fix; review of
+                    # #564: a 404 for no endpoint says so, never blaming the model id. The reply's
                     # message is never logged (it may hold page text; ``_error_codes``).
-                    _log.warning(
-                        "model not found" if unusable == "model_not_found" else "model redirected",
-                        extra={"code": unusable, "model": model},
-                    )
+                    _log.warning(UNUSABLE_CODES[unusable], extra={"code": unusable, "model": model})
                     raise ModelUnavailable(unusable)
                 raise ModelUnavailable("http_error")
             if reply.status == 0 and code == "timeout":
