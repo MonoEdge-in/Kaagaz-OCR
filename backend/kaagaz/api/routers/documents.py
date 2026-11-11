@@ -139,6 +139,7 @@ Why some choices:
 """
 
 import hashlib
+import logging
 import math
 import uuid
 from collections.abc import Mapping, Sequence
@@ -210,7 +211,7 @@ from kaagaz.db.folders import MAX_DEPTH
 from kaagaz.db.upload_policy import customer_policy
 from kaagaz.db.zip_unpacks import Unpack
 from kaagaz.ingestion import resolve, sniff
-from kaagaz.ingestion.errors import RejectCode, UploadRejected
+from kaagaz.ingestion.errors import BackendUnavailable, RejectCode, UploadRejected
 from kaagaz.ingestion.messages import over_every_limit_message, storage_full_message, too_large_message
 from kaagaz.ingestion.pagecount import goes_express
 from kaagaz.ingestion.policy import UploadPolicy
@@ -223,6 +224,7 @@ from kaagaz.search import page_words
 from kaagaz.settings import Settings
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _UPLOAD_PART_BYTES = 8 * 1024 * 1024
 
@@ -1131,6 +1133,43 @@ def complete_resumable_upload(session_id: uuid.UUID, user: User, context: Contex
     metadata = cast(dict[str, Any], session["metadata"])
     if metadata.get("completed") is not None:  # sent again after a lost reply (production QA T1)
         return JSONResponse(metadata["completed"], status_code=200)
+    customer_id, user_id, key = user.customer_id, user.user_id, str(session_id)
+    with context.db.customer(customer_id) as conn:
+        claimed = upload_sessions_sql.claim(conn, customer_id, user_id, key)
+        if not claimed:  # finished meanwhile, or another complete is storing it (review of #564)
+            latest = upload_sessions_sql.get(conn, customer_id, user_id, key, finished=True)
+    if not claimed:
+        done = None if latest is None else cast(dict[str, Any], latest["metadata"]).get("completed")
+        if done is not None:
+            return JSONResponse(done, status_code=200)
+        raise ApiError(429, "rate_limited", _STILL_STORING, headers={"Retry-After": "2"})
+    try:
+        result, status = _store_completed(context, user, session_id, session, metadata)
+        with context.db.customer(customer_id) as conn:  # the reply first: a resend gets it
+            upload_sessions_sql.complete(conn, customer_id, user_id, key, result)
+    except BaseException:
+        with context.db.customer(customer_id) as conn:
+            upload_sessions_sql.release(conn, customer_id, user_id, key)
+        raise
+    try:
+        context.storage.delete_resumable(str(session["storage_key"]))
+    except BackendUnavailable as error:  # the purge removes the parts with the session, a day on
+        logger.warning("resumable parts left for the purge", extra={"code": type(error).__name__})
+    return JSONResponse(result, status_code=status or (200 if result["duplicate"] else 201))
+
+
+_STILL_STORING = "This file is still being saved. It is checked again in a moment."
+
+
+def _store_completed(
+    context: AppContext,
+    user: CurrentUser,
+    session_id: uuid.UUID,
+    session: dict[str, Any],
+    metadata: dict[str, Any],
+) -> tuple[dict[str, Any], int | None]:
+    """The claimed session's file stored (or refused, its parts and session removed): the reply
+    and its status (None: by the reply's ``duplicate``)."""
     if not context.storage.resumable_complete(str(session["storage_key"])):
         parts = context.storage.resumable_parts(
             str(session["storage_key"]), str(session["storage_upload_id"])
@@ -1191,10 +1230,7 @@ def complete_resumable_upload(session_id: uuid.UUID, user: User, context: Contex
             with context.db.customer(user.customer_id) as conn:
                 upload_sessions_sql.delete(conn, user.customer_id, user.user_id, str(session_id))
             raise
-    context.storage.delete_resumable(str(session["storage_key"]))
-    with context.db.customer(user.customer_id) as conn:
-        upload_sessions_sql.complete(conn, user.customer_id, user.user_id, str(session_id), result)
-    return JSONResponse(result, status_code=status or (200 if result["duplicate"] else 201))
+    return result, status
 
 
 def _document_or_404(conn: Connection, user: CurrentUser, document_id: uuid.UUID) -> RowMapping:

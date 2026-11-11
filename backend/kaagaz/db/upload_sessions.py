@@ -99,15 +99,49 @@ def set_part_hash(
     )
 
 
+# The browser's wait for a complete (lib/api.ts COMPLETE_TIMEOUT_MS): a claim older than this
+# is a crashed complete's, taken over.
+COMPLETING_SECONDS = 300
+
+
+def claim(conn: Connection, customer_id: str, user_id: str, session_id: str) -> bool:
+    """Review of #564: mark the session as being completed (``metadata.completing``), unless it
+    is finished or another complete holds a claim younger than COMPLETING_SECONDS. True when
+    this call holds it. One UPDATE on the row: two completes never both hold it."""
+    claimed = conn.execute(
+        text(
+            "UPDATE upload_sessions SET metadata = jsonb_set(metadata, '{completing}', to_jsonb(now()))"
+            " WHERE customer_id = :customer AND user_id = :user AND id = :id AND expires_at > now()"
+            " AND metadata -> 'completed' IS NULL AND (metadata -> 'completing' IS NULL"
+            " OR CAST(metadata ->> 'completing' AS timestamptz) < now() - make_interval(secs => :stale))"
+            " RETURNING id"
+        ),
+        {"customer": customer_id, "user": user_id, "id": session_id, "stale": COMPLETING_SECONDS},
+    ).first()
+    return claimed is not None
+
+
+def release(conn: Connection, customer_id: str, user_id: str, session_id: str) -> None:
+    """A failed complete's claim, freed for the next one."""
+    conn.execute(
+        text(
+            "UPDATE upload_sessions SET metadata = metadata - 'completing'"
+            " WHERE customer_id = :customer AND user_id = :user AND id = :id"
+        ),
+        {"customer": customer_id, "user": user_id, "id": session_id},
+    )
+
+
 def complete(
     conn: Connection, customer_id: str, user_id: str, session_id: str, reply: dict[str, Any]
 ) -> None:
     """Production QA T1: the session is kept a day after its file is stored, with the reply, so a
     ``complete`` sent again after a lost reply gets the same document; the expired-session
-    purge (jobs/purge.py) removes it then."""
+    purge (jobs/purge.py) removes it then, and its parts if they are still there."""
     conn.execute(
         text(
-            "UPDATE upload_sessions SET metadata = jsonb_set(metadata, '{completed}', CAST(:reply AS jsonb)),"
+            "UPDATE upload_sessions"
+            " SET metadata = jsonb_set(metadata - 'completing', '{completed}', CAST(:reply AS jsonb)),"
             " expires_at = now() + interval '1 day'"
             " WHERE customer_id = :customer AND user_id = :user AND id = :id"
         ),
