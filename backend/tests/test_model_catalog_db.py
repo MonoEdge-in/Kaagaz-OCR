@@ -161,3 +161,25 @@ def test_l2_a_refresh_names_each_env_model_the_catalogue_lacks_or_holds_ineligib
     ]
     off = make_settings(ocr_model=SONNET, model_chat=gone, model_enabled=False)
     assert catalog.check_env_models(db, off) == []  # MODEL_CHAT is not used with AI off
+
+
+def test_review_564_with_the_ulc_switch_on_an_ocr_model_that_cannot_lead_it_is_named(
+    db: Database, fake: OpenRouterFake, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Review of #564: while OCR_ULTRA_LOW_COST is on, OCR_MODEL (Ultra low cost's lead unless a
+    priced Gemini default is chosen) that is not a priced Gemini taking minimal thinking is named
+    at error after each refresh and at worker start (never a start-up that fails)."""
+    settings = make_settings(openrouter_api_key=KEY, openrouter_base_url=fake.url, ocr_model=PRO)
+    catalog.refresh(db, OpenRouterClient(settings), settings, today=TODAY, pause=lambda seconds: None)
+    switched = make_settings(ocr_model=PRO, ocr_ultra_low_cost=True)
+    [(efforts,)] = _owner(db, "SELECT efforts FROM model_catalog WHERE id = :m", {"m": PRO})
+    _owner(db, "UPDATE model_catalog SET efforts = '{low,high}' WHERE id = :m", {"m": PRO})
+    try:
+        caplog.set_level(logging.ERROR, logger="kaagaz.worker")
+        assert catalog.check_env_models(db, switched) == [("OCR_ULTRA_LOW_COST", PRO, "ulc_not_ready")]
+        assert [r.__dict__["code"] for r in caplog.records if r.getMessage() == "env model not usable"] == [
+            "ulc_not_ready"
+        ]
+        assert catalog.check_env_models(db, make_settings(ocr_model=PRO)) == []  # off: not asked
+    finally:
+        _owner(db, "UPDATE model_catalog SET efforts = :e WHERE id = :m", {"e": efforts, "m": PRO})

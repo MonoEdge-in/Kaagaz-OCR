@@ -67,6 +67,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from kaagaz.ai.openrouter import Probe
+from kaagaz.db import models
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.jobs.fair_share import SweepLock, no_lock
@@ -470,7 +471,10 @@ def refresh(
 
 
 _CATALOGUE_HELD = text("SELECT EXISTS (SELECT 1 FROM model_catalog)")
-_ENV_MODELS = text("SELECT id, eligible, chat_eligible FROM model_catalog WHERE id = ANY(:ids)")
+_ENV_MODELS = text(
+    "SELECT id, eligible, chat_eligible, price_in_usd_per_m, price_out_usd_per_m, price_request_usd,"
+    " price_image_usd, efforts FROM model_catalog WHERE id = ANY(:ids)"
+)
 
 
 def check_env_models(db: Database, settings: Settings) -> list[tuple[str, str, str]]:
@@ -481,17 +485,19 @@ def check_env_models(db: Database, settings: Settings) -> list[tuple[str, str, s
     After each refresh and at worker start; a database error is logged by its type and checks
     nothing (never a failed refresh or a worker that won't start). Review of #564: before the
     first refresh (no catalogue row at all) nothing is checked, logged once at info, never an
-    ERROR from every replica at start. Two statements."""
-    wanted = [("OCR_MODEL", settings.ocr_model, 1)]
+    ERROR from every replica at start; while OCR_ULTRA_LOW_COST is on, OCR_MODEL (its lead unless a
+    priced Gemini default is chosen) that can't lead it (``models.ulc_why``) is ``ulc_not_ready``,
+    logged the same way (start-up goes on). Two statements."""
+    wanted = [("OCR_MODEL", settings.ocr_model, "eligible")]
     if settings.model_enabled:
-        wanted.append(("MODEL_CHAT", settings.model_chat, 2))
+        wanted.append(("MODEL_CHAT", settings.model_chat, "chat_eligible"))
     try:
         with unavailable(), db.system() as conn:
             if not conn.execute(_CATALOGUE_HELD).scalar_one():
                 logger.info("env models not checked", extra={"code": "catalogue_empty"})
                 return []
             ids = [model for _, model, _ in wanted]
-            rows = {row[0]: row for row in conn.execute(_ENV_MODELS, {"ids": ids})}
+            rows = {row["id"]: row for row in conn.execute(_ENV_MODELS, {"ids": ids}).mappings()}
     except (SQLAlchemyError, BackendUnavailable) as error:
         logger.warning("env models not checked", extra={"code": type(error).__name__})
         return []
@@ -500,8 +506,12 @@ def check_env_models(db: Database, settings: Settings) -> list[tuple[str, str, s
         row = rows.get(model)
         code = "missing" if row is None else None if row[column] else "not_eligible"
         if code is not None:
-            logger.error("env model not usable", extra={"code": code, "model": model, "where": setting})
             problems.append((setting, model, code))
+    ocr = rows.get(settings.ocr_model)
+    if settings.ocr_ultra_low_cost and ocr is not None and models.ulc_why(ocr) is not None:
+        problems.append(("OCR_ULTRA_LOW_COST", settings.ocr_model, "ulc_not_ready"))
+    for setting, model, code in problems:
+        logger.error("env model not usable", extra={"code": code, "model": model, "where": setting})
     return problems
 
 

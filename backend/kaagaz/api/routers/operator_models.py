@@ -923,8 +923,13 @@ def _needs_gemini(
     reader, else the ``platform`` defaults' an organisation inherits) and its lead (as
     ``models._ulc_reading`` picks it: the default scan model in effect when a Gemini with a known
     price, else OCR_MODEL) is not a catalogue Gemini with a known price that takes minimal
-    thinking. One catalogue read, only while Ultra low cost would read."""
-    reader = body.scan_reader or (None if platform is None else platform["scan_reader"])
+    thinking. One catalogue read, only while Ultra low cost would read. Review of #564: with no
+    reader saved, OCR_ULTRA_LOW_COST's (``models.with_env_ulc``)."""
+    reader = (
+        body.scan_reader
+        or (None if platform is None else platform["scan_reader"])
+        or (ULTRA_LOW_COST if settings.ocr_ultra_low_cost else None)
+    )
     if reader != ULTRA_LOW_COST:
         return
     default = body.scan_default

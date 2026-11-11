@@ -147,6 +147,29 @@ def test_it_needs_a_gemini_with_a_price_that_takes_minimal(db: Database, platfor
     assert _save(api, operator, client, path, {**ORG_BODY, "scan_reader": "openrouter"}).status_code == 200
 
 
+def test_review_564_with_the_switch_on_a_save_with_no_reader_needs_a_gemini_too(
+    db: Database, platform: str
+) -> None:
+    """Review of #564: while OCR_ULTRA_LOW_COST supplies the reader (nothing saved), a save that
+    leaves the reader empty reads Ultra low cost, so its lead must be able to (409
+    ulc_needs_gemini), on the platform and for an organisation; switch off, nothing is asked."""
+    switched = dataclasses.replace(NOT_IN_CATALOGUE, ocr_ultra_low_cost=True)
+    no_minimal = scan_model(db, ("low", "high"))
+    for settings, expected in ((switched, 409), (NOT_IN_CATALOGUE, 200)):
+        api = Api(db, settings=settings)
+        operator, client = _signed_in(api)
+        customer = api.customer("ULC Switch")[0]
+        for where, body in (
+            (f"/api/operator/orgs/{customer}/ai", ORG_BODY),
+            ("/api/operator/ai-defaults", PLATFORM_BODY),
+        ):
+            lead = {"scan_models": [no_minimal], "scan_default": no_minimal, "scan_reader": None}
+            reply = _save(api, operator, client, where, {**body, **lead})
+            assert reply.status_code == expected, (where, reply.text)
+            if expected == 409:
+                assert reply.json()["error"]["code"] == "ulc_needs_gemini"
+
+
 def test_only_the_organisation_that_chose_it_reads_with_it(db: Database, platform: str) -> None:
     lead = scan_model(db)
     chosen, other = new_customer(db)[0], new_customer(db)[0]
