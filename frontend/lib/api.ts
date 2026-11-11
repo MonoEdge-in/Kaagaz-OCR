@@ -588,29 +588,33 @@ export type UploadWaiting = (waiting: boolean, why?: "connection" | "server") =>
 const SERVER_RETRIES = 4;
 
 // An upload call that never answers (a server restart mid-request) is given up on, then sent
-// again as after a lost connection, so a row never waits for ever (production QA, 5 Nov 2026).
+// again as a failing server's is (noAnswer), so a row never waits for ever (production QA, 5 Nov
+// 2026): after SERVER_RETRIES more it fails with Retry (review of #564).
 /** A part with no progress and no answer for this long. Not the whole part: a slow line takes longer. */
 const PART_IDLE_MS = 120_000;
 /** The upload's JSON calls; `complete` stores and checks the whole file, so it gets longer. */
 const CALL_TIMEOUT_MS = 60_000;
 const COMPLETE_TIMEOUT_MS = 300_000;
 
-/** request(), given up after `ms` with no answer as a TypeError (a lost connection), for retryWhileOffline. */
+/** No answer in time: a 5xx to retryWhileOffline (counted, "server"), Retry on the row, TOO_SLOW its words. */
+const noAnswer = () => new ApiError(504, "timeout", TOO_SLOW);
+
+/** request(), given up after `ms` with no answer (noAnswer), for retryWhileOffline. */
 async function requestInTime<T>(ms: number, method: string, path: string, body?: unknown): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   try {
     return await request<T>(method, path, body, controller.signal);
   } catch (error) {
-    throw controller.signal.aborted ? new TypeError("No answer in time") : error;
+    throw controller.signal.aborted ? noAnswer() : error;
   } finally {
     clearTimeout(timer);
   }
 }
 
 /**
- * Gives up on `xhr` once `wait(ms)` has run out with no new wait or `stop()`: rejected as a lost
- * connection (so retryWhileOffline sends it again), then aborted.
+ * Gives up on `xhr` once `wait(ms)` has run out with no new wait or `stop()`: rejected with
+ * noAnswer (so retryWhileOffline sends it again, as a failing server's), then aborted.
  */
 function giveUpWhenIdle(xhr: XMLHttpRequest, reject: (error: unknown) => void) {
   let idle: ReturnType<typeof setTimeout> | undefined;
@@ -618,7 +622,7 @@ function giveUpWhenIdle(xhr: XMLHttpRequest, reject: (error: unknown) => void) {
   const wait = (ms: number) => {
     stop();
     idle = setTimeout(() => {
-      reject(new TypeError("No answer in time"));
+      reject(noAnswer());
       xhr.abort();
     }, ms);
   };
@@ -759,6 +763,8 @@ async function resumableUpload(
     }
     if (matches) { resumeId = candidate.id; savedParts = candidate.parts; break; }
   }
+  // shortcut: a start whose answer never came is sent again and makes a second session; the
+  // first is never used, and the purge removes it a week on.
   const session = await retryWhileOffline(
     () => requestInTime<{ id: string; part_size: number; part_count: number } | UploadResult>(
       CALL_TIMEOUT_MS, "POST", "/documents/upload-sessions", { ...identified, resume_session_id: resumeId },
