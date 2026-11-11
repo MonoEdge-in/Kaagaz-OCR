@@ -463,9 +463,40 @@ def refresh(
     """Fetch and save the catalogue (see the module notes)."""
     fetched = fetch(client, settings, today=today, pause=pause)
     save(db, fetched.models, untouched=fetched.skipped)
+    check_env_models(db, settings)
     return Refreshed(
         len(fetched.models), sum(model.eligible for model in fetched.models), len(fetched.skipped)
     )
+
+
+_ENV_MODELS = text("SELECT id, eligible, chat_eligible FROM model_catalog WHERE id = ANY(:ids)")
+
+
+def check_env_models(db: Database, settings: Settings) -> list[tuple[str, str, str]]:
+    """Production QA L2: (setting, model, ``missing`` or ``not_eligible``) for each model .env
+    names that the catalogue does not hold, or holds as not eligible for its use: OCR_MODEL to
+    read scans, and MODEL_CHAT to answer while MODEL_ENABLED. Each is logged at error with its
+    model id, so a withdrawn model is named once a refresh sees it, not found 404 by 404.
+    After each refresh and at worker start; a database error is logged by its type and checks
+    nothing (never a failed refresh or a worker that won't start). One statement."""
+    wanted = [("OCR_MODEL", settings.ocr_model, 1)]
+    if settings.model_enabled:
+        wanted.append(("MODEL_CHAT", settings.model_chat, 2))
+    try:
+        with unavailable(), db.system() as conn:
+            ids = [model for _, model, _ in wanted]
+            rows = {row[0]: row for row in conn.execute(_ENV_MODELS, {"ids": ids})}
+    except (SQLAlchemyError, BackendUnavailable) as error:
+        logger.warning("env models not checked", extra={"code": type(error).__name__})
+        return []
+    problems = []
+    for setting, model, column in wanted:
+        row = rows.get(model)
+        code = "missing" if row is None else None if row[column] else "not_eligible"
+        if code is not None:
+            logger.error("env model not usable", extra={"code": code, "model": model, "where": setting})
+            problems.append((setting, model, code))
+    return problems
 
 
 def last_refreshed(db: Database) -> datetime | None:
