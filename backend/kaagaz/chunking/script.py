@@ -228,6 +228,20 @@ def ascii_digits(text: str) -> str:
     return _NON_ASCII_DIGIT.sub(lambda match: str(unicodedata.decimal(match[0])), text)
 
 
+# A word as the viewer reads it (kaagaz/search/page_words.py): runs of letters, digits and
+# Devanagari signs (never the danda, U+0964 and U+0965); "-" and "/" join two runs, and "," and
+# "." two digits, so "1,04,200", "7/12" and "INV-1042" stay whole. Here, not in page_words, so
+# search can use it without importing story matching (tests/test_import_graph.py).
+WORD_TOKEN = re.compile("[\\wऀ-ॣ०-ॿ]+(?:(?:(?<=[0-9])[,.](?=[0-9])|[/-])[\\wऀ-ॣ०-ॿ]+)*")
+
+
+def number_words(text: str) -> frozenset[str]:
+    """The words with a digit, as the viewer reads them (#556): NFC, casefolded, digits as ASCII,
+    each one word with its commas dropped, so "₹1,50,000" is 150000."""
+    tokens = WORD_TOKEN.findall(ascii_digits(unicodedata.normalize("NFC", text)).casefold())
+    return frozenset(token.replace(",", "") for token in tokens if any(c.isdigit() for c in token))
+
+
 def latin_digits(text: str) -> str:
     """Indic digits (U+0900 to U+0DFF) as ASCII digits; every other character unchanged, so the
     length is the same. For computing and searching only, never for the text shown (#524)."""

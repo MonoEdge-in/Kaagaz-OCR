@@ -125,9 +125,9 @@ from kaagaz.answering.expansion import NO_EXPANSION, Expansion, word_query
 from kaagaz.answering.hinglish import DATE_WORDS, STOP_WORDS, normalise
 from kaagaz.chunking.script import (
     SOUND_KEY_MIN,
-    ascii_digits,
     has_devanagari_letters,
     latin_spelling,
+    number_words,
     sound_keys,
 )
 from kaagaz.search.scope import EVERYTHING, Scope
@@ -143,7 +143,6 @@ RRF_K = 60
 MAX_LIMIT = 100
 # pg_trgm word similarity cut-off for the typo tolerant list. PROVISIONAL.
 FUZZY_THRESHOLD = 0.3
-_DIGIT = re.compile(r"\d")  # any decimal digit, Devanagari ones too (number_words)
 # Every search statement is cancelled after this long (PROVISIONAL). A meaning
 # list that runs out of time is dropped; the word and fuzzy lists still answer.
 STATEMENT_TIMEOUT_MS = 3000
@@ -226,7 +225,7 @@ _SET_INDEX_SCAN = text(
 
 _FUZZY = text(
     "SELECT p.id, p.document_id, GREATEST(word_similarity(:q, p.text), word_similarity(:ql, p.text_latin))"
-    " AS score"
+    " AS score, p.text, p.text_latin"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
@@ -241,7 +240,6 @@ _FUZZY = text(
     " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
     " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
     " AND (:q <% p.text OR :ql <% p.text_latin)"
-    " AND (CAST(:nums AS text) = '' OR p.tsv_simple @@ plainto_tsquery('simple', CAST(:nums AS text)))"
     " ORDER BY score DESC, d.created_at, p.document_id, p.seq, p.id LIMIT :n"
 )
 
@@ -607,10 +605,11 @@ def sound_query(question: str) -> str:
     return " ; ".join(group for group in groups if group)
 
 
-def number_words(question: str) -> str:
-    """#556: the question's words with a digit, digits as ASCII, for the typo list to find as
-    written ("" when it has none). ``plainto_tsquery`` takes any text, so this cannot fail."""
-    return " ".join(ascii_digits(word) for word in question.split() if _DIGIT.search(word))
+def _numbers_as_written(rows: Iterable[Sequence[Any]], asked: frozenset[str]) -> list[Sequence[Any]]:
+    """#556: the typo list's rows (id, document, score, text, text_latin) holding every number
+    the question asked as written, by the viewer's own word rule (``number_words``: "1,50,000"
+    is 150000); all of them when it asked none."""
+    return [row for row in rows if asked <= number_words(row[3]) | number_words(row[4] or "")]
 
 
 def vector_literal(values: Sequence[float]) -> str:
@@ -799,12 +798,12 @@ def _lists(
             "g": word_query(asked, expansion),
             "sk": sound_query(latin),
             "ql": latin,
-            "nums": number_words(query_text),
             "n": CANDIDATES,
         }
         word = _ranked(conn.execute(_WORD, {**params, **scope.params()}), owners)
         conn.execute(_SET_FUZZY_THRESHOLD, {"t": str(FUZZY_THRESHOLD)})
-        fuzzy = _ranked(conn.execute(_FUZZY, {**params, **scope.params()}), owners)
+        typo_rows = conn.execute(_FUZZY, {**params, **scope.params()}).all()
+        fuzzy = _ranked(_numbers_as_written(typo_rows, number_words(query_text)), owners)
     if embedding is not None:
         vector = {"c": customer_id, "vec": vector_literal(embedding), "recipe": recipe, "n": CANDIDATES}
         meaning = _meaning(conn, vector | scope.params(), ef_search, owners)

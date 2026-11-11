@@ -26,7 +26,8 @@ GIB = 1024 * MB
 # #555 (decision A1): the zip itself is kept and still counts toward storage, and its line says so.
 LINE = (
     'Unpacked: 2 files into folder "Bills", 1 skipped (1 failed the virus check).'
-    " The original zip is kept and counts toward storage. Delete it to free the space."
+    " The original zip is kept and counts toward storage."
+    " To free the space, delete it, then delete it forever from the Trash."
 )
 
 

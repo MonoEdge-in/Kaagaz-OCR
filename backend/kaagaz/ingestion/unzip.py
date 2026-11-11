@@ -126,7 +126,10 @@ ZIP_FAILURES = {
     " it again.",
 }
 # #555 (decision A1): once unpacked, the zip itself is still kept and still counts toward storage.
-KEPT_ZIP = "The original zip is kept and counts toward storage. Delete it to free the space."
+KEPT_ZIP = (
+    "The original zip is kept and counts toward storage."
+    " To free the space, delete it, then delete it forever from the Trash."
+)
 
 _CENTRAL_ENTRY = b"PK\x01\x02"  # every central directory entry starts with it
 _LOCAL_HEADER = 30  # a local file header's fixed part, before its name
