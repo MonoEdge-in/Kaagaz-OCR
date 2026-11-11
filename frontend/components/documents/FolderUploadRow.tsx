@@ -64,6 +64,8 @@ export function FolderUploadRow({
   const settled = ["done", "refused", "stopped", "needs_pick"].includes(view.phase);
   const reading = readingLine(view);
   const attention = attentionOf(view);
+  // Each button names its folder for a screen reader, as Clear does (production QA, 5 Nov 2026).
+  const named = <span className="visually-hidden">{` folder “${view.rootName}”`}</span>;
   return (
     <div className={styles.batch}>
       <div className={styles.batchHead}>
@@ -97,17 +99,17 @@ export function FolderUploadRow({
       <div className={styles.uploadsActions}>
         {(sending || view.phase === "planning" || view.phase === "registering") && (
           <button type="button" className="btn" onClick={actions.stop}>
-            Stop
+            Stop{named}
           </button>
         )}
         {view.phase === "stopping" && (
           <button type="button" className="btn" disabled>
-            Stopping after the files being sent…
+            Stopping after the files being sent…{named}
           </button>
         )}
         {view.phase === "stopped" && held && (
           <button type="button" className="btn" onClick={actions.resume}>
-            Continue upload
+            Continue upload{named}
           </button>
         )}
         {(view.phase === "needs_pick" || (view.phase === "stopped" && !held)) && (
@@ -117,12 +119,12 @@ export function FolderUploadRow({
         )}
         {retryable && !busy && held && (
           <button type="button" className="btn" onClick={actions.retryAll}>
-            Retry all failed
+            Retry all failed{named}
           </button>
         )}
         {settled && (
           <button type="button" className="btn btn-quiet" onClick={actions.clear}>
-            Clear<span className="visually-hidden">{` folder “${view.rootName}”`}</span>
+            Clear{named}
           </button>
         )}
       </div>
