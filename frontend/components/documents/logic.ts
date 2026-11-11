@@ -78,10 +78,10 @@ const MB = 1024 * 1024;
  * already has the customer's lower limit in it, and it checks every file again.
  */
 export const FALLBACK_UPLOAD_LIMITS: Readonly<UploadLimits> = {
-  pdf_bytes: 50 * MB,
+  pdf_bytes: 100 * MB, // MAX_UPLOAD_MB in .env.example
   image_bytes: 20 * MB,
   sheet_bytes: 10 * MB,
-  zip_bytes: 50 * MB, // the PDF limit until the server says its folder upload limit
+  zip_bytes: 100 * MB, // the PDF limit until the server says its folder upload limit
   max_pages: 100,
   readers: [], // no "Scan with" until the server says which readers it has
 };

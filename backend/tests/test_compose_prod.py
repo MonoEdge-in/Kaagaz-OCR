@@ -11,6 +11,8 @@ import json
 import re
 from pathlib import Path
 
+from kaagaz.api.upload_guard import MULTIPART_OVERHEAD
+
 ROOT = Path(__file__).resolve().parents[2]
 PROD = "docker-compose.prod.yml"
 PROD_COMMAND = "docker compose -f docker-compose.yml -f docker-compose.prod.yml <command>"
@@ -191,6 +193,17 @@ def test_caddy_is_pinned_and_gets_its_values_from_the_servers_env() -> None:
     assert has(caddy, "restart: unless-stopped")
 
 
+def test_caddy_lets_through_a_file_at_the_upload_limit() -> None:
+    """#569: a whole file up to MAX_UPLOAD_MB (a direct POST, not 8 MB parts) reaches the API,
+    which refuses a bigger one with its own message, never Caddy's bare 413. In bytes: Caddy's MB
+    is 10**6, the app's is 1024**2, and the API allows multipart overhead on top."""
+    caddy = (ROOT / "infra" / "caddy" / "Caddyfile").read_text(encoding="utf-8")
+    env = (ROOT / ".env.example").read_text(encoding="utf-8")
+    cap = int(re.findall(r"^\s*max_size (\d+)MB$", caddy, re.MULTILINE)[0])
+    limit = int(re.findall(r"^MAX_UPLOAD_MB=(\d+)$", env, re.MULTILINE)[0])
+    assert cap * 10**6 > limit * 1024**2 + MULTIPART_OVERHEAD
+
+
 def test_the_caddyfile_sends_api_unchanged_to_the_api_and_the_rest_to_the_frontend() -> None:
     text = (ROOT / "infra" / "caddy" / "Caddyfile").read_text(encoding="utf-8")
     lines = [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
@@ -200,7 +213,8 @@ def test_the_caddyfile_sends_api_unchanged_to_the_api_and_the_rest_to_the_fronte
         "}",
         "{$KAAGAZ_DOMAIN} {",
         "request_body {",
-        "max_size 60MB",
+        # Changed on purpose (#569, 11 Nov 2026): above the 100 MB upload limit.
+        "max_size 110MB",
         "}",
         # Changed on purpose (final polish, 16 Oct 2026): HSTS on the HTTPS site (security checklist).
         'header Strict-Transport-Security "max-age=31536000"',

@@ -69,9 +69,10 @@ describe("validateUpload", () => {
   });
 
   it("allows exactly the limit and refuses one byte over", () => {
-    expect(validateUpload({ name: "a.pdf", size: 50 * MB })).toBeNull();
-    expect(validateUpload({ name: "a.pdf", size: 50 * MB + 1 })).toBe(
-      "PDF, Word and PowerPoint files can be up to 50 MB. This one is 51 MB. Split it or save it smaller and try again.",
+    // Changed on purpose (#569, 11 Nov 2026): the PDF limit is 100 MB.
+    expect(validateUpload({ name: "a.pdf", size: 100 * MB })).toBeNull();
+    expect(validateUpload({ name: "a.pdf", size: 100 * MB + 1 })).toBe(
+      "PDF, Word and PowerPoint files can be up to 100 MB. This one is 101 MB. Split it or save it smaller and try again.",
     );
   });
 
@@ -93,10 +94,10 @@ describe("validateUpload", () => {
 
 describe("upload limits by type (PRD U2)", () => {
   const cases = [
-    { names: ["a.pdf", "a.docx", "a.dotx", "a.doc", "a.pptx", "a.ppt"], limit: 50 * MB },
+    { names: ["a.pdf", "a.docx", "a.dotx", "a.doc", "a.pptx", "a.ppt"], limit: 100 * MB },
     { names: ["a.png", "a.jpg", "a.jpeg", "a.tif", "a.tiff", "IMG_0042.HEIC", "a.heif"], limit: 20 * MB },
     { names: ["a.csv", "a.xlsx", "a.xls", "a.txt", "a.md", "a.json", "a.html", "a.HTM"], limit: 10 * MB },
-    { names: ["a.zip"], limit: 50 * MB }, // #522: the PDF limit until the server says its own
+    { names: ["a.zip"], limit: 100 * MB }, // #522: the PDF limit until the server says its own
   ];
 
   it("allows each type exactly at its limit and refuses one byte over", () => {
@@ -115,7 +116,7 @@ describe("upload limits by type (PRD U2)", () => {
     );
     expect(validateUpload({ name: "Photo.JpG", size: 20 * MB + 1 })).toMatch(/^Photos and scans/);
     expect(validateUpload({ name: "BOOK.XLSX", size: 10 * MB + 1 })).toMatch(/^Spreadsheets/);
-    expect(validateUpload({ name: "DEED.PDF", size: 50 * MB })).toBeNull();
+    expect(validateUpload({ name: "DEED.PDF", size: 100 * MB })).toBeNull();
     expect(uploadKind("DEED.PDF")).toBe("pdf");
     expect(uploadKind("IMG_01.JPEG")).toBe("image");
     expect(uploadKind("Ledger.Csv")).toBe("sheet");
@@ -132,8 +133,8 @@ describe("upload limits by type (PRD U2)", () => {
     expect(validateUpload({ name: "photo.jpg", size: 34 * MB })).toBe(
       "Photos and scans can be up to 20 MB. This one is 34 MB. Save it at a lower resolution and try again.",
     );
-    expect(validateUpload({ name: "statement.pdf", size: 61 * MB })).toBe(
-      "PDF, Word and PowerPoint files can be up to 50 MB. This one is 61 MB. Split it or save it smaller and try again.",
+    expect(validateUpload({ name: "statement.pdf", size: 121 * MB })).toBe(
+      "PDF, Word and PowerPoint files can be up to 100 MB. This one is 121 MB. Split it or save it smaller and try again.",
     );
     expect(validateUpload({ name: "ledger.xlsx", size: 12 * MB })).toBe(
       "Spreadsheets, CSV and text files can be up to 10 MB. This one is 12 MB. Split it into smaller files and try again.",
@@ -168,14 +169,14 @@ describe("upload limits by type (PRD U2)", () => {
 
   it("uses the platform's limits until the server's arrive", () => {
     expect(FALLBACK_UPLOAD_LIMITS).toEqual({
-      pdf_bytes: 50 * MB,
+      pdf_bytes: 100 * MB, // Changed on purpose (#569, 11 Nov 2026)
       image_bytes: 20 * MB,
       sheet_bytes: 10 * MB,
-      zip_bytes: 50 * MB,
+      zip_bytes: 100 * MB,
       max_pages: 100,
       readers: [], // no "Scan with" until the server says which readers it has
     });
-    expect(limitFor("pdf")).toBe(50 * MB);
+    expect(limitFor("pdf")).toBe(100 * MB);
     expect(limitFor("image")).toBe(20 * MB);
     expect(limitFor("sheet")).toBe(10 * MB);
   });
@@ -197,7 +198,7 @@ describe("upload limits by type (PRD U2)", () => {
 
   it("tells people each type's limit next to the dropzone", () => {
     expect(uploadLimitsHint()).toBe(
-      "PDF, Word or PowerPoint up to 50 MB. PNG, JPG, TIFF or HEIC up to 20 MB. CSV, XLSX, XLS, TXT, MD, JSON or HTML up to 10 MB. ZIP up to 50 MB, unpacked into a folder.",
+      "PDF, Word or PowerPoint up to 100 MB. PNG, JPG, TIFF or HEIC up to 20 MB. CSV, XLSX, XLS, TXT, MD, JSON or HTML up to 10 MB. ZIP up to 100 MB, unpacked into a folder.",
     );
     expect(uploadLimitsHint(customer)).toBe(
       "PDF, Word or PowerPoint up to 25 MB. PNG, JPG, TIFF or HEIC up to 20 MB. CSV, XLSX, XLS, TXT, MD, JSON or HTML up to 10 MB. ZIP up to 25 MB, unpacked into a folder.",
