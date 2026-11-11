@@ -12,6 +12,7 @@ from kaagaz.ingestion import unzip
 from kaagaz.ingestion.policy import ZIP_MAX_BYTES
 
 COMPOSE = Path(__file__).resolve().parents[2] / "docker-compose.yml"
+ENV_EXAMPLE = COMPOSE.parent / ".env.example"
 MIB = 1024 * 1024
 
 # Changed on purpose (#522, security review 6 Nov 2026, Vrushit approves): an encrypted zip
@@ -48,7 +49,8 @@ def _mib(value: str) -> int:
 def test_clamd_accepts_a_whole_upload() -> None:
     # A stream cut short by clamd's own limit would never be fully scanned.
     size = _clamd_settings()["StreamMaxLength"]
-    assert _mib(size) > 50 * MIB  # MAX_UPLOAD_MB in .env.example
+    limit = re.findall(r"^MAX_UPLOAD_MB=(\d+)$", ENV_EXAMPLE.read_text(encoding="utf-8"), re.MULTILINE)
+    assert _mib(size) > int(limit[0]) * MIB
 
 
 def test_clamd_can_scan_the_largest_zip_the_app_takes_and_every_file_in_it() -> None:

@@ -237,7 +237,7 @@ alias dc='docker compose -f docker-compose.yml -f docker-compose.prod.yml'
 2.11.6; `infra/caddy/Caddyfile`), the only service that publishes ports: 80
 and 443. Caddy gets and renews the Let's Encrypt certificate for
 `KAAGAZ_DOMAIN`, redirects HTTP to HTTPS, sends `/api/*` to `api:8000` and the
-rest to `frontend:3000`, refuses a body over 60 MB, and logs one JSON line per
+rest to `frontend:3000`, refuses a body over 110 MB, and logs one JSON line per
 request. Every other port is cleared, every long-running service restarts after
 a crash or a reboot, and every log is rotated (5 files of 20 MB). The job queue
 keeps its messages in the volume `elasticmq-data`, so a job survives a restart;
@@ -589,7 +589,7 @@ its output; until then it is NOT RUN.
 * **10.6** A made-up Marathi scan reaches Ready, its pages show the route `ocr`
   and "Read by Gemini", its text is Devanagari, and searching its Latin spelling
   finds it.
-* **10.7** A made-up 45 MB PDF uploads, and a 60 MB one is refused with the
+* **10.7** A made-up 95 MB PDF uploads, and a 110 MB one is refused with the
   size message. A chat answer cites the page with the spot highlighted, and an
   unanswerable question says not found.
 * **10.8** After `sudo reboot`, the site is back within about 3 minutes and

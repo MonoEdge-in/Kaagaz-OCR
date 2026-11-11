@@ -7,9 +7,9 @@
 }
 
 {$KAAGAZ_DOMAIN} {
-	# Above the 50 MB upload limit; the API refuses a bigger file with its own message.
+	# Above the 100 MB upload limit; the API refuses a bigger file with its own message.
 	request_body {
-		max_size 60MB
+		max_size 110MB
 	}
 
 	# Browsers then use only HTTPS for this site for a year (security checklist, 15 Oct 2026).

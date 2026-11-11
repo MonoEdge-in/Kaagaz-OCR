@@ -486,7 +486,7 @@ describe("what the tray and the status bar say", () => {
       document: null,
       ...over,
     });
-    expect(itemProblemText(item({ failure_code: "too_large" }), FALLBACK_UPLOAD_LIMITS)).toBe("Too big: the most is 50 MB.");
+    expect(itemProblemText(item({ failure_code: "too_large" }), FALLBACK_UPLOAD_LIMITS)).toBe("Too big: the most is 100 MB.");
     expect(itemProblemText(item({ name: "x.png", failure_code: "too_large" }), FALLBACK_UPLOAD_LIMITS)).toBe("Too big: the most is 20 MB.");
     expect(
       itemProblemText(
