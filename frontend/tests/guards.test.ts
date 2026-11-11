@@ -165,3 +165,12 @@ describe("guards", () => {
     expect(offenders.map((p) => relative(ROOT, p).replaceAll("\\", "/"))).toEqual([]);
   });
 });
+
+// #567 (Tushar, 11 Nov 2026): no clock beside the Kaagaz logo; the brand is the wordmark alone.
+describe("the sidebar brand", () => {
+  it("shows only the Kaagaz wordmark, with no clock", () => {
+    const shell = readFileSync(join(ROOT, "components/shell/AppShell.tsx"), "utf8");
+    expect(shell).toMatch(/<div className=\{styles\.brand\}>\s*<Wordmark href="\/dashboard" \/>\s*<\/div>/);
+    expect(shell).not.toMatch(/Clock/);
+  });
+});

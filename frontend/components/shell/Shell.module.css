@@ -209,8 +209,7 @@
   }
 }
 
-/* The brand at the sidebar's head, the handoff's .k-brand. */
-/* The brand and, at its right, the clock that peeks (24 Oct 2026): one row, never wrapped. */
+/* The brand at the sidebar's head, the handoff's .k-brand: the wordmark alone, no clock (issue 567, 11 Nov 2026). */
 .brand {
   display: flex;
   align-items: center;

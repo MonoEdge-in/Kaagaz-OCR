@@ -38,7 +38,6 @@ import { currentPageName, isCurrent, isSearchShortcut, navLinks, reviewCountText
 import { ShellMenu } from "./ShellMenu";
 import { StatusBarSlot } from "./StatusBar";
 import { SHELL_UPLOAD_INPUT_ID, UploadsProvider } from "./Uploads";
-import { ClockPeek } from "./ClockPeek";
 import { EmailBanner } from "./EmailBanner";
 import { OfflineBanner } from "./OfflineBanner";
 import { Wordmark } from "./Wordmark";
@@ -172,7 +171,6 @@ export function AppShell({ children }: { children: ReactNode }) {
         <div className={styles.sidebar}>
           <div className={styles.brand}>
             <Wordmark href="/dashboard" />
-            <ClockPeek />
           </div>
           {chrome && menu}
           <div className={styles.sideFoot}>
