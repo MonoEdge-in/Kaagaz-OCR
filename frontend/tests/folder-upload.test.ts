@@ -203,6 +203,33 @@ describe("a folder upload's run", () => {
     expect(events.at(-1)).toEqual({ type: "phase", id: "pb", phase: "done" });
   });
 
+  it("stops between pages of the listing when Stop is pressed, and before listing when pressed while planning", async () => {
+    const pick = pickOf(Array.from({ length: 2500 }, (_, n) => `A/f${n}.pdf`));
+    const source = { picked: pick, manifest: buildManifest(pick) };
+    const listing = fakeServer();
+    const events: FolderEvent[] = [];
+    await startFolderUpload(
+      listing.api,
+      { id: "s1", userId: "me", source, target: { kind: "folder", parentId: null }, merge: true },
+      run(events),
+      () => listing.registers.length >= 1,
+    );
+    expect(listing.registers.map((page) => page.length)).toEqual([1000]);
+    expect(listing.sentIds).toEqual([]);
+    expect(events.at(-1)).toEqual({ type: "phase", id: "s1", phase: "stopped" });
+
+    const planning = fakeServer();
+    const planned: FolderEvent[] = [];
+    await startFolderUpload(
+      planning.api,
+      { id: "s2", userId: "me", source, target: { kind: "folder", parentId: null }, merge: true },
+      run(planned),
+      () => true,
+    );
+    expect(planning.registers).toEqual([]);
+    expect(planned.map((event) => (event.type === "phase" ? event.phase : event.type))).toEqual(["start", "planning", "planned", "stopped"]);
+  });
+
   it("is refused in the server's words while another folder upload of the organisation still sends", async () => {
     const pick = pickOf(["A/a.pdf"]);
     const server = fakeServer();

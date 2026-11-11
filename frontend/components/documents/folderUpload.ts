@@ -69,7 +69,9 @@ export interface FolderSource {
 
 export type FolderTarget = { kind: "department" } | { kind: "folder"; parentId: string | null };
 
-type FolderPhase = "planning" | "registering" | "sending" | "done" | "stopped" | "needs_pick" | "refused";
+// stopping: Stop was pressed; the files being sent finish, then it is stopped.
+type FolderPhase = "planning" | "registering" | "sending" | "stopping" | "done" | "stopped" | "needs_pick" | "refused";
+const RUNNING: readonly FolderPhase[] = ["planning", "registering", "sending"];
 
 export type FolderEvent =
   | { type: "start"; id: string; rootName: string; total: number }
@@ -119,7 +121,8 @@ async function keyIndex(source: FolderSource): Promise<Map<string, number>> {
   return keys;
 }
 
-/** Plan, register, then send. `stopped` is asked before each file is checked or sent (Stop). */
+/** Plan, register, then send. `stopped` (Stop) is asked after the plan, before each page of the
+ * listing, and before each file is checked or sent; Continue upload lists again with the same id. */
 export async function startFolderUpload(
   api: FolderUploadApi,
   args: {
@@ -157,11 +160,13 @@ export async function startFolderUpload(
     return;
   }
   emit({ type: "planned", id, rootFolderId: plan.root_folder_id });
+  if (stopped()) return emit({ type: "phase", id, phase: "stopped" });
   emit({ type: "phase", id, phase: "registering" });
   if (onlyNew) emit({ type: "checked", id, done: 0 });
   const keys = new Map<string, number>();
   try {
     for (let start = 0; start < manifest.fileCount; start += REGISTER_PAGE) {
+      if (stopped()) return emit({ type: "phase", id, phase: "stopped" });
       const page: NewFolderItem[] = [];
       for (let at = start; at < Math.min(start + REGISTER_PAGE, manifest.fileCount); at++) {
         // Stopped while checking: the pages registered stay; Continue plans the same id again.
@@ -385,9 +390,15 @@ export function folderUploadsReducer(
   const without = (itemId: string) => view.sending.filter((row) => row.itemId !== itemId);
   let next: FolderUploadView;
   switch (event.type) {
-    case "phase":
-      next = { ...view, phase: event.phase, message: event.message ?? null, sending: event.phase === "sending" ? view.sending : [] };
+    case "phase": {
+      // Stop pressed just as the run ended changes nothing: the row is not left stopping. While
+      // it stops, the run going on to its next step ("sending") doesn't bring Stop back.
+      if (event.phase === "stopping" && !RUNNING.includes(view.phase)) return state;
+      const phase = view.phase === "stopping" && RUNNING.includes(event.phase) ? "stopping" : event.phase;
+      const keep = phase === "sending" || phase === "stopping";
+      next = { ...view, phase, message: event.message ?? null, sending: keep ? view.sending : [] };
       break;
+    }
     case "planned":
       next = { ...view, rootFolderId: event.rootFolderId };
       break;

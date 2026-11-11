@@ -229,8 +229,9 @@ describe("adding new files only", () => {
 });
 
 describe("the tray's row for a folder upload", () => {
-  const row = (phase: "sending" | "needs_pick" | "stopped", held = true) => {
+  const row = (phase: "planning" | "registering" | "sending" | "stopping" | "needs_pick" | "stopped", held = true) => {
     let state = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, { type: "start", id: "u", rootName: "A", total: 5000 });
+    if (phase === "stopping") state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "sending" });
     state = folderUploadsReducer(state, { type: "phase", id: "u", phase });
     for (let n = 0; n < 1240; n++) state = folderUploadsReducer(state, { type: "sent", id: "u", itemId: `i${n}`, outcome: "stored" });
     return renderToStaticMarkup(
@@ -286,6 +287,32 @@ describe("the tray's row for a folder upload", () => {
     expect(html).toContain('aria-label="Files of “A” checked"');
     expect(html).toContain('aria-valuetext="1,240 of 5,000"');
     expect(html).toContain(">Stop<");
+  });
+
+  it("offers Stop while it makes its folders and lists its files too", () => {
+    expect(row("planning")).toContain(">Stop<");
+    expect(row("registering")).toContain(">Stop<");
+  });
+
+  it("says it is stopping after Stop, with no Stop or Retry, until the files being sent are in", () => {
+    const html = row("stopping");
+    expect(html).toContain('<button type="button" class="btn" disabled="">Stopping after the files being sent…</button>');
+    expect(html).not.toContain(">Stop<");
+    expect(html).not.toContain("Retry");
+    expect(html).not.toContain("Clear<span");
+  });
+
+  it("keeps the files being sent while it stops, and never goes back to stopping once it ended", () => {
+    let state = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, { type: "start", id: "u", rootName: "A", total: 5 });
+    state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "sending" });
+    state = folderUploadsReducer(state, { type: "sending", id: "u", itemId: "i1", name: "a.pdf", fraction: 0.5 });
+    state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "stopping" });
+    expect(state.u?.phase).toBe("stopping");
+    expect(state.u?.sending.map((each) => each.name)).toEqual(["a.pdf"]);
+    state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "sending" }); // the run's next step
+    expect(state.u?.phase).toBe("stopping");
+    state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "stopped" });
+    expect(folderUploadsReducer(state, { type: "phase", id: "u", phase: "stopping" })).toBe(state);
   });
 
   it("after a reload names the folder to choose again; stopped here, it continues with the files it holds", () => {
