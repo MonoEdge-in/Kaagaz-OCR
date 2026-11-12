@@ -6,7 +6,9 @@ Read as text, like tests/test_compose_prod.py: Docker Compose itself renders the
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-LOCAL = "postgresql://${POSTGRES_USER:-kaagaz}:${POSTGRES_PASSWORD:-kaagaz}@postgres:5432/${POSTGRES_DB:-kaagaz}"
+LOCAL = (
+    "postgresql://${POSTGRES_USER:-kaagaz}:${POSTGRES_PASSWORD:-kaagaz}@postgres:5432/${POSTGRES_DB:-kaagaz}"
+)
 
 
 def test_rds_replaces_the_postgres_container_only_when_set_and_the_app_login_still_wins() -> None:
@@ -23,7 +25,7 @@ def test_the_nightly_dump_reads_rds_without_putting_its_password_on_a_command_li
     script = (ROOT / "infra" / "ec2" / "pgdump.sh").read_text(encoding="utf-8")
     assert 'rds_url="$(env_value RDS_DATABASE_URL)"' in script
     # The address goes to python on stdin and to the client as PG* variables, never as an argument.
-    assert "' <<<\"$rds_url\")" in script
+    assert '\' <<<"$rds_url")' in script
     assert "sys.stdin.read()" in script
     assert "-e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD" in script
     assert '"$rds_url"' not in script.replace('<<<"$rds_url"', "").replace('[[ -n "$rds_url" ]]', "")
