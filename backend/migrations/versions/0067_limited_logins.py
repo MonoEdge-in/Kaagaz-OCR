@@ -104,7 +104,7 @@ def _login(login: str, limit: int) -> str:
             IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{login}') THEN
                 CREATE ROLE {login} {LIMITED} CONNECTION LIMIT {limit};
             ELSIF (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
-                ALTER ROLE {login} {ALTERABLE} {SUPERUSER_ONLY} CONNECTION LIMIT {limit};
+                ALTER ROLE {login} {ALTERABLE} CONNECTION LIMIT {limit};
             ELSE
                 ALTER ROLE {login} {ALTERABLE} CONNECTION LIMIT {limit};
             END IF;
