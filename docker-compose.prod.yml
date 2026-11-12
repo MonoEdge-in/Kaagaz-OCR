@@ -65,7 +65,10 @@ x-sqs-env: &sqs-env
   QUEUE_EXPRESS_URL: ${QUEUE_EXPRESS_URL:?set QUEUE_EXPRESS_URL in .env}
 
 services:
+  # Retired: the database is Amazon RDS for PostgreSQL (ap-south-1). Kept so its port stays
+  # unpublished and a plain `up` never starts a local database by mistake.
   postgres:
+    profiles: ["postgres-retired"]
     ports: !reset []
     restart: unless-stopped
     logging: *logging
@@ -120,6 +123,8 @@ services:
       <<: *s3-env
       STORAGE_ACCESS_KEY: ""
       STORAGE_SECRET_KEY: ""
+      # The owner's login on RDS (migrations and owner-only CLI commands, #479).
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
     command:
       - sh
       - -c
