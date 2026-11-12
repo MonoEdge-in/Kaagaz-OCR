@@ -12,7 +12,12 @@
 #     Docker's own networks.
 #   - Every long-running service restarts after a crash or a reboot.
 #   - Every service's log is rotated (5 files of 20 MB), so logs never fill the disk.
-#   - SeaweedFS reads its access keys from the server's own file, not from git.
+#   - Files live in AWS S3 (ap-south-1) through the VPC gateway endpoint, not in
+#     SeaweedFS: STORAGE_ENDPOINT_URL below replaces docker-compose.yml's
+#     http://seaweedfs:8333 for migrate, api and worker. There are no storage keys:
+#     boto3 uses the instance role (IMDSv2, hop limit 2). SeaweedFS is retired: it
+#     starts only with --profile seaweedfs-retired and is kept read-only as a
+#     fallback until <date + 14 days>.
 #   - Every service but postgres and caddy has a memory limit (#246 A2; A15, 7 Nov
 #     2026), so one of them running away is stopped alone instead of the kernel's
 #     OOM killer picking a process anywhere on the box. memswap_limit equals
@@ -32,17 +37,32 @@
 #     and need none (LibreOffice, RapidOCR and pi-heif included). clamav, postgres
 #     and caddy start as root and are left as they are.
 #
-# The server's .env sets KAAGAZ_DOMAIN, ACME_EMAIL and SEAWEEDFS_S3_CONFIG (the
-# path of its s3.json); compose stops with the name of any that is missing. It
-# also sets STORAGE_ADMIN_ACCESS_KEY and STORAGE_ADMIN_SECRET_KEY (s3.json's
-# admin identity, migrate's alone): without them only migrate stops, naming
-# them, so logs, exec, pgdump.sh and idle-stop.sh keep working.
+# The server's .env sets KAAGAZ_DOMAIN, ACME_EMAIL, the bucket name
+# (kaagaz-prod-files) and SEAWEEDFS_S3_CONFIG (until the seaweedfs block below is
+# deleted); compose stops with the name of any that is missing. It must NOT set
+# STORAGE_ACCESS_KEY, its secret, or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY: any
+# of them would replace the instance role.
 
 x-logging: &logging
   driver: json-file
   options:
     max-size: "20m"
     max-file: "5"
+
+# AWS S3 for the three backend services (migrate, api, worker).
+x-s3-env: &s3-env
+  STORAGE_ENDPOINT_URL: https://s3.ap-south-1.amazonaws.com
+  AWS_REGION: ap-south-1
+  AWS_DEFAULT_REGION: ap-south-1
+
+# Amazon SQS in place of docker-compose.yml's elasticmq URLs for api and worker.
+# QUEUE_ENDPOINT_URL empty → boto3 uses the real SQS endpoint for QUEUE_REGION
+# (ap-south-1, from .env); credentials are the instance role. The queue URLs carry
+# the account id, so they come from .env, like STORAGE_BUCKET. ElasticMQ is retired.
+x-sqs-env: &sqs-env
+  QUEUE_ENDPOINT_URL: ""
+  QUEUE_URL: ${QUEUE_URL:?set QUEUE_URL in .env}
+  QUEUE_EXPRESS_URL: ${QUEUE_EXPRESS_URL:?set QUEUE_EXPRESS_URL in .env}
 
 services:
   postgres:
@@ -56,10 +76,12 @@ services:
     command: ["postgres", "-c", "shared_buffers=1GB", "-c", "maintenance_work_mem=512MB"]
     stop_grace_period: 60s # a clean shutdown, not Docker's kill after 10 s
 
+  # Retired. Kept so its ports stay unpublished and a plain `up` never starts it
+  # with the laptop s3.json. Delete this block (and SEAWEEDFS_S3_CONFIG from .env)
+  # once the fallback period ends and the container and its volume are removed.
   seaweedfs:
+    profiles: ["seaweedfs-retired"]
     ports: !reset []
-    # Same target as docker-compose.yml's ./infra/seaweedfs/s3.json, so this one
-    # takes its place (compose merges volumes by target path).
     volumes:
       - ${SEAWEEDFS_S3_CONFIG:?set SEAWEEDFS_S3_CONFIG in .env}:/etc/seaweedfs/s3.json:ro
     restart: unless-stopped
@@ -67,7 +89,11 @@ services:
     mem_limit: 1g
     memswap_limit: 1g
 
+  # Retired. Kept so its ports stay unpublished and a plain `up` never starts it:
+  # jobs are in Amazon SQS now (api and worker get the SQS URLs above). Delete this
+  # block once the fallback period ends and the container and its volume are removed.
   elasticmq:
+    profiles: ["elasticmq-retired"]
     ports: !reset []
     restart: unless-stopped
     logging: *logging
@@ -83,14 +109,29 @@ services:
     memswap_limit: 4g
 
   # One-shot: it runs once per deploy and exits, so it gets no restart policy.
-  # The storage admin key from the server's .env, never the laptop's (#477).
+  # It checks the bucket (ensure_bucket) too, so it needs S3 as well. On Amazon S3 it uses the
+  # server's own AWS role, never a key: the storage admin key (#477) is SeaweedFS's alone, so
+  # its key and docker-compose.yml's check for it are left out here.
   migrate:
     logging: *logging
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     environment:
-      STORAGE_ACCESS_KEY: ${STORAGE_ADMIN_ACCESS_KEY:-}
-      STORAGE_SECRET_KEY: ${STORAGE_ADMIN_SECRET_KEY:-}
+      <<: *s3-env
+      STORAGE_ACCESS_KEY: ""
+      STORAGE_SECRET_KEY: ""
+    command:
+      - sh
+      - -c
+      - >-
+        alembic upgrade head &&
+        python -c "from kaagaz.adapters.storage import S3Storage;
+        from kaagaz.settings import Settings;
+        S3Storage(Settings.from_env()).ensure_bucket()"
+    # docker-compose.yml's list without seaweedfs. `run migrate` starts these.
+    depends_on: !override
+      postgres:
+        condition: service_healthy
 
   api:
     ports: !reset []
@@ -103,9 +144,14 @@ services:
     # A16: an answer being written (POST /api/chat/stream) finishes before api stops.
     stop_grace_period: 200s
     environment:
+      <<: [*s3-env, *sqs-env]
       # The number of worker copies below, not docker-compose.yml's laptop "1".
       # OpenRouter RPM is reserved centrally in PostgreSQL across API and worker processes.
       WORKER_REPLICAS: ${WORKER_REPLICAS:-3}
+    # docker-compose.yml's list without seaweedfs or elasticmq (jobs are in Amazon SQS).
+    depends_on: !override
+      migrate:
+        condition: service_completed_successfully
 
   worker:
     logging: *logging # restart: unless-stopped is already in docker-compose.yml
@@ -120,7 +166,14 @@ services:
     deploy:
       replicas: ${WORKER_REPLICAS:-3}
     environment:
+      <<: [*s3-env, *sqs-env]
       WORKER_REPLICAS: ${WORKER_REPLICAS:-3}
+    # docker-compose.yml's list without seaweedfs or elasticmq (jobs are in Amazon SQS).
+    depends_on: !override
+      migrate:
+        condition: service_completed_successfully
+      clamav:
+        condition: service_healthy
 
   frontend:
     ports: !reset []

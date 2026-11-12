@@ -28,12 +28,11 @@ def test_the_script_checks_all_five_conditions() -> None:
         'path.startswith("/api/")',
         'path == "/api/health"',
         '"cookie"',
-        'QUEUES="kaagaz-jobs kaagaz-jobs-express"',  # 3. both lanes are empty (PRD 5 Q4)
-        'QUEUE="http://127.0.0.1:9324/000000000000/$name"',
-        "exec -T elasticmq wget -qO- ",
-        '"$QUEUE?Action=GetQueueAttributes&AttributeName.1=All"',
-        'values["ApproximateNumberOfMessages"]',
-        'values["ApproximateNumberOfMessagesNotVisible"]',
+        # 3. both lanes idle: waiting, in-flight and delayed, asked from Amazon SQS
+        # through the worker container, never from the database (PRD 5 Q4).
+        "dc exec -T worker python -m kaagaz.cli queue-depth",
+        "read -r lane waiting in_flight delayed",
+        "((waiting > 0 || in_flight > 0 || delayed > 0))",
         "DEPLOY_LOCK=/tmp/kaagaz-deploy.lock",  # 4. no deploy running
         'flock -n "$lock_fd"',
         "KEEP_ON_FILE=/etc/kaagaz/no-idle-stop",  # 5. the manual switch

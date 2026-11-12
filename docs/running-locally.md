@@ -15,7 +15,7 @@ placeholder**, never a real secret.
 | `migrate` | none | one-shot: `alembic upgrade head`, then makes the storage bucket | on every deploy |
 | `postgres` | 5432 | PostgreSQL 17 with pgvector | the same container (no RDS in this phase) |
 | `seaweedfs` | 8333 | file storage, S3 API | the same container (no S3 in this phase) |
-| `elasticmq` | 9324 | job queue `kaagaz-jobs` and its failure bin `kaagaz-jobs-failed`, SQS API; messages kept in the volume `elasticmq-data` | the same container (no SQS in this phase) |
+| `elasticmq` | 9324 | job queue `kaagaz-jobs` and its failure bin `kaagaz-jobs-failed`, SQS API; messages kept in the volume `elasticmq-data` | not run: jobs are in Amazon SQS (ap-south-1), through the instance role |
 | `clamav` | 3310 | clamd virus scanner | the same container |
 | `caddy` | none | HTTPS in front of `frontend` and `api` (`docker-compose.prod.yml` only) | 80 and 443, the only open ports |
 
@@ -503,7 +503,7 @@ Starting the app before step 3 leaves api on the new `data` network and postgres
 powers off (the instance's shutdown behaviour is Stop) only when the server has
 been up 20 minutes, Caddy logged no signed-in request to `/api/` (one with a
 Cookie header, other than `/api/health`) in the last 15 minutes, both job queues
-(`kaagaz-jobs` and `kaagaz-jobs-express`) have nothing waiting or being read, no deploy holds `/tmp/kaagaz-deploy.lock`,
+(`kaagaz-jobs` and `kaagaz-jobs-express`, asked from Amazon SQS) have nothing waiting, being read or waiting to retry, no deploy holds `/tmp/kaagaz-deploy.lock`,
 and `/etc/kaagaz/no-idle-stop` does not exist. A check that fails to run keeps
 it on. Each run logs why (`journalctl -u kaagaz-idle -n 5`), and
 `sudo ~/kaagaz/infra/ec2/idle-stop.sh --dry-run` prints the decision without

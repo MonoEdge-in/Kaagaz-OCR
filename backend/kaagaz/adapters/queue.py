@@ -28,7 +28,8 @@ worker takes it out), with the lease model described in kaagaz/jobs/ports.py:
   policy would move a job deferred ten times to the failure bin. It first renews
   the lease, as ``bury`` does, so a stale delivery sends nothing.
 * ``depth`` counts the jobs waiting in each lane, for the operator's Health
-  screen (PRD 5 U9).
+  screen (PRD 5 U9). ``backlog`` adds the in-flight and delayed counts, for the
+  server's idle-stop, so it stays awake while a job is being read or a retry waits.
 * ``bury`` puts the job in its lane's failure bin (the lane's URL + ``"-failed"``)
   with its code, then deletes it. It first renews the lease, so a worker whose
   lease already ran out cannot put a job in the failure bin that another worker
@@ -352,6 +353,35 @@ class SqsQueue:
         except _ANY_ERROR as error:
             raise BackendUnavailable("queue") from error
         return int(response.get("Attributes", {}).get("ApproximateNumberOfMessages", "0"))
+
+    def backlog(self) -> dict[str, tuple[int, int, int]]:
+        """Each lane's ``(waiting, in flight, delayed)`` job counts, for idle-stop:
+        ``ApproximateNumberOfMessages`` (waiting to be read), ``...NotVisible`` (being
+        read, inside a lease) and ``...Delayed`` (a deferred retry not yet due). The
+        server stays awake while any of the six is above zero, so a pending retry is
+        not lost to a power-off. ``(0, 0, 0)`` for express when there is no express
+        lane. One call a lane, on the short-timeout client (not a long poll's time)."""
+        express = (0, 0, 0) if self._express_url is None else self._counts(self._express_url)
+        return {"express": express, "main": self._counts(self._url)}
+
+    def _counts(self, url: str) -> tuple[int, int, int]:
+        try:
+            response = self._send_client.get_queue_attributes(
+                QueueUrl=url,
+                AttributeNames=[
+                    "ApproximateNumberOfMessages",
+                    "ApproximateNumberOfMessagesNotVisible",
+                    "ApproximateNumberOfMessagesDelayed",
+                ],
+            )
+        except _ANY_ERROR as error:
+            raise BackendUnavailable("queue") from error
+        attributes = response.get("Attributes", {})
+        return (
+            int(attributes.get("ApproximateNumberOfMessages", "0")),
+            int(attributes.get("ApproximateNumberOfMessagesNotVisible", "0")),
+            int(attributes.get("ApproximateNumberOfMessagesDelayed", "0")),
+        )
 
     # --- Settings ----------------------------------------------------------
 

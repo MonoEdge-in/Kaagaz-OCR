@@ -107,16 +107,25 @@ jobs:
           mkdir -p "$dir"
           printf '%s\n' KAAGAZ_DOMAIN=kaagaz.example.test ACME_EMAIL=admin@example.test \
             SEAWEEDFS_S3_CONFIG=/home/ubuntu/kaagaz-secrets/s3.json \
-            STORAGE_ADMIN_ACCESS_KEY=made-up STORAGE_ADMIN_SECRET_KEY=made-up > "$dir/.env"
+            STORAGE_ADMIN_ACCESS_KEY=made-up STORAGE_ADMIN_SECRET_KEY=made-up \
+            QUEUE_URL=https://sqs.ap-south-1.amazonaws.com/123456789012/kaagaz-jobs \
+            QUEUE_EXPRESS_URL=https://sqs.ap-south-1.amazonaws.com/123456789012/kaagaz-jobs-express > "$dir/.env"
           docker compose version
           docker compose --project-directory "$dir" -f docker-compose.yml -f docker-compose.prod.yml \
             config --format json > "$dir/merged.json"
           ports=$(jq -c '[.services | to_entries[] | select(.value.ports) | {(.key): [.value.ports[].published]}]' "$dir/merged.json")
           keys=$(jq -c '[.services.seaweedfs.volumes[] | select(.target == "/etc/seaweedfs/s3.json") | .source]' "$dir/merged.json")
+          # api and worker reach real Amazon SQS, not ElasticMQ: QUEUE_ENDPOINT_URL renders empty.
+          queue=$(jq -c '[.services.api.environment.QUEUE_ENDPOINT_URL, .services.worker.environment.QUEUE_ENDPOINT_URL]' "$dir/merged.json")
           echo "Published ports: $ports"
           echo "SeaweedFS keys file: $keys"
+          echo "Queue endpoint (api, worker): $queue"
           if [ "$ports" != '[{"caddy":["80","443"]}]' ] || [ "$keys" != '["/home/ubuntu/kaagaz-secrets/s3.json"]' ]; then
             echo "::error::Only caddy may publish ports (80 and 443), and SeaweedFS must read only the server's keys file."
+            exit 1
+          fi
+          if [ "$queue" != '["",""]' ]; then
+            echo "::error::api and worker must reach Amazon SQS (QUEUE_ENDPOINT_URL empty), not ElasticMQ."
             exit 1
           fi
           echo "The production compose files render."

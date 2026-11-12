@@ -97,7 +97,8 @@ def test_the_prod_file_covers_every_service_and_adds_only_caddy() -> None:
     # A hand `up -d --build` would rebuild the live :local images (infra/ec2/deploy.sh, #246).
     assert "# Deploys go through infra/ec2/deploy.sh, never `up -d --build` by hand" in text
     assert services(PROD) == [*services("docker-compose.yml"), "caddy"]
-    assert re.findall(r"^([a-z-]+):", text, re.MULTILINE) == ["x-logging", "services", "volumes"]
+    # x-s3-env has a digit, so this [a-z-] pattern skips it; x-sqs-env and x-logging match.
+    assert re.findall(r"^([a-z-]+):", text, re.MULTILINE) == ["x-logging", "x-sqs-env", "services", "volumes"]
     assert re.search(r"^volumes:\n  caddy-data:\n  caddy-config:\n\Z", text, re.MULTILINE)
 
 
@@ -173,6 +174,24 @@ def test_seaweedfs_reads_the_servers_own_keys_file() -> None:
     assert re.findall(r"^      - (.*)$", seaweedfs, re.MULTILINE) == [
         "${SEAWEEDFS_S3_CONFIG:?set SEAWEEDFS_S3_CONFIG in .env}:" + target
     ]
+
+
+def test_the_queue_is_amazon_sqs_and_elasticmq_never_starts() -> None:
+    """Jobs are in Amazon SQS: api and worker get the SQS env (no endpoint, so boto3
+    reaches real SQS; the URLs come from .env), and elasticmq only starts under its
+    retirement profile, like seaweedfs after the S3 move."""
+    text = (ROOT / PROD).read_text(encoding="utf-8")
+    assert "x-sqs-env: &sqs-env\n" in text
+    assert 'QUEUE_ENDPOINT_URL: ""' in text
+    assert "QUEUE_URL: ${QUEUE_URL:?set QUEUE_URL in .env}" in text
+    assert "QUEUE_EXPRESS_URL: ${QUEUE_EXPRESS_URL:?set QUEUE_EXPRESS_URL in .env}" in text
+    # Defined so its ports stay cleared, but never started on a plain `up`.
+    assert has(service("elasticmq", PROD), 'profiles: ["elasticmq-retired"]')
+    # api and worker take the SQS env and no longer wait on elasticmq.
+    for name in ("api", "worker"):
+        block = service(name, PROD)
+        assert "      <<: [*s3-env, *sqs-env]\n" in block, name
+        assert "      elasticmq:\n" not in block, name  # not a depends_on entry
 
 
 def test_caddy_is_pinned_and_gets_its_values_from_the_servers_env() -> None:
@@ -340,12 +359,17 @@ def test_only_migrate_gets_the_storage_admin_key() -> None:
         ("STORAGE_ACCESS_KEY", "${STORAGE_ADMIN_ACCESS_KEY:-kaagaz-local-admin}"),
         ("STORAGE_SECRET_KEY", "${STORAGE_ADMIN_SECRET_KEY:-kaagaz-local-admin-secret-laptop-only}"),
     ]
-    # Not required by compose (`:?`), so logs, exec, pgdump.sh and idle-stop.sh still run
-    # without them; migrate itself stops, naming them, before it migrates anything.
-    assert re.findall(r"^      (STORAGE_[A-Z_]+): (.*)$", service("migrate", PROD), re.M) == [
-        ("STORAGE_ACCESS_KEY", "${STORAGE_ADMIN_ACCESS_KEY:-}"),
-        ("STORAGE_SECRET_KEY", "${STORAGE_ADMIN_SECRET_KEY:-}"),
+    # Changed on purpose (release to production, #547): on the server, files are in Amazon S3
+    # through its own AWS role, so migrate gets no key at all (a key would replace the role)
+    # and runs docker-compose.yml's command without the admin-key check.
+    prod_migrate = service("migrate", PROD)
+    assert re.findall(r"^      (STORAGE_[A-Z_]+): (.*)$", prod_migrate, re.M) == [
+        ("STORAGE_ACCESS_KEY", '""'),
+        ("STORAGE_SECRET_KEY", '""'),
     ]
+    assert "      <<: *s3-env\n" in prod_migrate
+    assert "STORAGE_ADMIN" not in prod_migrate
+    assert "alembic upgrade head" in prod_migrate and "ensure_bucket()" in prod_migrate
     check = 'test -n "$$STORAGE_ACCESS_KEY" && test -n "$$STORAGE_SECRET_KEY" ||'
     assert migrate.index(check) < migrate.index("alembic upgrade head")
     assert "set STORAGE_ADMIN_ACCESS_KEY and STORAGE_ADMIN_SECRET_KEY in .env" in migrate

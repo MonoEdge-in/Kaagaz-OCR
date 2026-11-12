@@ -92,15 +92,17 @@ SWITCH = (
 )
 
 
-def test_the_service_lists_are_every_compose_service_but_migrate() -> None:
+def test_the_service_lists_are_every_compose_service_but_migrate_and_the_retired_stand_ins() -> None:
+    """seaweedfs and elasticmq stay defined in the compose files as the laptop's
+    stand-ins, each under a retirement profile the server never turns on (files are
+    in Amazon S3, jobs in Amazon SQS), so deploy.sh never starts them."""
     script = text("deploy.sh")
     infra = re.findall(r"^INFRA=\((.*)\)$", script, re.MULTILINE)
     apps = re.findall(r"^APPS=\((.*)\)$", script, re.MULTILINE)
     assert apps == ["api worker frontend"] and len(infra) == 1
     listed = infra[0].split() + apps[0].split()
-    assert sorted([*listed, "migrate"]) == sorted(
-        services(PROD)
-    )  # every service, read from the compose files
+    # migrate runs as a throwaway container; seaweedfs and elasticmq never start here.
+    assert sorted([*listed, "migrate", "seaweedfs", "elasticmq"]) == sorted(services(PROD))
 
 
 def test_no_up_runs_migrate_through_depends_on() -> None:

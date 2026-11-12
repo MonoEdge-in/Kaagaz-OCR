@@ -133,6 +133,10 @@
   the operations alerts' one rule (kaagaz.ops_alert); an email not sent fails the command.
 * ``ops-alert --subject S --text T``: the same with this subject and text (A22,
   infra/ec2/ops-alert.sh: a failed deploy or dump, an unhealthy container).
+* ``queue-depth``: one line a lane (``main`` and ``express``) with its waiting, in-flight and
+  delayed job counts, read from the queue (``SqsQueue.backlog``). It touches no database, file
+  storage or model. The server's idle-stop reads it to stay awake while a job is in flight or a
+  retry waits. Numbers only.
 
 Why passwords are never flags: a flag lands in the shell history and the
 process list. They come from ``KAAGAZ_ADMIN_PASSWORD`` (``KAAGAZ_DEMO_PASSWORD``
@@ -368,6 +372,8 @@ def _parser() -> argparse.ArgumentParser:
     alert = commands.add_parser("ops-alert", help="email OPS_ALERT_EMAIL this subject and text")
     alert.add_argument("--subject", required=True)
     alert.add_argument("--text", required=True)
+
+    commands.add_parser("queue-depth", help="each lane's waiting, in-flight and delayed job counts")
     return parser
 
 
@@ -1463,10 +1469,11 @@ def main(
     binary_out: IO[bytes] | None = None,
     backup_bucket: Any = None,
     mailer: Mailer | None = None,
+    queue: Any = None,
 ) -> int:
     """Run one command. Tests pass ``db``, ``environ``, ``out``, ``ask``, ``timer``,
     ``model``, ``settings``, ``storage``, ``file_store``, ``binary_in`` and ``binary_out``
-    (stdin and stdout as bytes), ``backup_bucket`` (its S3 client) and ``mailer``."""
+    (stdin and stdout as bytes), ``backup_bucket`` (its S3 client), ``mailer`` and ``queue``."""
     args = _parser().parse_args(argv)
     env = os.environ if environ is None else environ
     stdout = sys.stdout if out is None else out
@@ -1499,6 +1506,14 @@ def main(
                 chat=args.chat,
                 record_chat=record_chat,
             )
+        if args.command == "queue-depth":  # the queue only, no database
+            from kaagaz.adapters.queue import SqsQueue
+
+            counts = (queue or SqsQueue(settings or Settings.from_env(env))).backlog()
+            for lane in ("main", "express"):
+                waiting, in_flight, delayed = counts[lane]
+                stdout.write(f"{lane} {waiting} {in_flight} {delayed}\n")
+            return 0
         if args.command == "backup-upload":  # no settings either: it runs on the host network
             source = sys.stdin.buffer if binary_in is None else binary_in
             # No keys: boto3 finds the machine's own role.
