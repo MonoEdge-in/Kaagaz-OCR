@@ -5,7 +5,8 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { FolderCrumbs, FolderNav } from "@/components/documents/FolderNav";
+import { readFileSync } from "node:fs";
+import { FolderCrumbs, FolderNav, FolderPath, INDENT_LEVELS } from "@/components/documents/FolderNav";
 import { FolderPicker } from "@/components/documents/FolderPicker";
 import { buildTree } from "@/components/documents/folderTree";
 import type { FolderTree } from "@/components/documents/folderTree";
@@ -51,11 +52,37 @@ describe("the folder tree, deep and wide", () => {
     const html = nav(buildTree(chain(30)), "L30");
     expect(html).toContain('aria-level="30"');
     expect(html).toContain('aria-label="Hide folders in L29"');
-    // The indent stops growing after 8 levels, so the level is said in words there.
-    expect(html).toContain("--depth:8");
-    expect(html).not.toContain("--depth:9");
-    expect(html).toMatch(/L30<span[^>]*>Level 30<\/span>/);
-    expect(html).not.toMatch(/<span class="(?!visually-hidden)[^"]*">Level 8</); // said, not shown
+    // Changed on purpose (#572): the indent stops growing after 6 levels, so the level is said in words there.
+    expect(html).toContain("--depth:6");
+    expect(html).not.toContain("--depth:7");
+    expect(html).toMatch(/>L30<\/span><span class="[^"]*treeLevel[^"]*">Level 30<\/span>/);
+    expect(html).not.toMatch(/<span class="(?!visually-hidden)[^"]*">Level 6</); // said, not shown
+  });
+
+  it("keeps a deep folder's name on one line, its level on a line below, and its path on hover (#572)", () => {
+    expect(INDENT_LEVELS).toBe(6);
+    const html = nav(buildTree(chain(30)), "L30");
+    const path = Array.from({ length: 30 }, (_, n) => `L${n + 1}`).join(" / ");
+    // Past the indent, the name's own span holds the whole path for the pointer, then the level in words.
+    expect(html).toContain(`title="${path}">L30</span>`);
+    expect(html).toMatch(/<span class="[^"]*treeName[^"]*" title="L1 \/ L2 \/ [^"]*L30">L30<\/span>/);
+    // Within the indent the name is its own title, so a cut name can still be read whole.
+    expect(html).toMatch(/<span class="[^"]*treeName[^"]*" title="L2">L2<\/span>/);
+  });
+
+  it("never lets the folder tree scroll sideways or break a name between letters (#572)", () => {
+    const css = readFileSync("components/documents/Library.module.css", "utf8");
+    const rule = (selector: string) => {
+      const at = css.indexOf(`\n${selector} {`);
+      return at < 0 ? "" : css.slice(at, css.indexOf("}", at));
+    };
+    expect(rule(".treeName")).toMatch(/white-space: nowrap;/);
+    expect(rule(".treeName")).toMatch(/overflow: hidden;/);
+    expect(rule(".treeName")).toMatch(/text-overflow: ellipsis;/);
+    expect(rule(".treeText")).toMatch(/min-width: 0;/);
+    expect(rule(".treeRow")).toMatch(/var\(--depth, 0\) \* var\(--space-2\)/);
+    expect(css).toMatch(/\.treePane \{[^}]*overflow-x: hidden;/);
+    expect(rule(".treeLink")).not.toMatch(/overflow-wrap: anywhere/);
   });
 
   it("says each level past the first to a screen reader, in the tree and in the folder picker", () => {
@@ -63,8 +90,8 @@ describe("the folder tree, deep and wide", () => {
       createElement(FolderPicker, { tree: buildTree(chain(3)), name: "p", choice: "L3", onChoose: () => undefined }),
     );
     for (const html of [nav(buildTree(chain(3)), "L3"), picker]) {
-      expect(html).toMatch(/L2<span class="visually-hidden">, Level 2<\/span>/);
-      expect(html).toMatch(/L3<span class="visually-hidden">, Level 3<\/span>/);
+      expect(html).toMatch(/L2<\/span><span class="visually-hidden">, Level 2<\/span>/);
+      expect(html).toMatch(/L3<\/span><span class="visually-hidden">, Level 3<\/span>/);
       expect(html).not.toContain("Level 1<");
     }
   });
@@ -90,12 +117,29 @@ describe("the folder path", () => {
     expect(html).toContain(">L1<");
     expect(html).toContain(">L28<");
     expect(html).toContain(">L29<");
-    expect(html).toContain("<summary");
-    expect(html).toContain("Show 26 more folders");
+    // Changed on purpose (#572): a button, not a fold-out list, and the folded folders are not drawn.
+    expect(html).toMatch(/<button[^>]*aria-expanded="false"[^>]*>Show 26 more folders<\/button>/);
+    expect(html).not.toContain(">L5<");
     expect(html).not.toContain(">L30<"); // the place itself is the heading below the path
   });
 
   it("folds nothing in a short path", () => {
-    expect(crumbs("L3")).not.toContain("<summary");
+    expect(crumbs("L3")).not.toContain("more folders");
+  });
+
+  it("opened, puts the folded folders back in line in the same path, with Show fewer at its end (#572)", () => {
+    const html = renderToStaticMarkup(
+      createElement(FolderPath, { tree, library: ALL_DOCUMENTS, folderId: "L30", open: true, onToggle: () => undefined }),
+    );
+    expect(html.match(/<ol/g)).toHaveLength(1); // one wrapping line of links, never a column inside it
+    expect(html).not.toContain("<details");
+    expect(html).toMatch(/>L1<[\s\S]*>L2<[\s\S]*>L27<[\s\S]*>L28<[\s\S]*>L29</);
+    expect(html).toMatch(/<button[^>]*aria-expanded="true"[^>]*>Show fewer<\/button><\/li><\/ol>/);
+  });
+
+  it("draws no column and no stray slash for the folded folders (#572)", () => {
+    const css = readFileSync("components/documents/Library.module.css", "utf8");
+    expect(css).not.toContain(".crumbsMore");
+    expect(css).toMatch(/\.crumbs li\.crumbsEnd::before \{[^}]*content: none;/);
   });
 });

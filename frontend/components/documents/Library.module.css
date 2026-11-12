@@ -56,6 +56,7 @@
     top: var(--space-4);
     max-height: calc(var(--main-h) - 2 * var(--space-4)); /* <main> is the one scroller */
     overflow-y: auto;
+    overflow-x: hidden; /* issue 572: never sideways; a long name is cut with "…" in its row */
     overscroll-behavior: contain;
   }
 }
@@ -92,14 +93,33 @@
   padding: 0;
 }
 
-/* issue 484: one row a folder, drawn flat; the indent grows 12px a level and stops after 8. */
+/* issue 484: one row a folder, drawn flat. issue 572: the indent grows 8px a level and stops after 6
+   (INDENT_LEVELS), so a name keeps its room in the 13rem column at any depth. */
 .treeRow {
   display: flex;
   align-items: center;
-  padding-inline-start: calc(var(--depth, 0) * var(--space-3));
+  min-width: 0;
+  padding-inline-start: calc(var(--depth, 0) * var(--space-2));
 }
 
-.treeRow .treeLink {
+/* issue 572: a row's words: the name on one line, then (past the indent) its level on a small line. */
+.treeText {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+
+.treeName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.treeRow .treeLink,
+.treeRow .check {
   flex: 1 1 auto;
   min-width: 0;
 }
@@ -131,18 +151,19 @@
   }
 }
 
-/* Past 8 levels the indent no longer shows the level, so it is said in words. */
+/* Past 6 levels the indent no longer shows the level, so it is said in words, under the name. */
 .treeLevel {
-  flex: none;
-  margin-inline-start: auto;
   color: var(--text-muted);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-label);
   font-weight: 400;
 }
 
 .treeMore {
   justify-content: flex-start;
+  min-width: 0;
   font-size: var(--fs-sm);
+  text-align: start;
+  white-space: normal;
 }
 
 .treeFind {
@@ -162,7 +183,7 @@
   color: var(--k-ink);
   font-size: var(--fs-sm);
   text-decoration: none;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word; /* issue 572: not anywhere, which broke a squeezed name letter by letter */
 }
 
 /* Inside the scrolling tree pane: the ring drawn inside, so the pane never cuts it. */
@@ -336,27 +357,21 @@
   overflow-wrap: anywhere;
 }
 
-/* issue 484: the folders between the first and the last two, folded; open, they list as links. */
-.crumbsMore summary {
-  cursor: pointer;
-  color: var(--text-secondary);
-}
-
-.crumbsMore ol {
-  flex-direction: column;
-  align-items: flex-start;
-  margin-block-start: var(--space-1);
-}
-
-.crumbsMore li + li::before {
-  content: none;
-}
-
 .crumbs li + li::before {
   content: "/";
   content: "/" / "";
   margin-inline-end: var(--space-1);
   color: var(--text-secondary);
+}
+
+/* issue 484, issue 572: the folders between the first and the last two are folded behind a button;
+   opened, they come back in line in the same path, and "Show fewer" ends it with no "/" before it. */
+.crumbs li.crumbsEnd::before {
+  content: none;
+}
+
+.crumbs li.crumbsEnd {
+  margin-inline-start: var(--space-2);
 }
 
 /* issue 542: "Trash › Accounts › 2025". */

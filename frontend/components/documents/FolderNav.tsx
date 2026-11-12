@@ -11,7 +11,8 @@
 // Deep trees (#484, folders up to 100 levels): each list is drawn flat (visibleNodes), only
 // the open folders' folders, at most CHILD_CAP of one folder's with "Show all" for the rest.
 // A folder opens with its button, and the path to the folder shown is always open. Each row
-// says its level (aria-level); the indent stops after 8 levels and the level is then in words.
+// says its level (aria-level); the indent stops after 6 levels and the level is then in words
+// (#572: a name keeps its room in the 13rem column, on one line, cut with "…").
 // Past CHILD_CAP folders in all, "Find a folder" searches them by name.
 
 import Link from "next/link";
@@ -94,6 +95,7 @@ export function FolderNav({ tree, library, loading, error, onRetry, onNavigate, 
       row.kind === "folder" ? (
         <FolderItem
           key={row.node.folder.id}
+          tree={tree}
           row={row}
           library={away}
           onNavigate={onNavigate}
@@ -202,8 +204,9 @@ export function FolderNav({ tree, library, loading, error, onRetry, onNavigate, 
   );
 }
 
-/** The indent stops growing after this many levels; deeper rows say their level in words. */
-export const INDENT_LEVELS = 8;
+/** The indent stops growing after this many levels; deeper rows say their level in words.
+ * #572: 6 levels of 8px, so a name keeps about 60px of the 13rem column at any depth. */
+export const INDENT_LEVELS = 6;
 
 /** A tree row's indent: one step a level, none past INDENT_LEVELS. */
 export const indent = (depth: number) => ({ "--depth": Math.min(depth - 1, INDENT_LEVELS) }) as CSSProperties;
@@ -214,13 +217,34 @@ export function TreeLevel({ depth }: { depth: number }) {
   return depth > 1 ? <span className="visually-hidden">{`, Level ${depth}`}</span> : null;
 }
 
+/** A tree row's words (#572): the name on one line, cut with "…" and whole on hover (or, past
+ * the indent, the whole path in `title`), with the level in words on a small line below it. */
+export function TreeLabel({ name, depth, title }: { name: string; depth: number; title?: string }) {
+  return (
+    <span className={styles.treeText}>
+      <span className={styles.treeName} title={title ?? name}>
+        {name}
+      </span>
+      <TreeLevel depth={depth} />
+    </span>
+  );
+}
+
+/** A folder's path, top first, joined with " / " (the hover text past the indent). */
+export const pathTitle = (tree: FolderTree, id: string) =>
+  folderPath(tree, id)
+    .map((folder) => folder.name)
+    .join(" / ");
+
 function FolderItem({
+  tree,
   row,
   library,
   onNavigate,
   onDrop,
   onToggle,
 }: {
+  tree: FolderTree;
   row: Extract<VisibleRow, { kind: "folder" }>;
   library: LibraryState;
   onNavigate(placeName: string): void;
@@ -255,8 +279,11 @@ function FolderItem({
         {...target.handlers}
       >
         <TreeIcon name={isDepartment(node.folder) ? "department" : "folder"} size="sm" className={styles.treeIcon} />
-        {node.folder.name}
-        <TreeLevel depth={node.depth} />
+        <TreeLabel
+          name={node.folder.name}
+          depth={node.depth}
+          title={node.depth > INDENT_LEVELS ? pathTitle(tree, node.folder.id) : undefined}
+        />
       </Link>
     </li>
   );
@@ -298,9 +325,7 @@ function FindFolder({
                 href={libraryHref({ ...library, folderId: node.folder.id, trash: false })}
                 scroll={false}
                 className={styles.treeLink}
-                title={folderPath(tree, node.folder.id)
-                  .map((folder) => folder.name)
-                  .join(" / ")}
+                title={pathTitle(tree, node.folder.id)}
                 onClick={() => onNavigate(node.folder.name)}
               >
                 {shortPathLabel(tree, node.folder.id)}
@@ -349,6 +374,29 @@ export function TrashCrumbs({
  * "Show 26 more folders", which opens to list them as links.
  */
 export function FolderCrumbs({ tree, library, folderId }: { tree: FolderTree; library: LibraryState; folderId: string }) {
+  const [open, setOpen] = useState(false);
+  return <FolderPath tree={tree} library={library} folderId={folderId} open={open} onToggle={setOpen} />;
+}
+
+/**
+ * The path above a folder (#484): All documents, the first folder and the last two, with the
+ * folders between folded behind "Show N more folders". #572: opened, they come back in line in
+ * the same wrapping path (they were a column inside it, each with a stray "/"), and "Show fewer"
+ * at the path's end folds them again.
+ */
+export function FolderPath({
+  tree,
+  library,
+  folderId,
+  open,
+  onToggle,
+}: {
+  tree: FolderTree;
+  library: LibraryState;
+  folderId: string;
+  open: boolean;
+  onToggle(open: boolean): void;
+}) {
   const above = folderPath(tree, folderId).slice(0, -1);
   const { head, hidden, tail } = collapseCrumbs(above);
   const crumb = (folder: { id: string; name: string }) => (
@@ -356,6 +404,13 @@ export function FolderCrumbs({ tree, library, folderId }: { tree: FolderTree; li
       <Link href={libraryHref({ ...library, folderId: folder.id })} scroll={false}>
         {folder.name}
       </Link>
+    </li>
+  );
+  const toggle = (label: string, end: boolean) => (
+    <li key="toggle" className={end ? styles.crumbsEnd : undefined}>
+      <button type="button" className="quiet-link" aria-expanded={open} onClick={() => onToggle(!open)}>
+        {label}
+      </button>
     </li>
   );
   return (
@@ -367,15 +422,10 @@ export function FolderCrumbs({ tree, library, folderId }: { tree: FolderTree; li
           </Link>
         </li>
         {head.map(crumb)}
-        {hidden.length > 0 && (
-          <li>
-            <details className={styles.crumbsMore}>
-              <summary>Show {hidden.length} more folders</summary>
-              <ol>{hidden.map(crumb)}</ol>
-            </details>
-          </li>
-        )}
+        {hidden.length > 0 && !open && toggle(`Show ${formatNumber(hidden.length)} more folders`, false)}
+        {open && hidden.map(crumb)}
         {tail.map(crumb)}
+        {hidden.length > 0 && open && toggle("Show fewer", true)}
       </ol>
     </nav>
   );
