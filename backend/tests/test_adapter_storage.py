@@ -356,8 +356,14 @@ class ClientConfigTest(unittest.TestCase):
         self.assertEqual((config.connect_timeout, config.read_timeout), (5, 30))
         # max_attempts 2 is two retries after the first try.
         self.assertEqual(config.retries["total_max_attempts"], 3)
-        # SeaweedFS still gets signature version 4 and the bucket in the path.
+        # SeaweedFS (an endpoint URL is set) still gets signature version 4 and the bucket in the path.
         self.assertEqual((config.signature_version, config.s3), ("s3v4", {"addressing_style": "path"}))
+
+    def test_amazon_s3_gets_the_bucket_in_the_host_name(self) -> None:
+        settings = make_settings(storage_endpoint_url=None, storage_region="ap-south-1")
+        config = S3Storage(settings)._client.meta.config  # builds the real client; nothing is sent
+        self.assertEqual((config.signature_version, config.s3), ("s3v4", {"addressing_style": "auto"}))
+        self.assertEqual((config.connect_timeout, config.read_timeout), (5, 30))
 
 
 if __name__ == "__main__":
