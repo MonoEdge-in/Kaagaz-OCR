@@ -80,6 +80,9 @@ pg_db="${pg_db:-kaagaz}"
 # RDS by the postgres image's own pg_dump on the host network. The address reaches it as libpq's
 # PG* variables from this script's environment (docker run -e NAME), never on a command line,
 # where ps would show its password; python reads it from stdin, never as an argument.
+# The client is PostgreSQL 18 (the test server's RDS is 18.6): pg_dump refuses a newer server than
+# itself, and 18 also dumps 17. Pinned like every image here.
+RDS_CLIENT_IMAGE=pgvector/pgvector:0.8.7-pg18
 rds_url="$(env_value RDS_DATABASE_URL)"
 if [[ -n "$rds_url" ]]; then
   mapfile -d '' -t pg_parts < <(python3 -c '
@@ -91,13 +94,12 @@ for v in (p.hostname or "", str(p.port or 5432), u.unquote(p.username or ""),
     sys.stdout.write(v + "\0")' <<<"$rds_url")
   export PGHOST="${pg_parts[0]}" PGPORT="${pg_parts[1]}" PGUSER="${pg_parts[2]}"
   export PGPASSWORD="${pg_parts[3]}" PGDATABASE="${pg_parts[4]}" PGSSLMODE="${pg_parts[5]}"
-  pg_image="$(docker compose "${COMPOSE[@]}" config --images | grep -m1 '^pgvector/')"
 fi
 
 # rds <pg_dump or pg_dumpall> [args]: that client, against RDS.
 rds() {
   docker run --rm -i --network host -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD \
-    -e PGDATABASE -e PGSSLMODE "$pg_image" "$@"
+    -e PGDATABASE -e PGSSLMODE "$RDS_CLIENT_IMAGE" "$@"
 }
 
 umask 077

@@ -28,6 +28,8 @@ def test_the_nightly_dump_reads_rds_without_putting_its_password_on_a_command_li
     assert '\' <<<"$rds_url")' in script
     assert "sys.stdin.read()" in script
     assert "-e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD" in script
+    # RDS is PostgreSQL 18.6: pg_dump refuses a newer server, so the client is 18, pinned.
+    assert "\nRDS_CLIENT_IMAGE=pgvector/pgvector:0.8.7-pg18\n" in script
     assert '"$rds_url"' not in script.replace('<<<"$rds_url"', "").replace('[[ -n "$rds_url" ]]', "")
     assert '  rds pg_dump -Fc >"$partial"\n' in script
     assert "rds pg_dumpall -l postgres --roles-only --no-role-passwords | seal roles.sql" in script
