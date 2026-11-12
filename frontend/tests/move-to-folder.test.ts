@@ -139,7 +139,8 @@ describe("the Move dialog", () => {
   it("marks where the document is now Current and disables it; the others can be chosen", () => {
     const html = moveForm([doc({ folder_id: "f-26", doc_type: "other" })]);
     expect(radio(html, "2026")).toEqual({ disabled: true, checked: false });
-    expect(html).toMatch(/2026<span class="visually-hidden">, Level 2<\/span><span[^>]*>Current<\/span>/);
+    // Changed on purpose (#572): the name is its own span (cut with "…"); the tag stays whole after it.
+    expect(html).toMatch(/2026<\/span><span class="visually-hidden">, Level 2<\/span><\/span><span[^>]*>Current<\/span>/);
     expect(radio(html, "Suppliers").disabled).toBe(false);
     expect(radio(html, "All documents").disabled).toBe(false);
     // Not in a folder: All documents is the current place.
@@ -152,9 +153,9 @@ describe("the Move dialog", () => {
     const html = moveForm([doc({ doc_type: "invoice" })]);
     const first = html.split("<li")[1] ?? "";
     expect(first).toContain("All documents (no folder)");
-    expect(html).toMatch(/Invoices <span[^>]*>Suggested<\/span>/);
+    expect(html).toMatch(/Invoices<\/span><\/span> <span[^>]*>Suggested<\/span>/); // #572: name in its own span
     expect(radio(html, "Suggested").checked).toBe(true);
-    expect(html.match(/Invoices/g)).toHaveLength(1); // not listed twice
+    expect(html.match(/>Invoices</g)).toHaveLength(1); // not listed twice (#572: its hover title names it too)
   });
 
   it("offers New folder: <name> first when no folder has that name", () => {

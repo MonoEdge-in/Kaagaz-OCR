@@ -41,7 +41,9 @@ function nav(library: LibraryState): string {
 }
 
 /** The <a> whose words are `words`, as rendered. */
-const link = (html: string, words: string) => html.match(new RegExp(`<a [^>]*>(?:(?!</a>).)*${words}</a>`))?.[0] ?? "";
+// Changed on purpose (#572): a tree row's name sits in its own spans, closed before the link ends.
+const link = (html: string, words: string) =>
+  html.match(new RegExp(`<a [^>]*>(?:(?!</a>).)*${words}(?:</span>)*</a>`))?.[0] ?? "";
 
 describe("408: a row's Move to Trash asks in a dialog, not over the row", () => {
   const table = read("components/documents/DocumentsTable.tsx");
