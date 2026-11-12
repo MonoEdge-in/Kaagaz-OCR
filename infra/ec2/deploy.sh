@@ -61,7 +61,8 @@ COMPOSE=(-f docker-compose.yml -f docker-compose.prod.yml)
 # newer database and leaves the app stopped (24 Oct 2026). Only step 2 runs it.
 # SeaweedFS retired for AWS S3 (<date>): never started from here. Its old container
 # keeps running read-only as a fallback until <date + 14 days>, then is removed by hand.
-INFRA=(postgres elasticmq clamav caddy)
+# ElasticMQ retired for Amazon SQS the same way (<date>): never started from here.
+INFRA=(postgres clamav caddy)
 APPS=(api worker frontend)
 BUILD_CACHE_KEEP=168h
 MIN_FREE_GB=20

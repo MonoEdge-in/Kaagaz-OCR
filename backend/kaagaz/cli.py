@@ -102,6 +102,10 @@
   department, type, property, party and year folders with nothing in them, ``folders.prune_empty``'s
   rules), listed by each customer's count; ``--apply`` deletes them and then their parents left
   empty, each audited. Folders people made are never listed. Ids and counts only.
+* ``queue-depth``: one line a lane (``main`` and ``express``) with its waiting, in-flight and
+  delayed job counts, read from the queue (``SqsQueue.backlog``). It touches no database, file
+  storage or model. The server's idle-stop reads it to stay awake while a job is in flight or a
+  retry waits. Numbers only.
 
 Why passwords are never flags: a flag lands in the shell history and the
 process list. They come from ``KAAGAZ_ADMIN_PASSWORD`` (``KAAGAZ_DEMO_PASSWORD``
@@ -279,6 +283,8 @@ def _parser() -> argparse.ArgumentParser:
     saving = commands.add_parser("cost-saving", help="what Cost saving read and saved in the last runs")
     saving.add_argument("--customer-id", "--customer", help="one customer only (default: every customer)")
     saving.add_argument("--last", type=int, default=50, help="the last N ready runs (default 50)")
+
+    commands.add_parser("queue-depth", help="each lane's waiting, in-flight and delayed job counts")
     return parser
 
 
@@ -1080,9 +1086,10 @@ def main(
     model: ModelClient | None = None,
     settings: Settings | None = None,
     storage: CustomerStorage | None = None,
+    queue: Any = None,
 ) -> int:
     """Run one command. Tests pass ``db``, ``environ``, ``out``, ``ask``, ``timer``,
-    ``model``, ``settings`` and ``storage``."""
+    ``model``, ``settings``, ``storage`` and ``queue``."""
     args = _parser().parse_args(argv)
     env = os.environ if environ is None else environ
     stdout = sys.stdout if out is None else out
@@ -1113,6 +1120,14 @@ def main(
                 chat=args.chat,
                 record_chat=record_chat,
             )
+        if args.command == "queue-depth":  # the queue only, no database
+            from kaagaz.adapters.queue import SqsQueue
+
+            counts = (queue or SqsQueue(settings or Settings.from_env(env))).backlog()
+            for lane in ("main", "express"):
+                waiting, in_flight, delayed = counts[lane]
+                stdout.write(f"{lane} {waiting} {in_flight} {delayed}\n")
+            return 0
         if db is None:
             settings = settings or Settings.from_env(env)
             db = Database(make_engine(settings.database_url), settings.db_app_role)
