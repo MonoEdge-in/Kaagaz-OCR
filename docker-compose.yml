@@ -29,9 +29,12 @@ x-backend: &backend
     # The app's own login (#479): APP_DATABASE_URL once .env sets it (the server, host
     # postgres), the owner's until then. Only migrate gets the owner's (below), and no
     # backend container gets the master password itself, nor the workers the super admin's.
-    DATABASE_URL: ${APP_DATABASE_URL:-postgresql://${POSTGRES_USER:-kaagaz}:${POSTGRES_PASSWORD:-kaagaz}@postgres:5432/${POSTGRES_DB:-kaagaz}}
+    # Amazon RDS (12 Nov 2026): RDS_DATABASE_URL, when .env sets it, is the database in place of
+    # the postgres container (which then only waits as a fallback); the app's own login still wins.
+    DATABASE_URL: ${APP_DATABASE_URL:-${RDS_DATABASE_URL:-postgresql://${POSTGRES_USER:-kaagaz}:${POSTGRES_PASSWORD:-kaagaz}@postgres:5432/${POSTGRES_DB:-kaagaz}}}
     POSTGRES_PASSWORD: ""
     OPS_DATABASE_URL: ""
+    RDS_DATABASE_URL: "" # the owner's RDS address: migrate's alone, like the master password
     # env_file hands every .env line to each container; the storage admin key is migrate's
     # alone (#477), so it is blanked here and migrate sets its own below.
     STORAGE_ADMIN_ACCESS_KEY: ""
@@ -162,7 +165,7 @@ services:
     environment:
       <<: *backend-env
       # The owner's login: the migrations and the owner-only CLI commands (#479).
-      DATABASE_URL: postgresql://${POSTGRES_USER:-kaagaz}:${POSTGRES_PASSWORD:-kaagaz}@postgres:5432/${POSTGRES_DB:-kaagaz}
+      DATABASE_URL: ${RDS_DATABASE_URL:-postgresql://${POSTGRES_USER:-kaagaz}:${POSTGRES_PASSWORD:-kaagaz}@postgres:5432/${POSTGRES_DB:-kaagaz}}
       # Only migrate creates the bucket, so only it gets the storage admin key (#477).
       STORAGE_ACCESS_KEY: ${STORAGE_ADMIN_ACCESS_KEY:-kaagaz-local-admin}
       STORAGE_SECRET_KEY: ${STORAGE_ADMIN_SECRET_KEY:-kaagaz-local-admin-secret-laptop-only}

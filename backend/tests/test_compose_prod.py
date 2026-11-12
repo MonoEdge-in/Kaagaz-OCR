@@ -73,6 +73,9 @@ def test_the_base_file_runs_only_the_app_and_its_stand_ins() -> None:
         # the master password or (the workers) the super admin's login (tests/test_db_logins.py).
         "POSTGRES_PASSWORD",
         "OPS_DATABASE_URL",
+        # Changed on purpose (RDS, 12 Nov 2026): the owner's RDS address is blanked too; it reaches
+        # api and worker only as their DATABASE_URL, when no app login is set.
+        "RDS_DATABASE_URL",
         # #477: blanked too, so the .env line reaches only migrate, which sets its own.
         "STORAGE_ADMIN_ACCESS_KEY",
         "STORAGE_ADMIN_SECRET_KEY",

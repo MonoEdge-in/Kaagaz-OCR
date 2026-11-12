@@ -27,6 +27,8 @@ NOT_BACKEND = {
     "STORAGE_ADMIN_SECRET_KEY",
     # the app's login, which docker-compose.yml makes api's and worker's DATABASE_URL (#479).
     "APP_DATABASE_URL",
+    # the owner's Amazon RDS address, read by docker-compose.yml and infra/ec2/pgdump.sh (12 Nov 2026).
+    "RDS_DATABASE_URL",
     # the off-server backup's bucket and certificate, read by infra/ec2/pgdump.sh only (#476).
     "BACKUP_BUCKET",
     "BACKUP_CERT",

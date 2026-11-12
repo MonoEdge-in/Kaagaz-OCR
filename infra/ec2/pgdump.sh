@@ -76,6 +76,30 @@ pg_db="$(env_value POSTGRES_DB)"
 pg_user="${pg_user:-kaagaz}"
 pg_db="${pg_db:-kaagaz}"
 
+# On Amazon RDS (RDS_DATABASE_URL set; the test server from 12 Nov 2026) the dump is read from
+# RDS by the postgres image's own pg_dump on the host network. The address reaches it as libpq's
+# PG* variables from this script's environment (docker run -e NAME), never on a command line,
+# where ps would show its password; python reads it from stdin, never as an argument.
+rds_url="$(env_value RDS_DATABASE_URL)"
+if [[ -n "$rds_url" ]]; then
+  mapfile -d '' -t pg_parts < <(python3 -c '
+import sys, urllib.parse as u
+p = u.urlsplit(sys.stdin.read().strip())
+q = dict(u.parse_qsl(p.query))
+for v in (p.hostname or "", str(p.port or 5432), u.unquote(p.username or ""),
+          u.unquote(p.password or ""), u.unquote(p.path.lstrip("/")), q.get("sslmode", "require")):
+    sys.stdout.write(v + "\0")' <<<"$rds_url")
+  export PGHOST="${pg_parts[0]}" PGPORT="${pg_parts[1]}" PGUSER="${pg_parts[2]}"
+  export PGPASSWORD="${pg_parts[3]}" PGDATABASE="${pg_parts[4]}" PGSSLMODE="${pg_parts[5]}"
+  pg_image="$(docker compose "${COMPOSE[@]}" config --images | grep -m1 '^pgvector/')"
+fi
+
+# rds <pg_dump or pg_dumpall> [args]: that client, against RDS.
+rds() {
+  docker run --rm -i --network host -e PGHOST -e PGPORT -e PGUSER -e PGPASSWORD \
+    -e PGDATABASE -e PGSSLMODE "$pg_image" "$@"
+}
+
 umask 077
 mkdir -p "$BACKUP_DIR"
 day="$(date -u +%Y%m%d)"
@@ -86,14 +110,18 @@ trap 'rm -f "$partial"' EXIT
 # A dump missed while the server was stopped runs right after boot, before
 # postgres may be up: wait for it for up to 10 minutes.
 for _ in $(seq 60); do
-  if docker compose "${COMPOSE[@]}" exec -T postgres pg_isready -q >/dev/null 2>&1; then
+  if [[ -n "$rds_url" ]] || docker compose "${COMPOSE[@]}" exec -T postgres pg_isready -q >/dev/null 2>&1; then
     break
   fi
   sleep 10
 done
 
-docker compose "${COMPOSE[@]}" exec -T postgres \
+if [[ -n "$rds_url" ]]; then
+  rds pg_dump -Fc >"$partial"
+else
+  docker compose "${COMPOSE[@]}" exec -T postgres \
   pg_dump -U "$pg_user" -Fc "$pg_db" >"$partial"
+fi
 if [[ ! -s "$partial" ]]; then
   echo "pg_dump wrote nothing; no dump saved" >&2
   exit 1
@@ -142,8 +170,12 @@ seal() {
 }
 
 dump_line="$(seal kaagaz.dump <"$dump")"
-roles_line="$(docker compose "${COMPOSE[@]}" exec -T postgres \
+if [[ -n "$rds_url" ]]; then
+  roles_line="$(rds pg_dumpall -l postgres --roles-only --no-role-passwords | seal roles.sql)"
+else
+  roles_line="$(docker compose "${COMPOSE[@]}" exec -T postgres \
   pg_dumpall -U "$pg_user" --roles-only --no-role-passwords | seal roles.sql)"
+fi
 # backup-files prints its file count on stderr (stdout is the tar): kept for
 # done, then shown.
 counted="$(mktemp "$BACKUP_DIR/.files-count.XXXXXX")"
