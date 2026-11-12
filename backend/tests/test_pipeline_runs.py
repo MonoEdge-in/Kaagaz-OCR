@@ -180,7 +180,10 @@ class Rig:
         return self.make()
 
     def job(self, data: bytes) -> Job:
-        return Job(CUSTOMER, self.upload.accept(CUSTOMER, io.BytesIO(data)).document_id)
+        # #522: the name chooses only between text readers, so text is read as CSV, a PDF as a PDF.
+        return Job(
+            CUSTOMER, self.upload.accept(CUSTOMER, io.BytesIO(data), display_name="upload.csv").document_id
+        )
 
     def runs_of(self, job: Job) -> list[MemoryRun]:
         return self.runs.for_document(job.customer_id, job.document_id)

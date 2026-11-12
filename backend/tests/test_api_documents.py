@@ -10,19 +10,21 @@ import re
 from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import httpx2 as httpx
 import pytest
 from PIL import Image
 from sqlalchemy import Connection, event, text
 
-from kaagaz.api.routers.documents import day_start, display_name, upload_policy
+from kaagaz.api.routers.documents import _CONTENT_TYPES, DetectedTypeParam, day_start, display_name
 from kaagaz.api.views import document_time_left, in_progress, progress_message, status_message
 from kaagaz.db import folders as folders_sql
 from kaagaz.db.engine import Database
 from kaagaz.db.folders import FolderRow
 from kaagaz.db.pipeline_store import span_to_json
+from kaagaz.db.upload_policy import upload_policy
+from kaagaz.ingestion import resolve, sniff
 from kaagaz.reading import ocr
 from kaagaz.reading.spans import CellLocation, Span
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES
@@ -78,11 +80,6 @@ def _env_example() -> dict[str, str]:
         (None, "document"),
         ("folder/", "document"),
         ("tab\tand\nnewline.pdf", "tabandnewline.pdf"),
-        # Production QA S5: a character that hides or reorders what is shown is shown as U+FFFD,
-        # as a folder upload's refused name is (names.shown_upload_name); ZWJ and ZWNJ stay.
-        ("evil‮txt.pdf", "evil�txt.pdf"),
-        ("a​b.pdf", "a�b.pdf"),
-        ("क्‍ष.pdf", "क्‍ष.pdf"),
     ],
 )
 def test_display_name_strips_the_path_and_control_characters(given: str | None, expected: str) -> None:
@@ -117,8 +114,12 @@ def test_status_messages() -> None:
     # Changed on purpose (UI quality council, 15 Oct 2026): no failure code on screen.
     # Changed on purpose (council 16 Oct 2026): the same file uploaded again is a duplicate
     # and is never read again.
+    # Changed on purpose (#522): a damaged file is told so, since only another copy helps.
+    assert message("failed", "corrupt_file") == (
+        "This file is damaged, so it can't be opened. Save it again and upload that copy."
+    )
     assert (
-        message("failed", "corrupt_file")
+        message("failed", "malformed_csv")
         == "This file needs another read. Read it again, or try another copy of it."
     )
     # PROVISIONAL: the PRD quotes the real page count, which is not stored when a PDF fails.
@@ -227,12 +228,14 @@ def test_the_shipped_settings_give_every_allowed_type_its_limit() -> None:
     policy = upload_policy(settings, customer_max_mb=None)
     limits = {detected: policy.limit_for(detected) for detected in settings.allowed_types}
     assert limits == {
-        "pdf": 50 * MB,
+        "pdf": 100 * MB,  # Changed on purpose (#569, 11 Nov 2026)
         "png": 20 * MB,
         "jpeg": 20 * MB,
         "tiff": 20 * MB,
+        "heic": 20 * MB,  # #522
         "text": 10 * MB,
-        "zip": 10 * MB,
+        "zip": 100 * MB,  # #522: a zip or an old Office file at the PDF limit; its kind's after the scan
+        "ole2": 100 * MB,
     }
     assert (settings.max_pages, settings.max_image_pixels) == (100, 40_000_000)
 
@@ -251,6 +254,32 @@ def test_the_customers_own_limit_only_lowers_the_type_limits() -> None:
     assert upload_policy(settings, customer_max_mb=4).limit_for("pdf") == 4 * MB
     assert upload_policy(settings, customer_max_mb=1).limit_for("png") == 1 * MB
     assert upload_policy(settings, customer_max_mb=None).largest_limit == 5 * MB
+
+
+def test_a_zip_has_the_folder_upload_limit_which_the_customers_own_lowers() -> None:
+    """#522 PR 3: a zip may be as large as the organisation's folder upload limit, or the PDF
+    limit when that is larger (a .docx is sniffed as a zip too); every other type keeps its own."""
+    settings = make_settings()  # PDFs 5 MB, photos 2 MB, sheets 1 MB
+    policy = upload_policy(settings, customer_max_mb=None, folder_bytes=1024 * MB)
+    assert {kind: policy.limit_for(kind) for kind in ("zip", "pdf", "png", "text", "xlsx", "docx")} == {
+        "zip": 500 * MB,  # changed on purpose (#522 security review): capped at 500 MB
+        "pdf": 5 * MB,
+        "png": 2 * MB,
+        "text": MB,
+        "xlsx": MB,
+        "docx": 5 * MB,
+    }
+    assert policy.largest_limit == 500 * MB
+    assert upload_policy(settings, customer_max_mb=None, folder_bytes=MB).limit_for("zip") == 5 * MB
+    # Never more than 500 MB, whatever the folder upload limit: the scan gate holds a zip in memory.
+    capped = upload_policy(settings, customer_max_mb=None, folder_bytes=5 * 1024 * MB)
+    assert (capped.limit_for("zip"), capped.largest_limit) == (500 * MB, 500 * MB)
+    lowered = upload_policy(settings, customer_max_mb=3, folder_bytes=1024 * MB)
+    assert (lowered.limit_for("zip"), lowered.limit_for("pdf"), lowered.limit_for("png")) == (
+        3 * MB,
+        3 * MB,
+        2 * MB,
+    )
 
 
 # --- upload ---------------------------------------------------------------------------
@@ -321,8 +350,12 @@ def test_old_progress_is_ignored_once_a_document_is_ready_or_failed() -> None:
     # Changed on purpose (UI quality council, 15 Oct 2026): no failure code on screen.
     # Changed on purpose (council 16 Oct 2026): the same file uploaded again is a duplicate
     # and is never read again.
+    # Changed on purpose (#522): a damaged file is told so, since only another copy helps.
+    assert message("failed", "corrupt_file") == (
+        "This file is damaged, so it can't be opened. Save it again and upload that copy."
+    )
     assert (
-        message("failed", "corrupt_file")
+        message("failed", "malformed_csv")
         == "This file needs another read. Read it again, or try another copy of it."
     )
     assert in_progress("ready", progress) is None
@@ -547,14 +580,17 @@ def test_an_exe_renamed_to_pdf_is_refused_by_its_first_bytes(db: Database) -> No
         (
             "register.csv",
             _padded(CSV_BYTES, 1 * MB + 1, b"0"),
-            "Spreadsheets and CSV files can be up to 1 MB. This one is 2 MB."
+            "Spreadsheets, CSV and text files can be up to 1 MB. This one is 2 MB."
             " Split it into smaller files and try again.",
         ),
         (
-            # The PDF limit is the largest, so a PDF over it is over every limit.
+            # Changed on purpose (#522 PR 3): a zip's limit (the folder upload limit) is the largest
+            # now, so a PDF over its own limit is named, in the PDF group's words (#522 PR 2: Word
+            # and PowerPoint files have the PDF limit), the screen's too.
             "bill.pdf",
             _padded(PDF_BYTES, 5 * MB + 1),
-            "Files can be up to 5 MB. This one is larger. Split it or save it smaller and try again.",
+            "PDF, Word and PowerPoint files can be up to 5 MB. This one is 6 MB."
+            " Split it or save it smaller and try again.",
         ),
     ],
     ids=["photo", "sheet", "pdf"],
@@ -605,12 +641,15 @@ def test_upload_limits_are_the_type_limits_lowered_by_the_customers_own(db: Data
     max_pages = api.settings.max_pages
     readers = ocr.ocr_choices(api.settings)
     # Changed on purpose (#484): the folder upload's limits and sort_available come too
-    # (test_api_folder_upload_files checks them).
+    # (test_api_folder_upload_files checks them). Changed on purpose (#522): a zip's limit is the
+    # organisation's folder upload limit (5 GB by default) capped at 500 MB, lowered by the
+    # customer's own.
     folder = {key: reply.json().pop(key, None) for key in ("folder_upload", "sort_available")}
     assert {key: value for key, value in reply.json().items() if key not in folder} == {
         "pdf_bytes": 5 * MB,
         "image_bytes": 2 * MB,
         "sheet_bytes": MB,
+        "zip_bytes": 500 * MB,
         "max_pages": max_pages,
         "readers": readers,
     }
@@ -622,6 +661,7 @@ def test_upload_limits_are_the_type_limits_lowered_by_the_customers_own(db: Data
         "pdf_bytes": 4 * MB,
         "image_bytes": 2 * MB,
         "sheet_bytes": MB,
+        "zip_bytes": 4 * MB,
         "max_pages": max_pages,
         "readers": readers,
     }
@@ -792,22 +832,48 @@ def test_a_transfer_encoding_next_to_a_content_length_is_refused(db: Database) -
 
 @pytest.mark.db
 def test_a_declared_size_over_every_limit_is_413_before_the_body_is_read(db: Database) -> None:
-    api = Api(db)  # the largest limit is the PDF limit, 5 MB
+    # Changed on purpose (#522 PR 3): the largest limit is a zip's, the folder upload limit (5 GB
+    # by default), no longer the PDF limit.
+    api = Api(db)
     signed = api.new_signed()
     request = signed.client.build_request(
         "POST", "/api/documents", files={"file": ("a.pdf", PDF_BYTES, "application/pdf")}, headers=CSRF
     )
     # The body is a small PDF the upload would take. Only its declared size is too large,
     # so this reply can only come from the check made before the body is read.
-    request.headers["Content-Length"] = str(5 * MB + 64 * 1024 + 1)
+    request.headers["Content-Length"] = str(500 * MB + 64 * 1024 + 1)
     reply = signed.client.send(request)
     assert reply.status_code == 413
     assert reply.json()["error"] == {
         "code": "too_large",
-        "message": "Files can be up to 5 MB. This one is larger. Split it or save it smaller and try again.",
+        "message": "Files can be up to 500 MB. This one is larger."
+        " Split it or save it smaller and try again.",
     }
     assert api.storage.count() == 0
     assert api.queue.jobs == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    "route", ["/api/documents/upload-sessions/candidates", "/api/documents/upload-sessions"]
+)
+def test_a_zip_over_its_limit_is_told_the_screens_zip_words_at_the_resumable_start(
+    db: Database, route: str
+) -> None:
+    """#559 (UAT ZP-07): a 1 GB zip was told "Files can be up to 500 MB. This one is larger."
+    while the screen says the zip words; its name says it is a zip, so the server says them too.
+    Any other name keeps the words for every file."""
+    signed = Api(db).new_signed()
+    start = {"file_size": 1024 * MB, "fingerprint": "0" * 64, "user_id": signed.user_id}
+    zipped = signed.client.post(route, json={**start, "file_name": "Kit twice.ZIP"}, headers=CSRF)
+    other = signed.client.post(route, json={**start, "file_name": "big.pdf"}, headers=CSRF)
+    assert (zipped.status_code, other.status_code) == (413, 413)
+    assert zipped.json()["error"]["message"] == (
+        "Zip files can be up to 500 MB. Unzip it on your computer and upload the folder instead."
+    )
+    assert other.json()["error"]["message"] == (
+        "Files can be up to 500 MB. This one is larger. Split it or save it smaller and try again."
+    )
 
 
 @pytest.mark.db
@@ -1181,13 +1247,47 @@ def test_file_is_served_as_a_download_and_sandboxed(db: Database) -> None:
     assert reply.headers["x-content-type-options"] == "nosniff"
 
 
+def test_every_type_and_kind_downloads_with_its_own_media_type_and_ending() -> None:
+    """#522: each sniffed type and each kind the worker tells, with a media type that is never a
+    page to render for text (a download is an attachment in a sandbox, nosniff)."""
+    assert set(_CONTENT_TYPES) == set(get_args(DetectedTypeParam)) == resolve.KINDS | sniff.KNOWN_TYPES
+    assert {kind: ending for kind, (_, ending) in _CONTENT_TYPES.items()} == {
+        "pdf": "pdf",
+        "png": "png",
+        "jpeg": "jpg",
+        "tiff": "tif",
+        "heic": "heic",
+        "zip": "zip",
+        "ole2": "bin",
+        "text": "txt",
+        "xlsx": "xlsx",
+        "xls": "xls",
+        "csv": "csv",
+        "docx": "docx",
+        "dotx": "dotx",
+        "doc": "doc",
+        "pptx": "pptx",
+        "ppt": "ppt",
+        "txt": "txt",
+        "md": "md",
+        "json": "json",
+        "html": "txt",  # #557: saved as a page it would open in a browser on the computer
+    }
+    for kind in resolve.TEXT_KINDS | {sniff.TEXT}:
+        assert _CONTENT_TYPES[kind][0] == "text/plain; charset=utf-8", kind
+
+
 @pytest.mark.db
 @pytest.mark.parametrize(
     ("name", "detected_type", "encoded"),
     [
         ("सातबारा उतारा.pdf", "pdf", "%E0%A4%B8%E0%A4%BE%E0%A4%A4%E0%A4%AC%E0%A4%BE%E0%A4%B0%E0%A4%BE%20"),
         ('a"b\r\nSet-Cookie: x=1.png', "png", "a%22b%0D%0ASet-Cookie%3A%20x%3D1.png"),
-        ("stock list", "zip", "stock%20list.xlsx"),
+        # Changed on purpose (#522): a ready zip is xlsx, and a zip that is a folder of files is a zip.
+        ("stock list", "xlsx", "stock%20list.xlsx"),
+        ("archive", "zip", "archive.zip"),
+        ("page.htm", "html", "page.txt"),  # #557: sent as text, so saved as text
+        ("IMG_0042.HEIC", "heic", "IMG_0042.heic"),
     ],
 )
 def test_the_download_keeps_the_users_name_with_the_true_extension(
@@ -1201,6 +1301,57 @@ def test_the_download_keeps_the_users_name_with_the_true_extension(
     fallback, star = disposition.split("; filename*=UTF-8''")
     assert fallback.startswith('attachment; filename="document.') and encoded in star
     assert "\r" not in disposition and "\n" not in disposition and '"' not in star
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("detected_type", "content_type", "extension"),
+    [
+        ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docx"),
+        ("dotx", "application/vnd.openxmlformats-officedocument.wordprocessingml.template", "dotx"),
+        ("doc", "application/msword", "doc"),
+        ("pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "pptx"),
+        ("ppt", "application/vnd.ms-powerpoint", "ppt"),
+    ],
+)
+def test_a_word_or_powerpoint_file_is_viewed_as_its_pdf_and_downloaded_as_itself(
+    db: Database, detected_type: str, content_type: str, extension: str
+) -> None:
+    # #522 PR 2: the viewer's fetch gets the PDF LibreOffice made; Download gets the original.
+    api = Api(db)
+    signed = api.new_signed()
+    original = b"PK\x03\x04 the user's own file"
+    document_id = api.add_document(
+        signed.customer_id, detected_type=detected_type, name="Lease", data=original
+    )
+    api.storage.put_rendition(signed.customer_id, document_id, b"%PDF-1.7 its rendition")
+    viewed = signed.client.get(f"/api/documents/{document_id}/file")
+    assert viewed.status_code == 200
+    assert viewed.content == b"%PDF-1.7 its rendition"
+    assert viewed.headers["content-type"] == "application/pdf"
+    assert viewed.headers["content-disposition"].endswith("''Lease.pdf")
+    assert viewed.headers["content-security-policy"] == "sandbox"
+    downloaded = signed.client.get(f"/api/documents/{document_id}/file?download=1")
+    assert downloaded.status_code == 200
+    assert downloaded.content == original
+    assert downloaded.headers["content-type"] == content_type
+    assert downloaded.headers["content-disposition"].endswith(f"''Lease.{extension}")
+
+
+@pytest.mark.db
+def test_an_old_excel_file_is_downloaded_as_itself_and_one_not_yet_converted_is_not_viewed(
+    db: Database,
+) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    xls = api.add_document(
+        signed.customer_id, detected_type="xls", name="ledger.xls", data=b"\xd0\xcf\x11\xe0"
+    )
+    reply = signed.client.get(f"/api/documents/{xls}/file")  # no rendition: its cells are shown
+    assert (reply.content, reply.headers["content-type"]) == (b"\xd0\xcf\x11\xe0", "application/vnd.ms-excel")
+    docx = api.add_document(signed.customer_id, detected_type="docx", status="clean")
+    assert signed.client.get(f"/api/documents/{docx}/file").status_code == 404  # not converted yet
+    assert signed.client.get(f"/api/documents/{docx}/file?download=1").content == PDF_BYTES
 
 
 @pytest.mark.db
@@ -1775,3 +1926,72 @@ def test_the_summary_is_the_details_own_summary_in_fewer_statements(db: Database
     asked = _statements(db, lambda: signed.client.get(f"/api/documents/{document_id}/summary"))
     whole = _statements(db, lambda: signed.client.get(f"/api/documents/{document_id}"))
     assert asked < whole
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("detected_type", "name", "content_type", "served_name"),
+    [
+        (
+            "zip",
+            "Lease.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "Lease.docx",
+        ),
+        (
+            "zip",
+            "Slides.PPTX",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "Slides.pptx",
+        ),
+        ("zip", "Bills.zip", "application/zip", "Bills.zip"),
+        ("zip", "notes", "application/zip", "notes.zip"),  # no ending: its sniffed type's
+        ("text", "rent.csv", "text/plain; charset=utf-8", "rent.csv"),
+        ("text", "page.htm", "text/plain; charset=utf-8", "page.txt"),
+        ("text", "notes.exe", "text/plain; charset=utf-8", "notes.txt"),  # never a kind text can't be
+        ("pdf", "bill.docx", "application/pdf", "bill.pdf"),  # a told type: its own, whatever the name
+    ],
+)
+def test_a_document_not_read_since_0078_downloads_by_its_name_s_ending_among_its_type_s_kinds(
+    db: Database, detected_type: str, name: str, content_type: str, served_name: str
+) -> None:
+    """#522 (security review, 6 Nov 2026): 0078 told only ready documents' kinds; one that was
+    not read (needs_reader, failed) keeps its sniffed type until it is read again, so a Word file
+    kept unread downloaded as "Lease.zip". Its name's ending chooses among the kinds that type
+    can be, for Download and the label only; the reader tells the kind from the bytes."""
+    api = Api(db)
+    signed = api.new_signed()
+    document_id = api.add_document(
+        signed.customer_id,
+        detected_type=detected_type,
+        name=name,
+        data=b"PK\x03\x04 x",
+        status="needs_reader",
+    )
+    reply = signed.client.get(f"/api/documents/{document_id}/file?download=1")
+    assert reply.status_code == 200
+    assert reply.headers["content-type"] == content_type
+    assert reply.headers["content-disposition"].endswith("''" + served_name)
+    assert reply.headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(("detected_type", "extension"), [("html", "txt"), ("md", "md"), ("json", "json")])
+def test_an_html_markdown_or_json_original_downloads_as_plain_text_never_run(
+    db: Database, detected_type: str, extension: str
+) -> None:
+    """#522 (security review, 6 Nov 2026): the content check lets markup through in these files
+    (the text reader never renders it), so Download must never let a browser run it: plain
+    text, an attachment, nosniff, and a sandbox, whether the viewer or Download asks."""
+    api = Api(db)
+    signed = api.new_signed()
+    page = b"<html><script>alert(document.cookie)</script></html>"
+    document_id = api.add_document(signed.customer_id, detected_type=detected_type, name="page", data=page)
+    for asked in ("", "?download=1"):
+        reply = signed.client.get(f"/api/documents/{document_id}/file{asked}")
+        assert reply.status_code == 200 and reply.content == page
+        assert reply.headers["content-type"] == "text/plain; charset=utf-8"
+        assert reply.headers["content-disposition"].startswith("attachment;")
+        assert reply.headers["content-disposition"].endswith(f"''page.{extension}")
+        assert reply.headers["x-content-type-options"] == "nosniff"
+        assert reply.headers["content-security-policy"] == "sandbox"

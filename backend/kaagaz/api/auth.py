@@ -29,6 +29,12 @@ Why each piece (FULL-BUILD-SPEC section 3, PRD 1 A1 to A7):
   reviewer's re-typed password for Delete forever. ``{"uid","cid","ver","exp"}``,
   MAC over ``b"confirm\\x00" + body``, 5 minutes, an HttpOnly SameSite=Strict
   cookie for /api/documents only.
+* **The provider sign-in's tokens** (#457 phase 1), each its own MAC purpose, HttpOnly,
+  SameSite=Lax, on /api/auth/oidc only: the flow (``oidc_flow``, 10 minutes, single use: the
+  state, nonce and PKCE verifier from start to callback, and for a connect the signed-in user
+  and session version); the second step (``second_step``, 5 minutes: a right provider sign-in
+  for someone with two-step sign-in on, never a session); and the "isn't connected" notice
+  (``oidc_notice``, 60 seconds), so the provider's email never goes in a URL.
 * **Strict claims**: a token with a missing, extra or wrongly typed field is
   refused, so a Sprint 1 cookie (no scope, no ver) is refused and its user
   signs in once more.
@@ -40,6 +46,10 @@ Why each piece (FULL-BUILD-SPEC section 3, PRD 1 A1 to A7):
   403 ``mfa_enrol_required`` (MFA required for admins, 16 Oct 2026). Only the few
   routes that use ``current_user_allow_password_change`` (/auth/password,
   /auth/logout, /auth/me, /auth/session) skip both; /auth/admin/enrol needs no session.
+* **The limited session** (#507): last, a "Google only" user with no passing Google link
+  (``needs_google_link``) gets 403 ``google_link_required`` everywhere except the routes above
+  and those using ``current_user_allow_google_link`` (connect, its callback, Ways to sign in's
+  list and remove, and sign out everywhere). Their password signs them in only to connect Google.
 * **CSRF**: every request that is not GET, HEAD or OPTIONS must carry
   ``X-Requested-With: kaagaz``. A cross-site form cannot add a header, and a
   cross-site script cannot either without CORS, which the API never allows.
@@ -56,7 +66,7 @@ import json
 import secrets
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from functools import cache
 from typing import Annotated, Any
@@ -83,6 +93,15 @@ CONFIRM_PATH = "/api/documents"  # the browser calls the API on its own origin, 
 OPERATOR_COOKIE = "kaagaz_operator"
 OPERATOR_PATH = "/api/operator"
 OPERATOR_SESSION_SECONDS = 30 * 60  # absolute, PROVISIONAL (change plan question 4)
+# Signing in with a provider (#457 phase 1): the flow from start to callback, the code step
+# after it for anyone with two-step sign-in on, and the "isn't connected" notice for the page.
+OIDC_PATH = "/api/auth/oidc"
+OIDC_COOKIE = "kaagaz_oidc"
+OIDC_SECONDS = 10 * 60
+PENDING_COOKIE = "kaagaz_second_step"
+PENDING_SECONDS = 5 * 60
+NOTICE_COOKIE = "kaagaz_oidc_notice"
+NOTICE_SECONDS = 60
 # A session's end while an idle timeout is set (0040): the idle timeout, 1 to 24 hours, ends it.
 # Cookies issued before keep the end they were given.
 CAPPED_SECONDS = 24 * 3600
@@ -151,6 +170,9 @@ class SessionClaims:
     session_version: int
     expires_at: int  # seconds since the epoch
     capped: bool = False  # given the 24-hour cap while idle hours were set (0040): "cap": true
+    # This browser's session (0076, #502): logout writes it to ended_sessions, which every
+    # request checks. Random, so a cookie can't name another browser's session.
+    session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -168,18 +190,25 @@ class ConfirmClaims:
     customer_id: str
     session_version: int
     expires_at: int  # seconds since the epoch
+    session_id: str  # the browser session that typed the password (A4, 7 Nov 2026)
 
 
 _SESSION_PURPOSE = b"session"
 _ENROL_PURPOSE = b"enrol"
 _CONFIRM_PURPOSE = b"confirm"
-_SESSION_FIELDS = frozenset({"uid", "cid", "role", "scope", "ver", "exp"})
+_SESSION_FIELDS = frozenset({"uid", "cid", "role", "scope", "ver", "exp", "sid"})
 _ENROL_FIELDS = frozenset({"uid", "cid", "ver", "sec", "exp"})
-_CONFIRM_FIELDS = frozenset({"uid", "cid", "ver", "exp"})
+_CONFIRM_FIELDS = frozenset({"uid", "cid", "ver", "exp", "sid"})
 _OPERATOR_PURPOSE = b"operator"
 _OPERATOR_FIELDS = frozenset({"oid", "ver", "exp"})
 _MOVE_PURPOSE = b"operator_move"
 _MOVE_FIELDS = frozenset({"oid", "ver", "sec", "exp"})
+_FLOW_PURPOSE = b"oidc_flow"
+_FLOW_FIELDS = frozenset({"p", "m", "st", "no", "ve", "nx", "uid", "cid", "ver", "exp"})
+_PENDING_PURPOSE = b"second_step"
+_PENDING_FIELDS = frozenset({"p", "uid", "cid", "ver", "exp"})
+_NOTICE_PURPOSE = b"oidc_notice"
+_NOTICE_FIELDS = frozenset({"em", "exp"})
 
 
 def session_seconds(scope: str, settings: Settings, idle_hours: int | None = None) -> int:
@@ -228,6 +257,7 @@ def sign_session(claims: SessionClaims, secret: str) -> str:
             "scope": claims.scope,
             "ver": claims.session_version,
             "exp": claims.expires_at,
+            "sid": claims.session_id,
             **({"cap": True} if claims.capped else {}),  # left out otherwise: older cookies stay valid
         },
         _SESSION_PURPOSE,
@@ -279,6 +309,7 @@ def sign_confirm(claims: ConfirmClaims, secret: str) -> str:
             "cid": claims.customer_id,
             "ver": claims.session_version,
             "exp": claims.expires_at,
+            "sid": claims.session_id,
         },
         _CONFIRM_PURPOSE,
         secret,
@@ -287,16 +318,16 @@ def sign_confirm(claims: ConfirmClaims, secret: str) -> str:
 
 def read_confirm(token: str, secret: str, now: int) -> ConfirmClaims | None:
     """The claims of a genuine, unexpired confirm token, else None. Strict: exactly
-    the four fields, each of its type. Constant-time check."""
+    the five fields, each of its type. Constant-time check."""
     data = _verified(token, _CONFIRM_PURPOSE, secret)
     if not isinstance(data, dict) or set(data) != _CONFIRM_FIELDS:
         return None
-    uid, cid, ver, exp = data["uid"], data["cid"], data["ver"], data["exp"]
-    if not (isinstance(uid, str) and isinstance(cid, str) and _is_uuid(uid) and _is_uuid(cid)):
+    uid, cid, ver, exp, sid = data["uid"], data["cid"], data["ver"], data["exp"], data["sid"]
+    if not all(isinstance(value, str) and _is_uuid(value) for value in (uid, cid, sid)):
         return None
     if not (_is_version(ver) and _is_int(exp)) or exp <= now:
         return None
-    return ConfirmClaims(user_id=uid, customer_id=cid, session_version=ver, expires_at=exp)
+    return ConfirmClaims(user_id=uid, customer_id=cid, session_version=ver, expires_at=exp, session_id=sid)
 
 
 # --- the platform operator's tokens (super admin PR 2, PROVISIONAL): other purposes and
@@ -362,6 +393,181 @@ def read_move(token: str, secret: str, now: int) -> MoveClaims | None:
     return MoveClaims(operator_id=oid, session_version=ver, sealed_secret=sec, expires_at=exp)
 
 
+# --- the provider sign-in's tokens (#457 phase 1): their own purposes and fields, so none
+# reads as a session or as each other. All three live on OIDC_PATH only.
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FlowClaims:
+    """One sign-in or connect at a provider, from its start to its callback (single use)."""
+
+    provider: str
+    mode: str  # "signin" or "connect"
+    state: str
+    nonce: str
+    verifier: str  # the PKCE verifier
+    next_path: str
+    user_id: str | None  # a connect's: the signed-in user, customer and session version
+    customer_id: str | None
+    session_version: int | None
+    expires_at: int  # seconds since the epoch
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PendingClaims:
+    """A right provider sign-in for someone with two-step sign-in on: the code step is next."""
+
+    provider: str
+    user_id: str
+    customer_id: str
+    session_version: int
+    expires_at: int  # seconds since the epoch
+
+
+def sign_flow(claims: FlowClaims, secret: str) -> str:
+    """A flow token: exactly ``{p, m, st, no, ve, nx, uid, cid, ver, exp}``, purpose ``oidc_flow``."""
+    payload = {
+        "p": claims.provider,
+        "m": claims.mode,
+        "st": claims.state,
+        "no": claims.nonce,
+        "ve": claims.verifier,
+        "nx": claims.next_path,
+        "uid": claims.user_id,
+        "cid": claims.customer_id,
+        "ver": claims.session_version,
+        "exp": claims.expires_at,
+    }
+    return _sign(payload, _FLOW_PURPOSE, secret)
+
+
+def read_flow(token: str, secret: str, now: int) -> FlowClaims | None:
+    """The claims of a genuine, unexpired flow token, else None. Strict: exactly its fields,
+    each of its type; a connect carries its user, customer and session version, a sign-in none."""
+    data = _verified(token, _FLOW_PURPOSE, secret)
+    if not isinstance(data, dict) or set(data) != _FLOW_FIELDS:
+        return None
+    texts = [data[name] for name in ("p", "st", "no", "ve", "nx")]
+    if not all(isinstance(value, str) and value for value in texts):
+        return None
+    uid, cid, ver, exp = data["uid"], data["cid"], data["ver"], data["exp"]
+    if not _is_int(exp) or exp <= now:
+        return None
+    if data["m"] == "connect":
+        if not (isinstance(uid, str) and isinstance(cid, str) and _is_uuid(uid) and _is_uuid(cid)):
+            return None
+        if not _is_version(ver):
+            return None
+    elif data["m"] != "signin" or (uid, cid, ver) != (None, None, None):
+        return None
+    provider, state, nonce, verifier, next_path = texts
+    return FlowClaims(
+        provider=provider,
+        mode=data["m"],
+        state=state,
+        nonce=nonce,
+        verifier=verifier,
+        next_path=next_path,
+        user_id=uid,
+        customer_id=cid,
+        session_version=ver,
+        expires_at=exp,
+    )
+
+
+def sign_pending(claims: PendingClaims, secret: str) -> str:
+    """A second-step token: exactly ``{p, uid, cid, ver, exp}``, purpose ``second_step``."""
+    payload = {
+        "p": claims.provider,
+        "uid": claims.user_id,
+        "cid": claims.customer_id,
+        "ver": claims.session_version,
+        "exp": claims.expires_at,
+    }
+    return _sign(payload, _PENDING_PURPOSE, secret)
+
+
+def read_pending(token: str, secret: str, now: int) -> PendingClaims | None:
+    """The claims of a genuine, unexpired second-step token, else None. Strict."""
+    data = _verified(token, _PENDING_PURPOSE, secret)
+    if not isinstance(data, dict) or set(data) != _PENDING_FIELDS:
+        return None
+    provider, uid, cid, ver, exp = data["p"], data["uid"], data["cid"], data["ver"], data["exp"]
+    if not (isinstance(provider, str) and provider and isinstance(uid, str) and isinstance(cid, str)):
+        return None
+    if not (_is_uuid(uid) and _is_uuid(cid) and _is_version(ver) and _is_int(exp)) or exp <= now:
+        return None
+    return PendingClaims(provider=provider, user_id=uid, customer_id=cid, session_version=ver, expires_at=exp)
+
+
+def sign_notice(email: str, expires_at: int, secret: str) -> str:
+    """The "isn't connected" notice: exactly ``{em, exp}``, purpose ``oidc_notice``. It carries
+    the provider's email to the sign-in page without putting it in a URL."""
+    return _sign({"em": email, "exp": expires_at}, _NOTICE_PURPOSE, secret)
+
+
+def read_notice(token: str, secret: str, now: int) -> str | None:
+    """The email of a genuine, unexpired notice token, else None. Strict."""
+    data = _verified(token, _NOTICE_PURPOSE, secret)
+    if not isinstance(data, dict) or set(data) != _NOTICE_FIELDS:
+        return None
+    email, exp = data["em"], data["exp"]
+    if not (isinstance(email, str) and email and _is_int(exp)) or exp <= now:
+        return None
+    return email
+
+
+def _set_oidc_cookie(response: Response, name: str, token: str, max_age: int, settings: Settings) -> None:
+    """HttpOnly, SameSite=Lax (the provider's redirect back is a top-level GET from its site),
+    sent only to OIDC_PATH."""
+    response.set_cookie(
+        name,
+        token,
+        max_age=max_age,
+        httponly=True,
+        samesite="lax",
+        secure=settings.cookie_secure,
+        path=OIDC_PATH,
+    )
+
+
+def _clear_oidc_cookie(response: Response, name: str, settings: Settings) -> None:
+    response.delete_cookie(name, path=OIDC_PATH, httponly=True, samesite="lax", secure=settings.cookie_secure)
+
+
+def set_flow_cookie(response: Response, claims: FlowClaims, settings: Settings, *, now: int) -> None:
+    _set_oidc_cookie(
+        response, OIDC_COOKIE, sign_flow(claims, settings.session_secret), claims.expires_at - now, settings
+    )
+
+
+def clear_flow_cookie(response: Response, settings: Settings) -> None:
+    _clear_oidc_cookie(response, OIDC_COOKIE, settings)
+
+
+def set_pending_cookie(response: Response, claims: PendingClaims, settings: Settings, *, now: int) -> None:
+    _set_oidc_cookie(
+        response,
+        PENDING_COOKIE,
+        sign_pending(claims, settings.session_secret),
+        claims.expires_at - now,
+        settings,
+    )
+
+
+def clear_pending_cookie(response: Response, settings: Settings) -> None:
+    _clear_oidc_cookie(response, PENDING_COOKIE, settings)
+
+
+def set_notice_cookie(response: Response, email: str, settings: Settings, *, now: int) -> None:
+    token = sign_notice(email, now + NOTICE_SECONDS, settings.session_secret)
+    _set_oidc_cookie(response, NOTICE_COOKIE, token, NOTICE_SECONDS, settings)
+
+
+def clear_notice_cookie(response: Response, settings: Settings) -> None:
+    _clear_oidc_cookie(response, NOTICE_COOKIE, settings)
+
+
 def set_operator_cookie(response: Response, claims: OperatorClaims, settings: Settings, *, now: int) -> None:
     """HttpOnly, SameSite=Strict, sent only to /api/operator, for the token's own lifetime."""
     response.set_cookie(
@@ -401,8 +607,9 @@ def _verified(token: str, purpose: bytes, secret: str) -> Any:
 
 
 def _claims(data: Any, now: int) -> SessionClaims | None:
-    """Strict: exactly the six fields, each of its type, and "cap" (only ever true, 0040);
-    scope "admin" needs role "admin"."""
+    """Strict: exactly the seven fields, each of its type, and "cap" (only ever true, 0040);
+    scope "admin" needs role "admin". A cookie from before 0076 has no "sid": refused, so its
+    browser signs in once more."""
     if (
         not isinstance(data, dict)
         or set(data) - {"cap"} != _SESSION_FIELDS
@@ -410,8 +617,8 @@ def _claims(data: Any, now: int) -> SessionClaims | None:
     ):
         return None
     uid, cid, role, scope = data["uid"], data["cid"], data["role"], data["scope"]
-    ver, exp = data["ver"], data["exp"]
-    if not (isinstance(uid, str) and isinstance(cid, str) and isinstance(role, str)):
+    ver, exp, sid = data["ver"], data["exp"], data["sid"]
+    if not (isinstance(uid, str) and isinstance(cid, str) and isinstance(role, str) and isinstance(sid, str)):
         return None
     if not isinstance(scope, str) or scope not in SCOPES or role not in ROLES:
         return None
@@ -419,7 +626,7 @@ def _claims(data: Any, now: int) -> SessionClaims | None:
         return None
     if not (_is_version(ver) and _is_int(exp)) or exp <= now:
         return None
-    if not (_is_uuid(uid) and _is_uuid(cid)):
+    if not (_is_uuid(uid) and _is_uuid(cid) and _is_uuid(sid)):
         return None
     return SessionClaims(
         user_id=uid,
@@ -429,6 +636,7 @@ def _claims(data: Any, now: int) -> SessionClaims | None:
         session_version=ver,
         expires_at=exp,
         capped="cap" in data,
+        session_id=sid,
     )
 
 
@@ -524,8 +732,30 @@ class CurrentUser:
     totp_enabled: bool  # two-step sign-in is on (required for an admin, unless turned off)
     delete_forever_allowed: bool  # an admin allowed Delete forever (ignored for an admin)
     two_step_turned_off: bool = False  # the admin turned it off themselves (0061b)
+    two_step_required: bool = False  # the organisation requires it for admins (0068, #481)
     idle_hours: int | None = None  # the idle timeout in effect (0040); None: no idle limit
     seen_at: datetime | None = None  # the session's last use or sign-in, the idle clock
+    email_confirmed: bool = False  # the user proved their e-mail with a link (0061)
+    # Google sign-in (#507, ``users._GOOGLE_COLUMNS``): the organisation's switch, else the
+    # platform's; the role may use Google; uses it only; a passing link; the domains; an approved
+    # link whose domain is not checked yet (``users.google_unchecked``).
+    google_on: bool = True
+    google_allowed: bool = True
+    google_only: bool = False
+    google_linked: bool = False
+    google_domains: tuple[str, ...] = ()
+    google_unchecked: bool = False
+
+
+GOOGLE_LINK_REQUIRED = (
+    "Your organisation asks you to sign in with Google. Connect your Google account to continue."
+)
+
+
+def needs_google_link(user: CurrentUser, google_enabled: bool) -> bool:
+    """The limited session (#507): Google is on (``google_enabled``, GOOGLE_SIGNIN_ENABLED, and
+    the organisation's or platform's switch) and the role uses Google only, with no passing link."""
+    return google_enabled and user.google_on and user.google_only and not user.google_linked
 
 
 # The idle timeout (0040): the last use is written at most this often, so a request is not a write.
@@ -551,13 +781,16 @@ def touch_due(seen_at: datetime | None, now: datetime) -> bool:
     return seen_at is not None and now - seen_at >= TOUCH_EVERY
 
 
-def set_confirm_cookie(response: Response, user: CurrentUser, settings: Settings, *, now: int) -> None:
-    """A confirm token for this user and session version, CONFIRM_SECONDS long."""
+def set_confirm_cookie(
+    response: Response, user: CurrentUser, settings: Settings, *, now: int, session_id: str
+) -> None:
+    """A confirm token for this user, session version and browser session, CONFIRM_SECONDS long."""
     claims = ConfirmClaims(
         user_id=user.user_id,
         customer_id=user.customer_id,
         session_version=user.session_version,
         expires_at=now + CONFIRM_SECONDS,
+        session_id=session_id,
     )
     response.set_cookie(
         CONFIRM_COOKIE,
@@ -577,7 +810,17 @@ def current_user(request: Request) -> CurrentUser:
     user (enabled, same role, same session version). Then 403
     ``password_change_required`` while the user must set a new password, and 403
     ``mfa_enrol_required`` for an admin without two-step sign-in set up (one who turned it
-    off themselves, 0061b, signs in with the password and is let through)."""
+    off themselves, 0061b, signs in with the password and is let through). Then 403
+    ``google_link_required`` in the limited session (#507, ``needs_google_link``)."""
+    user = current_user_allow_google_link(request)
+    if needs_google_link(user, get_context(request).settings.google_signin_enabled):
+        raise ApiError(403, "google_link_required", GOOGLE_LINK_REQUIRED)
+    return user
+
+
+def current_user_allow_google_link(request: Request) -> CurrentUser:
+    """``current_user`` without the limited session's gate (#507). Only for connecting Google
+    (its start and callback), Ways to sign in's list and remove, and sign out everywhere."""
     user = _signed_in(request)
     if user.must_change_password:
         raise ApiError(403, "password_change_required")
@@ -598,7 +841,9 @@ def _signed_in(request: Request) -> CurrentUser:
     claims = session_claims(request, context.settings, int(now.timestamp()))
     if claims is None:
         raise ApiError(401, "not_signed_in")
-    user = load_user(context.db, claims.customer_id, claims.user_id, scope=claims.scope)
+    user = load_user(
+        context.db, claims.customer_id, claims.user_id, scope=claims.scope, session_id=claims.session_id
+    )
     if user is None or user.role != claims.role or user.session_version != claims.session_version:
         raise ApiError(401, "not_signed_in")
     if user.role == "admin" and claims.scope != "admin":
@@ -616,12 +861,15 @@ def _signed_in(request: Request) -> CurrentUser:
     return user
 
 
-def load_user(db: Database, customer_id: str, user_id: str, *, scope: str) -> CurrentUser | None:
+def load_user(
+    db: Database, customer_id: str, user_id: str, *, scope: str, session_id: str | None = None
+) -> CurrentUser | None:
     """The enabled user with this id in this customer, or None (also while the
-    customer is not active, 0014). ``scope`` is the session's (at sign-in, the
-    one being started). One indexed query."""
+    customer is not active, 0014, and while ``session_id``, a request's session, was ended
+    by logout, 0076). ``scope`` is the session's (at sign-in, the one being started). One
+    indexed query."""
     with db.customer(customer_id) as conn:
-        row = users_sql.session_user(conn, customer_id, user_id)
+        row = users_sql.session_user(conn, customer_id, user_id, session_id=session_id)
     if row is None or row["disabled"]:
         return None
     return CurrentUser(
@@ -637,12 +885,21 @@ def load_user(db: Database, customer_id: str, user_id: str, *, scope: str) -> Cu
         totp_enabled=bool(row["totp_enabled"]),
         delete_forever_allowed=bool(row["delete_forever_allowed"]),
         two_step_turned_off=bool(row["two_step_turned_off"]),
+        two_step_required=bool(row["two_step_required"]),
         idle_hours=row["idle_hours"],
         seen_at=row["seen_at"],
+        email_confirmed=bool(row["email_confirmed"]),
+        google_on=bool(row["google_on"]),
+        google_allowed=bool(row["google_allowed"]),
+        google_only=bool(row["google_only"]),
+        google_linked=users_sql.google_linked(row),
+        google_domains=tuple(row["google_domains"]),
+        google_unchecked=users_sql.google_unchecked(row),
     )
 
 
 User = Annotated[CurrentUser, Depends(current_user)]
+UserAllowGoogleLink = Annotated[CurrentUser, Depends(current_user_allow_google_link)]
 UserAllowPasswordChange = Annotated[CurrentUser, Depends(current_user_allow_password_change)]
 
 
@@ -658,8 +915,9 @@ AdminSession = Annotated[CurrentUser, Depends(require_admin_session)]
 
 
 def require_admin_with_two_step(user: AdminSession) -> CurrentUser:
-    """For what can't be undone (deleting a document forever, deleting a tag): an
-    admin session whose admin has two-step sign-in on, else 403
+    """For what can't be undone (deleting a tag; ``require_delete_forever`` lets an admin
+    without two-step type their password instead, #538): an admin session whose admin has
+    two-step sign-in on, else 403
     ``two_step_required``. ``current_user`` lets through only an admin with two-step
     sign-in on or one who turned it off themselves (0061b), whom this refuses."""
     if not user.totp_enabled:
@@ -670,23 +928,46 @@ def require_admin_with_two_step(user: AdminSession) -> CurrentUser:
 AdminWithTwoStep = Annotated[CurrentUser, Depends(require_admin_with_two_step)]
 
 
-def require_delete_forever(request: Request, user: User) -> CurrentUser:
-    """For deleting a document forever (council 4 Oct 2026). An admin needs what
-    they always did: an admin session with two-step sign-in on; a grant never
-    counts for an admin, so a password-only admin can't route round two-step.
-    Anyone else needs an admin's grant (403 ``forbidden``) and a confirm token
-    from typing their password in the last CONFIRM_SECONDS, for this user and
-    session version (403 ``password_confirm_required``). The grant is read
-    again on every request, so stopping it works at once."""
+def deletes_forever_by_password(user: CurrentUser) -> bool:
+    """Who types their password again to delete forever (``require_delete_forever``): a member
+    or reviewer an admin allowed, or an admin in an admin session without two-step sign-in on
+    (never while the organisation requires it)."""
     if user.role == "admin":
-        return require_admin_with_two_step(require_admin_session(user))
-    if not user.delete_forever_allowed:
+        return user.scope == "admin" and not user.totp_enabled and not user.two_step_required
+    return user.delete_forever_allowed
+
+
+def require_delete_forever(request: Request, user: User) -> CurrentUser:
+    """For deleting a document forever (council 4 Oct 2026; #538, Tushar, 7 Nov 2026). An admin
+    needs an admin session (403 ``admin_session_required``): with two-step sign-in on, nothing
+    more; without it, a confirm token, as below. A grant never counts for an admin. While the
+    organisation requires two-step for its admins (0068, #481) one without it is refused as
+    before (403 ``two_step_required``; ``current_user`` already refuses that state). Anyone else
+    needs an admin's grant (403 ``forbidden``). The confirm token comes from typing the password
+    in the last CONFIRM_SECONDS, for this user, session version and browser session (its ``sid``,
+    A4: never another browser's, nor one from before signing out and in again; 403
+    ``password_confirm_required``). The grant is read again on every request, so stopping it
+    works at once."""
+    if user.role == "admin" and not deletes_forever_by_password(require_admin_session(user)):
+        return require_admin_with_two_step(user)
+    if not deletes_forever_by_password(user):
         raise ApiError(403, "forbidden")
     context = get_context(request)
+    now = int(context.clock().timestamp())
     token = request.cookies.get(CONFIRM_COOKIE) or ""
-    claims = read_confirm(token, context.settings.session_secret, int(context.clock().timestamp()))
-    signed = None if claims is None else (claims.user_id, claims.customer_id, claims.session_version)
-    if signed != (user.user_id, user.customer_id, user.session_version):
+    claims = read_confirm(token, context.settings.session_secret, now)
+    session = session_claims(request, context.settings, now)
+    signed = (
+        None
+        if claims is None
+        else (claims.user_id, claims.customer_id, claims.session_version, claims.session_id)
+    )
+    if session is None or signed != (
+        user.user_id,
+        user.customer_id,
+        user.session_version,
+        session.session_id,
+    ):
         raise ApiError(403, "password_confirm_required")
     return user
 

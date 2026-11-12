@@ -470,7 +470,12 @@ describe("orgFlags", () => {
   it("acts at 100% of the budget and checks at 80%, in the budget's words", () => {
     const passed = orgFlags(org({ ai_budget_usd: 100, month_cost_usd: 1 }), spentReply(100), NOW);
     expect(passed).toEqual([
-      { code: "budget_passed", severity: "act", text: "AI spend has reached its budget ($100.00 of $100.00 this month)." },
+      // Changed on purpose (QA U11, 4 Nov 2026): reaching the budget pauses reading, so it says so.
+      {
+        code: "budget_passed",
+        severity: "act",
+        text: "AI spend has reached its budget, so reading is paused until next month or until the budget is raised ($100.00 of $100.00 this month).",
+      },
     ]);
     const near = orgFlags(org({ ai_budget_usd: 100 }), spentReply(99.99, 1, 2), NOW);
     expect(near).toEqual([
@@ -596,7 +601,7 @@ describe("attentionItems", () => {
     expect(attentionItems(r, names, quality({}), health(), NOW)).toEqual([
       {
         severity: "act",
-        text: "An organisation: AI spend has reached its budget ($12.00 of $10.00 this month).",
+        text: "An organisation: AI spend has reached its budget, so reading is paused until next month or until the budget is raised ($12.00 of $10.00 this month).",
         organisationId: "gone",
         organisationName: null,
         target: "organisation",

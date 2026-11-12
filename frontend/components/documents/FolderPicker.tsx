@@ -3,7 +3,7 @@
 // The folders to choose from, as radios in a tree that opens one folder at a time, for the
 // Move dialogs and Upload a folder (#484: up to 100 levels and thousands of folders). Like
 // the Documents tree (FolderNav.tsx) it draws only what is open (visibleNodes), at most
-// CHILD_CAP of one folder's folders with "Show all", and the indent stops after 8 levels,
+// CHILD_CAP of one folder's folders with "Show all", and the indent stops after 6 levels,
 // where each row says its level in words. The way to the chosen folder starts open. Past
 // CHILD_CAP folders in all, "Find a folder" lists up to 50 by name, each with its path.
 // The caller draws its own other choices (All documents, New folder…) in the same radio group.
@@ -12,9 +12,9 @@ import { useId, useState } from "react";
 import type { ReactNode } from "react";
 import { Icon } from "@/components/ui/Icon/Icon";
 import { formatNumber } from "@/lib/format";
-import { CHILD_CAP, TOP_LIST, folderPath, pathLabel, searchFolders, shortPathLabel, visibleNodes } from "./folderTree";
+import { CHILD_CAP, TOP_LIST, pathLabel, searchFolders, shortPathLabel, visibleNodes } from "./folderTree";
 import type { FolderNode, FolderTree } from "./folderTree";
-import { INDENT_LEVELS, TreeLevel, indent } from "./FolderNav";
+import { INDENT_LEVELS, TreeLabel, indent, pathTitle } from "./FolderNav";
 import styles from "./Library.module.css";
 
 interface FolderPickerProps {
@@ -127,11 +127,12 @@ export function FolderPicker({ tree, name, choice, onChoose, disabled, note, ope
               )}
               {radio(
                 node,
-                <>
-                  {node.folder.name}
-                  <TreeLevel depth={node.depth} />
-                </>,
-                node.depth > INDENT_LEVELS ? folderPath(tree, node.folder.id).map((folder) => folder.name).join(" / ") : undefined,
+                <TreeLabel
+                  name={node.folder.name}
+                  depth={node.depth}
+                  title={node.depth > INDENT_LEVELS ? pathTitle(tree, node.folder.id) : undefined}
+                />,
+                node.depth > INDENT_LEVELS ? pathTitle(tree, node.folder.id) : undefined,
               )}
             </li>
           );

@@ -10,12 +10,16 @@
 // shows only while something is changed (as Settings). Never a model name or cost word.
 // Scanning (#398) first picks who reads (AI reads every page, AI for harder pages, Local
 // reader only), and only AI's pick shows the levels of care (Low, High, Max).
+// #468: unsaved changes are kept in this tab for the same person (lib/drafts.ts, one draft per
+// scope) and come back over what is saved; onUnsaved tells AdminView, which asks before leaving.
 
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import libraryStyles from "@/components/documents/Library.module.css";
+import { LoadFailed } from "@/components/operator/LoadFailed";
 import reviewStyles from "@/components/review/Review.module.css";
-import { ApiError, FEATURE_OFF, getAiSettings, putMyAiSettings, putOrgAiSettings } from "@/lib/api";
+import { FEATURE_OFF, getAiSettings, putMyAiSettings, putOrgAiSettings } from "@/lib/api";
+import { errorWords } from "@/lib/errorWords";
 import {
   AI_LEVELS,
   CHOICES,
@@ -40,8 +44,11 @@ import {
   readerOf,
 } from "@/lib/aiSettings";
 import type { MineDraft, OrgDraft } from "@/lib/aiSettings";
+import { clearDraft, readDraft, saveDraftSoon } from "@/lib/drafts";
+import { useSession } from "@/lib/session";
 import type { TaskLevel, AiSettings, AiTaskSetting } from "@/lib/types";
 import { WhatsThis } from "@/components/ui/WhatsThis";
+import { aiChangesToKeep, aiSettingsDraft, mineDraftOver, orgDraftOver } from "./logic";
 import { Toast } from "./Toast";
 import type { Notice } from "./Toast";
 import styles from "./Admin.module.css";
@@ -52,13 +59,21 @@ type Draft = OrgDraft | MineDraft;
 const draftOf = (scope: AiScope, settings: AiSettings): Draft =>
   scope === "organisation" ? orgDraftOf(settings) : mineDraftOf(settings);
 
-export function AiSettingsPanel({ scope }: { scope: AiScope }) {
+/** The tasks changed from what is saved (nothing: no Save bar, no draft). */
+const changesOf = (scope: AiScope, settings: AiSettings, draft: Draft) =>
+  scope === "organisation"
+    ? changedOnly(orgDraftOf(settings), draft as OrgDraft)
+    : changedOnly(mineDraftOf(settings), draft as MineDraft);
+
+export function AiSettingsPanel({ scope, onUnsaved }: { scope: AiScope; onUnsaved?(unsaved: boolean): void }) {
+  const userId = useSession().me.user.id;
   const [settings, setSettings] = useState<AiSettings | null>(null);
   const [draft, setDraft] = useState<Draft>({});
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -66,16 +81,29 @@ export function AiSettingsPanel({ scope }: { scope: AiScope }) {
       (result) => {
         if (cancelled) return;
         setSettings(result);
-        setDraft(draftOf(scope, result));
+        const kept = readDraft(userId, aiSettingsDraft(scope));
+        setDraft(
+          scope === "organisation"
+            ? orgDraftOver(orgDraftOf(result), kept, result)
+            : mineDraftOver(mineDraftOf(result), kept, result),
+        );
       },
       (caught: unknown) =>
         !cancelled &&
-        setLoadError(caught instanceof ApiError ? caught.message : "Could not load the AI settings. Check your connection, then try again."),
+        setLoadError(errorWords(caught)),
     );
     return () => {
       cancelled = true;
     };
-  }, [scope]);
+  }, [scope, attempt, userId]);
+
+  const changes = useMemo(() => (settings === null ? null : changesOf(scope, settings, draft)), [scope, settings, draft]);
+  const unsaved = changes !== null && Object.keys(changes).length > 0;
+  useEffect(() => {
+    if (settings === null || changes === null) return; // not loaded yet: a kept draft is still to be read
+    saveDraftSoon(userId, aiSettingsDraft(scope), aiChangesToKeep(draftOf(scope, settings), changes));
+  }, [userId, scope, settings, changes]);
+  useEffect(() => onUnsaved?.(unsaved), [unsaved, onUnsaved]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -88,6 +116,7 @@ export function AiSettingsPanel({ scope }: { scope: AiScope }) {
         scope === "organisation" ? await putOrgAiSettings(changes as OrgDraft) : await putMyAiSettings(changes as MineDraft);
       setSettings(result);
       setDraft(draftOf(scope, result));
+      clearDraft(userId, aiSettingsDraft(scope));
       setNotice({ text: "Saved." });
     } catch (caught) {
       setError(aiSaveErrorText(caught));
@@ -102,9 +131,14 @@ export function AiSettingsPanel({ scope }: { scope: AiScope }) {
         AI settings
       </h2>
       {loadError && (
-        <p className="error-text" role="alert">
-          {loadError}
-        </p>
+        <LoadFailed
+          what="the AI settings"
+          message={loadError}
+          onRetry={() => {
+            setLoadError(null);
+            setAttempt((n) => n + 1);
+          }}
+        />
       )}
       {!settings && !loadError && (
         <>

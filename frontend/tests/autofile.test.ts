@@ -111,7 +111,8 @@ describe("the org admin's switch", () => {
     expect(settingsErrorText(new ApiError(400, "bad_request", "The limit can be at most 5 MB."))).toBe(
       "The limit can be at most 5 MB.",
     );
-    expect(settingsErrorText(new TypeError("fetch failed"))).toMatch(/Check your connection/);
+    // Changed on purpose (#468 review, PT2/UX9): the one network wording.
+    expect(settingsErrorText(new TypeError("fetch failed"))).toMatch(/Check your internet connection/);
   });
 
   it("sends the switch only when the form has it, so leaving it out keeps it as it is", async () => {
@@ -223,6 +224,7 @@ describe("the super admin's allow and stop", () => {
     last_activity_at: null,
     autofile_granted: false,
     autofile_on: false,
+    admin_email_confirmed: false, // #457
   };
 
   it("asks first, saying files already uploaded stay where they are, and stopping turns the switch off", async () => {

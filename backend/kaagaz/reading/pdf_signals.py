@@ -18,7 +18,9 @@ it), and gives the ``PageSignals`` that ``text_quality.text_layer_ok`` needs:
     stroked text); a font size under 1 pt (``FPDFText_GetFontSize``) (the
     council's PR 3 review, high 1); a box off the page as shown or too small; or a
     light colour that does not stand out where the page draws it (council
-    17 Oct 2026: white text on a dark band is seen, white on white is not).
+    17 Oct 2026: white text on a dark band is seen, white on white is not), or
+    dark text that does not reach the page where it is drawn: under a later
+    shape or image, outside a clipping path, or in a layer that is off (#464).
     Their loose boxes, merged along each run, become ``hidden_boxes`` as page
     fractions, and both PDF readers drop the words under them, whatever the share.
   * ``legacy_font_share``: in a font whose ``/BaseFont`` name, without a
@@ -69,7 +71,7 @@ _STROKED = _STROKE_ONLY | {
     pdfium_c.FPDF_TEXTRENDERMODE_FILL_STROKE_CLIP,
 }
 _NO_WIDTH = frozenset({"Mn", "Mc", "Cf", "Cs"})  # combining marks, joiners, surrogate halves
-_HIDDEN = (-1, -1, -1)  # _look's answer for a character that can't be seen
+_HIDDEN = ((-1, -1, -1), True)  # _look's answer for a character that can't be seen
 _LINEAR = tuple(c / 255 / 12.92 if c <= 10 else ((c / 255 + 0.055) / 1.055) ** 2.4 for c in range(256))
 # PROVISIONAL (council PR 3 review, high 1): a size under MIN_FONT_POINTS is too
 # small to read, so it is hidden.
@@ -80,9 +82,17 @@ MIN_BOX_HEIGHT = 2.5
 MIN_BOX_WIDTH = 0.3
 # A colour whose WCAG contrast with white is under this is light: seen only on a
 # darker background, which is checked on the drawn page. Also the contrast a
-# light glyph's background needs.
+# light glyph's background needs (and, since #464, a dark glyph's).
 LIGHT_CONTRAST = 3.0
 MAX_LIGHT_GLYPHS = 5000  # more light characters on a page: all hidden, nothing drawn
+# PROVISIONAL (#464), measured on the test files only: more dark characters on a page than
+# this and none of them is checked (seen, as before #464), so a crafted page cannot make
+# the check slow. A dense A4 statement at 6 pt holds about 7,500.
+MAX_DARK_GLYPHS = 20_000
+# PROVISIONAL (#464): a dark character drawn under this many pixels wide or high is too
+# small to judge (a full stop or a thin "l" in small print can fall between pixels, and a
+# glyph the stand-in for a missing font cannot draw has no height): seen, as before #464.
+MIN_INK_PIXELS = 1.5
 RENDER_DPI = 150  # the page is drawn at this, or lower to stay near RENDER_PIXELS
 RENDER_PIXELS = 4_000_000  # about 12 MB as RGB
 HALO = 0.15  # of the font size, added round the tight box to find the background
@@ -242,18 +252,19 @@ def hidden_chars(page: Any, textpage: Any) -> frozenset[int]:
 
     Each character is, by ``_look``: hidden (render mode 3 or 7, no alpha, a font
     size under MIN_FONT_POINTS, its loose box's centre outside the page as shown, or a
-    loose box under MIN_BOX_HEIGHT high or MIN_BOX_WIDTH wide); visible (its
-    colour has a contrast of LIGHT_CONTRAST or more with white, as before); or
-    light. Light characters can be seen only on a darker background, so the page
-    is drawn once and each one is checked where it is drawn (``_unseen``).
+    loose box under MIN_BOX_HEIGHT high or MIN_BOX_WIDTH wide); visible (a pattern
+    or shading, as before); or checked, light or dark. Light characters can be seen only on a
+    darker background, and dark ones (opaque, a contrast of LIGHT_CONTRAST or more
+    with white) only where nothing covers or cuts them away (#464), so the page is
+    drawn once and each one is checked where it is drawn (``_unseen``).
 
-    O(characters + the pixels of the light characters' boxes) time; space
-    O(drawn pixels), at most about RENDER_PIXELS, drawn only for a light character.
+    O(characters + the pixels of the checked characters' boxes) time; space
+    O(drawn pixels), at most about RENDER_PIXELS, drawn only for a checked character.
     """
     window = ViewerFrame.of(page)
     crop = (window.left, window.bottom, window.right, window.top)
     hidden: set[int] = set()
-    light: list[tuple[int, tuple[int, int, int]]] = []
+    checked: list[tuple[int, tuple[int, int, int], bool]] = []  # index, colour, light?
     for index in range(textpage.count_chars()):
         code = int(pdfium_c.FPDFText_GetUnicode(textpage, index))
         if (
@@ -266,14 +277,17 @@ def hidden_chars(page: Any, textpage: Any) -> frozenset[int]:
         if look == _HIDDEN:
             hidden.add(index)
         elif look is not None:
-            light.append((index, look))
-    if light:
-        hidden.update(_unseen(page, textpage, light))
+            checked.append((index, *look))
+    if checked:
+        hidden.update(_unseen(page, textpage, checked))
     return frozenset(hidden)
 
 
-def _look(textpage: Any, index: int, char: str, crop: tuple[float, ...]) -> tuple[int, int, int] | None:
-    """``_HIDDEN``, None for visible, or a light character's colour (r, g, b). O(1)."""
+def _look(
+    textpage: Any, index: int, char: str, crop: tuple[float, ...]
+) -> tuple[tuple[int, int, int], bool] | None:
+    """``_HIDDEN``, None for visible, or the colour (r, g, b) to check on the drawn
+    page and whether it is light. O(1)."""
     text_object = pdfium_c.FPDFText_GetTextObject(textpage, index)
     mode = pdfium_c.FPDF_TEXTRENDERMODE_FILL
     if ctypes.cast(text_object, ctypes.c_void_p).value is not None:
@@ -310,31 +324,43 @@ def _look(textpage: Any, index: int, char: str, crop: tuple[float, ...]) -> tupl
     ]
     darkest = min(shown, key=relative_luminance)
     opaque = all(alpha == 255 for _, alpha in colours if alpha)
-    return None if opaque and contrast_ratio(relative_luminance(darkest), 1.0) >= LIGHT_CONTRAST else darkest
+    return darkest, not (opaque and contrast_ratio(relative_luminance(darkest), 1.0) >= LIGHT_CONTRAST)
 
 
-def _unseen(page: Any, textpage: Any, light: list[tuple[int, tuple[int, int, int]]]) -> set[int]:
-    """The light characters that can't be seen where the page draws them. Above
-    MAX_LIGHT_GLYPHS of them, or if the page cannot be drawn, all of them (the
-    rule before light text was checked)."""
-    every = {index for index, _ in light}
-    if len(light) > MAX_LIGHT_GLYPHS:
+def _unseen(page: Any, textpage: Any, checked: list[tuple[int, tuple[int, int, int], bool]]) -> set[int]:
+    """The checked characters (index, colour, light?) that can't be seen where the
+    page draws them. Above MAX_LIGHT_GLYPHS light ones, or if the page cannot be
+    drawn, all the light ones (the rule before light text was checked); above
+    MAX_DARK_GLYPHS dark ones, or if the page cannot be drawn, none of the dark ones,
+    nor a dark one drawn under MIN_INK_PIXELS wide or high (the rule before #464)."""
+    every = {index for index, _, light in checked if light}
+    if len(every) > MAX_LIGHT_GLYPHS:
+        checked = [glyph for glyph in checked if not glyph[2]]
+    if sum(1 for glyph in checked if not glyph[2]) > MAX_DARK_GLYPHS:  # the dark ones only (#505)
+        checked = [glyph for glyph in checked if glyph[2]]
+    if not checked:
         return every
     width, height = page.get_size()
     dpi = min(RENDER_DPI, int(72 * math.sqrt(RENDER_PIXELS / max(width * height, 1e-9))))
     try:
-        image = render_pdf_page(page, dpi=max(1, dpi), max_image_pixels=2 * RENDER_PIXELS)
+        # Text drawn without anti-aliasing, so each pixel of a thin glyph is its own colour (#464).
+        image = render_pdf_page(page, dpi=max(1, dpi), max_image_pixels=2 * RENDER_PIXELS, smooth_text=False)
     except ReadError:
         return every
     try:
         frame = ViewerFrame.of(page)
         scale = (image.width / max(frame.width, 1e-9), image.height / max(frame.height, 1e-9))
-        unseen = set()
-        for index, colour in light:
+        unseen = every - {index for index, _, _ in checked}  # the light ones over the cap
+        memos: dict[tuple[int, int, int], tuple[dict[Any, bool], dict[Any, bool]]] = {}
+        for index, colour, light in checked:
             tight = textpage.get_charbox(index)
+            box = frame.word("", *tight)
+            drawn = min((box.x1 - box.x0) * scale[0], (box.bottom - box.top) * scale[1])
+            if not light and drawn < MIN_INK_PIXELS:
+                continue
             halo = float(pdfium_c.FPDFText_GetFontSize(textpage, index)) * HALO
-            grown = (tight[0] - halo, tight[1] - halo, tight[2] + halo, tight[3] + halo)
-            if not _shows(image, frame.word("", *tight), frame.word("", *grown), scale, colour):
+            grown = frame.word("", tight[0] - halo, tight[1] - halo, tight[2] + halo, tight[3] + halo)
+            if not _shows(image, box, grown, scale, colour, memos.setdefault(colour, ({}, {}))):
                 unseen.add(index)
         return unseen
     finally:
@@ -342,35 +368,54 @@ def _unseen(page: Any, textpage: Any, light: list[tuple[int, tuple[int, int, int
 
 
 def _shows(
-    image: Any, tight: WordBox, grown: WordBox, scale: tuple[float, float], colour: tuple[int, int, int]
+    image: Any,
+    tight: WordBox,
+    grown: WordBox,
+    scale: tuple[float, float],
+    colour: tuple[int, int, int],
+    memo: tuple[dict[Any, bool], dict[Any, bool]],
 ) -> bool:
     """Whether a glyph of ``colour`` is seen in ``image``: INK_SHARE of the pixels
     of its ``tight`` box are close to its colour (it reached the page: not
     covered, clipped or see-through), and CONTRAST_SHARE of those of its
     ``grown`` box (the tight box with a margin, so a thin "I" has background
-    too) stand out from it. O(the boxes' pixels), by their distinct colours."""
+    too) stand out from it. ``memo`` keeps both answers per pixel colour for the
+    glyphs of this colour, so a page of black text tests each grey once.
+    O(the boxes' pixels), by their distinct colours."""
     own = relative_luminance(colour)
     ink = _share(
         image,
         tight,
         scale,
         lambda px: max(abs(a - b) for a, b in zip(px, colour, strict=True)) <= INK_DISTANCE,
+        memo[0],
     )
     seen = _share(
-        image, grown, scale, lambda px: contrast_ratio(relative_luminance(px), own) >= LIGHT_CONTRAST
+        image,
+        grown,
+        scale,
+        lambda px: contrast_ratio(relative_luminance(px), own) >= LIGHT_CONTRAST,
+        memo[1],
     )
     return ink >= INK_SHARE and seen >= CONTRAST_SHARE
 
 
-def _share(image: Any, box: WordBox, scale: tuple[float, float], test: Any) -> float:
-    """The share of ``box``'s pixels (at least one, rounded outwards) that pass ``test``."""
+def _share(image: Any, box: WordBox, scale: tuple[float, float], test: Any, memo: dict[Any, bool]) -> float:
+    """The share of ``box``'s pixels (at least one, rounded outwards) that pass
+    ``test``, whose answer for each pixel colour ``memo`` keeps."""
     x0, x1 = max(0, math.floor(box.x0 * scale[0])), min(image.width, math.ceil(box.x1 * scale[0]))
     y0, y1 = max(0, math.floor(box.top * scale[1])), min(image.height, math.ceil(box.bottom * scale[1]))
     if x1 <= x0 or y1 <= y0:
         return 0.0
     total: int = (x1 - x0) * (y1 - y0)
     counted: list[tuple[int, Any]] = image.crop((x0, y0, x1, y1)).getcolors(total)  # (count, pixel)
-    return sum(count for count, pixel in counted if test(pixel)) / total
+    passed = 0
+    for count, pixel in counted:
+        if pixel not in memo:
+            memo[pixel] = test(pixel)
+        if memo[pixel]:
+            passed += count
+    return passed / total
 
 
 def words_left_visible(

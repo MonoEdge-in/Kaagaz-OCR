@@ -141,6 +141,7 @@ class Call:
     model: str | None = None
     provider: str | None = None
     validate: Callable[[dict[str, Any]], str | None] | None = None
+    max_output_tokens: int | None = None  # Changed on purpose (#463): the page read's output limit
 
 
 Outcome = PageReply | Exception
@@ -172,6 +173,7 @@ class FakeClient:
         model: str | None = None,
         provider: str | None = None,
         validate: Callable[[dict[str, Any]], str | None] | None = None,
+        max_output_tokens: int | None = None,
         budget: PageBudget | None = None,  # Changed on purpose (#488): Ultra low cost's, unused here
     ) -> PageReply:
         image = Image.open(io.BytesIO(png))
@@ -188,6 +190,7 @@ class FakeClient:
                     model,
                     provider,
                     validate,
+                    max_output_tokens,
                 )
             )
             outcome = self.script.pop(0) if self.script else None
@@ -958,6 +961,10 @@ class Q7FallbackTest(unittest.TestCase):
     def test_fx5_g6_a_model_id_that_names_no_model_waits_as_gemini_key_and_never_falls_back(self) -> None:
         """Review FX5: a 404 (model_not_found) is a wrong OCR_MODEL, a person's fix."""
         self._waits_as_a_key_problem("model_not_found")
+
+    def test_review_564_a_404_for_no_endpoint_waits_as_gemini_key_too(self) -> None:
+        """Review of #564: no endpoint within the provider or data policy is a person's fix too."""
+        self._waits_as_a_key_problem("no_endpoints")
 
     def test_fx5_g6_a_redirect_waits_as_gemini_key_and_never_falls_back(self) -> None:
         """Review FX5: a 3xx (redirect_refused) is a wrong OPENROUTER_BASE_URL, a person's fix."""

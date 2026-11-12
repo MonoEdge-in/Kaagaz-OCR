@@ -55,6 +55,9 @@ MODEL_ROUTES = {
     ("PUT", f"/api/operator/orgs/{ANY_ID}/model-rates"),
     ("PUT", f"/api/operator/orgs/{ANY_ID}/users/{ANY_ID}/model-rate"),
     ("GET", "/api/operator/usage"),
+    ("POST", "/api/operator/scan-cost"),  # #463: the approximate cost a page
+    ("GET", "/api/operator/storage-limit"),  # #516
+    ("PUT", "/api/operator/storage-limit"),
 }
 CATALOGUE_ROW = {
     "id": MODEL,
@@ -85,7 +88,10 @@ CATALOGUE_ROW = {
     "answer_questions_costed": 38,
     "answer_cost_usd": Decimal("0.190000"),
     "answer_cost_unknown_calls": 3,
+    "price_request_usd": Decimal("0"),  # #488: its price a request and an image
+    "price_image_usd": Decimal("0"),
 }
+# Changed on purpose (#463, 31 Oct 2026): the rows, bodies and env carry the scan cost settings.
 # kaagaz_op_org_ai's row: the organisation's own scan models, the rest from the defaults.
 ORG_ROW = {
     "scan_models": [MODEL, OTHER],
@@ -96,6 +102,14 @@ ORG_ROW = {
     "chat_levels": None,
     "chat_default_level": None,
     "dynamic": None,
+    "scan_resolution": "low",
+    "careful_thinking": None,
+    "careful_resolution": "high",
+    "page_max_output_tokens": 32768,
+    "scan_reader": None,  # Changed on purpose (#473)
+    "mistral_model": None,
+    "daily_page_limit": None,  # Changed on purpose (#478)
+    "ulc_ceiling_paise": None,  # Changed on purpose (#488)
     "ensemble": True,
     "ai_budget_usd": Decimal("50.00"),
 }
@@ -108,11 +122,27 @@ DEFAULTS_ROW = {
     "chat_levels": ["low", "medium"],
     "chat_default_level": "low",
     "dynamic": False,
+    "scan_resolution": None,
+    "careful_thinking": "minimal",
+    "careful_resolution": None,
+    "page_max_output_tokens": None,
+    "scan_reader": None,  # Changed on purpose (#473)
+    "mistral_model": None,
+    "daily_page_limit": None,  # Changed on purpose (#478)
+    "ulc_ceiling_paise": None,  # Changed on purpose (#488)
     "orgs_inheriting_scan_models": 4,
     "orgs_inheriting_chat_models": 7,
     "orgs_inheriting_scan_thinking": 6,
     "orgs_inheriting_chat_levels": 7,
     "orgs_inheriting_dynamic": 5,
+    "orgs_inheriting_scan_resolution": 3,
+    "orgs_inheriting_careful_thinking": 2,
+    "orgs_inheriting_careful_resolution": 1,
+    "orgs_inheriting_page_max_output_tokens": 9,
+    "orgs_inheriting_scan_reader": 8,  # Changed on purpose (#473)
+    "orgs_inheriting_mistral_model": 8,
+    "orgs_inheriting_daily_page_limit": 3,  # Changed on purpose (#478)
+    "orgs_inheriting_ulc_ceiling_paise": 3,  # Changed on purpose (#488)
 }
 ORG_BODY: dict[str, Any] = {
     "scan_models": [MODEL, OTHER],
@@ -123,6 +153,14 @@ ORG_BODY: dict[str, Any] = {
     "chat_levels": None,
     "chat_default_level": None,
     "dynamic": None,
+    "scan_resolution": "low",
+    "careful_thinking": None,
+    "careful_resolution": "high",
+    "page_max_output_tokens": 32768,
+    "scan_reader": None,  # Changed on purpose (#473)
+    "mistral_model": None,
+    "daily_page_limit": None,  # Changed on purpose (#478)
+    "ulc_ceiling_paise": None,  # Changed on purpose (#488)
     "ensemble": True,
     "ai_budget_usd": 12.5,
 }
@@ -135,6 +173,14 @@ DEFAULTS_BODY: dict[str, Any] = {
     "chat_levels": ["high", "low"],
     "chat_default_level": "low",
     "dynamic": False,
+    "scan_resolution": None,
+    "careful_thinking": "minimal",
+    "careful_resolution": "low",
+    "page_max_output_tokens": None,
+    "scan_reader": None,  # Changed on purpose (#473)
+    "mistral_model": None,
+    "daily_page_limit": None,  # Changed on purpose (#478)
+    "ulc_ceiling_paise": None,  # Changed on purpose (#488)
 }
 USAGE_ROW = {
     "customer_id": CID,
@@ -164,7 +210,30 @@ USAGE_KEYS = {
     "cost_part_unknown",
 }
 # The server's own settings (settings_factory): what an empty default list falls back to.
-ENV = {"scan_model": MODEL, "chat_model": MODEL, "scan_thinking": "low"}
+ENV = {
+    "scan_model": MODEL,
+    "chat_model": MODEL,
+    "scan_thinking": "low",
+    "scan_resolution": "high",
+    "careful_thinking": "high",
+    "careful_resolution": "high",
+    "page_max_output_tokens": 65536,
+    # Changed on purpose (#473): the server's reader and Mistral model, Mistral not set up here (no
+    # key in settings_factory), the Mistral models, and Mistral's status from the runs.
+    "scan_reader": "openrouter",
+    "ulc_ceiling_paise": 40,  # #564 [V]: a saved Ultra low cost with no ceiling
+    "switch_ceiling_paise": None,  # OCR_PAGE_CEILING_PAISE while OCR_ULTRA_LOW_COST is on
+    "mistral_model": "mistral-ocr-4-1",
+    "mistral_ready": False,
+    "mistral_missing": "key",
+    "mistral_models": [
+        {"id": "mistral-ocr-4-1", "name": "Mistral OCR 4.1", "usd_per_page": 0.004, "has_blocks": True},
+        {"id": "mistral-ocr-2512", "name": "Mistral OCR 3", "usd_per_page": 0.002, "has_blocks": False},
+    ],
+    "mistral_status": {"stopped": False, "code": None, "since": None, "documents_waiting": 0},
+}
+MISTRAL_ROW = {"code": None, "since": None, "documents_waiting": 0}  # #473: no document waits
+TODAY_ROW = {"pages": 1240, "cost_usd": Decimal("0.42")}  # #478: the reading pause's counter today
 
 
 class _NoDatabase(OperatorDatabase):
@@ -207,6 +276,8 @@ class _Offline:
             models_sql, "set_ai_defaults", self._recorder("set_ai_defaults", lambda: self.outcome)
         )
         monkeypatch.setattr(models_sql, "ai_defaults", self._recorder("ai_defaults", lambda: self.defaults))
+        monkeypatch.setattr(models_sql, "mistral_status", self._recorder("mistral_status", MISTRAL_ROW))
+        monkeypatch.setattr(models_sql, "reading_today", self._recorder("reading_today", TODAY_ROW))
         token = sign_operator(
             OperatorClaims(operator_id=OID, session_version=2, expires_at=AT + 600),
             self.settings.session_secret,
@@ -302,6 +373,9 @@ def test_the_catalogue_says_verified_for_the_current_prompts_only(
         "chat_eligible": True,
         "chat_verified": True,
         "vendor_allowed": True,
+        # #488: can it lead Ultra low cost, and why not.
+        "ulc_ready": False,
+        "ulc_why": "It can't read with minimal thinking.",
     }
     stale = {
         **CATALOGUE_ROW,
@@ -413,6 +487,14 @@ def test_an_organisations_ai_settings_round_trip_with_the_defaults_it_follows(of
             "chat_models": [],  # empty: follows the platform defaults
             "chat_default": None,
             "scan_thinking": "medium",
+            "scan_resolution": "low",
+            "careful_thinking": None,
+            "careful_resolution": "high",
+            "page_max_output_tokens": 32768,
+            "scan_reader": None,  # Changed on purpose (#473)
+            "mistral_model": None,
+            "daily_page_limit": None,  # Changed on purpose (#478)
+            "ulc_ceiling_paise": None,  # Changed on purpose (#488)
             "chat_levels": None,
             "chat_default_level": None,
             "dynamic": None,
@@ -423,6 +505,14 @@ def test_an_organisations_ai_settings_round_trip_with_the_defaults_it_follows(of
             "chat_models": [MODEL],
             "chat_default": MODEL,
             "scan_thinking": None,
+            "scan_resolution": None,
+            "careful_thinking": "minimal",
+            "careful_resolution": None,
+            "page_max_output_tokens": None,
+            "scan_reader": None,  # Changed on purpose (#473)
+            "mistral_model": None,
+            "daily_page_limit": None,  # Changed on purpose (#478)
+            "ulc_ceiling_paise": None,  # Changed on purpose (#488)
             "chat_levels": ["low", "medium"],
             "chat_default_level": "low",
             "dynamic": False,
@@ -431,6 +521,7 @@ def test_an_organisations_ai_settings_round_trip_with_the_defaults_it_follows(of
         "ensemble": True,
         "max_agents": 3,
         "ai_budget_usd": 50.0,
+        "reading_today": {"pages": 1240, "cost_usd": 0.42},  # Changed on purpose (#478): the operator's
     }
     put = offline.client.put(path, json={**ORG_BODY, "code": offline.code()}, headers=offline.headers)
     assert put.status_code == 200, put.text
@@ -448,6 +539,10 @@ def test_an_organisations_ai_settings_round_trip_with_the_defaults_it_follows(of
             chat_levels=None,
             chat_default_level=None,
             dynamic=None,
+            scan_resolution="low",
+            careful_thinking=None,
+            careful_resolution="high",
+            page_max_output_tokens=32768,
         ),
     )
     assert kwargs == {
@@ -468,7 +563,9 @@ def test_saving_an_organisations_ai_settings_needs_a_fresh_code(offline: _Offlin
         path, json={**ORG_BODY, "code": offline.wrong_code()}, headers=offline.headers
     )
     assert (refused.status_code, refused.json()["error"]["code"]) == (403, "step_up_failed")
-    assert offline.names() == ["step_up_failed"]
+    # Changed on purpose (#488): a save that follows the platform's reader reads the defaults first
+    # (Ultra low cost may be theirs), before the code is checked; nothing is written.
+    assert offline.names() == ["ai_defaults", "step_up_failed"]
 
 
 def test_ensemble_saved_off_with_one_scanning_model_is_said_not_refused(offline: _Offline) -> None:
@@ -525,6 +622,13 @@ def test_each_org_ai_outcome_gets_its_reply(
         {"chat_default": "nope"},
         {"scan_models": [MODEL] * 65},
         {"scan_thinking": "max"},
+        {"scan_resolution": "medium"},  # #463: low or high only
+        {"careful_thinking": "max"},
+        {"careful_resolution": "ultra_high"},
+        {"page_max_output_tokens": "4096"},  # #463: a whole number, strictly
+        {"page_max_output_tokens": 4096.5},
+        {"chat_levels": ["minimal"]},  # #463: minimal is for scanning only
+        {"chat_default_level": "minimal"},
         {"chat_levels": []},
         {"chat_levels": ["low", "medium", "high", "low"]},
         {"chat_levels": ["quick"]},
@@ -561,6 +665,14 @@ def test_the_platform_defaults_say_how_many_organisations_follow_each_area(offli
             "chat_models": [MODEL],
             "chat_default": MODEL,
             "scan_thinking": None,
+            "scan_resolution": None,
+            "careful_thinking": "minimal",
+            "careful_resolution": None,
+            "page_max_output_tokens": None,
+            "scan_reader": None,  # Changed on purpose (#473)
+            "mistral_model": None,
+            "daily_page_limit": None,  # Changed on purpose (#478)
+            "ulc_ceiling_paise": None,  # Changed on purpose (#488)
             "chat_levels": ["low", "medium"],
             "chat_default_level": "low",
             "dynamic": False,
@@ -572,6 +684,14 @@ def test_the_platform_defaults_say_how_many_organisations_follow_each_area(offli
             "scan_thinking": 6,
             "chat_levels": 7,
             "dynamic": 5,
+            "scan_resolution": 3,
+            "careful_thinking": 2,
+            "careful_resolution": 1,
+            "page_max_output_tokens": 9,
+            "scan_reader": 8,  # Changed on purpose (#473)
+            "mistral_model": 8,
+            "daily_page_limit": 3,  # Changed on purpose (#478)
+            "ulc_ceiling_paise": 3,  # Changed on purpose (#488)
         },
     }
     offline.defaults = None  # the operator was disabled meanwhile
@@ -603,6 +723,9 @@ def test_saving_the_platform_defaults_needs_a_fresh_code_and_sends_the_choice(of
             chat_levels=["high", "low"],
             chat_default_level="low",
             dynamic=False,
+            scan_resolution=None,
+            careful_thinking="minimal",
+            careful_resolution="low",
         ),
     )
     assert kwargs == {"scan_prompt": READER_PROMPT_VERSION, "chat_prompt": ANSWER_PROMPT_HASH, "step": STEP}

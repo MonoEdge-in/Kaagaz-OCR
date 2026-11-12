@@ -29,7 +29,7 @@ from kaagaz.eta import HISTORY_RUNS, RunTiming
 from kaagaz.extraction.learned import LearnedCorrection
 from kaagaz.extraction.values import ExtractedValue
 from kaagaz.ingestion.errors import BackendUnavailable
-from kaagaz.ingestion.ports import BlobNotFound, DocumentRecord, Job, UnknownFolder
+from kaagaz.ingestion.ports import BlobNotFound, DocumentRecord, Job, StorageRoom, UnknownFolder
 from kaagaz.jobs.worker import JobFailed, Superseded
 from kaagaz.pipeline import (
     DocumentContent,
@@ -53,7 +53,8 @@ class MemoryRepository:
     One lock makes check-and-insert atomic, like a UNIQUE (customer_id, sha256)
     constraint would in the real database. A record filed in a folder that is
     not in ``folders`` (keyed by customer) raises UnknownFolder, like the
-    folder foreign key.
+    folder foreign key. ``storage_limit`` is every customer's storage limit in bytes (#516);
+    the bytes used are its records' sizes.
     """
 
     def __init__(self) -> None:
@@ -64,6 +65,7 @@ class MemoryRepository:
         self._lock = threading.Lock()
         self.fail_add = False
         self.fail_remove = False
+        self.storage_limit = 50 * 1024**3  # DEFAULT_STORAGE_GB
 
     def get(self, customer_id: str, document_id: str) -> DocumentRecord | None:
         with self._lock:
@@ -132,6 +134,10 @@ class MemoryRepository:
         with self._lock:
             return [r for (c, _), r in self._by_fingerprint.items() if c == customer_id]
 
+    def storage_room(self, customer_id: str) -> StorageRoom:
+        used = sum(record.size for record in self.records_for(customer_id))
+        return StorageRoom(limit_bytes=self.storage_limit, used_bytes=used)
+
 
 class MemoryStorage:
     """Files keyed by (customer_id, document_id). No key strings are built, so
@@ -140,6 +146,7 @@ class MemoryStorage:
     def __init__(self) -> None:
         self._blobs: dict[tuple[str, str], bytes] = {}
         self.quarantined: dict[tuple[str, str], bytes] = {}
+        self.renditions: dict[tuple[str, str], bytes] = {}  # a Word or PowerPoint file's PDF (#522)
         self._lock = threading.Lock()
         self.fail_put = False
         self.fail_delete = False
@@ -165,6 +172,19 @@ class MemoryStorage:
             raise BackendUnavailable("storage down")
         with self._lock:
             self._blobs.pop((customer_id, document_id), None)
+            self.renditions.pop((customer_id, document_id), None)
+            self.quarantined.pop((customer_id, document_id), None)  # as the adapter's delete
+
+    def put_rendition(self, customer_id: str, document_id: str, pdf: bytes) -> None:
+        with self._lock:
+            self.renditions[(customer_id, document_id)] = pdf
+
+    def get_rendition(self, customer_id: str, document_id: str) -> bytes:
+        with self._lock:
+            try:
+                return self.renditions[(customer_id, document_id)]
+            except KeyError:
+                raise BlobNotFound(document_id) from None
 
     def count(self) -> int:
         with self._lock:
@@ -211,7 +231,7 @@ class FakeScanner:
         self._error = error
         self.scanned: list[bytes] = []
 
-    def scan(self, data: bytes) -> Any:
+    def scan(self, data: bytes, *, name: str | None = None) -> Any:
         self.scanned.append(data)
         if self._error:
             raise ScannerError("scanner down")
@@ -265,6 +285,17 @@ class MemoryDocuments(MemoryRepository):
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None:
         if self.get(customer_id, document_id) is not None:
             self.page_counts[(customer_id, document_id)] = page_count
+
+    def set_detected_type(self, customer_id: str, document_id: str, detected_type: str) -> None:
+        """#522: the kind resolve.py told, on the record (and its fingerprint's)."""
+        with self._lock:
+            record = self._by_id.get((customer_id, document_id))
+            if record is None:
+                return
+            resolved = replace(record, detected_type=detected_type)
+            self._by_id[(customer_id, document_id)] = resolved
+            if self._by_fingerprint.get((customer_id, record.sha256)) == record:
+                self._by_fingerprint[(customer_id, record.sha256)] = resolved
 
     def mark_ready(
         self,

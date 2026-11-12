@@ -6,6 +6,7 @@ text or name. The OCR engine and the timer are fakes, so the seconds are exact.
 """
 
 import io
+import json
 import tempfile
 from pathlib import Path
 
@@ -16,6 +17,7 @@ import kaagaz.adapters.queue
 import kaagaz.adapters.storage
 import kaagaz.cli
 from kaagaz.cli import main
+from kaagaz.extraction.checks import gstin_check_char
 from kaagaz.reading import wiring
 from kaagaz.reading.ocr import OcrLine, PageRead
 from kaagaz.settings import Settings
@@ -309,3 +311,180 @@ def test_measure_builds_its_engine_through_the_wiring() -> None:
     """``kaagaz.reading.wiring.build_ocr_engine`` builds the Gemini reader too;
     ``kaagaz.reading.ocr.build_ocr_engine`` alone cannot."""
     assert vars(kaagaz.cli)["build_ocr_engine"] is wiring.build_ocr_engine
+
+
+# --- measure --truth: true accuracy (#465) -------------------------------------------------
+
+# "zila" with its nukta letter written two ways: precomposed (U+095B) and as ja + nukta (NFC's).
+ZILA_PRECOMPOSED = "ज़िला"
+ZILA_DECOMPOSED = "ज़िला"
+SELLER_GSTIN = "27AAPFU0939F1Z" + gstin_check_char("27AAPFU0939F1Z")
+TRUTH_INVOICE = "Invoice INV-17 dated 12/10/2026 from Sharma Traders Pune for cement bags delivered to site"
+
+
+class TextOcr:
+    """Reads a scanned page as the given lines, one under the other."""
+
+    name = "fake-ocr"
+    version = "1"
+
+    def __init__(self, lines: list[str]) -> None:
+        self.lines = lines
+
+    def read(self, image: Image.Image) -> list[OcrLine]:
+        return [
+            OcrLine(text, 10, 10 + 30 * n, 140, 30 + 30 * n, None, "paragraph")
+            for n, text in enumerate(self.lines)
+        ]
+
+
+def measure_truth(
+    monkeypatch: pytest.MonkeyPatch, read: list[str], truth: str, fields: str | None = None
+) -> str:
+    """``measure --truth`` on one scanned page read as ``read``, against ``truth`` and, when
+    given, ``fields`` as the page's 1.fields.json."""
+    monkeypatch.setattr(kaagaz.cli, "build_ocr_engine", lambda settings: TextOcr(read))
+    monkeypatch.setattr(kaagaz.cli, "make_engine", never)
+    with tempfile.TemporaryDirectory() as folder:
+        path, truth_folder = Path(folder) / "scan.pdf", Path(folder) / "truth"
+        path.write_bytes(make_pdf([SCANNED]))
+        truth_folder.mkdir()
+        (truth_folder / "1.txt").write_text(truth, encoding="utf-8")
+        if fields is not None:
+            (truth_folder / "1.fields.json").write_text(fields, encoding="utf-8")
+        out = io.StringIO()
+        args = ["measure", "--file", str(path), "--truth", str(truth_folder)]
+        assert main(args, environ=shipped(), out=out, timer=Clock()) == 0
+    return out.getvalue()
+
+
+def truth_totals(output: str) -> dict[str, str]:
+    """The "truth name value ..." totals line as a mapping."""
+    (line,) = [line for line in output.splitlines() if line.startswith("truth ")]
+    words = line.split()[1:]
+    return dict(zip(words[::2], words[1::2], strict=True))
+
+
+def test_truth_compares_nfc_text_so_a_nukta_written_two_ways_is_no_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    read, truth = [f"{ZILA_DECOMPOSED} 12"], f"{ZILA_PRECOMPOSED} 12"
+    page = page_lines(measure_truth(monkeypatch, read, truth))[1]
+    assert (page["cer"], page["wer"]) == ("0.000", "0.000")
+
+
+def test_a_total_off_by_one_digit_is_one_value_error_though_the_wer_is_tiny(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    truth = f"{TRUTH_INVOICE} Total Rs. 11,800.00 only"
+    page = page_lines(measure_truth(monkeypatch, [TRUTH_INVOICE, "Total Rs. 11,300.00 only"], truth))[1]
+    assert float(page["wer"]) < 0.06
+    assert (page["values"], page["value_errors"], page["ver"]) == ("3", "1", "0.333")
+
+
+def test_lines_read_in_another_order_are_no_value_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    truth = f"{TRUTH_INVOICE}\nTotal Rs. 11,800.00 only"
+    page = page_lines(measure_truth(monkeypatch, ["Total Rs. 11,800.00 only", TRUTH_INVOICE], truth))[1]
+    assert float(page["wer"]) > 0
+    assert (page["values"], page["value_errors"], page["ver"]) == ("3", "0", "0.000")
+
+
+def test_a_fields_file_scores_each_field_by_exact_match(monkeypatch: pytest.MonkeyPatch) -> None:
+    fields = {
+        "gstin": SELLER_GSTIN,
+        "invoice_number": "INV-17",
+        "date": "12/10/2026",
+        "amounts": ["11,800.00", "1,800.00"],
+        "names": ["Sharma Traders", "Mehta Textiles"],
+    }
+    read = [TRUTH_INVOICE, f"GSTIN: {SELLER_GSTIN.lower()}", "Tax 1,800.00 Total 11,300.00"]
+    page = page_lines(measure_truth(monkeypatch, read, TRUTH_INVOICE, json.dumps(fields)))[1]
+    assert {name: value for name, value in page.items() if name.startswith("field")} == {
+        "field_gstin": "1/1",  # the GSTIN rule: case and spaces do not count
+        "field_invoice_number": "1/1",
+        "field_date": "1/1",
+        "field_amounts": "1/2",
+        "field_names": "1/2",
+    }
+
+
+def test_no_fields_file_means_no_field_scores(monkeypatch: pytest.MonkeyPatch) -> None:
+    output = measure_truth(monkeypatch, [TRUTH_INVOICE], TRUTH_INVOICE)
+    assert not [name for name in page_lines(output)[1] if name.startswith("field")]
+    assert not [name for name in truth_totals(output) if name.startswith("field")]
+
+
+def test_a_truth_gstin_that_fails_its_check_character_is_not_scored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The GSTIN checksum (extraction/checks.py) catches a typo in the hand-typed truth."""
+    wrong = SELLER_GSTIN[:14] + ("B" if SELLER_GSTIN[14] == "A" else "A")
+    output = measure_truth(monkeypatch, [f"GSTIN {wrong}"], f"GSTIN {wrong}", json.dumps({"gstin": wrong}))
+    assert page_lines(output)[1]["field_gstin"] == "truth_bad"
+    assert "field_gstin" not in truth_totals(output)
+
+
+def test_a_fields_file_naming_an_unknown_field_is_bad(monkeypatch: pytest.MonkeyPatch) -> None:
+    output = measure_truth(monkeypatch, [TRUTH_INVOICE], TRUTH_INVOICE, json.dumps({"gstn": SELLER_GSTIN}))
+    page = page_lines(output)[1]
+    assert page["fields"] == "bad"
+    assert not [name for name in page if name.startswith("field_")]
+
+
+def test_the_truth_totals_line_adds_up_the_pages_with_a_truth(monkeypatch: pytest.MonkeyPatch) -> None:
+    truth = f"{TRUTH_INVOICE} Total Rs. 11,800.00 only"
+    fields = json.dumps({"amounts": ["11,800.00"], "invoice_number": "INV-17"})
+    output = measure_truth(monkeypatch, [TRUTH_INVOICE, "Total Rs. 11,300.00 only"], truth, fields)
+    words = len(truth.split())
+    assert truth_totals(output) == {
+        "pages": "1",
+        "scored": "1",
+        "chars": str(len(truth)),
+        "char_edits": "1",
+        "cer": f"{1 / len(truth):.3f}",
+        "words": str(words),
+        "word_edits": "1",
+        "wer": f"{1 / words:.3f}",
+        "values": "3",
+        "value_errors": "1",
+        "ver": "0.333",
+        "field_amounts": "0/1",
+        "field_invoice_number": "1/1",
+        "input_tokens": "0",
+        "output_tokens": "0",
+        "input_tokens_per_page": "0",
+        "output_tokens_per_page": "0",
+    }
+    for secret in ("INV-17", "Sharma", "11,800", "scan.pdf"):
+        assert secret not in output
+
+
+def test_the_truth_totals_carry_the_tokens_per_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The tokens the reader's line prints, per page of the file, for the price sum in
+    docs/architecture.md (the prices are model_catalog's; measure reads no database). A
+    Gemini page is compared by its lines, without the word marks that repeat its unsure words."""
+    timer = Clock()
+    monkeypatch.setattr(kaagaz.cli, "build_ocr_engine", lambda settings: GeminiLikeOcr(timer))
+    monkeypatch.setattr(kaagaz.cli, "make_engine", never)
+    with tempfile.TemporaryDirectory() as folder:
+        path, truth = Path(folder) / "a.pdf", Path(folder) / "truth"
+        path.write_bytes(make_pdf([Page(texts=[Text(72, 700, LONG_LINE)]), SCANNED, SCANNED]))
+        truth.mkdir()
+        (truth / "2.txt").write_text("Sharma Traders [?] Pune TOTAL 1180", encoding="utf-8")
+        out = io.StringIO()
+        assert (
+            main(
+                ["measure", "--file", str(path), "--truth", str(truth)],
+                environ=shipped(),
+                out=out,
+                timer=timer,
+            )
+            == 0
+        )
+    assert page_lines(out.getvalue())[2]["wer"] == "0.000"  # the word marks do not repeat their words
+    totals = truth_totals(out.getvalue())
+    assert (totals["pages"], totals["scored"], totals["input_tokens"], totals["output_tokens"]) == (
+        "3",
+        "1",
+        "3400",
+        "8000",
+    )
+    assert (totals["input_tokens_per_page"], totals["output_tokens_per_page"]) == ("1133", "2667")

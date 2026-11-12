@@ -117,6 +117,19 @@ class ReadingMarksTest(unittest.TestCase):
         (value,) = label_reading_marks([self.agreed()], marks, ())
         self.assertEqual(reason(value), ("needs_review", "unsure_text", "1,180.00"))
 
+    def test_v4_and_g5_reach_a_value_placed_on_one_line_of_its_block(self) -> None:
+        """#523: a value in a block of several written lines is placed on its own line's band,
+        inside the block's box; the block's marks are still its line's."""
+        block = BoxLocation(1, 0.1, 0.2, 0.9, 0.7)
+        band = BoxLocation(1, 0.1, 0.5, 0.9, 0.55)
+        unsure, unpinned = LineMarks(unsure=("1,180.00",)), LineMarks(unpinned=True)
+        (value,) = label_reading_marks([self.agreed(box=band)], {BOX: LineMarks(), block: unsure}, ())
+        self.assertEqual(value.label_reason, "unsure_text")
+        (value,) = label_reading_marks([self.agreed(box=band)], {block: unpinned}, ())
+        self.assertEqual(value.label_reason, "box_unanchored")
+        (value,) = label_reading_marks([self.agreed(box=PAGE_2)], {block: unsure}, ())
+        self.assertEqual(value.label_reason, "readers_agree")  # another page's block holds nothing
+
     def test_v4_an_illegible_mark_in_the_value_is_unsure_text(self) -> None:
         (value,) = label_reading_marks([self.agreed("1,1[?]0.00")], {}, ())
         self.assertEqual(value.label_reason, "unsure_text")

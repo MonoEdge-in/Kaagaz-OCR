@@ -9,7 +9,11 @@ The steps, in order, for one (customer, document):
    ``customer_disabled``, and the job is not retried.
 2. Scan the file (ScanGate). Nothing below runs unless it is clean, and the
    bytes used below are exactly the bytes that were scanned.
-3. Check the scanned bytes still match the fingerprint taken at upload.
+3. Check the scanned bytes still match the fingerprint taken at upload. Tell the file's
+   kind from them (#522, ``resolve.py``) and check it against its kind's own size limit. A
+   Word or PowerPoint file is converted by LibreOffice (``kaagaz/reading/office.py``) to a
+   PDF, stored beside the original as the viewer's rendition, and an old Excel file to an
+   XLSX; the steps below read those bytes, while the document keeps its own kind.
 4. Prepare the pages: sizes, and a picture of each page (PDFs, photos),
    streamed (council A5b): each page is drawn, made WebP, stored, the
    heartbeat beats, and its picture is dropped before the next page is drawn,
@@ -46,7 +50,8 @@ The steps, in order, for one (customer, document):
    ``label_quoted`` (ML 2), each counting the other's boxes (council fix 2); a
    card value is never verified, and no box is cropped for a card value or an
    unsure quote. This customer's remembered
-   corrections are applied, then the invoice stage (PRD 2 E5, K1 to K3,
+   corrections are applied, the amounts the rules doubt go to review (#524,
+   ``label_amounts``, after both scan readers' values alike), then the invoice stage (PRD 2 E5, K1 to K3,
    ``extraction.invoice.finish_invoice``): the invoice row and its checks, from
    the E4 values or, with no type or an invoice type, from labelled.py's values
    (the check's failures put their values in review). Last, the link
@@ -156,7 +161,15 @@ The Gemini reader (PRD 5), when the processor is given its parts:
 * ``BackendUnavailable("gemini")`` (an outage) and ``BackendUnavailable("gemini_key")``
   (a wrong key or a spent cap, logged at error) come out of the reading as any
   backend that is down: the document waits for the next try, nothing falls back
-  here (the reader does that itself after READER_OUTAGE_FALLBACK_MINUTES, Q7).
+  here (the reader does that itself after READER_OUTAGE_FALLBACK_MINUTES, Q7). #473: a
+  document on Mistral OCR (``Reading.scan_reader``, passed on in ``DocumentPages`` with its
+  model) waits the same way on ``("mistral")``, ``("mistral_key")`` and ``("mistral_setup")``
+  (the last two logged at error), asked first (``mistral_ready``, review 2 Nov 2026) so a
+  document waits before its pages are drawn; its run's model is "mistral/<id>"
+  (``run.model``), and it never gets Dynamic's Careful or memo (Careful is Gemini).
+* #488: a document read under Ultra low cost (``Reading.ulc``, its ceiling) has it passed on in
+  ``DocumentPages.ulc``, with its lead's catalogue prices taken once at the job's start
+  (``JobReading.ulc_prices``), so the reader holds each page under the ceiling at one price.
 * With OCR_ENGINE=rapidocr and no model there is no checker, no page counted as
   the model's and no model call: everything is as before.
 
@@ -173,6 +186,15 @@ Model choice and AI spend (council 11 Oct 2026), when the processor is given the
   windows, the map and the embeddings each run in their own nested scope of that kind.
   The page threads keep the scope (``reading.socket`` copies the context).
 * Keyless (OCR_ENGINE=rapidocr, MODEL_ENABLED=false): neither, no query and no ledger.
+* ``reading_pause`` (#478, Tushar, 3 Nov 2026; ``kaagaz.jobs.reading_pause``): asked once the job
+  knows its reading, before any page is drawn. A paused organisation's document raises
+  ``ReadingPaused`` (never a reader outage: nothing is read locally): the run ends with its code
+  (``paused_daily_limit`` or ``paused_budget``), the list shows it waiting, and the job is acked:
+  the document is held in the database until the release sweep queues it again. A document let
+  in is read to its end. A spreadsheet is asked with no AI pages (the budget only, QA P4); the
+  upgrade sweep's read again (no one asked) is never asked: its document was ready, and a hold
+  would take it out of search (QA P1, 4 Nov 2026). Its pages are counted. (Ensemble after the scan is
+  paused too, #520: kaagaz/jobs/ensemble.py.)
 
 Dynamic and Ensemble reading (features 26 and 27, council 15 Oct 2026): ``job_reading``
 gives the document's whole ``Reading`` (``kaagaz.db.models.resolve_scan``, checked again
@@ -214,7 +236,7 @@ from kaagaz.chunking.context import with_context
 from kaagaz.chunking.layout import Layout, page_layout
 from kaagaz.chunking.lines import pieces_from_lines
 from kaagaz.chunking.piece import Piece
-from kaagaz.chunking.rows import pieces_from_rows
+from kaagaz.chunking.rows import pieces_from_rows, pieces_from_text_lines
 from kaagaz.chunking.script import languages_without_model
 from kaagaz.chunking.sections import (
     MAP_PROMPT_HASH,
@@ -242,6 +264,8 @@ from kaagaz.extraction.invoice import finish_invoice, local_today
 from kaagaz.extraction.labelled import tax_components, values_from_lines
 from kaagaz.extraction.labels import (
     LineMarks,
+    at_line,
+    label_amounts,
     label_quoted,
     label_reading_marks,
     label_values,
@@ -260,12 +284,25 @@ from kaagaz.extraction.understanding import (
     understand,
 )
 from kaagaz.extraction.values import CARD_RECORD, DocumentFacts, ExtractedValue, InvoiceRow, LinkIdentifier
-from kaagaz.ingestion import sniff
+from kaagaz.ingestion import resolve, sniff
 from kaagaz.ingestion.errors import BackendUnavailable
-from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, Job
+from kaagaz.ingestion.policy import ZIP_MAX_BYTES
+from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, Job, JobQueue
+from kaagaz.ingestion.resolve import UNSUPPORTED, resolve_kind
+from kaagaz.ingestion.spool import HEAD_SIZE
 from kaagaz.jobs.ports import LeaseLost
-from kaagaz.jobs.worker import Heartbeat, JobFailed, Superseded
+from kaagaz.jobs.reading_pause import CODES as PAUSE_CODES
+from kaagaz.jobs.reading_pause import ReadingPaused
+from kaagaz.jobs.worker import KEY_PROBLEMS, Heartbeat, JobFailed, Superseded
 from kaagaz.preparing.page_checks import PageCheck
+from kaagaz.reading.mistral_ocr import (
+    DEFAULT_MISTRAL_MODEL,
+    MISTRAL,
+    MISTRAL_KEY,
+    MISTRAL_SETUP,
+    OPENROUTER,
+    read_by,
+)
 from kaagaz.reading.ocr import (
     DYNAMIC_MAX_PAGES,
     HARD_LINES_MAX,
@@ -282,6 +319,8 @@ from kaagaz.reading.ocr import (
     is_word_mark,
     worst_first,
 )
+from kaagaz.reading.office import KINDS as OFFICE_KINDS
+from kaagaz.reading.office import RENDITION, read_as
 from kaagaz.reading.page_quality import (
     ISSUES,
     LOW_RESOLUTION,
@@ -290,7 +329,7 @@ from kaagaz.reading.page_quality import (
     READERS_DISAGREE,
     grade,
 )
-from kaagaz.reading.route import RouteDecision
+from kaagaz.reading.route import PDFIUM_TEXT, RouteDecision
 from kaagaz.reading.socket import NoReader, OnPage, pages_at_once, pages_in_flight, waiting
 from kaagaz.reading.spans import (
     DIRECT_ORIGINS,
@@ -316,6 +355,7 @@ if TYPE_CHECKING:
     from kaagaz.ai.client import ModelClient
     from kaagaz.db.engine import Database
     from kaagaz.db.models import Reading
+    from kaagaz.jobs.reading_pause import Alert
     from kaagaz.settings import Settings
 
 _log = logging.getLogger(__name__)
@@ -329,7 +369,15 @@ _VERDICT_CODES = REJECTION_CODES - {"rejected"}
 # it, so they are read. Rejected is not here: the scan gate refuses it for good.
 _SETTLED = frozenset({DocumentStatus.READY, DocumentStatus.FAILED, DocumentStatus.NEEDS_READER})
 # The detected types whose every page is a picture read by OCR (the time left, fast scan).
-_PHOTO_TYPES = frozenset({sniff.PNG, sniff.JPEG, sniff.TIFF})
+_PHOTO_TYPES = frozenset({sniff.PNG, sniff.JPEG, sniff.TIFF, sniff.HEIC})
+# Read from their cells, never by AI (kaagaz/reading/wiring.py): the daily page limit never holds
+# them. The sniffed text and zip types too: a new upload's, before the worker tells its kind (#522).
+_SHEET_TYPES = frozenset({sniff.TEXT, sniff.ZIP, resolve.XLSX, resolve.XLS, *resolve.TEXT_KINDS})
+# A zip (.docx, .pptx, .xlsx or a folder) or an old Office file (.doc, .ppt, .xls): what it is read
+# as is told only after the scan, so the reading pause is asked then (#522, _read_and_save).
+_TOLD_AFTER_SCAN = frozenset({sniff.ZIP, sniff.OLE2})
+# The text kinds read as lines on pages (the text reader), not as a sheet's cells (#522).
+_TEXT_LINE_KINDS = resolve.TEXT_KINDS - {resolve.CSV}
 
 # Stored page pictures are for people to look at (PRD 1, S1), so they are WebP.
 # Method 2 (R2 finding 2): several times faster to encode than 4, for under 1 dB
@@ -346,12 +394,18 @@ MAX_CHECK_CROPS = 200
 # V1, question 9: the checker's crop is the value's box grown by this share of its own width
 # and height on each side.
 CHECK_MARGIN = 0.04
-# G6: BackendUnavailable's name for a wrong key or a spent cap (a person's fix, logged at error).
-_KEY_PROBLEM = "gemini_key"
-# PRD 5 Q6: the run codes of a reader that is down (Gemini, or the OCR server) or has a key
-# problem: the document shows "Reading is paused for now" until its job returns, or, for a key
-# problem, that reading is stopped until it is fixed (kaagaz/api/views.py, issue 407).
-_READER_WAITS = frozenset({"gemini_unavailable", "gemini_key_unavailable", "ocr_unavailable"})
+# PRD 5 Q6: the run codes of a reader that is down (Gemini, Mistral (#473), or the OCR server) or
+# has a key problem: the document shows "Reading is paused for now" until its job returns, or,
+# for a key problem, that reading is stopped until it is fixed (kaagaz/api/views.py, issue 407).
+_READER_WAITS = frozenset(
+    {
+        "gemini_unavailable",
+        "gemini_key_unavailable",
+        "ocr_unavailable",
+        *(f"{name}_unavailable" for name in (MISTRAL, MISTRAL_KEY, MISTRAL_SETUP)),
+        *PAUSE_CODES.values(),  # #478: held by the reading pause, read once it ends
+    }
+)
 # V1: a line with any Devanagari character is read by the Devanagari recogniser.
 _DEVANAGARI = re.compile("[ऀ-ॿ]")
 # "ocr", "storage", "gemini_key", ...: a run's <backend>_unavailable (PRD 5 G6: a wrong key or a
@@ -386,6 +440,13 @@ class PageRecord:
     unsure_words: int = 0
     illegible_words: int = 0
     unpinned_lines: int = 0
+    # #463: the thinking level and picture detail of the page's first model read (#463 review:
+    # whichever pass produced its text), that pass (first or again) and the first read's output
+    # tokens.
+    read_thinking: str | None = None
+    read_resolution: str | None = None
+    read_pass: str | None = None
+    read_output_tokens: int | None = None
     # G3, CX1: its last line's sentence goes on at the top of the next page. Kept for the
     # pieces (the page cache keeps it with the page's read); not a pages column.
     continues_on_next_page: bool = False
@@ -508,6 +569,11 @@ class DocumentStore(Protocol):
         ...
 
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None: ...
+
+    def set_detected_type(self, customer_id: str, document_id: str, detected_type: str) -> None:
+        """#522: the kind ``resolve.resolve_kind`` told after the virus scan, in place of the
+        type sniffed at upload."""
+        ...
 
     def mark_ready(
         self,
@@ -634,6 +700,12 @@ class PageImageStore(Protocol):
     def put_page_image(self, customer_id: str, document_id: str, page_no: int, image: bytes) -> None: ...
 
 
+class RenditionStore(Protocol):
+    def put_rendition(self, customer_id: str, document_id: str, pdf: bytes) -> None:
+        """#522 PR 2: a Word or PowerPoint file's PDF, beside its original, for the viewer."""
+        ...
+
+
 class PipelineStore(Protocol):
     """kaagaz.db.pipeline_store.PgPipelineStore in production."""
 
@@ -697,6 +769,16 @@ class JobReading:
     ulc_prices: UlcPrices | None = None
 
 
+class ReadingAdmission(Protocol):
+    """``kaagaz.jobs.reading_pause.ReadingPause.admit`` (#478): the document may be read inside,
+    or its organisation is paused and it raises ReadingPaused (the document held). ``ai_pages``
+    False: a spreadsheet, never held by the daily page limit."""
+
+    def __call__(
+        self, customer_id: str, document_id: str, *, ai_pages: bool = True
+    ) -> contextlib.AbstractContextManager[object]: ...
+
+
 class UsageScopes(Protocol):
     """``kaagaz.ai.usage.usage_scope`` on the database (SP1): the model calls made inside
     are billed to this customer, user, kind and document, saved when it ends."""
@@ -706,7 +788,7 @@ class UsageScopes(Protocol):
     ) -> contextlib.AbstractContextManager[object]: ...
 
 
-class ProcessorStorage(BlobStorage, Quarantine, PageImageStore, Protocol):
+class ProcessorStorage(BlobStorage, Quarantine, PageImageStore, RenditionStore, Protocol):
     """What build_processor needs from file storage (kaagaz.adapters.storage.S3Storage)."""
 
 
@@ -839,6 +921,12 @@ class DocumentProcessor:
         cost_saving: tuple[int, float] = (HARD_LINES_MAX, HARD_SHARE),
         index_seconds: float | None = None,
         land_on: Callable[[str], bool] | None = None,
+        mistral_ready: Callable[[], None] | None = None,
+        reading_pause: ReadingAdmission | None = None,
+        office: Callable[[str, bytes], bytes] | None = None,
+        renditions: RenditionStore | None = None,
+        unpack: Callable[[Job, DocumentRecord, bytes, Heartbeat], bool] | None = None,
+        kind_limit: Callable[[str, str], int] | None = None,
     ) -> None:
         """``embed(customer_id, document_id, on_batch=...)`` gives the saved pieces their vectors;
         failing with one of ``model_errors`` is logged and skipped, never a failed document.
@@ -878,13 +966,33 @@ class DocumentProcessor:
         ``index_seconds`` (MODEL_TIMEOUT_SECONDS): how long the job's own indexing may go on
         before it hands the vectors left to the worker's EmbedMissing (never stuck, 17 Oct
         2026); None, until done. ``land_on(customer_id)``: the ``land_facts`` switch (PRD 6,
-        0052), asked once a job that has a chat model; None (tests with fakes) asks nothing."""
+        0052), asked once a job that has a chat model; None (tests with fakes) asks nothing.
+        ``mistral_ready()`` (#473, ``GeminiEngine.mistral_ready``) is asked at the start of a job
+        whose ``Reading`` is on Mistral, and raises BackendUnavailable while Mistral can't read
+        here, before anything is drawn; None asks nothing. ``reading_pause(customer_id,
+        document_id)`` (#478) holds the reading, or raises ReadingPaused; None pauses nothing.
+
+        All formats (#522 PR 2): ``office(kind, data)`` (``office.OfficeConverter.convert``) converts
+        a Word or PowerPoint file to the PDF it is read as, stored by ``renditions`` beside the
+        original for the viewer, and an old Excel file to the XLSX it is read as; None (no
+        LibreOffice) leaves them to no reader, so they need a reader.
+
+        All formats (#522 PR 3), both optional: ``unpack(job, record, data, heartbeat)``
+        (``kaagaz.jobs.unpack.ZipUnpacker``) unpacks a document of kind zip into a folder after
+        its scan, and says whether it did (False: a zip kept as an ordinary file, not read, which
+        is marked needs_reader as before); None unpacks nothing. ``kind_limit(customer_id,
+        kind)``: the organisation's limit for a kind, which a file let in under its container's
+        limit at upload (an Office file sniffed as a zip, or an old one as ole2 at the PDF
+        limit) must be within once its kind is told, so a spreadsheet over its own fails with
+        ``too_large``; None checks nothing."""
         if runs is not None and (clock is None or timer is None):
             raise ValueError("runs need a clock and a timer")
         if max_check_crops < 0:
             raise ValueError("max_check_crops must be 0 or more")
         if chat is not None and model_budget is None:
             raise ValueError("a chat model needs its model_budget")
+        if office is not None and renditions is None:
+            raise ValueError("an office converter needs a place for its renditions")
         self._gate = gate
         self._statuses = statuses
         self._land_on = land_on
@@ -921,6 +1029,12 @@ class DocumentProcessor:
         self._ocr_page_concurrency = ocr_page_concurrency
         self._cost_saving = cost_saving
         self._index_seconds = index_seconds
+        self._mistral_ready = mistral_ready
+        self._reading_pause = reading_pause
+        self._office = office
+        self._renditions = renditions
+        self._unpack = unpack
+        self._kind_limit = kind_limit
 
     def __call__(self, job: Job, heartbeat: Heartbeat) -> None:
         record = self._documents.get(job.customer_id, job.document_id)
@@ -933,6 +1047,14 @@ class DocumentProcessor:
                 extra={"customer_id": job.customer_id, "document_id": job.document_id, "code": "settled"},
             )
             return  # acked: no run, nothing read again
+        if record.in_trash:
+            # A8: acked, nothing read and its status left alone. Restored, it is in progress and
+            # untouched, so the stuck sweep (kaagaz.jobs.revive) queues it again.
+            _log.info(
+                "document in trash skipped",
+                extra={"customer_id": job.customer_id, "document_id": job.document_id, "code": "in_trash"},
+            )
+            return
         run = self._start_run(job)
         settled = False  # the run was finished, or is being, on a known path
         try:
@@ -960,7 +1082,7 @@ class DocumentProcessor:
         except BackendUnavailable as error:
             settled = True
             code = _unavailable_code(error)
-            if str(error) == _KEY_PROBLEM:
+            if str(error) in KEY_PROBLEMS:
                 # G6, Q7: not an outage. Documents wait and nothing falls back: the fix is a person's.
                 _log.error(
                     "reader key rejected, documents wait",
@@ -969,6 +1091,11 @@ class DocumentProcessor:
             self._clear_progress(job, run, code)  # while the run is still open
             self._close_run(job, run, "failed", code)
             raise
+        except ReadingPaused as paused:
+            settled = True
+            # #478: held in the database (never the queue); the release sweep queues it again.
+            self._clear_progress(job, run, paused.code)
+            self._close_run(job, run, "failed", paused.code)
         finally:
             if not settled:
                 # Anything else is a crash: it is not caught here and goes on up to the
@@ -990,20 +1117,93 @@ class DocumentProcessor:
             if reading.model is not None:
                 run.model, run.provider = reading.model, reading.provider
             run.reading, run.ulc_prices = reading.reading, reading.ulc_prices
+        if run.reading is not None and run.reading.scan_reader == MISTRAL:  # #473: Mistral reads it
+            if self._mistral_ready is not None:
+                self._mistral_ready()  # review, 2 Nov 2026: wait now, before any page is drawn
+            run.model = read_by(run.reading.mistral_model)
         extra = () if run.reading is None else (run.reading.careful, *run.reading.others)
         run.models = frozenset(
             model for model in (run.model, *(agent.model for agent in extra if agent is not None)) if model
         )
-        with self._billed(job, run, "scan" if run.user_id is not None else "upgrade"), pages_at_once(at_once):
-            self._read_and_save(job, record, heartbeat, run)
+        upgrade = self._job_reading is not None and run.user_id is None  # the upgrade sweep's
+        # QA P1: an upgrade never holds a ready document.
+        pause = None if upgrade else self._reading_pause
+        # #522: a zip or an old Office file is asked once its kind is told (_read_and_save).
+        told_later = record.detected_type in _TOLD_AFTER_SCAN
+        admitted = (
+            contextlib.nullcontext()
+            if pause is None or told_later
+            else pause(  # #478: or ReadingPaused
+                job.customer_id, job.document_id, ai_pages=record.detected_type not in _SHEET_TYPES
+            )
+        )
+        with (
+            admitted,
+            self._billed(job, run, "scan" if run.user_id is not None else "upgrade"),
+            pages_at_once(at_once),
+        ):
+            self._read_and_save(job, record, heartbeat, run, pause=pause if told_later else None)
 
-    def _read_and_save(self, job: Job, record: DocumentRecord, heartbeat: Heartbeat, run: _Run) -> None:
+    def _read_and_save(
+        self,
+        job: Job,
+        record: DocumentRecord,
+        heartbeat: Heartbeat,
+        run: _Run,
+        *,
+        pause: ReadingAdmission | None = None,
+    ) -> None:
+        """Scan, tell the kind, convert, then ``_read_told``. ``pause`` (#522): the reading pause
+        for a file whose kind is told only after the scan (a zip, an old Office file), asked
+        here once it is told and converted, by what it is read as, as for any other file: a
+        Word or PowerPoint file's PDF has pages for AI, a spreadsheet none (QA P4), so an
+        organisation at its daily page limit holds a Word file as it holds a PDF. Nothing of
+        it is drawn or read before."""
         customer_id, document_id = job.customer_id, job.document_id
+        if record.detected_type == sniff.ZIP and record.size > ZIP_MAX_BYTES:
+            # #522 PR 3: refused before the scan gate loads it into memory (policy.ZIP_MAX_BYTES).
+            raise JobFailed("zip_over_limit", retryable=False)
         self._progress(job, run, "scanning", 0, 1)
-        data = self._scan(job, run)
+        data = self._scan(job, run, record.display_name)
         if hashlib.sha256(data).hexdigest() != record.sha256:
             raise JobFailed("content_changed", retryable=False)
+        record = self._resolved(record, data)
         heartbeat()
+        converted, data = self._converted(record, data)
+        # #522: a Word or PowerPoint file's PDF is read by the rendition's readers.
+        reading = RENDITION if converted.detected_type == sniff.PDF != record.detected_type else None
+        record = converted
+        heartbeat()
+        if pause is None:
+            self._read_told(job, record, data, heartbeat, run, reading=reading)
+            return
+        with pause(customer_id, document_id, ai_pages=record.detected_type not in _SHEET_TYPES):
+            self._read_told(job, record, data, heartbeat, run, reading=reading)
+
+    def _read_told(
+        self,
+        job: Job,
+        record: DocumentRecord,
+        data: bytes,
+        heartbeat: Heartbeat,
+        run: _Run,
+        *,
+        reading: str | None = None,
+    ) -> None:
+        """The scanned file of a told kind (``record``), read as ``data``: unpacked if a zip,
+        else its pages drawn and read, and everything saved. ``reading``: the reader socket's
+        key when it is not the record's type (``office.RENDITION``, #522)."""
+        reads_as = record.detected_type if reading is None else reading
+        customer_id, document_id = job.customer_id, job.document_id
+        if (
+            record.detected_type == resolve.ZIP
+            and self._unpack is not None
+            and self._unpack(job, record, data, heartbeat)
+        ):
+            # #522 PR 3: unpacked into a folder, the zip kept there as a file and never read.
+            require_clean(self._statuses, job)
+            self._documents.mark_ready(customer_id, document_id, 0, run=self._finished(run, "ready", None))
+            return
 
         run.rates, run.preparing_started = self._rates(job, record.detected_type), self._timer()
         pictured: set[int] = set()  # the pages whose picture is stored
@@ -1042,7 +1242,7 @@ class DocumentProcessor:
             # Closed before anything else, whatever happened; the heartbeat beats while a page
             # is being read (fast scan: a page may make several slow calls in a row).
             with self._reading_document(job, run, page_count=len(pages)), waiting(heartbeat):
-                spans = _or_fail(lambda: self._socket.read(record.detected_type, data, on_page=on_page))
+                spans = _or_fail(lambda: self._socket.read(reads_as, data, on_page=on_page))
         except NoReader:
             require_clean(self._statuses, job)
             pages = _with_routes(pages, reads, prepared.checks)  # a blank page is blank still
@@ -1056,7 +1256,7 @@ class DocumentProcessor:
             return
         if self._ocr_meter is not None:
             run.page_reads = self._ocr_meter.take_page_reads()
-            spans = self._read_carefully(job, record, data, heartbeat, run, spans)
+            spans = self._read_carefully(job, reads_as, data, heartbeat, run, spans)
         run.reading_ended = self._timer()
 
         if not pages:
@@ -1067,22 +1267,24 @@ class DocumentProcessor:
         unreadable = self._count_unreadable(run, _with_results(pages, run.page_reads, Counter()))
 
         self._progress(job, run, "understanding", 0, 2)  # read: the time left is now until ready
-        second = self._read_second(job, record.detected_type, data)
+        second = self._read_second(job, reads_as, data)
         heartbeat()
 
         # The socket already refuses spans without a real location; this keeps the
         # rule here too, so no piece or value can be saved without one. A word mark (PRD 5
         # F3) is drawn on the page from the stored output, never a piece or a value.
         usable = [span for span in spans if _points_at(span.location) and not is_word_mark(span)]
-        pieces = pieces_from_rows(customer_id, document_id, usable)
+        # #522: a text file's lines make paragraphs; a sheet's cells make one piece per row.
+        prose = record.detected_type in _TEXT_LINE_KINDS
+        pieces = (pieces_from_text_lines if prose else pieces_from_rows)(customer_id, document_id, usable)
         # CX1: a page whose sentence goes on onto the next one, as its reader said.
         continued = {page_no for page_no, read in run.page_reads.items() if read.continues_on_next_page}
         pieces += pieces_from_lines(customer_id, document_id, usable, continues=continued)
-        reader, version = self._socket.reader_id(record.detected_type)
+        reader, version = self._socket.reader_id(reads_as)
         run.version_marks = version_marks(version)
         outputs = [ReaderOutput("first", reader, version, tuple(spans))]
         if second is not None:
-            second_reader, second_version = self._socket.reader_id(record.detected_type, second=True)
+            second_reader, second_version = self._socket.reader_id(reads_as, second=True)
             outputs.append(ReaderOutput("second", second_reader, second_version, tuple(second)))
         marks, line_texts = _line_marks(spans)
         read = _Read(
@@ -1090,7 +1292,7 @@ class DocumentProcessor:
             pages=pages,
             usable=usable,
             # The raw second reading is kept as read; only the labels leave pages out.
-            compared=None if second is None else _without_unread_pages(second, pages),
+            compared=None if second is None else _without_unread_pages(second, pages, reads),
             pieces=pieces,
             marks=marks,
             line_texts=line_texts,
@@ -1102,7 +1304,8 @@ class DocumentProcessor:
         # Council 16 Oct 2026: the card (type, date, summary, links) is asked only on readable
         # pages, never on a local reader's text of an unreadable one; with none, no card or map.
         readable = [span for span in usable if getattr(span.location, "page", None) not in unreadable]
-        rule = values_from_cells(usable) + values_from_lines(usable)
+        # A text file's lines are no table: its header rule would make values of prose (#522).
+        rule = ([] if prose else values_from_cells(usable)) + values_from_lines(usable)
 
         # Ready first (Tushar, 16 Oct 2026): saved and ready with the rule values, checked and
         # labelled as with the model off, before the card and the map are asked (Ready waits
@@ -1242,6 +1445,7 @@ class DocumentProcessor:
         if values:
             learned = self._store.load_learned(customer_id, {value.field for value in values})
             values = [_with_parsed(value) for value in apply_learned(values, learned)]
+            values = label_amounts(values)  # #524, before the invoice row reads the labels
         values, invoice = self._invoice(understanding, facts, read.usable, values)
         run.values_verified = sum(1 for value in values if value.label == "verified")
         run.values_needs_review = len(values) - run.values_verified
@@ -1366,9 +1570,42 @@ class DocumentProcessor:
             self._documents.set_page_count(job.customer_id, job.document_id, error.pages)
             raise
 
-    def _scan(self, job: Job, run: _Run) -> bytes:
+    def _resolved(self, record: DocumentRecord, data: bytes) -> DocumentRecord:
+        """The record with its kind (#522), told from the scanned bytes and its name now, and
+        stored when it is not the one stored (the type sniffed at upload, or a renamed text
+        file's). Every reader is chosen by it. A file of no kind Kaagaz reads fails for good."""
+        sniffed = sniff.detect_type(data[:HEAD_SIZE])
+        kind = _or_fail(lambda: resolve_kind(data, sniffed, record.display_name))
+        if kind == UNSUPPORTED:
+            raise JobFailed("unsupported_type", retryable=False)
+        # #522: it came in under its container's limit (PR 3: a zip's; PR 2: an old Office file
+        # at the PDF limit); an Office file has its own kind's.
+        container = record.detected_type in (sniff.ZIP, sniff.OLE2)
+        limit, office = self._kind_limit, container and kind != resolve.ZIP
+        if office and limit is not None and record.size > limit(record.customer_id, kind):
+            raise JobFailed("too_large", retryable=False)
+        if kind != record.detected_type:
+            self._documents.set_detected_type(record.customer_id, record.document_id, kind)
+        return replace(record, detected_type=kind)
+
+    def _converted(self, record: DocumentRecord, data: bytes) -> tuple[DocumentRecord, bytes]:
+        """#522 PR 2: a Word or PowerPoint file as the PDF LibreOffice makes of it, stored as its
+        rendition, and an old Excel file as an XLSX; the record says what it is read as (pdf or
+        xlsx) from here on, while the stored kind stays the file's own. Any other kind, or none
+        with no converter, as it is. A file LibreOffice can't open fails with ``office_unreadable``."""
+        kind = record.detected_type
+        if self._office is None or self._renditions is None or kind not in OFFICE_KINDS:
+            return record, data
+        convert = self._office
+        converted = _or_fail(lambda: convert(kind, data))
+        converted_type = read_as(kind)
+        if converted_type == sniff.PDF:
+            self._renditions.put_rendition(record.customer_id, record.document_id, converted)
+        return replace(record, detected_type=converted_type), converted
+
+    def _scan(self, job: Job, run: _Run, name: str) -> bytes:
         try:
-            return self._gate.check(job, run_id=run.run_id)
+            return self._gate.check(job, run_id=run.run_id, name=name)
         except JobFailed as failure:
             if failure.code in REJECTION_CODES:
                 # A file rejected on a later scan (new signatures) must not
@@ -1481,7 +1718,7 @@ class DocumentProcessor:
             ):
                 continue  # read directly, not scanned; no origin counts as scanned (fail closed)
             if box.page in pictured and box.page in checker_pages and box not in already:
-                text = line_texts.get(box, value.value_text)
+                text = at_line(box, line_texts) or value.value_text
                 wanted.setdefault(box.page, {})[box] = _DEVANAGARI.search(text) is not None
         readings: dict[Location, str] = {}
         checked: set[Location] = set()
@@ -1529,6 +1766,8 @@ class DocumentProcessor:
         if routes and run.routed is None:
             run.routed = {}
         careful = None if reading is None or reading.mode != "dynamic" else reading.careful
+        if reading is not None and reading.scan_reader == MISTRAL:
+            careful = None  # #473: Careful is Gemini; Mistral's first read is its only one
         if careful is not None and run.memo is None:
             run.memo = {}
         inline = careful is not None and 0 < page_count <= DYNAMIC_MAX_PAGES
@@ -1542,6 +1781,10 @@ class DocumentProcessor:
             model=run.model,
             provider=run.provider,
             thinking=None if reading is None else reading.thinking,
+            resolution=None if reading is None else reading.resolution,  # #463: the organisation's
+            careful_thinking=None if reading is None else reading.careful_thinking,
+            careful_resolution=None if reading is None else reading.careful_resolution,
+            max_output_tokens=None if reading is None else reading.page_max_output_tokens,
             others=()
             if reading is None
             else tuple((agent.model, agent.provider) for agent in reading.others),
@@ -1562,6 +1805,10 @@ class DocumentProcessor:
                 for agent in (reading.lead, reading.careful, *reading.others)
                 if agent is not None and not agent.thinks
             ),
+            # #463 review: a Careful or read-again level its model does not take is not sent.
+            levels={} if reading is None else reading.accepted(),
+            scan_reader=OPENROUTER if reading is None else reading.scan_reader,  # #473: who reads
+            mistral_model=DEFAULT_MISTRAL_MODEL if reading is None else reading.mistral_model,
             ulc=None if reading is None else reading.ulc,  # #488: Ultra low cost, held to its ceiling
             ulc_prices=run.ulc_prices,
         )
@@ -1570,7 +1817,7 @@ class DocumentProcessor:
     def _read_carefully(
         self,
         job: Job,
-        record: DocumentRecord,
+        reads_as: str,
         data: bytes,
         heartbeat: Heartbeat,
         run: _Run,
@@ -1608,7 +1855,7 @@ class DocumentProcessor:
         escalate = frozenset(page["page"] for page in chosen)
         reading_again = self._reading_document(job, run, escalate=escalate)
         with self._timed(run, "careful"), reading_again, waiting(heartbeat):
-            spans = _or_fail(lambda: self._socket.read(record.detected_type, data, on_page=beat))
+            spans = _or_fail(lambda: self._socket.read(reads_as, data, on_page=beat))
         run.page_reads = {**run.page_reads, **meter.take_page_reads()}
         _note_tokens(run)
         return spans
@@ -1949,6 +2196,10 @@ def _with_result(page: PageRecord, read: PageRead | None, disputed: int) -> Page
         illegible_words=read.illegible_words,
         unpinned_lines=read.unpinned_lines,
         continues_on_next_page=read.continues_on_next_page,
+        read_thinking=read.read_thinking,
+        read_resolution=read.read_resolution,
+        read_pass=read.read_pass,
+        read_output_tokens=read.read_output_tokens,
     )
 
 
@@ -2072,12 +2323,19 @@ def _line_marks(spans: Sequence[Span]) -> tuple[dict[BoxLocation, LineMarks], di
     return marks, texts
 
 
-def _without_unread_pages(second: list[Span], pages: Sequence[PageRecord]) -> list[Span]:
+def _without_unread_pages(
+    second: list[Span], pages: Sequence[PageRecord], reads: Sequence[RouteDecision | None] = ()
+) -> list[Span]:
     """The second reading without the pages that were read by OCR or are blank: a
     second reader reads text layers only, so there it could only agree with a
     text layer the route check threw out, such as a scan's hidden OCR layer
-    (ML 4). PROVISIONAL (plan 4.1, step 7). O(spans + pages)."""
+    (ML 4). PROVISIONAL (plan 4.1, step 7). Nor the pages the first reader read from
+    PDFium's text (``reads``, in page order: a rendition's ``pdfium_text`` pages, #522): the
+    second reader is PDFium too, so there it would only agree with itself, never check
+    the first. O(spans + pages)."""
     left_out = {page.info.page for page in pages if page.route in ("ocr", "blank")}
+    pdfium = {page for page, read in enumerate(reads, 1) if read is not None and read.reason == PDFIUM_TEXT}
+    left_out |= pdfium
     return [span for span in second if span.location.page not in left_out]
 
 
@@ -2153,9 +2411,13 @@ def build_processor(
     storage: ProcessorStorage,
     scanner: Scanner,
     model: "ModelClient | None",
+    alert: "Alert | None" = None,
+    queue: JobQueue | None = None,
 ) -> DocumentProcessor:
     """The production processor. The concrete parts are imported here only, so the
-    processor itself depends on the ports above and is tested with fakes."""
+    processor itself depends on the ports above and is tested with fakes. ``alert`` (#478)
+    emails the super admin when an organisation's reading pauses. ``queue`` (#522 PR 3): where
+    the files unpacked from a zip are queued; None unpacks no zip."""
     from sqlalchemy import text
 
     from kaagaz.ai.client import ModelOutputError, ModelUnavailable
@@ -2166,10 +2428,18 @@ def build_processor(
     from kaagaz.db.page_reads import PgPageReads
     from kaagaz.db.pipeline_store import PgPipelineStore
     from kaagaz.db.runs import PgRuns
+    from kaagaz.db.upload_policy import customer_policy
+    from kaagaz.jobs.reading_pause import ReadingPause
+    from kaagaz.jobs.unpack import ZipUnpacker
     from kaagaz.preparing.pages import prepare_pages, sheet_pages
     from kaagaz.reading.ocr import GEMINI, MeteredOcrEngine
     from kaagaz.reading.rapid_pool import shared_pool
-    from kaagaz.reading.wiring import build_ocr_engine, build_reader_socket, reader_config
+    from kaagaz.reading.wiring import (
+        build_ocr_engine,
+        build_office_converter,
+        build_reader_socket,
+        reader_config,
+    )
     from kaagaz.search.indexing import embed_pieces
 
     documents = PgDocuments(db)
@@ -2230,6 +2500,10 @@ def build_processor(
         with unavailable(), db.customer(customer_id) as conn:
             return ai_settings.switch_on(conn, "land_facts", customer_id)
 
+    def kind_limit(customer_id: str, kind: str) -> int:
+        with unavailable(), db.customer(customer_id) as conn:
+            return customer_policy(conn, customer_id, settings).limit_for(kind)
+
     return DocumentProcessor(
         gate=ScanGate(storage, scanner, storage, documents),
         statuses=documents,
@@ -2272,7 +2546,16 @@ def build_processor(
         ocr_page_concurrency=settings.ocr_page_concurrency,
         cost_saving=(settings.cost_saving_hard_lines_max, settings.cost_saving_hard_share),
         index_seconds=settings.model_timeout_seconds,
+        # #473: the Gemini reader's own check that Mistral can read (RapidOCR has none).
+        mistral_ready=getattr(engine, "mistral_ready", None),
         land_on=land_on if model is not None else None,
+        # #478: only where AI reads or answers (keyless: nothing to pause, no query a job).
+        reading_pause=None if job_reading is None else ReadingPause(db, clock=_utc_now, alert=alert).admit,
+        # #522 PR 2: Word, PowerPoint and old Excel files by LibreOffice, where it is installed.
+        office=build_office_converter(),
+        renditions=storage,
+        unpack=None if queue is None else ZipUnpacker(db, storage, queue, scanner, settings),
+        kind_limit=kind_limit,
     )
 
 

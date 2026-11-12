@@ -46,16 +46,13 @@ from typing import Any
 from kaagaz.answering import glossary
 from kaagaz.answering.evidence import valid_regions
 from kaagaz.answering.hinglish import STOP_WORDS
-from kaagaz.chunking.script import ascii_digits, has_devanagari_letters, latin_spelling
+from kaagaz.chunking.script import WORD_TOKEN, ascii_digits, has_devanagari_letters, latin_spelling
 from kaagaz.search.story_match import QueryWord, WordMatcher
 
 MAX_WORDS = 8
 MAX_WORD_CHARS = 40
 MIN_WORD_CHARS = 3
 MAX_BOXES = 2000  # regions in one reply, in the pieces' order; every page is still listed
-# A letter, digit or Devanagari sign, but not the danda (U+0964, U+0965).
-_CHAR = "[\\wऀ-ॣ०-ॿ]"
-_TOKEN = re.compile(f"{_CHAR}+(?:(?:(?<=[0-9])[,.](?=[0-9])|[/-]){_CHAR}+)*")
 _DIGIT = re.compile("[0-9]")
 _JOINS = re.compile("[/-]")
 _STOP = STOP_WORDS | glossary.ROMANISED_STOP
@@ -63,7 +60,7 @@ _STOP = STOP_WORDS | glossary.ROMANISED_STOP
 
 def _words(text: str) -> list[str]:
     words: list[str] = []
-    for token in _TOKEN.findall(ascii_digits(unicodedata.normalize("NFC", text)).casefold()):
+    for token in WORD_TOKEN.findall(ascii_digits(unicodedata.normalize("NFC", text)).casefold()):
         if _DIGIT.search(token):
             words.append(token.replace(",", ""))
         else:

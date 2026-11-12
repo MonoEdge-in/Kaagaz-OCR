@@ -1,9 +1,7 @@
 """Ultra low cost switched off (#488): every request body, page cache key and reading is
 byte-for-byte what it was before Ultra low cost existed.
 
-Production port (#488, no migration): with OCR_ULTRA_LOW_COST off (the default) nothing here
-changes. The fingerprints below were taken on production before the port (commit e41c431c),
-through the real
+The fingerprints below were taken on the code before #488 (commit 4a9aa1a1), through the real
 OpenRouter client against the loopback fake: a first read, a read again and a cached read of one
 page, with a table cell, unsure words, two blocks and a cut-off reply read in halves. The image
 is checked to be ``png_of`` the page and left out of the fingerprint, so a Pillow upgrade can't
@@ -35,11 +33,11 @@ from tests.test_dynamic_reading import ledger
 from tests.test_gemini_ocr import CUSTOMER, DOCUMENT, FakeCache, FakeFinder, FakeRapidOcr, line, value
 
 MODEL = "google/gemini-3.1-pro-preview"
-# sha256 of the scenario's bodies, keys, cache rows and reads, on production before #488 (e41c431c).
-BEFORE_ULC = "2a1ca1be6921121f2c8b2b9a0cdc7804941e9ba613f6393f453d13a354e913cd"
+# sha256 of the scenario's bodies, keys, cache rows and reads, on the code before #488.
+BEFORE_ULC = "7667e045e3d3dfaf541e0f8919f8003633c6b9311f193de7564399beb0a182d6"
 # #488 review (R10): sha256 of a repair, a retry after a reply that failed part way, and their
-# ledger rows, on production before #488 (e41c431c).
-BEFORE_ULC_REPAIR_AND_RETRY = "dda5a9ff3ecfc21a0b0884047a1a4cadd56139859c524359c21e127fbfeea7ff"
+# ledger rows, on the code before #488 (commit 4a9aa1a1).
+BEFORE_ULC_REPAIR_AND_RETRY = "5c6cbf1bec977d5ae5a3434fdeef151de0e345bb0ac057668e524fd53842bd5b"
 
 
 def _reply_value() -> dict[str, Any]:
@@ -185,6 +183,7 @@ def fingerprint_repair_and_retry() -> tuple[str, int]:
             "bodies": bodies,
             "reads": [repr(read) for read in reads],
             "ledger": [repr(row) for row in kept.rows],
+            "live": kept.live,
         }
         text = json.dumps(scenario, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(text.encode("utf-8")).hexdigest(), len(bodies)

@@ -20,8 +20,10 @@ until it is told to stop:
 * Each attempt is written on the document (``attempts``, ``max_attempts``),
   so the file list can say "Try 2 of 5".
 * A job with a ``run_id`` is an Ensemble run after the scan (``dispatch``, kaagaz/jobs/
-  ensemble.py), every other one the document's reading. A run's tries are written on the
-  run, and its last delivery fails the run (``retries_exhausted``), never the document.
+  ensemble.py), one with a ``check_id`` an operator's accuracy check (#463, kaagaz/jobs/
+  accuracy.py), every other one the document's reading. A run's tries are written on the
+  run, and its last delivery fails the run (``retries_exhausted``), never the document; a
+  check's last delivery fails the check, and its tries are written nowhere.
 * The queue's maximum receives is read from the queue once, at start-up. It
   must be above JOB_MAX_ATTEMPTS + 1, so a delivery is left to mark the
   document even if the database is down at the first try. A queue without a
@@ -66,6 +68,11 @@ until it is told to stop:
   again with one more try counted, or failed as ``stuck_no_job`` with no try left, at most
   20 every 10 minutes, under the sweep lock (``ReviveStuck``, kaagaz/jobs/revive.py,
   stuck reading, 16 Oct 2026).
+* Documents held by an organisation's reading pause (#478) are queued again once it ends (a new
+  India day, a raised limit or budget), looked at every 5 minutes under the sweep lock
+  (``ReleaseHeld``, kaagaz/jobs/reading_pause.py); the first turn after a start does it. With
+  OPS_ALERT_EMAIL and EMAIL_FROM (kaagaz/ops_alert.py), the super admin is emailed when one
+  pauses; without them, the start logs a warning that these alerts are off.
 * Before a job runs, ``admission`` (PRD 5 Q5) hands it back to the queue, with no
   attempt counted: for KEY_PROBLEM_DEFER_SECONDS (300) while the reader's gate
   has a key problem, and for 30 s when its customer already has
@@ -128,11 +135,14 @@ from kaagaz.jobs.fair_share import (
 from kaagaz.jobs.ports import LeaseLost, QueueSetupError, WorkQueue
 from kaagaz.jobs.purge import (
     CustomerStorage,
+    forget_kept_audit,
     purge_deleted_customers,
     purge_expired,
     purge_upload_sessions,
+    sweep_ended_sessions,
     sweep_purged_customers,
 )
+from kaagaz.jobs.reading_pause import ReleaseHeld, pause_alert, release_held
 from kaagaz.jobs.revive import ReviveStuck, revive_stuck
 from kaagaz.jobs.upgrade import UpgradeLocalReads, upgrade_oldest
 from kaagaz.jobs.worker import (
@@ -279,6 +289,8 @@ class RecordAttempt:
         self._record_run = record_run
 
     def __call__(self, job: Job, attempt: int) -> None:
+        if job.check_id is not None:  # an accuracy check (#463) keeps no tries
+            return
         if job.run_id is None:
             self._record(job.customer_id, job.document_id, attempt, self._max_attempts)
         elif self._record_run is not None:
@@ -297,17 +309,25 @@ def check_queue_redrive(max_receives: int, max_attempts: int) -> None:
 class MarkExhausted:
     """The worker's ``on_exhausted``: marks the job's document (``mark`` is
     PgDocuments.mark_exhausted), or an Ensemble run's run (``mark_run``:
-    EnsembleRuns.exhausted; the document stays as it is), and logs it, with ids and the
-    code only."""
+    EnsembleRuns.exhausted; the document stays as it is), or an accuracy check (``mark_check``:
+    AccuracyChecks.exhausted, required, #463 review: a check is never left running), and logs
+    it, with ids and the code only."""
 
     def __init__(
-        self, mark: Callable[[str, str], None], mark_run: Callable[[str, str], None] | None = None
+        self,
+        mark: Callable[[str, str], None],
+        mark_run: Callable[[str, str], None] | None = None,
+        *,
+        mark_check: Callable[[str, str], None],
     ) -> None:
         self._mark = mark
         self._mark_run = mark_run
+        self._mark_check = mark_check
 
     def __call__(self, job: Job) -> None:
-        if job.run_id is None:
+        if job.check_id is not None:  # an accuracy check (#463): the check fails
+            self._mark_check(job.customer_id, job.check_id)
+        elif job.run_id is None:
             self._mark(job.customer_id, job.document_id)
         elif self._mark_run is not None:
             self._mark_run(job.customer_id, job.run_id)
@@ -385,11 +405,15 @@ def beating(handler: Handler, beat: Callable[[], None]) -> Handler:
     return handle
 
 
-def dispatch(pipeline: Handler, ensemble: Handler) -> Handler:
-    """Each job to its handler: an Ensemble run's (``run_id``) to ``ensemble``, every other
-    to ``pipeline``."""
+def dispatch(pipeline: Handler, ensemble: Handler, accuracy: Handler) -> Handler:
+    """Each job to its handler: an Ensemble run's (``run_id``) to ``ensemble``, an accuracy
+    check's (``check_id``, #463; required, #463 review: never read as a document) to
+    ``accuracy``, every other to ``pipeline``."""
 
     def handle(job: Job, heartbeat: Heartbeat) -> None:
+        if job.check_id is not None:
+            accuracy(job, heartbeat)
+            return
         (pipeline if job.run_id is None else ensemble)(job, heartbeat)
 
     return handle
@@ -402,6 +426,7 @@ def job_worker(
     max_attempts: int,
     mark_exhausted: Callable[[str, str], None],
     record_attempt: Callable[[str, str, int, int], None],
+    mark_check_exhausted: Callable[[str, str], None],
     admit: Admit | None = None,
     mark_run_exhausted: Callable[[str, str], None] | None = None,
     record_run_attempt: Callable[[str, str, int], None] | None = None,
@@ -409,12 +434,13 @@ def job_worker(
     """The Worker _serve runs: each outcome logged, each try recorded, the delivery after
     the last attempt marked, a lease renewed at most every LEASE_RENEW_SECONDS on
     time.monotonic, and ``admit`` (``admission``) around each try. An Ensemble run's try and
-    last delivery go to ``record_run_attempt`` and ``mark_run_exhausted``."""
+    last delivery go to ``record_run_attempt`` and ``mark_run_exhausted``; an accuracy check's
+    last delivery to ``mark_check_exhausted`` (#463 review: required)."""
     return Worker(
         queue,
         LoggedHandler(handler),
         max_attempts=max_attempts,
-        on_exhausted=MarkExhausted(mark_exhausted, mark_run_exhausted),
+        on_exhausted=MarkExhausted(mark_exhausted, mark_run_exhausted, mark_check=mark_check_exhausted),
         on_attempt=RecordAttempt(record_attempt, max_attempts, record_run_attempt),
         clock=time.monotonic,
         admit=admit,
@@ -665,11 +691,14 @@ def fingerprint_missing(db: Database, limit: int = FINGERPRINT_PASS) -> int:
 
 def _purge(db: Database, storage: CustomerStorage, trash_days: int) -> int:
     """The hourly turn: old Trash (its count is returned and logged by PurgeHourly), then
-    the organisations whose deletion is due, and their second sweep a day later (logged here)."""
+    the organisations whose deletion is due, their second sweep a day later, and their kept
+    audit rows 365 days later (0068, #482; logged here)."""
     families = purge_expired(db, storage, _utc_now, trash_days)
     logger.info("abandoned uploads removed: %d", purge_upload_sessions(db, storage, _utc_now))
+    logger.info("ended sessions swept: %d", sweep_ended_sessions(db, _utc_now))
     logger.info("deleted organisations: %d families", purge_deleted_customers(db, storage, _utc_now))
     logger.info("purged organisations swept again: %d", sweep_purged_customers(db, storage, _utc_now))
+    logger.info("kept audit rows of deleted organisations removed: %d", forget_kept_audit(db, _utc_now))
     return families
 
 
@@ -800,23 +829,6 @@ def catalog_refresh(settings: Settings, db: Database) -> Callable[[], Refreshed]
     return lambda: refresh(db, client, settings, today=_utc_now().date())
 
 
-class UlcNotReady(Exception):
-    """#488: OCR_ULTRA_LOW_COST is on but OCR_MODEL can't read under it (the message says why)."""
-
-
-def ulc_check(settings: Settings, db: Database) -> None:
-    """#488: with OCR_ULTRA_LOW_COST on, ``UlcNotReady`` unless OCR_MODEL's catalogue row takes
-    minimal thinking and has a price (``models.ulc_not_ready``); nothing when it is off."""
-    if not settings.ocr_ultra_low_cost:
-        return
-    from kaagaz.db import models
-
-    with db.system() as conn:
-        problem = models.ulc_not_ready(conn, settings)
-    if problem is not None:
-        raise UlcNotReady(problem)
-
-
 def main() -> None:
     settings = Settings.from_env()
     configure_logging(settings.log_level)
@@ -829,9 +841,6 @@ def main() -> None:
         # A setup mistake, not a bug: the code says what to fix (jobs/ports.py).
         logger.critical("worker cannot start: queue setup", extra={"code": error.code})
         sys.exit(1)
-    except UlcNotReady as error:  # #488: the message names the model and what it lacks
-        logger.critical("worker cannot start: OCR_ULTRA_LOW_COST: %s", error, extra={"code": "ulc_not_ready"})
-        sys.exit(1)
     except Exception as error:  # noqa: BLE001 - the process boundary, see the comment above
         logger.critical("worker crashed", extra={"code": type(error).__name__})
         sys.exit(1)
@@ -841,13 +850,15 @@ def _serve(settings: Settings) -> None:
     """Build the worker and run jobs until it is told to stop."""
     # Imported here, not at the top: these modules pull in every reader, the
     # OCR engine and the AI client, and the loop above is tested without them.
+    from kaagaz.jobs.accuracy import AccuracyChecks
     from kaagaz.jobs.ensemble import EnsembleRuns
     from kaagaz.pipeline import build_processor
     from kaagaz.reading.ocr import GEMINI
     from kaagaz.reading.wiring import build_ocr_engine
 
     # The worker's PostgreSQL timeouts (#246 A1): long, so a big document's save or a sweep is
-    # never cut, but a stuck statement, lock wait or open transaction still ends.
+    # never cut, but a stuck statement, lock wait or open transaction still ends. DATABASE_URL is
+    # the app's login in Compose (#479); a worker never builds the operator's engine.
     engine = make_engine(
         settings.database_url,
         statement_timeout_seconds=settings.db_worker_statement_timeout_seconds,
@@ -855,17 +866,20 @@ def _serve(settings: Settings) -> None:
         idle_in_transaction_timeout_seconds=settings.db_idle_in_transaction_timeout_seconds,
     )
     db = Database(engine, settings.db_app_role)
-    ulc_check(settings, db)  # #488: before any job is taken
     storage = S3Storage(settings)
     queue = SqsQueue(settings)
     max_receives = queue.max_receives()  # once; no redrive policy stops the worker here
     check_queue_redrive(max_receives, settings.job_max_attempts)
     scanner = build_scanner(settings)
     model = worker_model(settings, db)
-    processor = build_processor(settings=settings, db=db, storage=storage, scanner=scanner, model=model)
+    alert = pause_alert(settings)  # #478: the super admin's email when an organisation's reading pauses
+    processor = build_processor(
+        settings=settings, db=db, storage=storage, scanner=scanner, model=model, alert=alert, queue=queue
+    )
     # Ensemble after the scan reads with a scan reader of its own (the same gate and pool).
     reader = build_ocr_engine(settings, db=db) if settings.ocr_engine == GEMINI else None
     ensemble = EnsembleRuns(db, storage, reader, settings=settings, clock=_utc_now)
+    accuracy = AccuracyChecks(db, storage, reader, settings=settings)  # #463, the same reader
 
     stop = threading.Event()
     install_stop_handlers(stop)
@@ -891,7 +905,7 @@ def _serve(settings: Settings) -> None:
 
     jobs = job_worker(
         queue,
-        beating(dispatch(processor, ensemble), worker_heartbeat.beat),
+        beating(dispatch(processor, ensemble, accuracy), worker_heartbeat.beat),
         max_attempts=settings.job_max_attempts,
         # The last delivery also ends the document's runs still running (AR11), on the worker's clock.
         mark_exhausted=lambda customer, document: documents.mark_exhausted(
@@ -907,6 +921,7 @@ def _serve(settings: Settings) -> None:
         ),
         mark_run_exhausted=ensemble.exhausted,
         record_run_attempt=ensemble.record_attempt,
+        mark_check_exhausted=accuracy.exhausted,
     )
     purge = functools.partial(_purge, db, storage, settings.trash_days)
     embed = None if model is None else functools.partial(embed_missing, db, model, limit=EMBED_PASS_PIECES)
@@ -939,7 +954,9 @@ def _serve(settings: Settings) -> None:
         stale_seconds=settings.queue_lease_seconds * settings.job_max_attempts,
         max_attempts=settings.job_max_attempts,
     )
-    worker = ReviveStuck(catalog, revive, lambda: gate.status()[0], _utc_now, lock=lock)
+    revived = ReviveStuck(catalog, revive, lambda: gate.status()[0], _utc_now, lock=lock)
+    release = functools.partial(release_held, db, queue.enqueue)
+    worker = ReleaseHeld(revived, lambda: release(now=_utc_now()), _utc_now, lock=lock)
     run_until_stopped(worker, stop, pause_seconds=settings.queue_wait_seconds, beat=worker_heartbeat.beat)
     reports.join(READER_REPORT_SECONDS)  # stop is set: at most the report in flight is left
     db.engine.dispose()

@@ -30,7 +30,7 @@ export function codeError(value: string): string | null {
 
 /**
  * The server asks for the code (401 code_required) only after the password was
- * right, for an admin with two-step sign-in set up. The screen then shows the
+ * right, for anyone with two-step sign-in set up (always admins; #457 phase 3). The screen then shows the
  * code step; nothing else means this.
  */
 export function codeNeeded(caught: unknown): boolean {
@@ -39,6 +39,9 @@ export function codeNeeded(caught: unknown): boolean {
 
 /** After a wrong code, the server's one refusal text, then this. */
 export const CODE_ADVICE = "Use the newest code from the app.";
+
+/** Under the code field, at sign-in and after Google (issue 468): what to do without the phone. */
+export const LOST_PHONE_HELP = "Lost your phone? Ask another admin, or Kaagaz support, to reset your two-step sign-in.";
 
 // --- Setting two-step up (MFA required for admins) ---------------------------
 

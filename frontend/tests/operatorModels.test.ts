@@ -49,7 +49,7 @@ import { AiFields, CODE_ID, fieldId, firstProblem, refusalOf } from "@/component
 import { DefaultsImpact, DefaultsSummary, SAVE_LABEL } from "@/components/operator/PlatformDefaults";
 import { SpendTable } from "@/components/operator/SpendView";
 import { ApiError } from "@/lib/api";
-import type { AiDefaults, AiValues, OperatorModel, OperatorUsageRow, OrgInsight } from "@/lib/types";
+import type { AiDefaults, AiEnv, AiValues, OperatorModel, OperatorUsageRow, OrgInsight } from "@/lib/types";
 
 const read = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");
 
@@ -81,6 +81,8 @@ const model = (overrides: Partial<OperatorModel> = {}): OperatorModel => ({
   chat_eligible: true,
   chat_verified: true,
   vendor_allowed: true,
+  ulc_ready: false,
+  ulc_why: "It can't read with minimal thinking.",
   ...overrides,
 });
 
@@ -254,12 +256,37 @@ const values = (overrides: Partial<AiValues> = {}): AiValues => ({
   chat_models: [],
   chat_default: null,
   scan_thinking: null,
+  scan_resolution: null,
+  careful_thinking: null,
+  careful_resolution: null,
+  page_max_output_tokens: null,
   chat_levels: null,
   chat_default_level: null,
   dynamic: null,
+  scan_reader: null, // Changed on purpose (#473): who reads the pages, and the Mistral model
+  mistral_model: null,
+  daily_page_limit: null, // Changed on purpose (#478): the daily page limit
+  ulc_ceiling_paise: null, // Changed on purpose (#488): the most a page may cost under ultra low cost
   ...overrides,
 });
-const ENV = { scan_model: "google/env-scan", chat_model: "google/env-chat", scan_thinking: "low" };
+const ENV: AiEnv = {
+  scan_model: "google/env-scan",
+  chat_model: "google/env-chat",
+  scan_thinking: "low",
+  scan_resolution: "high",
+  careful_thinking: "high",
+  careful_resolution: "high",
+  page_max_output_tokens: 65536,
+  // Changed on purpose (#473): the env says the server's reader and whether Mistral is set up.
+  scan_reader: "openrouter",
+  ulc_ceiling_paise: 40,
+  switch_ceiling_paise: null,
+  mistral_model: "mistral-ocr-4-1",
+  mistral_ready: true,
+  mistral_missing: null,
+  mistral_models: [],
+  mistral_status: { stopped: false, code: null, since: null, documents_waiting: 0 },
+};
 const DEFAULTS = values({
   scan_models: ["m/one", "m/two"],
   scan_default: "m/two",
@@ -267,7 +294,21 @@ const DEFAULTS = values({
   chat_default_level: "low",
   dynamic: true,
 });
-const COUNTS: AiDefaults["orgs_inheriting"] = { scan_models: 4, chat_models: 7, scan_thinking: 1, chat_levels: 7, dynamic: 5 };
+const COUNTS: AiDefaults["orgs_inheriting"] = {
+  scan_models: 4,
+  chat_models: 7,
+  scan_thinking: 1,
+  scan_resolution: 1,
+  careful_thinking: 1,
+  careful_resolution: 1,
+  page_max_output_tokens: 1,
+  chat_levels: 7,
+  dynamic: 5,
+  scan_reader: 5, // Changed on purpose (#473)
+  mistral_model: 5,
+  daily_page_limit: 1, // Changed on purpose (#478)
+  ulc_ceiling_paise: 1, // Changed on purpose (#488)
+};
 const catalogue = [
   model({ id: "m/one", name: "One", enabled_at: "2026-10-11T00:00:00Z", chat_verified: false }),
   model({ id: "m/two", name: "Two", enabled_at: "2026-10-11T00:00:00Z" }),
@@ -289,6 +330,7 @@ describe("a model with no thinking levels (Tushar, 18 Oct 2026)", () => {
       return renderToStaticMarkup(
         createElement(AiFields, {
           platform: false,
+          customerId: "org-1",
           catalogue: [...catalogue, plain],
           saved: own,
           defaults: DEFAULTS,
@@ -330,15 +372,15 @@ describe("the AI settings form's rules", () => {
 
   it("checks the defaults, levels and budget before a code is asked for", () => {
     const draft = draftOf(values({ scan_models: ["m/one"], chat_models: ["m/two"], chat_levels: ["low"] }), { ensemble: false, ai_budget_usd: null });
-    expect(aiErrors({ ...draft, budget: "abc" }, false)).toEqual({
+    expect(aiErrors({ ...draft, budget: "abc" }, false, "openrouter")).toEqual({
       scan_default: "Choose the default scanning model from the ticked models.",
       chat_default: "Choose the default answering model from the ticked models.",
       chat_levels: "Choose the default level from the ticked levels.",
       budget: "Enter dollars above 0, with at most 2 decimals, or leave it empty.",
     });
-    expect(aiErrors(draftOf(values()), false)).toEqual({}); // follows the defaults in everything
-    expect(aiErrors(draftOf(values()), true)).toEqual({ chat_levels: "Tick at least one thinking level." });
-    expect(aiErrors({ ...draftOf(values({ chat_levels: ["low"], chat_default_level: "low" })), budget: "abc" }, true)).toEqual({});
+    expect(aiErrors(draftOf(values()), false, "openrouter")).toEqual({}); // follows the defaults in everything
+    expect(aiErrors(draftOf(values()), true, "openrouter")).toEqual({ chat_levels: "Tick at least one thinking level." });
+    expect(aiErrors({ ...draftOf(values({ chat_levels: ["low"], chat_default_level: "low" })), budget: "abc" }, true, "openrouter")).toEqual({});
     expect(["", " 12.5 ", "0.01", "9999999999.99"].map(parseBudget)).toEqual([null, 12.5, 0.01, 9999999999.99]);
     for (const bad of ["0", "-5", "1.005", "1e3", "ten", "10000000000"]) expect(parseBudget(bad), bad).toBeUndefined();
     expect(firstProblem({ budget: "x", chat_default: "y" })).toBe("chat_default");
@@ -351,14 +393,23 @@ describe("the AI settings form's rules", () => {
   });
 
   it("says per area whether it follows the platform defaults (C12)", () => {
-    expect(statusText(values())).toBe("Scanning: platform defaults · Answering: platform defaults");
-    expect(statusText(values({ scan_models: ["m/one"], scan_thinking: "high", dynamic: false }))).toBe(
+    expect(statusText(values(), "openrouter")).toBe("Scanning: platform defaults · Answering: platform defaults");
+    // Changed on purpose (#463, 31 Oct 2026): picture detail and pages read again are scanning settings too.
+    // Changed on purpose (#473): who reads the pages is a scanning setting too.
+    const scanOwn = {
+      scan_resolution: "low",
+      careful_thinking: "high",
+      careful_resolution: "high",
+      page_max_output_tokens: 8192,
+      scan_reader: "openrouter",
+    } as const;
+    expect(statusText(values({ scan_models: ["m/one"], scan_thinking: "high", dynamic: false, ...scanOwn }), "openrouter")).toBe(
       "Scanning: own settings · Answering: platform defaults",
     );
-    expect(statusText(values({ dynamic: true, chat_models: ["m/two"], chat_levels: ["low"] }))).toBe(
+    expect(statusText(values({ dynamic: true, chat_models: ["m/two"], chat_levels: ["low"] }), "openrouter")).toBe(
       "Scanning: partly own settings · Answering: own settings",
     );
-    expect(follows(values({ chat_levels: ["low"] }))).toEqual({ scan: "all", chat: "some" });
+    expect(follows(values({ chat_levels: ["low"] }), "openrouter")).toEqual({ scan: "all", chat: "some" });
   });
 
   it("empties both areas and Ensemble for Use platform defaults, and keeps the budget", () => {
@@ -377,12 +428,12 @@ describe("the AI settings form's rules", () => {
       ai_budget_usd: 50,
     });
     const sections = ["scan", "chat", "ensemble", "budget"] as const;
-    expect(sections.map((each) => sameAsDefault(own, each))).toEqual([false, false, false, false]);
-    expect(sections.map((each) => sameAsDefault(draftOf(values()), each))).toEqual([true, true, true, true]);
+    expect(sections.map((each) => sameAsDefault(own, each, "openrouter"))).toEqual([false, false, false, false]);
+    expect(sections.map((each) => sameAsDefault(draftOf(values()), each, "openrouter"))).toEqual([true, true, true, true]);
     const scan = resetSection(own, "scan");
-    expect(sections.map((each) => sameAsDefault(scan, each))).toEqual([true, false, false, false]);
+    expect(sections.map((each) => sameAsDefault(scan, each, "openrouter"))).toEqual([true, false, false, false]);
     expect([scan.chat_levels, scan.ensemble, scan.budget]).toEqual([["low"], true, "50"]);
-    expect(sameAsDefault(resetSection(own, "chat"), "chat")).toBe(true);
+    expect(sameAsDefault(resetSection(own, "chat"), "chat", "openrouter")).toBe(true);
     expect(resetSection(own, "ensemble")).toEqual({ ...own, ensemble: false });
     expect(resetSection(own, "budget")).toEqual({ ...own, budget: "" });
   });
@@ -438,7 +489,7 @@ describe("the AI settings form's rules", () => {
   it("says which organisations still on the defaults a platform save changes, as a short list", () => {
     expect(defaultsImpact(DEFAULTS, DEFAULTS, COUNTS)).toEqual({ lead: "Nothing changes.", areas: [] });
     const all = { ...DEFAULTS, scan_default: "m/one", scan_thinking: "high" as const, dynamic: false, chat_models: ["m/two"], chat_default: "m/two" };
-    const one = { scan_models: 1, chat_models: 1, scan_thinking: 1, chat_levels: 1, dynamic: 1 };
+    const one = { ...COUNTS, scan_models: 1, chat_models: 1, chat_levels: 1, dynamic: 1 };
     expect(defaultsImpact(DEFAULTS, all, one)).toEqual({
       lead: "This save changes, for 1 organisation still on platform defaults:",
       areas: ["Scanning models", "Scanning level", "Cost saving", "Answering models"],
@@ -497,6 +548,7 @@ describe("the AI settings fields", () => {
     return renderToStaticMarkup(
       createElement(AiFields, {
         platform: props.platform ?? false,
+        customerId: props.platform ? null : "org-1",
         orgName: props.orgName,
         spent: props.spent,
         catalogue,
@@ -529,7 +581,8 @@ describe("the AI settings fields", () => {
     expect(html).toContain("Platform default (the server&#x27;s level (low))");
     expect(html).toContain("Platform default (On)");
     // Changed on purpose (Cost saving, 16 Oct 2026): the switch is "Cost saving", with its hint.
-    expect(html).toContain('<label for="ai-dynamic">Cost saving</label>');
+    // Changed on purpose (#463, 31 Oct 2026): each setting's label shares a row with its own-or-followed mark.
+    expect(html).toContain('<label for="ai-dynamic" class="label">Cost saving</label>');
     expect(html).toContain("Reads clear pages quickly and spends extra effort only on hard-to-read words.");
     expect(html).not.toMatch(/>Dynamic</);
     expect(fields({ platform: true })).toContain("<span>Cost saving</span>");
@@ -567,8 +620,9 @@ describe("the AI settings fields", () => {
   });
 
   // Changed on purpose (board 9, 16 Oct 2026): Ensemble and Budget are sections of their own.
+  // Changed on purpose (QA U6, 4 Nov 2026): and the Reading limit.
   it("locks every control while saving", () => {
-    expect(fields({ busy: true }).match(/<fieldset[^>]*disabled=""/g)).toHaveLength(4);
+    expect(fields({ busy: true }).match(/<fieldset[^>]*disabled=""/g)).toHaveLength(5);
   });
 
   it("offers Reset section only on a changed section, named by its section", () => {
@@ -600,8 +654,8 @@ describe("the AI settings fields", () => {
 describe("any number of scanning models (Tushar, 16 Oct 2026)", () => {
   it("lets one scanning model save with Cost saving and Ensemble, with no blocking error", () => {
     const one = values({ scan_models: ["m/one"], scan_default: "m/one", dynamic: true });
-    expect(aiErrors(draftOf(one, { ensemble: true, ai_budget_usd: null }), false)).toEqual({});
-    expect(aiErrors(draftOf({ ...one, chat_levels: ["low"], chat_default_level: "low" }), true)).toEqual({}); // the platform defaults
+    expect(aiErrors(draftOf(one, { ensemble: true, ai_budget_usd: null }), false, "openrouter")).toEqual({});
+    expect(aiErrors(draftOf({ ...one, chat_levels: ["low"], chat_default_level: "low" }), true, "openrouter")).toEqual({}); // the platform defaults
     expect(read("components/operator/OrgAiSettings.tsx")).not.toContain("Needs at least two scanning models");
     expect(read("components/operator/OrgAiSettings.tsx")).toContain("{COST_SAVING}"); // the super admin's label stays
   });
@@ -612,7 +666,8 @@ describe("any number of scanning models (Tushar, 16 Oct 2026)", () => {
       "Saved the AI settings of Sharma Traders. Ensemble is off: it needs a second scanning model.",
     );
     const dialog = read("components/operator/OrgAiSettings.tsx");
-    expect(dialog).toContain("onSaved(savedText(org.name, ensembleTurnedOff));");
+    // Changed on purpose (#463, 31 Oct 2026): the confirmation also says the cost a page and the accuracy.
+    expect(dialog).toContain("onSaved(withCost(savedText(org.name, ensembleTurnedOff), cost, true));");
     expect(dialog).toMatch(/\{ensembleOff && \(\s*<p className="hint" role="status">\s*\{ENSEMBLE_OFF\}/);
   });
 });
@@ -631,19 +686,21 @@ describe("the AI settings dialogs", () => {
 
   it("keeps a save bar at the dialog's foot that lists the changes, with Discard and Save off while nothing changed", () => {
     const dialog = read("components/operator/OrgAiSettings.tsx");
-    expect(dialog).toContain("changesText(saved, draft, loaded?.catalogue ?? [])");
+    // Changed on purpose (#473): with the reply, for who reads the pages after the save.
+    expect(dialog).toContain("changesText(saved, draft, loaded?.catalogue ?? [], loaded?.reply)");
     expect(dialog.match(/disabled=\{busy \|\| unchanged\}/g)).toHaveLength(2); // Discard and Save
     expect(dialog).toContain('"No unsaved changes"');
     expect(dialog).toContain("setDraft(saved);");
-    expect(dialog).toContain("if (busy || !draft || unchanged) return;");
+    expect(dialog).toContain("if (busy || !loaded || !draft || unchanged) return;");
     const css = read("components/operator/Operator.module.css");
     // Changed on purpose (MonoEdge design system, 16 Oct 2026): the MonoEdge surface token.
     expect(css).toMatch(/\.saveBar \{[^}]*position: sticky;\s*bottom: 0;[^}]*background: var\(--bg-surface\);/);
   });
 
   it("names both areas when the organisation goes back to the platform defaults", () => {
+    // Changed on purpose (QA U6, 4 Nov 2026): and says what stays.
     expect(read("components/operator/OrgAiSettings.tsx")).toContain(
-      "Scanning and answering will both follow the platform defaults, and Ensemble is off. Save to apply.",
+      "Scanning and answering will both follow the platform defaults, and Ensemble is off. The daily page limit and budget stay. Save to apply.",
     );
   });
 

@@ -20,6 +20,14 @@ import type { LibraryState } from "./libraryQuery";
 
 export type SearchMode = "inside" | "names";
 
+const ASK_LABEL_WORDS = 40; // a long search is cut short on the button
+
+/** "Ask Kaagaz about “rent”". */
+export function askAboutLabel(q: string): string {
+  const words = q.length > ASK_LABEL_WORDS ? `${q.slice(0, ASK_LABEL_WORDS)}…` : q;
+  return `Ask Kaagaz about “${words}”`;
+}
+
 export const DEFAULT_SEARCH_MODE: SearchMode = "inside";
 /** The longest search both routes take (q, 200 characters). */
 export const MAX_SEARCH_LENGTH = 200;

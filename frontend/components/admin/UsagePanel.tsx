@@ -15,11 +15,13 @@ import { useEffect, useId, useState } from "react";
 import type { ReactNode } from "react";
 import table from "@/components/documents/Table.module.css";
 import { Icon } from "@/components/ui/Icon";
-import { ApiError, getAdminUsage, listUsers } from "@/lib/api";
+import { getAdminUsage, listUsers } from "@/lib/api";
+import { errorWords } from "@/lib/errorWords";
 import { formatDate, formatDateTime, formatNumber } from "@/lib/format";
 import type { AdminUser, UsageReport, UsageTokens } from "@/lib/types";
 import {
   USAGE_PERIODS,
+  pagesTodayLine,
   usageKindText,
   usageRange,
   usageState,
@@ -274,10 +276,25 @@ export function UsageReportView({ state, onRetry }: { state: UsageState; onRetry
       </>
     );
   }
+  // QA P7 (4 Nov 2026): today's pages against the limit, even in a period with no AI calls.
+  const pagesToday = pagesTodayLine(state.report);
+  const pagesLine = pagesToday && <p>{pagesToday}</p>;
   if (state.kind === "off") {
-    return <p className={styles.emptyLine}>AI is off on this server, so no tokens are used.</p>;
+    return (
+      <>
+        {pagesLine}
+        <p className={styles.emptyLine}>AI is off on this server, so no tokens are used.</p>
+      </>
+    );
   }
-  if (state.kind === "empty") return <p className={styles.emptyLine}>No AI use in this period.</p>;
+  if (state.kind === "empty") {
+    return (
+      <>
+        {pagesLine}
+        <p className={styles.emptyLine}>No AI use in this period.</p>
+      </>
+    );
+  }
 
   const { report } = state;
   const total = usageTokens(report.totals);
@@ -285,6 +302,7 @@ export function UsageReportView({ state, onRetry }: { state: UsageState; onRetry
   const active = activeDays(report);
   return (
     <>
+      {pagesLine}
       <dl className={styles.tiles}>
         <div className={`${styles.tile} ${styles.usageTile}`}>
           <dt className={styles.usageTileHead}>
@@ -377,9 +395,7 @@ export function UsagePanel() {
       },
       (caught: unknown) => {
         if (!cancelled) {
-          const message =
-            caught instanceof ApiError ? caught.message : "Check your internet connection, then try again.";
-          setResult({ key, report: null, error: message, at: Date.now() });
+          setResult({ key, report: null, error: errorWords(caught), at: Date.now() });
         }
       },
     );

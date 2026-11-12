@@ -97,6 +97,8 @@ def test_every_new_column_the_index_and_both_functions_have_a_comment(db: Databa
         {"f": sorted(FUNCTIONS), "i": INDEX},
     )
     expected = FUNCTIONS | {INDEX} | {f"{table}.{column}" for table, column in NEW_COLUMNS}
+    # Changed on purpose (#542, 0081): a folder in Trash keeps its key.
+    expected |= {"trashed_folders.autofile_key"}
     assert sorted(name for name, _ in comments) == sorted(expected)
     assert [name for name, comment in comments if not (comment or "").strip()] == []
 

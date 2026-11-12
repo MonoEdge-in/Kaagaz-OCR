@@ -39,6 +39,14 @@ export function lastDepartment(departments: readonly Folder[]): string | null {
   }
 }
 
+/** B4: the department new files go into: the one picked (null: none) while it is still one, else
+ * the last one used (lastDepartment). A department deleted since it was picked is not used. */
+export function chosenDepartment(choice: string | null | undefined, departments: readonly Folder[]): string | null {
+  if (choice === null) return null;
+  if (choice !== undefined && departments.some((department) => department.id === choice)) return choice;
+  return lastDepartment(departments);
+}
+
 export function rememberDepartment(id: string | null): void {
   try {
     if (id === null) localStorage.removeItem(LAST_KEY);

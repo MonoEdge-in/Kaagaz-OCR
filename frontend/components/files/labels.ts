@@ -17,8 +17,10 @@ export const LABEL_NAMES: Record<Sensitivity, string> = {
 export const LABEL_DESCRIPTIONS: Record<Sensitivity, string> = {
   public: "Fine to share outside the company.",
   internal: "For people in the company. Most documents start here.",
-  confidential: "For the people who work on it. Land records, contracts and bank statements start here.",
-  restricted: "For a named few only, such as deeds and personal papers.",
+  confidential:
+    "A label for sensitive papers. Land records, contracts and bank statements start here. Everyone in your organisation can still open it.",
+  restricted:
+    "A label for papers to handle with care, such as deeds and personal papers. Everyone in your organisation can still open it.",
 };
 
 /** "Confidential"; a label the screen does not know (a newer server) is shown as sent. */

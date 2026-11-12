@@ -263,7 +263,7 @@ def test_an_organisations_models_and_budget_are_replaced_and_audited_in_both_log
         "scan_default": good,
         "chat_models": [],
         "chat_default": None,
-        "scan_thinking": None,
+        # Changed on purpose (#463 review, X1): the scan cost settings are the operator's log only.
         "chat_levels": None,
         "chat_default_level": None,
         "dynamic": None,
@@ -273,7 +273,25 @@ def test_an_organisations_models_and_budget_are_replaced_and_audited_in_both_log
     platform = "SELECT operator_id, action, target_type, target_id, details FROM platform_audit"
     platform += " WHERE subject_customer_id = :c"
     assert as_owner(db, platform, {"c": customer}) == [
-        (uuid.UUID(operator), "org.ai_settings_set", "customer", customer, {**details, "budget_usd": 12.5})
+        (
+            uuid.UUID(operator),
+            "org.ai_settings_set",
+            "customer",
+            customer,
+            {
+                **details,
+                "scan_thinking": None,
+                "scan_resolution": None,
+                "careful_thinking": None,
+                "careful_resolution": None,
+                "page_max_output_tokens": None,
+                "scan_reader": None,  # Changed on purpose (#473, 0065): the operator's log only
+                "mistral_model": None,
+                "daily_page_limit": None,  # Changed on purpose (#478)
+                "ulc_ceiling_paise": None,  # Changed on purpose (#488)
+                "budget_usd": 12.5,
+            },
+        )
     ]
 
     assert _set_org(db, operator, customer, [], None) == ("done", customer)  # back to OCR_MODEL, no budget

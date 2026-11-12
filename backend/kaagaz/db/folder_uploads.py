@@ -6,7 +6,7 @@ docs/architecture.md).
 
 * **Limits** (``effective_limits``): per field the organisation's own (``org_upload_limits``),
   else the platform's (``platform_ai_settings.folder_upload_*``), else the default here. The
-  super admin sets them (``kaagaz_op_set_folder_upload_limits``, 0061c).
+  super admin sets them (``kaagaz_op_set_folder_upload_limits``, 0071).
 * **The plan** (``plan_folders``): the browser sends the picked folder as a list of
   ``{name, parent index}``, parents first. Under the customer's tree lock, in the caller's one
   transaction, the folders are made or merged level by level with set-based statements (two a
@@ -16,7 +16,9 @@ docs/architecture.md).
   - One plan is built at a time per organisation (``plan_busy`` at once, never a wait: a
     transaction advisory lock), and a new upload is refused while another user's upload of the
     organisation still has files waiting and was active in the last 30 minutes
-    (``upload_in_progress``); a re-plan of the same upload, or the same user's new one, is not.
+    (``upload_in_progress``); a re-plan of the same upload, or the same user's new one, is not. A zip
+    the worker unpacks (#522, ``alone=False``, ``zip_document_id``) neither waits for a person's
+    upload nor holds one up.
   - Merge (the default): a same-name folder already there (any letter case, as
     ``folders_sibling_name`` compares, and NFC on both sides, so a folder a Mac made is found)
     is used at every level. Keep separate makes the root ``Name (2)`` or the first free
@@ -42,16 +44,18 @@ from sqlalchemy import Connection, text
 
 from kaagaz.db.folders import (
     _DEPTH,
+    _FREE,
     MAX_DEPTH,
     FolderError,
     FolderNameTaken,
     FolderNotFound,
     FolderTooDeep,
     _lock_tree,
+    _numbered,
 )
 
 GIB = 1024**3
-# The server's defaults (Tushar, 3 Nov 2026) and the most the super admin may set (0061c's CHECKs).
+# The server's defaults (Tushar, 3 Nov 2026) and the most the super admin may set (0071's CHECKs).
 DEFAULT_MAX_FILES, DEFAULT_MAX_GB, DEFAULT_MAX_FOLDERS = 50_000, 5, 10_000
 MOST_FILES, MOST_GB, MOST_FOLDERS = 200_000, 20, 50_000  # 20 GB until a free-disk check exists
 
@@ -84,7 +88,6 @@ def effective_limits(conn: Connection, customer_id: str) -> FolderUploadLimits:
 
 
 # --- the plan ---------------------------------------------------------------------------------
-NAME_MAX = 100  # folders.name's CHECK (0002)
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,14 +117,16 @@ _PLAN_LOCK = text(
 )
 # Another user's upload of the organisation with a file still waiting, upload by upload on the
 # state index, that was active in the last 30 minutes (production QA P1: a stopped or abandoned
-# upload's waiting files blocked the organisation for ever; the browser alone knows it stopped).
+# upload's waiting files blocked the organisation for ever; the browser alone knows it stopped);
+# a zip the worker unpacks (#522) is not one.
 _SENDING = text(
-    "SELECT EXISTS (SELECT 1 FROM folder_uploads u WHERE u.customer_id = :c AND u.user_id <> :usr"
+    "SELECT EXISTS (SELECT 1 FROM folder_uploads u WHERE u.customer_id = :c AND u.zip_document_id IS NULL"
+    " AND u.user_id <> :usr"
     " AND EXISTS (SELECT 1 FROM folder_upload_items i WHERE i.customer_id = :c"
     " AND i.folder_upload_id = u.id AND i.state = 'waiting')"
-    " AND greatest(u.updated_at, (SELECT max(i.updated_at) FROM folder_upload_items i"
-    " WHERE i.customer_id = :c AND i.folder_upload_id = u.id))"
-    " > now() - interval '30 minutes')"
+    " AND (u.updated_at > now() - interval '30 minutes'"
+    " OR EXISTS (SELECT 1 FROM folder_upload_items i WHERE i.customer_id = :c"
+    " AND i.folder_upload_id = u.id AND i.updated_at > now() - interval '30 minutes')))"
 )
 
 
@@ -139,12 +144,6 @@ _REUSE = text(
 _SAME_NAME = (
     "SELECT id, name FROM folders WHERE customer_id = :c AND lower(normalize(name, NFC)) = lower(:name)"
     " AND {where}"
-)
-# The first candidate name no sibling has, compared as folders_sibling_name compares (lower()), NFC.
-_FREE = (
-    "SELECT w.n FROM unnest(CAST(:names AS text[])) WITH ORDINALITY AS w (n, i)"
-    " WHERE NOT EXISTS (SELECT 1 FROM folders f WHERE f.customer_id = :c AND {where}"
-    " AND lower(normalize(f.name, NFC)) = lower(w.n)) ORDER BY w.i LIMIT 1"
 )
 _INSERT_ROOT = text(
     "INSERT INTO folders (customer_id, parent_id, name, created_by, kind)"
@@ -224,15 +223,21 @@ def plan_folders(
     total_bytes: int,
     skipped_count: int,
     limits: FolderUploadLimits,
+    only_new: bool = False,
+    alone: bool = True,
 ) -> Plan:
     """Make or merge the picked folder's tree (module notes) and record the upload. Raises
     PlanRefused, FolderNotFound (the parent, or another user's upload of this id) or
     FolderTooDeep; after PlanRefused("too_many_folders") the caller's transaction must roll
     back. The caller checks the list: entry 0 alone has no parent, every parent is earlier.
+    ``only_new`` ("Add new files only"): the declared files and bytes are checked against the
+    ceilings, as registering counts only the files not already in against the limits.
+    ``alone=False`` (a zip the worker unpacks, #522): never refused upload_in_progress.
     O(F) rows in at most 2H + 12 statements."""
-    if file_count > limits.max_files:
+    most_files, most_bytes = (MOST_FILES, MOST_GB * GIB) if only_new else (limits.max_files, limits.max_bytes)
+    if file_count > most_files:
         raise PlanRefused("too_many_files")
-    if total_bytes > limits.max_bytes:
+    if total_bytes > most_bytes:
         raise PlanRefused("too_large_upload")
     if len(folders) > limits.max_folders:
         raise PlanRefused("too_many_folders")
@@ -241,7 +246,7 @@ def plan_folders(
         raise PlanRefused("plan_busy")
     _lock_tree(conn, customer_id)
     before = conn.execute(_UPLOAD, params).first()
-    if before is None and conn.execute(_SENDING, params).scalar_one():
+    if before is None and alone and conn.execute(_SENDING, params).scalar_one():
         raise PlanRefused("upload_in_progress")
     paths = [folders[0].name]
     for folder in folders[1:]:
@@ -362,9 +367,3 @@ def _root(
     kind = "department" if target == "department" else "custom"
     made = conn.execute(_INSERT_ROOT, {**named, "name": free, "kind": kind}).scalar_one()
     return str(made), str(free), 1
-
-
-def _numbered(name: str, n: int) -> str:
-    """``Name (n)``, the name cut so the whole fits 100 characters. O(len(name))."""
-    suffix = f" ({n})"
-    return name[: NAME_MAX - len(suffix)].rstrip() + suffix

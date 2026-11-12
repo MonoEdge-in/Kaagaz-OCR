@@ -16,6 +16,7 @@ import {
   listFolderItems,
   listFolderUploads,
   planFolderUpload,
+  randomId,
   registerFolderItems,
   uploadFolderItem,
 } from "@/lib/api";
@@ -43,18 +44,20 @@ export function useFolderUploads({
   limits,
   reading,
   onStored,
+  onFolders,
 }: {
   userId: string;
   limits: UploadLimits;
   reading: UploadReading | undefined;
   onStored(): void;
+  onFolders(): void; // #536: its folders are made (planned), or it ended
 }) {
   const [state, dispatch] = useReducer(folderUploadsReducer, EMPTY_FOLDER_UPLOADS);
   const sources = useRef(new Map<string, FolderSource>());
   const stops = useRef(new Set<string>());
   const notSent = useRef(new Map<string, Map<string, NotSentRow>>());
   const listed = useRef(new Set<string>()); // registration finished in this tab
-  const starts = useRef(new Map<string, { target: FolderTarget; merge: boolean }>()); // to list again
+  const starts = useRef(new Map<string, { target: FolderTarget; merge: boolean; onlyNew: boolean }>()); // to list again
   // What the rows show, copied from the refs after each change: at most NOT_SENT_SHOWN rows each.
   const [held, setHeld] = useState<ReadonlySet<string>>(new Set());
   const [notSentShown, setNotSentShown] = useState<Readonly<Record<string, NotSentShown>>>({});
@@ -101,16 +104,19 @@ export function useFolderUploads({
     }
     if (event.type === "phase" && event.phase === "sending") listed.current.add(event.id);
     if (event.type === "sent" && event.outcome !== "failed") onStored();
+    // Ended too: a refused plan's reply may be lost after its folders were made.
+    const ended = event.type === "phase" && (event.phase === "done" || event.phase === "stopped" || event.phase === "refused");
+    if (event.type === "planned" || ended) onFolders();
     dispatch(event);
   }
 
   const stopped = (id: string) => () => stops.current.has(id);
 
-  function start(source: FolderSource, target: FolderTarget, merge: boolean) {
-    const id = crypto.randomUUID();
+  function start(source: FolderSource, target: FolderTarget, merge: boolean, onlyNew: boolean) {
+    const id = randomId();
     hold(id, source);
-    starts.current.set(id, { target, merge });
-    void startFolderUpload(api, { id, userId, source, target, merge, limits }, emit, stopped(id));
+    starts.current.set(id, { target, merge, onlyNew });
+    void startFolderUpload(api, { id, userId, source, target, merge, onlyNew, limits }, emit, stopped(id));
   }
 
   /** The files being sent finish; the row says so meanwhile (production QA, 5 Nov 2026). */

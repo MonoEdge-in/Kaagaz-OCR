@@ -9,7 +9,8 @@
 // UploadStatus (components/documents/UploadArea.tsx).
 // Upload a folder (#484) lives here too, so it keeps going between screens: the folder picker
 // (<input webkitdirectory>), a dropped folder read one at a time, the dialog before Start
-// (FolderUploadDialog), and each folder upload's row in the tray (FolderUploadRow).
+// (FolderUploadDialog), and each folder upload's row in the tray (FolderUploadRow). Before the
+// dialog shows, it asks for this person's last upload of a folder of that name, to choose its place.
 
 import { createContext, useCallback, useContext, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, ReactNode } from "react";
@@ -24,9 +25,9 @@ import { UploadStatus, useUploads } from "@/components/documents/UploadArea";
 import { NOTIFY_MS } from "@/components/documents/uploadQueue";
 import { departmentsOf, lastDepartment } from "@/components/files/departments";
 import { canReview } from "@/components/review/review";
-import { listFolders } from "@/lib/api";
+import { getPreviousFolderUpload, listFolders } from "@/lib/api";
 import { useSession } from "@/lib/session";
-import type { Folder } from "@/lib/types";
+import type { Folder, FolderUploadPrevious } from "@/lib/types";
 
 /** The shell's own file input; a screen with its own (#upload-input) is used first. */
 export const SHELL_UPLOAD_INPUT_ID = "upload-input-shell";
@@ -46,12 +47,16 @@ interface SharedUploads {
   setTrayOpen(open: boolean): void;
   listen(listener: () => void): () => void;
   folders: FolderPicking;
+  /** #536: goes up whenever a folder may be new on the server, for each folder list to ask again. */
+  foldersChanged: number;
+  /** B4: a screen made, renamed, moved, deleted or restored folders: foldersChanged goes up. */
+  foldersEdited(): void;
 }
 
 /** The step before a folder upload starts: a dropped folder still being read, or read. */
 type Pending =
   | { kind: "reading"; name: string; found: number; folderId: string | null; failed?: boolean | string }
-  | { kind: "ready"; source: FolderSource; folderId: string | null };
+  | { kind: "ready"; source: FolderSource; folderId: string | null; previous: FolderUploadPrevious | null };
 
 const UploadsContext = createContext<SharedUploads | null>(null);
 
@@ -78,9 +83,15 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
   const [trayOpen, setTrayOpen] = useState(false);
   const [folders, setFolders] = useState<Folder[]>([]);
   const tree = useMemo(() => buildTree(folders), [folders]);
+  const [folderUploadsChanged, setFolderUploadsChanged] = useState(0);
+  // #536: a folder upload made its folders or ended, Kaagaz filed a read file (feature 28), or a
+  // drop settled. Each part only goes up, so the sum does too.
+  // shortcut: a file is followed until it is understood; seen in the moment between that and its
+  // filing committing, it is never seen filed, and the list waits for the next change or a visit.
+  const foldersChanged = uploads.settled + uploads.filed + folderUploadsChanged;
 
-  // The folders, for "Filed into Invoices" in the tray and the department a file goes
-  // into; asked again as each drop settles, since Kaagaz may have made a folder for it.
+  // The folders, for "Filed into Invoices" in the tray, "In Tax" in a folder upload's rows and
+  // the department a file goes into; asked again whenever new folders may exist.
   useEffect(() => {
     let cancelled = false;
     listFolders().then(
@@ -92,7 +103,7 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [uploads.settled]);
+  }, [foldersChanged]);
 
   const listen = useCallback((listener: () => void) => {
     listeners.current.add(listener);
@@ -100,12 +111,31 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
       listeners.current.delete(listener);
     };
   }, []);
-  const folderUploads = useFolderUploads({ userId: me.user.id, limits: uploads.limits, reading: uploads.reading, onStored: notify });
+  const folderUploads = useFolderUploads({
+    userId: me.user.id,
+    limits: uploads.limits,
+    reading: uploads.reading,
+    onStored: notify,
+    onFolders: () => setFolderUploadsChanged((n) => n + 1),
+  });
   const folderInput = useRef<HTMLInputElement | null>(null);
   const pickFor = useRef<{ folderId: string | null; again: string | null }>({ folderId: null, again: null });
   const dropQueue = useRef<{ entries: FileSystemDirectoryEntry[]; folderId: string | null }>({ entries: [], folderId: null });
   const readCount = useRef(0); // a newer read, or Cancel, makes an older read's result go unused
   const [pending, setPending] = useState<Pending | null>(null);
+
+  /** The dialog, once this person's last upload of a folder of this name is known (null: none, or not known). */
+  function showReady(source: FolderSource, folderId: string | null) {
+    const read = readCount.current;
+    void getPreviousFolderUpload(source.picked.rootName)
+      .then(
+        (reply) => reply.previous,
+        () => null,
+      )
+      .then((previous) => {
+        if (read === readCount.current) setPending({ kind: "ready", source, folderId, previous });
+      });
+  }
 
   function readNextDrop() {
     const entry = dropQueue.current.entries.shift();
@@ -117,7 +147,7 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
       if (read === readCount.current) setPending({ kind: "reading", name: entry.name, found, folderId });
     }).then(
       (picked) => {
-        if (read === readCount.current) setPending({ kind: "ready", source: { picked, manifest: buildManifest(picked) }, folderId });
+        if (read === readCount.current) showReady({ picked, manifest: buildManifest(picked) }, folderId);
       },
       () => {
         if (read === readCount.current) setPending({ kind: "reading", name: entry.name, found: 0, folderId, failed: true });
@@ -155,11 +185,15 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
     if (!picked) return;
     const source = { picked, manifest: buildManifest(picked) };
     if (again !== null) folderUploads.resume(again, source);
-    else setPending({ kind: "ready", source, folderId });
+    else {
+      readCount.current += 1; // a read of a drop still going goes unused
+      showReady(source, folderId);
+    }
   }
 
   // useUploads gives a new queue object each render, so this is new each render too.
-  const shared: SharedUploads = { uploads, trayOpen, setTrayOpen, listen, folders: folderPicking };
+  const foldersEdited = () => setFolderUploadsChanged((n) => n + 1);
+  const shared: SharedUploads = { uploads, trayOpen, setTrayOpen, listen, folders: folderPicking, foldersChanged, foldersEdited };
 
   function onChoose(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []);
@@ -209,8 +243,9 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
           folderId={pending.folderId}
           admin={me.user.role === "admin"}
           limits={uploads.limits.folder_upload}
-          onStart={(target, merge) => {
-            folderUploads.start(pending.source, target, merge);
+          previous={pending.previous}
+          onStart={(target, merge, onlyNew) => {
+            folderUploads.start(pending.source, target, merge, onlyNew);
             setTrayOpen(true);
             closePending();
           }}

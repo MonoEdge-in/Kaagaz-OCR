@@ -41,7 +41,8 @@ def _refresh(db: Database, fake: OpenRouterFake) -> catalog.Refreshed:
 def test_a_refresh_saves_the_candidates_and_a_model_no_longer_listed_stays_ineligible(
     db: Database, fake: OpenRouterFake
 ) -> None:
-    # Production QA B7: a run before left PRO verified ('g9' below); start from no verify pass.
+    # QA T2: the shared PRO row as a first refresh finds it, whatever ran before (this test's
+    # own verify-models pass below, or another test's).
     _owner(
         db,
         "UPDATE model_catalog SET verified_prompt_version = NULL, verified_at = NULL WHERE id = :m",
@@ -73,6 +74,29 @@ def test_a_refresh_saves_the_candidates_and_a_model_no_longer_listed_stays_ineli
     assert tuple(_owner(db, _ROW, {"m": PRO})[0]) == ("Gemini 3.1 Pro, renamed", 2, True, "g9")
     # Never deleted: no longer listed, so no longer eligible.
     assert tuple(_owner(db, _ROW, {"m": SONNET})[0])[2] is False
+
+
+def test_a_refresh_saves_a_price_a_request_and_an_image_and_0_once_they_are_not_listed(
+    db: Database, fake: OpenRouterFake
+) -> None:
+    """#488 review (R3): the refresh writes pricing.request and pricing.image as they are listed
+    now, never an old one kept. Changed on purpose (#488, 4 Nov 2026): one left out of a listed
+    price is 0 (OpenRouter leaves out a charge it doesn't make), not NULL."""
+    priced: dict[str, Any] = copy.deepcopy(FIXTURE["models"])
+    priced["data"][0]["pricing"] |= {"request": "0", "image": "0.001238"}
+    assert priced["data"][0]["id"] == PRO
+
+    def with_prices(request: Recorded) -> Reply:
+        return Reply(200, priced) if request.action == "models" else listed(request)
+
+    query = "SELECT price_request_usd, price_image_usd FROM model_catalog WHERE id = :m"
+    fake.responder = with_prices
+    _refresh(db, fake)
+    [(request, image)] = _owner(db, query, {"m": PRO})
+    assert (request, float(image)) == (0, 0.001238)
+    fake.responder = listed
+    _refresh(db, fake)
+    assert [tuple(row) for row in _owner(db, query, {"m": PRO})] == [(0, 0)]
 
 
 def test_a_refresh_that_cannot_read_a_list_changes_nothing(db: Database, fake: OpenRouterFake) -> None:
@@ -137,3 +161,25 @@ def test_l2_a_refresh_names_each_env_model_the_catalogue_lacks_or_holds_ineligib
     ]
     off = make_settings(ocr_model=SONNET, model_chat=gone, model_enabled=False)
     assert catalog.check_env_models(db, off) == []  # MODEL_CHAT is not used with AI off
+
+
+def test_review_564_with_the_ulc_switch_on_an_ocr_model_that_cannot_lead_it_is_named(
+    db: Database, fake: OpenRouterFake, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Review of #564: while OCR_ULTRA_LOW_COST is on, OCR_MODEL (Ultra low cost's lead unless a
+    priced Gemini default is chosen) that is not a priced Gemini taking minimal thinking is named
+    at error after each refresh and at worker start (never a start-up that fails)."""
+    settings = make_settings(openrouter_api_key=KEY, openrouter_base_url=fake.url, ocr_model=PRO)
+    catalog.refresh(db, OpenRouterClient(settings), settings, today=TODAY, pause=lambda seconds: None)
+    switched = make_settings(ocr_model=PRO, ocr_ultra_low_cost=True)
+    [(efforts,)] = _owner(db, "SELECT efforts FROM model_catalog WHERE id = :m", {"m": PRO})
+    _owner(db, "UPDATE model_catalog SET efforts = '{low,high}' WHERE id = :m", {"m": PRO})
+    try:
+        caplog.set_level(logging.ERROR, logger="kaagaz.worker")
+        assert catalog.check_env_models(db, switched) == [("OCR_ULTRA_LOW_COST", PRO, "ulc_not_ready")]
+        assert [r.__dict__["code"] for r in caplog.records if r.getMessage() == "env model not usable"] == [
+            "ulc_not_ready"
+        ]
+        assert catalog.check_env_models(db, make_settings(ocr_model=PRO)) == []  # off: not asked
+    finally:
+        _owner(db, "UPDATE model_catalog SET efforts = :e WHERE id = :m", {"e": efforts, "m": PRO})

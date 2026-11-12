@@ -15,7 +15,8 @@ import fileStyles from "@/components/files/Files.module.css";
 import { FILES_TEXT } from "@/components/files/words";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
-import { ApiError, createFolder, listFolders, updateFolder } from "@/lib/api";
+import { createFolder, listFolders, updateFolder } from "@/lib/api";
+import { errorWords } from "@/lib/errorWords";
 import type { Folder } from "@/lib/types";
 import styles from "./Admin.module.css";
 
@@ -36,7 +37,7 @@ export function DepartmentsPanel({ initial }: { initial?: Folder[] }) {
         if (!cancelled) setFolders(reply.items);
       },
       (caught: unknown) => {
-        if (!cancelled) setError(caught instanceof ApiError ? caught.message : "The departments did not load.");
+        if (!cancelled) setError(`The departments did not load. ${errorWords(caught)}`);
       },
     );
     return () => {

@@ -14,6 +14,20 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends libgl1 libglib2.0-0t64 \
     && rm -rf /var/lib/apt/lists/*
 
+# Word, PowerPoint and old Excel files (#522) are converted by headless LibreOffice
+# (kaagaz/reading/office.py): Writer, Calc and Impress without their windows, and no
+# Java. The fonts their pages are drawn in: Noto (Noto Sans Devanagari, so Marathi and
+# Hindi render), and the ones metric-compatible with Arial, Times New Roman and Courier
+# New (Liberation) and with Calibri (Carlito), so a page breaks where it did in Word.
+# The build stops unless soffice runs and a Devanagari font is there.
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui \
+        fonts-noto-core fonts-liberation fonts-crosextra-carlito \
+    && rm -rf /var/lib/apt/lists/* \
+    && soffice --version \
+    && fc-list :lang=hi family | grep -q "Noto Sans Devanagari"
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -62,4 +76,7 @@ ENV KAAGAZ_COMMIT=$KAAGAZ_COMMIT
 ENV FORWARDED_ALLOW_IPS="*"
 
 EXPOSE 8000
-CMD ["uvicorn", "kaagaz.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# No "server: uvicorn" on a reply, and an idle connection kept 75 s, longer than Caddy keeps one
+# (keepalive 60s in infra/caddy/Caddyfile), so Caddy never reuses a connection uvicorn just closed
+# (a 502). docker-compose.yml's api command repeats these flags.
+CMD ["uvicorn", "kaagaz.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-server-header", "--timeout-keep-alive", "75"]

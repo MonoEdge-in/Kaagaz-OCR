@@ -46,6 +46,13 @@
   PRD 5 G6) is not a try either: the job is handed back for
   KEY_PROBLEM_DEFER_SECONDS (300) and the error goes on up, so the loop still
   pauses. Every other BackendUnavailable goes up as before and the lease runs out.
+* #473 (Tushar, 2 Nov 2026: only Mistral's organisations wait): a handler's
+  ``BackendUnavailable("mistral_key")`` (Mistral's key or credit) or ``("mistral_setup")``
+  (Mistral chosen but not set up here) hands the job back for KEY_PROBLEM_DEFER_SECONDS (300)
+  and ``("mistral")`` (Mistral not answering) for MISTRAL_DEFER_SECONDS (60), or for the
+  error's ``seconds`` (Mistral's switch-off) when longer, plus 0-20% jitter so the waiting
+  documents don't all come back at once (review, 2 Nov 2026). None is a try, and none goes up:
+  the loop never pauses, so the next job, a Gemini organisation's too, runs at once.
 
 PROVISIONAL: the retry back-off has no jitter; that needs the queue settings, which are Vrushit's.
 
@@ -57,6 +64,7 @@ jobs.)
 """
 
 import contextlib
+import random
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from typing import Protocol
@@ -67,6 +75,7 @@ from sqlalchemy.exc import TimeoutError as PoolTimeout
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.ports import LeaseLost, WorkQueue
+from kaagaz.reading.mistral_ocr import MISTRAL, MISTRAL_KEY, MISTRAL_SETUP
 from kaagaz.settings import LEASE_RENEW_SECONDS
 
 # Called by a long-running handler to say "still working", which renews the
@@ -80,6 +89,18 @@ RETRIES_EXHAUSTED = "retries_exhausted"
 # (kaagaz.pipeline), and how long its job waits: the fix is a person's.
 KEY_PROBLEM = "gemini_key"
 KEY_PROBLEM_DEFER_SECONDS = 300
+# Every reader's BackendUnavailable name for a problem only a person fixes (logged at error by
+# the pipeline; it fails an accuracy check): Gemini's key, and #473 Mistral's key or credit and
+# Mistral chosen but not set up here.
+KEY_PROBLEMS = frozenset({KEY_PROBLEM, MISTRAL_KEY, MISTRAL_SETUP})
+# #473: how long a document on Mistral OCR waits, at least, by its BackendUnavailable name.
+MISTRAL_DEFER_SECONDS = 60
+MISTRAL_WAITS = {
+    MISTRAL_KEY: KEY_PROBLEM_DEFER_SECONDS,
+    MISTRAL_SETUP: KEY_PROBLEM_DEFER_SECONDS,
+    MISTRAL: MISTRAL_DEFER_SECONDS,
+}
+MISTRAL_JITTER = (1.0, 1.2)  # the wait times 1 to 1.2 (review, 2 Nov 2026)
 
 # Holds what a job needs for its whole try (its fair-share slot), or raises Deferred.
 Admit = Callable[[Job], AbstractContextManager[object]]
@@ -226,6 +247,11 @@ class Worker:
             except Deferred as deferred:
                 self._queue.defer(delivery.receipt, deferred.seconds)
             except BackendUnavailable as error:
+                wait = MISTRAL_WAITS.get(str(error))
+                if wait is not None:  # #473: this document waits; the worker goes on
+                    seconds = max(wait, error.seconds) * random.uniform(*MISTRAL_JITTER)  # noqa: S311
+                    self._queue.defer(delivery.receipt, int(seconds))
+                    return True
                 if str(error) == KEY_PROBLEM:
                     with contextlib.suppress(LeaseLost):  # another delivery owns it: nothing to hand back
                         self._queue.defer(delivery.receipt, KEY_PROBLEM_DEFER_SECONDS)

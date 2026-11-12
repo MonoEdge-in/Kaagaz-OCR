@@ -70,9 +70,11 @@ describe("sign-in and admin calls", () => {
       totp_enabled: false,
       two_step_turned_off: false,
       can_delete_forever: false,
+      email_confirmed: true, // #457
     },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope: "admin" },
+    providers: [], // #457 review: the sign-in providers switched on
   };
   const USER: AdminUser = {
     id: "u2",
@@ -173,12 +175,13 @@ describe("sign-in and admin calls", () => {
   });
 
   // Tushar, 30 Oct 2026: an admin turns their own two-step sign-in off, and on again.
+  // Changed on purpose (#457 with #460): on the routes every role uses.
   it("turns the admin's own two-step off with the password and a code", async () => {
     const off = { ...ME, user: { ...ME.user, totp_enabled: false, two_step_turned_off: true } };
     reply(200, off);
     expect(await turnOffTwoStep("a long password", "123456")).toEqual(off);
     expect(sent(0)).toMatchObject({
-      url: "/api/auth/admin/2fa/off",
+      url: "/api/auth/2fa/off",
       method: "POST",
       headers: { "X-Requested-With": "kaagaz" },
       body: { password: "a long password", code: "123456" },
@@ -190,7 +193,7 @@ describe("sign-in and admin calls", () => {
     reply(200, setup);
     expect(await startTwoStep("a long password")).toEqual(setup);
     expect(sent(0)).toMatchObject({
-      url: "/api/auth/admin/2fa/start",
+      url: "/api/auth/2fa/start",
       method: "POST",
       headers: { "X-Requested-With": "kaagaz" },
       body: { password: "a long password" },

@@ -58,8 +58,6 @@ DEFAULT_PROVIDER = "google-vertex"
 # OCR_MODEL and MODEL_CHAT when unset (Tushar, 16 Oct 2026): with no super admin setting,
 # Gemini 3.8 Flash scans and answers; embeddings keep MODEL_EMBED.
 DEFAULT_MODEL = "google/gemini-3.8-flash"
-# #488 (Ultra low cost): OCR_PAGE_CEILING_PAISE's lowest and highest, a page's read in paise.
-ULC_CEILING_PAISE = (20, 55)
 # The model vendors (the part of a model id before "/") the operator may allow, a ceiling
 # apart from the providers (features 25-27, council 15 Oct 2026, S1). Tushar decided on 15
 # Oct 2026 that Sonnet 5.5 is allowed by default, so the default is google and anthropic;
@@ -139,11 +137,48 @@ def _openrouter_base_url(value: str) -> str:
     parts = urllib.parse.urlsplit(value)
     if parts.username is not None or parts.password is not None or parts.query or parts.fragment:
         raise SettingsError("OPENROUTER_BASE_URL must have no user, password, query or fragment")
+    return _https_url(value, "OPENROUTER_BASE_URL")
+
+
+def _app_url(value: str) -> str:
+    """APP_URL: an https origin (http only on a loopback host), with no user, path, query or
+    fragment, since every emailed link starts with it. Kept without a trailing slash."""
+    return _https_url(value, "APP_URL", "")
+
+
+def _redirect_uri(value: str, provider: str) -> str:
+    """{PROVIDER}_REDIRECT_URI (#457): where the provider sends the browser back, exactly as
+    registered with it. https (http only on a loopback host), no user, query or fragment, and
+    the path /api/auth/oidc/<provider>/callback."""
+    return _https_url(value, f"{provider.upper()}_REDIRECT_URI", f"/api/auth/oidc/{provider}/callback")
+
+
+_LOOPBACK_NOTE = " (http only for localhost, 127.0.0.1 or ::1)"
+# Each setting's own words when ``_https_url`` refuses it (a redirect URI's name its path).
+_URL_MESSAGES = {
+    "OPENROUTER_BASE_URL": "OPENROUTER_BASE_URL must be an https URL" + _LOOPBACK_NOTE,
+    "APP_URL": "APP_URL must be an https origin such as https://kaagaz.example.com" + _LOOPBACK_NOTE,
+}
+
+
+def _https_url(value: str, name: str, path: str | None = None) -> str:
+    """``value`` when it is https (http only on a loopback host) with no user, password, query
+    or fragment and, when ``path`` is given, exactly that path (``""``: an origin, "/" too);
+    kept without a trailing slash. Else ``SettingsError`` in ``name``'s own words."""
+    parts = urllib.parse.urlsplit(value)
     host = parts.hostname or ""
     secure = parts.scheme == "https" and bool(host)
-    if not (secure or (parts.scheme == "http" and host in _LOOPBACK_HOSTS)):
+    paths = {"", "/"} if path == "" else {path}
+    if (
+        parts.username is not None
+        or parts.password is not None
+        or parts.query
+        or parts.fragment
+        or (path is not None and parts.path not in paths)
+        or not (secure or (parts.scheme == "http" and host in _LOOPBACK_HOSTS))
+    ):
         raise SettingsError(
-            "OPENROUTER_BASE_URL must be an https URL (http only for localhost, 127.0.0.1 or ::1)"
+            _URL_MESSAGES.get(name) or f"{name} must be an https URL ending {path}" + _LOOPBACK_NOTE
         )
     return value.rstrip("/")
 
@@ -158,6 +193,11 @@ class Settings:
     # that is not a superuser, does not own the tables and has no BYPASSRLS, so
     # row level security always applies (docs/architecture.md).
     database_url: str = field(repr=False)  # it can hold a password
+    # The API's super admin engine's limited login (#479, 0067: ``kaagaz_ops``, which can only
+    # switch into kaagaz_operator); DATABASE_URL while unset, so nothing changes until it is
+    # set. DATABASE_URL itself is the app's login (``kaagaz_api``) in Compose's api and worker
+    # once .env sets APP_DATABASE_URL, and the owner's in migrate and until then.
+    ops_database_url: str = field(repr=False)
     db_app_role: str
 
     # File storage (S3 API: SeaweedFS on the laptop, Amazon S3 in AWS).
@@ -339,6 +379,11 @@ class Settings:
     # seconds, 1 to 60; past it the question is answered without its plan and aspects. A
     # follow-up's call keeps MODEL_TIMEOUT_SECONDS. Optional: 4 when unset.
     answer_plan_timeout_seconds: float
+    # Streaming Ask (#535): POST /api/chat/stream gives up after this many seconds, 5 to 600, and
+    # says so ("This answer is taking too long..."); nothing is saved. It is also the streamed draft's
+    # own limit (its idle one is MODEL_TIMEOUT_SECONDS). Optional: 180 when unset (a Precision answer
+    # read in parts took 133 s on the test server, 7 Nov 2026).
+    answer_stream_max_seconds: float
     # PRD 5 context and memory (sections CX and M; council 9 Oct 2026). Optional: unset is
     # the PRD's value, so an older .env keeps working. model_context_tokens is the chat
     # model's context window (M1), the one every budget uses. The chat's documents are given
@@ -411,6 +456,36 @@ class Settings:
     db_worker_statement_timeout_seconds: int = 900
     db_worker_lock_timeout_seconds: int = 300
     db_idle_in_transaction_timeout_seconds: int = 900  # both
+    # Email (#457 phase 0): Amazon SES from EMAIL_FROM, in SES_REGION. Off unless
+    # EMAIL_ENABLED=true; on, EMAIL_FROM and APP_URL are required. APP_URL is the https origin
+    # the links in an email open (http only on a loopback host).
+    email_enabled: bool = False
+    email_from: str | None = None
+    ses_region: str = "ap-south-1"
+    app_url: str | None = None
+    # The super admin's address for operations alerts, sent from EMAIL_FROM: an organisation's
+    # reading paused (#478) and the server's disk alert (#480, infra/ec2/disk-alert.sh), both
+    # with EMAIL_ENABLED on or off (kaagaz/ops_alert.py). Optional: unset, none is sent.
+    ops_alert_email: str | None = None
+    # Sign in with Google (#457 phase 1). Off unless GOOGLE_SIGNIN_ENABLED=true; on, the
+    # client id, secret and redirect URI are required. The redirect URI is https (http only
+    # on a loopback host) and ends /api/auth/oidc/google/callback.
+    google_signin_enabled: bool = False
+    google_client_id: str | None = None
+    google_client_secret: str | None = field(default=None, repr=False)
+    google_redirect_uri: str | None = None
+    # Mistral OCR, the second page reader the operator may choose per organisation (#473, Tushar,
+    # 2 Nov 2026). Optional: unset, Mistral can't be chosen. The key is a secret repr never shows,
+    # checked as OPENROUTER_API_KEY is. mistral_zdr_approved: zero data retention confirmed with
+    # Mistral (council 2 Nov 2026); off unless MISTRAL_ZDR_APPROVED=true.
+    mistral_api_key: str | None = field(default=None, repr=False)
+    mistral_zdr_approved: bool = False
+    # Production's Ultra low cost switch (#488 there, 65ee12e3; #564 [V]): with ocr_ultra_low_cost
+    # (off unless set to true; needs OCR_ENGINE=gemini) Ultra low cost is the platform's reader
+    # while the super admin has saved none, at ocr_page_ceiling_paise a page (20-55, 55 when unset)
+    # unless a ceiling is saved (``db.models.effective_settings``). A saved reader always wins.
+    ocr_ultra_low_cost: bool = False
+    ocr_page_ceiling_paise: int = 55
     # Folder upload (#484, council 3 Nov 2026): a folder upload's file sends have their own rate
     # bucket, folder_upload_calls_per_minute a user; this API process takes at most
     # folder_upload_files_at_once_per_org of one organisation's files at once and
@@ -418,17 +493,19 @@ class Settings:
     folder_upload_calls_per_minute: int = 600
     folder_upload_files_at_once_per_org: int = 4
     folder_upload_files_at_once: int = 8
-    # Ultra low cost (#488, production, no migration): with ocr_ultra_low_cost (off unless set
-    # to true; needs OCR_ENGINE=gemini) every scanned page is read in the compact reply at minimal
-    # thinking, and no read of a page is billed past ocr_page_ceiling_paise (20-55; 55 when unset;
-    # INR_PER_USD in kaagaz.reading.ocr). Off: every page is read exactly as before.
-    ocr_ultra_low_cost: bool = False
-    ocr_page_ceiling_paise: int = 55
+
+    @property
+    def mistral_ready(self) -> bool:
+        """Mistral is set up on this server: its key and zero data retention, both."""
+        return self.mistral_api_key is not None and self.mistral_zdr_approved
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
         env = _Env(os.environ if environ is None else environ)
         session_secret = env.secret("SESSION_SECRET")
+        # Off unless set to true, as SELF_SIGNUP_ENABLED.
+        email_enabled = env.optional("EMAIL_ENABLED") is not None and env.boolean("EMAIL_ENABLED")
+        google_on = env.optional("GOOGLE_SIGNIN_ENABLED") is not None and env.boolean("GOOGLE_SIGNIN_ENABLED")
         totp_encryption_key = env.secret("TOTP_ENCRYPTION_KEY")
         if totp_encryption_key == session_secret:
             raise SettingsError("TOTP_ENCRYPTION_KEY must differ from SESSION_SECRET")
@@ -563,10 +640,13 @@ class Settings:
             )
         if openrouter_api_key is not None and _API_KEY.fullmatch(openrouter_api_key) is None:
             raise SettingsError("OPENROUTER_API_KEY must be printable ASCII with no spaces")
+        mistral_api_key = env.optional("MISTRAL_API_KEY")
+        if mistral_api_key is not None and _API_KEY.fullmatch(mistral_api_key) is None:
+            raise SettingsError("MISTRAL_API_KEY must be printable ASCII with no spaces")
         ultra_low_cost = env.optional("OCR_ULTRA_LOW_COST") is not None and env.boolean("OCR_ULTRA_LOW_COST")
         if ultra_low_cost and ocr_engine != "gemini":
             raise SettingsError("OCR_ULTRA_LOW_COST=true needs OCR_ENGINE=gemini: no model reads the pages")
-        page_ceiling_paise = env.between_or("OCR_PAGE_CEILING_PAISE", *ULC_CEILING_PAISE, default=55)
+        page_ceiling_paise = env.between_or("OCR_PAGE_CEILING_PAISE", 20, 55, default=55)  # 0073's range
         queue_url = env.text("QUEUE_URL")
         queue_express_url = (
             None if env.optional("QUEUE_EXPRESS_URL") is None else env.url("QUEUE_EXPRESS_URL")
@@ -575,6 +655,7 @@ class Settings:
             raise SettingsError("QUEUE_EXPRESS_URL must name a queue other than QUEUE_URL")
         return cls(
             database_url=env.text("DATABASE_URL"),
+            ops_database_url=env.optional("OPS_DATABASE_URL") or env.text("DATABASE_URL"),
             db_app_role=env.text("DB_APP_ROLE"),
             storage_endpoint_url=env.optional("STORAGE_ENDPOINT_URL"),
             storage_region=env.text("STORAGE_REGION"),
@@ -623,8 +704,6 @@ class Settings:
             ocr_page_concurrency=env.positive("OCR_PAGE_CONCURRENCY"),
             careful_early_max_pages=env.at_least("CAREFUL_EARLY_MAX_PAGES", 0, default=0),
             ocr_seconds_per_page=env.positive_or("OCR_SECONDS_PER_PAGE", 60),
-            ocr_ultra_low_cost=ultra_low_cost,
-            ocr_page_ceiling_paise=page_ceiling_paise,
             cost_saving_hard_lines_max=env.between_or("COST_SAVING_HARD_LINES_MAX", 1, 60, default=12),
             cost_saving_hard_share=env.number_in("COST_SAVING_HARD_SHARE", 0.05, 1.0, default=0.4),
             cost_saving_crop_pad=env.number_in("COST_SAVING_CROP_PAD", 0.1, 2.0, default=0.5),
@@ -697,6 +776,7 @@ class Settings:
             and env.boolean("ANSWER_TRANSLATE_QUESTION"),
             model_translate_timeout_seconds=translate_timeout,
             answer_plan_timeout_seconds=env.number_in("ANSWER_PLAN_TIMEOUT_SECONDS", 1.0, 60.0, default=4.0),
+            answer_stream_max_seconds=env.number_in("ANSWER_STREAM_MAX_SECONDS", 5.0, 600.0, default=180.0),
             model_context_tokens=model_context_tokens,
             answer_whole_doc_tokens=whole_doc_tokens,
             answer_swift_input_tokens=env.at_least("ANSWER_SWIFT_INPUT_TOKENS", 0, default=30_000),
@@ -710,6 +790,24 @@ class Settings:
             rate_limit_per_minute=env.integer("RATE_LIMIT_PER_MINUTE"),
             chat_questions_per_minute=env.at_least("CHAT_QUESTIONS_PER_MINUTE", 1, default=20),
             log_level=env.text("LOG_LEVEL"),
+            email_enabled=email_enabled,
+            email_from=env.text("EMAIL_FROM") if email_enabled else env.optional("EMAIL_FROM"),
+            ses_region=env.optional("SES_REGION") or "ap-south-1",
+            app_url=_app_url(env.text("APP_URL")) if email_enabled else env.optional("APP_URL"),
+            ops_alert_email=env.optional("OPS_ALERT_EMAIL"),
+            google_signin_enabled=google_on,
+            google_client_id=env.text("GOOGLE_CLIENT_ID") if google_on else env.optional("GOOGLE_CLIENT_ID"),
+            google_client_secret=env.text("GOOGLE_CLIENT_SECRET")
+            if google_on
+            else env.optional("GOOGLE_CLIENT_SECRET"),
+            google_redirect_uri=_redirect_uri(env.text("GOOGLE_REDIRECT_URI"), "google")
+            if google_on
+            else env.optional("GOOGLE_REDIRECT_URI"),
+            mistral_api_key=mistral_api_key,
+            mistral_zdr_approved=env.optional("MISTRAL_ZDR_APPROVED") is not None
+            and env.boolean("MISTRAL_ZDR_APPROVED"),
+            ocr_ultra_low_cost=ultra_low_cost,
+            ocr_page_ceiling_paise=page_ceiling_paise,
         )
 
 

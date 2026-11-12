@@ -46,6 +46,12 @@ MESSAGES = {
     "folder_cycle": "A folder can't go inside itself or one of its own folders.",
     "folder_too_deep": "Folders can be at most 100 levels deep.",
     "folder_not_empty": "This folder isn't empty. Move or delete what is inside it first.",
+    "folder_upload_running": "An upload into this folder is still running. Try again when it finishes.",
+    "folder_live": "This folder is already in Documents. Refresh the page.",  # #542
+    "folder_not_emptied": "Some files in this folder were not deleted. Try again.",  # #542
+    "folder_changed": (
+        "Something was added to this folder while it was being deleted. Nothing was deleted. Try again."
+    ),
     "not_needs_review": "This value doesn't need review any more.",
     "not_in_trash": "Only a document in Trash can be deleted forever.",
     # PRD 2 X1 (PROVISIONAL wording); issue 407: or one still being read RETRY_STUCK_HOURS on.

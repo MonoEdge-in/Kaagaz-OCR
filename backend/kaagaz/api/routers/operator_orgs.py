@@ -8,10 +8,26 @@ one ``kaagaz_op_*`` function, which writes its own ``platform_audit`` row.
   organisation and its first admin; the temporary password is in this reply ONCE
   (stored only as its hash, never logged) and must be changed at the first sign-in.
   A name too short or an obvious test word ("asd") is a 400 (``names.org_name_ok``).
-* ``POST /operator/orgs/{id}/disable`` {code} (step-up) and ``/enable``.
+* ``POST /operator/orgs/{id}/disable`` {code} (step-up) and ``/enable``. Enable refuses a
+  pending organisation (409): only Approve makes it active.
+* ``POST /operator/orgs/{id}/approve`` (#457 phase 0): a password sign-up waiting as
+  ``pending`` becomes active, only once one of its admins confirmed their e-mail (409
+  otherwise), audited ``org.approved`` in both logs. The list says ``admin_email_confirmed``.
+  No step-up, as enable. Not behind EMAIL_ENABLED: an organisation left pending when email
+  was switched off must still be approvable.
 * ``PUT /operator/orgs/{id}/autofile`` {granted} (feature 28): allow or stop auto-filing;
   its admin then switches it on in Settings. Stopping it switches it off too. No step-up,
   as an organisation's models. The list says ``autofile_granted`` and ``autofile_on``.
+* ``GET`` and ``PUT /operator/orgs/{id}/admin-two-step`` {required, code} (#481, Tushar, 3 Nov
+  2026; 0068, step-up): ``{required}``, whether the organisation's admins must have two-step
+  sign-in. Off by default; while on, an admin who turned it off sets it up at sign-in and none
+  may turn it off. Audited ``org.admin_two_step_on`` or ``_off`` in both logs.
+* ``GET`` and ``PUT /operator/orgs/{id}/google-signin`` {on: true, false or null, code} (#507,
+  0074, step-up): ``{on, platform_on, effective, google_only_roles, domains}``: the organisation's
+  own value (null: follow the platform), the platform's, the one in force (with the server's
+  GOOGLE_SIGNIN_ENABLED), and its admin's "Google only" roles and domains, read-only. A change of
+  the value in force signs out its people with an approved connection (the connections are
+  kept); off, every password signs in. Audited ``org.google_signin_set`` in both logs.
 * ``POST /operator/orgs/{id}/schedule-delete`` {name, code} (PR 4, step-up): a DISABLED
   organisation whose name is typed exactly is removed for good after a grace period
   (7 days, PROVISIONAL), by the worker; ``/cancel-delete`` {code} (step-up) during it
@@ -40,12 +56,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import RowMapping
 
-from kaagaz.api import totp
+from kaagaz.api import emails, oidc, totp
 from kaagaz.api.auth import CurrentOperator, OperatorSession, current_operator, hash_password
 from kaagaz.api.context import AppContext, get_context, get_operator_db
 from kaagaz.api.errors import ApiError
@@ -56,6 +72,7 @@ from kaagaz.api.secret_box import SecretBoxError
 from kaagaz.api.twostep import box, digits, unix
 from kaagaz.api.views import iso
 from kaagaz.db import operator_orgs as orgs_sql
+from kaagaz.db import users as users_sql
 from kaagaz.db.engine import OperatorDatabase
 from kaagaz.db.operator_orgs import Change, Outcome
 
@@ -75,6 +92,9 @@ _REFUSALS = {
     "name_mismatch": (409, "name_mismatch", "Type the organisation's name exactly."),  # audited
     "not_deleting": (409, "conflict", "This organisation is not being deleted."),
     "purging": (409, "conflict", "The grace period is over: the organisation is being removed."),
+    "pending": (409, "conflict", "This organisation is waiting for approval. Use Approve."),
+    "not_pending": (409, "conflict", "This organisation is not waiting for approval."),
+    "unconfirmed": (409, "conflict", "The organisation's admin has not confirmed their email yet."),
 }
 
 
@@ -113,6 +133,20 @@ class AutofileBody(BaseModel):
     granted: bool
 
 
+class AdminTwoStepBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    required: bool
+    code: str = Field(min_length=1, max_length=MAX_CODE)
+
+
+class GoogleSigninBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    on: bool | None  # required; null: follow the platform
+    code: str = Field(min_length=1, max_length=MAX_CODE)
+
+
 class StepUpBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -132,6 +166,8 @@ def create_org(body: NewOrgBody, operator: OperatorSession, db: OperatorDb, cont
     if not org_name_ok(name):
         raise ApiError(400, "bad_request", ORG_NAME_PROBLEM)
     temporary = secrets.token_urlsafe(TEMPORARY_PASSWORD_BYTES)
+    with context.db.system() as conn:  # a stale, unconfirmed sign-up gives the e-mail back (0063)
+        users_sql.release_stale_signup(conn, email)
     with db.operator() as conn:
         outcome = orgs_sql.create_customer(
             conn,
@@ -162,6 +198,14 @@ def enable_org(
     return _set_status(db, context, operator, str(customer_id), "active", None)
 
 
+@router.post("/{customer_id}/approve")
+def approve_org(customer_id: uuid.UUID, operator: OperatorSession, db: OperatorDb) -> dict[str, Any]:
+    with db.operator() as conn:
+        outcome = orgs_sql.approve_customer(conn, operator.operator_id, str(customer_id))
+    _check(db, operator, outcome)
+    return {"organisation": {"id": str(customer_id), "status": "active", "changed": True}}
+
+
 @router.put("/{customer_id}/autofile")
 def set_org_autofile(
     customer_id: uuid.UUID, body: AutofileBody, operator: OperatorSession, db: OperatorDb
@@ -173,6 +217,69 @@ def set_org_autofile(
     _check(db, operator, outcome)
     changed = outcome.code == "done"
     return {"organisation": {"id": str(customer_id), "autofile_granted": body.granted, "changed": changed}}
+
+
+@router.get("/{customer_id}/admin-two-step")
+def get_admin_two_step(customer_id: uuid.UUID, operator: OperatorSession, db: OperatorDb) -> dict[str, bool]:
+    with db.operator() as conn:
+        required = orgs_sql.admin_two_step(conn, operator.operator_id, str(customer_id))
+    if required is None:  # an unknown organisation, or the operator was disabled meanwhile
+        raise ApiError(404, "not_found")
+    return {"required": required}
+
+
+@router.put("/{customer_id}/admin-two-step")
+def set_admin_two_step(
+    customer_id: uuid.UUID,
+    body: AdminTwoStepBody,
+    operator: OperatorSession,
+    db: OperatorDb,
+    context: Context,
+) -> dict[str, bool]:
+    """A fresh code first; the organisation's admins are held to it from their next request."""
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = orgs_sql.set_admin_two_step(
+            conn, operator.operator_id, str(customer_id), required=body.required, step=step_up.step
+        )
+    _check(db, operator, outcome, step_up)
+    return {"required": body.required}
+
+
+@router.get("/{customer_id}/google-signin")
+def get_google_signin(
+    customer_id: uuid.UUID, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, Any]:
+    with db.operator() as conn:
+        row = orgs_sql.google_signin(conn, operator.operator_id, str(customer_id))
+    if row is None:  # an unknown organisation, or the operator was disabled meanwhile
+        raise ApiError(404, "not_found")
+    on, platform_on = row["org_on"], bool(row["platform_on"])
+    return {
+        "on": on,
+        "platform_on": platform_on,
+        "effective": oidc.enabled(context.settings, "google") and (platform_on if on is None else bool(on)),
+        "google_only_roles": list(row["only_roles"]),
+        "domains": list(row["domains"]),
+    }
+
+
+@router.put("/{customer_id}/google-signin")
+def set_google_signin(
+    customer_id: uuid.UUID,
+    body: GoogleSigninBody,
+    operator: OperatorSession,
+    db: OperatorDb,
+    context: Context,
+) -> dict[str, Any]:
+    """A fresh code first; the organisation's people follow it from their next request."""
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = orgs_sql.set_google_signin(
+            conn, operator.operator_id, str(customer_id), on=body.on, step=step_up.step
+        )
+    _check(db, operator, outcome, step_up)
+    return get_google_signin(customer_id, operator, db, context)
 
 
 @router.post("/{customer_id}/schedule-delete")
@@ -267,11 +374,17 @@ def reset_admin_two_step(
     body: StepUpBody,
     operator: OperatorSession,
     db: OperatorDb,
+    background: BackgroundTasks,
     context: Context,
 ) -> dict[str, Any]:
-    """Two-step off (the password alone signs in again), every session ends."""
+    """Two-step off (the password alone signs in again), every session ends; a security
+    notice is emailed to the admin while email is on (#457)."""
     step_up = _step_up(db, context, operator, body.code)
-    return _change(db, context, operator, customer_id, user_id, "reset_totp", step_up)
+    reply = _change(db, context, operator, customer_id, user_id, "reset_totp", step_up)
+    admin = reply["admin"]
+    notice = emails.two_step_reset(admin["name"])
+    emails.after(background, "two_step_reset", emails.send, context, admin["email"], "two_step_reset", notice)
+    return reply
 
 
 def _set_status(
@@ -385,6 +498,7 @@ def _org(row: RowMapping) -> dict[str, Any]:
         "last_activity_at": _when(row["last_activity_at"]),
         "autofile_granted": bool(row["autofile_granted"]),  # feature 28
         "autofile_on": bool(row["autofile_on"]),
+        "admin_email_confirmed": bool(row["admin_email_confirmed"]),  # Approve needs it (#457)
     }
 
 

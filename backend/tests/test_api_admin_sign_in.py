@@ -45,7 +45,7 @@ ADMIN_SESSION_REFUSED = {
     }
 }
 ENROL_FIRST = "Set up two-step sign-in to continue. Admins need it to keep your organisation safe."
-WRONG_CODE = "That code is not right. Use the newest code from your authenticator app."
+WRONG_CODE = "That code is not right. Wait for the next code and try again."
 
 
 def _secret_from(grouped: str) -> bytes:
@@ -53,12 +53,12 @@ def _secret_from(grouped: str) -> bytes:
 
 
 def _turn_on(client: TestClient, password: str = PASSWORD) -> httpx.Response:
-    return client.post("/api/auth/admin/2fa/start", json={"password": password}, headers=CSRF)
+    return client.post("/api/auth/2fa/start", json={"password": password}, headers=CSRF)
 
 
 def _turn_off(client: TestClient, password: str = PASSWORD, code: str | None = None) -> httpx.Response:
     body = {"password": password} if code is None else {"password": password, "code": code}
-    return client.post("/api/auth/admin/2fa/off", json=body, headers=CSRF)
+    return client.post("/api/auth/2fa/off", json=body, headers=CSRF)
 
 
 def _session_client(api: Api, customer_id: str, user_id: str, *, scope: str) -> TestClient:
@@ -393,7 +393,7 @@ def test_turning_off_needs_the_password_and_a_right_code_each_failure_counted(db
     assert signed.client.get("/api/admin/users").status_code == 200  # still signed in
 
 
-def test_turning_off_when_already_off_is_409_and_needs_an_admin_session(db: Database) -> None:
+def test_turning_off_when_already_off_is_409_and_needs_a_session(db: Database) -> None:
     api = Api(db)
     signed = _turned_off(api)
 
@@ -403,8 +403,9 @@ def test_turning_off_when_already_off_is_409_and_needs_an_admin_session(db: Data
     assert reply.json()["error"] == {"code": "conflict", "message": "Two-step sign-in is already off."}
     assert api.user_state(signed.customer_id, signed.user_id)["failed_logins"] == 0
     assert _turn_off(api.client(), code="123456").status_code == 401
+    # Changed on purpose (#457 with #460): one route for every role; a member's is off too.
     member = api.sign_in(signed.customer_id, "member")
-    assert _turn_off(member.client, code="123456").json() == ADMIN_SESSION_REFUSED
+    assert _turn_off(member.client, code="123456").status_code == 409
 
 
 def test_turning_back_on_clears_turned_off_and_the_code_is_needed_again(db: Database) -> None:
@@ -451,7 +452,9 @@ def test_another_admins_reset_means_set_it_up_again_not_turned_off(db: Database)
     assert (again.status_code, again.json()["error"]["code"]) == (403, "mfa_enrol_required")
 
 
-def test_turned_off_what_cant_be_undone_still_needs_two_step(db: Database) -> None:
+def test_turned_off_deleting_a_tag_still_needs_two_step_and_delete_forever_a_password(db: Database) -> None:
+    # Changed on purpose (#538, Tushar, 7 Nov 2026): Delete forever asks for the password again
+    # instead of two-step (test_api_delete_forever_password); deleting a tag is unchanged.
     api = Api(db)
     signed = _turned_off(api)
     document = api.add_document(signed.customer_id, deleted_at=api.clock())
@@ -463,9 +466,18 @@ def test_turned_off_what_cant_be_undone_still_needs_two_step(db: Database) -> No
     forever = signed.client.delete(f"/api/documents/{document}/permanent", headers=CSRF)
     untag = signed.client.delete(f"/api/tags/{tag}", headers=CSRF)
 
-    assert (forever.status_code, forever.json()) == (403, refused)
+    assert (forever.status_code, forever.json()["error"]["code"]) == (403, "password_confirm_required")
     assert (untag.status_code, untag.json()) == (403, refused)
     assert signed.client.get(f"/api/documents/{document}").status_code == 200  # still there
+    # Allowing a member to delete forever too, pointed where the switch is now (#457 with #460).
+    member_id, _ = api.add_user(signed.customer_id, "member")
+    allow = signed.client.put(
+        f"/api/admin/users/{member_id}/delete-forever", json={"allowed": True}, headers=CSRF
+    )
+    assert (allow.status_code, allow.json()["error"]["message"]) == (
+        403,
+        "Turn on two-step sign-in in Account to allow this.",
+    )
 
 
 # --- codes -------------------------------------------------------------------------------
@@ -523,7 +535,7 @@ def test_wrong_codes_count_toward_the_lockout(db: Database) -> None:
     assert right.status_code == 401
     state = api.user_state(customer_id, admin.user_id)
     assert state["failed_logins"] == api.settings.login_max_failures
-    assert state["locked_until"] is not None
+    assert state["locked_until"] is None  # changed on purpose (A2): this address's lock, in memory
     assert "auth.locked" in api.audit_actions(customer_id)
 
 

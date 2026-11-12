@@ -9,7 +9,7 @@ import base64
 import json
 import re
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from sqlalchemy import text
@@ -17,10 +17,23 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from kaagaz.api.app import create_app
 from kaagaz.api.auth import (
+    NOTICE_SECONDS,
+    OIDC_SECONDS,
+    PENDING_SECONDS,
     SESSION_COOKIE,
+    ConfirmClaims,
+    FlowClaims,
+    PendingClaims,
     SessionClaims,
     hash_password,
+    read_flow,
+    read_notice,
+    read_pending,
     read_session,
+    sign_confirm,
+    sign_flow,
+    sign_notice,
+    sign_pending,
     sign_session,
     verify_password,
 )
@@ -111,6 +124,80 @@ def test_token_with_a_changed_customer_is_refused() -> None:
     payload["cid"] = "33333333-3333-4333-8333-333333333333"
     forged = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
     assert read_session(forged + "." + signature, secret, now=1_000) is None
+
+
+# --- the provider sign-in's flow cookie and second-step token (#457 phase 1) ------------------
+
+SECRET = "a-test-secret-that-is-long-enough-000000"
+CID = "22222222-2222-4222-8222-222222222222"
+
+
+def _flow(**changes: Any) -> FlowClaims:
+    values: dict[str, Any] = {
+        "provider": "google",
+        "mode": "connect",
+        "state": "made-up-state",
+        "nonce": "made-up-nonce",
+        "verifier": "v" * 64,
+        "next_path": "/settings/sign-in",
+        "user_id": UID,
+        "customer_id": CID,
+        "session_version": 3,
+        "expires_at": 1_000 + OIDC_SECONDS,
+    }
+    return FlowClaims(**{**values, **changes})
+
+
+def test_flow_round_trip() -> None:
+    connect = _flow()
+    signin = _flow(mode="signin", user_id=None, customer_id=None, session_version=None, next_path="/")
+    assert read_flow(sign_flow(connect, SECRET), SECRET, now=1_000) == connect
+    assert read_flow(sign_flow(signin, SECRET), SECRET, now=1_000) == signin
+
+
+def test_flow_refused_when_expired_tampered_or_signed_for_another_purpose() -> None:
+    token = sign_flow(_flow(), SECRET)
+    assert read_flow(token, SECRET, now=1_000 + OIDC_SECONDS) is None  # expired
+    assert read_flow(token, "another-secret-that-is-long-enough-0000", now=1_000) is None
+    body, signature = token.split(".")
+    assert read_flow(body + "x." + signature, SECRET, now=1_000) is None
+    confirm = sign_confirm(
+        ConfirmClaims(user_id=UID, customer_id=CID, session_version=3, expires_at=2_000, session_id=UID),
+        SECRET,
+    )
+    assert read_flow(confirm, SECRET, now=1_000) is None
+    assert read_session(token, SECRET, now=1_000) is None
+
+
+def test_flow_mode_must_be_signin_or_connect() -> None:
+    assert read_flow(sign_flow(_flow(mode="link"), SECRET), SECRET, now=1_000) is None
+    # a connect carries its user, a sign-in carries none
+    assert read_flow(sign_flow(_flow(user_id=None), SECRET), SECRET, now=1_000) is None
+    assert read_flow(sign_flow(_flow(mode="signin"), SECRET), SECRET, now=1_000) is None
+
+
+def test_pending_round_trip_and_expiry() -> None:
+    claims = PendingClaims(
+        provider="google", user_id=UID, customer_id=CID, session_version=3, expires_at=1_000 + PENDING_SECONDS
+    )
+    token = sign_pending(claims, SECRET)
+    assert read_pending(token, SECRET, now=1_000) == claims
+    assert read_pending(token, SECRET, now=1_000 + PENDING_SECONDS) is None
+    assert read_flow(token, SECRET, now=1_000) is None
+
+
+def test_pending_is_not_a_session() -> None:
+    claims = PendingClaims(
+        provider="google", user_id=UID, customer_id=CID, session_version=1, expires_at=2_000
+    )
+    assert read_session(sign_pending(claims, SECRET), SECRET, now=1_000) is None
+
+
+def test_notice_round_trip_and_expiry() -> None:
+    token = sign_notice("ramesh.k@gmail.com", 1_000 + NOTICE_SECONDS, SECRET)
+    assert read_notice(token, SECRET, now=1_000) == "ramesh.k@gmail.com"
+    assert read_notice(token, SECRET, now=1_000 + NOTICE_SECONDS) is None
+    assert read_pending(token, SECRET, now=1_000) is None
 
 
 # --- rate limiter ----------------------------------------------------------------
@@ -218,13 +305,28 @@ def test_signed_out_visitors_behind_caddy_each_have_their_own_bucket() -> None:
     dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
     assert re.findall(r"^ENV FORWARDED_ALLOW_IPS=(.+)$", dockerfile, re.MULTILINE) == ['"*"']
     app = _offline_client(rate_limit_per_minute=2).app
-    # uvicorn and starlette type the ASGI callables differently.
-    client = TestClient(cast(Any, ProxyHeadersMiddleware(cast(Any, app), trusted_hosts="*")))
+    client = TestClient(ProxyHeadersMiddleware(app, trusted_hosts="*"))  # type: ignore[arg-type]  # ASGI types differ
     first, second = {"X-Forwarded-For": "203.0.113.7"}, {"X-Forwarded-For": "198.51.100.9"}
     for _ in range(2):
         assert client.get("/api/auth/me", headers=first).status_code == 401
     assert client.get("/api/auth/me", headers=first).status_code == 429  # this visitor: used up
     assert client.get("/api/auth/me", headers=second).status_code == 401  # another: their own
+
+
+def test_the_sign_in_pages_server_calls_are_keyed_on_the_visitor_it_forwards() -> None:
+    """A7 (stability pass, 7 Nov 2026): the login page's server side (frontend
+    app/login/signInOptions.ts) calls /auth/session from the frontend container with the visitor's
+    address in X-Forwarded-For, so each visitor keeps their own bucket. From outside the header is
+    never believed: Caddy, with no trusted_proxies, replaces whatever a visitor sent."""
+    caddyfile = (Path(__file__).resolve().parents[2] / "infra" / "caddy" / "Caddyfile").read_text(
+        encoding="utf-8"
+    )
+    assert "trusted_proxies" not in caddyfile
+    app = _offline_client(rate_limit_per_minute=1).app
+    frontend = TestClient(ProxyHeadersMiddleware(app, trusted_hosts="*"), client=("172.18.0.5", 40000))  # type: ignore[arg-type]  # ASGI types differ
+    assert frontend.get("/api/auth/session", headers={"X-Forwarded-For": "203.0.113.7"}).status_code != 429
+    assert frontend.get("/api/auth/session", headers={"X-Forwarded-For": "203.0.113.7"}).status_code == 429
+    assert frontend.get("/api/auth/session", headers={"X-Forwarded-For": "198.51.100.9"}).status_code != 429
 
 
 def test_rate_limiter_retry_after_is_the_wait_for_the_next_token() -> None:
@@ -325,10 +427,16 @@ def test_login_sets_the_cookie_and_me_works(db: Database) -> None:
             "must_change_password": False,
             "totp_enabled": False,
             "two_step_turned_off": False,
+            "two_step_required": False,  # Changed on purpose (#481, 0068): an admin's only
             "can_delete_forever": False,
+            "email_confirmed": True,  # Changed on purpose (#457): true while email is off, no banner
+            "google_link_required": False,  # Changed on purpose (#507): the limited session
+            "google_unchecked": False,  # Changed on purpose (#507 review): a link not checked yet
         },
         "customer": {"id": customer_id, "name": "Sharma Traders"},
         "session": {"scope": "app"},
+        "recent_connections": [],  # Changed on purpose (#457 phase 1): the "Google connected" banner
+        "providers": [],  # Changed on purpose (#457 review): the providers switched on, for the menus
     }
     cookie = reply.headers["set-cookie"]
     assert cookie.startswith(f"{SESSION_COOKIE}=")
@@ -405,7 +513,10 @@ def test_the_session_probe_answers_200_signed_in_or_not(db: Database) -> None:
     """Issue 378: GET /auth/session is /auth/me with no 401 for a visit with no session (no
     cookie, a signed-out one, a disabled user's), so the browser logs no expected error."""
     api = Api(db)
-    assert api.client().get("/api/auth/session").json() == {"signed_in": False}  # no cookie at all
+    assert api.client().get("/api/auth/session").json() == {
+        "signed_in": False,
+        "providers": [],
+    }  # no cookie at all
     signed = api.new_signed()
     reply = signed.client.get("/api/auth/session")
     assert reply.status_code == 200
@@ -413,7 +524,7 @@ def test_the_session_probe_answers_200_signed_in_or_not(db: Database) -> None:
     with db.customer(signed.customer_id) as conn:
         conn.execute(text("UPDATE users SET disabled = true WHERE id = :u"), {"u": signed.user_id})
     reply = signed.client.get("/api/auth/session")
-    assert (reply.status_code, reply.json()) == (200, {"signed_in": False})
+    assert (reply.status_code, reply.json()) == (200, {"signed_in": False, "providers": []})
     assert signed.client.get("/api/auth/me").status_code == 401  # /auth/me is unchanged
 
 

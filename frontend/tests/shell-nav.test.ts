@@ -79,9 +79,11 @@ describe("the session gate", () => {
       totp_enabled: true, // every admin has two-step sign-in (16 Oct 2026; tests/admin-two-step.test.ts)
       two_step_turned_off: false,
       can_delete_forever: false,
+      email_confirmed: true, // #457
     },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope },
+    providers: [], // #457 review: the sign-in providers switched on
   });
 
   it("reads the scope", () => {
@@ -134,8 +136,9 @@ describe("where to sign in", () => {
   // Critical #5: once a session existed, the sign-in page is a full page load,
   // so nothing of that person stays in the tab's memory.
   it("adds why, for the sign-in page's note", () => {
-    expect(endedPath("/documents/d-1")).toBe("/login?ended=1");
-    expect(endedPath("/admin")).toBe("/login?next=/admin&ended=1");
+    // Changed on purpose (issue 468): a session's end comes back to the screen it was on.
+    expect(endedPath("/documents/d-1")).toBe("/login?next=%2Fdocuments%2Fd-1&ended=1");
+    expect(endedPath("/admin")).toBe("/login?next=%2Fadmin&ended=1");
     expect(signedOutPath("/documents")).toBe("/login?signed_out=1");
     expect(signedOutPath("/admin")).toBe("/login?next=/admin&signed_out=1");
     expect(signedOutMessage({ signed_out: "1" })).toBe("You signed out.");
@@ -146,7 +149,8 @@ describe("where to sign in", () => {
 
   it("loads a fresh page when a session existed, and keeps a quick redirect on a first visit", () => {
     const session = readFileSync(join(__dirname, "..", "lib", "session.tsx"), "utf8");
-    expect(session).toContain("leavePage(endedPath(pathname))");
+    // Changed on purpose (#468 review, SEC1): the path only, never its query.
+    expect(session).toContain("leavePage(endedPath(window.location.pathname))");
     expect(session).toMatch(/if \(event\.persisted\) window\.location\.reload\(\)/);
     // Put away for the back button: blank, so it never shows before the reload.
     expect(session).toMatch(/if \(event\.persisted\) document\.documentElement\.style\.visibility = "hidden"/);
@@ -228,8 +232,9 @@ describe("one nav list for the sidebar and the drawer", () => {
 
   it("renders the one ShellMenu element in both the sidebar and the drawer", () => {
     expect(shell.match(/<ShellMenu\b/g)).toHaveLength(1);
-    expect(shell.match(/\{menu\}/g)).toHaveLength(2);
-    expect(shell).toMatch(/className=\{styles\.sidebar\}[\s\S]*\{menu\}[\s\S]*<Drawer[\s\S]*\{menu\}/);
+    // Changed on purpose (#507 review): the sidebar shows it only outside the limited session.
+    expect(shell.match(/\{(chrome && )?menu\}/g)).toHaveLength(2);
+    expect(shell).toMatch(/className=\{styles\.sidebar\}[\s\S]*\{chrome && menu\}[\s\S]*<Drawer[\s\S]*\{menu\}/);
   });
 
   it("hard-codes no Review or Admin link in any shell component", () => {
@@ -256,7 +261,7 @@ describe("one nav list for the sidebar and the drawer", () => {
     expect(account).toMatch(/<ConfirmDialog[\s\S]*open=\{confirming\}[\s\S]*onConfirm=\{\(\) => void endSession\("everywhere"\)\}/);
     expect(account).toContain("logoutEverywhere()");
     expect(account).not.toContain("window.confirm");
-    expect(shell).toContain("<AccountMenu me={me} />");
+    expect(shell).toContain("<AccountMenu me={me} onChanged={refresh} />");
   });
 });
 
@@ -287,7 +292,8 @@ describe("the Review link", () => {
 
   it("asks the server only for a reviewer or an admin", () => {
     const shell = readFileSync(join(__dirname, "..", "components", "shell", "AppShell.tsx"), "utf8");
-    expect(shell).toContain("const reviewer = canReview(me.user.role);");
+    // Changed on purpose (#507 review): never in the limited session, which the server refuses.
+    expect(shell).toContain("const reviewer = chrome && canReview(me.user.role);");
     expect(shell).toMatch(/if \(!reviewer\) return;\s*let cancelled = false;\s*listReview\(\{ limit: 1 \}\)/);
     expect(shell).toContain("const reviewCount = reviewer ? reviewCountText(reviewTotal) : null;");
     expect(menu("member", "23")).not.toContain("review");

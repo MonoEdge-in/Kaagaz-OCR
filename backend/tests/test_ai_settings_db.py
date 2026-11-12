@@ -139,7 +139,8 @@ def test_ask_at_none_drafts_with_no_model_and_a_level_caps_the_request(db: Datab
     assert member.client.post("/api/chat", json={"question": "totals?"}, headers=CSRF).status_code == 200
     assert api.answers.choices[-1] is models.NO_MODEL
     put(member, "me", {"ask": "low"})
-    body = {"question": "totals?", "thinking": "high"}
+    # Changed on purpose (#535): another question, as "totals?" at low again is a repeat of the first.
+    body = {"question": "totals this month?", "thinking": "high"}
     member.client.post("/api/chat", json=body, headers=CSRF)
     choice = api.answers.choices[-1]
     assert choice is not None and choice.thinking == "low"  # the request's own level is capped

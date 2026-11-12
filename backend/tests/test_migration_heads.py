@@ -27,8 +27,78 @@ def test_each_migration_has_its_own_revision_id_and_its_file_starts_with_it() ->
     assert [name for name, revision in revisions.items() if not name.startswith(f"{revision}_")] == []
 
 
-def test_alembic_finds_one_head() -> None:
+def _scripts() -> ScriptDirectory:
     config = Config()
     config.set_main_option("script_location", str(BACKEND / "migrations"))
-    scripts = ScriptDirectory.from_config(config)
-    assert scripts.get_heads() == [max(_revision(path) for path in VERSIONS.glob("*.py"))]
+    return ScriptDirectory.from_config(config)
+
+
+def test_alembic_finds_one_head() -> None:
+    assert _scripts().get_heads() == [max(_revision(path) for path in VERSIONS.glob("*.py"))]
+
+
+def test_productions_0061c_is_a_branch_off_0061b_that_0071_merges() -> None:
+    """Production ran production-with-folder-upload's 0061c (#484, 4 Nov 2026), so Alembic must
+    find it; 0071 merges it with 0070, so the line still has one head."""
+    scripts = _scripts()
+    assert scripts.get_revision("0061c").down_revision == "0061b"
+    assert scripts.get_revision("0071").down_revision == ("0070", "0061c")
+
+
+def test_0071_is_the_merge_alone_and_0072_adds_after_it() -> None:
+    """#484, 5 Nov 2026: the test server ran 0071 as #509 merged it, so 0071 is the merge alone
+    (it never runs there again) and "Add new files only" is 0072's, after it."""
+    scripts = _scripts()
+    assert scripts.get_revision("0072").down_revision == "0071"
+    merge = (VERSIONS / "0071_folder_upload.py").read_text(encoding="utf-8")
+    assert "op.execute" not in merge and "items_counted" not in merge.split('"""')[-1]
+
+
+def test_googles_0074_comes_after_0073() -> None:
+    """#507's Google sign-in was 0072 on its own branch; with folder upload's 0072 and Ultra low
+    cost's 0073 first (5 Nov 2026), it is 0074. Changed on purpose (#516): the head is now 0075,
+    the merge of 0074 with production's 0061d."""
+    scripts = _scripts()
+    assert scripts.get_revision("0073").down_revision == "0072"
+    assert scripts.get_revision("0074").down_revision == "0073"
+
+
+def test_productions_0061d_is_a_branch_off_0061c_that_0075_merges() -> None:
+    """Production ran the storage limit's 0061d (#516, 5 Nov 2026), so Alembic must find it; 0075
+    merges it with 0074 and adds nothing (as 0071), so the line still has one head."""
+    scripts = _scripts()
+    assert scripts.get_revision("0061d").down_revision == "0061c"
+    assert scripts.get_revision("0075").down_revision == ("0074", "0061d")
+    merge = (VERSIONS / "0075_org_storage_limit_merge.py").read_text(encoding="utf-8")
+    assert "op.execute" not in merge
+    # Changed on purpose (#521, 6 Nov 2026): 0077 (the exact overlap) follows it;
+    # the line has no 0076 (Tushar dropped confirmed copies).
+    assert scripts.get_revision("0077").down_revision == "0075"
+
+
+def test_guard_rails_0077a_and_0077b_follow_0077() -> None:
+    """#502, #520 (Tushar, 6 Nov 2026): logout's ended sessions (0077a) and Ensemble held by the
+    reading pause (0077b) follow versioning's 0077, on one line. Changed on purpose (#522): the
+    file kinds' 0078 follows 0077b, so 0077b is no longer the head."""
+    scripts = _scripts()
+    assert scripts.get_revision("0077a").down_revision == "0077"
+    assert scripts.get_revision("0077b").down_revision == "0077a"
+    # Changed on purpose (#524, 6 Nov 2026): the amount reasons' 0077c follows 0077b.
+    assert scripts.get_revision("0077c").down_revision == "0077b"
+
+
+def test_the_file_kinds_0078_the_zip_unpack_s_0080_and_trashed_folders_0081_follow() -> None:
+    """#522 (6 Nov 2026): 0078 (the file kinds) after the amount reasons' 0077c, then 0080 (a zip
+    unpacked into a folder; no 0079 when it was written). Changed on purpose (#542): a folder in
+    Trash's 0081 follows 0080."""
+    scripts = _scripts()
+    assert scripts.get_revision("0078").down_revision == "0077c"
+    assert scripts.get_revision("0080").down_revision == "0078"
+    assert scripts.get_revision("0081").down_revision == "0080"
+
+
+def test_the_trashed_folder_parent_grant_0082_follows_0081_and_is_the_one_head() -> None:
+    """A13 (stability pass, 7 Nov 2026)."""
+    scripts = _scripts()
+    assert scripts.get_revision("0082").down_revision == "0081"
+    assert scripts.get_heads() == ["0082"]

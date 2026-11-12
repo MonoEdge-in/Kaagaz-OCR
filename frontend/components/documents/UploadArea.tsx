@@ -37,6 +37,8 @@ import Link from "next/link";
 import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
 import type { DragEvent, ReactNode } from "react";
 import { InStatusBar } from "@/components/shell/StatusBar";
+import { VersionChoice } from "@/components/versions/VersionChoice";
+import type { Chosen } from "@/components/versions/VersionChoice";
 import { VERSION_TEXT, suggestionsText } from "@/components/versions/words";
 import { Icon } from "@/components/ui/Icon";
 import { beingRead } from "@/components/viewer/reprocess";
@@ -45,6 +47,7 @@ import {
   ApiError,
   getBatch,
   getUploadLimits,
+  isStorageFull,
   restoreDocument,
   undoAutofile,
   uploadDocument,
@@ -56,8 +59,16 @@ import { progressSignature } from "@/lib/poll";
 import { advance, barValue } from "@/lib/progress";
 import type { ShownProgress } from "@/lib/progress";
 import { useSession } from "@/lib/session";
+import { leavingPage } from "@/lib/sessionChannel";
 import { useTick } from "@/lib/tick";
-import type { BatchView, DocumentSummary, UploadLimits, UploadReader, UploadResult } from "@/lib/types";
+import type {
+  BatchView,
+  DocumentSummary,
+  UploadLimits,
+  UploadReader,
+  UploadResult,
+  VersionSuggestion,
+} from "@/lib/types";
 import { usePoll } from "@/lib/usePoll";
 import {
   NOT_FILED_TEXT,
@@ -66,8 +77,10 @@ import {
   batchStore,
   filedText,
   inBatches,
+  keptCounts,
   leftText,
   newBatchId,
+  notSentText,
   readStored,
   rowKind,
   statusBarText,
@@ -86,6 +99,7 @@ import type { FolderTree } from "./folderTree";
 import { ALL_DOCUMENTS, libraryHref } from "./libraryQuery";
 import {
   FALLBACK_UPLOAD_LIMITS,
+  canSendAgain,
   estimateIngestSeconds,
   flaggedText,
   scanPhrase,
@@ -101,18 +115,18 @@ import type { UploadState } from "./logic";
 import { checkPages } from "./pageCount";
 import { capReaders, effectiveOf, startReader, useAiSettings } from "@/lib/aiSettings";
 import { DUPLICATE_READER_NOTE, offersChoice, pickedReader, readerOptions, readingToSend } from "./readers";
-import { EMPTY_QUEUE, UPLOADS_AT_ONCE, askBatches, createSlots, followed, isBusy, queueReducer } from "./uploadQueue";
+import { EMPTY_QUEUE, UPLOADS_AT_ONCE, askBatches, createSlots, followed, isBusy, queueReducer, uploadsAtRisk } from "./uploadQueue";
 import type { Followed, UploadEntry } from "./uploadQueue";
 import { NO_TIMES, jobFraction, nextShown, stageOf, valueText } from "./uploadStages";
 import type { Shown, Stage, StageTimes } from "./uploadStages";
 import { WrapName } from "./WrapName";
+import { ZipUnpackNote } from "./ZipUnpackNote";
+import { zipNote } from "./zipUnpack";
 import styles from "./Documents.module.css";
 
 type Start = (onProgress: (fraction: number) => void, onSent: () => void, onWaiting: UploadWaiting) => Promise<UploadResult>;
-
-/** Not sent because of the connection or the server, not because the file was refused: it can be sent again. */
-const canRetry = (caught: unknown) =>
-  !(caught instanceof ApiError) || caught.status === 0 || caught.status === 429 || caught.status >= 500;
+/** One drop of files: the API's words once one of them was refused for storage (#516). */
+type Drop = { full: string | null };
 
 // The reading picked in "Read with" during this visit; null: the organisation's default.
 let sessionReader: string | null = null;
@@ -177,10 +191,14 @@ export function useUploads(onUploaded: () => void) {
     dispatch({ type: "change", key, change: { state } });
   }
 
-  // The batches with a file still being read, and the drops from before a reload not seen yet.
+  // The batches with a file still being read, or Ready and still understood (then filed, feature 28:
+  // #536 hears of a folder Kaagaz made), and the drops from before a reload not seen yet.
   const following = useMemo(() => {
     const ids = new Set<string>();
-    for (const entry of queue.entries) if (entry.batchId && entry.state.kind === "reading") ids.add(entry.batchId);
+    for (const entry of queue.entries) {
+      const understood = entry.state.kind === "done" && entry.state.document?.understanding === true;
+      if (entry.batchId && (entry.state.kind === "reading" || understood)) ids.add(entry.batchId);
+    }
     for (const batch of stored) if (restored.has(batch.id) && !views[batch.id]) ids.add(batch.id);
     return [...ids];
   }, [queue.entries, stored, views, restored]);
@@ -206,7 +224,7 @@ export function useUploads(onUploaded: () => void) {
     again: (round) =>
       round.skipped ||
       round.failed ||
-      round.views.some((view) => view.documents.some((document) => beingRead(document.status))),
+      round.views.some((view) => view.documents.some((document) => beingRead(document.status) || document.understanding === true)),
     signature: (round) => JSON.stringify(round.views.map((view) => [view.id, progressSignature(view.documents)])),
   });
   // Driven by the list, not by send(): the poll reads the task of the last render, so it
@@ -219,18 +237,28 @@ export function useUploads(onUploaded: () => void) {
 
   // Remember each drop with the counts the batch API does not keep: already uploaded, not sent.
   useEffect(() => {
-    const counted = stored.map((batch) => {
-      const rows = queue.entries.filter((entry) => entry.batchId === batch.id);
-      if (rows.length === 0) return batch;
-      const already = rows.filter((entry) => rowKind(entry) === "already").length;
-      const notSent = rows.filter((entry) => entry.state.kind === "error").length;
-      return { ...batch, already, notSent };
-    });
+    const counted = stored.map((batch) =>
+      keptCounts(batch, queue.entries.filter((entry) => entry.batchId === batch.id), restored.has(batch.id)),
+    );
     writeStored(batchStore(), counted, Date.now());
-  }, [stored, queue.entries]);
+  }, [stored, queue.entries, restored]);
+
+  // #468: leaving while a file is still waiting or sending asks first; the question goes once
+  // every file has reached the server (or stopped).
+  const atRisk = uploadsAtRisk(queue.entries);
+  useEffect(() => {
+    if (!atRisk) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      if (leavingPage()) return; // a session's end or a sign-out reloads on purpose; the uploads stop anyway
+      event.preventDefault();
+      event.returnValue = ""; // older browsers ask only with this set
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [atRisk]);
 
   /** Send it: sending, saving, then (follow) followed while it is read; or say why not. */
-  async function send(key: string, start: Start, follow: boolean) {
+  async function send(key: string, start: Start, follow: boolean, drop?: Drop) {
     const times: StageTimes = { startedAt: null, sentAt: null, repliedAt: null };
     let fraction = 0;
     dispatch({ type: "change", key, change: { state: { kind: "sending", fraction: 0 }, times } });
@@ -272,18 +300,28 @@ export function useUploads(onUploaded: () => void) {
       onUploaded();
     } catch (caught) {
       stopped.current ??= sessionChangedMessage(caught);
-      const retry = stopped.current === null && canRetry(caught) && kept.current.has(key);
-      update(key, { kind: "error", message: uploadErrorText(caught, navigator.onLine), retry });
+      const retry = stopped.current === null && canSendAgain(caught) && kept.current.has(key);
+      const message = uploadErrorText(caught, navigator.onLine, retry);
+      if (drop && isStorageFull(caught)) drop.full ??= message;
+      update(key, { kind: "error", message, retry });
     }
   }
 
   /** Count a PDF's or TIFF's pages (kept for the time estimate), then send it, unless it has too many. */
-  async function checkThenSend(key: string, file: File, start: Start, follow: boolean) {
-    if (notSent(key)) return;
+  async function checkThenSend(key: string, file: File, start: Start, follow: boolean, drop?: Drop) {
+    if (notSent(key) || dropFull(key, drop)) return;
     const { pages, problem } = await checkPages(file, limits.max_pages);
     dispatch({ type: "change", key, change: { pages } });
     if (problem) update(key, { kind: "error", message: problem });
-    else if (!notSent(key)) await send(key, start, follow);
+    else if (!notSent(key) && !dropFull(key, drop)) await send(key, start, follow, drop);
+  }
+
+  /** True, and the file says why, once another file of its drop was refused for storage: the
+   * rest of the drop is not started (#516). */
+  function dropFull(key: string, drop?: Drop): boolean {
+    if (!drop?.full) return false;
+    update(key, { kind: "error", message: drop.full, retry: false });
+    return true;
   }
 
   /** True, and the file says why, once another account has signed in here. */
@@ -329,8 +367,9 @@ export function useUploads(onUploaded: () => void) {
     setStored((before) => [...batches.map(({ batchId }) => ({ id: batchId, at, already: 0, notSent: 0 })), ...before]);
     const sending = added.filter((item) => item.entry.state.kind === "waiting");
     for (const { entry, start } of sending) kept.current.set(entry.key, start);
+    const drop: Drop = { full: null };
     // A few at a time across every drop, so many drops do not multiply them.
-    await Promise.all(sending.map(({ entry, file, start }) => slots(() => checkThenSend(entry.key, file, start, true))));
+    await Promise.all(sending.map(({ entry, file, start }) => slots(() => checkThenSend(entry.key, file, start, true, drop))));
   }
 
   /** Queue one file as the next version of a document, with its note (V9, optional). It has
@@ -385,11 +424,12 @@ export function useUploads(onUploaded: () => void) {
     setStored((batches) => batches.filter((batch) => busy.has(batch.id)));
   }
 
-  const { entries, finished, settled } = queue;
+  const { entries, finished, settled, filed } = queue;
   return {
     entries,
     finished,
     settled,
+    filed,
     limits,
     limitsLoaded,
     reader: reader ?? startReader(limits.readers, scanLevel),
@@ -633,8 +673,13 @@ export function BatchTray({
   folderRows?: ReactNode; // #484: one row a folder upload, above the drops of files
   checkFailing?: boolean; // the batches have not answered for a while (useUploads)
 }) {
+  // #521 review: what was decided on a row, by suggestion id, kept until Clear finished, so a
+  // later poll that no longer asks it never takes the words and Undo away.
+  const [decided, setDecided] = useState<ReadonlyMap<string, TrayDecided>>(() => new Map());
   if (entries.length === 0 && folderRows === null) return null;
   const settled = entries.some((entry) => !isBusy(entry));
+  const keep = (suggestion: VersionSuggestion, chosen: Chosen, undone: boolean) =>
+    setDecided((before) => new Map(before).set(suggestion.id, { suggestion, chosen, undone }));
   // Issue 369: the story prompt is said once for the tray; each finished file has a short link.
   const storyPrompt = entries.some((entry) => storyTarget(entry.state) !== null);
   const batches = new Map<string, UploadEntry[]>();
@@ -643,10 +688,12 @@ export function BatchTray({
     if (entry.batchId) batches.set(entry.batchId, [...(batches.get(entry.batchId) ?? []), entry]);
     else loose.push(entry);
   }
-  const row = (entry: UploadEntry) => (
+  const row = (entry: UploadEntry, asks?: ReadonlyMap<string, TrayAsk>) => (
     <UploadRow
       key={entry.key}
       entry={entry}
+      ask={asks?.get(rowDocument(entry) ?? "")}
+      onDecided={keep}
       onRestore={onRestore}
       onRetry={onRetry}
       tree={tree}
@@ -663,7 +710,14 @@ export function BatchTray({
         </h2>
         <span className={styles.uploadsActions}>
           {settled && (
-            <button type="button" className="btn btn-quiet" onClick={onClearFinished}>
+            <button
+              type="button"
+              className="btn btn-quiet"
+              onClick={() => {
+                setDecided(new Map());
+                onClearFinished();
+              }}
+            >
               Clear finished
             </button>
           )}
@@ -680,22 +734,31 @@ export function BatchTray({
       {storyPrompt && <p className={`muted ${styles.small}`}>{STORY_PROMPT}</p>}
       {[...batches].map(([id, rows]) => {
         const view = views[id] ?? null;
+        const counts = trayCounts(rows, stored.find((batch) => batch.id === id));
+        const notSent = notSentText(counts);
         const busy = rows.some(isBusy);
         const left = busy ? leftText(view) : null;
         // File management V5: the files of this drop that look like new versions, and Review.
         const versions = suggestionsText(view?.version_suggestion_count ?? view?.version_suggestions?.length ?? 0);
         const found = view?.version_suggestions?.[0];
         // A server restart fails a drop's files one by one: one button sends them all again.
-        const notSent = rows.filter((entry) => entry.state.kind === "error" && entry.state.retry);
+        const notSentRows = rows.filter((entry) => entry.state.kind === "error" && entry.state.retry);
         const first = found ? { document_id: found.document.id, display_name: found.document.name } : undefined;
+        // #521: each file that looks like a new version gets the choice on its own row.
+        const asked = trayChoices(view?.version_suggestions ?? [], decided);
         return (
           <div key={id} className={styles.batch}>
             <div className={styles.batchHead}>
               <p className={styles.batchSummary}>
-                {summaryText(trayCounts(rows, stored.find((batch) => batch.id === id)))}
+                {summaryText(counts)}
               </p>
               {left && <span className={`muted ${styles.small} ${styles.timeLeft}`}>{left}</span>}
             </div>
+            {notSent && (
+              <p className={`error-text ${styles.small}`}>
+                <strong>{notSent}</strong>
+              </p>
+            )}
             {versions && first && (
               <p className={styles.small}>
                 {versions} ·{" "}
@@ -706,19 +769,19 @@ export function BatchTray({
               </p>
             )}
             {busy && <BatchBar view={view} rows={rows} />}
-            {notSent.length > 1 && (
+            {notSentRows.length > 1 && (
               <div className={styles.uploadsActions}>
-                <button type="button" className="btn" onClick={() => notSent.forEach((entry) => onRetry(entry.key))}>
+                <button type="button" className="btn" onClick={() => notSentRows.forEach((entry) => onRetry(entry.key))}>
                   <Icon name="refresh" />
                   Retry all not sent
                 </button>
               </div>
             )}
-            <ul className={styles.uploads}>{rows.map(row)}</ul>
+            <ul className={styles.uploads}>{rows.map((entry) => row(entry, asked))}</ul>
           </div>
         );
       })}
-      {loose.length > 0 && <ul className={styles.uploads}>{loose.map(row)}</ul>}
+      {loose.length > 0 && <ul className={styles.uploads}>{loose.map((entry) => row(entry))}</ul>}
     </section>
   );
 }
@@ -772,8 +835,74 @@ function RowBar({ entry, stage }: { entry: UploadEntry; stage: Stage }) {
   );
 }
 
+/** The stored document of a row (being read, or done), else null. */
+function rowDocument(entry: UploadEntry): string | null {
+  return entry.state.kind === "reading" || entry.state.kind === "done" ? entry.state.documentId : null;
+}
+
+/** #521: what a tray row decided, kept by the tray (BatchTray) by suggestion id. */
+export interface TrayDecided {
+  suggestion: VersionSuggestion;
+  chosen: Chosen;
+  undone: boolean;
+}
+
+/** #521: a tray row's near match: still asked, or what was decided on it. */
+export interface TrayAsk {
+  suggestion: VersionSuggestion;
+  chosen?: Chosen;
+  undone?: boolean;
+}
+
+/** Each row's near match by its document: the suggestions still asked, and every one decided on a
+ * row (kept, even once the batch's poll says it was decided or leaves it out). O(n). */
+export function trayChoices(
+  suggestions: readonly VersionSuggestion[],
+  decided: ReadonlyMap<string, TrayDecided>,
+): Map<string, TrayAsk> {
+  const asks = new Map<string, TrayAsk>();
+  for (const each of suggestions) {
+    if (each.status === "pending" && each.outcome === "suggested") asks.set(each.document.id, { suggestion: each });
+  }
+  for (const kept of decided.values()) asks.set(kept.suggestion.document.id, kept);
+  return asks;
+}
+
+/** #521: a tray row's near match, asked on the row; then what was done, with Undo after a version. */
+export function TrayChoice({
+  suggestion,
+  chosen,
+  undone,
+  onDone,
+  onUndone,
+}: {
+  suggestion: VersionSuggestion;
+  chosen?: Chosen;
+  undone?: boolean;
+  onDone(chosen: Chosen): void;
+  onUndone(): void;
+}) {
+  if (!chosen) return <VersionChoice suggestion={suggestion} onDone={onDone} />;
+  return (
+    <p className={styles.small} role="status">
+      {undone ? VERSION_TEXT.reverted : chosen.message}{" "}
+      {chosen.undo && !undone && (
+        <button
+          type="button"
+          className={`btn btn-quiet ${styles.inlineAction}`}
+          onClick={() => void chosen.undo?.().then(onUndone, () => undefined)}
+        >
+          {VERSION_TEXT.undo}
+        </button>
+      )}
+    </p>
+  );
+}
+
 function UploadRow({
   entry,
+  ask,
+  onDecided,
   onRestore,
   onRetry,
   tree,
@@ -781,6 +910,8 @@ function UploadRow({
   canReread,
 }: {
   entry: UploadEntry;
+  ask?: TrayAsk;
+  onDecided(suggestion: VersionSuggestion, chosen: Chosen, undone: boolean): void;
   onRestore: (key: string, documentId: string, existingName: string) => void;
   onRetry: (key: string) => void;
   tree: FolderTree;
@@ -797,7 +928,10 @@ function UploadRow({
   const stage = stageOf(state);
   const story = storyTarget(state); // a finished file offers its story section, never a dialog
   const document = state.kind === "done" ? state.document : undefined;
-  const ready = document?.status === "ready" ? document : undefined;
+  // #522: a zip the server unpacks says how far it has got, then what it unpacked and skipped.
+  const current = state.kind === "done" || state.kind === "reading" ? state.document : undefined;
+  const zip = current ? zipNote(current) : null;
+  const ready = document?.status === "ready" && !zip ? document : undefined;
   const unreadable = document?.status === "ready" ? unreadableWords(document, canReread) : null; // U1
   const verified = document ? verifiedWords(document) : null; // U1: only with values
   let icon: "alert" | "eye-alert" | "check-seal" | "file" = "file";
@@ -824,20 +958,21 @@ function UploadRow({
           <p className={`muted ${styles.small}`}>New version of “{entry.versionOf}”</p>
         )}
         {stage !== null && <RowBar entry={entry} stage={stage} />}
-        {state.kind === "reading" && <p className={`muted ${styles.small}`}>{scanPhrase(state.document)}</p>}
+        {state.kind === "reading" && !zip && <p className={`muted ${styles.small}`}>{scanPhrase(state.document)}</p>}
+        {zip && <ZipUnpackNote note={zip} />}
         {unreadable?.detail && <p className={styles.small}>{unreadable.detail}</p>}
         {ready && <p className={styles.small}>{`Scan complete · ${flaggedText(ready)}`}</p>}
         {verified && <p className={`muted ${styles.small}`}>{verified}</p>}
-        {document?.status === "ready" && (
+        {ready && (
           <AutofileNote
-            document={document}
+            document={ready}
             name={entry.name}
-            filed={document.folder_id ? filedText(shortPathLabel(tree, document.folder_id)) : ""}
-            folderHref={document.folder_id ? libraryHref({ ...ALL_DOCUMENTS, folderId: document.folder_id }) : null}
+            filed={ready.folder_id ? filedText(shortPathLabel(tree, ready.folder_id)) : ""}
+            folderHref={ready.folder_id ? libraryHref({ ...ALL_DOCUMENTS, folderId: ready.folder_id }) : null}
             onUndone={onUndone}
           />
         )}
-        {document && document.status !== "ready" && (
+        {document && document.status !== "ready" && !zip && (
           <p className={`error-text ${styles.small}`}>{document.status_message}</p>
         )}
         {state.kind === "done" && (
@@ -885,6 +1020,15 @@ function UploadRow({
               Open it
             </Link>
           </p>
+        )}
+        {ask && (
+          <TrayChoice
+            suggestion={ask.suggestion}
+            chosen={ask.chosen}
+            undone={ask.undone}
+            onDone={(chosen) => onDecided(ask.suggestion, chosen, false)}
+            onUndone={() => ask.chosen && onDecided(ask.suggestion, ask.chosen, true)}
+          />
         )}
         {state.kind === "error" && <p className={`error-text ${styles.small}`}>{state.message}</p>}
         {state.kind === "error" && state.retry && (

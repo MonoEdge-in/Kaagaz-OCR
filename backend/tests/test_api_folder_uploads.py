@@ -15,6 +15,7 @@ from sqlalchemy import text
 from kaagaz.db.engine import Database
 from kaagaz.db.folder_upload_items import batch_for
 from tests.folder_upload_support import path_key
+from tests.settings_factory import make_settings
 from tests.test_api_support import CSRF, Api, Signed
 from tests.test_operator_auth_db import _owner
 
@@ -91,6 +92,7 @@ def test_a_plan_makes_the_folders_in_order_and_audits_counts_and_ids_only(db: Da
         "folders_merged": 0,
         "skipped": 1,
         "target": "folder",
+        "only_new": False,
     }
 
 
@@ -152,13 +154,14 @@ def test_a_plan_over_8_mb_is_413_before_it_is_read(db: Database) -> None:
 
 
 def test_a_register_page_over_2_mb_is_413_and_a_full_page_of_long_names_fits(db: Database) -> None:
-    """Production QA S6: a register page was parsed whole up to Caddy's 60 MB. A full page of
-    1,000 files with 255-character Devanagari names is about 1 MB, so 2 MB refuses no real page."""
+    """Production QA S6 (f99be1e6): a register page was parsed whole up to Caddy's 60 MB. A full
+    page of 1,000 files with 255-character Devanagari names and "Add new files only" hashes is
+    about 1 MB, so 2 MB refuses no real page."""
     signed = Api(db).new_signed()
-    planned = plan(signed, file_count=1000, total_bytes=1_000_000).json()
+    planned = plan(signed, file_count=1000, total_bytes=1_000_000, only_new=True).json()
     upload, root = planned["id"], planned["folder_ids"][0]
     name = "क" * 251 + ".pdf"  # 255 characters, 3 bytes each in UTF-8
-    page = [{**item(f"A/{n}.pdf", root), "name": name} for n in range(1000)]
+    page = [{**item(f"A/{n}.pdf", root), "name": name, "sha256": f"{n:064x}"} for n in range(1000)]
     body = json.dumps({"user_id": signed.user_id, "items": page}, ensure_ascii=False).encode()
     assert 900_000 < len(body) < 2 * 1024 * 1024
     huge = b'{"items": "' + b"x" * (2 * 1024 * 1024) + b'"}'
@@ -167,7 +170,7 @@ def test_a_register_page_over_2_mb_is_413_and_a_full_page_of_long_names_fits(db:
         content=huge,
         headers={**CSRF, "Content-Type": "application/json"},
     )
-    assert _error(reply)[:2] == (413, "too_large")
+    assert _error(reply) == (413, "too_large", "This page of files is too big to register in one go.")
     reply = signed.client.post(
         f"/api/folder-uploads/{upload}/items",
         content=body,
@@ -212,7 +215,10 @@ def test_past_the_planned_count_or_bytes_is_refused_and_a_folder_not_planned_is_
 
 
 def test_a_file_kaagaz_cant_take_is_registered_failed_with_its_reason(db: Database) -> None:
-    api = Api(db)
+    # Changed on purpose (#522 PR 3): with zip uploads allowed, the largest limit is a zip's (the
+    # folder upload limit, the most a plan may hold), so a file is too large here only without them.
+    settings = make_settings(allowed_types=frozenset({"pdf", "png", "jpeg", "tiff", "text"}))
+    api = Api(db, settings=settings)
     signed = api.new_signed()
     planned = plan(signed, file_count=3, total_bytes=10**9).json()
     a = planned["folder_ids"][0]
@@ -230,6 +236,24 @@ def test_a_file_kaagaz_cant_take_is_registered_failed_with_its_reason(db: Databa
     for told in ("too_large", "empty_file"):  # the server decides these itself
         reply = register(signed, planned["id"], [item(f"A/{told}.pdf", a, 10, refused=told)])
         assert _error(reply)[:2] == (400, "bad_request"), told
+
+
+def test_a_file_the_browser_refused_is_not_counted_against_the_plans_bytes(db: Database) -> None:
+    signed = Api(db).new_signed()
+    planned = plan(signed, file_count=3, total_bytes=1_000).json()  # the browser left both out (#516)
+    a = planned["folder_ids"][0]
+    page = [
+        item("A/ok.pdf", a),
+        item("A/run.exe", a, 5_000, refused="unsupported_type"),
+        {**item("A/evil", a, 5_000, refused="unsupported_type"), "name": "evil‮txt.exe"},  # and bad_name
+    ]
+    reply = register(signed, planned["id"], page)
+    assert reply.status_code == 200, reply.text
+    assert [(row["state"], row["failure_code"]) for row in reply.json()["items"]] == [
+        ("waiting", None),
+        ("failed", "unsupported_type"),
+        ("failed", "bad_name"),
+    ]
 
 
 def test_an_unsafe_or_nfc_colliding_file_name_is_failed_bad_name_and_the_rest_register(db: Database) -> None:
@@ -270,7 +294,9 @@ def test_a_new_upload_waits_while_another_of_the_organisation_still_has_files_wa
     assert _error(plan(colleague)) == (
         409,
         "upload_in_progress",
-        "Another folder upload is still sending in this organisation. Try again in a few minutes.",
+        # Changed on purpose (review of #564): it blocks until the other is done or quiet 30 minutes.
+        "Another person's folder upload is still sending in this organisation."
+        " Try again when it has finished.",
     )
     assert plan(signed, id=first["id"]).status_code == 200  # a re-plan of the same upload
     assert plan(signed).status_code == 200  # the same user's new upload (production QA P1)
@@ -285,8 +311,8 @@ def test_a_new_upload_waits_while_another_of_the_organisation_still_has_files_wa
 
 
 def test_an_upload_quiet_for_30_minutes_no_longer_blocks_the_organisation(db: Database) -> None:
-    """Production QA P1: a stopped or abandoned upload's waiting files blocked every new folder
-    upload of the organisation for ever. Only one active in the last 30 minutes blocks now."""
+    """Production QA P1 (03d7140e): a stopped or abandoned upload's waiting files blocked every
+    new folder upload of the organisation for ever. Only one active in the last 30 minutes blocks."""
     api = Api(db)
     signed = api.new_signed()
     colleague = api.sign_in(signed.customer_id)

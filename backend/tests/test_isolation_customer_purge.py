@@ -1,7 +1,8 @@
 """Deleting an organisation against PostgreSQL (super admin PR 4, 0018): scheduling and
 cancelling; after the grace period every row and both storage prefixes of A go, and B's
-rows and files stay byte-for-byte the same. ``KeyStorage`` keys files as ``S3Storage``
-does. The purge covers every due customer of the shared test database; asserts look at
+rows and files stay byte-for-byte the same, except A's audit rows, kept for 365 days where no
+role can read them (0068, #482), and its open uploads, aborted. ``KeyStorage`` keys files as
+``S3Storage`` does. The purge covers every due customer of the shared test database; asserts look at
 A and B only."""
 
 import io
@@ -11,15 +12,17 @@ from typing import IO
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import ProgrammingError
 
-from kaagaz.adapters.storage import original_key, page_image_key, quarantine_key
+from kaagaz.adapters.storage import original_key, page_image_key, quarantine_key, rendition_key, resumable_key
 from kaagaz.api import totp
-from kaagaz.db.engine import Database
+from kaagaz.db.engine import Database, OperatorDatabase
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobNotFound
-from kaagaz.jobs.purge import purge_customer, purge_deleted_customers
+from kaagaz.jobs.purge import forget_kept_audit, purge_customer, purge_deleted_customers
 from tests import test_migration_0002_db as m0002
 from tests.db_support import insert_document, insert_folder, insert_tag, migrate, tag_document
+from tests.folder_upload_support import new_folder_upload, path_key
 from tests.test_api_support import CSRF, Api, TestClient, wrong_code
 from tests.test_document_stories_db import put
 from tests.test_operator_auth_db import _Operator, _owner
@@ -68,6 +71,7 @@ GONE_FIRST = {
     *[(table, "users") for table in ("pages", "ensemble_runs", "ensemble_readings", "word_changes")],
     ("ai_task_settings", "users"),
     ("learning_removals", "users"),  # 0051, PRD 6 F3: cascades from its document, SET NULL to its admin
+    ("user_identities", "users"),  # 0062, #457: cascades with its user, SET NULL to the admin who approved it
 }
 
 
@@ -80,6 +84,7 @@ class KeyStorage:
         self.objects: dict[str, bytes] = {}
         self.failing: set[str] = set()
         self.prefixes_down = False
+        self.aborted: list[tuple[str, str]] = []  # (key, upload id) of each resumable upload aborted
 
     def put(self, customer_id: str, document_id: str, data: IO[bytes]) -> None:
         self.objects[original_key(customer_id, document_id)] = data.read()
@@ -87,6 +92,12 @@ class KeyStorage:
     def get(self, customer_id: str, document_id: str) -> bytes:
         try:
             return self.objects[original_key(customer_id, document_id)]
+        except KeyError:
+            raise BlobNotFound(document_id) from None
+
+    def get_rendition(self, customer_id: str, document_id: str) -> bytes:
+        try:
+            return self.objects[rendition_key(customer_id, document_id)]
         except KeyError:
             raise BlobNotFound(document_id) from None
 
@@ -103,6 +114,7 @@ class KeyStorage:
 
     # CustomerStorage's resumable upload parts (#222); this purge never starts an upload.
     def abort_resumable(self, key: str, upload_id: str) -> None:
+        self.aborted.append((key, upload_id))
         self.objects.pop(key, None)
 
     def delete_resumable(self, key: str) -> None:
@@ -138,17 +150,21 @@ def _snapshot(db: Database, customer_id: str) -> dict[str, str]:
 
 
 def _organisation(api: Api, storage: KeyStorage, label: str) -> tuple[str, str, list[str]]:
-    """An organisation with a row in every kind of table a customer fills, and files under
-    both prefixes: (id, name, its documents)."""
+    """An organisation with a row in every kind of table a customer fills (its daily page limit,
+    the day's counter, a held document and a folder upload too), and files under both prefixes:
+    (id, name, its documents)."""
     name = f"Org {label} {uuid.uuid4().hex[:8]}"
     customer, admin = api.customer(name)
     member, _ = api.add_user(customer, "member")
+    session = str(uuid.uuid4())
+    upload = resumable_key(customer, member, session)
     with api.db.user(customer, member) as conn:  # the member's own rows (my words) too
         folder = insert_folder(conn, customer, member, "GST")
         tag = insert_tag(conn, customer, member, "Paid")
         first = insert_document(conn, customer, folder_id=folder, uploaded_by=member)
         second = insert_document(conn, customer, family_id=first, version_no=2, is_current=False)
         trashed = insert_document(conn, customer, deleted_at=_now(), deleted_by=member)
+        held = insert_document(conn, customer, status="received")  # stored, waiting to be read
         tag_document(conn, customer, first, tag)
         for statement in (
             "INSERT INTO conversations (customer_id, user_id, title) VALUES (:c, :u, 'Q')",
@@ -167,10 +183,57 @@ def _organisation(api: Api, storage: KeyStorage, label: str) -> tuple[str, str, 
             "INSERT INTO model_usage (customer_id, user_id, document_id, conversation_id, kind, model, calls,"
             " input_tokens, output_tokens, reasoning_tokens, cost_usd) SELECT :c, :u, :d, id, 'chat',"
             " 'google/gemini-3.1-pro-preview', 1, 10, 5, 0, 0.01 FROM conversations WHERE customer_id = :c",
+            # #482: an upload still open, whose parts no listing of the prefix shows, and a view.
+            "INSERT INTO upload_sessions (id, customer_id, user_id, storage_key, storage_upload_id,"
+            " file_size, part_count, metadata, expires_at) VALUES (:s, :c, :u, :k, :upload_id, 10, 1, '{}',"
+            " now() + interval '7 days')",
+            "INSERT INTO audit_log (customer_id, actor_user_id, action, target_type, target_id)"
+            " VALUES (:c, :u, 'document.view', 'document', :d)",
+            # #478: the day's counter and a document held at the daily limit.
+            "INSERT INTO reading_days (customer_id, day, pages, cost_usd, alerted_at)"
+            " VALUES (:c, current_date, 10, 0.5, now())",
+            "UPDATE documents SET reading_held = 'daily_limit' WHERE customer_id = :c AND id = :held",
         ):
-            conn.execute(text(statement), {"c": customer, "u": member, "d": first})
+            conn.execute(
+                text(statement),
+                {
+                    "c": customer,
+                    "u": member,
+                    "d": first,
+                    "s": session,
+                    "k": upload,
+                    "upload_id": f"upload-{customer}",
+                    "held": held,
+                },
+            )
+    _owner(
+        api.db,
+        "INSERT INTO customer_ai_settings (customer_id, daily_page_limit) VALUES (:c, 10)",
+        {"c": customer},
+    )
+    # #484 (0071): a folder upload with its folder and an item, and the organisation's own limits.
+    upload = new_folder_upload(api.db, customer, member, folder_ids=[folder])
+    with api.db.customer(customer) as conn:
+        conn.execute(
+            text(
+                "INSERT INTO folder_upload_items (customer_id, folder_upload_id, seq, path_key, name,"
+                " folder_id, size_bytes, batch_id, state, document_id)"
+                " VALUES (:c, :u, 0, :k, 'bill.pdf', :f, 10, :b, 'stored', :d)"
+            ),
+            {
+                "c": customer,
+                "u": upload,
+                "k": path_key("A/bill.pdf"),
+                "f": folder,
+                "b": str(uuid.uuid4()),
+                "d": first,
+            },
+        )
+    _owner(api.db, "INSERT INTO org_upload_limits (customer_id, max_files) VALUES (:c, 7)", {"c": customer})
     put(api.db, customer, admin, first, f"The papers of {label}")
-    documents = [first, second, trashed]
+    # 0061d: its own storage limit, which goes with the customers row (ON DELETE CASCADE).
+    _owner(api.db, "INSERT INTO org_storage_limits (customer_id, storage_gb) VALUES (:c, 7)", {"c": customer})
+    documents = [first, second, trashed, held]
     for document in documents:
         storage.put(customer, document, io.BytesIO(f"{label} {document}".encode()))
         storage.objects[page_image_key(customer, document, 1)] = b"page " + label.encode()
@@ -188,8 +251,19 @@ def _schedule(api: Api, operator: _Operator, client: TestClient, customer: str, 
 
 
 def _gone(db: Database, storage: KeyStorage, customer: str) -> None:
-    assert set(_snapshot(db, customer).values()) == {"0:"}  # no row in any table, nor customers
+    """No row in any table, nor customers, but the audit rows kept (0068, #482); no file."""
+    left = _snapshot(db, customer)
+    left.pop("audit_log_kept")
+    assert set(left.values()) == {"0:"}
     assert storage.listing(customer) == []
+
+
+def _organisation_gone(db: Database, storage: KeyStorage, customer: str) -> None:
+    """``_gone`` for an ``_organisation``: its audit rows kept, its open upload aborted (#482)."""
+    _gone(db, storage, customer)
+    kept = _owner(db, "SELECT count(*) FROM audit_log_kept WHERE customer_id = :c", {"c": customer})
+    assert kept[0][0] >= 2  # at least the view and the deletion's own rows
+    assert f"upload-{customer}" in {upload for _, upload in storage.aborted}  # safe to repeat
 
 
 def test_0018_up_down_up(fresh: tuple[str, Database]) -> None:
@@ -289,13 +363,19 @@ def test_after_the_grace_period_everything_of_a_goes_and_b_stays_byte_for_byte(d
     _schedule(api, operator, client, a, a_name)
     a_before, b_before = _snapshot(db, a), (_snapshot(db, b), storage.listing(b))
     assert all(value != "0:" for table, value in a_before.items() if table in NO_ACTION_TO_USERS)
+    # QA missing test b: the reading pause's rows (#478) go with the organisation too.
+    assert a_before["reading_days"] != "0:" and a_before["customer_ai_settings"] != "0:"
+    held = "SELECT count(*) FROM documents WHERE customer_id = :c AND reading_held IS NOT NULL"
+    assert _owner(db, held, {"c": a}) == [(1,)]
 
     purge_deleted_customers(db, storage, _now)  # within the grace period: nothing of A
-    assert (_snapshot(db, a), len(storage.listing(a))) == (a_before, 8)
+    assert (_snapshot(db, a), len(storage.listing(a))) == (a_before, 10)
 
     _owner(db, DUE, {"c": a})
+    audit_before = _owner(db, _AUDIT.format(table="audit_log"), {"c": a})
     assert purge_deleted_customers(db, storage, _now) >= 2  # A's two families at least
-    _gone(db, storage, a)
+    _organisation_gone(db, storage, a)
+    assert _owner(db, _AUDIT.format(table="audit_log_kept"), {"c": a}) == audit_before  # as they were
     assert (_snapshot(db, b), storage.listing(b)) == b_before
     purged = "SELECT operator_id, target_type, target_id FROM platform_audit WHERE subject_customer_id = :c"
     assert _owner(db, purged + " AND action = 'org.purged'", {"c": a}) == [(None, "customer", a)]
@@ -324,7 +404,7 @@ def test_a_storage_failure_rolls_that_step_back_and_the_next_run_goes_on(db: Dat
     storage.failing = set(documents)  # A's files can't be deleted: A fails, G goes all the same
     purge_deleted_customers(db, storage, _now)
     assert (_snapshot(db, a), storage.listing(a)) == (before, files)  # that family came back whole
-    _gone(db, storage, g)
+    _organisation_gone(db, storage, g)
 
     storage.failing = set()
     one_family = iter([True, False]).__next__  # the time is up after one family
@@ -338,5 +418,46 @@ def test_a_storage_failure_rolls_that_step_back_and_the_next_run_goes_on(db: Dat
 
     storage.prefixes_down = False
     assert purge_customer(db, storage, a, now=_now(), keep_going=_always) == (0, True)
-    _gone(db, storage, a)
+    _organisation_gone(db, storage, a)
     assert purge_customer(db, storage, a, now=_now(), keep_going=_always) == (0, False)  # gone: nothing to do
+
+
+# Every column audit_log and audit_log_kept share, oldest first.
+_AUDIT = (
+    "SELECT id, customer_id, actor_user_id, action, target_type, target_id, details, created_at, folder_id,"
+    " family_id FROM {table} WHERE customer_id = :c ORDER BY id"
+)
+_KEPT = "SELECT count(*) FROM audit_log_kept WHERE customer_id = :c"
+_A_YEAR_AGO = (
+    "UPDATE audit_log_kept SET deleted_at = now() - interval '365 days 1 minute' WHERE customer_id = :c"
+)
+
+
+def test_a_deleted_organisations_audit_rows_are_seen_by_no_role_and_go_after_365_days(db: Database) -> None:
+    """#482 (Tushar, 3 Nov 2026): kept where neither the app, as any customer, nor the operator
+    role can read them; the worker's sweep removes them 365 days after the deletion, and only
+    them (both clocks)."""
+    api, storage = Api(db), KeyStorage()
+    operator, client = _signed_in(api)
+    a, a_name, _ = _organisation(api, storage, "K")
+    b, b_name, _ = _organisation(api, storage, "L")
+    for customer, name in ((a, a_name), (b, b_name)):
+        _schedule(api, operator, client, customer, name)
+        _owner(db, DUE, {"c": customer})
+        assert purge_customer(db, storage, customer, now=_now(), keep_going=_always)[1]
+    for customer in (a, b):
+        with pytest.raises(ProgrammingError, match="permission denied"), db.customer(customer) as conn:
+            conn.execute(text(_KEPT), {"c": customer})
+    with (
+        pytest.raises(ProgrammingError, match="permission denied"),
+        OperatorDatabase(db.engine).operator() as conn,
+    ):
+        conn.execute(text(_KEPT), {"c": a})
+
+    _owner(db, _A_YEAR_AGO, {"c": a})
+    b_kept = _owner(db, _KEPT, {"c": b})
+    assert forget_kept_audit(db, lambda: _now() - timedelta(days=1)) == 0  # not due on the worker's clock
+    assert forget_kept_audit(db, _now) >= 2
+    assert forget_kept_audit(db, lambda: _now() + timedelta(days=400)) == 0  # running ahead: the database's
+    assert _owner(db, _KEPT, {"c": a}) == [(0,)]
+    assert _owner(db, _KEPT, {"c": b}) == b_kept  # deleted today: kept

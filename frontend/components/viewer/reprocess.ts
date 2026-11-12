@@ -6,6 +6,7 @@
 
 import { canReview } from "@/components/review/review";
 import { ApiError } from "@/lib/api";
+import { errorWords } from "@/lib/errorWords";
 import type { DocumentStatus, DocumentSummary, Label, Role } from "@/lib/types";
 
 const REPROCESSABLE: readonly DocumentStatus[] = ["ready", "failed", "needs_reader"];
@@ -86,14 +87,14 @@ export function reprocessErrorText(error: unknown): string {
     if (error.status === 403 && error.code === "forbidden") {
       return "Only a reviewer or an admin can read a document again.";
     }
-    return error.message;
+    return errorWords(error);
   }
   return "Check your internet connection, then try again.";
 }
 
 /** Why the document could not be shown, and whether Try again can help: not when it is not there (404). */
 export function loadFailure(error: unknown): { message: string; retry: boolean } {
-  if (error instanceof ApiError) return { message: error.message, retry: error.status !== 404 };
+  if (error instanceof ApiError) return { message: errorWords(error), retry: error.status !== 404 };
   return { message: "Check your internet connection, then try again.", retry: true };
 }
 

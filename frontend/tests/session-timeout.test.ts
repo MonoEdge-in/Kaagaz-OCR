@@ -67,7 +67,8 @@ describe("one organisation's session timeout", () => {
     expect(view).toContain('{ label: "Session timeout", description: MENU_HELP.timeout, onSelect: onTimeout }');
     // In the same list as AI settings and Feature switches, which a deleting organisation skips.
     expect(view.indexOf('org.status === "deleting"')).toBeLessThan(view.indexOf('label: "Session timeout"'));
-    const html = renderToStaticMarkup(createElement(OrgSessionTimeoutDialog, { org: ORG, onClose: () => {} }));
+    // Changed on purpose (#468 review, UX10): the page's Toast gets each change too (onDone).
+    const html = renderToStaticMarkup(createElement(OrgSessionTimeoutDialog, { org: ORG, onClose: () => {}, onDone: () => {} }));
     expect(html).toContain("Session timeout for Sharma Traders");
   });
 

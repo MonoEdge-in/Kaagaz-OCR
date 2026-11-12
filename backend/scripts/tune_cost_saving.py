@@ -30,18 +30,16 @@ import itertools
 import os
 import sys
 import threading
-from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
 
-from kaagaz.reading.ocr import PATH_WORDS, PageRead, careful_plan, careful_reasons
+from kaagaz.reading.ocr import PATH_WORDS, PageRead, careful_plan, careful_reasons, values_of
 
 LINES_MAX = (6, 12, 20)
 SHARES = (0.25, 0.4, 0.6)
 FIRST_THINKING = "low"  # Cost saving's first read (``db.models.resolve_scan``)
-PUNCTUATION = ".,;:()[]{}\"'"
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,11 +80,6 @@ def grid(lines_max: Iterable[int], shares: Iterable[float]) -> list[tuple[int, f
 
 def words_of(read: PageRead) -> list[str]:
     return [word for line in read.lines for word in line.text.split()]
-
-
-def values_of(words: Iterable[str]) -> Counter[str]:
-    """The words with a digit (amounts, dates, numbers), outer punctuation stripped."""
-    return Counter(word.strip(PUNCTUATION) for word in words if any(char.isdigit() for char in word))
 
 
 def compare(read: PageRead, reference: PageRead) -> tuple[int, int, int]:
@@ -288,7 +281,7 @@ def live_pages(
             words = None
             if any(plan[-1:] == [PATH_WORDS] for plan in plans):
                 # The reader's own crops call, at COST_SAVING_CROP_PAD.
-                words = engine._careful_words(image, first, (careful, provider))
+                words = engine._careful_words(image, first, None, (careful, provider))
             pages.append(Page(name, first, reference, words))
             out.write(f"read {name}\n")
     return pages, lead

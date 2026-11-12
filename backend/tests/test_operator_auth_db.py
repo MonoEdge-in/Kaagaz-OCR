@@ -17,7 +17,17 @@ from kaagaz.db.engine import Database, OperatorDatabase
 from kaagaz.db.sqlstate import sqlstate
 from tests import test_migration_0002_db as m0002
 from tests.db_support import migrate
-from tests.test_api_support import CSRF, PASSWORD, Api, TestClient, password_hash_of, route_calls, wrong_code
+from tests.test_api_support import (
+    CSRF,
+    EMAIL_ROUTES,
+    OIDC_ROUTES,
+    PASSWORD,
+    Api,
+    TestClient,
+    password_hash_of,
+    route_calls,
+    wrong_code,
+)
 from tests.test_operator_activity import ACTIVITY_ROUTES
 from tests.test_operator_insights import INSIGHT_ROUTES
 from tests.test_operator_orgs import ORG_ROUTES
@@ -39,6 +49,9 @@ OPEN_TO_ALL = {
     ("GET", "/api/auth/signup"),
     ("POST", "/api/auth/signup"),
 }
+# Changed on purpose (#457): 404 while email is off, whoever asks (tests/test_api_email.py).
+# Changed on purpose (#457 phase 1): the provider sign-in's too, while no provider is on.
+EMAIL_OFF = set(EMAIL_ROUTES) | set(OIDC_ROUTES)
 WRONG = "not the password!!"
 _INSERT = "INSERT INTO operators (email, display_name, password_hash) VALUES (:e, 'Ops', :h) RETURNING id"
 # As the CLI issues a secret (pending) and as the first valid code leaves it (confirmed).
@@ -164,8 +177,24 @@ def test_a_password_and_a_fresh_code_one_401_for_every_failure_and_the_lockout(d
     api.clock.advance(totp.STEP_SECONDS)
     _refused(operator.login(api.client()))  # locked: even a right password and fresh code, and no row
     assert operator.actions() == [FAILED] * 3 + [LOGIN] + [FAILED] * 4 + [(False, "operator.locked")]
+    # Changed on purpose (A2, 7 Nov 2026): the lock is this address's, so another address signs
+    # in; an unlock (the CLI's) does not reach the API's memory, so this one waits it out.
+    assert operator.login(TestClient(api.app, client=("198.51.100.9", 50000))).status_code == 200
     operator.sql(_UNLOCK)
+    api.clock.advance(api.settings.login_lock_minutes * 60)
     assert operator.login(api.client()).status_code == 200
+
+
+def test_a_flood_from_one_address_never_locks_the_operator_out_of_their_own(db: Database) -> None:
+    """A2: as an organisation's users (tests/test_api_lockout.py), with the same caps."""
+    api = Api(db)
+    operator = _Operator(api)
+    attacker = TestClient(api.app, client=("203.0.113.7", 50000))
+    for _ in range(105):
+        _refused(operator.login(attacker, password=WRONG))
+    _refused(operator.login(attacker))
+    assert operator.actions() == [FAILED] * 4 + [(False, "operator.locked")]  # the fifth locks
+    assert operator.login(TestClient(api.app, client=("198.51.100.9", 50000))).status_code == 200
 
 
 def test_disabling_signing_out_and_30_minutes_end_a_session(db: Database) -> None:
@@ -194,7 +223,11 @@ def test_an_operator_session_opens_no_customer_route(db: Database) -> None:
     client = api.client()
     assert operator.login(client).status_code == 200
     cookie = {**CSRF, "Cookie": f"{OPERATOR_COOKIE}={client.cookies.get(OPERATOR_COOKIE)}"}
-    calls = [call for call in route_calls(api.app) if call not in OPEN_TO_ALL and "/operator" not in call[1]]
+    calls = [
+        call
+        for call in route_calls(api.app)
+        if call not in OPEN_TO_ALL | EMAIL_OFF and "/operator" not in call[1]
+    ]
     assert len(calls) > 20
     for method, path in calls:
         body: dict[str, str] | None = None if method in ("GET", "DELETE") else {}

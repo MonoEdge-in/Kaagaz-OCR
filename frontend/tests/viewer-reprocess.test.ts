@@ -113,8 +113,9 @@ describe("reprocessReducer", () => {
 
 describe("loadFailure (QA, 15 Oct 2026)", () => {
   it("offers Try again for a server or network failure, never for a document that is not there", () => {
+    // Changed on purpose (#468): a 404 is said in lib/errorWords.ts's plain words.
     expect(loadFailure(new ApiError(404, "not_found", "We couldn't find that."))).toEqual({
-      message: "We couldn't find that.",
+      message: "This was not found. It may have been deleted.",
       retry: false,
     });
     expect(loadFailure(new ApiError(503, "backend_unavailable", "Busy.")).retry).toBe(true);

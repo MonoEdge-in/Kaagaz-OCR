@@ -147,8 +147,8 @@ interface Loaded {
   defaults: Record<FolderLimitName, number>;
 }
 
-/** Loads the platform's values (no org) or one organisation's, again after each save. */
-function useLimits(orgId?: string) {
+/** Loads the platform's values (no org) or one organisation's, again after each save. Exported for its tests. */
+export function useLimits(orgId?: string) {
   const [attempt, setAttempt] = useState(0);
   const [value, setValue] = useState<Loaded | null>(null);
   const [error, setError] = useState<{ attempt: number; message: string } | null>(null);
@@ -166,7 +166,8 @@ function useLimits(orgId?: string) {
     };
   }, [orgId, attempt]);
   const failed = error?.attempt === attempt ? error.message : null;
-  return { value, failed, reload: () => setAttempt((n) => n + 1) };
+  // A failed load (after a save, too) shows that it failed, never the values from before it.
+  return { value: failed ? null : value, failed, reload: () => setAttempt((n) => n + 1) };
 }
 
 export function FolderUploadLimitsView() {
@@ -209,8 +210,9 @@ export function FolderUploadLimitsView() {
   );
 }
 
-/** The Manage menu's "Folder upload limits" for one organisation: super admin only. */
-export function OrgFolderUploadLimitsDialog({ org, onClose }: { org: Organisation; onClose(): void }) {
+/** The Manage menu's "Folder upload limits" for one organisation: super admin only. `onDone`:
+ * each change's words, for the page's Toast too, so they outlast the dialog (as OrgAdminTwoStepDialog). */
+export function OrgFolderUploadLimitsDialog({ org, onClose, onDone }: { org: Organisation; onClose(): void; onDone(message: string): void }) {
   const { value, failed, reload } = useLimits(org.id);
   const [changing, setChanging] = useState<Confirm | null>(null);
   const [done, setDone] = useState("");
@@ -240,6 +242,7 @@ export function OrgFolderUploadLimitsDialog({ org, onClose }: { org: Organisatio
           onDone={(message) => {
             setChanging((open) => afterDone(open, changing));
             setDone(message);
+            onDone(message);
             reload();
           }}
         />

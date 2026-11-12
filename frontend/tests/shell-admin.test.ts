@@ -63,45 +63,49 @@ describe("lockedUntilText and isLocked", () => {
   });
 });
 
+// Changed on purpose (#457 phase 3): anyone may have codes, so every row says Two-step: On or Off.
 describe("userStatus", () => {
   const texts = (u: AdminUser, now = NOW) => userStatus(u, now).map((part) => part.text);
 
   it("says Active for a normal account", () => {
-    expect(userStatus(user(), NOW)).toEqual([{ text: "Active", tone: "ready" }]);
+    expect(userStatus(user(), NOW)).toEqual([{ text: "Active", tone: "ready" }, { text: "Two-step: Off", tone: "neutral" }]);
   });
 
   it("says Locked until 14:05 while locked", () => {
     expect(userStatus(user({ locked_until: LOCK_END }), NOW)).toEqual([
       { text: "Locked until 14:05", tone: "danger" },
+      { text: "Two-step: Off", tone: "neutral" },
     ]);
   });
 
   it("goes back to Active once the lock has passed, even before a reload", () => {
     expect(texts(user({ locked_until: LOCK_END }), Date.parse("2026-09-29T08:36:00Z"))).toEqual([
       "Active",
+      "Two-step: Off",
     ]);
   });
 
   it("says Disabled for a disabled account, lock or not", () => {
     expect(userStatus(user({ disabled: true, locked_until: LOCK_END }), NOW)).toEqual([
       { text: "Disabled", tone: "danger" },
+      { text: "Two-step: Off", tone: "neutral" },
     ]);
   });
 
   // Changed on purpose (plain words, 25 Oct 2026): "Two-step", as the rest of the product, not "2FA".
   it("says two-step on or off for admins", () => {
-    expect(texts(user({ role: "admin", totp_enabled: true }))).toEqual(["Active", "Two-step on"]);
-    expect(texts(user({ role: "admin" }))).toEqual(["Active", "Two-step off"]);
-    expect(texts(user({ role: "admin", disabled: true }))).toEqual(["Disabled", "Two-step off"]);
+    expect(texts(user({ role: "admin", totp_enabled: true }))).toEqual(["Active", "Two-step: On"]);
+    expect(texts(user({ role: "admin" }))).toEqual(["Active", "Two-step: Off"]);
+    expect(texts(user({ role: "admin", disabled: true }))).toEqual(["Disabled", "Two-step: Off"]);
   });
 
-  it("says nothing about two-step for other roles unless it is on", () => {
-    expect(texts(user({ role: "reviewer" }))).toEqual(["Active"]);
-    expect(texts(user({ role: "member", totp_enabled: true }))).toEqual(["Active", "Two-step on"]);
+  it("says two-step on or off for other roles too", () => {
+    expect(texts(user({ role: "reviewer" }))).toEqual(["Active", "Two-step: Off"]);
+    expect(texts(user({ role: "member", totp_enabled: true }))).toEqual(["Active", "Two-step: On"]);
   });
 
   it("marks an account that still has a temporary password", () => {
-    expect(texts(user({ must_change_password: true }))).toEqual(["Active", "Temporary password"]);
+    expect(texts(user({ must_change_password: true }))).toEqual(["Active", "Two-step: Off", "Temporary password"]);
   });
 });
 
@@ -153,15 +157,16 @@ describe("Delete forever, granted (council 4 Oct 2026)", () => {
 
   it("asks first, says it covers all of Trash, and shows the chip and the audit words", () => {
     expect(allowForeverQuestion("Ravi")).toBe(
-      "Let Ravi delete documents in Trash forever? This covers every document in Trash, " +
+      "Let Ravi delete documents in Trash for good? This covers every document in Trash, " +
         "not only theirs, and can't be undone. They will type their password each time.",
     );
     expect(userStatus(user({ can_delete_forever: true }), NOW).map((part) => part.text)).toEqual([
       "Active",
-      "Can delete forever",
+      "Two-step: Off",
+      "Can delete for good",
     ]);
-    expect(describeAction("user.delete_forever_on")).toBe("Allowed a user to delete forever");
-    expect(describeAction("user.delete_forever_off")).toBe("Stopped a user deleting forever");
+    expect(describeAction("user.delete_forever_on")).toBe("Allowed a user to delete for good");
+    expect(describeAction("user.delete_forever_off")).toBe("Stopped a user deleting for good");
   });
 });
 
@@ -176,9 +181,11 @@ describe("adminGate", () => {
       totp_enabled: false,
       two_step_turned_off: false,
       can_delete_forever: false,
+      email_confirmed: true, // #457
     },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope },
+    providers: [], // #457 review: the sign-in providers switched on
   });
 
   it("opens the admin screen only for an admin session", () => {
@@ -436,6 +443,8 @@ describe("describeAction", () => {
     }
     // Changed on purpose (plain words, 25 Oct 2026): "two-step sign-in", not "2FA".
     expect(describeAction("user.reset_totp")).toBe("Reset a user's two-step sign-in");
+    // #457: resets are audited as auth.totp_reset since 0063; both names read the same.
+    expect(describeAction("auth.totp_reset")).toBe("Reset a user's two-step sign-in");
   });
 
   it("has words for every action the backend writes to the audit log", () => {
@@ -486,8 +495,9 @@ describe("the failed documents tab", () => {
     const busy = new ApiError(429, "rate_limited", "Please wait and try again.");
     expect(retryErrorText(stale)).toBe("This document can't be read again now.");
     expect(retryErrorText(busy)).toBe("Please wait and try again.");
+    // Changed on purpose (#468 review, PT2/UX9): the one network wording (NETWORK_FAILURE).
     expect(retryErrorText(new TypeError("fetch failed"))).toBe(
-      "Could not reach the server. Check your connection, then try again.",
+      "Could not reach Kaagaz. Check your internet connection and try again.",
     );
   });
 });

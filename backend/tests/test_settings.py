@@ -1,6 +1,7 @@
 """Start-up settings for the scan reader (PRD 2 P3, P5, R5) and the lease check (AR1)."""
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -191,6 +192,7 @@ def test_a_bad_page_route_setting_stops_start_up_by_name(name: str, value: str) 
 # The settings that are secrets (council security note 7): repr never shows them.
 SECRET_FIELDS = [
     "database_url",
+    "ops_database_url",  # #479
     "storage_access_key",
     "storage_secret_key",
     "session_secret",
@@ -425,3 +427,121 @@ def test_chat_questions_per_minute_is_20_when_unset_and_at_least_1() -> None:
     assert Settings.from_env(shipped(CHAT_QUESTIONS_PER_MINUTE="5")).chat_questions_per_minute == 5
     with pytest.raises(SettingsError, match="CHAT_QUESTIONS_PER_MINUTE"):
         Settings.from_env(shipped(CHAT_QUESTIONS_PER_MINUTE="0"))
+
+
+# --- Google sign-in (#457 phase 1) ---------------------------------------------------------
+
+GOOGLE_CALLBACK = "https://kaagaz.example.com/api/auth/oidc/google/callback"
+GOOGLE_ON = {
+    "GOOGLE_SIGNIN_ENABLED": "true",
+    "GOOGLE_CLIENT_ID": "made-up-client.apps.googleusercontent.com",
+    "GOOGLE_CLIENT_SECRET": "made-up-google-secret",
+    "GOOGLE_REDIRECT_URI": GOOGLE_CALLBACK,
+}
+
+
+def test_google_signin_is_off_by_default() -> None:
+    settings = Settings.from_env(shipped())
+    assert settings.google_signin_enabled is False
+    assert (settings.google_client_id, settings.google_client_secret, settings.google_redirect_uri) == (
+        None,
+        None,
+        None,
+    )
+
+
+@pytest.mark.parametrize("missing", ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI"])
+def test_google_signin_needs_its_three_values(missing: str) -> None:
+    with pytest.raises(SettingsError, match=missing):
+        Settings.from_env(shipped(**{**GOOGLE_ON, missing: None}))
+
+
+@pytest.mark.parametrize(
+    ("uri", "ok"),
+    [
+        ("http://kaagaz.example.com/api/auth/oidc/google/callback", False),
+        ("https://kaagaz.example.com/other", False),
+        ("https://kaagaz.example.com/api/auth/oidc/google/callback?x=1", False),
+        (GOOGLE_CALLBACK, True),
+        ("http://localhost:3000/api/auth/oidc/google/callback", True),
+    ],
+)
+def test_google_redirect_must_be_https_and_the_callback_path(uri: str, ok: bool) -> None:
+    env = shipped(**{**GOOGLE_ON, "GOOGLE_REDIRECT_URI": uri})
+    if ok:
+        settings = Settings.from_env(env)
+        assert settings.google_signin_enabled is True
+        assert settings.google_redirect_uri == uri
+    else:
+        with pytest.raises(SettingsError, match="GOOGLE_REDIRECT_URI"):
+            Settings.from_env(env)
+
+
+@pytest.mark.parametrize(
+    ("check", "value", "message"),
+    [
+        (
+            lambda value: settings_module._openrouter_base_url(value),
+            "https://user@openrouter.example.com",
+            "OPENROUTER_BASE_URL must have no user, password, query or fragment",
+        ),
+        (
+            lambda value: settings_module._openrouter_base_url(value),
+            "http://openrouter.example.com",
+            "OPENROUTER_BASE_URL must be an https URL (http only for localhost, 127.0.0.1 or ::1)",
+        ),
+        (
+            lambda value: settings_module._app_url(value),
+            "https://kaagaz.example.com/app",
+            "APP_URL must be an https origin such as https://kaagaz.example.com"
+            " (http only for localhost, 127.0.0.1 or ::1)",
+        ),
+        (
+            lambda value: settings_module._redirect_uri(value, "google"),
+            "https://kaagaz.example.com/api/auth/oidc/google/callback/",
+            "GOOGLE_REDIRECT_URI must be an https URL ending /api/auth/oidc/google/callback"
+            " (http only for localhost, 127.0.0.1 or ::1)",
+        ),
+    ],
+)
+def test_each_https_setting_keeps_its_own_message(check: Any, value: str, message: str) -> None:
+    with pytest.raises(SettingsError) as refused:
+        check(value)
+    assert str(refused.value) == message
+
+
+def test_the_three_https_settings_share_one_check() -> None:
+    assert (
+        settings_module._https_url("https://kaagaz.example.com/", "APP_URL", "")
+        == "https://kaagaz.example.com"
+    )
+    assert (
+        settings_module._https_url("http://localhost:8080/v1/", "OPENROUTER_BASE_URL")
+        == "http://localhost:8080/v1"
+    )
+    callback = "https://kaagaz.example.com/api/auth/oidc/google/callback"
+    assert (
+        settings_module._https_url(callback, "GOOGLE_REDIRECT_URI", "/api/auth/oidc/google/callback")
+        == callback
+    )
+
+
+def test_google_client_secret_is_never_in_repr() -> None:
+    settings = Settings.from_env(shipped(**GOOGLE_ON))
+    assert settings.google_client_secret == "made-up-google-secret"
+    assert "made-up-google-secret" not in repr(settings)
+
+
+def test_promotion_ocr_ultra_low_cost_is_off_unless_set_and_needs_gemini() -> None:
+    """#564 [V]: production's Ultra low cost switch (65ee12e3) and its ceiling a page are read here
+    too: the platform's default while the super admin has saved no reader (``db.models``)."""
+    off = Settings.from_env(shipped(OCR_ULTRA_LOW_COST=None, OCR_PAGE_CEILING_PAISE=None))
+    assert (off.ocr_ultra_low_cost, off.ocr_page_ceiling_paise) == (False, 55)
+    gemini = {"OCR_ENGINE": "gemini", "OPENROUTER_API_KEY": KEY}
+    on = Settings.from_env(shipped(**gemini, OCR_ULTRA_LOW_COST="true", OCR_PAGE_CEILING_PAISE="30"))
+    assert (on.ocr_ultra_low_cost, on.ocr_page_ceiling_paise) == (True, 30)
+    with pytest.raises(SettingsError, match="OCR_ULTRA_LOW_COST=true needs OCR_ENGINE=gemini"):
+        Settings.from_env(shipped(OCR_ENGINE="rapidocr", OCR_ULTRA_LOW_COST="true"))
+    for bad in ("19", "56"):
+        with pytest.raises(SettingsError, match="OCR_PAGE_CEILING_PAISE must be between 20 and 55"):
+            Settings.from_env(shipped(OCR_PAGE_CEILING_PAISE=bad))

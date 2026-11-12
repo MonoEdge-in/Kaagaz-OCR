@@ -1,7 +1,7 @@
 // The decisions behind the documents screen, kept out of the components so
 // they are unit tested in node (tests/shell-documents.test.ts).
 
-import { ApiError } from "@/lib/api";
+import { ApiError, isStorageFull } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import type { DocumentStatus, DocumentSummary, UploadLimits } from "@/lib/types";
 
@@ -13,17 +13,36 @@ export const ACCEPTED_EXTENSIONS = [
   "jpeg",
   "tif",
   "tiff",
+  "heic",
+  "heif",
   "csv",
   "xlsx",
+  "txt",
+  "md",
+  "json",
+  "html",
+  "htm",
+  // #522 PR 2: Word, PowerPoint and old Excel files, which the server converts to read.
+  "xls",
+  "doc",
+  "docx",
+  "dotx",
+  "ppt",
+  "pptx",
+  "zip", // #522: unpacked into a folder by the server
 ] as const;
+
+/** Why a file of another kind will not be sent. */
+export const UNSUPPORTED_UPLOAD =
+  "This kind of file can't be uploaded. Use PDF, Word, PowerPoint, PNG, JPG, TIFF, HEIC, CSV, XLSX, XLS, TXT, MD, JSON, HTML or ZIP.";
 
 /** For the file picker's accept attribute. */
 export const ACCEPT_ATTRIBUTE = ACCEPTED_EXTENSIONS.map((ext) => `.${ext}`).join(",");
 
 type AcceptedExtension = (typeof ACCEPTED_EXTENSIONS)[number];
 
-/** The size group a file falls in, the same names the server uses ("pdf", "image", "sheet"). */
-export type UploadKind = "pdf" | "image" | "sheet";
+/** The size group a file falls in, the same names the server uses ("pdf", "image", "sheet", "zip"). */
+export type UploadKind = "pdf" | "image" | "sheet" | "zip";
 
 const KIND_OF_EXTENSION: Readonly<Record<AcceptedExtension, UploadKind>> = {
   pdf: "pdf",
@@ -32,8 +51,23 @@ const KIND_OF_EXTENSION: Readonly<Record<AcceptedExtension, UploadKind>> = {
   jpeg: "image",
   tif: "image",
   tiff: "image",
+  heic: "image",
+  heif: "image",
   csv: "sheet",
   xlsx: "sheet",
+  // Text files (#522) have the spreadsheets' limit.
+  txt: "sheet",
+  md: "sheet",
+  json: "sheet",
+  html: "sheet",
+  htm: "sheet",
+  xls: "sheet",
+  doc: "pdf",
+  docx: "pdf",
+  dotx: "pdf",
+  ppt: "pdf",
+  pptx: "pdf",
+  zip: "zip",
 };
 
 const MB = 1024 * 1024;
@@ -44,9 +78,10 @@ const MB = 1024 * 1024;
  * already has the customer's lower limit in it, and it checks every file again.
  */
 export const FALLBACK_UPLOAD_LIMITS: Readonly<UploadLimits> = {
-  pdf_bytes: 50 * MB,
+  pdf_bytes: 100 * MB, // MAX_UPLOAD_MB in .env.example
   image_bytes: 20 * MB,
   sheet_bytes: 10 * MB,
+  zip_bytes: 100 * MB, // the PDF limit until the server says its folder upload limit
   max_pages: 100,
   readers: [], // no "Scan with" until the server says which readers it has
 };
@@ -54,9 +89,10 @@ export const FALLBACK_UPLOAD_LIMITS: Readonly<UploadLimits> = {
 /** The limits in words, shown next to the dropzone. */
 export function uploadLimitsHint(limits: UploadLimits = FALLBACK_UPLOAD_LIMITS): string {
   return (
-    `PDF up to ${Math.floor(limits.pdf_bytes / MB)} MB. ` +
-    `PNG, JPG or TIFF up to ${Math.floor(limits.image_bytes / MB)} MB. ` +
-    `CSV or XLSX up to ${Math.floor(limits.sheet_bytes / MB)} MB.`
+    `PDF, Word or PowerPoint up to ${Math.floor(limits.pdf_bytes / MB)} MB. ` +
+    `PNG, JPG, TIFF or HEIC up to ${Math.floor(limits.image_bytes / MB)} MB. ` +
+    `CSV, XLSX, XLS, TXT, MD, JSON or HTML up to ${Math.floor(limits.sheet_bytes / MB)} MB. ` +
+    `ZIP up to ${Math.floor(limitFor("zip", limits) / MB)} MB, unpacked into a folder.`
   );
 }
 
@@ -86,6 +122,8 @@ export function limitFor(kind: UploadKind, limits: UploadLimits = FALLBACK_UPLOA
       return limits.image_bytes;
     case "sheet":
       return limits.sheet_bytes;
+    case "zip":
+      return limits.zip_bytes ?? Math.max(limits.pdf_bytes, limits.sheet_bytes); // an older server: as an .xlsx
   }
 }
 
@@ -100,11 +138,14 @@ export function tooLargeMessage(kind: UploadKind, sizeBytes: number, limitBytes:
   const size = Math.ceil(sizeBytes / MB);
   switch (kind) {
     case "pdf":
-      return `PDFs can be up to ${limit} MB. This one is ${size} MB. Split it or save it smaller and try again.`;
+      return `PDF, Word and PowerPoint files can be up to ${limit} MB. This one is ${size} MB. Split it or save it smaller and try again.`;
     case "image":
       return `Photos and scans can be up to ${limit} MB. This one is ${size} MB. Save it at a lower resolution and try again.`;
     case "sheet":
-      return `Spreadsheets and CSV files can be up to ${limit} MB. This one is ${size} MB. Split it into smaller files and try again.`;
+      return `Spreadsheets, CSV and text files can be up to ${limit} MB. This one is ${size} MB. Split it into smaller files and try again.`;
+    case "zip":
+      // The server's words: at most 500 MB (the scan holds a zip in memory), in GB when whole GB.
+      return `Zip files can be up to ${limitBytes % (1024 * MB) === 0 ? `${limitBytes / (1024 * MB)} GB` : `${limit} MB`}. Unzip it on your computer and upload the folder instead.`;
   }
 }
 
@@ -119,7 +160,7 @@ export function validateUpload(
 ): string | null {
   const kind = uploadKind(file.name);
   if (kind === null) {
-    return "This kind of file can't be uploaded. Use PDF, PNG, JPG, TIFF, CSV or XLSX.";
+    return UNSUPPORTED_UPLOAD;
   }
   if (file.size === 0) return "This file is empty.";
   const limit = limitFor(kind, limits);
@@ -195,6 +236,7 @@ export const SECONDS_PER_PAGE: Readonly<Record<UploadKind, number>> = {
   pdf: 35,
   image: 35,
   sheet: 1,
+  zip: 1, // unpacked, not read: each file inside is read as its own document
 };
 
 /**
@@ -314,14 +356,28 @@ export function sessionChangedMessage(caught: unknown): string | null {
   return caught instanceof ApiError && caught.code === "session_changed" ? caught.message : null;
 }
 
-/** The words for an upload that failed permanently. Transient connection loss resumes automatically. */
-export function uploadErrorText(caught: unknown, online: boolean): string {
+/**
+ * Not sent because of the connection or the server, not because the file was refused: it can be
+ * sent again (Retry, Retry all). Storage full (#516) never: only deleting files or a higher limit
+ * makes room, whatever the status.
+ */
+export const canSendAgain = (caught: unknown) =>
+  !isStorageFull(caught) &&
+  (!(caught instanceof ApiError) || caught.status === 0 || caught.status === 429 || caught.status >= 500);
+
+/** The words for an upload that failed permanently. Transient connection loss resumes automatically.
+ * `retry`: the row offers Retry, so the words may say so. */
+export function uploadErrorText(caught: unknown, online: boolean, retry = true): string {
+  if (isStorageFull(caught)) return (caught as ApiError).message; // the API's words, as they are (#516)
   if (!online) {
     // A failed row: it does not resume by itself (a paused one is the "offline" state instead).
     return "Not uploaded: no internet connection. Choose the file again when you're back online.";
   }
-  // A 502, 503 or 504 after the retries: the server was restarting (production QA, 5 Nov 2026).
-  if (caught instanceof ApiError && [502, 503, 504].includes(caught.status)) return "The server was restarting. Retry.";
+  // A 502 or 504 after the retries: the proxy found the server restarting (production QA, 5 Nov
+  // 2026). The API's own 503 (busy) keeps its words, below.
+  if (caught instanceof ApiError && (caught.status === 502 || caught.status === 504)) {
+    return retry ? "The server was restarting. Retry." : "The server was restarting.";
+  }
   return caught instanceof ApiError ? caught.message : "Upload failed. Check your connection, then try again.";
 }
 
@@ -444,14 +500,14 @@ export function flaggedShort(document: Finished): { shown: string; spoken: strin
 }
 
 /**
- * The list's Uploaded time, short so it stays on one line: "now", "5m ago", "2h ago",
+ * The list's Uploaded time, short so it stays on one line: "Just now", "5m ago", "2h ago",
  * "3d ago", then the date ("9 Oct 2026"). The exact time goes in its title and is read out.
  */
 export function shortWhen(iso: string, now: number): string {
   const at = new Date(iso).getTime();
   if (Number.isNaN(at)) return "";
   const minutes = Math.round((now - at) / 60_000);
-  if (minutes < 1) return "now";
+  if (minutes < 1) return "Just now";
   if (minutes < 60) return `${minutes}m ago`;
   if (minutes < 24 * 60) return `${Math.round(minutes / 60)}h ago`;
   if (minutes < 7 * 24 * 60) return `${Math.round(minutes / (24 * 60))}d ago`;

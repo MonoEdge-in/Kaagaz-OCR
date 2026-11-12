@@ -45,6 +45,7 @@ FEATURES = (
 STEPS = ("none", "low", "high", "max")  # scan and ask
 SCAN_STEPS = ("none", "save", "low", "high", "max")  # scan: with the reader choice's Save (#398)
 SWITCH = ("off", "on")  # ensemble and autofile
+ULTRA_LOW_COST = "ultra_low_cost"  # kaagaz.db.models.ULTRA_LOW_COST (that module imports this one)
 _ORDER = {level: n for levels in (SCAN_STEPS, SWITCH) for n, level in enumerate(levels)}
 
 # (task, organisation row?) -> (level, locked)
@@ -204,9 +205,12 @@ def scan_ceiling(ceiling: Mapping[Any, Any], settings: Settings) -> tuple[tuple[
     """(allowed, today's level) for scanning: High and Max only when the organisation's scan
     thinking is high; Save (#398) only with PAGE_ROUTING and Dynamic (Cost saving), whose
     reading it is; today is Low (Automatic) with Dynamic, else the single read's level.
-    Keyless (no reading model): None only."""
+    Keyless (no reading model): None only. #488: while Ultra low cost reads, None and Low only
+    (High, Max and Save are Low: it sets the thinking and reads every page)."""
     if settings.ocr_engine != "gemini":  # reading.ocr.GEMINI, not imported: the worker loads this early
         return ("none",), "none"
+    if ceiling.get("scan_reader") == ULTRA_LOW_COST:
+        return STEPS[:2], "low"
     top = (ceiling["scan_thinking"] or settings.ocr_thinking_level) == "high"
     allowed: tuple[str, ...] = STEPS if top else STEPS[:2]
     if settings.page_routing and ceiling["dynamic"]:

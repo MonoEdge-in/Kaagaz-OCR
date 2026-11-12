@@ -12,19 +12,22 @@ from sqlalchemy import RowMapping, text
 
 from kaagaz.api.auth import verify_password
 from kaagaz.api.routers.admin import month_window
+from kaagaz.api.routers.auth import ACCOUNT_MAX_FAILURES
 from kaagaz.api.views import audit_entry
 from kaagaz.db.engine import Database
 from kaagaz.db.runs import PgRuns
 from kaagaz.pipeline import FinishedRun
 from tests.settings_factory import make_settings
 from tests.test_api_model_choice import add_model, allow
-from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, MovingClock, answer_json
+from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, MovingClock, TestClient, answer_json
 from tests.test_api_usage import NOW, THIS_MONTH, add_spend, set_budget
 from tests.test_runs_db import totals
 
 # Money in a response: a key or a text that names it, or a currency sign (Tushar, 15 Oct 2026).
 MONEY = re.compile(r"usd|price|budget|cost|[$₹]", re.IGNORECASE)
 
+# How a person signs in and the Google tag (#457 phase 1, #507): only in replies that know them.
+GOOGLE_TAG = {"signs_in_with", "google_needed", "google_unchecked"}
 ADMIN_USER_FIELDS = {
     "id",
     "email",
@@ -230,7 +233,7 @@ def test_settings_read_and_change_within_the_platform_limit(db: Database) -> Non
         "max_upload_mb": None,
         "platform_max_upload_mb": 5,
         "autofile": {"granted": False, "on": False},  # feature 28: not granted
-    }
+    }  # Changed on purpose (#457 review): no auto_approve_connections while no provider is on
     changed = admin.client.patch("/api/admin/settings", json={"max_upload_mb": 3}, headers=CSRF)
     assert changed.json()["max_upload_mb"] == 3
     assert (
@@ -469,9 +472,12 @@ def test_a_run_at_00_30_ist_on_the_1st_counts_in_the_new_month(db: Database) -> 
 
 
 def _lock(api: Api, email: str) -> None:
-    client = api.client()
-    for _ in range(api.settings.login_max_failures):
-        client.post("/api/auth/login", json={"email": email, "password": WRONG}, headers=CSRF)
+    """Changed on purpose (A2, 7 Nov 2026): one address locks only itself, so the account's own
+    lock takes ACCOUNT_MAX_FAILURES from several addresses."""
+    for n in range(ACCOUNT_MAX_FAILURES // api.settings.login_max_failures):
+        client = TestClient(api.app, client=(f"203.0.113.{n}", 50000))
+        for _ in range(api.settings.login_max_failures):
+            client.post("/api/auth/login", json={"email": email, "password": WRONG}, headers=CSRF)
 
 
 @pytest.mark.db
@@ -483,13 +489,18 @@ def test_the_user_list_shows_lock_2fa_and_password_status(db: Database) -> None:
 
     items = {item["id"]: item for item in admin.client.get("/api/admin/users").json()["items"]}
 
-    assert all(set(item) == ADMIN_USER_FIELDS for item in items.values())
-    assert items[member_id]["locked_until"] == (api.clock() + timedelta(minutes=15)).isoformat()
+    # Changed on purpose (#457 phase 1): the list says how each person signs in.
+    # Changed on purpose (#507): and whether their role needs a Google account connected, or
+    # (#507 review) its domain checked.
+    assert all(set(item) == ADMIN_USER_FIELDS | GOOGLE_TAG for item in items.values())
+    # Changed on purpose (A2 review): the account's own lock lasts ACCOUNT_LOCK_MINUTES.
+    assert items[member_id]["locked_until"] == (api.clock() + timedelta(minutes=60)).isoformat()
     assert items[member_id]["totp_enabled"] is False
     assert items[admin.user_id]["totp_enabled"] is True
     assert items[admin.user_id]["must_change_password"] is False
-    api.clock.advance(15 * 60 + 1)
-    later = {item["id"]: item for item in admin.client.get("/api/admin/users").json()["items"]}
+    api.clock.advance(60 * 60 + 1)
+    again = api.new_admin_of(admin.customer_id)  # an admin session lasts an hour too
+    later = {item["id"]: item for item in again.client.get("/api/admin/users").json()["items"]}
     assert later[member_id]["locked_until"] is None  # a lock that has passed is not shown
 
 
@@ -522,7 +533,9 @@ def test_reset_password_gives_a_temporary_password_and_ends_sessions(db: Databas
 
     assert reply.status_code == 200, reply.text
     body = reply.json()
-    assert set(body["user"]) == ADMIN_USER_FIELDS
+    # Changed on purpose (#457 phase 1): a reset clears connected accounts, and says so; and
+    # (#507 review) the Google tag that may change with them.
+    assert set(body["user"]) == ADMIN_USER_FIELDS | GOOGLE_TAG
     assert body["user"]["must_change_password"] is True
     assert len(body["temporary_password"]) == 16
     assert member.client.get("/api/auth/me").status_code == 401
@@ -547,7 +560,9 @@ def test_reset_2fa_clears_the_code_so_the_next_sign_in_sets_it_up_again(db: Data
     assert reply.json()["totp_enabled"] is False
     state = api.user_state(admin.customer_id, colleague.user_id)
     assert (state["totp_secret_enc"], state["totp_enabled_at"], state["totp_last_step"]) == (None, None, None)
-    assert api.audit_actions(admin.customer_id)[-1] == "user.reset_totp"
+    assert (
+        api.audit_actions(admin.customer_id)[-1] == "auth.totp_reset"
+    )  # Changed on purpose (#457): the spec's
     signed_in = api.admin_login(api.client(), colleague.email)  # MFA required (0035): no session yet
     assert (signed_in.status_code, signed_in.json()["error"]["code"]) == (403, "mfa_enrol_required")
     assert "set-cookie" not in signed_in.headers

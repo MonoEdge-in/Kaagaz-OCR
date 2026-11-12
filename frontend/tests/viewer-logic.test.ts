@@ -12,6 +12,7 @@ import {
   focusZoom,
   pageMode,
   sheetRowWindow,
+  viewsAsPdf,
   stepZoom,
   visibleRect,
 } from "@/components/viewer/viewer";
@@ -231,6 +232,18 @@ describe("pageMode", () => {
     expect(pageMode({ detected_type: "pdf" }, { ...pdfPage, has_image: false }, true)).toBe("none");
   });
 
+  it("draws a Word or PowerPoint file's PDF rendition with PDF.js (#522)", () => {
+    for (const detected_type of ["docx", "dotx", "doc", "pptx", "ppt"] as const) {
+      expect(pageMode({ detected_type }, pdfPage, false)).toBe("pdf");
+      expect(pageMode({ detected_type }, pdfPage, true)).toBe("image");
+      expect(viewsAsPdf(detected_type)).toBe(true);
+    }
+    expect(viewsAsPdf("pdf")).toBe(true);
+    expect(viewsAsPdf("xls")).toBe(false);
+    expect(viewsAsPdf("png")).toBe(false);
+    expect(pageMode({ detected_type: "xls" }, sheetPage, false)).toBe("sheet");
+  });
+
   it("shows images and sheets their own way", () => {
     expect(pageMode({ detected_type: "png" }, { ...pdfPage, unit: "px" }, false)).toBe("image");
     expect(pageMode({ detected_type: "zip" }, sheetPage, false)).toBe("sheet");
@@ -329,6 +342,12 @@ describe("reasons for values the AI model or OCR read (PRD 2)", () => {
     // Changed on purpose (UI quality council, 15 Oct 2026): no "OCR" on user screens.
     expect(reasonText("ocr_script")).toBe(
       "Read from a scan in Hindi, Marathi or mixed script. Check it against the page.",
+    );
+  });
+
+  it("says an amount mixes digits of two scripts, naming no language (#524)", () => {
+    expect(reasonText("mixed_digits")).toBe(
+      "This amount has digits of two scripts. Check each digit against the page.",
     );
   });
 });

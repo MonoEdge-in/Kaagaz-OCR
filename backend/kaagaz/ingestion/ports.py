@@ -38,6 +38,16 @@ class DocumentRecord:
     batch_id: str | None = None
     # Folder upload (#484): it stays in folder_id, never auto-filed, even in a department.
     keep_place: bool = False
+    # A8: in Trash when read back (``deleted_at`` set); a new upload never is.
+    in_trash: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class StorageRoom:
+    """One organisation's storage limit and what its documents hold now, in bytes (#516)."""
+
+    limit_bytes: int
+    used_bytes: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,11 +58,14 @@ class Job:
     its first query, and carries ids only, never the file or its name.
     ``run_id`` (scan review UX rules, 16 Oct 2026): an Ensemble run of the document
     (``ensemble_runs.id``) to read, not the document itself; None for every other job.
+    ``check_id`` (#463): an operator's accuracy check (``scan_accuracy_checks.id``, also its
+    ``document_id``: it reads pages of several documents); None for every other job.
     """
 
     customer_id: str
     document_id: str
     run_id: str | None = None
+    check_id: str | None = None
 
 
 class BlobNotFound(Exception):
@@ -109,6 +122,11 @@ class DocumentRepository(Protocol):
         """Undo an insert. Removes only if the stored document id matches."""
         ...
 
+    def storage_room(self, customer_id: str) -> StorageRoom:
+        """This customer's storage limit and the bytes its documents hold now: every version,
+        and the Trash until it is purged (#516)."""
+        ...
+
 
 class BlobStorage(Protocol):
     """File storage. The adapter owns how keys are named (#11)."""
@@ -120,6 +138,14 @@ class BlobStorage(Protocol):
         ...
 
     def delete(self, customer_id: str, document_id: str) -> None: ...
+
+
+class RenditionStorage(BlobStorage, Protocol):
+    """File storage with a Word or PowerPoint file's PDF rendition beside it (#522 PR 2)."""
+
+    def get_rendition(self, customer_id: str, document_id: str) -> bytes:
+        """The PDF its pages were read from. Raises BlobNotFound before the worker converted it."""
+        ...
 
 
 class JobQueue(Protocol):

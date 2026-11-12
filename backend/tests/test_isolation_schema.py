@@ -51,9 +51,24 @@ spellings written again, never deleted by the app (a key goes with its value).
 Page layout (0056, #383, #382): a page's blocks and its tables' cells, deleted and inserted by
 the replacing save, never updated.
 
-Folder upload (0061c, #484, NEEDS VRUSHIT'S APPROVAL): an upload, its folders and its items the
+The reading pause (0066, #478): the live counter, read, added and only its counts and alert time
+written again, never deleted by the app (it goes with its organisation).
+
+Audit keeping (0068, #482): a deleted organisation's audit rows, granted to no role (only the
+owner reads them); the worker's sweep that removes them after 365 days; and the operator's
+switch that requires two-step sign-in for an organisation's admins (#481).
+
+Folder upload (0071, #484, NEEDS VRUSHIT'S APPROVAL): an upload, its folders and its items the
 app reads, adds and updates, never deletes (they go with the customer); an organisation's own
 limits it reads in four columns only, written by the operator's two functions (step-up).
+"Add new files only" (#484, 0072): the upload counts the files it sends
+(``items_counted``); the browser's SHA-256 of a file is never kept, on the upload or its items.
+
+Storage limit per organisation (0061d, merged by 0075, #516): an organisation's own limit the app
+reads in two columns only, written by the operator's two functions (step-up).
+
+A folder in Trash (0081, #542, NEEDS VRUSHIT'S APPROVAL): read, added and deleted by the app,
+never updated.
 """
 
 import re
@@ -145,13 +160,42 @@ UPDATES_0049 = {"value_keys": {"latin", "sound"}}
 FROM_0051 = {"learning_removals": (True, True, False, False)}
 # Page layout (0056, #383, #382): blocks and table cells are deleted and inserted by the save.
 FROM_0056 = {"page_blocks": (True, True, False, True), "table_cells": (True, True, False, True)}
-# Folder upload (0061c): never deleted by the app; the limits are a column grant, the operator writes.
-FROM_0061C = {
+# Email links (0061, #457 phase 0): read and added; only used_at may change (a column grant).
+FROM_0061 = {"email_links": (True, True, False, False)}
+# Connected accounts (0062, #457 phase 1): read, added and deleted; only the approval and
+# last-used columns may change (a column grant).
+FROM_0062 = {"user_identities": (True, True, False, True)}
+# Changed on purpose (#507, 0074): Google's hd claim, refreshed at each sign-in, and its email,
+# kept with hd when a Google sign-in is refused for the domains (#507 review).
+UPDATES_0062 = {
+    "user_identities": {
+        "status",
+        "approved_at",
+        "approved_by",
+        "last_used_at",
+        "hosted_domain",
+        "email_at_link",
+    }
+}
+# The reading pause (0066, #478): a day's counter is added and counted up (a column grant).
+FROM_0066 = {"reading_days": (True, True, False, False)}
+UPDATES_0066 = {"reading_days": {"pages", "cost_usd", "alerted_at"}}
+# Audit keeping (0068, #482): a deleted organisation's audit rows, no right for the app at all.
+FROM_0068 = {"audit_log_kept": (False, False, False, False)}
+# Folder upload (0071): never deleted by the app; the limits are a column grant, the operator writes.
+FROM_0071 = {
     "folder_uploads": (True, True, True, False),
     "folder_upload_folders": (True, True, True, False),
     "folder_upload_items": (True, True, True, False),
     "org_upload_limits": (False, False, False, False),
 }
+# Storage limit (0061d): a column grant only, the operator writes.
+FROM_0061D = {"org_storage_limits": (False, False, False, False)}
+# A folder in Trash (0081, #542): read, added and deleted (restored, forever, purged), never updated.
+FROM_0081 = {"trashed_folders": (True, True, False, True)}
+# Logout ends this browser's session (0076, #502): the app adds and reads ended sessions only;
+# the worker's sweep deletes them through kaagaz_sweep_ended_sessions.
+FROM_0076 = {"ended_sessions": (True, True, False, False)}
 UPDATES_0030 = {
     "word_changes": {"applied", "undone_at", "undone_by"},
     "ensemble_runs": {
@@ -165,6 +209,7 @@ UPDATES_0030 = {
 CATALOG_REFRESH = {
     "name", "price_in_usd_per_m", "price_out_usd_per_m", "providers", "efforts", "expires_on", "eligible",
     "seen_at", "chat_eligible",  # 0026, the answer filter
+    "price_request_usd", "price_image_usd",  # Changed on purpose (0070, #488 review): the prices a call
 }  # fmt: skip
 CATALOG_POLICIES = {
     ("model_catalog", "read_all"): ("SELECT", "PERMISSIVE", ["public"], "true", None),
@@ -195,11 +240,12 @@ RUN_OUTCOME = {
 # customers or users give ids only.
 EMPTY_PATH = ['search_path=""']
 OWNER_RIGHTS = {
+    # Changed on purpose (#479, 3 Nov 2026): 0067 gives 0001's two the empty path as well.
     "kaagaz_login_lookup": (
         "TABLE(user_id uuid, customer_id uuid, password_hash text, role text, disabled boolean)",
-        ["search_path=public, pg_temp"],
+        EMPTY_PATH,
     ),  # 0001, sign-in
-    "kaagaz_create_customer": ("uuid", ["search_path=public, pg_temp"]),  # 0001
+    "kaagaz_create_customer": ("uuid", EMPTY_PATH),  # 0001
     "kaagaz_customer_ids_with_trash": ("SETOF uuid", EMPTY_PATH),  # 0002, the purge
     "kaagaz_customer_ids": ("SETOF uuid", EMPTY_PATH),  # 0006, reembed
     "kaagaz_stories_to_embed": ("TABLE(customer_id uuid, user_id uuid, family_id uuid)", EMPTY_PATH),  # 0010
@@ -215,8 +261,40 @@ OWNER_RIGHTS = {
         "TABLE(customer_id uuid, id uuid, storage_key text, storage_upload_id text)",
         EMPTY_PATH,
     ),
+    # 0076, the worker's sweep of ended sessions whose cookie expired: a count only.
+    "kaagaz_sweep_ended_sessions": ("integer", EMPTY_PATH),
     # 0046, the shared scheduler's single admission function.
     "kaagaz_model_rate_slot": ("double precision", EMPTY_PATH),
+    # 0061, email: a clicked link found by its hash (ids, purpose and times), and self sign-up
+    # with email on (a pending customer).
+    "kaagaz_email_link_lookup": (
+        "TABLE(link_id uuid, customer_id uuid, user_id uuid, purpose text,"
+        " expires_at timestamp with time zone, used_at timestamp with time zone)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_create_pending_customer": ("uuid", EMPTY_PATH),
+    # 0062, connected accounts: a provider sign-in's connection found by its key (ids and
+    # status), and whether an e-mail is another user's (yes or no).
+    "kaagaz_identity_lookup": (
+        "TABLE(identity_id uuid, user_id uuid, customer_id uuid, status text)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_email_belongs_to_other": ("boolean", EMPTY_PATH),
+    # 0063: a pending, unconfirmed sign-up older than 24 hours no longer holds its e-mail.
+    "kaagaz_release_stale_signup": ("boolean", EMPTY_PATH),
+    # 0064 (#463): the worker claims and ends its own organisation's accuracy check (numbers only).
+    # Changed on purpose (#463 review): its Dynamic, and the job's heartbeat.
+    "kaagaz_accuracy_check_claim": (
+        "TABLE(model text, scan_thinking text, scan_resolution text, careful_thinking text,"
+        " careful_resolution text, page_max_output_tokens integer, dynamic boolean, max_pages integer)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_accuracy_check_beat": ("boolean", EMPTY_PATH),
+    "kaagaz_accuracy_check_finish": ("boolean", EMPTY_PATH),
+    # 0066 (#478): the release sweep's organisations with a held document, ids only.
+    "kaagaz_customer_ids_held": ("SETOF uuid", EMPTY_PATH),
+    # 0068 (#482): the worker removes deleted organisations' audit rows after 365 days (a count).
+    "kaagaz_forget_kept_audit": ("bigint", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"
@@ -236,7 +314,8 @@ OPERATOR_RIGHTS = {
         "TABLE(customer_id uuid, name text, status text, disabled_at timestamp with time zone,"
         " delete_after timestamp with time zone, created_at timestamp with time zone, admins bigint,"
         " reviewers bigint, members bigint, documents bigint, pages bigint, size_bytes bigint,"
-        " last_activity_at timestamp with time zone, autofile_granted boolean, autofile_on boolean)",
+        " last_activity_at timestamp with time zone, autofile_granted boolean, autofile_on boolean,"
+        " admin_email_confirmed boolean)",  # Changed on purpose (0061): Approve needs it
         EMPTY_PATH,
     ),
     # 0017: one organisation's admins, and the changes to one of them.
@@ -249,6 +328,7 @@ OPERATOR_RIGHTS = {
     **dict.fromkeys(
         (
             "kaagaz_op_create_customer",
+            "kaagaz_op_approve_customer",  # 0061
             "kaagaz_op_set_customer_status",
             "kaagaz_op_create_admin",
             "kaagaz_op_change_admin",
@@ -298,8 +378,10 @@ OPERATOR_RIGHTS = {
         " ledger_tokens_out numeric, chat_eligible boolean, chat_verified_prompt text,"
         " chat_verified_at timestamp with time zone, scan_pages bigint, scan_pages_costed bigint,"
         " scan_cost_usd numeric, scan_cost_unknown_calls bigint, answer_questions bigint,"
-        " answer_questions_costed bigint, answer_cost_usd numeric, answer_cost_unknown_calls bigint)",
-        # 0026: the answer columns; 0033: the real cost, counts and sums only
+        " answer_questions_costed bigint, answer_cost_usd numeric, answer_cost_unknown_calls bigint,"
+        " price_request_usd numeric, price_image_usd numeric)",
+        # 0026: the answer columns; 0033: the real cost, counts and sums only; changed on purpose
+        # (0070, #488 review): the prices a call, for the operator's check of Ultra low cost's lead
         EMPTY_PATH,
     ),
     "kaagaz_op_set_model_enabled": ("text", EMPTY_PATH),
@@ -308,20 +390,68 @@ OPERATOR_RIGHTS = {
     # organisations each area reaches, and the two saves (step-up). Pinned: no user, no document.
     "kaagaz_op_org_ai": (
         "TABLE(scan_models text[], scan_default text, chat_models text[], chat_default text,"
-        " scan_thinking text, chat_levels text[], chat_default_level text, dynamic boolean, ensemble boolean,"
-        " ai_budget_usd numeric)",
+        " scan_thinking text, chat_levels text[], chat_default_level text, dynamic boolean,"
+        " scan_resolution text, careful_thinking text, careful_resolution text,"
+        " page_max_output_tokens integer,"
+        " scan_reader text, mistral_model text,"  # Changed on purpose (#473, 0065): who reads the pages
+        " daily_page_limit integer,"  # Changed on purpose (#478, 0066): the reading pause
+        " ulc_ceiling_paise smallint,"  # Changed on purpose (#488, 0070): Ultra low cost's ceiling
+        " ensemble boolean,"
+        " ai_budget_usd numeric)",  # 0064 (#463): the scan cost settings
         EMPTY_PATH,
     ),
     "kaagaz_op_set_org_ai": ("record", EMPTY_PATH),
     "kaagaz_op_ai_defaults": (
         "TABLE(scan_models text[], scan_default text, chat_models text[], chat_default text,"
         " scan_thinking text, chat_levels text[], chat_default_level text, dynamic boolean,"
+        " scan_resolution text, careful_thinking text, careful_resolution text,"
+        " page_max_output_tokens integer,"
+        " scan_reader text, mistral_model text,"  # Changed on purpose (#473, 0065)
+        " daily_page_limit integer,"  # Changed on purpose (#478, 0066)
+        " ulc_ceiling_paise smallint,"  # Changed on purpose (#488, 0070)
         " orgs_inheriting_scan_models bigint, orgs_inheriting_chat_models bigint,"
         " orgs_inheriting_scan_thinking bigint, orgs_inheriting_chat_levels bigint,"
-        " orgs_inheriting_dynamic bigint)",
+        " orgs_inheriting_dynamic bigint, orgs_inheriting_scan_resolution bigint,"
+        " orgs_inheriting_careful_thinking bigint, orgs_inheriting_careful_resolution bigint,"
+        " orgs_inheriting_page_max_output_tokens bigint, orgs_inheriting_scan_reader bigint,"
+        " orgs_inheriting_mistral_model bigint, orgs_inheriting_daily_page_limit bigint,"
+        " orgs_inheriting_ulc_ceiling_paise bigint)",  # Changed on purpose (#488, 0070)
         EMPTY_PATH,
     ),
+    # 0066 (#478): one organisation's reading pause counter on one day (numbers only).
+    "kaagaz_op_reading_today": ("TABLE(pages integer, cost_usd numeric)", EMPTY_PATH),
     "kaagaz_op_set_ai_defaults": ("text", EMPTY_PATH),
+    # 0064 (#463): the estimate's measured cost, sums and counts only (no customer column).
+    "kaagaz_op_scan_cost": (
+        "TABLE(first_usd numeric, first_pages bigint, careful_usd numeric, careful_pages bigint,"
+        " scan_calls bigint, careful_calls bigint, quality_pages bigint, clean_pages bigint,"
+        " max_quality_pages bigint, max_clean_pages bigint, output_p99 integer, tokens_in numeric,"
+        " tokens_out numeric, token_pages bigint, limit_hits bigint)",  # Changed on purpose (#463 review)
+        EMPTY_PATH,
+    ),
+    # 0064 (#463): an organisation's accuracy check, started with a fresh code, and read back
+    # (settings and numbers, never text).
+    "kaagaz_op_start_accuracy_check": ("record", EMPTY_PATH),
+    "kaagaz_op_accuracy_check": (
+        "TABLE(id uuid, status text, model text, scan_thinking text, scan_resolution text,"
+        " careful_thinking text, careful_resolution text, page_max_output_tokens integer,"
+        " dynamic boolean, max_pages integer, pages_checked integer,"  # Changed on purpose (#463 review)
+        " pages_failed integer, word_match double precision, numbers_match double precision,"
+        " cost_usd numeric, started_at timestamp with time zone, finished_at timestamp with time zone)",
+        EMPTY_PATH,
+    ),
+    # 0070 (#488): what Ultra low cost really cost for one model (sums and counts only, no
+    # customer column).
+    "kaagaz_op_ulc_cost": (
+        "TABLE(pages bigint, cost_usd numeric, limit_hits bigint, top_usd_per_page numeric)",
+        EMPTY_PATH,
+    ),
+    # 0065 (#473): whether Mistral stopped reading pages, every organisation's together (a code,
+    # a time and a count; no customer column).
+    "kaagaz_op_mistral_status": (
+        "TABLE(code text, since timestamp with time zone, documents_waiting bigint)",
+        EMPTY_PATH,
+    ),
     "kaagaz_op_set_org_autofile": ("record", EMPTY_PATH),  # 0025: allow or stop auto-filing
     "kaagaz_op_usage": (
         "TABLE(customer_id uuid, customer_name text, model text, calls bigint, cached_calls bigint,"
@@ -393,12 +523,27 @@ OPERATOR_RIGHTS = {
     # Changed on purpose (0040): the sign-in idle timeout, and its write (step-up).
     "kaagaz_op_session_timeout": ("TABLE(org_hours integer, platform_hours integer)", EMPTY_PATH),
     "kaagaz_op_set_session_timeout": ("text", EMPTY_PATH),
-    "kaagaz_op_folder_upload_limits": (  # 0061c
+    # 0068 (#481): two-step sign-in required for an organisation's admins, and its write (step-up).
+    "kaagaz_op_admin_two_step": ("boolean", EMPTY_PATH),
+    "kaagaz_op_set_admin_two_step": ("text", EMPTY_PATH),
+    "kaagaz_op_folder_upload_limits": (  # 0071
         "TABLE(org_max_files integer, org_max_gb integer, org_max_folders integer,"
         " platform_max_files integer, platform_max_gb integer, platform_max_folders integer)",
         EMPTY_PATH,
     ),
     "kaagaz_op_set_folder_upload_limits": ("text", EMPTY_PATH),
+    # 0074 (#507): Google sign-in per organisation and for the platform, and its write (step-up).
+    "kaagaz_op_google_signin": (
+        "TABLE(org_on boolean, platform_on boolean, only_roles text[], domains text[])",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_set_google_signin": ("text", EMPTY_PATH),
+    # 0061d, #516: the storage limits (numbers and the bytes used only), and their write (step-up).
+    "kaagaz_op_storage_limit": (
+        "TABLE(org_storage_gb integer, platform_storage_gb integer, used_bytes bigint)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_set_storage_limit": ("text", EMPTY_PATH),
     # 0046: operator-only read/write for customer and user RPM overrides.
     "kaagaz_op_model_rates": (
         "TABLE(org_rpm integer, user_id uuid, email text, user_rpm integer)",
@@ -430,7 +575,8 @@ OPERATOR_RIGHTS = {
 # The only tables without customer_id: the customers themselves, alembic's own, the
 # platform operator's (0015), the workers' reader status (0022) and the model catalogue
 # (0023) and the platform AI defaults (0026), which belong to no customer.
-OPERATOR_TABLES = {"operators", "platform_audit"}
+# Changed on purpose (#463, 0064): the accuracy checks are the operator's too.
+OPERATOR_TABLES = {"operators", "platform_audit", "scan_accuracy_checks"}
 PLATFORM_DEFAULTS = {"platform_models", "platform_ai_settings", "feature_switches", "platform_model_override"}
 NO_CUSTOMER_ID = (
     {"customers", "alembic_version", "reader_status", "model_catalog", "model_rate_scheduler"}
@@ -473,7 +619,14 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0049)
         | set(FROM_0051)
         | set(FROM_0056)
-        | set(FROM_0061C)
+        | set(FROM_0061)
+        | set(FROM_0062)
+        | set(FROM_0066)
+        | set(FROM_0068)
+        | set(FROM_0071)
+        | set(FROM_0061D)
+        | set(FROM_0076)
+        | set(FROM_0081)  # Changed on purpose (#542, 0081)
     )
 
     with db.system() as conn:
@@ -520,7 +673,12 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         # An organisation's models and settings are the operator's. Changed on purpose (0039):
         # its feature switches too.
         # Changed on purpose (0040): and its sign-in idle timeout.
-        if table not in FROM_0023 | FROM_0026 | FROM_0039 | FROM_0040 | FROM_0043 | FROM_0061C:
+        # Changed on purpose (#482, 0068): and a deleted organisation's kept audit rows.
+        # Changed on purpose (#484, 0071): and an organisation's folder upload limits.
+        # Changed on purpose (#516, 0061d): and an organisation's storage limit.
+        if table not in (
+            FROM_0023 | FROM_0026 | FROM_0039 | FROM_0040 | FROM_0043 | FROM_0068 | FROM_0071 | FROM_0061D
+        ):
             assert (select, insert) == (True, True), table
     for table in FROM_0002:
         assert granted[table] == (True, True, True, True), table
@@ -541,7 +699,14 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0049
         | FROM_0051
         | FROM_0056
-        | FROM_0061C
+        | FROM_0061
+        | FROM_0062
+        | FROM_0066
+        | FROM_0068
+        | FROM_0071
+        | FROM_0061D
+        | FROM_0076
+        | FROM_0081  # Changed on purpose (#542, 0081)
     ).items():
         assert granted[table] == expected, table
 
@@ -599,6 +764,28 @@ def test_the_app_may_update_only_the_undo_and_progress_columns_of_word_review(db
     assert {table: _updatable(db, table) for table in UPDATES_0030} == UPDATES_0030
 
 
+def test_the_app_may_update_only_when_an_email_link_was_used(db: Database) -> None:
+    """0061: never a link's hash, purpose, user or expiry, so a link can't be moved or lengthened."""
+    assert _updatable(db, "email_links") == {"used_at"}
+
+
+def test_the_app_may_update_only_the_approval_and_last_use_of_a_connected_account(db: Database) -> None:
+    """0062: never a connection's provider, issuer, subject, user or customer, so an approved
+    connection can't be moved to another person or outside account."""
+    assert {table: _updatable(db, table) for table in UPDATES_0062} == UPDATES_0062
+
+
+def test_the_app_may_update_only_the_counts_of_a_reading_day(db: Database) -> None:
+    """0066: never a counter's organisation or day, so pages can't be moved to another day."""
+    assert {table: _updatable(db, table) for table in UPDATES_0066} == UPDATES_0066
+
+
+def test_the_app_may_update_only_the_parent_of_a_trashed_folder(db: Database) -> None:
+    """0082 (A13): never a trashed folder's name, kind, delete or owner; only where it would be
+    restored to, when the folder it was in is deleted with its contents kept elsewhere."""
+    assert _updatable(db, "trashed_folders") == {"parent_id"}
+
+
 def test_the_app_may_update_only_the_spellings_of_a_value_key(db: Database) -> None:
     """0049: never a key's value, document, kind or place level, so a key can't be moved to
     another value or document."""
@@ -652,7 +839,44 @@ def test_the_app_may_update_only_the_upload_limit_and_the_auto_filing_switch_of_
             {"r": APP_ROLE},
         ).all()
     # Changed on purpose (auto-filing council, 15 Oct 2026): the admin's switch, 0025.
-    assert {name for name, may_update in columns if may_update} == {"max_upload_mb", "autofile_on"}
+    # Changed on purpose (#457 phase 1, 0062): the admin's auto-approval switch.
+    # Changed on purpose (#507, 0074): the admin's Google rules; never google_signin (the operator's).
+    assert {name for name, may_update in columns if may_update} == {
+        "max_upload_mb",
+        "autofile_on",
+        "auto_approve_connections",
+        "google_roles",
+        "google_only_roles",
+        "google_domains",
+    }
+
+
+def _columns(db: Database, table: str) -> set[str]:
+    with db.system() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT attname::text FROM pg_attribute WHERE attrelid = CAST(:t AS regclass)"
+                " AND attnum > 0 AND NOT attisdropped"
+            ),
+            {"t": table},
+        ).scalars()
+        return set(rows)
+
+
+def test_a_folder_upload_keeps_counts_and_never_the_browsers_hash_of_a_file(db: Database) -> None:
+    """0072 (#484, "Add new files only"): ``items_counted``, the files registered that weren't
+    already in, is what the limit is checked against; no column keeps a file's SHA-256. Changed on
+    purpose (#522 PR 3, 0080): ``zip_document_id``, the zip an upload the worker made is from."""
+    assert _columns(db, "folder_uploads") == {
+        "id", "customer_id", "user_id", "target", "parent_folder_id", "root_folder_id", "source_name",
+        "root_name", "merge", "file_count", "total_bytes", "skipped_count", "folders_created",
+        "items_registered", "items_counted", "bytes_registered", "created_at", "updated_at",
+        "zip_document_id",
+    }  # fmt: skip
+    assert _columns(db, "folder_upload_items") == {
+        "id", "customer_id", "folder_upload_id", "seq", "path_key", "name", "folder_id", "size_bytes",
+        "batch_id", "state", "failure_code", "document_id", "updated_at",
+    }  # fmt: skip
 
 
 _FOREIGN_KEYS = text(
@@ -682,7 +906,11 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
         | set(FROM_0041)  # Changed on purpose (PRD 1, 0041)
         | set(FROM_0049)
         | set(FROM_0056)
-        | {"folder_upload_folders", "folder_upload_items"}  # 0061c
+        | set(FROM_0061)
+        | set(FROM_0062)
+        | {"folder_upload_folders", "folder_upload_items"}  # 0071
+        | set(FROM_0076)
+        | set(FROM_0081)  # Changed on purpose (#542, 0081)
         | {"pages", "model_usage", "documents"}  # documents.owner_id (0041)
     )
     for name, _table, _parent, columns, parent_columns in between:
@@ -749,7 +977,11 @@ def test_the_operator_role_has_no_table_rights_and_its_tables_no_grants_and_no_p
             {"t": sorted(OPERATOR_TABLES)},
         ).all()
     assert (tuple(role), granted) == ((False, False, False), [])
-    assert sorted(tuple(row) for row in locked) == [("operators", True, 0), ("platform_audit", True, 0)]
+    assert sorted(tuple(row) for row in locked) == [
+        ("operators", True, 0),
+        ("platform_audit", True, 0),
+        ("scan_accuracy_checks", True, 0),
+    ]
 
 
 # 0024's readers (F1-F4): read-only, no dynamic SQL, the operator check, and no column

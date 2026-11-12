@@ -6,6 +6,9 @@
 // also shows `twoStep`, the signed-in admin's own Two-step sign-in, which the
 // page passes in (app/(app)/admin/TwoStepPanel.tsx).
 //
+// #468: with unsaved Settings or AI settings, another tab opens only once the admin says to leave
+// without saving; their kept draft (lib/drafts.ts) goes then too.
+//
 // It opens only for an admin session (PRD A1; every admin's sign-in at /login
 // gives one since 16 Oct 2026): an admin with an app session is sent to sign in,
 // anyone else is told it is for admins. The link is shown
@@ -15,6 +18,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { clearDraft } from "@/lib/drafts";
 import { useSession } from "@/lib/session";
 import { leavePage } from "@/lib/sessionChannel";
 import { ActivityPanel } from "./ActivityPanel";
@@ -23,7 +27,7 @@ import { AnswerQualityPanel } from "./AnswerQualityPanel";
 import { DepartmentsPanel } from "./DepartmentsPanel";
 import { FailedPanel } from "./FailedPanel";
 import { LearnedList } from "./LearnedList";
-import { TABS, adminGate } from "./logic";
+import { LEAVE_UNSAVED, SETTINGS_DRAFT, TABS, adminGate, aiSettingsDraft, tabChangeAllowed } from "./logic";
 import type { TabId } from "./logic";
 import { NumbersPanel } from "./NumbersPanel";
 import { SettingsPanel } from "./SettingsPanel";
@@ -36,11 +40,26 @@ export function AdminView({ twoStep }: { twoStep: ReactNode }) {
   const { me } = useSession();
   const gate = adminGate(me);
   const [active, setActive] = useState<TabId>("users");
+  const [unsaved, setUnsaved] = useState(false); // the open Settings or AI settings tab has changes not saved
 
   // A full page load: someone else may sign in there (critical #5).
   useEffect(() => {
     if (gate === "admin_sign_in") leavePage("/login?next=/admin");
   }, [gate]);
+
+  /** Opens the tab, and says whether it did: not when the admin stays with unsaved changes. */
+  function openTab(next: TabId): boolean {
+    if (next === active) return true;
+    if (!tabChangeAllowed(unsaved, () => window.confirm(LEAVE_UNSAVED))) return false;
+    if (unsaved) {
+      // Only the draft of the tab being left: the other tab's unsaved changes stay kept.
+      if (active === "settings") clearDraft(me.user.id, SETTINGS_DRAFT);
+      if (active === "ai") clearDraft(me.user.id, aiSettingsDraft("organisation"));
+    }
+    setUnsaved(false);
+    setActive(next);
+    return true;
+  }
 
   if (gate === "no_access") {
     return (
@@ -82,18 +101,18 @@ export function AdminView({ twoStep }: { twoStep: ReactNode }) {
           </p>
         </div>
       </header>
-      <Tabs<TabId> prefix="admin" label="Admin sections" tabs={TABS} active={active} onChange={setActive}>
+      <Tabs<TabId> prefix="admin" label="Admin sections" tabs={TABS} active={active} onChange={openTab}>
         {active === "users" && (
-          <UsersPanel currentUserId={me.user.id} adminTwoStep={me.user.totp_enabled} />
+          <UsersPanel currentUserId={me.user.id} adminTwoStep={me.user.totp_enabled} providers={me.providers} />
         )}
         {active === "settings" && (
           <div className={styles.panelStack}>
-            <SettingsPanel />
+            <SettingsPanel providers={me.providers} onUnsaved={setUnsaved} />
             {twoStep}
           </div>
         )}
         {active === "departments" && <DepartmentsPanel />}
-        {active === "ai" && <AiSettingsPanel scope="organisation" />}
+        {active === "ai" && <AiSettingsPanel scope="organisation" onUnsaved={setUnsaved} />}
         {active === "activity" && <ActivityPanel />}
         {active === "numbers" && <NumbersPanel />}
         {active === "usage" && <UsagePanel />}

@@ -1,7 +1,8 @@
 """The rule for a name a person types: a folder, a tag or a document's new name.
 
 Why one rule: control characters are removed (they can break a screen or a
-log line) and the ends are trimmed. Nothing else changes, so "GST 2026/27"
+log line), and so are hidden ones (``without_hidden``, #520), and the ends are
+trimmed. Nothing else changes, so "GST 2026/27"
 stays as typed; there is no path strip. A name that is empty after that, or
 longer than its limit, is refused, never cut, so nobody gets a name they did
 not type. The limits match the database checks (migration 0002).
@@ -17,18 +18,53 @@ FOLDER_NAME_MAX = 100
 TAG_NAME_MAX = 40
 DOCUMENT_NAME_MAX = 255
 
-CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
+# C0, DEL and C1 (#520 review: NEL, U+0085, is one).
+CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# #520: a format character (a bidi override or isolate, a direction mark, a zero-width space, a
+# byte order mark, a soft hyphen) or a line or paragraph separator hides or reorders what a name
+# shows: "invoice<U+202E>fdp.exe" shows as "invoiceexe.pdf". ZWNJ and ZWJ (U+200C, U+200D) stay:
+# Devanagari needs them. A folder upload's names (``upload_name``) refuse the same ones. A lone
+# surrogate (Cs, "\ud800" in JSON) draws nothing and can't be stored: it goes too, as production's
+# rule refuses it (port of b8faa1d3, #564; it was a 500).
+_HIDDEN_CATEGORIES = frozenset({"Cf", "Cs", "Zl", "Zp"})
+_JOINERS = "\u200c\u200d"
+# #520 review: a flag emoji's tag characters (U+E0020 to U+E007E after the black flag U+1F3F4,
+# ended by the cancel tag U+E007F: Scotland, Wales, England) stay with it; any other tag
+# character, which draws nothing, goes.
+_FLAG = re.compile("(\U0001f3f4[\U000e0020-\U000e007e]+\U000e007f)")
+
+
+def without_hidden(name: str) -> str:
+    """``name`` without the hidden characters above. O(len(name))."""
+    parts = _FLAG.split(name)  # the odd parts are flag emoji
+    return "".join(part if n % 2 else _shown(part) for n, part in enumerate(parts))
+
+
+def _shown(text: str) -> str:
+    return "".join(
+        char for char in text if unicodedata.category(char) not in _HIDDEN_CATEGORIES or char in _JOINERS
+    )
 
 
 def clean_name(name: str, *, max_length: int) -> str | None:
-    """``name`` without control characters and trimmed; None when that leaves
-    nothing or more than ``max_length`` characters, or when it holds a character that can
-    hide or reorder what is shown (the folder upload's rule below, production QA S5; "/" and
-    "\\" stay, a typed name is no path). O(len(name))."""
-    cleaned = CONTROL_CHARACTERS.sub("", name).strip()
-    if any(map(_hidden, cleaned)):
+    """``name`` without control or hidden characters and trimmed; None when that
+    leaves nothing, or only ZWNJ and ZWJ (#520 review), or more than ``max_length``
+    characters. O(len(name))."""
+    cleaned = without_hidden(CONTROL_CHARACTERS.sub("", name)).strip()
+    if not cleaned.translate(dict.fromkeys(map(ord, _JOINERS))).strip():
         return None
-    return cleaned if 1 <= len(cleaned) <= max_length else None
+    return cleaned if len(cleaned) <= max_length else None
+
+
+# #527: a line break (as reading.spans reads one) or a tab, or a run of them.
+_BREAKS = re.compile(r"(?:\r\n|[\n\r\u2028\u2029\t])+")
+
+
+def one_line(text: str) -> str:
+    """``text`` as one typed line (#527, a clean copy line's text box starts with it; the
+    frontend's ``oneLine`` mirrors it): each run of line breaks or tabs a single space, then
+    ``clean_name``'s control and hidden characters removed, trimmed. O(len(text))."""
+    return without_hidden(CONTROL_CHARACTERS.sub("", _BREAKS.sub(" ", text))).strip()
 
 
 def clean_document_name(name: str) -> str | None:
@@ -45,18 +81,8 @@ def clean_document_name(name: str) -> str | None:
 _UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
 
 
-def _hidden(char: str) -> bool:
-    return unicodedata.category(char) in _UNSAFE_CATEGORIES and char not in "\u200c\u200d"
-
-
 def _unsafe(char: str) -> bool:
-    return char in "/\\" or _hidden(char)
-
-
-def mark_hidden(name: str) -> str:
-    """``name`` with each character that can hide or reorder what is shown (above) as U+FFFD:
-    an uploaded file's name, which is shown, not refused (production QA S5). O(len(name))."""
-    return "".join("\ufffd" if _hidden(char) else char for char in name)
+    return char in "/\\" or (unicodedata.category(char) in _UNSAFE_CATEGORIES and char not in "\u200c\u200d")
 
 
 def upload_name(name: str, *, max_length: int) -> str | None:

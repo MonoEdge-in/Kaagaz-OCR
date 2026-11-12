@@ -14,6 +14,7 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { StillLoading } from "@/components/shell/StillLoading";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { ApiError, FEATURE_OFF, listReview, verifyAllReview } from "@/lib/api";
@@ -323,6 +324,7 @@ function Queue({ documentId, initialReason }: { documentId?: string; initialReas
           <p className="visually-hidden" role="status">
             Loading the review queue…
           </p>
+          <StillLoading onRetry={() => setAttempt((n) => n + 1)} />
           <div className={`delayed ${styles.skeletons}`} aria-hidden="true">
             {SKELETON_CARDS.map((card) => (
               <span key={card} className={`skeleton ${styles.skeletonCard}`} />

@@ -34,9 +34,10 @@ Why some choices:
   delete only moves it to Trash; nothing is removed and storage is not touched,
   so a restore brings everything back. Because both act on every version, only
   an admin or a user who uploaded every version may do them (``can_delete`` in
-  the summary, kaagaz/api/views.py). Only an admin session with two-step sign-in,
-  or a member or reviewer an admin allowed who typed their password in the last
-  5 minutes (``CanDeleteForever``), can delete forever, and only a family in Trash (409 ``not_in_trash``
+  the summary, kaagaz/api/views.py). Only an admin session with two-step sign-in, or an
+  admin session without it (#538) or a member or reviewer an admin allowed, either having
+  typed their password in the last 5 minutes (``CanDeleteForever``), can delete forever,
+  and only a family in Trash (409 ``not_in_trash``
   otherwise); its files go inside the same transaction, so if storage cannot be
   reached every row stays and the admin can try again.
 * **Trash means deleted.** A family in Trash can't be renamed, moved, tagged
@@ -95,6 +96,10 @@ Why some choices:
   ``read_model`` in an optional JSON body, checked as an upload's, and its audit row
   names it; a page's Read again keeps the document's model (no re-billing of the cache).
   Both make the asker ``read_requested_by``, written by ``mark_for_reprocess`` itself.
+* **While reading is paused** (#478, QA P1 and C3, 4 Nov 2026): a Read again of a ready
+  document, or of one of its pages, is 409 ``reading_paused`` with plain words, and nothing
+  changes: it would be held, out of search and Ask, until the pause ends. A failed or unreadable
+  one is in neither, so it may be read again, and waits for the pause.
 * **Batches** (PRD 5 Q1): an upload may name its drop in the optional ``batch_id`` form
   field, a UUID the browser made (anything else is 400). A drop holds at most
   MAX_FILES_PER_BATCH of the uploader's files: the next is 409 ``batch_full``, checked
@@ -107,6 +112,11 @@ Why some choices:
   list but stays flagged on the page itself and in answers (``accept_page``, under
   the family lock). One ``document.page_accept`` audit row names the page. A
   document in Trash is 409 ``in_trash``; a page it does not have is 404.
+* **Every read is logged** (#482, 3 Nov 2026): the detail, and each way of reading a document
+  one by one (the viewer's own file fetch, page images, word lists, readings, cells), write
+  ``document.view`` at most once per person per document every half hour (``audit.record_view``,
+  ``{"via": ...}`` naming the way), in the transaction that found the document readable; the
+  Download button's ``document.download`` stays as it was.
 * **A folder upload's file** (#484): ``POST /documents?folder_upload_item_id=`` or the
   resumable start with ``folder_upload_item_id``. The item names the folder, batch and name (a
   ``folder_id``, ``department_id`` or ``batch_id`` beside it is 400); it is this user's (404),
@@ -114,6 +124,14 @@ Why some choices:
   already in is 200 with the item, storing nothing. A folder deleted since or a refused file
   fails the item with that code. Never auto-filed. ``_accept_item`` holds a send slot (429
   ``rate_limited``, ``Retry-After: 2``, past FOLDER_UPLOAD_FILES_AT_ONCE[_PER_ORG]).
+* **Storage limit** (#516): a new file that would take the organisation past its storage limit
+  (``db/storage_limits.py``) is 413 ``storage_full``, with ``details`` {used_bytes, limit_bytes,
+  limit_gb} and the words of ``storage_full_message``, before anything is stored: in the upload
+  service (an upload, a new version, a resumable complete and a folder upload's file all go
+  through it). The resumable start is not checked: its bytes are not known yet, so it can't
+  tell a duplicate, and a duplicate costs nothing; a resumable file refused at its complete has
+  its parts and session removed, as any refusal there. A folder upload's file refused so stays
+  waiting, to be sent again.
 * **Undo auto-filing** (feature 28, R16): any user of the customer may move a family
   Kaagaz filed back to the top level, under the family lock; the folder stays. In Trash
   is 409 ``in_trash``; filed no more (moved since, or its folder deleted) is 409
@@ -121,9 +139,10 @@ Why some choices:
 """
 
 import hashlib
+import logging
 import math
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import date, datetime, time
@@ -139,10 +158,10 @@ from sqlalchemy import Connection, RowMapping
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import FormData, UploadFile
 
-from kaagaz.api.auth import CanDeleteForever, CurrentUser, Reviewer, User
+from kaagaz.api.auth import CanDeleteForever, CurrentUser, Reviewer, User, deletes_forever_by_password
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
-from kaagaz.api.names import CONTROL_CHARACTERS, DOCUMENT_NAME_MAX, clean_document_name, mark_hidden
+from kaagaz.api.names import CONTROL_CHARACTERS, DOCUMENT_NAME_MAX, clean_document_name, without_hidden
 from kaagaz.api.readers import SINGLE, ReadingChoice, check_reading, check_shape, offer
 from kaagaz.api.upload_guard import check_upload_request
 from kaagaz.api.views import (
@@ -162,14 +181,18 @@ from kaagaz.api.views import (
     page_summary,
     timeline,
 )
-from kaagaz.db import admin as admin_sql
-from kaagaz.db import audit, autofile, listing, trash
+from kaagaz.api.views import (
+    folder as folder_view,
+)
+from kaagaz.db import audit, autofile, listing, reading_days, storage_limits, trash
 from kaagaz.db import chat as chat_sql
 from kaagaz.db import folder_upload_items as items_sql
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import tags as tags_sql
+from kaagaz.db import trashed_folders as trashed_sql
 from kaagaz.db import upload_sessions as upload_sessions_sql
 from kaagaz.db import versions as versions_sql
+from kaagaz.db import zip_unpacks as unpacks_sql
 from kaagaz.db.documents import (
     EnsembleRunning,
     NotInTrash,
@@ -185,18 +208,23 @@ from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.folder_upload_items import ItemRow
 from kaagaz.db.folder_uploads import effective_limits
 from kaagaz.db.folders import MAX_DEPTH
-from kaagaz.ingestion import sniff
-from kaagaz.ingestion.errors import RejectCode, UploadRejected
-from kaagaz.ingestion.messages import over_every_limit_message, too_large_message
+from kaagaz.db.upload_policy import customer_policy
+from kaagaz.db.zip_unpacks import Unpack
+from kaagaz.ingestion import resolve, sniff
+from kaagaz.ingestion.errors import BackendUnavailable, RejectCode, UploadRejected
+from kaagaz.ingestion.messages import over_every_limit_message, storage_full_message, too_large_message
 from kaagaz.ingestion.pagecount import goes_express
-from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
-from kaagaz.ingestion.ports import BlobNotFound, Job, JobQueue, UnknownFamily, UnknownFolder
+from kaagaz.ingestion.policy import UploadPolicy
+from kaagaz.ingestion.ports import BlobNotFound, Job, JobQueue, StorageRoom, UnknownFamily, UnknownFolder
 from kaagaz.ingestion.service import UploadResult, UploadService
+from kaagaz.jobs.reading_pause import BUDGET, DAILY_LIMIT, pause_reason
 from kaagaz.reading.ocr import GEMINI
+from kaagaz.reading.office import PDF_KINDS as OFFICE_PDF_KINDS
 from kaagaz.search import page_words
 from kaagaz.settings import Settings
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _UPLOAD_PART_BYTES = 8 * 1024 * 1024
 
@@ -222,12 +250,15 @@ class ResumableUploadStart(BaseModel):
 
 Context = Annotated[AppContext, Depends(get_context)]
 
-MIB = 1024 * 1024
 MAX_SHEET_ROWS = 500
 MAX_TAG_FILTERS = tags_sql.MAX_TAG_FILTERS
 
 DocumentStatusParam = Literal["received", "clean", "rejected", "needs_reader", "ready", "failed"]
-DetectedTypeParam = Literal["pdf", "png", "jpeg", "tiff", "zip", "ole2", "text"]
+# The sniffed types, then the kinds the worker tells after the scan (#522, kaagaz/ingestion/resolve.py).
+DetectedTypeParam = Literal[
+    "pdf", "png", "jpeg", "tiff", "heic", "zip", "ole2", "text",
+    "xlsx", "xls", "csv", "docx", "dotx", "doc", "pptx", "ppt", "txt", "md", "json", "html",
+]  # fmt: skip
 IsoDay = Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")]
 SortParam = Literal[
     "name", "doc_type", "owner", "sensitivity", "version", "document_date", "updated_at", "created_at"
@@ -240,10 +271,44 @@ _CONTENT_TYPES = {
     "png": ("image/png", "png"),
     "jpeg": ("image/jpeg", "jpg"),
     "tiff": ("image/tiff", "tif"),
-    "zip": ("application/octet-stream", "xlsx"),  # only a spreadsheet passes the read
+    "heic": ("image/heic", "heic"),
+    # #522: an old Office file not told yet, then the kinds. A zip is a folder of files now, kept as
+    # one (PR 3; an .xlsx is told "xlsx" once scanned, and a ready one before 0078 is xlsx). Text
+    # of any kind is sent as plain text, never as a page to render.
+    "zip": ("application/zip", "zip"),
     "ole2": ("application/octet-stream", "bin"),
-    "text": ("text/plain; charset=utf-8", "csv"),
+    "text": ("text/plain; charset=utf-8", "txt"),
+    "xlsx": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"),
+    "xls": ("application/vnd.ms-excel", "xls"),
+    "docx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docx"),
+    "dotx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.template", "dotx"),
+    "doc": ("application/msword", "doc"),
+    "pptx": ("application/vnd.openxmlformats-officedocument.presentationml.presentation", "pptx"),
+    "ppt": ("application/vnd.ms-powerpoint", "ppt"),
+    "csv": ("text/plain; charset=utf-8", "csv"),
+    "txt": ("text/plain; charset=utf-8", "txt"),
+    "md": ("text/plain; charset=utf-8", "md"),
+    "json": ("text/plain; charset=utf-8", "json"),
+    # #557 (UAT FF-12): and saved as text, or the copy on the computer would open as a web page.
+    "html": ("text/plain; charset=utf-8", "txt"),
 }
+# #522: 0078 told only ready documents' kinds, so one not read since (needs_reader, failed)
+# keeps its sniffed type until it is read again. Its name's ending chooses among the kinds that
+# type can be, for Download only (the reader tells the kind from the bytes): all a zip's are
+# Office packages or a zip, all text's are sent as plain text, so no name can make it run.
+_KINDS_BY_ENDING = {
+    sniff.ZIP: {"xlsx": "xlsx", "docx": "docx", "dotx": "dotx", "pptx": "pptx", "zip": "zip"},
+    sniff.TEXT: {"csv": "csv", "txt": "txt", "md": "md", "json": "json", "html": "html", "htm": "html"},
+}
+
+
+def served_type(detected_type: str, display_name: str | None) -> str:
+    """What a document downloads as: its kind, or for one still of its sniffed zip or text type,
+    the kind its name's ending names among that type's (``_KINDS_BY_ENDING``)."""
+    kinds = _KINDS_BY_ENDING.get(detected_type, {})
+    return kinds.get(resolve.ending(display_name or ""), detected_type)
+
+
 _REPROCESS_LIMITED = {
     "hourly": "Too many documents were sent to be read again in the last hour. Please try again later.",
     "cooldown": (
@@ -256,20 +321,28 @@ _NOT_SCANNED = "Only a page read from a scan or photo can be read again."
 _ENSEMBLE_RUNNING = (
     "Ensemble is reading this document. Read it again when Ensemble finishes, or stop it first."
 )
+# QA C3 (4 Nov 2026): never money, as the list's words (kaagaz/api/views.py).
+_READING_PAUSED = {
+    DAILY_LIMIT: "Reading is paused, so this document can't be read again now. It stays searchable."
+    " Try again when the daily limit resets.",
+    BUDGET: "Reading is paused, so this document can't be read again now. It stays searchable."
+    " Try again when the monthly AI limit is raised or the new month begins.",
+}
 _REJECT_STATUS = {
     RejectCode.EMPTY_FILE: 400,
     RejectCode.UNSUPPORTED_TYPE: 400,
     RejectCode.TOO_LARGE: 413,
+    RejectCode.STORAGE_FULL: 413,
 }
 
 
 def display_name(filename: str | None) -> str:
-    """The name shown for an upload: path stripped, control characters removed, a character
-    that can hide or reorder what is shown as U+FFFD (``names.mark_hidden``), at most 255
-    characters, "document" if nothing is left."""
+    """The name shown for an upload: path stripped, control and hidden characters removed
+    (``names.without_hidden``, #520), at most 255 characters, "document" if nothing, "." or
+    ".." is left."""
     name = (filename or "").replace("\\", "/").rsplit("/", 1)[-1]
-    name = mark_hidden(CONTROL_CHARACTERS.sub("", name)).strip()[:DOCUMENT_NAME_MAX].strip()
-    return name or "document"
+    name = without_hidden(CONTROL_CHARACTERS.sub("", name)).strip()[:DOCUMENT_NAME_MAX].strip()
+    return name if name not in ("", ".", "..") else "document"
 
 
 def day_start(day: str, timezone: str) -> datetime:
@@ -308,6 +381,7 @@ def list_documents(
     uploaded_from: IsoDay = None,
     uploaded_to: IsoDay = None,
     trashed: bool = False,
+    trashed_folder_id: uuid.UUID | None = None,  # #542: the files of a folder in Trash
     attention: bool = False,
     department_id: Annotated[uuid.UUID | Literal["none"] | None, Query()] = None,  # "none": in no department
     owner_id: uuid.UUID | None = None,
@@ -323,7 +397,10 @@ def list_documents(
     """One page and its total. The top level with its subfolders is everything,
     so it filters nothing. At most five data queries, whatever the page size:
     the folder's and the department's subtrees, the page, the count and the page's
-    tags (one batch). File management Q3 and Q4: the new filters and the sort."""
+    tags (one batch). File management Q3 and Q4: the new filters and the sort. #542: Trash's
+    loose files leave out those inside a folder in Trash unless a search or filter is set;
+    ``trashed_folder_id`` lists one's (with ``trashed`` only; 404 for a folder not in this
+    customer's Trash)."""
     zone = context.settings.timezone
     try:
         start = None if uploaded_from is None else day_start(uploaded_from, zone)
@@ -344,6 +421,11 @@ def list_documents(
         )
         if tag_ids and tags_sql.count_existing(conn, customer_id, tag_ids) != len(set(tag_ids)):
             raise ApiError(404, "not_found")  # a tag this customer does not have
+        in_trashed = None if trashed_folder_id is None else str(trashed_folder_id)
+        if in_trashed is not None and not trashed:
+            raise ApiError(400, "bad_request", "A folder in Trash is listed with trashed=true.")
+        if in_trashed is not None and not trashed_sql.exists(conn, customer_id, in_trashed):
+            raise ApiError(404, "not_found")
         rows, total = listing.list_documents(
             conn,
             customer_id,
@@ -358,6 +440,7 @@ def list_documents(
             uploaded_from=start,
             uploaded_to=end,
             trashed=trashed,
+            trashed_folder_id=in_trashed,
             attention=attention,
             department_folders=department,
             outside_departments=department_id == "none",
@@ -372,34 +455,33 @@ def list_documents(
             descending=order == "desc",
         )
         tags = tags_sql.tags_for_documents(conn, customer_id, [str(row["id"]) for row in rows])
+        unpacks = zip_unpacks(conn, customer_id, rows)
     max_pages, now = context.settings.max_pages, context.clock()
     items = [
-        document_summary(row, max_pages=max_pages, tags=tags[str(row["id"])], user=user, now=now)
+        document_summary(
+            row,
+            max_pages=max_pages,
+            tags=tags[str(row["id"])],
+            user=user,
+            now=now,
+            unpack=unpacks.get(str(row["id"])),
+        )
         for row in rows
     ]
     return {"items": items, "total": total}
 
 
-def upload_policy(settings: Settings, customer_max_mb: int | None) -> UploadPolicy:
-    """The limits for one customer's upload (PRD 1, U2): each type's own limit,
-    lowered by the customer's own limit when an admin set one."""
-    max_bytes = settings.max_upload_bytes
-    if customer_max_mb is not None:
-        max_bytes = min(max_bytes, customer_max_mb * MIB)
-    return UploadPolicy(
-        max_bytes=max_bytes,
-        allowed_types=settings.allowed_types,
-        type_limits=limits_by_type(
-            pdf=settings.max_upload_bytes, image=settings.max_image_bytes, sheet=settings.max_sheet_bytes
-        ),
-    )
+def zip_unpacks(conn: Connection, customer_id: str, rows: Sequence[RowMapping]) -> dict[str, Unpack]:
+    """#522 PR 3: the unpacking of each zip among ``rows`` (``DocumentSummary.unpack``); no
+    query when there is none."""
+    zips = [str(row["id"]) for row in rows if row["detected_type"] == "zip"]
+    return unpacks_sql.unpacks(conn, customer_id, zips) if zips else {}
 
 
 def user_upload_policy(context: AppContext, user: CurrentUser) -> UploadPolicy:
+    """This user's organisation's upload limits (``db/upload_policy.py``), a zip's included."""
     with context.db.customer(user.customer_id) as conn:
-        row = admin_sql.get_settings(conn, user.customer_id)
-    customer_max_mb = None if row is None or row["max_upload_mb"] is None else int(row["max_upload_mb"])
-    return upload_policy(context.settings, customer_max_mb)
+        return customer_policy(conn, user.customer_id, context.settings)
 
 
 @router.get("/upload-limits")
@@ -418,7 +500,8 @@ def get_upload_limits(user: User, context: Context) -> dict[str, Any]:
     return {
         "pdf_bytes": policy.limit_for(sniff.PDF),
         "image_bytes": policy.limit_for(sniff.PNG),
-        "sheet_bytes": policy.limit_for(sniff.ZIP),
+        "sheet_bytes": policy.limit_for(resolve.XLSX),
+        "zip_bytes": policy.limit_for(sniff.ZIP),  # #522: the folder upload limit, or a larger type's
         "max_pages": settings.max_pages,
         "readers": readers,
         # Folder upload (#484): its limits, the pace and sends at once its files are taken at,
@@ -433,6 +516,21 @@ def get_upload_limits(user: User, context: Context) -> dict[str, Any]:
         },
         "sort_available": sort_available,
     }
+
+
+def storage_full(room: StorageRoom) -> ApiError:
+    """#516: the refusal of a new upload past the organisation's storage limit (module notes)."""
+    limit_gb = room.limit_bytes // storage_limits.GIB
+    details = {"used_bytes": room.used_bytes, "limit_bytes": room.limit_bytes, "limit_gb": limit_gb}
+    message = storage_full_message(limit_gb, room.limit_bytes - room.used_bytes)
+    return ApiError(413, RejectCode.STORAGE_FULL.value, message, details=details)
+
+
+def _refused(rejected: UploadRejected, policy: UploadPolicy) -> ApiError:
+    """The reply to a file the upload service refused."""
+    if rejected.code is RejectCode.STORAGE_FULL and rejected.used is not None and rejected.limit is not None:
+        return storage_full(StorageRoom(limit_bytes=rejected.limit, used_bytes=rejected.used))
+    return ApiError(_REJECT_STATUS[rejected.code], rejected.code.value, _refusal_message(rejected, policy))
 
 
 def _refusal_message(rejected: UploadRejected, policy: UploadPolicy) -> str | None:
@@ -531,7 +629,7 @@ def _service(
     queue = _ReadingQueue(context.queue, context.db, requested_by=user.user_id, reading=reading)
     return UploadService(
         policy,
-        PgDocuments(context.db),
+        PgDocuments(context.db, storage=context.storage),
         context.storage,
         queue,
         express_max_pages=context.settings.express_max_pages,
@@ -602,8 +700,7 @@ def _accept(
             keep_place=item is not None,
         )
     except UploadRejected as rejected:
-        message = _refusal_message(rejected, policy)
-        raise ApiError(_REJECT_STATUS[rejected.code], rejected.code.value, message) from None
+        raise _refused(rejected, policy) from None
     except UnknownFolder:  # deleted since the check; the service removed the stored file
         if item is not None:
             raise ApiError(409, "folder_gone", _FOLDER_GONE) from None
@@ -826,8 +923,7 @@ def _accept_version(
             uploaded_by=user.user_id,
         )
     except UploadRejected as rejected:
-        message = _refusal_message(rejected, policy)
-        raise ApiError(_REJECT_STATUS[rejected.code], rejected.code.value, message) from None
+        raise _refused(rejected, policy) from None
     except UnknownFamily:  # gone or moved to Trash since the check; the service removed the stored file
         raise ApiError(404, "not_found") from None
     if note is not None and not result.duplicate:  # V9: this version's note
@@ -859,18 +955,36 @@ async def upload_version(
     return JSONResponse(body, status_code=200 if body["duplicate"] else 201)
 
 
+def _too_large_to_start(body: ResumableUploadStart, policy: UploadPolicy) -> ApiError:
+    """A resumable start of no size or over every limit. #559 (UAT ZP-07): a zip over it (by its
+    name) gets the zip words the upload screen says; any other the words for every file."""
+    zip_name = body.file_name.casefold().endswith(".zip")
+    if zip_name and body.file_size > 0 and sniff.ZIP in policy.allowed_types:
+        return ApiError(
+            413, "too_large", too_large_message("zip", body.file_size, policy.limit_for(sniff.ZIP))
+        )
+    return ApiError(413, "too_large", over_every_limit_message(policy.largest_limit))
+
+
 @router.post("/documents/upload-sessions/candidates")
 def resumable_candidates(body: ResumableUploadStart, user: User, context: Context) -> dict[str, Any]:
     """Find this user's pending same-name, same-size uploads; the browser verifies saved chunks."""
     same_user(body.user_id, user)
     policy = user_upload_policy(context, user)
     if body.file_size <= 0 or body.file_size > policy.largest_limit:
-        raise ApiError(413, "too_large", over_every_limit_message(policy.largest_limit))
+        raise _too_large_to_start(body, policy)
     filename = display_name(body.file_name)
     with context.db.customer(user.customer_id) as conn:
         return {
             "candidates": upload_sessions_sql.candidates(
-                conn, user.customer_id, user.user_id, filename, body.file_size, body.fingerprint
+                conn,
+                user.customer_id,
+                user.user_id,
+                filename,
+                body.file_size,
+                body.fingerprint,
+                batch_id=_form_uuid(body.batch_id),
+                item_id=_form_uuid(body.folder_upload_item_id),
             )
         }
 
@@ -878,11 +992,12 @@ def resumable_candidates(body: ResumableUploadStart, user: User, context: Contex
 @router.post("/documents/upload-sessions")
 def create_resumable_session(body: ResumableUploadStart, user: User, context: Context) -> dict[str, Any]:
     """The session (``id``, ``part_size``, ``part_count``); for a folder upload's item already in,
-    the upload reply with the item instead (nothing to send)."""
+    the upload reply with the item instead (nothing to send), and for a finished session resumed,
+    its stored reply."""
     same_user(body.user_id, user)
     policy = user_upload_policy(context, user)
     if body.file_size <= 0 or body.file_size > policy.largest_limit:
-        raise ApiError(413, "too_large", over_every_limit_message(policy.largest_limit))
+        raise _too_large_to_start(body, policy)
     count = math.ceil(body.file_size / _UPLOAD_PART_BYTES)
     if count > 10_000:
         raise ApiError(413, "too_large")
@@ -902,7 +1017,7 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
     if body.resume_session_id:
         session_id = str(uuid.UUID(body.resume_session_id))
         with context.db.customer(user.customer_id) as conn:
-            row = upload_sessions_sql.get(conn, user.customer_id, user.user_id, session_id)
+            row = upload_sessions_sql.get(conn, user.customer_id, user.user_id, session_id, finished=True)
         if (
             row is None
             or row["file_size"] != body.file_size
@@ -910,6 +1025,9 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
             or cast(dict[str, Any], row["metadata"]).get("fingerprint") != body.fingerprint
         ):
             raise ApiError(404, "not_found")
+        done = cast(dict[str, Any], row["metadata"]).get("completed")
+        if done is not None:  # a Retry after a lost reply: its stored reply (review of #564)
+            return cast(dict[str, Any], done)
         return {"id": session_id, "part_size": _UPLOAD_PART_BYTES, "part_count": count}
 
     folder_id = _form_uuid(body.folder_id) if item is None else item.folder_id
@@ -1026,6 +1144,43 @@ def complete_resumable_upload(session_id: uuid.UUID, user: User, context: Contex
     metadata = cast(dict[str, Any], session["metadata"])
     if metadata.get("completed") is not None:  # sent again after a lost reply (production QA T1)
         return JSONResponse(metadata["completed"], status_code=200)
+    customer_id, user_id, key = user.customer_id, user.user_id, str(session_id)
+    with context.db.customer(customer_id) as conn:
+        claimed = upload_sessions_sql.claim(conn, customer_id, user_id, key)
+        if not claimed:  # finished meanwhile, or another complete is storing it (review of #564)
+            latest = upload_sessions_sql.get(conn, customer_id, user_id, key, finished=True)
+    if not claimed:
+        done = None if latest is None else cast(dict[str, Any], latest["metadata"]).get("completed")
+        if done is not None:
+            return JSONResponse(done, status_code=200)
+        raise ApiError(429, "rate_limited", _STILL_STORING, headers={"Retry-After": "2"})
+    try:
+        result, status = _store_completed(context, user, session_id, session, metadata)
+        with context.db.customer(customer_id) as conn:  # the reply first: a resend gets it
+            upload_sessions_sql.complete(conn, customer_id, user_id, key, result)
+    except BaseException:
+        with context.db.customer(customer_id) as conn:
+            upload_sessions_sql.release(conn, customer_id, user_id, key)
+        raise
+    try:
+        context.storage.delete_resumable(str(session["storage_key"]))
+    except BackendUnavailable as error:  # the purge removes the parts with the session, a day on
+        logger.warning("resumable parts left for the purge", extra={"code": type(error).__name__})
+    return JSONResponse(result, status_code=status or (200 if result["duplicate"] else 201))
+
+
+_STILL_STORING = "This file is still being saved. It is checked again in a moment."
+
+
+def _store_completed(
+    context: AppContext,
+    user: CurrentUser,
+    session_id: uuid.UUID,
+    session: dict[str, Any],
+    metadata: dict[str, Any],
+) -> tuple[dict[str, Any], int | None]:
+    """The claimed session's file stored (or refused, its parts and session removed): the reply
+    and its status (None: by the reply's ``duplicate``)."""
     if not context.storage.resumable_complete(str(session["storage_key"])):
         parts = context.storage.resumable_parts(
             str(session["storage_key"]), str(session["storage_upload_id"])
@@ -1086,10 +1241,7 @@ def complete_resumable_upload(session_id: uuid.UUID, user: User, context: Contex
             with context.db.customer(user.customer_id) as conn:
                 upload_sessions_sql.delete(conn, user.customer_id, user.user_id, str(session_id))
             raise
-    context.storage.delete_resumable(str(session["storage_key"]))
-    with context.db.customer(user.customer_id) as conn:
-        upload_sessions_sql.complete(conn, user.customer_id, user.user_id, str(session_id), result)
-    return JSONResponse(result, status_code=status or (200 if result["duplicate"] else 201))
+    return result, status
 
 
 def _document_or_404(conn: Connection, user: CurrentUser, document_id: uuid.UUID) -> RowMapping:
@@ -1124,11 +1276,17 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         typed = listing.invoice_for(conn, customer_id, target)
         links = listing.document_links(conn, customer_id, target)
         suggestion = versions_sql.for_document(conn, customer_id, target, str(row["family_id"]))
+        unpack = zip_unpacks(conn, customer_id, [row]).get(target)
         audit.record_view(conn, customer_id, actor_user_id=user.user_id, document_id=target)  # A1
     document_date = None if facts is None else facts["document_date"]
     return {
         **document_summary(
-            row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
+            row,
+            max_pages=context.settings.max_pages,
+            tags=tags,
+            user=user,
+            now=context.clock(),
+            unpack=unpack,
         ),
         "pages": [page_summary(page) for page in pages],
         "values": [extracted_value(value) for value in values],
@@ -1162,8 +1320,9 @@ def get_document_summary(document_id: uuid.UUID, user: User, context: Context) -
     with context.db.customer(customer_id) as conn:
         row = _document_or_404(conn, user, document_id)
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
+        unpack = zip_unpacks(conn, customer_id, [row]).get(target)
     return document_summary(
-        row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
+        row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock(), unpack=unpack
     )
 
 
@@ -1288,6 +1447,7 @@ def reprocess_document(
             raise ApiError(409, "not_reprocessable") from None
         except ReprocessLimited as limited:
             raise ApiError(429, "rate_limited", _REPROCESS_LIMITED[limited.reason]) from None
+        _refuse_while_paused(conn, customer_id, previous, context.clock())
         if previous is None:  # deleted in the moment since
             raise ApiError(404, "not_found")
         details: dict[str, audit.DetailValue] = {"status": previous, **reading.details()}
@@ -1308,6 +1468,21 @@ def reprocess_document(
         # Last, inside the transaction: a queue that is down rolls everything back (503).
         context.queue.enqueue(Job(customer_id, target), express=_read_again_express(context, row))
     return reply
+
+
+def _refuse_while_paused(conn: Connection, customer_id: str, previous: str | None, now: datetime) -> None:
+    """409 ``reading_paused`` for a document that was ready while its organisation's reading is
+    paused (the module notes); the caller's transaction rolls back. One statement for a ready one."""
+    if previous == "ready":
+        refuse_while_paused(conn, customer_id, now)
+
+
+def refuse_while_paused(conn: Connection, customer_id: str, now: datetime) -> None:
+    """409 ``reading_paused``, in Read again's words, while the organisation's reading is paused
+    (also Ensemble's start and retry, #520). One statement."""
+    reason = pause_reason(reading_days.state(conn, customer_id, reading_days.india_day(now)))
+    if reason is not None:
+        raise ApiError(409, "reading_paused", _READING_PAUSED[reason])
 
 
 def _read_again_express(context: AppContext, row: RowMapping) -> bool:
@@ -1356,6 +1531,7 @@ def read_page_again(
             raise ApiError(409, "not_reprocessable") from None
         except ReprocessLimited as limited:
             raise ApiError(429, "rate_limited", _REPROCESS_LIMITED[limited.reason]) from None
+        _refuse_while_paused(conn, customer_id, previous, context.clock())
         if previous is None or not request_page_read_again(
             conn, customer_id, target, page_no, now=context.clock(), regions=regions
         ):
@@ -1480,11 +1656,7 @@ def update_document(
     if "display_name" in given:
         name = clean_document_name(body.display_name or "")
         if name is None:
-            raise ApiError(
-                400,
-                "bad_request",
-                f"Enter a name of 1 to {DOCUMENT_NAME_MAX} characters, with no hidden characters.",
-            )
+            raise ApiError(400, "bad_request", f"Enter a name of 1 to {DOCUMENT_NAME_MAX} characters.")
     customer_id, target = user.customer_id, str(document_id)
     folder_id = None if body.folder_id is None else str(body.folder_id)
     try:
@@ -1558,13 +1730,21 @@ def undo_autofile(document_id: uuid.UUID, user: User, context: Context) -> dict[
 @router.get("/documents/{document_id}/file")
 def get_file(document_id: uuid.UUID, user: User, context: Context, download: bool = False) -> Response:
     """The original file. File management A2: the Download button asks ``download=1``, which
-    logs ``document.download`` once the file is found; the viewer's own fetch is not logged."""
+    logs ``document.download`` once the file is found; the viewer's own fetch is a view (#482).
+    #522 PR 2: the viewer's fetch of a Word or PowerPoint file gets its PDF rendition, which the
+    worker stored when it converted it (404 until then); Download gets the original."""
     with context.db.customer(user.customer_id) as conn:
         row = _readable_or_409(conn, user, document_id)
+        if not download and row["status"] in _SERVABLE:
+            _viewed(conn, user, document_id, "file")
     if row["status"] not in _SERVABLE:
         raise ApiError(404, "not_found")
+    rendition = not download and row["detected_type"] in OFFICE_PDF_KINDS
     try:
-        data = context.storage.get(user.customer_id, str(document_id))
+        if rendition:
+            data = context.storage.get_rendition(user.customer_id, str(document_id))
+        else:
+            data = context.storage.get(user.customer_id, str(document_id))
     except BlobNotFound:
         raise ApiError(404, "not_found") from None
     if download:
@@ -1577,7 +1757,8 @@ def get_file(document_id: uuid.UUID, user: User, context: Context, download: boo
                 target_type="document",
                 target_id=str(document_id),
             )
-    content_type, extension = _CONTENT_TYPES.get(row["detected_type"], ("application/octet-stream", "bin"))
+    detected = sniff.PDF if rendition else served_type(row["detected_type"], row["display_name"])
+    content_type, extension = _CONTENT_TYPES.get(detected, ("application/octet-stream", "bin"))
     # The user's own name with the file's true extension, percent-encoded (RFC 6266), so no
     # quote or line break reaches the header; "document.<ext>" for browsers without filename*.
     name = quote(f"{splitext(row['display_name'] or '')[0] or 'document'}.{extension}", safe="")
@@ -1598,8 +1779,9 @@ def get_file(document_id: uuid.UUID, user: User, context: Context, download: boo
 def get_page_image(document_id: uuid.UUID, page_no: int, user: User, context: Context) -> Response:
     with context.db.customer(user.customer_id) as conn:
         row = _readable_or_409(conn, user, document_id)
-    if row["status"] == "rejected" or page_no < 1:
-        raise ApiError(404, "not_found")
+        if row["status"] == "rejected" or page_no < 1:
+            raise ApiError(404, "not_found")
+        _viewed(conn, user, document_id, "page_image")
     try:
         image = context.storage.get_page_image(user.customer_id, str(document_id), page_no)
     except BlobNotFound:
@@ -1615,7 +1797,7 @@ def get_page_image(document_id: uuid.UUID, page_no: int, user: User, context: Co
 def get_page_readings(document_id: uuid.UUID, page_no: int, user: User, context: Context) -> dict[str, Any]:
     """Scanned text: every line each reader read on this page, as read. Who may see it
     is exactly who may see the page image (above): any version out of Trash (T1: 409
-    ``in_trash``), never a rejected one; and the page must exist. Never logged."""
+    ``in_trash``), never a rejected one; and the page must exist. A view (#482)."""
     customer_id, target = user.customer_id, str(document_id)
     with context.db.customer(customer_id) as conn:
         row = _readable_or_409(conn, user, document_id)
@@ -1625,6 +1807,7 @@ def get_page_readings(document_id: uuid.UUID, page_no: int, user: User, context:
             raise ApiError(404, "not_found")
         rows = listing.page_readings(conn, customer_id, target, page_no)
         marks = listing.page_marks(conn, customer_id, target, page_no)  # PRD 5 U3
+        _viewed(conn, user, document_id, "readings")
     return page_readings(page_no, rows, marks)
 
 
@@ -1642,17 +1825,18 @@ def get_document_words(
     words: the viewer keeps it while its pages change. Who may ask is who may see the page
     image: another customer's id and a rejected file are 404, a family in Trash 409
     ``in_trash`` (T1). Regions, page numbers and the asker's own words only, never the
-    document's text. One statement."""
+    document's text. One statement, and the view (#482)."""
     words = page_words.clean_words(w or [])
     with context.db.customer(user.customer_id) as conn:
         found = listing.word_lines(conn, user.customer_id, str(document_id))
-    if found is None:
-        raise ApiError(404, "not_found")
-    in_trash, status, pieces = found
-    if in_trash:
-        raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.")
-    if status == "rejected":
-        raise ApiError(404, "not_found")
+        if found is None:
+            raise ApiError(404, "not_found")
+        in_trash, status, pieces = found
+        if in_trash:
+            raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.")
+        if status == "rejected":
+            raise ApiError(404, "not_found")
+        _viewed(conn, user, document_id, "words")
     return page_words.word_finds(pieces, words)
 
 
@@ -1674,12 +1858,20 @@ def get_sheet_cells(
         if page is None or page["unit"] != "cells":
             raise ApiError(404, "not_found")
         cells = listing.sheet_cells(conn, user.customer_id, str(document_id), page_no, row_from, row_to)
+        _viewed(conn, user, document_id, "cells")
     rows: list[dict[str, Any]] = []
     for cell in cells:
         if not rows or rows[-1]["row"] != cell["row_no"]:
             rows.append({"row": int(cell["row_no"]), "cells": []})
         rows[-1]["cells"].append({"column": int(cell["column_no"]), "text": cell["text"] or ""})
     return {"page_no": page_no, "total_rows": int(page["height"]), "rows": rows}
+
+
+def _viewed(conn: Connection, user: CurrentUser, document_id: uuid.UUID, via: str) -> None:
+    """#482: this read is a view of the document, once per person per half hour (A1)."""
+    audit.record_view(
+        conn, user.customer_id, actor_user_id=user.user_id, document_id=str(document_id), via=via
+    )
 
 
 # --- Trash (PRD 1 F5) -------------------------------------------------------------
@@ -1715,12 +1907,36 @@ def delete_document(document_id: uuid.UUID, user: User, context: Context) -> Res
 
 @router.post("/documents/{document_id}/restore")
 def restore_document(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
-    """Bring the whole family back from Trash, and return this version's summary."""
+    """Bring the whole family back from Trash, and return this version's summary. #542: one
+    that went with a folder goes back into its folder, which comes back with its chain of folders
+    (``trashed_folders.restore_document``; audited ``folder.restore`` too)."""
     customer_id, target = user.customer_id, str(document_id)
     with context.db.customer(customer_id) as conn:
         _may_trash(user, _document_or_404(conn, user, document_id))
-        if not trash.restore_document(conn, customer_id, target):
+        try:
+            found, chain = trashed_sql.restore_document(conn, customer_id, target, admin=user.role == "admin")
+        except trashed_sql.DepartmentAdminOnly:  # its folders could not come back: nothing changed
+            raise ApiError(
+                403, "forbidden", "Its folder is a department, which only an admin can restore."
+            ) from None
+        except folders_sql.FolderNameTaken:
+            raise ApiError(
+                409, "folder_names_taken", "Its folder can't come back: too many folders there have its name."
+            ) from None
+        except folders_sql.FolderError as error:
+            raise ApiError(404 if error.code == "not_found" else 409, error.code) from None
+        if not found:
             raise ApiError(404, "not_found")
+        if chain is not None:
+            audit.record(
+                conn,
+                customer_id,
+                actor_user_id=user.user_id,
+                action="folder.restore",
+                target_type="folder",
+                target_id=chain.folder.id,
+                details=trashed_sql.audit_details(chain),
+            )
         audit.record(
             conn,
             customer_id,
@@ -1731,17 +1947,30 @@ def restore_document(document_id: uuid.UUID, user: User, context: Context) -> di
         )
         row = _document_or_404(conn, user, document_id)
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
-    return document_summary(
+    summary = document_summary(
         row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
     )
+    # #542: the folders that came back with it, so the screen can say where (null: none did).
+    summary["restored_folder"] = (
+        None
+        if chain is None
+        else {
+            "folder": folder_view(chain.folder),
+            "location": list(chain.location),
+            "renamed": chain.renamed,
+            "relocated": chain.relocated,
+        }
+    )
+    return summary
 
 
 @router.delete("/documents/{document_id}/permanent", status_code=204)
 def delete_document_forever(document_id: uuid.UUID, user: CanDeleteForever, context: Context) -> Response:
     """Delete every version of a family in Trash for good, rows and files (today's
     full delete). It can't be undone, so it needs an admin session whose admin has
-    two-step sign-in on, or an admin's grant and a typed password (``require_delete_forever``).
-    The audit row says ``by_grant`` when a grant was used."""
+    two-step sign-in on, or a typed password from an admin session without it (#538) or a
+    user an admin allowed (``require_delete_forever``). The audit row says ``by_grant`` when
+    a grant was used, ``by_password`` for an admin's typed password."""
     customer_id, target = user.customer_id, str(document_id)
     with context.db.customer(customer_id) as conn:
         try:
@@ -1753,6 +1982,8 @@ def delete_document_forever(document_id: uuid.UUID, user: CanDeleteForever, cont
         details: dict[str, audit.DetailValue] = {"versions": versions}
         if user.role != "admin":
             details["by_grant"] = True
+        elif deletes_forever_by_password(user):
+            details["by_password"] = True
         audit.record(
             conn,
             customer_id,

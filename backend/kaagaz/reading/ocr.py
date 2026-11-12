@@ -58,7 +58,8 @@ import math
 import re
 import statistics
 import threading
-from collections.abc import Callable, Collection, Iterator, Mapping
+from collections import Counter
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from importlib import metadata
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, runtime_checkable
@@ -67,6 +68,7 @@ from PIL import Image
 
 from kaagaz.chunking.script import ocr_script_suspect, ocr_suspect_count
 from kaagaz.reading.lines import PageFrame, WordBox, line_spans
+from kaagaz.reading.mistral_ocr import DEFAULT_MISTRAL_MODEL, OPENROUTER
 from kaagaz.reading.page_quality import ILLEGIBLE_MARK, ILLEGIBLE_WORDS, NO_TEXT
 from kaagaz.reading.rapid_pool import (
     DEVANAGARI_REC_MODEL,
@@ -77,7 +79,7 @@ from kaagaz.reading.rapid_pool import (
     devanagari_params,
     shared_pool,
 )
-from kaagaz.reading.spans import BOX_SOURCES, BoxLocation, ReadError, Span
+from kaagaz.reading.spans import BOX_SOURCES, BoxLocation, ReadError, Span, text_lines
 from kaagaz.settings import Settings, SettingsError
 
 if TYPE_CHECKING:
@@ -103,17 +105,19 @@ GEMINI = "gemini"
 # without loading the reader, and the API may import it. g2: the strict-portable PAGE_SCHEMA.
 # g3 (#383, #382): each line's block, the kind "note", and a table cell's col_span.
 READER_PROMPT_VERSION = "g3"
-# #488 (Ultra low cost, OCR_ULTRA_LOW_COST): the compact reply's prompt version
+# #488 (Ultra low cost, Tushar, 4 Nov 2026): the compact reply's prompt version
 # (``kaagaz/reading/compact.py``: INSTRUCTION_COMPACT, COMPACT_SCHEMA). A page read under Ultra low
 # cost is cached under "c1+ulc<paise>", so it is never taken for a g3 read, nor a g3 read for it.
 COMPACT_PROMPT_VERSION = "c1"
-# #488: rupees to the dollar (the operator's screens use the same), so a ceiling in paise is a
-# ceiling in dollars.
+# #488: rupees to the dollar, the rate the operator's screens show (frontend
+# components/operator/models.ts INR_PER_USD), so a ceiling in paise is a ceiling in dollars.
 INR_PER_USD = 88  # shortcut: a fixed rate; make it a platform setting if the rupee moves
 # PRD 5 RT2: pages.read_by for a page the local reader read.
 LOCAL_READ_BY = "rapidocr"
 # PRD 5 F3: the span qualities that mark one word of a line, not the line.
 WORD_MARK_QUALITIES = frozenset({"unsure", "illegible"})
+# #463 review: pages.read_pass, the pass that produced a page's text (0064's CHECK).
+FIRST_PASS, AGAIN_PASS = "first", "again"
 # Features 26 and 27 (council 15 Oct 2026, C5, C6): at most this many pages of a document are
 # read again with Careful (Dynamic), worst first; a page of at least CROWDED_LINES lines is
 # crowded; the other readers of Ensemble read the pages numbered up to ENSEMBLE_MAX_PAGES.
@@ -151,6 +155,8 @@ PATH_WORDS, PATH_PAGE = "path_words", "path_page"
 # ``handwritten`` flag is no reason at all (production QA B1, 5 Nov 2026): it is set for any
 # handwriting, one signature on a printed page enough, and re-read most pages whole.
 PAGE_WIDE = frozenset({*(CAREFUL_ISSUES - {ILLEGIBLE_WORDS}), "quality_poor"})
+# values_of: the outer punctuation a value word loses ("1,180.00." is "1,180.00").
+VALUE_PUNCTUATION = ".,;:()[]{}\"'"
 # #385: a region of a page asked to be read again, as page fractions (x0, y0, x1, y1).
 Region = tuple[float, float, float, float]
 
@@ -241,6 +247,12 @@ class PageRead:
 
     * ``others`` (Ensemble, F27): the page as each other chosen model read it, for the
       vote on the values that need review; never stored.
+    * ``read_thinking``, ``read_resolution`` (#463): the thinking level and picture detail
+      the model was sent for the page's first read (#463 review: whichever pass produced its
+      text, so a page counts at the settings it was first read at); ``read_pass`` the pass
+      whose text it is, FIRST_PASS or AGAIN_PASS (Careful's re-read, Careful's words, a page
+      read again); ``read_output_tokens`` the first read's output tokens (every call of it;
+      None for a page read again). Each None when no model read it.
 
     The counts F1 stores are worked out from the lines, so they always agree with
     them: ``unsure_words`` (every word listed as unsure), ``illegible_words``
@@ -259,6 +271,10 @@ class PageRead:
     cached: bool = False
     continues_on_next_page: bool = False
     others: tuple["OtherRead", ...] = ()
+    read_thinking: str | None = None
+    read_resolution: str | None = None
+    read_pass: str | None = None
+    read_output_tokens: int | None = None
 
     @property
     def unsure_words(self) -> int:
@@ -339,6 +355,12 @@ def hard_lines(read: PageRead) -> list[int]:
     or a part it could not read (ILLEGIBLE_MARK). The checker's disagreement comes after the
     reading, so it is not known here. O(the page's text)."""
     return [index for index, line in enumerate(read.lines) if line.unsure or ILLEGIBLE_MARK in line.text]
+
+
+def values_of(words: Iterable[str]) -> Counter[str]:
+    """The words with a digit (amounts, dates, numbers, GSTINs), outer punctuation stripped:
+    what scripts/tune_cost_saving.py and ``cli measure --truth`` compare. O(the words)."""
+    return Counter(word.strip(VALUE_PUNCTUATION) for word in words if any(char.isdigit() for char in word))
 
 
 def careful_reasons(read: PageRead, *, lead: str, again: bool = False) -> list[str]:
@@ -557,10 +579,10 @@ def as_page_engine(engine: OcrEngine) -> PageEngine:
 
 @dataclass(frozen=True, slots=True)
 class UlcCeiling:
-    """#488: the most one read of a page may cost under Ultra low cost: ``paise`` as
-    OCR_PAGE_CEILING_PAISE sets it (20 to 55), and the same in US dollars (``usd``, at
-    INR_PER_USD), which every call made for the read is held under. "Read again" is a new read,
-    with its own ceiling. ``kaagaz.db.models.ulc_ceiling`` makes one."""
+    """#488: the most one read of a page may cost under Ultra low cost: ``paise`` as the super
+    admin set it (20 to 55), and the same in US dollars (``usd``, at INR_PER_USD), which every
+    call made for the read is held under. "Read again" is a new read, with its own ceiling.
+    ``kaagaz.db.models.ulc_ceiling`` makes one."""
 
     usd: float
     paise: int
@@ -570,14 +592,15 @@ class UlcCeiling:
 class UlcPrices:
     """#488: the lead model's ``model_catalog`` prices (dollars a million tokens in and out) and
     its tokens a page in (None: not measured), taken once for the document, so a price change
-    mid-document never moves a page's output limit under it. shortcut: production's catalogue
-    has no request or image price, so what a call costs besides its tokens is not known: each
-    call keeps a reserve back for it and the reported usage.cost is charged (``gemini_ocr``); add
-    the price columns (Testing-Env's ``per_call_usd``, 0070) when that release lands."""
+    mid-document never moves a page's output limit under it. ``per_call_usd`` (#488 review): what
+    a call costs besides its tokens (OpenRouter's pricing.request and pricing.image, together),
+    paid from each call's ceiling; None when either is not known (``models.ulc_prices``), and then
+    no output limit holds a page under its ceiling, so the reader refuses the lead."""
 
     price_in_usd_per_m: float
     price_out_usd_per_m: float
     tokens_per_page_in: int | None = None
+    per_call_usd: float | None = None
 
 
 class PageCache(Protocol):
@@ -615,10 +638,23 @@ class DocumentPages:
     it is slow, on the same 60 s page deadline (``careful_read`` reads do not: their first read
     stays).
 
-    #488 (Ultra low cost, OCR_ULTRA_LOW_COST): with ``ulc`` set, each page is one compact read by
-    ``model`` at minimal thinking, every call held under the ceiling at ``ulc_prices`` (None: no
-    known price, so nothing is sent); never Careful, Ensemble, routing, regions or halves
-    (``gemini_ocr``'s module notes). None: everything above, as before."""
+    #463 (``kaagaz.db.models.Reading``): ``resolution`` the picture detail of a first read
+    (None: OCR_MEDIA_RESOLUTION); ``careful_thinking`` and ``careful_resolution`` Careful's
+    re-reads' and the read-again pages' (None: OCR_RETRY_THINKING_LEVEL and
+    OCR_RETRY_MEDIA_RESOLUTION); ``max_output_tokens`` every page read's output limit (None:
+    PAGE_MAX_OUTPUT_TOKENS; a reply that reaches it is read in halves, as before). #463 review:
+    ``levels`` the thinking levels each of the document's models with any takes
+    (``models.accepted_levels``; a model not in it is sent the level asked for): a Careful or
+    read-again level its model does not take is sent as OCR_RETRY_THINKING_LEVEL.
+
+    #473 (Tushar, 2 Nov 2026; ``kaagaz.db.models.Reading``): ``scan_reader`` who reads the pages
+    a model would read, openrouter (the fields above) or mistral (Mistral OCR's ``mistral_model``
+    in place of every model call: never Gemini, Careful or Ensemble).
+
+    #488 (Ultra low cost, ``kaagaz.db.models.Reading.ulc``): with ``ulc`` set, each page is one
+    compact read by ``model`` at minimal thinking, every call held under the ceiling at
+    ``ulc_prices`` (None: no known price, so nothing is sent); never Careful, Ensemble, routing,
+    regions or halves (``gemini_ocr``'s module notes). None: everything above, as before."""
 
     customer_id: str
     document_id: str
@@ -647,6 +683,13 @@ class DocumentPages:
     # #385: for a page asked to be read again for some of its regions (page fractions x0, y0,
     # x1, y1; ``pages.read_again_regions``), only those regions are read again.
     read_again_regions: Mapping[int, tuple[Region, ...]] = dataclasses.field(default_factory=dict)
+    resolution: str | None = None
+    careful_thinking: str | None = None
+    careful_resolution: str | None = None
+    max_output_tokens: int | None = None
+    levels: Mapping[str, frozenset[str]] = dataclasses.field(default_factory=dict)
+    scan_reader: str = OPENROUTER
+    mistral_model: str = DEFAULT_MISTRAL_MODEL
     ulc: UlcCeiling | None = None
     ulc_prices: UlcPrices | None = None
 
@@ -831,7 +874,12 @@ def ocr_spans(lines: list[OcrLine], page_no: int, width_px: int, height_px: int)
     becomes a span of its own after the line's, with quality "unsure" or
     "illegible", the line's box source, no kind, and a sub-box: the line's box
     split in proportion to the word's character position (approximate, so the
-    viewer draws it dashed). ``is_word_mark`` tells them apart, so they are kept
+    viewer draws it dashed). #523: a block whose text keeps the breaks of several
+    written lines is cut into that many equal bands first, and the word split
+    across its own line's band, never a strip the block's whole height. A block
+    several lines tall with no breaks can't tell the word's line, so its marks are
+    split across as before; the viewer's shape guard leaves so tall and narrow a
+    strip undrawn, and it stays listed. ``is_word_mark`` tells them apart, so they are kept
     out of pieces and values in one place. An unsure word not found in its line
     has no spot, so it gets no mark.
 
@@ -936,11 +984,12 @@ def _word_marks(line: OcrLine, page_no: int, width: int, height: int) -> list[Sp
         found.append((start, start + len(ILLEGIBLE_MARK), "illegible"))
         start = text.find(ILLEGIBLE_MARK, start + len(ILLEGIBLE_MARK))
     marks: list[Span] = []
-    step = (line.x1 - line.x0) / len(text) if text else 0.0
+    rows = text_lines(text)
+    if len(rows) <= 1:
+        rows = [(0, len(text))]  # one line, or no breaks to tell the lines by: across, as before
     for start, end, quality in sorted(found):
         raw = text[start:end]
-        pixels = (line.x0 + step * start, line.y0, line.x0 + step * end, line.y1)
-        box = _page_box(page_no, pixels, width, height)
+        box = _page_box(page_no, _word_pixels(line, rows, start, end), width, height)
         if box.is_valid():
             marks.append(
                 Span(
@@ -954,6 +1003,19 @@ def _word_marks(line: OcrLine, page_no: int, width: int, height: int) -> list[Sp
                 )
             )
     return marks
+
+
+def _word_pixels(line: OcrLine, rows: list[tuple[int, int]], start: int, end: int) -> PixelBox:
+    """Where the word at ``start:end`` of the line's text sits (#523): the band of its own
+    written line (``rows``, from ``text_lines``; the box cut into equal bands), split across in
+    proportion to its characters' place in that line. One row: the whole box, split across."""
+    row = next((index for index, (_, row_end) in enumerate(rows) if start < row_end), len(rows) - 1)
+    row_start, row_end = rows[row]
+    across = (line.x1 - line.x0) / max(1, row_end - row_start)
+    down = (line.y1 - line.y0) / len(rows)
+    bottom = line.y1 if row + 1 == len(rows) else line.y0 + down * (row + 1)
+    x0 = line.x0 + across * (start - row_start)
+    return x0, line.y0 + down * row, line.x0 + across * (min(end, row_end) - row_start), bottom
 
 
 def _find_word(text: str, word: str, cursor: int) -> int | None:

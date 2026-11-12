@@ -24,10 +24,11 @@ import table from "@/components/documents/Table.module.css";
 import { WrapName } from "@/components/documents/WrapName";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
-import { ApiError, auditExportUrl, listAudit, listDocuments, listFolders, listPeople } from "@/lib/api";
+import { auditExportUrl, listAudit, listDocuments, listFolders, listPeople } from "@/lib/api";
+import { errorWords } from "@/lib/errorWords";
 import { formatDateTime } from "@/lib/format";
 import type { ActivityEntry, DocumentSummary, Folder, Person } from "@/lib/types";
-import { AUDIT_PAGE_SIZE, describeDetails } from "./logic";
+import { AUDIT_PAGE_SIZE, activityEmptyText, datesError, describeDetails } from "./logic";
 import styles from "./Admin.module.css";
 
 const SKELETON_ROWS = [0, 1, 2, 3, 4];
@@ -149,7 +150,9 @@ export function ActivityPanel() {
           </div>
         </>
       )}
-      {shown && shown.items.length === 0 && <p className={styles.emptyLine}>No activity yet.</p>}
+      {shown && shown.items.length === 0 && (
+        <ActivityEmpty filtered={auditFilterCount(filters) > 0} onClear={() => change(NO_AUDIT_FILTERS)} />
+      )}
       {shown && shown.items.length > 0 && <ActivityTable items={shown.items} />}
       {shown && shown.items.length > 0 && (
         <nav className={styles.pager} aria-label="Activity pages">
@@ -165,6 +168,22 @@ export function ActivityPanel() {
         </nav>
       )}
     </section>
+  );
+}
+
+/** Nothing to show: "matches these filters" with Clear filters, or nothing yet (#468). Exported for the render test. */
+export function ActivityEmpty({ filtered, onClear }: { filtered: boolean; onClear(): void }) {
+  return (
+    <div className="stack">
+      <p className={styles.emptyLine}>{activityEmptyText(filtered)}</p>
+      {filtered && (
+        <div>
+          <button type="button" className="btn" onClick={onClear}>
+            Clear filters
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -368,34 +387,90 @@ export function ActivityFilters({
       )}
       {open === "date" && (
         <div id={panelId} className={`motion-fade ${library.filterPanel}`}>
-          <fieldset>
-            <legend>{ACTIVITY_TEXT.date}</legend>
-            <div className={library.dates}>
-              <div className="field">
-                <label htmlFor={`${id}-from`}>From</label>
-                <input
-                  id={`${id}-from`}
-                  className="input"
-                  type="date"
-                  value={filters.from ?? ""}
-                  onChange={(event) => onChange({ ...filters, from: event.target.value || null })}
-                />
-              </div>
-              <div className="field">
-                <label htmlFor={`${id}-to`}>To (that day included)</label>
-                <input
-                  id={`${id}-to`}
-                  className="input"
-                  type="date"
-                  value={filters.to ?? ""}
-                  onChange={(event) => onChange({ ...filters, to: event.target.value || null })}
-                />
-              </div>
-            </div>
-          </fieldset>
+          <ActivityDates from={filters.from} to={filters.to} onApply={(from, to) => onChange({ ...filters, from, to })} />
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * The Date panel (#468): a From later than To is refused on the field just changed, with the
+ * words under it; the filter keeps the last range that made sense. The focus stays where the
+ * person is typing. Exported for the render test.
+ */
+export function ActivityDates({
+  from: startFrom,
+  to: startTo,
+  onApply,
+}: {
+  from: string | null;
+  to: string | null;
+  onApply(from: string | null, to: string | null): void;
+}) {
+  const id = useId();
+  const [from, setFrom] = useState(startFrom ?? "");
+  const [to, setTo] = useState(startTo ?? "");
+  // #468 review: the filters' dates changed from outside (Clear filters, with this panel open):
+  // the inputs start over from them, so old dates never come back on the next pick. A pick made
+  // here only changes them to what the inputs hold already, so typing is never interrupted.
+  const [shown, setShown] = useState({ from: startFrom, to: startTo });
+  if (shown.from !== startFrom || shown.to !== startTo) {
+    setShown({ from: startFrom, to: startTo });
+    setFrom(startFrom ?? "");
+    setTo(startTo ?? "");
+  }
+  const [changed, setChanged] = useState<"from" | "to">("from");
+  const error = datesError(from, to);
+
+  function apply(nextFrom: string, nextTo: string, field: "from" | "to") {
+    setFrom(nextFrom);
+    setTo(nextTo);
+    setChanged(field);
+    if (datesError(nextFrom, nextTo)) return; // refused: the list keeps the last good range
+    onApply(nextFrom || null, nextTo || null);
+  }
+
+  const wrong = (field: "from" | "to") => error !== null && changed === field;
+  const errorId = (field: "from" | "to") => `${id}-${field}-error`;
+  const invalid = (field: "from" | "to") =>
+    wrong(field) ? { "aria-invalid": true, "aria-describedby": errorId(field) } : {};
+  const message = (field: "from" | "to") =>
+    wrong(field) && (
+      <span id={errorId(field)} className="error-text" role="alert">
+        {error}
+      </span>
+    );
+  return (
+    <fieldset>
+      <legend>{ACTIVITY_TEXT.date}</legend>
+      <div className={library.dates}>
+        <div className="field">
+          <label htmlFor={`${id}-from`}>From</label>
+          <input
+            id={`${id}-from`}
+            className="input"
+            type="date"
+            value={from}
+            onChange={(event) => apply(event.target.value, to, "from")}
+            {...invalid("from")}
+          />
+          {message("from")}
+        </div>
+        <div className="field">
+          <label htmlFor={`${id}-to`}>To (that day included)</label>
+          <input
+            id={`${id}-to`}
+            className="input"
+            type="date"
+            value={to}
+            onChange={(event) => apply(from, event.target.value, "to")}
+            {...invalid("to")}
+          />
+          {message("to")}
+        </div>
+      </div>
+    </fieldset>
   );
 }
 
@@ -436,14 +511,22 @@ function FileFinder({ onPick }: { onPick(document: { id: string; name: string })
   const id = useId();
   const [text, setText] = useState("");
   const [found, setFound] = useState<DocumentSummary[] | null>(null);
-  function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  const [findFailed, setFindFailed] = useState<string | null>(null); // #468: a failure is not "no file"
+  function find() {
     const q = text.trim();
     if (q === "") return;
+    setFindFailed(null);
     listDocuments({ q, limit: 8 }).then(
       (list) => setFound(list.items),
-      () => setFound([]),
+      (caught: unknown) => {
+        setFound(null);
+        setFindFailed(errorText(caught));
+      },
     );
+  }
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    find();
   }
   return (
     <form onSubmit={submit}>
@@ -465,6 +548,17 @@ function FileFinder({ onPick }: { onPick(document: { id: string; name: string })
             Find
           </button>
         </div>
+        {findFailed && (
+          <div role="alert">
+            <p className="error-text">
+              Could not search the file names. {findFailed}
+            </p>
+            <button type="button" className="btn" onClick={find}>
+              <Icon name="refresh" />
+              Try again
+            </button>
+          </div>
+        )}
         {found !== null && found.length === 0 && <p className="muted">{ACTIVITY_TEXT.noFiles}</p>}
         {found !== null && found.length > 0 && (
           <ul className={library.choices}>
@@ -487,5 +581,5 @@ function FileFinder({ onPick }: { onPick(document: { id: string; name: string })
 }
 
 function errorText(caught: unknown): string {
-  return caught instanceof ApiError ? caught.message : "Check your internet connection, then try again.";
+  return errorWords(caught);
 }

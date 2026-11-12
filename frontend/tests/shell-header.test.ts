@@ -43,9 +43,11 @@ const me: Me = {
     totp_enabled: false,
     two_step_turned_off: false,
     can_delete_forever: false,
+    email_confirmed: true, // #457
   },
   customer: { id: "c1", name: "Sharma Traders" },
   session: { scope: "admin" },
+  providers: [], // #457 review: the sign-in providers switched on
 };
 const noop = () => undefined;
 /** The account menu as the server renders it, inside the page's theme and palette (children as the third argument). */
@@ -57,7 +59,7 @@ const account = (initial: ThemeChoice) =>
       createElement(
         PaletteProvider,
         { initial: "kaagaz" } as Parameters<typeof PaletteProvider>[0],
-        createElement(AccountMenu, { me }),
+        createElement(AccountMenu, { me, onChanged: noop }),
       ),
     ),
   );

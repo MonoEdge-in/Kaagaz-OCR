@@ -18,6 +18,7 @@ import { conversationTime, filterConversations, groupConversations } from "./log
 import styles from "./Chat.module.css";
 
 const TITLE_MAX = 200;
+const BUSY_REASON = "Wait for the answer to finish.";
 
 export function ConversationList({
   items,
@@ -166,7 +167,7 @@ export function ConversationList({
                         <button
                           type="submit"
                           className="btn btn-primary"
-                          disabled={busy || renaming.title.trim() === ""}
+                          disabled={busy || disabled || renaming.title.trim() === ""}
                           aria-busy={busy || undefined}
                         >
                           Save
@@ -190,6 +191,7 @@ export function ConversationList({
                         {conversationTime(item.created_at, group.key)}
                       </time>
                     </button>
+                    {/* B3: not while an answer is being written: it may be this conversation's. */}
                     <RowMenu
                       compact
                       name={item.title}
@@ -198,12 +200,14 @@ export function ConversationList({
                           label: "Rename",
                           description: "Give this conversation a new name.",
                           onSelect: () => setRenaming({ id: item.id, title: item.title }),
+                          disabledReason: disabled ? BUSY_REASON : null,
                         },
                         {
                           label: "Delete",
                           description: "Removes it and its answers for good. Your documents stay.",
                           onSelect: () => setDeleting(item),
                           destructive: true,
+                          disabledReason: disabled ? BUSY_REASON : null,
                         },
                       ]}
                     />
@@ -229,7 +233,7 @@ export function ConversationList({
             <button
               type="button"
               className="btn btn-danger"
-              disabled={busy}
+              disabled={busy || disabled}
               aria-busy={busy || undefined}
               onClick={async () => {
                 setBusy(true);

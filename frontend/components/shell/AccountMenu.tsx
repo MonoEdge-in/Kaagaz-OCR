@@ -9,8 +9,11 @@
 // a dialog that gives Cancel the focus. The arrow keys move into the menu from the
 // avatar and between its actions, Home and End to the first and last, as a row's
 // menu does (RowMenu's onMenuKey); a theme or palette radio keeps its own arrows.
-// An admin also has Two-step sign-in (Tushar, 30 Oct 2026): a dialog to turn their own
-// off or on (TwoStepDialog); members and reviewers have no codes, so it is not there.
+// #457: Change password and Two-step sign-in for every role open their dialogs
+// (ChangePasswordDialog, TwoStepDialog), and focus comes back to the avatar when they close; a
+// toast says when it is done, and `onChanged` loads who is signed in again after a two-step
+// change. Ways to sign in shows only while a provider is on (Me's providers). Each of the three
+// has its own icon, from the handoff's set.
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -20,15 +23,18 @@ import { menuItemAfterKey } from "@/components/documents/library";
 import { clearStored } from "@/components/documents/batchTray";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Icon } from "@/components/ui/Icon";
+import { Icon as KIcon } from "@/components/ui/Icon/Icon";
 import { PalettePicker } from "@/components/ui/PalettePicker";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
+import { Toast } from "@/components/ui/Toast";
 import { ApiError, logout, logoutEverywhere } from "@/lib/api";
+import { clearDrafts } from "@/lib/drafts";
 import { announceSession, leavePage } from "@/lib/sessionChannel";
 import type { Me } from "@/lib/types";
+import { ChangePasswordDialog } from "./ChangePasswordDialog";
+import { TwoStepDialog } from "./TwoStepDialog";
 import { signedOutPath } from "./gate";
 import { initials, roleName } from "./nav";
-import { TwoStepDialog } from "./TwoStepDialog";
-import { TWO_STEP_ACCOUNT, showsTwoStepItem } from "./twoStepAccount";
 import styles from "./Shell.module.css";
 
 const MENU_ID = "account-menu";
@@ -51,13 +57,15 @@ export function menuKeyTarget<T>(items: readonly T[], current: T | null, key: st
   return next === null ? null : (items[next] ?? null);
 }
 
-export function AccountMenu({ me }: { me: Me }) {
+export function AccountMenu({ me, onChanged }: { me: Me; onChanged(): void }) {
   const pathname = usePathname();
   const avatar = useRef<HTMLButtonElement>(null);
   const [signingOut, setSigningOut] = useState<SignOutKind | null>(null);
   const [failure, setFailure] = useState<{ kind: SignOutKind; message: string } | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [changingPassword, setChangingPassword] = useState(false);
   const [twoStep, setTwoStep] = useState(false);
+  const [done, setDone] = useState<string | null>(null);
   const name = me.user.display_name;
 
   // "everywhere" raises the account's session version on the server, which
@@ -84,6 +92,7 @@ export function AccountMenu({ me }: { me: Me }) {
       }
     }
     clearStored(); // the upload tray's drops (PRD 5 U1) are this person's
+    clearDrafts(); // and so is unsent work kept in this tab (lib/drafts.ts, issue 468)
     announceSession(null);
     leavePage(signedOutPath(pathname));
   }
@@ -146,20 +155,39 @@ export function AccountMenu({ me }: { me: Me }) {
           <Icon name="admin" />
           <span>AI settings</span>
         </Link>
-
-        {showsTwoStepItem(me) && (
-          <button
-            type="button"
+        {/* #457 phase 1: Account, Ways to sign in (email and password, and Google), while one is on. */}
+        {me.providers.length > 0 && (
+          <Link
+            href="/settings/sign-in"
             className={`btn btn-quiet btn-block ${styles.signOut}`}
-            onClick={() => {
-              document.getElementById(MENU_ID)?.hidePopover();
-              setTwoStep(true);
-            }}
+            onClick={() => document.getElementById(MENU_ID)?.hidePopover()}
           >
-            <Icon name="check-seal" />
-            <span>{TWO_STEP_ACCOUNT.item}</span>
-          </button>
+            <KIcon name="link" />
+            <span>Ways to sign in</span>
+          </Link>
         )}
+        <button
+          type="button"
+          className={`btn btn-quiet btn-block ${styles.signOut}`}
+          onClick={() => {
+            document.getElementById(MENU_ID)?.hidePopover();
+            setChangingPassword(true);
+          }}
+        >
+          <KIcon name="key" />
+          <span>Change password</span>
+        </button>
+        <button
+          type="button"
+          className={`btn btn-quiet btn-block ${styles.signOut}`}
+          onClick={() => {
+            document.getElementById(MENU_ID)?.hidePopover();
+            setTwoStep(true);
+          }}
+        >
+          <KIcon name="lock" />
+          <span>Two-step sign-in</span>
+        </button>
 
         <div className={styles.signOuts}>
           <button
@@ -203,14 +231,30 @@ export function AccountMenu({ me }: { me: Me }) {
           again on each one.
         </p>
       </ConfirmDialog>
-
+      {changingPassword && (
+        <ChangePasswordDialog
+          me={me}
+          onClose={() => setChangingPassword(false)}
+          onClosed={() => avatar.current?.focus()}
+          onDone={(message) => {
+            setChangingPassword(false);
+            setDone(message);
+          }}
+        />
+      )}
       {twoStep && (
         <TwoStepDialog
           me={me}
           onClose={() => setTwoStep(false)}
           onClosed={() => avatar.current?.focus()}
+          onDone={(message) => {
+            setTwoStep(false);
+            setDone(message);
+            onChanged();
+          }}
         />
       )}
+      <Toast message={done} onClose={() => setDone(null)} />
     </>
   );
 }

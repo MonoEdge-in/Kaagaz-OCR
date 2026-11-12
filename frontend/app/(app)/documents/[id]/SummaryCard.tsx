@@ -11,6 +11,8 @@
 // which says so (a small dot, its name and tooltip) and opens Verify, Edit value… and Show on page.
 // Each is one POST /review/{value_id}, as Review sends it (sendResolve); the reply's value replaces
 // the old one here. A fact with a value behind it shows that value's words, the ones Verify confirms.
+// Issue 468: an edit not saved yet is kept in this tab as a draft (lib/drafts.ts) and opens again,
+// without taking focus, when the card shows again for the same person.
 
 import Link from "next/link";
 import { useEffect, useId, useRef, useState } from "react";
@@ -28,6 +30,7 @@ import type { CardItem, Spot } from "@/components/viewer/panels";
 import { beingRead } from "@/components/viewer/reprocess";
 import { plural, valueAt } from "@/components/viewer/scanned";
 import { sameRegion } from "@/components/viewer/selection";
+import { clearDraft, readDraft, saveDraftSoon } from "@/lib/drafts";
 import type { DocumentDetail, ExtractedValue, Region } from "@/lib/types";
 import styles from "./DocumentView.module.css";
 
@@ -99,6 +102,7 @@ export function SummaryCard({
   reviewer,
   onResolved,
   onStale,
+  userId,
 }: {
   detail: DocumentDetail;
   active: Region | null;
@@ -108,6 +112,8 @@ export function SummaryCard({
   onResolved: (value: ExtractedValue, message: string) => void;
   /** The server refused as the value had changed (404, 409): ask for the document again. */
   onStale: () => void;
+  /** Who is signed in: an edit's draft is theirs only (issue 468). */
+  userId: string;
 }) {
   const id = useId();
   const [open, setOpen] = useState(false);
@@ -160,6 +166,7 @@ export function SummaryCard({
               onShow={onShow}
               onResolved={onResolved}
               onStale={onStale}
+              userId={userId}
             />
           ))}
         </dl>
@@ -180,6 +187,9 @@ export function SummaryCard({
   );
 }
 
+/** The draft of one fact's edit (lib/drafts.ts). */
+export const factDraftKey = (valueId: string) => `fact:${valueId}`;
+
 /**
  * One fact: its name (wrapping when long), its value on one line (cut short with "…", whole in
  * its title), and at the row's end the same slot on every row: a reviewer's ⋯ menu while the
@@ -194,6 +204,7 @@ function KeyFact({
   onShow,
   onResolved,
   onStale,
+  userId,
 }: {
   item: CardItem & { value: ExtractedValue | undefined };
   index: number;
@@ -202,10 +213,18 @@ function KeyFact({
   onShow: (spot: Spot) => void;
   onResolved: (value: ExtractedValue, message: string) => void;
   onStale: () => void;
+  userId: string;
 }) {
   const { value } = item;
-  const [editing, setEditing] = useState(false);
-  const [typed, setTyped] = useState("");
+  const draftKey = value ? factDraftKey(value.id) : null;
+  // The document loads in the browser, so the draft is read at once. Only a value still to check
+  // can be edited, so only then does a kept edit open again.
+  const [kept] = useState(() => {
+    const draft = draftKey && reviewer && value?.label === "needs_review" ? readDraft(userId, draftKey) : null;
+    return typeof draft?.typed === "string" ? draft.typed : null;
+  });
+  const [editing, setEditing] = useState(kept !== null);
+  const [typed, setTyped] = useState(kept ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const row = useRef<HTMLDivElement>(null);
@@ -217,9 +236,16 @@ function KeyFact({
   const text = value ? value.value : item.text;
   const name = `${item.name} ${text}`;
 
+  // Focus goes to the field when Edit value… opens it, never when a kept edit opens it again.
+  const reopened = useRef(kept !== null);
   useEffect(() => {
-    if (editing) field.current?.focus();
+    if (editing && !reopened.current) field.current?.focus();
+    reopened.current = false;
   }, [editing]);
+
+  useEffect(() => {
+    if (draftKey) saveDraftSoon(userId, draftKey, editing ? { typed } : null);
+  }, [userId, draftKey, editing, typed]);
 
   /** The row as it shows again, with `update` in the same render; focus on the value. */
   const settle = (update: () => void) => {
@@ -233,6 +259,7 @@ function KeyFact({
 
   const cancel = () => {
     if (busy) return;
+    if (draftKey) clearDraft(userId, draftKey);
     flushSync(() => {
       setEditing(false);
       setError(null);
@@ -246,6 +273,7 @@ function KeyFact({
     setError(null);
     const done = await sendResolve(value.id, "typed", entered, null, false);
     if (done.ok) {
+      if (draftKey) clearDraft(userId, draftKey);
       settle(() => onResolved(done.item.value, said(done.item.value.value)));
       return;
     }

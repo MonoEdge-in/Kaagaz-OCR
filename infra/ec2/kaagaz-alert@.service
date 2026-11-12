@@ -1,0 +1,14 @@
+# Emails that a unit failed (infra/ec2/ops-alert.sh, A22): the OnFailure= of
+# kaagaz-deploy.service and kaagaz-pgdump.service starts kaagaz-alert@<their name>.
+# Copy to /etc/systemd/system/ (EC2 PRD section 9). No OnFailure= of its own: an
+# alert that fails is in the journal and `systemctl --failed`, and never sends another.
+[Unit]
+Description=Kaagaz: email that %i failed
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/kaagaz
+ExecStart=/home/ubuntu/kaagaz/infra/ec2/ops-alert.sh %i "Kaagaz server: %i failed" "%i failed on the Kaagaz server. On the server, journalctl -u %i -n 50 says why."

@@ -27,6 +27,8 @@ out outside a transaction (it may wait on the model), then the conversation, bot
 messages (the question with its scope and rewrite) and the audit row are written
 in one transaction.
 The audit row holds only the ids, ``answer.status`` and the models asked and their level.
+A fresh question asked again unchanged is answered from its stored answer in one more short
+transaction (#535, answering/ready.py ``repeat_key``), and saved and audited as any answer.
 
 The asker's own words (My words, A3) may help the answer, which then lists them in
 ``understood_words``; they are never in a message's text, so never in the history.
@@ -51,15 +53,26 @@ is made only after the answer); the memory's to the same user, kind ``memory``
 (``usage_scope``).
 """
 
+import asyncio
+import contextlib
+import contextvars
 import functools
 import json
 import logging
+import math
+import threading
+import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Callable, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Response
+from fastapi.concurrency import run_in_threadpool
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import StreamingResponse
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -70,22 +83,32 @@ from pydantic import (
     model_validator,
 )
 from sqlalchemy import Connection, RowMapping
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.ai.usage import usage_scope
-from kaagaz.answering import ready, small_talk
-from kaagaz.answering.clarify import MAX_CHOICES, Pending, answers_clarify, latin_key, reply_to
+from kaagaz.answering import ready, small_talk, stream
+from kaagaz.answering.clarify import (
+    MAX_CHOICES,
+    Pending,
+    answers_clarify,
+    latin_key,
+    reply_to,
+    without_resume,
+)
 from kaagaz.answering.memory import NO_MEMORY, Memory, from_row, live
 from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
+from kaagaz.answering.stream import Events, StreamCancelled
 from kaagaz.answering.voice import SOFT_NOTHING, first_name, numbers, opening, soft_line, unsupported
 from kaagaz.answering.words_text import WordTextError, check_meaning, check_word
 from kaagaz.api.auth import FEATURE_OFF, CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
-from kaagaz.api.errors import ApiError
+from kaagaz.api.errors import MESSAGES, ApiError
 from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.names import clean_name
+from kaagaz.api.routers.health import running_commit
 from kaagaz.api.views import answer_with_source_states, cited_document_ids, conversation_summary, message
 from kaagaz.db import ai_settings, audit, organization_words
 from kaagaz.db import chat as chat_sql
@@ -107,6 +130,7 @@ from kaagaz.settings import MODEL_ID
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+_timing_log = logging.getLogger("kaagaz.answering.timing")  # a repeat's line, as an answer's (#535)
 
 Context = Annotated[AppContext, Depends(get_context)]
 
@@ -154,6 +178,9 @@ class AskBody(BaseModel):
     # (resolve_chat); left out, the organisation's default. Ids only, never trusted.
     agents: list[ModelId] | None = Field(default=None, min_length=1, max_length=MAX_AGENTS)
     thinking: Literal["low", "medium", "high"] | None = None
+    # Streaming Ask (#535): the question's message id, chosen by the client and sent again with
+    # its fallback, so one question is never answered or saved twice (``ask``).
+    question_id: uuid.UUID | None = None
 
     @field_validator("agents")
     @classmethod
@@ -221,6 +248,9 @@ class FeedbackBody(BaseModel):
 
 # KZ-006 (24 Oct 2026): every model was down, so this is no answer and no "not found" either.
 OUTAGE_LINE = "The AI is not responding right now, so this is not a written answer. Ask again in a minute."
+# #535 (test-server log, 7 Nov 2026): a draft that took too long times out the same way a minute
+# later, so its outage (``outage_reason`` "timeout") says what to do instead.
+TIMEOUT_LINE = "This question took too long for the AI. Ask about fewer documents, then try again."
 
 
 def answer_text(answer: dict[str, Any]) -> str:
@@ -236,14 +266,153 @@ def answer_text(answer: dict[str, Any]) -> str:
     if answer.get("status") in ("answered", "unchecked") and isinstance(sentences, list):
         texts = [s["text"] for s in sentences if isinstance(s, dict) and isinstance(s.get("text"), str)]
     if answer.get("outage"):
-        return OUTAGE_LINE
+        return TIMEOUT_LINE if answer.get("outage_reason") == "timeout" else OUTAGE_LINE
     missing = answer.get("missing_words")
     words = [word for word in missing if isinstance(word, str)] if isinstance(missing, list) else []
     return " ".join(texts) or soft_line(bool(answer.get("closest_documents")), words)
 
 
+# Streaming Ask (#535): the question ids being answered in this process now (``ask``).
+_IN_PROGRESS: dict[str, threading.Event] = {}
+_IN_PROGRESS_LOCK = threading.Lock()
+ANSWERING_ALREADY = "That question is still being answered. Open this conversation again in a minute."
+
+# Answers being written at once (A3, stability pass, 7 Nov 2026). One answer holds at most two
+# pooled connections at a time, each only for a short transaction (its own, and step 19's early
+# search beside the plan call), and otherwise waits on the model. The pool is 15 a process
+# (db/engine.py: POOL_SIZE 10 + MAX_OVERFLOW 5), and a request waits at most POOL_TIMEOUT_SECONDS
+# (10) for one. So STREAM_WORKERS (5) streamed and POSTED_ANSWERS (2) posted answers at once hold
+# at most 2 x 7 = 14, and every other request always finds one. Past them an answer waits its turn
+# instead of failing, for up to ANSWER_STREAM_MAX_SECONDS (180), and its own time cap starts only
+# once it runs: a stream in the stream pool's queue (pings keep it open), a POST for a free slot
+# (waiting off the threadpool every route shares). At 10 to 45 seconds an answer, the last of 20
+# people asking at once starts within about two minutes.
+# One person has at most ANSWERS_PER_USER answers being written, streamed and posted together.
+ANSWERS_PER_USER = 2
+POSTED_ANSWERS = 2
+TOO_MANY_RUNNING = "You already have answers being written. Wait for one to finish."
+_POSTED = threading.BoundedSemaphore(POSTED_ANSWERS)
+_ANSWERING: dict[str, int] = {}  # user id: answers being written (under _IN_PROGRESS_LOCK)
+
+
+def _take_turn(user_id: str) -> bool:
+    """One of this person's ANSWERS_PER_USER answers at once; False when they are all in use."""
+    with _IN_PROGRESS_LOCK:
+        if _ANSWERING.get(user_id, 0) >= ANSWERS_PER_USER:
+            return False
+        _ANSWERING[user_id] = _ANSWERING.get(user_id, 0) + 1
+        return True
+
+
+def _end_turn(user_id: str) -> None:
+    with _IN_PROGRESS_LOCK:
+        left = _ANSWERING.pop(user_id, 1) - 1
+        if left > 0:
+            _ANSWERING[user_id] = left
+
+
+def _new_answer(body: "AskBody", user: CurrentUser) -> str | None:
+    """Whose turn this question takes: the asker's, unless it is one still being answered here (a
+    client's fallback, which ``ask`` waits for). 429 while the asker has no turn left."""
+    with _IN_PROGRESS_LOCK:
+        if body.question_id is not None and str(body.question_id) in _IN_PROGRESS:
+            return None
+        if _ANSWERING.get(user.user_id, 0) >= ANSWERS_PER_USER:
+            raise ApiError(429, "rate_limited", TOO_MANY_RUNNING, headers={"Retry-After": "10"})
+    return user.user_id
+
+
+POSTED_POLL_SECONDS = 0.25
+
+
 @router.post("/chat")
-def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks) -> dict[str, Any]:
+async def ask_posted(
+    body: AskBody, user: User, context: Context, background: BackgroundTasks
+) -> dict[str, Any]:
+    """``ask`` (on the threadpool) within the asker's turns and the process's POSTED_ANSWERS (A3).
+    The wait for a slot is here, on the event loop, so waiting answers hold no pool thread; one
+    that finds none in ANSWER_STREAM_MAX_SECONDS is 503, logged ``posted_answers_full``."""
+    turn = _new_answer(body, user)
+    if turn is None:
+        return await run_in_threadpool(ask, body, user, context, background)
+    if not _take_turn(turn):
+        raise ApiError(429, "rate_limited", TOO_MANY_RUNNING, headers={"Retry-After": "10"})
+    try:
+        gives_up = time.monotonic() + context.settings.answer_stream_max_seconds
+        while not _POSTED.acquire(blocking=False):
+            if time.monotonic() >= gives_up:
+                logger.warning("no slot for a posted answer", extra={"code": "posted_answers_full"})
+                raise ApiError(503, "backend_unavailable")
+            await asyncio.sleep(POSTED_POLL_SECONDS)
+        try:
+            return await run_in_threadpool(ask, body, user, context, background)
+        finally:
+            _POSTED.release()
+    finally:
+        _end_turn(turn)
+
+
+def ask(body: AskBody, user: CurrentUser, context: AppContext, background: BackgroundTasks) -> dict[str, Any]:
+    """The answer's ids come first (streaming Ask, #535): the question's (the client's
+    ``question_id``, else a new one) and its conversation's (the one asked in, else a new one),
+    sent as ``started`` on the stream before any database work. A ``question_id`` this person
+    already asked returns that saved answer, waiting while this process still works on it: never
+    a second model call (a client's fallback after a broken stream). One of anyone else's is 409,
+    as an id that never was would be once saved (row level security hides another
+    organisation's). Then ``_ask``."""
+    question_id = str(body.question_id) if body.question_id else str(uuid.uuid4())
+    landing = str(body.conversation_id) if body.conversation_id else str(uuid.uuid4())
+    stream.emit("started", {"conversation_id": landing, "question_id": question_id})
+    mine: threading.Event | None = None
+    for _ in range(2):  # wait once for a run of the same question here, then answer it ourselves
+        with _IN_PROGRESS_LOCK:
+            running = _IN_PROGRESS.get(question_id)
+            if running is None:
+                mine = _IN_PROGRESS[question_id] = threading.Event()
+        if running is None:
+            break
+        running.wait(context.settings.answer_stream_max_seconds + 30)
+        found = _saved_reply(context, user, question_id)
+        if found is not None:
+            return found
+    if mine is None:
+        raise ApiError(409, "conflict", ANSWERING_ALREADY)
+    try:
+        found = None if body.question_id is None else _saved_reply(context, user, question_id)
+        return found or _ask(body, user, context, background, landing, question_id)
+    finally:
+        with _IN_PROGRESS_LOCK:
+            _IN_PROGRESS.pop(question_id, None)
+        mine.set()
+
+
+def _saved_reply(context: AppContext, user: CurrentUser, question_id: str) -> dict[str, Any] | None:
+    """#535: the reply ``ask`` gave for ``question_id``, as it was saved; None when it was not;
+    409 when it is not this person's question (nothing about it is said)."""
+    with context.db.customer(user.customer_id) as conn:
+        found = chat_sql.saved_turn(conn, user.customer_id, question_id)
+    if found is None:
+        return None
+    owner, question, answer = found
+    if owner != user.user_id or question["role"] != "user" or answer is None:
+        raise ApiError(409, "conflict")
+    return {
+        "conversation_id": str(question["conversation_id"]),
+        "question": message(question),
+        "answer": message(answer),
+    }
+
+
+def _ask(
+    body: AskBody,
+    user: CurrentUser,
+    context: AppContext,
+    background: BackgroundTasks,
+    landing: str,
+    question_id: str,
+) -> dict[str, Any]:
+    """``ask``'s work: the answer to ``body``, saved as ``question_id`` in the conversation asked
+    in, else a new one named ``landing``."""
     if not chat_limits(context.settings.chat_questions_per_minute).allow(user.user_id):
         raise ApiError(429, "rate_limited", TOO_MANY_QUESTIONS, headers={"Retry-After": "60"})
     question = body.question.strip()
@@ -287,17 +456,25 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
         # "hi", "thanks", "what can you do" (answering/small_talk.py): answered here, no search.
         talk = small_talk.kind(question) if answering is None else None
         examples = [text for text, _ in ready.questions(conn, user.customer_id, user.user_id)] if talk else []
+        # #535: a fresh question (no conversation, no clarify), in any scope, may be a repeat.
+        repeatable = conversation_id is None and answering is None and talk is None
+        made_from = ready.stamp(conn, user.customer_id) if repeatable else ""
+        tagged = ready.tagged(conn, user.customer_id, scope.tag_ids) if repeatable else []
         ready_key = (
-            ready.key(
-                user.customer_id,
-                user.user_id,
-                question,
-                (pins, switched, choice),
-                ready.stamp(conn, user.customer_id),
-            )
+            ready.key(user.customer_id, user.user_id, question, (pins, switched, choice), made_from)
             if fresh and talk is None
             else None
         )
+    repeat_key, repeated, started = None, None, time.monotonic()
+    if repeatable:
+        # #535 (answering/ready.py): a fresh question asked again by this person, with these same
+        # inputs, today, on this code, while nothing it reads changed: its stored answer, at once.
+        today = context.clock().astimezone(ZoneInfo(context.settings.timezone)).date()
+        shaped = ready.shaping(context.settings)
+        inputs = (pins, switched, choice, scope, tagged, today, running_commit(), shaped)
+        with context.db.user(user.customer_id, user.user_id) as conn:  # the asker's own words too
+            repeat_key = ready.repeat_key(conn, user.customer_id, user.user_id, question, inputs, made_from)
+            repeated = chat_sql.repeated_answer(conn, user.customer_id, user.user_id, repeat_key)
     saved = None if chosen is None else chosen.model_dump(mode="json")
     # json.dumps writes ", " and ": " as jsonb's text does, so this is the CHECK's length.
     if saved is not None and len(json.dumps(saved).encode()) > MAX_SCOPE_BYTES:
@@ -311,93 +488,64 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
         kind="chat",
         conversation_id=conversation_id,
     ) as spend:
+        degraded = copied = False  # #535: the model or a vector was down; served from the cache
         if talk is not None:
             answer = small_talk.answer(talk, question, first_name(user.display_name), examples)
         else:
             kept = None if ready_key is None else ready.READY.get(ready_key)
-            reply = kept or context.answers.answer(
-                user.customer_id,
-                question,
-                scope=scope,
-                history=history,
-                user_id=user.user_id,
-                memory=memory,
-                choice=choice,
-                pins=pins,
-                pending=pending,
-                clarify=switched["nlq_clarify"],
-                cited=_cited(recent),
+            reply = (
+                kept
+                or _stored(repeated, started)
+                or context.answers.answer(
+                    user.customer_id,
+                    question,
+                    scope=scope,
+                    history=history,
+                    user_id=user.user_id,
+                    memory=memory,
+                    choice=choice,
+                    pins=pins,
+                    pending=pending,
+                    clarify=switched["nlq_clarify"],
+                    cited=_cited(recent),
+                )
             )
             # KZ-006: an outage is never "not found": the reply says the AI is not responding
             # (``outage``, OUTAGE_LINE) and lists the closest documents; never a "busy" error.
-            answer = reply.to_json()
+            answer, degraded, copied = reply.to_json(), reply.degraded, isinstance(reply, _Stored)
             if reply.unavailable:
                 answer["outage"] = True
             # A clarifying question shows no opening (ClarifyView), so it never spends the greeting.
             if answer.get("version") == 2 and answer.get("status") != "clarify":
                 answer["opening"] = _opening(answer, question, user.display_name, earlier, context)
 
-        with context.db.customer(user.customer_id) as conn:
-            if conversation_id is None:
-                conversation_id = chat_sql.create_conversation(
-                    conn, user.customer_id, user.user_id, short_title(question)
+        try:
+            # #535: a streamed answer stopped by its cap is never saved, and one saved is finished.
+            with stream.saving(), context.db.customer(user.customer_id) as conn:
+                saved_to = _save(
+                    conn,
+                    body,
+                    user,
+                    context,
+                    landing,
+                    question_id,
+                    conversation_id,
+                    answering,
+                    question,
+                    answer,
+                    repeat_key,
+                    saved,
+                    choice,
+                    pending,
+                    degraded,
+                    copied,
                 )
-            elif chat_sql.get_conversation(conn, user.customer_id, conversation_id, user.user_id) is None:
-                raise ApiError(404, "not_found")
-            # PRD 6 B1: checked again under the conversation's lock, so two replies never both answer it.
-            if answering and chat_sql.newest_message(conn, user.customer_id, conversation_id) != str(
-                answering.message_id
-            ):
-                raise ApiError(409, "conflict", CLARIFY_GONE)
-            if (
-                answer.get("status") == "not_found"
-                and not answer.get("documents")
-                and not answer.get("outage")
-            ):
-                # Nothing close (24 Oct 2026): the best next step is a question this library answers.
-                answer["suggestions"] = [
-                    text
-                    for text, _ in ready.questions(conn, user.customer_id, user.user_id)
-                    if ready.same_question(text) != ready.same_question(question)
-                ][:3]
-            asked = chat_sql.add_message(
-                conn,
-                user.customer_id,
-                conversation_id,
-                role="user",
-                message_text=question,
-                answer=None,
-                scope=saved,
-                rewritten_question=answer.get("rewritten_question"),
-            )
-            answered = chat_sql.add_message(
-                conn,
-                user.customer_id,
-                conversation_id,
-                role="assistant",
-                message_text=answer_text(answer),
-                answer=answer,
-            )
-            status = answer.get("status")
-            audit.record(
-                conn,
-                user.customer_id,
-                actor_user_id=user.user_id,
-                action="chat.ask",
-                target_type="message",
-                target_id=str(answered["id"]),
-                details={
-                    "conversation_id": conversation_id,
-                    "question_id": str(asked["id"]),
-                    "status": status if isinstance(status, str) else None,
-                    # S5c: who was asked to draft it (model ids, lead first, comma-separated:
-                    # details hold no lists) and at what level.
-                    "agents": ",".join(agent.model for agent in choice.agents),
-                    "thinking": choice.thinking,
-                },
-            )
-            if pending is not None:
-                _suggest(conn, user, pending)
+        except IntegrityError:  # #535: saved meanwhile by another process (the client's fallback)
+            found = _saved_reply(context, user, question_id)
+            if found is None:
+                raise ApiError(409, "conflict") from None
+            return found
+        conversation_id, asked, answered = saved_to
         spend.conversation_id = conversation_id  # committed: the ledger row may name it
     if fresh:
         ready.SHOWN.used(user.customer_id, user.user_id, question)  # Home's list changes only now
@@ -405,7 +553,299 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
         background.add_task(
             _remember, context, user.customer_id, user.user_id, conversation_id, summary_turn, turns + 1
         )
-    return {"conversation_id": conversation_id, "question": message(asked), "answer": message(answered)}
+    shown = message(answered)
+    if copied and shown["answer"]:  # A10: a stored copy is shown as a conversation shows it
+        with context.db.customer(user.customer_id) as conn:
+            states = chat_sql.document_states(conn, user.customer_id, cited_document_ids(shown["answer"]))
+        shown["answer"] = answer_with_source_states(shown["answer"], states)
+    return {"conversation_id": conversation_id, "question": message(asked), "answer": shown}
+
+
+def _save(
+    conn: Connection,
+    body: AskBody,
+    user: CurrentUser,
+    context: AppContext,
+    landing: str,
+    question_id: str,
+    conversation_id: str | None,
+    answering: ReplyBody | None,
+    question: str,
+    answer: dict[str, Any],
+    repeat_key: str | None,
+    saved: dict[str, Any] | None,
+    choice: ChatChoice,
+    pending: Pending | None,
+    degraded: bool,
+    copied: bool,
+) -> tuple[str, RowMapping, RowMapping]:
+    """``_ask``'s one save transaction: the conversation (new, named ``landing``), both messages
+    (the question as ``question_id``) and the audit row; (the conversation, the question's row,
+    the answer's row)."""
+    if conversation_id is None:
+        conversation_id = chat_sql.create_conversation(
+            conn, user.customer_id, user.user_id, short_title(question), conversation_id=landing
+        )
+    elif chat_sql.get_conversation(conn, user.customer_id, conversation_id, user.user_id) is None:
+        raise ApiError(404, "not_found")
+    # PRD 6 B1: checked again under the conversation's lock, so two replies never both answer it.
+    if answering and chat_sql.newest_message(conn, user.customer_id, conversation_id) != str(
+        answering.message_id
+    ):
+        raise ApiError(409, "conflict", CLARIFY_GONE)
+    if answer.get("status") == "not_found" and not answer.get("documents") and not answer.get("outage"):
+        # Nothing close (24 Oct 2026): the best next step is a question this library answers.
+        answer["suggestions"] = [
+            text
+            for text, _ in ready.questions(conn, user.customer_id, user.user_id)
+            if ready.same_question(text) != ready.same_question(question)
+        ][:3]
+    if repeat_key is not None and _reusable(answer, degraded):
+        # #535: found again by a repeat; a copy served from the cache only marks it, so its
+        # Not useful still counts (db/chat.py), and is never itself served.
+        answer[ready.REPEAT_COPY if copied else ready.REPEAT_KEY] = repeat_key
+    asked = chat_sql.add_message(
+        conn,
+        user.customer_id,
+        conversation_id,
+        role="user",
+        message_text=question,
+        answer=None,
+        scope=saved,
+        rewritten_question=answer.get("rewritten_question"),
+        message_id=question_id,
+    )
+    answered = chat_sql.add_message(
+        conn,
+        user.customer_id,
+        conversation_id,
+        role="assistant",
+        message_text=answer_text(answer),
+        answer=answer,
+    )
+    status = answer.get("status")
+    audit.record(
+        conn,
+        user.customer_id,
+        actor_user_id=user.user_id,
+        action="chat.ask",
+        target_type="message",
+        target_id=str(answered["id"]),
+        details={
+            "conversation_id": conversation_id,
+            "question_id": str(asked["id"]),
+            "status": status if isinstance(status, str) else None,
+            # S5c: who was asked to draft it (model ids, lead first, comma-separated:
+            # details hold no lists) and at what level.
+            "agents": ",".join(agent.model for agent in choice.agents),
+            "thinking": choice.thinking,
+        },
+    )
+    if pending is not None:
+        _suggest(conn, user, pending)
+    return conversation_id, asked, answered
+
+
+@dataclass(frozen=True)
+class _Stored:
+    """#535: a repeated question's stored answer, answered as ``AnswerService.answer``'s is."""
+
+    found: dict[str, Any]
+    unavailable: bool = False  # only a found answer is stored for a repeat (db/chat.py)
+    degraded: bool = False  # nor one made while the model or a vector was down (``_reusable``)
+
+    def to_json(self) -> dict[str, Any]:
+        return without_resume(self.found)  # no key; the opening is written again for now
+
+
+def _reusable(answer: dict[str, Any], degraded: bool) -> bool:
+    """#535: whether a repeat may be answered with ``answer``: found (answered or unchecked), drafted
+    by the model or by a fixed query (never quoted while the model was down or off), and made with
+    the model and the question's vector up (``degraded`` False)."""
+    found = answer.get("status") in ("answered", "unchecked")
+    return found and not degraded and (bool(answer.get("model_used")) or answer.get("route") != "search")
+
+
+def _stored(found: dict[str, Any] | None, started: float) -> _Stored | None:
+    """``found`` to answer with, its timing line logged as the answer's (``cached=1``); None for none."""
+    if found is None:
+        return None
+    _timing_log.info(
+        "answer timing route=%s status=%s outcome=%s cached=1 total_ms=%.0f streamed=%d",
+        found.get("route"),
+        found.get("status"),
+        found.get("label"),
+        (time.monotonic() - started) * 1000,
+        stream.EVENTS.get() is not None,
+    )
+    return _Stored(found)
+
+
+# Streaming Ask (#535): what the stream sends while it waits, and its plain words.
+HEARTBEAT_SECONDS = 10.0
+TOO_SLOW = "This answer is taking too long. Try a narrower question or Swift."
+STREAM_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+
+@router.post("/chat/stream")
+def ask_stream(body: AskBody, user: User, context: Context) -> StreamingResponse:
+    """``POST /api/chat`` streamed (#535): the same body, auth and work, sent as server-sent
+    events (``stream_answer``): ``started`` (where the answer will land), ``stage``, ``sources``
+    and each checked ``sentence`` while the answer is worked out, then ``done`` with exactly the
+    reply ``POST /api/chat`` gives (``ask`` itself, saved the same way), or ``error`` with its
+    code and words. A client that leaves stops the events only: the answer is finished and saved
+    (Tushar, 16 Oct 2026), and the memory's background task runs after it, as after ``ask``'s."""
+    return StreamingResponse(
+        stream_answer(
+            functools.partial(ask, body, user),
+            context,
+            cap=context.settings.answer_stream_max_seconds,
+            turn=_new_answer(body, user),
+        ),
+        media_type="text/event-stream",
+        headers=STREAM_HEADERS,
+    )
+
+
+def sse(name: str, data: dict[str, Any]) -> str:
+    """One server-sent event; the JSON as FastAPI writes a reply's (one line)."""
+    text = json.dumps(data, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    return f"event: {name}\ndata: {text}\n\n"
+
+
+# #535 (review): every streamed answer's work runs on one bounded pool, never a thread per
+# stream; RUNNING holds the ones not finished yet (a graceful stop, and the tests, wait on them).
+# Its size: A3's note above ``ask_posted``.
+STREAM_WORKERS = 5
+_STREAMS = ThreadPoolExecutor(max_workers=STREAM_WORKERS, thread_name_prefix="answer-stream")
+RUNNING: set[Future[None]] = set()
+
+
+async def stream_answer(
+    work: Callable[..., dict[str, Any]],
+    context: AppContext,
+    *,
+    cap: float,
+    heartbeat: float | None = None,
+    turn: str | None = None,
+) -> AsyncGenerator[str]:
+    """#535: ``work(context=..., background=...)`` (``ask``) on the stream pool, with
+    ``stream.EVENTS`` set so the answer sends its events (``started`` first); each event as it
+    comes, ": ping" after ``heartbeat`` seconds (HEARTBEAT_SECONDS) with none, then ``done`` with
+    its reply or ``error`` with its code and words (an ``ApiError``'s, else what the app's handlers
+    would send). Past ``cap`` seconds from when it starts: ``error`` "answer_timeout" (TOO_SLOW,
+    logged with that code), and the answer is stopped (``Events.cancel``: its model stream closed
+    at the next check, nothing saved), unless it is being saved or saved already: it is finished
+    then, and ``done`` follows. A client that goes away before ``done`` only stops the events
+    (``Events.detach``): the answer is finished and saved, as ``POST /api/chat``'s is (Tushar, 16 Oct 2026).
+    ``turn``: the asker whose turn (A3) it takes from here until the reply is sent (not the
+    memory's write after it); none left, an ``error`` "rate_limited" (the route has said 429
+    already, unless another came in between). Still waiting for the stream pool after ``cap``
+    seconds (A3): it never runs, and the error is the busy words, logged ``answer_queue_full``."""
+    if turn is not None and not _take_turn(turn):
+        yield sse("error", {"code": "rate_limited", "message": TOO_MANY_RUNNING})
+        return
+    loop = asyncio.get_running_loop()
+    inbox: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
+
+    def post(name: str, data: dict[str, Any]) -> None:
+        with contextlib.suppress(RuntimeError):  # the stream's loop is gone
+            loop.call_soon_threadsafe(inbox.put_nowait, (name, data))
+
+    def replied() -> None:
+        if turn is not None:
+            _end_turn(turn)
+
+    events, started = Events(post), threading.Event()
+    # The request's context, and the events, on the pool's thread. submit, not run_in_executor:
+    # the work goes on after the stream ends, with no asyncio future left behind on a closed loop.
+    running = _STREAMS.submit(
+        contextvars.copy_context().run, _work, work, context, events, post, started, replied
+    )
+    RUNNING.add(running)
+    running.add_done_callback(RUNNING.discard)
+    queued_until: float | None = loop.time() + cap
+    ends = math.inf
+    every = HEARTBEAT_SECONDS if heartbeat is None else heartbeat
+    try:
+        while True:
+            if queued_until is not None and started.is_set():
+                queued_until, ends = None, loop.time() + cap  # it runs: its own time starts
+            left = (ends if queued_until is None else queued_until) - loop.time()
+            if left <= 0 and queued_until is not None:
+                if running.cancel():  # never started: the pool was full the whole time
+                    replied()
+                    logger.warning("streamed answer never started", extra={"code": "answer_queue_full"})
+                    yield sse(
+                        "error", {"code": "backend_unavailable", "message": MESSAGES["backend_unavailable"]}
+                    )
+                    return
+                queued_until, ends = None, loop.time() + cap  # it started just now
+                continue
+            if left <= 0:
+                # A9: off the loop: it waits while a save holds the answer's lock.
+                if await asyncio.to_thread(events.cancel):
+                    logger.warning(
+                        "streamed answer too slow", extra={"code": "answer_timeout", **events.landing}
+                    )
+                    yield sse("error", {"code": "answer_timeout", "message": TOO_SLOW})
+                    return
+                ends = math.inf  # saved already: it is finished, and done follows
+                continue
+            try:
+                name, data = await asyncio.wait_for(inbox.get(), min(every, left))
+            except TimeoutError:
+                if loop.time() < (ends if queued_until is None else queued_until):
+                    yield ": ping\n\n"
+                continue
+            yield sse(name, data)
+            if name in ("done", "error"):
+                return
+    finally:
+        events.detach()  # the client left (or the stream ended): no more events, the answer goes on
+
+
+def _work(
+    work: Callable[..., dict[str, Any]],
+    context: AppContext,
+    events: Events,
+    post: Callable[[str, dict[str, Any]], None],
+    started: threading.Event,
+    replied: Callable[[], None],
+) -> None:
+    """``stream_answer``'s work: ``started`` set, the answer, ``replied()`` (the asker's turn back,
+    A3), then ``done`` or ``error``; nothing once stopped by the cap. Once saved the answer is
+    finished: ``done`` goes out (if anyone still listens) and its background tasks (the memory,
+    ``ask``'s) run here, each in its own try, whether the client stayed or not. A failure is logged
+    with where the answer would have landed."""
+    token = stream.EVENTS.set(events)
+    started.set()
+    background = BackgroundTasks()
+    try:
+        try:
+            reply = work(context=context, background=background)
+        except StreamCancelled:
+            return  # stopped by the cap: the stream has said so already
+        except ApiError as error:
+            post("error", {"code": error.code, "message": error.message})
+            return
+        except (BackendUnavailable, OperationalError, PoolTimeout):
+            post("error", {"code": "backend_unavailable", "message": MESSAGES["backend_unavailable"]})
+            return
+        except Exception as error:  # noqa: BLE001 - the stream's boundary, as ErrorMiddleware's
+            logger.error("streamed answer failed", extra={"code": type(error).__name__, **events.landing})
+            post("error", {"code": "internal_error", "message": MESSAGES["internal_error"]})
+            return
+        finally:
+            replied()
+        post("done", {"reply": jsonable_encoder(reply)})
+        for task in background.tasks:
+            try:
+                task.func(*task.args, **task.kwargs)
+            except Exception as error:  # noqa: BLE001 - after the reply, as Starlette's own tasks
+                logger.warning("background task failed", extra={"code": type(error).__name__})
+    finally:
+        stream.EVENTS.reset(token)
 
 
 def _inputs(

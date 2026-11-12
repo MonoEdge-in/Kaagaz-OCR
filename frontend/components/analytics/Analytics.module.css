@@ -1,0 +1,21 @@
+/* The Google Analytics choice (Analytics.tsx), in the page under the sign-in form: calm like
+   the signed-out notice, its words then Accept and Decline side by side, which wrap under
+   the words on a phone. In the page's flow, so it never covers the form. MonoEdge tokens only. */
+
+.banner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--k-r-2);
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+
+.text {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  text-wrap: pretty;
+}

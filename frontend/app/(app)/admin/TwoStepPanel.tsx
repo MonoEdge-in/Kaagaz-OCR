@@ -7,7 +7,7 @@
 
 import styles from "@/app/login/twoStep.module.css";
 import admin from "@/components/admin/Admin.module.css";
-import { twoStepState } from "@/components/shell/twoStepAccount";
+import { REQUIRED_TEXT, mayTurnOff, twoStepView } from "@/components/shell/twoStepAccount";
 import { useSession } from "@/lib/session";
 
 export const TWO_STEP_ON =
@@ -20,7 +20,7 @@ export const LOST_PHONE =
 
 export function TwoStepPanel() {
   const { me } = useSession();
-  const on = twoStepState(me) === "on";
+  const on = twoStepView(me) === "on";
   return (
     <section className="card stack" aria-labelledby="two-step-heading">
       <h2 id="two-step-heading" className={admin.sectionHeading}>
@@ -28,7 +28,8 @@ export function TwoStepPanel() {
       </h2>
       <p className={styles.twoStepText}>
         Your two-step sign-in: <strong>{on ? "On" : "Off"}</strong>. {on ? TWO_STEP_ON : TWO_STEP_OFF}{" "}
-        {CHANGE_IN_ACCOUNT}
+        {/* QA U5: while the organisation requires it (#481) there is nothing to turn off. */}
+        {on && !mayTurnOff(me) ? REQUIRED_TEXT : CHANGE_IN_ACCOUNT}
       </p>
       {on && <p className={styles.note}>{LOST_PHONE}</p>}
     </section>

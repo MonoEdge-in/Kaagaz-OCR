@@ -24,6 +24,10 @@ class RouteNamesTest(unittest.TestCase):
                 "malformed_devanagari",
                 "blank",
                 "ok",
+                # Changed on purpose (#522): a Word or PowerPoint file's PDF page read from PDFium's
+                # text (route text_layer); never stored, and never printed by cli measure, which
+                # checks a PDF's pages as a PDF upload's.
+                "pdfium_text",
             ),
         )
 

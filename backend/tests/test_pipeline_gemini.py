@@ -230,7 +230,10 @@ class Rig:
     jobs: list[Job] = field(default_factory=list)
 
     def job(self, data: bytes) -> Job:
-        job = Job(CUSTOMER, self.upload.accept(CUSTOMER, io.BytesIO(data)).document_id)
+        # #522: the name chooses only between text readers, so text is read as CSV, a PDF as a PDF.
+        job = Job(
+            CUSTOMER, self.upload.accept(CUSTOMER, io.BytesIO(data), display_name="upload.csv").document_id
+        )
         self.jobs.append(job)
         return job
 
@@ -818,7 +821,12 @@ class FakeGeminiModule:
         class GeminiEngine(ScriptedReader):
             @classmethod
             def from_settings(
-                cls, settings: Settings, *, pool: RapidOcrPool, db: Database | None = None
+                cls,
+                settings: Settings,
+                *,
+                pool: RapidOcrPool,
+                db: Database | None = None,
+                mistral: object = None,  # Changed on purpose (#473): the Mistral client, when set up
             ) -> ScriptedReader:
                 outer.built.append(pool)
                 return cls({})

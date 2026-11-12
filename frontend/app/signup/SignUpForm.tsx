@@ -6,10 +6,12 @@
 // hydrated and while busy, the password masked again on submit, and typed
 // values kept after an error. Signed up, the new admin sets up two-step sign-in
 // (every admin must have it, 16 Oct 2026: RequiredEnrol), then the browser goes
-// to /admin.
+// to /admin. With email on (#457) the server sends a confirm link instead, and the
+// form says to check the email (focus moves to its heading): the organisation then waits for
+// approval.
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { flushSync } from "react-dom";
 import { PasswordField } from "@/components/ui/PasswordField";
@@ -18,6 +20,7 @@ import { signUp, signUpOpen } from "@/lib/api";
 import { leavePage } from "@/lib/sessionChannel";
 import type { TwoStepSetup } from "@/lib/types";
 import { RequiredEnrol } from "../login/EnrolStep";
+import { ResendConfirm } from "../login/ResendConfirm";
 import login from "../login/login.module.css";
 import {
   MAX_EMAIL,
@@ -25,9 +28,11 @@ import {
   MAX_ORGANISATION,
   PASSWORD_HINT,
   SIGN_UP_OFF,
+  checkEmail,
   firstInvalidSignUp,
   signUpBody,
   signUpError,
+  signUpConfirming,
   signUpFieldError,
   validateSignUp,
 } from "./signUp";
@@ -60,9 +65,12 @@ export function SignUpForm() {
   const [busy, setBusy] = useState(false);
   // Signed up: the two-step set-up the server sent (no session before the first code).
   const [enrol, setEnrol] = useState<TwoStepSetup | null>(null);
+  // Or, with email on, the confirm link went to the email, or could not be sent (#457).
+  const [confirming, setConfirming] = useState<{ sent: boolean } | null>(null);
   // N3 (QA 17 Oct): asked as SignUpLink does; switched off, no form is shown. No answer: the form stays.
   // null while asking, so the form never flashes before an "off" reply (CodeRabbit).
   const [off, setOff] = useState<boolean | null>(null);
+  const focusOnMount = useCallback((element: HTMLHeadingElement | null) => element?.focus(), []);
 
   useEffect(() => {
     let live = true;
@@ -105,12 +113,34 @@ export function SignUpForm() {
     setErrors(found);
     setBusy(true);
     try {
-      setEnrol(await signUp(signUpBody(input)));
+      const reply = await signUp(signUpBody(input));
+      if (signUpConfirming(reply)) setConfirming({ sent: reply.sent });
+      else setEnrol(reply);
       setBusy(false);
     } catch (caught) {
       setFailure(signUpError(caught));
       setBusy(false);
     }
+  }
+
+  if (confirming) {
+    const words = checkEmail(signUpBody(input).email, confirming.sent);
+    return (
+      <div className={login.form}>
+        <div className={login.intro}>
+          <h1 ref={focusOnMount} tabIndex={-1} className={login.title}>
+            {words.title}
+          </h1>
+          <p className={login.lead} role="status">
+            {words.text}
+          </p>
+        </div>
+        <ResendConfirm email={signUpBody(input).email} />
+        <p className={login.switch}>
+          <Link href="/login">Back to sign in</Link>
+        </p>
+      </div>
+    );
   }
 
   if (enrol) {
@@ -188,7 +218,7 @@ export function SignUpForm() {
 
       {textField("organisation", "Organisation name", MAX_ORGANISATION, "organization")}
       {textField("name", "Your name", MAX_NAME, "name")}
-      {textField("email", "Work e-mail", MAX_EMAIL, "username")}
+      {textField("email", "Work email", MAX_EMAIL, "username")}
 
       <PasswordField
         id={FIELD_IDS.password}

@@ -1,0 +1,10 @@
+# Runs kaagaz-disk.service 15 minutes after boot, then every hour.
+[Unit]
+Description=Kaagaz: check every hour whether the disk is nearly full
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=1h
+
+[Install]
+WantedBy=timers.target

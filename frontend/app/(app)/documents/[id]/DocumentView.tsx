@@ -72,6 +72,7 @@ import {
   splitAfterDrag,
   splitAfterKey,
   tabsThatFit,
+  viewsAsPdf,
 } from "@/components/viewer/viewer";
 import { CLEAN_COPY } from "@/components/viewer/clearCopy";
 import { ReadClearlyPanel } from "@/components/viewer/ReadClearlyPanel";
@@ -109,15 +110,24 @@ import { QUESTIONS_TEXT, QuestionsPanel } from "@/components/files/QuestionsPane
 import { FILES_TEXT } from "@/components/files/words";
 import { VersionBanner } from "@/components/versions/VersionBanner";
 import { VersionsPanel } from "@/components/versions/VersionsPanel";
+import { takeFlash } from "@/components/versions/flash";
 import { VERSION_TEXT } from "@/components/versions/words";
-import { documentActivity, getDocument, getDocumentSummary, getPageReadings } from "@/lib/api";
-import { formatDate, formatDateTime, statusChip, typeLabel } from "@/lib/format";
+import {
+  documentActivity,
+  getDocument,
+  getDocumentSummary,
+  getPageReadings,
+  lostConnection,
+  undoVersionLink,
+} from "@/lib/api";
+import { fileTypeLabel, formatDate, formatDateTime, statusChip } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
 import { progressSignature } from "@/lib/poll";
 import { markReceived } from "@/lib/timeLeft";
 import { decodeRegion } from "@/lib/regions";
 import { useSession } from "@/lib/session";
 import { backFrom } from "@/lib/backLink";
+import { StillLoading } from "@/components/shell/StillLoading";
 import type {
   DocumentDetail,
   DocumentSummary,
@@ -193,6 +203,20 @@ export function DocumentView({
   const [readAgainKey, setReadAgainKey] = useState(0); // Read again picked from the menu: its question
   const [announcement, setAnnouncement] = useState("");
   const [toast, setToast] = useState<string | null>(null); // "Owner saved.", "Download started."
+  // #521: Undo in the toast after a version choice or Make it a separate file.
+  const [toastUndo, setToastUndo] = useState<(() => Promise<unknown>) | null>(null);
+  // #521: the words of a choice made on the compare screen, shown here once.
+  useEffect(() => {
+    // After the first paint (the store is the browser's), once.
+    const timer = setTimeout(() => {
+      const flash = takeFlash(documentId);
+      if (flash === null) return;
+      const linked = flash.undoLinkOf;
+      setToast(flash.message);
+      setToastUndo(() => (linked ? () => undoVersionLink(linked) : null));
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [documentId]);
   const [moreOpen, setMoreOpen] = useState(false); // the status line's More details
   const viewerRef = useRef<HTMLElement>(null);
   // Set when a poll sees reading end: the next detail says what was found ("again": after Read again).
@@ -256,9 +280,13 @@ export function DocumentView({
 
   // #453: counts the changes made here (a value verified or saved on the summary card). A reply
   // asked for before one would put the old value back, so it is dropped and asked for again.
+  // Issue 468: a document already shown stays when asking again fails while the browser is
+  // offline (as the documents list does); it is asked for again once back online. Online, any
+  // failure (a timeout, Wi-Fi with no internet) shows the error with Try again.
   const changes = useRef(0);
   useEffect(() => {
     let cancelled = false;
+    let onOnline: (() => void) | null = null;
     const asked = changes.current;
     getDocument(documentId)
       .then((detail) => {
@@ -275,10 +303,18 @@ export function DocumentView({
       .catch((error: unknown) => {
         if (cancelled) return;
         if (asked !== changes.current) return setReloads((n) => n + 1);
-        setLoaded({ attempt, error: loadFailure(error) });
+        const lost = lostConnection(error) && navigator.onLine === false;
+        setLoaded((shown) =>
+          lost && shown && "detail" in shown && shown.attempt === attempt ? shown : { attempt, error: loadFailure(error) },
+        );
+        if (lost) {
+          onOnline = () => setReloads((n) => n + 1);
+          window.addEventListener("online", onOnline, { once: true });
+        }
       });
     return () => {
       cancelled = true;
+      if (onOnline) window.removeEventListener("online", onOnline);
       poll.stop();
     };
   }, [poll, documentId, attempt, reloads]);
@@ -293,7 +329,7 @@ export function DocumentView({
       : initialSelection(shown, pageParam, regionParam);
   // #454: a PDF scrolls through all its pages, so the marks of the pages beside the page shown are
   // loaded too, and every loaded page's marks go to the PDF viewer; the panels keep the page's own.
-  const scroll = shown?.detected_type === "pdf" ? shown.pages.map((p) => p.page_no) : [];
+  const scroll = shown && viewsAsPdf(shown.detected_type) ? shown.pages.map((p) => p.page_no) : [];
   const pageNo = selection ? selection.pageNo : null;
   const words = useViewerWords(documentId, pageNo, scroll);
   const stickyViewer = useMediaQuery(STICKY_VIEWER_QUERY);
@@ -310,6 +346,7 @@ export function DocumentView({
         <p className="visually-hidden" role="status">
           Loading the document…
         </p>
+        <StillLoading onRetry={() => setAttempt((n) => n + 1)} />
         <div className={`delayed ${styles.loading}`} aria-hidden="true">
           <span className={`skeleton ${styles.titleSkeleton}`} />
           <div className={styles.layout}>
@@ -418,7 +455,7 @@ export function DocumentView({
   // #454: a PDF scrolls through every page under one notice, so if any page has it, its room is
   // kept on all of them, hidden where it does not apply: it came and went with the page in view
   // and resized the viewer mid-scroll, which then set its scroll again.
-  const lowRoom = detail.detected_type === "pdf" ? (detail.pages.map(lowNote).find((note) => note !== null) ?? null) : null;
+  const lowRoom = viewsAsPdf(detail.detected_type) ? (detail.pages.map(lowNote).find((note) => note !== null) ?? null) : null;
   const pageFlags = page ? openFlags.filter((flag) => flag.page_no === page.page_no) : [];
   const pageMarks = page ? review.flags.filter((flag) => flag.page_no === page.page_no) : [];
   const toWord = (key: string) => {
@@ -478,7 +515,8 @@ export function DocumentView({
       : folder
         ? { href: libraryHref({ ...ALL_DOCUMENTS, folderId: folder.id }), name: folder.name }
         : { href: "/documents", name: "documents" });
-  const chip = statusChip(detail.status);
+  const chip = statusChip(detail.status, detail.detected_type);
+  const barSaysStatus = detail.status !== "rejected" && review.status !== null && review.status.status !== "ready";
   // Trash means deleted: no download from there, only Restore (the Trash view).
   const download = detail.deleted_at === null ? downloadHref(detail) : null;
   const position = versionPosition(detail);
@@ -496,8 +534,9 @@ export function DocumentView({
   const highlightNote = highlighted
     ? `Highlighted: ${fieldText(highlighted.field)}${fromLink ? FROM_LINK : ""}`
     : undefined;
-  const reloadWith = (message: string) => {
+  const reloadWith = (message: string, undo?: () => Promise<unknown>) => {
     setToast(message); // its own live region reads it out
+    setToastUndo(() => undo ?? null);
     setReloads((n) => n + 1);
   };
 
@@ -506,7 +545,22 @@ export function DocumentView({
       <p className="visually-hidden" aria-live="polite">
         {announcement}
       </p>
-      <Toast message={toast} onClose={() => setToast(null)} />
+      <Toast
+        message={toast}
+        onUndo={
+          toastUndo
+            ? () =>
+                void toastUndo().then(
+                  () => reloadWith(VERSION_TEXT.reverted),
+                  () => setToast("It could not be undone. Check your connection, then try again."),
+                )
+            : undefined
+        }
+        onClose={() => {
+          setToast(null);
+          setToastUndo(null);
+        }}
+      />
       <div ref={layoutRef} className={styles.layout} style={{ "--split": `${split}%` } as CSSProperties}>
         <section ref={viewerRef} id="document-page" className={styles.viewer} aria-label="Page">
           {(lowResolution ?? lowRoom) && (
@@ -517,7 +571,7 @@ export function DocumentView({
           )}
           {/* SoW 19 Oct 2026: a PDF in extend-hq/ui's viewer, every page in one scroll; photos
               and sheets keep PageViewer. */}
-          {page && detail.detected_type === "pdf" ? (
+          {page && viewsAsPdf(detail.detected_type) ? (
             <div className={styles.pdfPane}>
               {/* #246 A8: a throw in the viewer shows in this pane only, not the whole screen. */}
               <ViewerBoundary key={detail.id} download={download}>
@@ -540,6 +594,7 @@ export function DocumentView({
                   onFlag={pressFlag}
                   wordBoxes={wordBoxes}
                   wordHits={wordHits}
+                  role={me.user.role}
                 />
               </ViewerBoundary>
             </div>
@@ -563,6 +618,7 @@ export function DocumentView({
               onFlag={pressFlag}
               wordBoxes={wordBoxes}
               wordHits={wordHits}
+              role={me.user.role}
             />
           ) : (
             <p className={styles.noPages}>No pages to show yet.</p>
@@ -586,7 +642,9 @@ export function DocumentView({
                 <KIcon name={STATUS_ICONS[chip.tone]} size="sm" />
                 {chip.text}
               </span>
-              {detail.status !== "ready" && <span className={styles.meta}>{detail.status_message}</span>}
+              {/* #549: said once. The status bar says it while its own status isn't ready; here otherwise
+                  (refused: no bar; still loading or failed to load; a Read again the bar hasn't caught up with). */}
+              {detail.status !== "ready" && !barSaysStatus && <span className={styles.meta}>{detail.status_message}</span>}
               {detail.status === "ready" && detail.understanding === true && <span className={styles.meta}>{UNDERSTANDING_TEXT}</span>}
               <TimeLeft document={detail} />
               {/* File management P1: the label, quiet, with a lock when it is kept close. */}
@@ -627,6 +685,7 @@ export function DocumentView({
               active={selection?.region ?? null}
               onShow={showSpot}
               reviewer={canReview(me.user.role) && detail.deleted_at === null}
+              userId={me.user.id}
               onResolved={(value, message) => {
                 // #453: the reply's value in place at once, never undone by an older reply; the
                 // words asked for again (a flagged value is one of them); said aloud.
@@ -643,6 +702,7 @@ export function DocumentView({
                 documentId={detail.id}
                 review={review}
                 scanning={detail.status_message}
+                scanningIcon={STATUS_ICONS[chip.tone]}
                 reviewing={reviewing}
                 reviewRef={reviewButton}
                 onReview={() => startReview()}
@@ -659,7 +719,7 @@ export function DocumentView({
             )}
             <div id={DETAILS_ID} className={styles.status} hidden={!moreOpen && detail.status !== "rejected"}>
               <span className={styles.meta}>
-                {typeLabel(detail.detected_type)}
+                {fileTypeLabel(detail.detected_type, detail.display_name)}
                 {/* The count line after it starts with the pages: said once ("PDF · 3 pages 3 pages · 180 words", QA pass, 25 Oct 2026). */}
                 {!review.status?.summary && <span className="mono">{pagesText}</span>}
               </span>
@@ -851,6 +911,7 @@ export function DocumentView({
                   documentId={detail.id}
                   active={selection?.region ?? null}
                   onShow={showLine}
+                  canEdit={canReview(me.user.role) && detail.deleted_at === null}
                 />
               ) : shownTab === "questions" ? (
                 <QuestionsPanel documentId={detail.id} />

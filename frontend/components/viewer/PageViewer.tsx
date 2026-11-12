@@ -25,6 +25,9 @@
 // flagged for review (scan review UX rules, section 2) are a third layer: each a button
 // with its band's underline and glyph ("?" Check, "!" Review) and its words as its name.
 // The lines holding your words (package H, YourWords.tsx) are drawn under the spot.
+// #523: marks point, never hide the text. The word marks and word flags follow a "Show words to
+// check" switch (on at first for a reviewer or an admin), over WORD_MARK_CAP on a page they give way
+// to a chip that shows them, and one far taller than a word is never drawn (wordMarkView).
 
 import dynamic from "next/dynamic";
 import Image from "next/image";
@@ -40,8 +43,21 @@ import { pageImageUrl } from "@/lib/api";
 import { FADE_IN, MOTION_MS, play } from "@/lib/motion";
 import { boxToPixels, cropRect, framedCropView, pageAspect, regionsOnPage } from "@/lib/regions";
 import type { BoxRegion, CropView, FractionRect } from "@/lib/regions";
-import type { DocumentSummary, PageSummary, ReadingMark, Region, WordFlag } from "@/lib/types";
-import { MARK_WORDS, legend, markChecked, markName, markRect, marksOnPage, showByDefault } from "./readingMarks";
+import type { DocumentSummary, PageSummary, ReadingMark, Region, Role, WordFlag } from "@/lib/types";
+import {
+  MARK_WORDS,
+  focusFirstWord,
+  isWordMark,
+  legend,
+  markChecked,
+  markName,
+  markRect,
+  marksOnPage,
+  showByDefault,
+  showWordsByDefault,
+  wordMarkView,
+  wordsChipText,
+} from "./readingMarks";
 import { SheetGrid } from "./SheetGrid";
 import { useObservedBox } from "./useObservedBox";
 import type { ViewRect } from "./canvasPlan";
@@ -102,6 +118,8 @@ export interface PageViewerProps {
   wordBoxes?: Region[];
   /** For each of wordBoxes, its word (24 Oct 2026): the colour it is drawn in. */
   wordHits?: readonly number[];
+  /** #523: the viewer's role, for "Show words to check" at first (on unless a member). */
+  role?: Role;
 }
 
 export function PageViewer({
@@ -127,6 +145,7 @@ export function PageViewer({
   cropMaxHeight = CROP_MAX_HEIGHT,
   wordBoxes = [],
   wordHits = [],
+  role,
 }: PageViewerProps) {
   const isCrop = crop !== undefined;
   const { ref: measureRef, box, near } = useObservedBox(isCrop);
@@ -161,6 +180,8 @@ export function PageViewer({
   const legendId = useId();
   // "Show reading problems", chosen on this page; until then, on for a page with problems.
   const [problemsChoice, setProblemsChoice] = useState<{ key: string; on: boolean } | null>(null);
+  const [showWords, setShowWords] = useState(() => showWordsByDefault(role));
+  const [crowdedOpen, setCrowdedOpen] = useState<string | null>(null); // the crowded page whose chip was pressed
 
   const pdfFailed = pdfFailedFor === pageKey;
   const imageFailed = imageFailedFor === pageKey;
@@ -183,6 +204,7 @@ export function PageViewer({
   const marksKey = `${document.id}:${page.page_no}`;
   const showProblems =
     problemsChoice && problemsChoice.key === marksKey ? problemsChoice.on : showByDefault(page);
+  const words = wordMarkView(problems, showWords, crowdedOpen === marksKey, 1 / aspect);
   const spot = isCrop ? undefined : boxes[0];
   const spotKey = spot ? `${marksKey}:${spot.box.join(",")}` : null;
   let spotZoom = 1;
@@ -232,6 +254,14 @@ export function PageViewer({
   }, [spotKey, zoom, box, fill]);
 
   // A new page with no spot to show starts at its top-left, even zoomed in.
+  // #523: the chip pressed, focus goes to the first word mark it showed, not to the page's body.
+  const focusWords = useRef(false);
+  useEffect(() => {
+    if (!focusWords.current) return;
+    focusWords.current = false;
+    focusFirstWord(stageRef.current);
+  }, [crowdedOpen]);
+
   const toPageStart = useEffectEvent(() => {
     if (!spotKey) frameRef.current?.scrollTo(0, 0);
   });
@@ -411,6 +441,7 @@ export function PageViewer({
         ? null
         : flags.map((flag) => {
             if (flag.region.kind !== "box" || flag.page_no !== page.page_no) return null;
+            if (flag.kind === "mark" && flag.word_key !== activeFlag && !words.drawn(flag.region)) return null;
             const px = markerRect(flag.region.box, width, height);
             const name = markLabel(flag);
             return (
@@ -432,6 +463,7 @@ export function PageViewer({
       {crop || !showProblems
         ? null
         : problems.map((mark, index) => {
+            if (isWordMark(mark) && !words.drawn(mark.region)) return null;
             const px = markRect(mark, width, height);
             if (!px) return null;
             const checked = markChecked(mark, flags);
@@ -442,6 +474,7 @@ export function PageViewer({
                 type="button"
                 className={styles.problem}
                 data-quality={mark.quality}
+                data-word-mark={isWordMark(mark) ? "" : undefined}
                 data-state={checked ? "checked" : undefined}
                 data-hot={hotMark === index ? "true" : undefined}
                 aria-label={name}
@@ -657,8 +690,36 @@ export function PageViewer({
               </span>
             </span>
           ) : null}
+          {words.total > 0 && canZoom ? (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={showWords}
+              className={`btn btn-quiet ${styles.wordsSwitch}`}
+              aria-label="Show words to check"
+              onClick={() => setShowWords((on) => !on)}
+            >
+              <Icon name="eye-alert" />
+              <span className="narrow-hide">Words to check</span>
+            </button>
+          ) : null}
           {tools}
         </div>
+      ) : null}
+      {words.capped && canZoom ? (
+        <p className={styles.note}>
+          <button
+            type="button"
+            className={styles.wordsChip}
+            onClick={() => {
+              focusWords.current = true;
+              setCrowdedOpen(marksKey);
+            }}
+          >
+            {wordsChipText(words.total)}
+            <span className="visually-hidden">: show their marks</span>
+          </button>
+        </p>
       ) : null}
       {belowToolbar}
       {body}

@@ -5,11 +5,15 @@
 // button named for what it marks; its hit area is at least 24 x 24 px (WCAG 2.5.8),
 // and the Attention panel lists the same marks. The text is shown as read (visibleText).
 // #431: a mark whose flagged words a person fixed or confirmed turns green (markChecked).
+// #523: marks point, never hide the text. An unsure word is a thin dashed underline; the word
+// marks (unsure, couldn't read) follow "Show words to check" (on at first for reviewers and
+// admins), a page with more than WORD_MARK_CAP of them shows a chip instead, and a word mark far
+// taller than a word (a strip the height of a paragraph, stored before the fix) is never drawn.
 
 import { settled } from "@/components/review/wordReview";
 import { markerRect } from "@/components/words/spots";
 import type { PixelRect } from "@/lib/regions";
-import type { PageSummary, ReadingMark, WordFlag } from "@/lib/types";
+import type { PageSummary, ReadingMark, Region, Role, WordFlag } from "@/lib/types";
 import { visibleText } from "./scanned";
 import { sameRegion } from "./selection";
 
@@ -18,7 +22,7 @@ export type MarkQuality = ReadingMark["quality"];
 export const MIN_HIT_PX = 24;
 
 export const MARK_WORDS: Record<MarkQuality, { name: string; legend: string }> = {
-  unsure: { name: "Unsure word", legend: "Unsure word (dashed)" },
+  unsure: { name: "Unsure word", legend: "Unsure word (dashed underline)" },
   illegible: { name: "Hard to read", legend: "Hard to read (double edge)" },
   unpinned: { name: "Spot not confirmed", legend: "Spot not confirmed (dotted)" },
 };
@@ -62,4 +66,89 @@ export function showByDefault(page: Pick<PageSummary, "read_quality">): boolean 
 /** Where a mark goes on a page drawn at width x height (markerRect: never tiny, kept on the page). */
 export function markRect(mark: ReadingMark, width: number, height: number): PixelRect | null {
   return mark.region.kind === "box" ? markerRect(mark.region.box, width, height) : null;
+}
+
+/** #523: more word marks than this on a page are not drawn; a chip says how many instead. */
+export const WORD_MARK_CAP = 40;
+/** #523: a word mark narrower than it is tall by this much (in pixels) is a strip ... */
+export const STRIP_RATIO = 2;
+/** ... and is not drawn when taller than this many times the page's usual word height ... */
+export const TALL_TIMES = 2.5;
+/** ... or, with no usual word on the page to go by, than this share of the page's height. */
+export const TALL_SHARE = 0.06;
+
+/** A mark on one word (PRD 5 F3): unsure, or couldn't read. A spot not confirmed is a line's. */
+export function isWordMark(mark: Pick<ReadingMark, "quality">): boolean {
+  return mark.quality === "unsure" || mark.quality === "illegible";
+}
+
+/** "Show words to check" starts on for a reviewer or an admin, off for a member (#523). A viewer
+ * told no role (a crop, a test) keeps the marks it drew before. */
+export function showWordsByDefault(role: Role | undefined): boolean {
+  return role !== "member";
+}
+
+export function wordsChipText(count: number): string {
+  return `${count} words to check on this page`;
+}
+
+function heightOf(region: Region): number | null {
+  return region.kind === "box" ? region.box[3] - region.box[1] : null;
+}
+
+/** A stored strip's shape (#523): taller than STRIP_RATIO times its width, in pixels of a page
+ * `aspect` (its height over its width) times as tall as it is wide. A word is wider than tall. */
+function stripShaped(region: Region, aspect: number): boolean {
+  if (region.kind !== "box") return false;
+  const [x0, y0, x1, y1] = region.box;
+  return (y1 - y0) * aspect > STRIP_RATIO * (x1 - x0);
+}
+
+/**
+ * How tall a strip-shaped word mark may be and still be drawn, as a share of the page's height
+ * (#523): TALL_TIMES the median height of the page's word-shaped marks, or TALL_SHARE when it has
+ * none. Only the shape names a strip, so a close-up page of big writing keeps its marks, and a
+ * page of stored strips never raises its own limit. O(n log n).
+ */
+export function tallLimit(marks: readonly ReadingMark[], aspect: number): number {
+  const heights = marks
+    .filter((mark) => isWordMark(mark) && !stripShaped(mark.region, aspect))
+    .map((mark) => heightOf(mark.region))
+    .filter((height): height is number => height !== null)
+    .sort((a, b) => a - b);
+  if (heights.length === 0) return TALL_SHARE;
+  const half = Math.floor(heights.length / 2);
+  const median = heights.length % 2 ? heights[half]! : (heights[half - 1]! + heights[half]!) / 2;
+  return TALL_TIMES * median;
+}
+
+export interface WordMarkView {
+  /** The page's word marks, drawn or not: all of them are still listed. */
+  total: number;
+  /** Over WORD_MARK_CAP while shown and not opened: none drawn, a chip instead. */
+  capped: boolean;
+  /** Whether a word mark (or a word flag) at this region is drawn. */
+  drawn: (region: Region) => boolean;
+}
+
+/** Which of a page's word marks are drawn (#523): none while "Show words to check" is off (`on`),
+ * none over WORD_MARK_CAP until the chip is pressed (`opened`), and never a strip-shaped one over
+ * tallLimit. `aspect` is the page's height over its width. */
+export function wordMarkView(
+  marks: readonly ReadingMark[],
+  on: boolean,
+  opened: boolean,
+  aspect: number,
+): WordMarkView {
+  const words = marks.filter(isWordMark);
+  const limit = tallLimit(words, aspect);
+  const capped = on && !opened && words.length > WORD_MARK_CAP;
+  const strip = (region: Region) => stripShaped(region, aspect) && (heightOf(region) ?? 0) > limit;
+  return { total: words.length, capped, drawn: (region) => on && !capped && !strip(region) };
+}
+
+/** After the chip shows a crowded page's marks (#523): focus goes to the first one drawn
+ * (`data-word-mark`), not back to the page's body. */
+export function focusFirstWord(root: ParentNode | null | undefined): void {
+  root?.querySelector<HTMLElement>("[data-word-mark]")?.focus();
 }

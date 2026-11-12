@@ -4,6 +4,8 @@
 Description=Kaagaz: nightly database dump
 Wants=docker.service
 After=docker.service
+# A failed dump emails OPS_ALERT_EMAIL (kaagaz-alert@.service, A22).
+OnFailure=kaagaz-alert@%n.service
 
 [Service]
 Type=oneshot

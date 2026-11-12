@@ -57,7 +57,7 @@ from tests.test_document_stories_db import put
 from tests.test_embed_missing_db import CURRENT, SameVector, drain, tags
 from tests.test_indexing_db import FakeModel
 from tests.test_migration_0004_db import _current, _head
-from tests.test_pipeline import PIPELINE_POLICY, real_socket
+from tests.test_pipeline import CSV_NAME, PIPELINE_POLICY, real_socket
 from tests.test_pipeline_db import CSV, one
 from tests.test_search_db import add_document, add_pieces
 
@@ -138,7 +138,16 @@ def test_0014_up_down_up(fresh: tuple[str, Database]) -> None:
     }
     assert all(column[3] for column in columns.values())  # each commented (0007's rule)
     # Changed on purpose (#239, 27 Oct 2026): 0025 (auto-filing) lets the app update autofile_on.
-    assert _app_may_update(database) == {"max_upload_mb", "autofile_on"}
+    # Changed on purpose (#457 phase 1): 0062, the admin's auto-approval switch.
+    # Changed on purpose (#507): 0074, the admin's Google rules (never google_signin, the operator's).
+    assert _app_may_update(database) == {
+        "max_upload_mb",
+        "autofile_on",
+        "auto_approve_connections",
+        "google_roles",
+        "google_only_roles",
+        "google_domains",
+    }
 
     m0002._downgrade(url, "0013")
     assert m0002._schema(database) == at_0013
@@ -264,8 +273,8 @@ def test_the_worker_fails_a_disabled_customers_job_and_reads_bs(db: Database) ->
         store=PgPipelineStore(db),
         customer_active=documents.customer_active,
     )
-    a_doc = upload.accept(a, io.BytesIO(CSV)).document_id
-    b_doc = upload.accept(b, io.BytesIO(CSV)).document_id
+    a_doc = upload.accept(a, io.BytesIO(CSV), display_name=CSV_NAME).document_id
+    b_doc = upload.accept(b, io.BytesIO(CSV), display_name=CSV_NAME).document_id
     _cli(db, "disable-customer", a)
 
     with pytest.raises(JobFailed) as failed:
@@ -348,6 +357,41 @@ def test_the_cli_refuses_a_customer_being_deleted_and_says_so(
         assert _cli(db, command, customer) == (2, "")
         assert "being deleted; nothing was changed" in capsys.readouterr().err
     assert _status(db, customer) == ("deleting", NOW, NOW)
+    assert _audit(db, customer) == []
+
+
+def test_the_cli_never_enables_a_sign_up_waiting_for_approval(
+    db: Database, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A pending sign-up (0061) is approved in the operator console, after its admin proved
+    their e-mail: enable-customer is no way round that."""
+    customer, _ = new_customer(db)
+    with db.engine.begin() as conn:
+        conn.execute(text("UPDATE customers SET status = 'pending' WHERE id = :c"), {"c": customer})
+
+    assert _cli(db, "enable-customer", customer) == (2, "")
+    error = capsys.readouterr().err
+    assert "waiting for approval" in error and "Approve" in error and "operator console" in error
+    assert _status(db, customer) == ("pending", None, None)
+    assert _audit(db, customer) == []
+
+
+def test_a_sign_up_waiting_for_approval_can_never_be_disabled_either(
+    db: Database, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Disable then Enable would route round Approve and its confirmed-email rule (#457 review):
+    a pending organisation can do nothing, and a stale one is released (0063)."""
+    customer, _ = new_customer(db)
+    with db.engine.begin() as conn:
+        conn.execute(text("UPDATE customers SET status = 'pending' WHERE id = :c"), {"c": customer})
+    with db.engine.begin() as conn:
+        assert customers.set_status(conn, customer, customers.DISABLED, now=NOW) == customers.PENDING
+    assert _status(db, customer) == ("pending", None, None)
+
+    assert _cli(db, "disable-customer", customer) == (2, "")
+    error = capsys.readouterr().err
+    assert "waiting for approval" in error and "Approve" in error
+    assert _status(db, customer) == ("pending", None, None)
     assert _audit(db, customer) == []
 
 

@@ -67,6 +67,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from kaagaz.ai.openrouter import Probe
+from kaagaz.db import models
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.jobs.fair_share import SweepLock, no_lock
@@ -130,6 +131,9 @@ class CatalogModel:
     expires_on: date | None
     eligible: bool
     chat_eligible: bool = False  # features 25-27, C11: may draft answers
+    # #488 review (R3): pricing.request and pricing.image, dollars a call; None: not known.
+    price_request_usd: float | None = None
+    price_image_usd: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +170,20 @@ def _price_per_m(value: object) -> float | None:
         return None
     per_m = round(per_token * TOKENS_PER_M, 6)
     return per_m if math.isfinite(per_m) and 0 <= per_m <= MAX_PRICE_PER_M else None
+
+
+def _price_per_call(value: object) -> float | None:
+    """OpenRouter's USD a request or an image (a string or a number), or None when it is not a
+    finite number at least 0: not known. The caller passes 0 for one left out of a model's
+    pricing: OpenRouter leaves out a charge it doesn't make (#488, 4 Nov 2026: every Gemini on
+    the test server had no pricing.request, so none could read with Ultra low cost)."""
+    if isinstance(value, bool) or not isinstance(value, str | int | float):
+        return None
+    try:
+        usd = float(value)
+    except ValueError:
+        return None
+    return usd if math.isfinite(usd) and usd >= 0 else None
 
 
 def _name(value: object, model_id: str) -> str:
@@ -241,6 +259,8 @@ def candidate(item: object, *, efforts: frozenset[str], today: date) -> CatalogM
         expires_on=expires_on,
         eligible=scan,
         chat_eligible=chat,
+        price_request_usd=_price_per_call(pricing.get("request", 0)),  # left out: not charged
+        price_image_usd=_price_per_call(pricing.get("image", 0)),
     )
 
 
@@ -362,6 +382,8 @@ def fetch(
                 model.expires_on,
                 model.eligible and allowed,
                 model.chat_eligible and allowed,
+                model.price_request_usd,
+                model.price_image_usd,
             )
         )
     return Fetched(models, tuple(skipped))
@@ -369,11 +391,12 @@ def fetch(
 
 _UPSERT = text(
     "INSERT INTO model_catalog (id, name, price_in_usd_per_m, price_out_usd_per_m, providers, efforts,"
-    " expires_on, eligible, chat_eligible, seen_at)"
+    " expires_on, eligible, chat_eligible, price_request_usd, price_image_usd, seen_at)"
     " VALUES (:id, :name, :price_in, :price_out, CAST(:providers AS text[]), CAST(:efforts AS text[]),"
-    " :expires_on, :eligible, :chat_eligible, now())"
+    " :expires_on, :eligible, :chat_eligible, :price_request, :price_image, now())"
     " ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, price_in_usd_per_m = EXCLUDED.price_in_usd_per_m,"
-    " price_out_usd_per_m = EXCLUDED.price_out_usd_per_m, providers = EXCLUDED.providers,"
+    " price_out_usd_per_m = EXCLUDED.price_out_usd_per_m, price_request_usd = EXCLUDED.price_request_usd,"
+    " price_image_usd = EXCLUDED.price_image_usd, providers = EXCLUDED.providers,"
     " efforts = EXCLUDED.efforts, expires_on = EXCLUDED.expires_on, eligible = EXCLUDED.eligible,"
     " chat_eligible = EXCLUDED.chat_eligible, seen_at = EXCLUDED.seen_at"
 )
@@ -401,6 +424,8 @@ def save(db: Database, models: Sequence[CatalogModel], *, untouched: Sequence[st
             "expires_on": model.expires_on,
             "eligible": model.eligible,
             "chat_eligible": model.chat_eligible,
+            "price_request": model.price_request_usd,
+            "price_image": model.price_image_usd,
         }
         for model in models
     ]
@@ -411,7 +436,8 @@ def save(db: Database, models: Sequence[CatalogModel], *, untouched: Sequence[st
 
 
 def valid(model: CatalogModel) -> bool:
-    """``model`` fits 0023's model_catalog CHECKs: its id, name, prices, providers and efforts."""
+    """``model`` fits 0023's model_catalog CHECKs: its id, name, prices, providers and efforts
+    (0070's prices a call: not known, or at least 0, as ``_price_per_call`` makes them)."""
     return (
         valid_model_id(model.id)
         and 1 <= len(model.name) <= MAX_NAME
@@ -420,6 +446,10 @@ def valid(model: CatalogModel) -> bool:
         )
         and _valid_list(model.providers, _slug) == model.providers
         and _valid_list(model.efforts, _effort) == model.efforts
+        and all(
+            price is None or (math.isfinite(price) and price >= 0)
+            for price in (model.price_request_usd, model.price_image_usd)
+        )
     )
 
 
@@ -440,7 +470,11 @@ def refresh(
     )
 
 
-_ENV_MODELS = text("SELECT id, eligible, chat_eligible FROM model_catalog WHERE id = ANY(:ids)")
+_CATALOGUE_HELD = text("SELECT EXISTS (SELECT 1 FROM model_catalog)")
+_ENV_MODELS = text(
+    "SELECT id, eligible, chat_eligible, price_in_usd_per_m, price_out_usd_per_m, price_request_usd,"
+    " price_image_usd, efforts FROM model_catalog WHERE id = ANY(:ids)"
+)
 
 
 def check_env_models(db: Database, settings: Settings) -> list[tuple[str, str, str]]:
@@ -449,14 +483,21 @@ def check_env_models(db: Database, settings: Settings) -> list[tuple[str, str, s
     read scans, and MODEL_CHAT to answer while MODEL_ENABLED. Each is logged at error with its
     model id, so a withdrawn model is named once a refresh sees it, not found 404 by 404.
     After each refresh and at worker start; a database error is logged by its type and checks
-    nothing (never a failed refresh or a worker that won't start). One statement."""
-    wanted = [("OCR_MODEL", settings.ocr_model, 1)]
+    nothing (never a failed refresh or a worker that won't start). Review of #564: before the
+    first refresh (no catalogue row at all) nothing is checked, logged once at info, never an
+    ERROR from every replica at start; while OCR_ULTRA_LOW_COST is on, OCR_MODEL (its lead unless a
+    priced Gemini default is chosen) that can't lead it (``models.ulc_why``) is ``ulc_not_ready``,
+    logged the same way (start-up goes on). Two statements."""
+    wanted = [("OCR_MODEL", settings.ocr_model, "eligible")]
     if settings.model_enabled:
-        wanted.append(("MODEL_CHAT", settings.model_chat, 2))
+        wanted.append(("MODEL_CHAT", settings.model_chat, "chat_eligible"))
     try:
         with unavailable(), db.system() as conn:
+            if not conn.execute(_CATALOGUE_HELD).scalar_one():
+                logger.info("env models not checked", extra={"code": "catalogue_empty"})
+                return []
             ids = [model for _, model, _ in wanted]
-            rows = {row[0]: row for row in conn.execute(_ENV_MODELS, {"ids": ids})}
+            rows = {row["id"]: row for row in conn.execute(_ENV_MODELS, {"ids": ids}).mappings()}
     except (SQLAlchemyError, BackendUnavailable) as error:
         logger.warning("env models not checked", extra={"code": type(error).__name__})
         return []
@@ -465,8 +506,12 @@ def check_env_models(db: Database, settings: Settings) -> list[tuple[str, str, s
         row = rows.get(model)
         code = "missing" if row is None else None if row[column] else "not_eligible"
         if code is not None:
-            logger.error("env model not usable", extra={"code": code, "model": model, "where": setting})
             problems.append((setting, model, code))
+    ocr = rows.get(settings.ocr_model)
+    if settings.ocr_ultra_low_cost and ocr is not None and models.ulc_why(ocr) is not None:
+        problems.append(("OCR_ULTRA_LOW_COST", settings.ocr_model, "ulc_not_ready"))
+    for setting, model, code in problems:
+        logger.error("env model not usable", extra={"code": code, "model": model, "where": setting})
     return problems
 
 

@@ -1,10 +1,12 @@
 """GET /api/health: can the API reach the database, storage and the queue?
 
 Why: the load balancer and ``docker compose`` need one call that says whether
-this instance can serve. Each check reports ``ok`` or ``error`` only, never why,
-and any error makes the reply 503.
+this instance can serve: ``{"status": "ok"}``, or ``{"status": "degraded"}`` with a 503 when
+any check fails. Anyone may ask, so it says nothing more (A5, 7 Nov 2026): which part failed
+(``components``, each ``ok`` or ``error``, never why) and the running commit are on the
+operator's Health page (routers/operator_activity.py).
 
-``commit`` (#246 O1) is the commit this image was built from: the deployer builds each
+``running_commit`` (#246 O1) is the commit this image was built from: the deployer builds each
 release with ``KAAGAZ_TAG=<commit>``, which compose passes to backend/Dockerfile as the
 KAAGAZ_COMMIT build argument. "local" for an image built by hand or on a laptop.
 """
@@ -35,15 +37,16 @@ def _check(ping: Callable[[], None]) -> str:
     return "ok"
 
 
-@router.get("/health")
-def health(context: Annotated[AppContext, Depends(get_context)]) -> JSONResponse:
-    checks = {
+def components(context: AppContext) -> dict[str, str]:
+    """Each part the API needs: ``ok`` or ``error``."""
+    return {
         "database": _check(context.db.ping),
         "storage": _check(context.storage.ping),
         "queue": _check(context.queue.ping),
     }
-    healthy = all(value == "ok" for value in checks.values())
-    return JSONResponse(
-        {"status": "ok" if healthy else "degraded", **checks, "commit": running_commit()},
-        status_code=200 if healthy else 503,
-    )
+
+
+@router.get("/health")
+def health(context: Annotated[AppContext, Depends(get_context)]) -> JSONResponse:
+    healthy = all(value == "ok" for value in components(context).values())
+    return JSONResponse({"status": "ok" if healthy else "degraded"}, status_code=200 if healthy else 503)

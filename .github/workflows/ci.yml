@@ -17,7 +17,7 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.12"
-  NODE_VERSION: "20"
+  NODE_VERSION: "24.22.2" # the same Node as frontend/Dockerfile (#477)
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -245,6 +245,11 @@ jobs:
 
       - name: Install
         run: npm ci
+
+      # The website's own libraries (not the build tools) with a known high or critical
+      # vulnerability fail the pull request (#481). npm's built-in audit: no new tool.
+      - name: Vulnerable libraries
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Lint
         run: npm run lint

@@ -7,9 +7,11 @@
 // UI audit (16 Oct 2026): the badge says why it needs review (R2); Remember starts
 // off (R4, no pre-ticked box); no second reading is one muted line (R5). In focus
 // mode (R3, `onSkip` given) the card takes the keys 1, 2, E, S and Enter.
+// Issue 468: the typed value is kept in this tab as a draft (lib/drafts.ts) until the value is
+// settled, so a session's end does not lose it. Remember is not kept: it always starts off (R4).
 
 import Link from "next/link";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { Tip } from "@/components/ui/Tip";
@@ -17,7 +19,9 @@ import { PageViewer } from "@/components/viewer/PageViewer";
 import { confidenceTip, fieldText, reasonText, voteText } from "@/components/viewer/labels";
 import { CONFIDENCE_NOTE, confidenceText, notSure, routeOrigin } from "@/components/viewer/scanned";
 import { useBackFrom, withFrom } from "@/lib/backLink";
+import { clearDraft, readDraft, saveDraftSoon } from "@/lib/drafts";
 import { pageLink } from "@/lib/regions";
+import { useSession } from "@/lib/session";
 import type { ReviewChoice, ReviewItem } from "@/lib/types";
 import { checkReasonsText, focusKeyAction, MAX_TYPED_LENGTH, reasonTag, sendResolve } from "./review";
 import styles from "./Review.module.css";
@@ -26,6 +30,9 @@ import styles from "./Review.module.css";
 export function reviewTitleId(valueId: string): string {
   return `review-${valueId}-title`;
 }
+
+/** The draft of one value's card (lib/drafts.ts). */
+export const reviewDraftKey = (valueId: string) => `review:${valueId}`;
 
 /** Where a key was pressed: in a text field, on a button, link or box, or elsewhere on the card. */
 function keyTarget(target: EventTarget): "typing" | "control" | "other" {
@@ -47,8 +54,17 @@ export function ReviewCard({
 }) {
   const { value } = item;
   const from = useBackFrom(); // the queue's address (reviewHref): the document's back link leads there (#436)
-  const [typed, setTyped] = useState("");
+  const userId = useSession().me.user.id;
+  const draftKey = reviewDraftKey(value.id);
+  // Cards show only once the queue has loaded in the browser, so the draft is read at once.
+  const [typed, setTyped] = useState(() => {
+    const kept = readDraft(userId, draftKey)?.typed;
+    return typeof kept === "string" ? kept : "";
+  });
   const [remember, setRemember] = useState(false);
+  useEffect(() => {
+    saveDraftSoon(userId, draftKey, typed.trim() ? { typed } : null);
+  }, [userId, draftKey, typed]);
   const typedRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -64,6 +80,7 @@ export function ReviewCard({
     setError(null);
     const done = await sendResolve(value.id, choice, typed, value.second_reading, remember);
     if (done.ok) {
+      clearDraft(userId, draftKey);
       onResolved(item, done.item);
       return;
     }

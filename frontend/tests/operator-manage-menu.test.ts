@@ -19,8 +19,17 @@ const row = view.slice(view.indexOf("function OrgRow("));
 describe("one Manage menu per organisation", () => {
   it("is the row's only action: no stacked buttons", () => {
     expect(row.match(/<ManageMenu\b/g)).toHaveLength(1);
-    expect(row).not.toContain("<button");
+    // Changed on purpose (#457 review): one visible Approve beside the menu, only on a waiting
+    // sign-up whose admin confirmed their email; no other button.
+    expect(row.match(/<button/g)).toHaveLength(1);
+    expect(row).toMatch(
+      /\{org\.status === "pending" && org\.admin_email_confirmed && \(\s*<button\s+type="button"\s+className="btn"\s+aria-label=\{`Approve \$\{org\.name\}`\}\s+onClick=\{\(\) => onChange\("approve"\)\}\s*>\s*Approve\s*<\/button>/,
+    );
     expect(view).not.toMatch(/rowActions|actionGroups/);
+  });
+
+  it("offers a waiting sign-up Approve only: it can't be disabled (#457 review)", () => {
+    expect(view).toContain('pending: [{ change: "approve", label: "Approve", description: MENU_HELP.approve }],');
   });
 
   it("names the organisation and says it opens a menu", () => {
@@ -44,10 +53,13 @@ describe("one Manage menu per organisation", () => {
     expect(row).toContain('{ label: "AI settings", description: MENU_HELP.ai, onSelect: onModels }');
     expect(row).toContain('{ label: "Request limits", description: MENU_HELP.limits, onSelect: onModelRates }');
     expect(row).toMatch(/org\.autofile_granted\s*\? \{ label: "Stop auto-filing"[^}]*\}\s*: \{ label: "Allow auto-filing"/);
-    expect(row).toContain("changes={CHANGES[org.status].map(");
+    // Changed on purpose (#457): Approve only once the admin's email is confirmed.
+    expect(row).toMatch(/changes=\{CHANGES\[org\.status\]\s*\.filter\(\(\{ change \}\) => change !== "approve" \|\| org\.admin_email_confirmed\)\s*\.map\(/);
     expect(menu).toMatch(/\{safe\.map\(entry\)\}\s*\{safe\.length > 0 && changes\.length > 0 && <div role="separator"/);
     expect(menu.indexOf('role="separator"')).toBeLessThan(menu.indexOf("{changes.map(entry)}"));
-    expect(row).not.toMatch(/two-step|twoStep/i);
+    // Changed on purpose (#481, 3 Nov 2026): 0035's two-step grant stays gone; only the super
+    // admin's "Two-step for admins" item (its own dialog) names two-step here.
+    expect(row.replace(/onTwoStep|MENU_HELP\.twoStep|"Two-step for admins"/g, "")).not.toMatch(/two-step|twoStep/i);
   });
 
   it("is a portal menu with a 1px border and no shadow, keyboard and outside-click safe", () => {

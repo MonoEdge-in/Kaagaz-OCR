@@ -168,3 +168,37 @@ def location_from_json(data: dict[str, Any]) -> Location:
         return CellLocation(int(data["page"]), int(data["row"]), int(data["column"]))
     x0, y0, x1, y1 = (float(value) for value in data["box"])
     return BoxLocation(int(data["page"]), x0, y0, x1, y1)
+
+
+# #523: a line break in a span's raw text. The Gemini reader may give a handwritten paragraph
+# as one entry; its raw text keeps the written lines' breaks (``text`` joins them with spaces).
+_LINE_BREAK = re.compile(r"\r\n|[\n\r\u2028\u2029]")
+
+
+def text_lines(raw: str) -> list[tuple[int, int]]:
+    """Where each written line of ``raw`` starts and ends in it, its edge spaces left out, in
+    order (#523): one band each. A blank line between two lines of text takes its own band
+    (empty, where it sits), as it takes its own room on the page; blank lines before the first
+    line of text or after the last are left out. One entry for text with no breaks. O(len(raw))."""
+    lines: list[tuple[int, int]] = []
+    start = 0
+    for found in [*_LINE_BREAK.finditer(raw), None]:
+        end = len(raw) if found is None else found.start()
+        part = raw[start:end]
+        if part.strip():
+            lines.append((start + len(part) - len(part.lstrip()), start + len(part.rstrip())))
+        elif lines:
+            lines.append((start, start))  # a blank line: kept only if text follows it (below)
+        if found is not None:
+            start = found.end()
+    while lines and lines[-1][0] == lines[-1][1]:
+        lines.pop()
+    return lines
+
+
+def line_band(box: BoxLocation, lines: int, first: int, last: int) -> BoxLocation:
+    """Lines ``first`` to ``last`` (from 0) of ``box`` cut into ``lines`` equal bands, at its
+    whole width (#523). Approximate, as a block's written lines are about evenly spaced."""
+    step = (box.y1 - box.y0) / lines
+    bottom = box.y1 if last + 1 >= lines else box.y0 + step * (last + 1)
+    return BoxLocation(box.page, box.x0, box.y0 + step * first, box.x1, bottom)

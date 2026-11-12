@@ -73,7 +73,8 @@ const NOW = Date.parse("2026-10-06T08:20:00Z");
 
 describe("operator sign-in", () => {
   it("needs the e-mail, the password and a 6-digit code", () => {
-    const none = { email: "Enter your e-mail address.", password: PASSWORD_MISSING, code: CODE_MISSING };
+    // Changed on purpose (#457 review): one spelling, "email" (the shared sign-in message).
+    const none = { email: "Enter your email address.", password: PASSWORD_MISSING, code: CODE_MISSING };
     expect(validateOperatorSignIn("", "", "")).toEqual(none);
     expect(validateOperatorSignIn("op@monoedge.in", "pw", "123 456")).toEqual({ email: null, password: null, code: null });
     expect(validateOperatorSignIn("op", "pw", "12345").email).toBe(EMAIL_INVALID);
@@ -312,6 +313,11 @@ describe("one organisation's admins", () => {
     const stepUp = (["disable", "enable", "unlock", "reset-2fa"] as const).map((c) => adminConfirm("o-1", admin, c).stepUp);
     expect(stepUp).toEqual([false, false, false, true]);
     expect(adminConfirm("o-1", admin, "reset-2fa").title).toBe("Reset two-step for Asha Rao?");
+    // QA U4 (4 Nov 2026): the reset clears the code and the admin sets up a new one at sign-in.
+    expect(adminConfirm("o-1", admin, "reset-2fa")).toMatchObject({
+      effect: "Their two-step code is cleared and they are signed out. They set up a new code the next time they sign in.",
+      done: "Two-step reset for Asha Rao.",
+    });
     expect(adminConfirm("o-1", admin, "unlock").focusId).toBe("admin-name-u-1"); // the focus after a change
   });
 

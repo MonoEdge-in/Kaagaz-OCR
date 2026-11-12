@@ -249,7 +249,7 @@ export function orgFlags(org: OrgInsight, reply: InsightsReply, now: Date): Flag
     const line = budgetLine({ ai_budget_usd: budget, spent_this_month_usd: spent, spent_part_unknown: month.unknownCalls > 0 });
     const { forecast } = month;
     if (spent > 0 && spent >= budget * ATTENTION.budgetAct) {
-      flags.push({ code: "budget_passed", severity: "act", text: `AI spend has reached its budget (${line}).` });
+      flags.push({ code: "budget_passed", severity: "act", text: `AI spend has reached its budget, so reading is paused until next month or until the budget is raised (${line}).` });
     } else if (spent > 0 && spent >= budget * ATTENTION.budgetCheck) {
       flags.push({ code: "budget_near", severity: "check", text: `AI spend is at ${percentOf(spent, budget)} of its budget (${line}).` });
     } else if (forecast.passDay !== null && forecast.usd !== null) {

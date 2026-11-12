@@ -1,4 +1,4 @@
-"""The folder upload limits the super admin sets (0061c, #484): the organisation's own, else the
+"""The folder upload limits the super admin sets (0071, #484): the organisation's own, else the
 platform's, else the server's default (50,000 files, 5 GB, 10,000 folders); each change with a
 fresh code and one platform_audit row holding the old and new numbers only.
 

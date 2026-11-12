@@ -1,79 +1,54 @@
-// An admin's own two-step sign-in, turned off or on from their Account menu (Tushar,
-// 30 Oct 2026), kept pure so vitest can prove it: who sees the item, on or off, the
-// dialog's words, and what to say when the server says no. With it off the admin signs
-// in with e-mail and password only, until they turn it on again. Members and reviewers
-// have no codes, so the item is not there for them. The code and set-up key rules are
-// app/login/twoStep.ts; the dialog is TwoStepDialog.tsx.
+// Account, Two-step sign-in (#457 phase 3), kept pure so vitest can prove it: which panel
+// shows and what it says. Anyone turns it on and off, an admin too (Tushar, 30 Oct 2026):
+// an admin's then stays off until they turn it on again, and they sign in with e-mail and
+// password only. The panel itself is TwoStepDialog.tsx.
 
-import { NETWORK_FAILURE, TOO_MANY_ATTEMPTS } from "@/app/login/signIn";
 import { ApiError } from "@/lib/api";
 import type { Me } from "@/lib/types";
-import { sessionScope } from "./gate";
+import { setPasswordError } from "./setPassword";
 
-export type TwoStepState = "on" | "off";
+export const OFF_TEXT =
+  "Turn it on and sign-in asks for your password and a 6-digit code from an authenticator app on your phone.";
+export const ON_TEXT = "Sign-in asks for your password and a 6-digit code from your authenticator app.";
+export const LOST_CODE = "New phone, or lost it? Your admin can reset your two-step code.";
+export const OFF_WARNING = "Anyone who learns your password can then sign in as you.";
+export const TURNED_ON = "Two-step sign-in is on.";
+export const TURNED_OFF = "Two-step sign-in is off. Your other devices are signed out.";
+// #481 (3 Nov 2026): the server's own words when it refuses (routers/auth.py TWO_STEP_REQUIRED).
+export const REQUIRED_TEXT = "Your organisation requires two-step sign-in for admins, so it stays on.";
+const SIGNED_OUT = "Your session has ended. Sign in again, then try again.";
+// The server's words for a wrong password, and a missing or wrong code (routers/auth.py).
+export const PASSWORD_NOT_RIGHT = "Your current password is not right.";
+const CODE_REFUSALS = [
+  "Enter the 6-digit code from your authenticator app.",
+  "That code is not right. Wait for the next code and try again.",
+];
 
-/** Deny by default, like gate.ts: only true is on. */
-export function twoStepState(me: Me): TwoStepState {
+/** The field a refusal belongs on (#457 review): a wrong password, or a missing or wrong code;
+ * null for anything else, which is said under the form. */
+export function proofField(caught: unknown): "password" | "code" | null {
+  if (!(caught instanceof ApiError) || caught.status !== 400) return null;
+  const said = caught.message.trim();
+  if (said === PASSWORD_NOT_RIGHT) return "password";
+  return CODE_REFUSALS.includes(said) ? "code" : null;
+}
+
+/** "on" or "off", the same for every role. Deny by default, like gate.ts: only true is on. */
+export function twoStepView(me: Me): "on" | "off" {
   return me.user.totp_enabled === true ? "on" : "off";
 }
 
-/** The item is for an admin's own admin session only: the server's routes need one. */
-export function showsTwoStepItem(me: Me): boolean {
-  return me.user.role === "admin" && sessionScope(me) === "admin";
+/** Whether Turn off is offered: not while the organisation requires it for admins (#481).
+ * The server refuses it all the same (409 two_step_required). */
+export function mayTurnOff(me: Me): boolean {
+  return me.user.two_step_required !== true;
 }
 
-export const TWO_STEP_ACCOUNT = {
-  item: "Two-step sign-in",
-  password: "Password",
-  code: "6-digit code",
-  offWarning: "Anyone who learns your password can then sign in as you.",
-  offButton: "Turn off two-step sign-in",
-  offDone: "Two-step sign-in is off. You'll sign in with your email and password only.",
-  onLead: "Type your password to see the key for your authenticator app.",
-  onButton: "Continue",
-  onDone: "Two-step sign-in is on.",
-  cancel: "Cancel",
-  done: "Done",
-  passwordMissing: "Enter your password.",
-  failed: "That did not work. Try again in a minute.",
-} as const;
-
-/** What the dialog says first, and the one button that changes it. */
-export function statusText(state: TwoStepState): { text: string; action: string } {
-  return state === "on"
-    ? {
-        text: "Two-step sign-in is on. You type a 6-digit code from your authenticator app after your password.",
-        action: "Turn off",
-      }
-    : { text: "Two-step sign-in is off.", action: "Turn on" };
-}
-
-/** The password exactly as typed: never trimmed. */
-export function passwordError(value: string): string | null {
-  return value === "" ? TWO_STEP_ACCOUNT.passwordMissing : null;
-}
-
-export type Field = "password" | "code";
-
-/**
- * Where a refusal goes and what it says. A 400 names a wrong or missing password or
- * code in plain words, so it is shown as sent, on the field it names (the code only when
- * the form has one and the words say code, not password). A 403 or 409 (already off) is
- * shown as sent above the buttons. A server error's own text never is.
- */
-export function refusal(caught: unknown, hasCode: boolean): { field: Field | null; message: string } {
-  if (caught instanceof ApiError) {
-    const message = caught.message.trim() || TWO_STEP_ACCOUNT.failed;
-    if (caught.status === 400) {
-      const saysCode = hasCode && /\bcode\b/i.test(message) && !/password/i.test(message);
-      return { field: saysCode ? "code" : "password", message };
-    }
-    if (caught.status === 403 || caught.status === 409) return { field: null, message };
-    if (caught.status === 429) return { field: null, message: TOO_MANY_ATTEMPTS };
-    if (caught.status === 0) return { field: null, message: NETWORK_FAILURE };
-    return { field: null, message: TWO_STEP_ACCOUNT.failed };
+/** The server's 400 and 409 say what is wrong in plain words; the rest as Change password says it. */
+export function twoStepError(caught: unknown): string {
+  if (caught instanceof ApiError && (caught.status === 400 || caught.status === 409) && caught.message.trim()) {
+    return caught.message.trim();
   }
-  // fetch rejects with a TypeError when the network is down or blocked.
-  if (caught instanceof TypeError) return { field: null, message: NETWORK_FAILURE };
-  return { field: null, message: TWO_STEP_ACCOUNT.failed };
+  if (caught instanceof ApiError && caught.status === 401 && caught.code !== "bad_credentials") return SIGNED_OUT;
+  return setPasswordError(caught).message;
 }

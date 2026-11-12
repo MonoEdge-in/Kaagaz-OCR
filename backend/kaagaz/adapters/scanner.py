@@ -48,6 +48,13 @@ from kaagaz.settings import Settings, SettingsError
 
 logger = logging.getLogger(__name__)
 
+# The content check's refusals as the gate's verdicts (LayeredScanner); anything else fails closed.
+_VERDICTS = {
+    Finding.BLOCKED: Verdict.BLOCKED,
+    Finding.UNSCANNABLE: Verdict.UNSCANNABLE,
+    Finding.ENCRYPTED: Verdict.ENCRYPTED,
+}
+
 # Large enough to keep system calls few; clamd accepts any chunk up to its
 # StreamMaxLength.
 _CHUNK_BYTES = 64 * 1024
@@ -76,7 +83,7 @@ class ClamdScanner:
         self._address = (host, port)
         self._timeout = timeout  # applies to connecting and to each send and read
 
-    def scan(self, data: bytes) -> Verdict:
+    def scan(self, data: bytes, *, name: str | None = None) -> Verdict:
         try:
             with socket.create_connection(self._address, timeout=self._timeout) as connection:
                 sent_all = _send_stream(connection, data)
@@ -148,7 +155,7 @@ class EicarDevScanner:
     without ClamAV.
     """
 
-    def scan(self, data: bytes) -> Verdict:
+    def scan(self, data: bytes, *, name: str | None = None) -> Verdict:
         return Verdict.INFECTED if EICAR in data else Verdict.CLEAN
 
 
@@ -165,16 +172,15 @@ class LayeredScanner:
     def __init__(self, scanner: Scanner) -> None:
         self.scanner = scanner
 
-    def scan(self, data: bytes) -> Verdict:
-        finding = inspect_isolated(data)  # in a child process with OS limits
-        if finding is not None:
-            # Which layer refused the file, so a support case can tell (Vrushit UAT, 25 Oct 2026).
-            logger.warning("content check refused: %s", finding.value)
-        if finding is Finding.BLOCKED:
-            return Verdict.BLOCKED
-        if finding is Finding.UNSCANNABLE:
-            return Verdict.UNSCANNABLE
-        return self.scanner.scan(data)
+    def scan(self, data: bytes, *, name: str | None = None) -> Verdict:
+        """``name``: the file's name, which only chooses between text kinds (#522)."""
+        finding = inspect_isolated(data, name or "")  # in a child process with OS limits
+        if finding is None:
+            return self.scanner.scan(data)
+        # Which layer refused the file, so a support case can tell (Vrushit UAT, 25 Oct 2026).
+        logger.warning("content check refused: %s", getattr(finding, "value", finding))
+        # Review (11 Nov 2026): a finding with no verdict here (one added later) fails closed.
+        return _VERDICTS.get(finding, Verdict.UNSCANNABLE)
 
 
 def build_scanner(settings: Settings) -> Scanner:

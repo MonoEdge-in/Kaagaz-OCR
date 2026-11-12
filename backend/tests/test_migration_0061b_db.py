@@ -38,7 +38,7 @@ def test_0061b_up_down_up(fresh: tuple[str, Database]) -> None:
     customer_id, user_id = new_customer(db)  # an admin from before 0061b
     assert at_0060[0].count(M0061B.OLD) == 1
 
-    # Changed on purpose (#484, 3 Nov 2026): up to 0061b itself, not head; 0061c follows it.
+    # Changed on purpose (#457 with #460, 30 Oct 2026): 0061b alone, as 0061 to 0063 follow it.
     migrate(url, M0061B.revision)
     after = base._schema(db)
     added = [row for row in after["columns"] if row[:2] == ("users", "totp_off_at")]

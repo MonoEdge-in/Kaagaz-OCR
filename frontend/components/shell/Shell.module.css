@@ -209,8 +209,7 @@
   }
 }
 
-/* The brand at the sidebar's head, the handoff's .k-brand. */
-/* The brand and, at its right, the clock that peeks (24 Oct 2026): one row, never wrapped. */
+/* The brand at the sidebar's head, the handoff's .k-brand: the wordmark alone, no clock (issue 567, 11 Nov 2026). */
 .brand {
   display: flex;
   align-items: center;
@@ -375,44 +374,30 @@
   }
 }
 
-/* An admin's own Two-step sign-in dialog (TwoStepDialog.tsx, 30 Oct 2026). Its forms are the
-   sign-in's paper-form lines (app/login/login.module.css); below 480px each label sits over
-   its line, so the line keeps its width in a 320px window. */
-.twoStep {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
+/* --- Issue 457: "Confirm your email" at the top of every signed-in screen --------------- */
 
-.twoStep p {
-  margin: 0;
-}
-
-.twoStepWarning {
-  color: var(--warning);
-  font-weight: 600;
-}
-
-.twoStepButtons {
+.emailBanner {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: var(--space-2);
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border-strong);
+  background: var(--review-bg);
+  color: var(--review-fg);
 }
 
-@media (max-width: 479.98px) {
-  .twoStepButtons {
-    flex-direction: column-reverse;
-    align-items: stretch;
-  }
+.emailBannerText {
+  flex: 1 1 16rem;
+  margin: 0;
+  color: var(--text-primary);
+}
 
-  .twoStep form :global(.field) {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .twoStep form :global(.field) > * {
-    grid-column: 1;
-  }
+.emailBannerSaid {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
 }
 
 /* --- Content: the one main scroller --------------------------------------------------- */
@@ -667,4 +652,39 @@
   .pageName {
     display: none;
   }
+}
+
+/* --- Issue 468: the offline line, the operator's session warning, a slow load's note ------- */
+
+.offlineBanner,
+.sessionNotice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border-strong);
+  background: var(--review-bg);
+  color: var(--text-primary);
+}
+
+/* Issue 468 review: in view however far the screen is scrolled, above what scrolls under it. */
+.offlineBanner {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.sessionNoticeText {
+  flex: 1 1 16rem;
+  margin: 0;
+}
+
+.stillLoading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  color: var(--fg-muted);
 }

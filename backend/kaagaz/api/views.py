@@ -14,14 +14,19 @@ from sqlalchemy import Connection, RowMapping
 
 from kaagaz.answering.clarify import without_resume
 from kaagaz.answering.hard_to_read import FlaggedPage, not_found_note
-from kaagaz.api.auth import CurrentUser
-from kaagaz.db import audit
+from kaagaz.api.auth import CurrentUser, needs_google_link
+from kaagaz.db import audit, word_review
 from kaagaz.db import ensemble as ensemble_sql
 from kaagaz.db.folder_upload_items import ItemRow
 from kaagaz.db.folders import FolderRow
 from kaagaz.db.listing import CLEAR_COPY_LINES, CLEAR_COPY_TEXT, MAX_READING_LINES, MAX_READING_TEXT
 from kaagaz.db.tags import TagRow
+from kaagaz.db.trashed_folders import TrashedFolder
+from kaagaz.db.zip_unpacks import Unpack
 from kaagaz.eta import time_left
+from kaagaz.ingestion.unzip import KEPT_ZIP, REASONS, SHORT_REASONS, ZIP_FAILURES
+from kaagaz.jobs.reading_pause import BUDGET, CODES, DAILY_LIMIT
+from kaagaz.jobs.worker import KEY_PROBLEMS
 from kaagaz.reading.page_quality import ILLEGIBLE_WORDS, READERS_DISAGREE, UNPINNED, fix, says
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES
 
@@ -32,6 +37,31 @@ _STATUS_MESSAGES = {
     "needs_reader": "Stored safely. This kind of file can't be read yet.",
 }
 _IN_PROGRESS = ("received", "clean")
+# All formats (#522): a file that can never be read as it is, in words that say what to do.
+FILE_FAILURES = {
+    "corrupt_file": "This file is damaged, so it can't be opened. Save it again and upload that copy.",
+    "unsupported_type": (
+        "Kaagaz can't read this kind of file. Save it as a PDF, a photo, a spreadsheet or a text file"
+        " and upload that."
+    ),
+    "not_utf8": (
+        "This text file isn't saved as UTF-8, so it can't be read. Save it as UTF-8 and upload it again."
+    ),
+    "too_deep": (
+        "This JSON file is nested more than 100 levels deep, so it can't be read. Flatten it and upload it"
+        " again."
+    ),
+}
+# All formats (#522 PR 2): what an Office file LibreOffice could not open is called, by its kind.
+_OFFICE_FILES = {
+    "docx": "Word file",
+    "dotx": "Word file",
+    "doc": "Word file",
+    "pptx": "PowerPoint file",
+    "ppt": "PowerPoint file",
+    "xls": "Excel file",
+}
+_SPREADSHEETS = ("xlsx", "xls")
 _MONEY_KEY = re.compile(r"usd|price|budget|cost", re.IGNORECASE)
 
 # How far the worker has got (PRD 2 X3), by step. PROVISIONAL wording (plan 3.3).
@@ -49,12 +79,30 @@ _WAITING_AGAIN = "Waiting to try again."
 READER_WAITING = "Reading is paused for now. It will continue on its own."
 _WAITING_STEP = "waiting"
 # Issue 407: the wait's run ended with a key problem (pipeline: a wrong key, a spent cap, a
-# model ID that names no model). No wait fixes that, so the words never say it goes on by
-# itself. PROVISIONAL wording.
+# model ID that names no model; #473: Mistral's key or credit, or Mistral not set up here). No
+# wait fixes that, so the words never say it goes on by itself. PROVISIONAL wording.
 READER_STOPPED = (
     "Reading is stopped until the Kaagaz team fixes the reading service. It starts again after that."
 )
-_KEY_WAIT = "gemini_key_unavailable"
+_KEY_WAITS = frozenset(f"{name}_unavailable" for name in KEY_PROBLEMS)  # #473: Mistral's too
+# #478 (Tushar, 3 Nov 2026): the organisation's reading pause held it; never a sum of money.
+# Review, 3 Nov 2026: the super admin is told, not the organisation's admin. QA C4 (4 Nov 2026):
+# never "tomorrow morning" (a weekend, a raised limit), and the budget is the "monthly AI limit".
+PAUSED_FOR_TODAY = (
+    "Reading is paused. Your organisation has reached its daily page limit. This file will be read"
+    " on its own when the limit resets, or sooner if it is raised."
+)
+PAUSED_BUDGET = (
+    "Reading is paused. Your organisation has reached its monthly AI limit. It starts again when the"
+    " limit is raised or the new month begins."
+)
+_PAUSE_WORDS = {CODES[DAILY_LIMIT]: PAUSED_FOR_TODAY, CODES[BUDGET]: PAUSED_BUDGET}
+
+
+def held_message(reason: str | None) -> str | None:
+    """#484 with #478: the words for files the reading pause holds (``documents.reading_held``,
+    DAILY_LIMIT or BUDGET), as a held document's own; None with none held."""
+    return None if reason is None else _PAUSE_WORDS[CODES[reason]]
 
 
 def files_ahead_message(count: int) -> str:
@@ -93,7 +141,7 @@ def status_message(
     how many are ahead. A ready document with ``pages_unreadable`` pages still flagged
     says so (council 16 Oct 2026: such a document is ready, not failed, since e01b937d).
     ``waiting_code`` is the last run's code while it waits: a key problem is READER_STOPPED
-    (issue 407)."""
+    (issue 407), a reading pause (#478) PAUSED_FOR_TODAY or PAUSED_BUDGET."""
     if status == "rejected":
         return CUSTOMER_MESSAGES.get(failure_code or "", "This file was not processed.")
     if status == "failed" and failure_code == "too_many_pages":
@@ -102,6 +150,18 @@ def status_message(
             return f"{what} has more than {max_pages} pages. The limit is {max_pages}. Split it into parts."
         split = "Split it into parts and upload each one."
         return f"{what} has {page_count} pages. The limit is {max_pages}. {split}"
+    if status == "failed" and failure_code == "office_unreadable" and detected_type in _OFFICE_FILES:
+        # #522 PR 2: a password, damage, or a conversion that ran out of time.
+        what = _OFFICE_FILES[detected_type]
+        return f"This {what} could not be opened. If it has a password, remove it and upload again."
+    if status == "failed" and failure_code == "password_protected":  # an encrypted .docx, .xlsx or .pptx
+        return "This file has a password, so it can't be opened. Remove the password and upload it again."
+    if status == "failed" and failure_code == "too_large":  # over its kind's own limit, told after the scan
+        if detected_type in _SPREADSHEETS:
+            what = "This spreadsheet is larger than spreadsheets can be."
+        else:
+            what = "This file is larger than files of its kind can be."
+        return f"{what} Split it into smaller files and upload them."
     if status == "failed" and failure_code == "retries_exhausted":
         tries = f"{max_attempts} tries" if max_attempts else "several tries"
         return f"The scan stopped after {tries}. Read it again, or ask your admin to look at it."
@@ -111,9 +171,17 @@ def status_message(
     if status == "failed" and failure_code == "ocr_failed":
         # The scan reader failed on a page of this file (kaagaz/reading/ocr.py): not an outage.
         return "A page of this file needs another read. Read it again, or upload a clearer scan."
+    if status == "failed" and failure_code == "too_large":
+        # #522 PR 3: an Office file that came in under a zip's limit, past its own kind's.
+        return (
+            "This file is larger than Kaagaz takes for its kind."
+            " Split it or save it smaller and upload it again."
+        )
     if status == "failed" and failure_code == "customer_disabled":
         # The worker came to it while the organisation was turned off (0014): nothing was read.
         return "This file was not read because your organisation was turned off. Read it again."
+    if status == "failed" and failure_code in FILE_FAILURES:
+        return FILE_FAILURES[failure_code]  # #522: a read again can't help; another copy can
     if status == "failed":
         return "This file needs another read. Read it again, or try another copy of it."
     if status == "ready" and pages_unreadable > 0:
@@ -121,7 +189,9 @@ def status_message(
         return f"Ready. {pages} to check."
     message = _STATUS_MESSAGES.get(status, "")
     if status in _IN_PROGRESS and progress is not None and progress.get("step") == _WAITING_STEP:
-        message = READER_STOPPED if waiting_code == _KEY_WAIT else READER_WAITING
+        message = _PAUSE_WORDS.get(waiting_code or "") or (
+            READER_STOPPED if waiting_code in _KEY_WAITS else READER_WAITING
+        )
     elif status in _IN_PROGRESS and progress is not None:
         message = progress_message(progress) or message
     elif status in _IN_PROGRESS and batch_ahead > 0:
@@ -187,9 +257,14 @@ def can_delete(row: RowMapping, user: CurrentUser) -> bool:
     """May ``user`` move this document's family to Trash, or bring it back? Both act
     on every version, so: an admin, or the one user who uploaded every version.
     ``family_uploaders`` comes from db/listing.py's _COLUMNS."""
+    return uploaded_every_version(row["family_uploaders"] or [], user)
+
+
+def uploaded_every_version(uploaders: Sequence[object], user: CurrentUser) -> bool:
+    """``can_delete``'s rule over these versions' uploaders: an admin, or the one user who
+    uploaded every one of them (#542: every file of a folder in Trash too)."""
     if user.role == "admin":
         return True
-    uploaders = row["family_uploaders"] or []
     return bool(uploaders) and all(
         uploader is not None and str(uploader) == user.user_id for uploader in uploaders
     )
@@ -220,12 +295,20 @@ def newer_version(newer: Mapping[str, Any] | None, *, max_pages: int) -> dict[st
 
 
 def document_summary(
-    row: RowMapping, *, max_pages: int, tags: Sequence[TagRow], user: CurrentUser, now: datetime
+    row: RowMapping,
+    *,
+    max_pages: int,
+    tags: Sequence[TagRow],
+    user: CurrentUser,
+    now: datetime,
+    unpack: Unpack | None = None,
 ) -> dict[str, Any]:
     """``DocumentSummary``. ``max_pages`` is passed on to ``status_message``;
     ``tags`` are the document's own, from one ``tags_for_documents`` call per page;
-    ``user`` decides ``can_delete``; ``now`` is the request's one clock reading."""
-    return {
+    ``user`` decides ``can_delete``; ``now`` is the request's one clock reading. A zip
+    (#522 PR 3) also has ``unpack``, its unpacking (``zip_unpacks.unpacks``; null when it
+    wasn't unpacked, or the caller didn't look), whose words are its status message."""
+    summary = {
         "id": str(row["id"]),
         "display_name": row["display_name"],
         "detected_type": row["detected_type"],
@@ -281,6 +364,66 @@ def document_summary(
         "department": row["department"],
         "pending_suggestion": row["pending_suggestion"],
     }
+    if row["detected_type"] == "zip":
+        summary["unpack"] = unpack_view(unpack)
+        summary["status_message"] = (
+            zip_message(row["status"], row["failure_code"], unpack) or summary["status_message"]
+        )
+    return summary
+
+
+def unpack_view(unpack: Unpack | None) -> dict[str, Any] | None:
+    """``ZipUnpack``: where a zip was unpacked (#522 PR 3), its files counted (unpacked, already
+    in Kaagaz, skipped, still waiting) and the first skipped ones, each with why in plain words."""
+    if unpack is None:
+        return None
+    return {
+        "folder_upload_id": unpack.upload_id,
+        "folder_id": unpack.root_folder_id,
+        "folder_name": unpack.root_name,
+        "files": unpack.file_count,
+        "unpacked": unpack.stored,
+        "already_in": unpack.duplicate,
+        "skipped": unpack.failed,
+        "waiting": unpack.waiting,
+        "skipped_files": [
+            {"name": name, "code": code, "reason": REASONS.get(code, "It could not be unpacked.")}
+            for name, code in unpack.skipped
+        ],
+    }
+
+
+def zip_message(status: str, failure_code: str | None, unpack: Unpack | None) -> str | None:
+    """A zip document's words (#522 PR 3): unpacking k of n files, the result line ("Unpacked:
+    120 files into folder "X", 3 skipped (...)", then that the zip still counts toward storage,
+    #555), where it stopped, why it wasn't unpacked, or that it was kept as a file; None for the
+    usual words (waiting, its virus check)."""
+    if unpack is None:
+        if status == "needs_reader":
+            return "Kept as a file, not unpacked: Kaagaz unpacks a zip only when it is uploaded on its own."
+        return ZIP_FAILURES.get(failure_code or "") if status == "failed" else None
+    folder = f'folder "{unpack.root_name}"'
+    if status in _IN_PROGRESS:
+        done = unpack.stored + unpack.duplicate + unpack.failed
+        return f"Unpacking: {done} of {_files(unpack.file_count)} into {folder}…"
+    line = f"{_files(unpack.stored)} into {folder}"
+    if unpack.duplicate:
+        line += f", {unpack.duplicate} already in Kaagaz"
+    if unpack.failed:
+        why = sorted(unpack.reasons.items(), key=lambda item: (-item[1], item[0]))
+        line += (
+            f", {unpack.failed} skipped ("
+            + ", ".join(f"{count} {SHORT_REASONS.get(code, code)}" for code, count in why)
+            + ")"
+        )
+    if status == "failed":
+        stopped = ZIP_FAILURES.get(failure_code or "") or "Unpack it again, or try another copy of the zip."
+        return f"Unpacking stopped after {line}. {stopped}"
+    return f"Unpacked: {line}. {KEPT_ZIP}"
+
+
+def _files(count: int) -> str:
+    return f"{count} file" if count == 1 else f"{count} files"
 
 
 _FAILED = ("failed", "rejected", "needs_reader")  # as the operator's health counts them (0020)
@@ -295,6 +438,7 @@ def batch_view(
     user: CurrentUser,
     now: datetime,
     max_active: int,
+    unpacks: Mapping[str, Unpack] | None = None,
 ) -> dict[str, Any]:
     """``BatchView`` (PRD 5 Q1, U1): the uploader's own files of one drop, in upload
     order (``listing.batch_rows``), each a ``DocumentSummary`` with its first unreadable
@@ -347,7 +491,14 @@ def batch_view(
         "id": batch_id,
         "documents": [
             {
-                **document_summary(row, max_pages=max_pages, tags=tags[str(row["id"])], user=user, now=now),
+                **document_summary(
+                    row,
+                    max_pages=max_pages,
+                    tags=tags[str(row["id"])],
+                    user=user,
+                    now=now,
+                    unpack=(unpacks or {}).get(str(row["id"])),
+                ),
                 "first_unreadable": first_unreadable(row["first_unreadable"]),
                 "values_found": int(row["values_found"]),  # U1: "All values verified" needs some
             }
@@ -406,6 +557,23 @@ def folder(row: FolderRow) -> dict[str, Any]:
         "created_at": iso(row.created_at),
         "kind": row.kind,  # File management F1
         "sort_order": row.sort_order,
+    }
+
+
+def trashed_folder(row: TrashedFolder, user: CurrentUser) -> dict[str, Any]:
+    """``TrashedFolder`` (#542): a folder in Trash with what it holds at every depth, the live
+    folder it goes back into (``was_in``, root first: [] the top level, null gone), and whether
+    this user may restore it (``can_delete``'s rule over every version of every file in it)."""
+    return {
+        "id": row.id,
+        "name": row.name,
+        "kind": row.kind,
+        "was_in": None if row.was_in is None else list(row.was_in),
+        "files": row.files,
+        "folders": row.folders,
+        "deleted_at": iso(row.deleted_at),
+        "deleted_by_name": row.deleted_by_name,
+        "can_restore": uploaded_every_version(row.uploaders, user),
     }
 
 
@@ -632,11 +800,15 @@ def page_readings(
 
 
 def clear_copy(
-    page_numbers: Sequence[int], rows: Sequence[RowMapping], marks: Sequence[RowMapping]
+    page_numbers: Sequence[int],
+    rows: Sequence[RowMapping],
+    marks: Sequence[RowMapping],
+    live: Sequence[RowMapping],
 ) -> dict[str, Any]:
     """``ClearCopy`` (Read clearly, 19 Oct 2026): every page with its lines and marks, from
-    ``listing.clear_copy``. The lines stop at CLEAR_COPY_LINES or CLEAR_COPY_TEXT for the
-    whole document, or after a line cut in SQL; then ``truncated``. O(lines + marks)."""
+    ``listing.clear_copy``, each line as ``clear_line`` with ``live`` (the changes in force,
+    oldest first). The lines stop at CLEAR_COPY_LINES or CLEAR_COPY_TEXT for the whole
+    document, or after a line cut in SQL; then ``truncated``. O(lines + marks)."""
     pages: dict[int, dict[str, Any]] = {n: {"page_no": n, "lines": [], "marks": []} for n in page_numbers}
     truncated, used, count = False, 0, 0
     for row in rows:
@@ -646,13 +818,32 @@ def clear_copy(
         used, count = used + len(row["text"]), count + 1
         truncated = truncated or bool(row["cut"])
         if row["page_no"] in pages:
-            pages[row["page_no"]]["lines"].append(_line(row))
+            pages[row["page_no"]]["lines"].append(clear_line(row, live))
     for mark in marks:
         if mark["page_no"] in pages:
             pages[mark["page_no"]]["marks"].append(
                 {"quality": mark["quality"], "region": mark["region"], "text": mark["text"]}
             )
     return {"pages": list(pages.values()), "truncated": truncated}
+
+
+def clear_line(row: RowMapping, live: Sequence[RowMapping]) -> dict[str, Any]:
+    """A clean copy's ``ReadLine`` (#527): with its ``key`` and the ``correction`` in force (who
+    and when, and ``before_text``, the line as first shown); ``text`` is the line's text now
+    when a change in force touches it (``word_review.line_text``). O(changes)."""
+    change = word_review.line_correction(row, live)
+    text_now = word_review.line_text(row, live)
+    line = {**_line(row), "key": word_review.line_key(row), "correction": None}
+    if text_now is not None:
+        line["text"] = text_now
+    if change is not None:
+        line["correction"] = {
+            "before_text": row["text"],
+            "by": change["user_name"] or "",
+            "at": iso(change["created_at"]),
+            "change_id": str(change["id"]),
+        }
+    return line
 
 
 def _line(row: RowMapping) -> dict[str, Any]:
@@ -862,9 +1053,24 @@ def conversation_summary(row: RowMapping) -> dict[str, Any]:
     return {"id": str(row["id"]), "title": row["title"], "created_at": iso(row["created_at"])}
 
 
-def me_json(user: CurrentUser) -> dict[str, Any]:
+def me_json(
+    user: CurrentUser,
+    *,
+    email_on: bool,
+    providers: Sequence[str],
+    recent_connections: Sequence[dict[str, str]] = (),
+) -> dict[str, Any]:
     """``Me``: who is signed in, their customer, and the session's scope ("app" for a
-    member or reviewer, "admin" for an admin; the screen shows Admin only for "admin")."""
+    member or reviewer, "admin" for an admin; the screen shows Admin only for "admin").
+    ``email_confirmed`` false shows the "Confirm your email" banner (#457), so it is true
+    while email is off: nothing could be sent to confirm it. ``recent_connections``: the
+    "Google connected on 30 Oct." banner's ``{provider, linked_at}`` (#457 phase 1; only
+    /auth/me and /auth/session read them, every other reply leaves the list empty).
+    ``providers``: those switched on (``oidc.enabled_providers``), so Account shows "Ways to
+    sign in" only while one is. ``google_link_required`` (#507): the limited session, whose
+    password lets the user only connect Google; ``google_unchecked`` (#507 review): in it, their
+    connected Google account is from before its domain was checked, so they sign in with Google
+    once instead."""
     return {
         "user": {
             "id": user.user_id,
@@ -874,18 +1080,42 @@ def me_json(user: CurrentUser) -> dict[str, Any]:
             "must_change_password": user.must_change_password,
             "totp_enabled": user.totp_enabled,
             "two_step_turned_off": user.two_step_turned_off,  # by the admin; sign-in is the password
+            # The organisation requires it for admins (0068, #481): Account offers no Turn off.
+            "two_step_required": user.two_step_required and user.role == "admin",
             "can_delete_forever": user.delete_forever_allowed and user.role != "admin",  # the grant
+            "email_confirmed": user.email_confirmed or not email_on,
+            "google_link_required": needs_google_link(user, "google" in providers),
+            "google_unchecked": needs_google_link(user, "google" in providers) and user.google_unchecked,
         },
         "customer": {"id": user.customer_id, "name": user.customer_name},
         "session": {"scope": user.scope},
+        "recent_connections": list(recent_connections),
+        "providers": list(providers),
     }
 
 
-def admin_user(row: RowMapping, *, now: datetime) -> dict[str, Any]:
+def admin_user(
+    row: RowMapping,
+    *,
+    now: datetime,
+    signs_in_with: Sequence[str] | None = None,
+    google_needed: bool | None = None,
+    google_unchecked: bool = False,
+) -> dict[str, Any]:
     """``AdminUser``. ``locked_until`` is null once the lock has passed, so the
-    screen never shows a lock that no longer holds."""
+    screen never shows a lock that no longer holds. ``signs_in_with`` (#457 phase 1:
+    "password" and each approved provider) only where the reply knows it: the list, and the
+    replies that removed connections; the screen keeps what it had otherwise. ``google_needed``
+    (#507: their role uses Google only and they have no connection that passes) likewise, with
+    ``google_unchecked`` (#507 review: their connection's domain is not checked yet)."""
     locked_until: datetime | None = row["locked_until"]
     return {
+        **({} if signs_in_with is None else {"signs_in_with": list(signs_in_with)}),
+        **(
+            {}
+            if google_needed is None
+            else {"google_needed": google_needed, "google_unchecked": google_unchecked}
+        ),
         "id": str(row["id"]),
         "email": row["email"],
         "display_name": row["display_name"],
@@ -894,7 +1124,7 @@ def admin_user(row: RowMapping, *, now: datetime) -> dict[str, Any]:
         "created_at": iso(row["created_at"]),
         "locked_until": iso(locked_until) if locked_until is not None and locked_until > now else None,
         "totp_enabled": row["totp_enabled_at"] is not None,
-        "two_step_turned_off": row["totp_off_at"] is not None,
+        "two_step_turned_off": row["totp_off_at"] is not None and not row["two_step_required"],
         "must_change_password": bool(row["must_change_password"]),
         "can_delete_forever": row["delete_forever_allowed_at"] is not None and row["role"] != "admin",
     }
@@ -1054,7 +1284,10 @@ def run_json(conn: Connection, customer_id: str, run: RowMapping) -> dict[str, A
         "failed_pages": failed,
         "started_at": _iso(run["started_at"]),
         "finished_at": _iso(run["finished_at"]),
-        "error": None if code is None else {"code": code, "message": error_message(code, failed, done)},
+        # #520: a run held by the reading pause says so, in a held document's words.
+        "error": None
+        if code is None
+        else {"code": code, "message": _PAUSE_WORDS.get(code) or error_message(code, failed, done)},
     }
 
 

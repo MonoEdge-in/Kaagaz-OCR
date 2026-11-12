@@ -1,12 +1,13 @@
 """The AI spend ledger (model choice, council 11 Oct 2026, SP1): ``model_usage`` rows,
 written by ``kaagaz.ai.usage`` when a usage scope ends.
 
-One row per (scope, model, kind, cached): how many calls, their tokens and their cost in US
-dollars. The cost is the sum of OpenRouter's ``usage.cost`` when every call carried one;
-otherwise the catalogue's price times the tokens, marked ``cost_estimated``; NULL when the
-model is not in the catalogue either. A row holds ids, codes and numbers only, never content.
-A sum counts the known costs; ``cost_part_unknown`` says some row's cost was not known, so
-the screens never show a partial sum as the whole one.
+One row per (scope, model, kind, cached, thinking, resolution): how many calls, their tokens
+and their cost in US dollars; ``thinking`` and ``resolution`` what a page read was sent at
+(#463), NULL for every other kind. The cost is the sum of OpenRouter's ``usage.cost`` when
+every call carried one; otherwise the catalogue's price times the tokens, marked
+``cost_estimated``; NULL when the model is not in the catalogue either. A row holds ids,
+codes and numbers only, never content. A sum counts the known costs; ``cost_part_unknown``
+says some row's cost was not known, so the screens never show a partial sum as the whole one.
 
 The admin's Usage screen (SP2) reads one organisation's rows back over a period
 [``start``, ``end``) (the route turns its days into one: ``api.routers.admin``):
@@ -36,12 +37,13 @@ TABLE = "model_usage"  # migration 0023; _INSERT spells it out (no SQL is built 
 _INSERT = text(
     "INSERT INTO model_usage (customer_id, user_id, document_id, conversation_id, kind, model,"
     " provider_name, cached, calls, input_tokens, output_tokens, reasoning_tokens, cost_usd,"
-    " cost_estimated)"
+    " cost_estimated, thinking, resolution, limit_hits, pages)"
     " VALUES (:customer_id, :user_id, :document_id, :conversation_id, :kind, :model,"
     " :provider_name, :cached, :calls, :input_tokens, :output_tokens, :reasoning_tokens,"
     " COALESCE(CAST(:cost_usd AS numeric), (SELECT (:input_tokens * c.price_in_usd_per_m"
     " + :output_tokens * c.price_out_usd_per_m) / 1000000 FROM model_catalog c WHERE c.id = :model)),"
-    " CAST(:cost_usd AS numeric) IS NULL AND EXISTS (SELECT 1 FROM model_catalog c WHERE c.id = :model))"
+    " CAST(:cost_usd AS numeric) IS NULL AND EXISTS (SELECT 1 FROM model_catalog c WHERE c.id = :model),"
+    " CAST(:thinking AS text), CAST(:resolution AS text), :limit_hits, :pages)"
 )
 
 
@@ -49,7 +51,8 @@ _INSERT = text(
 class UsageRow:
     """One ledger row. ``user_id`` None: work no user asked for (the upgrade sweep, the
     missing-vector pass); ``provider_name`` the last provider OpenRouter named, or None;
-    ``cost_usd`` None when a call carried no ``usage.cost`` (the catalogue price is used)."""
+    ``cost_usd`` None when a call carried no ``usage.cost`` (the catalogue price is used);
+    ``thinking`` and ``resolution`` a page read's (#463), else None."""
 
     customer_id: str
     user_id: str | None
@@ -64,6 +67,10 @@ class UsageRow:
     output_tokens: int
     reasoning_tokens: int
     cost_usd: float | None
+    thinking: str | None = None
+    resolution: str | None = None
+    limit_hits: int = 0  # #463: calls that hit the page read's output limit
+    pages: int = 0  # #463 review: page reads among the calls, each counted once
 
 
 def insert_usage(conn: Connection, rows: Sequence[UsageRow]) -> None:
@@ -82,19 +89,22 @@ _COUNTS = ("calls", "cached_calls", "input_tokens", "output_tokens", "reasoning_
 # The period's rows grouped six ways in one read: the total, and by user, model, kind, day
 # (in TIMEZONE) and document. A row with no document counts as a deleted document only
 # when it was document work (scan, upgrade, card, invoice, land, map, or Dynamic's and Ensemble's
-# extra page reads, careful and ensemble_scan, 0026) with no conversation:
+# extra page reads, careful and ensemble_scan, 0026; #488's ulc_scan) with no conversation:
 # chat, search, stories and the missing-vector pass had none to lose.
 # ponytail: an embed row of a deleted document is left out of the deleted bucket, since
 # the missing-vector pass writes embed rows with no document too; a kind of its own if needed.
 # Names are looked up after the grouping (users and documents by the customer's own key).
+# #463 review: an operator's accuracy checks are the operator's, never on the admin's screen.
 _REPORT = text(
     "WITH r AS ("
     " SELECT u.user_id, u.model, u.kind, CAST(timezone(:tz, u.created_at) AS date) AS day, u.document_id,"
     " (u.document_id IS NOT NULL OR (u.conversation_id IS NULL AND u.kind IN"
-    " ('scan', 'upgrade', 'card', 'invoice', 'land', 'map', 'careful', 'ensemble_scan'))) AS of_document,"
+    " ('scan', 'upgrade', 'card', 'invoice', 'land', 'map', 'careful', 'ensemble_scan', 'ulc_scan')))"
+    " AS of_document,"
     " u.cached, u.calls, u.input_tokens, u.output_tokens, u.reasoning_tokens, u.cost_usd, u.cost_estimated"
     " FROM model_usage u"
-    " WHERE u.customer_id = :c AND u.created_at >= :start_at AND u.created_at < :end_at"
+    " WHERE u.customer_id = :c AND u.kind <> 'accuracy_check'"
+    " AND u.created_at >= :start_at AND u.created_at < :end_at"
     " AND (CAST(:user AS uuid) IS NULL OR u.user_id = CAST(:user AS uuid))"
     "), g AS ("
     " SELECT CASE WHEN GROUPING(r.user_id) = 0 THEN 'user' WHEN GROUPING(r.model) = 0 THEN 'model'"
@@ -118,9 +128,11 @@ _REPORT = text(
 )
 
 # The dollars spent in a period (unknown costs count nothing), and whether any was unknown.
+# #463: an operator's accuracy checks are never the organisation's budget.
 _SPENT = text(
     "SELECT COALESCE(sum(u.cost_usd), 0), COALESCE(bool_or(u.cost_usd IS NULL), false) FROM model_usage u"
-    " WHERE u.customer_id = :c AND u.created_at >= :start_at AND u.created_at < :end_at"
+    " WHERE u.customer_id = :c AND u.kind <> 'accuracy_check'"
+    " AND u.created_at >= :start_at AND u.created_at < :end_at"
 )
 
 

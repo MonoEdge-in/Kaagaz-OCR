@@ -6,10 +6,12 @@ one customer (and its one admin) and writes its own ``platform_audit`` row.
 
 A write returns an ``Outcome``: ``done`` (changed and audited), ``unchanged``,
 ``missing``, ``deleting``, ``step_up`` (the fresh code's step was not accepted) or
-``signed_out``; scheduling a deletion also ``not_disabled`` or ``name_mismatch``
-(audited), cancelling one ``not_deleting`` or ``purging`` (its grace period is over).
-The organisation list returns counts only, and each one's auto-filing grant and switch
-(0025); the admin list, one customer's admins only.
+``signed_out``; enabling also ``pending`` (0061: Approve it instead); approving one
+``not_pending`` or ``unconfirmed`` (no admin proved their e-mail); scheduling a deletion
+also ``not_disabled`` or ``name_mismatch`` (audited), cancelling one ``not_deleting`` or
+``purging`` (its grace period is over). The organisation list returns counts only, and
+each one's auto-filing grant and switch (0025) and whether an admin proved their e-mail
+(0061); the admin list, one customer's admins only.
 
 Time: each write is O(log n) on primary keys, except disabling or enabling a customer,
 O(u) for its u users. ``list_customers`` is O(all users, documents and audit rows):
@@ -61,6 +63,15 @@ def set_customer_status(
     )
 
 
+def approve_customer(conn: Connection, operator_id: str, customer_id: str) -> Outcome:
+    """Approve one pending customer whose admin proved their e-mail (0061): it becomes active."""
+    return _write(
+        conn,
+        text("SELECT outcome, result_id FROM kaagaz_op_approve_customer(:o, :c)"),
+        {"o": operator_id, "c": customer_id},
+    )
+
+
 def set_org_autofile(conn: Connection, operator_id: str, customer_id: str, *, granted: bool) -> Outcome:
     """Allow or stop auto-filing for one customer (feature 28, R1); stopping it also switches
     it off. Audited in both logs when it changes."""
@@ -69,6 +80,43 @@ def set_org_autofile(conn: Connection, operator_id: str, customer_id: str, *, gr
         text("SELECT outcome, result_id FROM kaagaz_op_set_org_autofile(:o, :c, :granted)"),
         {"o": operator_id, "c": customer_id, "granted": granted},
     )
+
+
+def admin_two_step(conn: Connection, operator_id: str, customer_id: str) -> bool | None:
+    """Whether one customer requires two-step sign-in for its admins (0068, #481). None for an
+    unknown customer or an operator who is not enabled. O(log n)."""
+    params = {"o": operator_id, "c": customer_id}
+    found = conn.execute(text("SELECT kaagaz_op_admin_two_step(:o, :c)"), params).scalar()
+    return None if found is None else bool(found)
+
+
+def set_admin_two_step(
+    conn: Connection, operator_id: str, customer_id: str, *, required: bool, step: int
+) -> Outcome:
+    """Require two-step sign-in for one customer's admins, or stop (``step`` of a fresh code
+    required). Audited in both logs when it changes. O(log n)."""
+    params = {"o": operator_id, "c": customer_id, "r": required, "step": step}
+    code = conn.execute(text("SELECT kaagaz_op_set_admin_two_step(:o, :c, :r, :step)"), params).scalar_one()
+    return Outcome(str(code), customer_id)
+
+
+def google_signin(conn: Connection, operator_id: str, customer_id: str | None) -> RowMapping | None:
+    """Google sign-in (0074, #507): org_on (None: follows the platform; None without a customer),
+    platform_on, and the organisation's only_roles and domains. None for an unknown customer or
+    an operator who is not enabled. O(log n)."""
+    params = {"o": operator_id, "c": customer_id}
+    return conn.execute(text("SELECT * FROM kaagaz_op_google_signin(:o, :c)"), params).mappings().first()
+
+
+def set_google_signin(
+    conn: Connection, operator_id: str, customer_id: str | None, *, on: bool | None, step: int
+) -> Outcome:
+    """Turn Google sign-in on or off for the platform (no customer) or one customer (None: follow
+    the platform), ``step`` of a fresh code required. A change of the value in force signs out the
+    users with an approved connection there. Audited. O(users of the organisations touched)."""
+    params = {"o": operator_id, "c": customer_id, "on": on, "step": step}
+    code = conn.execute(text("SELECT kaagaz_op_set_google_signin(:o, :c, :on, :step)"), params).scalar_one()
+    return Outcome(str(code), customer_id)
 
 
 def schedule_delete(conn: Connection, operator_id: str, customer_id: str, *, name: str, step: int) -> Outcome:

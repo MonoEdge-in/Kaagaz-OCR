@@ -26,7 +26,20 @@ CUSTOMER = "00000000-0000-0000-0000-00000000000a"
 DOCUMENT = "00000000-0000-0000-0000-00000000000c"
 SETTINGS = make_settings()
 FLASH, PRO, SONNET = "google/gemini-3.8-flash", "google/gemini-3.1-pro-preview", "anthropic/claude-sonnet-5.5"
-INHERIT = {"scan_thinking": None, "chat_levels": ["low"], "chat_default_level": "low", "dynamic": False}
+# Changed on purpose (#463, 31 Oct 2026): the effective settings carry the scan cost settings too.
+INHERIT = {
+    "scan_thinking": None,
+    "chat_levels": ["low"],
+    "chat_default_level": "low",
+    "dynamic": False,
+    "scan_resolution": None,
+    "careful_thinking": None,
+    "careful_resolution": None,
+    "page_max_output_tokens": None,
+    "scan_reader": None,  # Changed on purpose (#473): who reads the pages, inherited
+    "mistral_model": None,
+    "ulc_ceiling_paise": None,  # Changed on purpose (#488): Ultra low cost's ceiling
+}
 
 
 class _Result:
@@ -84,13 +97,17 @@ def row(
     tokens: tuple[int, int] | None = (1000, 500),
     price: tuple[float, float] = (2, 12),
     area: str = "scan",
+    per_call: tuple[float | None, float | None] = (0.0, 0.0),
 ) -> dict[str, Any]:
-    """One usable-list row as ``_SCAN`` or ``_CHAT`` returns it."""
+    """One usable-list row as ``_SCAN`` or ``_CHAT`` returns it (``per_call``: its price a
+    request and an image, #488 review; None: not known)."""
     return {
         "id": model,
         "name": model.split("/")[1].title(),
         "price_in_usd_per_m": price[0],
         "price_out_usd_per_m": price[1],
+        "price_request_usd": per_call[0],
+        "price_image_usd": per_call[1],
         "tokens_per_page_in": None if tokens is None else tokens[0],
         "tokens_per_page_out": None if tokens is None else tokens[1],
         f"is_default_{area}": default,
@@ -210,6 +227,8 @@ def test_an_old_ensemble_document_is_read_by_its_lead_alone() -> None:
         "careful": None,
         "thinking": "low",
         "notes": ["ensemble_after_scan"],
+        "scan_reader": "openrouter",  # Changed on purpose (#473): who read the pages, in the run's config
+        "mistral_model": "mistral-ocr-4-1",
     }
 
 

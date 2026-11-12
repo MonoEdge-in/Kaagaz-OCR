@@ -124,7 +124,7 @@ def _tasks(conn: Connection, user: CurrentUser, settings: Settings) -> dict[str,
     """Every task for ``user``: the ceiling the organisation has now (with the platform
     switches), the saved rows, the rule. Five statements."""
     on = ai_settings.switches(conn, user.customer_id)
-    ceiling = models_sql.effective_settings(conn, user.customer_id)
+    ceiling = models_sql.effective_settings(conn, user.customer_id, settings=settings)
     org = admin_sql.get_settings(conn, user.customer_id)
     saved = ai_settings.rows(conn, user.customer_id, user.user_id)
     ensemble = bool(ceiling["ensemble"]) and len(usable(conn, user.customer_id, settings)) >= 2

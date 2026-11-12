@@ -5,43 +5,73 @@
   have two-step sign-in (MFA required for admins) and gets an admin session
   (``scope: "admin"``, the shorter ADMIN_SESSION_MINUTES): after a right password, an admin
   without a code set up gets 403 ``mfa_enrol_required`` with ``details`` {enrol_token,
-  secret, otpauth_uri} and no session; one with a code set up gets 401 ``code_required``
-  (counted like a failure) until it is sent. An admin with a temporary password and no
-  code yet gets a session that can only set the new password (``current_user``); the
-  next sign-in then sets up the code. An admin who turned two-step off themselves
-  (``users.totp_off_at``, 0061b) gets the admin session on the password alone.
+  secret, otpauth_uri} and no session. Anyone with a code set up (always an admin, and a
+  member or reviewer who turned it on, #457) gets 401 ``code_required`` (counted like a
+  failure) until it is sent: ``_finish_second_step``, for every role. An admin with a
+  temporary password and no code yet gets a session that can only set the new password
+  (``current_user``); the next sign-in then sets up the code. An admin who turned two-step
+  off themselves (``users.totp_off_at``, 0061b) gets the admin session on the password
+  alone, after Google too. Google only (#507): a user whose role signs in with Google only
+  and who has a passing Google link gets 403 ``password_refused`` after a right password
+  (audited, the count cleared; a wrong one is the one 401 as ever), except an admin who still
+  has to set up two-step, who enrols first. With no passing link, the password opens the
+  limited session (``api/auth.py``, ``google_link_required``), which can only connect Google.
 * ``POST /auth/admin/login``: 410 ``gone``, whatever is sent. Not kept as an alias: one
   route to sign in is one set of rules to get right, and an old page gets a clear answer.
-* ``POST /auth/admin/2fa/start`` {password} (admin session): with the current
-  password, ``{enrol_token, secret, otpauth_uri}`` for turning it on again. Asking
-  for the password means a stolen admin cookie alone cannot put its own key
-  on the account. Nothing is stored yet.
-* ``POST /auth/admin/enrol`` {enrol_token, code}: turns the code on (clearing "turned
-  off") and starts an admin session. The session version stays, so other browsers stay in.
-* ``POST /auth/admin/2fa/off`` {password, code} (admin session, Tushar, 30 Oct 2026): the
-  admin turns their own two-step sign-in off, and it stays off until they turn it on
-  again. The current password and a right code, each counted like a sign-in, else a 400
-  that says which; 409 when it is already off. ``Me``; every other browser is signed
-  out, this one is re-signed. Delete forever and deleting a tag still need it on
-  (``require_admin_with_two_step``). A reset of the code (another admin, the operator,
-  the CLI) is not "turned off": the admin sets one up at the next sign-in.
-* ``POST /auth/password`` {current_password, new_password}: a new password;
-  every other browser is signed out, this one is re-signed.
+* ``POST /auth/2fa/start`` {password} (any session; #457 opened it to every role, it was
+  ``/auth/admin/2fa/start``): with the current password, ``{enrol_token, secret,
+  otpauth_uri}`` for turning it on. Asking for the password means a stolen cookie alone
+  cannot put its own key on the account. Nothing is stored yet. 409 when it is on.
+* ``POST /auth/admin/enrol`` {enrol_token, code}: turns the code on (audited
+  ``auth.totp_on``, a security notice; clearing "turned off") and starts a session of the
+  user's scope (an admin's at sign-in or sign-up, or from Account, Two-step sign-in, like a
+  member's or reviewer's). The session version stays, so other browsers stay in.
+* ``POST /auth/2fa/off`` {password, code}: anyone turns their own two-step sign-in off, with
+  the password and a current code (both counted like a sign-in, else a 400 that says
+  which). Every other browser is signed out, this one is re-signed; audited
+  ``auth.totp_off``, a security notice. 409 when it is off. An admin's stays off until they
+  turn it on again (0061b, Tushar, 30 Oct 2026): they sign in with the password alone,
+  deleting a tag still needs it on (``require_admin_with_two_step``), and Delete forever asks
+  for the password again (#538, ``require_delete_forever``). While
+  the super admin requires two-step for the organisation's admins (0068, #481), an admin's
+  turning off is 409 ``two_step_required`` before anything is checked, and one already off
+  sets it up at the next sign-in (``users.session_user``, ``_ATTEMPT_COLUMNS``). A
+  reset of the code (another admin, the operator, the CLI) is not "turned off": an admin
+  sets one up at the next sign-in. A member's or reviewer's lost code: an admin resets it
+  (``routers/admin.py``).
+* ``POST /auth/password`` {current_password, new_password, code?}: a new password;
+  every other browser is signed out, this one is re-signed. Anyone with two-step sign-in on
+  also sends the code (#457; the sign-in's own check, ``_code_problem``), and a security
+  notice is emailed while email is on. In the limited session (#507) only a temporary
+  password may be changed (403 ``google_link_required`` otherwise), so a stolen password
+  can't take the account from its owner.
 * ``POST /auth/confirm-password`` {password}: only for a member or reviewer an
-  admin allowed to delete forever; the password, counted like a sign-in, then a
+  admin allowed to delete forever, or an admin in an admin session without two-step sign-in
+  on (#538, ``deletes_forever_by_password``); the password, counted like a sign-in, then a
   5-minute confirm cookie (kaagaz/api/auth.py) for Delete forever. 204.
-* ``POST /auth/logout``, ``POST /auth/logout-everywhere``, ``GET /auth/me``.
+* ``POST /auth/logout``: ends this browser's session on the server (0076, #502, Tushar 6 Nov
+  2026): its id goes to ``ended_sessions``, so a copied cookie stops working at once, and the
+  user's other browsers stay signed in. ``POST /auth/logout-everywhere`` (the limited session
+  too, #507 review) ends every one (``session_version``). ``GET /auth/me``.
 * ``GET /auth/session`` (issue 378): the app's first look, 200 either way: ``{signed_in:
-  false}`` with no session (one ``/auth/me`` would refuse with 401), else ``{signed_in:
-  true, me}``, the same checks and reply as ``/auth/me``. A signed-out visit then logs no
-  expected 401 in the browser before it goes to sign in.
+  false, providers}`` with no session (one ``/auth/me`` would refuse with 401; ``providers``:
+  those switched on, #457), else ``{signed_in: true, me}``, the same checks and reply as
+  ``/auth/me``. A signed-out visit then logs no expected 401 in the browser before it goes to
+  sign in.
 * ``POST /auth/signup`` {organisation_name, name, email, password} (16 Oct 2026): anyone
   makes a new organisation and its first admin, with their own password. The reply (201) is
   the two-step set-up offer {enrol_token, secret, otpauth_uri}, no session: the first code
   (``/auth/admin/enrol``) signs them in as that admin (MFA required, 0035).
   ``kaagaz_create_customer`` (the CLI's function) makes both in one statement, with an
   operator-made organisation's defaults (models, permissions and features off).
-  A taken e-mail is the admin screens' 409. At most ``SIGNUPS_PER_HOUR`` a client
+  With email on (#457 phase 0) the organisation is made ``pending`` instead, a "Confirm
+  your email" link is sent, and the reply is 201 ``{status: "confirm_email", sent}`` (``sent``:
+  false when the email failed, so the screen offers to send it again) with no
+  set-up offer and no session; sign-in then says 403 ``org_pending`` (after a right
+  password only) until an operator approves it (``routers/operator_orgs.py``).
+  A taken e-mail is the admin screens' 409; with email on, the same 201 as a new sign-up and
+  nothing is sent, so sign-up never shows who has an account. A pending sign-up never
+  confirmed within 24 hours no longer holds its e-mail (0063). At most ``SIGNUPS_PER_HOUR`` a client
   address (429). Off (``SELF_SIGNUP_ENABLED=false``, or the super admin's Self sign-up
   switch, 0038): 404; ``GET /auth/signup`` says
   ``{enabled}`` for the sign-in pages' link. Audited ``org.self_signup`` in the new
@@ -53,7 +83,7 @@ Why the sign-in looks the way it does (council record 29 Sep, WP1.3):
 
 * **One reply for every failure.** A wrong password, an unknown e-mail, a
   locked or disabled account and a wrong or reused code all get the same 401
-  ``bad_credentials`` text (``code_required`` and ``mfa_enrol_required`` only
+  ``bad_credentials`` text (``code_required``, ``mfa_enrol_required`` and ``two_step_unreadable`` only
   ever follow a right password), and every path
   spends exactly one scrypt hash, so neither the reply nor its time says
   which accounts exist or which part was wrong.
@@ -63,6 +93,12 @@ Why the sign-in looks the way it does (council record 29 Sep, WP1.3):
   check. A right password (or password and code) clears the count
   (``users.attempt_succeeded``); anything else leaves it counted, so wrong
   codes count toward the lockout too.
+* **A sign-in locks per account and address** (A2, 7 Nov 2026): ``login_max_failures``
+  in a row from one address lock the account for that address (``AddressLocks``, in
+  memory), and those refused there are not counted, so a flood from one address never
+  locks the person out of their own. ``ACCOUNT_MAX_FAILURES`` in a row from anywhere
+  lock the account (``users.begin_attempt``). The signed-in checks lock the account at
+  ``login_max_failures``, as before.
 * **The e-mail lookup** is the one SECURITY DEFINER function made for it,
   inside ``db.system()``; everything after it runs as the found customer.
 * **A disabled organisation** (0014) is refused like a disabled user: the
@@ -79,25 +115,31 @@ Why the sign-in looks the way it does (council record 29 Sep, WP1.3):
 """
 
 import dataclasses
-from datetime import datetime
+import json
+import logging
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from sqlalchemy import Connection
 
-from kaagaz.api import totp
+from kaagaz.api import emails, oidc, totp
 from kaagaz.api.auth import (
-    AdminSession,
+    GOOGLE_LINK_REQUIRED,
     CurrentUser,
+    SessionClaims,
     User,
+    UserAllowGoogleLink,
     UserAllowPasswordChange,
     clear_session_cookie,
     current_user_allow_password_change,
+    deletes_forever_by_password,
     feature_on,
     hash_password,
     load_user,
+    needs_google_link,
     new_enrol,
     new_session,
     read_enrol,
@@ -109,8 +151,9 @@ from kaagaz.api.auth import (
     verify_password,
 )
 from kaagaz.api.context import AppContext, get_context
+from kaagaz.api.emails import email_on, new_link, send
 from kaagaz.api.errors import ApiError
-from kaagaz.api.middleware import RateLimiter
+from kaagaz.api.middleware import AddressLocks, RateLimiter, client_address
 from kaagaz.api.names import ORG_NAME_PROBLEM, org_name_ok
 from kaagaz.api.routers.admin import MAX_PASSWORD, MIN_PASSWORD, valid_email
 from kaagaz.api.secret_box import SecretBoxError
@@ -118,20 +161,28 @@ from kaagaz.api.twostep import box as _box
 from kaagaz.api.twostep import digits as _digits
 from kaagaz.api.twostep import refused as _refused
 from kaagaz.api.twostep import unix as _unix
-from kaagaz.api.views import me_json
-from kaagaz.db import audit
+from kaagaz.api.views import iso, me_json
+from kaagaz.db import audit, identities
+from kaagaz.db import email_links as links_sql
 from kaagaz.db import users as users_sql
 from kaagaz.db.users import AttemptRow
+from kaagaz.settings import Settings
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 Context = Annotated[AppContext, Depends(get_context)]
 
 MAX_CODE = 16  # 6 digits, plus room for the spaces people type
 ENROL_FIRST = "Set up two-step sign-in to continue. Admins need it to keep your organisation safe."
-CODE_MISSING = "Enter the 6-digit code from your authenticator app."
-WRONG_CODE = "That code is not right. Use the newest code from your authenticator app."
 ADMIN_LOGIN_GONE = "Sign in on the sign-in page. Admins and members use the same one now."
+CODE_REQUIRED = "Enter the 6-digit code from your authenticator app."
+WRONG_CODE = "That code is not right. Wait for the next code and try again."
+ORG_PENDING = "Your organisation is waiting for approval."
+UNREADABLE = "Your two-step code can't be checked right now. Ask your admin to reset it."
+TWO_STEP_REQUIRED = "Your organisation requires two-step sign-in for admins, so it stays on."
+PASSWORD_REFUSED = "Your organisation asks you to sign in with Google. Use Continue with Google."  # noqa: S105
+RECENT_DAYS = 14  # how long the app's "Google connected" banner shows (#457 phase 1)
 # Sign-ups an hour (PROVISIONAL). Behind the Next.js proxy every visitor shares the proxy's
 # address (kaagaz/api/middleware.py), so in production this is one cap for the whole site,
 # sized for real sign-ups. ponytail: site-wide cap; per-visitor once X-Forwarded-For is trusted.
@@ -140,6 +191,15 @@ ADMIN_LOGIN_GONE = "Sign in on the sign-in page. Admins and members use the same
 SIGNUPS_PER_HOUR = 20
 signup_limits = RateLimiter(SIGNUPS_PER_HOUR, window_seconds=3600)
 TOO_MANY_SIGNUPS = "Too many sign-ups from here. Try again in an hour."
+# A2: a sign-in's cap for the account across every address (each address has
+# login_max_failures, address_locks), locked for an hour: at most 50 an hour from anywhere.
+# shortcut: in a row, not an hour: one address at 5 a lock reaches it in about 2.5 hours unless
+# the person signs in meanwhile, and the one 401's words still say login_lock_minutes. The
+# signed-in checks still lock at login_max_failures, counted on the same column, so after a flood
+# they can lock sooner.
+ACCOUNT_MAX_FAILURES = 50
+ACCOUNT_LOCK_MINUTES = 60
+address_locks = AddressLocks()
 # Trimmed, then the operator's limits (routers/operator_orgs.py NewOrgBody).
 OrgName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 PersonName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
@@ -150,7 +210,7 @@ class LoginBody(BaseModel):
 
     email: str = Field(min_length=1, max_length=254)
     password: str = Field(min_length=1, max_length=MAX_PASSWORD)
-    code: str | None = Field(default=None, max_length=MAX_CODE)  # admins only; ignored for others
+    code: str | None = Field(default=None, max_length=MAX_CODE)  # with two-step sign-in on
 
 
 class EnrolBody(BaseModel):
@@ -178,6 +238,7 @@ class PasswordBody(BaseModel):
 
     current_password: str = Field(min_length=1, max_length=MAX_PASSWORD)
     new_password: str = Field(min_length=MIN_PASSWORD, max_length=MAX_PASSWORD)
+    code: str | None = Field(default=None, max_length=MAX_CODE)  # with two-step sign-in on
 
 
 class SignupBody(BaseModel):
@@ -193,35 +254,9 @@ class SignupBody(BaseModel):
 
 
 @router.post("/auth/login")
-def login(body: LoginBody, context: Context) -> JSONResponse:
-    attempt = _check_password(context, body.email, body.password)
-    if attempt.role != "admin":
-        return _start_session(context, attempt.customer_id, attempt.user_id, scope="app", action="auth.login")
-    if attempt.totp_enabled_at is None:
-        if attempt.must_change_password or attempt.totp_off_at is not None:
-            # The set-new-password screen first (current_user keeps every other route
-            # shut); the next sign-in then sets up the code. Or turned off by the admin.
-            return _start_session(
-                context, attempt.customer_id, attempt.user_id, scope="admin", action="auth.login"
-            )
-        _succeeded(context, attempt)  # the password was right; no session until a code is set up
-        user = load_user(context.db, attempt.customer_id, attempt.user_id, scope="admin")
-        if user is None:  # disabled in the meantime
-            raise _refused(context)
-        raise ApiError(403, "mfa_enrol_required", ENROL_FIRST, details=_enrol_offer(context, user))
-    if not _digits(body.code):
-        _failed(context, attempt, "code_required")  # counted: a wrong code next can't reset it
-        raise ApiError(401, "code_required", CODE_MISSING)
-
-    step = _code_step(context, attempt, body.code)
-    if step is None:
-        raise _refused(context)
-    with context.db.customer(attempt.customer_id) as conn:
-        accepted = users_sql.accept_totp_step(conn, attempt.customer_id, attempt.user_id, step)
-    if not accepted:  # another request used this code a moment ago
-        _failed(context, attempt, "code_reused")
-        raise _refused(context)
-    return _start_session(context, attempt.customer_id, attempt.user_id, scope="admin", action="auth.login")
+def login(body: LoginBody, request: Request, context: Context) -> JSONResponse:
+    attempt = _check_password(context, body.email, body.password, client_address(request))
+    return _finish_second_step(context, attempt, body.code)
 
 
 @router.post("/auth/admin/login")
@@ -231,7 +266,7 @@ def admin_login_gone() -> None:
 
 
 @router.post("/auth/admin/enrol")
-def admin_enrol(body: EnrolBody, context: Context) -> JSONResponse:
+def admin_enrol(body: EnrolBody, background: BackgroundTasks, context: Context) -> JSONResponse:
     now = context.clock()
     claims = read_enrol(body.enrol_token, context.settings.session_secret, _unix(now))
     if claims is None:
@@ -248,8 +283,7 @@ def admin_enrol(body: EnrolBody, context: Context) -> JSONResponse:
     if attempt is None:
         raise _refused(context)
     if (
-        attempt.role != "admin"
-        or attempt.disabled
+        attempt.disabled
         or not attempt.customer_active
         or attempt.must_change_password
         or attempt.totp_enabled_at is not None
@@ -282,7 +316,11 @@ def admin_enrol(body: EnrolBody, context: Context) -> JSONResponse:
     if not enrolled:  # a second request with the same token, or something changed
         _failed(context, attempt, "enrol_refused")
         raise ApiError(401, "not_signed_in")
-    return _start_session(context, attempt.customer_id, attempt.user_id, scope="admin", action="auth.login")
+    who = (context, customer_id, user_id)
+    emails.after(background, "two_step_on", emails.notify, *who, "two_step_on", emails.two_step_on)
+    return _start_session(
+        context, attempt.customer_id, attempt.user_id, scope=_scope(attempt), action="auth.login"
+    )
 
 
 @router.get("/auth/signup")
@@ -299,7 +337,7 @@ def _signup_on(context: AppContext) -> bool:
 def signup(body: SignupBody, request: Request, context: Context) -> JSONResponse:
     if not context.settings.self_signup_enabled:
         raise ApiError(404, "not_found")
-    if not signup_limits.allow(request.client.host if request.client else "-"):
+    if not signup_limits.allow(client_address(request)):
         raise ApiError(429, "rate_limited", TOO_MANY_SIGNUPS, headers={"Retry-After": "3600"})
     email = valid_email(body.email)
     if not org_name_ok(body.organisation_name):
@@ -307,6 +345,9 @@ def signup(body: SignupBody, request: Request, context: Context) -> JSONResponse
     if not _signup_on(context):  # the super admin's switch (0038), the first database read
         raise ApiError(404, "not_found")
     password_hash = hash_password(body.password)  # before the transaction, never during it
+    pending = email_on(context)  # #457: the e-mail is proven, then an operator approves
+    with context.db.system() as conn:  # a stale, unconfirmed sign-up gives the e-mail back (0063)
+        users_sql.release_stale_signup(conn, email)
     try:
         with context.db.system() as conn:
             customer_id = users_sql.create_customer(
@@ -315,12 +356,21 @@ def signup(body: SignupBody, request: Request, context: Context) -> JSONResponse
                 admin_email=email,
                 admin_name=body.name,
                 password_hash=password_hash,
+                pending=pending,
             )
             found = users_sql.login_lookup(conn, email)
     except users_sql.EmailTaken:
+        if pending:  # the same reply as a new sign-up, and nothing sent: it never shows who has an account
+            return JSONResponse({"status": "confirm_email", "sent": True}, status_code=201)
         raise ApiError(409, "conflict", "That e-mail is already in use.") from None
     if found is None:  # never: made in this transaction
         raise ApiError(500, "internal_error")
+    if pending:
+        with context.db.customer(customer_id) as conn:
+            _record(conn, customer_id, "org.self_signup", actor=found.user_id, target=found.user_id)
+        link = new_link(context, customer_id, found.user_id, "confirm")
+        sent = send(context, email, "confirm", emails.confirm_email(link))
+        return JSONResponse({"status": "confirm_email", "sent": sent}, status_code=201)
     user = load_user(context.db, customer_id, found.user_id, scope="admin")
     if user is None:  # never: made in this transaction
         raise ApiError(500, "internal_error")
@@ -331,8 +381,8 @@ def signup(body: SignupBody, request: Request, context: Context) -> JSONResponse
     return JSONResponse(_enrol_offer(context, user), status_code=201)
 
 
-@router.post("/auth/admin/2fa/start")
-def turn_on_two_step(body: CurrentPasswordBody, user: AdminSession, context: Context) -> dict[str, str]:
+@router.post("/auth/2fa/start")
+def turn_on_two_step(body: CurrentPasswordBody, user: User, context: Context) -> dict[str, str]:
     if user.totp_enabled:
         raise ApiError(409, "conflict", "Two-step sign-in is already on.")
     now = context.clock()
@@ -342,41 +392,48 @@ def turn_on_two_step(body: CurrentPasswordBody, user: AdminSession, context: Con
     return _enrol_offer(context, user)
 
 
-@router.post("/auth/admin/2fa/off")
+@router.post("/auth/2fa/off")
 def turn_off_two_step(
-    body: TurnOffBody, user: AdminSession, request: Request, context: Context
+    body: TurnOffBody, user: User, request: Request, background: BackgroundTasks, context: Context
 ) -> JSONResponse:
+    """Anyone, with the password and a code. An admin's stays off until they turn it on
+    again (0061b, Tushar, 30 Oct 2026); never while the organisation requires it (0068, #481:
+    should it be required a moment after this check, the admin sets it up at the next request)."""
     if not user.totp_enabled:
         raise ApiError(409, "conflict", "Two-step sign-in is already off.")
+    if user.role == "admin" and user.two_step_required:
+        raise ApiError(409, "two_step_required", TWO_STEP_REQUIRED)
     now = context.clock()
-    attempt = _check_current_password(context, user, body.password, now)
-    if not _digits(body.code):
-        _failed(context, attempt, "code_required")
-        raise ApiError(400, "bad_request", CODE_MISSING)
-    step = _code_step(context, attempt, body.code)
-    if step is None:
-        raise ApiError(400, "bad_request", WRONG_CODE)
+    _prove(context, user, body.password, body.code)
     with context.db.customer(user.customer_id) as conn:
-        version = users_sql.turn_off_totp(conn, user.customer_id, user.user_id, step=step, now=now)
+        version = users_sql.turn_off_totp(conn, user.customer_id, user.user_id, now=now)
         if version is not None:
-            users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
             _record(conn, user.customer_id, "auth.totp_off", actor=user.user_id, target=user.user_id)
-    if version is None:  # another request used this code, or turned it off, a moment ago
-        _failed(context, attempt, "code_reused")
-        raise ApiError(400, "bad_request", WRONG_CODE)
-    changed = dataclasses.replace(user, session_version=version, totp_enabled=False, two_step_turned_off=True)
-    return _keep_this_browser(request, context, changed, now)
+    if version is None:  # another request turned it off a moment ago
+        raise ApiError(409, "conflict", "Two-step sign-in is already off.")
+    changed = dataclasses.replace(
+        user, session_version=version, totp_enabled=False, two_step_turned_off=user.role == "admin"
+    )
+    response = _keep_this_browser(request, context, changed, now)
+    notice = emails.two_step_off(user.display_name)
+    emails.after(background, "two_step_off", send, context, user.email, "two_step_off", notice)
+    return response
 
 
 @router.post("/auth/password")
 def change_password(
-    body: PasswordBody, user: UserAllowPasswordChange, request: Request, context: Context
+    body: PasswordBody,
+    user: UserAllowPasswordChange,
+    request: Request,
+    background: BackgroundTasks,
+    context: Context,
 ) -> JSONResponse:
+    if needs_google_link(user, context.settings.google_signin_enabled) and not user.must_change_password:
+        raise ApiError(403, "google_link_required", GOOGLE_LINK_REQUIRED)
     if body.new_password == body.current_password:
         raise ApiError(400, "bad_request", "Choose a new password that is different from the current one.")
     now = context.clock()
-    _check_current_password(context, user, body.current_password, now)
-
+    _prove(context, user, body.current_password, body.code)
     password_hash = hash_password(body.new_password)
     with context.db.customer(user.customer_id) as conn:
         row = users_sql.set_password(
@@ -384,30 +441,40 @@ def change_password(
         )
         if row is None:
             raise ApiError(401, "not_signed_in")
-        users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
+        links_sql.void_all(conn, user.customer_id, user.user_id, now=now)  # a reset link sent before
         _record(conn, user.customer_id, "auth.password_change", actor=user.user_id, target=user.user_id)
     changed = dataclasses.replace(
         user, session_version=int(row["session_version"]), must_change_password=False
     )
-    return _keep_this_browser(request, context, changed, now)
+    response = _keep_this_browser(request, context, changed, now)
+    notice = emails.password_changed(user.display_name)
+    emails.after(background, "password_changed", send, context, user.email, "password_changed", notice)
+    return response
 
 
 @router.post("/auth/confirm-password", status_code=204)
-def confirm_password(body: CurrentPasswordBody, user: User, context: Context) -> Response:
-    if user.role == "admin" or not user.delete_forever_allowed:
+def confirm_password(body: CurrentPasswordBody, user: User, request: Request, context: Context) -> Response:
+    if not deletes_forever_by_password(user):
         raise ApiError(403, "forbidden")  # nothing is counted
     now = context.clock()
+    claims = session_claims(request, context.settings, _unix(now))
+    if claims is None:  # never: ``user`` was read from these claims
+        raise ApiError(401, "not_signed_in")
     _check_current_password(context, user, body.password, now)
     with context.db.customer(user.customer_id) as conn:
         users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
     response = Response(status_code=204)
-    set_confirm_cookie(response, user, context.settings, now=_unix(now))
+    set_confirm_cookie(response, user, context.settings, now=_unix(now), session_id=claims.session_id)
     return response
 
 
 @router.post("/auth/logout", status_code=204)
-def logout(user: UserAllowPasswordChange, context: Context) -> Response:
+def logout(request: Request, user: UserAllowPasswordChange, context: Context) -> Response:
+    claims = session_claims(request, context.settings, _unix(context.clock()))
     with context.db.customer(user.customer_id) as conn:
+        if claims is not None:  # always: ``user`` was read from these claims
+            ends = datetime.fromtimestamp(claims.expires_at, UTC)
+            users_sql.end_session(conn, user.customer_id, user.user_id, claims.session_id, expires_at=ends)
         _record(conn, user.customer_id, "auth.logout", actor=user.user_id, target=user.user_id)
     response = Response(status_code=204)
     clear_session_cookie(response, context.settings)
@@ -415,7 +482,7 @@ def logout(user: UserAllowPasswordChange, context: Context) -> Response:
 
 
 @router.post("/auth/logout-everywhere", status_code=204)
-def logout_everywhere(user: User, context: Context) -> Response:
+def logout_everywhere(user: UserAllowGoogleLink, context: Context) -> Response:  # also the limited session
     with context.db.customer(user.customer_id) as conn:
         users_sql.bump_session_version(conn, user.customer_id, user.user_id)
         _record(conn, user.customer_id, "auth.logout_everywhere", actor=user.user_id, target=user.user_id)
@@ -425,26 +492,55 @@ def logout_everywhere(user: User, context: Context) -> Response:
 
 
 @router.get("/auth/me")
-def me(user: UserAllowPasswordChange) -> dict[str, Any]:
-    return me_json(user)
+def me(user: UserAllowPasswordChange, context: Context) -> dict[str, Any]:
+    return me_json(
+        user,
+        email_on=email_on(context),
+        providers=oidc.enabled_providers(context.settings),
+        recent_connections=_recent_connections(context, user),
+    )
 
 
 @router.get("/auth/session")
 def session(request: Request) -> dict[str, Any]:
-    """``/auth/me``'s checks, with no session a 200 ``{signed_in: false}``, not a 401."""
+    """``/auth/me``'s checks, with no session a 200 ``{signed_in: false, providers}``, not a
+    401. ``providers``: the sign-in page's "Continue with" buttons, those switched on (#457)."""
     try:
         user = current_user_allow_password_change(request)
     except ApiError as error:
         if error.status == 401:
-            return {"signed_in": False}
+            settings = get_context(request).settings
+            return {
+                "signed_in": False,
+                "providers": oidc.enabled_providers(settings),
+            }
         raise
-    return {"signed_in": True, "me": me_json(user)}
+    context = get_context(request)
+    recent = _recent_connections(context, user)
+    providers = oidc.enabled_providers(context.settings)
+    me = me_json(user, email_on=email_on(context), providers=providers, recent_connections=recent)
+    return {"signed_in": True, "me": me}
 
 
 # --- the steps they share ----------------------------------------------------------------
 
 
-def _check_password(context: AppContext, email: str, password: str) -> AttemptRow:
+def _recent_connections(context: AppContext, user: CurrentUser) -> list[dict[str, str]]:
+    """The user's approved connections made in the last RECENT_DAYS, for the app's "Google
+    connected on 30 Oct." banner (#457 phase 1); none, and nothing read, while no provider is on."""
+    if not oidc.enabled_providers(context.settings):
+        return []
+    since = context.clock() - timedelta(days=RECENT_DAYS)
+    with context.db.customer(user.customer_id) as conn:
+        rows = identities.for_user(conn, user.customer_id, user.user_id)
+    return [
+        {"provider": str(row["provider"]), "linked_at": iso(row["linked_at"])}
+        for row in rows
+        if row["status"] == "approved" and row["linked_at"] >= since
+    ]
+
+
+def _check_password(context: AppContext, email: str, password: str, address: str) -> AttemptRow:
     """The counted attempt of an enabled user whose password is right, else the one 401.
 
     Exactly one scrypt hash on every path: the dummy one for an unknown e-mail,
@@ -459,7 +555,7 @@ def _check_password(context: AppContext, email: str, password: str) -> AttemptRo
     if found is None:
         spend_password_time(password)
         raise _refused(context)
-    attempt = _begin(context, found.customer_id, found.user_id, context.clock())
+    attempt = _begin(context, found.customer_id, found.user_id, context.clock(), address=address)
     if attempt is None:
         spend_password_time(password)
         raise _refused(context)
@@ -469,32 +565,78 @@ def _check_password(context: AppContext, email: str, password: str) -> AttemptRo
     if attempt.disabled:
         _failed(context, attempt, "disabled")
         raise _refused(context)
+    if attempt.customer_pending:  # a sign-up waiting for an operator (0061), told after a right password
+        _succeeded(context, attempt)  # not a failure: waiting must never lock its admin out
+        raise ApiError(403, "org_pending", ORG_PENDING)
     if not attempt.customer_active:  # its organisation is disabled or being deleted (0014)
         _failed(context, attempt, "customer_disabled")
         raise _refused(context)
+    if _google_only(context, attempt):  # told only after a right password, so no account is shown
+        _succeeded(context, attempt)
+        _audit_failure(context, attempt.customer_id, attempt.user_id, "password_refused")
+        raise ApiError(403, "password_refused", PASSWORD_REFUSED)
     return attempt
 
 
-def _begin(context: AppContext, customer_id: str, user_id: str, now: datetime) -> AttemptRow | None:
-    """Count one attempt, committed before any check. None: locked."""
+def _google_only(context: AppContext, attempt: AttemptRow) -> bool:
+    """Google only for this user (#507): Google on, the role uses it only, and a passing link.
+    Not for an admin who still has to set up two-step: Google says ``password_first`` to them."""
+    enrolling = attempt.role == "admin" and attempt.totp_enabled_at is None and attempt.totp_off_at is None
+    return (
+        context.settings.google_signin_enabled
+        and attempt.google_on
+        and attempt.google_only
+        and attempt.google_linked
+        and not enrolling
+    )
+
+
+def _begin(
+    context: AppContext, customer_id: str, user_id: str, now: datetime, *, address: str | None = None
+) -> AttemptRow | None:
+    """Count one attempt, committed before any check. None: locked. A sign-in gives the visitor's
+    ``address``: locked per account and address, then per account at ACCOUNT_MAX_FAILURES (A2).
+    Its ``failed_logins`` is then the count that locks, for ``_failed``'s ``auth.locked``."""
     settings = context.settings
+    key, count = f"{user_id}|{address}", 0
+    if address is not None:
+        taken = _take(key, now, settings)
+        if taken is None:
+            seen = address_locks.seen(key)  # before the read (AddressLocks.seen)
+            with context.db.customer(customer_id) as conn:
+                account = users_sql.peek_attempt(conn, customer_id, user_id, now=now)
+            if account is None or account.failed_logins >= seen:
+                return None
+            address_locks.clear(key)  # the account's count started again since: a right password, an unlock
+            taken = _take(key, now, settings)
+        count = taken or 1
     with context.db.customer(customer_id) as conn:
-        return users_sql.begin_attempt(
+        attempt = users_sql.begin_attempt(
             conn,
             customer_id,
             user_id,
             now=now,
-            max_failures=settings.login_max_failures,
-            lock_minutes=settings.login_lock_minutes,
+            max_failures=settings.login_max_failures if address is None else ACCOUNT_MAX_FAILURES,
+            lock_minutes=settings.login_lock_minutes if address is None else ACCOUNT_LOCK_MINUTES,
         )
+    if attempt is None or address is None or attempt.failed_logins >= ACCOUNT_MAX_FAILURES:
+        return attempt
+    address_locks.saw(key, attempt.failed_logins)
+    return dataclasses.replace(attempt, failed_logins=count)
+
+
+def _take(key: str, now: datetime, settings: Settings) -> int | None:
+    """``address_locks.take`` with the sign-in's limit and lock."""
+    return address_locks.take(
+        key, now.timestamp(), settings.login_max_failures, settings.login_lock_minutes * 60
+    )
 
 
 def _check_current_password(
     context: AppContext, user: CurrentUser, password: str, now: datetime
 ) -> AttemptRow:
     """The signed-in user's own password, counted like a sign-in (so wrong ones
-    lead to the lockout), else a 400 that says what is wrong. The counted attempt;
-    the caller clears it with ``attempt_succeeded``."""
+    lead to the lockout), else a 400 that says what is wrong. The counted attempt."""
     attempt = _begin(context, user.customer_id, user.user_id, now)
     if attempt is None:
         # The lock stays on for a signed-in session too: letting a session check
@@ -513,20 +655,100 @@ def _check_current_password(
     return attempt
 
 
-def _code_step(context: AppContext, attempt: AttemptRow, code: str | None) -> int | None:
-    """The step of ``code`` from the attempt's stored secret, not used before; else None,
-    the failure audited (the attempt stays counted). Signing in and turning it off share it."""
+def _prove(context: AppContext, user: CurrentUser, password: str, code: str | None) -> None:
+    """The signed-in user's proof before a change to how they sign in: the password, then the
+    code for anyone with two-step sign-in on (always an admin), each counted like a sign-in,
+    else a 400 that says what is wrong; then the count starts again. Turning codes off, Change
+    password and connecting an account share it."""
+    attempt = _check_current_password(context, user, password, context.clock())
+    if attempt.totp_enabled_at is not None:
+        problem = _code_problem(context, attempt, code)
+        if problem is not None:
+            _failed(context, attempt, problem)
+            raise ApiError(400, "bad_request", CODE_REQUIRED if problem == "code_required" else WRONG_CODE)
+    _succeeded(context, attempt)
+
+
+def _per_user_limit(limiter: RateLimiter, user: CurrentUser, message: str) -> None:
+    """At most ``limiter``'s allowance for this user, else 429 with ``message`` and when to try again."""
+    key = f"user:{user.user_id}"
+    if not limiter.allow(key):
+        raise ApiError(429, "rate_limited", message, headers={"Retry-After": str(limiter.retry_after(key))})
+
+
+def _scope(attempt: AttemptRow) -> str:
+    """An admin's session is an admin session; everyone else's an app session."""
+    return "admin" if attempt.role == "admin" else "app"
+
+
+def _finish_second_step(
+    context: AppContext,
+    attempt: AttemptRow,
+    code: str | None,
+    details: dict[str, audit.DetailValue] | None = None,
+) -> JSONResponse:
+    """After a right first step (the password, or a connected Google account), the second, for
+    every role (#457): the session, once the code is right for anyone with two-step sign-in on.
+    ``attempt`` is the counted attempt of an enabled user; ``details`` go on its ``auth.login``
+    audit row (a provider sign-in's ``{"via": "google"}``).
+
+    * No code set up: a member or reviewer gets their app session, and an admin who turned it
+      off themselves (``totp_off_at``, 0061b) their admin session. Any other admin must set
+      one up first: 403 ``mfa_enrol_required`` with the set-up offer and no session, except
+      with a temporary password (the set-new-password screen first; the next sign-in sets it up).
+    * A code set up: 401 ``code_required`` until it is sent, else the next unused code
+      (``_code_problem``: the replay check). A missing or wrong code is counted like a wrong
+      password, so it leads to the lock too, and audited with its reason.
+    """
+    scope = _scope(attempt)
+    if attempt.totp_enabled_at is None:
+        if attempt.role != "admin" or attempt.must_change_password or attempt.totp_off_at is not None:
+            # An admin's set-new-password screen first (current_user keeps every other route
+            # shut); the next sign-in then sets up the code. Or turned off by the admin.
+            return _start_session(
+                context, attempt.customer_id, attempt.user_id, scope=scope, action="auth.login"
+            )
+        _succeeded(context, attempt)  # the password was right; no session until a code is set up
+        user = load_user(context.db, attempt.customer_id, attempt.user_id, scope=scope)
+        if user is None:  # disabled in the meantime
+            raise _refused(context)
+        raise ApiError(403, "mfa_enrol_required", ENROL_FIRST, details=_enrol_offer(context, user))
+    problem = _code_problem(context, attempt, code)
+    if problem is not None:
+        _failed(context, attempt, problem)  # counted: a wrong code next can't reset it
+        if problem == "code_required":
+            raise ApiError(401, "code_required", CODE_REQUIRED)
+        raise _refused(context)
+    return _start_session(
+        context, attempt.customer_id, attempt.user_id, scope=scope, action="auth.login", details=details
+    )
+
+
+def _code_problem(context: AppContext, attempt: AttemptRow, code: str | None) -> str | None:
+    """None when ``code`` is this user's next unused two-step code, which is then used up;
+    else why not (``code_required``, ``wrong_code``, ``code_reused``), for the caller to
+    count, audit and answer. Sign-in and Change password share it.
+
+    A secret that does not open (a changed key, a damaged row) is not the person's fault: it is
+    logged ``totp_unreadable`` at error level, the attempt is not counted (the password was
+    right), and the reply is 403 ``two_step_unreadable``. Another admin or the CLI resets it."""
+    if not _digits(code):
+        return "code_required"
     try:  # a missing secret ("") does not open either
         secret = _box(context.settings.totp_encryption_key).open(
             attempt.totp_secret_enc or "", aad=attempt.user_id
         )
     except SecretBoxError:
-        _failed(context, attempt, "totp_unreadable")  # another admin or the CLI resets it
-        return None
+        log.error(json.dumps({"event": "totp_unreadable"}, separators=(",", ":")))
+        with context.db.customer(attempt.customer_id) as conn:  # not counted toward the lock
+            users_sql.unlock(conn, attempt.customer_id, attempt.user_id)
+        raise ApiError(403, "two_step_unreadable", UNREADABLE) from None
     step = totp.matching_step(secret, _digits(code), _unix(context.clock()), attempt.totp_last_step)
     if step is None:
-        _failed(context, attempt, "wrong_code")
-    return step
+        return "wrong_code"
+    with context.db.customer(attempt.customer_id) as conn:
+        accepted = users_sql.accept_totp_step(conn, attempt.customer_id, attempt.user_id, step)
+    return None if accepted else "code_reused"  # another request used this code a moment ago
 
 
 def _keep_this_browser(
@@ -539,7 +761,8 @@ def _keep_this_browser(
     if claims is None:
         raise ApiError(401, "not_signed_in")
     renewed = dataclasses.replace(claims, session_version=user.session_version)
-    response = JSONResponse(me_json(user))
+    providers = oidc.enabled_providers(context.settings)
+    response = JSONResponse(me_json(user, email_on=email_on(context), providers=providers))
     set_session_cookie(response, renewed, context.settings, now=_unix(now))
     return response
 
@@ -554,6 +777,25 @@ def _start_session(
     details: dict[str, audit.DetailValue] | None = None,
 ) -> JSONResponse:
     """The ``Me`` reply and a new session cookie of this scope; clears the count."""
+    user, claims = _open_session(context, customer_id, user_id, scope=scope, action=action, details=details)
+    providers = oidc.enabled_providers(context.settings)
+    response = JSONResponse(me_json(user, email_on=email_on(context), providers=providers))
+    set_session_cookie(response, claims, context.settings, now=_unix(context.clock()))
+    return response
+
+
+def _open_session(
+    context: AppContext,
+    customer_id: str,
+    user_id: str,
+    *,
+    scope: str,
+    action: str,
+    details: dict[str, audit.DetailValue] | None = None,
+) -> tuple[CurrentUser, SessionClaims]:
+    """A new session of this scope for an enabled user: clears the count, audits ``action``,
+    and gives the claims for the caller's reply (``_start_session``'s, or a provider sign-in's
+    redirect). The one 401 when the user was disabled in the meantime."""
     now = context.clock()
     user = load_user(context.db, customer_id, user_id, scope=scope)
     if user is None:  # disabled in the meantime
@@ -571,13 +813,11 @@ def _start_session(
         now=_unix(now),
         idle_hours=user.idle_hours,  # set: 24 hours, the idle timeout ends it (0040)
     )
-    response = JSONResponse(me_json(user))
-    set_session_cookie(response, claims, context.settings, now=_unix(now))
-    return response
+    return user, claims
 
 
 def _enrol_offer(context: AppContext, user: CurrentUser) -> dict[str, str]:
-    """A new secret for the admin to put into an authenticator app (typed in, or
+    """A new secret for the user to put into an authenticator app (typed in, or
     as the otpauth link in a QR code), and the signed enrol token that carries it
     (sealed) for 10 minutes. Nothing is stored. The token, the key and the link
     are all made from this one signed-in user."""
@@ -611,12 +851,18 @@ def _failed(context: AppContext, attempt: AttemptRow, reason: str) -> None:
 
 
 def _audit_failure(
-    context: AppContext, customer_id: str, user_id: str, reason: str, *, locked: bool = False
+    context: AppContext,
+    customer_id: str,
+    user_id: str,
+    reason: str,
+    *,
+    locked: bool = False,
+    details: dict[str, audit.DetailValue] | None = None,
 ) -> None:
+    """``auth.login_failed`` {reason, and ``details``: a Google sign-in's ``via`` and ``domain``}."""
     with context.db.customer(customer_id) as conn:
-        _record(
-            conn, customer_id, "auth.login_failed", actor=None, target=user_id, details={"reason": reason}
-        )
+        written: dict[str, audit.DetailValue] = {"reason": reason, **(details or {})}
+        _record(conn, customer_id, "auth.login_failed", actor=None, target=user_id, details=written)
         if locked:
             _record(conn, customer_id, "auth.locked", actor=None, target=user_id)
 

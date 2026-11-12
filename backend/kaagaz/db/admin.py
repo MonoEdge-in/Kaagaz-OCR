@@ -35,7 +35,10 @@ from sqlalchemy import Connection, RowMapping, text
 def get_settings(conn: Connection, customer_id: str) -> RowMapping | None:
     return (
         conn.execute(
-            text("SELECT name, max_upload_mb, autofile_granted, autofile_on FROM customers WHERE id = :c"),
+            text(
+                "SELECT name, max_upload_mb, autofile_granted, autofile_on, auto_approve_connections"
+                " FROM customers WHERE id = :c"
+            ),
             {"c": customer_id},
         )
         .mappings()
@@ -48,7 +51,7 @@ def update_settings(conn: Connection, customer_id: str, *, max_upload_mb: int | 
         conn.execute(
             text(
                 "UPDATE customers SET max_upload_mb = :mb WHERE id = :c"
-                " RETURNING name, max_upload_mb, autofile_granted, autofile_on"
+                " RETURNING name, max_upload_mb, autofile_granted, autofile_on, auto_approve_connections"
             ),
             {"c": customer_id, "mb": max_upload_mb},
         )
@@ -68,6 +71,14 @@ def set_autofile(conn: Connection, customer_id: str, *, on: bool) -> bool:
             {"c": customer_id, "on": on},
         ).first()
         is not None
+    )
+
+
+def set_auto_approve(conn: Connection, customer_id: str, *, on: bool) -> None:
+    """Switch "Approve new sign-in connections automatically" on or off (#457 phase 1). O(1)."""
+    conn.execute(
+        text("UPDATE customers SET auto_approve_connections = :on WHERE id = :c"),
+        {"c": customer_id, "on": on},
     )
 
 

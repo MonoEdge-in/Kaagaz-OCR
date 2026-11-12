@@ -12,8 +12,9 @@
 // own columns and the next row); focus goes to Cancel, and back to the menu button. Restore
 // needs no question: nothing is lost. Ticked rows can be moved to Trash
 // together; in Trash they can be restored together, or deleted forever together
-// by whoever may (canDeleteForever, asked first; a granted member or reviewer
-// types their password in that step). In Trash the list shows when each
+// by whoever may (canDeleteForever, asked first; a granted member or reviewer, or an admin
+// without two-step sign-in, #538, types their password in that step, and again after a 403
+// password_confirm_required, with the question kept open). In Trash the list shows when each
 // document was trashed. Each row is the family's
 // current version; a newer one still being read, or one that failed, gets a
 // line under the name ("Version 3: ..."), linking to it. The Type column
@@ -32,10 +33,13 @@
 // a row keeps its place (the list is newest first, which a state never changes), and
 // while the pointer is on the list a row not shown yet waits until it leaves
 // (rowsInPlace), so nothing is put in above the pointer.
+// #542: in Trash, its folders are rows above the documents (TrashFolderRow), ticked with them for
+// the selection's Restore and Delete forever (each one call, a folder's to its own route).
 
 import Link from "next/link";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, RefCallback } from "react";
+import { flushSync } from "react-dom";
 import { extensionOf } from "@/components/dashboard/words";
 import { LabelChip } from "@/components/files/LabelChip";
 import { labelName } from "@/components/files/labels";
@@ -50,12 +54,14 @@ import {
   confirmPassword,
   deleteDocument,
   deleteDocumentForever,
+  deleteTrashedFolderForever,
   reprocessDocument,
   restoreDocument,
+  restoreTrashedFolder,
 } from "@/lib/api";
 import { useSession } from "@/lib/session";
-import { docTypeLabel, formatBytes, formatDate, formatDateTime, formatRelative, typeLabel } from "@/lib/format";
-import type { DocumentSummary, Me, Tag } from "@/lib/types";
+import { docTypeLabel, fileTypeLabel, formatBytes, formatDate, formatDateTime, formatRelative } from "@/lib/format";
+import type { DocumentSummary, FolderBack, FolderRestored, Me, Tag, TrashedFolder } from "@/lib/types";
 import { ActionDialog } from "./ActionDialog";
 import { EditDialog, MoveDialog, RowMenu } from "./DocumentActions";
 import { DOCUMENT_DRAG } from "./FolderNav";
@@ -77,6 +83,7 @@ import {
 } from "./logic";
 import { StatusChip } from "./StatusChip";
 import { TimeLeft } from "./TimeLeft";
+import { TrashFolderRow } from "./TrashFolderRow";
 import { WrapName } from "./WrapName";
 import {
   type BulkAction,
@@ -88,9 +95,15 @@ import {
   bulkTrashQuestion,
   canDeleteForever,
   deletedForeverMessage,
+  folderBackMessage,
+  folderKey,
+  folderOf,
   foreverNeedsPassword,
+  isFolderKey,
+  folderRestoredMessage,
   foreverQuestion,
   lostTheRight,
+  passwordAgain,
   restoredMessage,
   runForever,
   selectable,
@@ -129,6 +142,12 @@ interface Props extends RowEvents {
   movedLeaves: boolean;
   /** Q4: the list's sort and what a header press does; left out, the headers are words only. */
   sorting?: Sorting;
+  /** #542: Trash's folders, as rows above the documents. */
+  trashFolders?: readonly TrashedFolder[];
+  onOpenFolder?(folder: TrashedFolder): void;
+  /** A folder restored or deleted for good from its row: the toast's words. Left out (inside an
+   * opened folder), its folders only open. */
+  onFolderDone?(message: string): void;
 }
 
 /** The list's sort (Q4) and the header press that changes it. */
@@ -190,6 +209,9 @@ export function DocumentsTable({
   suggestions,
   movedLeaves,
   sorting,
+  trashFolders = NO_FOLDERS,
+  onOpenFolder,
+  onFolderDone,
   ...events
 }: Props) {
   const { onRemoved } = events;
@@ -209,7 +231,9 @@ export function DocumentsTable({
   }, [items]);
   const { refresh } = useSession();
   const canForever = canDeleteForever(me);
-  const askPassword = foreverNeedsPassword(me);
+  // A 403 password_confirm_required asks for the password from then on (passwordAgain, #538).
+  const [passwordAsked, setPasswordAsked] = useState(false);
+  const askPassword = foreverNeedsPassword(me) || passwordAsked;
   // Read again (PRD 5 U2): a reviewer or an admin, for a document that can be read again.
   const readable = useCallback(
     (item: DocumentSummary) => !inTrash && canReprocess(me.user.role, item),
@@ -221,6 +245,12 @@ export function DocumentsTable({
     [inTrash, canForever],
   );
   const deletableItems = useMemo(() => items.filter(tickable), [items, tickable]);
+  // #542: a folder in Trash is ticked by its key (folderKey) beside the documents' ids.
+  const folderTickable = (folder: TrashedFolder) => onFolderDone !== undefined && (folder.can_restore || canForever);
+  const tickableKeys = [
+    ...trashFolders.filter(folderTickable).map((folder) => folderKey(folder.id)),
+    ...deletableItems.map((item) => item.id),
+  ];
   const [moving, setMoving] = useState(false);
   const bulkMoved = useRef(false);
   const [password, setPassword] = useState("");
@@ -233,21 +263,28 @@ export function DocumentsTable({
   const [error, setError] = useState<string | null>(null);
   // Two select-all boxes: the table's header, and the bar's on cards; one shows at a time.
   const selectAll = useRef<HTMLInputElement[]>([]);
-  const visibleIds = useMemo(() => new Set(items.map((item) => item.id)), [items]);
+  const visibleIds = useMemo(
+    () => new Set([...items.map((item) => item.id), ...trashFolders.map((folder) => folderKey(folder.id))]),
+    [items, trashFolders],
+  );
   const visibleSelectedIds = useMemo(
     () => new Set([...selectedIds].filter((id) => visibleIds.has(id))),
     [selectedIds, visibleIds],
   );
   const selectedCount = visibleSelectedIds.size;
   // Restore (and Move to Trash) only for rows with can_delete; Delete forever for every ticked row.
-  const restorableIds = items
-    .filter((item) => item.can_delete && visibleSelectedIds.has(item.id))
-    .map((item) => item.id);
+  const restorableIds = [
+    ...trashFolders
+      .filter((folder) => folder.can_restore && visibleSelectedIds.has(folderKey(folder.id)))
+      .map((folder) => folderKey(folder.id)),
+    ...items.filter((item) => item.can_delete && visibleSelectedIds.has(item.id)).map((item) => item.id),
+  ];
+  const selectedFolders = [...visibleSelectedIds].filter(isFolderKey).length;
   const movable = movableItems(items, visibleSelectedIds);
   const readableIds = items
     .filter((item) => readable(item) && visibleSelectedIds.has(item.id))
     .map((item) => item.id);
-  const allSelected = deletableItems.length > 0 && selectedCount === deletableItems.length;
+  const allSelected = tickableKeys.length > 0 && selectedCount === tickableKeys.length;
   const partiallySelected = selectedCount > 0 && !allSelected;
 
   // Stable, with the row events below, so a poll that changes one row renders only that row.
@@ -282,7 +319,7 @@ export function DocumentsTable({
   }, []);
 
   function toggleAll() {
-    setSelectedIds(allSelected ? new Set() : new Set(deletableItems.map((item) => item.id)));
+    setSelectedIds(allSelected ? new Set() : new Set(tickableKeys));
     setError(null);
   }
 
@@ -303,7 +340,26 @@ export function DocumentsTable({
     setDeleteProgress({ done: 0, total: ids.length });
     setError(null);
     const typed = action === "forever" && askPassword ? password : null;
-    const calls = { confirm: confirmPassword, remove: BULK_CALLS[action] };
+    // #542: a restore that put a folder somewhere else, or brought folders back with a file, says so,
+    // and then has no Undo (Undo would send the files back alone).
+    const notes: string[] = [];
+    let foldersBack = false;
+    const call = async (key: string) => {
+      const reply = await (isFolderKey(key) ? FOLDER_CALLS[action](folderOf(key)) : BULK_CALLS[action](key));
+      if (action !== "restore") return reply;
+      if (isFolderKey(key)) {
+        const restored = reply as FolderRestored;
+        if (restored.relocated || restored.renamed) notes.push(folderRestoredMessage(restored));
+      } else {
+        const back = (reply as { restored_folder?: FolderBack | null }).restored_folder;
+        if (back) {
+          foldersBack = true;
+          if (back.relocated || back.renamed) notes.push(folderBackMessage(back));
+        }
+      }
+      return reply;
+    };
+    const calls = { confirm: confirmPassword, remove: call };
     const outcome = await runForever(ids, typed, calls, (handled) =>
       setDeleteProgress({ done: handled, total: ids.length }),
     );
@@ -312,22 +368,40 @@ export function DocumentsTable({
     setBusyAction(null);
     setDeleteProgress(null);
     const failure = outcome.kind === "password" ? outcome.error : outcome.result.firstError;
-    if (lostTheRight(failure)) refresh();
-    // A refused password deleted nothing: the question stays open, with why.
+    if (lostTheRight(failure)) {
+      refresh();
+      setPasswordAsked(false); // the fresh me decides who types a password
+    }
+    // A refused password deleted nothing: the question stays open, with why, and focus in the box.
     if (outcome.kind === "password") {
-      setError(errorText(failure));
+      flushSync(() => setError(errorText(failure)));
+      window.document.getElementById("bulk-forever-password")?.focus();
       return;
     }
     const { result } = outcome;
     setSelectedIds(new Set(result.failed));
-    setConfirming(null);
+    // No typed password counted (none was typed, or it ran out partway: then every later one
+    // failed too, so the last failure says it): the question stays open and asks for it.
+    const askAgain = action === "forever" && passwordAgain(result.lastError);
+    if (!askAgain) setConfirming(null);
     if (result.failed.length > 0) {
-      setError(bulkFailedMessage(action, result.failed.length, errorText(result.firstError)));
+      const why = errorText(askAgain ? result.lastError : result.firstError);
+      const folders = result.failed.filter(isFolderKey).length;
+      setError(bulkFailedMessage(action, result.failed.length - folders, why, folders));
     }
     if (result.done.length > 0) {
-      // Read again keeps the rows (they are read again); the others leave the list.
-      if (action === "read") events.onSaved(bulkDoneMessage(action, result.done.length));
-      else onRemoved(bulkDoneMessage(action, result.done.length), undoRemoval(action, result.done));
+      // Read again keeps the rows (they are read again); the others leave the list. A restored
+      // folder has no Undo (#542), so a selection with one has none.
+      const folders = result.done.filter(isFolderKey).length;
+      const message = [bulkDoneMessage(action, result.done.length - folders, folders), ...notes].join(" ");
+      if (action === "read") events.onSaved(message);
+      else onRemoved(message, folders > 0 || foldersBack ? undefined : undoRemoval(action, result.done));
+    }
+    if (askAgain) {
+      // The question is still open: focus waits in the password box, shown now if it was not.
+      flushSync(() => setPasswordAsked(true));
+      window.document.getElementById("bulk-forever-password")?.focus();
+      return;
     }
     // The buttons pressed are gone now: keep keyboard focus on the select-all box shown.
     selectAll.current.find((input) => input.isConnected && input.offsetParent !== null)?.focus();
@@ -375,8 +449,8 @@ export function DocumentsTable({
         <thead role="rowgroup">
           <tr role="row">
             <th scope="col" role="columnheader" className={styles.selectColumn}>
-              {deletableItems.length > 0 ? (
-                <label className={styles.selectHit}>{allBox("Select all visible documents")}</label>
+              {tickableKeys.length > 0 ? (
+                <label className={styles.selectHit}>{allBox("Select all visible")}</label>
               ) : (
                 <span className="visually-hidden">Select</span>
               )}
@@ -407,6 +481,21 @@ export function DocumentsTable({
           </tr>
         </thead>
         <tbody ref={body} role="rowgroup">
+          {trashFolders.map((folder) => (
+            <TrashFolderRow
+              key={folder.id}
+              folder={folder}
+              whenShort={shortWhen(folder.deleted_at, now)}
+              whenSpoken={whenSpokenAt(folder.deleted_at, now)}
+              onDone={onFolderDone}
+              canForever={canForever}
+              askPassword={askPassword}
+              tickable={folderTickable(folder)}
+              selected={selectedIds.has(folderKey(folder.id))}
+              onToggle={toggle}
+              onOpen={(opened) => onOpenFolder?.(opened)}
+            />
+          ))}
           {items.map((document) => (
             <DocumentRow
               key={document.id}
@@ -429,7 +518,7 @@ export function DocumentsTable({
           ))}
         </tbody>
       </table>
-      {deletableItems.length > 0 && (
+      {tickableKeys.length > 0 && (
         <div
           className={styles.selectionBar}
           role="toolbar"
@@ -440,7 +529,7 @@ export function DocumentsTable({
             {allBox()}
             <span>
               {allSelected
-                ? "All visible documents selected"
+                ? "All visible selected"
                 : partiallySelected
                   ? `${selectedCount} selected`
                   : "Select all visible"}
@@ -509,7 +598,7 @@ export function DocumentsTable({
             >
               <span id="bulk-confirm-question">
                 {confirming === "forever"
-                  ? bulkForeverQuestion(selectedCount)
+                  ? bulkForeverQuestion(selectedCount - selectedFolders, selectedFolders)
                   : confirming === "read"
                     ? bulkReadQuestion(readableIds.length)
                     : bulkTrashQuestion(restorableIds.length)}
@@ -594,6 +683,17 @@ const BULK_CALLS: Record<BulkAction, (id: string) => Promise<unknown>> = {
   forever: deleteDocumentForever,
   read: reprocessDocument,
 };
+// #542: a folder in Trash is only ever restored or deleted for good from a selection.
+// shortcut: a big folder's Delete forever repeats per part (B18) here too, but the selection's
+// progress counts whole items, so it waits on one item without saying how many files are left.
+const NO_FOLDERS: readonly TrashedFolder[] = [];
+const notForFolders = () => Promise.reject(new Error("not for a folder in Trash"));
+const FOLDER_CALLS: Record<BulkAction, (id: string) => Promise<unknown>> = {
+  trash: notForFolders,
+  restore: restoreTrashedFolder,
+  forever: deleteTrashedFolderForever,
+  read: notForFolders,
+};
 
 const CONFIRM_LABEL: Record<BulkAction, string> = {
   trash: "Confirm moving to Trash",
@@ -636,7 +736,10 @@ const whenOf = (document: DocumentSummary, inTrash: boolean) =>
 // Worked out here, so a row renders again only when its own words change, not on every poll.
 // Shown "2h ago" (shortWhen); read out "2 hours ago, 16 Oct 2026, 2:05 pm".
 function whenSpoken(document: DocumentSummary, inTrash: boolean, now: number): string {
-  const when = whenOf(document, inTrash);
+  return whenSpokenAt(whenOf(document, inTrash), now);
+}
+
+function whenSpokenAt(when: string, now: number): string {
   const relative = formatRelative(when, now);
   return relative === formatDate(when) ? formatDateTime(when) : `${relative}, ${formatDateTime(when)}`;
 }
@@ -681,10 +784,15 @@ const DocumentRow = memo(function DocumentRow({
   const [working, setWorking] = useState(BUSY_WORDS.restore);
   const [error, setError] = useState<string | null>(null);
   const [password, setPassword] = useState("");
+  // A 403 password_confirm_required asks for the password from then on (passwordAgain, #538).
+  const [passwordAsked, setPasswordAsked] = useState(false);
+  const needsPassword = askPassword || passwordAsked;
   const { refresh } = useSession();
   const actionsButton = useRef<HTMLButtonElement | null>(null);
   const refocusActions = useRef(false);
   const afterEdit = useRef<"actions" | "list">("actions");
+  // B6: Delete forever is checking the typed password; refused, the question stays open.
+  const checkingPassword = useRef(false);
 
   // A stable callback ref, so it runs once when its button appears.
   const holdActions = useCallback((element: HTMLButtonElement | null) => {
@@ -707,11 +815,14 @@ const DocumentRow = memo(function DocumentRow({
     }
     if (action === "restore") {
       setWorking(BUSY_WORDS.restore);
+      let back: FolderBack | null = null; // #542: its folder came back with it
       void act(
-        restoreDocument,
-        restoredMessage(document.display_name),
+        async (id) => {
+          back = (await restoreDocument(id)).restored_folder ?? null;
+        },
+        () => (back ? `${restoredMessage(document.display_name)} ${folderBackMessage(back)}` : restoredMessage(document.display_name)),
         "Could not restore this document.",
-        undoRemoval("restore", [document.id]),
+        () => (back ? undefined : undoRemoval("restore", [document.id])),
       );
       return;
     }
@@ -733,18 +844,38 @@ const DocumentRow = memo(function DocumentRow({
   }
 
   // Move to Trash, Restore or Delete forever: the row leaves this list when it works.
-  async function act(call: (id: string) => Promise<unknown>, message: string, failed: string, undo?: RemovalUndo) {
+  // The words and the Undo may depend on the reply (#542), so either may be worked out after the call.
+  async function act(
+    call: (id: string) => Promise<unknown>,
+    message: string | (() => string),
+    failed: string,
+    undo?: RemovalUndo | (() => RemovalUndo | undefined),
+  ) {
     setBusy(true);
     setError(null);
     try {
       await call(document.id);
-      events.onRemoved(message, undo);
+      events.onRemoved(
+        typeof message === "string" ? message : message(),
+        typeof undo === "function" ? undo() : undo,
+      );
     } catch (caught) {
-      if (lostTheRight(caught)) refresh();
+      if (lostTheRight(caught)) {
+        refresh();
+        setPasswordAsked(false); // the fresh me decides who types a password
+      }
       setError(
         caught instanceof ApiError ? caught.message : `${failed} Check your connection, then try again.`,
       );
       setBusy(false);
+      const refused = checkingPassword.current && !lostTheRight(caught);
+      checkingPassword.current = false;
+      if (passwordAgain(caught) || refused) {
+        // The dialog stays open, says why, and asks for the password; focus waits in its box.
+        flushSync(() => setPasswordAsked(true));
+        window.document.getElementById(`forever-password-${document.id}`)?.focus();
+        return;
+      }
       refocusActions.current = true;
       setConfirming(null);
     }
@@ -752,12 +883,16 @@ const DocumentRow = memo(function DocumentRow({
 
   function confirm() {
     if (confirming === "forever") {
-      // A granted user's password is checked first: if it is refused, nothing is deleted.
-      const typed = askPassword ? password : null;
+      // A typed password is checked first: if it is refused, nothing is deleted.
+      const typed = needsPassword ? password : null;
       setPassword("");
       void act(
         async (id) => {
-          if (typed !== null) await confirmPassword(typed);
+          if (typed !== null) {
+            checkingPassword.current = true;
+            await confirmPassword(typed);
+            checkingPassword.current = false;
+          }
           await deleteDocumentForever(id);
         },
         deletedForeverMessage(document.display_name),
@@ -776,6 +911,7 @@ const DocumentRow = memo(function DocumentRow({
   // The dialog hands focus back to the menu button once it is shut (onClosed).
   function cancel() {
     setConfirming(null);
+    setError(null); // a "type your password again" said in the dialog goes with it
   }
 
   // Issue 407: the status cell's Retry is Read again (POST .../reprocess); the row stays and
@@ -800,7 +936,10 @@ const DocumentRow = memo(function DocumentRow({
   // F5: "v1 · newer?" while a newer version of this family waits to be confirmed.
   const newer = document.pending_suggestion?.role === "candidate";
   const owner = document.owner?.name ?? null;
-  const typeWords = [typeLabel(document.detected_type), document.doc_type && docTypeLabel(document.doc_type)]
+  const typeWords = [
+    fileTypeLabel(document.detected_type, document.display_name),
+    document.doc_type && docTypeLabel(document.doc_type),
+  ]
     .filter(Boolean)
     .join(" · ");
   const folderPath = !inTrash && document.folder_id && tree.byId.has(document.folder_id) ? pathLabel(tree, document.folder_id) : null;
@@ -939,7 +1078,7 @@ const DocumentRow = memo(function DocumentRow({
       {/* Issue 452: "PDF · Land record" on the first line, the size on the second, on every row. */}
       <td role="cell" className={`${styles.meta} ${styles.typeCell}`}>
         <span className={styles.typeLine} title={typeWords}>
-          {typeLabel(document.detected_type)}
+          {fileTypeLabel(document.detected_type, document.display_name)}
           {document.doc_type && <span className={styles.docType}>{docTypeLabel(document.doc_type)}</span>}
         </span>
         <span className={`${styles.bandSize} tabular`}>{formatBytes(document.size_bytes)}</span>
@@ -1013,7 +1152,7 @@ const DocumentRow = memo(function DocumentRow({
           >
             <div className={library.dialogForm}>
               <p>{question}</p>
-              {confirming === "forever" && askPassword && (
+              {confirming === "forever" && needsPassword && (
                 <PasswordField
                   id={`forever-password-${document.id}`}
                   label="Your password"
@@ -1022,12 +1161,17 @@ const DocumentRow = memo(function DocumentRow({
                   onChange={setPassword}
                 />
               )}
+              {error && (
+                <p className="error-text" role="alert">
+                  {error}
+                </p>
+              )}
               <div className={library.formButtons}>
                 <button
                   type="button"
                   className={`btn btn-danger ${library.apart}`}
                   onClick={confirm}
-                  disabled={busy || (confirming === "forever" && askPassword && password === "")}
+                  disabled={busy || (confirming === "forever" && needsPassword && password === "")}
                 >
                   <BusyLabel
                     busy={busy}
@@ -1042,7 +1186,7 @@ const DocumentRow = memo(function DocumentRow({
             </div>
           </ActionDialog>
         )}
-        {error && (
+        {error && confirming === null && (
           <p className={`error-text ${styles.rowError}`} role="alert">
             {error}
           </p>
@@ -1093,10 +1237,12 @@ export function StatusCell({
   if (beingRead(document.status) && document.deleted_at === null) {
     const words = scanWords(document);
     const detail = words ? words.detail : document.status_message;
+    // QA U10: a file held for the reader or by a reading pause waits; its words say why.
+    const chip = words ? words.chip : document.progress?.step === "waiting" ? "Waiting" : "Queued";
     return (
       <span className={styles.statusContent} key="scanning">
         <span className={styles.statusLine}>
-          <StatusChip status={document.status} text={words ? words.chip : "Queued"} />
+          <StatusChip status={document.status} text={chip} />
           <span className={styles.statusText} title={detail}>
             {detail}
           </span>
@@ -1141,7 +1287,7 @@ export function StatusCell({
   return (
     <span className={styles.statusContent}>
       <span className={styles.statusLine}>
-        <StatusChip status={document.status} />
+        <StatusChip status={document.status} detectedType={document.detected_type} />
       </span>
       <span className={styles.statusLine}>
         <span className={styles.statusText} title={document.status_message}>

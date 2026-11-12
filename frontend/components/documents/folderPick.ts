@@ -9,6 +9,9 @@
 //   hidden folder takes everything inside it. Each is listed once (the first SKIPPED_SHOWN).
 // - Names are kept in one Unicode form (NFC), so a Mac's copy and a PC's copy are one path.
 
+import type { NewFolderItem } from "@/lib/types";
+import { uploadKind } from "./logic";
+
 /** A name is skipped when it starts with "." or "~$", or is one of these, in any letter case. */
 const SYSTEM_NAMES = new Set([
   "thumbs.db",
@@ -25,6 +28,10 @@ const SKIPPED_SHOWN = 100;
 
 /** The longest folder name Kaagaz keeps (the server's FOLDER_NAME_MAX). */
 const FOLDER_NAME_MAX = 100;
+
+/** A kind of file Kaagaz can't take, refused before it is sent; the server judges size and emptiness. */
+export const refusedReason = (file: { name: string }): NewFolderItem["refused"] =>
+  uploadKind(file.name) === null ? "unsupported_type" : undefined;
 
 export function isSkipped(name: string): boolean {
   return name.startsWith(".") || name.startsWith("~$") || SYSTEM_NAMES.has(name.toLowerCase());
@@ -154,7 +161,7 @@ export interface Manifest {
   folders: { name: string; parent: number | null }[]; // parents first; entry 0 is the root
   fileFolder: Int32Array; // per file of the pick: the index of its folder
   fileCount: number;
-  totalBytes: number;
+  totalBytes: number; // the files it will send: not those refusedReason refuses (#516)
   height: number; // levels, the root counted
   badName: { name: string; problem: "long" | "hidden" } | null; // the first folder name Kaagaz can't keep
 }
@@ -195,13 +202,23 @@ export function buildManifest(pick: Picked, earlier?: Manifest): Manifest {
   let totalBytes = 0;
   pick.paths.forEach((path, at) => {
     fileFolder[at] = folderOf(path.slice(0, path.lastIndexOf("/")));
-    totalBytes += pick.files[at]?.size ?? 0;
+    const file = pick.files[at];
+    if (file && !refusedReason(file)) totalBytes += file.size;
   });
   return { folders, fileFolder, fileCount: pick.paths.length, totalBytes, height, badName };
 }
 
+const hex = (digest: ArrayBuffer) => Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+
 /** A file's id within its upload: the SHA-256 (hex) of its NFC path, root first. */
 export async function pathKey(path: string): Promise<string> {
-  const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(path.normalize("NFC"))));
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(path.normalize("NFC"))));
+}
+
+/**
+ * The SHA-256 (hex) of a file's bytes, for "Add new files only". The caller hashes one file at a
+ * time and awaits each, so only one file's bytes are ever held (at most the upload limit).
+ */
+export async function fileSha256(file: File): Promise<string> {
+  return hex(await crypto.subtle.digest("SHA-256", await file.arrayBuffer()));
 }

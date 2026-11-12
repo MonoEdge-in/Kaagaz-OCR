@@ -70,7 +70,7 @@ def test_a_tag_name_must_be_1_to_40_characters_and_unique_in_any_case(db: Databa
         assert reply.status_code == 400, name
         assert reply.json()["error"] == {
             "code": "bad_request",
-            "message": "Enter a tag name of 1 to 40 characters, with no hidden characters.",
+            "message": "Enter a tag name of 1 to 40 characters.",
         }
     _create(signed, "GST")
     clash = _create(signed, "gst")

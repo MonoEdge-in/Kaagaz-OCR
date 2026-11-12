@@ -10,10 +10,14 @@
 // differ), and when another tab signs out (the BroadcastChannel
 // OPERATOR_CHANNEL, not the customer app's). Always a full page load, so
 // nothing of the console stays in the tab's memory.
+// Issue 468: two minutes before the end, a line says so (SessionEndingNotice). The session lasts
+// a fixed 30 minutes and has no way to be made longer, so it says to save, not to stay signed in.
+// OperatorShell shows it, with the offline line (OfflineBanner), after its skip link.
 
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import styles from "@/components/shell/Shell.module.css";
+import { Icon } from "@/components/ui/Icon";
 import { OPERATOR_CHANNEL, RECHECK_MS, SIGNED_OUT, exitUrl, expiryDelay, meFailed, recheckAfter } from "@/components/operator/logic";
 import type { ExitReason } from "@/components/operator/logic";
 import { onSessionEnded, operatorMe } from "./api";
@@ -36,6 +40,41 @@ export function announceSignOut(): void {
 }
 
 const OperatorContext = createContext<OperatorMe | null>(null);
+
+/** The warning shows this long before the session ends. */
+export const WARN_BEFORE_MS = 2 * 60_000;
+
+/** Milliseconds until the warning shows (at once when it is already that late), within one timer. */
+export function warningDelay(expiresAt: number, now: number): number {
+  return expiryDelay(expiresAt - WARN_BEFORE_MS / 1000, now);
+}
+
+/** What the warning says: no count of minutes, which would go stale while it shows (#468 review). */
+export const SESSION_ENDING_TEXT = "Your session ends in under 2 minutes. Save your changes now.";
+
+/** The warning before the session ends: a polite live region, there from the start, and dismissable. */
+export function SessionEndingNotice({ expiresAt }: { expiresAt: number }) {
+  const [shown, setShown] = useState<number | null>(null); // the expiresAt it was shown for
+  const [dismissed, setDismissed] = useState<number | null>(null);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setShown(expiresAt), warningDelay(expiresAt, Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [expiresAt]);
+  const showing = shown === expiresAt && dismissed !== expiresAt;
+  return (
+    <div role="status" aria-live="polite">
+      {showing ? (
+        <div className={styles.sessionNotice}>
+          <Icon name="alert" />
+          <p className={styles.sessionNoticeText}>{SESSION_ENDING_TEXT}</p>
+          <button type="button" className="btn" onClick={() => setDismissed(expiresAt)}>
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 type Loaded =
   | { kind: "loading" }

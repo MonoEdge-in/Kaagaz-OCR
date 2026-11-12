@@ -6,24 +6,32 @@
 // (AdminsDialog); AI settings opens its scanning and answering settings, Ensemble and
 // budget (OrgAiSettings, features 25-27); Feature switches its own switches (0039,
 // OrgFeatureSwitchesDialog); Session timeout its own sign-in idle timeout (0040,
-// OrgSessionTimeoutDialog); Folder upload limits its own folder upload limits (#484,
-// OrgFolderUploadLimitsDialog). They sit in one Manage menu per row (ManageMenu,
+// OrgSessionTimeoutDialog); Two-step for admins whether its admins must use two-step sign-in
+// (#481, 0068, OrgAdminTwoStepDialog); Folder upload limits its own folder upload limits (#484,
+// OrgFolderUploadLimitsDialog); Google sign-in whether its people may sign in with Google (#507,
+// OrgGoogleSignInDialog); Storage limit how much it may store in all (#516,
+// OrgStorageLimitDialog). They sit in one Manage menu per row (ManageMenu,
 // 16 Oct 2026). Each change opens a dialog (ConfirmDialog): disable, enable,
 // delete (only a disabled organisation) and cancel the deletion; a row being
 // deleted shows its date and the days left. Auto-filing (feature 28) is allowed or
 // stopped per organisation, also in a ConfirmDialog. The table is the shared reflow
 // (Table.module.css): cards below 48rem of room, a table from there.
 // initialSearch (Needs attention on Overview) fills the search and focuses it.
+// #457: a password sign-up waits as "Waiting for approval", with whether its admin's email
+// is confirmed; Approve shows only once it is, as a button beside Manage and in its menu. A
+// waiting sign-up can't be disabled. "Waiting for approval" filters to them.
 
 import { useEffect, useRef, useState } from "react";
 import { useMinuteNow } from "@/components/chat/hooks";
 import table from "@/components/documents/Table.module.css";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
+import { Toast } from "@/components/ui/Toast";
 import { listOrgs } from "@/lib/api";
 import { formatBytes, formatNumber } from "@/lib/format";
 import type { Organisation } from "@/lib/types";
 import { AdminsDialog } from "./AdminsDialog";
+import { OrgAdminTwoStepDialog } from "./AdminTwoStep";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { Confirm } from "./ConfirmDialog";
 import { autofileConfirm, orgConfirm, orgFocusId } from "./confirms";
@@ -31,16 +39,17 @@ import type { OrgChange } from "./confirms";
 import { CreateDialog } from "./CreateDialog";
 import { ManageMenu } from "./ManageMenu";
 import { OrgFeatureSwitchesDialog } from "./FeatureSwitches";
+import { LoadingRows } from "./LoadingRows";
 import { OrgAiSettings, orgAiFocusId } from "./OrgAiSettings";
 import { OrgModelRates } from "./OrgModelRates";
 import { OrgSessionTimeoutDialog } from "./SessionTimeout";
 import { OrgFolderUploadLimitsDialog } from "./FolderUploadLimits";
-import { afterDone, countText, deleteCountdown, filterOrgs, GRACE_DAYS, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts } from "./logic";
+import { GOOGLE_SIGNIN_LINE, OrgGoogleSignInDialog } from "./GoogleSignIn";
+import { OrgStorageLimitDialog } from "./StorageLimit";
+import { afterDone, countText, deleteCountdown, filterOrgs, GRACE_DAYS, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts, waitingOnly } from "./logic";
 import { MoreRows, useRowCap } from "@/components/admin/RowCap";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
-
-const SKELETON_ROWS = [0, 1, 2];
 
 // The header row; Name has the room the short columns leave.
 const COLUMNS: { label: string; className?: string }[] = [
@@ -61,6 +70,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
   const [search, setSearch] = useState(initialSearch);
   const [searched, setSearched] = useState(initialSearch); // the initialSearch last applied
   const [query, setQuery] = useState(initialSearch); // the search, 200ms after the last key
+  const [waiting, setWaiting] = useState(false); // only the sign-ups waiting for approval
   const cap = useRowCap();
   const searchRef = useRef<HTMLInputElement>(null);
   const [creating, setCreating] = useState(false);
@@ -70,8 +80,11 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
   const [ratesOf, setRatesOf] = useState<Organisation | null>(null);
   const [switchesOf, setSwitchesOf] = useState<Organisation | null>(null);
   const [timeoutOf, setTimeoutOf] = useState<Organisation | null>(null);
+  const [twoStepOf, setTwoStepOf] = useState<Organisation | null>(null);
+  const [googleOf, setGoogleOf] = useState<Organisation | null>(null);
   const [folderLimitsOf, setFolderLimitsOf] = useState<Organisation | null>(null);
-  const [done, setDone] = useState("");
+  const [storageOf, setStorageOf] = useState<Organisation | null>(null);
+  const [done, setDone] = useState<string | null>(null);
   const now = useMinuteNow();
 
   useEffect(() => {
@@ -108,7 +121,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
 
   const failed = error !== null && error.attempt === attempt ? error.message : null;
   const reload = () => setAttempt((n) => n + 1);
-  const shown = orgs ? filterOrgs(orgs, query) : [];
+  const shown = orgs ? waitingOnly(filterOrgs(orgs, query), waiting) : [];
   const create = (
     <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
       <Icon name="plus" />
@@ -127,9 +140,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
         </div>
         {orgs && orgs.length > 0 && create}
       </div>
-      <p className="visually-hidden" role="status">
-        {done}
-      </p>
+      <Toast message={done} onClose={() => setDone(null)} />
 
       {failed && !orgs && (
         <div className={admin.errorBanner} role="alert">
@@ -144,18 +155,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
           </button>
         </div>
       )}
-      {!orgs && !failed && (
-        <>
-          <p className="visually-hidden" role="status">
-            Loading the organisations…
-          </p>
-          <div className={`delayed ${admin.skeletons}`} aria-hidden="true">
-            {SKELETON_ROWS.map((row) => (
-              <span key={row} className={`skeleton ${admin.skeletonRow}`} />
-            ))}
-          </div>
-        </>
-      )}
+      {!orgs && !failed && <LoadingRows what="the organisations" />}
       {orgs && orgs.length === 0 && (
         <EmptyState icon="admin" title="No organisations yet" action={create}>
           Create the first one with its first admin.
@@ -178,12 +178,18 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
                 aria-describedby="org-search-summary"
               />
             </div>
+            <label className={styles.waitingFilter}>
+              <input type="checkbox" checked={waiting} onChange={(event) => setWaiting(event.target.checked)} />
+              Waiting for approval
+            </label>
             <p id="org-search-summary" className={styles.summary} role="status">
-              {searchSummary(shown.length, orgs.length, query)}
+              {searchSummary(shown.length, orgs.length, query || (waiting ? "waiting" : ""))}
             </p>
           </div>
           {shown.length === 0 ? (
-            <p className={admin.emptyLine}>No organisation name has these letters.</p>
+            <p className={admin.emptyLine}>
+              {waiting ? "No organisation is waiting for approval." : "No organisation name has these letters."}
+            </p>
           ) : (
             <div className={`${table.reflowWrap} ${admin.tableScroll}`}>
               <table className={`table ${table.reflow}`} role="table">
@@ -208,7 +214,10 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
                       onModelRates={() => setRatesOf(org)}
                       onSwitches={() => setSwitchesOf(org)}
                       onTimeout={() => setTimeoutOf(org)}
+                      onTwoStep={() => setTwoStepOf(org)}
+                      onGoogle={() => setGoogleOf(org)}
                       onFolderLimits={() => setFolderLimitsOf(org)}
+                      onStorage={() => setStorageOf(org)}
                       onChange={(change) => setChanging(orgConfirm(org, change, Date.now()))}
                       onAutofile={() => setChanging(autofileConfirm(org, !org.autofile_granted))}
                     />
@@ -233,9 +242,14 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
       {adminsOf && <AdminsDialog org={adminsOf} onClose={() => setAdminsOf(null)} />}
       {modelsOf && <OrgAiSettings org={modelsOf} onClose={() => setModelsOf(null)} onSaved={setDone} />}
       {ratesOf && <OrgModelRates org={ratesOf} onClose={() => setRatesOf(null)} onSaved={setDone} />}
-      {switchesOf && <OrgFeatureSwitchesDialog org={switchesOf} onClose={() => setSwitchesOf(null)} />}
-      {timeoutOf && <OrgSessionTimeoutDialog org={timeoutOf} onClose={() => setTimeoutOf(null)} />}
-      {folderLimitsOf && <OrgFolderUploadLimitsDialog org={folderLimitsOf} onClose={() => setFolderLimitsOf(null)} />}
+      {switchesOf && <OrgFeatureSwitchesDialog org={switchesOf} onClose={() => setSwitchesOf(null)} onDone={setDone} />}
+      {timeoutOf && <OrgSessionTimeoutDialog org={timeoutOf} onClose={() => setTimeoutOf(null)} onDone={setDone} />}
+      {twoStepOf && <OrgAdminTwoStepDialog org={twoStepOf} onClose={() => setTwoStepOf(null)} onDone={setDone} />}
+      {googleOf && <OrgGoogleSignInDialog org={googleOf} onClose={() => setGoogleOf(null)} onDone={setDone} />}
+      {folderLimitsOf && (
+        <OrgFolderUploadLimitsDialog org={folderLimitsOf} onClose={() => setFolderLimitsOf(null)} onDone={setDone} />
+      )}
+      {storageOf && <OrgStorageLimitDialog org={storageOf} onClose={() => setStorageOf(null)} onDone={setDone} />}
       {changing && (
         <ConfirmDialog
           confirm={changing}
@@ -254,22 +268,28 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
 /** What each Manage item does, in one plain line under it (plain words, 25 Oct 2026). */
 export const MENU_HELP = {
   admins: "See this organisation's admins. Add one, or disable, unlock or reset one's two-step sign-in.",
-  ai: "Choose which AI reads its scans and answers its questions, Ensemble and its monthly budget.",
+  ai: "Choose who reads its pages, which AI answers, Ensemble, its daily page limit and its monthly budget.",
   switches: "Turn features on or off for this organisation only.",
   timeout: "Choose how long its people can be idle before they are signed out.",
+  twoStep: "Require every admin here to sign in with a code from their phone.",
+  google: GOOGLE_SIGNIN_LINE,
   folderLimits: "Set the most files, size and folders one folder upload may have.",
+  storage: "Set how much this organisation may store in all, in GB.",
   limits: "Cap how many AI requests a minute it and each of its people may send.",
   allowAutofile: "Lets its admin turn on filing new uploads into folders by type.",
   stopAutofile: "Turns auto-filing off here. Files already filed stay where they are.",
   disable: "Signs all its people out now and stops its work until you enable it again.",
   enable: "Lets this organisation's people sign in again.",
+  approve: "Lets this new organisation's admin sign in and start uploading.",
   delete: `Deletes it with all its people and documents after ${GRACE_DAYS} days. You can cancel until then.`,
   cancel: "Keeps it and everything in it. It stays disabled until you enable it.",
 } as const;
 
-// The changes each status allows, as the server: delete only a disabled one.
+// The changes each status allows, as the server: delete only a disabled one; Approve only a
+// pending one whose admin confirmed their email (OrgRow), which can't be disabled.
 const CHANGES: Record<Organisation["status"], { change: OrgChange; label: string; description: string; danger?: boolean }[]> = {
   active: [{ change: "disable", label: "Disable", description: MENU_HELP.disable, danger: true }],
+  pending: [{ change: "approve", label: "Approve", description: MENU_HELP.approve }],
   disabled: [
     { change: "enable", label: "Enable", description: MENU_HELP.enable },
     { change: "delete", label: "Delete", description: MENU_HELP.delete, danger: true },
@@ -285,11 +305,15 @@ function OrgRow(props: {
   onModelRates(): void;
   onSwitches(): void;
   onTimeout(): void;
+  onTwoStep(): void;
+  onGoogle(): void;
   onFolderLimits(): void;
+  onStorage(): void;
   onChange(change: OrgChange): void;
   onAutofile(): void;
 }) {
-  const { org, now, onAdmins, onModels, onModelRates, onSwitches, onTimeout, onFolderLimits, onChange, onAutofile } = props;
+  const { org, now, onAdmins, onModels, onModelRates, onSwitches, onTimeout, onTwoStep, onGoogle, onFolderLimits, onStorage, onChange, onAutofile } =
+    props;
   const status = orgStatus(org);
   const countdown = org.status === "deleting" ? deleteCountdown(org.delete_after, now) : null;
   const size = formatBytes(org.storage_bytes);
@@ -333,34 +357,48 @@ function OrgRow(props: {
         <span className={styles.when}>{lastActivityText(org.last_activity_at, now)}</span>
       </td>
       <td role="cell">
-        {/* One menu (owner, 16 Oct 2026): the safe actions, then Disable, Enable, Delete
-            or Cancel deletion after a separator. Each change opens its confirm. The
-            button keeps orgAiFocusId, so closing AI settings comes back to it. */}
-        <ManageMenu
-          name={org.name}
-          buttonId={orgAiFocusId(org.id)}
-          safe={[
-            { label: "Admins", description: MENU_HELP.admins, onSelect: onAdmins },
-            ...(org.status === "deleting"
-              ? []
-              : [
-                  { label: "AI settings", description: MENU_HELP.ai, onSelect: onModels },
-                  { label: "Feature switches", description: MENU_HELP.switches, onSelect: onSwitches },
-                  { label: "Session timeout", description: MENU_HELP.timeout, onSelect: onTimeout },
-                  { label: "Folder upload limits", description: MENU_HELP.folderLimits, onSelect: onFolderLimits },
-                  { label: "Request limits", description: MENU_HELP.limits, onSelect: onModelRates },
-                  org.autofile_granted
-                    ? { label: "Stop auto-filing", description: MENU_HELP.stopAutofile, onSelect: onAutofile }
-                    : { label: "Allow auto-filing", description: MENU_HELP.allowAutofile, onSelect: onAutofile },
-                ]),
-          ]}
-          changes={CHANGES[org.status].map(({ change, label, description, danger }) => ({
-            label,
-            description,
-            danger,
-            onSelect: () => onChange(change),
-          }))}
-        />
+        <div className={styles.orgActions}>
+          {/* #457 review: a waiting sign-up whose admin confirmed their email shows Approve here
+              too, so the operator need not open the menu to find it. */}
+          {org.status === "pending" && org.admin_email_confirmed && (
+            <button type="button" className="btn" aria-label={`Approve ${org.name}`} onClick={() => onChange("approve")}>
+              Approve
+            </button>
+          )}
+          {/* One menu (owner, 16 Oct 2026): the safe actions, then Disable, Enable, Delete
+              or Cancel deletion after a separator. Each change opens its confirm. The
+              button keeps orgAiFocusId, so closing AI settings comes back to it. */}
+          <ManageMenu
+            name={org.name}
+            buttonId={orgAiFocusId(org.id)}
+            safe={[
+              { label: "Admins", description: MENU_HELP.admins, onSelect: onAdmins },
+              ...(org.status === "deleting"
+                ? []
+                : [
+                    { label: "AI settings", description: MENU_HELP.ai, onSelect: onModels },
+                    { label: "Feature switches", description: MENU_HELP.switches, onSelect: onSwitches },
+                    { label: "Session timeout", description: MENU_HELP.timeout, onSelect: onTimeout },
+                    { label: "Two-step for admins", description: MENU_HELP.twoStep, onSelect: onTwoStep },
+                    { label: "Google sign-in", description: MENU_HELP.google, onSelect: onGoogle },
+                    { label: "Folder upload limits", description: MENU_HELP.folderLimits, onSelect: onFolderLimits },
+                    { label: "Storage limit", description: MENU_HELP.storage, onSelect: onStorage },
+                    { label: "Request limits", description: MENU_HELP.limits, onSelect: onModelRates },
+                    org.autofile_granted
+                      ? { label: "Stop auto-filing", description: MENU_HELP.stopAutofile, onSelect: onAutofile }
+                      : { label: "Allow auto-filing", description: MENU_HELP.allowAutofile, onSelect: onAutofile },
+                  ]),
+            ]}
+            changes={CHANGES[org.status]
+              .filter(({ change }) => change !== "approve" || org.admin_email_confirmed)
+              .map(({ change, label, description, danger }) => ({
+              label,
+              description,
+              danger,
+              onSelect: () => onChange(change),
+            }))}
+          />
+        </div>
       </td>
     </tr>
   );

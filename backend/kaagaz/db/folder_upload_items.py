@@ -9,17 +9,31 @@ an upload.
 
 * ``register_items``: a page of at most 1,000 files, idempotent by ``path_key`` (an item
   already there comes back as it is). The counts registered are kept on the upload row, so
-  the limits are checked in O(1) a page, never by counting the items again. A file Kaagaz
+  the limits are checked in O(1) a page, never by counting the items again; the bytes leave out
+  a file refused for its type (by the browser, which leaves it out of the plan's bytes too) or
+  its unsafe name (#516). A file Kaagaz
   can't take (empty, too large, a type the browser refused, or ``bad_name``: an unsafe name, or
   the name of another file of its folder once NFC) is registered ``failed`` with its code, so
   nothing is dropped. Item ``seq`` goes into batch ``seq // cap`` (``batch_for``), so a batch
   never holds more than MAX_FILES_PER_BATCH and ``batch_full`` can't happen.
+* "Add new files only": a file registered with the browser's SHA-256 (``NewItem.sha256``) of a
+  document of this organisation of the same size (``_ALREADY_IN``, on UNIQUE (customer_id,
+  sha256)) is registered ``duplicate`` of it, so it is never sent. The hash is only looked up,
+  never kept; no document is written or moved, and a file that is sent is hashed again by the
+  server. Already-in files are not counted against the limits (``items_counted``,
+  ``bytes_registered``), only against the declared count. A page that looked hashes up is
+  audited ``folder.upload_check`` (counts only; only the admin's log shows it). Access: any
+  user of the organisation may open any of its documents today, Trash included
+  (``listing.get_document``); per-user access (NB-46) adds its rule to ``_ALREADY_IN``.
 * ``finish_item`` and ``fail_item`` move a ``waiting`` item only, in one statement each, so two
   sends of one item end in one state. A send whose document already exists is ``stored`` when
   that document is this item's own (the same uploader, folder, batch and name: an earlier send
   stored it, then died before finishing), else ``duplicate`` (Kaagaz already had the file).
-* ``summaries`` counts the items by state on the index ``folder_upload_items_state``; only one
+* ``summaries`` counts the items by state on the index ``folder_upload_items_state`` (a zip the
+  worker unpacked, #522, is not listed: the zip's own document shows it); only one
   upload's ``progress`` joins documents (reading, ready, a problem), under a statement timeout.
+  A stored file the reading pause holds (``documents.reading_held``, #478) is counted ``held``,
+  never reading, with why (``held_reason``: the budget first, as ``pause_reason``).
 """
 
 import uuid
@@ -30,6 +44,8 @@ from typing import Any, Literal
 
 from sqlalchemy import Connection, text
 
+from kaagaz.db import audit
+from kaagaz.db.documents import REFUSED_ALONE
 from kaagaz.db.folder_uploads import FolderUploadLimits
 
 FAILURE_CODES = ("too_large", "unsupported_type", "empty_file", "folder_gone", "bad_name")
@@ -45,6 +61,7 @@ class NewItem:
     folder_id: str
     size: int
     refused: str | None = None  # unsupported_type (the browser's), or bad_name (the caller's)
+    sha256: str | None = None  # the browser's, of the file's bytes: only looked up, never kept
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,9 +101,11 @@ class Summary:
     stored: int
     duplicate: int
     failed: int
-    reading: int | None  # these three only for one upload (``progress``)
+    reading: int | None  # these five only for one upload (``progress``)
     ready: int | None
     problem: int | None
+    held: int | None  # waiting for the reading pause (#478), not counted in reading
+    held_reason: str | None  # DAILY_LIMIT or BUDGET (kaagaz.jobs.reading_pause); None with none held
 
 
 class ItemsRefused(Exception):
@@ -110,7 +129,8 @@ _COLUMNS = (
     " LEFT JOIN documents d ON d.customer_id = i.customer_id AND d.id = i.document_id"
 )
 _LOCK = text(
-    "SELECT file_count, total_bytes, items_registered, bytes_registered FROM folder_uploads"
+    "SELECT file_count, total_bytes, items_registered, items_counted, bytes_registered, root_folder_id"
+    " FROM folder_uploads"
     " WHERE customer_id = :c AND id = :u AND user_id = :usr FOR UPDATE"
 )
 _UNKNOWN_FOLDERS = text(
@@ -122,21 +142,30 @@ _KNOWN_KEYS = text(
     "SELECT path_key FROM folder_upload_items"
     " WHERE customer_id = :c AND folder_upload_id = :u AND path_key = ANY(CAST(:keys AS text[]))"
 )
+# "Add new files only": the document of this organisation each hash and size is, if any; a
+# refused copy alone is not, so the file is sent and replaces it (#554, ``db/documents.py``).
+_ALREADY_IN = text(
+    "SELECT w.k, d.id FROM unnest(CAST(:keys AS text[]), CAST(:hashes AS text[]), CAST(:sizes AS bigint[]))"  # noqa: S608 - a fixed fragment
+    " AS w (k, h, s) JOIN documents d ON d.customer_id = :c AND d.sha256 = w.h AND d.size_bytes = w.s"
+    " AND NOT (" + REFUSED_ALONE + ")"
+)
+# Each row: failed with its code, else a duplicate of the document it already is, else waiting.
 _INSERT = text(
     "INSERT INTO folder_upload_items (customer_id, folder_upload_id, seq, path_key, name, folder_id,"
-    " size_bytes, batch_id, state, failure_code)"
+    " size_bytes, batch_id, state, failure_code, document_id)"
     " SELECT :c, :u, w.seq, w.k, w.n, w.f, w.s, w.b,"
-    " CASE WHEN w.code IS NULL THEN 'waiting' ELSE 'failed' END, w.code"
+    " CASE WHEN w.code IS NOT NULL THEN 'failed' WHEN w.d IS NOT NULL THEN 'duplicate' ELSE 'waiting' END,"
+    " w.code, CASE WHEN w.code IS NULL THEN w.d END"
     " FROM unnest(CAST(:seqs AS integer[]), CAST(:keys AS text[]), CAST(:names AS text[]),"
-    " CAST(:folders AS uuid[]), CAST(:sizes AS bigint[]), CAST(:batches AS uuid[]), CAST(:codes AS text[]))"
-    " AS w (seq, k, n, f, s, b, code)"
+    " CAST(:folders AS uuid[]), CAST(:sizes AS bigint[]), CAST(:batches AS uuid[]), CAST(:codes AS text[]),"
+    " CAST(:docs AS uuid[])) AS w (seq, k, n, f, s, b, code, d)"
 )
 _COUNTED = text(
-    "UPDATE folder_uploads SET items_registered = :n, bytes_registered = :bytes, updated_at = now()"
-    " WHERE customer_id = :c AND id = :u"
+    "UPDATE folder_uploads SET items_registered = :n, items_counted = :counted, bytes_registered = :bytes,"
+    " updated_at = now() WHERE customer_id = :c AND id = :u"
 )
 # shortcut: no index on (folder_id, name), so this reads the upload's items, O(n) a page; add
-# one to 0061c if registering a 200,000-file upload gets slow.
+# one to 0071 if registering a 200,000-file upload gets slow.
 _SAME_NAMES = text(
     "SELECT i.folder_id, i.name FROM folder_upload_items i"
     " JOIN unnest(CAST(:folders AS uuid[]), CAST(:names AS text[])) AS w (f, n)"
@@ -163,8 +192,10 @@ def register_items(
     """Register these files of this user's upload (module notes); every item, new or known, in
     the request's order. Raises ItemsRefused before anything is written: not_found (no such
     upload of this user), bad_request (a folder not in its plan, a key twice), too_many_files
-    or too_large_upload (past the plan's count or the limit). Seven statements: O(k log n) for
-    k items in a page of an upload of n, and O(n) for the names (_SAME_NAMES)."""
+    (past the plan's count, or the files not already in past the limit) or too_large_upload
+    (their bytes past the plan's or the limit). At most nine statements: O(k log n) for k items
+    in a page of an upload of n, O(k log D) for the hashes against D documents, and O(n) for
+    the names (_SAME_NAMES)."""
     keys = [item.path_key for item in items]
     if len(set(keys)) != len(keys):
         raise ItemsRefused("bad_request")
@@ -177,35 +208,73 @@ def register_items(
         raise ItemsRefused("bad_request")
     known = {str(key) for key in conn.execute(_KNOWN_KEYS, params).scalars()}
     new = [item for item in items if item.path_key not in known]
-    file_count, total_bytes, registered, registered_bytes = (int(value) for value in upload)
-    count, size = registered + len(new), registered_bytes + sum(item.size for item in new)
-    if count > min(file_count, limits.max_files):
-        raise ItemsRefused("too_many_files")
-    if size > min(total_bytes, limits.max_bytes):
-        raise ItemsRefused("too_large_upload")
     if new:
-        seqs = list(range(registered, count))
-        places = {"folders": [item.folder_id for item in new], "names": [item.name for item in new]}
-        taken = {(str(f), str(n)) for f, n in conn.execute(_SAME_NAMES, {**params, **places})}
-        codes = []
-        for item in new:  # names are NFC already, so equal here is equal once NFC
-            code = _refused(item, largest_limit)
-            codes.append("bad_name" if code is None and (item.folder_id, item.name) in taken else code)
-            taken.add((item.folder_id, item.name))
-        rows = {
-            **params,
-            "seqs": seqs,
-            "keys": [item.path_key for item in new],
-            "names": [item.name for item in new],
-            "folders": [item.folder_id for item in new],
-            "sizes": [item.size for item in new],
-            "batches": [batch_for(upload_id, seq, batch_cap) for seq in seqs],
-            "codes": codes,
-        }
-        conn.execute(_INSERT, rows)
-        conn.execute(_COUNTED, {**params, "n": count, "bytes": size})
+        _register_new(conn, params, upload, new, batch_cap, largest_limit, limits)
     found = {row.path_key: row for row in map(_item, conn.execute(_BY_KEYS, params))}
     return [found[key] for key in keys]
+
+
+def _register_new(
+    conn: Connection,
+    params: dict[str, Any],
+    upload: Sequence[Any],
+    new: Sequence[NewItem],
+    batch_cap: int,
+    largest_limit: int,
+    limits: FolderUploadLimits,
+) -> None:
+    """Insert the new items (failed, already in, or waiting), count them and audit the hashes
+    looked up (``register_items``)."""
+    file_count, total_bytes, registered, counted, counted_bytes = (int(value) for value in upload[:5])
+    places = {"folders": [item.folder_id for item in new], "names": [item.name for item in new]}
+    taken = {(str(f), str(n)) for f, n in conn.execute(_SAME_NAMES, {**params, **places})}
+    codes = []
+    for item in new:  # names are NFC already, so equal here is equal once NFC
+        code = _refused(item, largest_limit)
+        codes.append("bad_name" if code is None and (item.folder_id, item.name) in taken else code)
+        taken.add((item.folder_id, item.name))
+    looked_up = [item for item, code in zip(new, codes, strict=True) if code is None and item.sha256]
+    already: dict[str, str] = {}
+    if looked_up:
+        hashes = {
+            "keys": [item.path_key for item in looked_up],
+            "hashes": [item.sha256 for item in looked_up],
+            "sizes": [item.size for item in looked_up],
+        }
+        already = {str(k): str(d) for k, d in conn.execute(_ALREADY_IN, {**params, **hashes})}
+    sent = [item for item in new if item.path_key not in already]
+    count, counted = registered + len(new), counted + len(sent)
+    # A file refused here by its type or name is never sent, and the browser leaves the files it
+    # refused out of the plan's bytes (#516), so their bytes are not counted.
+    counted_bytes += sum(item.size for item in sent if item.refused is None)
+    if count > file_count or counted > limits.max_files:
+        raise ItemsRefused("too_many_files")
+    if counted_bytes > min(total_bytes, limits.max_bytes):
+        raise ItemsRefused("too_large_upload")
+    upload_id = str(params["u"])
+    seqs = list(range(registered, count))
+    rows = {
+        **params,
+        **places,
+        "seqs": seqs,
+        "keys": [item.path_key for item in new],
+        "sizes": [item.size for item in new],
+        "batches": [batch_for(upload_id, seq, batch_cap) for seq in seqs],
+        "codes": codes,
+        "docs": [already.get(item.path_key) for item in new],
+    }
+    conn.execute(_INSERT, rows)
+    conn.execute(_COUNTED, {**params, "n": count, "counted": counted, "bytes": counted_bytes})
+    if looked_up:
+        audit.record(
+            conn,
+            str(params["c"]),
+            actor_user_id=str(params["usr"]),
+            action="folder.upload_check",
+            target_type="folder",
+            target_id=None if upload[5] is None else str(upload[5]),
+            details={"folder_upload_id": upload_id, "checked": len(looked_up), "already_in": len(already)},
+        )
 
 
 def _refused(item: NewItem, largest_limit: int) -> str | None:
@@ -239,6 +308,11 @@ def item(conn: Connection, customer_id: str, item_id: str, *, user_id: str) -> I
 
 # The document is the item's own copy when an earlier send stored it (same uploader, folder,
 # batch and name) and then died before it was finished: stored, not a duplicate of itself.
+_OWN = text(
+    "SELECT d.id FROM folder_upload_items i JOIN documents d ON d.customer_id = i.customer_id"
+    " AND d.uploaded_by = :usr AND d.folder_id = i.folder_id AND d.batch_id = i.batch_id"
+    " AND d.display_name = i.name WHERE i.customer_id = :c AND i.id = :i ORDER BY d.created_at, d.id LIMIT 1"
+)
 _FINISH = text(
     "UPDATE folder_upload_items i SET document_id = :d, updated_at = now(),"
     " state = CASE WHEN NOT :dup OR EXISTS (SELECT 1 FROM documents d WHERE d.customer_id = :c"
@@ -261,9 +335,35 @@ def finish_item(
     conn.execute(_FINISH, params)
 
 
+def own_document(conn: Connection, customer_id: str, item_id: str, *, user_id: str) -> str | None:
+    """A14: the document an earlier run stored for this item (``_FINISH``'s rule) before it stopped
+    short of finishing it; None for none. One statement, on the batch's documents."""
+    found = conn.execute(_OWN, {"c": customer_id, "i": item_id, "usr": user_id}).scalar()
+    return None if found is None else str(found)
+
+
 def fail_item(conn: Connection, customer_id: str, item_id: str, code: str) -> None:
     """A waiting item failed for good with ``code`` (FAILURE_CODES). One statement, O(log n)."""
     conn.execute(_FAIL, {"c": customer_id, "i": item_id, "code": code})
+
+
+_SENT = text(
+    "SELECT coalesce(sum(i.size_bytes), 0) FROM folder_upload_items i"
+    " JOIN folder_uploads u ON u.customer_id = i.customer_id AND u.id = i.folder_upload_id"
+    " WHERE i.customer_id = :c AND i.folder_upload_id = :u AND u.user_id = :usr"
+    " AND i.state IN ('stored', 'duplicate', 'failed')"
+)
+
+
+def sent_bytes(conn: Connection, customer_id: str, upload_id: str, *, user_id: str) -> int:
+    """#516: the bytes of this user's upload no longer to be sent (stored, a duplicate, or failed);
+    0 for a new upload. A re-plan ("Continue upload") checks only the rest against the storage
+    limit, so the files it sent are not counted twice and a failed one, never stored, not at all.
+    shortcut: a file the browser refused is failed too, though the plan's bytes left it out, so a
+    re-plan can pass by its bytes; the upload service still refuses each file past the limit. Mark
+    the browser's refusals apart if that matters. O(k) for its k items, on
+    ``folder_upload_items_state``."""
+    return int(conn.execute(_SENT, {"c": customer_id, "u": upload_id, "usr": user_id}).scalar_one())
 
 
 _UPLOADS = (
@@ -272,7 +372,8 @@ _UPLOADS = (
     " FROM folder_uploads WHERE customer_id = :c AND user_id = :usr"
 )
 _RECENT = text(
-    _UPLOADS + " AND created_at > now() - make_interval(days => :days) ORDER BY created_at DESC LIMIT :limit"
+    _UPLOADS + " AND zip_document_id IS NULL AND created_at > now() - make_interval(days => :days)"
+    " ORDER BY created_at DESC LIMIT :limit"
 )
 _ONE = text(_UPLOADS + " AND id = :u")
 _STATES = text(
@@ -281,10 +382,14 @@ _STATES = text(
     " GROUP BY folder_upload_id, state"
 )
 _SET_TIMEOUT = text("SELECT set_config('statement_timeout', :ms, true)")
+# Held: as the release sweep's (reading_days.waiting). min(): 'budget' sorts before
+# 'daily_limit', so the budget is named first, as pause_reason does.
 _PROGRESS = text(
-    "SELECT count(*) FILTER (WHERE d.status IN ('received', 'clean')),"
+    "SELECT count(*) FILTER (WHERE d.status IN ('received', 'clean') AND d.reading_held IS NULL),"
     " count(*) FILTER (WHERE d.status = 'ready'),"
-    " count(*) FILTER (WHERE d.status IN ('failed', 'rejected', 'needs_reader'))"
+    " count(*) FILTER (WHERE d.status IN ('failed', 'rejected', 'needs_reader')),"
+    " count(*) FILTER (WHERE d.status IN ('received', 'clean') AND d.reading_held IS NOT NULL),"
+    " min(d.reading_held) FILTER (WHERE d.status IN ('received', 'clean'))"
     " FROM folder_upload_items i JOIN documents d ON d.customer_id = i.customer_id AND d.id = i.document_id"
     " WHERE i.customer_id = :c AND i.folder_upload_id = :u AND i.state = 'stored'"
 )
@@ -299,14 +404,52 @@ def summaries(conn: Connection, customer_id: str, *, user_id: str) -> list[Summa
 
 def progress(conn: Connection, customer_id: str, upload_id: str, *, user_id: str) -> Summary | None:
     """One upload of this user, its items counted by state and its stored files by where their
-    reading is; None for none. Three statements under TIMEOUT_MS, O(n log D) for n items."""
+    reading is (held by the reading pause apart); None for none. Three statements under
+    TIMEOUT_MS, O(n log D) for n items."""
     params = {"c": customer_id, "usr": user_id, "u": upload_id}
     found = _summaries(conn, params, conn.execute(_ONE, params).all())
     if not found:
         return None
     conn.execute(_SET_TIMEOUT, {"ms": str(TIMEOUT_MS)})
-    reading, ready, problem = conn.execute(_PROGRESS, params).one()
-    return replace(found[0], reading=int(reading), ready=int(ready), problem=int(problem))
+    reading, ready, problem, held, reason = conn.execute(_PROGRESS, params).one()
+    return replace(
+        found[0],
+        reading=int(reading),
+        ready=int(ready),
+        problem=int(problem),
+        held=int(held),
+        held_reason=reason,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class Previous:
+    id: str
+    target: str
+    parent_folder_id: str | None
+    root_folder_id: str
+    created_at: datetime
+
+
+# Newest first on folder_uploads_owner; a root deleted since is passed over.
+_PREVIOUS = text(
+    "SELECT u.id, u.target, u.parent_folder_id, u.root_folder_id, u.created_at FROM folder_uploads u"
+    " WHERE u.customer_id = :c AND u.user_id = :usr AND u.source_name = :name"
+    " AND EXISTS (SELECT 1 FROM folders f WHERE f.customer_id = :c AND f.id = u.root_folder_id)"
+    " ORDER BY u.created_at DESC LIMIT 1"
+)
+
+
+def previous(conn: Connection, customer_id: str, *, user_id: str, source_name: str) -> Previous | None:
+    """This user's latest upload of a folder named ``source_name`` (cleaned, as the plan keeps
+    it) whose root folder is still there; None for none. One statement, O(u log F) for this
+    user's u uploads."""
+    params = {"c": customer_id, "usr": user_id, "name": source_name}
+    row = conn.execute(_PREVIOUS, params).first()
+    if row is None:
+        return None
+    parent = None if row[2] is None else str(row[2])
+    return Previous(str(row[0]), str(row[1]), parent, str(row[3]), row[4])
 
 
 def _summaries(conn: Connection, params: dict[str, Any], uploads: Sequence[Any]) -> list[Summary]:
@@ -336,6 +479,8 @@ def _summaries(conn: Connection, params: dict[str, Any], uploads: Sequence[Any])
             reading=None,
             ready=None,
             problem=None,
+            held=None,
+            held_reason=None,
         )
         for row in uploads
     ]

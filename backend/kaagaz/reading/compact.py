@@ -31,10 +31,9 @@ unpinned. A reply with no valid header line (none, or one short of a field) did 
 layout: ``Decoded.headed`` is False and every row is unpinned (the reader never caches it). Only
 what is not text is left out: a row with no text, controls (as ``checked`` drops them), an
 unknown script or issue code, an unsure word not in its line. ``encode_compact`` turns a cached
-g3 read into ``r``, for the offline proof (``tests/test_reading_compact.py``'s round trip;
-Testing-Env's ``cli measure-compact`` on real cached reads) that the format loses nothing; it
-writes boxes exactly as cached, and a line break inside a line's text (never in a model's
-reply) as a space, its one loss.
+g3 read into ``r``, for the offline proof (``cli measure-compact``) that the format loses
+nothing; it writes boxes exactly as cached, and a line break inside a line's text (never in a
+model's reply) as a space, its one loss.
 
 This module imports neither the reader nor the model client, so the offline proof runs without
 them. Nothing here logs. O(size of the reply) both ways.

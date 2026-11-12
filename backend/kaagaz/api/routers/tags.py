@@ -91,11 +91,7 @@ def list_tags(user: User, context: Context) -> dict[str, Any]:
 def create_tag(body: NewTagBody, user: User, context: Context) -> dict[str, Any]:
     name = clean_name(body.name, max_length=TAG_NAME_MAX)
     if name is None:
-        raise ApiError(
-            400,
-            "bad_request",
-            f"Enter a tag name of 1 to {TAG_NAME_MAX} characters, with no hidden characters.",
-        )
+        raise ApiError(400, "bad_request", f"Enter a tag name of 1 to {TAG_NAME_MAX} characters.")
     with _refused(), context.db.customer(user.customer_id) as conn:
         row = tags_sql.create_tag(conn, user.customer_id, name=name, created_by=user.user_id)
         _audit(conn, user, "tag.create", "tag", row.id)

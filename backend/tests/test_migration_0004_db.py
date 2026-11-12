@@ -122,7 +122,9 @@ def _current(url: str) -> str:
         check=True,
         capture_output=True,
     )
-    return done.stdout.decode().strip()
+    # Changed on purpose (#484, 4 Nov 2026): 0071 merges production's 0061c, a branch off 0061b,
+    # so alembic marks those two "(mergepoint)" and "(branchpoint)"; `alembic heads` does not.
+    return done.stdout.decode().replace(" (mergepoint)", "").replace(" (branchpoint)", "").strip()
 
 
 def _head() -> str:

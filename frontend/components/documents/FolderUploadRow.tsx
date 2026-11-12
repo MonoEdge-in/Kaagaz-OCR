@@ -14,8 +14,8 @@ import { BusyLabel } from "./BusyLabel";
 import { shortPathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
 import { attentionOf, folderLine, itemProblemText, readingLine } from "./folderUpload";
-import { uploadStateText } from "./logic";
 import type { FolderUploadView } from "./folderUpload";
+import { uploadStateText } from "./logic";
 import styles from "./Documents.module.css";
 
 /** A file this tab could not send, and whether sending it again may help. */
@@ -56,9 +56,14 @@ export function FolderUploadRow({
   const uploaded = view.stored + view.duplicates;
   const sending = view.phase === "sending";
   const busy = sending || view.phase === "stopping"; // no Retry until the files being sent are in
+  // "Add new files only", while listing: the bar shows the files checked.
+  const checked = view.phase === "registering" ? view.checked : null;
+  const meter = checked ?? uploaded;
   const retryable = notSent.rows.some((row) => row.retry);
-  // Production QA (5 Nov 2026): a stopped row, or one to choose again, can be cleared too.
-  const settled = ["done", "refused", "stopped", "needs_pick"].includes(view.phase);
+  // Production QA (5 Nov 2026): a stopped row, or one to choose again, can be cleared too; and
+  // one stopping (review of #564): a file being sent may never finish (offline, a server that
+  // never answers), so the row is never left with no button. Its run's later events are ignored.
+  const settled = ["done", "refused", "stopped", "needs_pick", "stopping"].includes(view.phase);
   const reading = readingLine(view);
   const attention = attentionOf(view);
   // Each button names its folder for a screen reader, as Clear does (production QA, 5 Nov 2026).
@@ -74,18 +79,21 @@ export function FolderUploadRow({
           <progress
             className={styles.readMeter}
             max={view.total}
-            value={uploaded}
-            aria-label={`Files of “${view.rootName}” uploaded`}
-            aria-valuetext={`${formatNumber(uploaded)} of ${formatNumber(view.total)}`}
+            value={meter}
+            aria-label={`Files of “${view.rootName}” ${checked === null ? "uploaded" : "checked"}`}
+            aria-valuetext={`${formatNumber(meter)} of ${formatNumber(view.total)}`}
           />
         </div>
       )}
       {reading && <p className={`muted ${styles.small}`}>{reading}</p>}
+      {view.held > 0 && view.heldMessage && <p className={`muted ${styles.small}`}>{view.heldMessage}</p>}
       {view.sending.length > 0 && (
         <ul className={styles.uploads}>
           {view.sending.map((row) => (
             <li key={row.itemId} className={`muted ${styles.small}`}>
-              {row.waiting ? `${row.name}: ${uploadStateText({ kind: "offline", fraction: row.fraction, server: row.waiting === "server" })}` : `Sending ${row.name}`}
+              {row.waiting
+                ? `${row.name}: ${uploadStateText({ kind: "offline", fraction: row.fraction, server: row.waiting === "server" })}`
+                : `Sending ${row.name}`}
             </li>
           ))}
         </ul>
@@ -98,7 +106,8 @@ export function FolderUploadRow({
         )}
         {view.phase === "stopping" && (
           <button type="button" className="btn" disabled>
-            Stopping after the files being sent…{named}
+            {view.sending.length > 0 ? "Stopping after the files being sent…" : "Stopping…"}
+            {named}
           </button>
         )}
         {view.phase === "stopped" && held && (
@@ -123,7 +132,7 @@ export function FolderUploadRow({
         )}
       </div>
       {notSent.total > 0 && (
-        <ul className={styles.uploads} aria-label="Not sent">
+        <ul className={styles.uploads} aria-label="Not sent yet">
           {notSent.rows.map((row) => (
             <li key={row.item.id} className={styles.upload} data-state="error">
               <div className={styles.uploadBody}>
@@ -139,7 +148,7 @@ export function FolderUploadRow({
             </li>
           ))}
           {notSent.total > notSent.rows.length && (
-            <li className={`muted ${styles.small}`}>and {formatNumber(notSent.total - notSent.rows.length)} more not sent</li>
+            <li className={`muted ${styles.small}`}>and {formatNumber(notSent.total - notSent.rows.length)} more not sent yet</li>
           )}
         </ul>
       )}
@@ -159,7 +168,7 @@ export function FolderUploadRow({
           render={(item) => <DuplicateItem key={item.id} item={item} tree={tree} />}
         />
       )}
-      {attention === 0 && notSent.total === 0 && view.duplicates === 0 && view.phase === "done" && view.reading === 0 && (
+      {attention === 0 && notSent.total === 0 && view.duplicates === 0 && view.phase === "done" && view.reading === 0 && view.held === 0 && (
         <p className={`muted ${styles.small}`}>Every file is in its folder.</p>
       )}
     </div>

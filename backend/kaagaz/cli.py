@@ -11,7 +11,8 @@
   it is off its users can't sign in, their sessions end at the next request
   (for good: after enabling, everyone signs in again), the worker fails its
   jobs (``customer_disabled``) and no model is called for it. A customer
-  being deleted is refused, and nothing changes. Each change
+  being deleted is refused, and nothing changes; so is enabling a sign-up waiting for
+  approval (0061: the operator console's Approve, once its e-mail is proven). Each change
   writes one audit row in that customer's log (``customer.disable``,
   ``customer.enable``). These two run as the table owner (``_owner``).
 * ``purge-customer --customer-id --now``: break-glass for a legal request (super admin
@@ -42,7 +43,14 @@
   thresholds and timeouts from real numbers. It touches no database, file storage or
   queue, and it does NOT run the virus scan: use it only on files you trust.
   ``--truth`` names a folder of the right text for each page (``1.txt``, ``2.txt``,
-  ..., UTF-8), and adds each page's character and word error rates (CER, WER).
+  ..., UTF-8), and adds each page's character and word error rates (CER, WER), on NFC
+  text, and its value error rate (#465): of the values in the truth (``values_of``: words
+  with a digit, such as amounts, dates and GSTINs), the share the read got wrong or missed,
+  in any order. A page's optional ``<n>.fields.json`` (gstin, invoice_number, date,
+  amounts, names: a text or a list of texts each) adds each field's exact matches, a
+  truth GSTIN with a wrong check character ``truth_bad``. A ``truth`` line then adds them
+  up, with the reader's tokens per page (the price sum: docs/architecture.md, "Measure true
+  accuracy with a truth set").
   ``--engine`` (PRD 5 PR 1, the measurement) reads scans with that reader instead of
   OCR_ENGINE's, with every OCR_ENGINE check of the settings, and each page read by
   OCR adds who read it, its tokens (in and out, 0 from the page cache), its unsure
@@ -98,10 +106,33 @@
   spent (all measured), and the tokens saved (estimated: a whole-page Careful read's tokens
   less what the page spent). Per-page tokens are recorded only since 16 Oct 2026, so the
   token lines count only the runs read since, and it says how many. Numbers only.
+* ``measure-compact [--days N]`` (#488, Tushar, 4 Nov 2026): the offline proof of Ultra low cost's
+  compact reply, for the server. It makes no AI call: over every organisation's cached g3 page
+  reads (``page_reads``, READER_PROMPT_VERSION and its "+<level>" keys) of the last N days (30),
+  each read as its own organisation, each reply is encoded to the compact ``r`` and decoded
+  back (``reading.compact``) and compared (``same_reply``: ignoring the lines' order, blocks as
+  groupings). It prints the pages, the share decoded without a loss, the average and 95th
+  percentile characters of the compact and of the original replies (compact JSON), and an output
+  token estimate from the cache's own output tokens a character (an upper bound: hidden thinking
+  is billed as output too). Numbers only, never a word of a page.
 * ``prune-folders [--customer-id ID] [--apply]``: the empty folders Kaagaz made (auto-filing's
   department, type, property, party and year folders with nothing in them, ``folders.prune_empty``'s
   rules), listed by each customer's count; ``--apply`` deletes them and then their parents left
   empty, each audited. Folders people made are never listed. Ids and counts only.
+* ``backup-files`` and ``restore-files`` (#476, 3 Nov 2026): every stored file, every
+  customer's, as one tar on stdout, read through the S3 API (``S3Storage.write_tar``), for the
+  nightly backup (infra/ec2/pgdump.sh); and that tar from stdin back into an EMPTY bucket, made
+  first if missing (the restore drill, infra/ec2/restore-drill.sh). The file count goes to stderr;
+  a backup of no files fails (code 2).
+* ``backup-upload --bucket NAME --key KEY``: stdin, already encrypted, to the off-server backup
+  bucket in ap-south-1, in parts, never over an object already there, with the machine's own AWS
+  role; prints its size and sha256. It reads no settings and no database, so pgdump.sh runs it
+  beside the app on the host network.
+* ``disk-alert --used PERCENT``: emails OPS_ALERT_EMAIL from EMAIL_FROM through SES that the
+  server's disk is that full (#480; infra/ec2/disk-alert.sh decides when, once a day at most), by
+  the operations alerts' one rule (kaagaz.ops_alert); an email not sent fails the command.
+* ``ops-alert --subject S --text T``: the same with this subject and text (A22,
+  infra/ec2/ops-alert.sh: a failed deploy or dump, an unhealthy container).
 * ``queue-depth``: one line a lane (``main`` and ``express``) with its waiting, in-flight and
   delayed job counts, read from the queue (``SqsQueue.backlog``). It touches no database, file
   storage or model. The server's idle-stop reads it to stay awake while a job is in flight or a
@@ -118,20 +149,26 @@ terminal instead of logging): ids and e-mails only, never a password.
 import argparse
 import functools
 import getpass
+import hashlib
+import json
+import math
 import os
 import sys
 import time
 import unicodedata
 import uuid
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, TextIO
+from typing import IO, Any, Protocol, TextIO
 
+import boto3
 from sqlalchemy import Connection, RowMapping, text
 
-from kaagaz import verify_models
+from kaagaz import ops_alert, verify_models
+from kaagaz.adapters.email import Mailer
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable, build_model_client
 from kaagaz.ai.openrouter import OpenRouterClient
 from kaagaz.ai.usage import usage_scope
@@ -147,14 +184,27 @@ from kaagaz.db import operators as operators_sql
 from kaagaz.db import users as users_sql
 from kaagaz.db.document_stories import recipe_tag as story_tag
 from kaagaz.db.engine import Database, make_engine
+from kaagaz.extraction.checks import GSTIN_FIELDS, gstin_valid
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
+from kaagaz.ingestion.ports import RenditionStorage
+from kaagaz.ingestion.resolve import UNSUPPORTED, resolve_kind
 from kaagaz.ingestion.spool import HEAD_SIZE
 from kaagaz.jobs import catalog, land_facts
 from kaagaz.jobs.purge import CustomerStorage, purge_customer
 from kaagaz.preparing.page_checks import BlankMeasure, measure_blank
 from kaagaz.preparing.pages import PreparedPages, prepare_pages
-from kaagaz.reading.ocr import PATH_PAGE, PATH_WORDS, READER_PROMPT_VERSION, MeteredOcrEngine, PageRead
+from kaagaz.reading.compact import decode_compact, encode_compact
+from kaagaz.reading.ocr import (
+    PATH_PAGE,
+    PATH_WORDS,
+    READER_PROMPT_VERSION,
+    VALUE_PUNCTUATION,
+    MeteredOcrEngine,
+    PageRead,
+    is_word_mark,
+    values_of,
+)
 from kaagaz.reading.rapid_pool import shared_pool
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader
@@ -170,6 +220,8 @@ MEASURE_ENGINES = ("gemini", "rapidocr")
 # measure --truth: each page's texts are cut to these before the edit distance (council PR 3, low 10).
 MAX_TRUTH_CHARS = 5000
 MAX_TRUTH_WORDS = 1000
+# measure --truth (#465): the fields a page's <n>.fields.json may name.
+TRUTH_FIELDS = ("gstin", "invoice_number", "date", "amounts", "names")
 ADMIN_ENV_VAR = "KAAGAZ_ADMIN_PASSWORD"
 DEMO_ENV_VAR = "KAAGAZ_DEMO_PASSWORD"
 # reembed embeds this once before it clears anything (a check that the model answers).
@@ -192,10 +244,31 @@ CUSTOMER_STATUS = {
 SECRET_COMMANDS = ("create-operator", "reset-operator-2fa")
 # cost-saving: the limits a run's config names (``reader_config``), after "cost_saving_".
 LIMIT_NAMES = ("hard_lines_max", "hard_share", "crop_pad")
+# backup-upload (#476): the off-server backup bucket's region, and its upload parts: 32 MB, one
+# at a time, so S3's 10,000 parts hold up to 320 GB in about 32 MB of memory.
+BACKUP_REGION = "ap-south-1"
+BACKUP_PART_BYTES = 32 * 1024 * 1024
+# The commands that read the settings but no database.
+NO_DATABASE = ("backup-files", "restore-files", "disk-alert", "ops-alert")
 
 
 class CliError(Exception):
     """Stops the command with a short message and exit code 2."""
+
+
+class FileBackup(Protocol):
+    """What backup-files and restore-files need of storage (``S3Storage``)."""
+
+    def ensure_bucket(self) -> None: ...
+
+    def write_tar(self, out: IO[bytes]) -> int: ...
+
+    def read_tar(self, source: IO[bytes]) -> int: ...
+
+
+class CliStorage(CustomerStorage, RenditionStorage, Protocol):
+    """What the commands need of file storage (``S3Storage``): purge's calls, and land facts'
+    renditions of Word and PowerPoint files (#522 PR 2)."""
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -276,6 +349,11 @@ def _parser() -> argparse.ArgumentParser:
     times.add_argument("--customer-id", help="one customer only (default: every customer)")
     times.add_argument("--last", type=int, default=5, help="the last N ready runs (default 5)")
 
+    compact = commands.add_parser(
+        "measure-compact", help="the compact reply's loss and size over the cached page reads (no AI call)"
+    )
+    compact.add_argument("--days", type=int, default=30, help="the last N days of cached reads (default 30)")
+
     prune = commands.add_parser("prune-folders", help="the empty folders Kaagaz made; --apply deletes them")
     prune.add_argument("--customer-id", help="one customer only (default: every customer)")
     prune.add_argument("--apply", action="store_true", help="delete them (default: only count them)")
@@ -283,6 +361,17 @@ def _parser() -> argparse.ArgumentParser:
     saving = commands.add_parser("cost-saving", help="what Cost saving read and saved in the last runs")
     saving.add_argument("--customer-id", "--customer", help="one customer only (default: every customer)")
     saving.add_argument("--last", type=int, default=50, help="the last N ready runs (default 50)")
+
+    commands.add_parser("backup-files", help="every stored file as one tar on stdout (the backup)")
+    commands.add_parser("restore-files", help="a backup-files tar from stdin into an empty bucket")
+    upload = commands.add_parser("backup-upload", help="stdin to the off-server backup bucket")
+    upload.add_argument("--bucket", required=True)
+    upload.add_argument("--key", required=True)
+    disk = commands.add_parser("disk-alert", help="email OPS_ALERT_EMAIL that the disk is this full")
+    disk.add_argument("--used", type=int, required=True, help="the percent of the disk in use")
+    alert = commands.add_parser("ops-alert", help="email OPS_ALERT_EMAIL this subject and text")
+    alert.add_argument("--subject", required=True)
+    alert.add_argument("--text", required=True)
 
     commands.add_parser("queue-depth", help="each lane's waiting, in-flight and delayed job counts")
     return parser
@@ -419,12 +508,12 @@ def _reset_admin_2fa(db: Database, email: str) -> str:
     with db.customer(found.customer_id) as conn:
         if users_sql.reset_totp(conn, found.customer_id, found.user_id) is None:
             raise CliError("no admin has that e-mail")
-        # PROVISIONAL: "user.reset_totp", the same action as the admin screen's 2FA reset.
+        # The spec's auth.totp_reset (#457), the same action as the admin screen's 2FA reset.
         audit.record(
             conn,
             found.customer_id,
             actor_user_id=None,
-            action="user.reset_totp",
+            action="auth.totp_reset",
             target_type="user",
             target_id=found.user_id,
             details={"by": "cli"},
@@ -439,8 +528,9 @@ def _owner(db: Database) -> Iterator[Connection]:
     ``kaagaz_app`` may not do, so no code on the customer side can: a customer's
     status (0014), create-customer's and every command's ``platform_audit`` row and
     the operator commands (0015). Every statement names its one customer or operator.
-    PROVISIONAL: it needs DATABASE_URL to log in as the owner, as it does today
-    (change plan, open question 8)."""
+    It needs DATABASE_URL to log in as the owner: on the server only migrate has that
+    login, so these commands run there (``dc run --rm migrate python -m kaagaz.cli ...``);
+    in api, which logs in as ``kaagaz_api`` (#479), PostgreSQL refuses them."""
     with db.engine.begin() as conn:
         yield conn
 
@@ -459,6 +549,11 @@ def _set_customer_status(db: Database, command: str, customer_id: str, now: date
             raise CliError("no such customer")
         if before == customers_sql.DELETING:
             raise CliError("this customer is being deleted; nothing was changed (cancel the deletion first)")
+        if before == customers_sql.PENDING:  # neither enable nor disable: Approve only (0063)
+            raise CliError(
+                "this organisation is waiting for approval; nothing was changed"
+                " (use Approve in the operator console once its admin has confirmed their email)"
+            )
         if before == status:
             return f"customer {customer_id}: already {done}, nothing changed"
         audit.record(
@@ -569,7 +664,7 @@ def _land_facts(
     args: argparse.Namespace,
     settings: Settings,
     model: ModelClient | None,
-    storage: CustomerStorage | None,
+    storage: CliStorage | None,
     out: TextIO,
 ) -> None:
     """land-facts: the mode's checks, then ``kaagaz.jobs.land_facts``."""
@@ -603,6 +698,120 @@ def _land_facts(
         db, chat, settings, customers, max_usd=args.max_usd, out=out, storage=storage, checker=checker,
         sample=args.sample,
     )  # fmt: skip
+
+
+# measure-compact: one organisation's cached g3 page reads of the last days (the reply, its tokens).
+_COMPACT_PAGES = text(
+    "SELECT result, output_tokens FROM page_reads WHERE customer_id = :c"
+    " AND (prompt_version = :v OR prompt_version LIKE :level)"
+    " AND created_at >= now() - make_interval(days => :days)"
+)
+
+
+def _measure_compact(db: Database, days: int, out: TextIO) -> None:
+    """``measure-compact`` (module notes): every organisation's cached g3 reads, each in its own
+    ``db.customer()``, then the numbers (``compact_lines``). O(pages x reply size)."""
+    if days < 1:
+        raise CliError("--days must be at least 1")
+    with db.system() as conn:
+        customers = indexing.customer_ids(conn)
+    sizes: list[tuple[bool, int, int, int]] = []  # (lossless, compact chars, original chars, tokens)
+    params = {"v": READER_PROMPT_VERSION, "level": f"{READER_PROMPT_VERSION}+%", "days": days}
+    for customer in customers:
+        with db.customer(customer) as conn:
+            rows = conn.execute(_COMPACT_PAGES, {**params, "c": customer}).all()
+        for result, tokens in rows:
+            lossless, compact = compact_round_trip(
+                dict(result), encode_compact, lambda r: decode_compact(r).result
+            )
+            original = len(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+            sizes.append((lossless, compact, original, int(tokens or 0)))
+    out.write("\n".join(compact_lines(days, sizes)) + "\n")
+
+
+def compact_lines(days: int, sizes: Sequence[tuple[bool, int, int, int]]) -> list[str]:
+    """The printed lines: numbers only. A page that could not be encoded counts 0 compact
+    characters (and is not lossless). O(n log n)."""
+    lines = [
+        f"measure-compact: the cached g3 page reads of the last {days} days, numbers only",
+        f"pages {len(sizes)}",
+    ]
+    if not sizes:
+        return lines
+    pages = len(sizes)
+    kept = sum(1 for lossless, *_ in sizes if lossless)
+    compact = [size[1] for size in sizes]
+    original = [size[2] for size in sizes]
+    ratio = sum(size[3] for size in sizes) / max(1, sum(original))
+    return [
+        *lines,
+        f"lossless {kept / pages:.1%} ({kept} of {pages})",
+        f"characters a page: original {sum(original) / pages:.0f} average, {_p95(original)} p95;"
+        f" compact {sum(compact) / pages:.0f} average, {_p95(compact)} p95"
+        f" ({sum(compact) / max(1, sum(original)):.0%} of the original)",
+        f"output tokens a page, at the cache's own {ratio:.2f} a character: original"
+        f" {sum(original) / pages * ratio:.0f}, compact {sum(compact) / pages * ratio:.0f}",
+    ]
+
+
+def _p95(values: Sequence[int]) -> int:
+    """The 95th percentile, nearest rank."""
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(0.95 * len(ordered)) - 1)]
+
+
+def compact_round_trip(
+    result: dict[str, Any],
+    encode: Callable[[dict[str, Any]], str],
+    decode: Callable[[str], dict[str, Any]],
+) -> tuple[bool, int]:
+    """(decoded without a loss, the compact reply's characters) of one cached reply; a reply the
+    pair can't encode is (False, 0), one it can't decode back (False, its characters)."""
+    try:
+        compact = encode(result)
+    except Exception:  # noqa: BLE001 - one page the encoder can't take is counted, never stops the run
+        return False, 0
+    try:
+        return same_reply(result, decode(compact)), len(compact)
+    except Exception:  # noqa: BLE001 - as above, for the decoder
+        return False, len(compact)
+
+
+def same_reply(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
+    """Two replies say the same: the page's header (scripts and issues as sets), the lines as a
+    multiset ignoring their order and block numbers, the blocks as groupings of lines, and
+    whether the page continues on the next. O(lines log lines)."""
+
+    def header(reply: Mapping[str, Any]) -> tuple[Any, ...]:
+        page = reply.get("page") or {}
+        return (
+            page.get("quality"),
+            page.get("handwritten"),
+            frozenset(page.get("scripts") or ()),
+            frozenset(page.get("issues") or ()),
+        )
+
+    def line(one: Mapping[str, Any]) -> str:
+        table = one.get("table")
+        return json.dumps(
+            [one.get("kind"), one.get("text"), one.get("box_2d"), sorted(one.get("unsure") or []), table],
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+
+    def shape(reply: Mapping[str, Any]) -> tuple[Any, ...]:
+        lines = list(reply.get("lines") or [])
+        blocks: dict[Any, list[str]] = {}
+        for one in lines:
+            blocks.setdefault(one.get("block"), []).append(line(one))
+        return (
+            header(reply),
+            Counter(line(one) for one in lines),
+            Counter(tuple(sorted(members)) for members in blocks.values()),
+            any(one.get("continues_on_next_page") for one in lines),
+        )
+
+    return shape(a) == shape(b)
 
 
 def _prune_folders(db: Database, customer_id: str | None, apply: bool, out: TextIO) -> None:
@@ -901,8 +1110,11 @@ def _measure(
         data = path.read_bytes()
     except OSError:
         raise CliError("the file cannot be opened") from None
-    detected = sniff.detect_type(data[:HEAD_SIZE])
-    if detected is None:
+    try:  # its kind, as the worker tells it after the scan (#522)
+        detected = resolve_kind(data, sniff.detect_type(data[:HEAD_SIZE]), path.name)
+    except ReadError as error:
+        raise CliError(f"the file cannot be read ({error.code})") from None
+    if detected == UNSUPPORTED:
         raise CliError("this kind of file is not supported")
     engine = build_ocr_engine(settings)
     meter = None if engine is None else MeteredOcrEngine(engine, timer=timer)
@@ -940,6 +1152,7 @@ def _measure(
     )
     out.write(f"type {detected} size {len(data) / (1024 * 1024):.2f} MB pages {len(pages)}\n")
     by_page: dict[int, list[Span]] = {}
+    scores: Counter[str] = Counter()  # --truth: the scored pages' counts, for the totals
     for span in spans:
         by_page.setdefault(span.location.page, []).append(span)
     for index, (page, unit) in enumerate(pages):
@@ -954,9 +1167,12 @@ def _measure(
         line += _reader_numbers(page_reads.get(page))
         if len(stamps) == len(pages) + 1:
             line += f" seconds {stamps[index + 1] - stamps[index]:.2f}"
-        if truth is not None:
-            line += _truth_scores(truth / f"{page}.txt", " ".join(span.text for span in page_spans))
+        if truth is not None:  # the read's lines; its word marks repeat their words
+            read_text = " ".join(span.text for span in page_spans if not is_word_mark(span))
+            line += _truth_scores(truth, page, read_text, scores)
         out.write(line + "\n")
+    if truth is not None:
+        out.write(_truth_totals(len(pages), scores, list(page_reads.values())) + "\n")
     ocr_pages, ocr_seconds = meter.take() if meter is not None else (0, 0.0)
     per_page = ocr_seconds / ocr_pages if ocr_pages else 0.0
     if meter is not None:
@@ -1045,23 +1261,118 @@ def _script_shares(text: str) -> tuple[float, float]:
     return (devanagari / letters, foreign / letters) if letters else (0.0, 0.0)
 
 
-def _truth_scores(truth_file: Path, read: str) -> str:
-    """ " cer X wer Y" against the page's truth, or " truth none" without a file.
-    Both texts are cut at MAX_TRUTH_CHARS characters and MAX_TRUTH_WORDS words
-    first (" truth_cut yes"), so one page costs at most MAX_TRUTH_CHARS squared."""
+def _truth_scores(folder: Path, page: int, read: str, scores: Counter[str]) -> str:
+    """ " cer X wer Y values V value_errors E ver R" against the page's truth (``<page>.txt``
+    in ``folder``), then its field scores (``_field_scores``), or " truth none" without a
+    file; its counts are added to ``scores``. Both texts are NFC first, so a nukta or matra
+    typed another way is no error. For the CER and WER both are cut at MAX_TRUTH_CHARS
+    characters and MAX_TRUTH_WORDS words (" truth_cut yes"), so one page costs at most
+    MAX_TRUTH_CHARS squared. The value errors are the truth's values (``values_of``) the read
+    does not have, counted as a multiset, so lines read in another order are none."""
     try:
-        truth = truth_file.read_text(encoding="utf-8")
+        truth = unicodedata.normalize("NFC", (folder / f"{page}.txt").read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError):
         return " truth none"
+    read = unicodedata.normalize("NFC", read)
     truth_words, read_words = truth.split(), read.split()
+    wanted, values_read = values_of(truth_words), values_of(read_words)
+    value_errors, values = sum((wanted - values_read).values()), sum(wanted.values())
+    fields = _field_scores(folder / f"{page}.fields.json", read_words, scores)
     truth_chars, read_chars = " ".join(truth_words), " ".join(read_words)
     cut = max(len(truth_chars), len(read_chars)) > MAX_TRUTH_CHARS
     cut = cut or max(len(truth_words), len(read_words)) > MAX_TRUTH_WORDS
     truth_chars, read_chars = truth_chars[:MAX_TRUTH_CHARS], read_chars[:MAX_TRUTH_CHARS]
     truth_words, read_words = truth_words[:MAX_TRUTH_WORDS], read_words[:MAX_TRUTH_WORDS]
-    cer = _edits(read_chars, truth_chars) / max(1, len(truth_chars))
-    wer = _edits(read_words, truth_words) / max(1, len(truth_words))
-    return f" cer {cer:.3f} wer {wer:.3f}" + (" truth_cut yes" if cut else "")
+    char_edits, word_edits = _edits(read_chars, truth_chars), _edits(read_words, truth_words)
+    scores.update(
+        scored=1,
+        chars=len(truth_chars),
+        char_edits=char_edits,
+        words=len(truth_words),
+        word_edits=word_edits,
+        values=values,
+        value_errors=value_errors,
+    )
+    line = f" cer {_share(char_edits, len(truth_chars))} wer {_share(word_edits, len(truth_words))}"
+    line += " truth_cut yes" if cut else ""
+    return line + f" values {values} value_errors {value_errors} ver {_share(value_errors, values)}" + fields
+
+
+def _share(part: int, whole: int) -> str:
+    """``part / whole`` to 3 places, as the error rates print (0 of nothing is 0.000)."""
+    return f"{part / max(1, whole):.3f}"
+
+
+def _field_scores(fields_file: Path, read_words: list[str], scores: Counter[str]) -> str:
+    """ " field_<name> ok/all" for each field (TRUTH_FIELDS order) the page's fields file
+    names, a text or a list of texts: a text is ok when the read has its words in a row, as
+    typed, outer punctuation stripped (VALUE_PUNCTUATION). A GSTIN field follows the GSTIN
+    rule (``checks.gstin_valid``: spaces and case do not count), and is "truth_bad", and not
+    counted, when a truth GSTIN fails its check character: a typo in the truth. Its counts
+    are added to ``scores``. "" without a file; " fields bad" when it is not such a JSON
+    object. O(the fields' words x the read's words)."""
+    try:
+        fields = json.loads(fields_file.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return ""
+    except (OSError, ValueError):
+        return " fields bad"
+    if not isinstance(fields, dict) or not set(fields) <= set(TRUTH_FIELDS):
+        return " fields bad"
+    wanted = {name: [value] if isinstance(value, str) else value for name, value in fields.items()}
+    if not all(
+        isinstance(texts, list) and texts and all(isinstance(text, str) and text.strip() for text in texts)
+        for texts in wanted.values()
+    ):
+        return " fields bad"
+    read = [word.strip(VALUE_PUNCTUATION) for word in read_words]
+    line = ""
+    for name in (name for name in TRUTH_FIELDS if name in wanted):
+        texts = [unicodedata.normalize("NFC", text) for text in wanted[name]]
+        if name in GSTIN_FIELDS:
+            if not all(gstin_valid(text) for text in texts):
+                line += f" field_{name} truth_bad"
+                continue
+            found = {word.upper() for word in read}
+            ok = sum("".join(text.split()).upper() in found for text in texts)
+        else:
+            ok = sum(
+                _in_a_row([word.strip(VALUE_PUNCTUATION) for word in text.split()], read) for text in texts
+            )
+        scores[f"field_{name}_ok"] += ok
+        scores[f"field_{name}_all"] += len(texts)
+        line += f" field_{name} {ok}/{len(texts)}"
+    return line
+
+
+def _in_a_row(words: list[str], read: list[str]) -> bool:
+    """Whether ``read`` has ``words`` one after the other. O(len(words) x len(read))."""
+    return any(read[start : start + len(words)] == words for start in range(len(read) - len(words) + 1))
+
+
+def _truth_totals(pages: int, scores: Counter[str], reads: list[PageRead]) -> str:
+    """The ``truth`` line: the scored pages' counts and rates added up (``_truth_scores``),
+    each field's exact matches, and the reader's tokens over the file's ``pages`` and per
+    page. Numbers only, each after its name, so the lines of several files add up."""
+    tokens_in = sum(read.input_tokens for read in reads)
+    tokens_out = sum(read.output_tokens for read in reads)
+    line = (
+        f"truth pages {pages} scored {scores['scored']}"
+        f" chars {scores['chars']} char_edits {scores['char_edits']}"
+        f" cer {_share(scores['char_edits'], scores['chars'])}"
+        f" words {scores['words']} word_edits {scores['word_edits']}"
+        f" wer {_share(scores['word_edits'], scores['words'])}"
+        f" values {scores['values']} value_errors {scores['value_errors']}"
+        f" ver {_share(scores['value_errors'], scores['values'])}"
+    )
+    for name in TRUTH_FIELDS:
+        if f"field_{name}_all" in scores:
+            line += f" field_{name} {scores[f'field_{name}_ok']}/{scores[f'field_{name}_all']}"
+    return line + (
+        f" input_tokens {tokens_in} output_tokens {tokens_out}"
+        f" input_tokens_per_page {tokens_in / max(1, pages):.0f}"
+        f" output_tokens_per_page {tokens_out / max(1, pages):.0f}"
+    )
 
 
 def _edits(a: Sequence[str], b: Sequence[str]) -> int:
@@ -1075,6 +1386,73 @@ def _edits(a: Sequence[str], b: Sequence[str]) -> int:
     return previous[-1]
 
 
+def _backup_upload(client: Any, bucket: str, key: str, source: IO[bytes]) -> str:
+    """``source`` to ``bucket``/``key`` as it is read (it need not fit on the disk), never over
+    an object already there: If-None-Match, which the bucket's policy requires (boto3's managed
+    upload cannot send it). Returns its size and sha256, done's line for the part (pgdump.sh)."""
+    target = {"Bucket": bucket, "Key": key}
+    chunk = source.read(BACKUP_PART_BYTES)
+    if len(chunk) < BACKUP_PART_BYTES:  # all of it in one request
+        client.put_object(Body=chunk, IfNoneMatch="*", **target)
+        return f"{len(chunk)} {hashlib.sha256(chunk).hexdigest()}"
+    digest, size = hashlib.sha256(), 0
+    parts: list[dict[str, Any]] = []
+    # CRC32 on every part, as boto3's own upload does (Object Lock needs a checksum).
+    upload_id = client.create_multipart_upload(ChecksumAlgorithm="CRC32", **target)["UploadId"]
+    try:
+        while chunk:
+            digest.update(chunk)
+            size += len(chunk)
+            number = len(parts) + 1
+            sent = client.upload_part(
+                Body=chunk, PartNumber=number, UploadId=upload_id, ChecksumAlgorithm="CRC32", **target
+            )
+            parts.append({"PartNumber": number, "ETag": sent["ETag"], "ChecksumCRC32": sent["ChecksumCRC32"]})
+            chunk = source.read(BACKUP_PART_BYTES)
+        client.complete_multipart_upload(
+            UploadId=upload_id, MultipartUpload={"Parts": parts}, IfNoneMatch="*", **target
+        )
+    except BaseException:
+        client.abort_multipart_upload(UploadId=upload_id, **target)
+        raise
+    return f"{size} {digest.hexdigest()}"
+
+
+def _disk_alert(settings: Settings, mailer: Mailer | None, used: int) -> None:
+    _alert(
+        settings,
+        mailer,
+        f"Kaagaz server: the disk is {used}% full",
+        f"The Kaagaz server's disk is {used}% full. This alert is sent at most once a day.\n\n"
+        "Free some space before it fills, or the database and the uploads stop. "
+        "`docker system df` on the server shows what uses it.\n",
+        purpose="disk_alert",
+    )
+
+
+def _alert(settings: Settings, mailer: Mailer | None, subject: str, text: str, *, purpose: str) -> None:
+    problem = ops_alert.missing(settings)
+    if problem is not None:
+        raise CliError(problem)
+    sent = ops_alert.send_ops_alert(settings, subject, text, purpose=purpose, mailer=mailer)
+    if not sent:  # a failed command: the script notes no day and tries again next time
+        raise CliError("the alert was not sent: the log says why")
+
+
+def _file_backup(command: str, files: FileBackup, source: IO[bytes], out: IO[bytes]) -> str:
+    """backup-files or restore-files; the line for stderr (stdout may be the tar)."""
+    if command == "backup-files":
+        count = files.write_tar(out)
+        if count == 0:  # a storage that reads as empty is broken, not backed up (#476)
+            raise CliError("backup-files: the storage bucket gave no files, so nothing was backed up")
+        return f"backup-files: {count} files"
+    files.ensure_bucket()
+    try:
+        return f"restore-files: {files.read_tar(source)} files"
+    except ValueError as error:
+        raise CliError(str(error)) from None
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -1085,17 +1463,25 @@ def main(
     timer: Callable[[], float] = time.perf_counter,
     model: ModelClient | None = None,
     settings: Settings | None = None,
-    storage: CustomerStorage | None = None,
+    storage: CliStorage | None = None,
+    file_store: FileBackup | None = None,
+    binary_in: IO[bytes] | None = None,
+    binary_out: IO[bytes] | None = None,
+    backup_bucket: Any = None,
+    mailer: Mailer | None = None,
     queue: Any = None,
 ) -> int:
     """Run one command. Tests pass ``db``, ``environ``, ``out``, ``ask``, ``timer``,
-    ``model``, ``settings``, ``storage`` and ``queue``."""
+    ``model``, ``settings``, ``storage``, ``file_store``, ``binary_in`` and ``binary_out``
+    (stdin and stdout as bytes), ``backup_bucket`` (its S3 client), ``mailer`` and ``queue``."""
     args = _parser().parse_args(argv)
     env = os.environ if environ is None else environ
     stdout = sys.stdout if out is None else out
     try:
         if args.command in SECRET_COMMANDS and ask is getpass.getpass and not sys.stdin.isatty():
-            raise CliError("run it at a terminal (docker compose exec WITHOUT -T): it shows a secret")
+            raise CliError(
+                "run it at a terminal (docker compose run --rm migrate, WITHOUT -T): it shows a secret"
+            )
         if args.command == "measure":  # before any database is built: it never uses one
             chosen = env if args.engine is None else {**env, "OCR_ENGINE": args.engine}
             _measure(Settings.from_env(chosen), args.file, args.truth, stdout, timer=timer)
@@ -1128,6 +1514,30 @@ def main(
                 waiting, in_flight, delayed = counts[lane]
                 stdout.write(f"{lane} {waiting} {in_flight} {delayed}\n")
             return 0
+        if args.command == "backup-upload":  # no settings either: it runs on the host network
+            source = sys.stdin.buffer if binary_in is None else binary_in
+            # No keys: boto3 finds the machine's own role.
+            client = backup_bucket or boto3.client("s3", region_name=BACKUP_REGION)
+            stdout.write(_backup_upload(client, args.bucket, args.key, source) + "\n")
+            return 0
+        if args.command in NO_DATABASE:
+            checked = settings or Settings.from_env(env)
+            if args.command == "disk-alert":
+                _disk_alert(checked, mailer, args.used)
+                stdout.write("disk alert sent\n")  # never the address
+                return 0
+            if args.command == "ops-alert":
+                _alert(checked, mailer, args.subject, args.text, purpose="server_alert")
+                stdout.write("alert sent\n")
+                return 0
+            if file_store is None:
+                from kaagaz.adapters.storage import S3Storage
+
+                file_store = S3Storage(checked)
+            source = sys.stdin.buffer if binary_in is None else binary_in
+            line = _file_backup(args.command, file_store, source, binary_out or sys.stdout.buffer)
+            sys.stderr.write(line + "\n")
+            return 0
         if db is None:
             settings = settings or Settings.from_env(env)
             db = Database(make_engine(settings.database_url), settings.db_app_role)
@@ -1151,6 +1561,8 @@ def main(
             _land_facts(db, args, settings or Settings.from_env(env), model, storage, stdout)
         elif args.command == "scan-times":
             _scan_times(db, args.customer_id, args.last, stdout)
+        elif args.command == "measure-compact":  # no model: it reads the cache and prints numbers
+            _measure_compact(db, args.days, stdout)
         elif args.command == "prune-folders":
             _prune_folders(db, args.customer_id, args.apply, stdout)
         elif args.command == "cost-saving":

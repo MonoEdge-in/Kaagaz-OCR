@@ -11,7 +11,31 @@ export type DocumentStatus =
   | "ready"
   | "failed";
 
-export type DetectedType = "pdf" | "png" | "jpeg" | "tiff" | "zip" | "ole2" | "text";
+/**
+ * The file's type: at upload, the one sniffed from its first bytes (pdf, png, jpeg, tiff, heic,
+ * zip, ole2, text); once the worker has checked it, its kind (#522, the backend's resolve.py).
+ */
+export type DetectedType =
+  | "pdf"
+  | "png"
+  | "jpeg"
+  | "tiff"
+  | "heic"
+  | "zip"
+  | "ole2"
+  | "text"
+  | "xlsx"
+  | "xls"
+  | "csv"
+  | "docx"
+  | "dotx"
+  | "doc"
+  | "pptx"
+  | "ppt"
+  | "txt"
+  | "md"
+  | "json"
+  | "html";
 
 export type Label = "verified" | "needs_review";
 
@@ -28,7 +52,11 @@ export type LabelReason =
   | "check_failed" // PRD 2, K3: a check on its invoice failed, even if the readers agreed
   | "unsure_text" // PRD 5 V4: it holds a word the reader was unsure of, or [?]
   | "box_unanchored" // PRD 5 G5: its spot on the page couldn't be confirmed
-  | "local_reader"; // PRD 5 Q7: read by the backup reader while the main reader was down
+  | "local_reader" // PRD 5 Q7: read by the backup reader while the main reader was down
+  | "mixed_digits" // #524: an amount's digits are of two scripts (९४0000/-)
+  | "amount_commas" // #524: an amount's commas fit no grouping (1,15,0000)
+  | "amount_mark" // #524: a mark inside an amount, or "/-" read as a 1 (115000001-)
+  | "amount_outlier"; // #524: a total more than ten times the page's other total
 
 /** "admin" only for an admin's session (from /login, always with two-step since 16 Oct 2026). */
 export type SessionScope = "app" | "admin";
@@ -45,13 +73,58 @@ export interface Me {
     must_change_password: boolean;
     totp_enabled: boolean; // two-step sign-in is on (required for an admin unless they turned it off)
     two_step_turned_off: boolean; // an admin turned their own two-step off (Tushar, 30 Oct 2026)
+    two_step_required?: boolean; // the super admin requires it for this organisation's admins (#481)
     can_delete_forever: boolean; // an admin allowed this member or reviewer (never an admin)
+    email_confirmed: boolean; // false: the "Confirm your email" banner (#457; true while email is off)
+    // #507: the organisation asks this person to sign in with Google and they have no connected
+    // account that passes its rules yet: every route but Ways to sign in replies 403
+    // google_link_required, so the app sends them there (lib/session.tsx).
+    google_link_required?: boolean;
+    // #507 review: in that session, the connected account is from before its domain could be
+    // checked, so the banner asks for one Google sign-in instead of a new connection.
+    google_unchecked?: boolean;
   };
   customer: { id: string; name: string };
   session: { scope: SessionScope };
+  // The sign-in providers switched on ("google"), for every role (#457 review): empty while none
+  // is, and Ways to sign in is hidden; the copy names only these.
+  providers: string[];
+  // Ways to sign in (#457 phase 1): approved connections made in the last 14 days, for the
+  // app's "Google connected on 30 Oct." banner. Empty while no provider is on (always sent).
+  recent_connections?: { provider: string; linked_at: string }[];
 }
 
-/** "Turn on" two-step sign-in (POST /auth/admin/2fa/start). Nothing is stored yet. */
+/** One connected account of the signed-in user (GET /auth/identities). */
+export interface ConnectedIdentity {
+  id: string;
+  provider: string; // "google"
+  email: string | null; // the account's email when it was connected, a label only
+  status: "pending" | "approved";
+  linked_at: string;
+  last_used_at: string | null;
+}
+
+/** Account, Ways to sign in: the providers switched on, and the user's own connections. */
+export interface WaysToSignIn {
+  providers: string[];
+  identities: ConnectedIdentity[];
+  // #507: the organisation's rules for this person: Google only for their role, and the
+  // company domains a Google account must be from (empty: any).
+  rules?: { google_only: boolean; domains: string[] };
+}
+
+/** Admin, People, Connections to approve (GET /admin/identities). */
+export interface PendingConnection {
+  id: string;
+  user_id: string;
+  display_name: string;
+  user_email: string;
+  provider: string;
+  email: string | null;
+  linked_at: string;
+}
+
+/** "Turn on" two-step sign-in (POST /auth/2fa/start, or after a right password). Nothing is stored yet. */
 export interface TwoStepSetup {
   enrol_token: string; // lasts 10 minutes
   secret: string; // base32, in groups of 4
@@ -116,6 +189,29 @@ export interface DocumentSummary {
   department?: { id: string; name: string } | null;
   // "new": this document may be a new version of another; "candidate": a newer one waits on this family.
   pending_suggestion?: { id: string; role: "new" | "candidate" } | null;
+  // #522: a zip only: where it was unpacked, null until it is (or when it is kept as a file).
+  // Its status_message already says "Unpacked: 120 files into folder "X", 3 skipped (...)".
+  unpack?: ZipUnpack | null;
+}
+
+/** #522: a zip upload unpacked into a folder by the server: its files counted, and the first
+ * skipped ones, each with why in plain words. */
+export interface ZipUnpack {
+  folder_upload_id: string;
+  folder_id: string | null; // null once that folder is deleted
+  folder_name: string;
+  files: number; // every file in the zip but a Mac's own (__MACOSX, .DS_Store)
+  unpacked: number;
+  already_in: number; // duplicates: already in Kaagaz, nothing new stored
+  skipped: number;
+  waiting: number; // still to unpack
+  skipped_files: ZipSkippedFile[]; // the first 20, in the zip's order
+}
+
+export interface ZipSkippedFile {
+  name: string;
+  code: string;
+  reason: string; // plain words, safe to show as is
 }
 
 /** The four sensitivity labels (O2). They inform; they restrict nothing. */
@@ -138,6 +234,7 @@ export interface VersionSuggestion {
   candidate: { family_id: string; id: string; name: string }; // id: the family's current version
   next_version_no: number; // "Make it version N"
   text_overlap: number | null;
+  text_overlap_estimated?: boolean; // #521: true when text_overlap is the estimate, not counted exactly
   name_similarity: number | null;
   shared_identifier: string | null; // its kind, such as "survey_number"
   reasons?: string | string[] | null;
@@ -204,7 +301,20 @@ export interface DocumentCompare {
   left_id: string;
   right_id: string;
   summary: string; // "2 changes on page 2"
-  pages: { page_no: number; changes: number; truncated: boolean; runs: CompareRun[] }[];
+  pages: {
+    page_no: number;
+    changes: number;
+    truncated: boolean;
+    runs: CompareRun[];
+    // #521: the words changed (a replacement counts its longer side) and each side's words.
+    words_changed?: number;
+    left_words?: number;
+    right_words?: number;
+  }[];
+  truncated?: boolean; // over the compare limits: only the first part is compared
+  overview?: string; // #521: "94% the same. 38 words changed on pages 2 and 5. Page 6 is new."
+  left_pages?: number | null; // #521 review: each side's page count, for its page images
+  right_pages?: number | null;
 }
 
 /** An active person of this company, for the owner picker and the filters. */
@@ -335,6 +445,46 @@ export interface Folder {
   created_at: string;
   kind?: FolderKind; // F1; left out by older replies: custom
   sort_order?: number | null; // a department's place on the dashboard and in the tree
+}
+
+/** #542: a folder in Trash, with what it holds at every depth (files: a file's versions count once). */
+export interface TrashedFolder {
+  id: string;
+  name: string;
+  kind: FolderKind;
+  was_in: string[] | null; // the live folder it goes back into, root first; [] the top level; null gone
+  files: number;
+  folders: number;
+  deleted_at: string;
+  deleted_by_name: string | null;
+  can_restore: boolean; // an admin, or who uploaded every version of every file in it
+}
+
+/** #542: a folder in Trash opened: itself, its path within Trash (Trash's item first), its folders. */
+export interface TrashedFolderContents {
+  folder: TrashedFolder;
+  path: { id: string; name: string }[];
+  folders: TrashedFolder[];
+}
+
+/** #542: the folder that came back with a file restored from a folder in Trash (restoreDocument's reply). */
+export type FolderBack = Omit<FolderRestored, "files" | "folders">;
+
+/** #542: a restored folder, where it went ([] the top level), and why it is not as it was. */
+export interface FolderRestored {
+  folder: Folder;
+  location: string[];
+  renamed: boolean; // a folder there had its name: it is "Name (2)" now
+  relocated: boolean; // its folder no longer exists: it is at the top level
+  files: number;
+  folders: number;
+}
+
+/** #537: what a folder holds at every depth: live files (a file's versions count once), folders, bytes. */
+export interface FolderSummary {
+  files: number;
+  folders: number;
+  bytes: number;
 }
 
 export interface Tag {
@@ -543,6 +693,7 @@ export interface UploadLimits {
   pdf_bytes: number;
   image_bytes: number;
   sheet_bytes: number;
+  zip_bytes?: number; // #522: the folder upload limit; left out by an older server
   max_pages: number; // for a PDF's pages and a TIFF's frames
   readers: UploadReader[]; // the scan readers an upload may choose, the server's default first
   // #484: this organisation's folder upload limits; left out by an older server (no folder upload).
@@ -573,6 +724,7 @@ export interface FolderUploadPlanBody {
   file_count: number;
   total_bytes: number;
   skipped_count: number;
+  only_new?: boolean; // "Add new files only": the counts are checked against the ceilings, not the organisation's limits
 }
 
 /** The plan's reply: folder_ids[i] is the Kaagaz folder for manifest folder i. */
@@ -592,6 +744,7 @@ export interface NewFolderItem {
   folder_id: string;
   size: number;
   refused?: "unsupported_type"; // the server judges size, emptiness and names itself
+  sha256?: string; // "Add new files only": the SHA-256 (hex) of its bytes; a match comes back "duplicate", never sent
 }
 
 export type FolderItemFailure = "too_large" | "unsupported_type" | "empty_file" | "folder_gone" | "bad_name";
@@ -617,6 +770,15 @@ export interface FolderUploadItem {
   } | null;
 }
 
+/** GET /folder-uploads/previous: this person's latest upload of a folder of that name whose folder is still there. */
+export interface FolderUploadPrevious {
+  id: string;
+  target: "department" | "folder";
+  parent_folder_id: string | null;
+  root_folder_id: string;
+  created_at: string;
+}
+
 /** GET /folder-uploads/{id}/items: a page, and where the next starts (null: the last page). */
 export interface FolderItemsPage {
   items: FolderUploadItem[];
@@ -624,7 +786,7 @@ export interface FolderItemsPage {
 }
 
 /** GET /folder-uploads/{id}: one folder upload's counts, by state, and of its documents. In the
- * list (GET /folder-uploads) reading, ready and problem are null. */
+ * list (GET /folder-uploads) reading, ready, problem and held are null. */
 export interface FolderUploadSummary {
   id: string;
   root_folder_id: string | null;
@@ -645,6 +807,8 @@ export interface FolderUploadSummary {
   reading: number | null; // stored, still being checked or read
   ready: number | null;
   problem: number | null; // stored, but its reading failed or was refused
+  held: number | null; // stored, waiting for the reading pause (#478), not counted in reading
+  held_message: string | null; // the pause's own words while any is held, as a held document's
 }
 
 /** What an upload or a whole document's Read again asks for (feature 26); nothing: the default. */
@@ -713,6 +877,24 @@ export interface ReadLine {
   kind: string | null; // a layout block kind, when the reader gives one
   region: Region;
   table?: { id: string; row: number; col: number; header: boolean } | null; // a table cell's place
+  key?: string; // #527: the clean copy's lines only, the line's stable key (a flag's word_key)
+  correction?: LineCorrection | null; // #527: the clean copy's lines only; `text` is then the corrected text
+}
+
+/** #527: the correction in force for a clean copy line; `before_text` is the text it replaced. */
+export interface LineCorrection {
+  before_text: string;
+  by: string; // the person's name
+  at: string;
+  change_id: string; // for Undo (POST changes/{id}/undo)
+}
+
+/** POST /documents/{id}/lines/{key}/edit (#527): the change and the line as it now reads. */
+export interface LineSaved {
+  change_id: string;
+  line: ReadLine;
+  written: { pieces: number; values: number }; // the search pieces and values that took the new text
+  skipped: { pieces: number; values: number }; // those over the line that did not (not there exactly once)
 }
 
 /** GET /documents/{id}/clear-copy (Read clearly): every page's main reader lines, in order. */
@@ -804,6 +986,8 @@ export interface ListedDocument {
 export interface Answer {
   /** KZ-006 (24 Oct 2026): every model was down; said as such, never as "not found". */
   outage?: boolean;
+  /** #535: the outage was a draft that took too long ("timeout"), so asking again won't help. */
+  outage_reason?: "timeout";
   // "unchecked": the figure asked for is only in unchecked card values, so no
   // number is given; closest_documents says where.
   status: "answered" | "not_found" | "unchecked" | "clarify";
@@ -1026,7 +1210,7 @@ export interface ReviewItem {
   check_reasons: string[]; // why its document's invoice check failed (PRD 3 Y5); [] otherwise
 }
 
-/** The review queue's reason filter (PRD 3 Y5; PRD 5 U6 adds the last four). */
+/** The review queue's reason filter (PRD 3 Y5; PRD 5 U6 adds four, then #524's amount four). */
 export type ReviewReason =
   | "check_failed"
   | "readers_disagree"
@@ -1035,7 +1219,11 @@ export type ReviewReason =
   | "unsure_text"
   | "box_unanchored"
   | "local_reader"
-  | "ocr_script";
+  | "ocr_script"
+  | "mixed_digits"
+  | "amount_commas"
+  | "amount_mark"
+  | "amount_outlier";
 
 /** A row of the admin's Failed jobs tab (PRD 3 Z1). */
 export interface FailedDocument {
@@ -1086,6 +1274,24 @@ export interface AdminUser {
   two_step_turned_off: boolean; // this admin turned their own two-step off
   must_change_password: boolean;
   can_delete_forever: boolean; // an admin allowed Delete forever (never set for an admin)
+  // #457 phase 1: "password" and each approved provider. Only the list and the replies that
+  // removed connections send it; a row keeps what it had otherwise.
+  signs_in_with?: string[];
+  // #507: their role signs in with Google only and they have no connected account that passes.
+  google_needed?: boolean;
+  // #507 review: and their connected account's domain is not checked yet (one Google sign-in does).
+  google_unchecked?: boolean;
+}
+
+/** POST /admin/users: the new user; with email on (#457), whether the invite email went. */
+export interface AddedUser extends AdminUser {
+  invited?: boolean;
+}
+
+/** POST /auth/signup with email on (#457): no set-up yet, the email is confirmed first. */
+export interface SignUpConfirming {
+  status: "confirm_email";
+  sent: boolean; // false: the confirm email could not be sent
 }
 
 /** A reset password: the temporary password is in this one reply only. */
@@ -1100,6 +1306,31 @@ export interface CustomerSettings {
   platform_max_upload_mb: number;
   // Feature 28: the platform allowed auto-filing (granted), and the admin switched it on.
   autofile: { granted: boolean; on: boolean };
+  // #457 phase 1: "Approve new sign-in connections automatically"; left out while no provider is on.
+  auto_approve_connections?: boolean;
+  // #507: Ways to sign in, per role; left out while Google sign-in is off for the product.
+  google?: GoogleRules;
+}
+
+/** The admin's Google sign-in rules (#507). available: Google sign-in is on for the organisation
+ * (the super admin's switch). */
+export interface GoogleRules {
+  available: boolean;
+  allowed_roles: Role[];
+  only_roles: Role[];
+  domains: string[];
+}
+
+/** PATCH /admin/settings' google: it replaces all three. */
+export type GoogleRulesChange = Pick<GoogleRules, "allowed_roles" | "only_roles" | "domains">;
+
+/** Operator: one organisation's Google sign-in (#507). on: null follows the platform. */
+export interface OrgGoogleSignIn {
+  on: boolean | null;
+  platform_on: boolean;
+  effective: boolean;
+  google_only_roles: Role[];
+  domains: string[];
 }
 
 export interface AuditEntry {
@@ -1185,7 +1416,8 @@ export interface OperatorMoveOffer {
   otpauth_uri: string; // the same key as an otpauth:// link, for a QR code
 }
 
-export type OrgStatus = "active" | "disabled" | "deleting";
+// pending (#457): a password sign-up waiting for the operator's Approve.
+export type OrgStatus = "active" | "pending" | "disabled" | "deleting";
 
 /** One organisation in GET /operator/orgs: its metadata and counts only. */
 export interface Organisation {
@@ -1202,6 +1434,7 @@ export interface Organisation {
   last_activity_at: string | null;
   autofile_granted: boolean; // feature 28: auto-filing allowed; its admin switches it on
   autofile_on: boolean;
+  admin_email_confirmed: boolean; // #457: one of its admins confirmed their email; Approve needs it
 }
 
 export interface ModelRateUser {
@@ -1276,6 +1509,8 @@ export interface PlatformHealth {
   // #246 O1: the commit the API's image was built from ("local": built by hand). The
   // deployer's last attempt and last good release stay in files on the server.
   release?: { commit: string };
+  // QA C2 (4 Nov 2026): whether Mistral has stopped reading pages, as the AI settings say it.
+  mistral_status?: MistralStatus;
 }
 
 export type ReaderState = "working" | "failing" | "down" | "key_problem";
@@ -1305,7 +1540,8 @@ export type UsageKind =
   | "careful" // Dynamic's careful re-reads (feature 26)
   | "ensemble_scan" // Ensemble's other readers (feature 27)
   | "ensemble_chat" // Ensemble's other answer drafts (feature 27)
-  | "land"; // PRD 6 D: reading owners, shares and places of land records
+  | "land" // PRD 6 D: reading owners, shares and places of land records
+  | "ulc_scan"; // #488: a page read under Ultra low cost
 
 /** Tokens of some model calls: all an org admin sees (no money, Tushar, 15 Oct 2026). */
 export interface UsageTokens {
@@ -1365,6 +1601,8 @@ export interface UsageReport {
   by_day: UsageByDay[];
   top_documents: UsageTopDocument[]; // at most 10, the costliest first
   ai_enabled?: boolean; // false: keyless mode (no OpenRouter key, MODEL_ENABLED=false), no model is called
+  // #478: pages AI read today (India day) and the daily page limit in effect (null: none); never money.
+  reading_today?: { pages: number; limit: number | null };
 }
 
 /** One catalogue model (GET /operator/models), from OpenRouter's live list. */
@@ -1398,10 +1636,36 @@ export interface OperatorModel {
   chat_eligible: boolean; // may answer questions (features 25-27, C11)
   chat_verified: boolean; // verify-models passed for the current answer prompt
   vendor_allowed: boolean; // its maker is in OPENROUTER_MODEL_VENDORS; else never used
+  ulc_ready: boolean; // #488: may lead Ultra low cost (a Gemini with a known price that takes minimal)
+  ulc_why: string | null; // #488: the one plain reason it can't; null when it can
 }
 
 /** A thinking level, as the operator console says it (High / Medium / Low). */
 export type AiLevel = "low" | "medium" | "high";
+/** A scan's thinking level: Minimal too, for scanning only, never answering (#463). */
+export type ScanLevel = "minimal" | AiLevel;
+/** How much picture detail a page is sent with (#463). */
+export type Resolution = "low" | "high";
+/** Who reads scanned pages (#473): Gemini through OpenRouter, or Mistral OCR; or (#488) Gemini
+ * read as briefly as possible under a ceiling on what one page may cost. */
+export type ScanReader = "openrouter" | "mistral" | "ultra_low_cost";
+export type MistralModelId = "mistral-ocr-4-1" | "mistral-ocr-2512";
+/** A Mistral OCR model (#473); has_blocks: it says where each line is on the page. */
+export interface MistralModel {
+  id: MistralModelId;
+  name: string;
+  usd_per_page: number;
+  has_blocks: boolean;
+}
+/** Whether Mistral has stopped reading pages (#473): code mistral_key for a refused key or no
+ * credit, mistral when it isn't answering, mistral_setup when it is chosen but the server isn't
+ * set up for it; since when, and the documents waiting for it. */
+export interface MistralStatus {
+  stopped: boolean;
+  code: "mistral_key" | "mistral" | "mistral_setup" | null;
+  since: string | null;
+  documents_waiting: number;
+}
 
 /** One organisation's own AI settings or the platform defaults (features 25-27, C10). For an
  * organisation, an empty list or a null field follows the platform defaults; for the
@@ -1411,17 +1675,38 @@ export interface AiValues {
   scan_default: string | null;
   chat_models: string[];
   chat_default: string | null;
-  scan_thinking: AiLevel | null;
+  scan_thinking: ScanLevel | null;
+  scan_resolution: Resolution | null;
+  careful_thinking: ScanLevel | null; // pages read again
+  careful_resolution: Resolution | null;
+  page_max_output_tokens: number | null; // the most a page's read may write and think
   chat_levels: AiLevel[] | null;
   chat_default_level: AiLevel | null;
   dynamic: boolean | null;
+  scan_reader: ScanReader | null; // #473
+  mistral_model: MistralModelId | null;
+  daily_page_limit: number | null; // #478: pages AI may read in one India day; the platform's null: no limit
+  ulc_ceiling_paise: number | null; // #488: the most a page may cost under ultra low cost, 20 to 55; null follows (40)
 }
 
-/** What the server uses when the platform defaults name no model or scan level. */
+/** What the server uses when the platform defaults name no model or scan setting, and
+ * whether Mistral is set up on it (#473): mistral_missing says which half is not. */
 export interface AiEnv {
   scan_model: string;
   chat_model: string;
   scan_thinking: string;
+  scan_resolution: string;
+  careful_thinking: string;
+  careful_resolution: string;
+  page_max_output_tokens: number;
+  scan_reader: ScanReader; // #564: ultra_low_cost while OCR_ULTRA_LOW_COST is on
+  ulc_ceiling_paise: number; // the server's ceiling for a saved Ultra low cost with none (40)
+  switch_ceiling_paise: number | null; // #564: OCR_PAGE_CEILING_PAISE where the switch reads (null: off)
+  mistral_model: MistralModelId;
+  mistral_ready: boolean;
+  mistral_missing: "key" | "zdr" | null;
+  mistral_models: MistralModel[];
+  mistral_status: MistralStatus;
 }
 
 /** GET /operator/orgs/{id}/ai (operator only: the budget is in US dollars). */
@@ -1432,13 +1717,111 @@ export interface OrgAiReply {
   ensemble: boolean;
   max_agents: number; // the most models that read or answer together
   ai_budget_usd: number | null;
+  reading_today: { pages: number; cost_usd: number | null }; // #478: today's counter (India day)
 }
 
 /** GET /operator/ai-defaults: the defaults and how many organisations follow each area. */
 export interface AiDefaults {
   defaults: AiValues;
   env: AiEnv;
-  orgs_inheriting: Record<"scan_models" | "chat_models" | "scan_thinking" | "chat_levels" | "dynamic", number>;
+  orgs_inheriting: Record<
+    | "scan_models"
+    | "chat_models"
+    | "scan_thinking"
+    | "scan_resolution"
+    | "careful_thinking"
+    | "careful_resolution"
+    | "page_max_output_tokens"
+    | "chat_levels"
+    | "dynamic"
+    | "scan_reader"
+    | "mistral_model"
+    | "daily_page_limit"
+    | "ulc_ceiling_paise",
+    number
+  >;
+}
+
+/** POST /operator/scan-cost (#463): the scan settings and `dynamic` to price;
+ * null is what a save would inherit (the ceiling's: the organisation's own, else the
+ * platform's). customer_id null: the platform defaults. */
+export type ScanCostAsk = { customer_id: string | null } & Pick<
+  AiValues,
+  | "scan_thinking"
+  | "scan_resolution"
+  | "careful_thinking"
+  | "careful_resolution"
+  | "page_max_output_tokens"
+  | "dynamic"
+  | "scan_reader"
+  | "mistral_model"
+  | "ulc_ceiling_paise"
+>;
+
+/** One kind of page read, as measured in the last `days`: usd_per_page null when no page
+ * was read with these settings. */
+export interface ScanCostRead {
+  model: string;
+  thinking: string;
+  resolution: string;
+  usd_per_page: number | null;
+  pages: number;
+}
+
+/** The approximate cost a page: the first read, plus the share of pages read again (re_read
+ * null when Dynamic is off) at their cost. usd_per_page null when the first read is not
+ * measured; the first read's alone when the pages read again are not. quality: the share of
+ * pages read cleanly (no word the AI was unsure of) at these settings and at max settings
+ * (the same model, highest thinking, high picture detail). accuracy: the latest finished
+ * check at these settings; always null for the platform defaults. */
+export interface ScanCost {
+  days: number;
+  first_read: ScanCostRead;
+  re_read: (ScanCostRead & { share: number | null }) | null;
+  usd_per_page: number | null;
+  quality: { clean_share: number | null; pages: number; max_clean_share: number | null; max_pages: number };
+  // Tokens a page at these settings in the last `days`: null without data; limit_hits: pages
+  // whose read reached the limit (cut off and read again in two halves).
+  tokens: {
+    input_per_page: number | null;
+    output_per_page: number | null;
+    output_p99: number | null;
+    limit: number;
+    limit_hits: number;
+    pages: number;
+  };
+  accuracy: AccuracyCheck | null;
+  // #473: Mistral charges a fixed price a page, not by tokens.
+  fixed_price: boolean;
+  fixed_usd_per_page: number | null;
+  ulc?: UlcCost | null; // #488: only while ultra low cost reads
+}
+
+/** What ultra low cost measured in the last `days` (#488): the ceiling, the pages it read, their
+ * cost a page and the dearest document's, and the pages read locally to stay within the ceiling. */
+export interface UlcCost {
+  ceiling_paise: number;
+  ceiling_usd: number;
+  pages: number;
+  usd_per_page: number | null;
+  top_usd_per_page: number | null;
+  limit_hits: number;
+}
+
+/** One organisation's accuracy check (#463): recent pages read at its settings and at max
+ * settings, and the share of words that match. No text is shown or kept. */
+export interface AccuracyCheck {
+  id: string;
+  status: "running" | "done" | "failed";
+  settings: { model: string } & Pick<AiValues, "scan_thinking" | "scan_resolution" | "careful_thinking" | "careful_resolution">;
+  pages_checked: number;
+  pages_failed: number;
+  word_match: number | null;
+  numbers_match: number | null; // amounts, dates and numbers; null: none on the checked pages
+  max_pages: number; // the pages it reads
+  cost_usd: number | null;
+  started_at: string;
+  finished_at: string | null;
 }
 
 /** One row of GET /operator/usage: one organisation's use of one model. No user or document. */
@@ -1790,6 +2173,26 @@ export interface OrgFolderLimits {
   own: FolderLimits;
   platform: FolderLimits;
   defaults: Record<FolderLimitName, number>;
+}
+
+/** GET /operator/storage-limit and /operator/orgs/{id}/storage-limit (#516): how much an
+ * organisation may store in all, in whole GB. storage_gb is this level's own (null: an
+ * organisation follows the platform; the platform uses the default); effective_gb is the one that
+ * applies; used_bytes is what the organisation has stored, Trash included (0 for the platform). */
+export interface StorageLimit {
+  storage_gb: number | null;
+  platform_gb: number | null;
+  effective_gb: number;
+  default_gb: number;
+  most_gb: number;
+  used_bytes: number;
+}
+
+/** GET /admin/storage (#516): what this organisation has stored, Trash included, and its limit. */
+export interface AdminStorage {
+  used_bytes: number;
+  limit_bytes: number;
+  limit_gb: number;
 }
 
 /** GET /operator/speed (package S, 0053): each speed control's saved value (null: the server's

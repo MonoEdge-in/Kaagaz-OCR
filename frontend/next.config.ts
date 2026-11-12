@@ -4,26 +4,6 @@ import type { NextConfig } from "next";
 // FastAPI backend, so the session cookie stays first-party and no CORS is needed.
 const backend = process.env.BACKEND_URL ?? "http://localhost:8000";
 
-// Everything comes from this app: Next.js's inline scripts and styles, the
-// PDF.js worker (a file under /_next, or a blob: one), page images drawn from
-// data: and blob: URLs, and PDF.js's fonts from data: URLs. The PDF viewer's
-// engine is WebAssembly (served from /_next, compiled under 'wasm-unsafe-eval',
-// which allows no JavaScript eval) and Print frames the file from a blob: URL.
-const CSP = [
-  "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
-  "style-src 'self' 'unsafe-inline'",
-  "worker-src 'self' blob:",
-  "img-src 'self' data: blob:",
-  "frame-src 'self' blob:",
-  "font-src 'self' data:",
-  "connect-src 'self'",
-  "object-src 'none'",
-  "frame-ancestors 'none'",
-  "base-uri 'self'",
-  "form-action 'self'",
-].join("; ");
-
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
@@ -46,11 +26,22 @@ const nextConfig: NextConfig = {
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "same-origin" },
           { key: "X-Frame-Options", value: "DENY" },
-          // Security checklist (15 Oct 2026): report only, so the browser logs what
-          // would be blocked and blocks nothing, until it is checked on the live site.
-          { key: "Content-Security-Policy-Report-Only", value: CSP },
+          // The content security policy is set by proxy.ts: its script rule carries a fresh
+          // nonce on every page (#481, 3 Nov 2026).
           { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
         ],
+      },
+      {
+        // The emailed links' pages (#457): their token is in the fragment, never sent anyway;
+        // no referrer at all leaves these pages, as the spec asks for link paths.
+        source: "/:page(reset-password|invite|email/confirm)",
+        headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
+      },
+      {
+        // The provider sign-in's routes (#457 phase 1): the callback's address holds Google's
+        // one-time code and state, so no referrer leaves it either.
+        source: "/api/auth/oidc/:path*",
+        headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
       },
       {
         // The browser keeps no copy of an app page, so after signing out the

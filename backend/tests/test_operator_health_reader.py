@@ -54,4 +54,7 @@ def test_a_queue_that_does_not_answer_is_null_and_no_error_shows(offline: _Offli
     reply = offline.get(HEALTH)
     assert reply.status_code == 200
     assert (reply.json()["queues"], reply.json()["reader"]) == (None, [])
-    assert "queue" not in reply.text.replace('"queues"', "")
+    # Changed on purpose (A5, 7 Nov 2026): the parts' states moved here from the public
+    # /api/health, the queue's "error" among them, never why.
+    assert reply.json()["components"]["queue"] == "error"
+    assert "queue" not in reply.text.replace('"queues"', "").replace('"queue":"error"', "")

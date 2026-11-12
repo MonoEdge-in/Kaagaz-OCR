@@ -46,7 +46,7 @@ def test_b_setting_up_and_turning_off_two_step_never_touches_a(db: Database) -> 
         assert b.post(f"/api/admin/users/{target}/reset-2fa", headers=CSRF).status_code == 404
     api.clock.advance(totp.STEP_SECONDS)
     turn_off = {"password": PASSWORD, "code": api.code(secret)}
-    off = b.post("/api/auth/admin/2fa/off", json=turn_off, headers=CSRF)
+    off = b.post("/api/auth/2fa/off", json=turn_off, headers=CSRF)
     assert off.status_code == 200, off.text
 
     assert on.json()["user"]["id"] == off.json()["user"]["id"] == b_id

@@ -13,10 +13,21 @@
 // reviewer to delete forever (asked first; needs the admin's own two-step
 // sign-in), and stop it again.
 //
+// Connected accounts (#457 phase 1): "Connections to approve" above the list while any wait
+// (Approve, Decline; focus then moves to the next row's Approve, else the Users heading), a
+// "Signs in with" column, and "Remove connected accounts" in a row's menu, asked first. The
+// section hides only on the server's 404 (no provider on); any other failure says so, with Try
+// again. Approving one another admin already decided (404) reloads the list.
+// #507: "Needs to connect Google" beside how someone signs in, while their role uses Google only
+// and they have no Google account that passes (googleTag: or that its domain is not checked yet); Reset password says it disconnects Google too.
+// Add a user says, under the role, that the person connects Google after choosing a password,
+// while Google sign-in is on for that role (the rules from Settings, read when the form opens).
+//
 // A reset password comes back once, in the reply. It is shown in a card above
 // the list, with Copy, until Done or until the tab is left; it is never stored.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import type { FormEvent } from "react";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { useMinuteNow } from "@/components/chat/hooks";
@@ -27,16 +38,23 @@ import { IconButton } from "@/components/ui/IconButton";
 import { PasswordField } from "@/components/ui/PasswordField";
 import {
   ApiError,
+  approveConnection,
   createUser,
+  declineConnection,
+  getSettings,
   listUsers,
+  pendingConnections,
+  removeConnections,
   resetUser2fa,
   resetUserPassword,
   setDeleteForever,
   unlockUser,
   updateUser,
 } from "@/lib/api";
+import { DRAFT_KEPT, clearDraft, readDraft, saveDraftSoon } from "@/lib/drafts";
+import { errorWords } from "@/lib/errorWords";
 import { formatDate } from "@/lib/format";
-import type { AdminUser, Role } from "@/lib/types";
+import type { AddedUser, AdminUser, GoogleRules, PendingConnection, Role } from "@/lib/types";
 import table from "@/components/documents/Table.module.css";
 import { CopyButton } from "./CopyButton";
 import { MoreRows, useRowCap } from "./RowCap";
@@ -45,13 +63,26 @@ import type { RowMenuItem } from "./RowMenu";
 import { Toast } from "./Toast";
 import type { Notice } from "./Toast";
 import {
+  ADD_USER_DRAFT,
+  ALREADY_DECIDED,
+  CONNECTIONS_FAILED,
   MIN_PASSWORD_LENGTH,
   NEW_USER_FIELD_IDS,
+  addedNotice,
+  addUserGoogleHint,
   ROLES,
   allowForeverQuestion,
+  decideLabel,
   firstInvalidField,
+  googleTag,
   foreverControl,
   generatePassword,
+  newUserDraft,
+  newUserFromDraft,
+  pendingLine,
+  removeConnectionsQuestion,
+  resetPasswordQuestion,
+  signsInWith,
   twoStepNote,
   userActions,
   userStatus,
@@ -61,6 +92,8 @@ import type { NewUserErrors, NewUserInput } from "./logic";
 import styles from "./Admin.module.css";
 
 const SKELETON_ROWS = [0, 1, 2];
+const USERS_HEADING_ID = "users-heading";
+const approveId = (connectionId: string) => `approve-${connectionId}`;
 
 /** A temporary password just made for one user: shown once, then gone. */
 interface Revealed {
@@ -68,12 +101,15 @@ interface Revealed {
   password: string;
 }
 
+/** providers: the sign-in providers switched on (Me's), named in Remove connected accounts. */
 export function UsersPanel({
   currentUserId,
   adminTwoStep,
+  providers,
 }: {
   currentUserId: string;
   adminTwoStep: boolean;
+  providers: readonly string[];
 }) {
   const [attempt, setAttempt] = useState(0);
   const [users, setUsers] = useState<AdminUser[] | null>(null);
@@ -96,10 +132,7 @@ export function UsersPanel({
         if (!cancelled) {
           setError({
             attempt,
-            message:
-              caught instanceof ApiError
-                ? caught.message
-                : "Check your internet connection, then try again.",
+            message: errorWords(caught),
           });
         }
       },
@@ -112,16 +145,18 @@ export function UsersPanel({
   const failed = error !== null && error.attempt === attempt ? error.message : null;
 
   function replace(user: AdminUser) {
+    // A reply without signs_in_with (#457) changed no connection: the row keeps what it had.
     setUsers((current) =>
-      current ? current.map((existing) => (existing.id === user.id ? user : existing)) : current,
+      current ? current.map((existing) => (existing.id === user.id ? { ...existing, ...user } : existing)) : current,
     );
   }
 
   return (
     <div className={styles.panelStack}>
-      <section className={styles.section} aria-labelledby="users-heading">
+      <ConnectionsToApprove onApproved={() => setAttempt((n) => n + 1)} onNotice={setNotice} />
+      <section className={styles.section} aria-labelledby={USERS_HEADING_ID}>
         <div className={styles.sectionHead}>
-          <h2 id="users-heading" className={styles.sectionHeading}>
+          <h2 id={USERS_HEADING_ID} tabIndex={-1} className={styles.sectionHeading}>
             Users
           </h2>
           <button
@@ -176,6 +211,9 @@ export function UsersPanel({
                   <th scope="col" role="columnheader" className={styles.statusColumn}>
                     Status
                   </th>
+                  <th scope="col" role="columnheader">
+                    Signs in with
+                  </th>
                   <th scope="col" role="columnheader" className={styles.addedColumn}>
                     Added
                   </th>
@@ -191,6 +229,7 @@ export function UsersPanel({
                     user={user}
                     isSelf={user.id === currentUserId}
                     adminTwoStep={adminTwoStep}
+                    providers={providers}
                     now={now}
                     onChanged={replace}
                     onPasswordReset={setRevealed}
@@ -210,11 +249,14 @@ export function UsersPanel({
       </section>
       {adding && (
         <AddUserPanel
+          userId={currentUserId}
+          google={providers.includes("google")}
           onClose={() => setAdding(false)}
           onAdded={(user) => {
             setUsers((current) => (current ? [...current, user] : [user]));
             setAdding(false);
-            setNotice({ text: `Added ${user.display_name}. They choose their own password when they first sign in.` });
+            // #457: with email on, whether the invite went; else the temporary password, as before.
+            setNotice(addedNotice(user));
           }}
         />
       )}
@@ -225,14 +267,14 @@ export function UsersPanel({
 
 /** Disabling and the two resets ask first (each signs the user out on every device), and
  * so does allowing Delete forever (UI audit AD2: every action that takes something away). */
-type Confirming = "disable" | "password" | "2fa" | "forever";
+type Confirming = "disable" | "password" | "2fa" | "forever" | "connections";
 
-const CONFIRM_TEXT: Record<Confirming, (name: string) => string> = {
+const CONFIRM_TEXT: Record<Confirming, (name: string, providers: readonly string[], ways?: readonly string[]) => string> = {
+  connections: (name, providers) => removeConnectionsQuestion(name, providers),
   disable: (name) => `Disable ${name}'s account? They are signed out and can't sign in until it is enabled again.`,
-  password: (name) =>
-    `Reset ${name}'s password? They are signed out everywhere and must choose a new one.`,
+  password: (name, _providers, ways) => resetPasswordQuestion(name, ways),
   "2fa": (name) =>
-    `Reset ${name}'s two-step sign-in? They are signed out, and can sign in with their password, then set it up again.`,
+    `Reset ${name}'s two-step code? They are signed out, and can sign in with their password, then set up a new code.`,
   forever: allowForeverQuestion,
 };
 
@@ -241,8 +283,9 @@ const CONFIRM_TEXT: Record<Confirming, (name: string) => string> = {
 const CONFIRM_BUTTON: Record<Confirming, string> = {
   disable: "Disable",
   password: "Reset password",
-  "2fa": "Reset two-step sign-in",
+  "2fa": "Reset two-step code",
   forever: "Allow Delete forever",
+  connections: "Remove connected accounts",
 };
 
 /** What each item in a user's menu does, in one plain line under it (plain words, 25 Oct 2026). */
@@ -252,14 +295,16 @@ export const USER_MENU_HELP = {
   stopForever: "Takes back their right to delete documents in Trash permanently.",
   allowForever: "Lets them delete any document in Trash permanently. Deleted documents can't be recovered.",
   password: "Makes a one-time password for you to give them. They are signed out, then choose their own when they sign in.",
-  twoStep: "For a lost phone: turns off their two-step sign-in and signs them out, so they can set it up again.",
+  twoStep: "For a lost phone: turns off their two-step code and signs them out, so they can set up a new one.",
   disable: "Signs them out and stops them signing in until you enable them again.",
+  connections: "Stops them signing in with Google. Their password still works.",
 } as const;
 
 function UserRow({
   user,
   isSelf,
   adminTwoStep,
+  providers,
   now,
   onChanged,
   onPasswordReset,
@@ -268,6 +313,7 @@ function UserRow({
   user: AdminUser;
   isSelf: boolean;
   adminTwoStep: boolean;
+  providers: readonly string[];
   now: number;
   onChanged: (user: AdminUser) => void;
   onPasswordReset: (revealed: Revealed) => void;
@@ -284,10 +330,7 @@ function UserRow({
     } catch (caught) {
       onNotice({
         problem: true,
-        text:
-          caught instanceof ApiError
-            ? caught.message
-            : "Could not save the change. Check your connection, then try again.",
+        text: errorWords(caught),
       });
     } finally {
       setBusy(false);
@@ -301,7 +344,8 @@ function UserRow({
   const confirmed = (kind: Confirming) => {
     if (kind === "disable") return change({ disabled: true }, "disabled.");
     if (kind === "forever") return act(() => setDeleteForever(user.id, true), "Delete forever allowed.");
-    if (kind === "2fa") return act(() => resetUser2fa(user.id), "two-step sign-in reset.");
+    if (kind === "2fa") return act(() => resetUser2fa(user.id), "two-step code reset.");
+    if (kind === "connections") return act(() => removeConnections(user.id), "connected accounts removed.");
     return act(async () => {
       const reset = await resetUserPassword(user.id);
       onPasswordReset({ name: user.display_name, password: reset.temporary_password });
@@ -337,12 +381,16 @@ function UserRow({
       ? [{ label: "Reset password", description: USER_MENU_HELP.password, onSelect: () => setConfirming("password") }]
       : []),
     ...(can.reset2fa
-      ? [{ label: "Reset two-step sign-in", description: USER_MENU_HELP.twoStep, onSelect: () => setConfirming("2fa") }]
+      ? [{ label: "Reset two-step code", description: USER_MENU_HELP.twoStep, onSelect: () => setConfirming("2fa") }]
+      : []),
+    ...((user.signs_in_with ?? []).some((way) => way !== "password")
+      ? [{ label: "Remove connected accounts", description: USER_MENU_HELP.connections, onSelect: () => setConfirming("connections") }]
       : []),
     ...(can.toggleDisabled && !user.disabled
       ? [{ label: "Disable", description: USER_MENU_HELP.disable, onSelect: () => setConfirming("disable"), destructive: true }]
       : []),
   ];
+  const tag = googleTag(user);
   return (
     <tr role="row">
       <td role="cell" className={styles.userCell}>
@@ -386,6 +434,16 @@ function UserRow({
           ))}
         </span>
       </td>
+      <td role="cell" data-label="Signs in with">
+        <span className={styles.statusList}>
+          {signsInWith(user.signs_in_with)}
+          {tag && (
+            <span className="status-chip" data-tone="working">
+              {tag}
+            </span>
+          )}
+        </span>
+      </td>
       <td role="cell" data-label="Added" className="tabular">
         <span className={styles.date}>{formatDate(user.created_at)}</span>
       </td>
@@ -396,7 +454,7 @@ function UserRow({
         </span>
         {confirming && (
           <ActionDialog title={user.display_name} onClose={() => setConfirming(null)} canClose={() => !busy}>
-            <p>{CONFIRM_TEXT[confirming](user.display_name)}</p>
+            <p>{CONFIRM_TEXT[confirming](user.display_name, providers, user.signs_in_with)}</p>
             {/* [Cancel] [Yes, ...]: the action last; Cancel has focus, so Enter never acts by accident. */}
             <div className="actions">
               <button type="button" className="btn" data-autofocus disabled={busy} onClick={() => setConfirming(null)}>
@@ -417,6 +475,118 @@ function UserRow({
         )}
       </td>
     </tr>
+  );
+}
+
+/** Connections to approve (#457 phase 1): each waiting Google account, its person, email and
+ * day, with Approve and Decline; shown while any wait, or when the list could not be loaded
+ * (never on the 404 while no provider is on). */
+function ConnectionsToApprove({ onApproved, onNotice }: { onApproved(): void; onNotice(notice: Notice): void }) {
+  const [attempt, setAttempt] = useState(0);
+  const [pending, setPending] = useState<PendingConnection[]>([]);
+  const [failed, setFailed] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    pendingConnections().then(
+      (reply) => {
+        if (!live) return;
+        setPending(reply.items);
+        setFailed(false);
+      },
+      (caught: unknown) => {
+        // 404: no provider is on, so there is nothing to approve. Anything else is said.
+        if (live) setFailed(!(caught instanceof ApiError && caught.status === 404));
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [attempt]);
+
+  async function decide(row: PendingConnection, approve: boolean, at: number) {
+    setBusy(row.id);
+    try {
+      const reply = await (approve ? approveConnection(row.id) : declineConnection(row.id));
+      flushSync(() => {
+        setPending(reply.items);
+        setBusy(null);
+      });
+      // The row is gone: on to the next row's Approve, else the Users heading.
+      const next = reply.items[at];
+      document.getElementById(next ? approveId(next.id) : USERS_HEADING_ID)?.focus();
+      onNotice({ text: `${row.display_name}: Google ${approve ? "approved" : "declined"}.` });
+      if (approve) onApproved();
+    } catch (caught) {
+      setBusy(null);
+      if (caught instanceof ApiError && caught.status === 404) {
+        onNotice({ text: ALREADY_DECIDED });
+        setAttempt((n) => n + 1); // the list as it is now
+        return;
+      }
+      onNotice({
+        problem: true,
+        text: errorWords(caught),
+      });
+    }
+  }
+
+  if (failed) {
+    return (
+      <section className={styles.section} aria-labelledby="connections-heading">
+        <h2 id="connections-heading" className={styles.sectionHeading}>
+          Connections to approve
+        </h2>
+        <div className={styles.errorBanner} role="alert">
+          <Icon name="alert" className={styles.errorIcon} />
+          <div className={styles.errorBody}>
+            <p className={styles.errorTitle}>{CONNECTIONS_FAILED}</p>
+          </div>
+          <button type="button" className="btn" onClick={() => setAttempt((n) => n + 1)}>
+            <Icon name="refresh" />
+            Try again
+          </button>
+        </div>
+      </section>
+    );
+  }
+  if (pending.length === 0) return null;
+  return (
+    <section className={styles.section} aria-labelledby="connections-heading">
+      <h2 id="connections-heading" className={styles.sectionHeading}>
+        Connections to approve
+      </h2>
+      <ul className={styles.connections}>
+        {pending.map((row, at) => (
+          <li key={row.id} className={styles.connection}>
+            <span className={styles.connectionText}>{pendingLine(row)}</span>
+            <span className={styles.rowActions}>
+              <button
+                type="button"
+                id={approveId(row.id)}
+                className="btn"
+                aria-label={decideLabel(row, true)}
+                disabled={busy !== null}
+                onClick={() => void decide(row, true, at)}
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                className="btn"
+                aria-label={decideLabel(row, false)}
+                disabled={busy !== null}
+                onClick={() => void decide(row, false, at)}
+              >
+                Decline
+              </button>
+              {busy === row.id && <span className="spinner" aria-hidden="true" />}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -457,7 +627,6 @@ function TemporaryPassword({ revealed, onDone }: { revealed: Revealed; onDone: (
   );
 }
 
-const EMPTY_USER: NewUserInput = { email: "", display_name: "", role: "member", password: "" };
 const ADD_USER_TITLE_ID = "add-user-heading";
 const UNSAVED_QUESTION = "Close without adding? What you typed here will be lost.";
 
@@ -466,18 +635,61 @@ const UNSAVED_QUESTION = "Close without adding? What you typed here will be lost
  * Esc, inert page). Esc, the backdrop (press and release both on it) and Close ask
  * first when something is typed; focus goes back to "Add user" when it closes.
  */
-function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (user: AdminUser) => void }) {
+function AddUserPanel({
+  userId,
+  google,
+  onClose,
+  onAdded,
+}: {
+  userId: string; // #468: the draft (email, name, role) is this admin's only
+  google: boolean; // Google sign-in is switched on (Me's providers): its rules are read
+  onClose: () => void;
+  onAdded: (user: AddedUser) => void;
+}) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const pressTarget = useRef<EventTarget | null>(null);
-  const [input, setInput] = useState<NewUserInput>(EMPTY_USER);
+  // #468: what was typed before a session ended comes back; the password never does. A line says
+  // so (DRAFT_KEPT) until the form is edited or sent.
+  const [kept] = useState(() => readDraft(userId, ADD_USER_DRAFT));
+  const [input, setInput] = useState<NewUserInput>(() => newUserFromDraft(kept));
+  const [keptNote, setKeptNote] = useState(kept !== null);
+  const edit = (next: NewUserInput) => {
+    setKeptNote(false);
+    setInput(next);
+  };
   const [errors, setErrors] = useState<NewUserErrors>({});
   const [serverError, setServerError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [masked, setMasked] = useState(true);
+  // #507: the organisation's Google rules, for the hint under the role; none until read (or if
+  // reading fails: the hint is only a hint).
+  const [googleRules, setGoogleRules] = useState<GoogleRules | undefined>(undefined);
+  const googleHint = addUserGoogleHint(googleRules, input.role);
   const unsaved = input.email !== "" || input.display_name !== "" || input.password !== "";
   const askClose = () => {
-    if (!busy && closeAllowed(unsaved, () => window.confirm(UNSAVED_QUESTION))) onClose();
+    if (!busy && closeAllowed(unsaved, () => window.confirm(UNSAVED_QUESTION))) {
+      clearDraft(userId, ADD_USER_DRAFT); // closed on purpose: what was typed is let go
+      onClose();
+    }
   };
+
+  useEffect(() => {
+    saveDraftSoon(userId, ADD_USER_DRAFT, newUserDraft(input));
+  }, [userId, input]);
+
+  useEffect(() => {
+    if (!google) return;
+    let live = true;
+    getSettings().then(
+      (settings) => {
+        if (live) setGoogleRules(settings.google);
+      },
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [google]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -494,6 +706,7 @@ function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (use
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return; // Enter in a field while adding: never a second user
+    setKeptNote(false);
     setMasked(true); // never leave a password showing once it is sent
     setServerError(null);
     const found = validateNewUser(input);
@@ -510,12 +723,10 @@ function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (use
         email: input.email.trim(),
         display_name: input.display_name.trim(),
       });
+      clearDraft(userId, ADD_USER_DRAFT);
       onAdded(user);
     } catch (caught) {
-      const message =
-        caught instanceof ApiError
-          ? caught.message
-          : "Could not add the user. Check your connection, then try again.";
+      const message = errorWords(caught);
       if (caught instanceof ApiError && caught.code === "conflict") {
         setErrors({ email: message });
       } else {
@@ -549,6 +760,7 @@ function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (use
           </h2>
           <IconButton icon="close" label="Close" className="btn-quiet" onClick={askClose} />
         </div>
+        {keptNote && <p className="muted">{DRAFT_KEPT}</p>}
         <form className={styles.form} onSubmit={submit} noValidate>
           <Field
             id={NEW_USER_FIELD_IDS.email}
@@ -556,7 +768,7 @@ function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (use
             error={errors.email}
             type="email"
             value={input.email}
-            onChange={(email) => setInput({ ...input, email })}
+            onChange={(email) => edit({ ...input, email })}
           />
           <Field
             id={NEW_USER_FIELD_IDS.display_name}
@@ -564,17 +776,18 @@ function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (use
             error={errors.display_name}
             type="text"
             value={input.display_name}
-            onChange={(display_name) => setInput({ ...input, display_name })}
+            onChange={(display_name) => edit({ ...input, display_name })}
           />
           <div className="field">
             <label htmlFor="new-user-role">Role</label>
             <select
               id="new-user-role"
               className="input"
+              aria-describedby={googleHint ? "new-user-google-hint" : undefined}
               value={input.role}
               onChange={(event) => {
                 const role = ROLES.find((option) => option === event.target.value);
-                if (role) setInput({ ...input, role });
+                if (role) edit({ ...input, role });
               }}
             >
               {ROLES.map((role) => (
@@ -583,6 +796,11 @@ function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (use
                 </option>
               ))}
             </select>
+            {googleHint && (
+              <span id="new-user-google-hint" className="hint">
+                {googleHint}
+              </span>
+            )}
           </div>
           {/* AD3: the password across the panel, Generate and Copy under it. */}
           <div className={styles.passwordBlock}>
@@ -592,7 +810,7 @@ function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (use
               autoComplete="new-password"
               hint={`At least ${MIN_PASSWORD_LENGTH} characters. Give it to them yourself; they set their own when they sign in.`}
               value={input.password}
-              onChange={(password) => setInput({ ...input, password })}
+              onChange={(password) => edit({ ...input, password })}
               error={errors.password ?? null}
               masked={masked}
               onMaskedChange={setMasked}
@@ -602,7 +820,7 @@ function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (use
                 type="button"
                 className="btn"
                 onClick={() => {
-                  setInput({ ...input, password: generatePassword() });
+                  edit({ ...input, password: generatePassword() });
                   setMasked(false); // shown, so it can be copied and given to them
                 }}
               >

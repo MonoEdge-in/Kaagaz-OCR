@@ -14,11 +14,11 @@ from kaagaz.answering.memory import Memory
 from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
 from kaagaz.db.models import ChatChoice
-from kaagaz.ingestion.ports import BlobStorage, JobQueue
+from kaagaz.ingestion.ports import JobQueue, RenditionStorage
 from kaagaz.search.scope import Scope
 
 
-class ApiStorage(BlobStorage, Protocol):
+class ApiStorage(RenditionStorage, Protocol):
     """Original files plus page images. ``get`` and ``get_page_image`` raise
     BlobNotFound; ``ping`` raises BackendUnavailable."""
 
@@ -57,6 +57,11 @@ class AnswerLike(Protocol):
 
     @property
     def unavailable(self) -> bool: ...
+
+    @property
+    def degraded(self) -> bool:
+        """#535: the model or the question's vector was down for it, so a repeat never reuses it."""
+        ...
 
 
 class Answers(Protocol):

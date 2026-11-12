@@ -24,13 +24,29 @@ audit rows.
 * ``ai_defaults`` and ``set_ai_defaults``: the platform defaults and how many
   organisations inherit each area; the same outcomes but missing and deleting.
 * ``usage``: tokens and dollars per organisation and model. No user, no document.
+* ``reading_today`` (#478, 0066): one organisation's pages read by AI and dollars on one India
+  day (the reading pause's counter). Numbers only.
+* ``mistral_status`` (#473, 0065): whether Mistral stopped reading pages, from the runs that
+  waited on it (no worker memory). Codes and counts only.
+* ``ulc_cost`` (#488, 0070): what Ultra low cost really cost for one model: its pages, their
+  reported cost, the pages read locally to stay within the ceiling and the highest cost a page of
+  one document. Numbers only.
+* ``scan_cost`` (#463, 0064): the measured cost of a page at one first read's and one
+  Careful re-read's (model, thinking, picture detail), the scope's share read again, and its
+  pages read at the first read's and at max settings, and the clean ones.
+* ``start_accuracy_check`` and ``accuracy_check`` (#463, 0064): an organisation's accuracy
+  check against max settings, started with a fresh code (``done``, ``missing``, ``deleting``,
+  ``check_running``, ``rate_limited``, ``no_pages``, ``step_up`` or ``signed_out``), and its
+  latest (or its latest done at given settings). Numbers only.
 * ``feature_switches`` and ``set_feature_switch`` (0038): the platform feature switches;
   ``org_feature_switches`` and ``set_org_feature_switch`` (0039): one organisation's.
 * ``session_timeout`` and ``set_session_timeout`` (0040): the sign-in idle timeout, the
   platform's and one organisation's.
 * ``speed`` and ``set_speed`` (0053): the platform's speed controls.
-* ``folder_upload_limits`` and ``set_folder_upload_limits`` (0061c, #484): the folder upload
+* ``folder_upload_limits`` and ``set_folder_upload_limits`` (0071, #484): the folder upload
   limits (files, GB, folders), the platform's and one organisation's.
+* ``storage_limit`` and ``set_storage_limit`` (0061d, #516): the storage limit in GB, the
+  platform's and one organisation's, with the bytes the organisation's documents hold.
 * ``current_test_model``, ``set_test_model`` and ``clear_test_model`` (0038): the platform
   test model, one model for every organisation's scanning and answering, and its undo.
 
@@ -43,7 +59,7 @@ Time: each is one statement; ``usage`` is O(ledger rows in the period).
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import Connection, RowMapping, text
@@ -57,17 +73,35 @@ _RECORD = text(
 _RECORD_CHAT = text(
     "UPDATE model_catalog SET chat_verified_prompt = :prompt, chat_verified_at = now() WHERE id = :model"
 )
-# An AiChoice's parameters (sm to dyn) are in the functions' order.
+# An AiChoice's parameters (sm to dyn) are in the functions' order (0064: sr, ct, cr, pm after st;
+# #473, 0065: rd and mm after the step; #478, 0066: dpl; #488, 0070: ulc last).
 _SET_ORG_AI = text(
     "SELECT outcome, result_id FROM kaagaz_op_set_org_ai(:o, :c, CAST(:sm AS text[]), CAST(:sd AS text),"
-    " CAST(:cm AS text[]), CAST(:cd AS text), CAST(:st AS text), CAST(:cl AS text[]), CAST(:cdl AS text),"
-    " CAST(:dyn AS boolean), :ensemble, CAST(:budget AS numeric), :scan, :chat, :step)"
+    " CAST(:cm AS text[]), CAST(:cd AS text), CAST(:st AS text), CAST(:sr AS text), CAST(:ct AS text),"
+    " CAST(:cr AS text), CAST(:pm AS integer), CAST(:cl AS text[]), CAST(:cdl AS text),"
+    " CAST(:dyn AS boolean), :ensemble,"
+    " CAST(:budget AS numeric), :scan, :chat, :step, CAST(:rd AS text), CAST(:mm AS text),"
+    " CAST(:dpl AS integer), CAST(:ulc AS integer))"
 )
 _SET_AI_DEFAULTS = text(
     "SELECT kaagaz_op_set_ai_defaults(:o, CAST(:sm AS text[]), CAST(:sd AS text), CAST(:cm AS text[]),"
-    " CAST(:cd AS text), CAST(:st AS text), CAST(:cl AS text[]), CAST(:cdl AS text), CAST(:dyn AS boolean),"
-    " :scan, :chat, :step)"
+    " CAST(:cd AS text), CAST(:st AS text), CAST(:sr AS text), CAST(:ct AS text), CAST(:cr AS text),"
+    " CAST(:pm AS integer), CAST(:cl AS text[]), CAST(:cdl AS text), CAST(:dyn AS boolean), :scan, :chat,"
+    " :step, CAST(:rd AS text), CAST(:mm AS text), CAST(:dpl AS integer), CAST(:ulc AS integer))"
 )
+_SCAN_COST = text(
+    "SELECT * FROM kaagaz_op_scan_cost(:o, CAST(:c AS uuid), :m, :t, :r, CAST(:cm AS text),"
+    " CAST(:ct AS text), CAST(:cr AS text), :mt, :mr)"
+)
+_START_CHECK = text(
+    "SELECT outcome, result_id FROM kaagaz_op_start_accuracy_check(:o, :c, :m, :st, :sr, :ct, :cr,"
+    " CAST(:pm AS integer), CAST(:dyn AS boolean), :n, :step)"
+)
+_CHECK = text(
+    "SELECT * FROM kaagaz_op_accuracy_check(:o, :c, CAST(:m AS text), CAST(:st AS text), CAST(:sr AS text),"
+    " CAST(:ct AS text), CAST(:cr AS text), CAST(:pm AS integer), CAST(:dyn AS boolean))"
+)
+_ULC_COST = text("SELECT * FROM kaagaz_op_ulc_cost(:o, CAST(:c AS uuid), :m)")
 _MODEL_RATES = text("SELECT * FROM kaagaz_op_model_rates(:o, :c)")
 _SET_MODEL_RATE = text("SELECT kaagaz_op_set_model_rate(:o, :c, :u, :rpm, :step)")
 
@@ -77,7 +111,16 @@ class AiChoice:
     """One AI settings save, an organisation's or the platform's (C10): the scan and answer
     models with their defaults (an empty list: the platform's; for the platform, the
     environment's OCR_MODEL and MODEL_CHAT), the scan thinking level, the answer levels and
-    default level, and Dynamic. For an organisation, None inherits that field."""
+    default level, and Dynamic. For an organisation, None inherits that field. #463 (0064): the
+    scan picture detail, Careful's pair (pages read again) and a page read's output limit, last
+    so the order above holds; for the platform, None is the server's (OCR_MEDIA_RESOLUTION,
+    OCR_RETRY_*, PAGE_MAX_OUTPUT_TOKENS). #473 (0065): who reads scanned pages (``scan_reader``,
+    openrouter or mistral) and the Mistral model; for the platform, None is openrouter and
+    DEFAULT_MISTRAL_MODEL. Whether Mistral is set up is the API's check, not the database's.
+    #478 (0066): the daily page limit (pages AI may read in one India day); for the platform,
+    None is no limit. #488 (0070): Ultra low cost's ceiling, the most one read of a page may cost,
+    in paise (20 to 55, 0073; ``scan_reader`` ultra_low_cost reads with it); for the platform,
+    None is ULC_DEFAULT_PAISE."""
 
     scan_models: Sequence[str] = ()
     scan_default: str | None = None
@@ -87,6 +130,14 @@ class AiChoice:
     chat_levels: Sequence[str] | None = None
     chat_default_level: str | None = None
     dynamic: bool | None = None
+    scan_resolution: str | None = None
+    careful_thinking: str | None = None
+    careful_resolution: str | None = None
+    page_max_output_tokens: int | None = None
+    scan_reader: str | None = None
+    mistral_model: str | None = None
+    daily_page_limit: int | None = None
+    ulc_ceiling_paise: int | None = None
 
     def params(self) -> dict[str, object]:
         return {
@@ -95,9 +146,17 @@ class AiChoice:
             "cm": list(self.chat_models),
             "cd": self.chat_default,
             "st": self.scan_thinking,
+            "sr": self.scan_resolution,
+            "ct": self.careful_thinking,
+            "cr": self.careful_resolution,
+            "pm": self.page_max_output_tokens,
             "cl": None if self.chat_levels is None else list(self.chat_levels),
             "cdl": self.chat_default_level,
             "dyn": self.dynamic,
+            "rd": self.scan_reader,
+            "mm": self.mistral_model,
+            "dpl": self.daily_page_limit,
+            "ulc": self.ulc_ceiling_paise,
         }
 
 
@@ -135,9 +194,10 @@ def set_model_enabled(
 
 def org_ai(conn: Connection, operator_id: str, customer_id: str) -> RowMapping | None:
     """One organisation's own settings (scan_models, scan_default, chat_models,
-    chat_default, scan_thinking, chat_levels, chat_default_level, dynamic, ensemble) and
-    ai_budget_usd; an empty list or a NULL field inherits. None when there is no such
-    organisation (or the operator is not enabled)."""
+    chat_default, scan_thinking, chat_levels, chat_default_level, dynamic, scan_resolution,
+    careful_thinking, careful_resolution, page_max_output_tokens, scan_reader, mistral_model,
+    daily_page_limit, ulc_ceiling_paise, ensemble) and ai_budget_usd; an empty list or a
+    NULL field inherits. None when there is no such organisation (or the operator is not enabled)."""
     return (
         conn.execute(text("SELECT * FROM kaagaz_op_org_ai(:o, :c)"), {"o": operator_id, "c": customer_id})
         .mappings()
@@ -178,7 +238,9 @@ def set_org_ai(
 
 def ai_defaults(conn: Connection, operator_id: str) -> RowMapping | None:
     """The platform defaults (as ``org_ai``, without ensemble and budget) and
-    orgs_inheriting_{scan_models, chat_models, scan_thinking, chat_levels, dynamic}: the
+    orgs_inheriting_{scan_models, chat_models, scan_thinking, chat_levels, dynamic,
+    scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens, scan_reader,
+    mistral_model, daily_page_limit, ulc_ceiling_paise}: the
     organisations (not being deleted) a change of that area reaches. None for an operator
     who is not enabled."""
     return (
@@ -194,6 +256,39 @@ def set_ai_defaults(
     params = {"o": operator_id, **choice.params(), "scan": scan_prompt, "chat": chat_prompt, "step": step}
     row = conn.execute(_SET_AI_DEFAULTS, params).one()
     return str(row[0])
+
+
+def reading_today(conn: Connection, operator_id: str, customer_id: str, day: date) -> RowMapping | None:
+    """#478 (0066): pages and cost_usd, the organisation's counter on ``day`` (0 and 0 with
+    none). None for an operator who is not enabled."""
+    return (
+        conn.execute(
+            text("SELECT * FROM kaagaz_op_reading_today(:o, :c, :day)"),
+            {"o": operator_id, "c": customer_id, "day": day},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def mistral_status(conn: Connection, operator_id: str) -> RowMapping | None:
+    """#473 (0065): code (the newest wait's run error code, ``mistral_key_unavailable`` or
+    ``mistral_unavailable``; None when no document waits), since (when the first of the waiting
+    documents' Mistral waits ended) and documents_waiting, over the last 24 hours, every
+    organisation's together. None for an operator who is not enabled."""
+    return (
+        conn.execute(text("SELECT * FROM kaagaz_op_mistral_status(:o)"), {"o": operator_id})
+        .mappings()
+        .first()
+    )
+
+
+def ulc_cost(conn: Connection, operator_id: str, customer_id: str | None, model: str) -> RowMapping | None:
+    """#488 (0070): pages, cost_usd (None with none), limit_hits and top_usd_per_page (the highest
+    cost a page of one document; None with none) of ``model``'s Ultra low cost reads over the last
+    30 days, ``customer_id``'s (None: every organisation's), reported costs only. None for an
+    operator who is not enabled."""
+    return conn.execute(_ULC_COST, {"o": operator_id, "c": customer_id, "m": model}).mappings().first()
 
 
 def feature_switches(conn: Connection, operator_id: str) -> Sequence[RowMapping]:
@@ -251,7 +346,7 @@ def set_session_timeout(
 
 
 def folder_upload_limits(conn: Connection, operator_id: str, customer_id: str | None) -> RowMapping | None:
-    """The folder upload limits (0061c): org_max_* (None without a customer) and platform_max_*,
+    """The folder upload limits (0071): org_max_* (None without a customer) and platform_max_*,
     each None for "not set". None for an unknown organisation or an operator who is not enabled."""
     params = {"o": operator_id, "c": customer_id}
     statement = text("SELECT * FROM kaagaz_op_folder_upload_limits(:o, :c)")
@@ -273,6 +368,25 @@ def set_folder_upload_limits(
     ``missing``, ``deleting``, ``step_up`` or ``signed_out``."""
     params = {"o": operator_id, "c": customer_id, "f": max_files, "g": max_gb, "d": max_folders, "step": step}
     statement = text("SELECT kaagaz_op_set_folder_upload_limits(:o, :c, :f, :g, :d, :step)")
+    return str(conn.execute(statement, params).scalar_one())
+
+
+def storage_limit(conn: Connection, operator_id: str, customer_id: str | None) -> RowMapping | None:
+    """The storage limit (0061d): org_storage_gb (None without a customer or with no own),
+    platform_storage_gb (None: the default) and used_bytes (0 without a customer). None for an
+    unknown organisation or an operator who is not enabled."""
+    params = {"o": operator_id, "c": customer_id}
+    return conn.execute(text("SELECT * FROM kaagaz_op_storage_limit(:o, :c)"), params).mappings().first()
+
+
+def set_storage_limit(
+    conn: Connection, operator_id: str, customer_id: str | None, storage_gb: int | None, *, step: int
+) -> str:
+    """Set the platform's storage limit (no customer; None: the default) or one organisation's
+    (None: follow the platform), ``step`` of a fresh code required; audited. ``done``,
+    ``unchanged``, ``missing``, ``deleting``, ``step_up`` or ``signed_out``."""
+    params = {"o": operator_id, "c": customer_id, "g": storage_gb, "step": step}
+    statement = text("SELECT kaagaz_op_set_storage_limit(:o, :c, :g, :step)")
     return str(conn.execute(statement, params).scalar_one())
 
 
@@ -340,6 +454,71 @@ def clear_test_model(conn: Connection, operator_id: str, *, step: int) -> str:
     ``unchanged``, ``step_up`` or ``signed_out``."""
     params = {"o": operator_id, "step": step}
     return str(conn.execute(text("SELECT kaagaz_op_clear_test_model(:o, :step)"), params).scalar_one())
+
+
+Sent = tuple[str, str, str]  # (model, thinking level, picture detail) as a page read sends them
+# An accuracy check's settings: (model, scan_thinking, scan_resolution, careful_thinking,
+# careful_resolution, page_max_output_tokens, dynamic), every one a value (the estimate's, after
+# inheritance; #463 review: Dynamic after the Cost saving switches).
+CheckSettings = tuple[str, str, str, str, str, int, bool]
+
+
+def scan_cost(
+    conn: Connection,
+    operator_id: str,
+    customer_id: str | None,
+    first: Sent,
+    careful: Sent | None,
+    best: tuple[str, str],
+) -> RowMapping | None:
+    """#463: first_usd and first_pages (the first reads at ``first``), careful_usd and
+    careful_pages (Careful's at ``careful``; none with None) over every organisation's ledger
+    of the last 30 days, OpenRouter's reported cost only, a page counted once (#463 review);
+    scan_calls and careful_calls of ``customer_id``'s (None: every organisation's); and its
+    pages ``first``'s model first read in those days at ``first``'s settings (quality_pages,
+    clean_pages; output_p99, the 99th percentile of their output tokens, None under 20) and
+    read once at ``best``'s (thinking, picture detail: max settings; max_quality_pages,
+    max_clean_pages); its first reads' tokens_in, tokens_out, token_pages and limit_hits (not
+    cached). None for an operator who is not enabled."""
+    model, thinking, resolution = first
+    careful_model, careful_thinking, careful_resolution = careful or (None, None, None)
+    params = {
+        "o": operator_id,
+        "c": customer_id,
+        "m": model,
+        "t": thinking,
+        "r": resolution,
+        "cm": careful_model,
+        "ct": careful_thinking,
+        "cr": careful_resolution,
+        "mt": best[0],
+        "mr": best[1],
+    }
+    return conn.execute(_SCAN_COST, params).mappings().first()
+
+
+def _check_params(settings: CheckSettings | None) -> dict[str, object]:
+    names = ("m", "st", "sr", "ct", "cr", "pm", "dyn")
+    return dict(zip(names, settings or (None,) * len(names), strict=True))
+
+
+def start_accuracy_check(
+    conn: Connection, operator_id: str, customer_id: str, settings: CheckSettings, pages: int, *, step: int
+) -> Outcome:
+    """Start ``customer_id``'s accuracy check of up to ``pages`` pages at ``settings`` (a fresh
+    code's ``step``; audited); the outcome, with the check's id when ``done``."""
+    params = {"o": operator_id, "c": customer_id, **_check_params(settings), "n": pages, "step": step}
+    row = conn.execute(_START_CHECK, params).one()
+    return Outcome(str(row[0]), None if row[1] is None else str(row[1]))
+
+
+def accuracy_check(
+    conn: Connection, operator_id: str, customer_id: str, settings: CheckSettings | None = None
+) -> RowMapping | None:
+    """``customer_id``'s latest accuracy check (``settings`` None), else its latest done one at
+    exactly ``settings``; None with none (or an operator who is not enabled)."""
+    params = {"o": operator_id, "c": customer_id, **_check_params(settings)}
+    return conn.execute(_CHECK, params).mappings().first()
 
 
 def usage(conn: Connection, operator_id: str, start: datetime, end: datetime) -> Sequence[RowMapping]:

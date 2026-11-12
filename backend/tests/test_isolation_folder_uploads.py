@@ -1,4 +1,4 @@
-"""Folder upload tables (0061c, #484): customer B sees none of customer A's uploads, folders,
+"""Folder upload tables (0071, #484): customer B sees none of customer A's uploads, folders,
 items or limits, and can write none for A, even with A's exact ids."""
 
 import uuid

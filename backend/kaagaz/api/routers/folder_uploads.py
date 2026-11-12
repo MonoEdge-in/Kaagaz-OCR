@@ -10,12 +10,23 @@ batches and duplicates stay exactly as for any upload.
   department" is an admin's. Every folder and file name follows ``names.upload_name``. Audited
   once (``folder.upload``, counts and ids only) on the first plan and on a re-plan that made
   folders. One user's uploads send at a time per organisation (409 ``upload_in_progress``, until
-  the other has been quiet for 30 minutes) and one plan
-  is built at a time (429 ``plan_busy``, ``Retry-After: 2``).
+  the other has been quiet for 30 minutes) and one plan is built at a time (429 ``plan_busy``,
+  ``Retry-After: 2``). A plan whose bytes would take the organisation past its storage limit is
+  413 ``storage_full`` before any folder is made (#516, ``documents.storage_full``); a re-plan
+  counts only the bytes it still has to send (not a file stored, a duplicate or failed), the
+  browser leaves out the files it refuses, and "Add new files only" is not checked there (its
+  bytes hold the files already in Kaagaz, which cost nothing): each new file is, as it is sent.
 * ``POST /folder-uploads/{id}/items`` (at most MAX_REGISTER_BYTES, checked before it is parsed):
-  a page of at most 1,000 files; each gets its folder and
-  batch now (``db/folder_upload_items.py``). A file with an unsafe name is registered failed
-  ``bad_name``, never a 400 for the page.
+  a page of at most 1,000 files; each gets its folder and batch now (``db/folder_upload_items.py``).
+  A file with an unsafe name is registered failed ``bad_name``, never a 400 for the page.
+* "Add new files only": the plan says ``only_new`` (its declared counts checked against the
+  ceilings, not the organisation's limits; ``folder.upload`` says it), and each file Kaagaz
+  could take comes with the browser's ``sha256``. A file already in this organisation (that
+  hash and size) comes back ``duplicate`` with its document and is never sent; the hash is
+  only looked up, never kept, and moves or stores nothing. The page stays on the general
+  per-user rate limit, at most 1,000 hashes a call.
+* ``GET /folder-uploads/previous?source_name=``: this user's latest upload of a folder of that
+  name whose root folder is still there, so "Add new files only" can offer the same place.
 * ``GET /folder-uploads`` (this user's of the last 7 days, counts by state only),
   ``GET /folder-uploads/{id}`` (also where its stored files' reading is) and
   ``GET /folder-uploads/{id}/items?view=waiting|attention|duplicate|all&after=-1&limit=500``.
@@ -34,8 +45,8 @@ from kaagaz.api.auth import CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import DOCUMENT_NAME_MAX, FOLDER_NAME_MAX, shown_upload_name, upload_name
-from kaagaz.api.routers.documents import same_user, user_upload_policy
-from kaagaz.api.views import folder_upload_item, iso
+from kaagaz.api.routers.documents import same_user, storage_full, user_upload_policy
+from kaagaz.api.views import folder_upload_item, held_message, iso
 from kaagaz.db import audit
 from kaagaz.db import folder_upload_items as items_sql
 from kaagaz.db.folder_upload_items import NewItem, Summary
@@ -51,6 +62,7 @@ from kaagaz.db.folder_uploads import (
     plan_folders,
 )
 from kaagaz.db.folders import MAX_DEPTH, FolderError
+from kaagaz.db.storage_limits import storage_room
 
 router = APIRouter()
 
@@ -59,7 +71,7 @@ Context = Annotated[AppContext, Depends(get_context)]
 MAX_PLAN_BYTES = 8 * 1024 * 1024  # 50,000 folders' names fit with room to spare
 REGISTER_PAGE = 1000
 # A register page's body (production QA S6: it was parsed whole up to Caddy's 60 MB). A full page
-# of 1,000 files with 255-character Devanagari names is about 1 MB.
+# of 1,000 files with 255-character Devanagari names and "Add new files only" hashes is about 1 MB.
 MAX_REGISTER_BYTES = 2 * 1024 * 1024
 _BAD_NAME = "A folder name is empty, longer than 100 characters, or holds a character Kaagaz can't keep."
 
@@ -83,6 +95,7 @@ class PlanBody(BaseModel):
     file_count: int = Field(ge=0, le=MOST_FILES)
     total_bytes: int = Field(ge=0, le=MOST_GB * GIB)
     skipped_count: int = Field(ge=0, le=2**31 - 1)
+    only_new: bool = False  # "Add new files only": the files already in Kaagaz aren't sent
 
 
 class ItemBody(BaseModel):
@@ -93,6 +106,7 @@ class ItemBody(BaseModel):
     folder_id: uuid.UUID
     size: int = Field(ge=0, le=MOST_GB * GIB)
     refused: Literal["unsupported_type"] | None = None  # too_large and empty_file: the server's
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")  # the browser's: looked up only
 
 
 class RegisterBody(BaseModel):
@@ -109,15 +123,16 @@ def _words(code: str, limits: FolderUploadLimits) -> str:
         "too_many_folders": f"A folder upload can make at most {limits.max_folders:,} folders.",
         "plan_changed": "This upload was started with a different folder or place. Start a new upload.",
         "folder_too_deep": f"This folder would go deeper than {MAX_DEPTH} levels here.",
-        "upload_in_progress": "Another folder upload is still sending in this organisation."
-        " Try again in a few minutes.",
+        "upload_in_progress": "Another person's folder upload is still sending in this organisation."
+        " Try again when it has finished.",
     }.get(code, "")
 
 
 async def _body(
     request: Request, most: int, words: str = "This folder is too big to plan in one go."
 ) -> bytes:
-    """The request body, refused (413, ``words``) past ``most`` bytes before it is read whole or parsed."""
+    """The request body, refused (413, ``words``) past ``most`` bytes before it is read whole or
+    parsed."""
     declared = request.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > most:
         raise ApiError(413, "too_large", words)
@@ -158,6 +173,13 @@ def _plan(context: AppContext, user: CurrentUser, body: PlanBody) -> dict[str, A
     try:
         with context.db.customer(customer_id) as conn:
             limits = effective_limits(conn, customer_id)
+            if not body.only_new:  # #516: the bytes not sent yet must fit (module notes)
+                room = storage_room(conn, customer_id)
+                unsent = body.total_bytes - items_sql.sent_bytes(
+                    conn, customer_id, str(body.id), user_id=user.user_id
+                )
+                if room.used_bytes + unsent > room.limit_bytes:
+                    raise storage_full(room)
             plan = _plan_and_audit(conn, user, body, folders, parent, limits)
     except FolderError as refused:  # out of the block first: the plan is rolled back
         if refused.code == "not_found":
@@ -202,6 +224,7 @@ def _plan_and_audit(
         total_bytes=body.total_bytes,
         skipped_count=body.skipped_count,
         limits=limits,
+        only_new=body.only_new,
     )
     if plan.new or plan.created:
         details: dict[str, audit.DetailValue] = {
@@ -212,6 +235,7 @@ def _plan_and_audit(
             "folders_merged": plan.merged,
             "skipped": body.skipped_count,
             "target": body.target,
+            "only_new": body.only_new,
         }
         audit.record(
             conn,
@@ -247,7 +271,7 @@ def _register(
         refused: str | None = entry.refused
         if name is None:
             name, refused = shown_upload_name(entry.name, max_length=DOCUMENT_NAME_MAX), "bad_name"
-        items.append(NewItem(entry.path_key, name, str(entry.folder_id), entry.size, refused))
+        items.append(NewItem(entry.path_key, name, str(entry.folder_id), entry.size, refused, entry.sha256))
     largest = user_upload_policy(context, user).largest_limit
     customer_id = user.customer_id
     with context.db.customer(customer_id) as conn:
@@ -274,6 +298,30 @@ def list_folder_uploads(user: User, context: Context) -> dict[str, Any]:
     with context.db.customer(user.customer_id) as conn:
         rows = items_sql.summaries(conn, user.customer_id, user_id=user.user_id)
     return {"items": [summary_json(row) for row in rows]}
+
+
+@router.get("/folder-uploads/previous")
+def previous_folder_upload(
+    source_name: Annotated[str, Query(max_length=4 * FOLDER_NAME_MAX)], user: User, context: Context
+) -> dict[str, Any]:
+    """``{previous: {id, target, parent_folder_id, root_folder_id, created_at} | null}``: this
+    user's latest upload of a folder of this name whose root folder is still there."""
+    name = upload_name(source_name, max_length=FOLDER_NAME_MAX)
+    found = None
+    if name is not None:
+        with context.db.customer(user.customer_id) as conn:
+            found = items_sql.previous(conn, user.customer_id, user_id=user.user_id, source_name=name)
+    if found is None:
+        return {"previous": None}
+    return {
+        "previous": {
+            "id": found.id,
+            "target": found.target,
+            "parent_folder_id": found.parent_folder_id,
+            "root_folder_id": found.root_folder_id,
+            "created_at": iso(found.created_at),
+        }
+    }
 
 
 @router.get("/folder-uploads/{upload_id}")
@@ -310,7 +358,8 @@ def list_folder_upload_items(
 
 
 def summary_json(row: Summary) -> dict[str, Any]:
-    """``FolderUploadSummary``; reading, ready and problem are null in the list."""
+    """``FolderUploadSummary``; reading, ready, problem and held are null in the list. ``held``:
+    stored files the reading pause holds (#478), with its words (``held_message``)."""
     return {
         "id": row.id,
         "root_folder_id": row.root_folder_id,
@@ -331,4 +380,6 @@ def summary_json(row: Summary) -> dict[str, Any]:
         "reading": row.reading,
         "ready": row.ready,
         "problem": row.problem,
+        "held": row.held,
+        "held_message": held_message(row.held_reason),
     }

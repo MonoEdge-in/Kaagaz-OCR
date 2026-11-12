@@ -16,14 +16,27 @@
 // app opens once the new password is saved. An admin without two-step sign-in
 // (MFA required, 16 Oct 2026; a session from before, or just after a temporary
 // password) is signed out and sent to the sign-in, which sets it up.
+// #507: a session that may only connect Google (me.user.google_link_required) sees only Ways to sign
+// in: any other page sends the browser there, and so does a 403 google_link_required from any
+// reply (who is signed in is asked again first, the server decides).
 
 import { usePathname, useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { appGate, endedPath, pageAfterSessionChange, signInPath, twoStepPath } from "@/components/shell/gate";
+import {
+  appGate,
+  endedPath,
+  pageAfterSessionChange,
+  SEARCH_DRAFT,
+  searchToKeep,
+  signInPath,
+  twoStepPath,
+  WAYS_PATH,
+} from "@/components/shell/gate";
 import { SetPasswordScreen } from "@/components/shell/SetPasswordScreen";
 import styles from "@/components/shell/Shell.module.css";
-import { ApiError, currentSession, logout, onSessionEnded } from "./api";
+import { ApiError, currentSession, logout, onGoogleLinkRequired, onSessionEnded } from "./api";
+import { clearDrafts, flushDrafts, keepDraftsOf, saveDraft } from "./drafts";
 import { announceSession, leavePage, watchSession } from "./sessionChannel";
 import type { Me } from "./types";
 
@@ -76,13 +89,30 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // Once a session existed, the sign-in page is a full page load, so nothing
   // of that person (cached PDFs, earlier screens) stays in this tab's memory.
   // A first visit with no session has nothing to clear: a quick move is fine.
+  // Issue 468: the sign-in comes back to this screen's path (endedPath's ?next=), and unsent work
+  // waiting to be kept is written first (lib/drafts.ts), for the same person to get back. A
+  // search's words go in that person's draft, not the address (SearchScreen restores them).
+  const signedInId = state.kind === "signed_in" ? state.me.user.id : null;
   const hadSession = useRef(false);
+  const lastUserId = useRef<string | null>(null);
   useEffect(() => {
-    if (state.kind === "signed_in") hadSession.current = true;
+    if (signedInId !== null) {
+      hadSession.current = true;
+      lastUserId.current = signedInId;
+    }
     if (state.kind !== "signed_out") return;
-    if (hadSession.current) leavePage(endedPath(pathname));
-    else router.replace(signInPath(pathname));
-  }, [state.kind, router, pathname]);
+    if (hadSession.current) {
+      const kept = searchToKeep(window.location.pathname, window.location.search);
+      if (kept !== null && lastUserId.current !== null) saveDraft(lastUserId.current, SEARCH_DRAFT, kept);
+      flushDrafts();
+      leavePage(endedPath(window.location.pathname));
+    } else router.replace(signInPath(pathname));
+  }, [state.kind, signedInId, router, pathname]);
+
+  // Drafts kept in this tab by anyone else are dropped as soon as who is signed in is known.
+  useEffect(() => {
+    if (signedInId !== null) keepDraftsOf(signedInId);
+  }, [signedInId]);
 
   // Another tab signed out, or someone else signed in (lib/sessionChannel.ts).
   // Heard from the start: a tab that does not know yet who is signed in
@@ -93,7 +123,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       watchSession((now) => {
         if (state.kind === "signed_in") {
           const to = pageAfterSessionChange(state.me.user.id, now, window.location);
-          if (to !== null) leavePage(to);
+          if (to === null) return;
+          clearDrafts(); // signed out, or someone else signed in: nothing of this person is kept
+          leavePage(to);
         } else if (state.kind !== "signed_out") {
           setAttempt((n) => n + 1);
         }
@@ -136,7 +168,22 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     void logout().then(go, go); // signed out or not, the sign-in sets two-step up
   }, [gate, pathname]);
 
-  if (session && gate !== "set_two_step") {
+  // #507: a reply refused with 403 google_link_required: ask who is signed in again, and the gate
+  // below sends the browser to Ways to sign in. Once Me says so already, there is nothing to ask.
+  const linkRequired = session?.me.user.google_link_required === true;
+  useEffect(() => {
+    onGoogleLinkRequired(linkRequired ? null : refresh);
+    return () => onGoogleLinkRequired(null);
+  }, [linkRequired, refresh]);
+
+  useEffect(() => {
+    if (gate !== "connect_google" || pathname === WAYS_PATH) return;
+    router.replace(WAYS_PATH);
+  }, [gate, pathname, router]);
+
+  // Any other page waits for the move: its screen would only be refused.
+  const leaving = gate === "set_two_step" || (gate === "connect_google" && pathname !== WAYS_PATH);
+  if (session && !leaving) {
     return (
       <SessionContext.Provider value={session}>
         {appGate(session.me) === "set_password" ? (
@@ -178,9 +225,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         <span className="spinner" aria-hidden="true" />
         {gate === "set_two_step"
           ? "Taking you to set up two-step sign-in…"
-          : state.kind === "signed_out"
-            ? "Taking you to sign in…"
-            : "Loading…"}
+          : gate === "connect_google"
+            ? "Taking you to Ways to sign in…"
+            : state.kind === "signed_out"
+              ? "Taking you to sign in…"
+              : "Loading…"}
       </p>
     </main>
   );

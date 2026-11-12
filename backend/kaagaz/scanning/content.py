@@ -11,18 +11,40 @@ may contain, and refuses the rest, whether or not any signature matches:
   through it, every object header in the whole file is parsed as well, the way
   a viewer rebuilds a broken index, so damage cannot hide active content from
   the check while a viewer still runs it (council 17 Oct 2026). A damaged
-  encrypted PDF is ``unscannable``. pdfium (Chrome's engine) opens the file too, and
+  encrypted PDF is ``unscannable``; one that needs a password to open is
+  ``password_protected`` (#552). pdfium (Chrome's engine) opens the file too, and
   document JavaScript, an attached file or an XFA form it finds is refused as well:
   either reader finding active content blocks the file.
 * **Office files (zip):** no macros (vbaProject), no ActiveX, no embedded OLE
   objects, no external templates or links in the package relationships, no
   executables or nested archives inside, and no path traversal (``../``,
-  absolute paths).
-* **Plain text (CSV):** it must be data, not a script or markup: no HTML,
+  absolute paths). Embedded parts (``embeddings/``) only as a chart's or another
+  Office package (.xlsx, .docx, .pptx, which ClamAV looks inside too) or a picture.
+* **A plain zip** (none of ``[Content_Types].xml`` and the parts that make a Word,
+  PowerPoint or Excel file, as ``kaagaz/ingestion/resolve.py`` tells them: a folder
+  of files, #522 PR 3): the
+  same, except that a zip inside it, a part with a password and an unsafe path are
+  each refused on their own when it is unpacked (``kaagaz/ingestion/unzip.py``),
+  where every file is checked again by itself, so they don't refuse the whole zip.
+* **Old Office files (OLE2: .doc, .xls, .ppt, #522):** no macros (a ``Macros``,
+  ``_VBA_PROJECT...`` or ``VBA`` storage or stream, anywhere), no embedded OLE objects
+  (``ObjectPool``) and no password (``EncryptedPackage``: an encrypted .docx, .xlsx or
+  .pptx, which can't be checked; ``password_protected``, #552, unless it holds macros or an
+  object too). Read with ``resolve.py``'s bounded directory reader. A
+  PowerPoint 97 file keeps its macros and objects inside its own stream, out of this
+  check's sight: ClamAV's OLE2 parser looks there.
+* **Plain text:** it must be data, not a script or markup: no HTML,
   XML, SVG, RTF, shell or batch scripts, and no spreadsheet formulas that
-  run commands (DDE, ``=cmd|...``, ``=WEBSERVICE``).
+  run commands (DDE, ``=cmd|...``, ``=WEBSERVICE``). The markup rule is left out
+  for a file the name makes HTML, Markdown or JSON (#522, ``resolve.py``'s text
+  kinds): the text reader never renders one, and Download sends it as plain
+  text, an attachment, with nosniff. A .txt or .csv file keeps it (a spreadsheet
+  may open a .csv), and so does a file with no name.
 * **Every file:** no hidden program inside (a Windows or Linux executable
-  header), and no zip archive glued onto a PDF or an image (a polyglot file).
+  header), no zip archive glued onto a PDF or an image, and no PDF header in the
+  first 1 KiB of anything but a PDF (polyglot files). A zip with one there (#553: a
+  PDF stored first) is read as a PDF by a viewer, so it gets the whole PDF check, then
+  the zip's own.
 
 It never opens anything that could run: it only reads bytes and names.
 A file it cannot inspect is not called safe: that is ``unscannable``.
@@ -60,13 +82,16 @@ import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
 from pdfminer import pdftypes
 from pdfminer.lzw import LZWDecoder
-from pdfminer.pdfdocument import LITERAL_OBJSTM, PDFDocument, PDFXRefFallback
+from pdfminer.pdfdocument import LITERAL_OBJSTM, PDFDocument, PDFPasswordIncorrect, PDFXRefFallback
 from pdfminer.pdfparser import PDFParser, PDFStreamParser
 from pdfminer.pdftypes import PDFObjRef, PDFStream
 from pdfminer.psexceptions import PSEOF, PSException
 from pdfminer.psparser import KWD, PSBaseParser, PSKeyword, PSLiteral
 
-from kaagaz.ingestion.sniff import JPEG, PDF, PNG, TEXT, TIFF, ZIP, detect_type
+from kaagaz import pdfminer_fix  # noqa: F401  (for its effect: a /P 0 PDF opens, #551)
+from kaagaz.ingestion import resolve
+from kaagaz.ingestion.sniff import HEIC, JPEG, OLE2, PDF, PNG, TEXT, TIFF, ZIP, detect_type
+from kaagaz.reading.spans import ReadError
 
 
 class Finding(Enum):
@@ -74,6 +99,7 @@ class Finding(Enum):
 
     BLOCKED = "blocked_content"  # active content or a hidden program
     UNSCANNABLE = "unscannable"  # could not be inspected, so not called safe
+    ENCRYPTED = "password_protected"  # needs a password to open, so not called safe (#552)
 
 
 # --- every file -----------------------------------------------------------------
@@ -336,6 +362,8 @@ def _bounded_pdf_finding(data: bytes, bounds: _Bounds) -> Finding | None:
     file = _MeteredFile(data, bounds)
     try:
         document = PDFDocument(PDFParser(file))
+    except PDFPasswordIncorrect:  # no empty user password opens it (#552)
+        return Finding.ENCRYPTED
     except _DAMAGED:
         return Finding.UNSCANNABLE
     # pdfminer's own fallback index stops at the first trailer, so it is no proof of
@@ -576,15 +604,25 @@ def _pdfium_sees_active(data: bytes) -> bool:
 # --- Office packages (zip) ---------------------------------------------------------
 
 _RISKY_PARTS = re.compile(
-    r"(^|/)(vbaProject\.bin|vbaData\.xml|activeX/|embeddings/|oleObject|macrosheets/)",
+    r"(^|/)(vbaProject\.bin|vbaData\.xml|activeX/|oleObject|macrosheets/)",
     re.IGNORECASE,
 )
+# What a package may embed (#522, security review 6 Nov 2026): a chart's workbook, another
+# Office package (ClamAV looks inside each too) or a picture. Anything else under embeddings/
+# (an OLE object, any .bin package, a program, a macro-enabled file) is refused.
+_EMBEDDINGS = re.compile(r"(^|/)embeddings/", re.IGNORECASE)
+_EMBEDDABLE = re.compile(r"\.(xlsx|docx|pptx|png|jpe?g|gif|bmp|tiff?|emf|wmf)$", re.IGNORECASE)
 _RISKY_EXTENSIONS = re.compile(
     r"\.(exe|dll|com|scr|msi|msp|bat|cmd|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|hta|lnk|jar|"
     r"iso|img|vhd|zip|rar|7z|gz|tar|cab|docm|xlsm|pptm|dotm|xltm|xlam|ppam)$",
     re.IGNORECASE,
 )
 _MAX_RELS_BYTES = 1_000_000
+# Any of these makes a zip an Office package (resolve.py reads it as one by the last three).
+_PACKAGE_PARTS = frozenset(
+    {"[Content_Types].xml", "word/document.xml", "ppt/presentation.xml", "xl/workbook.xml"}
+)
+_NESTED_ZIP = re.compile(r"\.zip$", re.IGNORECASE)  # kept unread in a plain zip (#522 PR 3)
 
 
 def _loads_from_outside(rels: bytes) -> bool:
@@ -605,13 +643,17 @@ def _zip_finding(data: bytes) -> Finding | None:
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             infos = archive.infolist()
+            package = any(info.filename in _PACKAGE_PARTS for info in infos)  # else a folder of files
             for info in infos:
                 name = info.filename.replace("\\", "/")
-                if name.startswith("/") or ".." in name.split("/") or re.match(r"^[A-Za-z]:", name):
+                unsafe = name.startswith("/") or ".." in name.split("/") or re.match(r"^[A-Za-z]:", name)
+                if package and unsafe:
                     return Finding.BLOCKED  # path traversal (Zip Slip)
-                if info.flag_bits & 0x1:
+                if package and info.flag_bits & 0x1:
                     return Finding.UNSCANNABLE  # a password-protected part cannot be checked
-                if _RISKY_PARTS.search(name) or _RISKY_EXTENSIONS.search(name):
+                embedded = bool(_EMBEDDINGS.search(name)) and not _EMBEDDABLE.search(name)
+                risky = bool(_RISKY_PARTS.search(name) or _RISKY_EXTENSIONS.search(name)) or embedded
+                if risky and (package or not _NESTED_ZIP.search(name)):
                     return Finding.BLOCKED
             for info in infos:
                 if not info.filename.lower().endswith(".rels"):
@@ -658,13 +700,18 @@ _DANGEROUS_FORMULA = re.compile(
 _DDE_CALL = re.compile(r"[A-Za-z0-9_.]+\s*\|\s*'[^'\n\r]*'\s*!", re.IGNORECASE)
 
 
-def _text_finding(data: bytes) -> Finding | None:
+# The text kinds whose reader never renders their markup (#522): HTML, Markdown and JSON.
+_MARKUP_IS_TEXT = frozenset({resolve.HTML, resolve.MD, resolve.JSON})
+
+
+def _text_finding(data: bytes, name: str) -> Finding | None:
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         return Finding.UNSCANNABLE
     text = text.removeprefix(_BOM)
-    if _MARKUP_OR_SCRIPT_START.match(text) or _SCRIPT_ANYWHERE.search(text):
+    markup_is_text = resolve.resolve_kind(data, TEXT, name) in _MARKUP_IS_TEXT
+    if not markup_is_text and (_MARKUP_OR_SCRIPT_START.match(text) or _SCRIPT_ANYWHERE.search(text)):
         return Finding.BLOCKED
     if _DANGEROUS_FORMULA.search(text) or _DDE_CALL.search(text):
         return Finding.BLOCKED
@@ -674,11 +721,32 @@ def _text_finding(data: bytes) -> Finding | None:
 # --- the check ----------------------------------------------------------------------
 
 
-def inspect(data: bytes) -> Finding | None:
+# OLE2 entries a business document must not carry (#522): macros, embedded OLE objects, and a
+# password (an encrypted .docx, .xlsx or .pptx, which nothing can look inside).
+_OLE2_MACROS = re.compile(r"^(Macros|_VBA_PROJECT.*|VBA)$", re.IGNORECASE)
+_OLE2_REFUSED = frozenset({"objectpool"})
+
+
+def _ole2_finding(data: bytes) -> Finding | None:
+    try:
+        names = resolve.ole2_entry_names(data)
+    except ReadError:
+        return Finding.UNSCANNABLE
+    if any(_OLE2_MACROS.match(name) or name.lower() in _OLE2_REFUSED for name in names):
+        return Finding.BLOCKED
+    # #552 (UAT FF-14): told it has a password, not macros. After the check above, so a file
+    # refused for macros or an object keeps that verdict, whatever else it holds.
+    if any(name.lower() == "encryptedpackage" for name in names):
+        return Finding.ENCRYPTED
+    return None
+
+
+def inspect(data: bytes, name: str = "") -> Finding | None:
     """Why this file must be refused, or None if nothing risky was found.
 
     The type is worked out again from the bytes (never from a name), so the
-    check cannot be fooled by an extension.
+    check cannot be fooled by an extension. ``name``, the file's name, only chooses
+    between text kinds that are all read as text (#522: the markup rule).
     """
     kind = detect_type(data[:4096])
     if kind is None:
@@ -687,14 +755,25 @@ def inspect(data: bytes) -> Finding | None:
         return Finding.BLOCKED
     if kind != ZIP and _has_zip_inside(data):
         return Finding.BLOCKED  # a polyglot: an archive glued onto a document, image or text
-    if kind != PDF and b"%PDF-" in data[:1024]:
+    if kind not in (PDF, ZIP) and b"%PDF-" in data[:1024]:
         return Finding.BLOCKED  # a polyglot: viewers find a PDF header anywhere in 1 KiB
-    if kind == PDF:
+    if kind == PDF or (kind == ZIP and b"%PDF-" in data[:1024]):
+        # #553 (UAT ZP-04/05): a zip whose first file is a PDF stored, not compressed, is read
+        # by a viewer as a PDF, all of it (comments and names too), so that view gets this whole
+        # check, as a PDF upload does (the repair walk reads every object header in the file).
         finding = _pdf_finding(data)
         # Either reader finding active content blocks the file.
-        return Finding.BLOCKED if finding is not Finding.BLOCKED and _pdfium_sees_active(data) else finding
+        finding = Finding.BLOCKED if finding is not Finding.BLOCKED and _pdfium_sees_active(data) else finding
+        if kind == PDF:
+            return finding
+        if finding is not None:
+            # Review (11 Nov 2026): a zip's PDF view that can't be fully checked stays refused (fail
+            # closed), but never as "has a password": the zip itself has none.
+            return Finding.BLOCKED if finding is Finding.BLOCKED else Finding.UNSCANNABLE
     if kind == ZIP:
         return _zip_finding(data)
     if kind == TEXT:
-        return _text_finding(data)
-    return None if kind in (PNG, JPEG, TIFF) else Finding.BLOCKED  # deny by default (old OLE2)
+        return _text_finding(data, name)
+    if kind == OLE2:
+        return _ole2_finding(data)
+    return None if kind in (PNG, JPEG, TIFF, HEIC) else Finding.BLOCKED  # deny by default

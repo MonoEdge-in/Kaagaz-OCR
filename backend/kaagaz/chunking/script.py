@@ -24,6 +24,14 @@ of it looks sound, and a Latin spelling of it for search.
   (Devanagari, Gujarati, any category Nd) as its ASCII digit, for checking
   numbers; one character for one. ``fold_digits`` stays Devanagari only:
   ``hinglish.normalise`` uses it, and its output must not change.
+* ``latin_digits`` (#524). The digits of the Indic blocks (U+0900 to U+0DFF: Devanagari,
+  Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam, Sinhala) as
+  ASCII digits, by ``str.translate``; one character for one. Other digits (Arabic-Indic,
+  full-width) are kept. For amounts and search only: the printed text is never changed.
+* ``piece_latin`` (L3, #524): a piece's ``text_latin``: a Devanagari piece's
+  ``latin_spelling`` with ``latin_digits``; another piece's words holding an Indic digit only,
+  in ASCII, line by line; so "940000" finds a page that prints ९४००००, and no English word
+  counts twice.
 * ``spaced_words`` (PRD 5 CX6, M3): the words of a text in any script, split at
   whitespace with the punctuation at their ends removed, for topic terms and the
   memory's quote check.
@@ -99,6 +107,14 @@ _VISARGA = "\u0903"
 _JOINERS = "\u200c\u200d"  # ZWNJ and ZWJ
 
 _DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
+# #524: every decimal digit (Nd) of the Indic blocks, U+0900 to U+0DFF, as its ASCII digit.
+_INDIC_DIGITS = str.maketrans(
+    {
+        chr(c): str(unicodedata.digit(chr(c)))
+        for c in range(0x0900, 0x0E00)
+        if unicodedata.category(chr(c)) == "Nd"
+    }
+)
 # PROVISIONAL: the candra vowels as the plain vowels IAST can spell, ॰ dropped, । and ॥ as ".".
 _BEFORE_IAST = str.maketrans(
     {
@@ -210,6 +226,42 @@ def ascii_digits(text: str) -> str:
     if text.isascii():
         return text
     return _NON_ASCII_DIGIT.sub(lambda match: str(unicodedata.decimal(match[0])), text)
+
+
+# A word as the viewer reads it (kaagaz/search/page_words.py): runs of letters, digits and
+# Devanagari signs (never the danda, U+0964 and U+0965); "-" and "/" join two runs, and "," and
+# "." two digits, so "1,04,200", "7/12" and "INV-1042" stay whole. Here, not in page_words, so
+# search can use it without importing story matching (tests/test_import_graph.py).
+WORD_TOKEN = re.compile("[\\wऀ-ॣ०-ॿ]+(?:(?:(?<=[0-9])[,.](?=[0-9])|[/-])[\\wऀ-ॣ०-ॿ]+)*")
+
+
+def number_words(text: str) -> frozenset[str]:
+    """The words with a digit, as the viewer reads them (#556): NFC, casefolded, digits as ASCII,
+    each one word with its commas dropped, so "₹1,50,000" is 150000."""
+    tokens = WORD_TOKEN.findall(ascii_digits(unicodedata.normalize("NFC", text)).casefold())
+    return frozenset(token.replace(",", "") for token in tokens if any(c.isdigit() for c in token))
+
+
+def latin_digits(text: str) -> str:
+    """Indic digits (U+0900 to U+0DFF) as ASCII digits; every other character unchanged, so the
+    length is the same. For computing and searching only, never for the text shown (#524)."""
+    return text.translate(_INDIC_DIGITS)
+
+
+def piece_latin(text: str) -> str | None:
+    """A piece's ``text_latin``: when it is Devanagari (L2), its Latin spelling with its digits
+    as ASCII; else, when it holds an Indic digit (#524: a page printing ९४०००० is found by
+    "940000"), only the words holding one, as ASCII, line by line, so its lines still pair with
+    its regions and none of its words counts twice in search; else None. O(n)."""
+    if is_devanagari(text):
+        return latin_digits(latin_spelling(text))
+    if latin_digits(text) == text:
+        return None
+    lines = (
+        " ".join(latin_digits(word) for word in line.split() if latin_digits(word) != word)
+        for line in text.split("\n")
+    )
+    return "\n".join(lines)
 
 
 def spaced_words(text: str) -> list[str]:

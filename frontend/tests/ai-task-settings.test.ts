@@ -129,7 +129,8 @@ describe("the API calls", () => {
 describe("the admin's AI settings tab", () => {
   it("is a tab of Admin", () => {
     expect(TABS.map((tab) => tab.label)).toContain("AI settings");
-    expect(read("components/admin/AdminView.tsx")).toContain('<AiSettingsPanel scope="organisation" />');
+    // Changed on purpose (#468): it tells AdminView about unsaved changes (onUnsaved).
+    expect(read("components/admin/AdminView.tsx")).toContain('<AiSettingsPanel scope="organisation" onUnsaved={setUnsaved} />');
   });
 
   it("shows one row per task by its job, with no model names or cost words", () => {
@@ -390,7 +391,8 @@ describe("one organisation's feature switches (0039)", () => {
     expect(read("components/operator/OrganisationsView.tsx")).toContain(
       '{ label: "Feature switches", description: MENU_HELP.switches, onSelect: onSwitches }',
     );
-    const html = renderToStaticMarkup(createElement(OrgFeatureSwitchesDialog, { org: ORG, onClose: () => {} }));
+    // Changed on purpose (#468 review, UX10): the page's Toast gets each change too (onDone).
+    const html = renderToStaticMarkup(createElement(OrgFeatureSwitchesDialog, { org: ORG, onClose: () => {}, onDone: () => {} }));
     expect(html).toContain("Feature switches for Sharma Traders");
     expect(html).toContain("Each switch turns a feature on or off for this organisation only.");
   });

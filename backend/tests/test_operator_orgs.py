@@ -4,7 +4,7 @@ and what a reply may hold. The SQL itself: ``test_operator_orgs_db.py``."""
 
 import logging
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Any, cast
 
 import pytest
@@ -25,6 +25,7 @@ from kaagaz.api.names import ORG_NAME_PROBLEM
 from kaagaz.api.secret_box import SecretBox
 from kaagaz.db import operator_orgs as orgs_sql
 from kaagaz.db import operators as operators_sql
+from kaagaz.db import users as users_sql
 from kaagaz.db.engine import OperatorDatabase
 from kaagaz.db.operator_orgs import Outcome
 from tests.test_api_auth import _offline_client
@@ -60,12 +61,24 @@ ORG_ROUTES = {
     # Changed on purpose (0040): one organisation's sign-in idle timeout.
     ("GET", f"{ORGS}/{ANY_ID}/session-timeout"),
     ("PUT", f"{ORGS}/{ANY_ID}/session-timeout"),
+    # Changed on purpose (#481, 0068): whether its admins must have two-step sign-in.
+    ("GET", f"{ORGS}/{ANY_ID}/admin-two-step"),
+    ("PUT", f"{ORGS}/{ANY_ID}/admin-two-step"),
+    # Changed on purpose (#507, 0074): its Google sign-in.
+    ("GET", f"{ORGS}/{ANY_ID}/google-signin"),
+    ("PUT", f"{ORGS}/{ANY_ID}/google-signin"),
     ("GET", f"{ORGS}/{ANY_ID}/folder-upload-limits"),  # #484
     ("PUT", f"{ORGS}/{ANY_ID}/folder-upload-limits"),
+    ("GET", f"{ORGS}/{ANY_ID}/storage-limit"),  # #516
+    ("PUT", f"{ORGS}/{ANY_ID}/storage-limit"),
     # Changed on purpose (#212, 21 Oct 2026): one organisation's model call rates.
     ("GET", f"{ORGS}/{ANY_ID}/model-rates"),
     ("PUT", f"{ORGS}/{ANY_ID}/model-rates"),
     ("PUT", f"{ORGS}/{ANY_ID}/users/{ANY_ID}/model-rate"),
+    ("POST", f"{ORGS}/{ANY_ID}/approve"),  # Changed on purpose (#457): a pending sign-up
+    # Changed on purpose (#463, 31 Oct 2026): one organisation's accuracy check against max settings.
+    ("POST", f"{ORGS}/{ANY_ID}/accuracy-check"),
+    ("GET", f"{ORGS}/{ANY_ID}/accuracy-check/latest"),
 }
 ORG_ROW = {
     "customer_id": CID,
@@ -83,6 +96,7 @@ ORG_ROW = {
     "last_activity_at": NOW,
     "autofile_granted": True,
     "autofile_on": False,
+    "admin_email_confirmed": False,
 }
 
 
@@ -117,6 +131,10 @@ class _Offline:
         monkeypatch.setattr(orgs_sql, "list_customers", lambda conn, oid: [ORG_ROW])
         for name in ("create_customer", "set_customer_status", "step_up_failed", "set_org_autofile"):
             monkeypatch.setattr(orgs_sql, name, self._recorder(name))
+        # Changed on purpose (#457 review): a new organisation first frees a stale sign-up's
+        # e-mail through the app's database (tests/test_api_email.py proves it).
+        monkeypatch.setattr(app.state.kaagaz.db, "system", lambda: nullcontext(None))
+        monkeypatch.setattr(users_sql, "release_stale_signup", lambda conn, email: False)
         token = sign_operator(
             OperatorClaims(operator_id=OID, session_version=2, expires_at=AT + 600),
             self.settings.session_secret,
@@ -257,6 +275,7 @@ def test_the_organisation_list_holds_counts_only(offline: _Offline) -> None:
         "last_activity_at",
         "autofile_granted",  # feature 28
         "autofile_on",
+        "admin_email_confirmed",  # Changed on purpose (#457): Approve needs it
     }
     assert (org["autofile_granted"], org["autofile_on"]) == (True, False)
 

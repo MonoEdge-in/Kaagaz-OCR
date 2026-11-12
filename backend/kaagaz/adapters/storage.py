@@ -1,7 +1,8 @@
 """File storage over the S3 API: SeaweedFS on the laptop, Amazon S3 in AWS.
 
 It implements ``BlobStorage`` (upload), ``Quarantine`` (the scan gate) and
-the page image calls the pipeline and the API use.
+the page image calls the pipeline and the API use, and the nightly backup's
+copy of the whole bucket (``write_tar``, ``read_tar``).
 
 Keys are made from ids only, never from file names. Every key starts with
 the customer, so one customer's calls can only ever build keys under that
@@ -9,6 +10,10 @@ customer's own prefix:
 
 * ``customers/{customer_id}/documents/{document_id}/original``
 * ``customers/{customer_id}/documents/{document_id}/pages/{page_no}.webp``
+* ``customers/{customer_id}/documents/{document_id}/rendition.pdf``: a Word or
+  PowerPoint file's PDF, which the viewer shows (#522 PR 2); the original stays
+  the download. Under the document's prefix, so delete, purge and the backup
+  take it with the rest.
 * ``quarantine/{customer_id}/{document_id}``: outside every customer prefix,
   so ``get`` cannot reach a quarantined file.
 
@@ -27,6 +32,7 @@ his call too; here it does, so a delete leaves nothing of the customer's
 file behind.
 """
 
+import tarfile
 import tempfile
 import uuid
 from collections.abc import Iterator
@@ -99,6 +105,10 @@ def page_image_key(customer_id: str, document_id: str, page_no: int) -> str:
     if page_no < 1:
         raise ValueError("page numbers start at 1")
     return _document_prefix(customer_id, document_id) + f"pages/{page_no}.webp"
+
+
+def rendition_key(customer_id: str, document_id: str) -> str:
+    return _document_prefix(customer_id, document_id) + "rendition.pdf"
 
 
 def quarantine_key(customer_id: str, document_id: str) -> str:
@@ -320,6 +330,22 @@ class S3Storage:
         """The page's WebP picture. BlobNotFound if this customer has no such page image."""
         return self._get_bytes(page_image_key(customer_id, document_id, page_no), document_id)
 
+    # --- Renditions (#522 PR 2) ----------------------------------------------
+
+    def put_rendition(self, customer_id: str, document_id: str, pdf: bytes) -> None:
+        # Not counted towards the storage limit: derived from the original, like the page
+        # images (kaagaz/db/storage_limits.py).
+        """Store a Word or PowerPoint file's PDF (the pipeline converts it), beside the original."""
+        key = rendition_key(customer_id, document_id)
+        try:
+            self._client.put_object(Bucket=self._bucket, Key=key, Body=pdf, ContentType="application/pdf")
+        except _ANY_ERROR as error:
+            raise BackendUnavailable("storage") from error
+
+    def get_rendition(self, customer_id: str, document_id: str) -> bytes:
+        """The PDF rendition. BlobNotFound if this customer's document has none (not converted yet)."""
+        return self._get_bytes(rendition_key(customer_id, document_id), document_id)
+
     # --- Health and set-up -------------------------------------------------
 
     def ping(self) -> None:
@@ -354,6 +380,58 @@ class S3Storage:
                 raise BackendUnavailable("storage") from error
         except _UNREACHABLE as error:
             raise BackendUnavailable("storage") from error
+
+    # --- Backup (#476, 3 Nov 2026) -----------------------------------------
+
+    def write_tar(self, out: IO[bytes]) -> int:
+        """Every object in the bucket, every customer's, as one tar stream on ``out``, each under
+        its own key: the nightly backup (infra/ec2/pgdump.sh encrypts and uploads it). Read
+        through the S3 API, so the running SeaweedFS needs no stop. An object deleted after the
+        listing is skipped. Time O(n) for n objects; memory one listing page and one read buffer.
+        Returns n."""
+        count = 0
+        arguments: dict[str, Any] = {"Bucket": self._bucket}
+        with tarfile.open(fileobj=out, mode="w|") as archive:
+            while True:
+                response = self._list_page(arguments)
+                for item in response.get("Contents", []):
+                    member = tarfile.TarInfo(str(item["Key"]))
+                    member.mtime = int(item["LastModified"].timestamp())
+                    member.mode = 0o600
+                    try:
+                        reply = self._client.get_object(Bucket=self._bucket, Key=member.name)
+                        member.size = int(reply["ContentLength"])
+                        archive.addfile(member, reply["Body"])
+                    except ClientError as error:
+                        if _is_missing(error):
+                            continue
+                        raise BackendUnavailable("storage") from error
+                    except _UNREACHABLE as error:
+                        raise BackendUnavailable("storage") from error
+                    count += 1
+                token = response.get("NextContinuationToken")
+                if not response.get("IsTruncated") or not token:
+                    return count
+                arguments["ContinuationToken"] = token
+
+    def read_tar(self, source: IO[bytes]) -> int:
+        """Put every file of a ``write_tar`` stream back under its key (the restore drill).
+        Refuses a bucket that holds anything, so a restore never writes over live files.
+        Memory: one file at a time. Returns the number of files."""
+        if self._list_page({"Bucket": self._bucket, "MaxKeys": 1}).get("Contents"):
+            raise ValueError("the storage bucket is not empty; restore into an empty one")
+        count = 0
+        with tarfile.open(fileobj=source, mode="r|") as archive:
+            for member in archive:
+                data = archive.extractfile(member) if member.isfile() else None
+                if data is None:
+                    continue
+                try:
+                    self._client.put_object(Bucket=self._bucket, Key=member.name, Body=data.read())
+                except _ANY_ERROR as error:
+                    raise BackendUnavailable("storage") from error
+                count += 1
+        return count
 
     # --- Helpers -----------------------------------------------------------
 

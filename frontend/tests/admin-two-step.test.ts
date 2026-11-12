@@ -3,7 +3,7 @@
 // super admin (its tests went with it, on the owner's decision): no toggle in the
 // console, no "Turn off" for an admin, and the set-up step on /login and after sign-up.
 // Changed on purpose (Tushar, 30 Oct 2026): an admin can turn their own two-step off, and on
-// again, from their Account menu (tests/two-step-account.test.ts); Settings says which it is.
+// again, from their Account menu (tests/account-two-step.test.ts); Settings says which it is.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -13,6 +13,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { CHANGE_IN_ACCOUNT, LOST_PHONE, TWO_STEP_OFF, TWO_STEP_ON, TwoStepPanel } from "@/app/(app)/admin/TwoStepPanel";
 import { ENROL_REQUIRED, enrolOffer } from "@/app/login/twoStep";
 import { appGate, pathAfterSignIn, signedOutMessage, twoStepPath } from "@/components/shell/gate";
+import { REQUIRED_TEXT } from "@/components/shell/twoStepAccount";
 import { ApiError } from "@/lib/api";
 import type { Me } from "@/lib/types";
 
@@ -32,9 +33,11 @@ const me = (role: Me["user"]["role"], totpEnabled: boolean, mustChange = false):
     totp_enabled: totpEnabled,
     two_step_turned_off: false,
     can_delete_forever: false,
+    email_confirmed: true, // #457
   },
   customer: { id: "c1", name: "Sharma Traders" },
   session: { scope: role === "admin" ? "admin" : "app" },
+  providers: [], // #457 review: the sign-in providers switched on
 });
 
 const OFFER = { enrol_token: "t.k", secret: "JBSW Y3DP", otpauth_uri: "otpauth://totp/x" };
@@ -75,7 +78,9 @@ describe("the sign-in page shows the set-up step", () => {
 
   it("and after sign-up, where the reply is the set-up and not a session", () => {
     const signUp = read("app/signup/SignUpForm.tsx");
-    expect(signUp).toContain("setEnrol(await signUp(signUpBody(input)));");
+    // Changed on purpose (#457): with email on, the reply may say to confirm the email first.
+    expect(signUp).toContain("const reply = await signUp(signUpBody(input));");
+    expect(signUp).toContain("else setEnrol(reply);");
     expect(signUp).toContain("<RequiredEnrol");
     expect(signUp).not.toContain("announceSession(signedIn");
   });
@@ -96,6 +101,15 @@ describe("the admin's own Two-step panel", () => {
       expect(html).toContain("Turn it off or on from your Account menu.");
       expect(html).not.toContain("<button");
     }
+  });
+
+  it("says it stays on while the organisation requires it, not that the Account menu turns it off (QA U5)", () => {
+    session.me = { ...me("admin", true), user: { ...me("admin", true).user, two_step_required: true } };
+    const required = renderToStaticMarkup(createElement(TwoStepPanel));
+    expect(required).toContain("<strong>On</strong>");
+    expect(required).toContain(REQUIRED_TEXT);
+    expect(required).not.toContain(CHANGE_IN_ACCOUNT);
+    expect(required).toContain(LOST_PHONE);
   });
 });
 

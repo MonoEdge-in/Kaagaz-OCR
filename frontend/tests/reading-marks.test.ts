@@ -40,7 +40,8 @@ describe("the marks on a page", () => {
   it("explains each pattern in words, only for the kinds the page has", () => {
     expect(legend([mark("unpinned"), mark("unsure"), mark("unsure")])).toEqual(["unsure", "unpinned"]);
     expect(legend([])).toEqual([]);
-    expect(MARK_WORDS.unsure.legend).toBe("Unsure word (dashed)");
+    // Changed on purpose (#523): an unsure word is a dashed underline, not a dashed box.
+    expect(MARK_WORDS.unsure.legend).toBe("Unsure word (dashed underline)");
     // Changed on purpose (MonoEdge design system, 16 Oct 2026): no gradients, so no hatch.
     expect(MARK_WORDS.illegible.legend).toBe("Hard to read (double edge)");
     expect(MARK_WORDS.unpinned.legend).toBe("Spot not confirmed (dotted)");
@@ -68,7 +69,8 @@ describe("how the marks look", () => {
   // Changed on purpose (MonoEdge design system, 16 Oct 2026): no gradients, so "couldn't read"
   // is a double edge with a light fill instead of a hatch.
   it("gives each kind its own pattern: dashed, double, dotted", () => {
-    expect(css).toMatch(/\.problem\[data-quality="unsure"\][^}]*border: 2px dashed/);
+    // Changed on purpose (#523): an unsure word's dashes are an underline, never a box over the text.
+    expect(css).toMatch(/\.problem\[data-quality="unsure"\][^}]*border-bottom: 2px dashed/);
     expect(css).toMatch(/\.problem\[data-quality="illegible"\][^}]*border: 4px double var\(--illegible-on-paper\)/);
     expect(css.replace(/\/\*[\s\S]*?\*\//g, "")).not.toMatch(/gradient/);
     expect(css).toMatch(/\.problem\[data-quality="unpinned"\][^}]*border: 2px dotted/);
@@ -141,7 +143,7 @@ describe("the marks layer (PageViewer)", () => {
     // uncertain page), its legend a tooltip tied to it.
     expect(html).toMatch(/<button [^>]*aria-pressed="true" aria-label="Show reading problems" aria-describedby="([^"]+)"/);
     expect(html).toMatch(/<span id="[^"]+" role="tooltip"[^>]*><ul [^>]*aria-label="What the marks mean"/);
-    expect(html).toContain("Unsure word (dashed)");
+    expect(html).toContain("Unsure word (dashed underline)");
     // Each mark is drawn on the page as a button, named for what it marks, with its pattern.
     const buttons = html.match(/<button [^>]*data-quality="[a-z]+"[^>]*><\/button>/g) ?? [];
     expect(buttons).toHaveLength(2);

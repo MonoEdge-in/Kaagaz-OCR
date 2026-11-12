@@ -11,7 +11,7 @@
 // Feature switches (spec 17 Oct 2026) holds the platform switches and the test model;
 // while a test model runs, its banner sits above the tabs on every tab. Timeout setup (0040)
 // holds the sign-in idle timeout, Speed (0053) the platform's speed controls, Folder uploads
-// (#484) the most one folder upload may hold.
+// (#484) the most one folder upload may hold, and under it the platform's storage limit (#516).
 
 import { useEffect, useState } from "react";
 import { Tabs, tabId, tabSelectId } from "@/components/admin/Tabs";
@@ -29,8 +29,10 @@ import { OrgNumbersView } from "./OrgNumbers";
 import { OverviewView } from "./OverviewView";
 import { QualityView } from "./QualityView";
 import { SessionTimeoutView } from "./SessionTimeout";
+import { PlatformGoogleSignIn } from "./GoogleSignIn";
 import { SpeedView } from "./SpeedControls";
 import { SpendView } from "./SpendView";
+import { StorageLimitView } from "./StorageLimit";
 import css from "./Insights.module.css";
 
 export const OPERATOR_TABS = [
@@ -67,9 +69,10 @@ export function OperatorConsole() {
   }, [testAsk]);
   const reloadTestModel = () => setTestAsk((n) => n + 1);
 
-  function choose(id: TabId) {
+  function choose(id: TabId): boolean {
     setActive(id);
     setOrgSearch("");
+    return true; // a tab here always opens (Tabs moves focus to it)
   }
 
   function openTab(id: "health" | "models") {
@@ -113,9 +116,19 @@ export function OperatorConsole() {
         {active === "spend" && <SpendView />}
         {active === "activity" && <ActivityView />}
         {active === "health" && <HealthView />}
-        {active === "folders" && <FolderUploadLimitsView />}
+        {active === "folders" && (
+          <>
+            <FolderUploadLimitsView />
+            <StorageLimitView />
+          </>
+        )}
         {active === "features" && <FeatureSwitchesView testModel={testModel} onTestModel={reloadTestModel} />}
-        {active === "timeout" && <SessionTimeoutView />}
+        {active === "timeout" && (
+          <>
+            <SessionTimeoutView />
+            <PlatformGoogleSignIn />
+          </>
+        )}
         {active === "speed" && <SpeedView />}
       </Tabs>
     </div>

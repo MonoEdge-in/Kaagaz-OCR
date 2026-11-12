@@ -5,21 +5,17 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { getPathMatch } from "next/dist/shared/lib/router/utils/path-match";
+import { NextRequest } from "next/server";
 import { describe, expect, it } from "vitest";
-import nextConfig from "@/next.config";
+import { proxy } from "@/proxy";
 
 const ROOT = join(__dirname, "..");
 const read = (path: string) => readFileSync(join(ROOT, path), "utf8");
 
-async function cspFor(path: string): Promise<string> {
-  for (const rule of (await nextConfig.headers?.()) ?? []) {
-    const match = getPathMatch(rule.source, { strict: true, removeUnnamedParams: true });
-    if (match(path) === false) continue;
-    const csp = rule.headers.find(({ key }) => key.startsWith("Content-Security-Policy"));
-    if (csp) return csp.value;
-  }
-  return "";
+// The policy proxy.ts sends with a page (#481, 3 Nov 2026).
+function cspFor(path: string): string {
+  const headers = proxy(new NextRequest(new URL(path, "https://kaagaz.example"))).headers;
+  return headers.get("Content-Security-Policy-Report-Only") ?? "";
 }
 
 describe("PDF viewer", () => {
@@ -31,8 +27,8 @@ describe("PDF viewer", () => {
     expect(engine.replace(/^\/\/.*$/gm, "")).not.toMatch(/https?:\/\//); // code, not comments
   });
 
-  it("is allowed by the content security policy: WebAssembly and Print's blob: frame", async () => {
-    const csp = await cspFor("/documents/d-1");
+  it("is allowed by the content security policy: WebAssembly and Print's blob: frame", () => {
+    const csp = cspFor("/documents/d-1");
     expect(csp).toMatch(/script-src [^;]*'wasm-unsafe-eval'/);
     expect(csp).not.toMatch(/script-src [^;]*'unsafe-eval'/);
     expect(csp).toMatch(/frame-src 'self' blob:/);

@@ -13,7 +13,7 @@ import pytest
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.answering import translate as translating
-from kaagaz.answering.evidence import Translated
+from kaagaz.answering.evidence import Lists, Translated
 from kaagaz.answering.expansion import NO_EXPANSION, Expansion
 from kaagaz.answering.service import Answer, AnswerService
 from kaagaz.answering.translate import Query, target_scripts, translate
@@ -181,6 +181,7 @@ class Search:
         limit: int,
         scope: Scope,
         expansion: Expansion = NO_EXPANSION,
+        asked: Lists | None = None,
     ) -> Translated:
         self.translations.append(list(translations))
         return Translated(self.second[:limit], self.original)

@@ -39,8 +39,9 @@ describe("#416 no Values found in the Details tab", () => {
     // Changed on purpose (owner, 29 Oct 2026): the card is told whether its count links to Review.
     // Changed on purpose (owner, 29 Oct 2026, #453): and what to do once a value is verified or saved
     // there (review panel, 29 Oct 2026: its words asked for again, fact-actions.test.ts).
+    // Changed on purpose (issue 468): and who is signed in, whose drafts its edits keep.
     expect(read(VIEW)).toMatch(
-      /<SummaryCard\s+detail=\{detail\}\s+active=\{selection\?\.region \?\? null\}\s+onShow=\{showSpot\}\s+reviewer=\{canReview\(me\.user\.role\) && detail\.deleted_at === null\}\s+onResolved=\{[\s\S]{1,700}?\}\s+onStale=\{\(\) => setReloads\(\(n\) => n \+ 1\)\}\s+\/>/,
+      /<SummaryCard\s+detail=\{detail\}\s+active=\{selection\?\.region \?\? null\}\s+onShow=\{showSpot\}\s+reviewer=\{canReview\(me\.user\.role\) && detail\.deleted_at === null\}\s+userId=\{me\.user\.id\}\s+onResolved=\{[\s\S]{1,700}?\}\s+onStale=\{\(\) => setReloads\(\(n\) => n \+ 1\)\}\s+\/>/,
     );
     expect(read("components/shell/nav.ts")).toMatch(/href: "\/review"/);
     // Follow-up: Details links a reviewer or an admin to this document's values waiting in Review,

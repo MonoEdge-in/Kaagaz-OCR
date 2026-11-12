@@ -6,6 +6,7 @@ import { codeError } from "@/app/login/twoStep";
 import { NETWORK_FAILURE, SIGN_IN_DOWN, TOO_MANY_ATTEMPTS, emailError, passwordError } from "@/app/login/signIn";
 import type { CloseWay } from "@/components/documents/ActionDialog";
 import { ApiError } from "@/lib/api";
+import { errorWords } from "@/lib/errorWords";
 import { formatDate, formatNumber, formatRelative } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
 import type { OrgAdmin, OrgStatus, Organisation } from "@/lib/types";
@@ -116,6 +117,11 @@ const SERVER_FALLBACK = "Something went wrong."; // lib/api.ts, when the reply h
 export const OPERATOR_DOWN = "Something went wrong on our side. Try again in a minute.";
 export const NAME_MISMATCH = "That is not the organisation's name. Type it exactly, with the same capitals and spaces.";
 export const CONFLICT = "That change is not possible now. Reload the list and try again.";
+/** The most output tokens a page the server accepts (#463), said on the field and for its refusal. */
+export const TOKENS_RANGE = "Choose a number from 1,024 to 65,536.";
+export const DAILY_PAGES_RANGE = "Choose a daily page limit from 1 to 1,000,000 pages, or leave it empty."; // #478
+// #488: the server's words for ceiling_out_of_range, said by the field's own check too.
+export const CEILING_RANGE = "Choose from ₹0.20 to ₹0.55 a page, or leave it empty.";
 
 /** The server's error codes in plain words (the server sends most refusals as
  * 409 "conflict" with its own sentence, which is used then). */
@@ -137,6 +143,12 @@ export const REFUSALS: Record<string, string> = {
   unavailable: "One of these models is not enabled on the platform now, or can't do this work. Reload and choose again.",
   default_not_allowed: "Choose each default from its own ticked list.",
   level_not_supported: "A chosen model does not accept one of these thinking levels. Choose levels every model accepts.",
+  limit_out_of_range: TOKENS_RANGE, // the most output tokens a page (#463)
+  pages_out_of_range: DAILY_PAGES_RANGE, // the daily page limit (#478)
+  mistral_not_set_up: "Mistral isn't set up on this server yet.", // #473
+  // #488: ultra low cost, in the server's words.
+  ceiling_out_of_range: CEILING_RANGE,
+  ulc_needs_gemini: "Ultra low cost needs a Gemini model with a known price that can read with minimal thinking.",
 };
 
 /** Plain words for a refused change. A 409 keeps the server's own sentence
@@ -145,12 +157,13 @@ export function operatorErrorMessage(caught: unknown): string {
   if (!(caught instanceof ApiError)) return caught instanceof TypeError ? NETWORK_FAILURE : OPERATOR_DOWN;
   const known = Object.hasOwn(REFUSALS, caught.code) ? REFUSALS[caught.code] : undefined;
   if (known) return known;
+  if (caught.status === 403) return errorWords(caught, "operator"); // #468: never "on our side"
   if (caught.status === 409) return caught.message && caught.message !== SERVER_FALLBACK ? caught.message : CONFLICT;
   if (caught.status === 404) return ORG_NOT_FOUND;
   if (caught.status === 400) return CHECK_INPUT;
   if (caught.status === 401) return "Your session ended. Sign in again.";
   if (caught.status === 429) return TOO_MANY_ATTEMPTS;
-  if (caught.status === 0) return NETWORK_FAILURE;
+  if (caught.status === 0) return caught.code === "timeout" ? caught.message : NETWORK_FAILURE;
   return OPERATOR_DOWN;
 }
 
@@ -163,8 +176,15 @@ export interface OrgStatusText {
   note: string | null;
 }
 
-export function orgStatus(org: Pick<Organisation, "status" | "delete_after">): OrgStatusText {
+export function orgStatus(
+  org: Pick<Organisation, "status" | "delete_after"> & Partial<Pick<Organisation, "admin_email_confirmed">>,
+): OrgStatusText {
   if (org.status === "active") return { text: "Active", tone: "ready", note: null };
+  if (org.status === "pending") {
+    // #457: Approve needs the admin's email confirmed first.
+    const note = org.admin_email_confirmed ? "Email confirmed" : "Email not confirmed yet";
+    return { text: "Waiting for approval", tone: "working", note };
+  }
   if (org.status === "deleting") {
     const date = org.delete_after ? formatDate(org.delete_after) : "";
     return { text: "Being deleted", tone: "danger", note: date ? `Deleted on ${date}` : null };
@@ -222,6 +242,11 @@ export function lastActivityText(iso: string | null, now: number): string {
 export function filterOrgs<T extends { name: string }>(items: readonly T[], search: string): T[] {
   const wanted = search.trim().toLocaleLowerCase();
   return wanted ? items.filter((org) => org.name.toLocaleLowerCase().includes(wanted)) : [...items];
+}
+
+/** The "Waiting for approval" filter (#457): only the pending sign-ups, or every one. */
+export function waitingOnly<T extends Pick<Organisation, "status">>(items: readonly T[], waiting: boolean): T[] {
+  return waiting ? items.filter((org) => org.status === "pending") : [...items];
 }
 
 /** The one status line under the search box. */

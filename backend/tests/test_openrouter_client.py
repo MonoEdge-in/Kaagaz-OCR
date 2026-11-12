@@ -600,6 +600,48 @@ def test_l2_an_ultra_low_cost_read_404_is_a_reading_problem_too(
     assert client.gate.health()[0] == "key_problem"
 
 
+@pytest.mark.parametrize(
+    "said",
+    [
+        "No endpoints found matching your data policy (Zero data retention). Configure: " + SECRET,
+        "No allowed providers are available for the selected model.",
+    ],
+)
+def test_review_564_a_404_for_no_endpoint_is_never_blamed_on_the_model_id(
+    fake: OpenRouterFake, caplog: pytest.LogCaptureFixture, said: str
+) -> None:
+    """Review of #564: OpenRouter answers 404 too when no endpoint passes the provider or data
+    policy (OPENROUTER_PROVIDERS, zero data retention), not only for an unknown model. That 404
+    says so, with the fixed code no_endpoints, and still marks the reader unusable (a person's
+    fix). The reply's message is matched against fixed words only, never kept or logged."""
+    caplog.set_level(logging.WARNING, logger="kaagaz.ai.openrouter")
+    fake.script("completions", error_reply(404, message=said))
+    client = _client(fake.url, Clock())
+    with pytest.raises(ModelUnavailable) as caught:
+        _read(client)
+    assert caught.value.code == "no_endpoints"
+    assert _lines(caplog, "model not found") == []
+    assert [(line["code"], line["model"]) for line in _lines(caplog, "no endpoint for model")] == [
+        ("no_endpoints", PRO)
+    ]
+    assert [line["code"] for line in _lines(caplog, "reading model unusable")] == ["no_endpoints"]
+    assert client.gate.health()[0] == "key_problem"
+    assert SECRET not in caplog.text
+
+
+def test_review_564_a_chat_reply_never_ends_the_readers_problem(fake: OpenRouterFake) -> None:
+    """Review of #564: a chat call naming OCR_MODEL's id (MODEL_CHAT == OCR_MODEL) that answers says
+    nothing of page reads, so it never clears the reader's problem; a page read that answers does."""
+    fake.script("completions", error_reply(404), json_reply(GOOD), json_reply(GOOD))
+    client = _client(fake.url, Clock(), model_chat=PRO)
+    with pytest.raises(ModelUnavailable):
+        _read(client)
+    client.chat_json(system="s", user="u", schema=SCHEMA)
+    assert client.gate.health()[0] == "key_problem"
+    assert _read(client).value == GOOD
+    assert client.gate.health() == ("working", None)
+
+
 def test_any_other_status_is_an_http_error(fake: OpenRouterFake) -> None:
     fake.script("completions", error_reply(418))
     with pytest.raises(ModelUnavailable) as caught:

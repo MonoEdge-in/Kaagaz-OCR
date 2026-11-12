@@ -17,7 +17,7 @@ from botocore.exceptions import EndpointConnectionError, ReadTimeoutError
 from botocore.response import StreamingBody
 from botocore.stub import ANY, Stubber
 
-from kaagaz.adapters.storage import S3Storage, original_key, page_image_key, quarantine_key
+from kaagaz.adapters.storage import S3Storage, original_key, page_image_key, quarantine_key, rendition_key
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobNotFound
 from tests.settings_factory import make_settings
@@ -58,6 +58,7 @@ class StubbedStorageTest(unittest.TestCase):
     def test_keys_are_made_from_ids_only(self) -> None:
         self.assertEqual(original_key(CUSTOMER, DOCUMENT), PREFIX + "original")
         self.assertEqual(page_image_key(CUSTOMER, DOCUMENT, 3), PREFIX + "pages/3.webp")
+        self.assertEqual(rendition_key(CUSTOMER, DOCUMENT), PREFIX + "rendition.pdf")
         self.assertEqual(quarantine_key(CUSTOMER, DOCUMENT), f"quarantine/{CUSTOMER}/{DOCUMENT}")
 
     def test_ids_are_written_in_standard_form(self) -> None:
@@ -122,6 +123,23 @@ class StubbedStorageTest(unittest.TestCase):
         self.stub.add_client_error("get_object", "NoSuchKey", http_status_code=404)
         with self.assertRaises(BlobNotFound):
             self.storage.get_page_image(CUSTOMER, DOCUMENT, 9)
+
+    # --- renditions (#522 PR 2) ---------------------------------------------
+
+    def test_rendition_round_trip_beside_the_original(self) -> None:
+        pdf = b"%PDF-1.7 a Word file's rendition"
+        key = PREFIX + "rendition.pdf"
+        self.stub.add_response(
+            "put_object", {}, {"Bucket": BUCKET, "Key": key, "Body": pdf, "ContentType": "application/pdf"}
+        )
+        self.stub.add_response("get_object", {"Body": body(pdf)}, {"Bucket": BUCKET, "Key": key})
+        self.storage.put_rendition(CUSTOMER, DOCUMENT, pdf)
+        self.assertEqual(self.storage.get_rendition(CUSTOMER, DOCUMENT), pdf)
+
+    def test_missing_rendition_is_blob_not_found(self) -> None:
+        self.stub.add_client_error("get_object", "NoSuchKey", http_status_code=404)
+        with self.assertRaises(BlobNotFound):
+            self.storage.get_rendition(CUSTOMER, DOCUMENT)
 
     # --- delete -------------------------------------------------------------
 
@@ -307,6 +325,8 @@ def _every_call(storage: S3Storage) -> dict[str, Callable[[], object]]:
         "quarantine": lambda: storage.quarantine(CUSTOMER, DOCUMENT),
         "put_page_image": lambda: storage.put_page_image(CUSTOMER, DOCUMENT, 1, b"p"),
         "get_page_image": lambda: storage.get_page_image(CUSTOMER, DOCUMENT, 1),
+        "put_rendition": lambda: storage.put_rendition(CUSTOMER, DOCUMENT, b"%PDF"),
+        "get_rendition": lambda: storage.get_rendition(CUSTOMER, DOCUMENT),
         "ping": storage.ping,
         "ensure_bucket": storage.ensure_bucket,
     }

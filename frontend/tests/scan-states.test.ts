@@ -203,6 +203,11 @@ describe("one calm, fixed-height status cell", () => {
     expect(html(doc("n"))).not.toContain(">Review<");
     expect(html(read, true)).not.toContain(">Review<"); // nothing to open for review in Trash
     expect(html(queued)).toMatch(/>Queued<\/span>.*Waiting to start\./);
+    // QA U10 (4 Nov 2026): a file held (for the reader, or by a reading pause) says Waiting, not Queued.
+    const held = scanning("h", { step: "waiting", done: 0, total: 3 }, { status: "received", status_message: "Reading is paused." });
+    expect(html(held)).toMatch(/>Waiting<\/span>.*Reading is paused\./);
+    expect(html(held)).not.toContain(">Queued<");
+    expect(lines(html(held))).toBe(2);
   });
 
   // Changed on purpose (Tushar, 17 Oct 2026): the words wrapped and made a Rejected or Failed row

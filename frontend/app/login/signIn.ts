@@ -2,6 +2,7 @@
 // field must hold, which field gets focus after a failed submit, and what to
 // say when the server says no. Messages say what to do next.
 
+import { PASSWORD_REFUSED } from "@/app/login/providerMessages";
 import { ApiError } from "@/lib/api";
 
 export type SignInField = "email" | "password";
@@ -11,8 +12,8 @@ export interface SignInErrors {
   password: string | null;
 }
 
-export const EMAIL_MISSING = "Enter your e-mail address.";
-export const EMAIL_INVALID = "Enter an e-mail address with an @, like the one you use for work.";
+export const EMAIL_MISSING = "Enter your email address.";
+export const EMAIL_INVALID = "Enter an email address with an @, like the one you use for work.";
 export const PASSWORD_MISSING = "Enter your password.";
 
 // Something, an @, something, with no spaces. The server decides the rest.
@@ -45,10 +46,18 @@ export function firstInvalid(errors: SignInErrors): SignInField | null {
   return null;
 }
 
-export const WRONG_DETAILS_ADVICE = "Check your e-mail and password, then try again.";
+export const WRONG_DETAILS_ADVICE = "Check your email and password, then try again.";
 export const TOO_MANY_ATTEMPTS = "Too many attempts. Wait a minute, then try again.";
 export const NETWORK_FAILURE = "Could not reach Kaagaz. Check your internet connection and try again.";
 export const SIGN_IN_DOWN = "Sign-in is not working right now. Try again in a minute.";
+/** A sign-up waiting for the operator (#457), said only after a right password (403 org_pending). */
+export const ORG_PENDING =
+  "Your organisation is waiting for approval from the Kaagaz team. If you haven't confirmed your email yet, use the link we sent you.";
+
+/** The organisation is a sign-up waiting for approval: the page offers a new confirm link. */
+export function orgPending(caught: unknown): boolean {
+  return caught instanceof ApiError && caught.code === "org_pending";
+}
 
 /**
  * The banner text for a failed sign-in. A 401 shows the backend's own message
@@ -58,6 +67,8 @@ export const SIGN_IN_DOWN = "Sign-in is not working right now. Try again in a mi
  */
 export function signInErrorMessage(caught: unknown): string {
   if (caught instanceof ApiError) {
+    if (caught.code === "org_pending") return ORG_PENDING;
+    if (caught.code === "password_refused") return PASSWORD_REFUSED;
     if (caught.status === 401) return caught.message.trim() || WRONG_DETAILS_ADVICE;
     if (caught.status === 429) return TOO_MANY_ATTEMPTS;
     if (caught.status === 0) return NETWORK_FAILURE;

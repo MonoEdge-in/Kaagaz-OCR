@@ -2,7 +2,8 @@
 // to its item; Continue sends only what is still waiting, matched by path; a file that changed
 // or is missing is said, not sent; the counts and the line the status bar says.
 
-import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { describe, expect, it, vi } from "vitest";
 import { buildManifest, fromFileList, pathKey } from "@/components/documents/folderPick";
 import type { Picked } from "@/components/documents/folderPick";
 import {
@@ -11,6 +12,7 @@ import {
   folderLine,
   folderUploadsReducer,
   itemProblemText,
+  readingLine,
   refusedReason,
   restoredUpload,
   sendWaiting,
@@ -37,7 +39,7 @@ const pickOf = (paths: string[]): Picked => {
 };
 
 /** An in-memory server: the plan gives folder ids f0, f1…; items keep their folder and state. */
-function fakeServer(options: { refuse?: (item: FolderUploadItem) => ApiError | null } = {}) {
+function fakeServer(options: { refuse?: (item: FolderUploadItem) => ApiError | null; known?: Set<string> } = {}) {
   const items: FolderUploadItem[] = [];
   const registers: NewFolderItem[][] = [];
   let inFlight = 0;
@@ -56,6 +58,7 @@ function fakeServer(options: { refuse?: (item: FolderUploadItem) => ApiError | n
       registers.push(page);
       for (const each of page) {
         if (items.some((item) => item.path_key === each.path_key)) continue;
+        const already = !each.refused && each.sha256 !== undefined && options.known?.has(each.sha256);
         items.push({
           id: `i${items.length}`,
           seq: items.length,
@@ -63,10 +66,10 @@ function fakeServer(options: { refuse?: (item: FolderUploadItem) => ApiError | n
           name: each.name,
           folder_id: each.folder_id,
           size: each.size,
-          state: each.refused ? "failed" : "waiting",
+          state: each.refused ? "failed" : already ? "duplicate" : "waiting",
           failure_code: each.refused ?? null,
-          document_id: null,
-          document: null,
+          document_id: already ? `d-${each.sha256}` : null,
+          document: already ? { status: "ready", failure_code: null, folder_id: "f9", in_trash: false } : null,
         });
       }
     },
@@ -113,6 +116,8 @@ function summaryOf(id: string, items: FolderUploadItem[]): FolderUploadSummary {
     reading: 0,
     ready: count("stored"),
     problem: 0,
+    held: 0,
+    held_message: null,
   };
 }
 
@@ -139,6 +144,63 @@ describe("a folder upload's run", () => {
     const b1 = manifest.folders.findIndex((folder) => folder.name === "B1");
     expect(server.items.find((item) => item.name === "f1.pdf")?.folder_id).toBe(`f${b1}`);
     expect(events.at(-1)).toEqual({ type: "phase", id: "u1", phase: "done" });
+  });
+
+  it("registers only a kind Kaagaz can't take as refused; the server judges size and emptiness", async () => {
+    const pick = fromFileList([picked("A/notes.odt"), picked("A/bill.pdf"), picked("A/zero.pdf", 0)]);
+    if (!pick) throw new Error("empty");
+    const server = fakeServer();
+    await startFolderUpload(
+      server.api,
+      { id: "u2", userId: "me", source: { picked: pick, manifest: buildManifest(pick) }, target: { kind: "folder", parentId: null }, merge: true },
+      () => undefined,
+      never,
+    );
+    expect(server.registers[0]?.map((each) => each.refused)).toEqual(["unsupported_type", undefined, undefined]);
+    expect(server.sentIds).toHaveLength(2);
+    expect(refusedReason({ name: "big.pdf" })).toBeUndefined();
+    expect(refusedReason({ name: "notes.odt" })).toBe("unsupported_type");
+  });
+
+  it("plans only the bytes it will send, and still registers a refused file with its size (#516)", async () => {
+    const pick = fromFileList([picked("A/notes.odt", 100), picked("A/bill.pdf", 5)]);
+    if (!pick) throw new Error("empty");
+    const server = fakeServer();
+    const plans: FolderUploadPlanBody[] = [];
+    const plan = server.api.plan;
+    server.api.plan = (body) => (plans.push(body), plan(body));
+    await startFolderUpload(
+      server.api,
+      { id: "u2b", userId: "me", source: { picked: pick, manifest: buildManifest(pick) }, target: { kind: "folder", parentId: null }, merge: true },
+      () => undefined,
+      never,
+    );
+    expect(plans.map((body) => [body.file_count, body.total_bytes])).toEqual([[2, 5]]);
+    expect(server.registers[0]?.map((each) => [each.size, each.refused])).toEqual([
+      [100, "unsupported_type"],
+      [5, undefined],
+    ]);
+  });
+
+  it("waits the server's Retry-After while another plan of the organisation is built, then plans", async () => {
+    const pick = pickOf(["A/a.pdf"]);
+    const server = fakeServer();
+    const plan = server.api.plan;
+    let asked = 0;
+    server.api.plan = async (body) => {
+      asked += 1;
+      if (asked < 3) throw new ApiError(429, "plan_busy", "Another folder is being planned.", undefined, 0.001);
+      return plan(body);
+    };
+    const events: FolderEvent[] = [];
+    await startFolderUpload(
+      server.api,
+      { id: "pb", userId: "me", source: { picked: pick, manifest: buildManifest(pick) }, target: { kind: "folder", parentId: null }, merge: true },
+      run(events),
+      never,
+    );
+    expect(asked).toBe(3);
+    expect(events.at(-1)).toEqual({ type: "phase", id: "pb", phase: "done" });
   });
 
   it("stops between pages of the listing when Stop is pressed, and before listing when pressed while planning", async () => {
@@ -194,48 +256,10 @@ describe("a folder upload's run", () => {
     expect(state.w1?.sending).toEqual([{ itemId: "i0", name: "a.pdf", fraction: 0, waiting: "connection" }]);
   });
 
-  it("registers only a kind Kaagaz can't take as refused; the server judges size and emptiness", async () => {
-    const pick = fromFileList([picked("A/notes.docx"), picked("A/bill.pdf"), picked("A/zero.pdf", 0)]);
-    if (!pick) throw new Error("empty");
-    const server = fakeServer();
-    await startFolderUpload(
-      server.api,
-      { id: "u2", userId: "me", source: { picked: pick, manifest: buildManifest(pick) }, target: { kind: "folder", parentId: null }, merge: true },
-      () => undefined,
-      never,
-    );
-    expect(server.registers[0]?.map((each) => each.refused)).toEqual(["unsupported_type", undefined, undefined]);
-    expect(server.sentIds).toHaveLength(2);
-    expect(refusedReason({ name: "big.pdf" })).toBeUndefined();
-    expect(refusedReason({ name: "notes.docx" })).toBe("unsupported_type");
-  });
-
-  it("waits the server's Retry-After while another plan of the organisation is built, then plans", async () => {
-    const pick = pickOf(["A/a.pdf"]);
-    const server = fakeServer();
-    const plan = server.api.plan;
-    let asked = 0;
-    server.api.plan = async (body) => {
-      asked += 1;
-      if (asked < 3) throw new ApiError(429, "plan_busy", "Another folder is being planned.", undefined, 0.001);
-      return plan(body);
-    };
-    const events: FolderEvent[] = [];
-    await startFolderUpload(
-      server.api,
-      { id: "pb", userId: "me", source: { picked: pick, manifest: buildManifest(pick) }, target: { kind: "folder", parentId: null }, merge: true },
-      run(events),
-      never,
-    );
-    expect(asked).toBe(3);
-    expect(events.at(-1)).toEqual({ type: "phase", id: "pb", phase: "done" });
-  });
-
   it("is refused in the server's words while another folder upload of the organisation still sends", async () => {
     const pick = pickOf(["A/a.pdf"]);
     const server = fakeServer();
-    // Changed on purpose (production QA, 5 Nov 2026): the server's new words, shown as they are.
-    const words = "Another folder upload is still sending in this organisation. Try again in a few minutes.";
+    const words = "Another person's folder upload is still sending in this organisation. Try again when it has finished.";
     server.api.plan = async () => {
       throw new ApiError(409, "upload_in_progress", words);
     };
@@ -247,6 +271,26 @@ describe("a folder upload's run", () => {
       never,
     );
     expect(events.at(-1)).toEqual({ type: "phase", id: "ip", phase: "refused", message: words });
+  });
+
+  it("never says Retry on a row with no Retry: a plan or a listing cut off by a server restart", async () => {
+    const pick = pickOf(["A/a.pdf"]);
+    const restart = new ApiError(502, "error", "Something went wrong.");
+    const planning = fakeServer();
+    planning.api.plan = async () => {
+      throw restart;
+    };
+    const planned: FolderEvent[] = [];
+    const args = { userId: "me", source: { picked: pick, manifest: buildManifest(pick) }, target: { kind: "folder", parentId: null }, merge: true } as const;
+    await startFolderUpload(planning.api, { id: "r1", ...args }, run(planned), never);
+    expect(planned.at(-1)).toEqual({ type: "phase", id: "r1", phase: "refused", message: "The server was restarting." });
+    const listing = fakeServer();
+    listing.api.register = async () => {
+      throw restart;
+    };
+    const listed: FolderEvent[] = [];
+    await startFolderUpload(listing.api, { id: "r2", ...args }, run(listed), never);
+    expect(listed.at(-1)).toEqual({ type: "phase", id: "r2", phase: "stopped", message: "Not every file could be listed. The server was restarting." });
   });
 
   it("stops planning with the server's words when the plan is refused", async () => {
@@ -403,9 +447,32 @@ describe("what the tray and the status bar say", () => {
     expect(state.u).toMatchObject({ rootName: "A", stored: 4990, reading: 7, ready: 4983, problem: 0 });
   });
 
+  it("counts the files the reading pause holds apart from those reading, with the pause's own words (#478)", () => {
+    const summary: FolderUploadSummary = {
+      ...summaryOf("u", []),
+      file_count: 5,
+      registered: 5,
+      stored: 5,
+      reading: 0,
+      ready: 2,
+      held: 3,
+      held_message: "Reading is paused. Your organisation has reached its daily page limit. This file will be read on its own when the limit resets, or sooner if it is raised.",
+    };
+    let state = folderUploadsReducer(start, { type: "counts", id: "u", summary });
+    expect(state.u).toMatchObject({ reading: 0, held: 3, heldMessage: summary.held_message });
+    expect(readingLine(state.u!)).toBe("Reading: 2 of 5 ready, 3 waiting. Reading can take a while for big folders.");
+    state = folderUploadsReducer(state, { type: "counts", id: "u", summary: { ...summary, held: null, held_message: null } });
+    expect(state.u).toMatchObject({ held: 3, heldMessage: summary.held_message }); // the list leaves them out
+    state = folderUploadsReducer(state, { type: "counts", id: "u", summary: { ...summary, ready: 5, held: 0, held_message: null } });
+    expect(state.u).toMatchObject({ held: 0, heldMessage: null });
+    expect(readingLine(state.u!)).toBeNull();
+  });
+
   it("names the folder to choose again after a reload, and gives a plain fix for a refused file", () => {
     const waiting = folderUploadsReducer(start, { type: "phase", id: "u", phase: "needs_pick" });
-    expect(folderLine(waiting.u!)).toBe("Folder “A”: 0 of 5,000 uploaded. Choose “A” again to send the rest.");
+    expect(folderLine(waiting.u!)).toBe("Folder “A”: 0 of 5,000 uploaded, 5,000 not sent yet. Choose “A” again to send them.");
+    const stopped = folderUploadsReducer(start, { type: "phase", id: "u", phase: "stopped" });
+    expect(folderLine(stopped.u!)).toBe("Folder “A”: stopped at 0 of 5,000 uploaded, 5,000 not sent yet");
     const item = (over: Partial<FolderUploadItem>): FolderUploadItem => ({
       id: "i",
       seq: 0,
@@ -419,7 +486,7 @@ describe("what the tray and the status bar say", () => {
       document: null,
       ...over,
     });
-    expect(itemProblemText(item({ failure_code: "too_large" }), FALLBACK_UPLOAD_LIMITS)).toBe("Too big: the most is 50 MB.");
+    expect(itemProblemText(item({ failure_code: "too_large" }), FALLBACK_UPLOAD_LIMITS)).toBe("Too big: the most is 100 MB.");
     expect(itemProblemText(item({ name: "x.png", failure_code: "too_large" }), FALLBACK_UPLOAD_LIMITS)).toBe("Too big: the most is 20 MB.");
     expect(
       itemProblemText(
@@ -433,6 +500,12 @@ describe("what the tray and the status bar say", () => {
     ).toBe("Virus found. Upload a clean copy of the file.");
     const failed = item({ state: "stored", document_id: "d", document: { status: "failed", failure_code: null, folder_id: "f", in_trash: false } });
     expect(itemProblemText(failed, FALLBACK_UPLOAD_LIMITS)).toBe("Failed. Read it again, or try another copy of it.");
+    // #549: a zip in a folder upload is kept as a file by design, never "Failed".
+    const keptZip = { status: "needs_reader" as const, failure_code: null, folder_id: "f", in_trash: false };
+    expect(itemProblemText(item({ name: "Scans.ZIP", state: "stored", document_id: "d", document: keptZip }), FALLBACK_UPLOAD_LIMITS)).toBe(
+      "Kept as a file, not unpacked: Kaagaz unpacks a zip only when it is uploaded on its own.",
+    );
+    expect(itemProblemText(item({ name: "old.doc", state: "stored", document_id: "d", document: keptZip }), FALLBACK_UPLOAD_LIMITS)).not.toMatch(/^Kept/);
     expect(itemProblemText(item({ failure_code: "bad_name" }), FALLBACK_UPLOAD_LIMITS)).toBe(
       "Kaagaz can’t keep this file’s name: it has a hidden character, or another file in its folder has the same name. Rename it, then upload it again.",
     );
@@ -480,7 +553,7 @@ describe("after a reload", () => {
     expect(cut).toMatchObject({ listed: false, again: { target: { kind: "folder", parentId: "p9" }, merge: false } });
     const state = cut!.events.reduce(folderUploadsReducer, EMPTY_FOLDER_UPLOADS);
     expect(state.r).toMatchObject({ rootName: "A", phase: "needs_pick", stored: 1 });
-    expect(folderLine(state.r!)).toBe("Folder “A”: 1 of 3 uploaded. Choose “A” again to send the rest.");
+    expect(folderLine(state.r!)).toBe("Folder “A”: 1 of 3 uploaded, 2 not sent yet. Choose “A” again to send them.");
     expect(restoredUpload(summary({ registered: 0, target: "department" }))?.again.target).toEqual({ kind: "department" });
   });
 
@@ -510,5 +583,146 @@ describe("after a reload", () => {
   it("says so when another folder is picked to continue", () => {
     expect(wrongFolderText("A", "A")).toBeNull();
     expect(wrongFolderText("A", "B")).toBe("This is “B”. Choose “A” to continue.");
+  });
+});
+
+describe("adding new files only", () => {
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+  /** A picked file whose bytes are `text`. */
+  function filled(path: string, text: string): File {
+    const file = new File([text], path.split("/").at(-1) ?? path);
+    Object.defineProperty(file, "webkitRelativePath", { value: path });
+    return file;
+  }
+  const sourceOf = (files: File[]) => {
+    const pick = fromFileList(files);
+    if (!pick) throw new Error("empty");
+    return { picked: pick, manifest: buildManifest(pick) };
+  };
+  const many = (count: number) => Array.from({ length: count }, (_, n) => filled(`A/f${n}.pdf`, `bill ${n}`));
+  const target = { kind: "folder" as const, parentId: null };
+
+  it("hashes one file at a time: the most reads in flight is 1", async () => {
+    const read = Blob.prototype.arrayBuffer;
+    let inFlight = 0;
+    let most = 0;
+    const spy = vi.spyOn(Blob.prototype, "arrayBuffer").mockImplementation(async function (this: Blob) {
+      inFlight += 1;
+      most = Math.max(most, inFlight);
+      await new Promise((resolve) => setImmediate(resolve));
+      try {
+        return await read.call(this);
+      } finally {
+        inFlight -= 1;
+      }
+    });
+    try {
+      const server = fakeServer();
+      await startFolderUpload(server.api, { id: "h1", userId: "me", source: sourceOf(many(120)), target, merge: true, onlyNew: true }, () => undefined, never);
+      expect(spy).toHaveBeenCalledTimes(120);
+      expect(most).toBe(1);
+      expect(server.registers[0]?.[7]?.sha256).toBe(sha("bill 7"));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("registers sha256 only for files Kaagaz could take, and never sends a file already in Kaagaz", async () => {
+    const locked = filled("A/locked.pdf", "secret");
+    Object.defineProperty(locked, "arrayBuffer", { value: () => Promise.reject(new Error("NotReadableError")) });
+    const files = [
+      filled("A/notes.odt", "words"), // a kind Kaagaz can't take
+      filled("A/zero.pdf", ""), // empty
+      filled("A/big.pdf", "x".repeat(60)), // over the PDF limit below
+      locked, // the browser can't read it
+      filled("A/bill.pdf", "bill"),
+      filled("A/scan.png", "scan"),
+    ];
+    const limits = { ...FALLBACK_UPLOAD_LIMITS, pdf_bytes: 50 };
+    const server = fakeServer({ known: new Set([sha("bill")]) });
+    const bodies: FolderUploadPlanBody[] = [];
+    const plan = server.api.plan;
+    server.api.plan = async (body) => {
+      bodies.push(body);
+      return plan(body);
+    };
+    await startFolderUpload(server.api, { id: "h2", userId: "me", source: sourceOf(files), target, merge: true, limits, onlyNew: true }, () => undefined, never);
+    expect(bodies[0]?.only_new).toBe(true);
+    expect(server.registers[0]?.map((each) => [each.name, each.sha256])).toEqual([
+      ["notes.odt", undefined],
+      ["zero.pdf", undefined],
+      ["big.pdf", undefined],
+      ["locked.pdf", undefined],
+      ["bill.pdf", sha("bill")],
+      ["scan.png", sha("scan")],
+    ]);
+    // Those not hashed go as today; the server judges them.
+    expect(server.items.find((item) => item.name === "bill.pdf")?.state).toBe("duplicate");
+    expect(server.sentIds.map((itemId) => server.items.find((item) => item.id === itemId)?.name).sort()).toEqual([
+      "big.pdf",
+      "locked.pdf",
+      "scan.png",
+      "zero.pdf",
+    ]);
+
+    const plain = fakeServer();
+    await startFolderUpload(plain.api, { id: "h3", userId: "me", source: sourceOf(files), target, merge: true, limits }, () => undefined, never);
+    expect(plain.registers[0]?.every((each) => !("sha256" in each))).toBe(true);
+  });
+
+  it("says “checking your files: N of M” every 50 files, then how many were already in Kaagaz", async () => {
+    const files = many(120);
+    const server = fakeServer({ known: new Set(files.slice(0, 100).map((_, n) => sha(`bill ${n}`))) });
+    const events: FolderEvent[] = [];
+    await startFolderUpload(server.api, { id: "h4", userId: "me", source: sourceOf(files), target, merge: true, onlyNew: true }, run(events), never);
+    const checked = events.flatMap((event) => (event.type === "checked" ? [event.done] : []));
+    expect(checked).toEqual([0, 50, 100, 120]);
+    const upTo = events.findIndex((event) => event.type === "checked" && event.done === 50);
+    const checking = events.slice(0, upTo + 1).reduce(folderUploadsReducer, EMPTY_FOLDER_UPLOADS);
+    expect(folderLine(checking.h4!)).toBe("Folder “A”: checking your files: 50 of 120");
+    const done = events.reduce(folderUploadsReducer, EMPTY_FOLDER_UPLOADS);
+    expect(folderLine(done.h4!)).toBe("Folder “A”: 120 of 120 uploaded, 100 already in Kaagaz");
+    expect(server.sentIds).toHaveLength(20);
+  });
+
+  it("stops while checking, keeping what is registered, and Continue checks the rest", async () => {
+    const source = sourceOf(many(2500));
+    const server = fakeServer();
+    const events: FolderEvent[] = [];
+    const stop = () => events.some((event) => event.type === "checked" && event.done >= 1200);
+    await startFolderUpload(server.api, { id: "h5", userId: "me", source, target, merge: true, onlyNew: true }, run(events), stop);
+    expect(server.registers.map((page) => page.length)).toEqual([1000]);
+    expect(server.items).toHaveLength(1000);
+    expect(server.sentIds).toEqual([]);
+    expect(events.at(-1)).toEqual({ type: "phase", id: "h5", phase: "stopped" });
+    expect(events.filter((event) => event.type === "checked").at(-1)).toMatchObject({ done: 1200 });
+
+    await startFolderUpload(server.api, { id: "h5", userId: "me", source, target, merge: true, onlyNew: true }, () => undefined, never);
+    expect(server.items).toHaveLength(2500);
+    expect(server.items.every((item) => item.state === "stored")).toBe(true);
+  });
+
+  it("keeps listing with “listing its files…” when not checking, and checks again after a reload when it was adding", () => {
+    const start = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, { type: "start", id: "u", rootName: "A", total: 5000 });
+    const listing = folderUploadsReducer(start, { type: "phase", id: "u", phase: "registering" });
+    expect(folderLine(listing.u!)).toBe("Folder “A”: listing its files…");
+    const checking = folderUploadsReducer(listing, { type: "checked", id: "u", done: 1240 });
+    expect(folderLine(checking.u!)).toBe("Folder “A”: checking your files: 1,240 of 5,000");
+    // The status bar says it again only each tenth of the files checked.
+    let state = listing;
+    const said = new Set<string>([state.u!.spoken]);
+    for (let done = 0; done <= 1240; done += 50) {
+      state = folderUploadsReducer(state, { type: "checked", id: "u", done });
+      said.add(state.u!.spoken);
+    }
+    expect([...said]).toEqual([
+      "Folder “A”: listing its files…",
+      "Folder “A”: checking your files: 0 of 5,000",
+      "Folder “A”: checking your files: 500 of 5,000",
+      "Folder “A”: checking your files: 1,000 of 5,000",
+    ]);
+    const cut = { ...summaryOf("r", []), file_count: 3, registered: 1 };
+    expect(restoredUpload({ ...cut, merge: true })?.again.onlyNew).toBe(true);
+    expect(restoredUpload({ ...cut, merge: false })?.again.onlyNew).toBe(false);
   });
 });

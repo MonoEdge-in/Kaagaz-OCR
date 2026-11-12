@@ -1,80 +1,72 @@
 "use client";
 
-// "Two-step sign-in" from an admin's own Account menu (Tushar, 30 Oct 2026). It says
-// whether it is on, with one button to change it. Turn off asks for the password and a
-// code from the app, and warns first; it then stays off until the admin turns it on. Turn
-// on asks for the password, then shows the sign-in's own set-up step (EnrolStep: the QR
-// code, the key and the first code). An error goes on its field and the focus moves there.
-// The key and token live only in this state. Never closes while a request runs.
+// Account, Two-step sign-in (#457 phase 3), for every role. Anyone turns it on with their
+// password, then the set-up step every admin uses (EnrolStep: the QR code or the key, then a
+// first code); and off with their password and a current code, after a warning, which signs
+// every other browser out. An admin's then stays off until they turn it on again (Tushar,
+// 30 Oct 2026); another admin resets an admin's lost code, an admin a member's. Like Change
+// password: method="post", no name attributes, the password masked again on submit and never
+// trimmed, the code cleared after a refusal. A missing or wrong password or code shows on its
+// field, which takes focus (#457 review).
 
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { flushSync } from "react-dom";
+import { LOST_PHONE } from "@/app/(app)/admin/TwoStepPanel";
 import { CodeField } from "@/app/login/CodeField";
 import { EnrolStep } from "@/app/login/EnrolStep";
-import login from "@/app/login/login.module.css";
 import { codeError, normalizeCode } from "@/app/login/twoStep";
-import admin from "@/components/admin/Admin.module.css";
+import styles from "@/app/login/twoStep.module.css";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { PasswordField } from "@/components/ui/PasswordField";
 import { startTwoStep, turnOffTwoStep } from "@/lib/api";
-import { useSession } from "@/lib/session";
 import type { Me, TwoStepSetup } from "@/lib/types";
-import { TWO_STEP_ACCOUNT, passwordError, refusal, statusText, twoStepState } from "./twoStepAccount";
-import type { Field } from "./twoStepAccount";
-import styles from "./Shell.module.css";
+import { CURRENT_MISSING } from "./setPassword";
+import {
+  LOST_CODE,
+  OFF_TEXT,
+  OFF_WARNING,
+  ON_TEXT,
+  REQUIRED_TEXT,
+  TURNED_OFF,
+  TURNED_ON,
+  mayTurnOff,
+  proofField,
+  twoStepError,
+  twoStepView,
+} from "./twoStepAccount";
 
 const PASSWORD_ID = "two-step-password";
 const CODE_ID = "two-step-code";
 
-const fieldId = (field: Field) => (field === "password" ? PASSWORD_ID : CODE_ID);
-const focusOnMount = (element: HTMLElement | null) => element?.focus();
+type Problems = { password: string | null; code: string | null };
 
-type Step = "status" | "off" | "on_password" | "on_enrol" | "done";
-
-export function TwoStepDialog({ me, onClose, onClosed }: { me: Me; onClose(): void; onClosed(): void }) {
-  const { refresh } = useSession();
-  const [step, setStep] = useState<Step>("status");
+/** onClosed: once it is shut, where focus goes (the account menu's avatar). */
+export function TwoStepDialog({
+  me,
+  onClose,
+  onClosed,
+  onDone,
+}: {
+  me: Me;
+  onClose(): void;
+  onClosed?(): void;
+  onDone(message: string): void;
+}) {
+  const view = twoStepView(me);
   const [password, setPassword] = useState("");
   const [masked, setMasked] = useState(true);
   const [code, setCode] = useState("");
-  const [problems, setProblems] = useState<Record<Field, string | null>>({ password: null, code: null });
+  const [problems, setProblems] = useState<Problems>({ password: null, code: null });
   const [failure, setFailure] = useState<string | null>(null);
-  const [setup, setSetup] = useState<TwoStepSetup | null>(null);
-  const [done, setDone] = useState("");
   const [busy, setBusy] = useState(false);
-  const status = statusText(twoStepState(me));
+  // Turn on, after the password: the set-up key the server sent (nothing is stored yet).
+  const [enrol, setEnrol] = useState<TwoStepSetup | null>(null);
 
-  // A new step starts empty, with focus on its first field.
-  function show(next: "off" | "on_password") {
-    flushSync(() => {
-      setStep(next);
-      setPassword("");
-      setCode("");
-      setProblems({ password: null, code: null });
-      setFailure(null);
-    });
-    document.getElementById(PASSWORD_ID)?.focus();
-  }
-
-  function finish(message: string) {
-    setDone(message);
-    setStep("done");
-    refresh(); // the menu, Trash and the gate read the new state
-  }
-
-  function refused(caught: unknown, hasCode: boolean) {
-    const found = refusal(caught, hasCode);
-    if (hasCode) setCode(""); // a code works once and changes every 30 seconds
-    if (found.field === null) {
-      setFailure(found.message);
-      return;
-    }
-    const { field, message } = found;
-    flushSync(() =>
-      setProblems({ password: field === "password" ? message : null, code: field === "code" ? message : null }),
-    );
-    document.getElementById(fieldId(field))?.focus();
+  /** Commit the messages first, so the field is described when it gets focus. */
+  function showOnFields(found: Problems) {
+    flushSync(() => setProblems(found));
+    document.getElementById(found.password ? PASSWORD_ID : CODE_ID)?.focus();
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -82,135 +74,114 @@ export function TwoStepDialog({ me, onClose, onClosed }: { me: Me; onClose(): vo
     if (busy) return;
     setMasked(true);
     setFailure(null);
-    const hasCode = step === "off";
-    const found = { password: passwordError(password), code: hasCode ? codeError(code) : null };
-    flushSync(() => setProblems(found));
-    const first: Field | null = found.password ? "password" : found.code ? "code" : null;
-    if (first) {
-      document.getElementById(fieldId(first))?.focus();
+    const found = {
+      password: password === "" ? CURRENT_MISSING : null,
+      code: view === "on" ? codeError(code) : null,
+    };
+    if (found.password || found.code) {
+      showOnFields(found);
       return;
     }
+    setProblems(found);
     setBusy(true);
     try {
-      if (hasCode) {
+      if (view === "on") {
         await turnOffTwoStep(password, normalizeCode(code));
-        finish(TWO_STEP_ACCOUNT.offDone);
-      } else {
-        setSetup(await startTwoStep(password));
-        setStep("on_enrol");
+        onDone(TURNED_OFF);
+        return;
       }
+      setEnrol(await startTwoStep(password));
       setPassword("");
+      setBusy(false);
     } catch (caught) {
-      refused(caught, hasCode);
+      const field = proofField(caught);
+      const message = twoStepError(caught);
+      setCode(""); // a code works once
+      setBusy(false);
+      if (field) showOnFields({ password: field === "password" ? message : null, code: field === "code" ? message : null });
+      else setFailure(message);
     }
-    setBusy(false);
   }
 
-  const failed = failure && (
-    <p className="error-text" role="alert">
-      {failure}
-    </p>
-  );
+  if (enrol) {
+    return (
+      <ActionDialog title="Two-step sign-in" onClose={onClose} onClosed={onClosed}>
+        <EnrolStep
+          enrol={enrol}
+          email={me.user.email}
+          onTurnedOn={() => onDone(TURNED_ON)}
+          onRestart={() => setEnrol(null)}
+        />
+      </ActionDialog>
+    );
+  }
+
+  if (view === "on" && !mayTurnOff(me)) {
+    // #481: the super admin requires it for this organisation's admins, so there is nothing to turn off.
+    return (
+      <ActionDialog title="Two-step sign-in" onClose={onClose} onClosed={onClosed}>
+        <p className={styles.twoStepText}>
+          Your two-step sign-in: <strong>On</strong>. {ON_TEXT}
+        </p>
+        <p className={styles.note}>{REQUIRED_TEXT}</p>
+        <p className={styles.note}>{LOST_PHONE}</p>
+        <div className="actions">
+          <button type="button" className="btn" onClick={onClose}>
+            Close
+          </button>
+        </div>
+      </ActionDialog>
+    );
+  }
 
   return (
-    <ActionDialog title={TWO_STEP_ACCOUNT.item} onClose={onClose} onClosed={onClosed} canClose={() => !busy}>
-      <div className={styles.twoStep}>
-        {step === "status" && (
-          <>
-            <p>{status.text}</p>
-            <div className={styles.twoStepButtons}>
-              <button
-                type="button"
-                className="btn btn-primary"
-                data-autofocus
-                onClick={() => show(twoStepState(me) === "on" ? "off" : "on_password")}
-              >
-                {status.action}
-              </button>
-            </div>
-          </>
-        )}
-
-        {(step === "off" || step === "on_password") && (
-          <form method="post" noValidate onSubmit={(event) => void submit(event)} className={login.form}>
-            {step === "on_password" && <p>{TWO_STEP_ACCOUNT.onLead}</p>}
-            <PasswordField
-              id={PASSWORD_ID}
-              label={TWO_STEP_ACCOUNT.password}
-              value={password}
-              onChange={(value) => {
-                setPassword(value);
-                if (problems.password) setProblems({ ...problems, password: passwordError(value) });
-              }}
-              autoComplete="current-password"
-              required
-              error={problems.password}
-              masked={masked}
-              onMaskedChange={setMasked}
-              enterKeyHint={step === "off" ? "next" : "go"}
-            />
-            {step === "off" && (
-              <>
-                <CodeField
-                  id={CODE_ID}
-                  label={TWO_STEP_ACCOUNT.code}
-                  value={code}
-                  onChange={(value) => {
-                    setCode(value);
-                    if (problems.code) setProblems({ ...problems, code: codeError(value) });
-                  }}
-                  error={problems.code}
-                />
-                <p className={styles.twoStepWarning}>{TWO_STEP_ACCOUNT.offWarning}</p>
-              </>
-            )}
-            {failed}
-            {/* [Cancel] [the action]: the action last, on top when they stack. */}
-            <div className={styles.twoStepButtons}>
-              <button type="button" className="btn" onClick={onClose} disabled={busy}>
-                {TWO_STEP_ACCOUNT.cancel}
-              </button>
-              <button
-                type="submit"
-                className={`btn btn-primary ${busy ? admin.busy : ""}`}
-                disabled={busy}
-                aria-busy={busy || undefined}
-              >
-                {busy && <span className="spinner" aria-hidden="true" />}
-                {step === "off" ? TWO_STEP_ACCOUNT.offButton : TWO_STEP_ACCOUNT.onButton}
-              </button>
-            </div>
-          </form>
-        )}
-
-        {step === "on_enrol" && setup && (
-          <EnrolStep
-            enrol={setup}
-            email={me.user.email}
-            onTurnedOn={() => {
-              setSetup(null);
-              finish(TWO_STEP_ACCOUNT.onDone);
+    <ActionDialog title="Two-step sign-in" onClose={onClose} onClosed={onClosed} canClose={() => !busy}>
+      <p className={styles.twoStepText}>
+        Your two-step sign-in: <strong>{view === "on" ? "On" : "Off"}</strong>. {view === "on" ? ON_TEXT : OFF_TEXT}
+      </p>
+      {view === "on" && <p className={styles.note}>{me.user.role === "admin" ? LOST_PHONE : LOST_CODE}</p>}
+      <form method="post" noValidate onSubmit={submit}>
+        <PasswordField
+          id={PASSWORD_ID}
+          label="Current password"
+          value={password}
+          onChange={setPassword}
+          autoComplete="current-password"
+          required
+          error={problems.password}
+          masked={masked}
+          onMaskedChange={setMasked}
+        />
+        {view === "on" && (
+          <CodeField
+            id={CODE_ID}
+            label="6-digit code"
+            value={code}
+            onChange={(value) => {
+              setCode(value);
+              if (problems.code) setProblems((was) => ({ ...was, code: codeError(value) }));
             }}
-            onRestart={() => {
-              setSetup(null);
-              show("on_password");
-            }}
+            error={problems.code}
+            hint="From your authenticator app."
+            enterKeyHint="done"
           />
         )}
-
-        {step === "done" && (
-          <>
-            <p ref={focusOnMount} tabIndex={-1} role="status">
-              {done}
-            </p>
-            <div className={styles.twoStepButtons}>
-              <button type="button" className="btn btn-primary" onClick={onClose}>
-                {TWO_STEP_ACCOUNT.done}
-              </button>
-            </div>
-          </>
+        {view === "on" && <p className={styles.warning}>{OFF_WARNING}</p>}
+        {failure && (
+          <p className="error-text" role="alert">
+            {failure}
+          </p>
         )}
-      </div>
+        <div className="actions">
+          <button type="button" className="btn" disabled={busy} onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" className="btn btn-primary" disabled={busy} aria-busy={busy || undefined}>
+            {busy && <span className="spinner" aria-hidden="true" />}
+            {view === "on" ? "Turn off" : "Turn on"}
+          </button>
+        </div>
+      </form>
     </ActionDialog>
   );
 }

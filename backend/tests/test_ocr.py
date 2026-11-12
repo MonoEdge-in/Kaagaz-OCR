@@ -580,7 +580,12 @@ class GeminiFactoryTest(unittest.TestCase):
         class GeminiEngine:
             @classmethod
             def from_settings(
-                cls, settings: Settings, *, pool: RapidOcrPool, db: Database | None = None
+                cls,
+                settings: Settings,
+                *,
+                pool: RapidOcrPool,
+                db: Database | None = None,
+                mistral: object = None,  # Changed on purpose (#473): the Mistral client, when set up
             ) -> PageEngine:
                 return factory(settings, pool=pool)
 
@@ -737,6 +742,37 @@ class WordMarksTest(unittest.TestCase):
             [("INVOICE 1O42", None, False), ("1O42", "unsure", True)],
         )
         self.assertEqual(spans[1].confidence, 0.6)
+
+    def test_a_word_in_a_block_of_ten_lines_is_marked_in_its_own_line_only(self) -> None:
+        """#523: a block holding ten written lines (its text keeps their breaks) is split into
+        ten equal bands; each unsure word is marked one band tall, in its own line's band,
+        across by its place in that line, never as a strip the block's whole height."""
+        rows = [f"row{n} aaaa bbbb cccc" for n in range(10)]  # each 19 characters
+        rows[2], rows[5], rows[9] = "row2 aaaa WORD cccc", "WORD aaaa bbbb cccc", "row9 aaaa bbbb WORD"
+        block = OcrLine("\n".join(rows), 100, 0, 290, 200, None, "paragraph", None, ("WORD",) * 3, "found")
+        marks = [box_of(s) for s in ocr_spans([block], 1, 1000, 1000) if is_word_mark(s)]
+        self.assertEqual(len(marks), 3)
+        for mark, (row, first) in zip(marks, [(2, 10), (5, 0), (9, 15)], strict=True):
+            self.assertAlmostEqual(mark.y0, row * 0.02)  # 20 pixels a line, of 1000
+            self.assertAlmostEqual(mark.y1, (row + 1) * 0.02)
+            self.assertAlmostEqual(mark.x0, (100 + 10 * first) / 1000)  # 10 pixels a character
+            self.assertAlmostEqual(mark.x1, (100 + 10 * (first + 4)) / 1000)
+
+    def test_a_block_of_several_lines_with_no_breaks_is_split_across_as_before(self) -> None:
+        """#523 review: a block several lines tall whose text has no line breaks: the word's line
+        can't be told, so its mark is split across as before (the block's height, the word's
+        share of its width), never the block's whole box, which would underline a paragraph and
+        stack every such mark in one place. It stays listed (it still sends a value to review);
+        the viewer's shape guard leaves so tall and narrow a strip undrawn."""
+        text = " ".join(["aaaa bbbb cccc dddd"] * 9) + " WORD"  # 184 characters, one line of text
+        block = OcrLine(text, 100, 0, 284, 200, None, "paragraph", None, ("WORD",), "found")
+        spans = ocr_spans([block], 1, 1000, 1000)
+        (mark,) = [s for s in spans if is_word_mark(s)]
+        self.assertEqual((mark.text, mark.quality), ("WORD", "unsure"))
+        box = box_of(mark)
+        self.assertEqual((box.y0, box.y1), (0.0, 0.2))
+        self.assertAlmostEqual(box.x0, 0.28)  # characters 180 to 184 of 184, a pixel each
+        self.assertAlmostEqual(box.x1, 0.284)
 
     def test_lines_without_marks_give_spans_as_before(self) -> None:
         line = OcrLine("Tax Invoice", 20, 5, 100, 15, None, "heading")

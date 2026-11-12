@@ -4,18 +4,27 @@
 
 import { sessionScope } from "@/components/shell/gate";
 import { roleName } from "@/components/shell/nav";
+import { DOMAIN_UNCHECKED, providersText } from "@/components/account/signInWays";
+import type { MineDraft, OrgDraft } from "@/lib/aiSettings";
 import { ApiError } from "@/lib/api";
+import type { Draft } from "@/lib/drafts";
+import { errorWords } from "@/lib/errorWords";
 import { formatDateTime, formatNumber, formatUsd, PART_NOT_KNOWN, statusChip } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
 import type {
+  AddedUser,
   AdminUser,
+  AiSettings,
+  AiTask,
   AuditEntry,
   CustomerSettings,
   DocumentStatus,
+  GoogleRules,
   Me,
   MemberNumbers,
   MemberPeriod,
   PageRoute,
+  PendingConnection,
   Role,
   Stats,
   UsageBudget,
@@ -136,9 +145,9 @@ export interface StatusPart {
 }
 
 /**
- * The status column: Active, "Locked until 14:05" or Disabled, then "Two-step on"
- * or "Two-step off" (off is only worth saying for an admin, who can turn it on for
- * the admin screen), then "Temporary password" until the user sets their own.
+ * The status column: Active, "Locked until 14:05" or Disabled, then "Two-step: On" or
+ * "Two-step: Off" for every user (#457 phase 3: anyone may have codes), then "Temporary
+ * password" until the user sets their own.
  */
 export function userStatus(user: AdminUser, now: number): StatusPart[] {
   const parts: StatusPart[] = [];
@@ -147,10 +156,9 @@ export function userStatus(user: AdminUser, now: number): StatusPart[] {
     parts.push({ text: lockedUntilText(user.locked_until), tone: "danger" });
   } else parts.push({ text: "Active", tone: "ready" });
   // Plain words (25 Oct 2026): "Two-step", as the rest of the product says, not "2FA".
-  if (user.totp_enabled) parts.push({ text: "Two-step on", tone: "neutral" });
-  else if (user.role === "admin") parts.push({ text: "Two-step off", tone: "neutral" });
+  parts.push({ text: user.totp_enabled ? "Two-step: On" : "Two-step: Off", tone: "neutral" });
   if (user.must_change_password) parts.push({ text: "Temporary password", tone: "neutral" });
-  if (user.can_delete_forever) parts.push({ text: "Can delete forever", tone: "neutral" });
+  if (user.can_delete_forever) parts.push({ text: "Can delete for good", tone: "neutral" });
   return parts;
 }
 
@@ -220,13 +228,29 @@ export function generatePassword(length = 16, random: (bytes: Uint8Array) => Uin
 }
 
 /** AD7 (UI audit, 16 Oct 2026), with two-step required for admins (0035): what an admin without it sees. */
+/** The toast after Add user (#457): the invite went, or could not be sent (a problem: the typed
+ * temporary password is the way in), or with email off the temporary password as before. */
+export function addedNotice(user: Pick<AddedUser, "display_name" | "email" | "invited">): {
+  text: string;
+  problem?: boolean;
+} {
+  const name = user.display_name;
+  if (user.invited === true) {
+    return { text: `Invite sent to ${user.email}. If it doesn't arrive, give ${name} the temporary password you typed.` };
+  }
+  if (user.invited === false) {
+    return { problem: true, text: `Couldn't send the invite email. Give ${name} the temporary password you typed.` };
+  }
+  return { text: `Added ${name}. They choose their own password when they first sign in.` };
+}
+
 export function twoStepNote(): string {
   return "Admins without two-step sign-in set it up at their next sign-in.";
 }
 
 export function allowForeverQuestion(name: string): string {
   return (
-    `Let ${name} delete documents in Trash forever? This covers every document in Trash, ` +
+    `Let ${name} delete documents in Trash for good? This covers every document in Trash, ` +
     "not only theirs, and can't be undone. They will type their password each time."
   );
 }
@@ -257,6 +281,71 @@ export const AUTOFILE_HELP =
   "If a file lands in the wrong folder, press Undo or move it.";
 export const AUTOFILE_NOT_AVAILABLE = "Auto-filing isn't available for your organisation yet.";
 
+// Connected accounts (#457 phase 1): the People and Settings words, naming only the providers
+// that are on (Me's providers, #457 review).
+export const AUTO_APPROVE_LABEL = "Approve new sign-in connections automatically";
+export const AUTO_APPROVE_SAVED = "Saved.";
+export const AUTO_APPROVE_NOTE = "This setting saves as soon as you change it.";
+export const CONNECTIONS_FAILED = "Couldn't load connections to approve. Try again.";
+export const ALREADY_DECIDED = "Another admin already decided this one.";
+
+export function autoApproveWarning(providers: readonly string[]): string {
+  return `Members' ${providersText(providers)} accounts will work at once, without your review.`;
+}
+
+export function removeConnectionsQuestion(name: string, providers: readonly string[]): string {
+  return `Remove ${name}'s connected accounts? They can't sign in with ${providersText(providers)} any more. Their password still works.`;
+}
+
+const WAY_NAMES: Record<string, string> = { password: "Password", google: "Google" };
+
+/** Approve's and Decline's names for a screen reader: "Approve Ramesh Kumar's Google account". */
+export function decideLabel(row: PendingConnection, approve: boolean): string {
+  return `${approve ? "Approve" : "Decline"} ${row.display_name}'s ${WAY_NAMES[row.provider] ?? row.provider} account`;
+}
+
+/** "Password, Google": how this person signs in (every account keeps its password). */
+export function signsInWith(ways: readonly string[] | undefined): string {
+  return (ways ?? ["password"]).map((way) => WAY_NAMES[way] ?? way).join(", ");
+}
+
+/** #507: the tag beside how they sign in, while their role signs in with Google only and they
+ * have no Google account that passes (AdminUser.google_needed). */
+export const GOOGLE_NEEDED = "Needs to connect Google";
+
+/** The tag's words: their connected account's domain is not checked yet (#507 review,
+ * AdminUser.google_unchecked: the limited session's words), else "Needs to connect Google";
+ * null: no tag. */
+export function googleTag(user: AdminUser): string | null {
+  if (user.google_unchecked === true) return DOMAIN_UNCHECKED;
+  return user.google_needed === true ? GOOGLE_NEEDED : null;
+}
+export const RESET_DISCONNECTS = "This also disconnects their Google account.";
+
+/** #507, Add a user: the hint under the role while Google sign-in is on for it (as the invite
+ * email's line: the server's Google sign-in, the super admin's, and the role allowed). */
+export const ADD_USER_GOOGLE_HINT =
+  "Your organisation signs in with Google for this role. After they choose a password, they connect their Google account.";
+
+/** The hint for this role; null while Google is off (``google`` left out: the server's switch). */
+export function addUserGoogleHint(google: GoogleRules | undefined, role: Role): string | null {
+  return google?.available === true && google.allowed_roles.includes(role) ? ADD_USER_GOOGLE_HINT : null;
+}
+
+/** Asked before Reset password; it also removes their connected accounts (#507). */
+export function resetPasswordQuestion(name: string, ways: readonly string[] | undefined): string {
+  const question = `Reset ${name}'s password? They are signed out everywhere and must choose a new one.`;
+  return (ways ?? []).some((way) => way !== "password") ? `${question} ${RESET_DISCONNECTS}` : question;
+}
+
+const askedDay = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", timeZone: "Asia/Kolkata" });
+
+/** A waiting connection in one line: "Ramesh Kumar · Google · ramesh.k@gmail.com · asked 30 Oct". */
+export function pendingLine(row: PendingConnection): string {
+  const parts = [row.display_name, WAY_NAMES[row.provider] ?? row.provider, row.email ?? "no email given"];
+  return `${parts.join(" · ")} · asked ${askedDay.format(new Date(row.linked_at))}`;
+}
+
 /** AD6: the form differs from what is saved (the Save bar shows only then). */
 export function settingsChanged(
   saved: Pick<CustomerSettings, "max_upload_mb" | "autofile">,
@@ -267,12 +356,104 @@ export function settingsChanged(
   return text.trim() !== savedText || (saved.autofile.granted && autofileOn !== saved.autofile.on);
 }
 
+// --- Drafts (#468): unsent admin work kept in this tab for the same admin (lib/drafts.ts) ---
+
+export const ADD_USER_DRAFT = "admin:add-user";
+export const SETTINGS_DRAFT = "admin:settings";
+/** The admin's AI settings tab and a member's own (/settings/ai) keep separate drafts. */
+export const aiSettingsDraft = (scope: "organisation" | "member") =>
+  scope === "organisation" ? "admin:ai-settings" : "settings:ai";
+
+/** Add a user's draft: email, name and role, never the temporary password; null until something is typed. */
+export function newUserDraft(input: NewUserInput): Draft | null {
+  if (input.email === "" && input.display_name === "") return null;
+  return { email: input.email, display_name: input.display_name, role: input.role };
+}
+
+/** The form from a kept draft; a value of the wrong kind is the empty form's. The password is always empty. */
+export function newUserFromDraft(draft: Draft | null): NewUserInput {
+  const role = ROLES.find((each) => each === draft?.role) ?? "member";
+  const text = (value: unknown) => (typeof value === "string" ? value : "");
+  return { email: text(draft?.email), display_name: text(draft?.display_name), role, password: "" };
+}
+
+/** Settings' draft: only the fields that differ from what is saved, so restoring it never undoes
+ * another admin's change to the other one (#468 review, CR1); null when nothing does. */
+export function settingsDraft(saved: CustomerSettings, text: string, autofileOn: boolean): Draft | null {
+  const draft: Draft = {};
+  if (text.trim() !== (saved.max_upload_mb === null ? "" : String(saved.max_upload_mb))) draft.uploadLimit = text;
+  if (saved.autofile.granted && autofileOn !== saved.autofile.on) draft.autofile = autofileOn;
+  return Object.keys(draft).length > 0 ? draft : null;
+}
+
+/** The Settings form from what is saved, with a kept draft over it (auto-filing only while allowed). */
+export function settingsFromDraft(draft: Draft | null, saved: CustomerSettings): { text: string; autofileOn: boolean } {
+  const savedText = saved.max_upload_mb === null ? "" : String(saved.max_upload_mb);
+  return {
+    text: typeof draft?.uploadLimit === "string" ? draft.uploadLimit : savedText,
+    autofileOn: saved.autofile.granted && typeof draft?.autofile === "boolean" ? draft.autofile : saved.autofile.on,
+  };
+}
+
+/** AI settings' changed tasks as plain values to keep; of an organisation's task, only the part
+ * changed from `saved` (its level, its lock), as Settings does (CR1); null when none changed. */
+export function aiChangesToKeep(saved: OrgDraft | MineDraft, changes: OrgDraft | MineDraft): Draft | null {
+  const kept: Draft = {};
+  for (const [task, value] of Object.entries(changes)) {
+    if (value === undefined) continue;
+    if (value === null || typeof value === "string") {
+      kept[task] = value;
+      continue;
+    }
+    const before = (saved as OrgDraft)[task as AiTask];
+    const part: Draft = {};
+    if (value.level !== before?.level) part.level = value.level;
+    if (value.locked !== before?.locked) part.locked = value.locked;
+    kept[task] = part;
+  }
+  return Object.keys(kept).length > 0 ? kept : null;
+}
+
+/** An organisation's kept changes over what is saved: tasks the reply has, with a level allowed
+ * now; only the parts kept, the rest as saved now. */
+export function orgDraftOver(saved: OrgDraft, kept: Draft | null, settings: AiSettings): OrgDraft {
+  const draft = { ...saved };
+  for (const task of settings.tasks) {
+    const value = kept?.[task.task];
+    const now = saved[task.task];
+    if (typeof value !== "object" || value === null || Array.isArray(value) || !now) continue;
+    const level = "level" in value ? task.allowed.find((each) => each === value.level) : now.level;
+    if (level) draft[task.task] = { level, locked: typeof value.locked === "boolean" ? value.locked : now.locked };
+  }
+  return draft;
+}
+
+/** A member's kept changes over what is saved: tasks not locked, an allowed level or null (the organisation's). */
+export function mineDraftOver(saved: MineDraft, kept: Draft | null, settings: AiSettings): MineDraft {
+  const draft = { ...saved };
+  for (const task of settings.tasks) {
+    if (task.locked || !kept || !(task.task in kept)) continue;
+    const value = kept[task.task];
+    if (value === null) draft[task.task] = null;
+    else {
+      const level = task.allowed.find((each) => each === value);
+      if (level) draft[task.task] = level;
+    }
+  }
+  return draft;
+}
+
+export const LEAVE_UNSAVED = "You have unsaved changes. Leave without saving?";
+
+/** Another admin tab may open: at once with nothing unsaved, else only once the admin says leave. */
+export function tabChangeAllowed(unsaved: boolean, confirmLeave: () => boolean): boolean {
+  return !unsaved || confirmLeave();
+}
+
 /** What a Save that did not work says: the plain words for a switch not allowed yet, else the server's. */
 export function settingsErrorText(caught: unknown): string {
   if (caught instanceof ApiError && caught.code === "not_granted") return AUTOFILE_NOT_AVAILABLE;
-  return caught instanceof ApiError
-    ? caught.message
-    : "Could not save the settings. Check your connection, then try again.";
+  return errorWords(caught);
 }
 
 export interface Tile {
@@ -457,6 +638,19 @@ function detailText(key: string, value: unknown): string | null {
   return null;
 }
 
+// #468: an empty Activity list says whether filters hid everything or nothing has happened yet
+// (the admin's and the operator's tabs), and a date range may not end before it starts.
+export const NO_ACTIVITY = "No activity yet.";
+export const NO_ACTIVITY_MATCHES = "No activity matches these filters.";
+export const activityEmptyText = (filtered: boolean) => (filtered ? NO_ACTIVITY_MATCHES : NO_ACTIVITY);
+
+export const DATES_BACKWARDS = "From must be on or before To.";
+
+/** DATES_BACKWARDS for From after To (YYYY-MM-DD, compared as text); null otherwise or while one is empty. */
+export function datesError(from: string, to: string): string | null {
+  return from !== "" && to !== "" && from > to ? DATES_BACKWARDS : null;
+}
+
 /** An audit row's details as one line of plain text: "Page 3, Status: Ready". */
 export function describeDetails(details: Record<string, unknown>): string {
   return Object.keys(details)
@@ -500,13 +694,19 @@ const ACTION_WORDS: Record<string, string> = {
   "document.read_upgrade": "Read a document again after an upgrade",
   "document.land_facts": "Read a land record's owners and places again", // PRD 6 D3
   "document.page_accept": "Kept a page as it was read",
+  "document.line_corrected": "Corrected a line in a clean copy", // #527
+  "document.line_correction_undone": "Undid a line correction in a clean copy", // #527
   "document_story.saved": "Saved a document's story",
   "document_story.deleted": "Deleted a document's story",
   "folder.create": "Added a folder",
   "folder.rename": "Renamed a folder",
   "folder.move": "Moved a folder",
   "folder.delete": "Deleted a folder",
+  "folder.trash": "Moved a folder to Trash", // #542: ids and counts only, never a name
+  "folder.restore": "Restored a folder from Trash",
+  "folder.delete_forever": "Deleted a folder for good",
   "folder.upload": "Uploaded a folder", // #484: counts and ids only, never a name
+  "folder.upload_check": "Folder upload checked for files already in Kaagaz", // #484: counts only
   "tag.create": "Added a tag",
   "tag.delete": "Deleted a tag",
   "user_word.added": "Added a word to My words",
@@ -514,6 +714,7 @@ const ACTION_WORDS: Record<string, string> = {
   "user_word.deleted": "Deleted a word from My words",
   "customer.create": "Organisation set up",
   "org.self_signup": "Created the organisation at sign-up",
+  "org.approved": "Organisation approved", // #457: a sign-up approved by the Kaagaz team
   "customer.enable": "Organisation turned on",
   "customer.disable": "Organisation turned off",
   "chat.ask": "Asked a question",
@@ -534,12 +735,31 @@ const ACTION_WORDS: Record<string, string> = {
   "auth.totp_on": "Turned on two-step sign-in",
   "auth.totp_off": "Turned off two-step sign-in",
   "auth.password_change": "Changed their password",
+  // #457 phase 0: email.
+  "auth.email_confirmed": "Confirmed their email",
+  "auth.password_reset": "Reset their password from an email",
+  "auth.invite_sent": "Sent an invite",
+  "auth.invite_accepted": "Accepted an invite",
   "auth.logout_everywhere": "Signed out everywhere",
+  // #457 phase 1: connected accounts.
+  "auth.identity_linked": "Connected a Google account",
+  "auth.identity_approved": "Approved a Google account",
+  "auth.identity_declined": "Declined a Google account",
+  "auth.identity_unlinked": "Disconnected a Google account",
+  // #507: Google sign-in by organisation and role.
+  "auth.identity_link_refused": "A Google account couldn't be connected",
+  "auth.identity_reapproval": "A Google account waits for approval again",
+  "settings.google_rules": "Changed the Google sign-in rules",
+  "settings.google_rules_refused": "Google sign-in rules not saved: they would have locked you out",
+  "org.google_signin_set": "Google sign-in changed for the organisation",
+  "settings.auto_approve_on": "Turned on automatic approval of sign-in connections",
+  "settings.auto_approve_off": "Turned off automatic approval of sign-in connections",
   "user.unlock": "Unlocked a user",
   "user.reset_password": "Reset a user's password",
   "user.reset_totp": "Reset a user's two-step sign-in",
-  "user.delete_forever_on": "Allowed a user to delete forever",
-  "user.delete_forever_off": "Stopped a user deleting forever",
+  "auth.totp_reset": "Reset a user's two-step sign-in", // #457: the name since 0063; older rows keep user.reset_totp
+  "user.delete_forever_on": "Allowed a user to delete for good",
+  "user.delete_forever_off": "Stopped a user deleting for good",
   // Feature 28: auto-filing.
   "document.autofile": "Kaagaz filed a document",
   "document.autofile_undo": "Undid automatic filing",
@@ -558,7 +778,14 @@ const ACTION_WORDS: Record<string, string> = {
   "version.rejected": "Kept a document separate",
   "version.undone": "Undid a version link",
   "version.make_current": "Made a version current",
+  "document.version_separated": "Made a version a separate file",
   "audit.export": "Exported the activity",
+  // #482 and #481 (3 Nov 2026): reads logged since, and the super admin's two-step rule.
+  "search.run": "Searched inside documents",
+  "usage.export": "Exported the AI usage",
+  "org.admin_two_step_on": "Two-step sign-in required for admins",
+  "org.admin_two_step_off": "Two-step sign-in no longer required for admins",
+  "document.reading_released": "Reading started again after a pause", // QA P2: a held file let go
 };
 
 /** The audit action in words; an action this screen does not know is shown as is. */
@@ -568,10 +795,18 @@ export function describeAction(action: string, details: Record<string, unknown> 
 }
 
 // What Kaagaz did by itself (feature 28) has no person: the Who column says "Kaagaz".
-const BY_KAAGAZ = new Set(["document.autofile", "org.autofile_grant", "org.autofile_revoke"]);
+const BY_KAAGAZ = new Set([
+  "document.autofile",
+  "org.autofile_grant",
+  "org.autofile_revoke",
+  "org.admin_two_step_on", // #481: the super admin's, as auto-filing's grant
+  "org.admin_two_step_off",
+  "org.google_signin_set", // #507: the super admin's switch
+  "document.reading_released", // QA P2: the release sweep's, after a reading pause
+]);
 // Issue 375: with no person at all (actor_id null), these come from Kaagaz's own set-up
 // commands (backend kaagaz/cli.py create-user and reset-admin-2fa), never from a screen.
-const SET_UP_BY_KAAGAZ = new Set(["user.create", "user.reset_totp"]);
+const SET_UP_BY_KAAGAZ = new Set(["user.create", "user.reset_totp", "auth.totp_reset"]);
 
 /** Who did it: the person's name, "Kaagaz" for auto-filing and set-up, else a dash (a removed user). */
 export function whoText(
@@ -599,9 +834,7 @@ export function lastRunText(lastRunAt: string | null): string {
  * (409, someone already retried it; 429, too many at once), else a network hint.
  */
 export function retryErrorText(caught: unknown): string {
-  return caught instanceof ApiError
-    ? caught.message
-    : "Could not reach the server. Check your connection, then try again.";
+  return errorWords(caught);
 }
 
 // --- The Usage tab (model choice SP2, SP4) ---------------------------------------
@@ -649,15 +882,25 @@ export function usageRange(
 export type UsageState =
   | { kind: "loading" }
   | { kind: "error"; message: string }
-  | { kind: "off" }
-  | { kind: "empty" }
+  | { kind: "off"; report: UsageReport }
+  | { kind: "empty"; report: UsageReport }
   | { kind: "ready"; report: UsageReport };
 
 export function usageState(report: UsageReport | null, error: string | null): UsageState {
   if (error !== null) return { kind: "error", message: error };
   if (report === null) return { kind: "loading" };
   if (report.totals.calls > 0) return { kind: "ready", report };
-  return report.ai_enabled === false ? { kind: "off" } : { kind: "empty" };
+  return report.ai_enabled === false ? { kind: "off", report } : { kind: "empty", report };
+}
+
+/** #478 (Tushar, 3 Nov 2026): "Pages read today: 1,240 of 2,000." while a daily page limit is
+ * in effect (the India day), and that reading is paused once it is reached; null without one.
+ * Never money. */
+export function pagesTodayLine(report: Pick<UsageReport, "reading_today">): string | null {
+  const today = report.reading_today;
+  if (!today || today.limit === null) return null;
+  const line = `Pages read today: ${formatNumber(today.pages)} of ${formatNumber(today.limit)}.`;
+  return today.pages >= today.limit ? `${line} Reading is paused until the limit resets, or until it is raised.` : line; // QA C4
 }
 
 /** "$12.40 of $50.00 this month", or that there is no budget. */
@@ -684,6 +927,7 @@ const KIND_WORDS: Record<UsageKind, string> = {
   ensemble_scan: "Second opinions", // Ensemble (feature 27): the other readers
   ensemble_chat: "Second opinions", // and the other answer drafts
   land: "Land records", // PRD 6 D: owners, shares and places
+  ulc_scan: "Reading scanned pages", // #488: the org admin is never told it was Ultra low cost
 };
 
 /** The kind of work in words; a kind this screen does not know yet is shown as is. */

@@ -157,7 +157,9 @@ def test_a_sign_in_lock_never_blocks_a_step_up_and_a_step_up_lock_never_blocks_s
         )
     api.clock.advance(totp.STEP_SECONDS)
     assert client.post(disable, json={"code": api.code(operator.secret)}, headers=CSRF).status_code == 403
-    assert operator.login(api.client()).status_code == 200  # the sign-in is not locked
+    # Changed on purpose (A2, 7 Nov 2026): the address that failed waits out its own lock (the
+    # unlock above is the database's), so another address shows the sign-in is not locked.
+    assert operator.login(TestClient(api.app, client=("198.51.100.9", 50000))).status_code == 200
     failed = ("operator.step_up_failed", None, "operator", operator.id)
     assert _platform(operator) == [
         ("customer.disable", a.customer_id, "customer", a.customer_id),
