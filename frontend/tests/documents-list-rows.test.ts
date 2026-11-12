@@ -105,14 +105,30 @@ describe("a row of the documents list", () => {
     expect(html).toMatch(/<span class="[^"]*facts[^"]*"[^>]*>(?:(?!<\/td>).)*In Land &amp; Legal/);
   });
 
-  it("gives Status its own width, so Name takes the free width", () => {
+  // Changed on purpose (handoff sections 20 and 21, Documents.html, 5 Nov 2026): fixed shares of
+  // the width, so nothing scrolls sideways at 1280px and up.
+  it("gives every column the handoff's share of the width", () => {
     const tableBlock = css.slice(css.indexOf("@container docs-list (min-width: 36rem) {\n  table.docs {\n    table-layout: fixed;"));
-    expect(tableBlock).toMatch(/\.statusColumn \{\s*width: 11rem;\s*\}/);
-    expect(tableBlock).not.toMatch(/\.nameColumn \{[^}]*width:/);
+    const widths = {
+      selectColumn: "40px",
+      nameColumn: "30%",
+      statusColumn: "15%",
+      typeColumn: "13%",
+      ownerColumn: "8%",
+      labelColumn: "11%",
+      docDateColumn: "11%",
+      uploadedColumn: "12%",
+      actionsColumn: "40px",
+    };
+    for (const [column, width] of Object.entries(widths)) {
+      expect(tableBlock, column).toMatch(new RegExp(`\\.${column} \\{\\s*width: ${width};\\s*\\}`));
+    }
   });
 
-  it("keeps the compact rhythm: a 48px row with lines of --row-sub under the first", () => {
-    expect(css).toMatch(/table\.docs td \{\s*height: 48px;\s*padding-block: var\(--space-2\);/);
-    expect(css).toMatch(/\.inFolder,\s*\.bandSize,\s*\.bandBy \{\s*line-height: var\(--row-sub\);/);
+  it("keeps the compact rhythm: one 44px line per row", () => {
+    expect(css).toMatch(/table\.docs td \{\s*height: var\(--h-lg\);[^}]*padding: 0 var\(--space-2\);/);
+    // Below a 1024px window only, the table keeps 760px and scrolls inside its own box.
+    expect(css).toMatch(/@media \(max-width: 1023\.98px\) \{\s*\.tableBox \{\s*overflow-x: auto;/);
+    expect(css).toMatch(/table\.docs \{\s*min-width: 760px;/);
   });
 });

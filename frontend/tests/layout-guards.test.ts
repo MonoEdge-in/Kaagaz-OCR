@@ -140,7 +140,10 @@ const rulesFor = (file: string, selector: string) =>
 
 describe("layout guards", () => {
   it("lets every table cell, header and its text wrap", () => {
-    expect(nowrapCells(TABLE_FILES)).toEqual([]);
+    // Changed on purpose (handoff sections 20 and 21, Documents.html, 5 Nov 2026): the documents
+    // list is one 44px line per file, every cell cut with "…" and its whole words in a title
+    // (documents-even-452.test.ts); the other tables still wrap.
+    expect(nowrapCells(TABLE_FILES.filter((file) => file !== DOCS_CSS))).toEqual([]);
   });
 
   it("never breaks words anywhere in a table cell, only where they are too long to fit", () => {
@@ -177,26 +180,29 @@ describe("layout guards", () => {
   });
 
   it("gives the tables' short columns rem widths, never percentages", () => {
-    const percent = TABLE_FILES.flatMap((file) => rules(read(file)))
+    // Changed on purpose (Documents.html, 5 Nov 2026): the documents list's columns are the
+    // handoff's shares of the width (documents-list-rows.test.ts); the other tables keep rem.
+    const percent = TABLE_FILES.filter((file) => file !== DOCS_CSS)
+      .flatMap((file) => rules(read(file)))
       .filter((rule) => selectors(rule).some((s) => /Column$/.test(s)) && /(?<![-\w])width:\s*[\d.]+%/.test(rule.body))
       .map((rule) => rule.selector);
     expect(percent).toEqual([]);
   });
 
-  it("leaves Name and Status room at each width the documents table starts at", () => {
-    const found = budgets(DOCS_CSS, "docs-list", NAME_REM);
-    // Changed on purpose (UI audit, 16 Oct 2026): D3, a table from 36rem (a laptop's list with the
-    // side nav and the folder tree), Type back at 48rem, every column from 64rem.
-    // Changed on purpose (PRD 1, screens): File management F5's columns come in one by one,
-    // Label at 56rem, Owner at 64rem, Version and Updated by at 72rem, Document date at 80rem.
-    expect(found.map((b) => b.start)).toEqual([36, 56, 64, 72, 80]);
-    for (const { start, needs } of found) expect(needs, `at ${start}rem`).toBeLessThanOrEqual(start);
+  // Changed on purpose (handoff sections 20 and 21, Documents.html, 5 Nov 2026): no column comes
+  // and goes with the width any more. From 36rem every column shows at its share of the width
+  // (the shares and the two 40px columns fill it), and below a 1024px window the table keeps 760px
+  // and scrolls inside its own box; e2e/layout.spec.ts measures it in WebKit and Chromium.
+  it("shows every column of the documents table from 36rem, the shares filling the width", () => {
+    expect(budgets(DOCS_CSS, "docs-list", NAME_REM).map((b) => b.start)).toEqual([36]); // one start, all columns
     const css = read(DOCS_CSS);
-    expect(columnsAt(css, "docs-list", 36).has("typeColumn")).toBe(false);
-    expect(columnsAt(css, "docs-list", 48).has("typeColumn")).toBe(true);
-    const at48 = [...columnsAt(css, "docs-list", 48).values()].reduce((sum, rem) => sum + rem, NAME_REM);
-    expect(columnsAt(css, "docs-list", 36).get("statusColumn")).toBe(11);
-    expect(at48).toBeLessThanOrEqual(48);
+    const table = css.slice(
+      css.indexOf("@container docs-list (min-width: 36rem) {\n  table.docs {"),
+      css.indexOf("@container docs-list (max-width: 35.98rem) {\n  /* A card"),
+    );
+    const shares = [...table.matchAll(/\.[a-zA-Z]+Column \{\s*width: (\d+)%;/g)].map((m) => Number(m[1]));
+    expect(shares.reduce((sum, share) => sum + share, 0)).toBe(100);
+    expect(table).not.toMatch(/\.(type|owner|label|docDate|uploaded)(Column|Cell)\s*\{\s*display: none;/);
   });
 
   it("lets a badge wrap, so a long label never pushes the page sideways", () => {
@@ -365,6 +371,9 @@ describe("layout guards", () => {
       // sideways wrappers keep theirs.
       "components/viewer/PageViewer.module.css: .sheetFrame: overscroll-behavior-x",
       "components/documents/Table.module.css: .reflowWrap: overscroll-behavior-x",
+      // Changed on purpose (handoff sections 20 and 21, 5 Nov 2026): below a 1024px window the
+      // documents list scrolls sideways inside its own box, like the other tables' wrappers.
+      "components/documents/Documents.module.css: .tableBox: overscroll-behavior-x",
       "app/(app)/documents/[id]/DocumentView.module.css: .valuesWrap: overscroll-behavior-x",
       // Changed on purpose (scan states, 16 Oct 2026): the uploads panel above the status bar.
       "components/documents/Documents.module.css: .trayPanel: overscroll-behavior",

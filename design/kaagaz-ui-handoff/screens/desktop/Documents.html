@@ -115,43 +115,41 @@
           </div>
 
           <div class="k-table-wrap">
-            <table class="k-table" style="min-width: 1100px">
+            <table class="k-table k-table--compact k-table--fit">
               <thead>
                 <tr>
-                  <th style="width: 40px"><input type="checkbox" aria-label="Select all" style="accent-color: var(--k-accent); width: 16px; height: 16px"></th>
-                  <th><button class="k-sort" type="button">Name</button></th>
-                  <th><button class="k-sort" type="button">Type</button></th>
-                  <th><button class="k-sort" type="button">Owner</button></th>
-                  <th><button class="k-sort" type="button">Label</button></th>
-                  <th><button class="k-sort" type="button">Version</button></th>
-                  <th aria-sort="descending"><button class="k-sort" type="button" aria-sort="descending">Document date<svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5"></path></svg></button></th>
-                  <th><button class="k-sort" type="button">Last updated</button></th>
-                  <th><button class="k-sort" type="button">Updated by</button></th>
-                  <th style="width: 48px"><span style="position: absolute; left: -9999px">Actions</span></th>
+                  <th style="width: 40px"><input type="checkbox" aria-label="Select all" style="accent-color: var(--k-accent); width: 15px; height: 15px"></th>
+                  <th style="width: 30%"><button class="k-sort" type="button">Name</button></th>
+                  <th style="width: 15%"><span class="k-sort">To check</span></th>
+                  <th style="width: 13%"><button class="k-sort" type="button">Type</button></th>
+                  <th style="width: 8%"><button class="k-sort" type="button">Owner</button></th>
+                  <th style="width: 11%"><button class="k-sort" type="button">Label</button></th>
+                  <th aria-sort="descending" style="width: 11%"><button class="k-sort" type="button">Doc date<svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5"></path></svg></button></th>
+                  <th style="width: 12%"><button class="k-sort" type="button">Updated</button></th>
+                  <th style="width: 40px"><span style="position: absolute; left: -9999px">Actions</span></th>
                 </tr>
               </thead>
               <tbody>
                 <sc-for list="{{rows}}" as="r" hint-placeholder-count="9">
                   <tr class="{{r.rowCls}}">
-                    <td><input type="checkbox" aria-label="Select {{r.name}}" checked="{{r.sel}}" style="accent-color: var(--k-accent); width: 16px; height: 16px"></td>
+                    <td><input type="checkbox" aria-label="Select {{r.name}}" checked="{{r.sel}}" style="accent-color: var(--k-accent); width: 15px; height: 15px"></td>
                     <td>
-                      <span class="k-name-cell">
-                        <span class="k-file-ic" data-ext="{{r.ext}}" aria-hidden="true"></span>
-                        <span style="display: flex; flex-direction: column; gap: 2px; min-width: 0">
-                          <a href="DocumentPage.html" style="color: var(--k-ink); text-decoration: none">{{r.name}}</a>
-                          <sc-if value="{{r.hasSub}}" hint-placeholder-val="{{ false }}"><span class="k-sub k-deva">{{r.sub}}</span></sc-if>
-                          <sc-if value="{{r.problem}}" hint-placeholder-val="{{ false }}"><span class="k-problem"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 2.5 20h19z"></path><path d="M12 10v4M12 17v.5"></path></svg>2 pages unreadable</span></sc-if>
-                        </span>
+                      <span style="display: flex; align-items: baseline; gap: 8px; min-width: 0">
+                        <a class="k-row-name" href="DocumentPage.html">{{r.name}}</a>
+                        <span class="k-ver {{r.verCls}}">{{r.ver}}</span>
                       </span>
                     </td>
-                    <td>{{r.type}}</td>
-                    <td><span style="display: inline-flex; gap: 8px; align-items: center"><span class="k-avatar" style="width: 22px; height: 22px; font-size: 10px">{{r.oi}}</span>{{r.owner}}</span></td>
-                    <td><span class="k-lab {{r.lab}}">{{r.labName}}</span></td>
-                    <td><span class="k-ver {{r.verCls}}">{{r.ver}}</span></td>
-                    <td class="k-mono" style="font-size: 12.5px">{{r.date}}</td>
-                    <td class="k-muted">{{r.updated}}</td>
-                    <td>{{r.by}}</td>
-                    <td><button class="k-btn k-btn--quiet k-btn--icon k-btn--sm" type="button" aria-label="More actions for {{r.name}}" style="color: var(--k-ink-muted)"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true" style="stroke-width: 3"><path d="M5 12h.01M12 12h.01M19 12h.01"></path></svg></button></td>
+                    <td>
+                      <sc-if value="{{r.hasCheck}}" hint-placeholder-val="{{ false }}"><a class="k-check-link" href="Review.html">{{r.check}} to check</a></sc-if>
+                      <sc-if value="{{r.problem}}" hint-placeholder-val="{{ false }}"><span class="k-problem"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 2.5 20h19z"></path><path d="M12 10v4M12 17v.5"></path></svg>2 pages unreadable</span></sc-if>
+                      <sc-if value="{{r.reading}}" hint-placeholder-val="{{ false }}"><span class="k-status k-status--reading"><span class="k-dots" aria-hidden="true"><i></i><i></i><i></i></span>Reading 2 of 3</span></sc-if>
+                    </td>
+                    <td class="k-muted">{{r.type}}</td>
+                    <td>{{r.owner}}</td>
+                    <td><span class="k-lab k-lab--quiet {{r.lab}}">{{r.labName}}</span></td>
+                    <td class="k-mono k-muted">{{r.date}}</td>
+                    <td class="k-muted"><span class="k-ellip" style="display: block">{{r.updated}} · {{r.by}}</span></td>
+                    <td><button class="k-row-more" type="button" aria-label="More actions for {{r.name}}"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true" style="stroke-width: 3"><path d="M5 12h.01M12 12h.01M19 12h.01"></path></svg></button></td>
                   </tr>
                 </sc-for>
               </tbody>
@@ -193,16 +191,16 @@ class Component extends DCLogic {
       { name: 'Sale deeds', meta: '2 files', cls: '' },
       { name: 'NA orders', meta: '1 file', cls: '' }
     ];
-    const row = (o) => Object.assign({ ext: 'PDF', hasSub: false, sub: '', problem: false, sel: false, verCls: '', rowCls: '' }, o, { rowCls: o.sel ? 'is-selected' : '' });
+    const row = (o) => Object.assign({ problem: false, reading: false, check: 0, sel: false, verCls: '' }, o, { rowCls: o.sel ? 'is-selected' : '', hasCheck: !!o.check });
     const rows = [
-      row({ name: '7/12 Survey 44 Wakad.pdf', hasSub: true, sub: 'सातबारा उतारा · गाव वाकड', type: 'Land record', owner: 'Anita', oi: 'AN', lab: 'k-lab--confidential', labName: 'Confidential', ver: 'v1 · newer?', verCls: 'k-ver--newer', date: '02 Oct 2026', updated: 'Today, 10:20', by: 'Kaagaz', sel: true }),
-      row({ name: 'Ferfar 2187 Survey 44.pdf', hasSub: true, sub: 'फेरफार नोंद क्र. 2187', type: 'Mutation entry', owner: 'Anita', oi: 'AN', lab: 'k-lab--confidential', labName: 'Confidential', ver: 'v1', date: '28 Sep 2026', updated: '16 Oct', by: 'Anita', sel: true }),
+      row({ name: '7/12 Survey 44 Wakad.pdf', hasSub: true, sub: 'सातबारा उतारा · गाव वाकड', type: 'Land record', owner: 'Anita', oi: 'AN', lab: 'k-lab--confidential', labName: 'Confidential', ver: 'v1 · newer?', verCls: 'k-ver--newer', date: '02 Oct 2026', updated: 'Today, 10:20', by: 'Kaagaz', sel: true, check: 3 }),
+      row({ name: 'Ferfar 2187 Survey 44.pdf', hasSub: true, sub: 'फेरफार नोंद क्र. 2187', type: 'Mutation entry', owner: 'Anita', oi: 'AN', lab: 'k-lab--confidential', labName: 'Confidential', ver: 'v1', date: '28 Sep 2026', updated: '16 Oct', by: 'Anita', sel: true, check: 1 }),
       row({ name: 'Sale Deed Shinde Survey 44.pdf', type: 'Sale deed', owner: 'Priya', oi: 'PR', lab: 'k-lab--restricted', labName: 'Restricted', ver: 'v1', date: '14 Sep 2026', updated: '15 Sep', by: 'Priya' }),
       row({ name: 'NA Permission Plot 7.pdf', type: 'Government letter', owner: 'Rahul', oi: 'RA', lab: 'k-lab--internal', labName: 'Internal', ver: 'v2', date: '30 Aug 2026', updated: '18 Oct', by: 'Rahul', sel: true }),
       row({ name: 'Ferfar 2203 Survey 44.pdf', hasSub: true, sub: 'फेरफार नोंद क्र. 2203', problem: true, type: 'Mutation entry', owner: 'Anita', oi: 'AN', lab: 'k-lab--confidential', labName: 'Confidential', ver: 'v1', date: '21 Aug 2026', updated: '12 Oct', by: 'Tushar' }),
-      row({ name: 'Mutation register extract 2026.pdf', type: 'Register', owner: 'Anita', oi: 'AN', lab: 'k-lab--confidential', labName: 'Confidential', ver: 'v3', date: '05 Aug 2026', updated: '09 Oct', by: 'Anita' }),
+      row({ name: 'Mutation register extract 2026.pdf', type: 'Register', owner: 'Anita', oi: 'AN', lab: 'k-lab--confidential', labName: 'Confidential', ver: 'v3', date: '05 Aug 2026', updated: '09 Oct', by: 'Anita', check: 7 }),
       row({ name: 'Tax receipt Survey 44 2025-26.pdf', type: 'Receipt', owner: 'Tushar', oi: 'TU', lab: 'k-lab--public', labName: 'Public', ver: 'v1', date: '18 Jul 2026', updated: '20 Jul', by: 'Tushar' }),
-      row({ name: 'Measurement map Survey 44.pdf', type: 'Map', owner: 'Rahul', oi: 'RA', lab: 'k-lab--internal', labName: 'Internal', ver: 'v1', date: '02 Jun 2026', updated: '04 Jun', by: 'Rahul' }),
+      row({ name: 'Measurement map Survey 44.pdf', type: 'Map', owner: 'Rahul', oi: 'RA', lab: 'k-lab--internal', labName: 'Internal', ver: 'v1', date: '—', updated: '2m ago', by: 'Rahul', reading: true }),
       row({ name: 'Bojha certificate SBI.pdf', type: 'Bank letter', owner: 'Priya', oi: 'PR', lab: 'k-lab--confidential', labName: 'Confidential', ver: 'v1', date: '11 May 2026', updated: '13 May', by: 'Priya' })
     ];
     return { theme: this.props.theme ?? 'light', tree, folders, rows };

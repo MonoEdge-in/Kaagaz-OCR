@@ -1,3 +1,7 @@
 node_modules/
 .next/
 *.tsbuildinfo
+
+# Playwright's screenshots and traces (e2e/)
+/e2e-results/
+/playwright-report/

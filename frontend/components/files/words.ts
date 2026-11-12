@@ -28,6 +28,10 @@ export const FILES_TEXT = {
     documentDate: "Document date",
     updatedAt: "Last updated",
     updatedBy: "Updated by",
+    // The compact list's headers (Documents.html, 5 Nov 2026).
+    toCheck: "To check",
+    docDate: "Doc date",
+    updated: "Updated",
   },
   sortBy: (column: string) => `Sort by ${column}`,
   // The Sort pill above the list (desktop/Documents.html): the same keys as the headers, so the grid sorts too.

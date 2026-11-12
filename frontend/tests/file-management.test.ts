@@ -732,16 +732,18 @@ describe("the folder screen (F5)", () => {
       }),
     );
     const head = html.slice(html.indexOf("<thead"), html.indexOf("</thead>"));
-    const columns = ["Name", "Status", "Type", "Owner", "Label", "Version", "Document date", "Last updated", "Updated by"];
+    // Changed on purpose (Documents.html, 5 Nov 2026): the compact list's columns. The version is a
+    // chip beside the name, and who changed it last shares the Updated cell.
+    const columns = ["Name", "To check", "Type", "Owner", "Label", "Doc date", "Updated"];
     const at = columns.map((words) => head.indexOf(`>${words}<`));
     expect(at.every((i) => i >= 0)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
-    expect(head.match(/title="Sort by /g)).toHaveLength(7);
+    expect(head.match(/title="Sort by /g)).toHaveLength(6);
     expect(head).toContain('aria-sort="ascending"');
     expect(html).toContain("v1<span");
     expect(html).toContain(" · newer?");
     expect(html).toContain('data-label="confidential"');
-    expect(html).toContain("Updated by </span>");
+    expect(html).toContain(", updated by </span>Anita");
     expect(versionCell(1, true)).toBe("v1 · newer?");
     expect(versionCell(2, false)).toBe("v2");
   });

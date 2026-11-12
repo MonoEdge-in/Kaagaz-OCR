@@ -39,9 +39,17 @@
   background: var(--accent-subtle);
 }
 
-.dropIcon {
-  color: var(--text-secondary);
+/* Upload.html: one 56px circle in the accent's soft fill holding the upload icon; nothing
+   else overlaps it. */
+.dropCircle {
+  display: grid;
+  place-items: center;
   flex: none;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--k-r-pill);
+  background: var(--accent-subtle);
+  color: var(--accent);
 }
 
 .dropText {
@@ -88,7 +96,9 @@
   flex-wrap: wrap;
   align-items: flex-start;
   justify-content: flex-end;
-  gap: var(--space-2) var(--space-3);
+  /* 16px between a select and the links beside it, so the select can never run into
+     "Upload a folder" or "Let Kaagaz sort files" (handoff section 21). */
+  gap: var(--space-2) var(--space-4);
   min-width: 0;
   /* One control tall (SoW 19 Oct: the hint's reserved line left a gap under the heading). */
   min-height: calc(var(--control-h));
@@ -141,10 +151,16 @@
   min-width: 100%;
 }
 
-/* select.input is width 100%; here it is as wide as its longest choice, at least 14rem. */
-.uploadControls .readerSelect {
-  width: auto;
-  min-width: min(14rem, 100%);
+/* The select's wrapper (SelectWrap): as wide as its longest choice, at least 220px, and
+   never squeezed by the links beside it; on a phone it takes the row's width instead. */
+.uploadControls .readerWrap {
+  min-width: 220px;
+}
+
+@media (max-width: 639.98px) {
+  .uploadControls .readerWrap {
+    min-width: 0;
+  }
 }
 
 .reader {
@@ -160,8 +176,7 @@
   font-weight: 600;
 }
 
-.readerSelect {
-  width: auto;
+.readerWrap {
   max-width: 100%;
 }
 
@@ -708,31 +723,22 @@ table.docs tbody tr[data-selected="true"] .selectHit input {
   justify-content: flex-end;
 }
 
-/* --- Rows: cards, a narrow table, or the full table -----------------------------
+/* --- Rows: cards, or the compact table ------------------------------------------
 
-   The list's own width decides (a container query), since the folder tree
-   beside it takes room the window still has. UI audit D3 (16 Oct 2026): a table
-   from 36rem, so a laptop with the side nav and the folder tree (about 37rem of
-   list at 1140px) gets rows, not cards:
+   The list's own width decides (a container query), since the folder tree beside it takes
+   room the window still has:
    - below 36rem: cards;
-   - 36 to 48rem: no Type, Size or By columns; type and size show under the name,
-     "Uploaded by" under the time;
-   - 48 to 64rem: the Type column is back; the size shows under the type;
-   - 64rem and up: all eight columns.
-   The short columns have rem widths and Name and Status share the rest, so the
-   columns never need more room than the table has (tests/layout-guards.test.ts
-   checks the sums). Every cell may wrap: nothing runs into the next column.
-   The markup carries role="table|rowgroup|row|columnheader|cell", so the cards
-   keep the table's meaning. */
+   - 36rem and up: the compact table (Documents.html and handoff sections 20 and 21, 5 Nov
+     2026). One 44px line per file, no file icon (the extension is in the name), every
+     column at a fixed share of the width (table-layout: fixed), so nothing scrolls sideways
+     at 1280px and up; each cell is one line cut with "…", its full words in a title. Only
+     below a 1024px window does the table keep 760px and scroll inside its own box.
+   The markup carries role="table|rowgroup|row|columnheader|cell", so the cards keep the
+   table's meaning. */
 
-/* The whole row is in the UI's sans, numbers in tabular figures (Tushar, 16 Oct 2026: the
-   name, size, flagged count and date were mono beside sans words). Each cell's first line is
-   the control height (--row-line), the ⋯ button's own, and everything on it is centred in it:
-   the tick box, the file icon and name, the status chip, the date and the menu. */
 table.docs {
+  /* The tick box's hit area and the ⋯ button share the control height (D2). */
   --row-line: var(--control-h);
-  /* Every line after the first: close under it, one line after another (Vrushit UAT, 25 Oct 2026). */
-  --row-sub: var(--badge-h);
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
@@ -748,15 +754,28 @@ table.docs {
   }
 }
 
-/* Long words break only when they cannot fit; names wrap at <wbr> (names.ts). */
-table.docs td,
-table.docs th {
-  overflow-wrap: break-word;
+.tableBox {
+  position: relative; /* hidden screen-reader text inside it never stretches the page */
   min-width: 0;
 }
 
-/* D11: the whole row opens the document. The name is a stretched link (its ::after covers
-   the row); the row's own controls sit above it. No underline; the file icon leads. */
+/* Below 1024px only: the table keeps its 760px and scrolls inside this box (macOS hides
+   scrollbars, so a clipped column would look broken). Inside a scrolling box the header
+   cannot stick to the window, so it stays in place there. */
+@media (max-width: 1023.98px) {
+  .tableBox {
+    overflow-x: auto;
+    overscroll-behavior-x: contain; /* sideways only, as the other tables' wrappers */
+    -webkit-overflow-scrolling: touch;
+  }
+
+  table.docs {
+    min-width: 760px; /* the cards below 36rem set their own (0) */
+  }
+}
+
+/* D11: the whole row opens the document (openRow in DocumentsTable.tsx); its own controls
+   keep theirs. */
 table.docs > tbody > tr {
   position: relative;
   cursor: pointer;
@@ -768,68 +787,44 @@ table.docs > tbody > tr {
   }
 }
 
-/* The first line is centred in --row-line (the padding); a long name's next lines sit close. */
 .name {
-  --name-line: 1.5em;
-  display: inline-flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  padding-block: calc((var(--row-line) - var(--name-line)) / 2);
   color: var(--text-primary);
-  font-weight: 600;
-  line-height: var(--name-line);
+  font-weight: 500;
   text-decoration: none;
-  overflow-wrap: break-word;
+  min-width: 0;
 }
 
 @media (hover: hover) and (pointer: fine) {
   .name:hover {
-    color: var(--text-primary);
+    color: var(--accent);
+    text-decoration: underline;
   }
 }
 
-.name > * {
+/* The name and its version chip on one line; the name gives way first. */
+.nameRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   min-width: 0;
 }
 
-/* One line per row (Tushar, 16 Oct 2026): a long name ends in an ellipsis; its
-   whole name is in the link's title. */
-.name {
-  max-width: 100%;
-}
-
-.name > span {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 1;
-  line-clamp: 1;
+.nameRow > .name {
+  flex: 0 1 auto;
   overflow: hidden;
 }
 
-/* issue 542: a folder in Trash is a row too; its name is a button that opens it, its icon in the
-   file icon's 24px. Its Restore and Delete forever are a document's ⋯ menu (B16). */
-.folderName {
-  border: 0;
-  background: none;
-  padding-inline: 0;
-  font: inherit;
-  font-weight: 600;
-  text-align: start;
-  cursor: pointer;
+.name > span {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
-.folderIcon {
+.verChip {
   flex: none;
-  width: 24px;
-  color: var(--text-secondary);
-}
-
-/* The handoff's paper icon (.k-file-ic, 30px tall), centred on the name's line without
-   making the line taller, so the row's other cells still line up with it. */
-.fileIcon {
-  --file-ic-h: 30px; /* the height .k-file-ic sets */
-  flex: none;
-  margin-block: calc((var(--name-line) - var(--file-ic-h)) / 2);
+  padding: 0 var(--space-2);
+  font-size: 11px;
 }
 
 .selectHit,
@@ -840,22 +835,7 @@ table.docs > tbody > tr {
   z-index: 1;
 }
 
-/* File management F5: the label, version, owner and document date under the name while
-   their columns have no room (each hidden once its column shows), and the sort buttons. */
-/* The lines under a name start under its words, not under its file icon (24 Oct 2026):
-   the icon's width (.k-file-ic, 24px) and the name's gap. */
-.nameCell {
-  --name-indent: calc(24px + var(--space-2));
-}
-
-/* "In <folder>" is a fact on the facts' line (issue 371), so it is indented with it; so is the
-   type line of the narrowest table (issue 452: inside the facts' line, not a line of its own). */
-.facts,
-.newerVersion,
-.nameCell > ul {
-  margin-inline-start: var(--name-indent);
-}
-
+/* On a card: the label, owner, type, date and folder on a line under the name. */
 .facts {
   display: flex;
   flex-wrap: wrap;
@@ -866,9 +846,9 @@ table.docs > tbody > tr {
   color: var(--text-secondary);
 }
 
-.newer {
-  color: var(--label-confidential-fg);
-  font-weight: 600;
+/* The chip beside the name says the version already. */
+.factVersion {
+  display: none;
 }
 
 .sortButton {
@@ -876,6 +856,7 @@ table.docs > tbody > tr {
   align-items: center;
   gap: var(--space-1);
   min-height: var(--control-min);
+  max-width: 100%;
   padding: 0;
   border: 0;
   background: none;
@@ -885,6 +866,7 @@ table.docs > tbody > tr {
   letter-spacing: inherit;
   text-transform: inherit;
   text-align: start;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -898,10 +880,9 @@ table.docs > tbody > tr {
   color: var(--accent);
 }
 
-/* Type and size under the name, only in the narrowest table. */
-/* "In Suppliers / 2026": the folder a row is filed in. */
+/* "In Suppliers / 2026": the folder a row is filed in, on a card's facts line. */
 .inFolder {
-  display: block;
+  display: inline;
   font-size: var(--fs-sm);
   color: var(--text-secondary);
   overflow-wrap: anywhere;
@@ -909,11 +890,9 @@ table.docs > tbody > tr {
 
 .bandType {
   display: none;
-  font-size: var(--fs-sm);
-  color: var(--text-secondary);
 }
 
-/* A newer version still being read, or one that failed, under the name. */
+/* A newer version still being read, or one that failed, under the name on a card. */
 .newerVersion {
   display: flex;
   align-items: center;
@@ -928,71 +907,33 @@ table.docs > tbody > tr {
   }
 }
 
-/* The size and "Uploaded by" lines are shown only in the table: the size always (issue 452),
-   "Uploaded by" while the By column is hidden. */
-.bandSize,
-.bandBy {
-  display: none;
-}
-
-/* One line, ending in "…" when it cannot fit; the whole words are in its title. Uploaded (Tushar,
-   16 Oct 2026: it wrapped to 5 lines): "2h ago" and "by tusharsaini", one line each (the exact
-   date in the time's title and read out). */
+/* One line, ending in "…" when it cannot fit; the whole words are in its title. */
 .oneLine,
 .typeLine,
-.bandBy,
-.byName {
+.updatedLine {
+  display: block;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
-.oneLine,
-.typeLine {
-  display: block;
-}
-
-.bandBy {
-  line-height: 1.5;
-}
-
-/* What kind of document it is (PRD 2, D6), after its file type: "PDF · Land record" (issue 452). */
+/* What kind of document it is (PRD 2, D6), after its file type: "PDF · Land record". */
 .docType {
-  color: var(--text-secondary);
+  color: inherit;
 }
 
 .docType::before {
   content: "·";
   content: "·" / "";
-  margin-inline: var(--space-2);
+  margin-inline: var(--space-1);
 }
 
-.statusCell {
-  vertical-align: middle;
-}
-
-/* Scan states (16 Oct 2026): two lines of fixed height while a document is queued, being
-   read, or read (StatusCell in DocumentsTable.tsx), so a scan finishing never changes the
-   row's height; each line's text is cut to one line, its full words in a title. The second
-   line is 44px on touch, room for "Open to review" in every state. */
-.statusContent {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
+/* The To check cell: one line, empty unless there is something to act on. */
 .statusLine {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
-  height: var(--row-sub);
-}
-
-@media (pointer: coarse) {
-  .statusLine + .statusLine {
-    height: var(--h-lg);
-  }
 }
 
 .statusLine > * {
@@ -1014,32 +955,27 @@ table.docs > tbody > tr {
 
 .statusText {
   flex: 0 1 auto;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 1;
-  line-clamp: 1;
   overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   min-width: 0;
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
 }
 
-/* Issue 452 (owner, 29 Oct 2026: "2 pages to…" was cut, and Review moved): "9 to check" then
-   Review at the line's end, the same spot and size on every row. The count is one short number
-   (flaggedShort), so the two always fit the 11rem column; its words in full are in its title.
-   The action is ink, not blue (blue is punctuation). */
+/* Retry: a small round icon button, the row's one action here, so it fits beside "Failed" in
+   the narrow To check column. Ink, not blue. */
 .statusAction {
-  display: inline-flex;
-  align-items: center;
-  align-self: stretch; /* QA 17 Oct: the link fills its 28px line, so all of it is a target */
-  /* A small rounded button (24 Oct 2026), so it reads as the row's one action. */
+  display: inline-grid;
+  place-items: center;
+  align-self: stretch; /* QA 17 Oct: the button fills its line, so all of it is a target */
   flex: none;
-  margin-inline-start: auto;
-  padding-inline: var(--space-2);
+  min-width: var(--badge-h);
+  padding: 0;
   border: 1px solid var(--border-strong);
   border-radius: var(--k-r-pill);
-  background: none; /* issue 407: Retry is a button, the same look as Review */
+  background: none;
   font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--text-primary);
@@ -1061,27 +997,67 @@ table.docs > tbody > tr {
 }
 
 .rowError {
-  margin: var(--space-1) 0 0;
+  margin: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The ⋯ button (.k-row-more): a quiet circle, shown on hover or focus; always on touch. */
+table.docs .actionsCell button[aria-haspopup="menu"] {
+  width: var(--h-sm);
+  min-width: var(--h-sm);
+  height: var(--h-sm);
+  min-height: var(--h-sm);
+  padding: 0;
+  border: 0;
+  border-radius: var(--k-r-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  display: inline-grid;
+  place-items: center;
+  transition: opacity var(--t-fast) var(--ease);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  table.docs > tbody > tr:not(:hover, :focus-within) .actionsCell button[aria-haspopup="menu"]:not([aria-expanded="true"]) {
+    opacity: 0;
+  }
+
+  table.docs .actionsCell button[aria-haspopup="menu"]:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+}
+
+@media (hover: none) {
+  table.docs .actionsCell button[aria-haspopup="menu"] {
+    width: var(--h-lg);
+    min-width: var(--h-lg);
+    height: var(--h-lg);
+  }
 }
 
 @container docs-list (min-width: 36rem) {
   table.docs {
     table-layout: fixed;
+    font-size: 13px;
   }
 
-  /* The header sticks under the top bar. No overflow wrapper (the MonoEdge rule for tables),
-     on purpose: a row's Actions menu opens past the row, and a
-     scrolling wrapper would cut it off. The column budgets (tests/layout-guards.test.ts)
-     and the cards below 36rem keep the table inside its width instead. */
+  /* The header sticks under the top bar (not inside the scrolling box below 1024px). A row's
+     menu opens in its own layer (a portal), so no box ever cuts it off. */
   table.docs thead th {
     position: sticky;
     top: var(--topbar-space);
     z-index: var(--z-sticky);
+    height: calc(var(--h-sm) + var(--space-1)); /* 36px */
+    padding: 0 var(--space-2);
     background: var(--bg-surface);
     border-bottom: 1px solid var(--border);
-    vertical-align: middle; /* the labels on the select-all box's line */
-    /* A column's name may wrap between words where its column is narrow, never inside one ("Versio / n"). */
-    overflow-wrap: normal;
+    vertical-align: middle;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
 
   table.docs thead th:first-child {
@@ -1097,204 +1073,127 @@ table.docs > tbody > tr {
     scroll-margin-top: calc(var(--topbar-space) + 4rem);
   }
 
-  /* D2: every cell starts at the top, each first line 32px, so the box, the name, the
-     status chip and the dates share one line. */
+  /* One 44px line per row; every cell cut with "…", never wrapped. */
   table.docs td {
-    height: 48px;
-    padding-block: var(--space-2); /* Vrushit UAT (25 Oct 2026): a compact row */
-    vertical-align: top;
+    height: var(--h-lg); /* 44px, one line per row */
+    padding: 0 var(--space-2);
+    vertical-align: middle;
     border-bottom: 1px solid var(--k-rule);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
 
-  .statusCell .statusLine:first-child {
-    height: var(--row-line);
+  /* The tick box's 32px hit area fits its 40px column. */
+  table.docs td:first-child,
+  table.docs th:first-child {
+    padding-inline: var(--space-1);
+    text-align: center;
   }
 
   table.docs tbody tr:last-child td {
     border-bottom: 0;
   }
 
-  /* Name has no width: it takes what is left (issue 371: Status had half of it, so a long
-     name was cut while Status stood half empty, and the facts under the name wrapped). */
+  /* The handoff's column widths (Documents.html). */
   .selectColumn {
-    width: 3rem;
+    width: 40px;
   }
 
-  /* The chip, and "8 to check" with Review, fit (the 11rem Status always had at 36rem). */
+  .nameColumn {
+    width: 30%;
+  }
+
   .statusColumn {
-    width: 11rem;
+    width: 15%;
   }
 
-  /* Room for "Image (JPEG)" and "Bank statement" on one line, with a gap before the size
-     (Tushar, 17 Oct 2026: "Image (JPEG)" wrapped and made its row taller). */
   .typeColumn {
-    width: 8.5rem;
+    width: 13%;
   }
 
-  .typeLine .docType::before {
-    margin-inline: var(--space-1);
+  .ownerColumn {
+    width: 8%;
+  }
+
+  .labelColumn {
+    width: 11%;
+  }
+
+  .docDateColumn {
+    width: 11%;
   }
 
   .uploadedColumn {
-    width: 7.5rem;
+    width: 12%;
   }
 
-  /* In the table the time is a line of its own; on a card it joins the meta line. */
-  .when {
-    display: block;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
-
-  /* The menu cell's own start padding is the gap after it: room for "by tusharsaini". */
-  table.docs .uploadedCell {
-    padding-inline-end: 0;
-  }
-
-  /* The menu's icon button (36px) and its padding. */
   .actionsColumn {
-    width: 3.5rem;
+    width: 40px;
   }
 
   table.docs .actionsColumn,
   table.docs .actionsCell {
-    padding-inline: var(--space-2);
-  }
-
-  .meta {
-    font-size: var(--fs-sm);
-    line-height: var(--row-line);
+    padding-inline: 0 var(--space-1);
   }
 
   .actionsCell {
     text-align: end;
   }
 
-  .rowError {
-    text-align: start;
-  }
-}
-
-/* The narrowest table: Type leaves its column for a line under the name. */
-@container docs-list (min-width: 36rem) and (max-width: 47.98rem) {
-  .typeColumn,
-  .typeCell {
+  /* The card's lines under the name stay on the cards. */
+  .facts,
+  .factTags,
+  .newerVersion,
+  table.docs .nameCell > ul {
     display: none;
   }
 
-  .bandType {
-    display: inline;
-  }
-}
-
-/* The size is the Type cell's second line (issue 452: under "PDF · Land record" on every row). */
-@container docs-list (min-width: 36rem) {
-  /* A short line of its own under the kind, not another control-tall one (SoW 19 Oct). */
-  .bandSize {
-    display: block;
+  .meta {
     color: var(--text-secondary);
-    line-height: 1.5;
   }
-}
 
-/* File management F5 (Changed on purpose, PRD 1 screens): the columns Owner, Label, Version,
-   Document date and Updated by each take their column once the table has room for it (the
-   budgets in tests/layout-guards.test.ts); until then their facts sit on a line under the
-   name (.facts), and "Updated by" under Last updated (.bandBy). */
-@container docs-list (min-width: 36rem) and (max-width: 55.98rem) {
-  .labelColumn,
-  .labelCell {
-    display: none;
-  }
-}
-
-@container docs-list (min-width: 36rem) and (max-width: 63.98rem) {
-  .ownerColumn,
   .ownerCell {
-    display: none;
-  }
-}
-
-@container docs-list (min-width: 36rem) and (max-width: 71.98rem) {
-  .versionColumn,
-  .versionCell,
-  .byColumn,
-  .byCell {
-    display: none;
+    color: var(--text-primary);
   }
 
-  .bandBy {
-    display: block;
-    color: var(--text-secondary);
-  }
-}
-
-@container docs-list (min-width: 36rem) and (max-width: 79.98rem) {
-  .docDateColumn,
   .docDateCell {
-    display: none;
-  }
-}
-
-@container docs-list (min-width: 56rem) {
-  .labelColumn {
-    width: 7.5rem;
+    font-family: var(--font-mono);
+    font-size: 12px;
   }
 
-  /* The label and the tags show in the Label column (Vrushit UAT, 25 Oct 2026); the tags as
-     table.docs', or the tag list's own display (Library.module.css, loaded after) wins. */
-  .factLabel,
-  table.docs .factTags {
-    display: none;
-  }
-}
-
-@container docs-list (min-width: 64rem) {
-  .ownerColumn {
-    width: 7rem;
+  /* Quiet labels (.k-lab--quiet): the label's words in its colour, no fill or edge. */
+  table.docs .labelCell :global(.label-chip) {
+    min-height: 0;
+    padding: 0;
+    background: transparent;
+    border-color: transparent;
+    font-weight: 500;
   }
 
-  .factOwner {
-    display: none;
-  }
-}
-
-@container docs-list (min-width: 80rem) {
-  .docDateColumn {
-    width: 8rem; /* "Document date" on one line */
+  table.docs .labelCell :global(.label-chip[data-label="restricted"]) {
+    font-weight: 600;
   }
 
-  .factDate {
-    display: none;
-  }
-}
-
-/* The full table: "Updated by" heads its column, so the cell's own words are hidden. */
-@container docs-list (min-width: 72rem) {
-  /* Each name on one line, its sort arrow too (stability pass, measured 7 Nov 2026): "Version ↓"
-     and "Last updated ↓"; Updated by gives the room ("Updated by" needs about 6.2rem). */
-  .versionColumn {
-    width: 5.5rem;
+  /* In the narrow To check column a status is its mark and word, quiet, never wrapped (the
+     handoff's .k-status); the chip's fill stays on the cards. */
+  table.docs .statusCell :global(.status-chip) {
+    flex: none; /* the word is never cut; the server's words after it give way first */
+    min-height: 0;
+    padding: 0;
+    border-color: transparent;
+    background: transparent;
+    white-space: nowrap;
   }
 
-  .uploadedColumn {
-    width: 7.75rem;
-  }
-
-  .factVersion {
+  /* One line: Chromium still breaks a name at its <wbr> marks (WrapName) under nowrap. */
+  table.docs .name wbr {
     display: none;
   }
 
-  .byColumn {
-    width: 7.25rem;
-  }
-
-  .byName {
-    display: block;
-  }
-
-  .byLabel {
+  /* Beside a status word the server's words have no room here: they are read out and in the
+     line's title, not shown cut to a sliver. */
+  table.docs .statusLine > :global(.status-chip) + .statusText {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -1302,6 +1201,18 @@ table.docs > tbody > tr {
     overflow: hidden;
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
+  }
+
+  /* A label too long for its column ends in "…", its description in its title. */
+  table.docs .labelCell :global(.label-chip) {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* The tags stay on the document's page and on the cards. */
+  table.docs .labelCell > ul {
+    display: none;
   }
 }
 
@@ -1314,6 +1225,7 @@ table.docs > tbody > tr {
   }
 
   table.docs {
+    min-width: 0;
     background: transparent;
     border: 0;
     border-radius: var(--k-r-4);
@@ -1373,24 +1285,20 @@ table.docs > tbody > tr {
     min-width: 0;
   }
 
+  /* UI council (24 Oct 2026): on a phone's cards a name may take two lines. */
+  .name > span {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    white-space: normal;
+  }
+
   .statusCell {
     flex: 1 1 100%;
   }
 
-  /* A folder in Trash has no status (its dash is for the table's column): no line of its own. */
-  .statusCell[data-empty] {
-    display: none;
-  }
-
-  /* Its facts ("Was in: Top level · 9 files, 26 folders") keep the table's dot between them; both
-     always show, so no fact before them is hidden. */
-  .folderFacts > * + *::before {
-    content: "·";
-    content: "·" / "";
-    margin-inline-end: var(--space-2);
-  }
-
-  .statusContent {
+  .statusCell > .statusLine {
     padding-block-start: var(--space-2);
   }
 
@@ -1412,22 +1320,12 @@ table.docs > tbody > tr {
     display: none;
   }
 
-  /* "Updated by ..." starts its own line on a card. */
-  .byCell {
-    flex-basis: 100%;
-  }
-
-  /* File management F5: on a card the owner, label, version and date are the facts line.
+  /* File management F5: on a card the owner, label and date are the facts line.
      QA issue 370: more specific than "table.docs td" above, or the cells showed too, with a "—". */
   table.docs .ownerCell,
   table.docs .labelCell,
-  table.docs .versionCell,
   table.docs .docDateCell {
     display: none;
-  }
-
-  .meta.byCell::before {
-    content: none;
   }
 
   .actionsCell {
@@ -1682,85 +1580,4 @@ table.docs > tbody > tr {
 .busyLabel[data-busy="true"] > :first-child,
 .busyLabel[data-busy="false"] > :last-child {
   visibility: hidden;
-}
-
-/* UI council (24 Oct 2026): on a phone's cards a name may take two lines. */
-@media (max-width: 35.98rem) {
-  .name > span {
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-  }
-}
-
-/* One line rhythm across a row (Tushar, 24 Oct 2026: "no one alignment is good"): in the
-   table every first line is --row-line tall and every line after it --row-sub (24px), so the
-   first lines (the name, the status chip, "PDF · Land record", the owner, the time) sit on one
-   row, and the second lines (the facts, "17 to check", the size, "by …") on the next. */
-@container docs-list (min-width: 36rem) {
-  /* Issue 452: the facts are one line of text under the name, in a fixed order, the owner early
-     ("Owner: Vrushit · v1 · Dated 15 Jun 2007 · In Land & Legal / Land records"). What does not
-     fit is cut at the line's end with "…" (review panel, 29 Oct 2026: whole facts that did not
-     fit were dropped without a trace), and the whole line is in its title. Each shown fact has
-     a dot before it in a box the gap's width; the line starts a gap early, so the first one's
-     is outside it and clipped, and the facts' columns can come and go without a stray dot. */
-  .facts {
-    margin-block-start: 0;
-    line-height: var(--row-sub);
-    display: block;
-    height: var(--row-sub);
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    text-indent: calc(var(--space-3) * -1);
-  }
-
-  .facts > * {
-    text-indent: 0;
-    vertical-align: top;
-  }
-
-  .inFolder {
-    display: inline;
-  }
-
-  .facts > *::before {
-    content: "·";
-    content: "·" / "";
-    display: inline-block;
-    width: var(--space-3);
-    text-align: center;
-  }
-
-  /* The tags: one line too, under the name or the label; any that do not fit are cut off. */
-  .factTags,
-  table.docs .labelCell > ul {
-    flex-wrap: nowrap;
-    align-items: center;
-    height: var(--row-sub);
-    margin-block-start: 0;
-    overflow: hidden;
-  }
-
-  .factTags > li,
-  table.docs .labelCell li {
-    flex: none;
-  }
-
-  .inFolder,
-  .bandSize,
-  .bandBy {
-    line-height: var(--row-sub);
-  }
-
-  table.docs .labelCell :global(.badge),
-  table.docs .labelCell > * {
-    vertical-align: middle;
-  }
-
-  /* Issue 452: the label chip's middle on the first line's middle, as every other cell's (middle
-     put it half a pixel low, beside the words). */
-  table.docs .labelCell > :global(.label-chip) {
-    vertical-align: top;
-    margin-block-start: calc((var(--row-line) - var(--badge-h)) / 2);
-  }
 }

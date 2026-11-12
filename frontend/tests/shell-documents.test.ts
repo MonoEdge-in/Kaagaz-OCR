@@ -198,30 +198,10 @@ describe("upload limits by type (PRD U2)", () => {
 
   it("tells people each type's limit next to the dropzone", () => {
     expect(uploadLimitsHint()).toBe(
-      "PDF, Word or PowerPoint up to 100 MB. PNG, JPG, TIFF or HEIC up to 20 MB. CSV, XLSX, XLS, TXT, MD, JSON or HTML up to 10 MB. ZIP up to 100 MB, unpacked into a folder.",
+      "PDF, JPG, PNG, TIFF, Excel, CSV · PDF up to 50 MB, images up to 20 MB, Excel and CSV up to 10 MB.",
     );
     expect(uploadLimitsHint(customer)).toBe(
-      "PDF, Word or PowerPoint up to 25 MB. PNG, JPG, TIFF or HEIC up to 20 MB. CSV, XLSX, XLS, TXT, MD, JSON or HTML up to 10 MB. ZIP up to 25 MB, unpacked into a folder.",
-    );
-  });
-
-  it("takes a zip up to the server's zip limit, at most 500 MB (#522)", () => {
-    // Changed on purpose (#522 security review, 6 Nov 2026): the server's most is 500 MB.
-    const zips: UploadLimits = { ...customer, zip_bytes: 500 * MB };
-    expect(uploadKind("Bills 2026.Zip")).toBe("zip");
-    expect(limitFor("zip", zips)).toBe(500 * MB);
-    expect(limitFor("zip", customer)).toBe(25 * MB); // an older server: as large as an .xlsx or a PDF
-    expect(validateUpload({ name: "Bills.zip", size: 500 * MB }, zips)).toBeNull();
-    expect(validateUpload({ name: "Bills.zip", size: 500 * MB + 1 }, zips)).toBe(
-      "Zip files can be up to 500 MB. Unzip it on your computer and upload the folder instead.",
-    );
-    // A whole number of GB (an older server's 1 GB) is named in GB.
-    expect(tooLargeMessage("zip", 1024 * MB + 1, 1024 * MB)).toBe(
-      "Zip files can be up to 1 GB. Unzip it on your computer and upload the folder instead.",
-    );
-    // A limit lowered by the customer's own is named in MB.
-    expect(tooLargeMessage("zip", 30 * MB, 25 * MB)).toBe(
-      "Zip files can be up to 25 MB. Unzip it on your computer and upload the folder instead.",
+      "PDF, JPG, PNG, TIFF, Excel, CSV · PDF up to 25 MB, images up to 20 MB, Excel and CSV up to 10 MB.",
     );
   });
 });

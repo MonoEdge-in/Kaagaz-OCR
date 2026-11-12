@@ -62,3 +62,8 @@
 
 /* ---------- 18. Motion ---------- */
 @keyframes k-spin { to { transform: rotate(360deg); } }
+
+/* Safari ignores font-stretch on some variable fonts: the wide display face sets the axis too,
+   here and wherever a style names --k-font-display inline (handoff section 21). */
+.k-display, .k-h1, .k-h2, .k-num { font-variation-settings: "wdth" 112; }
+[style*="--k-font-display"] { font-stretch: var(--k-display-stretch); font-variation-settings: "wdth" 112; }

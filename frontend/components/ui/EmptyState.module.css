@@ -61,6 +61,19 @@
   color: var(--accent);
 }
 
+/* Upload.html's drop zone: one 56px circle in the accent's soft fill, the icon centred in it. */
+.circle {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 56px;
+  height: 56px;
+  margin-bottom: var(--space-2);
+  border-radius: var(--k-r-pill);
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
 .title {
   margin: 0;
   font-size: var(--fs-xl);

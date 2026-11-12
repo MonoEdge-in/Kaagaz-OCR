@@ -7,6 +7,7 @@
 
 import { useId } from "react";
 import styles from "@/components/documents/Documents.module.css";
+import { SelectWrap } from "@/components/ui/SelectWrap";
 import type { Folder } from "@/lib/types";
 import { FILES_TEXT } from "./words";
 
@@ -26,19 +27,21 @@ export function DepartmentPicker({
       <label htmlFor={id} className={styles.readerLabel}>
         {FILES_TEXT.departmentLabel}
       </label>
-      <select
-        id={id}
-        className={`input ${styles.readerSelect}`}
-        value={value ?? ""}
-        onChange={(event) => onChange(event.target.value === "" ? null : event.target.value)}
-      >
-        <option value="">{FILES_TEXT.noDepartment}</option>
-        {departments.map((department) => (
-          <option key={department.id} value={department.id}>
-            {department.name}
-          </option>
-        ))}
-      </select>
+      <SelectWrap className={styles.readerWrap}>
+        <select
+          id={id}
+          className="input"
+          value={value ?? ""}
+          onChange={(event) => onChange(event.target.value === "" ? null : event.target.value)}
+        >
+          <option value="">{FILES_TEXT.noDepartment}</option>
+          {departments.map((department) => (
+            <option key={department.id} value={department.id}>
+              {department.name}
+            </option>
+          ))}
+        </select>
+      </SelectWrap>
     </div>
   );
 }

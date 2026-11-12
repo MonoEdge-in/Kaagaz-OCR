@@ -48,13 +48,10 @@
 
           <!-- drop zone -->
           <section class="k-drop" aria-label="Add files">
-            <div style="position: relative; width: 96px; height: 76px; flex: none" aria-hidden="true">
-              <span class="k-ledger" style="width: 72px; height: 58px; position: absolute; left: 0; top: 10px; transform: rotate(-5deg); opacity: .6"></span>
-              <span style="position: absolute; right: 0; top: 0; width: 56px; height: 72px; background: var(--k-paper); border: 1px solid var(--k-rule-strong); box-shadow: var(--k-shadow-page); clip-path: polygon(0 0, 70% 0, 100% 22%, 100% 100%, 0 100%); display: grid; place-items: center; color: var(--k-accent)"><svg class="k-ic k-ic--lg" viewBox="0 0 24 24"><path d="M12 15V4M7 9l5-5 5 5M4 15v5h16v-5"></path></svg></span>
-            </div>
+            <span style="width: 56px; height: 56px; flex: none; border-radius: 50%; background: var(--k-accent-soft); color: var(--k-accent); display: grid; place-items: center" aria-hidden="true"><svg class="k-ic k-ic--lg" viewBox="0 0 24 24"><path d="M12 15V4M7 9l5-5 5 5M4 15v5h16v-5"></path></svg></span>
             <div style="flex: 1 1 300px; display: flex; flex-direction: column; gap: 6px; min-width: 0">
               <p class="k-h3">Drop up to 100 files here, or <a href="#choose">choose files</a></p>
-              <p class="k-small k-muted">PDF, JPG, PNG, HEIC, Excel, CSV · up to 50 MB each · scans and phone photos are fine</p>
+              <p class="k-small k-muted">PDF, JPG, PNG, TIFF, Excel, CSV · up to 50 MB each · scans and phone photos are fine</p>
               <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px">
                 <button class="k-btn k-btn--primary" type="button" id="choose"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6v18h12V7z"></path><path d="M14 3v4h4"></path></svg>Choose files</button>
                 <button class="k-btn" type="button"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"></path><circle cx="12" cy="13" r="3.5"></circle></svg>Take a photo</button>

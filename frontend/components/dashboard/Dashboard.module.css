@@ -23,10 +23,13 @@
   font-size: var(--fs-sm);
 }
 
+/* Home.html (5 Nov 2026): smaller, and wrapped into even lines, not one long line and a stub. */
 .greeting {
   margin: 0;
-  font-size: clamp(2rem, 1.5rem + 1.8vw, 3rem);
+  max-width: 21ch;
+  font-size: clamp(34px, 3.2vw, 46px);
   line-height: 1.2; /* room for Devanagari vowel marks on a two-line name */
+  text-wrap: balance;
   overflow-wrap: anywhere;
 }
 
@@ -244,10 +247,12 @@ a.action:focus-visible {
   }
 }
 
-.eyebrowRow {
-  display: inline-flex;
-  gap: var(--space-2);
+/* Versions to confirm (Home.html, 5 Nov 2026): the number with the dashed "waiting" chip beside it,
+   under the label's own line. */
+.numberRow {
+  display: flex;
   align-items: center;
+  gap: 10px;
 }
 
 .waiting {

@@ -173,45 +173,40 @@ describe("the words for each state (wording table)", () => {
   });
 });
 
-describe("one calm, fixed-height status cell", () => {
+// Changed on purpose (handoff section 20, Documents.html, 5 Nov 2026): the list's To check cell is
+// one line, shown only when there is something to act on; "Scan complete" is the silent default.
+describe("one calm, one-line status cell", () => {
   const html = (document: DocumentSummary, inTrash = false) =>
     renderToStaticMarkup(createElement(StatusCell, { document, inTrash }));
   const lines = (markup: string) => markup.match(/class="[^"]*statusLine[^"]*"/g)?.length ?? 0;
 
-  it("is two lines while queued, being read, and read, so a scan finishing reflows nothing", () => {
+  it("is one line while queued, being read, or with something to check, and nothing on a clean read", () => {
     const busy = scanning("a", { step: "reading", done: 5, total: 14 }, { time_left: left(90) });
     markReceived([busy], performance.now());
     const queued = doc("q", { status: "received", status_message: "Waiting to start." });
     const read = doc("r", { words_unsure: 9, values_to_review: 3 });
-    for (const document of [busy, queued, read, doc("n")]) expect(lines(html(document)), document.id).toBe(2);
+    for (const document of [busy, queued, read]) expect(lines(html(document)), document.id).toBe(1);
     const scanningCell = html(busy);
     expect(scanningCell).toMatch(/data-tone="working"[^>]*>Scanning<\/span>/);
     expect(scanningCell).toContain("page 6 of 14");
-    expect(scanningCell).toContain("About 2 min left");
-    expect(scanningCell).toMatch(/<progress[^>]*aria-label="Progress: a.pdf"/);
     expect(scanningCell).not.toMatch(/%|rough guess|Reading page/);
     const readCell = html(read);
-    expect(readCell).toMatch(/data-tone="ready"[^>]*>Scan complete<\/span>/);
-    // Changed on purpose (Tushar, 16 Oct 2026, Documents table sans): "12 flagged" in full, then a
-    // short "Review" link read out with what is to review and where; the UI's sans, no mono.
-    expect(readCell).toContain(">12 to check</span>"); // plain words, 25 Oct 2026
+    // "12 to check" is the link to them, read out with what and where; the UI's sans, no mono.
+    expect(readCell).toMatch(/<a class="k-check-link" title="12 words to check" href="\/documents\/r">12 to check<span class="visually-hidden"> in r\.pdf: 12 words to check<\/span><\/a>/);
     expect(readCell).not.toContain("mono");
-    expect(readCell).toMatch(/<a [^>]*href="\/documents\/r"[^>]*>Review<span class="visually-hidden"> 12 words to check in r.pdf<\/span><\/a>/);
-    // Changed on purpose (UI audit, 16 Oct 2026): D4, a clean read is its badge alone; the second
-    // line stays laid out (two lines above), so the row keeps its height.
-    expect(html(doc("n"))).not.toContain("Nothing to check");
-    expect(html(doc("n"))).not.toContain(">Review<");
-    expect(html(read, true)).not.toContain(">Review<"); // nothing to open for review in Trash
+    // A clean read shows nothing; a screen reader still hears it is done.
+    expect(html(doc("n"))).toBe('<span class="visually-hidden">Scan complete</span>');
+    expect(html(read, true)).not.toContain("k-check-link"); // nothing to open for review in Trash
     expect(html(queued)).toMatch(/>Queued<\/span>.*Waiting to start\./);
     // QA U10 (4 Nov 2026): a file held (for the reader, or by a reading pause) says Waiting, not Queued.
     const held = scanning("h", { step: "waiting", done: 0, total: 3 }, { status: "received", status_message: "Reading is paused." });
     expect(html(held)).toMatch(/>Waiting<\/span>.*Reading is paused\./);
     expect(html(held)).not.toContain(">Queued<");
-    expect(lines(html(held))).toBe(2);
+    expect(lines(html(held))).toBe(1);
   });
 
   // Changed on purpose (Tushar, 17 Oct 2026): the words wrapped and made a Rejected or Failed row
-  // taller than the rest; now one line like "7 flagged", cut with "…", the whole sentence in its title.
+  // taller than the rest; now one line, cut with "…", the whole sentence in its title.
   it("keeps the server's words on one line, whole in the title, for a failed document", () => {
     const words = "None of this file could be read. Upload a sharper scan.";
     const failed = doc("f", { status: "failed", status_message: words });
@@ -226,25 +221,24 @@ describe("one calm, fixed-height status cell", () => {
     const stopped = "Reading is stopped until the Kaagaz team fixes the reading service. It starts again after that.";
     const stuck = doc("s", { status: "clean", stuck: true, status_message: stopped });
     const failed = doc("f", { status: "failed", status_message: "This file needs another read." });
-    const button = /<button type="button" class="[^"]*statusAction[^"]*">Retry<span class="visually-hidden"> s\.pdf<\/span><\/button>/;
+    // Changed on purpose (Documents.html, 5 Nov 2026): a round icon button beside the status word.
+    const button = /<button type="button" class="[^"]*statusAction[^"]*" title="Retry"><svg[^>]*>[\s\S]*?<\/svg><span class="visually-hidden">Retry s\.pdf<\/span><\/button>/;
     expect(withRetry(stuck)).toMatch(button);
     expect(withRetry(stuck)).toContain(`title="${stopped}">${stopped}</span>`);
-    expect(lines(withRetry(stuck))).toBe(2); // still two lines: the row keeps its height
-    expect(withRetry(failed)).toContain(">Retry<span");
+    expect(lines(withRetry(stuck))).toBe(1); // still one line: the row keeps its height
+    expect(withRetry(failed)).toContain(">Retry f.pdf<");
     // Not stuck yet, ready, or in Trash: no Retry. No onRetry (a member): none either.
     for (const document of [doc("q", { status: "clean", stuck: false }), doc("r")]) {
-      expect(withRetry(document), document.id).not.toContain(">Retry<");
+      expect(withRetry(document), document.id).not.toContain("Retry");
     }
-    expect(withRetry(failed, true)).not.toContain(">Retry<");
-    expect(html(stuck)).not.toContain(">Retry<");
+    expect(withRetry(failed, true)).not.toContain("Retry");
+    expect(html(stuck)).not.toContain("Retry");
   });
 
-  it("gives each line one fixed height, the text cut to one line, the bar one width", () => {
+  it("cuts the words to one line, the bar one width", () => {
     const css = read("components/documents/Documents.module.css");
-    // Changed on purpose (Vrushit UAT, 25 Oct 2026): a row's lines after the first sit close, --row-sub.
-    expect(css).toMatch(/\.statusLine \{[^}]*height: var\(--row-sub\);/);
-    expect(css).toMatch(/@media \(pointer: coarse\) \{\s*\.statusLine \+ \.statusLine \{\s*height: var\(--h-lg\);/);
-    expect(css).toMatch(/\.statusText \{[^}]*-webkit-line-clamp: 1;[^}]*overflow: hidden;/);
+    // Changed on purpose (Documents.html, 5 Nov 2026): one line, its words cut with "…".
+    expect(css).toMatch(/\.statusText \{[^}]*overflow: hidden;\s*white-space: nowrap;\s*text-overflow: ellipsis;/);
     expect(css).toMatch(/\.scanMeter \{\s*flex: none;\s*width: 4rem;/);
     // Blue is punctuation: the bar's fill is ink.
     expect(css).toMatch(/\.readMeter::-webkit-progress-value \{\s*background: var\(--text-secondary\);/);

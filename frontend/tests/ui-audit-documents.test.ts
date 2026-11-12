@@ -191,7 +191,8 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
     // Changed on purpose (Tushar, 16 Oct 2026, one control height): --control-h, 44px on touch.
     expect(docs).toMatch(/table\.docs \{\s*--row-line:\s*var\(--control-h\);/);
     expect(docs).toMatch(/@media \(pointer: coarse\) \{\s*table\.docs \{\s*--row-line:\s*var\(--h-lg\);/);
-    expect(docs).toMatch(/\.name \{[^}]*padding-block:\s*calc\(\(var\(--row-line\) - var\(--name-line\)\) \/ 2\);/);
+    // Changed on purpose (Documents.html, 5 Nov 2026): one line per row, the name cut with "…".
+    expect(docs).toMatch(/\.name > span \{\s*display: block;\s*overflow: hidden;\s*white-space: nowrap;\s*text-overflow: ellipsis;/);
     expect(docs).toMatch(/table\.docs \.selectCell \{\s*flex: 0 0 auto;\s*padding-inline-end:\s*var\(--space-3\);/);
   });
 
@@ -219,7 +220,8 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
     // The card's own cells lose to "table.docs td { display: block }" unless at least as specific.
     const cards = docs.slice(docs.search(/@container docs-list \(max-width: 35\.98rem\) \{\s*table\.docs,/));
     expect(cards).toMatch(/^@container[\s\S]*?table\.docs td \{\s*display:\s*block;/);
-    for (const cell of ["ownerCell", "labelCell", "versionCell", "docDateCell"]) {
+    // Changed on purpose (Documents.html, 5 Nov 2026): no Version column; the chip is beside the name.
+    for (const cell of ["ownerCell", "labelCell", "docDateCell"]) {
       expect(cards).toMatch(new RegExp(`table\\.docs \\.${cell}[,\\s][^{]*\\{\\s*display:\\s*none;`));
     }
   });
@@ -241,8 +243,8 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
     expect(table).toMatch(/closest\("a, button, input, label, select, textarea/);
     expect(table).toContain("querySelector<HTMLAnchorElement>(`.${styles.name}`)?.click()");
     expect(docs).toMatch(/\.name \{[^}]*text-decoration:\s*none;/);
-    // Changed on purpose (UI rebuild, 21 Oct 2026): the handoff's paper icon with the file's extension.
-    expect(table).toContain('<span className={`k-file-ic ${styles.fileIcon}`} data-ext={extensionOf(document.display_name)} aria-hidden="true" />');
+    // Changed on purpose (handoff section 20, 5 Nov 2026): no file icon, the extension is in the name.
+    expect(table).not.toContain("k-file-ic");
   });
 
   it("D12: puts New folder in the folder column's header and moves a document dropped on a folder", () => {
@@ -290,11 +292,13 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
     expect(shortWhen(before(60 * 26), now)).toBe("1d ago");
     expect(shortWhen(before(60 * 24 * 9), now)).toBe("7 Oct 2026");
     expect(shortWhen("not a date", now)).toBe("");
+    // Changed on purpose (Documents.html, 5 Nov 2026): "2h ago · Anita" in one cell, the exact time
+    // and who in its title.
     expect(table).toContain(
-      '<time dateTime={when} title={formatDateTime(when)} className={styles.when} aria-hidden="true">',
+      '<span className={styles.updatedLine} title={by ? `${formatDateTime(when)} · ${by}` : formatDateTime(when)}>',
     );
+    expect(table).toContain('<time dateTime={when} className={styles.when} aria-hidden="true">');
     expect(table).toContain('<span className="visually-hidden">{whenSpoken}</span>');
-    expect(table).toContain('<span className={styles.bandBy} title={by}>');
   });
 
   it("says 7 flagged in full, and names its Review link with what and where", () => {
@@ -320,7 +324,7 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
     // count and date were mono beside sans words. Values elsewhere stay mono (.mono).
     expect(table).not.toMatch(/className=\{?[`"][^`"]*\bmono\b/);
     expect(docs).toMatch(/table\.docs \{[^}]*font-variant-numeric: tabular-nums;/); // the body's sans, inherited
-    expect(docs).toMatch(/\.bandBy,\s*\.byName \{[^}]*white-space: nowrap;[^}]*text-overflow: ellipsis;/);
+    expect(docs).toMatch(/\.oneLine,\s*\.typeLine,\s*\.updatedLine \{[^}]*white-space: nowrap;[^}]*text-overflow: ellipsis;/);
   });
 });
 
