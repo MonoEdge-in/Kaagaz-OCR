@@ -9,11 +9,16 @@ batches and duplicates stay exactly as for any upload.
   into a folder (no per-folder rights: any signed-in user may change folders); "As a new
   department" is an admin's. Every folder and file name follows ``names.upload_name``. Audited
   once (``folder.upload``, counts and ids only) on the first plan and on a re-plan that made
-  folders. One upload sends at a time per organisation (409 ``upload_in_progress``) and one plan
-  is built at a time (429 ``plan_busy``, ``Retry-After: 2``).
-* ``POST /folder-uploads/{id}/items``: a page of at most 1,000 files; each gets its folder and
-  batch now (``db/folder_upload_items.py``). A file with an unsafe name is registered failed
-  ``bad_name``, never a 400 for the page.
+  folders. One user's uploads send at a time per organisation (409 ``upload_in_progress``, until
+  the other has been quiet for 30 minutes) and one plan is built at a time (429 ``plan_busy``,
+  ``Retry-After: 2``). A plan whose bytes would take the organisation past its storage limit is
+  413 ``storage_full`` before any folder is made (#516, ``documents.storage_full``); a re-plan
+  counts only the bytes it still has to send (not a file stored, a duplicate or failed), the
+  browser leaves out the files it refuses, and "Add new files only" is not checked there (its
+  bytes hold the files already in Kaagaz, which cost nothing): each new file is, as it is sent.
+* ``POST /folder-uploads/{id}/items`` (at most MAX_REGISTER_BYTES, checked before it is parsed):
+  a page of at most 1,000 files; each gets its folder and batch now (``db/folder_upload_items.py``).
+  A file with an unsafe name is registered failed ``bad_name``, never a 400 for the page.
 * "Add new files only": the plan says ``only_new`` (its declared counts checked against the
   ceilings, not the organisation's limits; ``folder.upload`` says it), and each file Kaagaz
   could take comes with the browser's ``sha256``. A file already in this organisation (that
@@ -40,7 +45,7 @@ from kaagaz.api.auth import CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import DOCUMENT_NAME_MAX, FOLDER_NAME_MAX, shown_upload_name, upload_name
-from kaagaz.api.routers.documents import same_user, user_upload_policy
+from kaagaz.api.routers.documents import same_user, storage_full, user_upload_policy
 from kaagaz.api.views import folder_upload_item, held_message, iso
 from kaagaz.db import audit
 from kaagaz.db import folder_upload_items as items_sql
@@ -57,6 +62,7 @@ from kaagaz.db.folder_uploads import (
     plan_folders,
 )
 from kaagaz.db.folders import MAX_DEPTH, FolderError
+from kaagaz.db.storage_limits import storage_room
 
 router = APIRouter()
 
@@ -64,6 +70,9 @@ Context = Annotated[AppContext, Depends(get_context)]
 
 MAX_PLAN_BYTES = 8 * 1024 * 1024  # 50,000 folders' names fit with room to spare
 REGISTER_PAGE = 1000
+# A register page's body (production QA S6: it was parsed whole up to Caddy's 60 MB). A full page
+# of 1,000 files with 255-character Devanagari names and "Add new files only" hashes is about 1 MB.
+MAX_REGISTER_BYTES = 2 * 1024 * 1024
 _BAD_NAME = "A folder name is empty, longer than 100 characters, or holds a character Kaagaz can't keep."
 
 
@@ -114,21 +123,24 @@ def _words(code: str, limits: FolderUploadLimits) -> str:
         "too_many_folders": f"A folder upload can make at most {limits.max_folders:,} folders.",
         "plan_changed": "This upload was started with a different folder or place. Start a new upload.",
         "folder_too_deep": f"This folder would go deeper than {MAX_DEPTH} levels here.",
-        "upload_in_progress": "Another folder upload is still sending in this organisation."
-        " Wait for it to finish, or stop it.",
+        "upload_in_progress": "Another person's folder upload is still sending in this organisation."
+        " Try again when it has finished.",
     }.get(code, "")
 
 
-async def _body(request: Request, most: int) -> bytes:
-    """The request body, refused (413) past ``most`` bytes before it is read whole or parsed."""
+async def _body(
+    request: Request, most: int, words: str = "This folder is too big to plan in one go."
+) -> bytes:
+    """The request body, refused (413, ``words``) past ``most`` bytes before it is read whole or
+    parsed."""
     declared = request.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > most:
-        raise ApiError(413, "too_large", "This folder is too big to plan in one go.")
+        raise ApiError(413, "too_large", words)
     body = bytearray()
     async for chunk in request.stream():
         body.extend(chunk)
         if len(body) > most:
-            raise ApiError(413, "too_large", "This folder is too big to plan in one go.")
+            raise ApiError(413, "too_large", words)
     return bytes(body)
 
 
@@ -161,6 +173,13 @@ def _plan(context: AppContext, user: CurrentUser, body: PlanBody) -> dict[str, A
     try:
         with context.db.customer(customer_id) as conn:
             limits = effective_limits(conn, customer_id)
+            if not body.only_new:  # #516: the bytes not sent yet must fit (module notes)
+                room = storage_room(conn, customer_id)
+                unsent = body.total_bytes - items_sql.sent_bytes(
+                    conn, customer_id, str(body.id), user_id=user.user_id
+                )
+                if room.used_bytes + unsent > room.limit_bytes:
+                    raise storage_full(room)
             plan = _plan_and_audit(conn, user, body, folders, parent, limits)
     except FolderError as refused:  # out of the block first: the plan is rolled back
         if refused.code == "not_found":
@@ -231,7 +250,20 @@ def _plan_and_audit(
 
 
 @router.post("/folder-uploads/{upload_id}/items")
-def register_items(upload_id: uuid.UUID, body: RegisterBody, user: User, context: Context) -> dict[str, Any]:
+async def register_items(
+    upload_id: uuid.UUID, request: Request, user: User, context: Context
+) -> dict[str, Any]:
+    raw = await _body(request, MAX_REGISTER_BYTES, "This page of files is too big to register in one go.")
+    try:
+        body = RegisterBody.model_validate_json(raw)
+    except ValidationError:
+        raise ApiError(400, "bad_request") from None
+    return await run_in_threadpool(_register, context, user, upload_id, body)
+
+
+def _register(
+    context: AppContext, user: CurrentUser, upload_id: uuid.UUID, body: RegisterBody
+) -> dict[str, Any]:
     same_user(body.user_id, user)
     items = []
     for entry in body.items:

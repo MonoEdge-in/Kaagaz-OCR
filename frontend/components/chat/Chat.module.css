@@ -784,32 +784,169 @@
   cursor: pointer;
 }
 
-/* Pending: a skeleton card while the answer is worked out. */
-.pendingText {
+/* Issue 535: the answer while it streams (StreamingAnswer.tsx), in the answer card. One calm
+   pattern: the stages, then the documents found, rising in one after another, then the
+   verified words, each fading in where it stays. Opacity and transform only; reduced motion
+   shows it all at once (no word reveal, no pulse). */
+.stages {
+  list-style: none;
   margin: 0;
+  padding: 0;
   display: flex;
-  align-items: center;
-  gap: var(--space-2);
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 
-.skeletonLines {
+.stage {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: var(--space-2);
 }
 
-.skeletonLine {
-  height: 0.9em;
-  width: 92%;
+.stage[data-state="active"] {
+  color: var(--fg);
 }
 
-.skeletonLine:nth-child(2) {
-  width: 78%;
+.stageMark {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
 }
 
-.skeletonLine:nth-child(3) {
-  width: 55%;
+/* The stage running: a small accent dot that breathes (the pulse, below). */
+.stage[data-state="active"] .stageMark::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-full);
+  background: var(--accent);
+}
+
+.found {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.foundChips {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* A document's name: a quiet chip, not a link (the final card's sources are the links). */
+.foundChip {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  padding: 2px var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  background: var(--surface);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.foundName {
+  min-width: 0;
+  max-width: 32ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.foundMore {
+  color: var(--fg-muted);
+}
+
+/* A streamed sentence's citation number: the final card's chip, without the link. */
+.streamCite {
+  margin-inline-start: var(--space-1);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .stage,
+  .found > p,
+  .word,
+  .streamOpening {
+    animation: stream-fade var(--t-med) var(--ease);
+  }
+
+  .stage[data-state="done"] svg {
+    animation: stream-pop var(--t-fast) var(--ease-out);
+  }
+
+  /* Each document's name fades and rises in, 40ms after the one before. */
+  .foundChip {
+    animation: stream-rise 180ms var(--ease-out) both;
+    animation-delay: calc(var(--i, 0) * 40ms);
+  }
+
+  .streamCite {
+    animation: stream-pop var(--t-med) var(--ease-out);
+  }
+
+  .stage[data-state="active"] .stageMark::before {
+    animation: stage-pulse 1.6s ease-in-out infinite alternate;
+  }
+
+  /* The final card in the preview's place: it does not rise again; what the preview did
+     not have (the label, the sources, the rating) fades in, and the sentences only when
+     they differ from the preview. The opening was in the preview already. */
+  .settled > :not(.answerText, .opening),
+  .settledChanged > .opening,
+  .settled :global(.label-mark) {
+    animation: stream-fade var(--motion-calm) var(--ease-out) both;
+  }
+
+  .settledChanged > .answerText {
+    animation: settle-in var(--motion-calm) var(--ease-out);
+  }
+}
+
+@keyframes stream-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes stream-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@keyframes stream-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+}
+
+@keyframes stage-pulse {
+  to {
+    opacity: 0.35;
+    transform: scale(0.75);
+  }
+}
+
+@keyframes settle-in {
+  from {
+    opacity: 0.5;
+  }
 }
 
 /* --- Source card ------------------------------------------------------------ */

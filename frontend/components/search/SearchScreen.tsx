@@ -243,7 +243,7 @@ export function NameResults({
       </p>
       <ol className={styles.names} aria-label={`Documents named like “${q}”`}>
         {names.items.map((document) => {
-          const chip = statusChip(document.status);
+          const chip = statusChip(document.status, document.detected_type);
           return (
             <li key={document.id} className={styles.name}>
               <Link href={withFrom(`/documents/${document.id}`, from)} className={styles.nameLink}>

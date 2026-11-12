@@ -9,10 +9,11 @@
 // providers are on and whether email is on are asked here, before the page is drawn
 // (signInOptions), so nothing moves once it shows.
 
+import { headers } from "next/headers";
 import { pathAfterSignIn, signedOutMessage } from "@/components/shell/gate";
 import { AuthFrame } from "./AuthFrame";
 import { SignInForm } from "./SignInForm";
-import { signInOptions } from "./signInOptions";
+import { signInOptions, visitorIp } from "./signInOptions";
 import { SignUpLink } from "./SignUpLink";
 
 export const metadata = { title: "Sign in" };
@@ -23,7 +24,7 @@ export default async function LoginPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const query = await searchParams;
-  const options = await signInOptions();
+  const options = await signInOptions(fetch, visitorIp(await headers()));
   return (
     <AuthFrame>
       <SignInForm

@@ -13,7 +13,8 @@ and native finish reasons, usage with reasoning tokens and cost, error replies w
 message, ``flagged_input`` and ``raw`` hold ``SECRET`` (page text that must never be
 logged or kept), 402, a 403 refusal and a moderation block, ``content_filter``,
 ``length``, ``finish_reason: "error"``, embeddings in shuffled index order, an endpoints
-listing, the key's limits, a redirect, a slow reply, an oversized body and a closed port.
+listing, the key's limits, a redirect, a slow reply, an oversized body and a closed port; and a
+streamed reply (``stream_reply``, #535): server-sent events, one ``data:`` chunk a piece of text.
 """
 
 import json
@@ -38,13 +39,18 @@ class Reply:
     seconds to wait before answering (cut short when the fake shuts down). ``trickle``: the
     headers go at once, then a space every ``trickle`` seconds for ``delay`` seconds, then
     the body (a reply kept alive while a model thinks). ``status`` 0: the connection is closed
-    once the request is read, with no reply at all (#488 review: dropped after the send)."""
+    once the request is read, with no reply at all (#488 review: dropped after the send).
+    ``stream`` (#535): sent as ``text/event-stream``, each chunk written on its own, ``every``
+    seconds apart (cut short when the fake shuts down); ``sent`` counts the chunks written."""
 
     status: int = 200
     body: object = None
     headers: dict[str, str] = field(default_factory=dict)
     delay: float = 0.0
     trickle: float = 0.0
+    stream: list[bytes] | None = None
+    every: float = 0.0
+    sent: int = 0
 
 
 @dataclass(frozen=True)
@@ -133,6 +139,9 @@ def _handler(fake: OpenRouterFake) -> type[BaseHTTPRequestHandler]:
                     return
                 if reply.delay and not reply.trickle:
                     fake.release.wait(reply.delay)
+                if reply.stream is not None:
+                    self._stream(reply)
+                    return
                 payload = reply.body if isinstance(reply.body, bytes) else json.dumps(reply.body).encode()
                 try:
                     self.send_response(reply.status)
@@ -152,6 +161,22 @@ def _handler(fake: OpenRouterFake) -> type[BaseHTTPRequestHandler]:
                     pass  # the client gave up first (the deadline tests)
             finally:
                 fake._leave()
+
+        def _stream(self, reply: Reply) -> None:
+            """#535: the chunks as server-sent events; the body ends when the connection closes."""
+            self.close_connection = True
+            try:
+                self.send_response(reply.status)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                for chunk in reply.stream or []:
+                    if reply.sent and reply.every and fake.release.wait(reply.every):
+                        return
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                    reply.sent += 1
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass  # the client stopped reading (a cancelled answer)
 
         do_POST = _serve
         do_GET = _serve
@@ -265,9 +290,10 @@ def error_reply(
     provider_name: str | None = None,
     reasons: list[str] | None = None,
     headers: dict[str, str] | None = None,
+    message: str = SECRET,
 ) -> Reply:
-    """An error reply like OpenRouter's. Its message, flagged_input and raw hold ``SECRET``:
-    page text that must never be logged, kept or shown."""
+    """An error reply like OpenRouter's. Its message (unless ``message`` is given), flagged_input
+    and raw hold ``SECRET``: page text that must never be logged, kept or shown."""
     metadata: dict[str, Any] = {"flagged_input": SECRET, "raw": {"error": {"message": SECRET}}}
     if error_type is not None:
         metadata["error_type"] = error_type
@@ -276,7 +302,7 @@ def error_reply(
     if reasons is not None:
         metadata["reasons"] = reasons
         metadata["model_slug"] = "google/gemini-3.1-pro-preview"
-    body = {"error": {"code": status, "message": SECRET, "metadata": metadata}}
+    body = {"error": {"code": status, "message": message, "metadata": metadata}}
     return Reply(status, body, headers or {})
 
 
@@ -359,3 +385,45 @@ def trickled(reply: Reply, seconds: float, every: float = 0.05) -> Reply:
 
 def oversized(size: int) -> Reply:
     return Reply(200, b'{"choices": "' + b"x" * size + b'"}')
+
+
+def _event(chunk: dict[str, Any]) -> bytes:
+    return b"data: " + json.dumps(chunk, ensure_ascii=False).encode() + b"\n\n"
+
+
+def stream_reply(
+    parts: Sequence[str],
+    *,
+    finish: str | None = "stop",
+    native: str | None = "STOP",
+    counts: dict[str, Any] | None = None,
+    every: float = 0.0,
+    error: bool = False,
+    with_usage: bool = True,
+) -> Reply:
+    """#535: a streamed /chat/completions reply as OpenRouter sends it: a keep-alive comment, one
+    chunk a piece of ``parts`` (``delta.content``), then the finish reasons with the usage, then
+    ``[DONE]``. ``finish`` None: the stream just stops after the text. ``error``: the last chunk is
+    a mid-stream error (finish_reason error). ``with_usage`` False: the last chunk has no usage."""
+    head = {"id": "gen-made-up", "object": "chat.completion.chunk", "model": "google/gemini-3.1-pro-preview"}
+    chunks = [b": OPENROUTER PROCESSING\n\n"]
+    for part in parts:
+        delta = {"index": 0, "delta": {"role": "assistant", "content": part}, "finish_reason": None}
+        chunks.append(_event({**head, "provider": "Google", "choices": [delta]}))
+    if error:
+        last = {"index": 0, "delta": {"content": ""}, "finish_reason": "error"}
+        chunks.append(_event({**head, "error": {"code": 502, "message": SECRET}, "choices": [last]}))
+    elif finish is not None:
+        last = {"index": 0, "delta": {"content": ""}, "finish_reason": finish}
+        if native is not None:
+            last["native_finish_reason"] = native
+        tail = {"usage": counts or usage()} if with_usage else {}
+        chunks.append(_event({**head, "provider": "Google", "choices": [last], **tail}))
+        chunks.append(b"data: [DONE]\n\n")
+    return Reply(200, stream=chunks, every=every)
+
+
+def json_stream(value: object, size: int = 7, **options: Any) -> Reply:
+    """``value`` as JSON, streamed ``size`` characters a chunk (cut anywhere, mid-string too)."""
+    text = json.dumps(value, ensure_ascii=False)
+    return stream_reply([text[i : i + size] for i in range(0, len(text), size)], **options)

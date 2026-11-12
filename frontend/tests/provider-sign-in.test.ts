@@ -125,7 +125,7 @@ describe("no layout jump on /login (#457 review)", () => {
 
   it("passes them to the form as props: no request from the browser for them", () => {
     const page = source("app/login/page.tsx");
-    expect(page).toContain("await signInOptions()");
+    expect(page).toContain("await signInOptions(fetch, visitorIp(await headers()))"); // B19: the visitor's IP
     expect(page).toContain("providers={options.providers}");
     expect(page).toContain("emailOn={options.emailOn}");
     const form = source("app/login/SignInForm.tsx");

@@ -7,7 +7,8 @@
 # Only the stand-ins, to run the API and worker on the laptop itself:
 #   docker compose up postgres seaweedfs elasticmq clamav
 #
-# Image versions are pinned; Dependabot proposes updates.
+# Image versions are pinned; Dependabot proposes updates. Every port is published
+# on 127.0.0.1 only: reachable from this laptop, never from its network (A21).
 name: kaagaz-ocr
 
 # Shared by the three backend containers (migrate, api, worker): one image,
@@ -19,7 +20,7 @@ x-backend: &backend
   build:
     context: ./backend
     args:
-      # The commit the image is built from, shown by /api/health (#246 O1).
+      # The commit the image is built from, shown on the operator's Health page (#246 O1).
       KAAGAZ_COMMIT: ${KAAGAZ_TAG:-local}
   env_file: .env
   environment: &backend-env
@@ -55,7 +56,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kaagaz}
       POSTGRES_DB: ${POSTGRES_DB:-kaagaz}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -75,7 +76,7 @@ services:
       - data
     command: server -dir=/data -ip.bind=0.0.0.0 -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
     ports:
-      - "8333:8333"
+      - "127.0.0.1:8333:8333"
     volumes:
       - seaweedfs-data:/data
       - ./infra/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
@@ -94,7 +95,7 @@ services:
     networks:
       - data
     ports:
-      - "9324:9324"
+      - "127.0.0.1:9324:9324"
     volumes:
       - ./infra/elasticmq/elasticmq.conf:/opt/elasticmq.conf:ro
       - elasticmq-data:/data # the stored messages (messages-storage in elasticmq.conf)
@@ -113,18 +114,26 @@ services:
       - scan
     # Strict scanning. The image writes each CLAMD_CONF_<Option> into clamd.conf
     # at start-up. Deny by default: a file clamd cannot fully look inside (too
-    # big, too deep, encrypted) is reported, never passed as OK, and the scan
-    # gate treats those reports as unscannable (backend/kaagaz/adapters/scanner.py).
+    # big, too deep, an encrypted document) is reported, never passed as OK, and the
+    # scan gate treats those reports as unscannable (backend/kaagaz/adapters/scanner.py).
+    # Security config, Vrushit approves (#522, 6 Nov 2026): the limits are at least the
+    # app's zip limits (500 MB, 50,000 files: backend/tests/test_clamav_settings.py checks
+    # it). clamd writes a stream to a temporary file and unpacks archives to temporary
+    # files, so these are disk, not memory; its memory is the signatures (1.5 to 3 GiB
+    # while it reloads them), so its 4g memory limit in docker-compose.prod.yml stays. An
+    # encrypted zip is not an alert (AlertEncrypted would turn it on again): the file
+    # with a password is refused on its own when the zip is unpacked (unzip.ENCRYPTED).
+    # A zip that unpacks to more than MaxScanSize is reported, so it is unscannable.
     # PROVISIONAL: the scanner's configuration is Vrushit's decision.
     environment:
-      CLAMD_CONF_StreamMaxLength: "60M" # above the 50 MB upload limit
-      CLAMD_CONF_MaxFileSize: "100M"
-      CLAMD_CONF_MaxScanSize: "400M"
+      CLAMD_CONF_StreamMaxLength: "520M" # above the 500 MB zip limit, the largest upload
+      CLAMD_CONF_MaxFileSize: "520M" # the zip itself, and any one file in it
+      CLAMD_CONF_MaxScanSize: "1000M" # all a zip unpacks to
       CLAMD_CONF_MaxRecursion: "10"
-      CLAMD_CONF_MaxFiles: "10000"
+      CLAMD_CONF_MaxFiles: "50000" # unzip.MAX_ENTRIES
       CLAMD_CONF_AlertExceedsMax: "yes"
-      CLAMD_CONF_AlertEncrypted: "yes"
-      CLAMD_CONF_AlertEncryptedArchive: "yes"
+      CLAMD_CONF_AlertEncrypted: "no"
+      CLAMD_CONF_AlertEncryptedArchive: "no"
       CLAMD_CONF_AlertEncryptedDoc: "yes"
       CLAMD_CONF_AlertOLE2Macros: "yes"
       CLAMD_CONF_AlertBrokenExecutables: "yes"
@@ -135,7 +144,7 @@ services:
       CLAMD_CONF_HeuristicScanPrecedence: "yes"
       CLAMD_CONF_DetectPUA: "yes"
     ports:
-      - "3310:3310"
+      - "127.0.0.1:3310:3310"
     volumes:
       - clamav-data:/var/lib/clamav
     healthcheck:
@@ -180,12 +189,14 @@ services:
     environment:
       <<: *backend-env
       OPS_DATABASE_URL: ${OPS_DATABASE_URL:-} # the super admin's login (#479), only here
-    command: ["uvicorn", "kaagaz.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["uvicorn", "kaagaz.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-server-header", "--timeout-keep-alive", "75"]
     networks:
       - data
       - edge
+    # This laptop only (#520 review): the image trusts X-Forwarded-For (backend/Dockerfile), so a
+    # port open to the network would let anyone on it choose their own address and rate bucket.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     healthcheck:
       # The image has no curl. urlopen raises on a 503, so a degraded
       # /api/health fails the check.
@@ -205,6 +216,10 @@ services:
   worker:
     <<: *backend
     command: ["python", "-m", "kaagaz.worker_main"]
+    # An init process as PID 1 (#522): when a LibreOffice conversion runs out of time its whole
+    # process group is killed, and soffice.bin, whose parent died with it, is left to PID 1 to
+    # reap; the worker, as PID 1, never would.
+    init: true
     networks:
       - data
       - scan
@@ -249,7 +264,7 @@ services:
     networks:
       - edge
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     healthcheck:
       # The slim image has no curl or wget (#477, 3 Nov 2026). fetch follows redirects;
       # any answer but 2xx, or none in 5 s, fails the check. infra/ec2/deploy.sh waits for it.

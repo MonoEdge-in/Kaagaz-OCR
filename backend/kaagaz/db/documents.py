@@ -62,6 +62,17 @@ Auto-filing (feature 28, council 15 Oct 2026; 0025): ``add_if_absent`` marks a n
 ``autofile = 'pending'`` in its own insert when it goes in no folder and the customer's
 switch is on; a new version never is, and a duplicate makes no row. ``file_document`` is
 ``kaagaz.db.autofile.file_document`` in its own transaction after ``mark_ready``.
+
+A refused file may be uploaded again (#554, Tushar, 11 Nov 2026): a document refused by its
+scan that is its family's only version (``REFUSED_ALONE``, in Trash or not) is not "already in
+Kaagaz". Given the storage (the upload paths), ``find_by_fingerprint`` skips it and
+``add_if_absent`` deletes it for good (as ``delete_forever``: the row with what it owns, its
+folder if Kaagaz made it and it is left empty, its stored or quarantined file) in the
+transaction that inserts the new document, which is scanned afresh; one ``document.delete``
+audit row names the new one (``replaced_by``). The refused copy's family lock decides two such
+uploads at once: the second waits, finds it gone, and is a duplicate of the first. A refused
+version of a family with others stays a duplicate (Kaagaz deletes whole families only), and a
+new version (``add_version``) replaces nothing.
 """
 
 import dataclasses
@@ -74,12 +85,12 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
-from kaagaz.db import audit, autofile, customers, folders, versions
+from kaagaz.db import audit, autofile, customers, folders, storage_limits, versions
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.runs import close_running, finish_run, is_run_open
 from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, retry_on_deadlock, sqlstate
 from kaagaz.db.trash import lock_family
-from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, UnknownFolder
+from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, StorageRoom, UnknownFolder
 from kaagaz.jobs.worker import Superseded
 from kaagaz.reading.ocr import Region
 from kaagaz.scanning.gate import DocumentStatus
@@ -94,15 +105,30 @@ WAITING_FOR_READER = {"step": "waiting"}
 
 _SELECT = (
     "SELECT customer_id, id, sha256, size_bytes, detected_type, display_name, uploaded_by,"
-    " folder_id, family_id, version_no, ocr_choice"
+    " folder_id, family_id, version_no, ocr_choice, deleted_at IS NOT NULL"
     " FROM documents WHERE customer_id = :c"
+)
+
+# #554 (module notes): document ``d`` was refused by its scan and is its family's only version.
+REFUSED_ALONE = (
+    "d.status = 'rejected' AND NOT EXISTS (SELECT 1 FROM documents v"
+    " WHERE v.customer_id = d.customer_id AND v.family_id = d.family_id AND v.id <> d.id)"
+)
+_REFUSED_COPY = (
+    "SELECT d.id FROM documents d WHERE d.customer_id = :c AND d.sha256 = :h AND "  # noqa: S608 - a fixed fragment
+    + REFUSED_ALONE
+)
+_DROP_REFUSED = (
+    "DELETE FROM documents d WHERE d.customer_id = :c AND d.id = :old AND "  # noqa: S608 - a fixed fragment
+    + REFUSED_ALONE
+    + " RETURNING d.folder_id"
 )
 
 
 # The highest ready version_no is current (PRD 1 F6, PROVISIONAL plan 7.3): is a
 # newer version of this document's family ready already?
 _READY_STATE = (
-    "SELECT d.status, EXISTS (SELECT 1 FROM documents newer WHERE newer.customer_id = :c"
+    "SELECT d.status, d.display_name, EXISTS (SELECT 1 FROM documents newer WHERE newer.customer_id = :c"
     " AND newer.family_id = d.family_id AND newer.status = 'ready'"
     " AND newer.version_no > d.version_no) AS newer_ready"
     " FROM documents d WHERE d.customer_id = :c AND d.id = :d"
@@ -147,7 +173,8 @@ def mark_ready(
     A read again (a run of it was ready before, ``_READ_BEFORE``) keeps ``is_current`` as it
     is, so it never changes which version is current (File management V10).
     With ``run``, finish that run in the same transaction, so a ready document and
-    its finished run commit together. With ``open_run`` instead (Ready first, 16 Oct
+    its finished run commit together. The text's fingerprint and name key (Versions V1) are
+    written with it (#521). With ``open_run`` instead (Ready first, 16 Oct
     2026), the run fence on that run id, which stays open while the run goes on
     understanding the ready document, and the progress it wrote last is kept; otherwise
     the progress is cleared. A document set to be read again meanwhile (``received``)
@@ -187,6 +214,17 @@ def mark_ready(
         conn.execute(text(_OTHERS_NOT_CURRENT), params)
     ready = {"pages": page_count, "current": current, "again": again, "keep": open_run is not None}
     conn.execute(text(_READY), {**params, **ready})
+    # #521 fix 3: the text's fingerprint commits with Ready, so a spotting run that starts after
+    # this one sees it (db/versions.py). In a savepoint: an error there is logged with the ids
+    # and Ready commits without it (spotting writes a missing one; the sweep fills the rest).
+    try:
+        with conn.begin_nested():
+            versions.write_fingerprint(conn, customer_id, document_id, str(state.display_name))
+    except Exception as failed:  # noqa: BLE001 - a fingerprint must never fail Ready
+        _log.warning(
+            "fingerprint_failed",
+            extra={"customer_id": customer_id, "document_id": document_id, "code": type(failed).__name__},
+        )
     if run is not None:
         finish_run(conn, customer_id, run)
 
@@ -207,6 +245,37 @@ def delete_forever(conn: Connection, storage: BlobStorage, customer_id: str, doc
     # The folder Kaagaz made that its last document leaves goes too (Vrushit UAT 3).
     folders.prune_empty(conn, customer_id, [None if folder is None else str(folder)])
     storage.delete(customer_id, document_id)
+
+
+def _drop_refused_copy(conn: Connection, record: DocumentRecord) -> tuple[str, str | None] | None:
+    """#554: delete this customer's refused copy of ``record``'s bytes (``REFUSED_ALONE``) under
+    its family lock, so the new record can go in; its id and folder, or None. Its folder and
+    file go in ``_after_refused_copy``, once the new row is in: the new one may be filed in that
+    folder, and a file deleted before an insert that fails could not come back."""
+    params = {"c": record.customer_id, "h": record.sha256}
+    old = conn.execute(text(_REFUSED_COPY), params).scalar()
+    if old is None or lock_family(conn, record.customer_id, str(old)) is None:
+        return None  # none, or one that went while this upload waited for its lock
+    dropped = conn.execute(text(_DROP_REFUSED), {**params, "old": old}).first()
+    return None if dropped is None else (str(old), None if dropped[0] is None else str(dropped[0]))
+
+
+def _after_refused_copy(
+    conn: Connection, storage: BlobStorage, record: DocumentRecord, old: str, folder: str | None
+) -> None:
+    """The rest of ``delete_forever`` for the refused copy ``old``, and its audit row. Storage
+    last: if it can't be reached, BackendUnavailable rolls the whole upload back."""
+    folders.prune_empty(conn, record.customer_id, [folder])
+    audit.record(
+        conn,
+        record.customer_id,
+        actor_user_id=record.uploaded_by,
+        action="document.delete",
+        target_type="document",
+        target_id=old,
+        details={"replaced_by": record.document_id},
+    )
+    storage.delete(record.customer_id, old)
 
 
 # --- read again (PRD 2 X1) ----------------------------------------------------
@@ -282,9 +351,11 @@ _REPROCESSED_LATELY = (
 # Features 26 and 27 (0026): the reading asked for. A mode given replaces read_also too, in
 # the same statement, so the ai_documents_read_mode_models check always sees a pair it
 # allows; a model or mode left out (NULL) keeps the document's (as listing.set_reading).
+# A read again is a new reading, so the reading pause asks again (#520): the day an earlier
+# reading that failed was let in (reading_admitted) is cleared, never a pass past the pause.
 _REPROCESS = (
     "UPDATE documents d SET status = 'received', failure_code = NULL, attempts = 0, max_attempts = NULL,"  # noqa: S608 - a fixed fragment, STUCK
-    " progress = NULL, read_requested_by = CAST(:by AS uuid),"
+    " progress = NULL, read_requested_by = CAST(:by AS uuid), reading_admitted = NULL,"
     " read_model = COALESCE(CAST(:m AS text), read_model),"
     " read_mode = COALESCE(CAST(:mode AS text), read_mode),"
     " read_also = CASE WHEN CAST(:mode AS text) IS NULL THEN read_also ELSE CAST(:also AS text[]) END"
@@ -616,6 +687,7 @@ def _record(row: Sequence[Any]) -> DocumentRecord:
         family_id=str(row[8]),
         version_no=int(str(row[9])),
         ocr_choice=None if row[10] is None else str(row[10]),
+        in_trash=bool(row[11]),
     )
 
 
@@ -704,8 +776,11 @@ def add_version(
 
 
 class PgDocuments:
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, *, storage: BlobStorage | None = None) -> None:
+        """``storage``: the upload paths give it, so a refused copy can be replaced (#554,
+        module notes); without it a refused copy is a duplicate, as before."""
         self._db = db
+        self._storage = storage
 
     # --- DocumentRepository ---------------------------------------------------
 
@@ -724,17 +799,19 @@ class PgDocuments:
             return customers.is_active(conn, customer_id)
 
     def find_by_fingerprint(self, customer_id: str, sha256: str) -> DocumentRecord | None:
+        query = _SELECT + " AND sha256 = :h"
+        if self._storage is not None:  # #554: a refused copy alone is not "already in"
+            query += " AND NOT EXISTS (" + _REFUSED_COPY + ")"
         with unavailable(), self._db.customer(customer_id) as conn:
-            row = conn.execute(
-                text(_SELECT + " AND sha256 = :h"),
-                {"c": customer_id, "h": sha256},
-            ).first()
+            row = conn.execute(text(query), {"c": customer_id, "h": sha256}).first()
         return None if row is None else _record(row)
 
     def add_if_absent(self, record: DocumentRecord) -> tuple[DocumentRecord, bool]:
         """Atomic per (customer, fingerprint): the unique index decides the race.
-        Raises UnknownFolder when the record's folder is not this customer's."""
+        Raises UnknownFolder when the record's folder is not this customer's. With the
+        storage, a refused copy alone is replaced (#554, module notes)."""
         with unavailable(), self._db.customer(record.customer_id) as conn:
+            refused = None if self._storage is None else _drop_refused_copy(conn, record)
             params = {
                 "d": record.document_id,
                 "c": record.customer_id,
@@ -773,6 +850,8 @@ class PgDocuments:
                     raise UnknownFolder(record.document_id) from None
                 raise
             if inserted is not None:
+                if self._storage is not None and refused is not None:
+                    _after_refused_copy(conn, self._storage, record, *refused)
                 return record, True
             row = conn.execute(
                 text(_SELECT + " AND sha256 = :h"),
@@ -793,6 +872,11 @@ class PgDocuments:
                 text("DELETE FROM documents WHERE customer_id = :c AND id = :d AND sha256 = :h"),
                 {"c": record.customer_id, "d": record.document_id, "h": record.sha256},
             )
+
+    def storage_room(self, customer_id: str) -> StorageRoom:
+        """The storage limit and the bytes used (#516, ``storage_limits.storage_room``)."""
+        with unavailable(), self._db.customer(customer_id) as conn:
+            return storage_limits.storage_room(conn, customer_id)
 
     # --- StatusStore ----------------------------------------------------------
 
@@ -974,6 +1058,15 @@ class PgDocuments:
             conn.execute(
                 text("UPDATE documents SET page_count = :n WHERE customer_id = :c AND id = :d"),
                 {"n": page_count, "c": customer_id, "d": document_id},
+            )
+
+    def set_detected_type(self, customer_id: str, document_id: str, detected_type: str) -> None:
+        """#522: the kind resolve.py told after the virus scan, in place of the sniffed type
+        (0078's CHECK holds both). One indexed statement."""
+        with unavailable(), self._db.customer(customer_id) as conn:
+            conn.execute(
+                text("UPDATE documents SET detected_type = :t WHERE customer_id = :c AND id = :d"),
+                {"t": detected_type, "c": customer_id, "d": document_id},
             )
 
     # --- used by the worker ---------------------------------------------------

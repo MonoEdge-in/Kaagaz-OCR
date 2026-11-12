@@ -57,7 +57,7 @@ from tests.test_document_stories_db import put
 from tests.test_embed_missing_db import CURRENT, SameVector, drain, tags
 from tests.test_indexing_db import FakeModel
 from tests.test_migration_0004_db import _current, _head
-from tests.test_pipeline import PIPELINE_POLICY, real_socket
+from tests.test_pipeline import CSV_NAME, PIPELINE_POLICY, real_socket
 from tests.test_pipeline_db import CSV, one
 from tests.test_search_db import add_document, add_pieces
 
@@ -273,8 +273,8 @@ def test_the_worker_fails_a_disabled_customers_job_and_reads_bs(db: Database) ->
         store=PgPipelineStore(db),
         customer_active=documents.customer_active,
     )
-    a_doc = upload.accept(a, io.BytesIO(CSV)).document_id
-    b_doc = upload.accept(b, io.BytesIO(CSV)).document_id
+    a_doc = upload.accept(a, io.BytesIO(CSV), display_name=CSV_NAME).document_id
+    b_doc = upload.accept(b, io.BytesIO(CSV), display_name=CSV_NAME).document_id
     _cli(db, "disable-customer", a)
 
     with pytest.raises(JobFailed) as failed:

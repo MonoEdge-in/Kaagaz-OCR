@@ -3,8 +3,8 @@
 // The pace and the 429 handling are tests/request-budget.test.ts's.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { uploadStateText } from "@/components/documents/logic";
-import { uploadDocument } from "@/lib/api";
+import { uploadErrorText, uploadStateText } from "@/components/documents/logic";
+import { ApiError, uploadDocument } from "@/lib/api";
 import { settle } from "./fake-clock";
 
 const SESSION = { id: "s1", part_size: 8 * 1024 * 1024, part_count: 1 };
@@ -85,5 +85,22 @@ describe("an upload that has to wait says why", () => {
     ]);
     expect(uploadStateText({ kind: "offline", fraction: 0 })).toBe("Waiting for connection");
     expect(uploadStateText({ kind: "offline", fraction: 0, server: false })).toBe("Waiting for connection");
+  });
+});
+
+describe("a file not sent because the server was restarting", () => {
+  // Changed on purpose (review of #564): only the proxy's 502 and 504 mean a restart; the API's
+  // own 503 (busy) keeps its words, and a row with no Retry button isn't told to retry.
+  it("says so, and to retry, for a 502 or 504; other errors keep the server's words", () => {
+    for (const status of [502, 504]) {
+      expect(uploadErrorText(new ApiError(status, "error", "Something went wrong."), true)).toBe("The server was restarting. Retry.");
+      expect(uploadErrorText(new ApiError(status, "error", "Something went wrong."), true, false)).toBe("The server was restarting.");
+    }
+    const busy = "The service is busy right now. Please try again in a minute.";
+    expect(uploadErrorText(new ApiError(503, "backend_unavailable", busy), true)).toBe(busy);
+    expect(uploadErrorText(new ApiError(500, "internal_error", "Something went wrong on our side."), true)).toBe(
+      "Something went wrong on our side.",
+    );
+    expect(uploadErrorText(new ApiError(502, "error", "Something went wrong."), false)).toContain("no internet connection");
   });
 });

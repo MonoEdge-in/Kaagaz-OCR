@@ -452,7 +452,9 @@ def test_another_admins_reset_means_set_it_up_again_not_turned_off(db: Database)
     assert (again.status_code, again.json()["error"]["code"]) == (403, "mfa_enrol_required")
 
 
-def test_turned_off_what_cant_be_undone_still_needs_two_step(db: Database) -> None:
+def test_turned_off_deleting_a_tag_still_needs_two_step_and_delete_forever_a_password(db: Database) -> None:
+    # Changed on purpose (#538, Tushar, 7 Nov 2026): Delete forever asks for the password again
+    # instead of two-step (test_api_delete_forever_password); deleting a tag is unchanged.
     api = Api(db)
     signed = _turned_off(api)
     document = api.add_document(signed.customer_id, deleted_at=api.clock())
@@ -464,7 +466,7 @@ def test_turned_off_what_cant_be_undone_still_needs_two_step(db: Database) -> No
     forever = signed.client.delete(f"/api/documents/{document}/permanent", headers=CSRF)
     untag = signed.client.delete(f"/api/tags/{tag}", headers=CSRF)
 
-    assert (forever.status_code, forever.json()) == (403, refused)
+    assert (forever.status_code, forever.json()["error"]["code"]) == (403, "password_confirm_required")
     assert (untag.status_code, untag.json()) == (403, refused)
     assert signed.client.get(f"/api/documents/{document}").status_code == 200  # still there
     # Allowing a member to delete forever too, pointed where the switch is now (#457 with #460).
@@ -533,7 +535,7 @@ def test_wrong_codes_count_toward_the_lockout(db: Database) -> None:
     assert right.status_code == 401
     state = api.user_state(customer_id, admin.user_id)
     assert state["failed_logins"] == api.settings.login_max_failures
-    assert state["locked_until"] is not None
+    assert state["locked_until"] is None  # changed on purpose (A2): this address's lock, in memory
     assert "auth.locked" in api.audit_actions(customer_id)
 
 

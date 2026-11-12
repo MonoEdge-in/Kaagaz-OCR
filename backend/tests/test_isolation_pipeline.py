@@ -11,7 +11,7 @@ from kaagaz.pipeline import DocumentContent
 from kaagaz.scanning.gate import DocumentStatus
 from tests.fakes import FakeEmbedder
 from tests.pdf_builder import Page, Text, make_pdf
-from tests.test_pipeline import CSV, build
+from tests.test_pipeline import CSV, CSV_NAME, build
 from tests.test_pipeline_runs import Rig, beat, rig
 
 A, B = "cust-a", "cust-b"
@@ -20,7 +20,7 @@ A, B = "cust-a", "cust-b"
 class IsolationPipelineTest(unittest.TestCase):
     def test_job_for_another_customers_document_reads_and_writes_nothing(self) -> None:
         system = build()
-        doc = system.upload.accept(A, io.BytesIO(CSV)).document_id
+        doc = system.upload.accept(A, io.BytesIO(CSV), display_name=CSV_NAME).document_id
         system.queue.receive()  # take A's real job out of the way
 
         system.queue.enqueue(Job(B, doc))  # forged: B with A's document id
@@ -38,7 +38,7 @@ class IsolationPipelineTest(unittest.TestCase):
     def test_learned_corrections_of_one_customer_never_reach_another(self) -> None:
         system = build()
         system.store.learned[A] = [LearnedCorrection("invoice", "INV-1", "A-FIX")]
-        doc_b = system.upload.accept(B, io.BytesIO(CSV)).document_id
+        doc_b = system.upload.accept(B, io.BytesIO(CSV), display_name=CSV_NAME).document_id
         system.worker.run_once()
         texts = [v.value_text for v in system.store.values_for(B, doc_b)]
         self.assertIn("INV-1", texts)
@@ -46,8 +46,8 @@ class IsolationPipelineTest(unittest.TestCase):
 
     def test_same_file_from_two_customers_gives_separate_pieces(self) -> None:
         system = build()
-        doc_a = system.upload.accept(A, io.BytesIO(CSV)).document_id
-        doc_b = system.upload.accept(B, io.BytesIO(CSV)).document_id
+        doc_a = system.upload.accept(A, io.BytesIO(CSV), display_name=CSV_NAME).document_id
+        doc_b = system.upload.accept(B, io.BytesIO(CSV), display_name=CSV_NAME).document_id
         system.worker.run_once()
         system.worker.run_once()
 

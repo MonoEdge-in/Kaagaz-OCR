@@ -121,6 +121,14 @@ describe("the manifest", () => {
     expect(manifest.badName).toBeNull();
   });
 
+  it("leaves a file of a kind Kaagaz can't take out of the bytes: it is never sent (#516)", () => {
+    const pick = fromFileList([picked("A/a.pdf", 5), picked("A/notes.odt", 100), picked("A/b.csv", 7)]);
+    if (!pick) throw new Error("no pick");
+    const manifest = buildManifest(pick);
+    expect(manifest.fileCount).toBe(3);
+    expect(manifest.totalBytes).toBe(12);
+  });
+
   it("finds a folder name longer than 100 characters, or one with a hidden control character", () => {
     const long = "x".repeat(101);
     const pick = fromFileList([picked(`A/${long}/a.pdf`)]);

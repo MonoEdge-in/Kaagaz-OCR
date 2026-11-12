@@ -9,12 +9,15 @@
 //   the picked files by path_key, and send the server's files_at_once (at most
 //   FOLDER_UPLOADS_AT_ONCE) at a time to that item, so a retry always lands in the folder the
 //   server recorded. A file missing from the pick, or whose size changed, is said and not sent.
-//   Once another account signs in here, nothing more goes.
+//   Once another account signs in here, nothing more goes. Once a file is refused for storage
+//   (#516), nothing more goes either: the row says the API's words once, and the files left
+//   wait on the server for Continue upload, after room is made.
 // - The state keeps counts and at most FOLDER_UPLOADS_AT_ONCE rows being sent, never a row a
 //   file: the lists of what needs attention are read from the server, a page at a time.
 
 import { failureWords } from "@/components/operator/platform";
-import { ApiError, rateLimitWait } from "@/lib/api";
+import { ApiError, isStorageFull, rateLimitWait } from "@/lib/api";
+import type { UploadWaiting } from "@/lib/api";
 import { formatNumber } from "@/lib/format";
 import { documentWords, failureFix } from "@/lib/status";
 import type {
@@ -28,10 +31,17 @@ import type {
   UploadLimits,
   UploadResult,
 } from "@/lib/types";
-import { fileSha256, pathKey } from "./folderPick";
+import { fileSha256, pathKey, refusedReason } from "./folderPick";
 import type { Manifest, Picked } from "./folderPick";
 import type { NotSentRow } from "./FolderUploadRow";
-import { limitFor, sessionChangedMessage, uploadErrorText, uploadKind } from "./logic";
+import {
+  UNSUPPORTED_UPLOAD,
+  canSendAgain,
+  limitFor,
+  sessionChangedMessage,
+  uploadErrorText,
+  uploadKind,
+} from "./logic";
 import { createSlots } from "./uploadQueue";
 
 const FOLDER_UPLOADS_AT_ONCE = 4;
@@ -47,7 +57,7 @@ export interface FolderUploadApi {
   plan(body: FolderUploadPlanBody): Promise<FolderUploadPlan>;
   register(id: string, userId: string, items: NewFolderItem[]): Promise<unknown>;
   items(id: string, view: FolderItemView, after: number, limit: number): Promise<FolderItemsPage>;
-  send(file: File, item: FolderUploadItem, onProgress: (fraction: number) => void): Promise<UploadResult>;
+  send(file: File, item: FolderUploadItem, onProgress: (fraction: number) => void, onWaiting?: UploadWaiting): Promise<UploadResult>;
   summary(id: string): Promise<FolderUploadSummary>;
 }
 
@@ -60,7 +70,12 @@ export interface FolderSource {
 
 export type FolderTarget = { kind: "department" } | { kind: "folder"; parentId: string | null };
 
-type FolderPhase = "planning" | "registering" | "sending" | "done" | "stopped" | "needs_pick" | "refused";
+/** Why a file being sent waits to go again (lib/api.ts retryWhileOffline). */
+type Waiting = "connection" | "server";
+
+// stopping: Stop was pressed; the files being sent finish, then it is stopped.
+type FolderPhase = "planning" | "registering" | "sending" | "stopping" | "done" | "stopped" | "needs_pick" | "refused";
+const RUNNING: readonly FolderPhase[] = ["planning", "registering", "sending"];
 
 export type FolderEvent =
   | { type: "start"; id: string; rootName: string; total: number }
@@ -68,7 +83,7 @@ export type FolderEvent =
   | { type: "planned"; id: string; rootFolderId: string }
   | { type: "checked"; id: string; done: number }
   | { type: "counts"; id: string; summary: FolderUploadSummary }
-  | { type: "sending"; id: string; itemId: string; name: string; fraction: number }
+  | { type: "sending"; id: string; itemId: string; name: string; fraction: number; waiting?: Waiting }
   | { type: "sent"; id: string; itemId: string; outcome: "stored" | "duplicate" | "failed" }
   | { type: "notSent"; id: string; itemId: string; name: string; message: string; retry: boolean; item: FolderUploadItem }
   | { type: "remove"; id: string };
@@ -76,9 +91,7 @@ export type FolderEvent =
 /** The server's item failures: it recorded the item failed, so sending it again can't help. */
 const ITEM_FAILURES = new Set(["too_large", "unsupported_type", "empty_file", "folder_gone", "item_refused"]);
 
-/** A kind of file Kaagaz can't take, refused before it is sent; the server judges size and emptiness. */
-export const refusedReason = (file: { name: string }): NewFolderItem["refused"] =>
-  uploadKind(file.name) === null ? "unsupported_type" : undefined;
+export { refusedReason };
 
 /** The plan, asked again after the server's Retry-After while another plan of the organisation is built. */
 async function planWhenFree(api: FolderUploadApi, body: FolderUploadPlanBody): Promise<FolderUploadPlan> {
@@ -112,7 +125,8 @@ async function keyIndex(source: FolderSource): Promise<Map<string, number>> {
   return keys;
 }
 
-/** Plan, register, then send. `stopped` is asked before each file is checked or sent (Stop). */
+/** Plan, register, then send. `stopped` (Stop) is asked after the plan, before each page of the
+ * listing, and before each file is checked or sent; Continue upload lists again with the same id. */
 export async function startFolderUpload(
   api: FolderUploadApi,
   args: {
@@ -146,15 +160,17 @@ export async function startFolderUpload(
       only_new: onlyNew,
     });
   } catch (caught) {
-    emit({ type: "phase", id, phase: "refused", message: uploadErrorText(caught, online()) });
+    emit({ type: "phase", id, phase: "refused", message: uploadErrorText(caught, online(), false) });
     return;
   }
   emit({ type: "planned", id, rootFolderId: plan.root_folder_id });
+  if (stopped()) return emit({ type: "phase", id, phase: "stopped" });
   emit({ type: "phase", id, phase: "registering" });
   if (onlyNew) emit({ type: "checked", id, done: 0 });
   const keys = new Map<string, number>();
   try {
     for (let start = 0; start < manifest.fileCount; start += REGISTER_PAGE) {
+      if (stopped()) return emit({ type: "phase", id, phase: "stopped" });
       const page: NewFolderItem[] = [];
       for (let at = start; at < Math.min(start + REGISTER_PAGE, manifest.fileCount); at++) {
         // Stopped while checking: the pages registered stay; Continue plans the same id again.
@@ -182,7 +198,7 @@ export async function startFolderUpload(
       await api.register(id, userId, page);
     }
   } catch (caught) {
-    const why = sessionChangedMessage(caught) ?? `Not every file could be listed. ${uploadErrorText(caught, online())}`;
+    const why = sessionChangedMessage(caught) ?? `Not every file could be listed. ${uploadErrorText(caught, online(), false)}`;
     emit({ type: "phase", id, phase: "stopped", message: why });
     return;
   }
@@ -208,7 +224,8 @@ export async function sendWaiting(
   const keys = await keyIndex(source);
   const slots = createSlots(Math.max(1, Math.min(args.atOnce ?? FOLDER_UPLOADS_AT_ONCE, FOLDER_UPLOADS_AT_ONCE)));
   let signedOut: string | null = null;
-  const halted = () => signedOut !== null || stopped();
+  let full: string | null = null; // the API's storage_full words (#516)
+  const halted = () => signedOut !== null || full !== null || stopped();
 
   async function sendOne(item: FolderUploadItem) {
     if (halted()) return;
@@ -223,22 +240,33 @@ export async function sendWaiting(
     emit({ type: "sending", id, itemId: item.id, name: item.name, fraction: 0 });
     let shown = 0;
     try {
-      const result = await api.send(file, item, (fraction) => {
-        // Whole tenths only: a browser reports about every 50 ms, and each report redraws the tray.
-        if (Math.floor(fraction * 10) === Math.floor(shown * 10)) return;
-        shown = fraction;
-        emit({ type: "sending", id, itemId: item.id, name: item.name, fraction });
-      });
+      const result = await api.send(
+        file,
+        item,
+        (fraction) => {
+          // Whole tenths only: a browser reports about every 50 ms, and each report redraws the tray.
+          if (Math.floor(fraction * 10) === Math.floor(shown * 10)) return;
+          shown = fraction;
+          emit({ type: "sending", id, itemId: item.id, name: item.name, fraction });
+        },
+        // The row says while the file waits for the connection or the server (production QA, 5 Nov 2026).
+        (waiting, why) =>
+          emit({ type: "sending", id, itemId: item.id, name: item.name, fraction: shown, ...(waiting ? { waiting: why ?? "connection" } : {}) }),
+      );
       emit({ type: "sent", id, itemId: item.id, outcome: result.duplicate ? "duplicate" : "stored" });
     } catch (caught) {
+      if (isStorageFull(caught)) {
+        full ??= uploadErrorText(caught, online()); // the item stays waiting on the server
+        return;
+      }
       const changed = sessionChangedMessage(caught);
       signedOut ??= changed;
       if (caught instanceof ApiError && ITEM_FAILURES.has(caught.code)) {
         emit({ type: "sent", id, itemId: item.id, outcome: "failed" });
         return;
       }
-      const retry = changed === null && canRetry(caught);
-      notSent(changed ?? uploadErrorText(caught, online()), retry);
+      const retry = changed === null && canSendAgain(caught);
+      notSent(changed ?? uploadErrorText(caught, online(), retry), retry);
     }
   }
 
@@ -252,15 +280,12 @@ export async function sendWaiting(
     }
     emit({ type: "counts", id, summary: await api.summary(id) });
   } catch (caught) {
-    signedOut ??= sessionChangedMessage(caught) ?? `Kaagaz could not list the files still to send. ${uploadErrorText(caught, online())}`;
+    signedOut ??= sessionChangedMessage(caught) ?? `Kaagaz could not list the files still to send. ${uploadErrorText(caught, online(), false)}`;
   }
-  if (signedOut !== null) emit({ type: "phase", id, phase: "stopped", message: signedOut });
+  const why = signedOut ?? full;
+  if (why !== null) emit({ type: "phase", id, phase: "stopped", message: why });
   else emit({ type: "phase", id, phase: stopped() ? "stopped" : "done" });
 }
-
-/** A connection or server problem, not a refusal: the same item can be sent again. */
-const canRetry = (caught: unknown) =>
-  !(caught instanceof ApiError) || caught.status === 0 || caught.status === 429 || caught.status >= 500;
 
 // --- the state the tray shows ---------------------------------------------------------
 
@@ -268,6 +293,7 @@ interface SendingRow {
   itemId: string;
   name: string;
   fraction: number;
+  waiting?: Waiting;
 }
 
 export interface FolderUploadView {
@@ -376,9 +402,15 @@ export function folderUploadsReducer(
   const without = (itemId: string) => view.sending.filter((row) => row.itemId !== itemId);
   let next: FolderUploadView;
   switch (event.type) {
-    case "phase":
-      next = { ...view, phase: event.phase, message: event.message ?? null, sending: event.phase === "sending" ? view.sending : [] };
+    case "phase": {
+      // Stop pressed just as the run ended changes nothing: the row is not left stopping. While
+      // it stops, the run going on to its next step ("sending") doesn't bring Stop back.
+      if (event.phase === "stopping" && !RUNNING.includes(view.phase)) return state;
+      const phase = view.phase === "stopping" && RUNNING.includes(event.phase) ? "stopping" : event.phase;
+      const keep = phase === "sending" || phase === "stopping";
+      next = { ...view, phase, message: event.message ?? null, sending: keep ? view.sending : [] };
       break;
+    }
     case "planned":
       next = { ...view, rootFolderId: event.rootFolderId };
       break;
@@ -405,7 +437,7 @@ export function folderUploadsReducer(
       break;
     }
     case "sending": {
-      const row = { itemId: event.itemId, name: event.name, fraction: event.fraction };
+      const row = { itemId: event.itemId, name: event.name, fraction: event.fraction, ...(event.waiting ? { waiting: event.waiting } : {}) };
       const rest = without(event.itemId);
       next = { ...view, sending: [...rest, row].slice(-FOLDER_UPLOADS_AT_ONCE) };
       break;
@@ -466,6 +498,8 @@ export function withNotSent(
 }
 
 const MB = 1024 * 1024;
+// The server's own words for it (backend views.zip_message).
+const KEPT_ZIP = "Kept as a file, not unpacked: Kaagaz unpacks a zip only when it is uploaded on its own.";
 
 /** Why an item needs attention, with what to do, in plain words; null when it doesn't. Never retried. */
 export function itemProblemText(item: FolderUploadItem, limits: UploadLimits): string | null {
@@ -475,7 +509,7 @@ export function itemProblemText(item: FolderUploadItem, limits: UploadLimits): s
       return `Too big: the most is ${Math.floor(limitFor(kind, limits) / MB)} MB.`;
     }
     case "unsupported_type":
-      return "This kind of file can't be uploaded. Use PDF, PNG, JPG, TIFF, CSV or XLSX.";
+      return UNSUPPORTED_UPLOAD;
     case "empty_file":
       return "This file is empty.";
     case "folder_gone":
@@ -486,6 +520,8 @@ export function itemProblemText(item: FolderUploadItem, limits: UploadLimits): s
       break;
   }
   const document = item.document;
+  // #549: a zip in a folder upload is kept as a file by design; say so, never "Failed".
+  if (document?.status === "needs_reader" && uploadKind(item.name) === "zip") return KEPT_ZIP;
   if (document && ["failed", "rejected", "needs_reader"].includes(document.status)) {
     const code = document.status === "needs_reader" ? "needs_reader" : document.failure_code;
     const what = code ? failureWords(code) : documentWords(document.status);

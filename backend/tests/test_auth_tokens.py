@@ -10,6 +10,7 @@ import base64
 import hashlib
 import hmac
 import json
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,7 @@ from tests.test_api_support import ApiFakeStorage
 SECRET = "a-test-secret-that-is-long-enough-000000"
 UID = "11111111-1111-4111-8111-111111111111"
 CID = "22222222-2222-4222-8222-222222222222"
+SID = "33333333-3333-4333-8333-333333333333"  # Changed on purpose (#502, 0076): the session id
 NOW = 1_800_000_000
 SEALED = "v1:bm90LWEtcmVhbC1zZWFsZWQtc2VjcmV0LWJ1dC13ZWxsLWZvcm1lZA=="
 ENV_EXAMPLE = Path(__file__).resolve().parents[2] / ".env.example"
@@ -65,6 +67,7 @@ def _session(**changes: Any) -> SessionClaims:
         "scope": "app",
         "session_version": 3,
         "expires_at": NOW + 3600,
+        "session_id": SID,
     }
     return SessionClaims(**{**fields, **changes})
 
@@ -99,6 +102,7 @@ def _signed(payload: dict[str, Any], purpose: bytes, secret: str = SECRET) -> st
 def _session_payload(**changes: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {"uid": UID, "cid": CID, "role": "admin", "scope": "app", "ver": 3}
     payload["exp"] = NOW + 3600
+    payload["sid"] = SID
     payload.update(changes)
     return payload
 
@@ -119,6 +123,7 @@ def test_session_payload_is_exactly_the_agreed_json() -> None:
         "scope": "admin",
         "ver": 3,
         "exp": NOW + 3600,
+        "sid": SID,  # Changed on purpose (#502, 0076)
     }
 
 
@@ -235,16 +240,21 @@ def test_session_seconds_by_scope() -> None:
 
 @pytest.mark.parametrize(("scope", "seconds"), [("app", 12 * 3600), ("admin", 60 * 60)])
 def test_new_session_expires_after_its_scopes_lifetime(scope: str, seconds: int) -> None:
-    claims = new_session(
-        user_id=UID,
-        customer_id=CID,
-        role="admin",
-        scope=scope,
-        session_version=3,
-        settings=make_settings(),
-        now=NOW,
-    )
-    assert claims == _session(scope=scope, expires_at=NOW + seconds)
+    def started() -> SessionClaims:
+        return new_session(
+            user_id=UID,
+            customer_id=CID,
+            role="admin",
+            scope=scope,
+            session_version=3,
+            settings=make_settings(),
+            now=NOW,
+        )
+
+    claims, other = started(), started()
+    assert claims == _session(scope=scope, expires_at=NOW + seconds, session_id=claims.session_id)
+    # Changed on purpose (#502, 0076): each session has its own random id, so logout ends one.
+    assert str(uuid.UUID(claims.session_id)) == claims.session_id != other.session_id
 
 
 @pytest.mark.parametrize(("scope", "seconds"), [("app", 12 * 3600), ("admin", 60 * 60)])
@@ -351,11 +361,14 @@ def test_an_enrol_token_with_a_bad_or_extra_field_is_refused(changes: dict[str, 
 
 # --- the confirm token (council 4 Oct 2026) ----------------------------------------------------
 
-CONFIRM = {"uid": UID, "cid": CID, "ver": 3, "exp": NOW + CONFIRM_SECONDS}
+# Changed on purpose (A4, 7 Nov 2026): the browser session too.
+CONFIRM = {"uid": UID, "cid": CID, "ver": 3, "exp": NOW + CONFIRM_SECONDS, "sid": SID}
 
 
 def test_confirm_round_trips_and_lasts_5_minutes() -> None:
-    claims = ConfirmClaims(user_id=UID, customer_id=CID, session_version=3, expires_at=NOW + 300)
+    claims = ConfirmClaims(
+        user_id=UID, customer_id=CID, session_version=3, expires_at=NOW + 300, session_id=SID
+    )
     token = sign_confirm(claims, SECRET)
     assert CONFIRM_SECONDS == 300
     assert _payload(token) == CONFIRM
@@ -378,7 +391,7 @@ def test_a_confirm_token_is_never_a_session_or_an_enrol_token_and_the_reverse() 
 
 def test_a_confirm_token_with_a_missing_bad_or_extra_field_is_refused() -> None:
     payloads = [{key: value for key, value in CONFIRM.items() if key != missing} for missing in CONFIRM]
-    bad = ({"ver": True}, {"ver": 0}, {"exp": "1"}, {"uid": "x"}, {"role": "member"})
+    bad = ({"ver": True}, {"ver": 0}, {"exp": "1"}, {"uid": "x"}, {"sid": "x"}, {"role": "member"})
     for payload in payloads + [{**CONFIRM, **changes} for changes in bad]:
         assert read_confirm(_signed(payload, b"confirm"), SECRET, now=NOW) is None, payload
 
@@ -531,7 +544,9 @@ def _client(
     Each lookup's (customer_id, user_id, scope) is added to ``seen``."""
     lookups: Lookups = [] if seen is None else seen
 
-    def load_user(db: Database, customer_id: str, user_id: str, *, scope: str) -> CurrentUser | None:
+    def load_user(
+        db: Database, customer_id: str, user_id: str, *, scope: str, session_id: str | None = None
+    ) -> CurrentUser | None:
         lookups.append((customer_id, user_id, scope))
         if stored is None:
             return None
@@ -687,9 +702,17 @@ def _forever(client: TestClient, confirm: dict[str, Any] | None = None) -> tuple
         # A grant never counts for an admin: a password-only admin stays refused.
         ({"delete_forever_allowed": True}, "app", (401, "not_signed_in")),
         ({"delete_forever_allowed": True, "totp_enabled": False}, "admin", (403, "mfa_enrol_required")),
-        # Turned off by the admin (30 Oct 2026): signed in on the password, still refused here.
+        # Changed on purpose (#538, Tushar, 7 Nov 2026): turned off by the admin (30 Oct 2026),
+        # signed in on the password, the typed-password token now counts in an admin session.
         (
             {"delete_forever_allowed": True, "totp_enabled": False, "two_step_turned_off": True},
+            "admin",
+            (200, None),
+        ),
+        ({"totp_enabled": False, "two_step_turned_off": True}, "app", (401, "not_signed_in")),
+        # Required by the organisation (0068) but not set up: refused as before, token or not.
+        (
+            {"totp_enabled": False, "two_step_turned_off": True, "two_step_required": True},
             "admin",
             (403, "two_step_required"),
         ),

@@ -66,7 +66,7 @@ import json
 import secrets
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from functools import cache
 from typing import Annotated, Any
@@ -170,6 +170,9 @@ class SessionClaims:
     session_version: int
     expires_at: int  # seconds since the epoch
     capped: bool = False  # given the 24-hour cap while idle hours were set (0040): "cap": true
+    # This browser's session (0076, #502): logout writes it to ended_sessions, which every
+    # request checks. Random, so a cookie can't name another browser's session.
+    session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -187,14 +190,15 @@ class ConfirmClaims:
     customer_id: str
     session_version: int
     expires_at: int  # seconds since the epoch
+    session_id: str  # the browser session that typed the password (A4, 7 Nov 2026)
 
 
 _SESSION_PURPOSE = b"session"
 _ENROL_PURPOSE = b"enrol"
 _CONFIRM_PURPOSE = b"confirm"
-_SESSION_FIELDS = frozenset({"uid", "cid", "role", "scope", "ver", "exp"})
+_SESSION_FIELDS = frozenset({"uid", "cid", "role", "scope", "ver", "exp", "sid"})
 _ENROL_FIELDS = frozenset({"uid", "cid", "ver", "sec", "exp"})
-_CONFIRM_FIELDS = frozenset({"uid", "cid", "ver", "exp"})
+_CONFIRM_FIELDS = frozenset({"uid", "cid", "ver", "exp", "sid"})
 _OPERATOR_PURPOSE = b"operator"
 _OPERATOR_FIELDS = frozenset({"oid", "ver", "exp"})
 _MOVE_PURPOSE = b"operator_move"
@@ -253,6 +257,7 @@ def sign_session(claims: SessionClaims, secret: str) -> str:
             "scope": claims.scope,
             "ver": claims.session_version,
             "exp": claims.expires_at,
+            "sid": claims.session_id,
             **({"cap": True} if claims.capped else {}),  # left out otherwise: older cookies stay valid
         },
         _SESSION_PURPOSE,
@@ -304,6 +309,7 @@ def sign_confirm(claims: ConfirmClaims, secret: str) -> str:
             "cid": claims.customer_id,
             "ver": claims.session_version,
             "exp": claims.expires_at,
+            "sid": claims.session_id,
         },
         _CONFIRM_PURPOSE,
         secret,
@@ -312,16 +318,16 @@ def sign_confirm(claims: ConfirmClaims, secret: str) -> str:
 
 def read_confirm(token: str, secret: str, now: int) -> ConfirmClaims | None:
     """The claims of a genuine, unexpired confirm token, else None. Strict: exactly
-    the four fields, each of its type. Constant-time check."""
+    the five fields, each of its type. Constant-time check."""
     data = _verified(token, _CONFIRM_PURPOSE, secret)
     if not isinstance(data, dict) or set(data) != _CONFIRM_FIELDS:
         return None
-    uid, cid, ver, exp = data["uid"], data["cid"], data["ver"], data["exp"]
-    if not (isinstance(uid, str) and isinstance(cid, str) and _is_uuid(uid) and _is_uuid(cid)):
+    uid, cid, ver, exp, sid = data["uid"], data["cid"], data["ver"], data["exp"], data["sid"]
+    if not all(isinstance(value, str) and _is_uuid(value) for value in (uid, cid, sid)):
         return None
     if not (_is_version(ver) and _is_int(exp)) or exp <= now:
         return None
-    return ConfirmClaims(user_id=uid, customer_id=cid, session_version=ver, expires_at=exp)
+    return ConfirmClaims(user_id=uid, customer_id=cid, session_version=ver, expires_at=exp, session_id=sid)
 
 
 # --- the platform operator's tokens (super admin PR 2, PROVISIONAL): other purposes and
@@ -601,8 +607,9 @@ def _verified(token: str, purpose: bytes, secret: str) -> Any:
 
 
 def _claims(data: Any, now: int) -> SessionClaims | None:
-    """Strict: exactly the six fields, each of its type, and "cap" (only ever true, 0040);
-    scope "admin" needs role "admin"."""
+    """Strict: exactly the seven fields, each of its type, and "cap" (only ever true, 0040);
+    scope "admin" needs role "admin". A cookie from before 0076 has no "sid": refused, so its
+    browser signs in once more."""
     if (
         not isinstance(data, dict)
         or set(data) - {"cap"} != _SESSION_FIELDS
@@ -610,8 +617,8 @@ def _claims(data: Any, now: int) -> SessionClaims | None:
     ):
         return None
     uid, cid, role, scope = data["uid"], data["cid"], data["role"], data["scope"]
-    ver, exp = data["ver"], data["exp"]
-    if not (isinstance(uid, str) and isinstance(cid, str) and isinstance(role, str)):
+    ver, exp, sid = data["ver"], data["exp"], data["sid"]
+    if not (isinstance(uid, str) and isinstance(cid, str) and isinstance(role, str) and isinstance(sid, str)):
         return None
     if not isinstance(scope, str) or scope not in SCOPES or role not in ROLES:
         return None
@@ -619,7 +626,7 @@ def _claims(data: Any, now: int) -> SessionClaims | None:
         return None
     if not (_is_version(ver) and _is_int(exp)) or exp <= now:
         return None
-    if not (_is_uuid(uid) and _is_uuid(cid)):
+    if not (_is_uuid(uid) and _is_uuid(cid) and _is_uuid(sid)):
         return None
     return SessionClaims(
         user_id=uid,
@@ -629,6 +636,7 @@ def _claims(data: Any, now: int) -> SessionClaims | None:
         session_version=ver,
         expires_at=exp,
         capped="cap" in data,
+        session_id=sid,
     )
 
 
@@ -773,13 +781,16 @@ def touch_due(seen_at: datetime | None, now: datetime) -> bool:
     return seen_at is not None and now - seen_at >= TOUCH_EVERY
 
 
-def set_confirm_cookie(response: Response, user: CurrentUser, settings: Settings, *, now: int) -> None:
-    """A confirm token for this user and session version, CONFIRM_SECONDS long."""
+def set_confirm_cookie(
+    response: Response, user: CurrentUser, settings: Settings, *, now: int, session_id: str
+) -> None:
+    """A confirm token for this user, session version and browser session, CONFIRM_SECONDS long."""
     claims = ConfirmClaims(
         user_id=user.user_id,
         customer_id=user.customer_id,
         session_version=user.session_version,
         expires_at=now + CONFIRM_SECONDS,
+        session_id=session_id,
     )
     response.set_cookie(
         CONFIRM_COOKIE,
@@ -830,7 +841,9 @@ def _signed_in(request: Request) -> CurrentUser:
     claims = session_claims(request, context.settings, int(now.timestamp()))
     if claims is None:
         raise ApiError(401, "not_signed_in")
-    user = load_user(context.db, claims.customer_id, claims.user_id, scope=claims.scope)
+    user = load_user(
+        context.db, claims.customer_id, claims.user_id, scope=claims.scope, session_id=claims.session_id
+    )
     if user is None or user.role != claims.role or user.session_version != claims.session_version:
         raise ApiError(401, "not_signed_in")
     if user.role == "admin" and claims.scope != "admin":
@@ -848,12 +861,15 @@ def _signed_in(request: Request) -> CurrentUser:
     return user
 
 
-def load_user(db: Database, customer_id: str, user_id: str, *, scope: str) -> CurrentUser | None:
+def load_user(
+    db: Database, customer_id: str, user_id: str, *, scope: str, session_id: str | None = None
+) -> CurrentUser | None:
     """The enabled user with this id in this customer, or None (also while the
-    customer is not active, 0014). ``scope`` is the session's (at sign-in, the
-    one being started). One indexed query."""
+    customer is not active, 0014, and while ``session_id``, a request's session, was ended
+    by logout, 0076). ``scope`` is the session's (at sign-in, the one being started). One
+    indexed query."""
     with db.customer(customer_id) as conn:
-        row = users_sql.session_user(conn, customer_id, user_id)
+        row = users_sql.session_user(conn, customer_id, user_id, session_id=session_id)
     if row is None or row["disabled"]:
         return None
     return CurrentUser(
@@ -899,8 +915,9 @@ AdminSession = Annotated[CurrentUser, Depends(require_admin_session)]
 
 
 def require_admin_with_two_step(user: AdminSession) -> CurrentUser:
-    """For what can't be undone (deleting a document forever, deleting a tag): an
-    admin session whose admin has two-step sign-in on, else 403
+    """For what can't be undone (deleting a tag; ``require_delete_forever`` lets an admin
+    without two-step type their password instead, #538): an admin session whose admin has
+    two-step sign-in on, else 403
     ``two_step_required``. ``current_user`` lets through only an admin with two-step
     sign-in on or one who turned it off themselves (0061b), whom this refuses."""
     if not user.totp_enabled:
@@ -911,23 +928,46 @@ def require_admin_with_two_step(user: AdminSession) -> CurrentUser:
 AdminWithTwoStep = Annotated[CurrentUser, Depends(require_admin_with_two_step)]
 
 
-def require_delete_forever(request: Request, user: User) -> CurrentUser:
-    """For deleting a document forever (council 4 Oct 2026). An admin needs what
-    they always did: an admin session with two-step sign-in on; a grant never
-    counts for an admin, so a password-only admin can't route round two-step.
-    Anyone else needs an admin's grant (403 ``forbidden``) and a confirm token
-    from typing their password in the last CONFIRM_SECONDS, for this user and
-    session version (403 ``password_confirm_required``). The grant is read
-    again on every request, so stopping it works at once."""
+def deletes_forever_by_password(user: CurrentUser) -> bool:
+    """Who types their password again to delete forever (``require_delete_forever``): a member
+    or reviewer an admin allowed, or an admin in an admin session without two-step sign-in on
+    (never while the organisation requires it)."""
     if user.role == "admin":
-        return require_admin_with_two_step(require_admin_session(user))
-    if not user.delete_forever_allowed:
+        return user.scope == "admin" and not user.totp_enabled and not user.two_step_required
+    return user.delete_forever_allowed
+
+
+def require_delete_forever(request: Request, user: User) -> CurrentUser:
+    """For deleting a document forever (council 4 Oct 2026; #538, Tushar, 7 Nov 2026). An admin
+    needs an admin session (403 ``admin_session_required``): with two-step sign-in on, nothing
+    more; without it, a confirm token, as below. A grant never counts for an admin. While the
+    organisation requires two-step for its admins (0068, #481) one without it is refused as
+    before (403 ``two_step_required``; ``current_user`` already refuses that state). Anyone else
+    needs an admin's grant (403 ``forbidden``). The confirm token comes from typing the password
+    in the last CONFIRM_SECONDS, for this user, session version and browser session (its ``sid``,
+    A4: never another browser's, nor one from before signing out and in again; 403
+    ``password_confirm_required``). The grant is read again on every request, so stopping it
+    works at once."""
+    if user.role == "admin" and not deletes_forever_by_password(require_admin_session(user)):
+        return require_admin_with_two_step(user)
+    if not deletes_forever_by_password(user):
         raise ApiError(403, "forbidden")
     context = get_context(request)
+    now = int(context.clock().timestamp())
     token = request.cookies.get(CONFIRM_COOKIE) or ""
-    claims = read_confirm(token, context.settings.session_secret, int(context.clock().timestamp()))
-    signed = None if claims is None else (claims.user_id, claims.customer_id, claims.session_version)
-    if signed != (user.user_id, user.customer_id, user.session_version):
+    claims = read_confirm(token, context.settings.session_secret, now)
+    session = session_claims(request, context.settings, now)
+    signed = (
+        None
+        if claims is None
+        else (claims.user_id, claims.customer_id, claims.session_version, claims.session_id)
+    )
+    if session is None or signed != (
+        user.user_id,
+        user.customer_id,
+        user.session_version,
+        session.session_id,
+    ):
         raise ApiError(403, "password_confirm_required")
     return user
 

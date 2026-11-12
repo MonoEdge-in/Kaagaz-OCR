@@ -56,12 +56,19 @@ def document_questions(
     return conn.execute(_DOCUMENT_QUESTIONS, params).mappings().all()
 
 
-def create_conversation(conn: Connection, customer_id: str, user_id: str, title: str) -> str:
-    conversation_id: object = conn.execute(
-        text("INSERT INTO conversations (customer_id, user_id, title) VALUES (:c, :u, :t) RETURNING id"),
-        {"c": customer_id, "u": user_id, "t": title},
+def create_conversation(
+    conn: Connection, customer_id: str, user_id: str, title: str, *, conversation_id: str | None = None
+) -> str:
+    """A new conversation; ``conversation_id``: the id named for it before (streaming Ask's
+    ``started``, #535), else a new one."""
+    made: object = conn.execute(
+        text(
+            "INSERT INTO conversations (id, customer_id, user_id, title)"
+            " VALUES (COALESCE(CAST(:id AS uuid), gen_random_uuid()), :c, :u, :t) RETURNING id"
+        ),
+        {"id": conversation_id, "c": customer_id, "u": user_id, "t": title},
     ).scalar_one()
-    return str(conversation_id)
+    return str(made)
 
 
 def get_conversation(
@@ -186,15 +193,18 @@ def add_message(
     answer: Mapping[str, Any] | None,
     scope: Mapping[str, Any] | None = None,
     rewritten_question: str | None = None,
+    message_id: str | None = None,
 ) -> RowMapping:
     """Store one message. ``answer`` is set for assistant messages only (a table check);
-    ``scope`` for a question asked inside one, ``rewritten_question`` for a follow-up (H1)."""
+    ``scope`` for a question asked inside one, ``rewritten_question`` for a follow-up (H1);
+    ``message_id`` the id named for it before (streaming Ask's ``started``, #535), else a new one."""
     return (
         conn.execute(
             text(
-                "INSERT INTO messages (customer_id, conversation_id, role, text, answer, scope,"
+                "INSERT INTO messages (id, customer_id, conversation_id, role, text, answer, scope,"
                 " rewritten_question)"
-                " VALUES (:c, :conv, :role, :text, CAST(:answer AS jsonb), CAST(:scope AS jsonb), :rq)"
+                " VALUES (COALESCE(CAST(:id AS uuid), gen_random_uuid()), :c, :conv, :role, :text,"
+                " CAST(:answer AS jsonb), CAST(:scope AS jsonb), :rq)"
                 " RETURNING id, role, text, answer, scope, created_at"
             ),
             {
@@ -205,6 +215,7 @@ def add_message(
                 "answer": None if answer is None else json.dumps(answer),
                 "scope": None if scope is None else json.dumps(scope),
                 "rq": rewritten_question,
+                "id": message_id,
             },
         )
         .mappings()
@@ -255,6 +266,69 @@ def openings(conn: Connection, customer_id: str, conversation_id: str) -> list[s
             {"c": customer_id, "conv": conversation_id},
         ).scalars()
     )
+
+
+def repeated_answer(conn: Connection, customer_id: str, user_id: str, key: str) -> dict[str, Any] | None:
+    """#535 (answering/ready.py ``repeat_key``): the newest stored answer of the last day saved with
+    ``key`` (``repeat_key``), found (answered or unchecked), while no answer saved with it, the
+    first or a copy served from it (``repeat_copy``), is rated Not useful; None when there is none.
+    Only ``user_id``'s own conversations of the last day are read (the key holds the asker too),
+    through their indexes (conversations_user, messages_conversation), so only their answers'
+    JSON is opened. One statement."""
+    found = conn.execute(
+        text(
+            "WITH mine AS (SELECT m.id, m.answer, m.created_at FROM conversations c"
+            " JOIN messages m ON m.conversation_id = c.id AND m.customer_id = c.customer_id"
+            " WHERE c.customer_id = :c AND c.user_id = :u AND c.created_at > now() - interval '1 day'"
+            " AND m.role = 'assistant' AND m.created_at > now() - interval '1 day'"
+            " AND (m.answer ->> 'repeat_key' = :k OR m.answer ->> 'repeat_copy' = :k))"
+            " SELECT answer FROM mine WHERE answer ->> 'repeat_key' = :k"
+            " AND answer ->> 'status' IN ('answered', 'unchecked') AND answer -> 'outage' IS NULL"
+            " AND NOT EXISTS (SELECT 1 FROM mine r JOIN feedback f ON f.customer_id = :c"
+            " AND f.message_id = r.id WHERE f.rating = 'down')"
+            " ORDER BY created_at DESC LIMIT 1"
+        ),
+        {"c": customer_id, "u": user_id, "k": key},
+    ).scalar()
+    return None if found is None else dict(found)
+
+
+def saved_turn(
+    conn: Connection, customer_id: str, question_id: str
+) -> tuple[str, RowMapping, RowMapping | None] | None:
+    """#535 (streaming Ask's ``question_id``): the question message with this id, as
+    ``add_message`` returns it, its conversation's owner, and the answer saved with it (the first
+    assistant message of its conversation from its time on: both are written in one
+    transaction); None when this customer has no such message (row level security hides any
+    other's). Two statements by primary key and the conversation's messages."""
+    question = (
+        conn.execute(
+            text(
+                "SELECT q.id, q.role, q.text, q.answer, q.scope, q.created_at, q.conversation_id,"
+                " c.user_id AS owner FROM messages q JOIN conversations c"
+                " ON c.id = q.conversation_id AND c.customer_id = q.customer_id"
+                " WHERE q.customer_id = :c AND q.id = CAST(:id AS uuid)"
+            ),
+            {"c": customer_id, "id": question_id},
+        )
+        .mappings()
+        .first()
+    )
+    if question is None:
+        return None
+    answer = (
+        conn.execute(
+            text(
+                "SELECT id, role, text, answer, scope, created_at FROM messages"
+                " WHERE customer_id = :c AND conversation_id = :conv AND role = 'assistant'"
+                " AND created_at >= :at ORDER BY created_at, id LIMIT 1"
+            ),
+            {"c": customer_id, "conv": question["conversation_id"], "at": question["created_at"]},
+        )
+        .mappings()
+        .first()
+    )
+    return str(question["owner"]), question, answer
 
 
 def newest_message(conn: Connection, customer_id: str, conversation_id: str) -> str | None:

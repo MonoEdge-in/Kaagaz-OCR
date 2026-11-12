@@ -532,7 +532,7 @@ def assert_well_formed(answer: Answer) -> None:
     """The properties every answer keeps, answered or not (no source, no answer)."""
     data = answer.to_json()
     # Changed on purpose (24 Oct 2026): an outage adds ``outage`` (KZ-006, never "busy").
-    assert set(data) - {"outage"} == ANSWER_KEYS
+    assert set(data) - {"outage", "outage_reason"} == ANSWER_KEYS  # #535: a timeout says so
     assert data.get("outage", True) is True and ("outage" in data) == answer.unavailable
     assert data["route"] in {"fixed_query", "search"}
     # PRD 6 A: v2, the opening is the API's, nothing assumed yet; at most 10 documents listed,
@@ -1148,6 +1148,26 @@ def test_not_found_while_the_model_is_down_is_unavailable() -> None:
         assert (answer.status, answer.unavailable) == ("not_found", False)
 
 
+def test_an_outage_from_a_draft_that_timed_out_says_timeout_and_no_other_does() -> None:
+    """#535 (test-server log, 7 Nov 2026): asking again in a minute times out the same way, so a
+    draft that timed out says so (``outage_reason``); every other outage, and a timed-out question
+    vector, keeps the plain outage."""
+    question = "What is the GST number of INV-1042?"
+
+    def ask(pieces: list[FakeHit], model: FakeModel) -> Answer:
+        return service(pieces=pieces, model=model)[0].answer(A, question)
+
+    timed_out = ask([INVOICE], FakeModel(chat_error=ModelUnavailable("timeout")))
+    assert (timed_out.status, timed_out.unavailable) == ("not_found", True)
+    assert timed_out.to_json()["outage_reason"] == "timeout"
+    assert_well_formed(timed_out)
+    for other in (
+        ask([INVOICE], FakeModel(chat_error=ModelUnavailable("rate_limited"))),
+        ask([], FakeModel(embed_error=ModelUnavailable("timeout"))),
+    ):
+        assert other.unavailable and "outage_reason" not in other.to_json()
+
+
 def test_a_reply_the_model_gave_but_could_not_use_is_no_outage() -> None:
     """KZ-006 (24 Oct 2026, "jalna lands"): a reply too long for its budget, malformed or
     refused came from a model that was up, so the answer is never "busy"."""
@@ -1192,6 +1212,9 @@ def test_each_answer_logs_one_timing_line_of_codes_and_numbers(caplog: pytest.Lo
     stages = r" overlap=0 rewrite_ms=\d+ embed_ms=\d+ search_ms=\d+ widen_ms=\d+ draft_ms=\d+ verify_ms=\d+"
     # Changed on purpose (#381, 27 Oct 2026): parts, how many the evidence was read in (0: none).
     stages += r" overlap_ms=0 limiter_wait_ms=\d+ total_ms=\d+ parts=0"
+    stages += " redrafts=0"  # Changed on purpose (#535): the draft's model calls made again
+    # Changed on purpose (#535, 7 Nov 2026): streamed and first_sentence_ms (POST /api/chat/stream).
+    stages += " streamed=0 first_sentence_ms=0"
     expected = [
         r"route=search status=answered outcome=(verified|needs_review)",
         "route=search status=not_found outcome=notfound_model",

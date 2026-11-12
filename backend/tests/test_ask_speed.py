@@ -120,7 +120,8 @@ CASES: dict[str, tuple[str, list[Turn], Any, list[str], list[Any], bool, int]] =
         False,
         1,
     ),
-    "aspects": (LEAVE_QUESTION, [], plan(), ["holidays", "casual leave", "maternity leave"], [], True, 1),
+    # Changed on purpose (#535): the early search is fused with the aspects', never searched again.
+    "aspects": (LEAVE_QUESTION, [], plan(), ["holidays", "casual leave", "maternity leave"], [], True, 0),
 }
 
 

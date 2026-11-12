@@ -144,8 +144,10 @@ const suggestion = (over: Partial<VersionSuggestion> = {}): VersionSuggestion =>
   candidate: { family_id: "d1", id: "d1", name: "7/12 Survey 44 Wakad.pdf" },
   next_version_no: 2,
   text_overlap: 0.86,
+  text_overlap_estimated: false,
   name_similarity: 0.31,
   shared_identifier: "survey_number",
+  reasons: "86% the same text",
   outcome: "suggested",
   status: "pending",
   ...over,
@@ -231,18 +233,26 @@ describe("the activity words (A4)", () => {
 // --- V6, V7: the banner ----------------------------------------------------------
 
 describe("the new-version banner (V6, V7)", () => {
-  it("says why in plain words", () => {
-    expect(reasonsText({ text_overlap: 0.91, name_similarity: null, shared_identifier: "agreement_number" })).toBe(
-      "91% of the text is the same and the agreement number matches",
+  // Changed on purpose (#521, NB-17): the share of the text when the text led, else the name and
+  // identifier in plain words, in the title's brackets.
+  it("says why in plain words: the share of the text, else the name and identifier", () => {
+    expect(reasonsText({ text_overlap: 0.86, name_similarity: 0.7, shared_identifier: "survey_number" })).toBe("86% the same text");
+    expect(reasonsText({ text_overlap: 0.8, name_similarity: null, shared_identifier: null })).toBe("80% the same text");
+    expect(
+      reasonsText({ text_overlap: 0.828125, text_overlap_estimated: true, name_similarity: null, shared_identifier: null }),
+    ).toBe("about 82% the same text"); // #521: rounded down
+    expect(reasonsText({ text_overlap: 0.79, name_similarity: 1, shared_identifier: "survey_number" })).toBe(
+      "same name and same survey number",
     );
-    expect(reasonsText({ text_overlap: 0.86, name_similarity: 0.7, shared_identifier: "survey_number" })).toBe(
-      "86% of the text is the same, the names are alike and the survey number matches",
-    );
+    expect(reasonsText({ text_overlap: null, name_similarity: 0.7, shared_identifier: "gstin" })).toBe("similar name and same GSTIN");
     // The server's own words win, as a string or a list.
     expect(reasonsText({ text_overlap: 0.9, name_similarity: null, shared_identifier: null, reasons: "90% is the same" })).toBe("90% is the same");
     expect(reasonsText({ text_overlap: 0.9, name_similarity: null, shared_identifier: null, reasons: ["a", "b", "c"] })).toBe("a, b and c");
     expect(reasonsText({ text_overlap: 0.2, name_similarity: 0.3, shared_identifier: null })).toBe("");
-    expect(bannerTitle("Rent Agreement Shinde.pdf")).toBe("This looks like a new version of Rent Agreement Shinde.pdf");
+    expect(bannerTitle("Rent Agreement Shinde.pdf", "86% the same text")).toBe(
+      'This looks like a new version of "Rent Agreement Shinde.pdf" (86% the same text).',
+    );
+    expect(bannerTitle("Rent Agreement Shinde.pdf", "")).toBe('This looks like a new version of "Rent Agreement Shinde.pdf".');
   });
 
   it("asks while pending, offers Undo after a link while newest, and says nothing after Keep separate", () => {
@@ -268,10 +278,22 @@ describe("the new-version banner (V6, V7)", () => {
 
   it("renders the question with its three buttons and the note, and the link with Undo", () => {
     const ask = render(createElement(VersionBanner, { detail: detail(), onChanged: () => undefined }));
-    expect(ask).toContain("This looks like a new version of 7/12 Survey 44 Wakad.pdf");
-    expect(ask).toContain("86% of the text is the same and the survey number matches.");
-    expect(ask).toContain("Make it version 2");
-    expect(ask).toContain("Keep separate");
+    // #521: the share of the text in the title, from the server's words.
+    expect(ask).toContain("This looks like a new version of &quot;7/12 Survey 44 Wakad.pdf&quot; (86% the same text).");
+    expect(ask).not.toContain("survey number");
+    const byName = render(
+      createElement(VersionBanner, {
+        detail: detail({
+          version_suggestion: suggestion({ text_overlap: null, name_similarity: 1, reasons: "same name and same survey number" }),
+        }),
+        onChanged: () => undefined,
+      }),
+    );
+    expect(byName).toContain("This looks like a new version of &quot;7/12 Survey 44 Wakad.pdf&quot; (same name and same survey number).");
+    // Changed on purpose (#521, Tushar's council): the two buttons and See the differences.
+    expect(ask).toContain(">Upload as a new version<");
+    expect(ask).toContain(">Upload as a new file<");
+    expect(ask).toContain(">See the differences<");
     expect(ask).toContain('href="/documents/d3/compare?with=d1"');
     expect(ask).toContain("Note for this version (optional)");
     const linked = render(
@@ -420,7 +442,7 @@ describe("Compare (V11)", () => {
       }),
     );
     expect(html).toContain("2 changes on page 2");
-    expect(html).toContain("Next change");
+    expect(html).toContain("Jump to next change"); // #521
     expect(html).toMatch(/<del[^>]*data-change="0"[^>]*>.*old &lt;b&gt;owner&lt;\/b&gt;/);
     expect(html).toMatch(/<ins[^>]*data-change="1"[^>]*>.*mutation 1234/);
     expect(html).toContain("The version compared with");

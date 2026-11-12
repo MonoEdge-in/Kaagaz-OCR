@@ -10,8 +10,9 @@ import {
   formatUsd,
   statusChip,
   typeLabel,
+  fileTypeLabel,
 } from "@/lib/format";
-import type { DocType, DocumentStatus } from "@/lib/types";
+import type { DetectedType, DocType, DocumentStatus } from "@/lib/types";
 
 describe("formatBytes", () => {
   it("shows bytes as whole numbers", () => {
@@ -77,11 +78,53 @@ describe("formatNumber", () => {
   });
 });
 
+describe("fileTypeLabel", () => {
+  it("names a file not read since #522 by its name's ending among its sniffed type's kinds", () => {
+    // Before 0078 a file not read kept its sniffed type (zip, text) until it is read again.
+    expect(fileTypeLabel("zip", "Lease.docx")).toBe("Word document");
+    expect(fileTypeLabel("zip", "Book.XLSX")).toBe("Spreadsheet");
+    expect(fileTypeLabel("zip", "Bills.zip")).toBe("ZIP file");
+    expect(fileTypeLabel("zip", "notes")).toBe("ZIP file");
+    expect(fileTypeLabel("text", "rent.csv")).toBe("CSV");
+    expect(fileTypeLabel("text", "page.htm")).toBe("Web page (HTML)");
+    expect(fileTypeLabel("text", "notes.pdf")).toBe("Text file"); // never a kind text can't be
+    // A told type is its own, whatever the name says.
+    expect(fileTypeLabel("pdf", "bill.docx")).toBe("PDF");
+    expect(fileTypeLabel("docx", "letter.zip")).toBe("Word document");
+  });
+});
+
 describe("typeLabel", () => {
   it("names each detected type in words", () => {
     expect(typeLabel("pdf")).toBe("PDF");
-    expect(typeLabel("zip")).toBe("Spreadsheet");
-    expect(typeLabel("text")).toBe("CSV");
+    // Changed on purpose (#522): a ready spreadsheet is xlsx, and zip and text are only the
+    // sniffed types, until the worker has told the file's kind.
+    expect(typeLabel("xlsx")).toBe("Spreadsheet");
+    expect(typeLabel("csv")).toBe("CSV");
+    expect(typeLabel("zip")).toBe("ZIP file");
+    expect(typeLabel("text")).toBe("Text file");
+  });
+
+  it("names every kind the worker can tell (#522)", () => {
+    const kinds: [DetectedType, string][] = [
+      ["xlsx", "Spreadsheet"],
+      ["xls", "Spreadsheet (XLS)"],
+      ["csv", "CSV"],
+      ["docx", "Word document"],
+      ["dotx", "Word template"],
+      ["doc", "Word document (DOC)"],
+      ["pptx", "PowerPoint"],
+      ["ppt", "PowerPoint (PPT)"],
+      ["txt", "Text"],
+      ["md", "Markdown"],
+      ["json", "JSON"],
+      ["html", "Web page (HTML)"],
+      ["heic", "Image (HEIC)"],
+      ["zip", "ZIP file"],
+    ];
+    for (const [kind, words] of kinds) {
+      expect(typeLabel(kind), kind).toBe(words);
+    }
   });
 });
 
@@ -134,6 +177,15 @@ describe("statusChip", () => {
     expect(statusChip("rejected")).toEqual({ text: "Failed", tone: "danger", className: "status-chip" });
     expect(statusChip("failed")).toEqual({ text: "Failed", tone: "danger", className: "status-chip" });
     for (const status of all) expect(statusChip(status).className).not.toMatch(/badge/);
+  });
+
+  // #549 (Tushar, 10 Nov 2026): a zip Kaagaz keeps as a file (inside a folder upload, or the
+  // zip's own copy after unpacking) is needs_reader, but nothing failed.
+  it("calls a zip kept as a file just that, never Failed", () => {
+    expect(statusChip("needs_reader", "zip")).toEqual({ text: "Kept as a file", tone: "neutral", className: "status-chip" });
+    expect(statusChip("needs_reader", "pdf")).toEqual({ text: "Failed", tone: "danger", className: "status-chip" });
+    expect(statusChip("failed", "zip")).toEqual({ text: "Failed", tone: "danger", className: "status-chip" });
+    expect(statusChip("received", "zip")).toEqual({ text: "Reading", tone: "working", className: "status-chip" });
   });
 });
 

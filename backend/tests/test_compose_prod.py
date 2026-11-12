@@ -11,6 +11,8 @@ import json
 import re
 from pathlib import Path
 
+from kaagaz.api.upload_guard import MULTIPART_OVERHEAD
+
 ROOT = Path(__file__).resolve().parents[2]
 PROD = "docker-compose.prod.yml"
 PROD_COMMAND = "docker compose -f docker-compose.yml -f docker-compose.prod.yml <command>"
@@ -99,6 +101,39 @@ def test_the_prod_file_covers_every_service_and_adds_only_caddy() -> None:
     assert re.search(r"^volumes:\n  caddy-data:\n  caddy-config:\n\Z", text, re.MULTILINE)
 
 
+def test_the_laptops_api_port_is_reachable_from_the_laptop_only() -> None:
+    """Review of #520: the image trusts X-Forwarded-For (backend/Dockerfile), so an API port open
+    to the network would let anyone on it pick their own address, and rate bucket. The laptop
+    stack publishes it on 127.0.0.1 only; on the server no API port is published at all."""
+    api = service("api")
+    published = re.findall(r'^      - "(.*)"$', api[api.index("    ports:") :], re.MULTILINE)
+    assert published[:1] == ["127.0.0.1:8000:8000"]
+
+
+def test_the_laptop_publishes_every_port_on_127_0_0_1_only() -> None:
+    """A21: the stand-ins' ports (the database, storage, the queue, the scanner) and the website
+    are reachable from the laptop itself, never from the network it is on."""
+    for name in services("docker-compose.yml"):
+        block = service(name)
+        if "ports" in keys(block):
+            published = re.findall(r'^      - "(.*)"$', block[block.index("    ports:") :], re.MULTILINE)
+            assert published and all(port.startswith("127.0.0.1:") for port in published), name
+
+
+UVICORN = (
+    '["uvicorn", "kaagaz.api.main:app", "--host", "0.0.0.0", "--port", "8000",'
+    ' "--no-server-header", "--timeout-keep-alive", "75"]'
+)
+
+
+def test_uvicorn_names_no_server_and_keeps_idle_connections_longer_than_caddy() -> None:
+    """A5: no ``server: uvicorn`` header on a reply, and an idle connection kept 75 s, longer
+    than Caddy keeps it (keepalive 60s in the Caddyfile), so Caddy closes it first."""
+    assert has(service("api"), f"command: {UVICORN}")
+    dockerfile = (ROOT / "backend" / "Dockerfile").read_text(encoding="utf-8")
+    assert re.findall(r"^CMD (.*)$", dockerfile, re.MULTILINE) == [UVICORN]
+
+
 def test_only_caddy_publishes_ports_and_only_80_and_443() -> None:
     """Every service that publishes a port in the base file has it cleared by this one,
     so caddy's are the only ports left."""
@@ -158,6 +193,17 @@ def test_caddy_is_pinned_and_gets_its_values_from_the_servers_env() -> None:
     assert has(caddy, "restart: unless-stopped")
 
 
+def test_caddy_lets_through_a_file_at_the_upload_limit() -> None:
+    """#569: a whole file up to MAX_UPLOAD_MB (a direct POST, not 8 MB parts) reaches the API,
+    which refuses a bigger one with its own message, never Caddy's bare 413. In bytes: Caddy's MB
+    is 10**6, the app's is 1024**2, and the API allows multipart overhead on top."""
+    caddy = (ROOT / "infra" / "caddy" / "Caddyfile").read_text(encoding="utf-8")
+    env = (ROOT / ".env.example").read_text(encoding="utf-8")
+    cap = int(re.findall(r"^\s*max_size (\d+)MB$", caddy, re.MULTILINE)[0])
+    limit = int(re.findall(r"^MAX_UPLOAD_MB=(\d+)$", env, re.MULTILINE)[0])
+    assert cap * 10**6 > limit * 1024**2 + MULTIPART_OVERHEAD
+
+
 def test_the_caddyfile_sends_api_unchanged_to_the_api_and_the_rest_to_the_frontend() -> None:
     text = (ROOT / "infra" / "caddy" / "Caddyfile").read_text(encoding="utf-8")
     lines = [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
@@ -167,7 +213,8 @@ def test_the_caddyfile_sends_api_unchanged_to_the_api_and_the_rest_to_the_fronte
         "}",
         "{$KAAGAZ_DOMAIN} {",
         "request_body {",
-        "max_size 60MB",
+        # Changed on purpose (#569, 11 Nov 2026): above the 100 MB upload limit.
+        "max_size 110MB",
         "}",
         # Changed on purpose (final polish, 16 Oct 2026): HSTS on the HTTPS site (security checklist).
         'header Strict-Transport-Security "max-age=31536000"',
@@ -178,6 +225,11 @@ def test_the_caddyfile_sends_api_unchanged_to_the_api_and_the_rest_to_the_fronte
         "reverse_proxy api:8000 {",
         "lb_try_duration 30s",
         "lb_try_interval 500ms",
+        # Added on purpose (stability pass, 7 Nov 2026, A5): idle connections end here first,
+        # before uvicorn's 75 s keep-alive, so Caddy never reuses one uvicorn just closed (a 502).
+        "transport http {",
+        "keepalive 60s",
+        "}",
         "}",
         "}",
         "handle {",
@@ -192,10 +244,39 @@ def test_the_caddyfile_sends_api_unchanged_to_the_api_and_the_rest_to_the_fronte
         "}",
         "log {",
         "output stdout",
-        "format json",
+        # Changed on purpose (stability pass, 7 Nov 2026, A18): format json, filtered.
+        "format filter {",
+        "wrap json",
+        "fields {",
+        "request>uri query {",
+        *[f"delete {name}" for name in PRIVATE_QUERY],
+        "}",
+        "request>headers>Referer delete",
+        "}",
+        "}",
         "}",
         "}",
     ]
+
+
+# A18: the query parameters that can carry a question, a search, a document's words or a
+# folder's name: q (/api/search, /api/documents, /api/stories match, and the /search and /chat
+# pages), party (/api/documents), w (/api/documents/{id}/words), source_name
+# (/api/folder-uploads/previous); review: property (/api/documents, a survey number read from a
+# document), and a Google sign-in's code and state (/api/auth/oidc/google/callback).
+PRIVATE_QUERY = ["q", "party", "w", "source_name", "property", "code", "state"]
+
+
+def test_the_access_log_keeps_no_search_question_or_name() -> None:
+    """A18: Caddy's access log is written with the query parameters above deleted from each
+    address, and without the Referer header, which repeats a page's address (/search?q=...).
+    The idle check (infra/ec2/idle-stop.sh) still reads the path and the Cookie header's name."""
+    text = (ROOT / "infra" / "caddy" / "Caddyfile").read_text(encoding="utf-8")
+    query = text[text.index("request>uri query {") : text.index("}", text.index("request>uri query {"))]
+    assert re.findall(r"delete (\S+)", query) == PRIVATE_QUERY
+    idle = (ROOT / "infra" / "ec2" / "idle-stop.sh").read_text(encoding="utf-8")
+    assert 'path = str(request.get("uri", "")).split("?", 1)[0]' in idle
+    assert 'any(str(name).lower() == "cookie" for name in headers)' in idle
 
 
 def test_seaweedfs_is_healthy_only_once_its_s3_port_answers() -> None:

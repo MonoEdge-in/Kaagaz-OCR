@@ -193,6 +193,34 @@ class ModelOnTest(unittest.TestCase):
         kept = [(v.record_key, v.value_text) for v in content.values if v.field == "total_amount"]
         self.assertEqual(kept, [("page:1:line:3", "1,180.00"), ("document", "1.00")])
 
+    def test_a_total_with_an_extra_zero_against_its_item_lines_goes_to_review(self) -> None:
+        """#560 (UAT AM-08, the kit's "Outlier total"): two items and a total, no subtotal,
+        no tax. The lines are compared with the total, so 2,20,000 against items that add up
+        to 22,000 fails lines_sum_mismatch; the same bill totalled 22,000 does not. With the
+        model off there are no line values (labelled.py reads labels only), so no line check."""
+        for total, reasons in (
+            ("Rs. 2,20,000", ("lines_sum_mismatch", "missing_invoice_number")),
+            ("Rs. 22,000", ("missing_invoice_number",)),
+        ):
+            with self.subTest(total=total):
+                bill = lines("Repair bill", "Paint: Rs. 10,000", "Labour: Rs. 12,000", f"Total: {total}")
+                answer = invoice_reply(
+                    {"total": ("Total", total)},
+                    lines=[item("Paint", "Rs. 10,000"), item("Labour", "Rs. 12,000")],
+                )
+                _, content = rig(bill, FakeChat(card_reply(doc_type="invoice"), answer)).read()
+
+                invoice = content.invoice
+                assert invoice is not None
+                self.assertEqual((invoice.check_status, invoice.check_reasons), ("failed", reasons))
+                self.assertEqual(
+                    [line.amount for line in invoice.lines], [Decimal("10000.00"), Decimal("12000.00")]
+                )
+                found = labels(content)
+                flagged = "lines_sum_mismatch" in reasons
+                for key in (("line:1", "amount"), ("line:2", "amount"), ("document", "total_amount")):
+                    self.assertEqual(found[key][1] == "check_failed", flagged, key)
+
 
 class ModelOffTest(unittest.TestCase):
     def test_the_row_comes_from_the_labelled_values_with_no_lines_and_is_checked(self) -> None:

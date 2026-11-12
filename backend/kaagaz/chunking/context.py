@@ -22,7 +22,8 @@ shown as cited text. For example:
   document's own text can never add a part (council).
 
 ``with_context`` fills every piece's header, in document order, and its
-``text_latin`` (L3) when the piece is Devanagari (L2).
+``text_latin`` (L3) when the piece is Devanagari (L2) or holds an Indic digit
+(``piece_latin``, #524).
 
 Note for PRD 3 (council A9): the header holds document text (the file name,
 the headings and a line of the text), so it must be fenced like any other
@@ -37,7 +38,7 @@ from datetime import date
 from kaagaz.answering.sanitize import _CONTROL
 from kaagaz.chunking.lines import BEFORE_MAX
 from kaagaz.chunking.piece import Piece
-from kaagaz.chunking.script import is_devanagari, latin_spelling
+from kaagaz.chunking.script import piece_latin
 from kaagaz.reading.spans import CellLocation
 
 SECTION_MAX = 120  # council A7: the whole "Section: …" part
@@ -86,8 +87,9 @@ def with_context(
     pieces: Sequence[Piece], *, document_name: str, doc_type: str | None, document_date: date | None
 ) -> list[Piece]:
     """``pieces`` in the same order, each with its context header and, when it is
-    Devanagari (L2), its Latin spelling (L3). The type and date are None until the
-    document card (PR 5) knows them. O(n) in the characters of the pieces."""
+    Devanagari (L2) or holds an Indic digit, its Latin spelling (L3, ``piece_latin``). The
+    type and date are None until the document card (PR 5) knows them. O(n) in the
+    characters of the pieces."""
     done = []
     before: str | None = None
     for piece in pieces:
@@ -100,7 +102,7 @@ def with_context(
             before=before,
             sheet=sheet,
         )
-        latin = latin_spelling(piece.text) if is_devanagari(piece.text) else None
+        latin = piece_latin(piece.text)
         done.append(replace(piece, context_header=header, text_latin=latin))
         before = piece.text.rsplit("\n", 1)[-1]
     return done

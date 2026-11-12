@@ -79,7 +79,7 @@ from kaagaz.reading.rapid_pool import (
     devanagari_params,
     shared_pool,
 )
-from kaagaz.reading.spans import BOX_SOURCES, BoxLocation, ReadError, Span
+from kaagaz.reading.spans import BOX_SOURCES, BoxLocation, ReadError, Span, text_lines
 from kaagaz.settings import Settings, SettingsError
 
 if TYPE_CHECKING:
@@ -151,9 +151,10 @@ CAREFUL_ISSUES = frozenset(
 HARD_LINES_MAX = 12
 HARD_SHARE = 0.4
 PATH_WORDS, PATH_PAGE = "path_words", "path_page"
-# Handwriting stays page wide (Tushar's accuracy first, 16 Oct 2026): a quick read of a
-# handwritten page can be sure of every word and still be wrong (7/12 extracts).
-PAGE_WIDE = frozenset({*(CAREFUL_ISSUES - {ILLEGIBLE_WORDS}), "quality_poor", "handwritten"})
+# Hard handwriting is page wide through the reader's handwriting_hard issue. The page's
+# ``handwritten`` flag is no reason at all (production QA B1, 5 Nov 2026): it is set for any
+# handwriting, one signature on a printed page enough, and re-read most pages whole.
+PAGE_WIDE = frozenset({*(CAREFUL_ISSUES - {ILLEGIBLE_WORDS}), "quality_poor"})
 # values_of: the outer punctuation a value word loses ("1,180.00." is "1,180.00").
 VALUE_PUNCTUATION = ".,;:()[]{}\"'"
 # #385: a region of a page asked to be read again, as page fractions (x0, y0, x1, y1).
@@ -365,14 +366,12 @@ def values_of(words: Iterable[str]) -> Counter[str]:
 def careful_reasons(read: PageRead, *, lead: str, again: bool = False) -> list[str]:
     """Why one page may be worth a careful read (``careful_plan`` decides, for ``careful_pages``
     and page by page while a Dynamic document is read, fast scan, council 16 Oct 2026): an
-    issue in CAREFUL_ISSUES, handwriting, a fair or poor grade, unsure words, or at least
+    issue in CAREFUL_ISSUES (handwriting_hard among them), a fair or poor grade, unsure words, or at least
     CROWDED_LINES lines; none when ``lead`` did not read it or it was asked to be read again
     (``again``: F5 reads it harder already). O(issues)."""
     if read.read_by != lead or again:
         return []
     reasons = sorted(CAREFUL_ISSUES.intersection(read.issues))
-    if read.handwritten:
-        reasons.append("handwritten")
     if read.quality in ("fair", "poor"):
         reasons.append(f"quality_{read.quality}")
     if read.unsure_words:
@@ -875,7 +874,12 @@ def ocr_spans(lines: list[OcrLine], page_no: int, width_px: int, height_px: int)
     becomes a span of its own after the line's, with quality "unsure" or
     "illegible", the line's box source, no kind, and a sub-box: the line's box
     split in proportion to the word's character position (approximate, so the
-    viewer draws it dashed). ``is_word_mark`` tells them apart, so they are kept
+    viewer draws it dashed). #523: a block whose text keeps the breaks of several
+    written lines is cut into that many equal bands first, and the word split
+    across its own line's band, never a strip the block's whole height. A block
+    several lines tall with no breaks can't tell the word's line, so its marks are
+    split across as before; the viewer's shape guard leaves so tall and narrow a
+    strip undrawn, and it stays listed. ``is_word_mark`` tells them apart, so they are kept
     out of pieces and values in one place. An unsure word not found in its line
     has no spot, so it gets no mark.
 
@@ -980,11 +984,12 @@ def _word_marks(line: OcrLine, page_no: int, width: int, height: int) -> list[Sp
         found.append((start, start + len(ILLEGIBLE_MARK), "illegible"))
         start = text.find(ILLEGIBLE_MARK, start + len(ILLEGIBLE_MARK))
     marks: list[Span] = []
-    step = (line.x1 - line.x0) / len(text) if text else 0.0
+    rows = text_lines(text)
+    if len(rows) <= 1:
+        rows = [(0, len(text))]  # one line, or no breaks to tell the lines by: across, as before
     for start, end, quality in sorted(found):
         raw = text[start:end]
-        pixels = (line.x0 + step * start, line.y0, line.x0 + step * end, line.y1)
-        box = _page_box(page_no, pixels, width, height)
+        box = _page_box(page_no, _word_pixels(line, rows, start, end), width, height)
         if box.is_valid():
             marks.append(
                 Span(
@@ -998,6 +1003,19 @@ def _word_marks(line: OcrLine, page_no: int, width: int, height: int) -> list[Sp
                 )
             )
     return marks
+
+
+def _word_pixels(line: OcrLine, rows: list[tuple[int, int]], start: int, end: int) -> PixelBox:
+    """Where the word at ``start:end`` of the line's text sits (#523): the band of its own
+    written line (``rows``, from ``text_lines``; the box cut into equal bands), split across in
+    proportion to its characters' place in that line. One row: the whole box, split across."""
+    row = next((index for index, (_, row_end) in enumerate(rows) if start < row_end), len(rows) - 1)
+    row_start, row_end = rows[row]
+    across = (line.x1 - line.x0) / max(1, row_end - row_start)
+    down = (line.y1 - line.y0) / len(rows)
+    bottom = line.y1 if row + 1 == len(rows) else line.y0 + down * (row + 1)
+    x0 = line.x0 + across * (start - row_start)
+    return x0, line.y0 + down * row, line.x0 + across * (min(end, row_end) - row_start), bottom
 
 
 def _find_word(text: str, word: str, cursor: int) -> int | None:

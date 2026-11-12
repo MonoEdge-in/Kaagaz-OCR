@@ -48,9 +48,9 @@ NOISY_ROWS = 1_950  # about 19 MB of bytes that do not compress
 
 # The shipped limits (.env.example): MAX_UPLOAD_MB, MAX_IMAGE_MB, MAX_SHEET_MB, ALLOWED_TYPES.
 POLICY = UploadPolicy(
-    max_bytes=50 * MIB,
+    max_bytes=100 * MIB,
     allowed_types=frozenset({"pdf", "png", "jpeg", "tiff", "zip", "text"}),
-    type_limits=limits_by_type(pdf=50 * MIB, image=20 * MIB, sheet=10 * MIB),
+    type_limits=limits_by_type(pdf=100 * MIB, image=20 * MIB, sheet=10 * MIB),
 )
 PREPARE = functools.partial(
     prepare_pages, dpi=150, max_pages=100, max_image_pixels=40_000_000, blank_stddev=3.0, low_res_dpi=150

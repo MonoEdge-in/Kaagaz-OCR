@@ -6,7 +6,8 @@ Deny by default: only an explicit ``Verdict.CLEAN`` lets a file through.
   (a rescan with different signatures must not be able to clear it).
 
 * CLEAN: the document is marked clean and later steps may open it.
-* INFECTED, BLOCKED (active content such as scripts or macros) or
+* INFECTED, BLOCKED (active content such as scripts or macros), ENCRYPTED (a
+  password needed to open it, #552) or
   UNSCANNABLE (for example encrypted, or too big for the scanner), or any
   value that is not a Verdict: the file is quarantined, the document is
   marked rejected, and the job fails for good.
@@ -41,6 +42,8 @@ class Verdict(Enum):
     # Not a known virus, but content a business document must not carry:
     # scripts, macros, hidden programs (kaagaz/scanning/content.py).
     BLOCKED = "blocked"
+    # It needs a password to open, so nothing can look inside (content.py, #552).
+    ENCRYPTED = "encrypted"
 
 
 class DocumentStatus(Enum):
@@ -60,7 +63,10 @@ class ScannerError(Exception):
 
 
 class Scanner(Protocol):
-    def scan(self, data: bytes) -> Verdict: ...
+    def scan(self, data: bytes, *, name: str | None = None) -> Verdict:
+        """``name``: the file's name (None: not known), which may only choose between text
+        kinds the content check treats alike for safety (#522)."""
+        ...
 
 
 class Quarantine(Protocol):
@@ -82,7 +88,9 @@ class StatusStore(Protocol):
 
 # Codes that mean the file failed the scan (now or earlier). Anything made
 # from such a file must be removed.
-REJECTION_CODES = frozenset({"virus_found", "blocked_content", "unscannable", "rejected"})
+REJECTION_CODES = frozenset(
+    {"virus_found", "blocked_content", "unscannable", "password_protected", "rejected"}
+)
 
 # What the customer sees for each rejection. No scanner names or details.
 CUSTOMER_MESSAGES = {
@@ -94,6 +102,10 @@ CUSTOMER_MESSAGES = {
     "blocked_content": (
         "This file contains scripts, macros or a hidden program, so it was not processed."
         " Save it again as a plain PDF, photo or spreadsheet and upload that."
+    ),
+    # #552: the words a reader's own password_protected failure says (kaagaz/api/views.py).
+    "password_protected": (
+        "This file has a password, so it can't be opened. Remove the password and upload it again."
     ),
 }
 
@@ -111,10 +123,11 @@ class ScanGate:
         self._quarantine = quarantine
         self._statuses = statuses
 
-    def check(self, job: Job, *, run_id: str | None = None) -> bytes:
+    def check(self, job: Job, *, run_id: str | None = None, name: str | None = None) -> bytes:
         """Scan the job's file and return the scanned bytes, only if clean. With
         ``run_id``, the CLEAN write is fenced by that run: a stale delivery's scan
-        can never move a document read since back to clean."""
+        can never move a document read since back to clean. ``name``: the file's name, for
+        the scanner (#522: it only chooses between text kinds)."""
         customer_id, document_id = job.customer_id, job.document_id
         if self._statuses.get_status(customer_id, document_id) is DocumentStatus.REJECTED:
             raise JobFailed("rejected", retryable=False)
@@ -125,7 +138,7 @@ class ScanGate:
             # Includes a job naming another customer's document: nothing read.
             raise JobFailed("document_missing", retryable=False)
 
-        verdict = _scan(self._scanner, data)
+        verdict = _scan(self._scanner, data, name)
         if verdict is _SCANNER_FAILED:
             raise JobFailed("scanner_unavailable", retryable=True)
 
@@ -133,7 +146,11 @@ class ScanGate:
             self._statuses.set_status(customer_id, document_id, DocumentStatus.CLEAN, run_id=run_id)
             return data
 
-        codes = {Verdict.INFECTED: "virus_found", Verdict.BLOCKED: "blocked_content"}
+        codes = {
+            Verdict.INFECTED: "virus_found",
+            Verdict.BLOCKED: "blocked_content",
+            Verdict.ENCRYPTED: "password_protected",
+        }
         code = codes.get(verdict, "unscannable") if isinstance(verdict, Verdict) else "unscannable"
         # Refuse first: if moving the file to quarantine fails, it is already
         # marked rejected and no step will use it.
@@ -154,10 +171,10 @@ def _get_or_none(storage: BlobStorage, customer_id: str, document_id: str) -> by
 _SCANNER_FAILED = object()
 
 
-def _scan(scanner: Scanner, data: bytes) -> object:
+def _scan(scanner: Scanner, data: bytes, name: str | None) -> object:
     """The scanner's answer, or _SCANNER_FAILED if it could not give one."""
     try:
-        return scanner.scan(data)
+        return scanner.scan(data, name=name)
     except ScannerError:
         return _SCANNER_FAILED
 

@@ -6,7 +6,8 @@ ends only the child, never the worker, and the file is ``unscannable`` (fail-clo
 * the parent runs ``python -m kaagaz.scanning.isolated`` with the file on stdin, a wall
   clock of WALL_SECONDS and a minimal environment (none of the app's secrets);
 * the child limits its own memory (MEMORY_BYTES) and CPU time (CPU_SECONDS) first, then
-  prints exactly one word: ``ok``, ``blocked_content`` or ``unscannable``;
+  prints exactly one word: ``ok``, ``blocked_content``, ``unscannable`` or
+  ``password_protected`` (#552);
 * anything else (a non-zero exit, a signal, a timeout, other output) is ``unscannable``,
   logged at WARNING with the reason code only, never the file's content.
 
@@ -15,10 +16,12 @@ PROVISIONAL: the limits are Vrushit's to tune.
 
 import logging
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
+from kaagaz.ingestion import resolve
 from kaagaz.scanning.content import Finding, inspect
 
 logger = logging.getLogger(__name__)
@@ -30,21 +33,29 @@ MEMORY_BYTES = 3 * 512 * 1024 * 1024  # 1.5 GiB
 _COMMAND = [sys.executable, "-m", "kaagaz.scanning.isolated"]
 _BACKEND = Path(__file__).resolve().parents[2]  # where ``-m kaagaz...`` imports from
 _ENV_KEYS = frozenset({"PATH", "PYTHONPATH", "HOME", "LANG", "SYSTEMROOT"})
-_ANSWERS = {b"ok": None, b"blocked_content": Finding.BLOCKED, b"unscannable": Finding.UNSCANNABLE}
+_SAFE_ENDING = re.compile(r"[a-z0-9]{1,10}")
+_ANSWERS = {
+    b"ok": None,
+    b"blocked_content": Finding.BLOCKED,
+    b"unscannable": Finding.UNSCANNABLE,
+    b"password_protected": Finding.ENCRYPTED,
+}
 
 
 def _child_env() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if key in _ENV_KEYS or key.startswith("LC_")}
 
 
-def inspect_isolated(data: bytes) -> Finding | None:
-    """``content.inspect(data)``, run in a child process; ``unscannable`` if it fails.
+def inspect_isolated(data: bytes, name: str = "") -> Finding | None:
+    """``content.inspect(data, name)``, run in a child process; ``unscannable`` if it fails.
+    Only the name's ending goes to the child (its argument), and only when it is a short
+    run of letters and digits: all ``inspect`` needs of a name.
 
     ponytail: one new process per file (~0.3 s start-up); a warm pool if upload rates
     ever make that matter."""
     try:
         done = subprocess.run(  # noqa: S603 (a fixed command; the file goes on stdin)
-            _COMMAND,
+            [*_COMMAND, *_ending(name)],
             input=data,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,  # never buffered: a file could make a parser log gigabytes
@@ -68,6 +79,11 @@ def inspect_isolated(data: bytes) -> Finding | None:
     return Finding.UNSCANNABLE
 
 
+def _ending(name: str) -> list[str]:
+    found = resolve.ending(name)
+    return [found] if _SAFE_ENDING.fullmatch(found) else []
+
+
 def _child() -> None:
     # ponytail: Windows (laptops only) has no rlimits; the parent's wall clock still applies.
     if sys.platform != "win32":
@@ -76,7 +92,8 @@ def _child() -> None:
         resource.setrlimit(resource.RLIMIT_AS, (MEMORY_BYTES, MEMORY_BYTES))
         resource.setrlimit(resource.RLIMIT_CPU, (CPU_SECONDS, CPU_SECONDS + 1))
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-    finding = inspect(sys.stdin.buffer.read())
+    ending = sys.argv[1] if len(sys.argv) > 1 and _SAFE_ENDING.fullmatch(sys.argv[1]) else ""
+    finding = inspect(sys.stdin.buffer.read(), f"file.{ending}" if ending else "")
     sys.stdout.write("ok" if finding is None else finding.value)
 
 

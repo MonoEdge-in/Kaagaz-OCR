@@ -86,7 +86,12 @@
   --paper-rule: #d5d8dd;
   /* The amber page highlight stays: it marks a place, it is not decoration. */
   --hl-fill: rgba(255, 176, 0, 0.3);
+  /* #523: the page's source highlight is an outline with this light tint, so the writing under it
+     stays readable (a spreadsheet cell keeps --hl-fill). */
+  --hl-tint: rgba(255, 176, 0, 0.12);
   --hl-border: #b86e00;
+  /* #523: an unsure word's underline, the light theme's --warning, the same in dark (6:1 on white). */
+  --warning-on-paper: #8a5800;
   --hl-halo: #1f1a14; /* dark ink: the outer highlight ring, the same in both themes */
   --mine-on-paper: #204494; /* my words markers: pages are paper white in both themes */
   --illegible-on-paper: #9e2219; /* PRD 5 U3 (V8): "couldn't read" marks, the same in dark */
@@ -1276,6 +1281,12 @@ td.num {
   border-right-color: transparent;
   border-radius: 50%;
   animation: spin 900ms linear infinite;
+}
+
+/* #549: kept as it is (a zip not unpacked): quiet, neither done nor wrong. */
+.status-chip[data-tone="neutral"] {
+  color: var(--text-secondary);
+  background: var(--bg-subdued);
 }
 
 .status-chip[data-tone="danger"] {

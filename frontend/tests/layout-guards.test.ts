@@ -480,6 +480,9 @@ describe("layout guards", () => {
       "components/ui/Button/Button.module.css: .loading::before",
       // The handoff's busy button (app/styles/components.css).
       "app/styles/components.css: .k-btn.is-loading::before",
+      // Changed on purpose (#535, 7 Nov 2026): the streamed answer's running stage breathes
+      // until the answer is in; none under reduced motion (its no-preference block).
+      'components/chat/Chat.module.css: .stage[data-state="active"] .stageMark::before',
     ];
     const found = everyRule(/animation(-iteration-count)?:[^;]*\binfinite\b/).map(({ name }) => name);
     expect(found.filter((entry) => !allowed.includes(entry))).toEqual([]);

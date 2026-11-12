@@ -12,11 +12,13 @@ import { pageLink } from "@/lib/regions";
 import type {
   AnswerChoice,
   ChatOptions,
+  ChatResponse,
   Citation,
   ConversationSummary,
   DetectedType,
   DocType,
   DocumentSummary,
+  Message,
   Region,
   ThinkingLevel,
 } from "@/lib/types";
@@ -128,8 +130,9 @@ export const STILL_LOOKING_AFTER_MS = 10_000;
 
 // --- Source cards ---------------------------------------------------------------
 
-// Spreadsheets and CSV files have sheets, not pages; the backend numbers them as pages.
-const SHEET_TYPES: ReadonlySet<DetectedType> = new Set<DetectedType>(["zip", "ole2", "text"]);
+// Spreadsheets and CSV files have sheets, not pages; the backend numbers them as pages. A
+// text file (#522) has pages of about 3,000 characters.
+const SHEET_TYPES: ReadonlySet<DetectedType> = new Set<DetectedType>(["zip", "ole2", "xlsx", "xls", "csv"]);
 
 function placeWord(citation: Pick<Citation, "detected_type">): "Page" | "Sheet" {
   return SHEET_TYPES.has(citation.detected_type) ? "Sheet" : "Page";
@@ -205,23 +208,41 @@ export function openText(citation: Pick<Citation, "detected_type" | "page_no">):
 
 // --- Sending a question ---------------------------------------------------------
 
-const GENERIC_MESSAGE = "Something went wrong.";
+// The server's catch-all words ("Something went wrong.", "... on our side."): never shown (B14).
+const GENERIC_MESSAGE = /^something went wrong\b/i;
 
 /**
  * What a failed question says, from the error's HTTP status and message (null
  * when the server could not be reached). The typed question always stays in the box.
  */
-export function askErrorText(error: { status: number; message: string } | null): string {
+export function askErrorText(error: { status: number; message: string; code?: string } | null): string {
+  // #535: a streamed answer not found in its conversation yet: its own honest words, before its 503.
+  if (error?.code === "answer_pending") return error.message;
   if (error === null || error.status === 0) {
     return "Could not reach Kaagaz. Check your internet connection, then try again.";
   }
   if (error.status === 429) return "Too many questions at once. Wait a minute, then try again.";
   if (error.status === 503) return "Kaagaz is busy right now. Try again in a minute."; // the AI service is down
   const message = error.message.trim();
-  if (error.status >= 400 && error.status < 500 && message && message !== GENERIC_MESSAGE) {
+  if (error.status >= 400 && error.status < 500 && message && !GENERIC_MESSAGE.test(message)) {
     return message;
   }
   return "Could not get an answer right now. Try again in a minute.";
+}
+
+/** B1: a question stopped after `started`, in the thread under the id the server saves it with,
+ * until its saved answer takes its place (withSavedAnswer). */
+export function stoppedQuestion(id: string, text: string): Message {
+  return { id, role: "user", text, created_at: new Date().toISOString(), answer: null, feedback: null };
+}
+
+/** The thread with a stopped question's saved answer: in the question's place (so a question asked
+ * since stays after it), or at the end when the question is not there; unchanged if already in. */
+export function withSavedAnswer(messages: readonly Message[], saved: ChatResponse): Message[] {
+  if (messages.some((message) => message.id === saved.answer.id)) return [...messages];
+  const at = messages.findIndex((message) => message.id === saved.question.id);
+  if (at < 0) return [...messages, saved.question, saved.answer];
+  return [...messages.slice(0, at), saved.question, saved.answer, ...messages.slice(at + 1)];
 }
 
 /** Why a conversation did not load, and what to do (issue 468): Try again sits beside it. */

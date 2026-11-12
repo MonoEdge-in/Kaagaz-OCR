@@ -47,6 +47,10 @@ interface SharedUploads {
   setTrayOpen(open: boolean): void;
   listen(listener: () => void): () => void;
   folders: FolderPicking;
+  /** #536: goes up whenever a folder may be new on the server, for each folder list to ask again. */
+  foldersChanged: number;
+  /** B4: a screen made, renamed, moved, deleted or restored folders: foldersChanged goes up. */
+  foldersEdited(): void;
 }
 
 /** The step before a folder upload starts: a dropped folder still being read, or read. */
@@ -79,9 +83,15 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
   const [trayOpen, setTrayOpen] = useState(false);
   const [folders, setFolders] = useState<Folder[]>([]);
   const tree = useMemo(() => buildTree(folders), [folders]);
+  const [folderUploadsChanged, setFolderUploadsChanged] = useState(0);
+  // #536: a folder upload made its folders or ended, Kaagaz filed a read file (feature 28), or a
+  // drop settled. Each part only goes up, so the sum does too.
+  // shortcut: a file is followed until it is understood; seen in the moment between that and its
+  // filing committing, it is never seen filed, and the list waits for the next change or a visit.
+  const foldersChanged = uploads.settled + uploads.filed + folderUploadsChanged;
 
-  // The folders, for "Filed into Invoices" in the tray and the department a file goes
-  // into; asked again as each drop settles, since Kaagaz may have made a folder for it.
+  // The folders, for "Filed into Invoices" in the tray, "In Tax" in a folder upload's rows and
+  // the department a file goes into; asked again whenever new folders may exist.
   useEffect(() => {
     let cancelled = false;
     listFolders().then(
@@ -93,7 +103,7 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [uploads.settled]);
+  }, [foldersChanged]);
 
   const listen = useCallback((listener: () => void) => {
     listeners.current.add(listener);
@@ -101,7 +111,13 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
       listeners.current.delete(listener);
     };
   }, []);
-  const folderUploads = useFolderUploads({ userId: me.user.id, limits: uploads.limits, reading: uploads.reading, onStored: notify });
+  const folderUploads = useFolderUploads({
+    userId: me.user.id,
+    limits: uploads.limits,
+    reading: uploads.reading,
+    onStored: notify,
+    onFolders: () => setFolderUploadsChanged((n) => n + 1),
+  });
   const folderInput = useRef<HTMLInputElement | null>(null);
   const pickFor = useRef<{ folderId: string | null; again: string | null }>({ folderId: null, again: null });
   const dropQueue = useRef<{ entries: FileSystemDirectoryEntry[]; folderId: string | null }>({ entries: [], folderId: null });
@@ -176,7 +192,8 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
   }
 
   // useUploads gives a new queue object each render, so this is new each render too.
-  const shared: SharedUploads = { uploads, trayOpen, setTrayOpen, listen, folders: folderPicking };
+  const foldersEdited = () => setFolderUploadsChanged((n) => n + 1);
+  const shared: SharedUploads = { uploads, trayOpen, setTrayOpen, listen, folders: folderPicking, foldersChanged, foldersEdited };
 
   function onChoose(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []);
@@ -268,6 +285,7 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
         entries={uploads.entries}
         views={uploads.views}
         stored={uploads.stored}
+        checkFailing={uploads.checkFailing}
         onClearFinished={uploads.clearFinished}
         onRestore={(key, documentId, name) => void uploads.restore(key, documentId, name)}
         onRetry={(key) => void uploads.retry(key)}

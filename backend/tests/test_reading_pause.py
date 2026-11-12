@@ -32,10 +32,11 @@ from kaagaz.jobs.reading_pause import (
 )
 from kaagaz.scanning.gate import DocumentStatus
 from kaagaz.settings import Settings
+from tests.fakes import MemoryStorage
 from tests.pdf_builder import make_pdf
 from tests.settings_factory import make_settings
 from tests.test_model_choice_pipeline import _Reading
-from tests.test_pipeline import CSV
+from tests.test_pipeline import CSV, FakeConverter
 from tests.test_pipeline_gemini import (
     MODEL,
     SCANNED,
@@ -46,6 +47,8 @@ from tests.test_pipeline_gemini import (
     page_read,
     rig,
 )
+from tests.test_resolve import compound
+from tests.xlsx_builder import make_xlsx, make_zip, sheet_xml
 
 MONEY = views._MONEY_KEY  # usd, price, budget, cost: never to an organisation
 ORG = State(
@@ -110,8 +113,8 @@ class Asked:
 
 
 def test_an_upgrade_run_is_never_held_so_its_ready_document_stays_in_search() -> None:
-    """QA P1 (4 Nov 2026): the upgrade sweep's read again (no one asked) is counted, never paused,
-    as Ensemble's runs after the scan; a reading someone asked for is asked."""
+    """QA P1 (4 Nov 2026): the upgrade sweep's read again (no one asked) is counted, never paused;
+    a reading someone asked for is asked. (Ensemble after the scan is paused since #520.)"""
     pause = Asked(paused=True)
     upgrade = rig(
         ScriptedReader({1: page_read(TOTAL)}),
@@ -155,6 +158,58 @@ def test_a_spreadsheet_is_asked_with_no_ai_pages() -> None:
     scan = system.run(make_pdf([SCANNED]))
     assert pause.asked == [(sheet.document_id, False), (scan.document_id, True)]
     assert system.status(sheet) == DocumentStatus.READY
+
+
+def test_an_office_file_is_asked_once_its_kind_is_told_a_word_file_with_ai_pages() -> None:
+    """#522: a .docx, .pptx or .xlsx is sniffed as a zip, and a .doc, .ppt or .xls as an old Office
+    file, before the scan; so each is asked once its kind is told (and a Word or PowerPoint file
+    converted), never by its sniffed type: a Word or PowerPoint file's PDF has pages for AI, as a
+    PDF's, a spreadsheet none. Before, a Word file passed the daily page limit as a spreadsheet."""
+    pause = Asked()
+    rendition = make_pdf([SCANNED, SCANNED, SCANNED])
+    system = rig(
+        ScriptedReader({page: page_read(TOTAL) for page in (1, 2, 3)}),
+        checker=FakeChecker(),
+        reading_pause=pause,
+        office=FakeConverter(rendition),
+        renditions=MemoryStorage(),
+    )
+    files = {
+        "docx": make_zip({"word/document.xml": b"<w/>"}),
+        "pptx": make_zip({"ppt/presentation.xml": b"<p/>"}),
+        "doc": compound(["WordDocument"]),
+        "xlsx": make_xlsx([("S", sheet_xml(""))]),
+    }
+    jobs = {kind: system.job(data) for kind, data in files.items()}
+    for job in jobs.values():
+        system.processor(job, beat)
+    asked = dict(pause.asked)
+    assert {kind: asked[job.document_id] for kind, job in jobs.items()} == {
+        "docx": True,
+        "pptx": True,
+        "doc": True,
+        "xlsx": False,
+    }
+    assert len(pause.asked) == len(files)  # each asked once
+    assert system.status(jobs["docx"]) == DocumentStatus.READY
+
+
+def test_a_held_word_file_is_held_before_any_page_is_drawn_or_read() -> None:
+    """#522: held as a PDF is, after its conversion, so nothing of it is read or drawn."""
+    reader = ScriptedReader({page: page_read(TOTAL) for page in (1, 2, 3)})
+    pause = Asked(paused=True)
+    system = rig(
+        reader,
+        checker=FakeChecker(),
+        reading_pause=pause,
+        office=FakeConverter(make_pdf([SCANNED, SCANNED, SCANNED])),
+        renditions=MemoryStorage(),
+    )
+    job = system.job(make_zip({"word/document.xml": b"<w/>"}))
+    system.processor(job, beat)
+    assert pause.asked == [(job.document_id, True)]
+    assert reader.opened == [] and system.pages(job) == []
+    assert system.totals(job).error_code == "paused_daily_limit"
 
 
 @pytest.mark.parametrize(

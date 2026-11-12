@@ -4,9 +4,11 @@ as when they ran one after another; a first question's early search (service ste
 transactions of its own. ``watched``: no statement runs on a thread other than the one that
 opened its transaction. The same steps with fakes are in test_ask_speed.py."""
 
+import dataclasses
+import json
 import logging
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
@@ -138,3 +140,81 @@ def test_the_early_search_opens_its_own_transactions_on_its_own_thread(
     assert threading.get_ident() in opened and len(set(opened)) > 1 and crossed == []
     (line,) = [r.getMessage() for r in caplog.records if r.name == "kaagaz.answering.timing"]
     assert " overlap=1 " in line  # the early search was the answer's
+
+
+# #535 (Ask speed, PR 2): with aspects, the early search's lists for the question as asked are
+# fused with the aspects' as the fused search fuses them, so only the aspects are embedded and
+# searched: the same evidence, one embedded text and one search of the question fewer.
+AXES = {"holidays": axis(1), "casual leave": axis(0), "maternity leave": axis(2), "salary": axis(3)}
+QUESTIONS = [
+    ("How many leaves do I get?", ["holidays", "casual leave", "maternity leave"]),
+    ("What is my salary and notice period?", ["salary", "notice period"]),
+    ("Tell me about casual leave", ["casual leave"]),
+    ("What are the leave rules?", ["holidays", "casual leave", "maternity leave", "salary"]),
+]
+
+
+class AspectModel(Model):
+    """``Model`` whose rewrite call lists ``aspects``; each aspect is embedded on its piece's axis
+    (any other text on the leave policy's); ``embedded`` and ``evidence`` keep each embed call's
+    texts and each draft's evidence blocks, in the prompt's order."""
+
+    def __init__(self, aspects: list[str]) -> None:
+        self.aspects = aspects
+        self.embedded: list[list[str]] = []
+        self.evidence: list[list[tuple[int, str]]] = []
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self.embedded.append(list(texts))
+        return [AXES.get(text, axis(5)) for text in texts]
+
+    def chat_json(self, *, system: str, user: str, schema: Any, **_: Any) -> dict[str, Any]:
+        if system == rewrite.SYSTEM_PROMPT:
+            return {**super().chat_json(system=system, user=user, schema=schema), "aspects": self.aspects}
+        self.evidence.append(list(evidence_blocks(user).items()))
+        return super().chat_json(system=system, user=user, schema=schema)
+
+
+@pytest.mark.parametrize(("question", "aspects"), QUESTIONS)
+def test_aspects_reuse_the_early_search_with_the_same_evidence_and_fewer_calls(
+    db: Database, monkeypatch: pytest.MonkeyPatch, question: str, aspects: list[str]
+) -> None:
+    customer = _letter(db)
+    settings = make_settings(model_embed="test-embed", answer_whole_doc_tokens=0)
+    lists: list[str] = []
+    real_lists = hybrid._lists
+
+    def counted(conn: Any, customer_id: str, text_: str, *args: Any) -> Any:
+        lists.append(text_)
+        return real_lists(conn, customer_id, text_, *args)
+
+    monkeypatch.setattr(hybrid, "_lists", counted)
+
+    def ask() -> tuple[str, AspectModel, int]:
+        model = AspectModel(aspects)
+        lists.clear()
+        answer = AnswerService(db=db, model=model, settings=settings, clock=lambda: NOW).answer(
+            customer, question
+        )
+        assert answer.status == "answered"
+        return json.dumps(answer.to_json(), sort_keys=True), model, len(lists)
+
+    reused, model, searched = ask()  # this change
+
+    real_early = AnswerService._early
+    monkeypatch.setattr(  # before it: the early search's lists dropped, so the question searched again
+        AnswerService, "_early", lambda self, *args: dataclasses.replace(real_early(self, *args), lists=None)
+    )
+    before, old, searched_before = ask()
+
+    def one_after_another(self: AnswerService, rewriting: Callable[[], Any], *_: Any) -> tuple[Any, None]:
+        return rewriting(), None
+
+    monkeypatch.setattr(AnswerService, "_overlapped", one_after_another)
+    alone, sequential, searched_alone = ask()  # no early search at all
+
+    assert model.evidence == old.evidence == sequential.evidence  # the same ids, texts and order
+    assert reused == before == alone  # the same answer, byte for byte
+    assert searched == searched_before - 1 == searched_alone == 1 + len(aspects)
+    assert [len(texts) for texts in model.embedded] == [1, len(aspects)]  # the question once
+    assert [len(texts) for texts in old.embedded] == [1, 1 + len(aspects)]

@@ -186,6 +186,10 @@ export const TRY_THESE = "Try one of these";
 const CLOSEST_SHOWN = 3;
 /** KZ-006 (24 Oct 2026): every model was down; as routers/chat.py OUTAGE_LINE. */
 export const OUTAGE_TEXT = "The AI is not responding right now, so this is not a written answer. Ask again in a minute."
+/** #535: the outage was a draft that took too long; as routers/chat.py TIMEOUT_LINE. */
+export const TIMEOUT_TEXT = "This question took too long for the AI. Ask about fewer documents, then try again."
+/** B13: added only when this screen asked it with Precision (high thinking), which it knows. */
+export const SWIFT_FASTER = " Swift answers faster."
 /** A search answer the AI did not write (off on this server, or not answering): the lines that
  * matched, quoted. It read as a written answer before (QA pass, 25 Oct 2026). */
 export const QUOTED_TEXT =
@@ -197,6 +201,8 @@ export const AnswerView = memo(function AnswerView({
   onAskAll,
   onAskQuestion,
   readOnly = false,
+  settle,
+  precise = false,
 }: {
   message: Message;
   question: string | null;
@@ -205,6 +211,12 @@ export const AnswerView = memo(function AnswerView({
   onAskQuestion?: (question: string) => void;
   /** Someone else's answer (the admin's Answer quality page, PRD 6 F2): no rating, no Most relevant. */
   readOnly?: boolean;
+  /** #535: the answer just streamed (StreamingAnswer.tsx): the card takes the preview's place
+   * without rising, and what the preview did not have (the label, the sources) fades in;
+   * "changed", its sentences too, as they differ from the preview. */
+  settle?: "same" | "changed";
+  /** B13: this screen asked it with Precision; a timeout then suggests Swift. */
+  precise?: boolean;
 }) {
   // The source a chip is pointed at or focused: its card lights up (UI quality council, 15 Oct 2026).
   const [hot, setHot] = useState<number | null>(null);
@@ -224,9 +236,10 @@ export const AnswerView = memo(function AnswerView({
   };
 
   const card = { id: answerCardId(message.id), tabIndex: -1 };
+  const motion = settle ? `${styles.settled}${settle === "changed" ? ` ${styles.settledChanged}` : ""}` : "motion-rise";
   if (!answer) {
     return (
-      <div {...card} className={`motion-rise ${styles.answerCard}`}>
+      <div {...card} className={`${motion} ${styles.answerCard}`}>
         <span className="visually-hidden">Answer: </span>
         <p className={styles.plain}>{message.text}</p>
       </div>
@@ -331,7 +344,7 @@ export const AnswerView = memo(function AnswerView({
   if (answer.route === "small_talk") {
     const [line, ...list] = answer.sentences;
     return (
-      <div {...card} className={`motion-rise ${styles.answerCard}`}>
+      <div {...card} className={`${motion} ${styles.answerCard}`}>
         <span className="visually-hidden">Answer: </span>
         <p className={styles.answerText}>{line ? <Script text={line.text} /> : null}</p>
         {list.length > 0 ? (
@@ -349,7 +362,7 @@ export const AnswerView = memo(function AnswerView({
   if (answer.status === "not_found") {
     const closest = v2 ? (answer.documents ?? []).length : answer.closest_documents.length;
     return (
-      <div {...card} className={`motion-rise ${styles.answerCard}`}>
+      <div {...card} className={`${motion} ${styles.answerCard}`}>
         <span className="visually-hidden">Answer: </span>
         {opening}
         <div className={styles.notFound}>
@@ -357,7 +370,11 @@ export const AnswerView = memo(function AnswerView({
             <Icon name={answer.outage ? "alert" : "search-off"} size={20} />
           </span>
           <p className={styles.plain}>
-            {answer.outage ? OUTAGE_TEXT : notFoundText(closest, answer.missing_words ?? [])}
+            {answer.outage
+              ? answer.outage_reason === "timeout"
+                ? `${TIMEOUT_TEXT}${precise ? SWIFT_FASTER : ""}`
+                : OUTAGE_TEXT
+              : notFoundText(closest, answer.missing_words ?? [])}
           </p>
         </div>
         {v2 ? <DocumentList answer={answer} terms={terms} shown={CLOSEST_SHOWN} /> : null}
@@ -409,7 +426,7 @@ export const AnswerView = memo(function AnswerView({
   // saved before 16 Oct 2026, whose sentence asked for Review.
   if (answer.status === "unchecked") {
     return (
-      <div {...card} className={`motion-rise ${styles.answerCard}`}>
+      <div {...card} className={`${motion} ${styles.answerCard}`}>
         <span className="visually-hidden">Answer: </span>
         {opening}
         <div className={styles.notFound}>
@@ -437,7 +454,7 @@ export const AnswerView = memo(function AnswerView({
   // Decision 1: the answer's label beside its figure or total (a sentence with a digit).
   const labelled = v2 && answer.label && answer.sentences.some((s) => /\d/.test(s.text)) ? answer.label : null;
   return (
-    <div {...card} className={`motion-rise ${styles.answerCard}`}>
+    <div {...card} className={`${motion} ${styles.answerCard}`}>
       <span className="visually-hidden">Answer: </span>
       {opening}
       {answer.status === "answered" && answer.route === "search" && !answer.model_used ? <p className={styles.understood}>{QUOTED_TEXT}</p> : null}

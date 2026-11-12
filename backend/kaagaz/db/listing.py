@@ -181,6 +181,9 @@ _FILTERS = (
 )
 
 _TOP_LEVEL = " AND d.folder_id IS NULL"
+# #542: Trash's loose files, not those inside a folder in Trash; or one such folder's files.
+_LOOSE_IN_TRASH = " AND d.trashed_folder_id IS NULL"
+_IN_TRASHED_FOLDER = " AND d.trashed_folder_id = CAST(:trashed_folder AS uuid)"
 _IN_FOLDERS = " AND d.folder_id = ANY(CAST(:folders AS uuid[]))"
 # Every tag must match: the documents holding all :tag_count distinct tags asked for.
 _WITH_TAGS = (
@@ -291,6 +294,7 @@ def list_documents(
     uploaded_from: datetime | None = None,
     uploaded_to: datetime | None = None,
     trashed: bool = False,
+    trashed_folder_id: str | None = None,
     attention: bool = False,
     department_folders: Sequence[str] | None = None,
     outside_departments: bool = False,
@@ -308,7 +312,8 @@ def list_documents(
     and ``descending`` say otherwise, and the total that match.
 
     One row per family: its current version, out of Trash, or with ``trashed``
-    only what is in Trash.
+    only what is in Trash: its loose files (any file once a filter or ``name_contains`` is set),
+    or with ``trashed_folder_id`` the files directly in that folder in Trash (#542).
 
     Filters (each left at its default filters nothing): ``top_level_only`` (in no
     folder), ``folder_ids`` (in one of these folders), ``tag_ids`` (holding every
@@ -339,7 +344,8 @@ def list_documents(
     }
     chosen: list[str] = []
     if top_level_only:
-        chosen.append(_TOP_LEVEL)
+        # A11: in Trash, a file that went with its folder has no folder_id, yet is not loose.
+        chosen.append(_TOP_LEVEL + (_LOOSE_IN_TRASH if trashed else ""))
     elif folder_ids is not None:
         chosen.append(_IN_FOLDERS)
         params["folders"] = list(folder_ids)
@@ -372,6 +378,14 @@ def list_documents(
             has_newer_version=has_newer_version,
         )
     )
+    # #542: Trash's own list leaves out the files inside its folders (each folder is one row);
+    # a search or a filter finds them too, wherever they are.
+    narrowed = status is not None or name_contains is not None or any(chosen)
+    if trashed_folder_id is not None:
+        chosen.append(_IN_TRASHED_FOLDER)
+        params["trashed_folder"] = trashed_folder_id
+    elif trashed and not narrowed:
+        chosen.append(_LOOSE_IN_TRASH)
     where = (_TRASH_LIST if trashed else _LIST) + _FILTERS + "".join(chosen)
     way = "DESC" if descending else "ASC"
     nulls = "" if sort == "created_at" else " NULLS LAST"  # created_at: the listing index, as before
@@ -781,6 +795,7 @@ _CLEAR_COPY = text(
     " left(e.span ->> 'raw', :max_chars) AS text, length(e.span ->> 'raw') > :max_chars AS cut,"
     " CAST(e.span ->> 'confidence' AS double precision) AS confidence,"
     " e.span ->> 'origin' AS origin, e.span ->> 'kind' AS kind, e.span -> 'region' AS region,"
+    " e.span ->> 'text' AS as_read,"
     " e.span ->> 'table_id' AS table_id, CAST(e.span ->> 'row' AS integer) AS table_row,"
     " CAST(e.span ->> 'col' AS integer) AS table_col, CAST(e.span ->> 'header' AS boolean) AS table_header,"
     " sum(length(left(e.span ->> 'raw', :max_chars)))"
@@ -819,10 +834,24 @@ def clear_copy(
         "d": document_id,
         "max_lines": CLEAR_COPY_LINES,
         "max_chars": MAX_READING_CHARS,
+    }
+    lines = clear_copy_lines(conn, customer_id, document_id)
+    return lines, conn.execute(_CLEAR_COPY_MARKS, params).mappings().all()
+
+
+def clear_copy_lines(conn: Connection, customer_id: str, document_id: str) -> Sequence[RowMapping]:
+    """``clear_copy``'s lines alone, with each one's text as read (``as_read``, the span's
+    cleaned text, which a line's word key and the search pieces hold), under no timeout of its
+    own: a line correction (#527) finds its line here, in a save's transaction too. One
+    statement. O(spans of the document)."""
+    params = {
+        "c": customer_id,
+        "d": document_id,
+        "max_lines": CLEAR_COPY_LINES,
+        "max_chars": MAX_READING_CHARS,
         "max_text": CLEAR_COPY_TEXT,
     }
-    lines = conn.execute(_CLEAR_COPY, params).mappings().all()
-    return lines, conn.execute(_CLEAR_COPY_MARKS, params).mappings().all()
+    return conn.execute(_CLEAR_COPY, params).mappings().all()
 
 
 def rename_document(conn: Connection, customer_id: str, document_id: str, *, name: str) -> None:

@@ -30,7 +30,10 @@ def _cited(api: Api, customer_id: str) -> str:
 
 
 def _ask(api: Api, signed: Signed) -> tuple[str, list[Pin]]:
-    reply = signed.client.post("/api/chat", json={"question": "the total?"}, headers=CSRF)
+    # Changed on purpose (#535): each ask its own question, as one asked again unchanged is answered
+    # from its stored answer with no service call; the pins come from the stored answer's question.
+    asked = f"the total? ({len(api.answers.asked)})"
+    reply = signed.client.post("/api/chat", json={"question": asked}, headers=CSRF)
     assert reply.status_code == 200, reply.text
     return str(reply.json()["answer"]["id"]), api.answers.pins[-1]
 

@@ -19,6 +19,24 @@ class DetectTypeTest(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertEqual(detect_type(head), expected)
 
+    def test_heic_and_heif_by_the_ftyp_box_at_offset_4(self) -> None:
+        # #522: the box's size first, then "ftyp" and the major brand.
+        for brand in (b"heic", b"heix", b"hevc", b"heif", b"mif1", b"msf1"):
+            with self.subTest(brand=brand):
+                self.assertEqual(
+                    detect_type(b"\x00\x00\x00\x18ftyp" + brand + b"\x00\x00\x00\x00mif1heic"), sniff.HEIC
+                )
+
+    def test_other_iso_bmff_files_are_not_heic(self) -> None:
+        for head in (
+            b"\x00\x00\x00\x1cftypavif\x00\x00\x00\x00avifmif1",  # AVIF
+            b"\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isomiso2",  # MP4 video
+            b"ftypheic\x00\x00\x00\x00",  # "ftyp" at offset 0, not 4
+            b"\x00\x00\x00\x18ftyp",  # no brand
+        ):
+            with self.subTest(head=head):
+                self.assertIsNone(detect_type(head))
+
     def test_magic_must_be_at_the_start(self) -> None:
         # "%PDF-" later in the file does not make it a PDF; it is text.
         self.assertEqual(detect_type(b"hello %PDF-1.4"), sniff.TEXT)

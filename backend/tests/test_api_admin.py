@@ -12,13 +12,14 @@ from sqlalchemy import RowMapping, text
 
 from kaagaz.api.auth import verify_password
 from kaagaz.api.routers.admin import month_window
+from kaagaz.api.routers.auth import ACCOUNT_MAX_FAILURES
 from kaagaz.api.views import audit_entry
 from kaagaz.db.engine import Database
 from kaagaz.db.runs import PgRuns
 from kaagaz.pipeline import FinishedRun
 from tests.settings_factory import make_settings
 from tests.test_api_model_choice import add_model, allow
-from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, MovingClock, answer_json
+from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, MovingClock, TestClient, answer_json
 from tests.test_api_usage import NOW, THIS_MONTH, add_spend, set_budget
 from tests.test_runs_db import totals
 
@@ -471,9 +472,12 @@ def test_a_run_at_00_30_ist_on_the_1st_counts_in_the_new_month(db: Database) -> 
 
 
 def _lock(api: Api, email: str) -> None:
-    client = api.client()
-    for _ in range(api.settings.login_max_failures):
-        client.post("/api/auth/login", json={"email": email, "password": WRONG}, headers=CSRF)
+    """Changed on purpose (A2, 7 Nov 2026): one address locks only itself, so the account's own
+    lock takes ACCOUNT_MAX_FAILURES from several addresses."""
+    for n in range(ACCOUNT_MAX_FAILURES // api.settings.login_max_failures):
+        client = TestClient(api.app, client=(f"203.0.113.{n}", 50000))
+        for _ in range(api.settings.login_max_failures):
+            client.post("/api/auth/login", json={"email": email, "password": WRONG}, headers=CSRF)
 
 
 @pytest.mark.db
@@ -489,12 +493,14 @@ def test_the_user_list_shows_lock_2fa_and_password_status(db: Database) -> None:
     # Changed on purpose (#507): and whether their role needs a Google account connected, or
     # (#507 review) its domain checked.
     assert all(set(item) == ADMIN_USER_FIELDS | GOOGLE_TAG for item in items.values())
-    assert items[member_id]["locked_until"] == (api.clock() + timedelta(minutes=15)).isoformat()
+    # Changed on purpose (A2 review): the account's own lock lasts ACCOUNT_LOCK_MINUTES.
+    assert items[member_id]["locked_until"] == (api.clock() + timedelta(minutes=60)).isoformat()
     assert items[member_id]["totp_enabled"] is False
     assert items[admin.user_id]["totp_enabled"] is True
     assert items[admin.user_id]["must_change_password"] is False
-    api.clock.advance(15 * 60 + 1)
-    later = {item["id"]: item for item in admin.client.get("/api/admin/users").json()["items"]}
+    api.clock.advance(60 * 60 + 1)
+    again = api.new_admin_of(admin.customer_id)  # an admin session lasts an hour too
+    later = {item["id"]: item for item in again.client.get("/api/admin/users").json()["items"]}
     assert later[member_id]["locked_until"] is None  # a lock that has passed is not shown
 
 

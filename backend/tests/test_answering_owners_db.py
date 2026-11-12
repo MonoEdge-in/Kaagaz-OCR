@@ -343,23 +343,66 @@ def test_a_map_value_is_said_after_its_printed_label_and_an_older_one_as_before(
 
 def test_a_figure_with_no_spot_on_the_page_is_never_shown(keyed: Database) -> None:
     """Decision 2's final check: a value whose region is unusable cannot be cited, so the
-    sentence quoting it is dropped, and the other figures stay."""
+    sentence quoting it is dropped, and the other figures stay. Changed on purpose (review of
+    #564): it is said to be printed where Kaagaz can't point to it, never "not printed"."""
     c, _ = new_customer(keyed)
     add_land(keyed, c, "7/12.pdf", survey="45/2", printed=[("length", "45.5 m"), ("road_width", "9 m")])
-    with keyed.customer(c) as conn:
-        conn.execute(
-            text(
-                "UPDATE extracted_values SET region = '{}' WHERE customer_id = :c AND field = 'land_length'"
-            ),
-            {"c": c},
-        )
+    _no_spot(keyed, c, "land_length")
     question = "What is the length and road width of survey 45/2?"
 
     answer = ask(keyed, c, question)
 
-    assert [s["text"] for s in answer["sentences"]] == ["The road width of Survey 45/2 is printed as 9 m."]
+    assert [s["text"] for s in answer["sentences"]] == [
+        "The length of Survey 45/2 is printed on the map, but Kaagaz can't point to it on the page,"
+        " so it isn't quoted. Open the map to read it.",
+        "The road width of Survey 45/2 is printed as 9 m.",
+    ]
     assert "45.5" not in json.dumps(answer)
     numbers_allowed(answer, question)
+
+
+def _no_spot(db: Database, customer: str, *fields: str) -> None:
+    with db.customer(customer) as conn:
+        conn.execute(
+            text("UPDATE extracted_values SET region = '{}' WHERE customer_id = :c AND field = ANY(:f)"),
+            {"c": customer, "f": list(fields)},
+        )
+
+
+def test_review_564_values_printed_with_no_spot_are_never_called_not_printed(keyed: Database) -> None:
+    """Review of #564: when every value asked for is printed but none has a spot on its page, the
+    record is still answered (never dropped) and nothing says "not printed" or "no neighbour":
+    each is printed on the map where Kaagaz can't point to it. No figure of them is quoted."""
+    c, _ = new_customer(keyed)
+    add_land(keyed, c, "7/12.pdf", survey="45/2", printed=[("length", "45.5 m"), ("boundary_east", "46")])
+    _no_spot(keyed, c, "land_length", "land_boundary_east")
+
+    def said(question: str) -> list[str]:
+        answer = ask(keyed, c, question)
+        assert "45.5" not in json.dumps(answer) and " 46" not in json.dumps(answer["sentences"])
+        numbers_allowed(answer, question)
+        return [s["text"] for s in answer["sentences"]]
+
+    assert said("Length of survey 45/2?") == [
+        "The length of Survey 45/2 is printed on the map, but Kaagaz can't point to it on the page,"
+        " so it isn't quoted. Open the map to read it."
+    ]
+    assert said("Which survey numbers border 45/2?") == [
+        "Neighbours of Survey 45/2 are printed on the map, but Kaagaz can't point to them on the page,"
+        " so none is quoted. Open the map to read them."
+    ]
+    assert said("Show the map of survey 45/2") == [
+        "Values of Survey 45/2 are printed on the map, but Kaagaz can't point to them on the page,"
+        " so none is quoted. Open the map to read them."
+    ]
+    printed = [("road_width", "9 m"), ("boundary_west", "Nala"), ("length", "30 m"), ("boundary_north", "48")]
+    add_land(keyed, c, "7/12 47.pdf", survey="47", printed=printed)
+    _no_spot(keyed, c, "land_length", "land_boundary_north")
+    assert said("Show the map of survey 47") == [
+        "The map values printed for Survey 47: road width 9 m; west neighbour Nala.",
+        "Other values of Survey 47 are printed on the map where Kaagaz can't point to them; open the map"
+        " to read them.",
+    ]
 
 
 def test_a_record_known_by_its_khata_number_alone_is_named_and_cited_by_it(keyed: Database) -> None:

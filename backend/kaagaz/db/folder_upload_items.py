@@ -9,7 +9,9 @@ an upload.
 
 * ``register_items``: a page of at most 1,000 files, idempotent by ``path_key`` (an item
   already there comes back as it is). The counts registered are kept on the upload row, so
-  the limits are checked in O(1) a page, never by counting the items again. A file Kaagaz
+  the limits are checked in O(1) a page, never by counting the items again; the bytes leave out
+  a file refused for its type (by the browser, which leaves it out of the plan's bytes too) or
+  its unsafe name (#516). A file Kaagaz
   can't take (empty, too large, a type the browser refused, or ``bad_name``: an unsafe name, or
   the name of another file of its folder once NFC) is registered ``failed`` with its code, so
   nothing is dropped. Item ``seq`` goes into batch ``seq // cap`` (``batch_for``), so a batch
@@ -27,7 +29,8 @@ an upload.
   sends of one item end in one state. A send whose document already exists is ``stored`` when
   that document is this item's own (the same uploader, folder, batch and name: an earlier send
   stored it, then died before finishing), else ``duplicate`` (Kaagaz already had the file).
-* ``summaries`` counts the items by state on the index ``folder_upload_items_state``; only one
+* ``summaries`` counts the items by state on the index ``folder_upload_items_state`` (a zip the
+  worker unpacked, #522, is not listed: the zip's own document shows it); only one
   upload's ``progress`` joins documents (reading, ready, a problem), under a statement timeout.
   A stored file the reading pause holds (``documents.reading_held``, #478) is counted ``held``,
   never reading, with why (``held_reason``: the budget first, as ``pause_reason``).
@@ -42,6 +45,7 @@ from typing import Any, Literal
 from sqlalchemy import Connection, text
 
 from kaagaz.db import audit
+from kaagaz.db.documents import REFUSED_ALONE
 from kaagaz.db.folder_uploads import FolderUploadLimits
 
 FAILURE_CODES = ("too_large", "unsupported_type", "empty_file", "folder_gone", "bad_name")
@@ -138,10 +142,12 @@ _KNOWN_KEYS = text(
     "SELECT path_key FROM folder_upload_items"
     " WHERE customer_id = :c AND folder_upload_id = :u AND path_key = ANY(CAST(:keys AS text[]))"
 )
-# "Add new files only": the document of this organisation each hash and size is, if any.
+# "Add new files only": the document of this organisation each hash and size is, if any; a
+# refused copy alone is not, so the file is sent and replaces it (#554, ``db/documents.py``).
 _ALREADY_IN = text(
-    "SELECT w.k, d.id FROM unnest(CAST(:keys AS text[]), CAST(:hashes AS text[]), CAST(:sizes AS bigint[]))"
+    "SELECT w.k, d.id FROM unnest(CAST(:keys AS text[]), CAST(:hashes AS text[]), CAST(:sizes AS bigint[]))"  # noqa: S608 - a fixed fragment
     " AS w (k, h, s) JOIN documents d ON d.customer_id = :c AND d.sha256 = w.h AND d.size_bytes = w.s"
+    " AND NOT (" + REFUSED_ALONE + ")"
 )
 # Each row: failed with its code, else a duplicate of the document it already is, else waiting.
 _INSERT = text(
@@ -238,7 +244,9 @@ def _register_new(
         already = {str(k): str(d) for k, d in conn.execute(_ALREADY_IN, {**params, **hashes})}
     sent = [item for item in new if item.path_key not in already]
     count, counted = registered + len(new), counted + len(sent)
-    counted_bytes += sum(item.size for item in sent)
+    # A file refused here by its type or name is never sent, and the browser leaves the files it
+    # refused out of the plan's bytes (#516), so their bytes are not counted.
+    counted_bytes += sum(item.size for item in sent if item.refused is None)
     if count > file_count or counted > limits.max_files:
         raise ItemsRefused("too_many_files")
     if counted_bytes > min(total_bytes, limits.max_bytes):
@@ -300,6 +308,11 @@ def item(conn: Connection, customer_id: str, item_id: str, *, user_id: str) -> I
 
 # The document is the item's own copy when an earlier send stored it (same uploader, folder,
 # batch and name) and then died before it was finished: stored, not a duplicate of itself.
+_OWN = text(
+    "SELECT d.id FROM folder_upload_items i JOIN documents d ON d.customer_id = i.customer_id"
+    " AND d.uploaded_by = :usr AND d.folder_id = i.folder_id AND d.batch_id = i.batch_id"
+    " AND d.display_name = i.name WHERE i.customer_id = :c AND i.id = :i ORDER BY d.created_at, d.id LIMIT 1"
+)
 _FINISH = text(
     "UPDATE folder_upload_items i SET document_id = :d, updated_at = now(),"
     " state = CASE WHEN NOT :dup OR EXISTS (SELECT 1 FROM documents d WHERE d.customer_id = :c"
@@ -322,9 +335,35 @@ def finish_item(
     conn.execute(_FINISH, params)
 
 
+def own_document(conn: Connection, customer_id: str, item_id: str, *, user_id: str) -> str | None:
+    """A14: the document an earlier run stored for this item (``_FINISH``'s rule) before it stopped
+    short of finishing it; None for none. One statement, on the batch's documents."""
+    found = conn.execute(_OWN, {"c": customer_id, "i": item_id, "usr": user_id}).scalar()
+    return None if found is None else str(found)
+
+
 def fail_item(conn: Connection, customer_id: str, item_id: str, code: str) -> None:
     """A waiting item failed for good with ``code`` (FAILURE_CODES). One statement, O(log n)."""
     conn.execute(_FAIL, {"c": customer_id, "i": item_id, "code": code})
+
+
+_SENT = text(
+    "SELECT coalesce(sum(i.size_bytes), 0) FROM folder_upload_items i"
+    " JOIN folder_uploads u ON u.customer_id = i.customer_id AND u.id = i.folder_upload_id"
+    " WHERE i.customer_id = :c AND i.folder_upload_id = :u AND u.user_id = :usr"
+    " AND i.state IN ('stored', 'duplicate', 'failed')"
+)
+
+
+def sent_bytes(conn: Connection, customer_id: str, upload_id: str, *, user_id: str) -> int:
+    """#516: the bytes of this user's upload no longer to be sent (stored, a duplicate, or failed);
+    0 for a new upload. A re-plan ("Continue upload") checks only the rest against the storage
+    limit, so the files it sent are not counted twice and a failed one, never stored, not at all.
+    shortcut: a file the browser refused is failed too, though the plan's bytes left it out, so a
+    re-plan can pass by its bytes; the upload service still refuses each file past the limit. Mark
+    the browser's refusals apart if that matters. O(k) for its k items, on
+    ``folder_upload_items_state``."""
+    return int(conn.execute(_SENT, {"c": customer_id, "u": upload_id, "usr": user_id}).scalar_one())
 
 
 _UPLOADS = (
@@ -333,7 +372,8 @@ _UPLOADS = (
     " FROM folder_uploads WHERE customer_id = :c AND user_id = :usr"
 )
 _RECENT = text(
-    _UPLOADS + " AND created_at > now() - make_interval(days => :days) ORDER BY created_at DESC LIMIT :limit"
+    _UPLOADS + " AND zip_document_id IS NULL AND created_at > now() - make_interval(days => :days)"
+    " ORDER BY created_at DESC LIMIT :limit"
 )
 _ONE = text(_UPLOADS + " AND id = :u")
 _STATES = text(

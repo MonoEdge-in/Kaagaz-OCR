@@ -2,9 +2,9 @@
 
 Documents and pieces are inserted with plain SQL inside ``db.customer``, with
 the columns from migration 0001 (the vector is halfvec(1024) since 0006, tagged
-``RECIPE``; a Devanagari piece gets production's ``latin_spelling``, as the
-pipeline gives it). Embeddings are hand-made 1024 number vectors:
-``axis(i)`` points one way, so two pieces on different axes mean different
+``RECIPE``; a piece gets production's ``piece_latin``, as the pipeline gives it:
+a Devanagari piece, or one with an Indic digit, its Latin spelling). Embeddings are
+hand-made 1024 number vectors: ``axis(i)`` points one way, so two pieces on different axes mean different
 things. ``add_document`` and ``add_pieces`` are shared with the isolation and
 indexing tests.
 """
@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 from sqlalchemy import text
 
-from kaagaz.chunking.script import is_devanagari, latin_spelling
+from kaagaz.chunking.script import piece_latin
 from kaagaz.db.engine import Database
 from kaagaz.search import hybrid
 from kaagaz.search.hybrid import SearchHit, search, vector_literal
@@ -89,7 +89,7 @@ def add_pieces(
             "text": piece_text,
             "regions": json.dumps([REGION]),
             "label": label,
-            "latin": latin_spelling(piece_text) if is_devanagari(piece_text) else None,
+            "latin": piece_latin(piece_text),
             "v": None if embedding is None else vector_literal(embedding),
             "m": None if embedding is None else model,
         }
@@ -163,6 +163,51 @@ def test_a_typo_still_finds_the_word(db: Database) -> None:
     assert [hit.piece_id for hit in hits] == [wanted]
     assert hits[0].word_score is None  # the words list does not know the typo
     assert hits[0].fuzzy_score is not None and hits[0].fuzzy_score >= 0.3
+
+
+def test_a_number_matches_only_as_written_while_words_keep_their_typos(db: Database) -> None:
+    """#556 (UAT LC-04): after "Total: 150000/-" was corrected to "Total: 1500000/-", the typo
+    list still found it for 150000 (all of its trigrams are in 1500000). A word with a digit
+    must now be in the piece as written; the words around it keep their typos, and a Marathi
+    amount is still found by the English number (UAT AM-07)."""
+    customer, _ = new_customer(db)
+    document = add_document(db, customer)
+    corrected, marathi, _ = add_pieces(
+        db,
+        customer,
+        document,
+        [("Total: 1500000/-", None), ("एकूण रक्कम ९४००००/-", None), ("Rent paid for August", None)],
+    )
+
+    assert run(db, customer, "150000") == []
+    assert [hit.piece_id for hit in run(db, customer, "1500000")] == [corrected]
+    typo = run(db, customer, "totl 1500000")
+    assert [hit.piece_id for hit in typo] == [corrected] and typo[0].fuzzy_score is not None
+    assert [hit.piece_id for hit in run(db, customer, "940000")] == [marathi]
+    assert run(db, customer, "94000") == []
+
+
+def test_an_indian_amount_with_commas_is_one_number_in_the_typo_list(db: Database) -> None:
+    """Review of #556 (11 Nov 2026): the database's word splitter cut "1,50,000" into 1, 50 and
+    000, so the typo list kept a piece with any 1, 50 and 000 for "1,50,000". Numbers follow
+    the viewer's rule (``page_words``): one word, commas dropped. (A question of 150000 against a
+    page of 1,50,000 shares too few letter groups for the typo list at all, before and after.)"""
+    customer, _ = new_customer(db)
+    document = add_document(db, customer)
+    amount, other, _ = add_pieces(
+        db,
+        customer,
+        document,
+        [
+            ("Total: Rs. 1,50,000/-", None),
+            ("Qty 1 Rate 50 Total 3,000", None),
+            ("Rent paid for August", None),
+        ],
+    )
+
+    grouped = {hit.piece_id: hit for hit in run(db, customer, "totl 1,50,000")}
+    assert amount in grouped and grouped[amount].fuzzy_score is not None
+    assert other not in grouped or grouped[other].fuzzy_score is None  # 1, 50 and 000 aren't 150000
 
 
 def test_a_meaning_match_needs_no_shared_word(db: Database) -> None:

@@ -7,9 +7,9 @@
 }
 
 {$KAAGAZ_DOMAIN} {
-	# Above the 50 MB upload limit; the API refuses a bigger file with its own message.
+	# Above the 100 MB upload limit; the API refuses a bigger file with its own message.
 	request_body {
-		max_size 60MB
+		max_size 110MB
 	}
 
 	# Browsers then use only HTTPS for this site for a year (security checklist, 15 Oct 2026).
@@ -19,10 +19,19 @@
 	# reached, Caddy tries it again every half second for up to 30 s before giving up, so a
 	# request waits through the restart instead of failing at once. Only requests that never
 	# reached it are tried again, so nothing is sent twice.
+	# Streaming Ask (POST /api/chat/stream, #535) replies text/event-stream, which Caddy flushes
+	# as each event comes, so no flush_interval is needed. There is no encode (gzip) directive
+	# here, which would hold the events back.
 	handle /api/* {
 		reverse_proxy api:8000 {
 			lb_try_duration 30s
 			lb_try_interval 500ms
+			# An idle connection is closed here after 60 s, before uvicorn's own 75 s
+			# (backend/Dockerfile), so Caddy never sends a request down one uvicorn just
+			# closed, which was a 502 (A5). Caddy's default is 2 minutes.
+			transport http {
+				keepalive 60s
+			}
 		}
 	}
 
@@ -41,9 +50,30 @@
 		respond "Kaagaz is updating. Please try again in a minute." 503
 	}
 
-	# One JSON line per request on stdout; the idle check reads these (WP-G).
+	# One JSON line per request on stdout; the idle check reads these (WP-G). Never a
+	# search, a question, a document's words or a folder's name (A18): these query
+	# parameters are deleted from each logged address (q: /api/search, /api/documents,
+	# the stories match, the /search and /chat pages; party: /api/documents; w: a page's
+	# words; source_name: a folder upload's name; property: a survey number read from a document;
+	# code and state: a Google sign-in's), and the Referer header, which repeats
+	# a page's address, is not logged. The idle check reads only the path and the Cookie
+	# header's name.
 	log {
 		output stdout
-		format json
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					delete q
+					delete party
+					delete w
+					delete source_name
+					delete property
+					delete code
+					delete state
+				}
+				request>headers>Referer delete
+			}
+		}
 	}
 }

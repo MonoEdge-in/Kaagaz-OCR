@@ -158,7 +158,7 @@ export function userStatus(user: AdminUser, now: number): StatusPart[] {
   // Plain words (25 Oct 2026): "Two-step", as the rest of the product says, not "2FA".
   parts.push({ text: user.totp_enabled ? "Two-step: On" : "Two-step: Off", tone: "neutral" });
   if (user.must_change_password) parts.push({ text: "Temporary password", tone: "neutral" });
-  if (user.can_delete_forever) parts.push({ text: "Can delete forever", tone: "neutral" });
+  if (user.can_delete_forever) parts.push({ text: "Can delete for good", tone: "neutral" });
   return parts;
 }
 
@@ -250,7 +250,7 @@ export function twoStepNote(): string {
 
 export function allowForeverQuestion(name: string): string {
   return (
-    `Let ${name} delete documents in Trash forever? This covers every document in Trash, ` +
+    `Let ${name} delete documents in Trash for good? This covers every document in Trash, ` +
     "not only theirs, and can't be undone. They will type their password each time."
   );
 }
@@ -694,12 +694,17 @@ const ACTION_WORDS: Record<string, string> = {
   "document.read_upgrade": "Read a document again after an upgrade",
   "document.land_facts": "Read a land record's owners and places again", // PRD 6 D3
   "document.page_accept": "Kept a page as it was read",
+  "document.line_corrected": "Corrected a line in a clean copy", // #527
+  "document.line_correction_undone": "Undid a line correction in a clean copy", // #527
   "document_story.saved": "Saved a document's story",
   "document_story.deleted": "Deleted a document's story",
   "folder.create": "Added a folder",
   "folder.rename": "Renamed a folder",
   "folder.move": "Moved a folder",
   "folder.delete": "Deleted a folder",
+  "folder.trash": "Moved a folder to Trash", // #542: ids and counts only, never a name
+  "folder.restore": "Restored a folder from Trash",
+  "folder.delete_forever": "Deleted a folder for good",
   "folder.upload": "Uploaded a folder", // #484: counts and ids only, never a name
   "folder.upload_check": "Folder upload checked for files already in Kaagaz", // #484: counts only
   "tag.create": "Added a tag",
@@ -753,8 +758,8 @@ const ACTION_WORDS: Record<string, string> = {
   "user.reset_password": "Reset a user's password",
   "user.reset_totp": "Reset a user's two-step sign-in",
   "auth.totp_reset": "Reset a user's two-step sign-in", // #457: the name since 0063; older rows keep user.reset_totp
-  "user.delete_forever_on": "Allowed a user to delete forever",
-  "user.delete_forever_off": "Stopped a user deleting forever",
+  "user.delete_forever_on": "Allowed a user to delete for good",
+  "user.delete_forever_off": "Stopped a user deleting for good",
   // Feature 28: auto-filing.
   "document.autofile": "Kaagaz filed a document",
   "document.autofile_undo": "Undid automatic filing",
@@ -773,6 +778,7 @@ const ACTION_WORDS: Record<string, string> = {
   "version.rejected": "Kept a document separate",
   "version.undone": "Undid a version link",
   "version.make_current": "Made a version current",
+  "document.version_separated": "Made a version a separate file",
   "audit.export": "Exported the activity",
   // #482 and #481 (3 Nov 2026): reads logged since, and the super admin's two-step rule.
   "search.run": "Searched inside documents",

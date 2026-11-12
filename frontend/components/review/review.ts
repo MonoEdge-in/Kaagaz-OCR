@@ -164,7 +164,7 @@ export function verifyAllText(result: VerifyAllResult): string {
   return [`Verified ${result.verified} of ${total}.`, ...skipped].join(" ");
 }
 
-/** The reason filter's choices, in the order the screen lists them (PRD 3 Y5, PRD 5 U6). */
+/** The reason filter's choices, in the order the screen lists them (PRD 3 Y5, PRD 5 U6, #524). */
 export const REASON_FILTERS: readonly { value: ReviewReason; text: string }[] = [
   { value: "check_failed", text: "An invoice check failed" },
   { value: "readers_disagree", text: "Readers disagree" },
@@ -174,6 +174,10 @@ export const REASON_FILTERS: readonly { value: ReviewReason; text: string }[] = 
   { value: "box_unanchored", text: REASON_FILTER_TEXT.box_unanchored },
   { value: "local_reader", text: REASON_FILTER_TEXT.local_reader },
   { value: "ocr_script", text: REASON_FILTER_TEXT.ocr_script },
+  { value: "mixed_digits", text: REASON_FILTER_TEXT.mixed_digits },
+  { value: "amount_commas", text: REASON_FILTER_TEXT.amount_commas },
+  { value: "amount_mark", text: REASON_FILTER_TEXT.amount_mark },
+  { value: "amount_outlier", text: REASON_FILTER_TEXT.amount_outlier },
 ];
 
 /** "Group by document" (U6): the items shown, by document, in the order each first appears. */
@@ -236,6 +240,10 @@ const REASON_TAGS: Partial<Record<LabelReason, string>> = {
   local_reader: "Backup reader",
   ocr_script: "Hindi or Marathi script",
   model_chosen: "Found by the AI",
+  mixed_digits: REASON_FILTER_TEXT.mixed_digits,
+  amount_commas: REASON_FILTER_TEXT.amount_commas,
+  amount_mark: REASON_FILTER_TEXT.amount_mark,
+  amount_outlier: REASON_FILTER_TEXT.amount_outlier,
 };
 
 export function reasonTag(reason: LabelReason): string {

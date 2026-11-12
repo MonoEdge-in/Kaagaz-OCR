@@ -7,6 +7,8 @@
 
 import type { DocumentSearchParams } from "@/components/documents/insideSearch";
 import type { DocumentListParams } from "@/components/documents/libraryQuery";
+import { sseParser, streamEvent } from "./askStream";
+import type { Landing, StreamEvent } from "./askStream";
 import type { StoryMatchBody } from "./storyMatches";
 import type {
   AccuracyCheck,
@@ -14,6 +16,7 @@ import type {
   AddedUser,
   AdminChange,
   AdminCreated,
+  AdminStorage,
   AdminUser,
   AiDefaults,
   AiSettings,
@@ -51,6 +54,11 @@ import type {
   FolderItemView,
   FolderItemsPage,
   FolderLimits,
+  FolderBack,
+  FolderRestored,
+  FolderSummary,
+  TrashedFolder,
+  TrashedFolderContents,
   GoogleRulesChange,
   FolderUploadItem,
   FolderUploadPlan,
@@ -88,6 +96,7 @@ import type {
   PlatformFolderLimits,
   PlatformHealth,
   LearnedDocument,
+  LineSaved,
   QualityReply,
   ReasonCode,
   ReviewChoice,
@@ -107,6 +116,7 @@ import type {
   Speed,
   SpeedName,
   Stats,
+  StorageLimit,
   Tag,
   TaskLevel,
   TestModel,
@@ -166,6 +176,11 @@ export const FEATURE_OFF = "This is turned off for now.";
 /** A refusal because the super admin switched the feature off for everyone. */
 export const isFeatureOff = (caught: unknown) => caught instanceof ApiError && caught.code === "feature_off";
 
+/** An upload refused because it would take the organisation past its storage limit (#516). Its
+ * message is the API's own words, shown as they are; it is never sent again by itself, whatever
+ * its status, as more room comes only from deleting files or a higher limit. */
+export const isStorageFull = (caught: unknown) => caught instanceof ApiError && caught.code === "storage_full";
+
 async function errorFrom(response: Response): Promise<ApiError> {
   const waitHeader = Number(response.headers.get("Retry-After") ?? "");
   const retryAfter = waitHeader > 0 ? waitHeader : undefined;
@@ -195,8 +210,8 @@ export function rateLimitWait(caught: unknown, fallback: number): number | null 
  * Issue 468: a GET whose answer has not started in this long stops, and fails as a lost
  * connection does (status 0), in these words. Only the wait for the answer to start (its
  * headers) is timed: reading the body is not, so a big answer on a slow link still arrives.
- * Only GETs: Ask's answer, uploads and every change are POST, PUT, PATCH or DELETE, and keep
- * waiting as long as they take.
+ * Only GETs: Ask's answer and every change are POST, PUT, PATCH or DELETE, and keep waiting as
+ * long as they take; an upload's calls have their own, longer bounds (PART_IDLE_MS below).
  */
 export const GET_TIMEOUT_MS = 30_000;
 export const TOO_SLOW = "Kaagaz is taking too long to answer. Check your connection and try again.";
@@ -370,9 +385,10 @@ export const searchDocuments = (params: DocumentSearchParams) =>
   request<DocumentSearch>("GET", `/search${query(params)}`);
 /** Moves the document, with every version of it, to Trash (PRD 1, F5). */
 export const deleteDocument = (id: string) => request<void>("DELETE", `/documents/${id}`);
-/** Brings a document in Trash back, with every version of it. */
+/** Brings a document in Trash back, with every version of it; #542: and the folder that came
+ * back with it, when it went to Trash with its folder (null otherwise). */
 export const restoreDocument = (id: string) =>
-  request<DocumentSummary>("POST", `/documents/${id}/restore`);
+  request<DocumentSummary & { restored_folder?: FolderBack | null }>("POST", `/documents/${id}/restore`);
 /**
  * Read the document again from the start (PRD 2, X1): a reviewer or an admin,
  * for a ready, failed or unreadable document out of Trash (403 forbidden or
@@ -427,6 +443,12 @@ export const rejectSuggestion = (id: string) =>
 export const undoVersionLink = (id: string) => request<DocumentSummary>("POST", `${doc(id)}/version-undo`);
 /** V10: this ready version becomes the one search and chat use. */
 export const makeCurrent = (id: string) => request<DocumentSummary>("POST", `${doc(id)}/make-current`);
+/** #521 Make it a separate file: this version leaves its family under `name`; family_id is the family it left. */
+export const separateVersion = (id: string, name: string) =>
+  request<{ document: DocumentSummary; family_id: string }>("POST", `${doc(id)}/separate`, { name });
+/** #521: Undo of Make it a separate file, back in `familyId` as its newest version, with `name` again. */
+export const undoSeparate = (id: string, familyId: string, name?: string) =>
+  request<DocumentSummary>("POST", `${doc(id)}/separate/undo`, { family_id: familyId, name });
 /** V11: the reader text of `withId` (left) against `id` (right), page by page. */
 export const compareDocuments = (id: string, withId: string) =>
   request<DocumentCompare>("GET", `${doc(id)}/compare${query({ with: withId })}`);
@@ -565,6 +587,48 @@ export type UploadWaiting = (waiting: boolean, why?: "connection" | "server") =>
 /** A failing server (5xx) is asked this many more times, then the row fails with Retry. */
 const SERVER_RETRIES = 4;
 
+// An upload call that never answers (a server restart mid-request) is given up on, then sent
+// again as a failing server's is (noAnswer), so a row never waits for ever (production QA, 5 Nov
+// 2026): after SERVER_RETRIES more it fails with Retry (review of #564).
+/** A part with no progress and no answer for this long. Not the whole part: a slow line takes longer. */
+const PART_IDLE_MS = 120_000;
+/** The upload's JSON calls; `complete` stores and checks the whole file, so it gets longer. */
+const CALL_TIMEOUT_MS = 60_000;
+const COMPLETE_TIMEOUT_MS = 300_000;
+
+/** No answer in time: a 5xx to retryWhileOffline (counted, "server"), Retry on the row, TOO_SLOW its words. */
+const noAnswer = () => new ApiError(504, "timeout", TOO_SLOW);
+
+/** request(), given up after `ms` with no answer (noAnswer), for retryWhileOffline. */
+async function requestInTime<T>(ms: number, method: string, path: string, body?: unknown): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await request<T>(method, path, body, controller.signal);
+  } catch (error) {
+    throw controller.signal.aborted ? noAnswer() : error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Gives up on `xhr` once `wait(ms)` has run out with no new wait or `stop()`: rejected with
+ * noAnswer (so retryWhileOffline sends it again, as a failing server's), then aborted.
+ */
+function giveUpWhenIdle(xhr: XMLHttpRequest, reject: (error: unknown) => void) {
+  let idle: ReturnType<typeof setTimeout> | undefined;
+  const stop = () => clearTimeout(idle);
+  const wait = (ms: number) => {
+    stop();
+    idle = setTimeout(() => {
+      reject(noAnswer());
+      xhr.abort();
+    }, ms);
+  };
+  return { wait, stop };
+}
+
 /**
  * Upload calls from this tab (start, each part, finish): a burst of this many, then this many
  * a minute. The API gives a file's upload calls their own budget of RATE_LIMIT_PER_MINUTE
@@ -612,6 +676,7 @@ async function retryWhileOffline<T>(
     await turn();
     try { return await work(); }
     catch (error) {
+      if (isStorageFull(error)) throw error; // never again by itself, even as a 5xx (#516)
       const paced = rateLimitWait(error, delay);
       if (paced !== null) {
         await waitForNetwork(paced);
@@ -634,8 +699,13 @@ function putPart(url: string, body: Blob, onProgress: (loaded: number) => void):
     xhr.open("PUT", url);
     xhr.withCredentials = true;
     xhr.setRequestHeader("X-Requested-With", "kaagaz");
-    xhr.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(event.loaded); };
+    const idle = giveUpWhenIdle(xhr, reject);
+    xhr.upload.onprogress = (event) => {
+      idle.wait(PART_IDLE_MS);
+      if (event.lengthComputable) onProgress(event.loaded);
+    };
     xhr.onload = async () => {
+      idle.stop();
       if (xhr.status >= 200 && xhr.status < 300) resolve();
       else if (xhr.status === 0) reject(new ApiError(0, "network", "Could not reach the server."));
       else reject(noticeSessionEnd(await errorFrom(new Response(xhr.responseText, {
@@ -643,9 +713,16 @@ function putPart(url: string, body: Blob, onProgress: (loaded: number) => void):
         headers: { "Content-Type": "application/json", "Retry-After": xhr.getResponseHeader("Retry-After") ?? "" },
       }))));
     };
-    xhr.onerror = () => reject(new TypeError("Network error"));
-    xhr.onabort = () => reject(new TypeError("Upload interrupted"));
+    xhr.onerror = () => {
+      idle.stop();
+      reject(new TypeError("Network error"));
+    };
+    xhr.onabort = () => {
+      idle.stop();
+      reject(new TypeError("Upload interrupted"));
+    };
     xhr.send(body);
+    idle.wait(PART_IDLE_MS);
   });
 }
 
@@ -669,8 +746,8 @@ async function resumableUpload(
   const fingerprint = await digest(new Blob([partHashes.join("")]));
   const identified = { ...metadata, fingerprint };
   const { candidates } = await retryWhileOffline(
-    () => request<{ candidates: { id: string; parts: Record<string, string> }[] }>(
-      "POST", "/documents/upload-sessions/candidates", identified,
+    () => requestInTime<{ candidates: { id: string; parts: Record<string, string> }[] }>(
+      CALL_TIMEOUT_MS, "POST", "/documents/upload-sessions/candidates", identified,
     ),
     onWaiting,
   );
@@ -686,9 +763,11 @@ async function resumableUpload(
     }
     if (matches) { resumeId = candidate.id; savedParts = candidate.parts; break; }
   }
+  // shortcut: a start whose answer never came is sent again and makes a second session; the
+  // first is never used, and the purge removes it a week on.
   const session = await retryWhileOffline(
-    () => request<{ id: string; part_size: number; part_count: number } | UploadResult>(
-      "POST", "/documents/upload-sessions", { ...identified, resume_session_id: resumeId },
+    () => requestInTime<{ id: string; part_size: number; part_count: number } | UploadResult>(
+      CALL_TIMEOUT_MS, "POST", "/documents/upload-sessions", { ...identified, resume_session_id: resumeId },
     ),
     onWaiting,
   );
@@ -711,7 +790,7 @@ async function resumableUpload(
   }
   onSent?.();
   return retryWhileOffline(
-    () => request<UploadResult>("POST", `/documents/upload-sessions/${session.id}/complete`, {}),
+    () => requestInTime<UploadResult>(COMPLETE_TIMEOUT_MS, "POST", `/documents/upload-sessions/${session.id}/complete`, {}),
     onWaiting,
   );
 }
@@ -738,17 +817,25 @@ export const getPreviousFolderUpload = (sourceName: string) =>
 export const listFolderItems = (id: string, view: FolderItemView, after: number, limit: number) =>
   request<FolderItemsPage>("GET", `${folderUpload(id)}/items${query({ view, after, limit })}`);
 
-/** One multipart POST with upload progress (XHR); the reply is JSON. */
+/**
+ * One multipart POST with upload progress (XHR); the reply is JSON. Never left waiting: given up
+ * on as a part is while it sends, and as a `complete` once all of it has gone (the server then
+ * stores and checks the file); sent again for the same item, which answers once it is in.
+ */
 function postFile(path: string, form: FormData, onProgress: (fraction: number) => void): Promise<UploadResult> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `/api${path}`);
     xhr.withCredentials = true;
     xhr.setRequestHeader("X-Requested-With", "kaagaz");
+    const idle = giveUpWhenIdle(xhr, reject);
     xhr.upload.onprogress = (event) => {
+      const sent = event.lengthComputable && event.loaded >= event.total;
+      idle.wait(sent ? COMPLETE_TIMEOUT_MS : PART_IDLE_MS);
       if (event.lengthComputable && event.total > 0) onProgress(event.loaded / event.total);
     };
     xhr.onload = async () => {
+      idle.stop();
       if (xhr.status === 0) {
         reject(new ApiError(0, "network", "Could not reach the server."));
         return;
@@ -760,9 +847,16 @@ function postFile(path: string, form: FormData, onProgress: (fraction: number) =
       if (xhr.status >= 200 && xhr.status < 300) resolve((await reply.json()) as UploadResult);
       else reject(noticeSessionEnd(await errorFrom(reply)));
     };
-    xhr.onerror = () => reject(new TypeError("Network error"));
-    xhr.onabort = () => reject(new TypeError("Upload interrupted"));
+    xhr.onerror = () => {
+      idle.stop();
+      reject(new TypeError("Network error"));
+    };
+    xhr.onabort = () => {
+      idle.stop();
+      reject(new TypeError("Upload interrupted"));
+    };
     xhr.send(form);
+    idle.wait(PART_IDLE_MS);
   });
 }
 
@@ -826,6 +920,48 @@ export const updateFolder = (
   changes: { name?: string; parent_id?: string | null; sort_order?: number | null },
 ) => request<Folder>("PATCH", `/folders/${id}`, changes);
 export const deleteFolder = (id: string) => request<void>("DELETE", `/folders/${id}`);
+/** #537, an admin's: move what is inside to `to` (null: the top level) or send it all to Trash,
+ * then delete the folder. The reply: what moved, or the files that went to Trash. */
+export const deleteFolderWithContents = (
+  id: string,
+  what: { contents: "keep"; to: string | null } | { contents: "trash" },
+) =>
+  request<{ files: number; folders: number }>(
+    "DELETE",
+    `/folders/${id}${query({ contents: what.contents, to: what.contents === "keep" ? (what.to ?? undefined) : undefined })}`,
+  );
+export const folderSummary = (id: string) => request<FolderSummary>("GET", `/folders/${id}/summary`);
+/** #542: Trash's folders; one opened (its files: listDocuments with trashed_folder_id); Restore puts
+ * one back where it was; delete forever has a document's rule (an admin with two-step, or a typed
+ * password). Under /documents/trash, where the typed password's cookie is sent. */
+export const listTrashedFolders = () => request<{ items: TrashedFolder[] }>("GET", "/documents/trash/folders");
+export const getTrashedFolder = (id: string) =>
+  request<TrashedFolderContents>("GET", `/documents/trash/folders/${id}`);
+export const restoreTrashedFolder = (id: string) =>
+  request<FolderRestored>("POST", `/documents/trash/folders/${id}/restore`);
+/** Replies in a row that may leave the count where it was (another tab deleting the same folder)
+ * before deleteTrashedFolderForever stops asking. */
+const STUCK_REPLIES = 3;
+
+/**
+ * B18 (the backend's A12): a folder in Trash is deleted for good a part at a time. While files
+ * remain the server says 202 {remaining}; this asks again, telling `onLeft` how many are left,
+ * until its 204. A count that stops going down for STUCK_REPLIES replies stops it, as an error,
+ * so a stuck server is never asked for ever.
+ */
+export async function deleteTrashedFolderForever(id: string, onLeft?: (remaining: number) => void): Promise<void> {
+  let left = Number.POSITIVE_INFINITY;
+  let stuck = 0;
+  for (;;) {
+    const reply = await request<{ remaining?: unknown } | null | undefined>("DELETE", `/documents/trash/folders/${id}/permanent`);
+    if (reply === undefined) return; // 204: all gone
+    const remaining = typeof reply?.remaining === "number" ? reply.remaining : left; // no count: no progress
+    stuck = remaining < left ? 0 : stuck + 1;
+    left = remaining;
+    if (Number.isFinite(left)) onLeft?.(left);
+    if (stuck >= STUCK_REPLIES) throw new ApiError(409, "no_progress", "Deleting made no progress. Try again in a minute.");
+  }
+}
 export const listTags = () => request<{ items: Tag[] }>("GET", "/tags");
 export const createTag = (name: string) => request<Tag>("POST", "/tags", { name });
 
@@ -843,19 +979,250 @@ export const ask = (
   choice?: AnswerChoice,
   reply?: ClarifyReply,
   signal?: AbortSignal,
-) =>
-  request<ChatResponse>(
-    "POST",
-    "/chat",
-    {
-      question,
-      ...(conversationId ? { conversation_id: conversationId } : {}),
-      ...(scope ? { scope } : {}),
-      ...(choice ?? {}),
-      ...(reply ? { reply } : {}),
-    },
-    signal,
-  );
+) => request<ChatResponse>("POST", "/chat", chatBody(question, conversationId, scope, choice, reply), signal);
+
+const chatBody = (
+  question: string,
+  conversationId?: string,
+  scope?: ScopeBody,
+  choice?: AnswerChoice,
+  reply?: ClarifyReply,
+  questionId?: string,
+) => ({
+  question,
+  ...(conversationId ? { conversation_id: conversationId } : {}),
+  ...(scope ? { scope } : {}),
+  ...(choice ?? {}),
+  ...(reply ? { reply } : {}),
+  ...(questionId ? { question_id: questionId } : {}),
+});
+
+/** Why a stream broke before `done`, as logged (console.warn) by askStream. */
+type BrokenBecause = "no_connection" | "no_route" | "server_error" | "no_body" | "stream_broken" | "idle";
+
+/** The stream broke before `done` (`because`). With no `landing`, askStream asks POST /chat
+ * instead (with the same question id, so the server never answers it twice); after `started`, the
+ * server finishes and saves the answer anyway, so askStream fetches it there. */
+class StreamFailed extends Error {
+  constructor(
+    readonly because: BrokenBecause,
+    readonly landing: Landing | null = null,
+  ) {
+    super("stream failed");
+  }
+}
+
+/** No byte for this long means the stream is gone (the server pings every 10 s): it is given up. */
+export const IDLE_MS = 30_000;
+/** The waits between looks for a broken stream's saved answer after `started` (the last one again
+ * and again), for RECOVER_FOR_MS at most: the server may work on an answer for
+ * ANSWER_STREAM_MAX_SECONDS (180 s by default), so that long and a little more. */
+export const RECOVER_STEPS_MS = [2_000, 4_000, 8_000, 16_000, 30_000] as const;
+export const RECOVER_FOR_MS = 190_000;
+/** Said when the saved answer has not appeared in RECOVER_FOR_MS: honest, and promising nothing. */
+export const STILL_SAVING = "Couldn't get the answer yet. Open this conversation again in a minute.";
+
+/** An `error` event's code as the status /chat would have answered with, for askErrorText. An
+ * unknown code is a refusal in the server's own words (shown as they are). */
+const STREAM_ERROR_STATUS: Record<string, number> = {
+  bad_request: 400,
+  not_signed_in: 401,
+  feature_off: 403,
+  not_found: 404,
+  conflict: 409,
+  rate_limited: 429,
+  answer_timeout: 400, // ANSWER_STREAM_MAX_SECONDS: its words shown as they are, never asked again
+  internal_error: 500,
+  backend_unavailable: 503,
+};
+
+const isChatResponse = (value: unknown): value is ChatResponse => {
+  const reply = value as Partial<ChatResponse> | null;
+  return typeof reply?.conversation_id === "string" && typeof reply.question?.id === "string" && typeof reply.answer?.id === "string";
+};
+
+/** Reads POST /chat/stream's events until `done` (its reply) or `error` (thrown as /chat's error). */
+async function streamChat(body: unknown, signal: AbortSignal | undefined, onEvent: (event: StreamEvent) => void) {
+  let response: Response;
+  try {
+    response = await fetch("/api/chat/stream", {
+      method: "POST",
+      headers: { ...CSRF_HEADER, "Content-Type": "application/json", Accept: "text/event-stream" },
+      credentials: "same-origin",
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (caught) {
+    if (signal?.aborted) throw caught;
+    throw new StreamFailed("no_connection");
+  }
+  if (!response.ok) {
+    if (response.status === 404 || response.status === 405) throw new StreamFailed("no_route");
+    if (response.status >= 500) throw new StreamFailed("server_error");
+    throw noticeSessionEnd(await errorFrom(response)); // refused as /chat would refuse it: no second ask
+  }
+  if (!response.body) throw new StreamFailed("no_body");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  // Set by the parser's callback, so held in an object TypeScript does not narrow to null.
+  const state: {
+    outcome: { reply: ChatResponse } | { error: ApiError } | { failed: true } | null;
+    landing: Landing | null;
+  } = { outcome: null, landing: null };
+  const parser = sseParser((name, data) => {
+    if (state.outcome !== null) return;
+    let value: unknown;
+    try {
+      value = JSON.parse(data);
+    } catch {
+      state.outcome = { failed: true };
+      return;
+    }
+    if (name === "done") {
+      const reply = (value as { reply?: unknown } | null)?.reply;
+      state.outcome = isChatResponse(reply) ? { reply } : { failed: true };
+    } else if (name === "error") {
+      const { code, message } = (value ?? {}) as { code?: unknown; message?: unknown };
+      const known = typeof code === "string" ? code : "error";
+      const words = typeof message === "string" && message.trim() ? message : "Something went wrong.";
+      state.outcome = { error: noticeSessionEnd(new ApiError(STREAM_ERROR_STATUS[known] ?? 400, known, words)) };
+    } else {
+      const event = streamEvent(name, value);
+      if (event?.type === "started") state.landing = event.landing;
+      if (event) onEvent(event);
+    }
+  });
+  try {
+    while (state.outcome === null) {
+      const read = await readWithin(reader, IDLE_MS);
+      if (read === "idle") {
+        reader.cancel().catch(() => undefined);
+        throw new StreamFailed("idle", state.landing);
+      }
+      if (read.done) {
+        parser.push(decoder.decode());
+        parser.end();
+        break;
+      }
+      parser.push(decoder.decode(read.value, { stream: true }));
+    }
+  } catch (caught) {
+    if (signal?.aborted || caught instanceof StreamFailed) throw caught;
+    throw new StreamFailed("stream_broken", state.landing);
+  }
+  const { outcome } = state;
+  if (outcome === null || "failed" in outcome) throw new StreamFailed("stream_broken", state.landing);
+  reader.cancel().catch(() => undefined); // anything after done or error is not read
+  if ("error" in outcome) throw outcome.error;
+  return outcome.reply;
+}
+
+/** The reader's next chunk, or "idle" when none comes in `ms`. */
+async function readWithin(reader: ReadableStreamDefaultReader<Uint8Array>, ms: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const idle = new Promise<"idle">((resolve) => {
+    timer = setTimeout(() => resolve("idle"), ms);
+  });
+  try {
+    return await Promise.race([reader.read(), idle]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Waits `ms`, or rejects as fetch does once `signal` aborts. */
+function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const stopped = () => {
+      clearTimeout(timer);
+      reject(signal?.reason ?? new DOMException("Aborted", "AbortError"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", stopped);
+      resolve();
+    }, ms);
+    if (signal?.aborted) stopped();
+    else signal?.addEventListener("abort", stopped, { once: true });
+  });
+}
+
+/**
+ * The answer the server saved where `started` said: GET /conversations/{id}, again after each
+ * of RECOVER_STEPS_MS (the last one again and again), until the question's answer message is
+ * there, for RECOVER_FOR_MS at most; then an ApiError "answer_pending" (STILL_SAVING) whose
+ * details name the conversation. Not there yet (a 404 while the new conversation is unsaved, a
+ * lost connection): asked again; any other refusal (the session ended) is its own error. Also
+ * how Stop still shows the answer (ChatScreen).
+ */
+export async function savedAnswer(landing: Landing, signal?: AbortSignal): Promise<ChatResponse> {
+  const ends = Date.now() + RECOVER_FOR_MS;
+  for (let step = 0; ; step += 1) {
+    try {
+      const { messages } = await request<Conversation>("GET", `/conversations/${landing.conversationId}`, undefined, signal);
+      const at = messages.findIndex((each) => each.id === landing.questionId);
+      const answer = at < 0 ? undefined : messages.slice(at + 1).find((each) => each.role === "assistant");
+      const question = messages[at];
+      if (question && answer) return { conversation_id: landing.conversationId, question, answer };
+    } catch (caught) {
+      if (signal?.aborted) throw caught;
+      const waiting = caught instanceof ApiError && (caught.status === 404 || caught.status === 0);
+      if (!waiting && !lostConnection(caught)) throw caught;
+    }
+    const wait = RECOVER_STEPS_MS[Math.min(step, RECOVER_STEPS_MS.length - 1)] ?? 30_000;
+    if (Date.now() + wait > ends) {
+      throw new ApiError(503, "answer_pending", STILL_SAVING, { conversation_id: landing.conversationId });
+    }
+    await pause(wait, signal);
+  }
+}
+
+/**
+ * A random version 4 uuid. crypto.randomUUID exists only in a secure context (https or
+ * localhost); elsewhere (a server reached over plain http) it is built from getRandomValues,
+ * which every browser has (B15).
+ */
+export function randomId(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40; // version 4
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80; // the RFC 4122 variant
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/**
+ * #535: ask with the answer streamed (POST /chat/stream, the same body and auth as ask). Each
+ * real stage, the sources found and each verified sentence go to `onEvent` as they come; the
+ * reply is `done`'s, the same as /chat's. The question's id is chosen here (a uuid) and sent
+ * with the stream and with its fallback, so the server never answers or saves one question twice.
+ * On a network or stream failure before `done` (logged with why; no byte for IDLE_MS is one):
+ * once `started` has come, the server finishes and saves the answer anyway, so it is fetched
+ * from that conversation (savedAnswer), never asked again; before `started`, it asks POST /chat
+ * once instead. No error when either works. Stop (`signal`) aborts any of them and never falls
+ * back: the server still saves the answer.
+ */
+export async function askStream(
+  question: string,
+  conversationId: string | undefined,
+  scope: ScopeBody | undefined,
+  choice: AnswerChoice | undefined,
+  reply: ClarifyReply | undefined,
+  signal: AbortSignal | undefined,
+  onEvent: (event: StreamEvent) => void,
+): Promise<ChatResponse> {
+  const body = chatBody(question, conversationId, scope, choice, reply, randomId());
+  try {
+    return await streamChat(body, signal, onEvent);
+  } catch (caught) {
+    if (!(caught instanceof StreamFailed) || signal?.aborted) throw caught;
+    if (caught.landing) {
+      console.warn("Ask's stream broke after it started; fetching the saved answer:", caught.because);
+      return savedAnswer(caught.landing, signal);
+    }
+    console.warn("Ask's stream broke before it started; asking POST /api/chat once instead:", caught.because);
+    return request<ChatResponse>("POST", "/chat", body, signal);
+  }
+}
 /** The answer settings the organisation allows (features 25-27): names and levels, never prices. */
 export const getChatOptions = () => request<ChatOptions>("GET", "/chat/options");
 /**
@@ -964,6 +1331,8 @@ export const resetUser2fa = (id: string) =>
 export const setDeleteForever = (id: string, allowed: boolean) =>
   request<AdminUser>("PUT", `/admin/users/${id}/delete-forever`, { allowed });
 export const getSettings = () => request<CustomerSettings>("GET", "/admin/settings");
+/** What this organisation has stored, Trash included, and its storage limit (#516). */
+export const getAdminStorage = () => request<AdminStorage>("GET", "/admin/storage");
 /** "Approve new sign-in connections automatically" (#457 phase 1); nothing else changes. */
 export const setAutoApprove = (on: boolean) =>
   request<CustomerSettings>("PATCH", "/admin/settings", { auto_approve_connections: on });
@@ -1137,6 +1506,9 @@ export const confirmWord = (id: string, key: string, expectedText: string) =>
   request<WordFlag>("POST", `${word(id, key)}/confirm`, { expected_text: expectedText });
 export const editWord = (id: string, key: string, text: string, expectedText: string) =>
   request<WordFlag>("POST", `${word(id, key)}/edit`, { text, expected_text: expectedText });
+/** #527: a reviewer or an admin corrects a whole line of the clean copy; `expectedText` as editWord's. */
+export const editLine = (id: string, key: string, text: string, expectedText: string) =>
+  request<LineSaved>("POST", `${doc(id)}/lines/${encodeURIComponent(key)}/edit`, { text, expected_text: expectedText });
 export const listChanges = (
   id: string,
   params: { source?: "person" | "ensemble"; limit?: number; before?: string } = {},
@@ -1213,6 +1585,15 @@ export const setFolderUploadLimits = (limits: FolderLimits, code: string) =>
 export const getOrgFolderUploadLimits = (orgId: string) => request<OrgFolderLimits>("GET", folderLimitsPath(orgId));
 export const setOrgFolderUploadLimits = (orgId: string, limits: FolderLimits, code: string) =>
   request<OrgFolderLimits>("PUT", folderLimitsPath(orgId), { ...limits, code });
+
+/** Operator: the storage limit (#516), the platform's default (no orgId) or one organisation's. */
+const storageLimitPath = (orgId?: string | null) =>
+  orgId ? `/operator/orgs/${encodeURIComponent(orgId)}/storage-limit` : "/operator/storage-limit";
+export const getStorageLimit = (orgId?: string) => request<StorageLimit>("GET", storageLimitPath(orgId));
+/** Save it with a fresh code (step-up). null orgId: the platform's default; null storageGb: an
+ * organisation follows the platform, the platform goes back to the default (50 GB). */
+export const setStorageLimit = (orgId: string | null, storageGb: number | null, code: string) =>
+  request<StorageLimit>("PUT", storageLimitPath(orgId), { storage_gb: storageGb, code });
 
 /** Operator: the speed controls (package S, 0053); saving needs a fresh code, null: the server's setting. */
 export const getSpeed = () => request<Speed>("GET", "/operator/speed");

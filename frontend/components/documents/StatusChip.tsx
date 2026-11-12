@@ -4,10 +4,10 @@
 // document being read its step ("Scanning") and a read one "Scan complete".
 
 import { statusChip } from "@/lib/format";
-import type { DocumentStatus } from "@/lib/types";
+import type { DetectedType, DocumentStatus } from "@/lib/types";
 
-export function StatusChip({ status, text }: { status: DocumentStatus; text?: string }) {
-  const chip = statusChip(status);
+export function StatusChip({ status, text, detectedType }: { status: DocumentStatus; text?: string; detectedType?: DetectedType }) {
+  const chip = statusChip(status, detectedType);
   return (
     <span className={chip.className} data-tone={chip.tone}>
       {text ?? chip.text}

@@ -131,6 +131,8 @@
 * ``disk-alert --used PERCENT``: emails OPS_ALERT_EMAIL from EMAIL_FROM through SES that the
   server's disk is that full (#480; infra/ec2/disk-alert.sh decides when, once a day at most), by
   the operations alerts' one rule (kaagaz.ops_alert); an email not sent fails the command.
+* ``ops-alert --subject S --text T``: the same with this subject and text (A22,
+  infra/ec2/ops-alert.sh: a failed deploy or dump, an unhealthy container).
 
 Why passwords are never flags: a flag lands in the shell history and the
 process list. They come from ``KAAGAZ_ADMIN_PASSWORD`` (``KAAGAZ_DEMO_PASSWORD``
@@ -181,6 +183,8 @@ from kaagaz.db.engine import Database, make_engine
 from kaagaz.extraction.checks import GSTIN_FIELDS, gstin_valid
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
+from kaagaz.ingestion.ports import RenditionStorage
+from kaagaz.ingestion.resolve import UNSUPPORTED, resolve_kind
 from kaagaz.ingestion.spool import HEAD_SIZE
 from kaagaz.jobs import catalog, land_facts
 from kaagaz.jobs.purge import CustomerStorage, purge_customer
@@ -241,7 +245,7 @@ LIMIT_NAMES = ("hard_lines_max", "hard_share", "crop_pad")
 BACKUP_REGION = "ap-south-1"
 BACKUP_PART_BYTES = 32 * 1024 * 1024
 # The commands that read the settings but no database.
-NO_DATABASE = ("backup-files", "restore-files", "disk-alert")
+NO_DATABASE = ("backup-files", "restore-files", "disk-alert", "ops-alert")
 
 
 class CliError(Exception):
@@ -256,6 +260,11 @@ class FileBackup(Protocol):
     def write_tar(self, out: IO[bytes]) -> int: ...
 
     def read_tar(self, source: IO[bytes]) -> int: ...
+
+
+class CliStorage(CustomerStorage, RenditionStorage, Protocol):
+    """What the commands need of file storage (``S3Storage``): purge's calls, and land facts'
+    renditions of Word and PowerPoint files (#522 PR 2)."""
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -356,6 +365,9 @@ def _parser() -> argparse.ArgumentParser:
     upload.add_argument("--key", required=True)
     disk = commands.add_parser("disk-alert", help="email OPS_ALERT_EMAIL that the disk is this full")
     disk.add_argument("--used", type=int, required=True, help="the percent of the disk in use")
+    alert = commands.add_parser("ops-alert", help="email OPS_ALERT_EMAIL this subject and text")
+    alert.add_argument("--subject", required=True)
+    alert.add_argument("--text", required=True)
     return parser
 
 
@@ -646,7 +658,7 @@ def _land_facts(
     args: argparse.Namespace,
     settings: Settings,
     model: ModelClient | None,
-    storage: CustomerStorage | None,
+    storage: CliStorage | None,
     out: TextIO,
 ) -> None:
     """land-facts: the mode's checks, then ``kaagaz.jobs.land_facts``."""
@@ -1092,8 +1104,11 @@ def _measure(
         data = path.read_bytes()
     except OSError:
         raise CliError("the file cannot be opened") from None
-    detected = sniff.detect_type(data[:HEAD_SIZE])
-    if detected is None:
+    try:  # its kind, as the worker tells it after the scan (#522)
+        detected = resolve_kind(data, sniff.detect_type(data[:HEAD_SIZE]), path.name)
+    except ReadError as error:
+        raise CliError(f"the file cannot be read ({error.code})") from None
+    if detected == UNSUPPORTED:
         raise CliError("this kind of file is not supported")
     engine = build_ocr_engine(settings)
     meter = None if engine is None else MeteredOcrEngine(engine, timer=timer)
@@ -1398,20 +1413,24 @@ def _backup_upload(client: Any, bucket: str, key: str, source: IO[bytes]) -> str
 
 
 def _disk_alert(settings: Settings, mailer: Mailer | None, used: int) -> None:
-    problem = ops_alert.missing(settings)
-    if problem is not None:
-        raise CliError(problem)
-    sent = ops_alert.send_ops_alert(
+    _alert(
         settings,
+        mailer,
         f"Kaagaz server: the disk is {used}% full",
         f"The Kaagaz server's disk is {used}% full. This alert is sent at most once a day.\n\n"
         "Free some space before it fills, or the database and the uploads stop. "
         "`docker system df` on the server shows what uses it.\n",
         purpose="disk_alert",
-        mailer=mailer,
     )
-    if not sent:  # a failed command: disk-alert.sh notes no day and tries again next hour
-        raise CliError("the disk alert was not sent: the log says why")
+
+
+def _alert(settings: Settings, mailer: Mailer | None, subject: str, text: str, *, purpose: str) -> None:
+    problem = ops_alert.missing(settings)
+    if problem is not None:
+        raise CliError(problem)
+    sent = ops_alert.send_ops_alert(settings, subject, text, purpose=purpose, mailer=mailer)
+    if not sent:  # a failed command: the script notes no day and tries again next time
+        raise CliError("the alert was not sent: the log says why")
 
 
 def _file_backup(command: str, files: FileBackup, source: IO[bytes], out: IO[bytes]) -> str:
@@ -1438,7 +1457,7 @@ def main(
     timer: Callable[[], float] = time.perf_counter,
     model: ModelClient | None = None,
     settings: Settings | None = None,
-    storage: CustomerStorage | None = None,
+    storage: CliStorage | None = None,
     file_store: FileBackup | None = None,
     binary_in: IO[bytes] | None = None,
     binary_out: IO[bytes] | None = None,
@@ -1491,6 +1510,10 @@ def main(
             if args.command == "disk-alert":
                 _disk_alert(checked, mailer, args.used)
                 stdout.write("disk alert sent\n")  # never the address
+                return 0
+            if args.command == "ops-alert":
+                _alert(checked, mailer, args.subject, args.text, purpose="server_alert")
+                stdout.write("alert sent\n")
                 return 0
             if file_store is None:
                 from kaagaz.adapters.storage import S3Storage

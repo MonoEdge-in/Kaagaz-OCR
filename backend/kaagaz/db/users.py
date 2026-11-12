@@ -365,6 +365,29 @@ def bump_session_version(conn: Connection, customer_id: str, user_id: str) -> in
     return version
 
 
+def end_session(
+    conn: Connection, customer_id: str, user_id: str, session_id: str, *, expires_at: datetime
+) -> None:
+    """Logout (0076): this one session ends at once; the user's other browsers stay signed in.
+    The row is swept once ``expires_at``, the cookie's own end, has passed. O(log n)."""
+    conn.execute(
+        text(
+            "INSERT INTO ended_sessions (customer_id, session_id, user_id, expires_at)"
+            " VALUES (:c, :s, :u, :e) ON CONFLICT DO NOTHING"
+        ),
+        {"c": customer_id, "s": session_id, "u": user_id, "e": expires_at},
+    )
+
+
+def sweep_ended_sessions(conn: Connection, before: datetime) -> int:
+    """The worker's hourly sweep (0076): delete the ended sessions whose cookie expired by
+    ``before``, in every organisation; how many. ``conn`` comes from ``Database.system()``."""
+    swept: object = conn.execute(text("SELECT kaagaz_sweep_ended_sessions(:b)"), {"b": before}).scalar_one()
+    if not isinstance(swept, int):
+        raise TypeError("the sweep did not return a count")
+    return swept
+
+
 def set_password(
     conn: Connection, customer_id: str, user_id: str, *, password_hash: str, must_change: bool
 ) -> RowMapping | None:
@@ -478,7 +501,9 @@ def turn_off_totp(conn: Connection, customer_id: str, user_id: str, *, now: date
 # --- who is signed in, and the admin's user list ---------------------------------------------
 
 
-def session_user(conn: Connection, customer_id: str, user_id: str) -> RowMapping | None:
+def session_user(
+    conn: Connection, customer_id: str, user_id: str, *, session_id: str | None = None
+) -> RowMapping | None:
     """The signed-in user with their customer's name, or None. One query per request.
 
     None too while the customer is not active (0014): every sign-in starts its
@@ -489,7 +514,16 @@ def session_user(conn: Connection, customer_id: str, user_id: str) -> RowMapping
     the platform's (None: no idle limit), and ``seen_at``, the later of ``last_seen_at`` and
     ``last_login_at``. ``two_step_required``: the organisation requires two-step sign-in for its
     admins (0068, #481); while it does, an admin's "turned off" does not count. The Google
-    columns (#507, ``_GOOGLE_COLUMNS``): the limited session and Ways to sign in read them."""
+    columns (#507, ``_GOOGLE_COLUMNS``): the limited session and Ways to sign in read them.
+
+    With ``session_id`` (a request's, 0076): None too once logout ended that session, by one
+    probe of ``ended_sessions``' primary key in the same statement."""
+    ended = (
+        ""
+        if session_id is None
+        else " AND NOT EXISTS (SELECT 1 FROM ended_sessions e"
+        " WHERE e.customer_id = u.customer_id AND e.session_id = CAST(:sid AS uuid))"
+    )
     return (
         conn.execute(
             text(
@@ -506,9 +540,9 @@ def session_user(conn: Connection, customer_id: str, user_id: str) -> RowMapping
                 + " FROM users u JOIN customers c ON c.id = u.customer_id"
                 " LEFT JOIN org_session_settings s ON s.customer_id = c.id"
                 " LEFT JOIN platform_ai_settings p ON true"
-                " WHERE u.customer_id = :c AND u.id = :u AND c.status = 'active'"
+                " WHERE u.customer_id = :c AND u.id = :u AND c.status = 'active'" + ended
             ),
-            {"c": customer_id, "u": user_id},
+            {"c": customer_id, "u": user_id} | ({} if session_id is None else {"sid": session_id}),
         )
         .mappings()
         .first()

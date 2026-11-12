@@ -7,9 +7,14 @@
 // failed, the error shows and the question is back in the box.
 // Stop (Tushar, 24 Oct 2026): the asker can stop waiting; the request is cancelled in the
 // browser (stopAsk) and the question goes back in the box, with no error.
+// #535 (7 Nov 2026): the answer streams; its progress so far (stream.ts) is kept here too, so
+// a chat screen opened while it is on its way shows how far it has got (listenAsk).
 
+import type { Landing, StreamEvent } from "@/lib/askStream";
 import type { ChatResponse } from "@/lib/types";
 import { conversationFromSearch, documentFromSearch } from "./logic";
+import { NO_PROGRESS, progressAfter } from "./stream";
+import type { StreamProgress } from "./stream";
 
 export interface InFlight {
   question: string;
@@ -22,6 +27,11 @@ export interface InFlight {
   controller: AbortController;
   /** The asker pressed Stop: its failure is no error. */
   stopped?: boolean;
+  /** The streamed stages, sources and verified sentences so far. */
+  progress: StreamProgress;
+  /** #535: where the answer will land, once the stream said so (`started`); null before. */
+  landing: Landing | null;
+  listeners: Set<() => void>;
 }
 
 let current: InFlight | null = null;
@@ -30,10 +40,15 @@ let current: InFlight | null = null;
 export function startAsk(
   question: string,
   conversationId: string | null,
-  send: (signal: AbortSignal) => Promise<ChatResponse>,
+  send: (signal: AbortSignal, onEvent: (event: StreamEvent) => void) => Promise<ChatResponse>,
 ): InFlight {
   const controller = new AbortController();
-  const entry: InFlight = { question, conversationId, done: send(controller.signal), controller };
+  const entry = { question, conversationId, controller, progress: NO_PROGRESS, listeners: new Set(), landing: null } as InFlight;
+  entry.done = send(controller.signal, (event) => {
+    if (event.type === "started") entry.landing = event.landing;
+    entry.progress = progressAfter(entry.progress, event);
+    entry.listeners.forEach((listener) => listener());
+  });
   entry.done.then(
     (reply) => {
       entry.outcome = { reply };
@@ -47,6 +62,12 @@ export function startAsk(
 }
 
 export const askInFlight = (): InFlight | null => current;
+
+/** Call `listener` on each change to the entry's progress; returns the unsubscribe. */
+export function listenAsk(entry: InFlight, listener: () => void): () => void {
+  entry.listeners.add(listener);
+  return () => entry.listeners.delete(listener);
+}
 
 /** Stop waiting for this question: the request is cancelled and `done` fails as stopped. */
 export function stopAsk(entry: InFlight): void {

@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends
 from kaagaz.api.auth import User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
+from kaagaz.api.routers.documents import zip_unpacks
 from kaagaz.api.views import batch_view
 from kaagaz.db import listing
 from kaagaz.db import tags as tags_sql
@@ -45,6 +46,7 @@ def get_batch(batch_id: uuid.UUID, user: User, context: Context) -> dict[str, An
         found = versions_sql.in_batch(
             conn, customer_id, target, user_id=user.user_id, limit=settings.max_files_per_batch
         )
+        unpacks = zip_unpacks(conn, customer_id, rows)  # #522 PR 3: a zip's unpacking
     view = batch_view(
         target,
         rows,
@@ -53,6 +55,7 @@ def get_batch(batch_id: uuid.UUID, user: User, context: Context) -> dict[str, An
         user=user,
         now=context.clock(),
         max_active=settings.max_active_per_customer,
+        unpacks=unpacks,
     )
     # V5: the tray's "N files look like new versions", with Review.
     return {**view, "version_suggestion_count": len(found), "version_suggestions": found}

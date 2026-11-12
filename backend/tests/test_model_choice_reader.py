@@ -208,6 +208,15 @@ class WithdrawnModelTest(unittest.TestCase):
         self.assertEqual((read.read_by, read.issues[0]), ("rapidocr", READER_REFUSED))
         self.assertIn("model_not_found", [getattr(record, "code", None) for record in logs.records])
 
+    def test_review_564_a_chosen_model_with_no_endpoint_reads_the_page_locally(self) -> None:
+        built = build(ModelUnavailable("no_endpoints"))
+        with (
+            self.assertLogs("kaagaz.reading.gemini_ocr", "ERROR"),
+            built.engine.document(_pages(FakeCache(), CLAUDE, "google-vertex")),
+        ):
+            read = built.engine.read_page(page(), page_no=1)
+        self.assertEqual((read.read_by, read.issues[0]), ("rapidocr", READER_REFUSED))
+
     def test_ocr_model_that_is_gone_still_waits_as_a_key_problem(self) -> None:
         built = build(ModelUnavailable("model_not_found"))
         with (

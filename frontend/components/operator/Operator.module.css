@@ -442,6 +442,14 @@
   line-height: 1.25;
 }
 
+/* A section's one box (issue 528): Reset section and the fields, spaced as .area spaces them. */
+.sectionBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
 .sectionTools {
   display: flex;
   justify-content: flex-end;

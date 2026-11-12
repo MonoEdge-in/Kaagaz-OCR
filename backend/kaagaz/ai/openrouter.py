@@ -29,7 +29,8 @@ OPENROUTER_PROVIDERS (``ProviderNotAllowed``): a page read's or an answer draft'
 DEFAULT_PROVIDER for any other ``chat_json`` and ``embed`` (the settings require it;
 checked again here).
 
-**The request** (``POST /chat/completions``, ``stream: false``, G2). A system prompt is
+**The request** (``POST /chat/completions``, ``stream: false``, G2; Ask's draft streams, below). A
+system prompt is
 ``messages[0]`` with role system. A picture is a user message whose content is the
 instruction text first, then the image as a ``data:image/png;base64`` URL. The page's
 media resolution goes the way ``MEDIA_RESOLUTION_SHAPE`` says (``image_url.detail``, low or
@@ -41,6 +42,24 @@ call that names one (Ask's question rewrite and translation, 16 Oct 2026), sent 
 model only. A repair turn sends
 the first reply back with role assistant. ``python -m kaagaz.cli verify-models`` checks
 each of these against the live API.
+
+**Streaming** (#535, Ask's draft only: ``chat_json_stream``). The same request with ``stream:
+true``; the reply comes as server-sent events, each ``delta.content`` handed to the caller as it
+arrives, and is put back together as the reply ``stream: false`` would have given (its text, finish
+reasons, ``provider`` and the last chunk's ``usage``), so every check, the ledger, the limiter, the
+breaker and the latch are the same code. Its time is not one flat timeout: a streamed reply may go
+on while it keeps coming, up to the caller's deadline (else ANSWER_STREAM_MAX_SECONDS), and fails as
+``timeout`` only when nothing at all arrives for MODEL_TIMEOUT_SECONDS (the socket's read timeout;
+OpenRouter's ": OPENROUTER PROCESSING" keep-alive lines count as something). A Precision draft that
+thinks for 75 s while tokens and keep-alives arrive is never cut at 60 s. Two more differences: no
+repair turn (a reply that
+does not follow the schema is ``invalid_output``; the caller drafts again without streaming), and a
+reply that already handed out text is never sent again: a failure after it raises at once. The
+ledger is never told 0: the request asks for the usage (``usage: {include: true}``, OpenRouter's
+usage accounting, given in the last chunk); a stream that still ends without it is counted at its
+worst case (``_worst_usage``: its input at most its UTF-8 bytes, its whole output limit), with no
+cost, so the ledger prices those tokens and marks the cost estimated (db/usage.py), and logs
+``stream_usage_missing``.
 
 **Usage** (G9). Input tokens are ``usage.prompt_tokens``; output tokens are
 ``usage.completion_tokens``; ``completion_tokens_details.reasoning_tokens`` is the thinking
@@ -67,10 +86,13 @@ at (#463).
 * A 403 refusal or moderation block (``metadata.error_type`` in ``REFUSAL_ERROR_TYPES``, or
   a ``reasons`` list): ``ModelOutputError("blocked")``, no latch.
 * 404: ``ModelUnavailable("model_not_found")`` (a wrong model ID in .env, or a model
-  OpenRouter withdrew).
-* A redirect: ``ModelUnavailable("redirect_refused")``; any other status ``http_error``.
-  For OCR_MODEL, either one makes the reader's Health report ``key_problem`` for
-  KEY_LATCH_SECONDS (``ModelGate.health``), with no latch and no change to ``status``
+  OpenRouter withdrew), or ``no_endpoints`` when its message says no endpoint passes the
+  provider or data policy (review of #564), at once, logged at warning with the model id
+  (production QA L2).
+* A redirect: ``ModelUnavailable("redirect_refused")``, logged the same way; any other status
+  ``http_error``. For OCR_MODEL in a page read (``read_page`` only, an Ultra low cost read
+  too, never a chat call naming the same id), either one makes the reader's Health report
+  ``key_problem`` for KEY_LATCH_SECONDS (``ModelGate.health``), with no latch and no change to ``status``
   (issue 407, ``ModelGate.reader_unfixable``).
 * A reply that was blocked (``message.refusal``, ``finish_reason`` ``content_filter``, or a
   ``native_finish_reason`` in ``BLOCKED_FINISH_REASONS``): ``ModelOutputError("blocked")``.
@@ -525,16 +547,20 @@ def chat_request(
     max_output_tokens: int | None,
     strict: bool = STRICT_SCHEMA,
     provider_slug: str = DEFAULT_PROVIDER,
+    stream: bool = False,
 ) -> dict[str, Any]:
     """A /chat/completions body: the model, the messages, the thinking effort, the output
     cap, the schema and ``provider(provider_slug)``. ``thinking`` NO_THINKING (a model with
-    no thinking levels, Tushar 18 Oct 2026) sends no ``reasoning`` field at all."""
+    no thinking levels, Tushar 18 Oct 2026) sends no ``reasoning`` field at all. ``stream``:
+    Ask's draft only (#535)."""
     body: dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "stream": False,
+        "stream": stream,
         "provider": provider(provider_slug),
     }
+    if stream:
+        body["usage"] = {"include": True}  # the tokens and cost in the last chunk (the module docstring)
     if thinking != NO_THINKING:
         body["reasoning"] = reasoning(thinking)
     if max_output_tokens is not None:
@@ -716,17 +742,33 @@ def _code(value: object) -> str | None:
 
 @dataclass(frozen=True, slots=True)
 class _ErrorCodes:
-    """What is kept of an error reply: two short codes and whether it was a moderation block."""
+    """What is kept of an error reply: two short codes, whether it was a moderation block, and
+    whether it said no endpoint passes the provider or data policy (review of #564)."""
 
     error_type: str | None = None
     provider_name: str | None = None
     moderated: bool = False
+    no_endpoints: bool = False
+
+
+# The replies no wait fixes for a model (issue 407), each code with its log line (production QA
+# L2): a 404 for an unknown model, a 404 for no endpoint within the provider or data policy
+# (review of #564), and a redirect.
+UNUSABLE_CODES = {
+    "model_not_found": "model not found",
+    "no_endpoints": "no endpoint for model",
+    "redirect_refused": "model redirected",
+}
+# Review of #564: how OpenRouter's own 404 begins when the model exists but no endpoint passes
+# OPENROUTER_PROVIDERS or the zero data retention policy. Only compared, never kept or logged.
+_NO_ENDPOINT_WORDS = ("No endpoints found", "No allowed providers")
 
 
 def _error_codes(error: urllib.error.HTTPError) -> _ErrorCodes:
-    """The ``metadata.error_type`` and ``provider_name`` codes of an error reply, and whether
-    it holds a moderation ``reasons`` list. The body is read here and dropped: its message,
-    ``flagged_input`` and ``raw`` are never looked at, kept or logged."""
+    """The ``metadata.error_type`` and ``provider_name`` codes of an error reply, whether it
+    holds a moderation ``reasons`` list, and whether its message begins with _NO_ENDPOINT_WORDS.
+    The body is read here and dropped: its message is only compared with those fixed words, and
+    it, ``flagged_input`` and ``raw`` are never kept or logged."""
     try:
         raw = error.read(_ERROR_BODY_BYTES)
     except (OSError, HTTPException):
@@ -738,14 +780,17 @@ def _error_codes(error: urllib.error.HTTPError) -> _ErrorCodes:
     except (ValueError, RecursionError):
         return _ErrorCodes()
     inner = body.get("error") if isinstance(body, dict) else None
+    message = inner.get("message") if isinstance(inner, dict) else None
+    no_endpoints = isinstance(message, str) and message.startswith(_NO_ENDPOINT_WORDS)
     metadata = inner.get("metadata") if isinstance(inner, dict) else None
     if not isinstance(metadata, dict):
-        return _ErrorCodes()
+        return _ErrorCodes(no_endpoints=no_endpoints)
     reasons = metadata.get("reasons")
     return _ErrorCodes(
         _code(metadata.get("error_type")),
         _code(metadata.get("provider_name")),
         isinstance(reasons, list) and bool(reasons),
+        no_endpoints,
     )
 
 
@@ -769,6 +814,100 @@ def _read_until(response: Any, ends: float, limit: int) -> bytes | None:
         chunks.append(chunk)
         size += len(chunk)
     return b"".join(chunks)
+
+
+def _read_stream(
+    response: Any, ends: float, limit: int, on_text: Callable[[str], None], texts: list[str]
+) -> dict[str, Any] | str:
+    """#535: a streamed reply (server-sent events), each ``delta.content`` handed to ``on_text``
+    as it comes ("" for a line with none: a keep-alive comment or an event's blank line, so the
+    caller may stop the reply by raising), put back together as the reply ``stream: false``
+    gives: its text, ``refusal``, finish reasons, ``id``, ``model``, ``provider`` and the last
+    ``usage``. An ``error`` chunk is a reply that failed part way (finish_reason error). A
+    failure code instead: "timeout" once ``ends`` has passed, "response_too_large" past
+    ``limit`` bytes, "bad_response" for a chunk that is not a JSON object. ``texts`` gets each
+    piece of text as it comes, so a reply that fails part way still says how much it gave (the
+    ledger's worst case, ``OpenRouterClient._bill_partial``). An error chunk is logged with its
+    codes only (``code``, ``error_type``, ``provider_name``): its message can hold page text (the
+    module docstring, G6), so it is never read. O(body)."""
+    reply: dict[str, Any] = {}
+    choice: dict[str, Any] = {"index": 0, "finish_reason": None}
+    refusal: object = None
+    size = 0
+    while True:
+        if time.monotonic() >= ends:
+            return "timeout"
+        line = response.readline(limit + 1 - size)
+        if not line:
+            break
+        size += len(line)
+        if size > limit:
+            return "response_too_large"
+        text = ""
+        if line.startswith(b"data:"):
+            data = line[5:].strip()
+            if data == b"[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+            except (ValueError, RecursionError):
+                return "bad_response"
+            if not isinstance(chunk, dict):
+                return "bad_response"
+            reply.update({key: chunk[key] for key in ("id", "model", "provider", "usage") if key in chunk})
+            choices = chunk.get("choices")
+            first = (
+                choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+            )
+            delta = first.get("delta")
+            delta = delta if isinstance(delta, dict) else {}
+            if isinstance(delta.get("content"), str):
+                text = delta["content"]
+                texts.append(text)
+            if delta.get("refusal") is not None:
+                refusal = delta["refusal"]
+            choice.update(
+                {key: first[key] for key in ("finish_reason", "native_finish_reason") if first.get(key)}
+            )
+            if "error" in chunk:
+                choice["finish_reason"] = "error"
+                _log_error_chunk(chunk["error"])
+        on_text(text)
+    choice["message"] = {"role": "assistant", "content": "".join(texts), "refusal": refusal}
+    return {**reply, "choices": [choice]}
+
+
+def _worst_usage(body: Mapping[str, Any], content: str) -> dict[str, Any]:
+    """#535: a streamed reply's usage when it gave none, at its worst case (as #488 charges a call
+    with no usage): the input at most the UTF-8 bytes of its messages, the output its whole
+    ``max_completion_tokens``, of which all but ``content``'s bytes count as thinking (so the
+    caller's own reply budget is checked on the text alone). No cost: the ledger prices them."""
+    messages = body.get("messages")
+    said = json.dumps(messages, ensure_ascii=False) if isinstance(messages, list) else ""
+    limit = _whole(body.get("max_completion_tokens"))
+    text = len(content.encode("utf-8"))
+    output = max(limit, text)
+    return {
+        "prompt_tokens": len(said.encode("utf-8")),
+        "completion_tokens": output,
+        "completion_tokens_details": {"reasoning_tokens": output - text},
+    }
+
+
+def _log_error_chunk(error: object) -> None:
+    """#535: a streamed reply's error chunk, logged by its short codes only (``_read_stream``)."""
+    found = error if isinstance(error, dict) else {}
+    metadata = found.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    _log.warning(
+        "streamed reply failed part way",
+        extra={
+            "code": "server_error",
+            "error_code": _code(str(found.get("code"))) if found.get("code") is not None else None,
+            "error_type": _code(metadata.get("error_type")),
+            "provider_name": _code(metadata.get("provider_name")),
+        },
+    )
 
 
 @dataclass(slots=True)
@@ -951,9 +1090,11 @@ class ModelGate:
         with self._lock:
             self._breakers.setdefault(model, _Breaker()).probing = False
 
-    def record(self, model: str, *, failed: bool) -> None:
+    def record(self, model: str, *, failed: bool, page_read: bool = False) -> None:
         """One request's outcome for ``model``: any reply closes its breaker (and ends a key
-        latch, and OCR_MODEL's own ends ``reader_unfixable``); a failure (408, 429, 5xx, a
+        latch, and ends ``reader_unfixable`` when it is OCR_MODEL's page read that answered,
+        ``page_read``: never a chat call naming the same id, nor a 404 or redirect, the same
+        fault again; review of #564); a failure (408, 429, 5xx, a
         mid-reply error, no connection) counts towards
         opening it, unless the one before is more than FAILURE_GAP_SECONDS old (the count
         starts again). Another model's breaker is not touched."""
@@ -964,7 +1105,7 @@ class ModelGate:
                 breaker.state, breaker.failures, breaker.down_since = _CLOSED, 0, None
                 breaker.last_failure_at = None
                 self._key_latched_at = None
-                if model == self._reader_model:
+                if model == self._reader_model and page_read:
                     self._reader_unfixable_at = None
                 return
             now = self.clock()
@@ -996,14 +1137,16 @@ class ModelGate:
         says ``key_problem`` for KEY_LATCH_SECONDS: Health asks for action. ``status`` is not
         changed and no call is refused, so admission, the sweeps, chat and the organisations
         reading with another model go on. Another model's (one organisation's choice, read
-        locally) changes nothing. Logged once at error."""
+        locally) changes nothing. Logged once at error, with the model id (production QA L2),
+        until the reader answers again. Only ``read_page`` calls it: a chat call naming the same
+        model id is not a reading problem."""
         if model != self._reader_model:
             return
         with self._lock:
             first = self._reader_unfixable_at is None
             self._reader_unfixable_at = self.clock()
         if first:
-            _log.error("reading model unusable", extra={"code": code})
+            _log.error("reading model unusable", extra={"code": code, "model": model})
 
 
 _PROCESS_GATES: dict[tuple[str, int, int, int], ModelGate] = {}
@@ -1060,6 +1203,7 @@ class OpenRouterClient:
         self._host_path = settings.openrouter_base_url.rstrip("/").split("://", 1)[1]
         self._timeout = settings.model_timeout_seconds
         self._chat_timeout = self._timeout if chat_timeout_seconds is None else chat_timeout_seconds
+        self._stream_timeout = settings.answer_stream_max_seconds  # a streamed reply's own limit (#535)
         self._default_chat_tokens = settings.model_answer_max_tokens
         self._dim = settings.embedding_dim
         self._providers = settings.openrouter_providers
@@ -1152,6 +1296,68 @@ class OpenRouterClient:
         tries end by then (``timeout`` once it has passed); None, each has the chat
         timeout. ``temperature``: sent only to a model of TEMPERATURE_VENDORS; None, the
         default."""
+        body, output_limit, ends = self._chat_body(
+            system, user, schema, max_tokens, model, thinking, provider, deadline, temperature
+        )
+        messages = body["messages"]
+        content, spent = self._chat_reply(body, output_limit, (0, 0), ends)
+        value, problem = parse_reply(content, schema)
+        if value is not None:
+            return value
+        messages.append({"role": "assistant", "content": content})
+        messages.append({"role": "user", "content": REPAIR.format(problem=problem)})
+        content, spent = self._chat_reply(body, output_limit, spent, ends)
+        value, _ = parse_reply(content, schema)
+        if value is None:
+            raise ModelOutputError("invalid_output", input_tokens=spent[0], output_tokens=spent[1])
+        return value
+
+    def chat_json_stream(
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: dict[str, Any],
+        on_text: Callable[[str], None],
+        max_tokens: int | None = None,
+        model: str | None = None,
+        thinking: str | None = None,
+        provider: str | None = None,
+        deadline: float | None = None,
+    ) -> dict[str, Any]:
+        """``chat_json`` streamed (#535, Ask's draft; the module docstring): the same request with
+        ``stream: true``, each piece of the reply's text handed to ``on_text`` as it comes (""
+        for a line with none, so the caller may stop the reply by raising: the connection is
+        closed and nothing more is read). It ends by ``deadline`` (None: ANSWER_STREAM_MAX_SECONDS
+        from now), and fails as ``timeout`` sooner only when nothing arrives for the chat timeout
+        (MODEL_TIMEOUT_SECONDS). No repair turn: a reply that does not follow ``schema`` raises
+        ``invalid_output``, with its tokens."""
+        body, output_limit, ends = self._chat_body(
+            system, user, schema, max_tokens, model, thinking, provider, deadline, None, stream=True
+        )
+        content, spent = self._chat_reply(body, output_limit, (0, 0), ends, on_text=on_text)
+        value, _ = parse_reply(content, schema)
+        if value is None:
+            raise ModelOutputError("invalid_output", input_tokens=spent[0], output_tokens=spent[1])
+        return value
+
+    def _chat_body(
+        self,
+        system: str,
+        user: str,
+        schema: dict[str, Any],
+        max_tokens: int | None,
+        model: str | None,
+        thinking: str | None,
+        provider: str | None,
+        deadline: float | None,
+        temperature: float | None,
+        *,
+        stream: bool = False,
+    ) -> tuple[dict[str, Any], int, float | None]:
+        """``chat_json``'s request body, the reply's own budget and the deadline on ``now()``
+        (None: each call's chat timeout); ValueError or ``ProviderNotAllowed`` before anything
+        is sent."""
         if model is not None and not valid_model_id(model):
             raise ValueError("a model ID must be an OpenRouter author/slug with no :variant")
         slug = DEFAULT_PROVIDER if provider is None else provider
@@ -1173,20 +1379,11 @@ class OpenRouterClient:
             schema=schema,
             max_output_tokens=output_limit + CHAT_THINKING_TOKENS.get(level, 0),
             provider_slug=slug,
+            stream=stream,
         )
         if temperature is not None and chosen.split("/", 1)[0] in TEMPERATURE_VENDORS:
             body["temperature"] = temperature
-        content, spent = self._chat_reply(body, output_limit, (0, 0), ends)
-        value, problem = parse_reply(content, schema)
-        if value is not None:
-            return value
-        messages.append({"role": "assistant", "content": content})
-        messages.append({"role": "user", "content": REPAIR.format(problem=problem)})
-        content, spent = self._chat_reply(body, output_limit, spent, ends)
-        value, _ = parse_reply(content, schema)
-        if value is None:
-            raise ModelOutputError("invalid_output", input_tokens=spent[0], output_tokens=spent[1])
-        return value
+        return body, output_limit, ends
 
     # The reader's call (G1, G2, G3).
 
@@ -1238,14 +1435,14 @@ class OpenRouterClient:
         sent = (thinking_level, media_resolution)  # #463: the ledger's settings of a page read
         if budget is not None:
             return self._read_within(body, schema, validate, deadline, sent, budget)
-        reply = self._call(CHAT_PATH, body, deadline, sent=sent)
+        reply = self._read_call(body, deadline, sent=sent)
         input_tokens, output_tokens = reply_usage(reply)
         content, finish = _page_text(reply, (0, 0), str(body["model"]), sent)
         value, problem = _valid_reply(content, schema, validate)
         if value is None:
             body["messages"].append({"role": "assistant", "content": content})
             body["messages"].append({"role": "user", "content": REPAIR.format(problem=problem)})
-            reply = self._call(CHAT_PATH, body, deadline, sent=sent)
+            reply = self._read_call(body, deadline, sent=sent)
             content, finish = _page_text(reply, (input_tokens, output_tokens), str(body["model"]), sent)
             more_in, more_out = reply_usage(reply)
             input_tokens, output_tokens = input_tokens + more_in, output_tokens + more_out
@@ -1273,7 +1470,7 @@ class OpenRouterClient:
         as a limit hit. The reply's tokens, and any error's, are every billed call's."""
         model = str(body["model"])
         try:
-            reply = self._call(CHAT_PATH, body, deadline, sent=sent, budget=budget)
+            reply = self._read_call(body, deadline, sent=sent, budget=budget)
             content, finish = _page_text(reply, (0, 0), model, sent)
             value, problem = _valid_reply(content, schema, validate)
             if value is None:
@@ -1288,7 +1485,7 @@ class OpenRouterClient:
                 body["messages"].append({"role": "assistant", "content": content})
                 body["messages"].append({"role": "user", "content": repair})
                 body["max_completion_tokens"] = cap
-                reply = self._call(CHAT_PATH, body, deadline, sent=sent, budget=budget, tokens_in=tokens_in)
+                reply = self._read_call(body, deadline, sent=sent, budget=budget, tokens_in=tokens_in)
                 content, finish = _page_text(reply, (0, 0), model, sent)
                 value, _ = _valid_reply(content, schema, validate)
                 if value is None:
@@ -1300,6 +1497,25 @@ class OpenRouterClient:
             tokens = {"input_tokens": budget.input_tokens, "output_tokens": budget.output_tokens}
             raise ModelUnavailable(error.code, **tokens) from None
         return PageReply(value, budget.input_tokens, budget.output_tokens, finish)
+
+    def _read_call(
+        self,
+        body: Mapping[str, Any],
+        deadline: float,
+        *,
+        sent: tuple[str, str],
+        budget: PageBudget | None = None,
+        tokens_in: int | None = None,
+    ) -> dict[str, Any]:
+        """``_call`` for a page read, capped (#488) or not: a 404 or redirect for OCR_MODEL marks
+        the platform's reader unusable (``ModelGate.reader_unfixable``, issue 407); nothing else
+        does (production QA L2)."""
+        try:
+            return self._call(CHAT_PATH, body, deadline, sent=sent, budget=budget, tokens_in=tokens_in)
+        except ModelUnavailable as error:
+            if error.code in UNUSABLE_CODES:
+                self.gate.reader_unfixable(str(body["model"]), error.code)
+            raise
 
     def _check_provider(self, slug: str) -> None:
         """``ProviderNotAllowed`` unless ``slug`` is in OPENROUTER_PROVIDERS: nothing is sent."""
@@ -1329,12 +1545,21 @@ class OpenRouterClient:
     # Internals.
 
     def _chat_reply(
-        self, body: dict[str, Any], max_tokens: int | None, before: tuple[int, int], deadline: float | None
+        self,
+        body: dict[str, Any],
+        max_tokens: int | None,
+        before: tuple[int, int],
+        deadline: float | None,
+        *,
+        on_text: Callable[[str], None] | None = None,
     ) -> tuple[str, tuple[int, int]]:
         """(the reply's text, the tokens billed so far: ``before`` plus this reply's), by
         ``deadline`` on ``now()`` (None: the chat timeout from now). Its
-        ``ModelOutputError`` carries the same tokens."""
-        reply = self._call(CHAT_PATH, body, self.now() + self._chat_timeout if deadline is None else deadline)
+        ``ModelOutputError`` carries the same tokens. ``on_text``: a streamed reply's (#535), whose
+        limit with no ``deadline`` is ANSWER_STREAM_MAX_SECONDS, the chat timeout being its idle one."""
+        whole = self._chat_timeout if on_text is None else self._stream_timeout
+        ends = self.now() + whole if deadline is None else deadline
+        reply = self._call(CHAT_PATH, body, ends, on_text=on_text)
         text, _ = _billed_text(reply, before)
         input_tokens, output_tokens = reply_usage(reply)
         spent = (before[0] + input_tokens, before[1] + output_tokens)
@@ -1376,6 +1601,7 @@ class OpenRouterClient:
         sent: tuple[str, str] | None = None,
         budget: PageBudget | None = None,
         tokens_in: int | None = None,
+        on_text: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         """One request with the latch, the body's model's breaker, the limiter and retries
         (G6, G9). Returns the reply object of a 200; raises a coded error otherwise. ``sent``:
@@ -1384,11 +1610,21 @@ class OpenRouterClient:
         or not at all (``cost_ceiling``, a limit hit): never past the page's ceiling; ``tokens_in``
         the request's input at most (None: the page's, ``PageBudget.cap``). #488 review: a call
         that may have been billed with no usage to say so (``_Reply.maybe_billed``, a reply with
-        none) is charged its worst case."""
+        none) is charged its worst case. ``on_text`` (#535): a streamed reply's pieces of text; once
+        one went out, a failure is raised at once, never retried (the text would go out twice), and
+        whatever the caller raises from it releases the breaker's probe and goes up as it is."""
         gate = self.gate
         model = str(body["model"])
         attempt = 0
         worst = 0.0
+        handed_out = False
+
+        def heard(text: str) -> None:
+            nonlocal handed_out
+            handed_out = handed_out or bool(text)
+            if on_text is not None:
+                on_text(text)
+
         while True:
             if budget is not None and attempt:
                 cap = budget.cap(tokens_in)
@@ -1411,16 +1647,27 @@ class OpenRouterClient:
             if remaining <= 0:
                 gate.release_probe(model)
                 raise ModelUnavailable("timeout")
-            reply = self._send(path, body, remaining)
+            try:
+                reply = self._send(
+                    path,
+                    body,
+                    remaining,
+                    on_text=None if on_text is None else heard,
+                    idle=None if on_text is None else self._chat_timeout,
+                )
+            except BaseException:  # the caller stopped a streamed reply (#535): no outcome to record
+                gate.release_probe(model)
+                raise
             if budget is not None and reply.maybe_billed:
                 budget.charge_unknown(worst)
             code: str | None
+            page_read = sent is not None  # review of #564: only a page read says the reader works
             if 200 <= reply.status < 300:
                 if reply.body is None:
-                    gate.record(model, failed=False)
+                    gate.record(model, failed=False, page_read=page_read)
                     raise ModelUnavailable(reply.failure or "bad_response")
                 if not failed_mid_reply(reply.body):
-                    gate.record(model, failed=False)
+                    gate.record(model, failed=False, page_read=page_read)
                     self._count(reply.body, model, sent, budget, worst)
                     return reply.body
                 self._count(
@@ -1431,7 +1678,7 @@ class OpenRouterClient:
                 if reply.status == 403 and (
                     reply.codes.moderated or reply.codes.error_type in REFUSAL_ERROR_TYPES
                 ):
-                    gate.record(model, failed=False)
+                    gate.record(model, failed=False, page_read=page_read)
                     raise ModelOutputError("blocked")
                 gate.latch_key(_KEY_STATUSES[reply.status])
                 raise ModelUnavailable("key_rejected")
@@ -1440,15 +1687,20 @@ class OpenRouterClient:
             else:
                 code = _RETRY_STATUSES.get(reply.status) or ("server_error" if reply.status >= 500 else None)
             if code is None:  # the server answered: it is up, but this request is wrong
-                gate.record(model, failed=False)
+                unusable: str | None = None
+                if 300 <= reply.status < 400:
+                    unusable = "redirect_refused"
+                elif reply.status == 404:
+                    unusable = "no_endpoints" if reply.codes.no_endpoints else "model_not_found"
+                gate.record(model, failed=False, page_read=page_read and unusable is None)
                 if reply.status in _BAD_REQUEST_STATUSES:
                     raise ModelOutputError("bad_request")
-                if reply.status == 404:
-                    gate.reader_unfixable(model, "model_not_found")
-                    raise ModelUnavailable("model_not_found")
-                if 300 <= reply.status < 400:
-                    gate.reader_unfixable(model, "redirect_refused")
-                    raise ModelUnavailable("redirect_refused")
+                if unusable is not None:
+                    # Production QA L2: which model, so the operator knows what to fix; review of
+                    # #564: a 404 for no endpoint says so, never blaming the model id. The reply's
+                    # message is never logged (it may hold page text; ``_error_codes``).
+                    _log.warning(UNUSABLE_CODES[unusable], extra={"code": unusable, "model": model})
+                    raise ModelUnavailable(unusable)
                 raise ModelUnavailable("http_error")
             if reply.status == 0 and code == "timeout":
                 # Our own deadline ran out (a slow page at high thinking), not the model failing:
@@ -1457,6 +1709,8 @@ class OpenRouterClient:
                 gate.release_probe(model)
                 raise ModelUnavailable("timeout")
             gate.record(model, failed=True)
+            if handed_out:  # #535: never sent again once a streamed reply handed out text
+                raise ModelUnavailable(code)
             wait = gate.random() * min(BACKOFF_MAX_SECONDS, BACKOFF_BASE_SECONDS * 2**attempt)
             asked = _retry_after(reply.headers, gate.wall_clock())
             if asked is not None:
@@ -1505,11 +1759,32 @@ class OpenRouterClient:
             if cost is not None:
                 self._cost = cost if self._cost is None else self._cost + cost
 
+    def _bill_partial(self, body: Mapping[str, Any] | None, texts: list[str]) -> None:
+        """#535 (review): a streamed reply that ended part way (stopped by the cap, timed out, cut
+        off, malformed or too large) was billed for what it generated, with no usage to say how
+        much: one ledger row at its worst case (``_worst_usage``), never 0, never missing."""
+        if body is None:
+            return
+        _log.warning(
+            "streamed reply ended part way, billed at its worst case", extra={"code": "stream_partial"}
+        )
+        self._count({"usage": _worst_usage(body, "".join(texts))}, str(body["model"]))
+
     def _send(
-        self, path: str, body: Mapping[str, Any] | None, timeout: float, *, send_key: bool = True
+        self,
+        path: str,
+        body: Mapping[str, Any] | None,
+        timeout: float,
+        *,
+        send_key: bool = True,
+        on_text: Callable[[str], None] | None = None,
+        idle: float | None = None,
     ) -> _Reply:
         """One POST (or a GET when ``body`` is None). Never raises for HTTP or the network:
-        the outcome is a ``_Reply``."""
+        the outcome is a ``_Reply``. ``on_text``: a reply sent as ``text/event-stream`` is read
+        as it comes (``_read_stream``, #535); whatever ``on_text`` raises goes up. ``idle``: each
+        wait on the socket (connecting, the headers, every read) ends after this long with
+        nothing (a ``timeout``), while ``timeout`` stays the whole exchange's limit."""
         data = None if body is None else json.dumps(body).encode("utf-8")
         headers = {} if body is None else {"Content-Type": "application/json"}
         method = "GET" if body is None else "POST"
@@ -1523,7 +1798,26 @@ class OpenRouterClient:
             request.add_unredirected_header(API_KEY_HEADER, "Bearer " + self._key)
         ends = time.monotonic() + timeout
         try:
-            with self._opener.open(request, timeout=timeout) as response:
+            with self._opener.open(
+                request, timeout=timeout if idle is None else min(idle, timeout)
+            ) as response:
+                if on_text is not None and response.headers.get_content_type() == "text/event-stream":
+                    texts: list[str] = []
+                    try:
+                        streamed = _read_stream(response, ends, replies.MAX_RESPONSE_BYTES, on_text, texts)
+                    except BaseException:  # the caller stopped it (the cap), or the socket failed
+                        self._bill_partial(body, texts)
+                        raise
+                    if isinstance(streamed, str):
+                        self._bill_partial(body, texts)
+                        if streamed == "timeout":
+                            return _Reply(0, None, None, "timeout")
+                        return _Reply(response.status, response.headers, None, streamed)
+                    if body is not None and not _says_usage(streamed):
+                        _log.warning("streamed reply without usage", extra={"code": "stream_usage_missing"})
+                        content = streamed["choices"][0]["message"]["content"]
+                        streamed["usage"] = _worst_usage(body, content)
+                    return _Reply(response.status, response.headers, streamed)
                 raw = _read_until(response, ends, replies.MAX_RESPONSE_BYTES + 1)
                 if raw is None:
                     return _Reply(0, None, None, "timeout")

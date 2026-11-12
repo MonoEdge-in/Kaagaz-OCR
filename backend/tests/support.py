@@ -13,7 +13,7 @@ TEXT_BYTES = b"invoice,amount\nINV-1,100\n"
 
 TEST_POLICY = UploadPolicy(
     max_bytes=1024,
-    allowed_types=frozenset({sniff.PDF, sniff.PNG, sniff.TEXT, sniff.ZIP}),
+    allowed_types=frozenset({sniff.PDF, sniff.PNG, sniff.HEIC, sniff.TEXT, sniff.ZIP}),  # HEIC: #522
     type_limits=limits_by_type(pdf=1024, image=1024, sheet=1024),
 )
 

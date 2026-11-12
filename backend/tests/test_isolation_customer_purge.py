@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError
 
-from kaagaz.adapters.storage import original_key, page_image_key, quarantine_key, resumable_key
+from kaagaz.adapters.storage import original_key, page_image_key, quarantine_key, rendition_key, resumable_key
 from kaagaz.api import totp
 from kaagaz.db.engine import Database, OperatorDatabase
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -92,6 +92,12 @@ class KeyStorage:
     def get(self, customer_id: str, document_id: str) -> bytes:
         try:
             return self.objects[original_key(customer_id, document_id)]
+        except KeyError:
+            raise BlobNotFound(document_id) from None
+
+    def get_rendition(self, customer_id: str, document_id: str) -> bytes:
+        try:
+            return self.objects[rendition_key(customer_id, document_id)]
         except KeyError:
             raise BlobNotFound(document_id) from None
 
@@ -225,6 +231,8 @@ def _organisation(api: Api, storage: KeyStorage, label: str) -> tuple[str, str, 
         )
     _owner(api.db, "INSERT INTO org_upload_limits (customer_id, max_files) VALUES (:c, 7)", {"c": customer})
     put(api.db, customer, admin, first, f"The papers of {label}")
+    # 0061d: its own storage limit, which goes with the customers row (ON DELETE CASCADE).
+    _owner(api.db, "INSERT INTO org_storage_limits (customer_id, storage_gb) VALUES (:c, 7)", {"c": customer})
     documents = [first, second, trashed, held]
     for document in documents:
         storage.put(customer, document, io.BytesIO(f"{label} {document}".encode()))

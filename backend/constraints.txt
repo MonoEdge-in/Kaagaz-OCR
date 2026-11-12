@@ -17,7 +17,38 @@ toml==0.10.2
 tqdm==4.70.1  # MPL-2.0 AND MIT
 typer==0.27.2
 
+# pi-heif (#522), HEIC and HEIF photos: pillow-heif's decode-only build, so no GPL x265
+# encoder. BSD-3-Clause; its wheel bundles libheif and libde265, LGPL-3.0. Checked 6 Nov 2026.
+pi-heif==1.4.0
+
 # pdfminer.six, already a dependency (PDF content inspection, kaagaz/scanning/content.py),
 # pinned to the version the content check's read budget was measured on (4 Nov 2026): a
 # new pdfminer can read a file differently and refuse ordinary PDFs as unscannable.
 pdfminer.six==20260107
+
+# Production QA S3 (5 Nov 2026): the libraries that face the internet or read untrusted files,
+# and their direct dependencies, pinned to the versions the full test run passed on, so an image
+# build never takes a newer one unseen (there is no lock file yet; tests/test_constraints_pins.py).
+# Testing-Env (#564): the versions its image installs on 11 Nov 2026, never older than production's.
+# Licences: as pyproject.toml lists; the dependencies are MIT, BSD or Apache-2.0.
+fastapi==0.162.2
+starlette==1.10.0  # BSD-3-Clause
+pydantic==2.14.3
+pydantic-core==2.50.4
+typing-extensions==4.16.0  # PSF-2.0
+typing-inspection==0.4.5
+opentelemetry-api==1.45.2  # Apache-2.0
+python-multipart==0.0.33  # Apache-2.0
+uvicorn==0.54.0  # BSD-3-Clause
+click==8.5.1  # BSD-3-Clause
+h11==0.16.0
+anyio==4.16.0
+idna==3.20  # BSD-3-Clause
+cryptography==50.0.2  # Apache-2.0 OR BSD-3-Clause
+cffi==2.1.1
+charset-normalizer==3.5.2
+pillow==13.0.0  # MIT-CMU
+boto3==1.43.127  # Apache-2.0
+botocore==1.43.127  # Apache-2.0
+jmespath==1.1.0
+s3transfer==0.19.3  # Apache-2.0

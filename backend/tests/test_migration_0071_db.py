@@ -20,12 +20,16 @@ from kaagaz.db.engine import Database
 from tests import test_migration_0002_db as base
 from tests.db_support import database_url, insert_folder, migrate, new_customer
 from tests.folder_upload_support import new_folder_upload, path_key
-from tests.test_migration_0004_db import _current, _head
+from tests.test_migration_0004_db import _current
 from tests.test_migration_0034 import _load
 from tests.test_operator_auth_db import _owner
 
 pytestmark = pytest.mark.db
 fresh = base.fresh
+# Changed on purpose (#516, 0075): the head merges production's 0061d too, which a downgrade
+# across 0071 keeps; these paths stop at 0074, the line's top before that merge
+# (test_migration_0075_db goes on from here).
+TOP = "0074"
 TABLES = {"folder_uploads", "folder_upload_folders", "folder_upload_items", "org_upload_limits"}
 _ITEM = (
     "INSERT INTO folder_upload_items (customer_id, folder_upload_id, seq, path_key, name, folder_id,"
@@ -102,14 +106,14 @@ def _empty_again(url: str, db: Database) -> None:
 
 
 def _normal(url: str, db: Database) -> tuple[dict[str, list[tuple[Any, ...]]], ...]:
-    """The normal path's states (a fresh database): at 0070 and 0061c, at 0071 and at head; then
+    """The normal path's states (a fresh database): at 0070 and 0061c, at 0071 and at 0074; then
     the database empty again."""
     migrate(url, "0070")
     migrate(url, "0061c")
     parents = _state(db)
     migrate(url, "0071")
     at_0071 = _state(db)
-    migrate(url, "head")
+    migrate(url, TOP)
     at_head = _state(db)
     _empty_again(url, db)
     return parents, at_0071, at_head
@@ -140,8 +144,8 @@ def test_0071_is_a_merge_alone_and_0072_up_down_up(fresh: tuple[str, Database]) 
     migrate(url, "0071")
     assert _heads(url) == ["0071"]
     assert _state(db) == parents  # a merge: nothing added
-    migrate(url, "head")
-    assert _current(url) == _head()
+    migrate(url, TOP)
+    assert _heads(url) == [TOP]
     after = _state(db)
     assert base._names(after, "relations") >= TABLES
     with db.system() as conn:
@@ -151,14 +155,14 @@ def test_0071_is_a_merge_alone_and_0072_up_down_up(fresh: tuple[str, Database]) 
     assert _heads(url) == ["0071"]
     assert _state(db) == parents
     assert _rows(db, customer, upload) == (1, 2, 2, 20, 2, 3)
-    migrate(url, "head")
+    migrate(url, TOP)
     assert _state(db) == after
     assert _owner(db, _COUNTED, {"u": upload}) == [(2,)]
     base._downgrade(url, "0070")
     assert _heads(url) == ["0061c", "0070"]
     assert _state(db) == parents
     assert _rows(db, customer, upload) == (1, 2, 2, 20, 2, 3)  # 0061c's tables stay
-    migrate(url, "head")
+    migrate(url, TOP)
     assert _state(db) == after
     assert _owner(db, _COUNTED, {"u": upload}) == [(2,)]
 
@@ -176,8 +180,8 @@ def test_the_test_server_at_509s_0071_migrates_to_the_same_schema_and_keeps_its_
     assert _heads(url) == ["0071"]
     assert _state(db) == normal_0071
     customer, upload = _upload_with_rows(db)
-    migrate(url, "head")
-    assert _current(url) == _head()
+    migrate(url, TOP)
+    assert _heads(url) == [TOP]
     assert _state(db) == normal
     assert _rows(db, customer, upload) == (1, 2, 2, 20, 2, 3)
     assert _owner(db, _COUNTED, {"u": upload}) == [(2,)]
@@ -185,7 +189,7 @@ def test_the_test_server_at_509s_0071_migrates_to_the_same_schema_and_keeps_its_
     base._downgrade(url, "0071")
     assert _heads(url) == ["0071"]
     assert _state(db) == normal_0071
-    migrate(url, "head")
+    migrate(url, TOP)
     assert _state(db) == normal
     assert _owner(db, _COUNTED, {"u": upload}) == [(2,)]
 
@@ -208,8 +212,8 @@ def test_production_at_0061c_migrates_to_the_same_schema_and_keeps_its_uploads(
     assert _state(db) == normal_parents
     migrate(url, "0071")
     assert _state(db) == normal_0071
-    migrate(url, "head")
-    assert _current(url) == _head()
+    migrate(url, TOP)
+    assert _heads(url) == [TOP]
     assert _state(db) == normal
     assert _rows(db, customer, upload) == (1, 2, 2, 20, 2, 3)
     assert _owner(db, _COUNTED, {"u": upload}) == [(2,)]
@@ -218,7 +222,7 @@ def test_production_at_0061c_migrates_to_the_same_schema_and_keeps_its_uploads(
     assert _heads(url) == ["0061c", "0070"]
     assert _state(db) == normal_parents
     assert _rows(db, customer, upload) == (1, 2, 2, 20, 2, 3)
-    migrate(url, "head")
+    migrate(url, TOP)
     assert _state(db) == normal
     assert _owner(db, _COUNTED, {"u": upload}) == [(2,)]
 

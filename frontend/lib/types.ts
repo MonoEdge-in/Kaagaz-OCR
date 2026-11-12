@@ -11,7 +11,31 @@ export type DocumentStatus =
   | "ready"
   | "failed";
 
-export type DetectedType = "pdf" | "png" | "jpeg" | "tiff" | "zip" | "ole2" | "text";
+/**
+ * The file's type: at upload, the one sniffed from its first bytes (pdf, png, jpeg, tiff, heic,
+ * zip, ole2, text); once the worker has checked it, its kind (#522, the backend's resolve.py).
+ */
+export type DetectedType =
+  | "pdf"
+  | "png"
+  | "jpeg"
+  | "tiff"
+  | "heic"
+  | "zip"
+  | "ole2"
+  | "text"
+  | "xlsx"
+  | "xls"
+  | "csv"
+  | "docx"
+  | "dotx"
+  | "doc"
+  | "pptx"
+  | "ppt"
+  | "txt"
+  | "md"
+  | "json"
+  | "html";
 
 export type Label = "verified" | "needs_review";
 
@@ -28,7 +52,11 @@ export type LabelReason =
   | "check_failed" // PRD 2, K3: a check on its invoice failed, even if the readers agreed
   | "unsure_text" // PRD 5 V4: it holds a word the reader was unsure of, or [?]
   | "box_unanchored" // PRD 5 G5: its spot on the page couldn't be confirmed
-  | "local_reader"; // PRD 5 Q7: read by the backup reader while the main reader was down
+  | "local_reader" // PRD 5 Q7: read by the backup reader while the main reader was down
+  | "mixed_digits" // #524: an amount's digits are of two scripts (९४0000/-)
+  | "amount_commas" // #524: an amount's commas fit no grouping (1,15,0000)
+  | "amount_mark" // #524: a mark inside an amount, or "/-" read as a 1 (115000001-)
+  | "amount_outlier"; // #524: a total more than ten times the page's other total
 
 /** "admin" only for an admin's session (from /login, always with two-step since 16 Oct 2026). */
 export type SessionScope = "app" | "admin";
@@ -161,6 +189,29 @@ export interface DocumentSummary {
   department?: { id: string; name: string } | null;
   // "new": this document may be a new version of another; "candidate": a newer one waits on this family.
   pending_suggestion?: { id: string; role: "new" | "candidate" } | null;
+  // #522: a zip only: where it was unpacked, null until it is (or when it is kept as a file).
+  // Its status_message already says "Unpacked: 120 files into folder "X", 3 skipped (...)".
+  unpack?: ZipUnpack | null;
+}
+
+/** #522: a zip upload unpacked into a folder by the server: its files counted, and the first
+ * skipped ones, each with why in plain words. */
+export interface ZipUnpack {
+  folder_upload_id: string;
+  folder_id: string | null; // null once that folder is deleted
+  folder_name: string;
+  files: number; // every file in the zip but a Mac's own (__MACOSX, .DS_Store)
+  unpacked: number;
+  already_in: number; // duplicates: already in Kaagaz, nothing new stored
+  skipped: number;
+  waiting: number; // still to unpack
+  skipped_files: ZipSkippedFile[]; // the first 20, in the zip's order
+}
+
+export interface ZipSkippedFile {
+  name: string;
+  code: string;
+  reason: string; // plain words, safe to show as is
 }
 
 /** The four sensitivity labels (O2). They inform; they restrict nothing. */
@@ -183,6 +234,7 @@ export interface VersionSuggestion {
   candidate: { family_id: string; id: string; name: string }; // id: the family's current version
   next_version_no: number; // "Make it version N"
   text_overlap: number | null;
+  text_overlap_estimated?: boolean; // #521: true when text_overlap is the estimate, not counted exactly
   name_similarity: number | null;
   shared_identifier: string | null; // its kind, such as "survey_number"
   reasons?: string | string[] | null;
@@ -249,7 +301,20 @@ export interface DocumentCompare {
   left_id: string;
   right_id: string;
   summary: string; // "2 changes on page 2"
-  pages: { page_no: number; changes: number; truncated: boolean; runs: CompareRun[] }[];
+  pages: {
+    page_no: number;
+    changes: number;
+    truncated: boolean;
+    runs: CompareRun[];
+    // #521: the words changed (a replacement counts its longer side) and each side's words.
+    words_changed?: number;
+    left_words?: number;
+    right_words?: number;
+  }[];
+  truncated?: boolean; // over the compare limits: only the first part is compared
+  overview?: string; // #521: "94% the same. 38 words changed on pages 2 and 5. Page 6 is new."
+  left_pages?: number | null; // #521 review: each side's page count, for its page images
+  right_pages?: number | null;
 }
 
 /** An active person of this company, for the owner picker and the filters. */
@@ -380,6 +445,46 @@ export interface Folder {
   created_at: string;
   kind?: FolderKind; // F1; left out by older replies: custom
   sort_order?: number | null; // a department's place on the dashboard and in the tree
+}
+
+/** #542: a folder in Trash, with what it holds at every depth (files: a file's versions count once). */
+export interface TrashedFolder {
+  id: string;
+  name: string;
+  kind: FolderKind;
+  was_in: string[] | null; // the live folder it goes back into, root first; [] the top level; null gone
+  files: number;
+  folders: number;
+  deleted_at: string;
+  deleted_by_name: string | null;
+  can_restore: boolean; // an admin, or who uploaded every version of every file in it
+}
+
+/** #542: a folder in Trash opened: itself, its path within Trash (Trash's item first), its folders. */
+export interface TrashedFolderContents {
+  folder: TrashedFolder;
+  path: { id: string; name: string }[];
+  folders: TrashedFolder[];
+}
+
+/** #542: the folder that came back with a file restored from a folder in Trash (restoreDocument's reply). */
+export type FolderBack = Omit<FolderRestored, "files" | "folders">;
+
+/** #542: a restored folder, where it went ([] the top level), and why it is not as it was. */
+export interface FolderRestored {
+  folder: Folder;
+  location: string[];
+  renamed: boolean; // a folder there had its name: it is "Name (2)" now
+  relocated: boolean; // its folder no longer exists: it is at the top level
+  files: number;
+  folders: number;
+}
+
+/** #537: what a folder holds at every depth: live files (a file's versions count once), folders, bytes. */
+export interface FolderSummary {
+  files: number;
+  folders: number;
+  bytes: number;
 }
 
 export interface Tag {
@@ -588,6 +693,7 @@ export interface UploadLimits {
   pdf_bytes: number;
   image_bytes: number;
   sheet_bytes: number;
+  zip_bytes?: number; // #522: the folder upload limit; left out by an older server
   max_pages: number; // for a PDF's pages and a TIFF's frames
   readers: UploadReader[]; // the scan readers an upload may choose, the server's default first
   // #484: this organisation's folder upload limits; left out by an older server (no folder upload).
@@ -771,6 +877,24 @@ export interface ReadLine {
   kind: string | null; // a layout block kind, when the reader gives one
   region: Region;
   table?: { id: string; row: number; col: number; header: boolean } | null; // a table cell's place
+  key?: string; // #527: the clean copy's lines only, the line's stable key (a flag's word_key)
+  correction?: LineCorrection | null; // #527: the clean copy's lines only; `text` is then the corrected text
+}
+
+/** #527: the correction in force for a clean copy line; `before_text` is the text it replaced. */
+export interface LineCorrection {
+  before_text: string;
+  by: string; // the person's name
+  at: string;
+  change_id: string; // for Undo (POST changes/{id}/undo)
+}
+
+/** POST /documents/{id}/lines/{key}/edit (#527): the change and the line as it now reads. */
+export interface LineSaved {
+  change_id: string;
+  line: ReadLine;
+  written: { pieces: number; values: number }; // the search pieces and values that took the new text
+  skipped: { pieces: number; values: number }; // those over the line that did not (not there exactly once)
 }
 
 /** GET /documents/{id}/clear-copy (Read clearly): every page's main reader lines, in order. */
@@ -862,6 +986,8 @@ export interface ListedDocument {
 export interface Answer {
   /** KZ-006 (24 Oct 2026): every model was down; said as such, never as "not found". */
   outage?: boolean;
+  /** #535: the outage was a draft that took too long ("timeout"), so asking again won't help. */
+  outage_reason?: "timeout";
   // "unchecked": the figure asked for is only in unchecked card values, so no
   // number is given; closest_documents says where.
   status: "answered" | "not_found" | "unchecked" | "clarify";
@@ -1084,7 +1210,7 @@ export interface ReviewItem {
   check_reasons: string[]; // why its document's invoice check failed (PRD 3 Y5); [] otherwise
 }
 
-/** The review queue's reason filter (PRD 3 Y5; PRD 5 U6 adds the last four). */
+/** The review queue's reason filter (PRD 3 Y5; PRD 5 U6 adds four, then #524's amount four). */
 export type ReviewReason =
   | "check_failed"
   | "readers_disagree"
@@ -1093,7 +1219,11 @@ export type ReviewReason =
   | "unsure_text"
   | "box_unanchored"
   | "local_reader"
-  | "ocr_script";
+  | "ocr_script"
+  | "mixed_digits"
+  | "amount_commas"
+  | "amount_mark"
+  | "amount_outlier";
 
 /** A row of the admin's Failed jobs tab (PRD 3 Z1). */
 export interface FailedDocument {
@@ -1569,7 +1699,9 @@ export interface AiEnv {
   careful_thinking: string;
   careful_resolution: string;
   page_max_output_tokens: number;
-  scan_reader: ScanReader;
+  scan_reader: ScanReader; // #564: ultra_low_cost while OCR_ULTRA_LOW_COST is on
+  ulc_ceiling_paise: number; // the server's ceiling for a saved Ultra low cost with none (40)
+  switch_ceiling_paise: number | null; // #564: OCR_PAGE_CEILING_PAISE where the switch reads (null: off)
   mistral_model: MistralModelId;
   mistral_ready: boolean;
   mistral_missing: "key" | "zdr" | null;
@@ -2041,6 +2173,26 @@ export interface OrgFolderLimits {
   own: FolderLimits;
   platform: FolderLimits;
   defaults: Record<FolderLimitName, number>;
+}
+
+/** GET /operator/storage-limit and /operator/orgs/{id}/storage-limit (#516): how much an
+ * organisation may store in all, in whole GB. storage_gb is this level's own (null: an
+ * organisation follows the platform; the platform uses the default); effective_gb is the one that
+ * applies; used_bytes is what the organisation has stored, Trash included (0 for the platform). */
+export interface StorageLimit {
+  storage_gb: number | null;
+  platform_gb: number | null;
+  effective_gb: number;
+  default_gb: number;
+  most_gb: number;
+  used_bytes: number;
+}
+
+/** GET /admin/storage (#516): what this organisation has stored, Trash included, and its limit. */
+export interface AdminStorage {
+  used_bytes: number;
+  limit_bytes: number;
+  limit_gb: number;
 }
 
 /** GET /operator/speed (package S, 0053): each speed control's saved value (null: the server's

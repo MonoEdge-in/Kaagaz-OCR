@@ -44,6 +44,16 @@ Why here: the SQL in one reviewable place. Every function takes a connection fro
   change in force, oldest first, whose word is still on the page is written again into the
   new rows, so a read again of another page never undoes a person's text silently. A word
   no longer on the page stays in the history (``on_page`` false).
+* **A line of the clean copy** (#527, Tushar, 7 Nov 2026): a reviewer may correct any line
+  of the main reader (``lines``, the clean copy's own), flagged or not, through
+  ``change_word`` with ``line``; its key is a flagged line's (``line_key``), so a flagged
+  line is one item in both places. Written as an edit is, over the line's text now (its
+  word edits too, ``line_text``), and a value on the line (``_inside``) whose text is a part
+  of it takes the change too when it falls inside that part, there once (``line_part``).
+  What was not written is counted (``applied["skipped"]``). The stored reading is never
+  changed: the clean copy shows the text now and the correction in force
+  (``line_correction``). Its audit rows are ``document.line_corrected`` and
+  ``document.line_correction_undone``.
 
 Audit rows hold ids, codes and counts only, never a word. Cost: ``load`` is O(s) in the
 document's stored spans (unpacked in the database, only the flagged ones back) plus O(v)
@@ -61,21 +71,25 @@ from typing import Any
 
 from sqlalchemy import Connection, RowMapping, TextClause, text
 
-from kaagaz.chunking.script import is_devanagari, latin_spelling
-from kaagaz.db import audit, value_keys
+from kaagaz.api import names
+from kaagaz.chunking.script import piece_latin
+from kaagaz.db import audit, listing, value_keys
 from kaagaz.db import review as review_sql
 from kaagaz.db.documents import accept_page
 from kaagaz.db.trash import lock_family
 from kaagaz.extraction.flags import (
     COVERED_REASONS,
+    LINE,
     REVIEW,
     VALUE,
     Flag,
+    centre_in,
     occurrences,
     overlaps,
     span_flag,
     value_flag,
     value_key,
+    word_key,
 )
 from kaagaz.extraction.land import value_number
 from kaagaz.extraction.parsing import parse_date
@@ -312,9 +326,13 @@ def change_word(
     now: datetime,
     reading_id: str | None = None,
     votes: Mapping[str, Any] | None = None,
+    line: bool = False,
 ) -> str:
     """Confirm (``new_text`` None, or the same text) or edit one flagged word, and return
     the change's id. Raises Refused (not_found, in_trash, not_ready, changed_since).
+    With ``line`` (#527) ``key`` is a line of the clean copy, flagged or not, an edit whose
+    text must differ from the line as the clean copy shows it, made one line (``unchanged``
+    otherwise); it replaces the line's text now (``line_text``) in the pieces and values.
     With ``reading_id`` it is Ensemble's Keep of that reading's ``new_text``: action keep,
     written the same way but never Verifying a value nor writing into a Verified one, and a
     value flag's own value keeps ``votes`` (kaagaz.db.ensemble.keep)."""
@@ -322,14 +340,25 @@ def change_word(
     lock_ready(conn, ids)
     review = load(conn, customer_id, document_id)
     flag = review.flag(key)
-    if flag is None:
-        raise Refused("not_found")
     latest = review.latest()
-    before = current_text(flag, latest)
-    if before != expected_text:
+    if line:
+        row = lines(conn, customer_id, document_id).get(key)
+        if row is None:
+            raise Refused("not_found")
+        flag = flag or _line_flag(row)  # a flagged line keeps its band: settling its page works
+        now_text = line_text(row, [change for change in review.changes if change["undone_at"] is None])
+        before = str(row["as_read"]) if now_text is None else now_text  # what the pieces hold
+        shown = str(row["text"]) if now_text is None else now_text  # what the clean copy shows
+    elif flag is None:
+        raise Refused("not_found")
+    else:
+        before = shown = current_text(flag, latest)
+    if expected_text not in (before, shown):
         raise Refused("changed_since")
     after = before if new_text is None else new_text
-    action = "keep" if reading_id is not None else "confirm" if after == before else "edit"
+    if line and after == names.one_line(shown):
+        raise Refused("unchanged")
+    action = "keep" if reading_id is not None else "confirm" if after == before and not line else "edit"
     inserted = conn.execute(
         _INSERT_CHANGE,
         {
@@ -359,12 +388,15 @@ def change_word(
     applied["flag"] = {"band": flag.band, "reason": flag.reason}
     if _keep_settled_page(conn, ids, flag, review.listed, latest, user_id, inserted.created_at):
         applied["kept"] = True
+    if line:
+        applied["line"] = True  # its Undo's audit row says so
     conn.execute(_SET_APPLIED, {"c": customer_id, "id": change_id, "applied": json.dumps(applied)})
+    named = "document.line_corrected" if line else f"word_review.{action}"
     audit.record(
         conn,
         customer_id,
         actor_user_id=user_id,
-        action="ensemble.keep" if reading_id is not None else f"word_review.{action}",
+        action="ensemble.keep" if reading_id is not None else named,
         target_type="document",
         target_id=document_id,
         details=_audit_details(change_id, flag, applied),
@@ -428,7 +460,7 @@ def undo_change(
         conn,
         customer_id,
         actor_user_id=user_id,
-        action="word_review.undo",
+        action="document.line_correction_undone" if applied.get("line") else "word_review.undo",
         target_type="document",
         target_id=document_id,
         details={
@@ -454,9 +486,14 @@ def reapply(
         return
     review = load(conn, customer_id, document_id)
     flags = {flag.key: flag for flag in review.flags}
+    found: dict[str, RowMapping] | None = None  # the lines, read once if a change needs them
     reviewed: set[str] = set()
     for change in live:
         flag = flags.get(str(change["word_key"]))
+        if flag is None and change["kind"] == LINE:
+            found = lines(conn, customer_id, document_id) if found is None else found
+            row = found.get(str(change["word_key"]))
+            flag = None if row is None else _line_flag(row)
         if flag is None or change["user_id"] is None:
             continue  # no longer on the page: it stays in the history
         if change["action"] in PERSON_ACTIONS:
@@ -481,9 +518,15 @@ def reapply(
         if only is not None:
             applied["values"] = [*before_applied.get("values", []), *applied["values"]]
             applied["pieces"] = before_applied.get("pieces", [])
+            skipped = before_applied.get("skipped", {"pieces": 0, "values": 0})
+            applied["skipped"] = {
+                "pieces": skipped["pieces"],
+                "values": skipped["values"] + applied["skipped"]["values"],
+            }
         applied["flag"] = before_applied.get("flag")
-        if "kept" in before_applied:
-            applied["kept"] = before_applied["kept"]
+        for kept in ("kept", "line"):
+            if kept in before_applied:
+                applied[kept] = before_applied[kept]
         conn.execute(_SET_APPLIED, {"c": customer_id, "id": change_id, "applied": json.dumps(applied)})
 
 
@@ -516,6 +559,110 @@ def resolve_word(
         "now": now,
     }
     return str(conn.execute(_INSERT_CHANGE, params).scalar_one())
+
+
+def lines(conn: Connection, customer_id: str, document_id: str) -> dict[str, RowMapping]:
+    """The clean copy's lines (``listing.clear_copy_lines``) by ``line_key``; of two alike
+    (same page, spot and text) the first. O(spans of the document).
+    shortcut: a line past the clean copy's cap (CLEAR_COPY_LINES, CLEAR_COPY_TEXT) is not here,
+    so it can't be corrected and a read again keeps such a correction in the history only; lift
+    the cap for this lookup if documents grow past it."""
+    found: dict[str, RowMapping] = {}
+    for row in listing.clear_copy_lines(conn, customer_id, document_id):
+        found.setdefault(line_key(row), row)
+    return found
+
+
+def line_key(row: Mapping[Any, Any]) -> str:
+    """A clean copy line's word key: a flagged line's (flags.span_flag), from its text as read."""
+    return word_key(LINE, int(row["page_no"]), row["region"], str(row["as_read"]))
+
+
+def in_force(conn: Connection, customer_id: str, document_id: str) -> list[RowMapping]:
+    """The document's changes in force, oldest first: one statement."""
+    changes = conn.execute(_CHANGES, {"c": customer_id, "d": document_id}).mappings().all()
+    return [change for change in changes if change["undone_at"] is None]
+
+
+def line_correction(row: Mapping[Any, Any], live: Sequence[RowMapping]) -> RowMapping | None:
+    """The line's own latest change in force (``live``, oldest first) when it corrects the line:
+    an edit, back to the text as read too, or any change to other text; else None."""
+    key = line_key(row)
+    change = next((change for change in reversed(live) if change["word_key"] == key), None)
+    if change is None or (change["action"] != "edit" and change["after_text"] == row["as_read"]):
+        return None
+    return change
+
+
+def line_text(row: Mapping[Any, Any], live: Sequence[RowMapping]) -> str | None:
+    """A clean copy line's text now, which its pieces hold: as read, with each change in force
+    (``live``, oldest first) that touches it, in order: its own, and a word's or a value's
+    inside it (its box, or its centre) where the word's text is there once, as ``_apply`` wrote
+    it. None when no change touches it (the clean copy then shows the text as the reader gave
+    it). O(changes)."""
+    key, text_now, touched = line_key(row), str(row["as_read"]), False
+    for change in live:
+        before, after = str(change["before_text"]), str(change["after_text"])
+        if change["word_key"] == key:
+            touched = touched or change["action"] == "edit" or after != text_now
+            text_now = after
+        elif (
+            change["kind"] != LINE
+            and before != after
+            and _inside(change["region"], row["region"])
+            and occurrences(text_now, before) == 1
+        ):
+            text_now, touched = text_now.replace(before, after, 1), True
+    return text_now if touched else None
+
+
+def on_page(conn: Connection, customer_id: str, document_id: str, review: Review) -> set[str]:
+    """The keys of the changes still on the page: the flags', and the lines' when a line no
+    flag stands for was changed (one statement more then)."""
+    keys = {flag.key for flag in review.flags}
+    if any(row["kind"] == LINE and row["word_key"] not in keys for row in review.changes):
+        keys |= set(lines(conn, customer_id, document_id))
+    return keys
+
+
+def line_part(before: str, after: str, part: str) -> str | None:
+    """``part``'s text once a line reads ``after`` instead of ``before``, when ``part`` is in
+    ``before`` exactly once and every place the change could be (the same characters on both
+    sides of it can move it) is inside ``part``, never reaching past its edges; else None.
+    "150000" in "Total: 150000/-" made "Total: 1500000/-" is "1500000"; " only" added after it
+    is no part of it. O(len(before) + len(after))."""
+    if occurrences(before, part) != 1:
+        return None
+    start = before.index(part)
+    end = start + len(part)
+    head, tail = _same(before, after), _same(before[::-1], after[::-1])
+    low, high = sorted((head, len(before) - tail))
+    if not (start <= low and high <= end and low < end and high > start):
+        return None
+    new = after[start : end + len(after) - len(before)]
+    return new if new.strip() else None
+
+
+def _same(a: str, b: str) -> int:
+    """How many characters ``a`` and ``b`` start with alike."""
+    return next((n for n, (x, y) in enumerate(zip(a, b, strict=False)) if x != y), min(len(a), len(b)))
+
+
+def _line_flag(row: Mapping[Any, Any]) -> Flag:
+    """A clean copy line as a flag of no band, for ``_apply``."""
+    as_read = str(row["as_read"])
+    return Flag(line_key(row), LINE, int(row["page_no"]), row["region"], as_read, as_read, "", "", None)
+
+
+def _holds(region: Mapping[str, Any], spot: Mapping[str, Any]) -> bool:
+    """``region`` covers ``spot``: a box overlapping it, or the same cell (a spreadsheet's)."""
+    return region == spot or overlaps(region, spot)
+
+
+def _inside(region: Mapping[str, Any], line: Mapping[str, Any]) -> bool:
+    """``region`` is on the line: its box, or its centre, inside the line's box, or the same cell.
+    A box that only reaches into the line's edge is on another line (#527 review)."""
+    return region == line or centre_in(region, line)
 
 
 def lock_ready(conn: Connection, ids: dict[str, str]) -> None:
@@ -571,16 +718,18 @@ def _apply(
     only: Collection[str] | None = None,
 ) -> dict[str, Any]:
     """Write one change into the values and pieces of the word's page, and verify each
-    value whose box flags are all reviewed. Returns what was written (``applied``). With
+    value whose box flags are all reviewed. Returns what was written (``applied``), and how
+    many values and pieces over the word were not (``skipped``, #527 review). With
     ``verify`` False (a Keep) no value is Verified and a Verified one is left as it is;
     ``votes`` go on the flag's own value."""
     params = {**ids, "p": flag.page_no}
     written_values = []
+    skipped = {"pieces": 0, "values": 0}  # over the word but not written: never a guess
     for value in conn.execute(_PAGE_VALUES, params).mappings().all():
         mine = str(value["id"]) == flag.value_id
         if only is not None and str(value["id"]) not in only:
             continue
-        if not (mine or (flag.kind != VALUE and overlaps(flag.region, value["region"]))):
+        if not (mine or (flag.kind != VALUE and _holds(value["region"], flag.region))):
             continue
         text_now = str(value["value_text"])
         new: str | None = None
@@ -588,6 +737,8 @@ def _apply(
             new = after
         elif not mine and before != after and occurrences(text_now, before) == 1:
             new = text_now.replace(before, after, 1)
+        elif not mine and flag.kind == LINE and before != after and _inside(value["region"], flag.region):
+            new = line_part(before, after, text_now)  # a value on the line, never one on the next
         box = [f for f in flags if f.value_id == str(value["id"]) or overlaps(f.region, value["region"])]
         ready = (
             value["label"] == "needs_review"
@@ -596,9 +747,11 @@ def _apply(
             and all(f.key in reviewed for f in box)
         )
         if not verify and value["label"] == "verified":
+            skipped["values"] += 1
             continue  # Ensemble's Keep never changes a value a person Verified
         verified = verify and (ready or (value["label"] == "verified" and new is not None))
         if not verified and new is None:
+            skipped["values"] += 1
             continue
         final = text_now if new is None else new
         if verified:
@@ -626,19 +779,19 @@ def _apply(
     if before != after and only is None:
         for piece in conn.execute(_PAGE_PIECES, params).mappings().all():
             old = str(piece["text"])
-            if (
-                not any(overlaps(flag.region, region) for region in piece["regions"])
-                or occurrences(old, before) != 1
-            ):
+            if not any(_holds(region, flag.region) for region in piece["regions"]):
+                continue
+            if occurrences(old, before) != 1:
+                skipped["pieces"] += 1
                 continue
             new_piece = old.replace(before, after, 1)
-            latin = latin_spelling(new_piece) if is_devanagari(new_piece) else None
+            latin = piece_latin(new_piece)
             conn.execute(_SET_PIECE_TEXT, {**ids, "id": str(piece["id"]), "t": new_piece, "latin": latin})
             written_pieces.append(
                 {"id": str(piece["id"]), "before": old, "latin": piece["text_latin"], "after": new_piece}
             )
     value_keys.key_values(conn, ids["c"], [str(entry["id"]) for entry in written_values])  # 0049
-    return {"values": written_values, "pieces": written_pieces}
+    return {"values": written_values, "pieces": written_pieces, "skipped": skipped}
 
 
 def _choice(final: str, value: Mapping[Any, Any]) -> str:

@@ -47,14 +47,19 @@ const MB = 1024 * 1024;
 
 describe("validateUpload", () => {
   it("accepts every supported kind, in any letter case", () => {
-    for (const name of ["a.pdf", "b.PNG", "c.jpg", "d.JPEG", "e.tif", "f.tiff", "g.csv", "h.xlsx"]) {
+    const office = ["i.docx", "j.DOC", "k.dotx", "l.pptx", "m.ppt", "n.XLS"]; // #522 PR 2
+    const text = ["o.heic", "p.HEIF", "q.txt", "r.md", "s.json", "t.html", "u.htm"]; // #522 PR 1
+    for (const name of ["a.pdf", "b.PNG", "c.jpg", "d.JPEG", "e.tif", "f.tiff", "g.csv", "h.xlsx", "i.ZIP", ...office, ...text]) {
       expect(validateUpload({ name, size: 10 })).toBeNull();
     }
   });
 
   it("refuses other kinds and names without an ending", () => {
     expect(validateUpload({ name: "virus.exe", size: 10 })).toMatch(/can't be uploaded/);
-    expect(validateUpload({ name: "old.xls", size: 10 })).toMatch(/can't be uploaded/);
+    expect(validateUpload({ name: "old.xlsm", size: 10 })).toMatch(/can't be uploaded/);
+    expect(validateUpload({ name: "notes.odt", size: 10 })).toBe(
+      "This kind of file can't be uploaded. Use PDF, Word, PowerPoint, PNG, JPG, TIFF, HEIC, CSV, XLSX, XLS, TXT, MD, JSON, HTML or ZIP.",
+    );
     expect(validateUpload({ name: "README", size: 10 })).toMatch(/can't be uploaded/);
     expect(validateUpload({ name: "invoice.pdf.exe", size: 10 })).toMatch(/can't be uploaded/);
   });
@@ -64,29 +69,35 @@ describe("validateUpload", () => {
   });
 
   it("allows exactly the limit and refuses one byte over", () => {
-    expect(validateUpload({ name: "a.pdf", size: 50 * MB })).toBeNull();
-    expect(validateUpload({ name: "a.pdf", size: 50 * MB + 1 })).toBe(
-      "PDFs can be up to 50 MB. This one is 51 MB. Split it or save it smaller and try again.",
+    // Changed on purpose (#569, 11 Nov 2026): the PDF limit is 100 MB.
+    expect(validateUpload({ name: "a.pdf", size: 100 * MB })).toBeNull();
+    expect(validateUpload({ name: "a.pdf", size: 100 * MB + 1 })).toBe(
+      "PDF, Word and PowerPoint files can be up to 100 MB. This one is 101 MB. Split it or save it smaller and try again.",
     );
   });
 
   it("uses the server's limits when given them", () => {
     const limits: UploadLimits = { ...FALLBACK_UPLOAD_LIMITS, sheet_bytes: 5 * MB };
     expect(validateUpload({ name: "a.csv", size: 6 * MB }, limits)).toBe(
-      "Spreadsheets and CSV files can be up to 5 MB. This one is 6 MB. Split it into smaller files and try again.",
+      "Spreadsheets, CSV and text files can be up to 5 MB. This one is 6 MB. Split it into smaller files and try again.",
     );
   });
 
   it("offers the same kinds in the file picker", () => {
-    expect(ACCEPT_ATTRIBUTE).toBe(".pdf,.png,.jpg,.jpeg,.tif,.tiff,.csv,.xlsx");
+    // Changed on purpose (#522): HEIC photos, text files, Word, PowerPoint and old Excel files, and zips.
+    expect(ACCEPT_ATTRIBUTE).toBe(
+      ".pdf,.png,.jpg,.jpeg,.tif,.tiff,.heic,.heif,.csv,.xlsx,.txt,.md,.json,.html,.htm," +
+        ".xls,.doc,.docx,.dotx,.ppt,.pptx,.zip",
+    );
   });
 });
 
 describe("upload limits by type (PRD U2)", () => {
   const cases = [
-    { names: ["a.pdf"], limit: 50 * MB },
-    { names: ["a.png", "a.jpg", "a.jpeg", "a.tif", "a.tiff"], limit: 20 * MB },
-    { names: ["a.csv", "a.xlsx"], limit: 10 * MB },
+    { names: ["a.pdf", "a.docx", "a.dotx", "a.doc", "a.pptx", "a.ppt"], limit: 100 * MB },
+    { names: ["a.png", "a.jpg", "a.jpeg", "a.tif", "a.tiff", "IMG_0042.HEIC", "a.heif"], limit: 20 * MB },
+    { names: ["a.csv", "a.xlsx", "a.xls", "a.txt", "a.md", "a.json", "a.html", "a.HTM"], limit: 10 * MB },
+    { names: ["a.zip"], limit: 100 * MB }, // #522: the PDF limit until the server says its own
   ];
 
   it("allows each type exactly at its limit and refuses one byte over", () => {
@@ -105,7 +116,7 @@ describe("upload limits by type (PRD U2)", () => {
     );
     expect(validateUpload({ name: "Photo.JpG", size: 20 * MB + 1 })).toMatch(/^Photos and scans/);
     expect(validateUpload({ name: "BOOK.XLSX", size: 10 * MB + 1 })).toMatch(/^Spreadsheets/);
-    expect(validateUpload({ name: "DEED.PDF", size: 50 * MB })).toBeNull();
+    expect(validateUpload({ name: "DEED.PDF", size: 100 * MB })).toBeNull();
     expect(uploadKind("DEED.PDF")).toBe("pdf");
     expect(uploadKind("IMG_01.JPEG")).toBe("image");
     expect(uploadKind("Ledger.Csv")).toBe("sheet");
@@ -122,20 +133,20 @@ describe("upload limits by type (PRD U2)", () => {
     expect(validateUpload({ name: "photo.jpg", size: 34 * MB })).toBe(
       "Photos and scans can be up to 20 MB. This one is 34 MB. Save it at a lower resolution and try again.",
     );
-    expect(validateUpload({ name: "statement.pdf", size: 61 * MB })).toBe(
-      "PDFs can be up to 50 MB. This one is 61 MB. Split it or save it smaller and try again.",
+    expect(validateUpload({ name: "statement.pdf", size: 121 * MB })).toBe(
+      "PDF, Word and PowerPoint files can be up to 100 MB. This one is 121 MB. Split it or save it smaller and try again.",
     );
     expect(validateUpload({ name: "ledger.xlsx", size: 12 * MB })).toBe(
-      "Spreadsheets and CSV files can be up to 10 MB. This one is 12 MB. Split it into smaller files and try again.",
+      "Spreadsheets, CSV and text files can be up to 10 MB. This one is 12 MB. Split it into smaller files and try again.",
     );
     expect(tooLargeMessage("image", 34 * MB, 20 * MB)).toBe(
       "Photos and scans can be up to 20 MB. This one is 34 MB. Save it at a lower resolution and try again.",
     );
     expect(tooLargeMessage("pdf", 61 * MB, 50 * MB)).toBe(
-      "PDFs can be up to 50 MB. This one is 61 MB. Split it or save it smaller and try again.",
+      "PDF, Word and PowerPoint files can be up to 50 MB. This one is 61 MB. Split it or save it smaller and try again.",
     );
     expect(tooLargeMessage("sheet", 12 * MB, 10 * MB)).toBe(
-      "Spreadsheets and CSV files can be up to 10 MB. This one is 12 MB. Split it into smaller files and try again.",
+      "Spreadsheets, CSV and text files can be up to 10 MB. This one is 12 MB. Split it into smaller files and try again.",
     );
   });
 
@@ -158,13 +169,14 @@ describe("upload limits by type (PRD U2)", () => {
 
   it("uses the platform's limits until the server's arrive", () => {
     expect(FALLBACK_UPLOAD_LIMITS).toEqual({
-      pdf_bytes: 50 * MB,
+      pdf_bytes: 100 * MB, // Changed on purpose (#569, 11 Nov 2026)
       image_bytes: 20 * MB,
       sheet_bytes: 10 * MB,
+      zip_bytes: 100 * MB,
       max_pages: 100,
       readers: [], // no "Scan with" until the server says which readers it has
     });
-    expect(limitFor("pdf")).toBe(50 * MB);
+    expect(limitFor("pdf")).toBe(100 * MB);
     expect(limitFor("image")).toBe(20 * MB);
     expect(limitFor("sheet")).toBe(10 * MB);
   });
@@ -176,7 +188,7 @@ describe("upload limits by type (PRD U2)", () => {
 
     expect(validateUpload({ name: "a.pdf", size: 25 * MB }, customer)).toBeNull();
     expect(validateUpload({ name: "a.pdf", size: 25 * MB + 1 }, customer)).toBe(
-      "PDFs can be up to 25 MB. This one is 26 MB. Split it or save it smaller and try again.",
+      "PDF, Word and PowerPoint files can be up to 25 MB. This one is 26 MB. Split it or save it smaller and try again.",
     );
     expect(validateUpload({ name: "a.png", size: 21 * MB }, customer)).toBe(
       "Photos and scans can be up to 20 MB. This one is 21 MB. Save it at a lower resolution and try again.",
@@ -644,6 +656,9 @@ describe("libraryErrorText", () => {
     expect(libraryErrorText(taken, "tag")).toBe("A tag with this name already exists.");
   });
 
+  // Changed on purpose (#537, 7 Nov 2026): Delete asks what a folder holds before any press
+  // (folder-delete-537.test.ts), so "isn't empty" now comes back only when a file arrived
+  // meanwhile; an admin's delete of a folder with files can meet an upload still running.
   it("passes the server's own words through for the folder rules", () => {
     const notEmpty = new ApiError(
       409,
@@ -651,6 +666,13 @@ describe("libraryErrorText", () => {
       "This folder isn't empty. Move or delete what is inside it first.",
     );
     expect(libraryErrorText(notEmpty, "folder")).toBe(notEmpty.message);
+    const running = new ApiError(
+      409,
+      "folder_upload_running",
+      "An upload into this folder is still running. Try again when it finishes.",
+    );
+    expect(libraryErrorText(running, "folder")).toBe(running.message);
+    expect(libraryErrorText(running, "department")).toBe(running.message);
   });
 
   it("asks to check the connection when the server was not reached", () => {

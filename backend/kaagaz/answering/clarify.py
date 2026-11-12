@@ -440,5 +440,6 @@ def _joined(labels: Sequence[str]) -> str:
 
 
 def without_resume(answer: Mapping[str, Any]) -> dict[str, Any]:
-    """A stored answer as the API shows it: the resume state stays on the server."""
-    return {key: value for key, value in answer.items() if key != "resume"}
+    """A stored answer as the API shows it: the resume state stays on the server, and so does a
+    repeated question's key and a copy's mark (#535, answering/ready.py ``repeat_key``)."""
+    return {key: value for key, value in answer.items() if key not in ("resume", "repeat_key", "repeat_copy")}

@@ -147,7 +147,7 @@ describe("a folder upload's run", () => {
   });
 
   it("registers only a kind Kaagaz can't take as refused; the server judges size and emptiness", async () => {
-    const pick = fromFileList([picked("A/notes.docx"), picked("A/bill.pdf"), picked("A/zero.pdf", 0)]);
+    const pick = fromFileList([picked("A/notes.odt"), picked("A/bill.pdf"), picked("A/zero.pdf", 0)]);
     if (!pick) throw new Error("empty");
     const server = fakeServer();
     await startFolderUpload(
@@ -159,7 +159,27 @@ describe("a folder upload's run", () => {
     expect(server.registers[0]?.map((each) => each.refused)).toEqual(["unsupported_type", undefined, undefined]);
     expect(server.sentIds).toHaveLength(2);
     expect(refusedReason({ name: "big.pdf" })).toBeUndefined();
-    expect(refusedReason({ name: "notes.docx" })).toBe("unsupported_type");
+    expect(refusedReason({ name: "notes.odt" })).toBe("unsupported_type");
+  });
+
+  it("plans only the bytes it will send, and still registers a refused file with its size (#516)", async () => {
+    const pick = fromFileList([picked("A/notes.odt", 100), picked("A/bill.pdf", 5)]);
+    if (!pick) throw new Error("empty");
+    const server = fakeServer();
+    const plans: FolderUploadPlanBody[] = [];
+    const plan = server.api.plan;
+    server.api.plan = (body) => (plans.push(body), plan(body));
+    await startFolderUpload(
+      server.api,
+      { id: "u2b", userId: "me", source: { picked: pick, manifest: buildManifest(pick) }, target: { kind: "folder", parentId: null }, merge: true },
+      () => undefined,
+      never,
+    );
+    expect(plans.map((body) => [body.file_count, body.total_bytes])).toEqual([[2, 5]]);
+    expect(server.registers[0]?.map((each) => [each.size, each.refused])).toEqual([
+      [100, "unsupported_type"],
+      [5, undefined],
+    ]);
   });
 
   it("waits the server's Retry-After while another plan of the organisation is built, then plans", async () => {
@@ -183,10 +203,63 @@ describe("a folder upload's run", () => {
     expect(events.at(-1)).toEqual({ type: "phase", id: "pb", phase: "done" });
   });
 
+  it("stops between pages of the listing when Stop is pressed, and before listing when pressed while planning", async () => {
+    const pick = pickOf(Array.from({ length: 2500 }, (_, n) => `A/f${n}.pdf`));
+    const source = { picked: pick, manifest: buildManifest(pick) };
+    const listing = fakeServer();
+    const events: FolderEvent[] = [];
+    await startFolderUpload(
+      listing.api,
+      { id: "s1", userId: "me", source, target: { kind: "folder", parentId: null }, merge: true },
+      run(events),
+      () => listing.registers.length >= 1,
+    );
+    expect(listing.registers.map((page) => page.length)).toEqual([1000]);
+    expect(listing.sentIds).toEqual([]);
+    expect(events.at(-1)).toEqual({ type: "phase", id: "s1", phase: "stopped" });
+
+    const planning = fakeServer();
+    const planned: FolderEvent[] = [];
+    await startFolderUpload(
+      planning.api,
+      { id: "s2", userId: "me", source, target: { kind: "folder", parentId: null }, merge: true },
+      run(planned),
+      () => true,
+    );
+    expect(planning.registers).toEqual([]);
+    expect(planned.map((event) => (event.type === "phase" ? event.phase : event.type))).toEqual(["start", "planning", "planned", "stopped"]);
+  });
+
+  it("says a file waits for the connection, or for the server, while it waits, then that it sends again", async () => {
+    const pick = pickOf(["A/a.pdf"]);
+    const server = fakeServer();
+    const send = server.api.send;
+    server.api.send = async (file, item, onProgress, onWaiting) => {
+      onWaiting?.(true, "connection");
+      onWaiting?.(false);
+      onWaiting?.(true, "server");
+      onWaiting?.(false);
+      return send(file, item, onProgress);
+    };
+    const events: FolderEvent[] = [];
+    await startFolderUpload(
+      server.api,
+      { id: "w1", userId: "me", source: { picked: pick, manifest: buildManifest(pick) }, target: { kind: "folder", parentId: null }, merge: true },
+      run(events),
+      never,
+    );
+    const sending = events.flatMap((event) => (event.type === "sending" ? [event.waiting ?? null] : []));
+    expect(sending).toEqual([null, "connection", null, "server", null]);
+    let state = EMPTY_FOLDER_UPLOADS;
+    const upTo = events.findIndex((event) => event.type === "sending" && event.waiting === "connection");
+    for (const event of events.slice(0, upTo + 1)) state = folderUploadsReducer(state, event);
+    expect(state.w1?.sending).toEqual([{ itemId: "i0", name: "a.pdf", fraction: 0, waiting: "connection" }]);
+  });
+
   it("is refused in the server's words while another folder upload of the organisation still sends", async () => {
     const pick = pickOf(["A/a.pdf"]);
     const server = fakeServer();
-    const words = "Another folder upload is still sending in this organisation. Wait for it to finish, or stop it.";
+    const words = "Another person's folder upload is still sending in this organisation. Try again when it has finished.";
     server.api.plan = async () => {
       throw new ApiError(409, "upload_in_progress", words);
     };
@@ -198,6 +271,26 @@ describe("a folder upload's run", () => {
       never,
     );
     expect(events.at(-1)).toEqual({ type: "phase", id: "ip", phase: "refused", message: words });
+  });
+
+  it("never says Retry on a row with no Retry: a plan or a listing cut off by a server restart", async () => {
+    const pick = pickOf(["A/a.pdf"]);
+    const restart = new ApiError(502, "error", "Something went wrong.");
+    const planning = fakeServer();
+    planning.api.plan = async () => {
+      throw restart;
+    };
+    const planned: FolderEvent[] = [];
+    const args = { userId: "me", source: { picked: pick, manifest: buildManifest(pick) }, target: { kind: "folder", parentId: null }, merge: true } as const;
+    await startFolderUpload(planning.api, { id: "r1", ...args }, run(planned), never);
+    expect(planned.at(-1)).toEqual({ type: "phase", id: "r1", phase: "refused", message: "The server was restarting." });
+    const listing = fakeServer();
+    listing.api.register = async () => {
+      throw restart;
+    };
+    const listed: FolderEvent[] = [];
+    await startFolderUpload(listing.api, { id: "r2", ...args }, run(listed), never);
+    expect(listed.at(-1)).toEqual({ type: "phase", id: "r2", phase: "stopped", message: "Not every file could be listed. The server was restarting." });
   });
 
   it("stops planning with the server's words when the plan is refused", async () => {
@@ -393,7 +486,7 @@ describe("what the tray and the status bar say", () => {
       document: null,
       ...over,
     });
-    expect(itemProblemText(item({ failure_code: "too_large" }), FALLBACK_UPLOAD_LIMITS)).toBe("Too big: the most is 50 MB.");
+    expect(itemProblemText(item({ failure_code: "too_large" }), FALLBACK_UPLOAD_LIMITS)).toBe("Too big: the most is 100 MB.");
     expect(itemProblemText(item({ name: "x.png", failure_code: "too_large" }), FALLBACK_UPLOAD_LIMITS)).toBe("Too big: the most is 20 MB.");
     expect(
       itemProblemText(
@@ -407,6 +500,12 @@ describe("what the tray and the status bar say", () => {
     ).toBe("Virus found. Upload a clean copy of the file.");
     const failed = item({ state: "stored", document_id: "d", document: { status: "failed", failure_code: null, folder_id: "f", in_trash: false } });
     expect(itemProblemText(failed, FALLBACK_UPLOAD_LIMITS)).toBe("Failed. Read it again, or try another copy of it.");
+    // #549: a zip in a folder upload is kept as a file by design, never "Failed".
+    const keptZip = { status: "needs_reader" as const, failure_code: null, folder_id: "f", in_trash: false };
+    expect(itemProblemText(item({ name: "Scans.ZIP", state: "stored", document_id: "d", document: keptZip }), FALLBACK_UPLOAD_LIMITS)).toBe(
+      "Kept as a file, not unpacked: Kaagaz unpacks a zip only when it is uploaded on its own.",
+    );
+    expect(itemProblemText(item({ name: "old.doc", state: "stored", document_id: "d", document: keptZip }), FALLBACK_UPLOAD_LIMITS)).not.toMatch(/^Kept/);
     expect(itemProblemText(item({ failure_code: "bad_name" }), FALLBACK_UPLOAD_LIMITS)).toBe(
       "Kaagaz can’t keep this file’s name: it has a hidden character, or another file in its folder has the same name. Rename it, then upload it again.",
     );
@@ -532,7 +631,7 @@ describe("adding new files only", () => {
     const locked = filled("A/locked.pdf", "secret");
     Object.defineProperty(locked, "arrayBuffer", { value: () => Promise.reject(new Error("NotReadableError")) });
     const files = [
-      filled("A/notes.docx", "words"), // a kind Kaagaz can't take
+      filled("A/notes.odt", "words"), // a kind Kaagaz can't take
       filled("A/zero.pdf", ""), // empty
       filled("A/big.pdf", "x".repeat(60)), // over the PDF limit below
       locked, // the browser can't read it
@@ -550,7 +649,7 @@ describe("adding new files only", () => {
     await startFolderUpload(server.api, { id: "h2", userId: "me", source: sourceOf(files), target, merge: true, limits, onlyNew: true }, () => undefined, never);
     expect(bodies[0]?.only_new).toBe(true);
     expect(server.registers[0]?.map((each) => [each.name, each.sha256])).toEqual([
-      ["notes.docx", undefined],
+      ["notes.odt", undefined],
       ["zero.pdf", undefined],
       ["big.pdf", undefined],
       ["locked.pdf", undefined],

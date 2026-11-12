@@ -48,6 +48,7 @@ export type DocumentListParams = {
   uploaded_from?: string; // YYYY-MM-DD, the first day included
   uploaded_to?: string; // YYYY-MM-DD, exclusive: the day after the last one
   trashed?: boolean; // WP1.6: true lists only what is in Trash; left out, only what is not
+  trashed_folder_id?: string; // #542: with trashed, the files directly in this folder in Trash
   attention?: boolean; // PRD 5 U2: true lists only documents with reading problems
   department_id?: string;
   owner_id?: string;
@@ -133,7 +134,19 @@ export const MAX_PARTY_LENGTH = 200;
 export const MAX_PROPERTY_LENGTH = 64;
 
 /** The kinds the Type filter offers: the ones Kaagaz takes in (logic.ts ACCEPTED_EXTENSIONS). */
-export const FILTER_TYPES: readonly DetectedType[] = ["pdf", "png", "jpeg", "tiff", "zip", "text"];
+export const FILTER_TYPES: readonly DetectedType[] = [
+  "pdf",
+  "png",
+  "jpeg",
+  "tiff",
+  "heic",
+  "xlsx",
+  "csv",
+  "txt",
+  "md",
+  "json",
+  "html",
+];
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;

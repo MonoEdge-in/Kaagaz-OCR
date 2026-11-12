@@ -10,7 +10,7 @@ placeholder**, never a real secret.
 | Service | Port | What it is | On the EC2 server |
 |---|---|---|---|
 | `frontend` | 3000 | Next.js web app (open this) | the same image, behind Caddy |
-| `api` | 8000 | FastAPI, `/api/*` | the same image, behind Caddy |
+| `api` | 8000, on 127.0.0.1 only | FastAPI, `/api/*` | the same image, behind Caddy |
 | `worker` | none | `python -m kaagaz.worker_main`, one job at a time | the same image |
 | `migrate` | none | one-shot: `alembic upgrade head`, then makes the storage bucket | on every deploy |
 | `postgres` | 5432 | PostgreSQL 17 with pgvector | the same container (no RDS in this phase) |
@@ -71,6 +71,9 @@ unset) also searches an English or Romanised question in the script of its scans
 one model call that times out after `MODEL_TRANSLATE_TIMEOUT_SECONDS` (20, PROVISIONAL).
 `ANSWER_PLAN_TIMEOUT_SECONDS` (4 when unset, 1 to 60): a first question's rewrite and plan
 call ends by then, and the question is answered without its plan (code `plan_timeout`).
+`ANSWER_STREAM_MAX_SECONDS` (180 when unset, 5 to 600; also the streamed draft's own limit, MODEL_TIMEOUT_SECONDS being its idle one): `POST /api/chat/stream` (#535) gives
+up after this long. It says "This answer is taking too long. Try a narrower question or Swift."
+and saves nothing.
 One more (council 5 Oct 2026, PROVISIONAL): `OCR_DPI_RULE` (`fixed` when unset) draws each
 scan page at `OCR_DPI`; `text_height` draws it at the DPI its text needs, `OCR_DPI` at most;
 `text_height_no_scan_cap` is the same without the scan cap, for the accuracy test.
@@ -112,6 +115,9 @@ Open http://localhost:3000.
   signatures. The worker waits for it; the web app and API work meanwhile.
 * The frontend image bakes in `BACKEND_URL=http://api:8000` when it is built
   (Next.js writes the `/api` rewrite into the build).
+* The API's port 8000 is published on 127.0.0.1 only, never to the network:
+  the image trusts the `X-Forwarded-For` it is sent (`backend/Dockerfile`), so
+  another machine could choose its own address.
 * Scans are read by the `OCR_ENGINE` in `.env`: `rapidocr` on a laptop with no
   key, or `gemini` with `OPENROUTER_API_KEY` set (section 1).
 * Stop with `docker compose stop` (the worker finishes the job in hand).
@@ -231,7 +237,7 @@ alias dc='docker compose -f docker-compose.yml -f docker-compose.prod.yml'
 2.11.6; `infra/caddy/Caddyfile`), the only service that publishes ports: 80
 and 443. Caddy gets and renews the Let's Encrypt certificate for
 `KAAGAZ_DOMAIN`, redirects HTTP to HTTPS, sends `/api/*` to `api:8000` and the
-rest to `frontend:3000`, refuses a body over 60 MB, and logs one JSON line per
+rest to `frontend:3000`, refuses a body over 110 MB, and logs one JSON line per
 request. Every other port is cleared, every long-running service restarts after
 a crash or a reboot, and every log is rotated (5 files of 20 MB). The job queue
 keeps its messages in the volume `elasticmq-data`, so a job survives a restart;
@@ -299,7 +305,7 @@ the old key 35 days to read the backups made before.
    ```
    sudo mkdir -p /etc/kaagaz && sudo touch /etc/kaagaz/no-idle-stop
    sudo cp ~/kaagaz/infra/ec2/*.service ~/kaagaz/infra/ec2/*.timer /etc/systemd/system/
-   sudo systemctl daemon-reload && sudo systemctl enable --now kaagaz-deploy.timer kaagaz-pgdump.timer kaagaz-idle.timer kaagaz-disk.timer
+   sudo systemctl daemon-reload && sudo systemctl enable --now kaagaz-deploy.timer kaagaz-pgdump.timer kaagaz-idle.timer kaagaz-disk.timer kaagaz-containers.timer
    ```
 
 5. The first deploy (several minutes):
@@ -583,7 +589,7 @@ its output; until then it is NOT RUN.
 * **10.6** A made-up Marathi scan reaches Ready, its pages show the route `ocr`
   and "Read by Gemini", its text is Devanagari, and searching its Latin spelling
   finds it.
-* **10.7** A made-up 45 MB PDF uploads, and a 60 MB one is refused with the
+* **10.7** A made-up 95 MB PDF uploads, and a 110 MB one is refused with the
   size message. A chat answer cites the page with the spot highlighted, and an
   unanswerable question says not found.
 * **10.8** After `sudo reboot`, the site is back within about 3 minutes and
@@ -782,9 +788,14 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 
 **14b. Upload a whole folder (#484)**
 - Check (API): `POST $API/folder-uploads` with the folder list, then `POST $API/folder-uploads/<id>/items` (pages of 1,000), then each file to `POST $API/documents?folder_upload_item_id=<item>`; `GET $API/folder-uploads/<id>` for progress.
-- Expect: the same folders, at any depth up to 100; each file in its own folder, never auto-filed; a retry or a second send of an item stores nothing new; a deleted folder gives `folder_gone`, never the top level; an unsafe file name is `bad_name`; a second upload while one still sends is 409 `upload_in_progress`. Limits: `GET/PUT /api/operator/folder-upload-limits` (a fresh code; at most 20 GB). Sends at once (`FOLDER_UPLOAD_FILES_AT_ONCE_PER_ORG` 4, `FOLDER_UPLOAD_FILES_AT_ONCE` 8) are counted per API process, not per server. In an organisation whose reading is paused (#478), the upload's progress counts its held files as `held` ("waiting" in the tray, with the pause's words), never reading; files not sent are "not sent yet".
+- Expect: the same folders, at any depth up to 100; each file in its own folder, never auto-filed; a retry or a second send of an item stores nothing new; a deleted folder gives `folder_gone`, never the top level; an unsafe file name is `bad_name`; another user's upload while one still sends (active in the last 30 minutes) is 409 `upload_in_progress`. Limits: `GET/PUT /api/operator/folder-upload-limits` (a fresh code; at most 20 GB). Sends at once (`FOLDER_UPLOAD_FILES_AT_ONCE_PER_ORG` 4, `FOLDER_UPLOAD_FILES_AT_ONCE` 8) are counted per API process, not per server. In an organisation whose reading is paused (#478), the upload's progress counts its held files as `held` ("waiting" in the tray, with the pause's words), never reading; files not sent are "not sent yet".
 - Tests: `test_api_folder_uploads.py`, `test_api_folder_upload_files.py`, `test_folder_uploads_plan_db.py`, `test_folder_upload_reading_pause_db.py`, `test_isolation_*folder_uploads.py`.
 - Load test (not in CI, hours). Laptop stack only, without `OPENROUTER_API_KEY`; never run it on the test server. Make two organisations for it (`python -m kaagaz.cli create-customer`, then `create-user` for a member of each): the second one's member is the probe. From `backend/` (`.venv/Scripts/python.exe` on Windows, `.venv/bin/python` elsewhere): `LOADTEST_PASSWORD=... PROBE_PASSWORD=... .venv/Scripts/python.exe -m scripts.load_folder_upload --email <member> --password-env LOADTEST_PASSWORD --probe-email <member of the second organisation> --probe-password-env PROBE_PASSWORD`. It prints PASS or FAIL for each bar. Clean-up: delete both organisations in the operator console, then `python -m kaagaz.cli purge-customer --customer-id <id> --now` for each.
+
+**14c. Storage limit per organisation (#516)**
+- Check (API): as the operator, `PUT $API/operator/orgs/<id>/storage-limit` with `{"storage_gb": 1, "code": "<a fresh code>"}`; as that organisation's admin, `GET $API/admin/storage`; then upload files until it is full.
+- Expect: `{used_bytes, limit_bytes, limit_gb}` for the admin; the first file past 1 GB is 413 `storage_full` with its words and `details`, at the upload (a resumable one at its complete) or the folder upload plan; the same file again (a duplicate) is still answered; emptying the Trash (delete forever) makes room. `{"storage_gb": null}` follows the platform (`/api/operator/storage-limit`, null: 50 GB).
+- Tests: `test_api_storage_limit.py`, `test_upload_storage_limit.py`, `test_operator_storage_limit_db.py`, `test_migration_0061d_db.py`, `test_isolation_storage_limits.py`.
 
 **15. Document viewer**
 - Check (screen): open a PDF, click a value in "Values found"; open p.csv.

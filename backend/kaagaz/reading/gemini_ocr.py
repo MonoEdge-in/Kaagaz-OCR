@@ -301,13 +301,15 @@ GEMINI_BACKEND = "gemini"
 KEY_BACKEND = "gemini_key"
 # G6, review FX5: the client's codes only a person can fix, waited on as KEY_BACKEND and
 # never read locally: a key that is wrong or a spend cap reached, a model ID that names no
-# model (404), and a base URL that redirects. http_error (a status nothing else names)
+# model (404), or no endpoint within the provider or data policy (a 404 too, review of #564),
+# and a base URL that redirects. http_error (a status nothing else names)
 # stays an outage.
-KEY_CODES = frozenset({"key_rejected", "model_not_found", "redirect_refused"})
+KEY_CODES = frozenset({"key_rejected", "model_not_found", "no_endpoints", "redirect_refused"})
 # Model choice (council 11 Oct 2026): the client's code for a model OpenRouter does not know.
 # For a document's chosen model (not OCR_MODEL) it is never a key wait (one withdrawn model
 # must not pause everyone): the page is read locally as reader_refused.
 MODEL_NOT_FOUND = "model_not_found"
+NO_ENDPOINTS = "no_endpoints"  # review of #564: the same for a 404 for no endpoint
 # The code logged for a page whose provider is outside OPENROUTER_PROVIDERS (read locally).
 PROVIDER_NOT_ALLOWED = "provider_not_allowed"
 # G6: the client's code for a reply cut off at the output limit.
@@ -1685,7 +1687,7 @@ class GeminiEngine:
         the outage gap after the last one starts a new outage (see the module notes). A
         chosen model that is not OCR_MODEL and that OpenRouter does not know is read
         locally as reader_refused, logged at error: never a key wait for everyone."""
-        if code == MODEL_NOT_FOUND and model != self._model:
+        if code in (MODEL_NOT_FOUND, NO_ENDPOINTS) and model != self._model:
             _log.error("reading model not found, page read locally", extra={"code": code})
             return self._read_locally(image, page_no, READER_REFUSED, code, tokens=tokens)
         if code in KEY_CODES:

@@ -379,6 +379,11 @@ class Settings:
     # seconds, 1 to 60; past it the question is answered without its plan and aspects. A
     # follow-up's call keeps MODEL_TIMEOUT_SECONDS. Optional: 4 when unset.
     answer_plan_timeout_seconds: float
+    # Streaming Ask (#535): POST /api/chat/stream gives up after this many seconds, 5 to 600, and
+    # says so ("This answer is taking too long..."); nothing is saved. It is also the streamed draft's
+    # own limit (its idle one is MODEL_TIMEOUT_SECONDS). Optional: 180 when unset (a Precision answer
+    # read in parts took 133 s on the test server, 7 Nov 2026).
+    answer_stream_max_seconds: float
     # PRD 5 context and memory (sections CX and M; council 9 Oct 2026). Optional: unset is
     # the PRD's value, so an older .env keeps working. model_context_tokens is the chat
     # model's context window (M1), the one every budget uses. The chat's documents are given
@@ -475,6 +480,12 @@ class Settings:
     # Mistral (council 2 Nov 2026); off unless MISTRAL_ZDR_APPROVED=true.
     mistral_api_key: str | None = field(default=None, repr=False)
     mistral_zdr_approved: bool = False
+    # Production's Ultra low cost switch (#488 there, 65ee12e3; #564 [V]): with ocr_ultra_low_cost
+    # (off unless set to true; needs OCR_ENGINE=gemini) Ultra low cost is the platform's reader
+    # while the super admin has saved none, at ocr_page_ceiling_paise a page (20-55, 55 when unset)
+    # unless a ceiling is saved (``db.models.effective_settings``). A saved reader always wins.
+    ocr_ultra_low_cost: bool = False
+    ocr_page_ceiling_paise: int = 55
     # Folder upload (#484, council 3 Nov 2026): a folder upload's file sends have their own rate
     # bucket, folder_upload_calls_per_minute a user; this API process takes at most
     # folder_upload_files_at_once_per_org of one organisation's files at once and
@@ -632,6 +643,10 @@ class Settings:
         mistral_api_key = env.optional("MISTRAL_API_KEY")
         if mistral_api_key is not None and _API_KEY.fullmatch(mistral_api_key) is None:
             raise SettingsError("MISTRAL_API_KEY must be printable ASCII with no spaces")
+        ultra_low_cost = env.optional("OCR_ULTRA_LOW_COST") is not None and env.boolean("OCR_ULTRA_LOW_COST")
+        if ultra_low_cost and ocr_engine != "gemini":
+            raise SettingsError("OCR_ULTRA_LOW_COST=true needs OCR_ENGINE=gemini: no model reads the pages")
+        page_ceiling_paise = env.between_or("OCR_PAGE_CEILING_PAISE", 20, 55, default=55)  # 0073's range
         queue_url = env.text("QUEUE_URL")
         queue_express_url = (
             None if env.optional("QUEUE_EXPRESS_URL") is None else env.url("QUEUE_EXPRESS_URL")
@@ -761,6 +776,7 @@ class Settings:
             and env.boolean("ANSWER_TRANSLATE_QUESTION"),
             model_translate_timeout_seconds=translate_timeout,
             answer_plan_timeout_seconds=env.number_in("ANSWER_PLAN_TIMEOUT_SECONDS", 1.0, 60.0, default=4.0),
+            answer_stream_max_seconds=env.number_in("ANSWER_STREAM_MAX_SECONDS", 5.0, 600.0, default=180.0),
             model_context_tokens=model_context_tokens,
             answer_whole_doc_tokens=whole_doc_tokens,
             answer_swift_input_tokens=env.at_least("ANSWER_SWIFT_INPUT_TOKENS", 0, default=30_000),
@@ -790,6 +806,8 @@ class Settings:
             mistral_api_key=mistral_api_key,
             mistral_zdr_approved=env.optional("MISTRAL_ZDR_APPROVED") is not None
             and env.boolean("MISTRAL_ZDR_APPROVED"),
+            ocr_ultra_low_cost=ultra_low_cost,
+            ocr_page_ceiling_paise=page_ceiling_paise,
         )
 
 

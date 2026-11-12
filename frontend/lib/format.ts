@@ -43,6 +43,12 @@ export function formatBytes(bytes: number): string {
   return `${text} ${BYTE_UNITS[unit]}`;
 }
 
+/** What an organisation has stored of its storage limit (#516): "12.4 GB of 50 GB used". The
+ * limit is in whole GB as it is set, so 10,000 GB stays "10,000 GB", never "9.8 TB". */
+export function storageUsedText(usedBytes: number, limitGb: number): string {
+  return `${formatBytes(usedBytes)} of ${formatNumber(limitGb)} GB used`;
+}
+
 function parse(iso: string): Date | null {
   const date = new Date(iso);
   return Number.isNaN(date.getTime()) ? null : date;
@@ -115,14 +121,45 @@ const TYPE_LABELS: Record<DetectedType, string> = {
   png: "Image (PNG)",
   jpeg: "Image (JPEG)",
   tiff: "Image (TIFF)",
-  zip: "Spreadsheet",
+  heic: "Image (HEIC)",
+  // Changed on purpose (#522): the sniffed types, until the worker has told the file's kind.
+  zip: "ZIP file",
   ole2: "Old Office file",
-  text: "CSV",
+  text: "Text file",
+  xlsx: "Spreadsheet",
+  xls: "Spreadsheet (XLS)",
+  csv: "CSV",
+  docx: "Word document",
+  dotx: "Word template",
+  doc: "Word document (DOC)",
+  pptx: "PowerPoint",
+  ppt: "PowerPoint (PPT)",
+  txt: "Text",
+  md: "Markdown",
+  json: "JSON",
+  html: "Web page (HTML)",
 };
 
 /** The file kind in words, from the type the server detected from the bytes. */
 export function typeLabel(type: DetectedType): string {
   return TYPE_LABELS[type];
+}
+
+// #522: a file not read since the kinds came keeps its sniffed type (zip, text) until it is read
+// again; its name's ending chooses among the kinds that type can be, for the words only (as the
+// server's Download does, documents.py served_type).
+const KINDS_BY_ENDING: Partial<Record<DetectedType, Readonly<Record<string, DetectedType>>>> = {
+  zip: { xlsx: "xlsx", docx: "docx", dotx: "dotx", pptx: "pptx", zip: "zip" },
+  text: { csv: "csv", txt: "txt", md: "md", json: "json", html: "html", htm: "html" },
+};
+
+/** A document's kind in words: ``typeLabel``, or for a zip or text file not read since #522,
+ * the kind its name's ending names. */
+export function fileTypeLabel(type: DetectedType, name: string | null | undefined): string {
+  const dot = (name ?? "").trim().lastIndexOf(".");
+  const ending = dot < 0 ? "" : (name ?? "").trim().slice(dot + 1).toLowerCase();
+  const kinds = KINDS_BY_ENDING[type];
+  return typeLabel((kinds && Object.hasOwn(kinds, ending) ? kinds[ending] : undefined) ?? type);
 }
 
 const DOC_TYPE_LABELS: Record<DocType, string> = {
@@ -164,7 +201,12 @@ export interface StatusChip {
 const STATUS_TONES = { reading: "working", failed: "danger" } as const;
 
 /** The words, tone and class for a document status chip. */
-export function statusChip(status: DocumentStatus): StatusChip {
+export function statusChip(status: DocumentStatus, detectedType?: DetectedType): StatusChip {
+  // #549: a zip kept as a file (inside a folder upload, or the zip's own copy once unpacked) is
+  // needs_reader by design, so nothing failed.
+  if (status === "needs_reader" && detectedType === "zip") {
+    return { text: "Kept as a file", tone: "neutral", className: "status-chip" };
+  }
   const state = documentStatus(status);
   return { text: documentWords(status), tone: state === null ? "ready" : STATUS_TONES[state], className: "status-chip" };
 }

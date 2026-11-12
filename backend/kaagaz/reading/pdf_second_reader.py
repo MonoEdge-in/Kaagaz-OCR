@@ -14,6 +14,15 @@ about the text read, never about where a line was cut. Boxes use PDFium's
 loose character box (the font's full height), which matches how pdfplumber
 measures a line.
 
+A Word or PowerPoint file's PDF rendition (#522) is also read here, by the first reader,
+on a page pdfplumber can't read (``pdf_reader``): ``page_spans`` with ``word_gaps``.
+LibreOffice gives some Devanagari glyphs their text only by /ActualText, which PDFium
+reads, but PDFium then drops the space after some vowel signs ("पुणेयेथे" for "पुणे
+येथे"). With ``word_gaps``, a gap between two characters wider than ``WORD_GAP`` of the
+font size also ends a word: inside a word, LibreOffice's glyphs touch or overlap (at most
+0.03 of the size apart, measured), while a dropped space leaves about 0.24. The second
+reading of every PDF splits at spaces only, as before.
+
 Pages without a text layer give nothing: this reader never runs OCR, so a
 scan's values stay single_reader unless another second reading is set up.
 
@@ -38,6 +47,9 @@ from kaagaz.reading.pdf_signals import ViewerFrame, hidden_chars
 from kaagaz.reading.socket import OnPage
 from kaagaz.reading.spans import ReadError, Span
 
+# A gap wider than this share of the font size ends a word, with ``word_gaps`` (module notes).
+WORD_GAP = 0.15
+
 
 class PdfiumReader:
     name = "pdfium"
@@ -59,7 +71,7 @@ class PdfiumReader:
             for index in range(len(document)):
                 page = document[index]
                 try:
-                    spans.extend(_page_spans(page, index + 1))
+                    spans.extend(page_spans(page, index + 1))
                 finally:
                     page.close()
         except pdfium.PdfiumError:
@@ -71,11 +83,13 @@ class PdfiumReader:
         return spans
 
 
-def _page_spans(page: Any, number: int) -> list[Span]:
+def page_spans(page: Any, number: int, *, word_gaps: bool = False) -> list[Span]:
+    """Page ``number``'s lines (its ``page``, open in pypdfium2), as this reader reads them;
+    ``word_gaps``: a word also ends at a gap (module notes). O(characters)."""
     frame = ViewerFrame.of(page)
     textpage = page.get_textpage()
     try:
-        words = [frame.word(*run) for run in _runs(textpage, hidden_chars(page, textpage))]
+        words = [frame.word(*run) for run in _runs(textpage, hidden_chars(page, textpage), word_gaps)]
     finally:
         textpage.close()
     return line_spans(words, number, PageFrame(0.0, 0.0, frame.width, frame.height), origin="text_layer")
@@ -85,10 +99,11 @@ def _page_spans(page: Any, number: int) -> list[Span]:
 _Run = tuple[str, float, float, float, float]
 
 
-def _runs(textpage: Any, hidden: frozenset[int]) -> list[_Run]:
+def _runs(textpage: Any, hidden: frozenset[int], word_gaps: bool = False) -> list[_Run]:
     runs: list[_Run] = []
     units: list[str] = []
     box = (0.0, 0.0, 0.0, 0.0)
+    right = 0.0  # the last character's right edge
     count = textpage.count_chars()
     for index in range(count + 1):  # one past the end flushes the last run
         char = _char(textpage, index, hidden) if index < count else " "
@@ -98,6 +113,10 @@ def _runs(textpage: Any, hidden: frozenset[int]) -> list[_Run]:
             units = []
             continue
         c_left, c_bottom, c_right, c_top = textpage.get_charbox(index, loose=True)
+        if units and word_gaps and c_left - right > WORD_GAP * pdfium_c.FPDFText_GetFontSize(textpage, index):
+            runs.append((_text(units), *box))  # a space PDFium dropped
+            units = []
+        right = c_right
         if units:
             box = (min(box[0], c_left), min(box[1], c_bottom), max(box[2], c_right), max(box[3], c_top))
         else:

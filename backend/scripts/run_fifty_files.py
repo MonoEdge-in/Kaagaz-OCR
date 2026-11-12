@@ -22,9 +22,9 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from kaagaz.ingestion import sniff
+from kaagaz.ingestion import resolve
 from kaagaz.ingestion.errors import UploadRejected
-from kaagaz.ingestion.policy import KIND_OF, UploadPolicy, limits_by_type
+from kaagaz.ingestion.policy import UPLOAD_TYPES, UploadPolicy, limits_by_type
 from kaagaz.ingestion.service import UploadService
 from kaagaz.jobs.worker import Worker
 from kaagaz.pipeline import DocumentProcessor
@@ -65,7 +65,7 @@ EXPLAIN = {
 class MarkerScanner:
     """Stand-in scanner: files containing the fake marker count as infected."""
 
-    def scan(self, data: bytes) -> Verdict:
+    def scan(self, data: bytes, *, name: str | None = None) -> Verdict:
         return Verdict.INFECTED if FAKE_VIRUS_MARKER in data else Verdict.CLEAN
 
 
@@ -121,7 +121,7 @@ def main() -> None:
     # Every type that has a size limit (ole2 has none, and no sample is one).
     policy = UploadPolicy(
         max_bytes=100_000,
-        allowed_types=frozenset(KIND_OF),
+        allowed_types=UPLOAD_TYPES,
         type_limits=limits_by_type(pdf=100_000, image=100_000, sheet=100_000),
     )
     upload = UploadService(policy, repo, storage, queue)
@@ -132,7 +132,7 @@ def main() -> None:
         max_cells=100_000,
         max_text_chars=10_000_000,
     )
-    socket = ReaderSocket({sniff.TEXT: CsvReader(max_cells=100_000), sniff.ZIP: XlsxReader(limits)})
+    socket = ReaderSocket({resolve.CSV: CsvReader(max_cells=100_000), resolve.XLSX: XlsxReader(limits)})
     gate = ScanGate(storage, MarkerScanner(), storage, statuses)
     processor = DocumentProcessor(
         gate=gate,
@@ -164,7 +164,7 @@ def main() -> None:
     for sample in samples:
         started = time.perf_counter()
         try:
-            result = upload.accept(CUSTOMER, io.BytesIO(sample.data))
+            result = upload.accept(CUSTOMER, io.BytesIO(sample.data), display_name=sample.name)
         except UploadRejected as rejected:
             outcomes[sample.name] = f"rejected:{rejected.code.value}"
             continue

@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import text
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from kaagaz.api.app import create_app
 from kaagaz.api.auth import (
@@ -161,7 +162,8 @@ def test_flow_refused_when_expired_tampered_or_signed_for_another_purpose() -> N
     body, signature = token.split(".")
     assert read_flow(body + "x." + signature, SECRET, now=1_000) is None
     confirm = sign_confirm(
-        ConfirmClaims(user_id=UID, customer_id=CID, session_version=3, expires_at=2_000), SECRET
+        ConfirmClaims(user_id=UID, customer_id=CID, session_version=3, expires_at=2_000, session_id=UID),
+        SECRET,
     )
     assert read_flow(confirm, SECRET, now=1_000) is None
     assert read_session(token, SECRET, now=1_000) is None
@@ -293,6 +295,38 @@ def test_rate_limit_gives_429_with_the_error_shape() -> None:
     assert reply.status_code == 429
     assert reply.json()["error"]["code"] == "rate_limited"
     assert reply.headers["X-Request-ID"]
+
+
+def test_signed_out_visitors_behind_caddy_each_have_their_own_bucket() -> None:
+    """Production QA S2: uvicorn trusted X-Forwarded-For only from 127.0.0.1, so every signed-out
+    visitor came from Caddy's address and shared one bucket: one person could block sign-in for
+    every customer. The image trusts the header from anywhere (only Caddy reaches the API's port,
+    and Caddy sets the header itself); uvicorn's own middleware is applied here as it runs there."""
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
+    assert re.findall(r"^ENV FORWARDED_ALLOW_IPS=(.+)$", dockerfile, re.MULTILINE) == ['"*"']
+    app = _offline_client(rate_limit_per_minute=2).app
+    client = TestClient(ProxyHeadersMiddleware(app, trusted_hosts="*"))  # type: ignore[arg-type]  # ASGI types differ
+    first, second = {"X-Forwarded-For": "203.0.113.7"}, {"X-Forwarded-For": "198.51.100.9"}
+    for _ in range(2):
+        assert client.get("/api/auth/me", headers=first).status_code == 401
+    assert client.get("/api/auth/me", headers=first).status_code == 429  # this visitor: used up
+    assert client.get("/api/auth/me", headers=second).status_code == 401  # another: their own
+
+
+def test_the_sign_in_pages_server_calls_are_keyed_on_the_visitor_it_forwards() -> None:
+    """A7 (stability pass, 7 Nov 2026): the login page's server side (frontend
+    app/login/signInOptions.ts) calls /auth/session from the frontend container with the visitor's
+    address in X-Forwarded-For, so each visitor keeps their own bucket. From outside the header is
+    never believed: Caddy, with no trusted_proxies, replaces whatever a visitor sent."""
+    caddyfile = (Path(__file__).resolve().parents[2] / "infra" / "caddy" / "Caddyfile").read_text(
+        encoding="utf-8"
+    )
+    assert "trusted_proxies" not in caddyfile
+    app = _offline_client(rate_limit_per_minute=1).app
+    frontend = TestClient(ProxyHeadersMiddleware(app, trusted_hosts="*"), client=("172.18.0.5", 40000))  # type: ignore[arg-type]  # ASGI types differ
+    assert frontend.get("/api/auth/session", headers={"X-Forwarded-For": "203.0.113.7"}).status_code != 429
+    assert frontend.get("/api/auth/session", headers={"X-Forwarded-For": "203.0.113.7"}).status_code == 429
+    assert frontend.get("/api/auth/session", headers={"X-Forwarded-For": "198.51.100.9"}).status_code != 429
 
 
 def test_rate_limiter_retry_after_is_the_wait_for_the_next_token() -> None:

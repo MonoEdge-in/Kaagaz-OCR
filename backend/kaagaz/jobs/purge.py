@@ -12,7 +12,9 @@ filter on ``customer_id`` as well.
 One family per transaction: ``purge_next_family`` locks the family longest in
 Trash (a family another purger or a Trash action holds is skipped, never waited
 for), then every version's rows and stored files are deleted in that same
-transaction, by today's full delete (``kaagaz.db.documents.delete_forever``).
+transaction, by today's full delete (``kaagaz.db.documents.delete_forever``). Then, in its own
+transaction, the folders in Trash past the limit whose documents are all gone (#542,
+``trashed_folders.purge_folders``), so no document is left naming a trashed folder.
 
 A storage error rolls that family's rows back and **stops the run**: the
 BackendUnavailable goes up to the worker loop, which logs it and pauses, and
@@ -51,7 +53,9 @@ from typing import Protocol
 from sqlalchemy.exc import SQLAlchemyError
 
 from kaagaz.db import customer_purge
+from kaagaz.db import trashed_folders as trashed_sql
 from kaagaz.db import upload_sessions as upload_sessions_sql
+from kaagaz.db import users as users_sql
 from kaagaz.db.documents import delete_forever
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.trash import customer_ids_with_trash, purge_next_family
@@ -97,8 +101,18 @@ def purge_expired(
         with db.system() as conn:
             customers = customer_ids_with_trash(conn, before=before)
         for customer_id in customers:
-            while purged < batch and _purge_one_family(db, storage, customer_id, before):
-                purged += 1
+            purged += _purge_trash_of(db, storage, customer_id, before, batch - purged)
+    return purged
+
+
+def _purge_trash_of(db: Database, storage: BlobStorage, customer_id: str, before: datetime, room: int) -> int:
+    """Up to ``room`` families of this customer, oldest first, then its folders in Trash whose
+    files are all gone (#542: a folder waits for its last file). Returns how many families."""
+    purged = 0
+    while purged < room and _purge_one_family(db, storage, customer_id, before):
+        purged += 1
+    with db.customer(customer_id) as conn:
+        trashed_sql.purge_folders(conn, customer_id, before=before)
     return purged
 
 
@@ -114,6 +128,13 @@ def purge_upload_sessions(db: Database, storage: CustomerStorage, clock: Callabl
             upload_sessions_sql.delete_expired(conn, str(row["customer_id"]), str(row["id"]), now)
         removed += 1
     return removed
+
+
+def sweep_ended_sessions(db: Database, clock: Callable[[], datetime]) -> int:
+    """Forget the sessions ended by logout (0076) whose cookie has expired since: such a cookie
+    is refused by its own expiry now. Every organisation in one statement; how many."""
+    with db.system() as conn:
+        return users_sql.sweep_ended_sessions(conn, clock())
 
 
 def _purge_one_family(db: Database, storage: BlobStorage, customer_id: str, before: datetime) -> bool:

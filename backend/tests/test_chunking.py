@@ -1,7 +1,8 @@
 import unittest
 
+from kaagaz.chunking.lines import MAX_CHARS
 from kaagaz.chunking.piece import NEEDS_REVIEW, VERIFIED, Piece, piece_label
-from kaagaz.chunking.rows import column_letter, pieces_from_rows
+from kaagaz.chunking.rows import TEXT_MAX_CHARS, column_letter, pieces_from_rows, pieces_from_text_lines
 from kaagaz.reading.csv_reader import CsvReader
 from kaagaz.reading.spans import BoxLocation, CellLocation, Span
 
@@ -115,3 +116,29 @@ class PiecesFromRowsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_text_lines_make_paragraph_pieces_cut_at_blank_lines_pages_and_800_characters() -> None:
+    # #522: a text file's lines (one cell each, column 1), joined by line breaks.
+    def line(text: str, page: int, row: int) -> Span:
+        return Span(text, text, CellLocation(page, row, 1), origin="cell")
+
+    long = "x" * 500
+    spans = [
+        line("Rent receipt", 1, 1),
+        line("April 2026", 1, 2),
+        line("Paid", 1, 4),  # after a blank line
+        line(long, 1, 5),
+        line(long, 1, 6),  # 1,002 characters with the line before: a new piece
+        line("next page", 2, 1),
+    ]
+    pieces = pieces_from_text_lines("c", "d", spans)
+    assert [piece.text for piece in pieces] == [
+        "Rent receipt\nApril 2026",
+        "Paid\n" + long,
+        long,
+        "next page",
+    ]
+    assert pieces[0].locations == (CellLocation(1, 1, 1), CellLocation(1, 2, 1))
+    assert {piece.label for piece in pieces} == {"verified"}
+    assert TEXT_MAX_CHARS == MAX_CHARS

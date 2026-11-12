@@ -63,6 +63,12 @@ app reads, adds and updates, never deletes (they go with the customer); an organ
 limits it reads in four columns only, written by the operator's two functions (step-up).
 "Add new files only" (#484, 0072): the upload counts the files it sends
 (``items_counted``); the browser's SHA-256 of a file is never kept, on the upload or its items.
+
+Storage limit per organisation (0061d, merged by 0075, #516): an organisation's own limit the app
+reads in two columns only, written by the operator's two functions (step-up).
+
+A folder in Trash (0081, #542, NEEDS VRUSHIT'S APPROVAL): read, added and deleted by the app,
+never updated.
 """
 
 import re
@@ -183,6 +189,13 @@ FROM_0071 = {
     "folder_upload_items": (True, True, True, False),
     "org_upload_limits": (False, False, False, False),
 }
+# Storage limit (0061d): a column grant only, the operator writes.
+FROM_0061D = {"org_storage_limits": (False, False, False, False)}
+# A folder in Trash (0081, #542): read, added and deleted (restored, forever, purged), never updated.
+FROM_0081 = {"trashed_folders": (True, True, False, True)}
+# Logout ends this browser's session (0076, #502): the app adds and reads ended sessions only;
+# the worker's sweep deletes them through kaagaz_sweep_ended_sessions.
+FROM_0076 = {"ended_sessions": (True, True, False, False)}
 UPDATES_0030 = {
     "word_changes": {"applied", "undone_at", "undone_by"},
     "ensemble_runs": {
@@ -248,6 +261,8 @@ OWNER_RIGHTS = {
         "TABLE(customer_id uuid, id uuid, storage_key text, storage_upload_id text)",
         EMPTY_PATH,
     ),
+    # 0076, the worker's sweep of ended sessions whose cookie expired: a count only.
+    "kaagaz_sweep_ended_sessions": ("integer", EMPTY_PATH),
     # 0046, the shared scheduler's single admission function.
     "kaagaz_model_rate_slot": ("double precision", EMPTY_PATH),
     # 0061, email: a clicked link found by its hash (ids, purpose and times), and self sign-up
@@ -523,6 +538,12 @@ OPERATOR_RIGHTS = {
         EMPTY_PATH,
     ),
     "kaagaz_op_set_google_signin": ("text", EMPTY_PATH),
+    # 0061d, #516: the storage limits (numbers and the bytes used only), and their write (step-up).
+    "kaagaz_op_storage_limit": (
+        "TABLE(org_storage_gb integer, platform_storage_gb integer, used_bytes bigint)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_set_storage_limit": ("text", EMPTY_PATH),
     # 0046: operator-only read/write for customer and user RPM overrides.
     "kaagaz_op_model_rates": (
         "TABLE(org_rpm integer, user_id uuid, email text, user_rpm integer)",
@@ -603,6 +624,9 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0066)
         | set(FROM_0068)
         | set(FROM_0071)
+        | set(FROM_0061D)
+        | set(FROM_0076)
+        | set(FROM_0081)  # Changed on purpose (#542, 0081)
     )
 
     with db.system() as conn:
@@ -651,7 +675,10 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         # Changed on purpose (0040): and its sign-in idle timeout.
         # Changed on purpose (#482, 0068): and a deleted organisation's kept audit rows.
         # Changed on purpose (#484, 0071): and an organisation's folder upload limits.
-        if table not in FROM_0023 | FROM_0026 | FROM_0039 | FROM_0040 | FROM_0043 | FROM_0068 | FROM_0071:
+        # Changed on purpose (#516, 0061d): and an organisation's storage limit.
+        if table not in (
+            FROM_0023 | FROM_0026 | FROM_0039 | FROM_0040 | FROM_0043 | FROM_0068 | FROM_0071 | FROM_0061D
+        ):
             assert (select, insert) == (True, True), table
     for table in FROM_0002:
         assert granted[table] == (True, True, True, True), table
@@ -677,6 +704,9 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0066
         | FROM_0068
         | FROM_0071
+        | FROM_0061D
+        | FROM_0076
+        | FROM_0081  # Changed on purpose (#542, 0081)
     ).items():
         assert granted[table] == expected, table
 
@@ -748,6 +778,12 @@ def test_the_app_may_update_only_the_approval_and_last_use_of_a_connected_accoun
 def test_the_app_may_update_only_the_counts_of_a_reading_day(db: Database) -> None:
     """0066: never a counter's organisation or day, so pages can't be moved to another day."""
     assert {table: _updatable(db, table) for table in UPDATES_0066} == UPDATES_0066
+
+
+def test_the_app_may_update_only_the_parent_of_a_trashed_folder(db: Database) -> None:
+    """0082 (A13): never a trashed folder's name, kind, delete or owner; only where it would be
+    restored to, when the folder it was in is deleted with its contents kept elsewhere."""
+    assert _updatable(db, "trashed_folders") == {"parent_id"}
 
 
 def test_the_app_may_update_only_the_spellings_of_a_value_key(db: Database) -> None:
@@ -829,11 +865,13 @@ def _columns(db: Database, table: str) -> set[str]:
 
 def test_a_folder_upload_keeps_counts_and_never_the_browsers_hash_of_a_file(db: Database) -> None:
     """0072 (#484, "Add new files only"): ``items_counted``, the files registered that weren't
-    already in, is what the limit is checked against; no column keeps a file's SHA-256."""
+    already in, is what the limit is checked against; no column keeps a file's SHA-256. Changed on
+    purpose (#522 PR 3, 0080): ``zip_document_id``, the zip an upload the worker made is from."""
     assert _columns(db, "folder_uploads") == {
         "id", "customer_id", "user_id", "target", "parent_folder_id", "root_folder_id", "source_name",
         "root_name", "merge", "file_count", "total_bytes", "skipped_count", "folders_created",
         "items_registered", "items_counted", "bytes_registered", "created_at", "updated_at",
+        "zip_document_id",
     }  # fmt: skip
     assert _columns(db, "folder_upload_items") == {
         "id", "customer_id", "folder_upload_id", "seq", "path_key", "name", "folder_id", "size_bytes",
@@ -871,6 +909,8 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
         | set(FROM_0061)
         | set(FROM_0062)
         | {"folder_upload_folders", "folder_upload_items"}  # 0071
+        | set(FROM_0076)
+        | set(FROM_0081)  # Changed on purpose (#542, 0081)
         | {"pages", "model_usage", "documents"}  # documents.owner_id (0041)
     )
     for name, _table, _parent, columns, parent_columns in between:

@@ -27,6 +27,10 @@ const REASONS: LabelReason[] = [
   "unsure_text",
   "box_unanchored",
   "local_reader",
+  "mixed_digits",
+  "amount_commas",
+  "amount_mark",
+  "amount_outlier",
 ];
 
 describe("STATUS_WORDS", () => {
@@ -59,6 +63,8 @@ describe("valueStatus", () => {
     expect(valueStatus("needs_review", "single_reader").reason).toBe("Only one reader saw this");
     expect(valueStatus("needs_review", "model_chosen").reason).toBe("Picked by Kaagaz, check the page");
     expect(valueStatus("needs_review", "local_reader").reason).toBe("Read by the backup reader");
+    expect(valueStatus("needs_review", "mixed_digits").reason).toBe("Digits of two scripts in one amount");
+    expect(valueStatus("needs_review", "amount_commas").reason).toBe("The amount's commas look wrong");
     expect(valueStatus("needs_review", "direct_cell")).toEqual({ state: "review", reason: null });
   });
 
@@ -119,6 +125,11 @@ describe("failureFix", () => {
     expect(failureFix("failed", "unreadable")).toBe("Upload a sharper scan.");
     expect(failureFix("failed", "ocr_failed")).toBe("Read it again, or upload a clearer scan.");
     expect(failureFix("failed", "customer_disabled")).toBe("Read it again.");
+    expect(failureFix("failed", "office_unreadable")).toBe(
+      "Remove its password, or save it again and upload that copy.",
+    );
+    expect(failureFix("failed", "password_protected")).toBe("Remove the password and upload it again.");
+    expect(failureFix("failed", "too_large")).toBe("Split it into smaller files and upload them.");
     expect(failureFix("rejected", "virus_found")).toBe("Upload a clean copy of the file.");
     expect(failureFix("rejected", "unscannable")).toBe("Save it again and upload that copy.");
     expect(failureFix("rejected", "blocked_content")).toBe(

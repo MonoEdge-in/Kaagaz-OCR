@@ -18,14 +18,15 @@
   No route turns two-step off.
 
 As ``routers/auth.py``: one scrypt hash on every path, the attempt counted first, the
-lockout, a code used once. Each outcome writes one ``platform_audit`` row in its
-database function. Only ``OperatorDatabase`` here.
+lockout (a sign-in's per operator and address, A2), a code used once. Each outcome writes
+one ``platform_audit`` row in its database function. Only ``OperatorDatabase`` here.
 """
 
+import dataclasses
 from datetime import datetime, timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -47,8 +48,9 @@ from kaagaz.api.auth import (
 )
 from kaagaz.api.context import AppContext, get_context, get_operator_db
 from kaagaz.api.errors import ApiError
+from kaagaz.api.middleware import client_address
 from kaagaz.api.routers.admin import MAX_PASSWORD
-from kaagaz.api.routers.auth import MAX_CODE
+from kaagaz.api.routers.auth import ACCOUNT_LOCK_MINUTES, ACCOUNT_MAX_FAILURES, MAX_CODE, address_locks
 from kaagaz.api.secret_box import SecretBoxError
 from kaagaz.api.twostep import box, digits, refused, unix
 from kaagaz.db import operators as operators_sql
@@ -94,9 +96,9 @@ class MoveConfirmBody(BaseModel):
 
 
 @router.post("/login")
-def login(body: OperatorLoginBody, db: OperatorDb, context: Context) -> JSONResponse:
+def login(body: OperatorLoginBody, request: Request, db: OperatorDb, context: Context) -> JSONResponse:
     now = context.clock()
-    attempt = _begin(db, context, now, body.email)
+    attempt = _begin_from(db, context, now, body.email, client_address(request))
     if attempt is None:  # unknown or locked: no audit row (the lock was audited when it began)
         spend_password_time(body.password)
         raise refused(context)
@@ -115,6 +117,7 @@ def login(body: OperatorLoginBody, db: OperatorDb, context: Context) -> JSONResp
             version = operators_sql.login_succeeded(conn, attempt.operator_id, step, now)
     if version is None:
         raise _failed(db, context, attempt)
+    address_locks.clear(_address_key(body.email, client_address(request)))  # the count starts again
     return _start_session(context, attempt, version, now)
 
 
@@ -228,6 +231,37 @@ def _begin(db: OperatorDatabase, context: AppContext, now: datetime, email: str)
     lock_end = now + timedelta(minutes=settings.login_lock_minutes)
     with db.operator() as conn:
         return operators_sql.begin_login(conn, email, now, settings.login_max_failures, lock_end)
+
+
+def _begin_from(
+    db: OperatorDatabase, context: AppContext, now: datetime, email: str, address: str
+) -> OperatorAttempt | None:
+    """A sign-in's counted attempt, as ``routers/auth.py``'s ``_begin`` with an address (A2):
+    locked per operator and address, then per operator at ACCOUNT_MAX_FAILURES; ``failed_logins``
+    is the count that locks. shortcut: no read of the operator's count without counting it, so the
+    CLI's unlock-operator does not end an address's lock; it ends after login_lock_minutes (a
+    right password from that address does, ``login``)."""
+    settings = context.settings
+    key = _address_key(email, address)
+    count = address_locks.take(
+        key, now.timestamp(), settings.login_max_failures, settings.login_lock_minutes * 60
+    )
+    if count is None:
+        return None
+    with db.operator() as conn:
+        lock_end = now + timedelta(minutes=ACCOUNT_LOCK_MINUTES)
+        attempt = operators_sql.begin_login(conn, email, now, ACCOUNT_MAX_FAILURES, lock_end)
+    if attempt is None:
+        if count == 1:  # an unknown e-mail (or a locked operator) leaves nothing held
+            address_locks.clear(key)
+        return None
+    if attempt.failed_logins >= ACCOUNT_MAX_FAILURES:
+        return attempt
+    return dataclasses.replace(attempt, failed_logins=count)
+
+
+def _address_key(email: str, address: str) -> str:
+    return f"op:{email.strip().lower()}|{address}"
 
 
 def _failed(db: OperatorDatabase, context: AppContext, attempt: OperatorAttempt) -> ApiError:

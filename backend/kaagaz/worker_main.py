@@ -122,7 +122,7 @@ from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
-from kaagaz.jobs.catalog import RefreshCatalog, Refreshed, last_refreshed, refresh
+from kaagaz.jobs.catalog import RefreshCatalog, Refreshed, check_env_models, last_refreshed, refresh
 from kaagaz.jobs.fair_share import (
     PLATFORM_BUSY,
     FairShare,
@@ -139,6 +139,7 @@ from kaagaz.jobs.purge import (
     purge_deleted_customers,
     purge_expired,
     purge_upload_sessions,
+    sweep_ended_sessions,
     sweep_purged_customers,
 )
 from kaagaz.jobs.reading_pause import ReleaseHeld, pause_alert, release_held
@@ -184,7 +185,17 @@ FINGERPRINT_PASS = 50
 # The only extra fields a log line may carry. Anything else passed in
 # ``extra`` is dropped, so a careless call cannot log document data.
 _PACKAGE = os.path.dirname(os.path.abspath(__file__)) + os.sep  # kaagaz/, for crash_site
-_SAFE_FIELDS = ("customer_id", "document_id", "code", "retryable", "outcome", "where", "step", "seconds")
+_SAFE_FIELDS = (
+    "customer_id",
+    "document_id",
+    "code",
+    "retryable",
+    "outcome",
+    "where",
+    "step",
+    "seconds",
+    "model",
+)
 
 
 class JsonFormatter(logging.Formatter):
@@ -684,6 +695,7 @@ def _purge(db: Database, storage: CustomerStorage, trash_days: int) -> int:
     audit rows 365 days later (0068, #482; logged here)."""
     families = purge_expired(db, storage, _utc_now, trash_days)
     logger.info("abandoned uploads removed: %d", purge_upload_sessions(db, storage, _utc_now))
+    logger.info("ended sessions swept: %d", sweep_ended_sessions(db, _utc_now))
     logger.info("deleted organisations: %d families", purge_deleted_customers(db, storage, _utc_now))
     logger.info("purged organisations swept again: %d", sweep_purged_customers(db, storage, _utc_now))
     logger.info("kept audit rows of deleted organisations removed: %d", forget_kept_audit(db, _utc_now))
@@ -862,7 +874,7 @@ def _serve(settings: Settings) -> None:
     model = worker_model(settings, db)
     alert = pause_alert(settings)  # #478: the super admin's email when an organisation's reading pauses
     processor = build_processor(
-        settings=settings, db=db, storage=storage, scanner=scanner, model=model, alert=alert
+        settings=settings, db=db, storage=storage, scanner=scanner, model=model, alert=alert, queue=queue
     )
     # Ensemble after the scan reads with a scan reader of its own (the same gate and pool).
     reader = build_ocr_engine(settings, db=db) if settings.ocr_engine == GEMINI else None
@@ -925,6 +937,8 @@ def _serve(settings: Settings) -> None:
     upgrades = UpgradeLocalReads(
         vectors, upgrade, lambda: gate.status()[0], _utc_now, copies=settings.worker_replicas, lock=lock
     )
+    if settings.ocr_engine == GEMINI:
+        check_env_models(db, settings)  # production QA L2: a withdrawn OCR_MODEL named at start
     catalog = RefreshCatalog(
         upgrades,
         catalog_refresh(settings, db),

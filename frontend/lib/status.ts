@@ -34,6 +34,10 @@ const REVIEW_REASONS: Partial<Record<LabelReason, string>> = {
   single_reader: "Only one reader saw this",
   model_chosen: "Picked by Kaagaz, check the page",
   local_reader: "Read by the backup reader",
+  mixed_digits: "Digits of two scripts in one amount", // #524: the amount reasons
+  amount_commas: "The amount's commas look wrong",
+  amount_mark: "A mark in the amount looks wrong",
+  amount_outlier: "Much bigger than the other total",
 };
 
 const FIXED_BY_REVIEWER = "Fixed by a reviewer";
@@ -86,10 +90,18 @@ const FIXES: Record<string, string> = {
   unreadable: "Upload a sharper scan.",
   ocr_failed: "Read it again, or upload a clearer scan.",
   customer_disabled: "Read it again.",
+  office_unreadable: "Remove its password, or save it again and upload that copy.", // #522 PR 2
+  password_protected: "Remove the password and upload it again.",
+  too_large: "Split it into smaller files and upload them.",
   virus_found: "Upload a clean copy of the file.",
   unscannable: "Save it again and upload that copy.",
   blocked_content: "Save it again as a plain PDF, photo or spreadsheet and upload that.",
   needs_reader: "Upload it as a PDF, photo or spreadsheet.",
+  // #522: the file itself can't be read, so only another copy helps.
+  corrupt_file: "Save it again and upload that copy.",
+  unsupported_type: "Save it as a PDF, a photo, a spreadsheet or a text file and upload that.",
+  not_utf8: "Save it as UTF-8 and upload it again.",
+  too_deep: "Flatten the JSON and upload it again.",
 };
 const ANY_FIX = "Read it again, or try another copy of it.";
 

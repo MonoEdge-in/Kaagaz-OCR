@@ -19,8 +19,11 @@ Why here: the family rules next to their SQL. Every function takes a connection 
   other families sharing a band, a similar name (pg_trgm, 0.6 or more) or a link (the related
   documents rule, ``document_links``; it counts as a shared identifier only for the same
   type), never a pair already suggested or answered either way. MAX_CANDIDATES are scored
-  (``versions.outcome``); the best wins (auto over suggested, then text, then name, then the
-  newest current version). Uploaded earlier: this is its new version. Uploaded later, still
+  (``versions.outcome``) on the exact text overlap where both texts are within V11's limits,
+  else on the estimate, stored marked as such (#521); the best wins (text, then name, then the
+  newest current version). It is only ever suggested: a person accepts it or keeps it separate
+  (#521; a suggestion linked on its own before that stays ``auto``, Undo included).
+  Uploaded earlier: this is its new version. Uploaded later, still
   alone and never suggested (two of one batch, the later read first): that one is the new
   version of this family.
 * **Accept** (V6, V9) locks both families in id order and, in one transaction, gives the
@@ -44,6 +47,9 @@ from kaagaz.db.visibility import LIVE_SUGGESTION
 
 FEATURE = "version_spotting"
 MAX_CANDIDATES = 20
+# #521 fix 1: this many candidates are fetched and ranked by the estimate, before the best
+# MAX_CANDIDATES are counted exactly, so a close text under another name is never dropped.
+MAX_FETCHED = 200
 
 
 class Refused(Exception):
@@ -96,14 +102,12 @@ _ME = text(
     " (SELECT count(*) FROM documents o WHERE o.customer_id = d.customer_id AND o.family_id = d.family_id)"
     " AS versions,"
     " (SELECT count(*) FROM processing_runs r WHERE r.customer_id = d.customer_id AND r.document_id = d.id"
-    " AND r.status = 'ready') AS ready_runs"
+    " AND r.status = 'ready') AS ready_runs, d.text_minhash IS NULL AS unprinted"
     " FROM documents d WHERE d.customer_id = :c AND d.id = :d"
 )
 # The candidates (V3): every arm of the OR names one of the two indexes or the links' key.
 _CANDIDATES = text(
     "SELECT d.id, d.family_id, d.created_at > me.created_at AS later, d.text_minhash,"
-    " d.doc_type IS NOT DISTINCT FROM me.doc_type AND d.doc_type IS NOT NULL AS same_type,"
-    " d.folder_id IS NOT DISTINCT FROM me.folder_id AS same_folder,"
     " similarity(d.name_key, me.name_key) AS name_similarity,"
     " (SELECT min(l.identifier_kind) FROM document_links l WHERE l.customer_id = :c AND l.document_id = me.id"
     " AND l.linked_document_id = d.id AND d.doc_type = me.doc_type) AS shared_identifier,"
@@ -128,60 +132,56 @@ _CANDIDATES = text(
 _MY_MINHASH = text("SELECT text_minhash, family_id FROM documents WHERE customer_id = :c AND id = :d")
 _SUGGEST = text(
     "INSERT INTO version_suggestions (customer_id, document_id, candidate_family_id, text_overlap,"
-    " name_similarity, shared_identifier, outcome, status)"
-    " VALUES (:c, :new, :family, :t, :n, :i, :outcome, 'pending')"
+    " text_overlap_exact, name_similarity, shared_identifier, outcome, status)"
+    " VALUES (:c, :new, :family, :t, :exact, :n, :i, :outcome, 'pending')"
     " ON CONFLICT (document_id, candidate_family_id) DO NOTHING RETURNING id"
 )
-_RANK = {versions.AUTO: 2, versions.SUGGESTED: 1}
 
 
 def spot(conn: Connection, customer_id: str, document_id: str) -> str | None:
-    """V1 to V5 for a document just made ready: its fingerprint and name key always; then,
-    on its first ready only (module notes), the best candidate's suggestion, audited as
-    ``version.suggested`` (no actor), and linked at once when it is ``auto``. Returns a code
-    for the log (off, none, suggested, auto) or None when there was nothing to spot. The
-    family lock comes first. O(D) for this customer's D documents at worst (RLS may keep the
-    GIN indexes out of the plan), plus MAX_CANDIDATES scored."""
+    """V1 to V5 for a document just made ready: its fingerprint and name key when Ready left
+    none (``mark_ready`` writes them, #521); then, on its first ready only (module notes), the
+    best candidate's suggestion, audited as ``version.suggested`` (no actor); never linked on
+    its own (#521). Returns a code for the log (off, none, suggested) or None when there was
+    nothing to spot. The family lock comes first. Two runs at once suggest a pair once: each
+    suggests the later file as the new version, and the pair is unique. O(D) for this
+    customer's D documents at worst (RLS may keep the GIN indexes out of the plan), plus
+    MAX_FETCHED ranked by the estimate and MAX_CANDIDATES of them read and counted exactly
+    (O(w) for their w words)."""
     if lock_family(conn, customer_id, document_id) is None:
         return None
     params = {"c": customer_id, "d": document_id}
     me = conn.execute(_ME, params).mappings().one()
     if me["status"] != "ready":
         return None
-    write_fingerprint(conn, customer_id, document_id, str(me["display_name"]))
+    if me["unprinted"]:
+        write_fingerprint(conn, customer_id, document_id, str(me["display_name"]))
     if me["in_trash"] or me["versions"] != 1 or me["ready_runs"] > 1:
         return None  # in Trash, already in a family, or a read again
     if not ai_settings.switch_on(conn, FEATURE, customer_id):
         return "off"
     minhash, family_id = conn.execute(_MY_MINHASH, params).one()
-    candidates = conn.execute(
-        _CANDIDATES, {**params, "name": versions.NAME_SIGNAL, "n": MAX_CANDIDATES}
-    ).mappings()
-    best: tuple[tuple[Any, ...], RowMapping, str, float | None] | None = None
-    for row in candidates:
-        overlap = versions.overlap(minhash, row["text_minhash"])
+    fetched = conn.execute(_CANDIDATES, {**params, "name": versions.NAME_SIGNAL, "n": MAX_FETCHED}).mappings()
+    estimated = [(versions.overlap(minhash, row["text_minhash"]), row) for row in fetched]
+    estimated.sort(key=lambda pair: pair[0] or 0.0, reverse=True)  # stable: then name, then newest
+    mine: dict[int, str] | None = None
+    best: tuple[tuple[Any, ...], RowMapping, float | None, bool | None] | None = None
+    for overlap, row in estimated[:MAX_CANDIDATES]:
+        exact = None
+        if overlap is not None:  # both have a fingerprint: count it exactly when within the limits
+            mine = page_texts(conn, customer_id, document_id) if mine is None else mine
+            counted = versions.exact_overlap(mine, page_texts(conn, customer_id, str(row["id"])))
+            overlap, exact = (overlap, False) if counted is None else (counted, True)
         name = None if row["name_similarity"] is None else float(row["name_similarity"])
-        found = versions.outcome(
-            overlap,
-            name,
-            row["shared_identifier"] is not None,
-            same_type=bool(row["same_type"]),
-            same_folder=bool(row["same_folder"]),
-        )
-        if found is None:
+        if versions.outcome(overlap, name, row["shared_identifier"] is not None) is None:
             continue
-        key = (
-            _RANK[found],
-            overlap or 0.0,
-            name or 0.0,
-            row["shared_identifier"] is not None,
-            row["created_at"],
-        )
+        key = (overlap or 0.0, name or 0.0, row["shared_identifier"] is not None, row["created_at"])
         if best is None or key > best[0]:
-            best = (key, row, found, overlap)
+            best = (key, row, overlap, exact)
     if best is None:
         return "none"
-    _, row, found, overlap = best
+    _, row, overlap, exact = best
+    found = versions.SUGGESTED
     new, family = (str(row["id"]), str(family_id)) if row["later"] else (document_id, str(row["family_id"]))
     suggestion = conn.execute(
         _SUGGEST,
@@ -190,6 +190,7 @@ def spot(conn: Connection, customer_id: str, document_id: str) -> str | None:
             "new": new,
             "family": family,
             "t": overlap,
+            "exact": exact,
             "n": row["name_similarity"],
             "i": row["shared_identifier"],
             "outcome": found,
@@ -206,8 +207,6 @@ def spot(conn: Connection, customer_id: str, document_id: str) -> str | None:
         target_id=new,
         details={"suggestion_id": str(suggestion), "candidate_family": family, "outcome": found},
     )
-    if found == versions.AUTO:
-        link(conn, customer_id, str(suggestion), by=None)
     return found
 
 
@@ -264,7 +263,8 @@ _ACCEPT = text(
 def link(conn: Connection, customer_id: str, suggestion_id: str, *, by: str | None) -> str:
     """Make the suggestion's document the next version of its candidate family (V6): both
     families locked in id order, then in this transaction the family, number, folder, tags,
-    owner and label, current; the suggestion accepted by ``by`` (None: Kaagaz, ``auto``), and
+    owner and label, current; the suggestion accepted by ``by`` (None: Kaagaz's own ``auto``
+    links, made only before #521), and
     one ``version.accepted`` row naming the folders. The accept route writes the note (V9) and
     the details stamp in the same transaction. Returns the document's id. Raises Refused:
     not_found (no such live suggestion), already_decided, or not_ready. O(v log D)."""
@@ -410,6 +410,92 @@ def undo(conn: Connection, customer_id: str, document_id: str, *, by: str) -> No
     )
 
 
+# --- #521: make it a separate file ----------------------------------------------------------
+# The name is taken by a file of the folder that is listed (current) or of this family.
+_SEPARATE_STATE = text(
+    "SELECT d.id = d.family_id AS first, d.is_current, d.folder_id, d.version_no,"
+    " (SELECT count(*) FROM documents o WHERE o.customer_id = :c AND o.family_id = :f) AS versions,"
+    " EXISTS (SELECT 1 FROM documents o WHERE o.customer_id = :c AND o.id <> :d AND o.deleted_at IS NULL"
+    " AND (o.is_current OR o.family_id = :f)"
+    " AND o.folder_id IS NOT DISTINCT FROM d.folder_id AND lower(o.display_name) = lower(:name)) AS taken"
+    " FROM documents d WHERE d.customer_id = :c AND d.id = :d"
+)
+# A document on its own is current, ready or not (as 0002), so it stays in every list.
+_ON_ITS_OWN = text(
+    "UPDATE documents SET family_id = id, version_no = 1, is_current = true"
+    " WHERE customer_id = :c AND id = :d"
+)
+# The family left with no ready version: its newest is current, so the family stays listed.
+_NEWEST_CURRENT = text(
+    "UPDATE documents SET is_current = true WHERE customer_id = :c AND id = (SELECT v.id FROM documents v"
+    " WHERE v.customer_id = :c AND v.family_id = :f ORDER BY v.version_no DESC LIMIT 1)"
+    " AND NOT EXISTS (SELECT 1 FROM documents x WHERE x.customer_id = :c AND x.family_id = :f"
+    " AND x.is_current)"
+)
+# Keep separate's row for the pair (V6): spotting never suggests it again, and Undo is its Accept.
+_KEPT_APART = text(
+    "INSERT INTO version_suggestions (customer_id, document_id, candidate_family_id, outcome, status,"
+    " decided_by, decided_at) VALUES (:c, :d, :rest, 'suggested', 'rejected', :by, now())"
+    " ON CONFLICT (document_id, candidate_family_id) DO UPDATE SET status = 'rejected',"
+    " decided_by = :by, decided_at = now()"
+)
+_KEPT_APART_AGAIN = text(
+    "UPDATE version_suggestions SET status = 'pending', decided_by = NULL, decided_at = NULL"
+    " WHERE customer_id = :c AND document_id = :d AND candidate_family_id = :f AND status = 'rejected'"
+    " RETURNING id"
+)
+
+
+def separate(conn: Connection, customer_id: str, document_id: str, *, name: str, by: str) -> str:
+    """Make it a separate file (#521): this version leaves its family as its own document, version
+    1, in the same folder (the family's), current (ready or not); its reading, values and pieces
+    are not touched, so nothing is read again. Version 1 is refused: its id is its family's, which
+    stories, suggestions and the family lock key on. The highest ready version left is current
+    when this one was, else the newest left. The pair is kept apart (the keep-separate row, never
+    suggested again), and one ``document.version_separated`` row names the family and number.
+    The caller renames it (``listing.rename_document``) in this transaction. Returns the family
+    left. Raises Refused: not_found, only_version, first_version, name_taken; trash.InTrash in
+    Trash. O(v log D)."""
+    family = lock_live_family(conn, customer_id, document_id)
+    if family is None:
+        raise Refused("not_found")
+    params = {"c": customer_id, "d": document_id, "f": family, "name": name}
+    state = conn.execute(_SEPARATE_STATE, params).mappings().one()
+    if state["versions"] < 2:
+        raise Refused("only_version")
+    if state["first"]:
+        raise Refused("first_version")
+    if state["taken"]:
+        raise Refused("name_taken")
+    rest = family
+    audit.record(  # before the split, so the row is on the family's timeline (A5)
+        conn,
+        customer_id,
+        actor_user_id=by,
+        action="document.version_separated",
+        target_type="document",
+        target_id=document_id,
+        details={"family_id": family, "version_no": int(state["version_no"])},
+    )
+    conn.execute(_ON_ITS_OWN, params)
+    if state["is_current"]:
+        conn.execute(_HIGHEST_READY_CURRENT, params)
+        conn.execute(_NEWEST_CURRENT, params)
+    conn.execute(_KEPT_APART, {**params, "rest": rest, "by": by})
+    return rest
+
+
+def join_again(conn: Connection, customer_id: str, document_id: str, family_id: str, *, by: str) -> str:
+    """Undo of Make it a separate file (#521): the pair kept apart is asked again and accepted at
+    once (``link``), so the document is its family's newest, current version again. Raises
+    Refused: not_found (no such pair kept apart), and ``link``'s refusals."""
+    params = {"c": customer_id, "d": document_id, "f": family_id}
+    suggestion = conn.execute(_KEPT_APART_AGAIN, params).scalar()
+    if suggestion is None:
+        raise Refused("not_found")
+    return link(conn, customer_id, str(suggestion), by=by)
+
+
 # --- V10: make current ------------------------------------------------------------------
 _STATE = text("SELECT status, is_current, version_no FROM documents WHERE customer_id = :c AND id = :d")
 # The others first, then this one: the unique index documents_current is checked row by row.
@@ -453,7 +539,8 @@ _CANDIDATE = (
 )
 _VIEW = (
     "SELECT s.id, s.document_id, n.display_name AS document_name, s.candidate_family_id,"  # noqa: S608 - fixed fragments only
-    " cand.id AS candidate_id, cand.display_name AS candidate_name, s.text_overlap, s.name_similarity,"
+    " cand.id AS candidate_id, cand.display_name AS candidate_name, s.text_overlap, s.text_overlap_exact,"
+    " s.name_similarity,"
     " s.shared_identifier, s.outcome, s.status, s.created_at,"
     " (SELECT max(v.version_no) FROM documents v WHERE v.customer_id = s.customer_id"
     " AND v.family_id = s.candidate_family_id) + 1 AS next_version_no"
@@ -482,8 +569,11 @@ _ALLOWED = text(
 
 def view(row: Mapping[Any, Any], document_id: str) -> dict[str, Any]:
     """``VersionSuggestion``: the suggestion, its two sides, the next number, the scores and
-    the banner's reasons; ``role`` new (this document is the new version) or candidate."""
+    the banner's reasons; ``role`` new (this document is the new version) or candidate. The
+    overlap is ``text_overlap_estimated`` unless counted exactly (#521; all before 0076 were
+    estimates)."""
     text_overlap = None if row["text_overlap"] is None else float(row["text_overlap"])
+    estimated = text_overlap is not None and row["text_overlap_exact"] is not True
     name = None if row["name_similarity"] is None else float(row["name_similarity"])
     return {
         "id": str(row["id"]),
@@ -498,9 +588,10 @@ def view(row: Mapping[Any, Any], document_id: str) -> dict[str, Any]:
         },
         "next_version_no": None if row["next_version_no"] is None else int(row["next_version_no"]),
         "text_overlap": text_overlap,
+        "text_overlap_estimated": estimated,
         "name_similarity": name,
         "shared_identifier": row["shared_identifier"],
-        "reasons": versions.reasons(text_overlap, name, row["shared_identifier"]),
+        "reasons": versions.reasons(text_overlap, name, row["shared_identifier"], estimated=estimated),
     }
 
 

@@ -19,6 +19,7 @@ import {
   summaryLines,
 } from "@/components/documents/FolderUploadDialog";
 import { FolderUploadRow } from "@/components/documents/FolderUploadRow";
+import type { NotSentRow } from "@/components/documents/FolderUploadRow";
 import { buildTree } from "@/components/documents/folderTree";
 import { EMPTY_FOLDER_UPLOADS, folderUploadsReducer } from "@/components/documents/folderUpload";
 import type { FolderUploadItem, FolderUploadLimits, FolderUploadPrevious, Folder } from "@/lib/types";
@@ -229,15 +230,24 @@ describe("adding new files only", () => {
 });
 
 describe("the tray's row for a folder upload", () => {
-  const row = (phase: "sending" | "needs_pick" | "stopped", held = true) => {
+  const row = (
+    phase: "planning" | "registering" | "sending" | "stopping" | "needs_pick" | "stopped",
+    held = true,
+    notSent: { rows: NotSentRow[]; total: number } = { rows: [], total: 0 },
+    stoppedFrom: "sending" | "planning" = "sending", // "stopping": Stop pressed while a file was sent, or while planning
+  ) => {
     let state = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, { type: "start", id: "u", rootName: "A", total: 5000 });
+    if (phase === "stopping" && stoppedFrom === "sending") {
+      state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "sending" });
+      state = folderUploadsReducer(state, { type: "sending", id: "u", itemId: "x", name: "a.pdf", fraction: 0.5 });
+    }
     state = folderUploadsReducer(state, { type: "phase", id: "u", phase });
     for (let n = 0; n < 1240; n++) state = folderUploadsReducer(state, { type: "sent", id: "u", itemId: `i${n}`, outcome: "stored" });
     return renderToStaticMarkup(
       createElement(FolderUploadRow, {
         view: state.u!,
         held,
-        notSent: { rows: [], total: 0 },
+        notSent,
         tree: buildTree([]),
         limits: { pdf_bytes: 1, image_bytes: 1, sheet_bytes: 1, max_pages: 1, readers: [] },
         actions: {
@@ -257,7 +267,7 @@ describe("the tray's row for a folder upload", () => {
     const html = row("sending");
     expect(html).toContain('aria-valuetext="1,240 of 5,000"');
     expect(html).toContain("Folder “A”: 1,240 of 5,000 uploaded");
-    expect(html).toContain(">Stop<");
+    expect(html).toContain(">Stop<span"); // changed on purpose (production QA): Stop names the folder
   });
 
   it("shows the files checked on its bar, and Stop, while checking for files already in Kaagaz", () => {
@@ -285,13 +295,109 @@ describe("the tray's row for a folder upload", () => {
     expect(html).toContain("Folder “A”: checking your files: 1,240 of 5,000");
     expect(html).toContain('aria-label="Files of “A” checked"');
     expect(html).toContain('aria-valuetext="1,240 of 5,000"');
-    expect(html).toContain(">Stop<");
+    expect(html).toContain(">Stop<span"); // changed on purpose (production QA): Stop names the folder
+  });
+
+  it("says on a file being sent that it waits for the connection, or for the server", () => {
+    let state = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, { type: "start", id: "u", rootName: "A", total: 3 });
+    state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "sending" });
+    state = folderUploadsReducer(state, { type: "sending", id: "u", itemId: "i1", name: "a.pdf", fraction: 0, waiting: "connection" });
+    state = folderUploadsReducer(state, { type: "sending", id: "u", itemId: "i2", name: "b.pdf", fraction: 0 });
+    state = folderUploadsReducer(state, { type: "sending", id: "u", itemId: "i3", name: "c.pdf", fraction: 0.5, waiting: "server" });
+    const html = renderToStaticMarkup(
+      createElement(FolderUploadRow, {
+        view: state.u!,
+        held: true,
+        notSent: { rows: [], total: 0 },
+        tree: buildTree([]),
+        limits: { pdf_bytes: 1, image_bytes: 1, sheet_bytes: 1, max_pages: 1, readers: [] },
+        actions: {
+          stop: () => undefined,
+          resume: () => undefined,
+          chooseAgain: () => undefined,
+          retry: () => undefined,
+          retryAll: () => undefined,
+          clear: () => undefined,
+          loadItems: async () => ({ items: [], next_after: null }),
+        },
+      }),
+    );
+    expect(html).toContain("a.pdf: Waiting for connection");
+    expect(html).toContain("Sending b.pdf");
+    expect(html).toContain("c.pdf: The server had a problem. Trying again…");
+  });
+
+  it("offers Stop while it makes its folders and lists its files too", () => {
+    expect(row("planning")).toContain(">Stop<span");
+    expect(row("registering")).toContain(">Stop<span");
+  });
+
+  it("names the folder on each of its buttons for a screen reader", () => {
+    const named = '<span class="visually-hidden"> folder “A”</span>';
+    expect(row("sending")).toContain(`Stop${named}`);
+    expect(row("stopping")).toContain(`Stopping after the files being sent…${named}`);
+    expect(row("stopped", true)).toContain(`Continue upload${named}`);
+    expect(row("stopped", true, { rows: [{ item: NOT_SENT_ITEM, message: "Not sent.", retry: true }], total: 1 })).toContain(
+      `Retry all failed${named}`,
+    );
+    expect(row("stopped", true)).toContain(`Clear${named}`);
+  });
+
+  // Changed on purpose (review of #564): Clear while stopping, as a file being sent may never
+  // finish (offline, a server that never answers); the row must never be left with no button.
+  it("says it is stopping after Stop, with no Stop or Retry, and offers Clear meanwhile", () => {
+    const html = row("stopping");
+    expect(html).toContain('<button type="button" class="btn" disabled="">Stopping after the files being sent…');
+    expect(html).not.toContain(">Stop<span");
+    expect(html).not.toContain("Retry");
+    expect(html).toContain("Clear<span");
+  });
+
+  it("says only Stopping… when Stop was pressed while it made its folders or listed its files", () => {
+    const html = row("stopping", true, { rows: [], total: 0 }, "planning");
+    expect(html).toContain('<button type="button" class="btn" disabled="">Stopping…<span');
+    expect(html).not.toContain("files being sent");
+    expect(html).toContain("Clear<span");
+  });
+
+  it("stays cleared when the run it stopped ends later", () => {
+    let state = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, { type: "start", id: "u", rootName: "A", total: 5 });
+    state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "stopping" });
+    state = folderUploadsReducer(state, { type: "remove", id: "u" });
+    for (const late of [
+      { type: "sending", id: "u", itemId: "i1", name: "a.pdf", fraction: 1 },
+      { type: "sent", id: "u", itemId: "i1", outcome: "stored" },
+      { type: "phase", id: "u", phase: "stopped" },
+    ] as const) {
+      state = folderUploadsReducer(state, late);
+    }
+    expect(state).toEqual({});
+  });
+
+  it("keeps the files being sent while it stops, and never goes back to stopping once it ended", () => {
+    let state = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, { type: "start", id: "u", rootName: "A", total: 5 });
+    state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "sending" });
+    state = folderUploadsReducer(state, { type: "sending", id: "u", itemId: "i1", name: "a.pdf", fraction: 0.5 });
+    state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "stopping" });
+    expect(state.u?.phase).toBe("stopping");
+    expect(state.u?.sending.map((each) => each.name)).toEqual(["a.pdf"]);
+    state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "sending" }); // the run's next step
+    expect(state.u?.phase).toBe("stopping");
+    state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "stopped" });
+    expect(folderUploadsReducer(state, { type: "phase", id: "u", phase: "stopping" })).toBe(state);
   });
 
   it("after a reload names the folder to choose again; stopped here, it continues with the files it holds", () => {
     expect(row("needs_pick", false)).toContain("Choose “A” again");
     expect(row("stopped", true)).toContain("Continue upload");
     expect(row("stopped", false)).toContain("Choose “A” again");
+  });
+
+  it("offers Clear on a row stopped or waiting to be chosen again, never while it sends", () => {
+    expect(row("stopped", true)).toContain("Clear<span");
+    expect(row("stopped", false)).toContain("Clear<span");
+    expect(row("needs_pick", false)).toContain("Clear<span");
+    expect(row("sending")).not.toContain("Clear<span");
   });
 
   const settled = (counts: { failed?: number; problem?: number; duplicate?: number; held?: number }, notSent = 0) => {

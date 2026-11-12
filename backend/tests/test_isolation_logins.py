@@ -24,10 +24,12 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 
 from kaagaz import worker_main
+from kaagaz.api import app as app_module
 from kaagaz.api.app import create_app
 from kaagaz.cli import main
 from kaagaz.db.engine import Database, OperatorDatabase, make_engine
 from kaagaz.db.sqlstate import sqlstate
+from kaagaz.db.storage_limits import GIB
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.catalog import last_refreshed
 from kaagaz.jobs.fair_share import first_free_lock, sweep_lock
@@ -38,10 +40,15 @@ from kaagaz.search.indexing import embed_missing
 from kaagaz.search.story_vectors import embed_missing_stories
 from tests.db_support import APP_ROLE, database_url, insert_document, new_customer
 from tests.settings_factory import make_settings
+from tests.support import TEXT_BYTES
+from tests.test_api_folder_upload_files import ResumableStorage
 from tests.test_api_folder_uploads import TREE, item, plan, register
+from tests.test_api_storage_limit import _send_all as send_all
 from tests.test_api_support import CSRF, PDF_BYTES, Api, ApiFakeQueue, ApiFakeStorage, FakeAnswers, TestClient
 from tests.test_indexing_db import FakeModel
 from tests.test_isolation_customer_purge import KeyStorage
+from tests.test_migration_0023_db import new_operator
+from tests.test_operator_auth_db import _owner
 
 pytestmark = pytest.mark.db
 
@@ -278,6 +285,51 @@ def test_a_folder_upload_plans_registers_and_sends_under_the_app_login(logins: d
         engine.dispose()
 
 
+def test_the_storage_limit_is_read_and_enforced_under_the_two_logins(
+    db: Database, logins: dict[str, str]
+) -> None:
+    """#516 (0061d, merged by 0075) under #479: no owner right anywhere. The super admin's login
+    reads one organisation's limit and the bytes it holds (``kaagaz_op_storage_limit``); on the
+    app's login its admin reads the same, a file of exactly the bytes left goes in, the next is
+    refused ``storage_full`` at the upload, the resumable complete and the folder upload plan, and
+    a duplicate is still answered. The limit is written as the owner here: its write needs a fresh
+    code (test_operator_storage_limit_db)."""
+    app_engine, ops_engine = make_engine(logins[API]), make_engine(logins[OPS])
+    try:
+        api = Api(Database(app_engine, APP_ROLE), storage=ResumableStorage())
+        admin = api.new_admin()
+        customer = admin.customer_id
+        _owner(db, "INSERT INTO org_storage_limits (customer_id, storage_gb) VALUES (:c, 1)", {"c": customer})
+        with db.customer(customer) as conn:
+            insert_document(conn, customer, size_bytes=GIB - len(PDF_BYTES))
+        with OperatorDatabase(ops_engine).operator() as conn:
+            read = text("SELECT * FROM kaagaz_op_storage_limit(:o, :c)")
+            row = conn.execute(read, {"o": new_operator(db), "c": customer}).one()
+        assert tuple(row) == (1, None, GIB - len(PDF_BYTES))
+        assert admin.client.get("/api/admin/storage").json() == {
+            "used_bytes": GIB - len(PDF_BYTES),
+            "limit_bytes": GIB,
+            "limit_gb": 1,
+        }
+        pdf = {"file": ("bill.pdf", PDF_BYTES, "application/pdf")}
+        assert admin.client.post("/api/documents", files=pdf, headers=CSRF).status_code == 201
+        refused = [
+            admin.client.post(
+                "/api/documents", files={"file": ("b.csv", TEXT_BYTES, "text/csv")}, headers=CSRF
+            ),
+            send_all(admin, TEXT_BYTES),  # the resumable start, a part, then its complete
+            plan(admin, TREE, file_count=1, total_bytes=1),
+        ]
+        assert [(reply.status_code, reply.json()["error"]["code"]) for reply in refused] == [
+            (413, "storage_full")
+        ] * 3, [reply.text for reply in refused]
+        again = admin.client.post("/api/documents", files=pdf, headers=CSRF)
+        assert (again.status_code, again.json()["duplicate"]) == (200, True)
+    finally:
+        app_engine.dispose()
+        ops_engine.dispose()
+
+
 def test_an_owner_command_is_refused_under_the_app_login(db: Database, logins: dict[str, str]) -> None:
     """Why docs/running-locally.md runs them in migrate: in api, PostgreSQL refuses them."""
     customer, _ = new_customer(db)
@@ -315,6 +367,25 @@ def test_the_api_refuses_to_start_when_its_operator_login_cannot_switch(
         assert conn.execute(text(opened), {"login": API}).scalar_one() == 0
     _start_api(logins[API], logins[OPS])  # both logins set: it starts
     _start_api(_owner_url(), _owner_url())  # release day, the owner's for both: it starts
+
+
+def test_unsafe_settings_never_stop_the_start_and_the_operator_sees_them(
+    db: Database, logins: dict[str, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """A6 (stability pass, 7 Nov 2026): at start-up a setting unsafe on a server is logged and
+    alerted, and the operator's Health page shows it; the API starts all the same (a refusal could
+    take the test server down on a deploy). The limited app login is no superuser; the owner is."""
+    for url, expected in (
+        (logins[API], ["eicar_scanner"]),
+        (_owner_url(), ["eicar_scanner", "superuser_login"]),
+    ):
+        settings = make_settings(database_url=url, ops_database_url=logins[OPS], scanner="eicar_dev")
+        app = create_app(settings, storage=ApiFakeStorage(), queue=ApiFakeQueue(), answers=FakeAnswers())
+        with caplog.at_level(logging.ERROR), TestClient(app) as client:
+            assert client.get("/api/health").json() == {"status": "ok"}
+            assert app.state.kaagaz.unsafe_config == expected
+    said = [r for r in caplog.records if r.getMessage() in app_module.UNSAFE_SAID.values()]
+    assert len(said) == 3
 
 
 def test_a_database_it_cannot_reach_is_said_as_such_never_as_a_login_to_fix(

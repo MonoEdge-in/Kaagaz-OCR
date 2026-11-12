@@ -23,6 +23,7 @@ from kaagaz.db import operator_activity as activity_sql
 from kaagaz.db import operator_models as models_sql
 from kaagaz.db import operators as operators_sql
 from kaagaz.db import reader_status as reader_sql
+from kaagaz.db.engine import Database
 from kaagaz.db.operator_activity import Before
 from tests.test_api_auth import _offline_client
 from tests.test_api_support import CSRF, NOW, route_calls
@@ -85,6 +86,7 @@ class _Offline:
         monkeypatch.setattr(activity_sql, "purges", lambda conn, oid: self.purges)
         self.readers: list[dict[str, Any]] = []
         monkeypatch.setattr(reader_sql, "read", lambda conn, oid: self.readers)
+        monkeypatch.setattr(Database, "ping", lambda db: None)  # the app's database is never reached
         self.mistral: dict[str, Any] = {"code": None, "since": None, "documents_waiting": 0}
         monkeypatch.setattr(models_sql, "mistral_status", lambda conn, oid: self.mistral)
         token = sign_operator(
@@ -217,8 +219,22 @@ def test_health_holds_counts_only_with_the_totals_and_the_purges(offline: _Offli
     body = reply.json()
     # Changed on purpose (#246, 27 Oct 2026): the Release card's running commit (O1); and (QA U2)
     # whether Mistral stopped, as the AI settings say it.
-    assert set(body) == {"organisations", "totals", "purges", "reader", "queues", "release", "mistral_status"}
+    # Changed on purpose (A5, A6, 7 Nov 2026): which part is up (no longer on the public
+    # /api/health), and any setting unsafe on a server.
+    assert set(body) == {
+        "organisations",
+        "totals",
+        "purges",
+        "reader",
+        "queues",
+        "release",
+        "mistral_status",
+        "components",
+        "unsafe_config",
+    }
     assert body["release"] == {"commit": "local"}
+    assert body["components"] == {"database": "ok", "storage": "ok", "queue": "ok"}
+    assert body["unsafe_config"] == []
     assert body["mistral_status"] == {"stopped": False, "code": None, "since": None, "documents_waiting": 0}
     first = body["organisations"][0]
     assert set(first) == {
