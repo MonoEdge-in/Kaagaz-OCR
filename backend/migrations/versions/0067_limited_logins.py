@@ -53,7 +53,7 @@ depends_on = None
 # Each login, the one mode it may switch into, and its connection limit.
 LOGINS = {"kaagaz_api": ("kaagaz_app", 80), "kaagaz_ops": ("kaagaz_operator", 15)}
 # What every login is: given whole when CREATE ROLE makes it (any owner may name these there).
-LIMITED = "LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"
+LIMITED = "LOGIN NOINHERIT NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"
 # ALTER ROLE on an existing login: what any owner may name, and what only a superuser may
 # (PostgreSQL 16+: naming SUPERUSER, REPLICATION or BYPASSRLS needs that attribute oneself).
 ALTERABLE = "LOGIN NOINHERIT NOCREATEDB NOCREATEROLE"
