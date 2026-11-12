@@ -107,7 +107,6 @@ jobs:
           mkdir -p "$dir"
           printf '%s\n' KAAGAZ_DOMAIN=kaagaz.example.test ACME_EMAIL=admin@example.test \
             SEAWEEDFS_S3_CONFIG=/home/ubuntu/kaagaz-secrets/s3.json \
-            STORAGE_ADMIN_ACCESS_KEY=made-up STORAGE_ADMIN_SECRET_KEY=made-up \
             QUEUE_URL=https://sqs.ap-south-1.amazonaws.com/123456789012/kaagaz-jobs \
             QUEUE_EXPRESS_URL=https://sqs.ap-south-1.amazonaws.com/123456789012/kaagaz-jobs-express > "$dir/.env"
           docker compose version

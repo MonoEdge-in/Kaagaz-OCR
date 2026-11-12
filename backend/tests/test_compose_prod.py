@@ -15,6 +15,9 @@ from kaagaz.api.upload_guard import MULTIPART_OVERHEAD
 
 ROOT = Path(__file__).resolve().parents[2]
 PROD = "docker-compose.prod.yml"
+
+PRIVATE_QUERY = ["q", "party", "w", "source_name", "property", "code", "state"]
+
 PROD_COMMAND = "docker compose -f docker-compose.yml -f docker-compose.prod.yml <command>"
 LOGGING = 'x-logging: &logging\n  driver: json-file\n  options:\n    max-size: "20m"\n    max-file: "5"\n'
 ONE_SHOT = {"migrate"}  # runs once per deploy and exits
@@ -237,6 +240,9 @@ def test_the_caddyfile_sends_api_unchanged_to_the_api_and_the_rest_to_the_fronte
         "}",
         # Changed on purpose (final polish, 16 Oct 2026): HSTS on the HTTPS site (security checklist).
         'header Strict-Transport-Security "max-age=31536000"',
+        # Changed on purpose (production QA T3, 5 Nov 2026): replies compressed; GET /api/folders
+        # is about 1 MB at 5,100 folders and about 6 times smaller compressed.
+        "encode zstd gzip",
         # handle, not handle_path: the API's routes are mounted under /api (kaagaz/api/app.py).
         # Changed on purpose (#246, 27 Oct 2026): A7, each upstream is tried again for 30 s
         # while a deploy restarts it, then a short "updating" note instead of a bare 502.
@@ -283,7 +289,6 @@ def test_the_caddyfile_sends_api_unchanged_to_the_api_and_the_rest_to_the_fronte
 # pages), party (/api/documents), w (/api/documents/{id}/words), source_name
 # (/api/folder-uploads/previous); review: property (/api/documents, a survey number read from a
 # document), and a Google sign-in's code and state (/api/auth/oidc/google/callback).
-PRIVATE_QUERY = ["q", "party", "w", "source_name", "property", "code", "state"]
 
 
 def test_the_access_log_keeps_no_search_question_or_name() -> None:

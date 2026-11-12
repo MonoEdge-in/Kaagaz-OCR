@@ -158,9 +158,7 @@ python -c "from rapidocr import LangRec, ModelType, OCRVersion, RapidOCR; RapidO
 Without it, those pages stay as the default model read them, and the log says
 `ocr_model_missing`.
 
-The app's storage key may not create the bucket (#477), so make it once, on the
-first start, with the admin key of `infra/seaweedfs/s3.json`:
-`STORAGE_ACCESS_KEY=kaagaz-local-admin STORAGE_SECRET_KEY=kaagaz-local-admin-secret-laptop-only python -c "from kaagaz.adapters.storage import S3Storage; from kaagaz.settings import Settings; S3Storage(Settings.from_env()).ensure_bucket()"`.
+The worker makes the storage bucket on its first start if it is missing.
 Ctrl+C stops it after the job in hand. At most once an hour it also deletes
 for good what has been in Trash longer than `TRASH_DAYS` days (30). With the
 model on, every 10 minutes it gives up to 64 pieces their missing meaning vectors.
@@ -257,8 +255,7 @@ for passwords):
 | `SESSION_SECRET` | Random. Changing it signs everyone out |
 | `TOTP_ENCRYPTION_KEY` | Random. If it is lost, every admin's 2FA must be reset |
 | `POSTGRES_PASSWORD`, and the same password in `DATABASE_URL` | Random hex. Postgres takes it only when its volume is first made |
-| `STORAGE_ACCESS_KEY`, `STORAGE_SECRET_KEY` | Random. Must equal the app identity's keys in `s3.json`, whose actions are `Read:`, `Write:` and `List:<STORAGE_BUCKET>` only (#477) |
-| `STORAGE_ADMIN_ACCESS_KEY`, `STORAGE_ADMIN_SECRET_KEY` | Random. `s3.json`'s second identity, with `["Admin"]`; only migrate gets it, to create the bucket |
+| `STORAGE_ACCESS_KEY`, `STORAGE_SECRET_KEY` | Random. Must equal the keys in `s3.json` |
 | `COOKIE_SECURE=true`, `MODEL_ENABLED=true`, `OCR_ENGINE=gemini`, `OCR_DPI=300`, `OCR_TIMEOUT_SECONDS=120`, and `OPENROUTER_API_KEY` | As shown; the key is the OpenRouter key with its own credit limit (docs/architecture.md, Decisions) |
 | `KAAGAZ_DOMAIN`, `ACME_EMAIL`, `SEAWEEDFS_S3_CONFIG=/home/ubuntu/kaagaz-secrets/s3.json` | Read by `docker-compose.prod.yml`, which stops with the name of any that is missing |
 
