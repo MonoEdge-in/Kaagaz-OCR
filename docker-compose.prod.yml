@@ -134,9 +134,7 @@ services:
         from kaagaz.settings import Settings;
         S3Storage(Settings.from_env()).ensure_bucket()"
     # docker-compose.yml's list without seaweedfs. `run migrate` starts these.
-    depends_on: !override
-      postgres:
-        condition: service_healthy
+    depends_on: !reset []
 
   api:
     ports: !reset []
