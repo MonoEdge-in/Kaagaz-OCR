@@ -16,6 +16,13 @@ customer's rows were visible.
   ``kaagaz_app``), then its attributes are set either way. No password here: it is set by
   hand with ``\\password`` (docs/running-locally.md, "Limited database logins"); until then
   neither can log in.
+* Managed PostgreSQL (Amazon RDS, 12 Nov 2026): the owner there is not a superuser (it is a
+  member of ``rds_superuser``), and PostgreSQL 16 and later refuse ``ALTER ROLE`` from anyone
+  who does not hold SUPERUSER, REPLICATION or BYPASSRLS to so much as name that attribute,
+  ``NO...`` included. ``CREATE ROLE`` may name them as ``NO...`` (only granting one is
+  refused), so a new login gets all of ``LIMITED`` when it is made; an existing one is altered
+  with the three only when the owner is a superuser (laptops, CI). Either way the migration
+  then refuses to finish if a login has any of the three, so the rule above holds everywhere.
 * Temporary tables are refused to everyone but the owner (``REVOKE TEMPORARY ... FROM
   PUBLIC``): no code makes one.
 * 0001's ``kaagaz_login_lookup`` and ``kaagaz_create_customer``, never made again since,
@@ -45,7 +52,12 @@ depends_on = None
 
 # Each login, the one mode it may switch into, and its connection limit.
 LOGINS = {"kaagaz_api": ("kaagaz_app", 80), "kaagaz_ops": ("kaagaz_operator", 15)}
+# What every login is: given whole when CREATE ROLE makes it (any owner may name these there).
 LIMITED = "LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"
+# ALTER ROLE on an existing login: what any owner may name, and what only a superuser may
+# (PostgreSQL 16+: naming SUPERUSER, REPLICATION or BYPASSRLS needs that attribute oneself).
+ALTERABLE = "LOGIN NOINHERIT NOCREATEDB NOCREATEROLE"
+SUPERUSER_ONLY = "NOSUPERUSER NOREPLICATION NOBYPASSRLS"
 OWNER_FUNCTIONS = ("kaagaz_login_lookup", "kaagaz_create_customer")
 
 
@@ -83,21 +95,37 @@ def _functions(schema: str, path: str) -> list[str]:
     return [body.format(schema=schema, path=path) for body in (_LOGIN_LOOKUP, _CREATE_CUSTOMER)]
 
 
+def _login(login: str, limit: int) -> str:
+    """Make the login with every limit, or set them on an existing one as far as this owner
+    may; then refuse to go on if it is a superuser, replicates or skips row level security."""
+    return f"""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{login}') THEN
+                CREATE ROLE {login} {LIMITED} CONNECTION LIMIT {limit};
+            ELSIF (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) THEN
+                ALTER ROLE {login} {ALTERABLE} {SUPERUSER_ONLY} CONNECTION LIMIT {limit};
+            ELSE
+                ALTER ROLE {login} {ALTERABLE} CONNECTION LIMIT {limit};
+            END IF;
+            IF EXISTS (
+                SELECT 1 FROM pg_roles
+                WHERE rolname = '{login}' AND (rolsuper OR rolreplication OR rolbypassrls)
+            ) THEN
+                RAISE EXCEPTION '% must not be a superuser, replicate or bypass row level security',
+                    '{login}';
+            END IF;
+        END
+        $$
+        """
+
+
 UPGRADE = [
     *[
         statement
         for login, (mode, limit) in LOGINS.items()
         for statement in (
-            f"""
-            DO $$
-            BEGIN
-                IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{login}') THEN
-                    CREATE ROLE {login};
-                END IF;
-            END
-            $$
-            """,
-            f"ALTER ROLE {login} {LIMITED} CONNECTION LIMIT {limit}",
+            _login(login, limit),
             f"GRANT {mode} TO {login} WITH INHERIT FALSE, SET TRUE",
         )
     ],
