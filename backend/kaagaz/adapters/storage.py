@@ -42,20 +42,25 @@ from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobNotFound
 from kaagaz.settings import Settings
 
-# SeaweedFS needs the bucket in the path (host/bucket/key), not in the host
-# name, and signature version 4. Amazon S3 accepts both.
-# Storage that does not answer fails fast: 5 s to connect, 30 s per read, and at
-# most two retries (botocore's max_attempts counts retries: three tries in all),
-# about 105 s per call at worst instead of botocore's default 5 x (60 + 60) s.
-# A delete forever and the purge call storage inside their database
-# transaction, so this also bounds how long they hold its locks.
-_CONFIG = Config(
-    signature_version="s3v4",
-    s3={"addressing_style": "path"},
-    connect_timeout=5,
-    read_timeout=30,
-    retries={"max_attempts": 2},
-)
+
+def _config(endpoint_url: str | None) -> Config:
+    """Signature version 4. With an endpoint URL (SeaweedFS) the bucket goes in the path
+    (host/bucket/key), which SeaweedFS needs; without one (Amazon S3) botocore's default
+    puts it in the host name, the style AWS recommends.
+
+    Storage that does not answer fails fast: 5 s to connect, 30 s per read, and at
+    most two retries (botocore's max_attempts counts retries: three tries in all),
+    about 105 s per call at worst instead of botocore's default 5 x (60 + 60) s.
+    A delete forever and the purge call storage inside their database
+    transaction, so this also bounds how long they hold its locks."""
+    return Config(
+        signature_version="s3v4",
+        s3={"addressing_style": "path" if endpoint_url else "auto"},
+        connect_timeout=5,
+        read_timeout=30,
+        retries={"max_attempts": 2},
+    )
+
 
 # Cannot reach storage, or it stopped answering part way.
 _UNREACHABLE = (BotoConnectionError, HTTPClientError)
@@ -116,7 +121,7 @@ def _make_client(settings: Settings) -> Any:
         region_name=settings.storage_region,
         aws_access_key_id=settings.storage_access_key,
         aws_secret_access_key=settings.storage_secret_key,
-        config=_CONFIG,
+        config=_config(settings.storage_endpoint_url),
     )
 
 

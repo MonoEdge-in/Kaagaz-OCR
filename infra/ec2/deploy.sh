@@ -29,6 +29,11 @@
 # checkout's compose files and Caddyfile, those of the newest commit, so every
 # release must keep them working for the release before it.
 #
+# ASSUMPTION (S3, <date>): a rollback runs the previous images with these compose
+# files, which point at AWS S3. Every release that can be rolled back to must
+# therefore work with S3: the S3-capable code was deployed first while still
+# configured for SeaweedFS, and the switch to S3 came as a separate step.
+#
 # The live and previous images are kept; older commit images are removed after
 # a good deploy. Docker's build cache is pruned after each good deploy, keeping
 # what the current images use and anything used in the last 7 days, and also
@@ -54,7 +59,10 @@ COMPOSE=(-f docker-compose.yml -f docker-compose.prod.yml)
 # Every service but migrate. They are always started with --no-deps, so no
 # `up -d` runs migrate through depends_on: an older image's migrate fails on a
 # newer database and leaves the app stopped (24 Oct 2026). Only step 2 runs it.
-INFRA=(postgres seaweedfs elasticmq clamav caddy)
+# SeaweedFS retired for AWS S3 (<date>): never started from here. Its old container
+# keeps running read-only as a fallback until <date + 14 days>, then is removed by hand.
+# ElasticMQ retired for Amazon SQS the same way (<date>): never started from here.
+INFRA=(postgres clamav caddy)
 APPS=(api worker frontend)
 BUILD_CACHE_KEEP=168h
 MIN_FREE_GB=20

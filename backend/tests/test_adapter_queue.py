@@ -4,6 +4,7 @@ No network: Stubber checks each call's parameters and hands back a canned
 answer. Connection failures come from a tiny client object that raises them.
 """
 
+import io
 import json
 import unittest
 from typing import Any
@@ -16,6 +17,7 @@ from botocore.exceptions import EndpointConnectionError
 from botocore.stub import Stubber
 
 from kaagaz.adapters.queue import SqsQueue
+from kaagaz.cli import main as cli_main
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.ports import LeaseLost, QueueSetupError
@@ -190,6 +192,37 @@ class StubbedQueueTest(unittest.TestCase):
         waiting(stub, URL + "-express", "2")
         waiting(stub, URL, "0")
         self.assertEqual(SqsQueue(settings, client=client).depth(), {"express": 2, "main": 0})
+        stub.assert_no_pending_responses()
+
+    def test_backlog_counts_waiting_in_flight_and_delayed_in_each_lane(self) -> None:
+        attributes = [
+            "ApproximateNumberOfMessages",
+            "ApproximateNumberOfMessagesNotVisible",
+            "ApproximateNumberOfMessagesDelayed",
+        ]
+
+        def counts(stub: Stubber, url: str, waiting: str, in_flight: str, delayed: str) -> None:
+            answer = {
+                "Attributes": {
+                    "ApproximateNumberOfMessages": waiting,
+                    "ApproximateNumberOfMessagesNotVisible": in_flight,
+                    "ApproximateNumberOfMessagesDelayed": delayed,
+                }
+            }
+            stub.add_response("get_queue_attributes", answer, {"QueueUrl": url, "AttributeNames": attributes})
+
+        counts(self.stub, URL, "3", "1", "2")
+        self.assertEqual(self.queue.backlog(), {"express": (0, 0, 0), "main": (3, 1, 2)})  # no express lane
+
+        client = make_client()
+        stub = Stubber(client)
+        stub.activate()
+        self.addCleanup(stub.deactivate)
+        settings = make_settings(queue_url=URL, queue_express_url=URL + "-express", queue_wait_seconds=WAIT)
+        counts(stub, URL + "-express", "5", "0", "0")  # express lane asked first, then main
+        counts(stub, URL, "0", "0", "0")
+        backlog = SqsQueue(settings, client=client).backlog()
+        self.assertEqual(backlog, {"express": (5, 0, 0), "main": (0, 0, 0)})
         stub.assert_no_pending_responses()
 
     def test_stale_receipt_is_lease_lost(self) -> None:
@@ -639,6 +672,20 @@ class _RecordingClient:
             return {"Messages": [message(body="not a job")]} if name == "receive_message" else {}
 
         return call
+
+
+class QueueDepthCommandTest(unittest.TestCase):
+    """``python -m kaagaz.cli queue-depth``: one line a lane, read by idle-stop.sh."""
+
+    def test_prints_each_lane_with_its_waiting_in_flight_and_delayed_counts(self) -> None:
+        class FakeQueue:
+            def backlog(self) -> dict[str, tuple[int, int, int]]:
+                return {"main": (3, 1, 2), "express": (0, 4, 0)}
+
+        out = io.StringIO()
+        code = cli_main(["queue-depth"], queue=FakeQueue(), out=out, environ={})
+        self.assertEqual(code, 0)
+        self.assertEqual(out.getvalue(), "main 3 1 2\nexpress 0 4 0\n")
 
 
 if __name__ == "__main__":
