@@ -199,6 +199,10 @@ class Settings:
     # once .env sets APP_DATABASE_URL, and the owner's in migrate and until then.
     ops_database_url: str = field(repr=False)
     db_app_role: str
+    # The workers' role (#587, 0083: ``kaagaz_worker``), for the worker and the CLI; DB_APP_ROLE
+    # while unset. docker-compose.yml sets it only for the worker, and only once .env names the
+    # workers' own login (JOBS_DATABASE_URL), which alone may switch into it.
+    db_worker_role: str
 
     # File storage (S3 API: SeaweedFS on the laptop, Amazon S3 in AWS).
     storage_endpoint_url: str | None
@@ -657,6 +661,7 @@ class Settings:
             database_url=env.text("DATABASE_URL"),
             ops_database_url=env.optional("OPS_DATABASE_URL") or env.text("DATABASE_URL"),
             db_app_role=env.text("DB_APP_ROLE"),
+            db_worker_role=env.optional("DB_WORKER_ROLE") or env.text("DB_APP_ROLE"),
             storage_endpoint_url=env.optional("STORAGE_ENDPOINT_URL"),
             storage_region=env.text("STORAGE_REGION"),
             storage_bucket=env.text("STORAGE_BUCKET"),

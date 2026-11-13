@@ -97,8 +97,10 @@ def test_the_file_kinds_0078_the_zip_unpack_s_0080_and_trashed_folders_0081_foll
     assert scripts.get_revision("0081").down_revision == "0080"
 
 
-def test_the_trashed_folder_parent_grant_0082_follows_0081_and_is_the_one_head() -> None:
-    """A13 (stability pass, 7 Nov 2026)."""
+def test_the_trashed_folder_parent_0082_follows_0081_and_the_worker_role_0083_is_the_head() -> None:
+    """A13 (stability pass, 7 Nov 2026). Changed on purpose (#587, 14 Nov 2026): the workers'
+    role and login (0083) follow 0082."""
     scripts = _scripts()
     assert scripts.get_revision("0082").down_revision == "0081"
-    assert scripts.get_heads() == ["0082"]
+    assert scripts.get_revision("0083").down_revision == "0082"
+    assert scripts.get_heads() == ["0083"]
