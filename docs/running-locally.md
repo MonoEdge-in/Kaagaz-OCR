@@ -448,11 +448,16 @@ names `kaagaz_jobs`. Test server first, then production:
 4. From then on the CLI's work commands run in worker, as the workers do:
    `dc run --rm worker python -m kaagaz.cli <command>` (in api they run as `kaagaz_app`).
 5. The connections, PROVISIONAL: `kaagaz_jobs` may hold 65 (3 workers and one CLI run, 15 each,
-   and 5 to spare); now `ALTER ROLE kaagaz_api CONNECTION LIMIT 35` (api and one CLI run). Before
-   `WORKER_REPLICAS` goes above 3, `ALTER ROLE kaagaz_jobs CONNECTION LIMIT <15 x (replicas + 1) + 5>`.
+   and 5 to spare). Before `WORKER_REPLICAS` goes above 3,
+   `ALTER ROLE kaagaz_jobs CONNECTION LIMIT <15 x (replicas + 1) + 5>`. Only once EVERY server
+   that shares this database has moved its workers, `ALTER ROLE kaagaz_api CONNECTION LIMIT 35`
+   (api and one CLI run). These numbers assume one app server per database server. The test
+   server and production share one RDS database today, so do not lower it until #577 is done.
 
-**The undo:** `ALTER ROLE kaagaz_api CONNECTION LIMIT 80`, delete the `JOBS_DATABASE_URL` line
-from `.env` and `dc up -d --no-deps worker`; the workers are back on `kaagaz_api`.
+**The undo:** first `ALTER ROLE kaagaz_api CONNECTION LIMIT 80` if step 5 lowered it, then delete
+the `JOBS_DATABASE_URL` line from `.env` and `dc up -d --no-deps worker`; the workers are back on
+`kaagaz_api`. Do this BEFORE any `alembic downgrade 0082`: the downgrade takes every right from
+`kaagaz_worker`, and workers still on it would fail.
 
 **The closed lines and the storage keys (#477), by hand at a quiet time.** The
 release that adds the `data`, `scan` and `edge` networks moves postgres and
