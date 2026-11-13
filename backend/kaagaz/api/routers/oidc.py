@@ -375,7 +375,8 @@ def remove_identity(
     if not waiting:
         if body.password is None:
             raise ApiError(400, "bad_request", PROOF_NEEDED)
-        _succeeded(context, _check_current_password(context, user, body.password, context.clock()))
+        attempt = _check_current_password(context, user, body.password, context.clock())
+        _succeeded(context, attempt, signed_in=True)
     with context.db.user(user.customer_id, user.user_id) as conn:
         # Without the password, only while it still waits (an admin may approve it meanwhile).
         status = "pending" if waiting else None

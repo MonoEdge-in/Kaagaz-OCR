@@ -64,7 +64,8 @@ def new_link(context: AppContext, customer_id: str, user_id: str, purpose: str) 
 
 
 def add_link(conn: Connection, context: AppContext, customer_id: str, user_id: str, purpose: str) -> str:
-    """``new_link`` in the caller's transaction (``conn`` from ``Database.customer``)."""
+    """``new_link`` in the caller's transaction (``conn`` from ``Database.customer``, or
+    ``Database.user`` for the signed-in user's own link)."""
     token = secrets.token_urlsafe(TOKEN_BYTES)
     now = context.clock()
     links_sql.add(
