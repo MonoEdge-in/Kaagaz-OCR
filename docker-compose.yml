@@ -259,7 +259,7 @@ services:
         # Next.js writes the /api rewrite into the build (frontend/Dockerfile).
         BACKEND_URL: http://api:8000
         # Google Analytics on the public pages (#457 phase 4), from .env; empty, none.
-        NEXT_PUBLIC_GA_ID: ${NEXT_PUBLIC_GA_ID:-}
+        GA_ID: ${GA_ID:-}
     image: kaagaz-frontend:${KAAGAZ_TAG:-local}
     networks:
       - edge

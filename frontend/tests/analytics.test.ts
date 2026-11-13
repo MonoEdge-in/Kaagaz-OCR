@@ -272,13 +272,13 @@ describe("startGtag", () => {
 });
 
 describe("where it is mounted", () => {
-  it("only from the public pages' frame, read from NEXT_PUBLIC_GA_ID, never for the operator", () => {
+  it("only from the public pages' frame, read from GA_ID, never for the operator", () => {
     const importers = [...files("app"), ...files("components")].filter(
       (path) => !path.startsWith("components/analytics/") && /analytics\/Analytics["']/.test(source(path)),
     );
     expect(importers).toEqual(["app/login/AuthFrame.tsx"]);
     const frame = source("app/login/AuthFrame.tsx");
-    expect(frame).toContain("gaId(process.env.NEXT_PUBLIC_GA_ID)");
+    expect(frame).toContain("gaId(process.env.GA_ID)");
     expect(frame).toMatch(/variant === "member" && gaMeasurementId && <Analytics id=\{gaMeasurementId\} \/>/);
   });
 
@@ -300,15 +300,15 @@ describe("where it is mounted", () => {
 
   it("is off on the test server: .env.example leaves the id empty and commented", () => {
     const env = readFileSync(join(root, "..", ".env.example"), "utf8");
-    expect(env).toMatch(/^# NEXT_PUBLIC_GA_ID=$/m);
-    expect(env).not.toMatch(/^NEXT_PUBLIC_GA_ID=/m);
+    expect(env).toMatch(/^# GA_ID=$/m);
+    expect(env).not.toMatch(/^GA_ID=/m);
   });
 
   it("reaches the build, which is where Next.js reads a NEXT_PUBLIC_ value", () => {
-    expect(source("Dockerfile")).toMatch(/ARG NEXT_PUBLIC_GA_ID=\n/);
-    expect(source("Dockerfile")).toContain("NEXT_PUBLIC_GA_ID=${NEXT_PUBLIC_GA_ID}");
+    expect(source("Dockerfile")).toMatch(/ARG GA_ID=\n/);
+    expect(source("Dockerfile")).toContain("GA_ID=${GA_ID}");
     expect(readFileSync(join(root, "..", "docker-compose.yml"), "utf8")).toContain(
-      "NEXT_PUBLIC_GA_ID: ${NEXT_PUBLIC_GA_ID:-}",
+      "GA_ID: ${GA_ID:-}",
     );
   });
 });

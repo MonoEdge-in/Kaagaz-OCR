@@ -714,7 +714,7 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 - Tests (a made-up Google, `backend/tests/oidc_fake.py`, no network): `test_oidc.py`, `test_api_oidc_signin.py`, `test_api_oidc_connect.py`, `test_api_admin_identities.py`, `test_isolation_*identities.py`; `frontend/tests/provider-sign-in.test.ts`, `ways-to-sign-in.test.ts`, `admin-connections.test.ts`.
 
 **4b. Google Analytics (#457 phase 4)**
-- Set up: `NEXT_PUBLIC_GA_ID` (a GA4 `G-` id) in `.env` before the frontend is built. Tracked: /login (not with `?step=code`), /signup and /forgot-password, after Accept analytics.
+- Set up: `GA_ID` (a GA4 `G-` id) in `.env` before the frontend is built. Tracked: /login (not with `?step=code`), /signup and /forgot-password, after Accept analytics.
 - Release: in the GA4 property, switch off Enhanced measurement's "Page changes based on browser history events" and "Form interactions", switch off Google signals and the ads features, and set data retention to 2 months.
 - Tests: `frontend/tests/analytics.test.ts`.
 

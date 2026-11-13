@@ -21,7 +21,7 @@ export const PAGE_TITLES: Readonly<Record<string, string>> = {
   "/forgot-password": "Forgot password",
 };
 
-// NEXT_PUBLIC_GA_ID, when it is a GA4 measurement id ("G-" then letters and digits).
+// GA_ID, when it is a GA4 measurement id ("G-" then letters and digits).
 // Anything else counts as unset.
 export function gaId(raw: string | undefined): string | null {
   const id = raw?.trim() ?? "";
