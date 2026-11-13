@@ -31,7 +31,7 @@ from typing import Any, Protocol
 
 from sqlalchemy import text
 
-from kaagaz.db.engine import Database
+from kaagaz.db.engine import Database, user_or_customer
 from kaagaz.reading.spans import BoxLocation, location_from_json
 from kaagaz.search.scope import EVERYTHING, Scope
 
@@ -119,12 +119,17 @@ class WordMark:
 
 
 class ReadingQuality(Protocol):
-    def flagged_pages(self, customer_id: str, *, scope: Scope = EVERYTHING) -> tuple[list[FlaggedPage], int]:
+    def flagged_pages(
+        self, customer_id: str, *, scope: Scope = EVERYTHING, user_id: str | None
+    ) -> tuple[list[FlaggedPage], int]:
         """At most ``MAX_NAMED_PAGES`` unreadable or uncertain pages of the documents in
-        ``scope``, unreadable first, and how many there are in all."""
+        ``scope``, unreadable first, and how many there are in all; ``user_id``: the asker,
+        whose transaction it is (``word_marks``' too)."""
         ...
 
-    def word_marks(self, customer_id: str, document_ids: Sequence[str]) -> list[WordMark]:
+    def word_marks(
+        self, customer_id: str, document_ids: Sequence[str], *, user_id: str | None
+    ) -> list[WordMark]:
         """The word marks of these documents (their first reader's)."""
         ...
 
@@ -133,9 +138,11 @@ class PgReadingQuality:
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    def flagged_pages(self, customer_id: str, *, scope: Scope = EVERYTHING) -> tuple[list[FlaggedPage], int]:
+    def flagged_pages(
+        self, customer_id: str, *, scope: Scope = EVERYTHING, user_id: str | None = None
+    ) -> tuple[list[FlaggedPage], int]:
         params = {"customer_id": customer_id, "limit": MAX_NAMED_PAGES} | scope.params()
-        with self._db.customer(customer_id) as conn:
+        with user_or_customer(self._db, customer_id, user_id) as conn:
             rows = conn.execute(_FLAGGED_PAGES, params).all()
         pages = [
             FlaggedPage(str(row.document_id), str(row.display_name), int(row.page_no), str(row.read_quality))
@@ -143,11 +150,13 @@ class PgReadingQuality:
         ]
         return pages, int(rows[0].total) if rows else 0
 
-    def word_marks(self, customer_id: str, document_ids: Sequence[str]) -> list[WordMark]:
+    def word_marks(
+        self, customer_id: str, document_ids: Sequence[str], *, user_id: str | None = None
+    ) -> list[WordMark]:
         if not document_ids:
             return []
         params = {"customer_id": customer_id, "documents": sorted(set(document_ids))}
-        with self._db.customer(customer_id) as conn:
+        with user_or_customer(self._db, customer_id, user_id) as conn:
             rows = conn.execute(_WORD_MARKS, params).all()
         marks = []
         for row in rows:

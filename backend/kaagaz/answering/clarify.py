@@ -1,8 +1,9 @@
 """Clarifying questions (PRD 6 B1): the plan's names checked against the company's vocabulary,
 ``value_keys`` (GitHub #245): ``latin`` (``latin_spelling``, casefolded) and ``sound`` (sound
 keys) per person, place or property value, read in one statement through ``LIVE_CURRENT`` with
-the customer filter under row level security. A label (the value as printed) that is empty, over
-``MAX_CHOICE_CHARS`` or reads like instructions is never a candidate.
+the customer filter under row level security, as the asker (``user_id``, PRD 7). A label (the
+value as printed) that is empty, over ``MAX_CHOICE_CHARS`` or reads like instructions is never a
+candidate.
 
 Tiers, word by word (PROVISIONAL): match is the same spelling, a confirmed spelling (an approved
 organisation word, decision 6; a "Did you mean" pick suggests one, B2) or the same sound key of
@@ -31,7 +32,7 @@ from kaagaz.answering.evidence import looks_like_instructions
 from kaagaz.answering.rewrite import MAX_ENTITY_CHARS, Plan
 from kaagaz.answering.sanitize import clean_text
 from kaagaz.chunking.script import latin_spelling, sound_key
-from kaagaz.db.engine import Database
+from kaagaz.db.engine import Database, user_or_customer
 from kaagaz.extraction.links import normalise_identifier
 
 _log = logging.getLogger(__name__)
@@ -92,11 +93,14 @@ class Step:
 
 
 class Vocabulary(Protocol):
-    def candidates(self, customer_id: str, entities: Sequence[Entity]) -> list[list[Entry]]:
-        """Each entity's best MAX_CANDIDATES entries of its kind, best (then newest) first."""
+    def candidates(
+        self, customer_id: str, entities: Sequence[Entity], *, user_id: str | None
+    ) -> list[list[Entry]]:
+        """Each entity's best MAX_CANDIDATES entries of its kind, best (then newest) first;
+        ``user_id``: the asker, whose transaction it is (every method's)."""
         ...
 
-    def near(self, customer_id: str, districts: Sequence[str]) -> list[Entry]:
+    def near(self, customer_id: str, districts: Sequence[str], *, user_id: str | None) -> list[Entry]:
         """The newest places sharing a land record with one of ``districts`` (``latin_key``s)."""
         ...
 
@@ -104,7 +108,7 @@ class Vocabulary(Protocol):
         """The vocabulary of ``documents`` only (the chat's scope names them); None: every one."""
         ...
 
-    def any_keys(self, customer_id: str) -> bool:
+    def any_keys(self, customer_id: str, *, user_id: str | None) -> bool:
         """False only when there is no key at all, so ``candidates`` and ``near`` find nothing."""
         ...
 
@@ -155,7 +159,8 @@ _ANY_KEYS = text(
 
 
 class PgVocabulary:
-    """The vocabulary in PostgreSQL: one statement in one ``Database.customer`` transaction."""
+    """The vocabulary in PostgreSQL: one statement in one ``Database.user`` transaction as
+    ``user_id`` (``Database.customer`` with None)."""
 
     def __init__(self, db: Database, documents: Sequence[str] | None = None) -> None:
         self._db, self._documents = db, None if documents is None else list(documents)
@@ -163,7 +168,9 @@ class PgVocabulary:
     def within(self, documents: Sequence[str] | None) -> "PgVocabulary":
         return PgVocabulary(self._db, documents)
 
-    def candidates(self, customer_id: str, entities: Sequence[Entity]) -> list[list[Entry]]:
+    def candidates(
+        self, customer_id: str, entities: Sequence[Entity], *, user_id: str | None = None
+    ) -> list[list[Entry]]:
         found: list[list[Entry]] = [[] for _ in entities]
         latins = [latin_key(entity.as_typed, entity.kind) for entity in entities]
         sounds = [" ".join(map(sound_key, _WORD.findall(latin))) for latin in latins]
@@ -173,17 +180,17 @@ class PgVocabulary:
         folds = [" ".join(clean_text(entity.as_typed).casefold().split()) for entity in entities]
         params |= {"latins": latins, "sounds": sounds, "folds": folds}
         if entities:
-            with self._db.customer(customer_id) as conn:
+            with user_or_customer(self._db, customer_id, user_id) as conn:
                 for row in conn.execute(_CANDIDATES, params).mappings():
                     found[int(row["n"])].append(_entry(row))
         return found
 
-    def any_keys(self, customer_id: str) -> bool:
-        with self._db.customer(customer_id) as conn:
+    def any_keys(self, customer_id: str, *, user_id: str | None = None) -> bool:
+        with user_or_customer(self._db, customer_id, user_id) as conn:
             return bool(conn.execute(_ANY_KEYS, {"c": customer_id, "scoped": self._documents}).scalar_one())
 
-    def near(self, customer_id: str, districts: Sequence[str]) -> list[Entry]:
-        with self._db.customer(customer_id) as conn:
+    def near(self, customer_id: str, districts: Sequence[str], *, user_id: str | None = None) -> list[Entry]:
+        with user_or_customer(self._db, customer_id, user_id) as conn:
             params = {"c": customer_id, "districts": list(districts), "most": MAX_CHOICES}
             rows = conn.execute(_NEAR, {**params, "scoped": self._documents})
             return [_entry(row) for row in rows.mappings()]
@@ -267,20 +274,22 @@ def outcome(entity: Entity, entries: Sequence[Entry]) -> tuple[str, tuple[Entry,
 def first_step(
     vocabulary: Vocabulary,
     customer_id: str,
+    user_id: str | None,
     question: str,
     plan: Plan,
     narrowed: bool,
     cited: Sequence[str] = (),
 ) -> Step:
-    """Turn 1 for ``plan``; ``narrowed``: the scope narrows the question on its own. A missing
-    subject offers the entries of the documents ``cited`` by the chat's earlier answers first
-    (newest turn first; asked only with no scope, so all in it), then the company's newest."""
+    """Turn 1 for ``plan``, asked by ``user_id``; ``narrowed``: the scope narrows the question on
+    its own. A missing subject offers the entries of the documents ``cited`` by the chat's earlier
+    answers first (newest turn first; asked only with no scope, so all in it), then the company's
+    newest."""
     entities = [Entity("person", p.as_typed) for p in plan.people] + [Entity("place", p) for p in plan.places]
     between = _BETWEEN.search(question)
     ends = {end.casefold() for end in between.groups()} if between else set()
     if between and len(ends & {place.casefold() for place in plan.places}) == 2:  # decision 11
-        found = vocabulary.near(customer_id, [latin_key(end) for end in ends])
-        found = found or vocabulary.candidates(customer_id, [Entity("place", "")])[0]
+        found = vocabulary.near(customer_id, [latin_key(end) for end in ends], user_id=user_id)
+        found = found or vocabulary.candidates(customer_id, [Entity("place", "")], user_id=user_id)[0]
         phrase, rest = between[0], [entity for entity in entities if entity.as_typed.casefold() not in ends]
         asked = f'"{phrase[0].upper()}{phrase[1:]}" could cover a few places in your documents.'
         asked += " Which should I look in?"
@@ -288,10 +297,14 @@ def first_step(
             return _asking(question, (), asked, found, Entity("place", phrase), rest, 1)
     missing = [] if entities or plan.period or narrowed else [k for k in MISSING if k in plan.missing]
     if not missing:
-        return next_step(vocabulary, customer_id, question, entities, (), 1)
+        return next_step(vocabulary, customer_id, user_id, question, entities, (), 1)
     asked_for = [Entity(kind, "") for kind in missing]
-    newest = vocabulary.candidates(customer_id, asked_for)
-    chats = vocabulary.within(cited).candidates(customer_id, asked_for) if cited else [[] for _ in missing]
+    newest = vocabulary.candidates(customer_id, asked_for, user_id=user_id)
+    chats = (
+        vocabulary.within(cited).candidates(customer_id, asked_for, user_id=user_id)
+        if cited
+        else [[] for _ in missing]
+    )
     for kind, chat, entries in zip(missing, chats, newest, strict=True):
         if found := _chat_first(cited, chat, entries):
             return _asking(question, (), MISSING[kind], found, Entity(kind, ""), (), 1)
@@ -310,11 +323,15 @@ def _chat_first(cited: Sequence[str], chat: Sequence[Entry], newest: Sequence[En
     return list(kept.values())[:MAX_CHOICES]
 
 
-def after_reply(vocabulary: Vocabulary | None, customer_id: str, pending: Pending) -> Step:
+def after_reply(
+    vocabulary: Vocabulary | None, customer_id: str, user_id: str | None, pending: Pending
+) -> Step:
     """The picks checked again (one gone since is dropped) and put in the question; then the rest."""
     labels, rest = list(pending.picked), list(pending.remaining)
     if vocabulary is not None and labels:
-        found = vocabulary.candidates(customer_id, [Entity(pending.kind, label) for label in labels])
+        found = vocabulary.candidates(
+            customer_id, [Entity(pending.kind, label) for label in labels], user_id=user_id
+        )
         labels = [label for label, entries in zip(labels, found, strict=True) if _live(label, entries)]
     elif pending.typed:  # B2: typed instead of picked, it is checked as a name of its own
         labels, rest = [pending.typed], [Entity(pending.kind, pending.typed), *rest]
@@ -324,16 +341,22 @@ def after_reply(vocabulary: Vocabulary | None, customer_id: str, pending: Pendin
     )
     if vocabulary is None:
         return Step(question, pending.assumptions)
-    return next_step(vocabulary, customer_id, question, rest, pending.assumptions, pending.turn + 1)
+    return next_step(vocabulary, customer_id, user_id, question, rest, pending.assumptions, pending.turn + 1)
 
 
 def next_step(
-    vocabulary: Vocabulary, customer_id: str, question: str, entities: Sequence[Entity], said: Said, turn: int
+    vocabulary: Vocabulary,
+    customer_id: str,
+    user_id: str | None,
+    question: str,
+    entities: Sequence[Entity],
+    said: Said,
+    turn: int,
 ) -> Step:
     """Each name in turn: a resolved one is put in the question (and ``said`` when its spelling
     changed); the first unclear one is asked while ``turn`` is at most MAX_TURNS, else searched as
     typed, with an open-list line for several matches. One statement."""
-    found = vocabulary.candidates(customer_id, entities) if entities else []
+    found = vocabulary.candidates(customer_id, entities, user_id=user_id) if entities else []
     for index, (entity, entries) in enumerate(zip(entities, found, strict=True)):
         result, chosen = outcome(entity, entries)
         typed, label = clean_text(entity.as_typed), clean_text(chosen[0].label) if chosen else ""

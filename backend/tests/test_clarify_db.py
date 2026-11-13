@@ -30,7 +30,10 @@ def test_the_scope_narrows_the_vocabulary_and_a_property_pick_stays_live(db: Dat
     ]
     assert [e.label for e in scoped.candidates(customer, asked)[0]] == ["Nikhil Patel"]  # review 4
     pending = Pending("Unowned share of the property?", "property", None, (), (), 1, ("Survey 45/2",))
-    assert after_reply(everywhere, customer, pending).question == "Unowned share of the property Survey 45/2"
+    assert (
+        after_reply(everywhere, customer, None, pending).question
+        == "Unowned share of the property Survey 45/2"
+    )
 
 
 def test_the_vocabulary_is_aggregated_once_and_read_through_indexes_under_rls(db: Database) -> None:

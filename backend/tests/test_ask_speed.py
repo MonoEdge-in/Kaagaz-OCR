@@ -75,6 +75,8 @@ class Timed(Fused):
         limit: int,
         scope: Scope,
         expansion: Expansion = NO_EXPANSION,
+        *,
+        user_id: str | None = None,
     ) -> list[FakeHit]:
         self.threads.append(threading.get_ident())
         time.sleep(self.search_s)
@@ -212,7 +214,7 @@ def test_with_no_vocabulary_a_first_question_makes_no_plan_call_and_answers_the_
     skipped, model = first()
     assert model.rewrites == [] and json.loads(skipped)["status"] == "answered"
     assert len(first(NIKHIL)[1].rewrites) == 1  # a vocabulary: the plan call as today
-    monkeypatch.setattr(FakeVocabulary, "any_keys", lambda self, customer_id: True)
+    monkeypatch.setattr(FakeVocabulary, "any_keys", lambda self, customer_id, user_id: True)
     asked, today = first()  # the call as before this check: same answer, one call more
     assert len(today.rewrites) == 1 and today.rewrites[0].endswith("Plan: yes.")
     assert skipped == asked

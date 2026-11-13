@@ -487,6 +487,7 @@ def _ask(
         user_id=user.user_id,
         kind="chat",
         conversation_id=conversation_id,
+        as_person=True,
     ) as spend:
         degraded = copied = False  # #535: the model or a vector was down; served from the cache
         if talk is not None:
@@ -952,7 +953,9 @@ def _make_ready(
     pins, switched, choice = inputs
     for question in asked:
         try:
-            with usage_scope(context.db, customer_id=user.customer_id, user_id=user.user_id, kind="chat"):
+            with usage_scope(
+                context.db, customer_id=user.customer_id, user_id=user.user_id, kind="chat", as_person=True
+            ):
                 reply = context.answers.answer(
                     user.customer_id,
                     question,
@@ -1088,6 +1091,7 @@ def _remember(
             user_id=user_id,
             kind="memory",
             conversation_id=conversation_id,
+            as_person=True,
         ):
             _write_memory(context, customer_id, user_id, conversation_id, expected_turn, turn)
     except (SQLAlchemyError, BackendUnavailable, ModelUnavailable, ModelOutputError) as error:

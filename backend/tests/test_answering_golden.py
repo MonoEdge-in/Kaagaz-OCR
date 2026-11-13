@@ -139,6 +139,8 @@ class FakeRetriever:
         limit: int,
         scope: Scope,
         expansion: Expansion = NO_EXPANSION,
+        *,
+        user_id: str | None = None,
     ) -> list[FakeHit]:
         self.calls.append((customer_id, text, embedding, limit))
         words = text.casefold().split()
@@ -151,7 +153,9 @@ class FakeRetriever:
         hits.sort(key=lambda hit: -hit.score)
         return hits[:limit]
 
-    def neighbours(self, customer_id: str, hits: Sequence[Any], scope: Scope) -> list[FakeHit]:
+    def neighbours(
+        self, customer_id: str, hits: Sequence[Any], scope: Scope, *, user_id: str | None = None
+    ) -> list[FakeHit]:
         return []
 
 
@@ -234,7 +238,9 @@ class FakeFixedQueries:
     def scoped(self, scope: Scope) -> "FakeFixedQueries":
         return self
 
-    def available_fields(self, customer_id: str, fields: Sequence[str]) -> set[str]:
+    def available_fields(
+        self, customer_id: str, fields: Sequence[str], *, user_id: str | None = None
+    ) -> set[str]:
         self.field_calls.append(customer_id)
         found = {s.ref.field for record in self.records.get(customer_id, []) for s in record}
         return found & set(fields)
@@ -269,6 +275,8 @@ class FakeFixedQueries:
         start: date | None,
         end: date | None,
         descending: bool,
+        *,
+        user_id: str | None = None,
     ) -> list[FixedRow]:
         self.calls.append("top_group")
         groups: dict[str, list[list[Stored]]] = {}
@@ -303,6 +311,7 @@ class FakeFixedQueries:
         *,
         invoices: bool,
         group_fields: Sequence[str] = (),
+        user_id: str | None = None,
     ) -> list[Figure]:
         """PRD 6 C: with ``invoices``, every record with an invoice number, dated by invoice_date;
         else every record of a document holding the metric; with a range, also one undated.
@@ -335,7 +344,13 @@ class FakeFixedQueries:
         return found
 
     def count_documents(
-        self, customer_id: str, start: date | None, end: date | None, *, date_fields: Sequence[str]
+        self,
+        customer_id: str,
+        start: date | None,
+        end: date | None,
+        *,
+        date_fields: Sequence[str],
+        user_id: str | None = None,
     ) -> list[FixedRow]:
         self.calls.append("count_documents")
         first_by_document: dict[str, ValueRef] = {}
@@ -348,7 +363,9 @@ class FakeFixedQueries:
         verified = all(ref.label == "verified" for ref in refs)
         return [FixedRow(None, Decimal(len(refs)), len(refs), verified, refs[:MAX_CITED_VALUES])]
 
-    def count_invoices(self, customer_id: str, start: date | None, end: date | None) -> list[FixedRow]:
+    def count_invoices(
+        self, customer_id: str, start: date | None, end: date | None, *, user_id: str | None = None
+    ) -> list[FixedRow]:
         """An invoice is a record with an invoice number (a row of the invoices table), dated
         by its own invoice_date; it cites its first value in _COUNT_INVOICES's field order."""
         self.calls.append("count_invoices")
@@ -378,6 +395,8 @@ class FakeFixedQueries:
         start: date | None,
         end: date | None,
         descending: bool,
+        *,
+        user_id: str | None = None,
     ) -> list[FixedRow]:
         self.calls.append("extreme_value")
         rows = []
@@ -495,7 +514,12 @@ class FakeUnchecked:
         self.calls: list[tuple[str, tuple[str, ...]]] = []
 
     def documents_with(
-        self, customer_id: str, fields: Sequence[str], *, scope: Scope = EVERYTHING
+        self,
+        customer_id: str,
+        fields: Sequence[str],
+        *,
+        scope: Scope = EVERYTHING,
+        user_id: str | None = None,
     ) -> list[dict[str, str]]:
         self.calls.append((customer_id, tuple(fields)))
         found = self.cards.get(customer_id, {})

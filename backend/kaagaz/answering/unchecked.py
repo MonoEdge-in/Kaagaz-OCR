@@ -19,7 +19,7 @@ from typing import Protocol
 
 from sqlalchemy import text
 
-from kaagaz.db.engine import Database
+from kaagaz.db.engine import Database, user_or_customer
 from kaagaz.search.scope import EVERYTHING, Scope
 
 MAX_DOCUMENTS = 5
@@ -52,10 +52,10 @@ _CARD_DOCUMENTS = text(
 
 class UncheckedValues(Protocol):
     def documents_with(
-        self, customer_id: str, fields: Sequence[str], *, scope: Scope = EVERYTHING
+        self, customer_id: str, fields: Sequence[str], *, scope: Scope = EVERYTHING, user_id: str | None
     ) -> list[dict[str, str]]:
         """``{"id", "display_name"}`` of the documents whose card holds an unchecked
-        value of one of ``fields``, newest first."""
+        value of one of ``fields``, newest first; ``user_id``: the asker, whose transaction it is."""
         ...
 
 
@@ -64,13 +64,18 @@ class PgUncheckedValues:
         self._db = db
 
     def documents_with(
-        self, customer_id: str, fields: Sequence[str], *, scope: Scope = EVERYTHING
+        self,
+        customer_id: str,
+        fields: Sequence[str],
+        *,
+        scope: Scope = EVERYTHING,
+        user_id: str | None = None,
     ) -> list[dict[str, str]]:
         if not fields:
             return []
         params = {"customer_id": customer_id, "fields": list(fields), "limit": MAX_DOCUMENTS}
         params |= scope.params()
-        with self._db.customer(customer_id) as conn:
+        with user_or_customer(self._db, customer_id, user_id) as conn:
             rows = conn.execute(_CARD_DOCUMENTS, params).all()
         return [{"id": str(row.id), "display_name": str(row.display_name)} for row in rows]
 

@@ -670,7 +670,7 @@ def search_translated(
     list fused (the module docstring), and each piece a list of the question itself found,
     with its own meaning score (None: no meaning list of the question found it). The
     user's own words (``expansion``) go with the question only. ``begin`` opens one
-    ``Database.customer(customer_id)`` transaction: each text's lists run in one of their own,
+    ``Database.user`` transaction, as the asker: each text's lists run in one of their own,
     SEARCH_FAN_OUT at once (Ask speed, 24 Oct 2026), so no connection is shared across threads;
     they are fused in the texts' order, the question's first, so the ranking is the one they
     give one after another. The details, in one more. O(t) times ``search``'s cost for t

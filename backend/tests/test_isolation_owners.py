@@ -44,12 +44,15 @@ def test_the_queries_given_another_companys_keys_and_ids_find_nothing(db: Databa
     a_land = add_land(db, a, "A.pdf", [("Krishna Sohoni", "50%")], places=[("village", "Kusgaon")])
     queries, keys = PgOwners(db), ["krishna sohoni", "kusgaon"]
 
-    assert sorted(queries.resolve(a, keys, EVERYTHING)) == [("person", keys[0]), ("place", keys[1])]
-    assert queries.owned(a, keys[:1], EVERYTHING) == [(a_land, "land:1", True)]
-    assert queries.resolve(b, keys, EVERYTHING) == []
-    assert queries.owned(b, keys[:1], EVERYTHING) == []
-    assert queries.keyed(b, "place", keys[1:], EVERYTHING) == []
-    assert queries.shares(b, [a_land], EVERYTHING) == []
+    assert sorted(queries.resolve(a, keys, EVERYTHING, user_id=None)) == [
+        ("person", keys[0]),
+        ("place", keys[1]),
+    ]
+    assert queries.owned(a, keys[:1], EVERYTHING, user_id=None) == [(a_land, "land:1", True)]
+    assert queries.resolve(b, keys, EVERYTHING, user_id=None) == []
+    assert queries.owned(b, keys[:1], EVERYTHING, user_id=None) == []
+    assert queries.keyed(b, "place", keys[1:], EVERYTHING, user_id=None) == []
+    assert queries.shares(b, [a_land], EVERYTHING, user_id=None) == []
 
 
 def test_an_open_list_of_every_owner_and_number_finds_only_its_own_companys_records(db: Database) -> None:
@@ -73,8 +76,8 @@ def test_an_open_list_of_every_owner_and_number_finds_only_its_own_companys_reco
     for question in ("Who are all the owners?", "List every survey number"):
         for_c = answers.answer(c, question).to_json()
         assert a_land not in json.dumps(for_c) and b_land not in json.dumps(for_c)
-    assert queries.every(c, ["land_owner_name"], EVERYTHING, 50) == (0, [])
-    assert queries.every(b, ["land_survey_number"], EVERYTHING, 50) == (1, [(b_land, "land:1")])
+    assert queries.every(c, ["land_owner_name"], EVERYTHING, 50, user_id=None) == (0, [])
+    assert queries.every(b, ["land_survey_number"], EVERYTHING, 50, user_id=None) == (1, [(b_land, "land:1")])
 
 
 def test_a_map_question_finds_only_its_own_companys_map_values(db: Database) -> None:
@@ -89,5 +92,7 @@ def test_a_map_question_finds_only_its_own_companys_map_values(db: Database) -> 
     assert answers.answer(a, "Length of survey 45/2?").to_json()["documents"][0]["document_id"] == a_land
     for_b = answers.answer(b, "Length of survey 45/2?").to_json()
     assert not for_b["documents"] and a_land not in json.dumps(for_b) and "45.5" not in json.dumps(for_b)
-    assert queries.keyed(b, "property", ["46"], EVERYTHING, ["land_boundary_east"]) == []
-    assert queries.keyed(a, "property", ["46"], EVERYTHING, ["land_boundary_east"]) == [(a_land, "land:1")]
+    assert queries.keyed(b, "property", ["46"], EVERYTHING, ["land_boundary_east"], user_id=None) == []
+    assert queries.keyed(a, "property", ["46"], EVERYTHING, ["land_boundary_east"], user_id=None) == [
+        (a_land, "land:1")
+    ]

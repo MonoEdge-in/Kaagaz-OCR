@@ -75,10 +75,10 @@ def test_a_confirmed_spelling_and_a_districts_places_are_one_companys_own(db: Da
 def test_a_pick_moved_to_trash_since_is_dropped_when_it_is_answered(db: Database) -> None:
     customer, document = company(db, ("place", "Pune"))
     pending = Pending("Land in Puny?", "place", "Puny", (), (), 1, ("Pune",))
-    assert after_reply(PgVocabulary(db), customer, pending).question == "Land in Pune?"
+    assert after_reply(PgVocabulary(db), customer, None, pending).question == "Land in Pune?"
     with db.customer(customer) as conn:
         conn.execute(text("UPDATE documents SET deleted_at = now() WHERE id = :d"), {"d": document})
-    assert after_reply(PgVocabulary(db), customer, pending).question == "Land in Puny?"
+    assert after_reply(PgVocabulary(db), customer, None, pending).question == "Land in Puny?"
 
 
 def test_a_missing_subject_offers_the_chats_cited_properties_of_its_own_company_only(db: Database) -> None:
@@ -93,7 +93,7 @@ def test_a_missing_subject_offers_the_chats_cited_properties_of_its_own_company_
     which = Plan("documents", (), (), None, ("property",))
 
     def choices(customer: str, *cited: str) -> list[tuple[str, list[str]]]:
-        asked = first_step(PgVocabulary(db), customer, "What is the area?", which, False, cited).clarify
+        asked = first_step(PgVocabulary(db), customer, None, "What is the area?", which, False, cited).clarify
         assert asked is not None
         return [(c["label"], c.get("document_ids", [])) for c in asked["choices"]]
 

@@ -61,12 +61,16 @@ class FakeReading:
         self.scopes: list[Scope] = []
         self.asked_marks: list[list[str]] = []
 
-    def flagged_pages(self, customer_id: str, *, scope: Scope = EVERYTHING) -> tuple[list[FlaggedPage], int]:
+    def flagged_pages(
+        self, customer_id: str, *, scope: Scope = EVERYTHING, user_id: str | None = None
+    ) -> tuple[list[FlaggedPage], int]:
         assert customer_id == A
         self.scopes.append(scope)
         return self.pages, self.total
 
-    def word_marks(self, customer_id: str, document_ids: Sequence[str]) -> list[WordMark]:
+    def word_marks(
+        self, customer_id: str, document_ids: Sequence[str], *, user_id: str | None = None
+    ) -> list[WordMark]:
         assert customer_id == A
         self.asked_marks.append(list(document_ids))
         return [mark for mark in self.marks if mark.document_id in document_ids]
