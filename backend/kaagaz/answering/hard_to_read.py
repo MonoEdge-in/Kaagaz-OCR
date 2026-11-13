@@ -139,7 +139,7 @@ class PgReadingQuality:
         self._db = db
 
     def flagged_pages(
-        self, customer_id: str, *, scope: Scope = EVERYTHING, user_id: str | None = None
+        self, customer_id: str, *, scope: Scope = EVERYTHING, user_id: str | None
     ) -> tuple[list[FlaggedPage], int]:
         params = {"customer_id": customer_id, "limit": MAX_NAMED_PAGES} | scope.params()
         with user_or_customer(self._db, customer_id, user_id) as conn:
@@ -151,7 +151,7 @@ class PgReadingQuality:
         return pages, int(rows[0].total) if rows else 0
 
     def word_marks(
-        self, customer_id: str, document_ids: Sequence[str], *, user_id: str | None = None
+        self, customer_id: str, document_ids: Sequence[str], *, user_id: str | None
     ) -> list[WordMark]:
         if not document_ids:
             return []

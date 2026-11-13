@@ -41,6 +41,7 @@ from tests.settings_factory import make_settings
 
 A = str(uuid.uuid4())
 B = str(uuid.uuid4())
+ASKER = str(uuid.uuid4())  # a user of A (PRD 7: whom the answer runs as)
 NOW = datetime(2026, 9, 27, 6, 30, tzinfo=UTC)  # 27 Sep 2026, noon in India
 # Never connected to: the fakes stand in for both of its uses.
 UNUSED_DB = Database(create_engine("postgresql+psycopg://unused@localhost/unused"), "kaagaz_app")
@@ -234,6 +235,7 @@ class FakeFixedQueries:
         self.records = records
         self.calls: list[str] = []
         self.field_calls: list[str] = []  # the customer of each available_fields call
+        self.users: list[str | None] = []  # PRD 7: the asker each query was given
 
     def scoped(self, scope: Scope) -> "FakeFixedQueries":
         return self
@@ -242,6 +244,7 @@ class FakeFixedQueries:
         self, customer_id: str, fields: Sequence[str], *, user_id: str | None = None
     ) -> set[str]:
         self.field_calls.append(customer_id)
+        self.users.append(user_id)
         found = {s.ref.field for record in self.records.get(customer_id, []) for s in record}
         return found & set(fields)
 
@@ -279,6 +282,7 @@ class FakeFixedQueries:
         user_id: str | None = None,
     ) -> list[FixedRow]:
         self.calls.append("top_group")
+        self.users.append(user_id)
         groups: dict[str, list[list[Stored]]] = {}
         for record, amount, dated in self._matching(customer_id, metric, date_fields, start, end):
             party = _one(record, group_fields)
@@ -317,6 +321,7 @@ class FakeFixedQueries:
         else every record of a document holding the metric; with a range, also one undated.
         C2: with ``group_fields``, whether each names one party."""
         self.calls.append("figures")
+        self.users.append(user_id)
         records = self.records.get(customer_id, [])
         holders = {s.ref.document_id for record in records for s in record if s.ref.field == metric}
         found = []
@@ -353,6 +358,7 @@ class FakeFixedQueries:
         user_id: str | None = None,
     ) -> list[FixedRow]:
         self.calls.append("count_documents")
+        self.users.append(user_id)
         first_by_document: dict[str, ValueRef] = {}
         for _, _, dated in self._matching(customer_id, None, date_fields, start, end):
             if dated is not None:
@@ -369,6 +375,7 @@ class FakeFixedQueries:
         """An invoice is a record with an invoice number (a row of the invoices table), dated
         by its own invoice_date; it cites its first value in _COUNT_INVOICES's field order."""
         self.calls.append("count_invoices")
+        self.users.append(user_id)
         order = ("invoice_number", "total_amount", "invoice_date", "seller_name", "buyer_name")
         refs = []
         for record in self.records.get(customer_id, []):
@@ -399,6 +406,7 @@ class FakeFixedQueries:
         user_id: str | None = None,
     ) -> list[FixedRow]:
         self.calls.append("extreme_value")
+        self.users.append(user_id)
         rows = []
         for _, amount, dated in self._matching(customer_id, metric, date_fields, start, end):
             if amount is None or amount.number is None:
@@ -695,6 +703,13 @@ def test_total_amount_from_the_invoice() -> None:
         "bill-1042.pdf: Rs. 1,20,000, not verified yet.",
     ]
     assert answer.label == "needs_review"  # the invoice's total is a single reading
+
+
+def test_the_fixed_route_runs_every_query_as_the_asker() -> None:  # PRD 7 (#585)
+    answers, _, fixed = service()
+    answer = answers.answer(A, "Kul rakam kitni thi pichle mahine?", user_id=ASKER)
+    assert answer.route == "fixed_query"
+    assert fixed.users and set(fixed.users) == {ASKER}  # available_fields, then the figures
 
 
 def test_count_of_documents_in_a_month() -> None:

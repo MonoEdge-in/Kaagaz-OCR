@@ -169,7 +169,7 @@ class PgVocabulary:
         return PgVocabulary(self._db, documents)
 
     def candidates(
-        self, customer_id: str, entities: Sequence[Entity], *, user_id: str | None = None
+        self, customer_id: str, entities: Sequence[Entity], *, user_id: str | None
     ) -> list[list[Entry]]:
         found: list[list[Entry]] = [[] for _ in entities]
         latins = [latin_key(entity.as_typed, entity.kind) for entity in entities]
@@ -185,11 +185,11 @@ class PgVocabulary:
                     found[int(row["n"])].append(_entry(row))
         return found
 
-    def any_keys(self, customer_id: str, *, user_id: str | None = None) -> bool:
+    def any_keys(self, customer_id: str, *, user_id: str | None) -> bool:
         with user_or_customer(self._db, customer_id, user_id) as conn:
             return bool(conn.execute(_ANY_KEYS, {"c": customer_id, "scoped": self._documents}).scalar_one())
 
-    def near(self, customer_id: str, districts: Sequence[str], *, user_id: str | None = None) -> list[Entry]:
+    def near(self, customer_id: str, districts: Sequence[str], *, user_id: str | None) -> list[Entry]:
         with user_or_customer(self._db, customer_id, user_id) as conn:
             params = {"c": customer_id, "districts": list(districts), "most": MAX_CHOICES}
             rows = conn.execute(_NEAR, {**params, "scoped": self._documents})

@@ -69,7 +69,7 @@ class PgUncheckedValues:
         fields: Sequence[str],
         *,
         scope: Scope = EVERYTHING,
-        user_id: str | None = None,
+        user_id: str | None,
     ) -> list[dict[str, str]]:
         if not fields:
             return []

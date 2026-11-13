@@ -306,7 +306,7 @@ class PgExhaustive:
         self._db = db
 
     def documents_with(
-        self, customer_id: str, term: str, scope: Scope, listed: int, *, user_id: str | None = None
+        self, customer_id: str, term: str, scope: Scope, listed: int, *, user_id: str | None
     ) -> tuple[int, list[list[Hit]]]:
         from kaagaz.search.hybrid import FusedPiece, _hit
 
@@ -331,7 +331,7 @@ class PgExhaustive:
         exclude: Sequence[str],
         listed: int,
         *,
-        user_id: str | None = None,
+        user_id: str | None,
     ) -> tuple[int, list[dict[str, Any]]]:
         """``Mentions`` over PostgreSQL, as ``documents_with``: one statement."""
         if not terms:

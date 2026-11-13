@@ -11,11 +11,18 @@ Every file of kaagaz/answering and kaagaz/search is read with ``ast``. On a data
   parameters of the function it is in, never rebound there, so the person is the one its caller
   passed (``AnswerService.answer``'s ``user_id`` reaches every port, mypy checks the ports'
   signatures). Any other shape is in USER_EXCEPTIONS with its reason.
+* In kaagaz/answering a ``user_id=`` keyword passes the bare name ``user_id`` on, never another
+  value (None, a constant), so no call in the chain drops the asker.
+
+``PgDocuments`` (kaagaz/db/documents.py) and the usage ledger (kaagaz/ai/usage.py) name no
+``.customer`` or ``.system`` on a database: they open only through ``user_or_customer``, as the
+person they were given (a request's) or on the organisation (a worker's).
 
 And on kaagaz/api, whose routes always know the signed-in user (test_run_as_person_guard.py):
 ``user_or_customer`` is never used there; every ``usage_scope`` saves the ledger as the person
 (``as_person=True``); every question goes to the Ask service with the signed-in user's id
-(``user_id=user.user_id``), so its transactions run as that person, the streamed ones too.
+(``user_id=user.user_id``), so its transactions run as that person, the streamed ones too; and
+every ``PgDocuments`` it builds is given that user (``user_id=user.user_id``).
 """
 
 import ast
@@ -169,4 +176,33 @@ def test_the_api_asks_and_bills_as_the_signed_in_user() -> None:
                 wrong.append(f"kaagaz/{file}:{node.lineno}: usage_scope without as_person=True")
             if name == "context.answers.answer" and keywords.get("user_id") != "user.user_id":
                 wrong.append(f"kaagaz/{file}:{node.lineno}: answer without user_id=user.user_id")
+            if name == "PgDocuments" and keywords.get("user_id") != "user.user_id":
+                wrong.append(f"kaagaz/{file}:{node.lineno}: PgDocuments without user_id=user.user_id")
     assert not wrong, "\n".join(wrong)
+
+
+def test_answering_passes_the_asker_on_unchanged() -> None:
+    wrong = [
+        f"kaagaz/{path.relative_to(ROOT).as_posix()}:{keyword.lineno}: user_id={ast.unparse(keyword.value)}"
+        for path in sorted((ROOT / "answering").rglob("*.py"))
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+        if keyword.arg == "user_id" and ast.unparse(keyword.value) != "user_id"
+    ]
+    assert not wrong, "Pass the asker on as user_id=user_id:\n" + "\n".join(wrong)
+
+
+def test_documents_and_the_ledger_open_only_through_the_person_helper() -> None:
+    documents = ast.parse((ROOT / "db" / "documents.py").read_text(encoding="utf-8"))
+    (repository,) = [n for n in documents.body if isinstance(n, ast.ClassDef) and n.name == "PgDocuments"]
+    usage = ast.parse((ROOT / "ai" / "usage.py").read_text(encoding="utf-8"))
+    wrong = [
+        f"kaagaz/{file}:{node.lineno}: {ast.unparse(node)}"
+        for file, tree in (("db/documents.py", repository), ("ai/usage.py", usage))
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and node.attr in ("customer", "system")
+        and DATABASE.search(ast.unparse(node.value))
+    ]
+    assert not wrong, f"Open these through {PERSON}, as the person given or none:\n" + "\n".join(wrong)

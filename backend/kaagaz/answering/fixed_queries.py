@@ -763,9 +763,7 @@ class PgFixedQueries:
     def scoped(self, scope: Scope) -> "PgFixedQueries":
         return PgFixedQueries(self._db, scope)
 
-    def available_fields(
-        self, customer_id: str, fields: Sequence[str], *, user_id: str | None = None
-    ) -> set[str]:
+    def available_fields(self, customer_id: str, fields: Sequence[str], *, user_id: str | None) -> set[str]:
         """Which of ``fields`` the customer has: O(f) index probes for f fields."""
         with user_or_customer(self._db, customer_id, user_id) as conn:
             params = {"customer_id": customer_id, "candidates": list(fields), **self._scope.params()}
@@ -782,7 +780,7 @@ class PgFixedQueries:
         end: date | None,
         descending: bool,
         *,
-        user_id: str | None = None,
+        user_id: str | None,
     ) -> list[FixedRow]:
         params = _params(customer_id, date_fields, start, end)
         params.update(metric=metric, group_fields=list(group_fields), descending=descending, limit=_TOP_ROWS)
@@ -798,7 +796,7 @@ class PgFixedQueries:
         *,
         invoices: bool,
         group_fields: Sequence[str] = (),
-        user_id: str | None = None,
+        user_id: str | None,
     ) -> list[Figure]:
         """Every matching record, by date then document, and the printed total rows of their
         sheets; ``invoices``: the question names them; ``group_fields``: a ranking's parties."""
@@ -831,13 +829,13 @@ class PgFixedQueries:
         end: date | None,
         *,
         date_fields: Sequence[str],
-        user_id: str | None = None,
+        user_id: str | None,
     ) -> list[FixedRow]:
         params = _params(customer_id, date_fields, start, end)
         return self._run(customer_id, _COUNT_DOCUMENTS, params, user_id)
 
     def count_invoices(
-        self, customer_id: str, start: date | None, end: date | None, *, user_id: str | None = None
+        self, customer_id: str, start: date | None, end: date | None, *, user_id: str | None
     ) -> list[FixedRow]:
         if (start is None) != (end is None):
             raise ValueError("start and end go together")
@@ -857,7 +855,7 @@ class PgFixedQueries:
         end: date | None,
         descending: bool,
         *,
-        user_id: str | None = None,
+        user_id: str | None,
     ) -> list[FixedRow]:
         params = _params(customer_id, date_fields, start, end)
         params.update(metric=metric, descending=descending, limit=_TOP_ROWS, cap=MAX_CITED_VALUES)

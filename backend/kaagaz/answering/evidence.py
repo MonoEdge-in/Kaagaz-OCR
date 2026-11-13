@@ -359,7 +359,7 @@ class PgRetriever:
         scope: Scope,
         expansion: Expansion = NO_EXPANSION,
         *,
-        user_id: str | None = None,
+        user_id: str | None,
     ) -> Sequence[Hit]:
         # Imported here so the answering rules (and their tests) do not need the
         # search module; only the real retriever does.
@@ -389,7 +389,7 @@ class PgRetriever:
         expansion: Expansion = NO_EXPANSION,
         asked: Lists | None = None,
         *,
-        user_id: str | None = None,
+        user_id: str | None,
     ) -> Translated:
         from kaagaz.search.hybrid import search_translated
 
@@ -410,7 +410,7 @@ class PgRetriever:
         return Translated(hits, original, lists)
 
     def neighbours(
-        self, customer_id: str, hits: Sequence[Hit], scope: Scope, *, user_id: str | None = None
+        self, customer_id: str, hits: Sequence[Hit], scope: Scope, *, user_id: str | None
     ) -> Sequence[Hit]:
         from kaagaz.search.hybrid import neighbours
 
@@ -420,7 +420,7 @@ class PgRetriever:
             return neighbours(conn, customer_id=customer_id, hits=hits, size=self._neighbours, scope=scope)
 
     def whole(
-        self, customer_id: str, scope: Scope, budget: int, *, user_id: str | None = None
+        self, customer_id: str, scope: Scope, budget: int, *, user_id: str | None
     ) -> Sequence[Hit] | None:
         from kaagaz.search.hybrid import whole
 
@@ -434,7 +434,7 @@ class PgRetriever:
         hits: Sequence[Hit],
         scope: Scope,
         *,
-        user_id: str | None = None,
+        user_id: str | None,
     ) -> Sequence[Hit]:
         from kaagaz.search.hybrid import topic_pieces
 
@@ -452,7 +452,7 @@ class PgRetriever:
         hits: Sequence[Hit],
         scope: Scope,
         *,
-        user_id: str | None = None,
+        user_id: str | None,
     ) -> Sequence[Hit]:
         from kaagaz.search.hybrid import section_pieces
 
@@ -470,7 +470,7 @@ class PgRetriever:
             )
 
     def cards(
-        self, customer_id: str, document_ids: Sequence[str], scope: Scope, *, user_id: str | None = None
+        self, customer_id: str, document_ids: Sequence[str], scope: Scope, *, user_id: str | None
     ) -> Mapping[str, tuple[str, Any]]:
         from kaagaz.search.hybrid import cards
 

@@ -131,17 +131,17 @@ def register(db: Database) -> tuple[str, str, list[dict[str, Any]]]:
 
 
 def test_available_fields_are_those_of_ready_documents(db: Database) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     ready = add_document(db, customer, "a.xlsx")
     waiting = add_document(db, customer, "b.xlsx", status="clean")
     add_values(db, customer, ready, [cell("sheet:1:row:2", "profit", "5", number=5)])
     add_values(db, customer, waiting, [cell("sheet:1:row:2", "expense", "5", number=5)])
-    assert PgFixedQueries(db).available_fields(customer, FIELDS) == {"profit"}
+    assert PgFixedQueries(db).available_fields(customer, FIELDS, user_id=user) == {"profit"}
 
 
 def test_top_group_sums_per_party_inside_the_month(db: Database, register: Any) -> None:
     customer, document, values = register
-    rows = PgFixedQueries(db).top_group(customer, "profit", PARTIES, DATES, *AUGUST, True)
+    rows = PgFixedQueries(db).top_group(customer, "profit", PARTIES, DATES, *AUGUST, True, user_id=None)
 
     assert [(r.group, r.number, r.records) for r in rows] == [
         ("Sharma Traders", Decimal(120000), 2),  # 70,000 on 1 Aug + 50,000 on 31 Aug
@@ -164,9 +164,9 @@ def test_top_group_sums_per_party_inside_the_month(db: Database, register: Any) 
 def test_top_group_ascending_and_without_a_date(db: Database, register: Any) -> None:
     customer, _, _ = register
     fixed = PgFixedQueries(db)
-    lowest = fixed.top_group(customer, "profit", PARTIES, DATES, *AUGUST, False)
+    lowest = fixed.top_group(customer, "profit", PARTIES, DATES, *AUGUST, False, user_id=None)
     assert [r.group for r in lowest] == ["Mehta Textiles", "Sharma Traders"]
-    everything = fixed.top_group(customer, "profit", PARTIES, (), None, None, True)
+    everything = fixed.top_group(customer, "profit", PARTIES, (), None, None, True, user_id=None)
     assert [(r.group, r.number) for r in everything] == [
         ("Sharma Traders", Decimal(150000)),
         ("Gupta Stores", Decimal(90000)),
@@ -175,17 +175,17 @@ def test_top_group_ascending_and_without_a_date(db: Database, register: Any) -> 
 
 
 def test_one_needs_review_value_makes_the_group_unverified(db: Database) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     document = add_document(db, customer, "r.xlsx")
     add_values(
         db, customer, document, row(2, "Sharma Traders", 10, date(2026, 8, 3), party_label="needs_review")
     )
-    rows = PgFixedQueries(db).top_group(customer, "profit", PARTIES, DATES, *AUGUST, True)
+    rows = PgFixedQueries(db).top_group(customer, "profit", PARTIES, DATES, *AUGUST, True, user_id=user)
     assert rows[0].verified is False
 
 
 def test_a_record_with_two_values_for_one_role_is_left_out(db: Database) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     document = add_document(db, customer, "r.xlsx")
     two_profits = [
         *row(2, "Sharma Traders", 10, date(2026, 8, 3)),
@@ -199,12 +199,12 @@ def test_a_record_with_two_values_for_one_role_is_left_out(db: Database) -> None
     fine = row(5, "Bansal & Co", 5, date(2026, 8, 6))
     add_values(db, customer, document, [*two_profits, *two_dates, *two_parties, *fine])
 
-    rows = PgFixedQueries(db).top_group(customer, "profit", PARTIES, DATES, *AUGUST, True)
+    rows = PgFixedQueries(db).top_group(customer, "profit", PARTIES, DATES, *AUGUST, True, user_id=user)
     assert [(r.group, r.number) for r in rows] == [("Bansal & Co", Decimal(5))]
 
 
 def test_a_metric_without_a_number_is_left_out(db: Database) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     document = add_document(db, customer, "r.xlsx")
     add_values(
         db,
@@ -212,18 +212,18 @@ def test_a_metric_without_a_number_is_left_out(db: Database) -> None:
         document,
         [*row(2, "Sharma Traders", None, date(2026, 8, 3)), *row(3, "Mehta", 7, date(2026, 8, 3))],
     )
-    rows = PgFixedQueries(db).top_group(customer, "profit", PARTIES, DATES, *AUGUST, True)
+    rows = PgFixedQueries(db).top_group(customer, "profit", PARTIES, DATES, *AUGUST, True, user_id=user)
     assert [r.group for r in rows] == ["Mehta"]
 
 
 def test_documents_that_are_not_ready_are_left_out(db: Database) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     failed = add_document(db, customer, "f.xlsx", status="failed")
     add_values(db, customer, failed, row(2, "Sharma Traders", 10, date(2026, 8, 3)))
     fixed = PgFixedQueries(db)
-    assert fixed.top_group(customer, "profit", PARTIES, DATES, *AUGUST, True) == []
-    assert fixed.figures(customer, "profit", (), None, None, invoices=False) == []
-    assert fixed.count_documents(customer, None, None, date_fields=DATES) == []
+    assert fixed.top_group(customer, "profit", PARTIES, DATES, *AUGUST, True, user_id=user) == []
+    assert fixed.figures(customer, "profit", (), None, None, invoices=False, user_id=user) == []
+    assert fixed.count_documents(customer, None, None, date_fields=DATES, user_id=user) == []
 
 
 def summed(figures: list[Figure]) -> tuple[Decimal, int]:
@@ -236,31 +236,36 @@ def test_total_inside_a_month_and_overall(db: Database, register: Any) -> None:
     # and code adds them up; each cites its figure (it was one sum citing figures and dates).
     customer, _, values = register
     fixed = PgFixedQueries(db)
-    august = fixed.figures(customer, "profit", DATES, *AUGUST, invoices=False)
+    august = fixed.figures(customer, "profit", DATES, *AUGUST, invoices=False, user_id=None)
     assert summed(august) == (Decimal(200000), 3)
     assert all(f.verified and f.dated and f.date_verified and f.printed == 1 for f in august)
     august_keys = {"sheet:1:row:2", "sheet:1:row:3", "sheet:1:row:4"}
     cited = {f.value.value_id for f in august if f.value is not None}
     assert cited == {v["id"] for v in values if v["key"] in august_keys and v["field"] == "profit"}
     assert [f.amount for f in august] == [Decimal(70000), Decimal(80000), Decimal(50000)]  # by date
-    overall = fixed.figures(customer, "profit", (), None, None, invoices=False)
+    overall = fixed.figures(customer, "profit", (), None, None, invoices=False, user_id=None)
     assert summed(overall) == (Decimal(320000), 5)
     assert {f.value.field for f in overall if f.value is not None} == {"profit"}
-    assert fixed.figures(customer, "profit", DATES, date(2025, 1, 1), date(2026, 1, 1), invoices=False) == []
+    assert (
+        fixed.figures(
+            customer, "profit", DATES, date(2025, 1, 1), date(2026, 1, 1), invoices=False, user_id=None
+        )
+        == []
+    )
 
 
 def test_extreme_value(db: Database, register: Any) -> None:
     customer, _, _ = register
     fixed = PgFixedQueries(db)
-    highest = fixed.extreme_value(customer, "profit", DATES, *AUGUST, True)
+    highest = fixed.extreme_value(customer, "profit", DATES, *AUGUST, True, user_id=None)
     assert [r.number for r in highest] == [Decimal(80000), Decimal(70000), Decimal(50000)]
     assert {ref.field for ref in highest[0].values} == {"profit", "date"}
-    lowest = fixed.extreme_value(customer, "profit", (), None, None, False)
+    lowest = fixed.extreme_value(customer, "profit", (), None, None, False, user_id=None)
     assert lowest[0].number == Decimal(30000)
 
 
 def test_count_documents_counts_each_document_once(db: Database) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     sheet = add_document(db, customer, "r.xlsx")
     invoice = add_document(db, customer, "bill.pdf", detected_type="pdf")
     old_invoice = add_document(db, customer, "old.pdf", detected_type="pdf")
@@ -271,21 +276,21 @@ def test_count_documents_counts_each_document_once(db: Database) -> None:
         db, customer, old_invoice, [cell("document", "invoice_date", "1/1/2025", day=date(2025, 1, 1))]
     )
 
-    [count] = PgFixedQueries(db).count_documents(customer, *AUGUST, date_fields=DATES)
+    [count] = PgFixedQueries(db).count_documents(customer, *AUGUST, date_fields=DATES, user_id=user)
     assert (count.number, count.records, count.verified) == (Decimal(2), 2, False)
     assert {ref.document_id for ref in count.values} == {sheet, invoice}
     assert len(count.values) == 2
-    [every] = PgFixedQueries(db).count_documents(customer, None, None, date_fields=DATES)
+    [every] = PgFixedQueries(db).count_documents(customer, None, None, date_fields=DATES, user_id=user)
     assert every.number == Decimal(3)
 
 
 def test_citations_are_capped(db: Database) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     document = add_document(db, customer, "r.xlsx")
     add_values(
         db, customer, document, [v for r in range(2, 32) for v in row(r, "Sharma", r, date(2026, 8, 3))]
     )
-    [top] = PgFixedQueries(db).top_group(customer, "profit", PARTIES, DATES, *AUGUST, True)
+    [top] = PgFixedQueries(db).top_group(customer, "profit", PARTIES, DATES, *AUGUST, True, user_id=user)
     assert top.records == 30
     assert len(top.values) == MAX_CITED_VALUES
 
@@ -294,16 +299,18 @@ def test_a_field_name_is_only_ever_a_value(db: Database, register: Any) -> None:
     customer, _, _ = register
     fixed = PgFixedQueries(db)
     hostile = "profit' OR '1'='1"
-    assert fixed.figures(customer, hostile, (), None, None, invoices=False) == []
-    assert fixed.top_group(customer, "profit", [hostile], (), None, None, True) == []
+    assert fixed.figures(customer, hostile, (), None, None, invoices=False, user_id=None) == []
+    assert fixed.top_group(customer, "profit", [hostile], (), None, None, True, user_id=None) == []
 
 
 def test_start_and_end_go_together(db: Database) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     with pytest.raises(ValueError, match="together"):
-        PgFixedQueries(db).figures(customer, "profit", DATES, date(2026, 8, 1), None, invoices=False)
+        PgFixedQueries(db).figures(
+            customer, "profit", DATES, date(2026, 8, 1), None, invoices=False, user_id=user
+        )
     with pytest.raises(ValueError, match="date fields"):
-        PgFixedQueries(db).figures(customer, "profit", (), *AUGUST, invoices=False)
+        PgFixedQueries(db).figures(customer, "profit", (), *AUGUST, invoices=False, user_id=user)
 
 
 # --- a labelled invoice's values count once per document ------------------------------
@@ -380,61 +387,63 @@ def add_register(db: Database, customer: str) -> None:
 
 
 def test_an_invoice_total_printed_on_two_pages_is_counted_once(db: Database) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     values = add_invoice(db, customer)
     fixed = PgFixedQueries(db)
 
     # Changed on purpose (PRD 6 C, 24 Oct 2026): one record, citing its figure (it was a sum
     # citing the figure and the date).
-    [august] = fixed.figures(customer, "total_amount", DATES, *AUGUST, invoices=False)
+    [august] = fixed.figures(customer, "total_amount", DATES, *AUGUST, invoices=False, user_id=user)
     assert (august.amount, august.printed, august.dated) == (Decimal(1180), 1, True)
     first_page = {v["id"] for v in values if v["key"] == "document" and v["field"] == "total_amount"}
     assert august.value is not None and {august.value.value_id} == first_page
-    overall = fixed.figures(customer, "total_amount", (), None, None, invoices=False)
+    overall = fixed.figures(customer, "total_amount", (), None, None, invoices=False, user_id=user)
     assert summed(overall) == (Decimal(1180), 1)
 
 
 def test_top_group_counts_an_invoice_once(db: Database) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     add_invoice(db, customer)
     fixed = PgFixedQueries(db)
 
-    august = fixed.top_group(customer, "total_amount", PARTIES, DATES, *AUGUST, True)
+    august = fixed.top_group(customer, "total_amount", PARTIES, DATES, *AUGUST, True, user_id=user)
     assert [(r.group, r.number, r.records) for r in august] == [("Sharma Traders", Decimal(1180), 1)]
-    overall = fixed.top_group(customer, "total_amount", PARTIES, (), None, None, True)
+    overall = fixed.top_group(customer, "total_amount", PARTIES, (), None, None, True, user_id=user)
     assert [(r.group, r.number, r.records) for r in overall] == [("Sharma Traders", Decimal(1180), 1)]
 
 
 def test_extreme_value_lists_an_invoice_once(db: Database) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     add_invoice(db, customer)
-    rows = PgFixedQueries(db).extreme_value(customer, "total_amount", DATES, *AUGUST, True)
+    rows = PgFixedQueries(db).extreme_value(customer, "total_amount", DATES, *AUGUST, True, user_id=user)
     assert [(r.number, r.records) for r in rows] == [(Decimal(1180), 1)]
 
 
 def test_count_documents_takes_an_invoices_date_from_its_document_record(db: Database) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     add_invoice(db, customer, LATER_DATE_LINES)
     fixed = PgFixedQueries(db)
 
     # The same answer as the total: the invoice is not in August at all.
-    assert fixed.count_documents(customer, *AUGUST, date_fields=DATES) == []
-    assert fixed.figures(customer, "total_amount", DATES, *AUGUST, invoices=False) == []
-    [july] = fixed.count_documents(customer, date(2026, 7, 1), date(2026, 8, 1), date_fields=DATES)
+    assert fixed.count_documents(customer, *AUGUST, date_fields=DATES, user_id=user) == []
+    assert fixed.figures(customer, "total_amount", DATES, *AUGUST, invoices=False, user_id=user) == []
+    [july] = fixed.count_documents(
+        customer, date(2026, 7, 1), date(2026, 8, 1), date_fields=DATES, user_id=user
+    )
     assert (july.number, july.records) == (Decimal(1), 1)
     assert [ref.value_text for ref in july.values] == ["12/07/2026"]
 
 
 def test_a_register_column_named_total_amount_still_sums_every_row(db: Database) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     add_invoice(db, customer)
     add_register(db, customer)
     fixed = PgFixedQueries(db)
 
-    august = fixed.figures(customer, "total_amount", DATES, *AUGUST, invoices=False)
+    august = fixed.figures(customer, "total_amount", DATES, *AUGUST, invoices=False, user_id=user)
     # 1,000 + 2,500 + 4,000 from the register, and the invoice's 1,180 once
     assert summed(august) == (Decimal(8680), 4)
-    rows = fixed.top_group(customer, "total_amount", PARTIES, DATES, *AUGUST, True)
+    rows = fixed.top_group(customer, "total_amount", PARTIES, DATES, *AUGUST, True, user_id=user)
     assert [(r.group, r.number, r.records) for r in rows] == [
         ("Sharma Traders", Decimal(6180), 3),
         ("Mehta Textiles", Decimal(2500), 1),
@@ -452,7 +461,7 @@ SHEET_INVOICE = [
 
 
 def test_a_spreadsheet_invoices_total_is_counted_once_never_beside_its_cells(db: Database) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     document = add_document(db, customer, "bill-9.xlsx")
     spans = [
         Span(text=cell_text, raw=cell_text, location=CellLocation(1, r, c))
@@ -475,22 +484,22 @@ def test_a_spreadsheet_invoices_total_is_counted_once_never_beside_its_cells(db:
     add_register(db, customer)  # a register's rows, with no document record, all still count
     fixed = PgFixedQueries(db)
 
-    august = fixed.figures(customer, "total_amount", DATES, *AUGUST, invoices=False)
+    august = fixed.figures(customer, "total_amount", DATES, *AUGUST, invoices=False, user_id=user)
     # 1,000 + 2,500 + 4,000 from the register, and the invoice's 1,000 once (not 600 + 400 + 1,000 more)
     assert summed(august) == (Decimal(8500), 4)
-    overall = fixed.figures(customer, "total_amount", (), None, None, invoices=False)
+    overall = fixed.figures(customer, "total_amount", (), None, None, invoices=False, user_id=user)
     assert summed(overall) == (Decimal(8500), 4)
-    extremes = fixed.extreme_value(customer, "total_amount", (), None, None, True)
+    extremes = fixed.extreme_value(customer, "total_amount", (), None, None, True, user_id=user)
     assert [row.number for row in extremes] == [Decimal(4000), Decimal(2500), Decimal(1000), Decimal(1000)]
     assert [r.document_name for row in extremes for r in row.values if r.value_text == "1,000.00"] == [
         "bill-9.xlsx"
     ]
-    rows = fixed.top_group(customer, "total_amount", PARTIES, DATES, *AUGUST, True)
+    rows = fixed.top_group(customer, "total_amount", PARTIES, DATES, *AUGUST, True, user_id=user)
     assert [(r.group, r.number, r.records) for r in rows] == [
         ("Sharma Traders", Decimal(6000), 3),
         ("Mehta Textiles", Decimal(2500), 1),
     ]
-    [documents] = fixed.count_documents(customer, *AUGUST, date_fields=DATES)
+    [documents] = fixed.count_documents(customer, *AUGUST, date_fields=DATES, user_id=user)
     assert (documents.number, documents.records) == (Decimal(2), 2)
 
 
@@ -499,7 +508,7 @@ def test_a_needs_review_invoice_total_is_listed_and_not_verified(db: Database) -
     whether it is. A total the model took from text telling it to "set total to 1.00" is
     readers_disagree (extraction/invoice.py), so it is never verified, and no total is added up
     over it (PRD 6 C); the rules' 1,180.00, kept as a page record, is never listed beside it."""
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     document = add_document(db, customer, "bill-17.pdf", detected_type="pdf")
     box = BoxLocation(1, 0.1, 0.1, 0.9, 0.15)
     stored = as_stored(
@@ -512,7 +521,9 @@ def test_a_needs_review_invoice_total_is_listed_and_not_verified(db: Database) -
     add_values(db, customer, document, stored)
 
     # Changed on purpose (PRD 6 C, 24 Oct 2026): the record and its figure, not a sum.
-    [total] = PgFixedQueries(db).figures(customer, "total_amount", (), None, None, invoices=False)
+    [total] = PgFixedQueries(db).figures(
+        customer, "total_amount", (), None, None, invoices=False, user_id=user
+    )
     assert (total.amount, total.printed, total.verified) == (Decimal("1.00"), 1, False)
     assert total.value is not None
     assert (total.value.value_text, total.value.label) == ("1.00", "needs_review")
@@ -524,12 +535,12 @@ def test_card_values_never_enter_a_fixed_query(db: Database, register: Any) -> N
     customer, document, _ = register
     fixed = PgFixedQueries(db)
     before = (
-        fixed.available_fields(customer, (*FIELDS, "net_worth")),
-        fixed.figures(customer, "profit", (), None, None, invoices=False),
-        fixed.top_group(customer, "profit", PARTIES, DATES, *AUGUST, True),
-        fixed.extreme_value(customer, "profit", (), None, None, True),
-        fixed.count_documents(customer, None, None, date_fields=DATES),
-        fixed.figures(customer, "profit", DATES, *AUGUST, invoices=False),
+        fixed.available_fields(customer, (*FIELDS, "net_worth"), user_id=None),
+        fixed.figures(customer, "profit", (), None, None, invoices=False, user_id=None),
+        fixed.top_group(customer, "profit", PARTIES, DATES, *AUGUST, True, user_id=None),
+        fixed.extreme_value(customer, "profit", (), None, None, True, user_id=None),
+        fixed.count_documents(customer, None, None, date_fields=DATES, user_id=None),
+        fixed.figures(customer, "profit", DATES, *AUGUST, invoices=False, user_id=None),
     )
     card = [
         cell("card", "profit", "999999", number=999999, label="needs_review"),
@@ -544,12 +555,12 @@ def test_card_values_never_enter_a_fixed_query(db: Database, register: Any) -> N
     add_values(db, customer, card_only, [{**value, "id": str(uuid.uuid4())} for value in card])
 
     after = (
-        fixed.available_fields(customer, (*FIELDS, "net_worth")),
-        fixed.figures(customer, "profit", (), None, None, invoices=False),
-        fixed.top_group(customer, "profit", PARTIES, DATES, *AUGUST, True),
-        fixed.extreme_value(customer, "profit", (), None, None, True),
-        fixed.count_documents(customer, None, None, date_fields=DATES),
-        fixed.figures(customer, "profit", DATES, *AUGUST, invoices=False),
+        fixed.available_fields(customer, (*FIELDS, "net_worth"), user_id=None),
+        fixed.figures(customer, "profit", (), None, None, invoices=False, user_id=None),
+        fixed.top_group(customer, "profit", PARTIES, DATES, *AUGUST, True, user_id=None),
+        fixed.extreme_value(customer, "profit", (), None, None, True, user_id=None),
+        fixed.count_documents(customer, None, None, date_fields=DATES, user_id=None),
+        fixed.figures(customer, "profit", DATES, *AUGUST, invoices=False, user_id=None),
     )
     assert after == before
     assert "net_worth" not in after[0]
@@ -561,7 +572,7 @@ def test_card_values_never_enter_a_fixed_query(db: Database, register: Any) -> N
 def test_invoice_line_amounts_are_never_used_and_total_amount_still_plans(db: Database) -> None:
     """Plan conflict 1: a line's amount would make intent's "amount" (total_amount or amount)
     ambiguous for every customer with invoices, so line records stay out, like page records."""
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     document = add_document(db, customer, "bill-17.pdf", detected_type="pdf")
     spans = [
         Span(text=line, raw=line, location=BoxLocation(page, 0.1, 0.1 * n, 0.9, 0.1 * n + 0.05))
@@ -576,18 +587,18 @@ def test_invoice_line_amounts_are_never_used_and_total_amount_still_plans(db: Da
     add_values(db, customer, document, as_stored([*values_from_lines(spans), *lines]))
     fixed = PgFixedQueries(db)
 
-    available = fixed.available_fields(customer, (*FIELDS, "invoice_number", "description"))
+    available = fixed.available_fields(customer, (*FIELDS, "invoice_number", "description"), user_id=user)
     assert available == {"party_name", "invoice_number", "invoice_date", "total_amount"}
-    assert fixed.figures(customer, "amount", (), None, None, invoices=False) == []
-    assert fixed.extreme_value(customer, "amount", (), None, None, True) == []
-    august = fixed.figures(customer, "total_amount", DATES, *AUGUST, invoices=False)
+    assert fixed.figures(customer, "amount", (), None, None, invoices=False, user_id=user) == []
+    assert fixed.extreme_value(customer, "amount", (), None, None, True, user_id=user) == []
+    august = fixed.figures(customer, "total_amount", DATES, *AUGUST, invoices=False, user_id=user)
     assert summed(august) == (Decimal(1180), 1)
     normalised = normalise("Total amount in August 2026?")
     plan = plan_fixed(
         normalised,
         date_range(normalised, date(2026, 9, 30)),
         mentions_date(normalised),
-        lambda asked: fixed.available_fields(customer, asked),
+        lambda asked: fixed.available_fields(customer, asked, user_id=user),
     )
     assert plan == FixedPlan("total", "total_amount", (), ("invoice_date",), *AUGUST)
 
@@ -688,7 +699,7 @@ def add_invoice_row(
 
 
 def test_count_invoices_counts_each_invoice_inside_the_month(db: Database) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     in_august = {
         add_invoice_row(db, customer, date(2026, 8, 5)),
         add_invoice_row(db, customer, date(2026, 8, 31)),
@@ -697,12 +708,12 @@ def test_count_invoices_counts_each_invoice_inside_the_month(db: Database) -> No
     add_invoice_row(db, customer, None)  # no date read: counted overall, never inside a month
     fixed = PgFixedQueries(db)
 
-    [august] = fixed.count_invoices(customer, *AUGUST)
+    [august] = fixed.count_invoices(customer, *AUGUST, user_id=user)
     assert (august.number, august.records, august.verified) == (Decimal(2), 2, True)
     assert {ref.value_id for ref in august.values} == in_august
-    [overall] = fixed.count_invoices(customer, None, None)
+    [overall] = fixed.count_invoices(customer, None, None, user_id=user)
     assert (overall.number, overall.records) == (Decimal(4), 4)
-    assert fixed.count_invoices(customer, date(2026, 6, 1), date(2026, 7, 1)) == []
+    assert fixed.count_invoices(customer, date(2026, 6, 1), date(2026, 7, 1), user_id=user) == []
 
 
 def test_one_invoice_not_verified_or_not_passing_its_checks_makes_the_count_unverified(db: Database) -> None:
@@ -711,25 +722,25 @@ def test_one_invoice_not_verified_or_not_passing_its_checks_makes_the_count_unve
         ("verified", "failed"),
         ("verified", "not_checked"),
     ]:
-        customer, _ = new_customer(db)
+        customer, user = new_customer(db)
         add_invoice_row(db, customer, date(2026, 8, 5))
         add_invoice_row(db, customer, date(2026, 8, 6), label=label, check_status=check_status)
-        [august] = PgFixedQueries(db).count_invoices(customer, *AUGUST)
+        [august] = PgFixedQueries(db).count_invoices(customer, *AUGUST, user_id=user)
         assert (august.number, august.verified) == (Decimal(2), False), (label, check_status)
 
 
 def test_count_invoices_leaves_out_documents_that_are_not_ready(db: Database) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     add_invoice_row(db, customer, date(2026, 8, 5))
     add_invoice_row(db, customer, date(2026, 8, 6), document_status="received")
-    [august] = PgFixedQueries(db).count_invoices(customer, *AUGUST)
+    [august] = PgFixedQueries(db).count_invoices(customer, *AUGUST, user_id=user)
     assert august.number == Decimal(1)
 
 
 def test_count_invoices_needs_start_and_end_together(db: Database) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     with pytest.raises(ValueError, match="start and end go together"):
-        PgFixedQueries(db).count_invoices(customer, date(2026, 8, 1), None)
+        PgFixedQueries(db).count_invoices(customer, date(2026, 8, 1), None, user_id=user)
 
 
 # --- the numbers rule over invoices (PRD 6 C) --------------------------------------------------------
@@ -782,7 +793,7 @@ def test_fourteen_september_invoices_three_printing_a_profit_give_no_total(db: D
 
 
 def test_september_invoices_all_printing_a_verified_profit_give_the_total(db: Database) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     for day, profit in [(26, 31000), (12, 18400), (19, 9250)]:
         september_invoice(db, customer, day, profit)
 
@@ -795,7 +806,9 @@ def test_september_invoices_all_printing_a_verified_profit_give_the_total(db: Da
         "31,000.",
     ]
     assert answer.label == "verified"
-    figures = PgFixedQueries(db).figures(customer, "profit", ("invoice_date",), *SEPTEMBER, invoices=True)
+    figures = PgFixedQueries(db).figures(
+        customer, "profit", ("invoice_date",), *SEPTEMBER, invoices=True, user_id=user
+    )
     assert summed(figures) == (Decimal(58650), 3)
     assert all(f.verified and f.dated and f.date_verified for f in figures)
     september_invoice(db, customer, 30, 1000, check_status="failed")  # its figure is never verified
@@ -819,14 +832,14 @@ def test_an_undated_invoice_in_a_dated_question_withholds_the_total(db: Database
 
 def test_a_register_row_without_the_figure_is_a_record_that_prints_none(db: Database) -> None:
     """A row is a record: a register row that leaves the profit empty matches, with no figure."""
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     document = add_document(db, customer, "profit-register.xlsx")
     blank = [v for v in row(3, "Mehta Textiles", None, date(2026, 8, 15)) if v["field"] != "profit"]
     add_values(db, customer, document, [*row(2, "Sharma Traders", 70000, date(2026, 8, 1)), *blank])
     other = add_document(db, customer, "staff.xlsx")  # holds no profit: none of its rows match
     add_values(db, customer, other, [cell("sheet:1:row:2", "date", "2026-08-02", day=date(2026, 8, 2))])
 
-    figures = PgFixedQueries(db).figures(customer, "profit", DATES, *AUGUST, invoices=False)
+    figures = PgFixedQueries(db).figures(customer, "profit", DATES, *AUGUST, invoices=False, user_id=user)
 
     assert [(f.amount, f.printed) for f in figures] == [(Decimal(70000), 1), (None, 0)]
     assert figures[1].value is not None and figures[1].value.document_id == document
@@ -879,18 +892,18 @@ def ask(db: Database, customer: str, question: str) -> Answer:
 def test_a_sheets_printed_total_row_is_never_a_record(
     db: Database, label: str, day: str, printed: bool
 ) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     figure = "3,500" if printed else "9,000"  # a printed total adds up its sheet's other rows
     add_sheet(db, customer, [HEADER, *AUG_ROWS, (label, figure, day)])
     fixed = PgFixedQueries(db)
-    figures = fixed.figures(customer, "total_amount", (), None, None, invoices=False)
+    figures = fixed.figures(customer, "total_amount", (), None, None, invoices=False, user_id=user)
     assert [(f.amount, f.printed_total) for f in figures] == [
         (Decimal(1000), False),
         (Decimal(2500), False),
         (parse_amount(figure), printed),
     ]
-    highest = fixed.extreme_value(customer, "total_amount", (), None, None, True)
-    ranked = fixed.top_group(customer, "total_amount", PARTIES, (), None, None, True)
+    highest = fixed.extreme_value(customer, "total_amount", (), None, None, True, user_id=user)
+    ranked = fixed.top_group(customer, "total_amount", PARTIES, (), None, None, True, user_id=user)
     if printed:
         assert [row.number for row in highest] == [2500, 1000]
         assert [(row.group, row.number) for row in ranked] == [
@@ -1076,7 +1089,7 @@ def test_the_rule_and_the_ranking_see_the_same_sheet_rows(db: Database) -> None:
 
 
 def test_a_highest_is_verified_only_when_every_value_compared_is(db: Database) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     document = add_document(db, customer, "profit-register.xlsx")
     rows = [
         *row(2, "Sharma Traders", 70000, date(2026, 8, 1)),
@@ -1085,7 +1098,7 @@ def test_a_highest_is_verified_only_when_every_value_compared_is(db: Database) -
     ]
     add_values(db, customer, document, rows)
 
-    [highest, *_] = PgFixedQueries(db).extreme_value(customer, "profit", DATES, *AUGUST, True)
+    [highest, *_] = PgFixedQueries(db).extreme_value(customer, "profit", DATES, *AUGUST, True, user_id=user)
     assert (highest.number, highest.verified) == (Decimal(80000), True)
     assert {ref.value_id for ref in highest.unsure} == {v["id"] for v in rows if v["label"] != "verified"}
     answer = ask(db, customer, "What was the highest profit in August 2026?")

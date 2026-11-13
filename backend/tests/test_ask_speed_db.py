@@ -95,11 +95,11 @@ def test_aspects_searched_at_once_rank_as_one_after_another(
     retriever = PgRetriever(db, recipe=RECIPE, ef_search=100, neighbours=0)
     opened, crossed = watched(db, monkeypatch)
 
-    at_once = retriever.search_translated(customer, "leave", axis(5), ASPECTS, 10, EVERYTHING)
+    at_once = retriever.search_translated(customer, "leave", axis(5), ASPECTS, 10, EVERYTHING, user_id=None)
     threads = set(opened)
     monkeypatch.setattr(hybrid, "SEARCH_FAN_OUT", 1)
     opened.clear()
-    in_turn = retriever.search_translated(customer, "leave", axis(5), ASPECTS, 10, EVERYTHING)
+    in_turn = retriever.search_translated(customer, "leave", axis(5), ASPECTS, 10, EVERYTHING, user_id=None)
 
     # Five texts: more than one thread at once, each in transactions of its own, then the details.
     assert len(threads) > 2 and len(set(opened)) == 2 and crossed == []
