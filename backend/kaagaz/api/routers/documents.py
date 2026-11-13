@@ -412,7 +412,7 @@ def list_documents(
     customer_id = user.customer_id
     tag_ids = [str(tag) for tag in tag_id or []]
     number = None if property is None else autofile.survey_digits(property)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         folder_ids = _folder_scope(conn, customer_id, folder_id, include_subfolders)
         department = (
             _folder_scope(conn, customer_id, department_id, True)
@@ -480,7 +480,7 @@ def zip_unpacks(conn: Connection, customer_id: str, rows: Sequence[RowMapping]) 
 
 def user_upload_policy(context: AppContext, user: CurrentUser) -> UploadPolicy:
     """This user's organisation's upload limits (``db/upload_policy.py``), a zip's included."""
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         return customer_policy(conn, user.customer_id, context.settings)
 
 
@@ -492,7 +492,7 @@ def get_upload_limits(user: User, context: Context) -> dict[str, Any]:
     ``readers`` is the readings an upload may ask for, the default first, or Auto alone
     (``kaagaz/api/readers.py``). The server still checks everything itself. Three queries."""
     policy = user_upload_policy(context, user)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         readers = offer(conn, user.customer_id, context.settings)
         folders = effective_limits(conn, user.customer_id)  # #484
         sort_available = autofile.applies(conn, user.customer_id, user.user_id)
@@ -610,7 +610,7 @@ class _ReadingQueue:
 
     def enqueue(self, job: Job, *, express: bool = False) -> None:
         reading = self._reading
-        with unavailable(), self._db.customer(job.customer_id) as conn:
+        with unavailable(), self._db.user(job.customer_id, self._requested_by) as conn:
             listing.set_reading(
                 conn,
                 job.customer_id,
@@ -648,7 +648,7 @@ def _department(context: AppContext, user: CurrentUser, department_id: str) -> s
     """F2: the upload's department, a top-level department folder of this customer (404
     otherwise, before anything is stored). The file goes in it, and auto-filing files it
     further (``db/autofile.py``)."""
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         path = folders_sql.folder_path(conn, user.customer_id, department_id)
     if len(path) != 1 or path[0].kind != "department":
         raise ApiError(404, "not_found")
@@ -674,7 +674,7 @@ def _accept(
         or asked != _Asked()
         or context.settings.ocr_engine == GEMINI
     ):
-        with context.db.customer(customer_id) as conn:
+        with context.db.user(customer_id, user.user_id) as conn:
             reading = _checked_reading(conn, user, context.settings, asked)  # before anything is stored
             if folder_id is not None and not folders_sql.folder_path(conn, customer_id, folder_id):
                 if item is not None:
@@ -719,7 +719,7 @@ def _upload_reply(
     """The reply to an upload or a new version: the document, and whether it was a
     duplicate and is in Trash. A new file (not a duplicate) is audited first."""
     customer_id = user.customer_id
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         if not result.duplicate:
             audit.record(
                 conn,
@@ -760,7 +760,7 @@ _ITEM_REFUSED = {
 
 def _sendable_item(context: AppContext, user: CurrentUser, item_id: str) -> ItemRow:
     """#484: this user's item, not failed (404, 409 ``item_refused``). One query."""
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         row = items_sql.item(conn, user.customer_id, item_id, user_id=user.user_id)
     if row is None:
         raise ApiError(404, "not_found")
@@ -773,7 +773,7 @@ def _fail_if_folder_gone(context: AppContext, user: CurrentUser, item: ItemRow) 
     """#484: an item whose folder was deleted since fails (``folder_gone``, committed), and the
     reply is 409: it never lands at the top level. One transaction."""
     customer_id = user.customer_id
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         gone = not folders_sql.folder_path(conn, customer_id, item.folder_id)
         if gone:
             items_sql.fail_item(conn, customer_id, item.id, "folder_gone")
@@ -796,7 +796,7 @@ def _item_reply(context: AppContext, user: CurrentUser, item: ItemRow) -> dict[s
     """#484: the reply for an item already in (stored or duplicate), nothing stored again."""
     customer_id, document, in_trash = user.customer_id, None, False
     if item.document_id is not None:
-        with context.db.customer(customer_id) as conn:
+        with context.db.user(customer_id, user.user_id) as conn:
             row = listing.get_document(conn, customer_id, item.document_id)
             tags = tags_sql.tags_for_documents(conn, customer_id, [item.document_id])
         if row is not None:
@@ -827,10 +827,10 @@ def _accept_item(
         body = _accept(context, user, upload, policy, item.folder_id, item.batch_id, asked, item=item)
     except ApiError as refused:
         if refused.code in items_sql.FAILURE_CODES:
-            with context.db.customer(customer_id) as conn:
+            with context.db.user(customer_id, user.user_id) as conn:
                 items_sql.fail_item(conn, customer_id, item.id, refused.code)
         raise
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         items_sql.finish_item(
             conn,
             customer_id,
@@ -905,7 +905,7 @@ def _accept_version(
 ) -> dict[str, Any]:
     customer_id = user.customer_id
     reading = ReadingChoice(SINGLE)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         target = listing.get_document(conn, customer_id, of_document_id)
         if target is not None:
             reading = _checked_reading(conn, user, context.settings, asked)  # before anything is stored
@@ -927,7 +927,7 @@ def _accept_version(
     except UnknownFamily:  # gone or moved to Trash since the check; the service removed the stored file
         raise ApiError(404, "not_found") from None
     if note is not None and not result.duplicate:  # V9: this version's note
-        with context.db.customer(customer_id) as conn:
+        with context.db.user(customer_id, user.user_id) as conn:
             listing.set_details(conn, customer_id, result.document_id, by=user.user_id, version_note=note)
     details = {"family_id": str(target["family_id"]), **reading.details()}
     return _upload_reply(context, user, result, action="document.version", details=details)
@@ -974,7 +974,7 @@ def resumable_candidates(body: ResumableUploadStart, user: User, context: Contex
     if body.file_size <= 0 or body.file_size > policy.largest_limit:
         raise _too_large_to_start(body, policy)
     filename = display_name(body.file_name)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         return {
             "candidates": upload_sessions_sql.candidates(
                 conn,
@@ -1016,7 +1016,7 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
         _fail_if_folder_gone(context, user, item)
     if body.resume_session_id:
         session_id = str(uuid.UUID(body.resume_session_id))
-        with context.db.customer(user.customer_id) as conn:
+        with context.db.user(user.customer_id, user.user_id) as conn:
             row = upload_sessions_sql.get(conn, user.customer_id, user.user_id, session_id, finished=True)
         if (
             row is None
@@ -1042,7 +1042,7 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
             target_id = str(uuid.UUID(body.version_document_id))
         except ValueError:
             raise ApiError(400, "bad_request") from None
-        with context.db.customer(user.customer_id) as conn:
+        with context.db.user(user.customer_id, user.user_id) as conn:
             target = listing.get_document(conn, user.customer_id, target_id)
         if target is None:
             raise ApiError(404, "not_found")
@@ -1054,7 +1054,7 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
         or asked != _Asked()
         or context.settings.ocr_engine == GEMINI
     ):
-        with context.db.customer(user.customer_id) as conn:
+        with context.db.user(user.customer_id, user.user_id) as conn:
             _checked_reading(conn, user, context.settings, asked)
             if folder_id is not None and not folders_sql.folder_path(conn, user.customer_id, folder_id):
                 raise ApiError(404, "not_found")
@@ -1081,7 +1081,7 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
         "parts": {},
     }
     try:
-        with context.db.customer(user.customer_id) as conn:
+        with context.db.user(user.customer_id, user.user_id) as conn:
             upload_sessions_sql.create(
                 conn,
                 customer_id=user.customer_id,
@@ -1103,7 +1103,7 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
 async def upload_resumable_part(
     session_id: uuid.UUID, part_number: int, request: Request, user: User, context: Context
 ) -> Response:
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         session = upload_sessions_sql.get(conn, user.customer_id, user.user_id, str(session_id))
     if session is None:
         raise ApiError(404, "not_found")
@@ -1126,7 +1126,7 @@ async def upload_resumable_part(
         part_number,
         bytes(body),
     )
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         upload_sessions_sql.set_part_hash(
             conn, user.customer_id, user.user_id, str(session_id), part_number, digest
         )
@@ -1135,7 +1135,7 @@ async def upload_resumable_part(
 
 @router.post("/documents/upload-sessions/{session_id}/complete")
 def complete_resumable_upload(session_id: uuid.UUID, user: User, context: Context) -> JSONResponse:
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         session = upload_sessions_sql.get(
             conn, user.customer_id, user.user_id, str(session_id), finished=True
         )
@@ -1145,7 +1145,7 @@ def complete_resumable_upload(session_id: uuid.UUID, user: User, context: Contex
     if metadata.get("completed") is not None:  # sent again after a lost reply (production QA T1)
         return JSONResponse(metadata["completed"], status_code=200)
     customer_id, user_id, key = user.customer_id, user.user_id, str(session_id)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         claimed = upload_sessions_sql.claim(conn, customer_id, user_id, key)
         if not claimed:  # finished meanwhile, or another complete is storing it (review of #564)
             latest = upload_sessions_sql.get(conn, customer_id, user_id, key, finished=True)
@@ -1156,10 +1156,10 @@ def complete_resumable_upload(session_id: uuid.UUID, user: User, context: Contex
         raise ApiError(429, "rate_limited", _STILL_STORING, headers={"Retry-After": "2"})
     try:
         result, status = _store_completed(context, user, session_id, session, metadata)
-        with context.db.customer(customer_id) as conn:  # the reply first: a resend gets it
+        with context.db.user(customer_id, user.user_id) as conn:  # the reply first: a resend gets it
             upload_sessions_sql.complete(conn, customer_id, user_id, key, result)
     except BaseException:
-        with context.db.customer(customer_id) as conn:
+        with context.db.user(customer_id, user.user_id) as conn:
             upload_sessions_sql.release(conn, customer_id, user_id, key)
         raise
     try:
@@ -1238,7 +1238,7 @@ def _store_completed(
             if refused.status == 429:  # a send slot: the session is kept for the retry
                 raise
             context.storage.delete_resumable(str(session["storage_key"]))
-            with context.db.customer(user.customer_id) as conn:
+            with context.db.user(user.customer_id, user.user_id) as conn:
                 upload_sessions_sql.delete(conn, user.customer_id, user.user_id, str(session_id))
             raise
     return result, status
@@ -1263,7 +1263,7 @@ def _readable_or_409(conn: Connection, user: CurrentUser, document_id: uuid.UUID
 @router.get("/documents/{document_id}")
 def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
     customer_id, target = user.customer_id, str(document_id)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         row = _document_or_404(conn, user, document_id)
         pages = listing.list_pages(conn, customer_id, target)
         values = listing.list_values(conn, customer_id, target)
@@ -1317,7 +1317,7 @@ def get_document_summary(document_id: uuid.UUID, user: User, context: Context) -
     """The detail's own summary, as in the list (two queries): the viewer asks for it
     while a document is read, then for the whole detail once it settles."""
     customer_id, target = user.customer_id, str(document_id)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         row = _document_or_404(conn, user, document_id)
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
         unpack = zip_unpacks(conn, customer_id, [row]).get(target)
@@ -1378,7 +1378,7 @@ def get_document_activity(
 ) -> dict[str, Any]:
     """File management A5: ``{items: [AuditEntry], next_cursor}``, what happened to every
     version of the family, newest first (document, version and folder actions only)."""
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         family = str(_document_or_404(conn, user, document_id)["family_id"])
         return timeline(conn, user.customer_id, audit.Filters(family_id=family), limit=limit, cursor=cursor)
 
@@ -1388,7 +1388,7 @@ def get_document_questions(document_id: uuid.UUID, user: User, context: Context)
     """File management P2: ``{items: [{id, conversation_id, question, asked_at, answer}]}``,
     this person's questions asked about any version of the family or answered from one,
     newest first, at most chat_sql.QUESTIONS_SHOWN."""
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         family = str(_document_or_404(conn, user, document_id)["family_id"])
         rows = chat_sql.document_questions(conn, user.customer_id, user.user_id, family)
         # As the chat view: sources in Trash, deleted or replaced since (views.answer_with_source_states).
@@ -1420,7 +1420,7 @@ def reprocess_document(
     customer_id, target = user.customer_id, str(document_id)
     body = body or ReadAgainBody()
     read_model = body.read_model
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         _document_or_404(conn, user, document_id)
         reading = check_reading(
             conn,
@@ -1509,7 +1509,7 @@ def read_page_again(
     mark, the audit row, then the job."""
     customer_id, target = user.customer_id, str(document_id)
     regions = _regions(body)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         _document_or_404(conn, user, document_id)
         page = listing.get_page(conn, customer_id, target, page_no) if page_no >= 1 else None
         if page is None:
@@ -1565,7 +1565,7 @@ def keep_page_as_is(document_id: uuid.UUID, page_no: int, user: Reviewer, contex
     still flagged, with who accepted it and when. One transaction: the family lock,
     the change, the audit row."""
     customer_id, target = user.customer_id, str(document_id)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         row = _document_or_404(conn, user, document_id)
         if row["deleted_at"] is not None:
             raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.")
@@ -1660,7 +1660,7 @@ def update_document(
     customer_id, target = user.customer_id, str(document_id)
     folder_id = None if body.folder_id is None else str(body.folder_id)
     try:
-        with context.db.customer(customer_id) as conn:
+        with context.db.user(customer_id, user.user_id) as conn:
             if trash.lock_live_family(conn, customer_id, target) is None:
                 raise ApiError(404, "not_found")
             _details(conn, user, body, _document_or_404(conn, user, document_id))
@@ -1702,7 +1702,7 @@ def undo_autofile(document_id: uuid.UUID, user: User, context: Context) -> dict[
     inside one (File management F3), else "Not in a folder"; and return its summary."""
     customer_id, target = user.customer_id, str(document_id)
     try:
-        with context.db.customer(customer_id) as conn:
+        with context.db.user(customer_id, user.user_id) as conn:
             family_id = trash.lock_live_family(conn, customer_id, target)
             if family_id is None:
                 raise ApiError(404, "not_found")
@@ -1733,7 +1733,7 @@ def get_file(document_id: uuid.UUID, user: User, context: Context, download: boo
     logs ``document.download`` once the file is found; the viewer's own fetch is a view (#482).
     #522 PR 2: the viewer's fetch of a Word or PowerPoint file gets its PDF rendition, which the
     worker stored when it converted it (404 until then); Download gets the original."""
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         row = _readable_or_409(conn, user, document_id)
         if not download and row["status"] in _SERVABLE:
             _viewed(conn, user, document_id, "file")
@@ -1748,7 +1748,7 @@ def get_file(document_id: uuid.UUID, user: User, context: Context, download: boo
     except BlobNotFound:
         raise ApiError(404, "not_found") from None
     if download:
-        with context.db.customer(user.customer_id) as conn:
+        with context.db.user(user.customer_id, user.user_id) as conn:
             audit.record(
                 conn,
                 user.customer_id,
@@ -1777,7 +1777,7 @@ def get_file(document_id: uuid.UUID, user: User, context: Context, download: boo
 
 @router.get("/documents/{document_id}/pages/{page_no}/image")
 def get_page_image(document_id: uuid.UUID, page_no: int, user: User, context: Context) -> Response:
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         row = _readable_or_409(conn, user, document_id)
         if row["status"] == "rejected" or page_no < 1:
             raise ApiError(404, "not_found")
@@ -1799,7 +1799,7 @@ def get_page_readings(document_id: uuid.UUID, page_no: int, user: User, context:
     is exactly who may see the page image (above): any version out of Trash (T1: 409
     ``in_trash``), never a rejected one; and the page must exist. A view (#482)."""
     customer_id, target = user.customer_id, str(document_id)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         row = _readable_or_409(conn, user, document_id)
         if row["status"] == "rejected" or page_no < 1:
             raise ApiError(404, "not_found")
@@ -1827,7 +1827,7 @@ def get_document_words(
     ``in_trash`` (T1). Regions, page numbers and the asker's own words only, never the
     document's text. One statement, and the view (#482)."""
     words = page_words.clean_words(w or [])
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         found = listing.word_lines(conn, user.customer_id, str(document_id))
         if found is None:
             raise ApiError(404, "not_found")
@@ -1852,7 +1852,7 @@ def get_sheet_cells(
     if row_to < row_from:
         raise ApiError(400, "bad_request")
     row_to = min(row_to, row_from + MAX_SHEET_ROWS - 1)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         _readable_or_409(conn, user, document_id)
         page = listing.get_page(conn, user.customer_id, str(document_id), page_no)
         if page is None or page["unit"] != "cells":
@@ -1888,7 +1888,7 @@ def _may_trash(user: CurrentUser, row: RowMapping) -> None:
 def delete_document(document_id: uuid.UUID, user: User, context: Context) -> Response:
     """Move the whole family to Trash. A family already there keeps its first time."""
     customer_id, target = user.customer_id, str(document_id)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         row = _document_or_404(conn, user, document_id)
         _may_trash(user, row)
         if not trash.trash_document(conn, customer_id, target, by=user.user_id, now=context.clock()):
@@ -1911,7 +1911,7 @@ def restore_document(document_id: uuid.UUID, user: User, context: Context) -> di
     that went with a folder goes back into its folder, which comes back with its chain of folders
     (``trashed_folders.restore_document``; audited ``folder.restore`` too)."""
     customer_id, target = user.customer_id, str(document_id)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         _may_trash(user, _document_or_404(conn, user, document_id))
         try:
             found, chain = trashed_sql.restore_document(conn, customer_id, target, admin=user.role == "admin")
@@ -1972,7 +1972,7 @@ def delete_document_forever(document_id: uuid.UUID, user: CanDeleteForever, cont
     user an admin allowed (``require_delete_forever``). The audit row says ``by_grant`` when
     a grant was used, ``by_password`` for an admin's typed password."""
     customer_id, target = user.customer_id, str(document_id)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         try:
             versions = delete_family_forever(conn, context.storage, customer_id, target)
         except NotInTrash:

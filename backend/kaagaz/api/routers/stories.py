@@ -277,7 +277,7 @@ def my_story_matches(body: StoryMatchBody, user: User, context: Context) -> dict
     if not question_words(question):
         return {"story_matches": [], "searched": 0, "all": True, "reason": "no_content_words"}
     settings = context.settings
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         scope = resolve(conn, user.customer_id, body, timezone=settings.timezone)
     if scope.matches_nothing:
         return {"story_matches": [], "searched": 0, "all": True}

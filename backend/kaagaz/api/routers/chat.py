@@ -389,7 +389,7 @@ def ask(body: AskBody, user: CurrentUser, context: AppContext, background: Backg
 def _saved_reply(context: AppContext, user: CurrentUser, question_id: str) -> dict[str, Any] | None:
     """#535: the reply ``ask`` gave for ``question_id``, as it was saved; None when it was not;
     409 when it is not this person's question (nothing about it is said)."""
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         found = chat_sql.saved_turn(conn, user.customer_id, question_id)
     if found is None:
         return None
@@ -429,7 +429,7 @@ def _ask(
     memory, summary_turn, turns = NO_MEMORY, 0, 0
     earlier: list[str | None] = []  # the conversation's openings so far (PRD 6 A)
     pending: Pending | None = None
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         if conversation_id is not None:
             state = chat_sql.conversation_memory(conn, user.customer_id, conversation_id, user.user_id)
             if state is None:
@@ -521,7 +521,7 @@ def _ask(
 
         try:
             # #535: a streamed answer stopped by its cap is never saved, and one saved is finished.
-            with stream.saving(), context.db.customer(user.customer_id) as conn:
+            with stream.saving(), context.db.user(user.customer_id, user.user_id) as conn:
                 saved_to = _save(
                     conn,
                     body,
@@ -555,7 +555,7 @@ def _ask(
         )
     shown = message(answered)
     if copied and shown["answer"]:  # A10: a stored copy is shown as a conversation shows it
-        with context.db.customer(user.customer_id) as conn:
+        with context.db.user(user.customer_id, user.user_id) as conn:
             states = chat_sql.document_states(conn, user.customer_id, cited_document_ids(shown["answer"]))
         shown["answer"] = answer_with_source_states(shown["answer"], states)
     return {"conversation_id": conversation_id, "question": message(asked), "answer": shown}
@@ -911,7 +911,7 @@ def ready_questions(user: User, context: Context, background: BackgroundTasks) -
     """Home's questions for this person (answering/ready.py): ``{items: [{text, yours,
     ready}]}``, their own most-asked first; any whose answer is not ready yet is made after
     the reply, so a press a moment later answers at once."""
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         # The same questions on every visit until one is used (ready.ShownQuestions).
         picked = ready.SHOWN.get(user.customer_id, user.user_id) or ready.questions(
             conn, user.customer_id, user.user_id
@@ -983,7 +983,7 @@ def chat_options(user: User, context: Context) -> dict[str, Any]:
     list), the thinking levels and the default one, and whether more than one model may
     answer at once (its Ensemble switch and at least two models), at most ``max_agents``.
     No price, cost or budget (Tushar, 15 Oct 2026). Two statements."""
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         rows = usable_chat_models(conn, user.customer_id, settings=context.settings)
         allowed = effective_settings(conn, user.customer_id)
     levels = allowed["chat_levels"] or ["low"]
@@ -1102,7 +1102,7 @@ def _write_memory(
     only if ``summary_turn`` is still ``expected_turn``. Nothing is written when the model
     fails or another reply wrote first. The model call is outside any transaction."""
     every = context.settings.chat_summary_every
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user_id) as conn:
         state = chat_sql.conversation_memory(conn, customer_id, conversation_id, user_id)
         if state is None or state["summary_turn"] != expected_turn:
             return
@@ -1118,7 +1118,7 @@ def _write_memory(
     memory = context.answers.remember(_history(recent), previous, cited)
     if memory is None:
         return
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user_id) as conn:
         chat_sql.save_memory(
             conn,
             customer_id,
@@ -1207,14 +1207,14 @@ def _saved_scope(recent: Sequence[RowMapping]) -> ScopeBody | None:
 
 @router.get("/conversations")
 def list_conversations(user: User, context: Context) -> dict[str, Any]:
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         rows = chat_sql.list_conversations(conn, user.customer_id, user.user_id)
     return {"items": [conversation_summary(row) for row in rows]}
 
 
 @router.get("/conversations/{conversation_id}")
 def get_conversation(conversation_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         found = chat_sql.get_conversation(conn, user.customer_id, str(conversation_id), user.user_id)
         if found is None:
             raise ApiError(404, "not_found")
@@ -1247,7 +1247,7 @@ def rename_conversation(
     title = clean_name(body.title, max_length=MAX_TITLE)
     if title is None:
         raise ApiError(400, "bad_request", "Enter a name for the conversation.")
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         found = chat_sql.rename_conversation(
             conn, user.customer_id, str(conversation_id), user.user_id, title
         )
@@ -1268,7 +1268,7 @@ def rename_conversation(
 def delete_conversation(conversation_id: uuid.UUID, user: User, context: Context) -> Response:
     """The conversation and its messages and feedback (ON DELETE CASCADE); its AI spend
     stays, without the conversation (model_usage, ON DELETE SET NULL)."""
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         if not chat_sql.delete_conversation(conn, user.customer_id, str(conversation_id), user.user_id):
             raise ApiError(404, "not_found")
         audit.record(
@@ -1287,7 +1287,7 @@ def send_feedback(message_id: uuid.UUID, body: FeedbackBody, user: User, context
     if not feedback_limits.allow(user.user_id):
         raise ApiError(429, "rate_limited", TOO_MANY_RATINGS, headers={"Retry-After": "60"})
     reason = (body.reason.strip() or None) if body.reason else None
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         stored = chat_sql.upsert_feedback(
             conn,
             user.customer_id,
@@ -1308,7 +1308,7 @@ def pin_source(message_id: uuid.UUID, body: PinBody, user: User, context: Contex
     """ "Most relevant": the asker puts one source of an answer on top (0036). Kept as
     relevance feedback; the answer's text never changes. 404 for anyone else's answer or a
     document that is not this customer's."""
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         stored = chat_sql.add_pin(
             conn,
             user.customer_id,

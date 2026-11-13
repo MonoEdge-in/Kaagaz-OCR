@@ -387,7 +387,7 @@ def turn_on_two_step(body: CurrentPasswordBody, user: User, context: Context) ->
         raise ApiError(409, "conflict", "Two-step sign-in is already on.")
     now = context.clock()
     _check_current_password(context, user, body.password, now)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
     return _enrol_offer(context, user)
 
@@ -405,7 +405,7 @@ def turn_off_two_step(
         raise ApiError(409, "two_step_required", TWO_STEP_REQUIRED)
     now = context.clock()
     _prove(context, user, body.password, body.code)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         version = users_sql.turn_off_totp(conn, user.customer_id, user.user_id, now=now)
         if version is not None:
             _record(conn, user.customer_id, "auth.totp_off", actor=user.user_id, target=user.user_id)
@@ -435,7 +435,7 @@ def change_password(
     now = context.clock()
     _prove(context, user, body.current_password, body.code)
     password_hash = hash_password(body.new_password)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         row = users_sql.set_password(
             conn, user.customer_id, user.user_id, password_hash=password_hash, must_change=False
         )
@@ -461,7 +461,7 @@ def confirm_password(body: CurrentPasswordBody, user: User, request: Request, co
     if claims is None:  # never: ``user`` was read from these claims
         raise ApiError(401, "not_signed_in")
     _check_current_password(context, user, body.password, now)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
     response = Response(status_code=204)
     set_confirm_cookie(response, user, context.settings, now=_unix(now), session_id=claims.session_id)
@@ -471,7 +471,7 @@ def confirm_password(body: CurrentPasswordBody, user: User, request: Request, co
 @router.post("/auth/logout", status_code=204)
 def logout(request: Request, user: UserAllowPasswordChange, context: Context) -> Response:
     claims = session_claims(request, context.settings, _unix(context.clock()))
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         if claims is not None:  # always: ``user`` was read from these claims
             ends = datetime.fromtimestamp(claims.expires_at, UTC)
             users_sql.end_session(conn, user.customer_id, user.user_id, claims.session_id, expires_at=ends)
@@ -483,7 +483,7 @@ def logout(request: Request, user: UserAllowPasswordChange, context: Context) ->
 
 @router.post("/auth/logout-everywhere", status_code=204)
 def logout_everywhere(user: UserAllowGoogleLink, context: Context) -> Response:  # also the limited session
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         users_sql.bump_session_version(conn, user.customer_id, user.user_id)
         _record(conn, user.customer_id, "auth.logout_everywhere", actor=user.user_id, target=user.user_id)
     response = Response(status_code=204)
@@ -531,7 +531,7 @@ def _recent_connections(context: AppContext, user: CurrentUser) -> list[dict[str
     if not oidc.enabled_providers(context.settings):
         return []
     since = context.clock() - timedelta(days=RECENT_DAYS)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         rows = identities.for_user(conn, user.customer_id, user.user_id)
     return [
         {"provider": str(row["provider"]), "linked_at": iso(row["linked_at"])}
@@ -800,7 +800,7 @@ def _open_session(
     user = load_user(context.db, customer_id, user_id, scope=scope)
     if user is None:  # disabled in the meantime
         raise _refused(context)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
         _record(conn, user.customer_id, action, actor=user.user_id, target=user.user_id, details=details)
     claims = new_session(

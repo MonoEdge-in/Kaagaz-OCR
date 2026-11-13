@@ -82,7 +82,7 @@ def accept_suggestion(
     changes = {"version_note": clean_note(body.version_note)} if body is not None and given else {}
     customer_id = user.customer_id
     try:
-        with context.db.customer(customer_id) as conn:
+        with context.db.user(customer_id, user.user_id) as conn:
             document = versions_sql.link(conn, customer_id, str(suggestion_id), by=user.user_id)
             listing.set_details(conn, customer_id, document, by=user.user_id, **changes)
             return _summary(conn, context, user, document)
@@ -94,7 +94,7 @@ def accept_suggestion(
 def reject_suggestion(suggestion_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
     """Keep separate (V6)."""
     try:
-        with context.db.customer(user.customer_id) as conn:
+        with context.db.user(user.customer_id, user.user_id) as conn:
             document = versions_sql.reject(conn, user.customer_id, str(suggestion_id), by=user.user_id)
     except versions_sql.Refused as refused:
         raise _refused(refused) from None
@@ -105,7 +105,7 @@ def reject_suggestion(suggestion_id: uuid.UUID, user: User, context: Context) ->
 def undo_version(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
     """Undo a link (V7): the document's summary, on its own again."""
     try:
-        with context.db.customer(user.customer_id) as conn:
+        with context.db.user(user.customer_id, user.user_id) as conn:
             versions_sql.undo(conn, user.customer_id, str(document_id), by=user.user_id)
             return _summary(conn, context, user, str(document_id))
     except versions_sql.Refused as refused:
@@ -118,7 +118,7 @@ def undo_version(document_id: uuid.UUID, user: User, context: Context) -> dict[s
 def make_current(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
     """Make current (V10): the version's summary, now current."""
     try:
-        with context.db.customer(user.customer_id) as conn:
+        with context.db.user(user.customer_id, user.user_id) as conn:
             versions_sql.make_current(conn, user.customer_id, str(document_id), by=user.user_id)
             return _summary(conn, context, user, str(document_id))
     except versions_sql.Refused as refused:
@@ -163,7 +163,7 @@ def separate_version(
     name = _document_name(body.name)
     customer_id, document = user.customer_id, str(document_id)
     try:
-        with context.db.customer(customer_id) as conn:
+        with context.db.user(customer_id, user.user_id) as conn:
             family = versions_sql.separate(conn, customer_id, document, name=name, by=user.user_id)
             listing.rename_document(conn, customer_id, document, name=name)
             return {"document": _summary(conn, context, user, document), "family_id": family}
@@ -192,7 +192,7 @@ def join_again(document_id: uuid.UUID, body: JoinAgainBody, user: User, context:
     name = None if body.name is None else _document_name(body.name)
     customer_id, document = user.customer_id, str(document_id)
     try:
-        with context.db.customer(customer_id) as conn:
+        with context.db.user(customer_id, user.user_id) as conn:
             versions_sql.join_again(conn, customer_id, document, str(body.family_id), by=user.user_id)
             if name is not None:
                 listing.rename_document(conn, customer_id, document, name=name)
@@ -213,7 +213,7 @@ def compare(
     ``id``); each page also counts its words changed and each side's words, and ``overview``
     says it all in plain words (#521, See the differences)."""
     customer_id, right, left = user.customer_id, str(document_id), str(other)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         rows = [listing.get_document(conn, customer_id, each) for each in (left, right)]
         if any(row is None for row in rows) or not versions_sql.may_compare(conn, customer_id, left, right):
             raise ApiError(404, "not_found")

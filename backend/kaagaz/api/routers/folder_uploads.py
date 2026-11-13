@@ -171,7 +171,7 @@ def _plan(context: AppContext, user: CurrentUser, body: PlanBody) -> dict[str, A
     customer_id = user.customer_id
     parent = None if body.parent_folder_id is None else str(body.parent_folder_id)
     try:
-        with context.db.customer(customer_id) as conn:
+        with context.db.user(customer_id, user.user_id) as conn:
             limits = effective_limits(conn, customer_id)
             if not body.only_new:  # #516: the bytes not sent yet must fit (module notes)
                 room = storage_room(conn, customer_id)
@@ -274,7 +274,7 @@ def _register(
         items.append(NewItem(entry.path_key, name, str(entry.folder_id), entry.size, refused, entry.sha256))
     largest = user_upload_policy(context, user).largest_limit
     customer_id = user.customer_id
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         limits = effective_limits(conn, customer_id)
         try:
             rows = items_sql.register_items(
@@ -295,7 +295,7 @@ def _register(
 
 @router.get("/folder-uploads")
 def list_folder_uploads(user: User, context: Context) -> dict[str, Any]:
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         rows = items_sql.summaries(conn, user.customer_id, user_id=user.user_id)
     return {"items": [summary_json(row) for row in rows]}
 
@@ -309,7 +309,7 @@ def previous_folder_upload(
     name = upload_name(source_name, max_length=FOLDER_NAME_MAX)
     found = None
     if name is not None:
-        with context.db.customer(user.customer_id) as conn:
+        with context.db.user(user.customer_id, user.user_id) as conn:
             found = items_sql.previous(conn, user.customer_id, user_id=user.user_id, source_name=name)
     if found is None:
         return {"previous": None}
@@ -326,7 +326,7 @@ def previous_folder_upload(
 
 @router.get("/folder-uploads/{upload_id}")
 def get_folder_upload(upload_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         row = items_sql.progress(conn, user.customer_id, str(upload_id), user_id=user.user_id)
     if row is None:
         raise ApiError(404, "not_found")
@@ -345,7 +345,7 @@ def list_folder_upload_items(
     """``{items: [FolderUploadItem], next_after}``: one page in order; ``next_after`` is the
     ``after`` of the next page, null after the last."""
     customer_id = user.customer_id
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         if not items_sql.owned(conn, customer_id, str(upload_id), user_id=user.user_id):
             raise ApiError(404, "not_found")
         rows = items_sql.list_items(
