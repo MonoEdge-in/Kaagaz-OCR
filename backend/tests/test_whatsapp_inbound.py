@@ -2,12 +2,15 @@
 number only, numbers found by their keyed hash and sealed to their person; the settings that turn
 WhatsApp on; and the reply sent to the fake WhatsApp."""
 
+import http.client
 import json
+import urllib.request
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
+from kaagaz.adapters import whatsapp as whatsapp_adapter
 from kaagaz.adapters.whatsapp import MetaWhatsApp, WhatsAppError
 from kaagaz.api.secret_box import SecretBoxError
 from kaagaz.channel import inbound
@@ -124,6 +127,7 @@ def test_whatsapp_is_off_unless_set_and_on_needs_every_setting() -> None:
         ("WHATSAPP_APP_SECRET", "has space"),
         ("WHATSAPP_NUMBER_KEY", "short"),
         ("WHATSAPP_PEOPLE_AT_ONCE", "11"),
+        ("WHATSAPP_NUMBER_KEY", "y" * 32),  # TOTP_ENCRYPTION_KEY's (#603 review): one key, one purpose
     ):
         with pytest.raises(SettingsError, match=name):
             Settings.from_env(shipped(**{**ON, name: bad}))
@@ -151,3 +155,23 @@ def test_a_reply_is_one_text_with_link_previews_off_and_the_token_in_its_header_
             sender.send_text(NUMBER, "x")
         assert (lost.value.code, str(lost.value)) == ("unavailable", "unavailable")
         assert NUMBER not in str(refused.value) and TOKEN not in str(refused.value)
+
+
+def test_a_broken_reply_is_unavailable_and_a_trailing_slash_is_kept_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#603 review: http.client's own errors (a reply cut short) are the same "unavailable"."""
+    seen: list[str] = []
+
+    class Broken:
+        def open(self, request: urllib.request.Request, timeout: float) -> None:
+            seen.append(request.full_url)
+            raise http.client.IncompleteRead(b"")
+
+    monkeypatch.setattr(whatsapp_adapter, "_OPENER", Broken())
+    with pytest.raises(WhatsAppError) as broken:
+        MetaWhatsApp("https://graph.example.test/v0.0/", NUMBER_ID, TOKEN).send_text(NUMBER, "x")
+    assert (broken.value.code, seen) == (
+        "unavailable",
+        [f"https://graph.example.test/v0.0/{NUMBER_ID}/messages"],
+    )

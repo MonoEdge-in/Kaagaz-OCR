@@ -1,10 +1,12 @@
 """Meta's WhatsApp webhook (#603, PRD 7 section 15 W2): 404 while WhatsApp is off; Meta's setup
 check; a signed message from a connected number stored once, in its person's transaction; and
-dropped, storing nothing: an unsigned or wrongly signed delivery, a replay older than 10 minutes, a
-message for another number, a number not connected. A body over 3 MB is refused unread, a lost
-database is 503 (Meta sends it again), and the webhook has its own rate bucket."""
+dropped, storing nothing: an unsigned or wrongly signed delivery, a message older than WhatsApp's
+24 hours (a replay inside them is stopped by the message id), a message for another number, a
+number not connected. A signed body nothing can read never answers 500; a body over 3 MB is refused
+unread, a lost database is 503 (Meta sends it again), and the webhook has its own rate bucket."""
 
 import json
+import logging
 from datetime import timedelta
 from typing import Any
 
@@ -108,16 +110,42 @@ def test_an_unsigned_or_wrongly_signed_delivery_is_refused_and_stores_nothing(db
     assert _stored(db, customer) == []
 
 
-def test_a_replay_older_than_ten_minutes_and_a_message_for_another_number_are_dropped(db: Database) -> None:
+def test_a_message_past_24_hours_and_one_for_another_number_are_dropped_and_a_replay_kept_once(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The lead's decision on #603's review: WhatsApp's own 24 hours (it can't be answered after),
+    not 10 minutes; a replay within them is the same message id, kept once."""
     api = Api(db, settings=whatsapp_settings())
     customer, _, number, _ = _connected(api)
     client = api.client()
-    old = message(number, api.clock() - timedelta(minutes=10, seconds=1), wamid="wamid.old")
-    recent = message(number, api.clock() - timedelta(minutes=9), wamid="wamid.recent")
+    old = message(number, api.clock() - timedelta(hours=24, seconds=1), wamid="wamid.old")
+    recent = message(number, api.clock() - timedelta(hours=23), wamid="wamid.recent")
     elsewhere = message(number, api.clock(), wamid="wamid.elsewhere")
-    assert post(client, delivery(old, recent)).status_code == 200
+    with caplog.at_level(logging.WARNING, logger="kaagaz.api.whatsapp"):
+        assert post(client, delivery(old, recent)).status_code == 200
+    assert [(r.levelname, getattr(r, "code", None)) for r in caplog.records] == [("WARNING", "too_old")]
     assert post(client, delivery(elsewhere, number_id="987654321")).status_code == 200
+    assert post(client, delivery(recent)).status_code == 200  # replayed an hour later: kept once
     assert [row[0] for row in _stored(db, customer)] == ["wamid.recent"]
+
+
+def test_a_signed_body_nothing_can_read_never_answers_500(db: Database) -> None:
+    """#603 review: Meta would send a 500's body again for days. Each is answered 200; what can be
+    kept is kept, with NUL and a lone surrogate gone from its text (JSON escapes in the raw body)."""
+    api = Api(db, settings=whatsapp_settings())
+    customer, _, number, _ = _connected(api)
+    client = api.client()
+    deep = b"[" * 100_000 + b"]" * 100_000  # past the JSON reader's depth
+    assert post(client, deep).json() == {"ok": True}
+    odd = [
+        message(number, api.clock(), wamid="wamid.NUL"),  # a NUL in the id: dropped
+        message(number, api.clock(), wamid="wamid." + "x" * 200),  # too long: dropped
+        {**message(number, api.clock()), "timestamp": "9" * 12},  # past 11 digits: dropped
+        message(number, api.clock(), "aNULbSURROGATEc", wamid="wamid.kept"),  # kept, cleaned
+    ]
+    escaped = json.dumps(delivery(*odd)).replace("NUL", "\\u0000").replace("SURROGATE", "\\ud800")
+    assert post(client, escaped.encode()).json() == {"ok": True}
+    assert [(row[0], row[4]) for row in _stored(db, customer)] == [("wamid.kept", "abc")]
 
 
 def test_a_number_not_connected_or_no_longer_connected_stores_nothing(db: Database) -> None:

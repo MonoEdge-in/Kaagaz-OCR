@@ -63,8 +63,8 @@ def connect(
         return str(
             conn.execute(
                 text(
-                    "INSERT INTO whatsapp_links (customer_id, user_id, phone_hash, phone_sealed,"
-                    " session_version) SELECT :c, :u, :h, 'v1:sealed', u.session_version FROM users u"
+                    "INSERT INTO whatsapp_links (customer_id, user_id, phone_hash, phone_sealed, phone_last4,"
+                    " session_version) SELECT :c, :u, :h, 'v1:sealed', '1234', u.session_version FROM users u"
                     " WHERE u.id = :u RETURNING id"
                 ),
                 {"c": customer_id, "u": user_id, "h": number_hash(number)},
@@ -99,8 +99,8 @@ def _disconnections(db: Database, customer_id: str) -> list[tuple[Any, ...]]:
     return _owner(
         db,
         "SELECT actor_user_id::text, target_id, subject_user_id::text, details->>'reason',"
-        " details->>'link_id' FROM audit_log WHERE customer_id = :c AND action = 'whatsapp.disconnected'"
-        " ORDER BY id",
+        " details->>'link_id', details->>'number_last4' FROM audit_log"
+        " WHERE customer_id = :c AND action = 'whatsapp.disconnected' ORDER BY id",
         {"c": customer_id},
     )
 
@@ -177,7 +177,7 @@ def test_end_number_ends_its_live_connections_in_every_organisation_audited_in_e
     assert count == 1
     assert _link(db, ended) == (True, "number_changed", True)
     assert _link(db, kept) == (False, None, False)
-    assert _disconnections(db, a) == [(None, a_admin, a_admin, "number_changed", ended)]
+    assert _disconnections(db, a) == [(None, a_admin, a_admin, "number_changed", ended, "1234")]
     assert _disconnections(db, b) == []
     connect(db, b, _person(db, b), number)  # the number may be connected again
 
@@ -193,6 +193,23 @@ def test_end_link_ends_only_a_live_connection_of_the_current_organisation(db: Da
         with pytest.raises(DBAPIError, match="unknown connection or reason"), conn.begin_nested():
             conn.execute(end, {"l": link, "r": "number_changed"})  # the functions' own reason
     assert _link(db, link) == (False, None, False)
+    # The caller's check (#603 review): their own connection for every reason but admin; admin only
+    # by an enabled Admin of the organisation.
+    colleague, disabled_admin = _person(db, a), _person(db, a, "admin")
+    _owner(db, "UPDATE users SET disabled = true WHERE id = :u", {"u": disabled_admin})
+    for caller, reason in (
+        (colleague, "person"),
+        (colleague, "not_me"),
+        (colleague, "session"),
+        (colleague, "admin"),
+        (person, "admin"),
+        (disabled_admin, "admin"),
+    ):
+        with db.user(a, caller) as conn:
+            assert conn.execute(end, {"l": link, "r": reason}).scalar_one() is False, (caller, reason)
+    with db.customer(a) as conn:  # no person named
+        assert conn.execute(end, {"l": link, "r": "person"}).scalar_one() is False
+    assert _link(db, link) == (False, None, False)
     with db.user(a, a_admin) as conn:  # an Admin disconnects them: the Admin is the actor
         assert conn.execute(end, {"l": link, "r": "admin"}).scalar_one() is True
         assert conn.execute(end, {"l": link, "r": "admin"}).scalar_one() is False  # ended already
@@ -201,9 +218,57 @@ def test_end_link_ends_only_a_live_connection_of_the_current_organisation(db: Da
     with db.user(a, person) as conn:  # a check failed: Kaagaz ended it, no actor
         assert conn.execute(end, {"l": again, "r": "session"}).scalar_one() is True
     assert _disconnections(db, a) == [
-        (a_admin, person, person, "admin", link),
-        (None, person, person, "session", again),
+        (a_admin, person, person, "admin", link, "1234"),
+        (None, person, person, "session", again, "1234"),
     ]
+
+
+def test_a_message_names_its_connections_own_person(db: Database) -> None:
+    """#603 review: the key from a message to its connection holds the person too."""
+    customer, admin = new_customer(db)
+    person = _person(db, customer)
+    link = connect(db, customer, person, new_number())
+    message = (
+        "INSERT INTO whatsapp_messages (customer_id, link_id, user_id, wamid, kind, sent_at)"
+        " VALUES (:c, :l, :u, :w, 'text', now())"
+    )
+    _owner(db, message, {"c": customer, "l": link, "u": person, "w": "wamid.own"})
+    with pytest.raises(IntegrityError, match="whatsapp_messages_customer_id_link_id_user_id_fkey"):
+        _owner(db, message, {"c": customer, "l": link, "u": admin, "w": "wamid.someone_else"})
+
+
+def test_a_number_with_no_connection_is_told_once_a_day_and_never_after_block(db: Database) -> None:
+    told, blocked = number_hash(new_number()), number_hash(new_number())
+    tell = text("SELECT kaagaz_whatsapp_tell_unknown(:h)")
+    with db.system() as conn:
+        assert [conn.execute(tell, {"h": told}).scalar_one() for _ in range(2)] == [True, False]
+        conn.execute(text("SELECT kaagaz_whatsapp_block(:h)"), {"h": blocked})
+        conn.execute(text("SELECT kaagaz_whatsapp_block(:h)"), {"h": blocked})  # twice: the first time kept
+        assert conn.execute(tell, {"h": blocked}).scalar_one() is False
+    day_ago = (
+        "UPDATE whatsapp_unknown_numbers SET told_at = told_at - CAST(:age AS interval) WHERE phone_hash = :h"
+    )
+    _owner(db, day_ago, {"h": told, "age": "1 day"})
+    with db.system() as conn:
+        assert conn.execute(tell, {"h": told}).scalar_one() is True
+    with (
+        db.user(*new_customer(db)) as conn,
+        pytest.raises(DBAPIError, match="permission denied"),
+        conn.begin_nested(),
+    ):
+        conn.execute(text("SELECT count(*) FROM whatsapp_unknown_numbers"))  # no role reads it
+    old = (
+        "UPDATE whatsapp_unknown_numbers SET told_at = now() - interval '31 days' WHERE phone_hash = ANY(:h)"
+    )
+    _owner(db, old, {"h": [told, blocked]})
+    with db.system() as conn:
+        conn.execute(text("SELECT kaagaz_whatsapp_sweep()"))
+    kept = _owner(
+        db,
+        "SELECT phone_hash FROM whatsapp_unknown_numbers WHERE phone_hash = ANY(:h)",
+        {"h": [told, blocked]},
+    )
+    assert [bytes(row[0]) for row in kept] == [blocked]  # told and quiet 30 days: gone; blocked: kept
 
 
 def test_the_sweep_ends_what_is_no_longer_allowed_and_deletes_what_is_old(db: Database) -> None:
