@@ -188,11 +188,12 @@ _TOP = "SELECT parent_id, name, trash_id, kind FROM trashed_folders WHERE custom
 # folder holds now is dropped (folders_autofile_key keeps one a key).
 _MAKE_LIVE = (
     "INSERT INTO folders (id, customer_id, parent_id, name, created_by, created_at, kind, sort_order,"
-    " autofile_key)"
+    " autofile_key, department_only, private, department_id, private_folder_id)"
     " SELECT t.id, t.customer_id, CASE WHEN t.id = :top THEN CAST(:p AS uuid) ELSE t.parent_id END,"
     " CASE WHEN t.id = :top THEN CAST(:name AS text) ELSE t.name END, t.created_by, t.created_at, t.kind,"
     " t.sort_order, CASE WHEN EXISTS (SELECT 1 FROM folders k WHERE k.customer_id = :c"
-    " AND k.autofile_key = t.autofile_key) THEN NULL ELSE t.autofile_key END"
+    " AND k.autofile_key = t.autofile_key) THEN NULL ELSE t.autofile_key END, t.department_only, t.private,"
+    " t.department_id, t.private_folder_id"
     " FROM trashed_folders t WHERE t.customer_id = :c AND t.id = ANY(CAST(:ids AS uuid[]))"
     " RETURNING id, parent_id, name, created_at, kind, sort_order"
 )

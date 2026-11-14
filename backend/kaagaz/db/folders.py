@@ -296,9 +296,11 @@ _DELETE_ALL = "DELETE FROM folders WHERE customer_id = :c AND id = ANY(CAST(:ids
 # #542: the subtree into Trash as it is, every column folders has, under one trash_id; :f is the root.
 _TRASH_TREE = (
     "INSERT INTO trashed_folders (id, customer_id, parent_id, name, kind, sort_order, autofile_key,"
-    " created_by, created_at, trash_id, root, deleted_at, deleted_by)"
+    " created_by, created_at, trash_id, root, deleted_at, deleted_by, department_only, private,"
+    " department_id, private_folder_id)"
     " SELECT f.id, f.customer_id, f.parent_id, f.name, f.kind, f.sort_order, f.autofile_key, f.created_by,"
-    " f.created_at, CAST(:trash AS uuid), f.id = :f, :now, :by"
+    " f.created_at, CAST(:trash AS uuid), f.id = :f, :now, :by, f.department_only, f.private,"
+    " f.department_id, f.private_folder_id"
     " FROM folders f WHERE f.customer_id = :c AND f.id = ANY(CAST(:ids AS uuid[]))"
 )
 # The first candidate name no sibling has, compared as folders_sibling_name compares (lower()), NFC.

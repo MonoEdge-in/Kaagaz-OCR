@@ -97,10 +97,12 @@ def test_the_file_kinds_0078_the_zip_unpack_s_0080_and_trashed_folders_0081_foll
     assert scripts.get_revision("0081").down_revision == "0080"
 
 
-def test_the_trashed_folder_parent_0082_follows_0081_and_the_worker_role_0083_is_the_head() -> None:
+def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tables_0084_follow() -> None:
     """A13 (stability pass, 7 Nov 2026). Changed on purpose (#587, 14 Nov 2026): the workers'
-    role and login (0083) follow 0082."""
+    role and login (0083) follow 0082. Changed on purpose (#590, 14 Nov 2026): who-can-see-what's
+    tables and columns (0084) follow 0083 and are the head."""
     scripts = _scripts()
     assert scripts.get_revision("0082").down_revision == "0081"
     assert scripts.get_revision("0083").down_revision == "0082"
-    assert scripts.get_heads() == ["0083"]
+    assert scripts.get_revision("0084").down_revision == "0083"
+    assert scripts.get_heads() == ["0084"]
