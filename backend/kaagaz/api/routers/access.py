@@ -872,8 +872,9 @@ def private_preview(
     named: Annotated[list[uuid.UUID] | None, Query(max_length=MAX_NAMED)] = None,
 ) -> dict[str, Any]:
     """Who would lose and who would gain the folder's files if it were private (``on``), the people
-    once named on it coming back and ``named`` named now: ``{losing, gaining, files}``, from one
-    snapshot. Admins; refused as route 7 is."""
+    once named on it coming back and ``named`` named now: ``{losing, gaining, files, named_before}``,
+    from one snapshot; ``named_before``, making an open folder private, the people named on it
+    before who will see it again (switched on). Admins; refused as route 7 is."""
     target, customer_id = str(folder_id), user.customer_id
     people = {str(each) for each in named or ()}
     if people and not on:
@@ -894,7 +895,10 @@ def private_preview(
         )
         after = access_sql.place_audience(conn, place.department_id, then, department_only=closed) | people
         inside = folders_sql.descendant_ids(conn, customer_id, target)
-        return _preview(conn, user, before, after, access_sql.folder_files(conn, customer_id, inside))
+        reply = _preview(conn, user, before, after, access_sql.folder_files(conn, customer_id, inside))
+        again = on and not place.private
+        reply["named_before"] = access_sql.people_on(conn, customer_id, target, active=True) if again else []
+        return reply
 
 
 @router.get("/folders/{folder_id}/kept-from-me")
