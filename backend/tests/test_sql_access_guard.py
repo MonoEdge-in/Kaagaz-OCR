@@ -181,6 +181,12 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ("db/folders.py", "_DETACH_TRASHED"): (WRITE_AFTER_CHECK, "DELETE /folders/{id}: _seen first"),
     ("db/folders.py", "_PARENT"): (TREE_WALK, "PATCH and DELETE /folders: _seen first"),
     ("db/folders.py", "_SUMMARY"): (ADMIN_NUMBERS, "an Admin's delete dialog: true totals (PRD 7 section 5)"),
+    # #594: the refusal before a keep-delete's writes; it compares the stored values of the folder and
+    # of where its contents go, which a view would hide from an Admin (names, not contents).
+    ("db/folders.py", "_SAME_ACCESS"): (
+        WRITE_AFTER_CHECK,
+        "DELETE /folders/{id}?contents=keep, an Admin's: _seen first",
+    ),
     ("db/folders.py", "_MOVE_DOCUMENTS"): (
         WRITE_AFTER_CHECK,
         "DELETE /folders/{id}?contents=keep, an Admin's",
@@ -265,6 +271,18 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
         "DELETE /folders/{id}?contents=trash, an Admin's",
     ),
     ("db/trash.py", "_FAMILY_IN_TRASH"): (WRITE_AFTER_CHECK, "the family lock, after the view check (#595)"),
+    # #594: where a restore writes the family when its folder is gone, read under the tree lock and
+    # the family lock, after the route found the file through the view. The family's frozen values,
+    # and whether its department or private folder is live (a row lock, FOR SHARE): that folder may
+    # be one the restorer can't see, so a view would put the file somewhere wider.
+    ("db/trash.py", "_KEPT_PLACE"): (
+        WRITE_AFTER_CHECK,
+        "POST /documents/{id}/restore: the view first; the family lock held",
+    ),
+    ("db/trash.py", "LIVE_FOLDERS"): (
+        WRITE_AFTER_CHECK,
+        "the row lock of a restore's write: the file (or the trashed folder, one()) through the view first",
+    ),
     ("db/trashed_folders.py", "_SUBTREE"): (TREE_WALK, "restore and delete forever: one() (the view) first"),
     ("db/trashed_folders.py", "_CHAIN"): (
         TREE_WALK,
