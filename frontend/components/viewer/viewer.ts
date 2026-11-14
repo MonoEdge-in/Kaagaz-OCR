@@ -4,6 +4,7 @@
 
 import type { DetectedType, DocumentSummary, PageSummary, PageTurnSaved, ReadIssue, Region, SheetCells } from "@/lib/types";
 import type { ViewRect } from "./canvasPlan";
+import { unturnedBox } from "@/components/words/spots";
 import { sameRegion } from "./selection";
 
 export const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3] as const;
@@ -362,3 +363,17 @@ export function turnedStageTransform(width: number, height: number, turn: number
   if (turn === 270) return `translate(0px, ${width}px) rotate(270deg)`;
   return undefined;
 }
+
+/** A part of a page as it shows turned, in pixels, as the same part of the page before its turn. */
+export function unturnedView(rect: ViewRect, shown: { width: number; height: number }, turn: number): ViewRect {
+  if (turn !== 90 && turn !== 180 && turn !== 270) return rect;
+  const { width, height } = shown;
+  const box = [rect.x / width, rect.y / height, (rect.x + rect.width) / width, (rect.y + rect.height) / height] as const;
+  const [x0, y0, x1, y1] = unturnedBox(box, turn);
+  const [pageWidth, pageHeight] = turn === 180 ? [width, height] : [height, width];
+  return { x: x0 * pageWidth, y: y0 * pageHeight, width: (x1 - x0) * pageWidth, height: (y1 - y0) * pageHeight };
+}
+
+/** The turn of page `pageNo` (from 1) in degrees, from turns by page index in quarter turns. */
+export const turnOf = (turns: ReadonlyMap<number, number>, pageNo: number) =>
+  ((turns.get(pageNo - 1) ?? 0) * 90) as 0 | 90 | 180 | 270;

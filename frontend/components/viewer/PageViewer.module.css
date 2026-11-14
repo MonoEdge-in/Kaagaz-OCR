@@ -81,6 +81,14 @@
   transform-origin: 50% 0; /* a zoom grows from the top middle (lib/motion.ts) */
 }
 
+/* Issue 600: the page at its own size inside the stage, turned into the stage's (shown) size. */
+.turned {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+}
+
 /* The highlight: amber, then a paper ring and an ink ring, so it stands out
    (3:1 or more, 1.4.11) on white paper, dark print and the frame alike. Issue 523: an outline with a
    light tint (--hl-tint, 12%), so the writing under it stays readable: it points, never hides. */
@@ -630,4 +638,42 @@
     padding: var(--space-1);
     scrollbar-gutter: auto;
   }
+}
+
+/* Issue 600: the photo turn menu (PageTurnMenu.tsx), under its button as the admin row menu is. */
+.turnMenu {
+  position: fixed;
+  margin: 0;
+  padding: var(--space-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--k-r-4);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.turnMenu:popover-open {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+@supports (position-area: bottom) {
+  .turnMenu {
+    inset: auto;
+    margin-block: var(--space-1);
+    position-area: bottom span-left;
+    position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+  }
+}
+
+.turnRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.turnRow > span {
+  flex: 1;
+  padding-inline: var(--space-2);
+  white-space: nowrap;
 }

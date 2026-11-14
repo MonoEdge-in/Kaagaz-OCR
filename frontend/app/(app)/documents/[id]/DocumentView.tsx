@@ -64,6 +64,7 @@ import { Icon as KIcon } from "@/components/ui/Icon/Icon";
 import type { KIconName } from "@/components/ui/Icon/Icon";
 import { Toast } from "@/components/ui/Toast";
 import { PageViewer } from "@/components/viewer/PageViewer";
+import { PageTurnMenu, WithPageTurns } from "@/components/viewer/PageTurnMenu";
 import {
   DRAG_THRESHOLD_PX,
   SPLIT,
@@ -71,7 +72,9 @@ import {
   bringPageForSpot,
   splitAfterDrag,
   splitAfterKey,
+  pageMode,
   tabsThatFit,
+  turnOf,
   viewsAsPdf,
 } from "@/components/viewer/viewer";
 import { CLEAN_COPY } from "@/components/viewer/clearCopy";
@@ -600,27 +603,44 @@ export function DocumentView({
               </ViewerBoundary>
             </div>
           ) : page ? (
-            <PageViewer
-              document={detail}
-              page={page}
-              highlights={highlightsOf(selection)}
-              highlightNote={highlightNote}
-              pageNumbers={pageNumbers}
-              onPageChange={changePage}
-              marks={words.markers}
-              activeMark={words.activeId}
-              fill={stickyViewer}
-              readingMarks={readingMarks}
-              onMark={showMark}
-              hotMark={hotMark}
-              onHotMark={setHotMark}
-              flags={pageMarks}
-              activeFlag={reviewing ? currentFlag : null}
-              onFlag={pressFlag}
-              wordBoxes={wordBoxes}
-              wordHits={wordHits}
-              role={me.user.role}
-            />
+            // #600: a photo's turn menu and its turns, saved for everyone or on this screen only.
+            <WithPageTurns key={detail.id} documentId={detail.id} pageTurns={detail.page_turns} userId={me.user.id}>
+              {(turns) => (
+                <PageViewer
+                  document={detail}
+                  page={page}
+                  highlights={highlightsOf(selection)}
+                  highlightNote={highlightNote}
+                  pageNumbers={pageNumbers}
+                  onPageChange={changePage}
+                  marks={words.markers}
+                  activeMark={words.activeId}
+                  fill={stickyViewer}
+                  readingMarks={readingMarks}
+                  onMark={showMark}
+                  hotMark={hotMark}
+                  onHotMark={setHotMark}
+                  flags={pageMarks}
+                  activeFlag={reviewing ? currentFlag : null}
+                  onFlag={pressFlag}
+                  wordBoxes={wordBoxes}
+                  wordHits={wordHits}
+                  role={me.user.role}
+                  turn={turnOf(turns.shown, page.page_no)}
+                  tools={
+                    pageMode(detail, page, false) === "image" ? (
+                      <PageTurnMenu
+                        turns={turns}
+                        pages={detail.pages}
+                        pageNo={page.page_no}
+                        documentId={detail.id}
+                        userId={me.user.id}
+                      />
+                    ) : undefined
+                  }
+                />
+              )}
+            </WithPageTurns>
           ) : (
             <p className={styles.noPages}>No pages to show yet.</p>
           )}
