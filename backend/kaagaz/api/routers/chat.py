@@ -63,7 +63,7 @@ import math
 import threading
 import time
 import uuid
-from collections.abc import AsyncGenerator, Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
@@ -98,7 +98,7 @@ from kaagaz.answering.clarify import (
     reply_to,
     without_resume,
 )
-from kaagaz.answering.memory import NO_MEMORY, Memory, from_row, live
+from kaagaz.answering.memory import MAX_DOCUMENTS, NO_MEMORY, VERSION, Memory, from_row, live
 from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
 from kaagaz.answering.stream import Events, StreamCancelled
@@ -110,7 +110,14 @@ from kaagaz.api.errors import MESSAGES, ApiError
 from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.names import clean_name
 from kaagaz.api.routers.health import running_commit
-from kaagaz.api.views import cited_document_ids, conversation_summary, message, no_access, shown_message
+from kaagaz.api.views import (
+    NO_ACCESS,
+    cited_document_ids,
+    conversation_summary,
+    message,
+    no_access,
+    shown_message,
+)
 from kaagaz.db import ai_settings, audit, organization_words
 from kaagaz.db import chat as chat_sql
 from kaagaz.db.models import (
@@ -398,11 +405,12 @@ def _saved_reply(context: AppContext, user: CurrentUser, question_id: str) -> di
         owner, question, answer = found
         if owner != user.user_id or question["role"] != "user" or answer is None:
             raise ApiError(409, "conflict")
-        states = chat_sql.document_states(conn, user.customer_id, cited_document_ids(answer["answer"]))
+        named = cited_document_ids(answer["answer"]) + _scope_ids(question)
+        states = chat_sql.document_states(conn, user.customer_id, named)
     return {
         "conversation_id": str(question["conversation_id"]),
         "question": message(question),
-        "answer": shown_message(answer, states),
+        "answer": shown_message(answer, states, scope=_scope_ids(question)),
     }
 
 
@@ -561,7 +569,8 @@ def _ask(
         spend.conversation_id = conversation_id  # committed: the ledger row may name it
     if fresh:
         ready.SHOWN.used(user.customer_id, user.user_id, question)  # Home's list changes only now
-    if forget or summary_due(turns + 1, summary_turn, context.settings.chat_summary_every):
+    due = summary_due(turns + 1, summary_turn, context.settings.chat_summary_every)
+    if due or (forget and conversation_id is not None and _rebuild_due(conversation_id)):
         background.add_task(
             _remember, context, user.customer_id, user.user_id, conversation_id, summary_turn, turns + 1
         )
@@ -1074,20 +1083,42 @@ def _first_allowed(
     return [next((agent for agent in agents if agent in usable), agents[0])]
 
 
+# PRD 7 (#602, review): a memory made again (``forget``) whose rebuild keeps failing is tried at
+# most once in this many seconds a conversation (this process's own record, oldest dropped).
+REBUILD_SECONDS = 600
+_REBUILT: dict[str, float] = {}
+_REBUILT_LOCK = threading.Lock()
+
+
+def _rebuild_due(conversation_id: str) -> bool:
+    """Whether the memory of ``conversation_id`` may be made again now; notes the try."""
+    now = time.monotonic()
+    with _REBUILT_LOCK:
+        if now - _REBUILT.get(conversation_id, -math.inf) < REBUILD_SECONDS:
+            return False
+        _REBUILT[conversation_id] = now
+        if len(_REBUILT) > 10_000:
+            _REBUILT.pop(next(iter(_REBUILT)))
+        return True
+
+
 def _shown_turns(
     conn: Connection, customer_id: str, conversation_id: str, limit: int, state: RowMapping
 ) -> tuple[list[RowMapping], Memory | None]:
     """PRD 7 (#602): the conversation's newest ``limit`` messages (``recent_messages``) without
     the answers the asker may no longer see whole (``views.no_access``), so no history, cited id
     or open clarify comes from one; and the stored summary and memory with the live documents'
-    names, or None when it tracks a document they can no longer see (or deleted forever): it is
-    not used, and is made again (question 7). Two statements, three when the memory names a
-    document."""
+    names, or None when it tracks a document they can no longer see (or deleted forever), or was
+    written before every document it read was tracked (no ``VERSION``): it is not used, and is
+    made again (question 7). Two statements, three when the memory names a document."""
     recent = chat_sql.recent_messages(conn, customer_id, conversation_id, limit)
     stored = from_row(state["summary"], state["memory"])
     named = [*stored.documents, *(d for row in recent for d in cited_document_ids(row["answer"]))]
     states = chat_sql.document_states(conn, customer_id, named)
     shown = [row for row in recent if not no_access(row["answer"], states)]
+    written = state["memory"].get("v") if isinstance(state["memory"], Mapping) else None
+    if stored != NO_MEMORY and written != VERSION:
+        return shown, None
     if any(document not in states for document in stored.documents):
         return shown, None
     return shown, live(stored, chat_sql.live_document_names(conn, customer_id, stored.documents))
@@ -1137,13 +1168,14 @@ def _write_memory(
             return
         recent, remembered = _shown_turns(conn, customer_id, conversation_id, 2 * every, state)
     previous = NO_MEMORY if remembered is None else remembered
+    # PRD 7 (#602, review): every document a shown answer names, a clarify's choices too: the memory
+    # may hold anything the turns say, so it tracks all they read.
     cited = [
-        str(citation["document_id"])
-        for row in reversed(recent)
-        if row["role"] == "assistant" and (row["answer"] or {}).get("status") == "answered"
-        for citation in row["answer"].get("citations", [])
-        if isinstance(citation, dict) and citation.get("document_id")
+        d for row in reversed(recent) if row["role"] == "assistant" for d in cited_document_ids(row["answer"])
     ]
+    if len(set(cited)) > MAX_DOCUMENTS:  # never one id dropped: not written this time
+        logger.info("memory not written", extra={"code": "memory_too_many_documents"})
+        return
     memory = context.answers.remember(_history(recent), previous, cited)
     if memory is None:
         return
@@ -1255,8 +1287,13 @@ def get_conversation(conversation_id: uuid.UUID, user: User, context: Context) -
             raise ApiError(404, "not_found")
         rows = chat_sql.messages_with_feedback(conn, user.customer_id, str(conversation_id), user.user_id)
         cited = [document_id for row in rows for document_id in cited_document_ids(row["answer"])]
-        states = chat_sql.document_states(conn, user.customer_id, cited)
+        states = chat_sql.document_states(
+            conn, user.customer_id, cited + [d for r in rows for d in _scope_ids(r)]
+        )
     messages = []
+    scope: list[str] = []  # the question's, for its answer
+    replaced = False  # an answer before this one was replaced whole
+    picks: set[str] = set()  # the choices of a clarify just replaced
     for row in rows:
         pin = (
             None
@@ -1268,8 +1305,41 @@ def get_conversation(conversation_id: uuid.UUID, user: User, context: Context) -
             }
         )
         # Sources moved to Trash, replaced, hidden or deleted since: views.answer_with_source_states.
-        messages.append(shown_message(row, states, row["feedback"], pin))
+        shown = shown_message(row, states, row["feedback"], pin, scope)
+        if row["role"] == "user":
+            scope = _scope_ids(row)
+            if picks and set(str(row["text"]).split(", ")) <= picks:
+                shown["text"] = EARLIER_CHOICE  # PRD 7 (#602): a pick among choices now hidden
+            picks = set()
+        elif shown["answer"] and shown["answer"]["status"] == NO_ACCESS:
+            replaced = True
+            picks = {str(c.get("label")) for c in (row["answer"].get("clarify") or {}).get("choices", [])}
+        elif shown["answer"] and replaced:
+            shown["answer"] = _without_reading(shown["answer"])
+        messages.append(shown)
     return {"id": str(found["id"]), "title": found["title"], "messages": messages}
+
+
+# PRD 7 (#602, review): what a reply to a clarify replaced whole says instead of its pick.
+EARLIER_CHOICE = "A choice you made earlier"
+
+
+def _without_reading(answer: dict[str, Any]) -> dict[str, Any]:
+    """An answer after one replaced whole, in the same conversation: how it read the question (a
+    follow-up may have read the hidden answer) is left out."""
+    blank: dict[str, Any] = {
+        "rewritten_question": None,
+        "normalized_question": "",
+        "assumptions": [],
+        "understood_words": [],
+    }
+    return {**answer, **{key: value for key, value in blank.items() if key in answer}}
+
+
+def _scope_ids(row: RowMapping) -> list[str]:
+    """The document ids a question message was asked inside (its ScopeBody), else none."""
+    scope = row["scope"]
+    return [str(each) for each in scope.get("document_ids") or []] if isinstance(scope, Mapping) else []
 
 
 @router.patch("/conversations/{conversation_id}")

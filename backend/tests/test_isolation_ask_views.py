@@ -21,21 +21,24 @@ import pytest
 from sqlalchemy import Connection, event, text
 
 from kaagaz.ai.client import ModelUnavailable
-from kaagaz.answering import exhaustive, fixed_queries, ready, rewrite
+from kaagaz.answering import exhaustive, fixed_queries, ready, rewrite, stream
 from kaagaz.answering.clarify import Entity, Pending, PgVocabulary, latin_key, picked_page
+from kaagaz.answering.evidence import PgRetriever
 from kaagaz.answering.exhaustive import PgExhaustive
+from kaagaz.answering.expansion import NO_EXPANSION
 from kaagaz.answering.fixed_queries import PgFixedQueries
 from kaagaz.answering.hard_to_read import PgReadingQuality
-from kaagaz.answering.memory import NO_MEMORY
+from kaagaz.answering.memory import NO_MEMORY, VERSION, Memory
 from kaagaz.answering.owners import OWNING, PgOwners
 from kaagaz.answering.rewrite import Turn
 from kaagaz.answering.service import AnswerService
 from kaagaz.answering.unchecked import PgUncheckedValues
-from kaagaz.api.routers.chat import CLARIFY_GONE
+from kaagaz.api.routers.chat import CLARIFY_GONE, EARLIER_CHOICE
 from kaagaz.api.views import NO_ACCESS, NO_ACCESS_LINE
 from kaagaz.db import chat as chat_sql
 from kaagaz.db import organization_words
 from kaagaz.db.engine import Database
+from kaagaz.db.models import Agent, ChatChoice
 from kaagaz.search import hybrid
 from kaagaz.search.hybrid import FusedPiece
 from kaagaz.search.scope import EVERYTHING
@@ -759,22 +762,26 @@ def test_the_chat_statements_name_no_hidden_document(db: Database, ask: AskOrg) 
 
 
 def test_a_word_made_on_a_hidden_page_is_never_used_or_echoed(db: Database, ask: AskOrg) -> None:
-    """``approved`` for a scope of the hidden file answers as for a random id; the repeat key's
-    words leave it out too, so it moves no plain reviewer's key."""
+    """Decision 9: a word made on a page (or a Did you mean pick of one document) helps in any scope
+    for whoever sees its document, and never for one who doesn't; the repeat key's words leave it
+    out too, so it moves no plain reviewer's key. A same word tied to a document is a duplicate of
+    the organisation's own."""
     _approved_word(ask, None, "everyone")
     with _as(db, ask, "plain") as conn:
         before = conn.execute(ready._WORDS, {"c": ask.org.c, "u": ask.user("plain")}).scalar_one()
     _approved_word(ask, ask.id("fin"), "secretword")
     for person, sees in (("plain", False), ("member", True)):
         with _as(db, ask, person) as conn:
-            words = {w.word for w in organization_words.approved(conn, ask.org.c, document_id=ask.id("fin"))}
-            random = {
-                w.word for w in organization_words.approved(conn, ask.org.c, document_id=str(uuid.uuid4()))
-            }
+            words = {w.word for w in organization_words.approved(conn, ask.org.c)}
             after = conn.execute(ready._WORDS, {"c": ask.org.c, "u": ask.user(person)}).scalar_one()
-        assert ("secretword" in words) == sees and random == {"everyone"}, person
-        if not sees:
-            assert words == random and after == before
+        assert words == ({"everyone", "secretword"} if sees else {"everyone"}), person
+        assert (after == before) != sees, person
+    texts = {"word": "everyone", "word_fold": "everyone", "meaning": "meaning", "meaning_fold": "meaning"}
+    with _as(db, ask, "member") as conn:
+        tied = organization_words.submit(
+            conn, ask.org.c, ask.user("member"), **texts, document_id=ask.id("sales"), page_no=1
+        )
+    assert tied is None  # the organisation's own word already says it
 
 
 def test_home_offers_only_questions_about_what_the_person_sees(db: Database, ask: AskOrg) -> None:
@@ -1005,26 +1012,51 @@ def _hidden_marks(ask: AskOrg) -> list[str]:
     return marks
 
 
-def _answers(ask: AskOrg, model: Any, scope: Any = EVERYTHING) -> list[str]:
+def _answers(ask: AskOrg, model: Any, scope: Any = EVERYTHING, choice: Any = None) -> list[str]:
     settings = make_settings(model_embed="test-embed")
     service = AnswerService(db=_app(ask.db), model=model, settings=settings, clock=lambda: NOW)
     return [
         json.dumps(
-            service.answer(ask.org.c, q, scope=scope, user_id=ask.user("plain")).to_json(), sort_keys=True
+            service.answer(ask.org.c, q, scope=scope, user_id=ask.user("plain"), choice=choice).to_json(),
+            sort_keys=True,
         )
         for q in RED_TEAM
     ]
 
 
-@pytest.mark.parametrize("mode", ["model", "model down", "no model"])
+_LEAD = Agent("google/gemini-3.8-flash", "google-vertex", "Lead")
+_OTHER = Agent("anthropic/claude-sonnet-5.5", "google-vertex", "Other")
+_CHOICES = {"precision": ChatChoice([_LEAD], "high"), "ensemble": ChatChoice([_LEAD, _OTHER], "medium")}
+
+
+@pytest.mark.parametrize("mode", ["model", "model down", "no model", "precision", "ensemble", "streamed"])
 def test_red_team_nothing_hidden_reaches_a_prompt_or_a_reply(db: Database, ask: AskOrg, mode: str) -> None:
     """PRD 7 part 3: the real AnswerService, as the plain reviewer, every route these questions
-    take (search, whole scope, totals, counts, owners, pages not read, Did you mean)."""
+    take (search, whole scope, totals, counts, owners, pages not read, Did you mean), with the
+    model, down, off, Precision, Ensemble and streamed (every event it sends)."""
     model = None if mode == "no model" else _Recording(down=mode == "model down")
-    replies = _answers(ask, model)
-    seen = "\n".join(replies + ([] if model is None else model.prompts + model.embedded)).casefold()
+    events: list[str] = []
+    token = stream.EVENTS.set(stream.Events(lambda name, data: events.append(json.dumps(data))))
+    try:
+        replies = _answers(ask, model, choice=_CHOICES.get(mode))
+    finally:
+        stream.EVENTS.reset(token)
+    texts = replies + events + ([] if model is None else model.prompts + model.embedded)
+    seen = "\n".join(texts).casefold()
     assert [m for m in _hidden_marks(ask) if m.casefold() in seen] == []
     assert any(ask.id("sales") in reply for reply in replies)  # the visible file does answer
+
+
+def test_a_translated_search_finds_nothing_hidden(db: Database, ask: AskOrg) -> None:
+    """The fused search (CX6's aspects, the translation): a translation naming fin's word, on fin's
+    own vector, finds nothing of fin for the plain reviewer; Finance's member finds it."""
+    retriever = PgRetriever(_app(db), recipe=RECIPE, ef_search=EF_SEARCH, neighbours=1)
+    fin = [(WORDS["fin"], axis(ask.axes["fin"]))]
+    for person, sees in (("plain", False), ("member", True)):
+        found = retriever.search_translated(
+            ask.org.c, "ledger", None, fin, 50, EVERYTHING, user_id=ask.user(person)
+        )
+        assert (ask.id("fin") in {hit.document_id for hit in found.hits}) == sees, person
 
 
 def test_a_scope_of_a_hidden_file_answers_as_a_random_one(db: Database, ask: AskOrg) -> None:
@@ -1042,3 +1074,152 @@ def test_differential_the_hidden_file_deleted_forever_changes_no_reply(db: Datab
     before = _answers(ask, _Recording())
     _owner(db, "DELETE FROM documents WHERE id = :d", {"d": ask.id("fin")})
     assert _answers(ask, _Recording()) == before
+
+
+# --- review of #602 ------------------------------------------------------------------------------
+
+
+def test_no_hidden_piece_is_in_a_list_before_the_details(db: Database, ask: AskOrg) -> None:
+    """The pre-filter, at the lists themselves (_lists: words, typos, the walk and its exact
+    fallback): no hidden piece is a candidate, before search() fetches any detail."""
+    for person in ("plain", "member"):
+        for query, vector in ((WORDS["fin"], None), ("aardvrk", None), ("", axis(ask.axes["fin"]))):
+            owners: dict[str, str] = {}
+            with _as(db, ask, person) as conn:
+                hybrid._lists(
+                    conn, ask.org.c, query, vector, RECIPE, EF_SEARCH, EVERYTHING, NO_EXPANSION, owners,
+                    hybrid.MAX_SCAN_TUPLES, 0,
+                )  # fmt: skip
+            found = set(owners.values())
+            assert not found & {ask.id(f) for f in HIDDEN[person]}, (person, query)
+            assert (ask.id("fin") in found) == (person == "member"), (person, query)
+
+
+def test_a_walk_cut_by_the_timeout_falls_back_to_the_exact_scan(
+    db: Database, ask: AskOrg, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(hybrid, "STATEMENT_TIMEOUT_MS", 200)
+    monkeypatch.setattr(
+        hybrid,
+        "_MEANING",
+        text(
+            "SELECT p.id, p.document_id, 0.0 FROM pieces p CROSS JOIN pg_sleep(5)"
+            " WHERE p.customer_id = :c AND :recipe <> '' AND :n > 0 AND length(:vec) > 0"
+        ),
+    )
+    with _as(db, ask, "plain") as conn:
+        found = _search(conn, ask, "", axis(ask.axes["sales"]), exact_below=0)
+    assert found[0].piece_id == ask.pieces["sales"][0] and found[0].meaning_score is not None
+    assert [r.code for r in caplog.records if hasattr(r, "code")] == ["meaning_timeout"]
+
+
+def test_the_memory_tracks_the_documents_of_a_clarify_it_read(db: Database) -> None:
+    """A clarify about fin falls in the summary window: the memory tracks fin; fin hidden, the next
+    follow-up gets no memory and no turn naming fin's choice."""
+    ask = _ask_org(Api(db, settings=make_settings(chat_summary_every=2)))
+    made: list[list[str]] = []
+
+    def remember(turns: Any, memory: Any, cited: Any) -> Memory:
+        made.append(list(cited))
+        return Memory(summary="About Pune", documents=tuple(dict.fromkeys(cited)), names=("Pune",))
+
+    ask.api.answers.remember = remember  # type: ignore[method-assign]
+    _share(ask, "fin", give=True)
+    ask.api.answers.reply = _clarify(ask.id("fin"))
+    conversation = _post(ask, "plain", {"question": "Land in Puny?"})["conversation_id"]
+    ask.api.answers.reply = answer_json()
+    _post(ask, "plain", {"question": "What is the total amount?", "conversation_id": conversation})
+    assert made and ask.id("fin") in made[-1]
+    _share(ask, "fin", give=False)
+    _post(ask, "plain", {"question": "And the tax?", "conversation_id": conversation})
+    assert ask.api.answers.memories[-1] == NO_MEMORY
+    assert "Pune" not in repr(ask.api.answers.histories[-1])
+
+
+def test_a_memory_from_before_every_document_was_tracked_is_not_trusted(db: Database, ask: AskOrg) -> None:
+    """An old memory (no "v": 2) naming something of fin with fin's id missing: not used, and made
+    again; one written since is used (the control)."""
+    ask.api.answers.reply = answer_json()
+    for version, used in ((None, False), (VERSION, True)):
+        conversation = _post(ask, "plain", {"question": "What is the total?"})["conversation_id"]
+        memory = {"documents": [], "names": [WORDS["fin"]]} | ({} if version is None else {"v": version})
+        _owner(
+            db,
+            "UPDATE conversations SET summary = 'About it', memory = CAST(:m AS jsonb) WHERE id = :id",
+            {"id": conversation, "m": json.dumps(memory)},
+        )
+        summarised = len(ask.api.answers.summarised)
+        _post(ask, "plain", {"question": "And the tax?", "conversation_id": conversation})
+        assert (ask.api.answers.memories[-1] != NO_MEMORY) == used, version
+        assert (len(ask.api.answers.summarised) > summarised) != used, version  # made again
+
+
+def test_answers_after_a_replaced_one_show_no_reading_and_a_hidden_pick_is_not_named(
+    db: Database, ask: AskOrg
+) -> None:
+    """A clarify on fin, picked, then answered from sales: fin taken back, the clarify is replaced,
+    the pick shows as "A choice you made earlier", and the answer after it shows no question as
+    read, assumption or understood word (a follow-up may have read the hidden answer)."""
+    _share(ask, "fin", give=True)
+    ask.api.answers.reply = _clarify(ask.id("fin"))
+    first = _post(ask, "plain", {"question": "Land in Puny?"})
+    reading = {
+        "rewritten_question": "Pune land total",
+        "normalized_question": "pune land total",
+        "assumptions": ["Pune is the place"],
+        "understood_words": [{"word": "Puny", "meaning": "Pune"}],
+    }
+    ask.api.answers.reply = {**_cited_answer(ask.id("sales")), **reading}
+    reply = {"message_id": first["answer"]["id"], "choice_ids": ["c1"]}
+    _post(ask, "plain", {"conversation_id": first["conversation_id"], "reply": reply})
+    _share(ask, "fin", give=False)
+    plain = ask.org.people["plain"].client
+    messages = plain.get(f"/api/conversations/{first['conversation_id']}").json()["messages"]
+    assert [m["role"] for m in messages] == ["user", "assistant", "user", "assistant"]
+    assert messages[1]["answer"]["status"] == NO_ACCESS and messages[2]["text"] == EARLIER_CHOICE
+    after = messages[3]["answer"]
+    assert [after[key] for key in reading] == [None, "", [], []]
+    assert "Pune" not in json.dumps(messages)
+
+
+def test_a_not_found_answer_inside_a_hidden_file_is_replaced(db: Database, ask: AskOrg) -> None:
+    """A not-found answer names no document; its question's scope does: fin taken back, the words
+    it understood (a word made on fin's page) are not shown again."""
+    _share(ask, "fin", give=True)
+    ask.api.answers.reply = {
+        **answer_json(status="not_found"),
+        "understood_words": [{"word": "secretword", "meaning": "m", "origin": "organization"}],
+    }
+    asked = _post(ask, "plain", {"question": "secretword?", "scope": {"document_ids": [ask.id("fin")]}})
+    _share(ask, "fin", give=False)
+    plain = ask.org.people["plain"].client
+    shown = plain.get(f"/api/conversations/{asked['conversation_id']}").json()["messages"][1]
+    assert shown["answer"]["status"] == NO_ACCESS and "secretword" not in json.dumps(shown)
+
+
+def test_a_kept_answer_naming_a_hidden_file_is_not_served_under_the_same_key(
+    db: Database, ask: AskOrg, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The source check itself, the access version aside (the stamp held still): a repeat, and a
+    ready answer Home made, that name fin are not served once fin is taken back."""
+    monkeypatch.setattr(ready, "stamp", lambda conn, customer_id: "held still")
+    _share(ask, "fin", give=True)
+    ask.api.answers.reply = {**_cited_answer(ask.id("fin")), "model_used": True}
+    question = {"question": "What is the fin total?"}
+    _post(ask, "plain", question)
+    asked = len(ask.api.answers.asked)
+    _post(ask, "plain", question)
+    assert len(ask.api.answers.asked) == asked  # served as a repeat
+    _share(ask, "fin", give=False)
+    _post(ask, "plain", question)
+    assert len(ask.api.answers.asked) == asked + 1
+
+    _owner(db, "UPDATE documents SET doc_type = 'land_record' WHERE id = :d", {"d": ask.id("fin")})
+    _share(ask, "fin", give=True)
+    land = ready.TYPE_QUESTIONS["land_record"]
+    items = ask.org.people["plain"].client.get("/api/chat/ready-questions").json()["items"]
+    assert land in [item["text"] for item in items]  # its answer is made after the reply
+    made = len(ask.api.answers.asked)
+    _share(ask, "fin", give=False)
+    _post(ask, "plain", {"question": land})  # Home asked it at the level it may (_home_inputs)
+    assert len(ask.api.answers.asked) == made + 1

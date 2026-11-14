@@ -728,7 +728,8 @@ def search_translated(
     ``Database.user`` transaction, as the asker: each text's lists run in one of their own,
     SEARCH_FAN_OUT at once (Ask speed, 24 Oct 2026), so no connection is shared across threads;
     they are fused in the texts' order, the question's first, so the ranking is the one they
-    give one after another. The details, in one more. O(t) times ``search``'s cost for t
+    give one after another. The visible vectors are counted in one before them, the details in
+    one more. O(t) times ``search``'s cost for t
     translations, over about t / SEARCH_FAN_OUT of its time. Also the question's own lists;
     ``asked``, those lists from an earlier search of the same question, text, vector, words and
     scope, which are then not searched again (#535): fused as they are, the result is the same."""
@@ -738,6 +739,15 @@ def search_translated(
         return [], {}, ([], [], [])
     texts = [(query_text, embedding, expansion), *((t, v, NO_EXPANSION) for t, v in translations)]
     todo = texts if asked is None else texts[1:]
+    # PRD 7 (#602): the person's visible vectors are counted once for every text's meaning list.
+    walk: bool | None = None
+    if any(vector is not None for _, vector, _ in todo):
+        with begin() as conn:
+            conn.execute(_SET_SEARCH, {"ms": str(STATEMENT_TIMEOUT_MS)})
+            try:
+                walk = _walks(conn, {"c": customer_id, "recipe": recipe} | scope.params(), exact_below)
+            except OperationalError as error:
+                _cancelled(error)  # each list counts for itself
 
     def lists(text_: str, vector: list[float] | None, words: Expansion) -> Lists:
         with begin() as conn:
@@ -753,6 +763,7 @@ def search_translated(
                 {},
                 max_scan_tuples,
                 exact_below,
+                walk,
             )
 
     with ThreadPoolExecutor(max(1, min(SEARCH_FAN_OUT, len(todo)))) as pool:
@@ -850,6 +861,7 @@ def _lists(
     owners: dict[str, str],
     max_scan_tuples: int = MAX_SCAN_TUPLES,
     exact_below: int = EXACT_BELOW,
+    walk: bool | None = None,
 ) -> tuple[list[tuple[str, float]], list[tuple[str, float]], list[tuple[str, float]]]:
     """The word, fuzzy and meaning lists inside ``scope``, noting each piece's document id in
     ``owners``. W3: ``text_latin`` is matched with the question's ``latin_spelling``, and the
@@ -878,7 +890,9 @@ def _lists(
         fuzzy = _ranked(_numbers_as_written(typo_rows, number_words(query_text)), owners)
     if embedding is not None:
         vector = {"c": customer_id, "vec": vector_literal(embedding), "recipe": recipe, "n": CANDIDATES}
-        meaning = _meaning(conn, vector | scope.params(), ef_search, owners, max_scan_tuples, exact_below)
+        meaning = _meaning(
+            conn, vector | scope.params(), ef_search, owners, max_scan_tuples, exact_below, walk
+        )
     return word, fuzzy, meaning
 
 
@@ -1040,6 +1054,23 @@ def _hit(row: Sequence[Any], fused: FusedPiece) -> SearchHit:
     )
 
 
+def _cancelled(error: OperationalError) -> None:
+    """A meaning statement cancelled by the statement timeout is logged (``meaning_timeout``);
+    any other error is raised."""
+    if getattr(error.orig, "sqlstate", None) != _QUERY_CANCELED:
+        raise error
+    logger.warning("meaning search timed out", extra={"code": "meaning_timeout"})
+
+
+def _walks(conn: Connection, params: dict[str, Any], exact_below: int) -> bool:
+    """Whether the person sees at least ``exact_below`` vectors in the scope (_VISIBLE_VECTORS),
+    in a savepoint of its own."""
+    with conn.begin_nested():
+        return bool(
+            conn.execute(_VISIBLE_VECTORS, params | {"most": exact_below}).scalar_one() >= exact_below
+        )
+
+
 def _meaning(
     conn: Connection,
     params: dict[str, Any],
@@ -1047,23 +1078,30 @@ def _meaning(
     owners: dict[str, str],
     max_scan_tuples: int,
     exact_below: int,
+    walk: bool | None = None,
 ) -> list[tuple[str, float]]:
     """The meaning list: the exact scan alone when the person can see fewer than
-    ``exact_below`` vectors in the scope (PRD 7 section 7); else the index walk of at
-    most ``max_scan_tuples`` tuples, then the exact scan when the walk came back with
-    fewer than CANDIDATES rows. Empty when the statement timeout cancels it (logged,
-    ``meaning_timeout``): the savepoint keeps the transaction usable for the rest."""
+    ``exact_below`` vectors in the scope (PRD 7 section 7; ``walk``, when the caller counted
+    them already); else the index walk of at most ``max_scan_tuples`` tuples, then the exact
+    scan when the walk came back with fewer than CANDIDATES rows or ran out of time. Each in
+    its own savepoint, so a statement the timeout cancels (logged, ``meaning_timeout``) leaves
+    the transaction usable; empty when the count or the exact scan is cancelled."""
     conn.execute(_SET_INDEX_SCAN, {"ef": str(ef_search), "tuples": str(max_scan_tuples)})
+    rows: Sequence[Any] = []
     try:
-        with conn.begin_nested():
-            seen = conn.execute(_VISIBLE_VECTORS, params | {"most": exact_below}).scalar_one()
-            rows = conn.execute(_MEANING, params).all() if seen >= exact_below else []
-            if len(rows) < CANDIDATES:
+        if walk is None:
+            walk = _walks(conn, params, exact_below)
+        if walk:
+            try:
+                with conn.begin_nested():
+                    rows = conn.execute(_MEANING, params).all()
+            except OperationalError as error:
+                _cancelled(error)  # the exact scan below still answers
+        if len(rows) < CANDIDATES:
+            with conn.begin_nested():
                 rows = conn.execute(_MEANING_EXACT, params).all()
     except OperationalError as error:
-        if getattr(error.orig, "sqlstate", None) != _QUERY_CANCELED:
-            raise
-        logger.warning("meaning search timed out", extra={"code": "meaning_timeout"})
+        _cancelled(error)
         return []
     # A zero vector has no direction: its distance is NaN and says nothing.
     found = [row for row in rows if math.isfinite(float(row[2]))]

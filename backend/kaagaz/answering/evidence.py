@@ -97,6 +97,7 @@ from kaagaz.chunking.script import ascii_digits, is_devanagari
 from kaagaz.db.engine import Database, user_or_customer
 from kaagaz.extraction.parsing import _INDIAN, _WESTERN
 from kaagaz.reading.spans import BoxLocation, location_from_json, location_to_json
+from kaagaz.search.hybrid import EXACT_BELOW, MAX_SCAN_TUPLES
 from kaagaz.search.scope import Scope
 
 CLOSEST_DOCUMENTS = 5  # PRD 6 decision 9
@@ -336,8 +337,8 @@ class PgRetriever:
         neighbours: int,
         topic_pieces: int = 0,
         min_score: float = 1.0,
-        max_scan_tuples: int = 20000,
-        exact_below: int = 2000,
+        max_scan_tuples: int = MAX_SCAN_TUPLES,
+        exact_below: int = EXACT_BELOW,
     ) -> None:
         """``recipe``: the ``embedding_model`` tag meaning search uses (vectors with
         another tag are left out; a section's ``embed_recipe`` too); ``ef_search``:

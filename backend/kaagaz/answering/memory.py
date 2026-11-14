@@ -56,6 +56,9 @@ _log = logging.getLogger(__name__)
 MAX_SUMMARY = 1200  # the conversations.summary CHECK
 MAX_ITEMS = 20
 MAX_DOCUMENTS = 100  # PRD 7 (#602): every cited id, within the 16 KB CHECK (39 bytes each)
+# PRD 7 (#602, review): a memory written since every document it read is tracked carries "v": 2;
+# one without it may hold facts of a document it never tracked, so it is not trusted (the router).
+VERSION = 2
 MAX_ITEM_CHARS = 120
 MAX_BYTES = 16384  # the conversations.memory CHECK, octet_length(memory::text)
 KINDS = ("names", "numbers", "dates", "topics")
@@ -100,9 +103,9 @@ class Memory:
     # rewrite; never stored, never from the model.
     document_names: tuple[str, ...] = ()
 
-    def to_json(self) -> dict[str, list[str]]:
-        """The ``conversations.memory`` object (the summary has its own column)."""
-        return {name: list(getattr(self, name)) for name in ("documents", *KINDS)}
+    def to_json(self) -> dict[str, Any]:
+        """The ``conversations.memory`` object (the summary has its own column), with ``VERSION``."""
+        return {"v": VERSION, **{name: list(getattr(self, name)) for name in ("documents", *KINDS)}}
 
     def items(self) -> list[str]:
         return [item for kind in KINDS for item in getattr(self, kind)]
