@@ -595,6 +595,7 @@ export function DocumentView({
                   wordBoxes={wordBoxes}
                   wordHits={wordHits}
                   role={me.user.role}
+                  userId={me.user.id}
                 />
               </ViewerBoundary>
             </div>

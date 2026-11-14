@@ -68,6 +68,7 @@ import {
 } from "@embedpdf/plugin-zoom/react"
 import { flushSync } from "react-dom"
 
+import { turnPages, turnPagesTo } from "@/components/extend/lib/page-turns"
 import { loadSharedPdfEngine } from "@/components/extend/lib/pdf-thumbnail-utils"
 import { cn } from "@/components/extend/lib/utils"
 import { Button } from "@/components/extend/ui/button"
@@ -99,6 +100,7 @@ import {
   PanelLeftIcon,
   PlusIcon,
   RotateCcwIcon,
+  RotateCwIcon,
   ScanIcon,
   SearchIcon,
 } from "lucide-react"
@@ -142,6 +144,10 @@ export type PDFViewerProps = {
   showUpload?: boolean
   src?: string
   toolbarActions?: React.ReactNode
+  // Changed for Kaagaz (#589): the person's turns to open with (page index to quarter turns
+  // right), and each change of them, so the screen can keep them.
+  pageRotations?: ReadonlyMap<number, number>
+  onPageRotationsChange?: (pageRotations: ReadonlyMap<number, number>) => void
   pageClassName?: (pageNumber: number) => string | undefined
   renderPageOverlay?: (props: PDFViewerPageOverlayProps) => React.ReactNode
   onActivePageChange?: (pageNumber: number) => void
@@ -201,6 +207,12 @@ const PDFViewerScrollAreaResolverContext =
     resolveDefaultScrollAreaViewport
   )
 type PageRotationDeltas = Map<number, Rotation>
+// Changed for Kaagaz (#589): a choice in the page turn menu.
+type PageTurnChange =
+  | { pages: "picked" | "all"; direction: -1 | 1 }
+  | "wide"
+  | "tall"
+  | "reset"
 type ThumbnailSelectionMode = "replace" | "toggle" | "range"
 function getPageIndexRange(from: number, to: number): Set<number> {
   const start = Math.min(from, to)
@@ -858,6 +870,112 @@ const TOOLBAR_BUTTON =
 function ToolbarDivider() {
   return <span aria-hidden="true" className="mx-1 h-5 w-px flex-none bg-white/20" />
 }
+// Changed for Kaagaz (#589): the rotate button opens a small menu of page turns. It stays open
+// after a choice, so "Turn right" twice puts an upside-down page right in two clicks. "This
+// page" is the pages picked in the sidebar when there are several, as the button was.
+function PDFViewerTurnMenu({
+  controlsDisabled,
+  pickedPages,
+  onRotate,
+}: {
+  controlsDisabled: boolean
+  pickedPages: number
+  onRotate: (change: PageTurnChange) => void
+}) {
+  const id = React.useId()
+  const rows = [
+    {
+      pages: "picked",
+      label: pickedPages > 1 ? `${pickedPages} picked pages` : "This page",
+    },
+    { pages: "all", label: "All pages" },
+  ] as const
+  return (
+    <Popover>
+      <ToolbarTooltip label="Turn pages">
+        <PopoverTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Turn pages"
+            className={TOOLBAR_BUTTON}
+            disabled={controlsDisabled}
+          >
+            <RotateCcwIcon className="size-4" />
+          </Button>
+        </PopoverTrigger>
+      </ToolbarTooltip>
+      <PopoverContent
+        align="start"
+        aria-label="Turn pages"
+        className="flex w-auto flex-col gap-1 p-2"
+      >
+        {rows.map(({ pages, label }) => (
+          <div
+            key={pages}
+            role="group"
+            aria-labelledby={`${id}-${pages}`}
+            className="flex items-center gap-1"
+          >
+            <span
+              id={`${id}-${pages}`}
+              className="flex-1 px-2 text-sm whitespace-nowrap"
+            >
+              {label}
+            </span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => onRotate({ pages, direction: -1 })}
+            >
+              <RotateCcwIcon />
+              Turn left
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => onRotate({ pages, direction: 1 })}
+            >
+              <RotateCwIcon />
+              Turn right
+            </Button>
+          </div>
+        ))}
+        <span aria-hidden="true" className="my-1 h-px bg-border" />
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="justify-start"
+          onClick={() => onRotate("wide")}
+        >
+          Make all pages wide
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="justify-start"
+          onClick={() => onRotate("tall")}
+        >
+          Make all pages tall
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="justify-start"
+          onClick={() => onRotate("reset")}
+        >
+          Reset to original
+        </Button>
+      </PopoverContent>
+    </Popover>
+  )
+}
 function PDFViewerToolbar({
   activePage,
   controlsDisabled,
@@ -865,6 +983,7 @@ function PDFViewerToolbar({
   downloadDisabled = controlsDisabled,
   isPreparingDownload = false,
   numPages,
+  pickedPages = 1,
   searchControl,
   sidebarOpen,
   showDownload,
@@ -883,6 +1002,7 @@ function PDFViewerToolbar({
   downloadDisabled?: boolean
   isPreparingDownload?: boolean
   numPages: number
+  pickedPages?: number
   searchControl: React.ReactNode
   sidebarOpen: boolean
   showDownload: boolean
@@ -891,7 +1011,7 @@ function PDFViewerToolbar({
   toolbarActions?: React.ReactNode
   onDownload?: () => void
   onPageChange: (pageNumber: number) => void
-  onRotate: (direction: 1 | -1) => void
+  onRotate: (change: PageTurnChange) => void
   onToggleSidebar: () => void
   onUploadFile?: (file: File) => void
   onZoomChange: (zoomLevel: ZoomMode | number) => void
@@ -983,19 +1103,11 @@ function PDFViewerToolbar({
             </Button>
           </ToolbarTooltip>
           {showRotateControls ? (
-            <ToolbarTooltip label="Rotate counterclockwise">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                aria-label="Rotate counterclockwise"
-                className={TOOLBAR_BUTTON}
-                disabled={controlsDisabled}
-                onClick={() => onRotate(-1)}
-              >
-                <RotateCcwIcon className="size-4" />
-              </Button>
-            </ToolbarTooltip>
+            <PDFViewerTurnMenu
+              controlsDisabled={controlsDisabled}
+              pickedPages={pickedPages}
+              onRotate={onRotate}
+            />
           ) : null}
         </div>
         <span aria-hidden="true" className="flex-1" />
@@ -1840,6 +1952,8 @@ type PDFViewerInnerProps = {
   showRotateControls: boolean
   showUpload: boolean
   toolbarActions?: React.ReactNode
+  pageRotations?: PDFViewerProps["pageRotations"]
+  onPageRotationsChange?: PDFViewerProps["onPageRotationsChange"]
   pageClassName?: (pageNumber: number) => string | undefined
   renderPageOverlay?: (props: PDFViewerPageOverlayProps) => React.ReactNode
   onActivePageChange?: (pageNumber: number) => void
@@ -1863,6 +1977,8 @@ function PDFViewerInner({
   showRotateControls,
   showUpload,
   toolbarActions,
+  pageRotations,
+  onPageRotationsChange,
   pageClassName,
   renderPageOverlay,
   onActivePageChange,
@@ -1881,7 +1997,15 @@ function PDFViewerInner({
   const [sidebarOpen, setSidebarOpen] = React.useState(false)
   const [isPreparingDownload, setIsPreparingDownload] = React.useState(false)
   const [pageRotationDeltas, setPageRotationDeltas] =
-    React.useState<PageRotationDeltas>(() => new Map())
+    React.useState<PageRotationDeltas>(
+      () =>
+        new Map(
+          Array.from(pageRotations ?? [], ([pageIndex, turn]) => [
+            pageIndex,
+            normalizeRotation(turn),
+          ])
+        )
+    )
   const [selectedPageIndexes, setSelectedPageIndexes] = React.useState<
     Set<number>
   >(() => new Set())
@@ -2051,27 +2175,49 @@ function PDFViewerInner({
       setIsPreparingDownload(false)
     }
   }, [fileName, isPreparingDownload, pageRotationDeltas, pdfFile])
-  const rotateSelectedPages = React.useCallback(
-    (direction: -1 | 1) => {
+  // Changed for Kaagaz (#589): every choice of the page turn menu, not only a quarter turn left
+  // of the picked pages; the person's turns are handed on to be kept.
+  const rotatePages = React.useCallback(
+    (change: PageTurnChange) => {
       if (!pdfDocument || !registry || activePage < 1) return
       const documentState = registry.getStore().getState().core.documents[
         documentId
       ]
       const currentDocument = documentState?.document ?? pdfDocument
-      const selectedTargetPageIndexes = Array.from(
-        selectedPageIndexesRef.current
-      ).filter((pageIndex) => currentDocument.pages[pageIndex])
-      const fallbackPageIndex = activePage - 1
-      const targetPageIndexes = (
-        selectedTargetPageIndexes.length
-          ? selectedTargetPageIndexes
-          : [fallbackPageIndex]
-      )
-        .filter((pageIndex) => currentDocument.pages[pageIndex])
-        .sort((a, b) => a - b)
-      if (targetPageIndexes.length === 0) return
       const previousDeltas = pageRotationDeltasRef.current
-      const nextDeltas = new Map(previousDeltas)
+      let nextDeltas: PageRotationDeltas
+      if (change === "reset") {
+        nextDeltas = new Map()
+      } else if (change === "wide" || change === "tall") {
+        nextDeltas = turnPagesTo(previousDeltas, currentDocument.pages, change)
+      } else if (change.pages === "all") {
+        nextDeltas = turnPages(
+          previousDeltas,
+          currentDocument.pages.keys(),
+          change.direction
+        )
+      } else {
+        const selectedTargetPageIndexes = Array.from(
+          selectedPageIndexesRef.current
+        ).filter((pageIndex) => currentDocument.pages[pageIndex])
+        const fallbackPageIndex = activePage - 1
+        nextDeltas = turnPages(
+          previousDeltas,
+          (selectedTargetPageIndexes.length
+            ? selectedTargetPageIndexes
+            : [fallbackPageIndex]
+          ).filter((pageIndex) => currentDocument.pages[pageIndex]),
+          change.direction
+        )
+      }
+      const targetPageIndexes = currentDocument.pages
+        .map((_, pageIndex) => pageIndex)
+        .filter(
+          (pageIndex) =>
+            (previousDeltas.get(pageIndex) ?? 0) !==
+            (nextDeltas.get(pageIndex) ?? 0)
+        )
+      if (targetPageIndexes.length === 0) return
       const referencePageIndex =
         activePage > 0 && currentDocument.pages[activePage - 1]
           ? activePage - 1
@@ -2081,7 +2227,7 @@ function PDFViewerInner({
         const currentPage = currentDocument.pages[pageIndex]
         if (!currentPage) continue
         const previousDelta = previousDeltas.get(pageIndex) ?? 0
-        const nextDelta = normalizeRotation(previousDelta + direction)
+        const nextDelta = nextDeltas.get(pageIndex) ?? 0
         const basePageRotation =
           basePageRotations[pageIndex] ??
           normalizeRotation(currentPage.rotation)
@@ -2105,11 +2251,6 @@ function PDFViewerInner({
         } else if (pageIndex === referencePageIndex) {
           scrollDelta += heightDelta / 2
         }
-        if (nextDelta) {
-          nextDeltas.set(pageIndex, nextDelta)
-        } else {
-          nextDeltas.delete(pageIndex)
-        }
       }
       const store = registry.getStore()
       const viewport = viewportElementRef.current
@@ -2126,12 +2267,14 @@ function PDFViewerInner({
           calculateWindowState?: (documentId: string) => void
         } | null
       )?.calculateWindowState?.(documentId)
+      onPageRotationsChange?.(nextDeltas)
     },
     [
       activePage,
       basePageRotations,
       currentZoomLevel,
       documentId,
+      onPageRotationsChange,
       pdfDocument,
       registry,
       thumbnailPlugin,
@@ -2257,6 +2400,7 @@ function PDFViewerInner({
           downloadDisabled={downloadDisabled}
           isPreparingDownload={isPreparingDownload}
           numPages={numPages}
+          pickedPages={selectedPageIndexes.size}
           searchControl={
             <PDFViewerSearchControl
               key={documentId}
@@ -2271,7 +2415,7 @@ function PDFViewerInner({
           toolbarActions={toolbarActions}
           onDownload={handleDownload}
           onPageChange={scrollToPage}
-          onRotate={rotateSelectedPages}
+          onRotate={rotatePages}
           onToggleSidebar={() => setSidebarOpen((open) => !open)}
           onUploadFile={handleUpload}
           onZoomChange={(zoomLevel) => zoom?.requestZoom(zoomLevel)}
@@ -2419,6 +2563,8 @@ export const PDFViewer = React.forwardRef<PDFViewerHandle, PDFViewerProps>(
       showUpload = true,
       src,
       toolbarActions,
+      pageRotations,
+      onPageRotationsChange,
       pageClassName,
       renderPageOverlay,
       onActivePageChange,
@@ -2547,6 +2693,8 @@ export const PDFViewer = React.forwardRef<PDFViewerHandle, PDFViewerProps>(
             showRotateControls={showRotateControls}
             showUpload={showUpload}
             toolbarActions={toolbarActions}
+            pageRotations={pageRotations}
+            onPageRotationsChange={onPageRotationsChange}
             pageClassName={pageClassName}
             renderPageOverlay={renderPageOverlay}
             onActivePageChange={onActivePageChange}

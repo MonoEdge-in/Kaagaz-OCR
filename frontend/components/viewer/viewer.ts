@@ -291,3 +291,36 @@ export function buildGrid(
   });
   return { columns, rows };
 }
+
+// --- Page turns (#589): kept in this browser per person and file, as List or Grid is
+// (components/files/viewMode.ts). The file's id is its version's, so a new version starts with
+// none. Storage can be blocked (a private window) or full, so every read and write is in
+// try/catch: then the turns last for this visit only.
+
+export const pageTurnsKey = (userId: string, documentId: string) => `kaagaz.page-turns:${userId}:${documentId}`;
+
+/** This person's turns of this file: page index to quarter turns right, 1 to 3; none when unreadable. */
+export function readPageTurns(userId: string, documentId: string): Map<number, number> {
+  const turns = new Map<number, number>();
+  try {
+    const kept: unknown = JSON.parse(localStorage.getItem(pageTurnsKey(userId, documentId)) ?? "{}");
+    if (typeof kept !== "object" || kept === null) return turns;
+    for (const [page, turn] of Object.entries(kept)) {
+      if (/^\d+$/.test(page) && (turn === 1 || turn === 2 || turn === 3)) turns.set(Number(page), turn);
+    }
+  } catch {
+    // unreadable: the file opens unturned
+  }
+  return turns;
+}
+
+/** Keep this person's turns of this file; none left removes the entry. */
+export function savePageTurns(userId: string, documentId: string, turns: ReadonlyMap<number, number>): void {
+  try {
+    const key = pageTurnsKey(userId, documentId);
+    if (turns.size === 0) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify(Object.fromEntries(turns)));
+  } catch {
+    // Storage blocked or full: the turns last for this visit only.
+  }
+}

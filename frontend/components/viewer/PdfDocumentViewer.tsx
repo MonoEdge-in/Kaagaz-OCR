@@ -23,6 +23,9 @@
 // #523: "Show words to check", a toolbar switch, on at first for a reviewer or an admin: the word
 // marks and word flags follow it, each page as PageViewer does (wordMarkView: a chip on a page over
 // WORD_MARK_CAP, never a mark far taller than a word).
+//
+// #589: the pages as this person turned them, kept in this browser (readPageTurns): opened with
+// them, and each change kept.
 
 import "@/components/extend/extend.css";
 import { DownloadIcon, HandIcon, HighlighterIcon, PrinterIcon, SpellCheckIcon } from "lucide-react";
@@ -49,7 +52,7 @@ import {
   wordsChipText,
 } from "./readingMarks";
 import styles from "./PageViewer.module.css";
-import { centredScroll, mostVisiblePage, panTo } from "./viewer";
+import { centredScroll, mostVisiblePage, panTo, readPageTurns, savePageTurns } from "./viewer";
 import { wordColour } from "./YourWords";
 
 /** How long a scroll the screen asked for takes to settle (a smooth scroll across pages). */
@@ -86,6 +89,8 @@ export interface PdfDocumentViewerProps {
   wordHits?: readonly number[];
   /** #523: the viewer's role, for "Show words to check" at first (on unless a member). */
   role?: Role;
+  /** #589: the signed-in person, whose page turns of this file are kept. */
+  userId: string;
 }
 
 /**
@@ -150,8 +155,14 @@ export function PdfDocumentViewer({
   wordBoxes = NO_WORDS,
   wordHits = NO_HITS,
   role,
+  userId,
 }: PdfDocumentViewerProps) {
   const viewer = useRef<PDFViewerHandle>(null);
+  const [pageTurns] = useState(() => readPageTurns(userId, document.id));
+  const keepPageTurns = useCallback(
+    (turns: ReadonlyMap<number, number>) => savePageTurns(userId, document.id, turns),
+    [userId, document.id],
+  );
   const [showHighlights, setShowHighlights] = useState(true);
   const [showWords, setShowWords] = useState(() => showWordsByDefault(role));
   const [crowdedOpen, setCrowdedOpen] = useState<readonly number[]>([]); // pages whose chip was pressed
@@ -406,6 +417,8 @@ export function PdfDocumentViewer({
         fileName={document.display_name}
         defaultZoom="fit-width"
         showDownload={false}
+        pageRotations={pageTurns}
+        onPageRotationsChange={keepPageTurns}
         renderPageOverlay={overlay}
         onActivePageChange={pageChanged}
         onDocumentLoadSuccess={() => setOpen(true)}
