@@ -92,6 +92,45 @@ export interface Me {
   // Ways to sign in (#457 phase 1): approved connections made in the last 14 days, for the
   // app's "Google connected on 30 Oct." banner. Empty while no provider is on (always sent).
   recent_connections?: { provider: string; linked_at: string }[];
+  // Kaagaz on WhatsApp (#603): sent, true, only while the server has WhatsApp on: Account shows WhatsApp.
+  whatsapp?: boolean;
+}
+
+/** Account, WhatsApp (GET /whatsapp/me): off for the organisation, not for this role, or the
+ * person's connection (the last 4 digits only). ``google``: they confirm with Google. */
+export interface WhatsAppMe {
+  state: "off" | "not_allowed" | "none" | "connected";
+  google: boolean;
+  totp: boolean;
+  last4?: string;
+  linked_at?: string;
+  last_used_at?: string | null;
+}
+
+/** POST /whatsapp/codes: the bot sent the code (``sent``), or the second way's code and link. */
+export interface WhatsAppCode {
+  last4: string;
+  sent?: boolean;
+  code?: string;
+  link?: string;
+}
+
+/** Admin, Settings, WhatsApp (GET /admin/whatsapp), and who is connected. */
+export interface WhatsAppAdmin {
+  enabled: boolean;
+  roles: Role[];
+  management: boolean;
+  voice: boolean;
+  uploads: boolean;
+  available: boolean; // the super admin's switches
+  people: WhatsAppPerson[];
+}
+
+export interface WhatsAppPerson {
+  user_id: string;
+  last4: string;
+  linked_at: string;
+  last_used_at: string | null;
 }
 
 /** One connected account of the signed-in user (GET /auth/identities). */

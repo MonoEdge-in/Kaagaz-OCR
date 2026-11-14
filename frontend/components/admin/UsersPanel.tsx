@@ -23,6 +23,9 @@
 // Add a user says, under the role, that the person connects Google after choosing a password,
 // while Google sign-in is on for that role (the rules from Settings, read when the form opens).
 //
+// #603: while the server has WhatsApp on, a WhatsApp column (the last 4 digits and since when) and
+// "Disconnect WhatsApp" in a connected person's menu, asked first; the bot tells them once.
+//
 // A reset password comes back once, in the reply. It is shown in a card above
 // the list, with Copy, until Done or until the tab is left; it is never stored.
 
@@ -38,6 +41,8 @@ import { IconButton } from "@/components/ui/IconButton";
 import { PasswordField } from "@/components/ui/PasswordField";
 import {
   ApiError,
+  adminDisconnectWhatsApp,
+  adminWhatsApp,
   approveConnection,
   createUser,
   declineConnection,
@@ -54,7 +59,7 @@ import {
 import { DRAFT_KEPT, clearDraft, readDraft, saveDraftSoon } from "@/lib/drafts";
 import { errorWords } from "@/lib/errorWords";
 import { formatDate } from "@/lib/format";
-import type { AddedUser, AdminUser, GoogleRules, PendingConnection, Role } from "@/lib/types";
+import type { AddedUser, AdminUser, GoogleRules, PendingConnection, Role, WhatsAppAdmin, WhatsAppPerson } from "@/lib/types";
 import table from "@/components/documents/Table.module.css";
 import { CopyButton } from "./CopyButton";
 import { MoreRows, useRowCap } from "./RowCap";
@@ -89,6 +94,7 @@ import {
   validateNewUser,
 } from "./logic";
 import type { NewUserErrors, NewUserInput } from "./logic";
+import { whatsappCell } from "./whatsappSettings";
 import styles from "./Admin.module.css";
 
 const SKELETON_ROWS = [0, 1, 2];
@@ -101,15 +107,18 @@ interface Revealed {
   password: string;
 }
 
-/** providers: the sign-in providers switched on (Me's), named in Remove connected accounts. */
+/** providers: the sign-in providers switched on (Me's), named in Remove connected accounts.
+ * whatsapp: the server has WhatsApp on (Me's), so the WhatsApp column shows. */
 export function UsersPanel({
   currentUserId,
   adminTwoStep,
   providers,
+  whatsapp = false,
 }: {
   currentUserId: string;
   adminTwoStep: boolean;
   providers: readonly string[];
+  whatsapp?: boolean;
 }) {
   const [attempt, setAttempt] = useState(0);
   const [users, setUsers] = useState<AdminUser[] | null>(null);
@@ -121,6 +130,19 @@ export function UsersPanel({
   // Rounded to the minute, so "Locked until" and Unlock clear on their own.
   const now = useMinuteNow();
   const cap = useRowCap();
+  const [connected, setConnected] = useState<WhatsAppPerson[]>([]);
+
+  useEffect(() => {
+    if (!whatsapp) return;
+    let live = true;
+    adminWhatsApp().then(
+      (reply) => live && setConnected(reply.people),
+      () => undefined, // the column stays empty; the Settings tab says why
+    );
+    return () => {
+      live = false;
+    };
+  }, [whatsapp]);
 
   useEffect(() => {
     let cancelled = false;
@@ -214,6 +236,11 @@ export function UsersPanel({
                   <th scope="col" role="columnheader">
                     Signs in with
                   </th>
+                  {whatsapp && (
+                    <th scope="col" role="columnheader">
+                      WhatsApp
+                    </th>
+                  )}
                   <th scope="col" role="columnheader" className={styles.addedColumn}>
                     Added
                   </th>
@@ -230,6 +257,8 @@ export function UsersPanel({
                     isSelf={user.id === currentUserId}
                     adminTwoStep={adminTwoStep}
                     providers={providers}
+                    whatsapp={whatsapp ? (connected.find((person) => person.user_id === user.id) ?? false) : null}
+                    onWhatsApp={(reply) => setConnected(reply.people)}
                     now={now}
                     onChanged={replace}
                     onPasswordReset={setRevealed}
@@ -267,7 +296,7 @@ export function UsersPanel({
 
 /** Disabling and the two resets ask first (each signs the user out on every device), and
  * so does allowing Delete forever (UI audit AD2: every action that takes something away). */
-type Confirming = "disable" | "password" | "2fa" | "forever" | "connections";
+type Confirming = "disable" | "password" | "2fa" | "forever" | "connections" | "whatsapp";
 
 const CONFIRM_TEXT: Record<Confirming, (name: string, providers: readonly string[], ways?: readonly string[]) => string> = {
   connections: (name, providers) => removeConnectionsQuestion(name, providers),
@@ -276,6 +305,7 @@ const CONFIRM_TEXT: Record<Confirming, (name: string, providers: readonly string
   "2fa": (name) =>
     `Reset ${name}'s two-step code? They are signed out, and can sign in with their password, then set up a new code.`,
   forever: allowForeverQuestion,
+  whatsapp: (name) => `Disconnect ${name}'s WhatsApp? Their chat can no longer reach Kaagaz. The Kaagaz bot tells them once.`,
 };
 
 // Plain words (25 Oct 2026): the confirm button says the menu item's own verb, and the
@@ -286,6 +316,7 @@ const CONFIRM_BUTTON: Record<Confirming, string> = {
   "2fa": "Reset two-step code",
   forever: "Allow Delete forever",
   connections: "Remove connected accounts",
+  whatsapp: "Disconnect WhatsApp",
 };
 
 /** What each item in a user's menu does, in one plain line under it (plain words, 25 Oct 2026). */
@@ -298,6 +329,7 @@ export const USER_MENU_HELP = {
   twoStep: "For a lost phone: turns off their two-step code and signs them out, so they can set up a new one.",
   disable: "Signs them out and stops them signing in until you enable them again.",
   connections: "Stops them signing in with Google. Their password still works.",
+  whatsapp: "Their WhatsApp chat can no longer reach their files. They can connect it again.",
 } as const;
 
 function UserRow({
@@ -305,6 +337,8 @@ function UserRow({
   isSelf,
   adminTwoStep,
   providers,
+  whatsapp,
+  onWhatsApp,
   now,
   onChanged,
   onPasswordReset,
@@ -314,6 +348,9 @@ function UserRow({
   isSelf: boolean;
   adminTwoStep: boolean;
   providers: readonly string[];
+  /** Their WhatsApp connection, false for none, null while the server has WhatsApp off. */
+  whatsapp: WhatsAppPerson | false | null;
+  onWhatsApp(reply: WhatsAppAdmin): void;
   now: number;
   onChanged: (user: AdminUser) => void;
   onPasswordReset: (revealed: Revealed) => void;
@@ -346,12 +383,26 @@ function UserRow({
     if (kind === "forever") return act(() => setDeleteForever(user.id, true), "Delete forever allowed.");
     if (kind === "2fa") return act(() => resetUser2fa(user.id), "two-step code reset.");
     if (kind === "connections") return act(() => removeConnections(user.id), "connected accounts removed.");
+    if (kind === "whatsapp") return disconnectWhatsApp();
     return act(async () => {
       const reset = await resetUserPassword(user.id);
       onPasswordReset({ name: user.display_name, password: reset.temporary_password });
       return reset.user;
     }, "password reset.");
   };
+
+  async function disconnectWhatsApp() {
+    setBusy(true);
+    try {
+      onWhatsApp(await adminDisconnectWhatsApp(user.id));
+      onNotice({ text: `${user.display_name}: WhatsApp disconnected.` });
+    } catch (caught) {
+      onNotice({ problem: true, text: errorWords(caught) });
+    } finally {
+      setBusy(false);
+      setConfirming(null);
+    }
+  }
 
   const can = userActions(user, { isSelf, now });
   const forever = foreverControl(user, { isSelf, adminTwoStep });
@@ -385,6 +436,9 @@ function UserRow({
       : []),
     ...((user.signs_in_with ?? []).some((way) => way !== "password")
       ? [{ label: "Remove connected accounts", description: USER_MENU_HELP.connections, onSelect: () => setConfirming("connections") }]
+      : []),
+    ...(whatsapp
+      ? [{ label: "Disconnect WhatsApp", description: USER_MENU_HELP.whatsapp, onSelect: () => setConfirming("whatsapp") }]
       : []),
     ...(can.toggleDisabled && !user.disabled
       ? [{ label: "Disable", description: USER_MENU_HELP.disable, onSelect: () => setConfirming("disable"), destructive: true }]
@@ -444,6 +498,11 @@ function UserRow({
           )}
         </span>
       </td>
+      {whatsapp !== null && (
+        <td role="cell" data-label="WhatsApp" className="tabular">
+          {whatsapp ? whatsappCell(whatsapp) : <span className="muted">Not connected</span>}
+        </td>
+      )}
       <td role="cell" data-label="Added" className="tabular">
         <span className={styles.date}>{formatDate(user.created_at)}</span>
       </td>
