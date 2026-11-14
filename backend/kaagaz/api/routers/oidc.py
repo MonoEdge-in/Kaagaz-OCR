@@ -63,8 +63,9 @@ provider's own routes: while that one is off), before anything else is read.
   password keeps working, and a security notice is emailed. At most CONNECTS_PER_HOUR a user.
 * A WhatsApp proof (#603, ``routers/whatsapp_account.py`` starts it for a person who signs in with
   Google only): its callback, while that very session is signed in here (else ``signed_out``),
-  needs the Google account to be the person's own approved connection (else ``not_yours``), then
-  sets the WhatsApp proof cookie and goes back to /settings/whatsapp?proved=google, or ?error=<code>.
+  needs the Google account to be the person's own approved connection (else ``not_yours``) and a
+  fresh Google sign-in (``auth_time`` within FRESH_SECONDS, else ``not_fresh``), then sets the
+  WhatsApp proof cookie and goes back to /settings/whatsapp?proved=google, or ?error=<code>.
 * ``GET /auth/oidc/notice``: "isn't connected" names the provider's email, which never goes in
   a URL (history, logs): the callback leaves it in a signed 60-second cookie, read here once.
 * ``POST /auth/oidc/code`` {code}: the second step, ``routers/auth.py``'s ``_finish_second_step``
@@ -170,6 +171,7 @@ PROOF_NEEDED = "Type your Kaagaz password to continue."
 LOGIN = "/login"
 WAYS = "/settings/sign-in"  # Account, Ways to sign in
 WHATSAPP_PAGE = "/settings/whatsapp"  # Account, WhatsApp (#603)
+FRESH_SECONDS = 300  # WhatsApp's proof: a Google sign-in at most this old (asked with max_age=0)
 # A plain path on this site: no scheme, host, "//", "\", "%" or fragment can get through.
 _NEXT = re.compile(r"/[A-Za-z0-9_-][A-Za-z0-9/_-]{0,199}(\?[A-Za-z0-9=&_-]{1,200})?")
 # The OidcError codes the sign-in page explains as "That sign-in expired. Try again."
@@ -665,6 +667,9 @@ def _whatsapp_proof(
     theirs = found is not None and (found.customer_id, found.user_id) == (user.customer_id, user.user_id)
     if not theirs or found is None or found.status != "approved":
         raise _Refused("not_yours")
+    now = unix(context.clock())
+    if identity.auth_time is None or not now - FRESH_SECONDS <= identity.auth_time <= now + FRESH_SECONDS:
+        raise _Refused("not_fresh")
     response = RedirectResponse(f"{WHATSAPP_PAGE}?proved={provider.name}", status_code=303)
     set_whatsapp_proof_cookie(response, user, context.settings, now=unix(context.clock()))
     return response

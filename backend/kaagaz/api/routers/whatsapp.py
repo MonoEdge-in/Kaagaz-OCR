@@ -12,15 +12,16 @@ WhatsApp is off (``WHATSAPP_ENABLED``, on the router itself, as email's).
      id or time and strips what PostgreSQL can't keep from its text); a body that is not JSON,
      or nested too deep to read, is answered 200 and dropped, as Meta would only send it again:
      a signed body never answers 500;
-  4. a message sent more than MAX_AGE (WhatsApp's 24 hours, the lead's decision on #603's
+  4. (W3) WhatsApp says the number's owner changed (``inbound``'s ``owner_changed``), at any age
+     (Meta may deliver it late): every live connection of it made before the notice ends, in any
+     organisation (``kaagaz_whatsapp_end_number``); a newer one stays. Nothing is stored. Before
+     release: check this parsing against a real Meta payload of each kind (inbound.OWNER_CHANGED);
+  5. a message sent more than MAX_AGE (WhatsApp's 24 hours, the lead's decision on #603's
      review) ago is dropped, at WARNING: it can't be answered any more. A replay inside it is
-     stopped by the message id kept 30 days (6);
-  5. (W3) WhatsApp says the number's owner changed (``inbound``'s ``owner_changed``): every live
-     connection of it ends, in any organisation (``kaagaz_whatsapp_end_number``), and nothing is
-     stored. "Link <6 digits>" (the second way to connect) confirms the number's newest live phone
-     code when right (``kaagaz_whatsapp_phone_code``; wrong: one try more), answered "go back to
-     Kaagaz" and stored nowhere. BLOCK puts the number on the never-message list and ends its
-     connection (the person's own end);
+     stopped by the message id kept 30 days (7). Then (W3): "Link <6 digits>" (the second way to
+     connect) confirms the number's live phone code with that code (``kaagaz_whatsapp_phone_code``,
+     which lifts its BLOCK; wrong: one try more), answered "go back to Kaagaz" and stored nowhere.
+     BLOCK puts the number on the never-message list and ends its connection (the person's own end);
   6. the number's live connection (``kaagaz_whatsapp_lookup`` on its keyed hash); none: answered
      NOT_CONNECTED at most once a day, never once it said BLOCK (``kaagaz_whatsapp_tell_unknown``),
      never saying whether it once had an account;
@@ -109,18 +110,19 @@ def receive(
         _log.warning("whatsapp webhook not JSON", extra={"code": "not_json"})
         return {"ok": True}
     oldest = context.clock() - MAX_AGE
+    key = settings.whatsapp_number_key or ""
     for message in inbound.messages(payload, settings.whatsapp_phone_number_id or ""):
+        hashed = number_hash(key, message.number)
+        if message.owner_changed:  # at any age: only connections made before the notice end
+            with context.db.system() as conn:
+                wa.end_number(conn, hashed, "number_changed", before=message.sent_at)
+            continue
         if message.sent_at < oldest:
             _log.warning("whatsapp message dropped", extra={"code": "too_old"})
             continue
-        key = settings.whatsapp_number_key or ""
-        hashed = number_hash(key, message.number)
         typed = (message.body or "").strip().casefold() if message.kind == "text" else ""
         linking = _LINK.fullmatch(typed)
         with context.db.system() as conn:
-            if message.owner_changed:
-                wa.end_number(conn, hashed, "number_changed")
-                continue
             if linking is not None:
                 if wa.phone_code(conn, hashed, code_hash(key, message.number, linking.group(1))):
                     background.add_task(_reply, settings, message.number, GO_BACK)

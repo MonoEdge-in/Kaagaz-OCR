@@ -4,7 +4,8 @@
 // one dialog (what people can do, Allow voice notes ticked, Allow saving files not, answers already
 // sent stay on the phone, and the tick "our data rules allow WhatsApp") and asks for the Admin's password; the server audits it and emails
 // Management and the other Admins. Once on: the roles that may connect (Members and Reviewers by
-// default; Admins and Management are extra ticks), voice notes and uploads, saved by Save; Turn off
+// default; Admins and Management are extra ticks, which ask for the password), voice notes and
+// uploads, saved by Save; Turn off
 // asks first (everyone is disconnected). While the super admin has it off, a line says so. Shown
 // only while the server has WhatsApp on (Me's ``whatsapp``); its own form, apart from Settings'.
 
@@ -32,6 +33,7 @@ import {
   VOICE_LABEL,
   formChanged,
   formOf,
+  tickNeedsPassword,
   turnOnTitle,
   withRole,
 } from "./whatsappSettings";
@@ -51,6 +53,7 @@ export function WhatsAppPanel({ organisation }: { organisation: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [password, setPassword] = useState(""); // ticking Admins or Management asks for it
 
   useEffect(() => {
     let live = true;
@@ -75,6 +78,7 @@ export function WhatsAppPanel({ organisation }: { organisation: string }) {
       const reply = await saveAdminWhatsApp(next, password);
       setSaved(reply);
       setForm(formOf(reply));
+      setPassword("");
       setDialog(null);
       setNotice("Saved.");
     } catch (caught) {
@@ -115,7 +119,9 @@ export function WhatsAppPanel({ organisation }: { organisation: string }) {
           noValidate
           onSubmit={(event) => {
             event.preventDefault();
-            if (!busy) void save(form);
+            if (busy) return;
+            if (saved && tickNeedsPassword(saved, form) && password === "") setError("Enter your password.");
+            else void save(form, saved && tickNeedsPassword(saved, form) ? password : undefined);
           }}
         >
           <fieldset className={styles.settingsGroup}>
@@ -157,6 +163,17 @@ export function WhatsAppPanel({ organisation }: { organisation: string }) {
             </label>
           </fieldset>
           <p className="hint">{SENT_STAYS}</p>
+          {tickNeedsPassword(saved, form) && (
+            <PasswordField
+              id="whatsapp-tick-password"
+              label="Your Kaagaz password, to let Admins or Management use WhatsApp"
+              value={password}
+              onChange={setPassword}
+              autoComplete="current-password"
+              required
+              error={null}
+            />
+          )}
           {error && !dialog && (
             <p className="error-text" role="alert">
               {error}

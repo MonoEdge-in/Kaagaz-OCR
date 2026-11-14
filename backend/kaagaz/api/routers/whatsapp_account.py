@@ -10,31 +10,39 @@ Account, WhatsApp (signed in, any role). The bot messages first:
   so they confirm with Google; ``totp``: the code is asked too.
 * ``POST /whatsapp/prove`` {password, code?}: the password again, plus the code for anyone with
   two-step sign-in on (``routers/auth.py`` ``_prove``: counted like a sign-in, as Google connect's);
-  ``POST /whatsapp/prove/google`` {code?}: for one who signs in with Google only: the code first
-  (two-step on), then ``{url}`` to Google, whose callback (``routers/oidc.py``) checks it is their
-  own connection. Either sets the proof cookie: PROOF_SECONDS, this person at this session version.
+  ``POST /whatsapp/prove/google`` {code?}: only for one who signs in with Google only (else 403
+  ``not_google_only``), at most GOOGLE_PROOFS_AN_HOUR (their audit rows, 429): the code first
+  (two-step on), then ``{url}`` to Google asking for a fresh sign-in (``max_age=0``), whose callback
+  (``routers/oidc.py``) checks it is their own connection, signed in within 5 minutes. Either sets
+  the proof cookie: 10 minutes, this person at this session version; signing out clears it.
 * ``POST /whatsapp/codes`` {number, agreed, way}: with the proof (else 403 ``proof_needed``), the
   "I agree" tick (400), a number (400), WhatsApp on for the organisation and the role (403 ``off``,
-  ``not_allowed``), at most CODES_AN_HOUR codes for the account (429) and 5 a day for the number in
-  every organisation (``kaagaz_whatsapp_may_send``, 429). Nothing says whether the number is
-  connected anywhere. ``way``:
-  * ``sent``: a 6-digit code, CODE_MINUTES, is sent with Meta's code template; ``{last4, sent}``.
-    ``sent`` false when Meta refused it, or the number said BLOCK (nothing is sent, nothing kept):
-    the screen offers the second way.
-  * ``phone`` (the second way): a code for that number shown here: ``{last4, code, link}``, the
-    link opening WhatsApp with "Link <code>" to Kaagaz's number. The webhook confirms it when that
-    number sends it (``kaagaz_whatsapp_phone_code``).
-* ``POST /whatsapp/codes/verify`` {code}: the newest code only (a newer one replaces the older
-  ones), sent this way, unused, unexpired, under 5 wrong tries; the code is hashed with the number
-  it was sent to, so only that number connects. Wrong: one try counted (400, how many are left).
+  ``not_allowed``). Nothing says whether the number is connected anywhere. ``way``:
+  * ``sent``: one request a person at a time, at most CODES_AN_HOUR for the account (429) and 5 a
+    day for the number in every organisation (``kaagaz_whatsapp_may_send``, 429); a 6-digit code,
+    10 minutes, goes with Meta's code template: ``{last4, sent: true}``. When Meta refuses it, or the
+    number said BLOCK (then nothing is sent, but the code counts all the same, so BLOCK can't be
+    told from a refusal), the same reply starts the second way: ``{last4, sent: false, code, link}``.
+  * ``phone`` ("Didn't get it?"): only after a code the bot sent this person for this same number in
+    the last 10 minutes, still their newest (else 409 ``send_first``; decision 9): the second way.
+  The second way: a code for that number shown here, the link opening WhatsApp with "Link <code>" to
+  Kaagaz's number. The webhook confirms it when that number sends it (``kaagaz_whatsapp_phone_code``).
+* ``POST /whatsapp/codes/verify`` {code}: with the proof still on; the newest code only (a newer one
+  replaces the older ones), sent this way, unexpired, under 5 wrong tries; the code is hashed with
+  the number it was sent to, so only that number connects. Wrong: one try counted (400, how many are
+  left).
 * ``GET /whatsapp/codes/phone``: the second way's ``{state: waiting | confirmed | expired}``;
-  ``POST /whatsapp/codes/phone/confirm``: "Connect +91 ••••1234?" said yes, once the number sent it.
-* Connecting (both ways), in one transaction: WhatsApp still on for them; the person's own live
-  connection ends first (a stale one, say after WHATSAPP_NUMBER_KEY changed); then the number's. A
-  number connected to another account is 409 ``number_taken`` with nobody named, and only now, after
-  the right code. Audited ``whatsapp.connected`` (the person its subject, the last 4 digits), then
-  the welcome naming the person and the organisation, [Start] [Not me - disconnect], and the
-  security email, after the reply.
+  ``POST /whatsapp/codes/phone/confirm``: "Connect +91 ****1234?" said yes (the proof still on), once
+  the number sent it.
+* Connecting (both ways), in one transaction: WhatsApp still on for them; every code of the person
+  goes (the numbers in them too); the person's own live connection ends first (a stale one, say
+  after WHATSAPP_NUMBER_KEY changed); then the number's. A number connected to another account is
+  409 ``number_taken`` with nobody named, and only now, after the right code. Audited
+  ``whatsapp.connected`` (the person its subject, the last 4 digits). Then the welcome, before the
+  reply: the person, their sign-in email masked and the organisation, [Start] [Not me - disconnect]
+  (the template; on the second way, whose 24 hours are open, a text with the same buttons). Meta
+  refusing it ends the connection at once (``unwelcomed``, audited): 502 ``welcome_not_sent``. Then
+  the security email, after the reply.
 * ``POST /whatsapp/disconnect``: their own connection ends (audited by the function).
 
 The Admin (``/admin/whatsapp``):
@@ -42,17 +50,18 @@ The Admin (``/admin/whatsapp``):
 * ``GET``: the switches (WhatsApp, the roles that may connect, Management, voice notes, uploads),
   ``available`` (the super admin's switches) and who is connected, when, and when last used.
 * ``PUT`` {enabled, roles, management, voice, uploads, rules_confirmed?, password?}: all at once.
-  Turning WhatsApp on needs the Admin's tick "our organisation's data rules allow WhatsApp" (400
-  without; stored with when and who, and in the audit row), the Admin's password (400 without,
-  counted like a sign-in) and the super admin's switch (409 ``not_available``); it is emailed to
-  Management and the other Admins. A change is audited
+  Turning WhatsApp on needs the super admin's switch (409 ``not_available``) and the Admin's tick
+  "our organisation's data rules allow WhatsApp" (400 without; stored with when and who, and in the
+  audit row); it is emailed to Management and the other Admins. Turning it on, or ticking Admins or
+  Management, needs the Admin's password (400 without, counted like a sign-in). A change is audited
   (``settings.whatsapp_on``, ``_off`` or ``settings.whatsapp``, the values in its details), then the
   sweep ends at once the connections no longer allowed.
 * ``POST /admin/whatsapp/{user_id}/disconnect``: ends that person's connection (audited by the
-  function) and tells their phone with the "you were disconnected" template.
+  function) and tells their phone with the "you were disconnected" template; a number that no longer
+  opens (WHATSAPP_NUMBER_KEY changed) ends all the same, untold, logged ``number_sealed``.
 
-A message to a phone goes after the reply; one that fails is logged (its code only, never the
-number), as the channel's.
+The "you were disconnected" message goes after the reply; one that fails is logged (its code only,
+never the number), as the channel's.
 """
 
 import dataclasses
@@ -68,7 +77,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection
 
-from kaagaz.adapters.whatsapp import MetaWhatsApp, WhatsAppError
+from kaagaz.adapters.whatsapp import MetaWhatsApp, WhatsAppError, masked_email
 from kaagaz.api import emails, oidc
 from kaagaz.api.auth import (
     WHATSAPP_PROOF_COOKIE,
@@ -86,13 +95,13 @@ from kaagaz.api.routers.admin import MAX_PASSWORD
 from kaagaz.api.routers.auth import (
     MAX_CODE,
     _check_current_password,
-    _per_user_limit,
     _prove,
     _prove_code,
     _succeeded,
 )
-from kaagaz.api.routers.oidc import WHATSAPP_PAGE, _new_flow, connect_limits
+from kaagaz.api.routers.oidc import CONNECTS_PER_HOUR, WHATSAPP_PAGE, _new_flow
 from kaagaz.api.routers.whatsapp import require_whatsapp
+from kaagaz.api.secret_box import SecretBoxError
 from kaagaz.api.twostep import unix
 from kaagaz.api.views import iso
 from kaagaz.channel.numbers import code_hash, e164, new_code, number_hash, open_number, seal
@@ -108,6 +117,7 @@ _log = logging.getLogger("kaagaz.api.whatsapp")
 Context = Annotated[AppContext, Depends(get_context)]
 
 CODES_AN_HOUR = 3  # codes one account may ask for
+GOOGLE_PROOFS_AN_HOUR = CONNECTS_PER_HOUR  # as Google connect's
 MAX_TRIES = 5  # wrong codes for one code (whatsapp_link_codes.tries)
 _SPACING = re.compile(r"[\s().-]")
 ROLES = ("member", "reviewer", "admin")
@@ -126,6 +136,11 @@ NOT_CONNECTED = "No WhatsApp number is connected."
 NOT_AVAILABLE = "WhatsApp isn't available for your organisation yet."
 ON_NEEDS_PROOF = "Type your Kaagaz password to turn WhatsApp on."
 RULES_NOT_CONFIRMED = "Confirm that your organisation's data rules allow WhatsApp."
+TICK_NEEDS_PROOF = "Type your Kaagaz password to let Admins or Management use WhatsApp."
+SEND_FIRST = "Ask for a code on WhatsApp first."
+NOT_GOOGLE_ONLY = "Confirm with your Kaagaz password."
+TOO_MANY_PROOFS = "Too many tries. Try again in an hour."
+WELCOME_NOT_SENT = "Kaagaz couldn't message this number on WhatsApp, so it isn't connected. Try again later."
 _REFUSALS = {"off": OFF, "not_allowed": NOT_ALLOWED}
 
 
@@ -176,12 +191,7 @@ def my_whatsapp(user: User, context: Context) -> dict[str, Any]:
     with context.db.user(user.customer_id, user.user_id) as conn:
         refused = wa.refused(conn, user.customer_id, user.user_id)
         mine = wa.mine(conn, user.customer_id, user.user_id)
-    google = (
-        oidc.enabled(context.settings, "google")
-        and user.google_on
-        and user.google_only
-        and user.google_linked
-    )
+    google = _google_only(context, user)
     reply: dict[str, Any] = {"state": refused or "none", "google": google, "totp": user.totp_enabled}
     if mine is not None:  # shown even when it is no longer allowed: Disconnect stays
         reply |= {
@@ -203,15 +213,21 @@ def prove(body: ProveBody, user: User, context: Context) -> JSONResponse:
 
 @router.post("/whatsapp/prove/google")
 def prove_with_google(body: GoogleProveBody, user: User, context: Context) -> JSONResponse:
-    if not oidc.enabled(context.settings, "google"):
-        raise ApiError(404, "not_found")
-    _per_user_limit(connect_limits, user, "Too many tries. Try again in an hour.")
+    if not _google_only(context, user):
+        raise ApiError(403, "not_google_only", NOT_GOOGLE_ONLY)
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        if wa.google_proofs_this_hour(conn, user.customer_id, user.user_id) >= GOOGLE_PROOFS_AN_HOUR:
+            raise ApiError(429, "rate_limited", TOO_MANY_PROOFS)
+        audit.record(
+            conn, user.customer_id, actor_user_id=user.user_id, action="whatsapp.google_proof",
+            target_type="user", target_id=user.user_id, subject_user_id=user.user_id,
+        )  # fmt: skip
     _prove_code(context, user, body.code)
     now = unix(context.clock())
     provider = oidc.PROVIDERS["google"]
     flow = dataclasses.replace(_new_flow(provider, WHATSAPP_PAGE, now, user), mode="whatsapp")
     url = oidc.authorize_url(
-        provider, context.settings, state=flow.state, nonce=flow.nonce, verifier=flow.verifier
+        provider, context.settings, state=flow.state, nonce=flow.nonce, verifier=flow.verifier, max_age=0
     )
     response = JSONResponse({"url": url})
     set_flow_cookie(response, flow, context.settings, now=now)
@@ -222,59 +238,72 @@ def prove_with_google(body: GoogleProveBody, user: User, context: Context) -> JS
 def ask_for_code(body: CodesBody, user: User, request: Request, context: Context) -> dict[str, Any]:
     settings = context.settings
     key = settings.whatsapp_number_key or ""
-    proof = request.cookies.get(WHATSAPP_PROOF_COOKIE) or ""
-    if not whatsapp_proved(proof, user, settings.session_secret, unix(context.clock())):
-        raise ApiError(403, "proof_needed", PROOF_NEEDED)
+    _require_proof(request, user, context)
     if not body.agreed:
         raise ApiError(400, "bad_request", NOT_AGREED)
     number = e164(_SPACING.sub("", body.number))
     if number is None:
         raise ApiError(400, "bad_request", BAD_NUMBER)
     code, hashed = new_code(), number_hash(key, number)
+    sealed = seal(key, number, user.customer_id, user.user_id)
     with context.db.user(user.customer_id, user.user_id) as conn:
         _refuse(conn, user)
+        if body.way == "phone":  # "Didn't get it?": only after the bot's code to this same number
+            newest = wa.newest_code(conn, user.customer_id, user.user_id)
+            if newest is None or newest.via != "sent" or not newest.live or newest.phone_hash != hashed:
+                raise ApiError(409, "send_first", SEND_FIRST)
+            return _second_way(conn, context, user, number, hashed, sealed)
+        wa.lock_codes(conn, user.user_id)
         if wa.codes_this_hour(conn, user.customer_id, user.user_id) >= CODES_AN_HOUR:
             raise ApiError(429, "rate_limited", TOO_MANY_CODES)
         allowed = wa.may_send(conn, hashed)
         if allowed == "number_limit":
             raise ApiError(429, "rate_limited", NUMBER_LIMIT)
-        if allowed == "blocked" and body.way == "sent":  # it said BLOCK: never messaged
-            return {"last4": number[-4:], "sent": False}
-        sealed = seal(key, number, user.customer_id, user.user_id)
         wa.add_code(
-            conn, user.customer_id, user.user_id, hashed, sealed, code_hash(key, number, code), body.way
+            conn, user.customer_id, user.user_id, hashed, sealed, code_hash(key, number, code), "sent"
         )
-    if body.way == "phone":
-        link = f"https://wa.me/{settings.whatsapp_business_number}?text=Link%20{code}"
-        return {"last4": number[-4:], "code": code, "link": link}
+        if allowed == "blocked":  # it said BLOCK: never messaged; counted, and answered as a refusal
+            return _second_way(conn, context, user, number, hashed, sealed)
     try:
         MetaWhatsApp.from_settings(settings).send_code(number, code)
     except WhatsAppError as error:
         _log.warning("whatsapp code not sent", extra={"code": f"{error.code}:{error.status or '-'}"})
-        return {"last4": number[-4:], "sent": False}
+        with context.db.user(user.customer_id, user.user_id) as conn:
+            return _second_way(conn, context, user, number, hashed, sealed)
     return {"last4": number[-4:], "sent": True}
+
+
+def _second_way(
+    conn: Connection, context: AppContext, user: CurrentUser, number: str, hashed: bytes, sealed: str
+) -> dict[str, Any]:
+    """A phone code for the number, shown with the link that sends "Link <code>" from WhatsApp."""
+    code = new_code()
+    key = context.settings.whatsapp_number_key or ""
+    wa.add_code(conn, user.customer_id, user.user_id, hashed, sealed, code_hash(key, number, code), "phone")
+    link = f"https://wa.me/{context.settings.whatsapp_business_number}?text=Link%20{code}"
+    return {"last4": number[-4:], "sent": False, "code": code, "link": link}
 
 
 @router.post("/whatsapp/codes/verify")
 def verify_code(
-    body: VerifyBody, user: User, background: BackgroundTasks, context: Context
+    body: VerifyBody, user: User, request: Request, background: BackgroundTasks, context: Context
 ) -> dict[str, Any]:
+    _require_proof(request, user, context)
     key = context.settings.whatsapp_number_key or ""
-    wrong, connected = None, False
+    wrong, link_id = None, None
     with context.db.user(user.customer_id, user.user_id) as conn:
-        code = _live_code(conn, user, "sent")
+        code, number = _live_code(conn, context, user, "sent")
         if code.tries >= MAX_TRIES:
             raise ApiError(400, "bad_request", TOO_MANY_TRIES)
-        number = open_number(key, code.sealed, user.customer_id, user.user_id)
         if hmac.compare_digest(code.code_hash, code_hash(key, number, body.code.strip())):
-            connected = _connect(conn, context, user, background, code, number)
+            link_id = _connect(conn, context, user, code, number)
         else:
             wa.code_tried(conn, user.customer_id, code.id)
             wrong = MAX_TRIES - code.tries - 1
     if wrong is not None:  # the try is counted (committed) first
         left = f"{wrong} {'try' if wrong == 1 else 'tries'} left." if wrong else "Ask for a new one."
         raise ApiError(400, "wrong_code", f"That code isn't right. {left}")
-    return _connected(connected, user, context)
+    return _welcomed(context, user, background, number, link_id, window_open=False)
 
 
 @router.get("/whatsapp/codes/phone")
@@ -287,15 +316,16 @@ def phone_code_state(user: User, context: Context) -> dict[str, str]:
 
 
 @router.post("/whatsapp/codes/phone/confirm")
-def confirm_phone_code(user: User, background: BackgroundTasks, context: Context) -> dict[str, Any]:
-    key = context.settings.whatsapp_number_key or ""
+def confirm_phone_code(
+    user: User, request: Request, background: BackgroundTasks, context: Context
+) -> dict[str, Any]:
+    _require_proof(request, user, context)
     with context.db.user(user.customer_id, user.user_id) as conn:
-        code = _live_code(conn, user, "phone")
+        code, number = _live_code(conn, context, user, "phone")
         if not code.confirmed:
             raise ApiError(409, "not_confirmed", "Send the message from WhatsApp first.")
-        number = open_number(key, code.sealed, user.customer_id, user.user_id)
-        connected = _connect(conn, context, user, background, code, number)
-    return _connected(connected, user, context)
+        link_id = _connect(conn, context, user, code, number)
+    return _welcomed(context, user, background, number, link_id, window_open=True)
 
 
 @router.post("/whatsapp/disconnect")
@@ -308,50 +338,85 @@ def disconnect(user: User, context: Context) -> dict[str, Any]:
     return my_whatsapp(user, context)
 
 
+def _google_only(context: AppContext, user: CurrentUser) -> bool:
+    """The person signs in with Google only (#507): they confirm with Google, not the password."""
+    return (
+        oidc.enabled(context.settings, "google")
+        and user.google_on
+        and user.google_only
+        and user.google_linked
+    )
+
+
+def _require_proof(request: Request, user: CurrentUser, context: AppContext) -> None:
+    proof = request.cookies.get(WHATSAPP_PROOF_COOKIE) or ""
+    if not whatsapp_proved(proof, user, context.settings.session_secret, unix(context.clock())):
+        raise ApiError(403, "proof_needed", PROOF_NEEDED)
+
+
 def _refuse(conn: Connection, user: CurrentUser) -> None:
     refused = wa.refused(conn, user.customer_id, user.user_id)
     if refused is not None:
         raise ApiError(403, refused, _REFUSALS[refused])
 
 
-def _live_code(conn: Connection, user: CurrentUser, via: str) -> wa.Code:
-    """The person's newest code, sent ``via``, unused and unexpired; else 400."""
+def _live_code(conn: Connection, context: AppContext, user: CurrentUser, via: str) -> tuple[wa.Code, str]:
+    """The person's newest code, sent ``via``, unexpired, and its number; else 400."""
     code = wa.newest_code(conn, user.customer_id, user.user_id)
-    if code is None or code.via != via or code.used or not code.live:
+    if code is None or code.via != via or code.used or not code.live or code.sealed is None:
         raise ApiError(400, "bad_request", NO_CODE)
-    return code
+    return code, open_number(
+        context.settings.whatsapp_number_key or "", code.sealed, user.customer_id, user.user_id
+    )
 
 
-def _connected(connected: bool, user: CurrentUser, context: AppContext) -> dict[str, Any]:
-    """``/whatsapp/me`` once connected; 409 when the number is another account's (the code spent)."""
-    if not connected:
+def _welcomed(
+    context: AppContext,
+    user: CurrentUser,
+    background: BackgroundTasks,
+    number: str,
+    link_id: str | None,
+    *,
+    window_open: bool,
+) -> dict[str, Any]:
+    """The welcome, before the reply (see the module notes); ``/whatsapp/me`` once it went."""
+    if link_id is None:
         raise ApiError(409, "number_taken", NUMBER_TAKEN)
+    names = (user.display_name, masked_email(user.email), user.customer_name, link_id)
+    bot = MetaWhatsApp.from_settings(context.settings)
+    try:
+        (bot.welcome_buttons if window_open else bot.send_welcome)(number, *names)
+    except WhatsAppError as error:
+        _log.warning("whatsapp welcome not sent", extra={"code": f"{error.code}:{error.status or '-'}"})
+        with context.db.user(user.customer_id, user.user_id) as conn:
+            wa.end(conn, Linked(user.customer_id, user.user_id, link_id), "unwelcomed")
+        raise ApiError(502, "welcome_not_sent", WELCOME_NOT_SENT) from None
+    who = (context, user.customer_id, user.user_id)
+    emails.after(
+        background, "whatsapp_connected", emails.notify, *who, "whatsapp_connected", emails.whatsapp_connected
+    )
     return my_whatsapp(user, context)
 
 
 def _connect(
-    conn: Connection,
-    context: AppContext,
-    user: CurrentUser,
-    background: BackgroundTasks,
-    code: wa.Code,
-    number: str,
-) -> bool:
-    """The right code: the code is spent, and the number connects (see the module notes); False when it
-    is connected to another account."""
+    conn: Connection, context: AppContext, user: CurrentUser, code: wa.Code, number: str
+) -> str | None:
+    """The right code: every code of the person goes, and the number connects (see the module notes):
+    its connection's id, or None when it is connected to another account."""
     customer_id, user_id = user.customer_id, user.user_id
     _refuse(conn, user)
-    wa.code_used(conn, customer_id, code.id)
+    sealed = seal(context.settings.whatsapp_number_key or "", number, customer_id, user_id)
+    wa.drop_codes(conn, customer_id, user_id)
     mine = wa.mine(conn, customer_id, user_id)
     try:
         with conn.begin_nested():
             if mine is not None:  # their own, ended first: a stale one, or another number
                 wa.end(conn, Linked(customer_id, user_id, mine.id), "person")
             link_id = wa.add_link(
-                conn, customer_id, user_id, code.phone_hash, code.sealed, number[-4:], user.session_version
+                conn, customer_id, user_id, code.phone_hash, sealed, number[-4:], user.session_version
             )
     except wa.NumberTaken:
-        return False
+        return None
     audit.record(
         conn,
         customer_id,
@@ -362,15 +427,7 @@ def _connect(
         details={"link_id": link_id, "number_last4": number[-4:]},
         subject_user_id=user_id,
     )
-    name, organisation = user.display_name, user.customer_name
-    background.add_task(
-        _tell, context, "welcome", lambda bot: bot.send_welcome(number, name, organisation, link_id)
-    )
-    who = (context, customer_id, user_id)
-    emails.after(
-        background, "whatsapp_connected", emails.notify, *who, "whatsapp_connected", emails.whatsapp_connected
-    )
-    return True
+    return link_id
 
 
 def _tell(context: AppContext, what: str, send: Callable[[MetaWhatsApp], None]) -> None:
@@ -417,17 +474,21 @@ def save_whatsapp(
     if before is None:
         raise ApiError(404, "not_found")
     turned_on = body.enabled and not before["enabled"]
+    roles = [role for role in ROLES if role in body.roles]
+    ticked = ("admin" in roles and "admin" not in before["roles"]) or (
+        body.management and not before["management"]
+    )
     if turned_on:
         if not before["available"]:
             raise ApiError(409, "not_available", NOT_AVAILABLE)
         if not body.rules_confirmed:
             raise ApiError(400, "bad_request", RULES_NOT_CONFIRMED)
+    if turned_on or ticked:
         if body.password is None:
-            raise ApiError(400, "bad_request", ON_NEEDS_PROOF)
+            raise ApiError(400, "bad_request", ON_NEEDS_PROOF if turned_on else TICK_NEEDS_PROOF)
         _succeeded(
             context, _check_current_password(context, user, body.password, context.clock()), signed_in=True
         )
-    roles = [role for role in ROLES if role in body.roles]
     wanted = {
         "enabled": body.enabled,
         "management": body.management,
@@ -468,11 +529,17 @@ def admin_disconnect(
         mine = wa.mine(conn, user.customer_id, target)
         if mine is None:
             raise ApiError(404, "not_found", NOT_CONNECTED)
-        number = open_number(
-            context.settings.whatsapp_number_key or "", mine.sealed, user.customer_id, target
-        )
+        try:
+            number: str | None = open_number(
+                context.settings.whatsapp_number_key or "", mine.sealed, user.customer_id, target
+            )
+        except SecretBoxError:  # WHATSAPP_NUMBER_KEY changed: it ends all the same, untold
+            _log.warning("whatsapp number not opened", extra={"code": "number_sealed"})
+            number = None
         wa.end(conn, Linked(user.customer_id, target, mine.id), "admin")
-    background.add_task(_tell, context, "disconnected", lambda bot: bot.send_disconnected(number))
+    if number is not None:
+        told = number
+        background.add_task(_tell, context, "disconnected", lambda bot: bot.send_disconnected(told))
     return admin_whatsapp(user, context)
 
 

@@ -6,8 +6,10 @@
 * ``send_buttons`` (W3): one text with up to 3 reply buttons, each an id and a title.
 * The templates Meta approved (W3), which may go outside WhatsApp's 24 hours, in English:
   ``send_code``, the authentication template with its copy-code button (Meta fixes its words);
-  ``send_welcome``, naming the person and the organisation, with [Start] and [Not me - disconnect]
-  (whose payload names the connection, so an old welcome's tap ends only its own);
+  ``send_welcome``, WELCOME_BODY: the person, their sign-in email masked (``masked_email``, which
+  someone who tricks a person into connecting can't choose) and the organisation, with [Start] and
+  [Not me - disconnect] (whose payload names the connection, so an old welcome's tap ends only its
+  own); ``welcome_buttons`` sends the same as a text with reply buttons inside WhatsApp's 24 hours;
   ``send_disconnected``, "you were disconnected", with nothing in it.
 * No redirect is followed and no proxy is used (``build_opener``, as the OpenRouter and sign-in
   provider calls). TIMEOUT_SECONDS a call; at most MAX_REPLY_BYTES of the reply are read.
@@ -35,6 +37,12 @@ DISCONNECTED_TEMPLATE = "kaagaz_disconnected"
 LANGUAGE = "en"
 START = "start"  # the welcome's [Start] payload
 NOT_ME = "not_me:"  # the welcome's [Not me - disconnect] payload: this, then the connection's id
+# The welcome template's approved English body, its {{1}} {{2}} {{3}} as {} here (the text form's too).
+WELCOME_BODY = (
+    "Connected to Kaagaz as {} ({}) at {}. You can ask about your files, get a file, or save documents"
+    " to Kaagaz. You only get files you can already see in Kaagaz."
+)
+WELCOME_BUTTONS = ("Start", "Not me \u2013 disconnect")  # 20 characters at most each
 _PARAMETER_CHARS = 60  # a name in a template, on one line (Meta refuses new lines in a parameter)
 
 
@@ -82,8 +90,8 @@ class MetaWhatsApp:
         ]
         self._template(to, CODE_TEMPLATE, components)
 
-    def send_welcome(self, to: str, name: str, organisation: str, link_id: str) -> None:
-        names = [{"type": "text", "text": _one_line(text)} for text in (name, organisation)]
+    def send_welcome(self, to: str, name: str, email: str, organisation: str, link_id: str) -> None:
+        names = [{"type": "text", "text": _one_line(text)} for text in (name, email, organisation)]
         components: list[dict[str, object]] = [{"type": "body", "parameters": names}]
         for index, payload in enumerate((START, NOT_ME + link_id)):
             given = [{"type": "payload", "payload": payload}]
@@ -91,6 +99,11 @@ class MetaWhatsApp:
                 {"type": "button", "sub_type": "quick_reply", "index": str(index), "parameters": given}
             )
         self._template(to, WELCOME_TEMPLATE, components)
+
+    def welcome_buttons(self, to: str, name: str, email: str, organisation: str, link_id: str) -> None:
+        """The welcome as a text with reply buttons, inside WhatsApp's 24 hours (no template needed)."""
+        body = WELCOME_BODY.format(*(_one_line(text) for text in (name, email, organisation)))
+        self.send_buttons(to, body, list(zip((START, NOT_ME + link_id), WELCOME_BUTTONS, strict=True)))
 
     def send_disconnected(self, to: str) -> None:
         self._template(to, DISCONNECTED_TEMPLATE, [])
@@ -124,3 +137,9 @@ class MetaWhatsApp:
 
 def _one_line(text: str) -> str:
     return " ".join(text.split())[:_PARAMETER_CHARS]
+
+
+def masked_email(email: str) -> str:
+    """An email as its first letter, three dots and its domain: p, three dots, @gmail.com."""
+    local, _, domain = email.partition("@")
+    return f"{local[:1]}\u2022\u2022\u2022@{domain}"

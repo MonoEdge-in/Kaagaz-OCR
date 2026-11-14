@@ -39,6 +39,11 @@ export function withRole(form: WhatsAppForm, role: Role, on: boolean): WhatsAppF
   return { ...form, roles };
 }
 
+/** Ticking Admins or Management (not there before) asks for the Admin's password, as turning it on. */
+export function tickNeedsPassword(saved: WhatsAppAdmin, form: WhatsAppForm): boolean {
+  return (form.roles.includes("admin") && !saved.roles.includes("admin")) || (form.management && !saved.management);
+}
+
 export function formChanged(saved: WhatsAppAdmin, form: WhatsAppForm): boolean {
   const before = formOf(saved);
   return (Object.keys(before) as (keyof WhatsAppForm)[]).some((key) =>
@@ -46,7 +51,17 @@ export function formChanged(saved: WhatsAppAdmin, form: WhatsAppForm): boolean {
   );
 }
 
-/** The Users tab's WhatsApp cell: "••••1234 since 14 Nov 2026", or "" for one not connected. */
-export function whatsappCell(person: WhatsAppPerson | undefined): string {
-  return person ? `••••${person.last4} since ${formatDate(person.linked_at)}` : "";
+/** The Users tab's WhatsApp column: the connections while they load, could not load, or loaded. */
+export type WhatsAppLoad = WhatsAppPerson[] | "loading" | "failed";
+export type WhatsAppCellState =
+  | { kind: "loading" }
+  | { kind: "failed" } // "Couldn't load", with Try again: never "Not connected"
+  | { kind: "none" }
+  | { kind: "connected"; text: string };
+
+/** One person's WhatsApp cell: "••••1234 since 14 Nov 2026" once loaded and connected. */
+export function whatsappCellState(load: WhatsAppLoad, userId: string): WhatsAppCellState {
+  if (load === "loading" || load === "failed") return { kind: load };
+  const person = load.find((row) => row.user_id === userId);
+  return person ? { kind: "connected", text: `••••${person.last4} since ${formatDate(person.linked_at)}` } : { kind: "none" };
 }

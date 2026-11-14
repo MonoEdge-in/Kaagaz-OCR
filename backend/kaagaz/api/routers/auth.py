@@ -135,6 +135,7 @@ from kaagaz.api.auth import (
     UserAllowGoogleLink,
     UserAllowPasswordChange,
     clear_session_cookie,
+    clear_whatsapp_proof_cookie,
     current_user_allow_password_change,
     deletes_forever_by_password,
     feature_on,
@@ -475,6 +476,7 @@ def logout(request: Request, user: UserAllowPasswordChange, context: Context) ->
         _record(conn, user.customer_id, "auth.logout", actor=user.user_id, target=user.user_id)
     response = Response(status_code=204)
     clear_session_cookie(response, context.settings)
+    clear_whatsapp_proof_cookie(response, context.settings)  # #603
     return response
 
 
@@ -485,6 +487,7 @@ def logout_everywhere(user: UserAllowGoogleLink, context: Context) -> Response: 
         _record(conn, user.customer_id, "auth.logout_everywhere", actor=user.user_id, target=user.user_id)
     response = Response(status_code=204)
     clear_session_cookie(response, context.settings)
+    clear_whatsapp_proof_cookie(response, context.settings)  # #603
     return response
 
 

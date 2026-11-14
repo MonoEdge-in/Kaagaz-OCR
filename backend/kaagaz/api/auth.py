@@ -558,6 +558,17 @@ def set_whatsapp_proof_cookie(
     )
 
 
+def clear_whatsapp_proof_cookie(response: Response, settings: Settings) -> None:
+    """Signing out ends the WhatsApp proof too (#603)."""
+    response.delete_cookie(
+        WHATSAPP_PROOF_COOKIE,
+        path=WHATSAPP_PATH,
+        httponly=True,
+        samesite="lax",
+        secure=settings.cookie_secure,
+    )
+
+
 def _set_oidc_cookie(response: Response, name: str, token: str, max_age: int, settings: Settings) -> None:
     """HttpOnly, SameSite=Lax (the provider's redirect back is a top-level GET from its site),
     sent only to OIDC_PATH."""

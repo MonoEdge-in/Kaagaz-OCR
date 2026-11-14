@@ -10,9 +10,11 @@
   right to end a connection itself), and ``renew`` and ``release``, which touch the lease only
   while it is still the one this process holds (another may have taken it once it ran out).
 * Connecting (W3), in the person's own transaction: ``refused`` (why they may not connect now, as
-  ``check`` says it for a connection), ``codes_this_hour``, ``add_code``, ``newest_code`` (only the
-  newest counts: a newer one replaces the older ones), ``code_tried``, ``code_used``, ``mine`` (their
-  live connection) and ``add_link`` (``NumberTaken`` when the number is live elsewhere).
+  ``check`` says it for a connection), ``lock_codes`` (one request for codes at a time a person),
+  ``codes_this_hour``, ``add_code``, ``newest_code`` (only the newest counts: a newer one replaces
+  the older ones), ``code_tried``, ``drop_codes`` (a code used: all the person's go, numbers and
+  all), ``mine`` (their live connection), ``add_link`` (``NumberTaken`` when the number is live
+  elsewhere) and ``google_proofs_this_hour``.
 * The Admin's (W3), in the Admin's transaction: ``org_settings``, ``save_settings`` and
   ``connections`` (the organisation's live connections: who, the last 4 digits, when).
 
@@ -68,7 +70,7 @@ class Code:
 
     id: str
     phone_hash: bytes
-    sealed: str
+    sealed: str | None  # None once expired (the sweep)
     code_hash: bytes
     via: str
     tries: int
@@ -139,18 +141,22 @@ _REFUSED = text(
     " FROM users u LEFT JOIN whatsapp_org_settings s ON s.customer_id = u.customer_id"
     " WHERE u.customer_id = :c AND u.id = :u"
 )
-_END_NUMBER = text("SELECT kaagaz_whatsapp_end_number(:h, :reason)")
+_END_NUMBER = text("SELECT kaagaz_whatsapp_end_number(:h, :reason, :before)")
 _TELL = text("SELECT kaagaz_whatsapp_tell_unknown(:h)")
 _BLOCK = text("SELECT kaagaz_whatsapp_block(:h)")
 _MAY_SEND = text("SELECT kaagaz_whatsapp_may_send(:h)")
 _PHONE_CODE = text("SELECT kaagaz_whatsapp_phone_code(:h, :code)")
+# One request for codes at a time a person, to the commit: two at once count each other.
+_LOCK_CODES = text("SELECT pg_advisory_xact_lock(hashtextextended('whatsapp codes ' || :u, 0))")
+# The codes the bot was asked to send (a phone code is only ever made from one).
 _THIS_HOUR = text(
     "SELECT count(*) FROM whatsapp_link_codes"
-    " WHERE customer_id = :c AND user_id = :u AND created_at > now() - interval '1 hour'"
+    " WHERE customer_id = :c AND user_id = :u AND via = 'sent' AND created_at > now() - interval '1 hour'"
 )
 _ADD_CODE = text(
     "INSERT INTO whatsapp_link_codes (customer_id, user_id, phone_hash, phone_sealed, code_hash, via,"
-    " expires_at) VALUES (:c, :u, :h, :sealed, :code, :via, now() + make_interval(mins => :minutes))"
+    " created_at, expires_at) VALUES (:c, :u, :h, :sealed, :code, :via, clock_timestamp(),"
+    " clock_timestamp() + make_interval(mins => :minutes))"
 )
 # On whatsapp_link_codes_person: the newest only (a newer code replaces the older ones).
 _NEWEST_CODE = text(
@@ -159,7 +165,12 @@ _NEWEST_CODE = text(
     " WHERE customer_id = :c AND user_id = :u ORDER BY created_at DESC, id LIMIT 1 FOR UPDATE"
 )
 _CODE_TRIED = text("UPDATE whatsapp_link_codes SET tries = tries + 1 WHERE customer_id = :c AND id = :id")
-_CODE_USED = text("UPDATE whatsapp_link_codes SET used_at = now() WHERE customer_id = :c AND id = :id")
+_DROP_CODES = text("DELETE FROM whatsapp_link_codes WHERE customer_id = :c AND user_id = :u")
+# The Google proofs a person started in the last hour (their audit rows, on audit_log_actor).
+_GOOGLE_PROOFS = text(
+    "SELECT count(*) FROM audit_log WHERE customer_id = :c AND actor_user_id = :u"
+    " AND action = 'whatsapp.google_proof' AND created_at > now() - interval '1 hour'"
+)
 _MINE = text(
     "SELECT id, phone_last4, phone_sealed, linked_at, last_used_at FROM whatsapp_links"
     " WHERE customer_id = :c AND user_id = :u AND ended_at IS NULL"
@@ -304,9 +315,11 @@ def release(conn: Connection, linked: Linked, until: datetime, wait_seconds: int
 # --- with no organisation (W3) ---------------------------------------------------------------
 
 
-def end_number(conn: Connection, phone_hash: bytes, reason: str) -> int:
-    """Every live connection of the number ends (``number_changed`` or ``replaced``), audited; how many."""
-    return int(conn.execute(_END_NUMBER, {"h": phone_hash, "reason": reason}).scalar_one())
+def end_number(conn: Connection, phone_hash: bytes, reason: str, before: datetime | None = None) -> int:
+    """Every live connection of the number ends (``number_changed`` or ``replaced``), audited; with
+    ``before``, only those connected before it. How many."""
+    params = {"h": phone_hash, "reason": reason, "before": before}
+    return int(conn.execute(_END_NUMBER, params).scalar_one())
 
 
 def tell_unknown(conn: Connection, phone_hash: bytes) -> bool:
@@ -335,6 +348,10 @@ def refused(conn: Connection, customer_id: str, user_id: str) -> str | None:
     """``off`` (WhatsApp off for the organisation), ``not_allowed`` (their role), or None."""
     row = conn.execute(_REFUSED, {"c": customer_id, "u": user_id}).first()
     return "off" if row is None else row[0]
+
+
+def lock_codes(conn: Connection, user_id: str) -> None:
+    conn.execute(_LOCK_CODES, {"u": user_id})
 
 
 def codes_this_hour(conn: Connection, customer_id: str, user_id: str) -> int:
@@ -371,7 +388,7 @@ def newest_code(conn: Connection, customer_id: str, user_id: str) -> Code | None
     return Code(
         id=str(row[0]),
         phone_hash=bytes(row[1]),
-        sealed=str(row[2]),
+        sealed=row[2],
         code_hash=bytes(row[3]),
         via=str(row[4]),
         tries=int(row[5]),
@@ -385,8 +402,13 @@ def code_tried(conn: Connection, customer_id: str, code_id: str) -> None:
     conn.execute(_CODE_TRIED, {"c": customer_id, "id": code_id})
 
 
-def code_used(conn: Connection, customer_id: str, code_id: str) -> None:
-    conn.execute(_CODE_USED, {"c": customer_id, "id": code_id})
+def drop_codes(conn: Connection, customer_id: str, user_id: str) -> None:
+    """A code was used: every code of the person goes, with the numbers sealed in them."""
+    conn.execute(_DROP_CODES, {"c": customer_id, "u": user_id})
+
+
+def google_proofs_this_hour(conn: Connection, customer_id: str, user_id: str) -> int:
+    return int(conn.execute(_GOOGLE_PROOFS, {"c": customer_id, "u": user_id}).scalar_one())
 
 
 def mine(conn: Connection, customer_id: str, user_id: str) -> Mine | None:

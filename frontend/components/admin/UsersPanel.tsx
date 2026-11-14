@@ -59,7 +59,7 @@ import {
 import { DRAFT_KEPT, clearDraft, readDraft, saveDraftSoon } from "@/lib/drafts";
 import { errorWords } from "@/lib/errorWords";
 import { formatDate } from "@/lib/format";
-import type { AddedUser, AdminUser, GoogleRules, PendingConnection, Role, WhatsAppAdmin, WhatsAppPerson } from "@/lib/types";
+import type { AddedUser, AdminUser, GoogleRules, PendingConnection, Role, WhatsAppAdmin } from "@/lib/types";
 import table from "@/components/documents/Table.module.css";
 import { CopyButton } from "./CopyButton";
 import { MoreRows, useRowCap } from "./RowCap";
@@ -94,7 +94,8 @@ import {
   validateNewUser,
 } from "./logic";
 import type { NewUserErrors, NewUserInput } from "./logic";
-import { whatsappCell } from "./whatsappSettings";
+import { whatsappCellState } from "./whatsappSettings";
+import type { WhatsAppCellState, WhatsAppLoad } from "./whatsappSettings";
 import styles from "./Admin.module.css";
 
 const SKELETON_ROWS = [0, 1, 2];
@@ -130,19 +131,20 @@ export function UsersPanel({
   // Rounded to the minute, so "Locked until" and Unlock clear on their own.
   const now = useMinuteNow();
   const cap = useRowCap();
-  const [connected, setConnected] = useState<WhatsAppPerson[]>([]);
+  const [connected, setConnected] = useState<WhatsAppLoad>("loading");
+  const [whatsAppAttempt, setWhatsAppAttempt] = useState(0);
 
   useEffect(() => {
     if (!whatsapp) return;
     let live = true;
     adminWhatsApp().then(
       (reply) => live && setConnected(reply.people),
-      () => undefined, // the column stays empty; the Settings tab says why
+      () => live && setConnected("failed"), // the column says so, with Try again; never "Not connected"
     );
     return () => {
       live = false;
     };
-  }, [whatsapp]);
+  }, [whatsapp, whatsAppAttempt]);
 
   useEffect(() => {
     let cancelled = false;
@@ -257,8 +259,12 @@ export function UsersPanel({
                     isSelf={user.id === currentUserId}
                     adminTwoStep={adminTwoStep}
                     providers={providers}
-                    whatsapp={whatsapp ? (connected.find((person) => person.user_id === user.id) ?? false) : null}
+                    whatsapp={whatsapp ? whatsappCellState(connected, user.id) : null}
                     onWhatsApp={(reply) => setConnected(reply.people)}
+                    onWhatsAppRetry={() => {
+                      setConnected("loading");
+                      setWhatsAppAttempt((n) => n + 1);
+                    }}
                     now={now}
                     onChanged={replace}
                     onPasswordReset={setRevealed}
@@ -339,6 +345,7 @@ function UserRow({
   providers,
   whatsapp,
   onWhatsApp,
+  onWhatsAppRetry,
   now,
   onChanged,
   onPasswordReset,
@@ -348,9 +355,10 @@ function UserRow({
   isSelf: boolean;
   adminTwoStep: boolean;
   providers: readonly string[];
-  /** Their WhatsApp connection, false for none, null while the server has WhatsApp off. */
-  whatsapp: WhatsAppPerson | false | null;
+  /** Their WhatsApp cell (loading, failed, none, connected); null while the server has WhatsApp off. */
+  whatsapp: WhatsAppCellState | null;
   onWhatsApp(reply: WhatsAppAdmin): void;
+  onWhatsAppRetry(): void;
   now: number;
   onChanged: (user: AdminUser) => void;
   onPasswordReset: (revealed: Revealed) => void;
@@ -437,7 +445,7 @@ function UserRow({
     ...((user.signs_in_with ?? []).some((way) => way !== "password")
       ? [{ label: "Remove connected accounts", description: USER_MENU_HELP.connections, onSelect: () => setConfirming("connections") }]
       : []),
-    ...(whatsapp
+    ...(whatsapp?.kind === "connected"
       ? [{ label: "Disconnect WhatsApp", description: USER_MENU_HELP.whatsapp, onSelect: () => setConfirming("whatsapp") }]
       : []),
     ...(can.toggleDisabled && !user.disabled
@@ -500,7 +508,17 @@ function UserRow({
       </td>
       {whatsapp !== null && (
         <td role="cell" data-label="WhatsApp" className="tabular">
-          {whatsapp ? whatsappCell(whatsapp) : <span className="muted">Not connected</span>}
+          {whatsapp.kind === "connected" && whatsapp.text}
+          {whatsapp.kind === "none" && <span className="muted">Not connected</span>}
+          {whatsapp.kind === "loading" && <span className="muted">Loading…</span>}
+          {whatsapp.kind === "failed" && (
+            <span className={styles.statusList}>
+              <span className="muted">Couldn&apos;t load</span>
+              <button type="button" className="btn btn-quiet" onClick={onWhatsAppRetry}>
+                Try again
+              </button>
+            </span>
+          )}
         </td>
       )}
       <td role="cell" data-label="Added" className="tabular">

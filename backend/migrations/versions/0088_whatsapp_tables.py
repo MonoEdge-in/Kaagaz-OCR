@@ -15,8 +15,8 @@ section 15, W1, #603, Tushar, 14 Nov 2026). NEEDS VRUSHIT'S APPROVAL: schema and
   the live rows). An ended one keeps who, when and why, and loses its number at once.
 * ``whatsapp_link_codes``: a connect code, hashed, bound to its person and number, with its expiry
   and tries (5 at most), and how it travels (W3): ``sent`` by the bot and typed into Kaagaz, or
-  ``phone``, shown in Kaagaz and sent from the number (``confirmed_at`` once it came). ``own_user_only``
-  as well (0008).
+  ``phone``, shown in Kaagaz and sent from the number (``confirmed_at`` once it came). Deleted once
+  used; its number emptied once expired. ``own_user_only`` as well (0008).
 * ``whatsapp_messages``: each message WhatsApp delivered, once (its message id is unique in the
   organisation): its kind, text or media id until it is handled, Meta's time, its state and the
   reply's time; a batch and the document an upload made. ``own_user_only`` as well (0008): only
@@ -42,8 +42,9 @@ revoked from PUBLIC, for the two roles) read or change only what their names say
   (their partial index), takes up to ``limit`` connections whose lease is free (oldest waiting
   first, SKIP LOCKED), leases each for ``lease`` seconds and returns ids and the lease only, so one
   person's messages are handled one at a time and different people's side by side.
-* ``kaagaz_whatsapp_end_number(hash, reason)``: WhatsApp says the number changed hands, or it is
-  connected elsewhere: every live connection of it ends, in any organisation, each audited there.
+* ``kaagaz_whatsapp_end_number(hash, reason, before)``: WhatsApp says the number changed hands, or
+  it is connected elsewhere: every live connection of it ends, in any organisation, each audited
+  there; with ``before`` (W3: WhatsApp's notice's time), only those connected before it.
 * ``kaagaz_whatsapp_end_link(link, reason)``: one live connection of the current organisation ends
   (STOP, Not me, an Admin, or a check that failed), audited. ``admin`` only by an enabled Admin of
   the organisation; every other reason only by the connection's own person (the channel works as
@@ -52,14 +53,17 @@ revoked from PUBLIC, for the two roles) read or change only what their names say
 * ``kaagaz_whatsapp_tell_unknown(hash)`` and ``kaagaz_whatsapp_block(hash)``: whether a number with
   no connection may be told so now (yes or no), and its BLOCK.
 * ``kaagaz_whatsapp_may_send(hash)`` (W3): before a connect code goes to a number: ``blocked``,
-  ``number_limit`` (5 a day in every organisation) or ``ok``, the number locked to the caller's commit.
-* ``kaagaz_whatsapp_phone_code(hash, code hash)`` (W3): the number sent "Link <code>"; its newest
-  live phone code is confirmed when right, else one try more. Yes or no.
+  ``number_limit`` (5 sent a day in every organisation) or ``ok``, the number locked to the caller's
+  commit.
+* ``kaagaz_whatsapp_phone_code(hash, code hash)`` (W3): the number sent "Link <code>": its live phone
+  code with that code is confirmed and its BLOCK lifted; else each of its live phone codes counts one
+  more try. Yes or no.
 * ``kaagaz_whatsapp_sweep()``: ends the live connections no longer allowed (the person disabled or
   their organisation not active, their sign-in version changed, WhatsApp or their role switched
-  off, by the Admin or the super admin) or silent for 60 days, each audited; deletes messages, ended connections and numbers told
-  (not blocked) after 30 days, codes after a day and pickers once expired. Returns how many rows it
-  changed. The channel and the worker's hourly sweep both run it.
+  off, by the Admin or the super admin) or silent for 60 days, each audited; deletes messages,
+  ended connections and numbers told (not blocked) after 30 days, codes after a day (an expired
+  code's number at once) and pickers once expired. Returns how many rows it changed. The channel
+  and the worker's hourly sweep both run it.
 
 Each argument is checked: a limit, lease or reason out of range raises ``check_violation``.
 
@@ -131,6 +135,7 @@ END_REASONS = (
     "number_changed",  # WhatsApp says the number's owner changed
     "replaced",  # the number was connected to another account
     "silent",  # 60 days with no message
+    "unwelcomed",  # its welcome could not be delivered (W3)
 )
 _REASONS = ", ".join(f"'{reason}'" for reason in END_REASONS)
 SILENT_DAYS = 60
@@ -181,7 +186,7 @@ CREATE_TABLES = (
         id uuid NOT NULL DEFAULT gen_random_uuid(),
         user_id uuid NOT NULL,
         phone_hash bytea NOT NULL CHECK (octet_length(phone_hash) = 32),
-        phone_sealed text NOT NULL CHECK (length(phone_sealed) BETWEEN 1 AND 200),
+        phone_sealed text NULL CHECK (length(phone_sealed) BETWEEN 1 AND 200),
         code_hash bytea NOT NULL CHECK (octet_length(code_hash) = 32),
         via text NOT NULL DEFAULT 'sent' CHECK (via IN ('sent', 'phone')),
         created_at timestamptz NOT NULL DEFAULT now(),
@@ -263,7 +268,7 @@ GRANTS = {
         "UPDATE (enabled, roles, management, voice, uploads, rules_confirmed_at, rules_confirmed_by)",
     ),
     "whatsapp_links": ("SELECT, INSERT", "UPDATE (last_used_at, recent_folder_ids, busy_until)"),
-    "whatsapp_link_codes": ("SELECT, INSERT", "UPDATE (tries, used_at)"),
+    "whatsapp_link_codes": ("SELECT, INSERT, DELETE", "UPDATE (tries, used_at)"),
     "whatsapp_messages": (
         "SELECT, INSERT",
         "UPDATE (state, tries, body, batch_id, document_id, reply_sent_at)",
@@ -298,7 +303,7 @@ _END = """
 # functions' own), and who may: an enabled Admin of the organisation for admin; the connection's
 # own person for the rest (they, or the channel working as them). The actor: that person or Admin
 # when they did it, NULL when a check that failed did.
-APP_REASONS = ("person", "not_me", "admin", "account", "session", "not_allowed")
+APP_REASONS = ("person", "not_me", "admin", "account", "session", "not_allowed", "unwelcomed")
 _APP_REASONS = ", ".join(f"'{reason}'" for reason in APP_REASONS)
 _CALLER = f"""(
                 (p_reason <> 'admin' AND l.user_id = {_PERSON})
@@ -340,7 +345,14 @@ _NOT_ALLOWED = f"""
 _GONE = """
         WITH gone AS (DELETE FROM public.{table} x WHERE {old} RETURNING 1)
         SELECT v_changed + count(*) FROM gone INTO v_changed;"""
-_SWEPT = "".join(
+# An expired code's number goes at once (the row stays a day, for the limits).
+_EMPTIED = """
+        WITH emptied AS (
+            UPDATE public.whatsapp_link_codes x SET phone_sealed = NULL
+            WHERE x.expires_at < now() AND x.phone_sealed IS NOT NULL RETURNING 1
+        )
+        SELECT v_changed + count(*) FROM emptied INTO v_changed;"""
+_SWEPT = _EMPTIED + "".join(
     _GONE.format(table=table, old=old)
     for table, old in (
         ("whatsapp_messages", f"x.received_at < now() - interval '{KEEP_DAYS} days'"),
@@ -392,8 +404,10 @@ FUNCTIONS = {
     END
     $$
     """,
-    "kaagaz_whatsapp_end_number(bytea, text)": f"""
-    CREATE FUNCTION public.kaagaz_whatsapp_end_number(p_phone_hash bytea, p_reason text) RETURNS bigint
+    "kaagaz_whatsapp_end_number(bytea, text, timestamp with time zone)": f"""
+    CREATE FUNCTION public.kaagaz_whatsapp_end_number(
+        p_phone_hash bytea, p_reason text, p_before timestamptz DEFAULT NULL
+    ) RETURNS bigint
     LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
     DECLARE
         v_ended bigint;
@@ -401,7 +415,14 @@ FUNCTIONS = {
         IF p_phone_hash IS NULL OR p_reason IS NULL OR p_reason NOT IN ('number_changed', 'replaced') THEN
             RAISE EXCEPTION 'unknown number or reason' USING ERRCODE = 'check_violation';
         END IF;
-        WITH {_END.format(which="l.phone_hash = p_phone_hash", why="p_reason", using="", actor="NULL::uuid")}
+        WITH {
+        _END.format(
+            which="l.phone_hash = p_phone_hash AND (p_before IS NULL OR l.linked_at < p_before)",
+            why="p_reason",
+            using="",
+            actor="NULL::uuid",
+        )
+    }
         INTO v_ended;
         RETURN v_ended;
     END
@@ -458,36 +479,31 @@ FUNCTIONS = {
             RETURN 'blocked';
         END IF;
         IF (SELECT count(*) FROM public.whatsapp_link_codes k
-            WHERE k.phone_hash = p_phone_hash AND k.created_at > now() - interval '1 day') >= {NUMBER_CODES_A_DAY} THEN
+            WHERE k.phone_hash = p_phone_hash AND k.via = 'sent' AND k.created_at > now() - interval '1 day')
+           >= {NUMBER_CODES_A_DAY} THEN
             RETURN 'number_limit';
         END IF;
         RETURN 'ok';
     END
     $$
     """,
-    # The second way: the number sent "Link <code>". Only its newest live phone code counts (any
-    # organisation): right, it is confirmed (the person then confirms in Kaagaz); wrong, one try more.
+    # The second way: the number sent "Link <code>". The live phone code of that number with that code
+    # (any organisation) is confirmed, and the number's BLOCK lifted (its owner wrote to us); none: one
+    # try more on each of the number's live phone codes.
     "kaagaz_whatsapp_phone_code(bytea, bytea)": """
     CREATE FUNCTION public.kaagaz_whatsapp_phone_code(p_phone_hash bytea, p_code_hash bytea) RETURNS boolean
     LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
-    DECLARE
-        v_customer uuid;
-        v_id uuid;
-        v_hash bytea;
     BEGIN
-        SELECT k.customer_id, k.id, k.code_hash INTO v_customer, v_id, v_hash FROM public.whatsapp_link_codes k
-        WHERE k.phone_hash = p_phone_hash AND k.via = 'phone' AND k.used_at IS NULL AND k.confirmed_at IS NULL
-          AND k.expires_at > now() AND k.tries < 5
-        ORDER BY k.created_at DESC, k.id LIMIT 1
-        FOR UPDATE;
-        IF NOT FOUND THEN
-            RETURN false;
-        END IF;
-        IF v_hash = p_code_hash THEN
-            UPDATE public.whatsapp_link_codes k SET confirmed_at = now() WHERE k.customer_id = v_customer AND k.id = v_id;
+        UPDATE public.whatsapp_link_codes k SET confirmed_at = now()
+        WHERE k.phone_hash = p_phone_hash AND k.code_hash = p_code_hash AND k.via = 'phone'
+          AND k.used_at IS NULL AND k.confirmed_at IS NULL AND k.expires_at > now() AND k.tries < 5;
+        IF FOUND THEN
+            UPDATE public.whatsapp_unknown_numbers n SET blocked_at = NULL WHERE n.phone_hash = p_phone_hash;
             RETURN true;
         END IF;
-        UPDATE public.whatsapp_link_codes k SET tries = k.tries + 1 WHERE k.customer_id = v_customer AND k.id = v_id;
+        UPDATE public.whatsapp_link_codes k SET tries = k.tries + 1
+        WHERE k.phone_hash = p_phone_hash AND k.via = 'phone' AND k.used_at IS NULL AND k.confirmed_at IS NULL
+          AND k.expires_at > now() AND k.tries < 5;
         RETURN false;
     END
     $$
@@ -518,8 +534,9 @@ FUNCTION_COMMENTS = {
     "kaagaz_whatsapp_claim(integer, integer)": "WhatsApp: the channel takes up to p_limit connections with a"
     " waiting message and a free lease, oldest first, and leases each for p_lease_seconds. Ids and the"
     " lease only.",
-    "kaagaz_whatsapp_end_number(bytea, text)": "WhatsApp: ends every live connection of a number, in any"
-    " organisation (number_changed or replaced), each audited there. Returns how many.",
+    "kaagaz_whatsapp_end_number(bytea, text, timestamp with time zone)": "WhatsApp: ends every live"
+    " connection of a number, in any organisation (number_changed or replaced), each audited there; with"
+    " p_before, only those connected before it (WhatsApp's notice's time). Returns how many.",
     "kaagaz_whatsapp_end_link(uuid, text)": "WhatsApp: ends one live connection of the current organisation,"
     " its number gone at once, audited: admin by an enabled Admin, the other reasons by its own person."
     " True when it ended one.",
@@ -527,11 +544,11 @@ FUNCTION_COMMENTS = {
     " at most once a day, never once it said BLOCK. Yes or no only.",
     "kaagaz_whatsapp_block(bytea)": "WhatsApp: a number said BLOCK; it is never messaged again.",
     "kaagaz_whatsapp_may_send(bytea)": "WhatsApp: whether a connect code may be sent to a number now: blocked"
-    " (it said BLOCK), number_limit (5 codes in the last day, every organisation) or ok. Locks the number"
-    " until the caller's commit.",
+    " (it said BLOCK), number_limit (5 codes sent in the last day, every organisation) or ok. Locks the"
+    " number until the caller's commit.",
     "kaagaz_whatsapp_phone_code(bytea, bytea)": "WhatsApp: the number sent a connect code (the second way):"
-    " its newest live phone code is confirmed when the code is right, else it counts one more try."
-    " True when confirmed.",
+    " its live phone code with that code is confirmed and the number's BLOCK lifted; else each of its live"
+    " phone codes counts one more try. True when confirmed.",
     "kaagaz_whatsapp_sweep()": "WhatsApp: ends the live connections no longer allowed or silent for 60 days"
     " (audited), deletes messages, ended connections and numbers told (not blocked) after 30 days, codes"
     " after a day and expired pickers. Returns how many rows it changed.",
@@ -579,12 +596,13 @@ COMMENTS = {
     " NULL: free.",
     "whatsapp_links.ended_at": "When it ended. NULL: live.",
     "whatsapp_links.end_reason": "Why it ended: person, not_me, admin, account, session, not_allowed,"
-    " number_changed, replaced or silent. NULL: live.",
+    " number_changed, replaced, silent or unwelcomed. NULL: live.",
     "whatsapp_link_codes.customer_id": "The organisation of the person connecting.",
     "whatsapp_link_codes.id": "The code's id.",
     "whatsapp_link_codes.user_id": "users.id (same customer) of the person connecting.",
     "whatsapp_link_codes.phone_hash": "The keyed hash of the number the code was sent to.",
-    "whatsapp_link_codes.phone_sealed": "That number, sealed, for the connection the code makes.",
+    "whatsapp_link_codes.phone_sealed": "That number, sealed, for the connection the code makes; NULL once"
+    " the code expired (the sweep empties it: a stranger's number is never kept past it).",
     "whatsapp_link_codes.code_hash": "The code's keyed hash (HMAC-SHA256, bound to the number); the code"
     " itself is never kept.",
     "whatsapp_link_codes.via": "sent: the bot sent it to the number, typed into Kaagaz; phone: shown in"
