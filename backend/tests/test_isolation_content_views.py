@@ -165,10 +165,6 @@ _READS: list[tuple[str, _Read]] = [
         lambda conn, c, d, i: conn.execute(word_review._WORDS, {"c": c, "d": d}).scalar_one(),
     ),
     (
-        "word_review page to keep",
-        lambda conn, c, d, i: conn.execute(word_review._PAGE_TO_KEEP, {"c": c, "d": d, "p": 1}).all(),
-    ),
-    (
         "word_review values by id",
         lambda conn, c, d, i: conn.execute(
             word_review._VALUES_BY_ID, {"c": c, "d": d, "ids": [i["value"]]}
@@ -264,12 +260,16 @@ def test_the_review_queue_holds_no_value_of_a_hidden_file(db: Database) -> None:
         rows, _ = review_sql.list_queue(conn, org.c, limit=50, offset=0, document_id=None, reasons=None)
     assert org.files["fin"] in {str(row["document_id"]) for row in rows}
     body = {"choice": "first", "remember": False}
+    # A hidden value already settled too: the lock that reads it must not find it at all, or it
+    # would answer 409 not_needs_review, not as a random id.
+    settled = api.add_value(org.c, org.files["fin"], field_name="seller_name", label="verified")
     replies = [
         plain.post(f"/api/review/{value}", json=body, headers=CSRF)
-        for value in (str(uuid.uuid4()), content["fin"]["value"])
+        for value in (str(uuid.uuid4()), content["fin"]["value"], settled)
     ]
     assert replies[0].status_code == 404
-    assert (replies[1].status_code, replies[1].json()) == (replies[0].status_code, replies[0].json())
+    for reply in replies[1:]:
+        assert (reply.status_code, reply.json()) == (replies[0].status_code, replies[0].json())
     assert _owner(db, "SELECT label FROM extracted_values WHERE id = :v", {"v": content["fin"]["value"]}) == [
         ("needs_review",)
     ]

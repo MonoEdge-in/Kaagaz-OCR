@@ -167,8 +167,8 @@ _CHANGES = text(
 )
 # A page on the attention list (not good, not kept as is), with its problems.
 _PAGE_TO_KEEP = text(
-    "SELECT read_issues FROM pages WHERE customer_id = :c AND document_id = :d AND page_no = :p"  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
-    " AND read_quality <> 'good' AND accepted_at IS NULL" + SEEN_DOCUMENT
+    "SELECT read_issues FROM pages WHERE customer_id = :c AND document_id = :d AND page_no = :p"
+    " AND read_quality <> 'good' AND accepted_at IS NULL"
 )
 # Undo of a page a change kept: only while it is still kept from that change (its time).
 _UNKEEP_PAGE = text(

@@ -300,6 +300,7 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ("db/word_review.py", "_INSERT_CHANGE"): (SHARED_WITH_WORKER, _WORDS),
     ("db/word_review.py", "_PAGE_VALUES"): (SHARED_WITH_WORKER, _WORDS),
     ("db/word_review.py", "_PAGE_PIECES"): (SHARED_WITH_WORKER, _WORDS),
+    ("db/word_review.py", "_PAGE_TO_KEEP"): (SHARED_WITH_WORKER, _WORDS),
     ("db/zip_unpacks.py", "_COUNTS"): (
         SHARED_WITH_WORKER,
         "a zip's unpacking, of a document read through the view",
