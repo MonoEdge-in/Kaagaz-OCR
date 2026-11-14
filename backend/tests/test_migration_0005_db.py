@@ -57,6 +57,8 @@ TO_DOCUMENTS = {
     # Changed on purpose (#590, 0084): a file given and a lock grant go with their version.
     "document_shares",
     "lock_grants",
+    # Changed on purpose (#600, 0088): a page turn goes with its version.
+    "page_rotations",
 }
 # Changed on purpose (#239, 27 Oct 2026): 0023's spend ledger keeps its rows when a document
 # goes: SET NULL (document_id), never a cascade.

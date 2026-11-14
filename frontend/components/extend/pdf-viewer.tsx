@@ -216,12 +216,14 @@ const PDFViewerScrollAreaResolverContext =
     resolveDefaultScrollAreaViewport
   )
 type PageRotationDeltas = Map<number, Rotation>
-// Changed for Kaagaz (#589): a choice in the page turn menu.
+// Changed for Kaagaz (#589): a choice in the page turn menu. #600: or turns handed in after it
+// opened (a save's reply, with others' turns), shown the way a choice is.
 type PageTurnChange =
   | { pages: "picked" | "all"; direction: -1 | 1 }
   | "wide"
   | "tall"
   | "reset"
+  | { set: ReadonlyMap<number, number> }
 type ThumbnailSelectionMode = "replace" | "toggle" | "range"
 function getPageIndexRange(from: number, to: number): Set<number> {
   const start = Math.min(from, to)
@@ -2047,6 +2049,13 @@ function PDFViewerInner({
         nextDeltas = new Map()
       } else if (change === "wide" || change === "tall") {
         nextDeltas = turnPagesTo(previousDeltas, currentDocument.pages, change)
+      } else if ("set" in change) {
+        nextDeltas = new Map(
+          Array.from(change.set, ([pageIndex, turn]) => [
+            pageIndex,
+            normalizeRotation(turn),
+          ])
+        )
       } else if (change.pages === "all") {
         nextDeltas = turnPages(
           previousDeltas,
@@ -2132,6 +2141,14 @@ function PDFViewerInner({
       viewportCapability,
     ]
   )
+  // Changed for Kaagaz (#600): turns handed in after the file opened are shown once each, as a
+  // menu choice is, so the reader keeps their place.
+  const handedTurns = React.useRef(pageRotations)
+  React.useEffect(() => {
+    if (!pdfDocument || !pageRotations || pageRotations === handedTurns.current) return
+    handedTurns.current = pageRotations
+    rotatePages({ set: pageRotations })
+  }, [pageRotations, pdfDocument, rotatePages])
   const handleUpload = React.useCallback(
     (file: File) => {
       onUploadFile(file)

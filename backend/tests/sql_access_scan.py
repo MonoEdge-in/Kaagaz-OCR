@@ -23,7 +23,7 @@ from pathlib import Path
 import kaagaz
 
 ROOT = Path(kaagaz.__file__).parent
-# PRD 7 appendix A: the 26 tables that point at a document.
+# PRD 7 appendix A: the 27 tables that point at a document (page_rotations: #600, 0088).
 CONTENT = frozenset(
     [
         "pages",
@@ -52,6 +52,7 @@ CONTENT = frozenset(
         "organization_word_suggestions",
         "user_word_spots",
         "document_stories",
+        "page_rotations",
     ]
 )
 PLACES = frozenset({"documents", "folders", "trashed_folders"})

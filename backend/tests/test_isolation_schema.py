@@ -74,6 +74,9 @@ Who can see what (0084, PRD 7, #590, NEEDS VRUSHIT'S APPROVAL): department membe
 named on a private folder, files given and lock grants, read, added and deleted by the app; only a
 membership's Head tick is ever changed. Their triggers (0085, #593) run with the owner's rights,
 which no role may run.
+
+Page turns saved for everyone (0088, PRD 7 section 14, #600, NEEDS VRUSHIT'S APPROVAL): read, added
+and deleted by the app, never updated; a save deletes the pages it changes and adds them again.
 """
 
 import re
@@ -207,6 +210,8 @@ FROM_0084 = {
     "lock_grants": (True, True, False, True),
 }
 UPDATES_0084 = {"department_members": {"is_head"}}
+# Page turns saved for everyone (0088, #600): read, added and deleted, never updated.
+FROM_0088 = {"page_rotations": (True, True, False, True)}
 # Logout ends this browser's session (0076, #502): the app adds and reads ended sessions only;
 # the worker's sweep deletes them through kaagaz_sweep_ended_sessions.
 FROM_0076 = {"ended_sessions": (True, True, False, False)}
@@ -659,6 +664,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0076)
         | set(FROM_0081)  # Changed on purpose (#542, 0081)
         | set(FROM_0084)  # Changed on purpose (#590, 0084)
+        | set(FROM_0088)  # Changed on purpose (#600, 0088)
     )
 
     with db.system() as conn:
@@ -740,6 +746,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0076
         | FROM_0081  # Changed on purpose (#542, 0081)
         | FROM_0084  # Changed on purpose (#590, 0084)
+        | FROM_0088  # Changed on purpose (#600, 0088)
     ).items():
         assert granted[table] == expected, table
 
@@ -825,6 +832,11 @@ def test_the_app_may_update_only_the_head_tick_of_a_department_membership(db: Da
     assert {table: _updatable(db, table) for table in FROM_0084} == {
         table: UPDATES_0084.get(table, set()) for table in FROM_0084
     }
+
+
+def test_the_app_may_update_no_column_of_a_page_turn(db: Database) -> None:
+    """0088 (#600): never a turn's page, version or who saved it; a save deletes and adds."""
+    assert _updatable(db, "page_rotations") == set()
 
 
 def test_the_app_may_update_only_the_spellings_of_a_value_key(db: Database) -> None:
@@ -953,6 +965,7 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
         | set(FROM_0076)
         | set(FROM_0081)  # Changed on purpose (#542, 0081)
         | set(FROM_0084)  # Changed on purpose (#590, 0084)
+        | set(FROM_0088)  # Changed on purpose (#600, 0088)
         | {"pages", "model_usage", "documents"}  # documents.owner_id (0041)
     )
     for name, _table, _parent, columns, parent_columns in between:
