@@ -441,7 +441,8 @@ def test_conversations_list_is_this_users_newest_first(db: Database) -> None:
     items = signed.client.get("/api/conversations").json()["items"]
 
     assert [item["id"] for item in items] == [newer["conversation_id"], older["conversation_id"]]
-    assert set(items[0]) == {"id", "title", "created_at"}
+    # Changed on purpose (#603): "channel", whatsapp for a conversation asked there (null here).
+    assert set(items[0]) == {"id", "title", "created_at", "channel"} and items[0]["channel"] is None
 
 
 @pytest.mark.db
