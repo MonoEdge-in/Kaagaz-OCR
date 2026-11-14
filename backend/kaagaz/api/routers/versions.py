@@ -206,6 +206,7 @@ def join_again(document_id: uuid.UUID, body: JoinAgainBody, user: User, context:
     try:
         with context.db.user(customer_id, user.user_id) as conn:
             _visible(conn, user, document)
+            _visible(conn, user, str(body.family_id))  # the family it rejoins too, before any lock
             versions_sql.join_again(conn, customer_id, document, str(body.family_id), by=user.user_id)
             if name is not None:
                 listing.rename_document(conn, customer_id, document, name=name)

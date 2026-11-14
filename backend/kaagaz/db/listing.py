@@ -75,7 +75,7 @@ _FILE_COLUMNS = (
     " UNION ALL SELECT f.id, f.parent_id, up.depth + 1 FROM up JOIN folders f ON f.id = up.parent_id"
     " WHERE f.customer_id = d.customer_id AND up.depth < 101)"
     " SELECT json_build_object('id', dep.id, 'name', dep.name) FROM up"
-    " JOIN folders dep ON dep.customer_id = d.customer_id AND dep.id = up.id"
+    " JOIN visible_folders dep ON dep.customer_id = d.customer_id AND dep.id = up.id"
     " WHERE up.parent_id IS NULL AND dep.kind = 'department') AS department,"
     " (SELECT json_build_object('id', s.id,"
     " 'role', CASE WHEN s.document_id = d.id THEN 'new' ELSE 'candidate' END)"
@@ -450,6 +450,17 @@ def matching_ids(conn: Connection, customer_id: str, **filters: Any) -> list[str
     where = _LIST + file_filters(params, **filters)
     found: Sequence[object] = conn.execute(text("SELECT d.id" + where), params).scalars().all()
     return [str(document) for document in found]
+
+
+_FOLDERS_SEEN = text(
+    "SELECT id FROM visible_folders WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
+)
+
+
+def folders_seen(conn: Connection, customer_id: str, folder_ids: Sequence[str]) -> set[str]:
+    """Which of ``folder_ids`` the person may see (PRD 7, #595): a path or a folder filter
+    never names one they can't. One statement on the folders' key."""
+    return {str(row[0]) for row in conn.execute(_FOLDERS_SEEN, {"c": customer_id, "ids": list(folder_ids)})}
 
 
 def get_document(conn: Connection, customer_id: str, document_id: str) -> RowMapping | None:

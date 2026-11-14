@@ -360,6 +360,8 @@ def _folder_scope(
     subtree's s folders."""
     if not isinstance(folder_id, uuid.UUID):
         return None
+    if not listing.folders_seen(conn, customer_id, [str(folder_id)]):  # PRD 7 (#595): hidden is missing
+        raise ApiError(404, "not_found")
     subtree = folders_sql.descendant_ids(conn, customer_id, str(folder_id))
     if not subtree:
         raise ApiError(404, "not_found")
@@ -1270,6 +1272,10 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
         folder = row["folder_id"]
         path = [] if folder is None else folders_sql.folder_path(conn, customer_id, str(folder))
+        # PRD 7 (#595): a path with a folder the person can't see is not shown at all (a file given
+        # to them alone, or a private folder inside a department they are not in).
+        if path and len(listing.folders_seen(conn, customer_id, [each.id for each in path])) < len(path):
+            path = []
         versions = listing.family_versions(conn, customer_id, str(row["family_id"]))
         fixes = listing.reviewer_fix_count(conn, customer_id, target)
         facts = listing.document_facts(conn, customer_id, target)
@@ -1978,6 +1984,8 @@ def delete_document_forever(document_id: uuid.UUID, user: CanDeleteForever, cont
     a grant was used, ``by_password`` for an admin's typed password."""
     customer_id, target = user.customer_id, str(document_id)
     with context.db.user(customer_id, user.user_id) as conn:
+        if user.role != "admin":  # PRD 7 (#595): a hidden file is not found; an Admin's is PR 10's
+            _document_or_404(conn, user, document_id)
         try:
             versions = delete_family_forever(conn, context.storage, customer_id, target)
         except NotInTrash:

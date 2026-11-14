@@ -22,6 +22,7 @@ import kaagaz
 from kaagaz.db import audit, listing
 from kaagaz.db.engine import Database
 from tests.db_support import APP_ROLE, insert_folder
+from tests.test_api_delete_forever_grant import _confirm, _grant
 from tests.test_api_support import CSRF, PDF_BYTES, Api, Signed
 from tests.test_isolation_logins import WORKER
 from tests.test_operator_auth_db import _owner
@@ -149,7 +150,12 @@ def _expected(db: Database, org: Org, user: str, *, folders: bool = False) -> se
     }
     closed = {
         str(r[0])
-        for r in _owner(db, "SELECT id FROM folders WHERE customer_id = :c AND department_only", {"c": c})
+        for r in _owner(
+            db,
+            "SELECT id FROM folders WHERE customer_id = :c AND department_only"
+            " UNION ALL SELECT id FROM trashed_folders WHERE customer_id = :c AND department_only",
+            {"c": c},
+        )
     }
 
     def place(department: Any, private: Any, held: Any) -> bool:
@@ -316,13 +322,13 @@ def test_day_one_never_runs_the_given_or_lock_lookups(db: Database) -> None:
 # still run as kaagaz_app with no person on a server, and would see nothing). A new one belongs here
 # only once its callers are checked.
 VIEW_READERS = {
-    "db/audit.py": {"_OF_FAMILY", "_SEEN"},
+    "db/audit.py": {"_OF_FAMILY", "_SEEN", "_FOLDER_PATHS"},
     "db/chat.py": {"_DOCUMENT_QUESTIONS", "add_pin"},
     "db/document_stories.py": {"_DELETE"},
     "db/listing.py": {
         "_LAST_UPLOAD", "_LAST_UPLOADER", "_FILE_COLUMNS", "_COLUMNS", "_SELECT", "_LIST", "_VERSIONS",
         "_OUTSIDE_DEPARTMENTS", "_BATCH", "document_facts", "_LINKS", "_WORD_LINES", "_DASHBOARD_TILES",
-        "_DASHBOARD_TYPES", "_DASHBOARD_DEPARTMENTS", "_DASHBOARD_RECENT",
+        "_DASHBOARD_TYPES", "_DASHBOARD_DEPARTMENTS", "_DASHBOARD_RECENT", "_FOLDERS_SEEN",
     },
     "db/versions.py": {"_LIVE", "_CANDIDATE", "_VIEW", "_ALLOWED"},
     "db/visibility.py": {"LIVE_SUGGESTION"},
@@ -366,14 +372,14 @@ def test_hidden_files_are_missing_from_the_list_its_count_and_its_filters(db: Da
         for query in (
             "q=fin",
             "detected_type=pdf",
-            f"folder_id={org.folders['finance']}",
+            f"folder_id={org.folders['sales']}",
             "department_id=none",
         ):
             found = _ids(signed.client.get(f"/api/documents?limit=100&{query}"))
             assert found <= live, (name, query)
     plain = org.people["plain"].client
     assert _ids(plain.get("/api/documents?q=fin")) == set()
-    assert _ids(plain.get(f"/api/documents?folder_id={org.folders['finance']}")) == {org.files["given"]}
+    assert plain.get(f"/api/documents?folder_id={org.folders['finance']}").status_code == 404
 
 
 def test_hidden_files_are_missing_from_the_dashboard(db: Database) -> None:
@@ -395,6 +401,7 @@ def test_hidden_files_are_missing_from_the_dashboard(db: Database) -> None:
         live = _expected(db, org, signed.user_id) - {org.files["trashed"]}
         board = signed.client.get("/api/dashboard").json()
         assert board["tiles"]["documents"] == len(live), name
+        assert board["tiles"]["documents_this_week"] == len(live), name  # every file is new this week
         assert sum(row["count"] for row in board["by_type"]) == len(live), name
         assert {row["id"] for row in board["recent"]} <= live, name
         departments = {row["id"] for row in board["departments"]}
@@ -413,7 +420,16 @@ def test_a_file_given_directly_shows_and_nothing_else_of_its_folder(db: Database
     plain = org.people["plain"].client
     reply = plain.get(f"/api/documents/{org.files['given']}")
     assert reply.status_code == 200
-    assert _ids(plain.get(f"/api/documents?folder_id={org.folders['finance']}")) == {org.files["given"]}
+    detail = reply.json()
+    assert (detail["department"], detail["folder"]) == (None, None)
+    listed = {i["id"]: i for i in plain.get("/api/documents?limit=100").json()["items"]}
+    assert listed[org.files["given"]]["department"] is None
+    assert "Finance" not in json.dumps(detail) + json.dumps(listed[org.files["given"]])
+    member = org.people["member"].client.get(f"/api/documents/{org.files['given']}").json()
+    assert member["department"]["name"] == member["folder"]["name"] == "Finance"  # who can see it, still does
+    # A person named on Salaries, inside Finance which they can't see: no path rather than a part.
+    named = org.people["named"].client.get(f"/api/documents/{org.files['sal']}").json()
+    assert (named["department"], named["folder"]) == (None, None)
 
 
 # --- opening by id ------------------------------------------------------------------------
@@ -597,3 +613,180 @@ def test_versions_links_and_family_columns_show_no_hidden_version(db: Database) 
     assert [link["id"] for link in plain["links"]] == []
     member = org.people["member"].client.get(f"/api/documents/{first}").json()
     assert [link["id"] for link in member["links"]] == [org.files["fin"]]
+
+
+def test_new_versions_this_month_count_only_versions_the_person_sees(db: Database) -> None:
+    """A second version of Sales's file, and a locked second version nobody was given."""
+    api = Api(db)
+    org = _walled(api)
+    admin = org.people["admin"].user_id
+    for name, place in (("sales", "sales"), ("loose", "loose")):
+        api.add_document(
+            org.c, name=f"{name} v2.pdf", folder_id=org.folders[place], family_id=org.files[name],
+            version_no=2, is_current=False, uploaded_by=admin,
+        )  # fmt: skip
+    hidden = _owner(
+        db, "SELECT id FROM documents WHERE family_id = :f AND version_no = 2", {"f": org.files["loose"]}
+    )
+    _owner(
+        db,
+        "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d",
+        {"u": admin, "d": hidden[0][0]},
+    )
+    for name in ("plain", "member", "management", "admin"):
+        board = org.people[name].client.get("/api/dashboard").json()
+        assert board["tiles"]["new_versions_this_month"] == 1, name
+
+
+def test_a_closed_department_in_trash_stays_closed(db: Database) -> None:
+    """Finance (Department only) goes to Trash with its files: the plain reviewer still can't see
+    its files, its member still can, and every person still sees exactly the written rule."""
+    org = _walled(Api(db))
+    reply = org.people["admin"].client.delete(
+        f"/api/folders/{org.folders['finance']}?contents=trash", headers=CSRF
+    )
+    assert reply.status_code == 200, reply.text
+    app = _app(db)
+    assert org.files["fin"] not in _seen(app, org.c, org.people["plain"].user_id)
+    assert org.files["fin"] in _seen(app, org.c, org.people["member"].user_id)
+    for name, signed in org.people.items():
+        assert _seen(app, org.c, signed.user_id) == _expected(db, org, signed.user_id), name
+
+
+def test_a_hidden_folder_filter_answers_as_one_that_never_was(db: Database) -> None:
+    org = _walled(Api(db))
+    plain = org.people["plain"].client
+    for query, hidden in (("folder_id", org.folders["salaries"]), ("department_id", org.folders["finance"])):
+        missing = plain.get(f"/api/documents?{query}={uuid.uuid4()}")
+        found = plain.get(f"/api/documents?{query}={hidden}")
+        assert missing.status_code == 404, query
+        assert (found.status_code, found.json()) == (missing.status_code, missing.json()), query
+    member = org.people["member"].client.get(f"/api/documents?department_id={org.folders['finance']}")
+    assert member.status_code == 200 and org.files["fin"] in _ids(member)
+
+
+def test_the_feed_names_no_hidden_folder_and_shows_a_given_files_history(db: Database) -> None:
+    """An entry about a folder inside Salaries is left out for the plain reviewer; an entry naming
+    Salaries as a parent shows without its path; the file given to them shows its history."""
+    api = Api(db)
+    org = _walled(api)
+    admin = org.people["admin"].user_id
+    with db.customer(org.c) as conn:
+        inside = insert_folder(conn, org.c, admin, "Inside", org.folders["salaries"])
+        moved = insert_folder(conn, org.c, admin, "Moved out", org.folders["salaries"])
+        for folder in (inside, moved):
+            audit.record(
+                conn, org.c, actor_user_id=admin, action="folder.create", target_type="folder",
+                target_id=folder, details={"parent_id": org.folders["salaries"]},
+            )  # fmt: skip
+        audit.record(
+            conn, org.c, actor_user_id=admin, action="document.upload", target_type="document",
+            target_id=org.files["given"],
+        )  # fmt: skip
+    _owner(db, "UPDATE folders SET parent_id = NULL WHERE id = :f", {"f": moved})  # moved out later
+    plain = org.people["plain"].client
+    feed = {item["target_id"]: item for item in plain.get("/api/dashboard").json()["activity"]}
+    assert inside not in feed and moved in feed
+    assert "Salaries" not in json.dumps(feed[moved]) and "Finance" not in json.dumps(feed[moved])
+    named = {i["target_id"]: i for i in org.people["named"].client.get("/api/dashboard").json()["activity"]}
+    assert inside in named and "Salaries" in json.dumps(named[moved])
+    history = plain.get(f"/api/documents/{org.files['given']}/activity").json()["items"]
+    assert [item["target_id"] for item in history] == [org.files["given"]]
+
+
+def test_join_again_needs_the_family_it_rejoins_to_be_visible(db: Database) -> None:
+    """D was made a separate file from F; F is now held for the member and locked. The plain
+    reviewer, who sees D but not F, can't join them again: 404, and nothing changes. The member,
+    given F's lock, can."""
+    api = Api(db)
+    org = _walled(api)
+    admin = org.people["admin"]
+    family = api.add_document(
+        org.c, name="deed.pdf", folder_id=org.folders["sales"], uploaded_by=admin.user_id, is_current=False
+    )
+    later = api.add_document(
+        org.c, name="deed v2.pdf", folder_id=org.folders["sales"], uploaded_by=admin.user_id,
+        family_id=family, version_no=2,
+    )  # fmt: skip
+    reply = admin.client.post(
+        f"/api/documents/{later}/separate", json={"name": "deed apart.pdf"}, headers=CSRF
+    )
+    assert reply.status_code == 200, reply.text
+    member = org.people["member"].user_id
+    _owner(
+        db,
+        "UPDATE documents SET held_for = :m, locked_at = now(), locked_by = :a WHERE family_id = :f",
+        {"m": member, "a": admin.user_id, "f": family},
+    )
+    _owner(
+        db,
+        "INSERT INTO lock_grants (customer_id, document_id, user_id, given_by) VALUES (:c, :d, :m, :a)",
+        {"c": org.c, "d": family, "m": member, "a": admin.user_id},
+    )
+    state = "SELECT row_to_json(d)::text FROM documents d WHERE family_id = :f OR id = :l ORDER BY id"
+    tags = "SELECT tag_id FROM document_tags WHERE document_id = :l"
+    before = (_owner(db, state, {"f": family, "l": later}), _owner(db, tags, {"l": later}))
+    body = {"family_id": family}
+    plain = org.people["plain"].client.post(f"/api/documents/{later}/separate/undo", json=body, headers=CSRF)
+    assert (plain.status_code, plain.json()["error"]["code"]) == (404, "not_found")
+    assert (_owner(db, state, {"f": family, "l": later}), _owner(db, tags, {"l": later})) == before
+    joined = org.people["member"].client.post(
+        f"/api/documents/{later}/separate/undo", json=body, headers=CSRF
+    )
+    assert joined.status_code == 200, joined.text
+
+
+def test_deleting_a_hidden_file_forever_is_not_found_and_deletes_nothing(db: Database) -> None:
+    org = _walled(Api(db))
+    plain = org.people["plain"]
+    assert _grant(org.people["admin"], plain.user_id) == (200, True)
+    assert _confirm(plain) == 204
+    hidden = org.files["trashed"]  # in Trash, in Salaries
+    missing = plain.client.delete(f"/api/documents/{uuid.uuid4()}/permanent", headers=CSRF)
+    reply = plain.client.delete(f"/api/documents/{hidden}/permanent", headers=CSRF)
+    assert missing.status_code == 404
+    assert (reply.status_code, reply.json()) == (missing.status_code, missing.json())
+    assert _owner(db, "SELECT count(*) FROM documents WHERE id = :d", {"d": hidden}) == [(1,)]
+
+
+def test_no_module_outside_the_api_calls_a_function_that_reads_a_view() -> None:
+    """Condition 1 on #595, kept by a scan: the functions of VIEW_READERS' modules that use one of
+    its statements (or call one that does) are called only from kaagaz/api and search/scope.py."""
+    root = Path(kaagaz.__file__).parent
+    readers: dict[str, set[str]] = {}
+    for file, names in VIEW_READERS.items():
+        tree, tainted = ast.parse((root / file).read_text(encoding="utf-8")), set(names) | {"LIVE_SUGGESTION"}
+        for _ in range(len(tree.body)):  # until nothing new is tainted
+            for node in tree.body:
+                name = getattr(node, "name", None) or next(
+                    (t.id for t in getattr(node, "targets", []) if isinstance(t, ast.Name)), None
+                )
+                if name and any(isinstance(n, ast.Name) and n.id in tainted for n in ast.walk(node)):
+                    tainted.add(name)
+        readers[Path(file).stem] = {
+            n.name for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in tainted
+        }
+    calls = []
+    for path in sorted(root.rglob("*.py")):
+        where = path.relative_to(root).as_posix()
+        if where.startswith("api/") or where == "search/scope.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        aliases = {
+            a.asname or a.name: a.name
+            for n in ast.walk(tree)
+            if isinstance(n, ast.ImportFrom) and n.module == "kaagaz.db"
+            for a in n.names
+        }
+        for n in ast.walk(tree):
+            if isinstance(n, ast.ImportFrom) and (n.module or "").startswith("kaagaz.db."):
+                module = (n.module or "").split(".")[-1]
+                calls += [f"{where}: {a.name}" for a in n.names if a.name in readers.get(module, ())]
+            module = (
+                aliases.get(n.value.id, "")
+                if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
+                else ""
+            )
+            if isinstance(n, ast.Attribute) and n.attr in readers.get(module, ()):
+                calls.append(f"{where}: {module}.{n.attr}")
+    assert calls == []
