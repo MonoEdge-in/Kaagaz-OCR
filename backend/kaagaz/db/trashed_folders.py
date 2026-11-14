@@ -227,7 +227,7 @@ _SEEN_RESTORE = text(
 
 _ANY_LIVE = "SELECT EXISTS (SELECT 1 FROM folders WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[])))"
 _TOP = (
-    "SELECT parent_id, name, trash_id, kind, department_id, private_folder_id FROM trashed_folders"
+    "SELECT parent_id, name, trash_id, kind, department_id, private_folder_id, private FROM trashed_folders"
     " WHERE customer_id = :c AND id = :f"
 )
 # The rows back into folders, the topmost under its new parent and name, and private when :seal
@@ -242,6 +242,11 @@ _MAKE_LIVE = (
     " t.private OR (t.id = :top AND :seal), t.department_id, t.private_folder_id"
     " FROM trashed_folders t WHERE t.customer_id = :c AND t.id = ANY(CAST(:ids AS uuid[]))"
     " RETURNING id, parent_id, name, created_at, kind, sort_order"
+)
+# #594 (A): the restorer named on the folder their restore sealed, unless Management (who sees it).
+_NAME_RESTORER = (
+    "INSERT INTO private_folder_members (customer_id, folder_id, user_id, added_by)"
+    " SELECT :c, :top, u.id, u.id FROM users u WHERE u.customer_id = :c AND u.id = :by AND NOT u.management"
 )
 _DROP = "DELETE FROM trashed_folders WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
 # Every family filed in these trashed folders back into its folder, out of Trash, in one
@@ -337,7 +342,7 @@ def exists(conn: Connection, customer_id: str, folder_id: str) -> bool:
     return bool(conn.execute(text(_EXISTS), {"c": customer_id, "f": folder_id}).scalar())
 
 
-def restore_folder(conn: Connection, customer_id: str, folder_id: str, *, admin: bool) -> Restored:
+def restore_folder(conn: Connection, customer_id: str, folder_id: str, *, admin: bool, by: str) -> Restored:
     """Make the trashed folder live again, with every folder and file of its delete inside it,
     and the folders of its delete above it (with only it in them). Raises FolderNotFound,
     FolderLive (an id is live already), DepartmentAdminOnly (a department, and not ``admin``),
@@ -352,7 +357,7 @@ def restore_folder(conn: Connection, customer_id: str, folder_id: str, *, admin:
     inside = [str(row[0]) for row in subtree]
     above = chain[:-1]
     height = len(above) + max(int(row[1]) for row in subtree)
-    restored = _make_live(conn, customer_id, above + inside, height, admin=admin, asked=folder_id)
+    restored = _make_live(conn, customer_id, above + inside, height, admin=admin, by=by, asked=folder_id)
     families = {str(f) for f in conn.execute(text(_RESTORE_IN), {"c": customer_id, "ids": inside}).scalars()}
     _finish(conn, customer_id, above, above + inside)
     return replace(
@@ -384,7 +389,7 @@ def restore_document(
     if folder is None:  # restored meanwhile, under the lock we waited for
         return trash.restore_document(conn, customer_id, document_id, by=by), None
     chain = [str(i) for i, _ in conn.execute(text(_CHAIN), {"c": customer_id, "f": folder})]
-    restored = _make_live(conn, customer_id, chain, len(chain), admin=admin) if chain else None
+    restored = _make_live(conn, customer_id, chain, len(chain), admin=admin, by=by) if chain else None
     # Its folder missing can't happen; then where trash.place_family says (#594), never the top level.
     placed = trash.Placed(into=str(folder)) if chain else trash.place_family(conn, customer_id, family_id)
     params = {"c": customer_id, "f": family_id, "into": placed.into, "hold": placed.held, "by": by}
@@ -498,18 +503,23 @@ def _make_live(
     height: int,
     *,
     admin: bool,
+    by: str,
     asked: str | None = None,
 ) -> Restored:
     """Put the trashed folders ``ids`` (the topmost first, every other one under one of them) back
-    into folders; the topmost into its folder when live, else where ``_out_of_folder`` says, under
-    the first free name. A department (top level only, so only ever the topmost) only for an
-    ``admin``. The caller holds the tree lock and moves the documents. A fixed number of
-    statements."""
+    into folders, by user ``by``; the topmost into its folder when live, else where
+    ``_out_of_folder`` says, under the first free name. A department (top level only, so only ever
+    the topmost) only for an ``admin``. When that seals it (#594, A), ``by`` is named on it unless
+    an admin or Management: they passed the visibility check, so they gain nothing new, and the
+    restore is never hidden from the person who made it. The caller holds the tree lock and moves
+    the documents. A fixed number of statements."""
     params: dict[str, Any] = {"c": customer_id, "ids": list(ids)}
     if conn.execute(text(_ANY_LIVE), params).scalar():
         raise FolderLive()
     top = ids[0]
-    parent, name, trash_id, kind, department, private = conn.execute(text(_TOP), {**params, "f": top}).one()
+    parent, name, trash_id, kind, department, private, own = conn.execute(
+        text(_TOP), {**params, "f": top}
+    ).one()
     if kind == "department" and not admin:
         raise DepartmentAdminOnly(top)
     path = [] if parent is None else folder_path(conn, customer_id, str(parent))
@@ -529,6 +539,9 @@ def _make_live(
         raise FolderNameTaken()
     values = {**params, "top": top, "p": parent, "name": free, "seal": seal}
     made = _write_named(conn, _MAKE_LIVE, values).all()
+    sealed = seal and not own  # only when the seal made it private
+    if sealed and not admin:
+        conn.execute(text(_NAME_RESTORER), {**params, "top": top, "by": by})
     row = next(_folder(each) for each in made if str(each[0]) == top)
     mine = next((_folder(each) for each in made if str(each[0]) == asked), None)
     return Restored(
@@ -539,7 +552,7 @@ def _make_live(
         str(trash_id),
         location_ids=location_ids,
         asked=mine,
-        sealed=seal,
+        sealed=sealed,
     )
 
 
@@ -548,14 +561,16 @@ def _out_of_folder(
 ) -> tuple[str | None, bool]:
     """#594: where a restored folder whose folder is gone goes (Q6), from the department and
     private folder it inherited (its own are not inherited): under that private folder while it
-    is live, else under that department while it is live, else the top level; and it comes back
-    private, with nobody named, when one it inherited is gone (or in Trash). One statement."""
+    is live, else under that department while it is live, else the top level; and, once the
+    organisation is walled (``trash.WALLED``, decision 3), it comes back private when one it
+    inherited is gone (or in Trash). Day one, unwalled, never private. Two statements."""
     inherited = [None if f is None or str(f) == top else str(f) for f in (private, department)]
     kept = [f for f in inherited if f is not None]
     if not kept:
         return None, False
     live = {str(f) for f in conn.execute(text(trash.LIVE_FOLDERS), {"c": customer_id, "ids": kept}).scalars()}
-    return next((f for f in kept if f in live), None), any(f not in live for f in kept)
+    walled = bool(conn.execute(text(trash.WALLED), {"c": customer_id}).scalar())
+    return next((f for f in kept if f in live), None), walled and any(f not in live for f in kept)
 
 
 def _finish(conn: Connection, customer_id: str, chain_only: Sequence[str], made_live: Sequence[str]) -> None:
