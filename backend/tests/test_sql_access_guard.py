@@ -4,10 +4,10 @@
 names, reads ``visible_documents`` (joined, ``visibility.SEEN_DOCUMENT``, or the outer row a
 correlated fragment runs in). Anything else is on ALLOWED with one of the seven reasons and a note
 naming why it may (for a statement shared with the worker, the route that checks the document
-through the view first), or on PENDING_PR8: Ask and search, which PR 8 moves onto the view and
-empties. The scanner is ``tests/sql_access_scan.py``; SQL inside migrations (the owner-rights
-functions and the triggers) is reviewed with each migration and pinned by
-test_isolation_schema.py, not here.
+through the view first). Ask and search read only through the view (PR 8, #602): of theirs only
+Home's stamp, a hashed key, is listed. The scanner is ``tests/sql_access_scan.py``; SQL inside
+migrations (the owner-rights functions and the triggers) is reviewed with each migration and
+pinned by test_isolation_schema.py, not here.
 
 A text rule: a statement that joins the view for one table and reads another content table on its
 own still passes. Review, and PR 9's row level security, are the backstop."""
@@ -41,6 +41,11 @@ _WORDS = "word review and Ensemble routes: get_document (the view) first, in the
 _ENSEMBLE = "ensemble routes: get_document (the view) first"
 
 ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
+    ("answering/ready.py", "_STAMP"): (
+        EXISTENCE_ONLY,
+        "Home's ready-answer and repeat key (#602, question 2): counts and times hashed, never shown;"
+        " the person's side is customers.access_version",
+    ),
     ("db/admin.py", "_DOCUMENTS_BY_STATUS"): (ADMIN_NUMBERS, "GET /admin/stats"),
     ("db/admin.py", "_COUNTS"): (ADMIN_NUMBERS, "GET /admin/stats"),
     ("db/admin.py", "_KEPT"): (ADMIN_NUMBERS, "GET /admin/stats"),
@@ -336,13 +341,6 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ),
 }
 
-# Ask and search (PRD 7 phase 4): PR 8 moves each onto the view and removes it from here.
-PENDING_PR8: dict[tuple[str, str], str] = {
-    ("answering/ready.py", "_STAMP"): "Home's ready answers",
-}
-# PR 8's files: Ask, search, and the chat and word statements that feed Ask.
-_PR8_FILES = ("answering/", "search/", "db/chat.py", "db/organization_words.py")
-
 
 def _found() -> dict[tuple[str, str], scan.Owner]:
     """The statements the API reaches that read a table directly and are not passed by the rule."""
@@ -356,25 +354,27 @@ def _found() -> dict[tuple[str, str], scan.Owner]:
 class SqlAccessGuardTest(unittest.TestCase):
     def test_every_direct_read_the_api_reaches_is_listed(self) -> None:
         found = _found()
-        self.assertEqual(
-            set(found) - set(ALLOWED) - set(PENDING_PR8), set(), "read through the view, or list it"
-        )
-        self.assertEqual(set(ALLOWED) & set(PENDING_PR8), set())
+        self.assertEqual(set(found) - set(ALLOWED), set(), "read through the view, or list it")
 
     def test_no_listed_statement_is_stale(self) -> None:
         """Each entry still reads a table directly and is still reached from the API: one moved onto the
         view, renamed or no longer reached leaves the list."""
-        self.assertEqual((set(ALLOWED) | set(PENDING_PR8)) - set(_found()), set())
+        self.assertEqual(set(ALLOWED) - set(_found()), set())
 
     def test_each_entry_has_one_of_the_seven_reasons_and_a_note(self) -> None:
         for key, (reason, note) in ALLOWED.items():
             with self.subTest(statement=key):
                 self.assertIn(reason, REASONS)
                 self.assertTrue(note.strip())
-        for key, note in PENDING_PR8.items():
-            with self.subTest(statement=key):
-                self.assertTrue(note.strip())
-                self.assertTrue(key[0].startswith(_PR8_FILES), "only Ask and search wait for PR 8")
+
+    def test_ask_and_search_read_only_through_the_view(self) -> None:
+        """PR 8 (#602): no Ask or search statement is passed by a reason but Home's stamp; a search
+        statement written on the table is found; and none of hybrid's is."""
+        listed = {key for key in ALLOWED if key[0].startswith(("answering/", "search/"))}
+        self.assertEqual(listed, {("answering/ready.py", "_STAMP")})
+        ask = "SELECT p.id FROM pieces p JOIN documents d ON d.id = p.document_id WHERE p.customer_id = :c"
+        self.assertEqual(scan.reads(ask), {"pieces", "documents"})
+        self.assertEqual({key for key in _found() if key[0] == "search/hybrid.py"}, set())
 
     def test_no_statement_the_worker_reaches_reads_a_view(self) -> None:
         """#595 condition 1, across modules: the worker (jobs/, worker_main, cli, pipeline, the alerts)
