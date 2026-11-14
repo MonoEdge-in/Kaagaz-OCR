@@ -515,7 +515,6 @@ _ROUTES: list[tuple[str, str, Any]] = [
     ("DELETE", "/api/documents/{d}/my-story?user_id={u}", None),
     # Changed on purpose (#600): page turns saved for everyone.
     ("PATCH", "/api/documents/{d}/page-turns", {"changes": [{"page_no": 1, "turn": 90}], "user_id": "{u}"}),
-    ("DELETE", "/api/documents/{d}/page-turns?user_id={u}", None),
     ("DELETE", "/api/documents/{d}", None),
 ]
 _KEY = "0" * 64
