@@ -120,7 +120,7 @@ class _World:
     def raw(self, person: Person) -> dict[str, Any]:
         """The last message sent to ``person`` as Meta got it."""
         bodies = [body for _, _, body in self.fake.requests if body["to"] == person.number.removeprefix("+")]
-        return bodies[-1]
+        return dict(bodies[-1])
 
 
 @pytest.fixture
@@ -128,16 +128,15 @@ def world(db: Database, fake: WhatsAppFake) -> _World:
     return _World(db, fake)
 
 
-def _body(raw: dict[str, Any]) -> str:
-    return raw["text"]["body"] if raw["type"] == "text" else raw["interactive"]["body"]["text"]
-
-
 # --- the menu ------------------------------------------------------------------------------
 
 
 def test_the_menu_is_in_the_language_of_the_message_and_after_the_welcomes_start(world: _World) -> None:
     person = world.person()
-    assert world.say(person, "Hi") == ("Hello Test. What would you like to do?", ["ask.en", "get.en", "more.en"])
+    assert world.say(person, "Hi") == (
+        "Hello Test. What would you like to do?",
+        ["ask.en", "get.en", "more.en"],
+    )
     marathi = world.say(person, "नमस्कार")
     assert marathi == (say("menu", "mr", "Test"), ["ask.mr", "get.mr", "more.mr"])
     start = {**message(person.number, world.api.clock()), "type": "button", "button": {"payload": "start"}}
@@ -198,7 +197,9 @@ def test_a_follow_up_within_30_minutes_continues_the_conversation(world: _World)
 def test_a_message_handled_again_gets_its_saved_answer_with_no_second_question(world: _World) -> None:
     person = world.person()
     world.fake.failures = [500]  # the reply could not be sent: the message waits
-    assert post(world.client, delivery(message(person.number, world.api.clock(), "Total?"))).status_code == 200
+    assert (
+        post(world.client, delivery(message(person.number, world.api.clock(), "Total?"))).status_code == 200
+    )
     for claim in world.channel.claim(100):
         world.channel.handle(claim)
     assert world.replies(person) == []
@@ -254,7 +255,9 @@ def _clarified(world: _World, person: Person, *documents: str) -> str:
 
 def test_did_you_mean_is_buttons_and_a_tap_is_answered_by_ask(world: _World) -> None:
     person = world.person()
-    pune, panvel = (world.api.add_document(person.c, name=n, uploaded_by=person.u) for n in ("p.pdf", "v.pdf"))
+    pune, panvel = (
+        world.api.add_document(person.c, name=n, uploaded_by=person.u) for n in ("p.pdf", "v.pdf")
+    )
     asked = _clarified(world, person, pune, panvel)
     ids = [f"pick:{asked}:{c}:en" for c in ("c1", "c2", "other")]
     assert world.replies(person)[-1] == ("Did you mean Pune?", ids)
@@ -285,24 +288,37 @@ def test_more_than_three_choices_are_a_list_and_a_locked_files_choice_is_left_ou
     person = world.person()
     files = [world.api.add_document(person.c, uploaded_by=person.u) for _ in range(5)]
     reply = _clarify(files[0])
-    picks = [{"id": f"c{n}", "label": f"Place {n}", "kind": "pick", "document_ids": [d]} for n, d in enumerate(files, 1)]
-    reply["clarify"] = {**reply["clarify"], "choices": [*picks, {"id": "all", "label": "All of these", "kind": "all"},
-                        {"id": "other", "label": "Something else", "kind": "other"}], "multi": True}  # fmt: skip
+    picks = [
+        {"id": f"c{n}", "label": f"Place {n}", "kind": "pick", "document_ids": [d]}
+        for n, d in enumerate(files, 1)
+    ]
+    every = {"id": "all", "label": "All of these", "kind": "all"}
+    other = {"id": "other", "label": "Something else", "kind": "other"}
+    reply["clarify"] = {**reply["clarify"], "choices": [*picks, every, other], "multi": True}
     world.api.answers.reply = reply
     world.say(person, "Land between A and B?")
     raw = world.raw(person)["interactive"]
     rows = raw["action"]["sections"][0]["rows"]
-    assert raw["type"] == "list" and [r["title"] for r in rows] == [*(f"Place {n}" for n in range(1, 6)),
-                                                                    "All of these", "Something else"]  # fmt: skip
-    _owner(world.db, "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d", {"u": person.u, "d": files[4]})
-    _owner(world.db, "INSERT INTO lock_grants (customer_id, document_id, user_id, given_by) VALUES (:c, :d, :u, :u)",
-           {"c": person.c, "d": files[4], "u": person.u})  # fmt: skip
+    places = [f"Place {n}" for n in range(1, 6)]
+    assert raw["type"] == "list" and [r["title"] for r in rows] == [*places, "All of these", "Something else"]
+    _lock(world, person, files[4])
     world.say(person, "Land between A and B again?")
     rows = world.raw(person)["interactive"]["action"]["sections"][0]["rows"]
     assert [r["title"] for r in rows] == [*(f"Place {n}" for n in range(1, 5)), "Something else"]
 
 
 # --- Get a file ------------------------------------------------------------------------------
+
+
+def _lock(world: _World, person: Person, document: str) -> None:
+    """``document`` locked, and ``person`` allowed to open it (PRD 7's lock grant)."""
+    params = {"c": person.c, "d": document, "u": person.u}
+    _owner(world.db, "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d", params)
+    _owner(
+        world.db,
+        "INSERT INTO lock_grants (customer_id, document_id, user_id, given_by) VALUES (:c, :d, :u, :u)",
+        params,
+    )
 
 
 def _filed(world: _World, person: Person, name: str, words: str, **columns: Any) -> str:
@@ -314,9 +330,15 @@ def _filed(world: _World, person: Person, name: str, words: str, **columns: Any)
 def test_get_a_file_one_match_is_its_card_with_a_link(world: _World) -> None:
     person = world.person()
     folder = world.api.add_folder(person.c, person.u, "Bills")
-    document = _filed(world, person, "MSEB March.pdf", "electricity bill march", folder_id=folder, page_count=2)
-    _owner(world.db, "UPDATE documents SET summary = 'Electricity bill for March.', doc_type = 'invoice',"
-           " created_at = '2026-09-27 10:00+00' WHERE id = :d", {"d": document})  # fmt: skip
+    document = _filed(
+        world, person, "MSEB March.pdf", "electricity bill march", folder_id=folder, page_count=2
+    )
+    _owner(
+        world.db,
+        "UPDATE documents SET summary = 'Electricity bill for March.', doc_type = 'invoice',"
+        " created_at = '2026-09-27 10:00+00' WHERE id = :d",
+        {"d": document},
+    )
     assert world.tap(person, "get.en") == say("which_file", "en")
     body, buttons = world.say(person, "electricity")
     assert body == (
@@ -348,24 +370,26 @@ def test_a_hidden_locked_missing_or_made_up_file_gets_the_same_reply(world: _Wor
     other = world.person()  # another organisation
     theirs = _filed(world, other, "theirs.pdf", "secret ledger")
     locked = _filed(world, person, "locked.pdf", "secret ledger")
-    _owner(world.db, "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d", {"u": person.u, "d": locked})
-    _owner(world.db, "INSERT INTO lock_grants (customer_id, document_id, user_id, given_by) VALUES (:c, :d, :u, :u)",
-           {"c": person.c, "d": locked, "u": person.u})  # fmt: skip  # they may open it in Kaagaz
-    binned = _filed(world, person, "binned.pdf", "secret ledger", deleted_at=world.api.clock(), deleted_by=person.u)
+    _lock(world, person, locked)  # they may open it in Kaagaz
+    binned = _filed(
+        world, person, "binned.pdf", "secret ledger", deleted_at=world.api.clock(), deleted_by=person.u
+    )
     taps = [f"file:{d}:en" for d in (theirs, locked, binned, str(uuid.uuid4()))] + ["file:junk:en"]
     assert [world.tap(person, each, row=True) for each in taps] == [(NOT_FOUND, ["menu.en"])] * 5
     world.tap(person, "get.en")
     assert world.say(person, "secret ledger") == (NOT_FOUND, ["menu.en"])
     sent = repr(world.fake.requests)
-    assert not any(mark in sent for mark in ("locked.pdf", "binned.pdf", "theirs.pdf", locked, binned, theirs))
+    assert not any(
+        mark in sent for mark in ("locked.pdf", "binned.pdf", "theirs.pdf", locked, binned, theirs)
+    )
     assert "whatsapp.file_link" not in [row[0] for row in world.api.audit_rows(person.c)]
 
 
 def test_a_card_masks_id_numbers(world: _World) -> None:
     person = world.person()
     document = _filed(world, person, "Aadhaar 1234 5678 9012.pdf", "identity card")
-    _owner(world.db, "UPDATE documents SET summary = 'PAN ABCDE1234F, card 4111-1111-1111-1111.' WHERE id = :d",
-           {"d": document})  # fmt: skip
+    summary = "PAN ABCDE1234F, card 4111-1111-1111-1111."
+    _owner(world.db, "UPDATE documents SET summary = :s WHERE id = :d", {"s": summary, "d": document})
     world.tap(person, "get.en")
     body, _ = world.say(person, "identity")
     assert "Aadhaar ••••9012.pdf" in body and "PAN ••••234F" in body
@@ -377,7 +401,9 @@ def test_an_answers_id_numbers_are_masked(world: _World) -> None:
     person = world.person()
     world.api.answers.reply = {
         **answer_json(),
-        "sentences": [{"text": "The account number is 001234567890 and the PAN is ABCDE1234F.", "citations": []}],
+        "sentences": [
+            {"text": "The account number is 001234567890 and the PAN is ABCDE1234F.", "citations": []}
+        ],
     }
     body, _ = world.say(person, "What is my account number?")
     assert body.startswith("The account number is ••••7890 and the PAN is ••••234F.")

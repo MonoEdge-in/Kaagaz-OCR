@@ -28,7 +28,14 @@ def test_the_language_of_a_message(text: str, expected: str | None) -> None:
 
 def test_every_fixed_message_is_in_three_languages_within_whatsapps_limits() -> None:
     assert all(len(texts) == len(LANGUAGES) and all(texts) for texts in TEXTS.values())
-    for key in ("ask_button", "get_button", "more_button", "menu_button", "another_button", "not_this_button"):
+    for key in (
+        "ask_button",
+        "get_button",
+        "more_button",
+        "menu_button",
+        "another_button",
+        "not_this_button",
+    ):
         assert all(len(say(key, lang)) <= BUTTON_CHARS for lang in LANGUAGES), key
     for key in ("see_files", "choose"):  # a list's button
         assert all(len(say(key, lang)) <= BUTTON_CHARS for lang in LANGUAGES), key
@@ -74,7 +81,10 @@ def test_a_translation_keeps_the_numbers_in_any_script() -> None:
 def test_a_list_is_one_interactive_message_with_its_rows() -> None:
     with running_fake() as fake:
         MetaWhatsApp(fake.url, NUMBER_ID, TOKEN).send_list(
-            "+15550001234", "Pick one:", "See files", [("file:a:en", "a.pdf", "Bills"), ("file:b:en", "b.pdf", "")]
+            "+15550001234",
+            "Pick one:",
+            "See files",
+            [("file:a:en", "a.pdf", "Bills"), ("file:b:en", "b.pdf", "")],
         )
         ((_, _, body),) = fake.requests
     assert body["to"] == "15550001234" and body["type"] == "interactive"
@@ -84,7 +94,12 @@ def test_a_list_is_one_interactive_message_with_its_rows() -> None:
         "action": {
             "button": "See files",
             "sections": [
-                {"rows": [{"id": "file:a:en", "title": "a.pdf", "description": "Bills"}, {"id": "file:b:en", "title": "b.pdf"}]}
+                {
+                    "rows": [
+                        {"id": "file:a:en", "title": "a.pdf", "description": "Bills"},
+                        {"id": "file:b:en", "title": "b.pdf"},
+                    ]
+                }
             ],
         },
     }
