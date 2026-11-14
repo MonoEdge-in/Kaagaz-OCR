@@ -243,6 +243,15 @@ CATALOG_POLICIES = {
 }
 PAGE_READ_UPDATES = {"result", "input_tokens", "output_tokens", "created_at"}
 SECTION_UPDATES = {"embedding", "embed_recipe"}
+# Changed on purpose (#606, 0091): the tables the per-person rule (person_only) holds.
+PERSON_RULE_TABLES = {
+    "documents", "folders", "trashed_folders", "corrections", "document_links", "document_sections",
+    "document_stories", "document_tags", "document_topics", "ensemble_readings", "ensemble_runs",
+    "extracted_values", "invoice_lines", "invoices", "learning_removals", "model_usage",
+    "organization_word_suggestions", "page_blocks", "page_reads", "page_rotations", "pages", "pieces",
+    "processing_runs", "reader_outputs", "source_pins", "table_cells", "user_word_spots", "value_keys",
+    "version_suggestions", "word_changes",
+}  # fmt: skip
 # The second policy of the tables that belong to one user (0008, 0009): it must pass too.
 OWN_USER = "(user_id = (NULLIF(current_setting('kaagaz.user_id'::text, true), ''::text))::uuid)"
 RUN_OUTCOME = {
@@ -338,6 +347,10 @@ OWNER_RIGHTS = {
     ),
     "kaagaz_give_file": ("TABLE(user_id uuid, versions integer, added integer)", EMPTY_PATH),
     "kaagaz_take_file": ("integer", EMPTY_PATH),
+    # Changed on purpose (#606, 0091): the database rule's switch, fast path and new-version check.
+    "kaagaz_person_rule_on": ("boolean", EMPTY_PATH),
+    "kaagaz_sees_everything": ("boolean", EMPTY_PATH),
+    "kaagaz_family_visible": ("boolean", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"
@@ -635,8 +648,16 @@ TRIGGER_RIGHTS = dict.fromkeys(
 # Changed on purpose (#463, 0064): the accuracy checks are the operator's too.
 OPERATOR_TABLES = {"operators", "platform_audit", "scan_accuracy_checks"}
 PLATFORM_DEFAULTS = {"platform_models", "platform_ai_settings", "feature_switches", "platform_model_override"}
+# Changed on purpose (#606, 0091): the database rule's switch, the owner's only.
 NO_CUSTOMER_ID = (
-    {"customers", "alembic_version", "reader_status", "model_catalog", "model_rate_scheduler"}
+    {
+        "customers",
+        "alembic_version",
+        "reader_status",
+        "model_catalog",
+        "model_rate_scheduler",
+        "kaagaz_person_rule",
+    }
     | PLATFORM_DEFAULTS
     | OPERATOR_TABLES
 )
@@ -788,7 +809,15 @@ def test_the_tables_of_one_user_also_have_the_restrictive_own_user_only_policy(d
         }
     own = FROM_0008 | FROM_0009
     restrictive = ("ALL", "RESTRICTIVE", ["public"], OWN_USER, OWN_USER)
-    assert policies == {(table, "own_user_only"): restrictive for table in own} | CATALOG_POLICIES
+    # Changed on purpose (#606, 0091): the per-person rule, for the API role only, on documents,
+    # folders, trashed folders and the 27 content tables (test_isolation_person_rule checks them).
+    person = {key: value for key, value in policies.items() if key[1] == "person_only"}
+    assert {table for table, _ in person} == PERSON_RULE_TABLES
+    assert {(command, permissive, tuple(roles)) for command, permissive, roles, *_ in person.values()} == {
+        ("ALL", "RESTRICTIVE", ("kaagaz_app",))
+    }
+    others = {key: value for key, value in policies.items() if key[1] != "person_only"}
+    assert others == {(table, "own_user_only"): restrictive for table in own} | CATALOG_POLICIES
 
 
 def _updatable(db: Database, table: str) -> set[str]:
