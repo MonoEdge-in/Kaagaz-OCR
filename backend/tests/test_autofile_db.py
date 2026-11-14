@@ -573,12 +573,9 @@ def test_stale_flag_a_deleted_folder_of_a_filed_family_in_trash_is_not_filed_any
 
     assert state(db, customer, document) == (None, None)
     assert view(db, customer, document) is None
-    # Changed on purpose (#599, 0087 fails closed): the department Kaagaz made for the family is
-    # gone too (pruned once empty), so its file in Trash is closed to the member, as a file they
-    # can't see: not_found, where it was in_trash. Restored, it is in no department and theirs again.
     # Changed on purpose (#594, Q2): restored with its department gone, it is held for the restorer
     # (here the member) until it is filed, never open to everyone.
-    assert _undo(member.client, document).json()["error"]["code"] == "not_found"
+    assert _undo(member.client, document).json()["error"]["code"] == "in_trash"
     with db.customer(customer) as conn:
         assert restore_document(conn, customer, document, by=member.user_id) == Placed(held=True)
     assert _undo(member.client, document).json()["error"]["code"] == "already_moved"
