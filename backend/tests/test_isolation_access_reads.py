@@ -300,6 +300,14 @@ def test_the_admin_log_filters_by_whom_it_is_about_and_shows_self_given_first(db
     org = _walled(api)
     admin, p, files = org.people["admin"], _ids(org), org.files
     assert _call(admin, "PUT", f"/api/documents/{files['fin']}/shares/{p['plain']}", {})[0] == 200
+    # A file the Admin can't open filters by its whole family (the #595 residual), checked
+    # before the Admin makes themselves Management and so sees it.
+    later = api.add_document(
+        org.c, name="fin v2.pdf", folder_id=org.folders["finance"], family_id=files["fin"], version_no=2,
+        is_current=False, uploaded_by=p["admin"],
+    )  # fmt: skip
+    body = _get(admin, f"/api/admin/audit?document_id={later}")[1]
+    assert "access.file_give" in [item["action"] for item in body["items"]]
     assert _call(admin, "PUT", f"/api/admin/users/{p['named']}/management", {"on": True})[0] == 200
     mine = {"on": True, "password": PASSWORD}
     assert _call(admin, "PUT", f"/api/admin/users/{p['admin']}/management", mine)[0] == 200
@@ -321,13 +329,6 @@ def test_the_admin_log_filters_by_whom_it_is_about_and_shows_self_given_first(db
         p["admin"],
     )
     assert "self_given" not in _get(admin, f"/api/admin/audit?limit=1&cursor={body['next_cursor']}")[1]
-    # A file the Admin can't open filters by its whole family (the #595 residual).
-    later = api.add_document(
-        org.c, name="fin v2.pdf", folder_id=org.folders["finance"], family_id=files["fin"], version_no=2,
-        is_current=False, uploaded_by=p["admin"],
-    )  # fmt: skip
-    body = _get(admin, f"/api/admin/audit?document_id={later}")[1]
-    assert "access.file_give" in [item["action"] for item in body["items"]]
 
 
 def test_management_sees_access_activity_with_a_file_it_cant_see_unnamed(db: Database) -> None:
