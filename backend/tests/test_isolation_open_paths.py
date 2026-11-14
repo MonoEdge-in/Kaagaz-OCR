@@ -504,3 +504,76 @@ def test_a_folder_whose_private_folder_went_comes_back_private_under_its_departm
         "management",
     }
     assert _differences(db, org.c) == []
+
+
+# --- the organisation's walls (0089: customers.walls_set) ----------------------------------------
+
+
+def _stranded(api: Api, *, department_only: bool) -> tuple[str, str, str, str]:
+    """A new organisation whose only department, Legal (Department only or not), held Briefs and
+    its file: the file went to Trash, then Briefs and Legal were deleted for good. Returns (the
+    organisation, the file, a member in no department, a Management member)."""
+    db = api.db
+    c, first = api.customer()
+    plain, _ = api.add_user(c, "member")
+    management, _ = api.add_user(c, "member")
+    _owner(db, "UPDATE users SET management = true WHERE id = :u", {"u": management})
+    legal = api.add_folder(c, first, "Legal")
+    briefs = api.add_folder(c, first, "Briefs", legal)
+    _owner(
+        db,
+        "UPDATE folders SET kind = 'department', department_only = :o WHERE id = :f",
+        {"o": department_only, "f": legal},
+    )
+    brief = api.add_document(c, name="brief.pdf", folder_id=briefs, uploaded_by=first)
+    _owner(
+        db, "UPDATE documents SET deleted_at = now(), deleted_by = :u WHERE id = :d", {"u": first, "d": brief}
+    )
+    _owner(db, "UPDATE documents SET folder_id = NULL WHERE id = :d", {"d": brief})  # as a folder delete does
+    _owner(db, "DELETE FROM folders WHERE id IN (:b, :l)", {"b": briefs, "l": legal})
+    return c, brief, plain, management
+
+
+def _walls(db: Database, customer: str) -> bool:
+    return bool(_owner(db, "SELECT walls_set FROM customers WHERE id = :c", {"c": customer})[0][0])
+
+
+def test_day_one_nothing_is_walled_and_nothing_changes(db: Database) -> None:
+    """No folder was ever Department only: the flag is false and a department deleted since is
+    open, as before."""
+    api = Api(db)
+    c, brief, plain, _ = _stranded(api, department_only=False)
+    assert not _walls(db, c)
+    assert brief in _seen(_app(db), c, plain)
+
+
+def test_the_last_department_only_department_deleted_for_good_leaves_its_trash_closed(db: Database) -> None:
+    """0087's known gap: Legal was the organisation's only Department only department. Its file
+    stranded in Trash stays closed: Management sees it, the member in no department doesn't."""
+    api = Api(db)
+    c, brief, plain, management = _stranded(api, department_only=True)
+    assert _walls(db, c)
+    assert brief not in _seen(_app(db), c, plain)
+    assert brief in _seen(_app(db), c, management)
+
+
+def test_the_walls_flag_is_set_from_a_folder_in_trash_too_and_never_goes_back(db: Database) -> None:
+    api = Api(db)
+    c, first = api.customer()
+    inbox = api.add_folder(c, first, "Inbox")
+    _owner(db, "UPDATE folders SET kind = 'department' WHERE id = :f", {"f": inbox})
+    _owner(
+        db,
+        "INSERT INTO trashed_folders (id, customer_id, parent_id, name, kind, created_by, created_at,"
+        " trash_id, root, deleted_at, deleted_by) VALUES (gen_random_uuid(), :c, NULL, 'Old', 'department',"
+        " :u, now(), gen_random_uuid(), true, now(), :u)",
+        {"c": c, "u": first},
+    )
+    assert not _walls(db, c)
+    _owner(db, "UPDATE trashed_folders SET department_only = true WHERE customer_id = :c", {"c": c})
+    assert _walls(db, c)
+    _owner(db, "UPDATE folders SET department_only = true WHERE id = :f", {"f": inbox})
+    _owner(db, "UPDATE folders SET department_only = false WHERE id = :f", {"f": inbox})
+    _owner(db, "DELETE FROM trashed_folders WHERE customer_id = :c", {"c": c})
+    _owner(db, "DELETE FROM folders WHERE id = :f", {"f": inbox})
+    assert _walls(db, c)

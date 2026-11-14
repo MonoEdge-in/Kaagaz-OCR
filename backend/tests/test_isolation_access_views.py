@@ -152,15 +152,8 @@ def _expected(db: Database, org: Org, user: str, *, folders: bool = False) -> se
     # Changed on purpose (#599, 0087): once the organisation has a Department only department (live
     # or in Trash), open is a department still there and not Department only, so one deleted since
     # is closed (fail closed); with none, every department is open, as on day one.
-    walled = bool(
-        _owner(
-            db,
-            "SELECT 1 FROM folders WHERE customer_id = :c AND parent_id IS NULL AND department_only"
-            " UNION ALL SELECT 1 FROM trashed_folders WHERE customer_id = :c AND parent_id IS NULL"
-            " AND department_only",
-            {"c": c},
-        )
-    )
+    # Changed on purpose (#594, 0089): once it ever had one (customers.walls_set, never cleared).
+    walled = bool(_owner(db, "SELECT walls_set FROM customers WHERE id = :c", {"c": c})[0][0])
     opened = {
         str(r[0])
         for r in _owner(
