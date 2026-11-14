@@ -94,6 +94,7 @@ from kaagaz.answering.clarify import (
     Pending,
     answers_clarify,
     latin_key,
+    picked_page,
     reply_to,
     without_resume,
 )
@@ -1150,7 +1151,9 @@ def _pending(recent: Sequence[RowMapping], reply: ReplyBody, question: str) -> P
 def _suggest(conn: Connection, user: CurrentUser, pending: Pending) -> None:
     """Decision 6 (PRD 6 B2): a "Did you mean" pick ("Puny" meant Pune) is submitted to the
     organisation-words review as a pending suggestion, never straight to the company; its meaning
-    is the name's Latin spelling, which the vocabulary matches once a reviewer approves it."""
+    is the name's Latin spelling, which the vocabulary matches once a reviewer approves it. PRD 7
+    (#602, question 9): a pick of one document records it and the page its name is on
+    (``picked_page``, through the view), so the word shows and aliases only for who sees it."""
     if not (pending.confirm and pending.as_typed and len(pending.picked) == 1):
         return
     try:
@@ -1159,6 +1162,10 @@ def _suggest(conn: Connection, user: CurrentUser, pending: Pending) -> None:
         return
     texts: dict[str, Any] = {"word": word.text, "word_fold": word.fold, "meaning": meaning.text}
     texts["meaning_fold"] = meaning.fold
+    one = pending.documents[0] if len(pending.documents) == 1 else None
+    page = None if one is None else picked_page(conn, user.customer_id, one, pending)
+    if page is not None:
+        texts |= {"document_id": one, "page_no": page}
     row = organization_words.submit(conn, user.customer_id, user.user_id, **texts)
     if isinstance(row, Suggestion):  # None: already pending or approved; or the company's limit
         details = {"status": "pending", "source": "clarify"}

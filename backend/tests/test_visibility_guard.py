@@ -66,6 +66,7 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     # Clarifying questions (PRD 6 B1): names and places only of the documents chat may cite.
     (clarify, "_CANDIDATES"): LIVE_CURRENT,
     (clarify, "_NEAR"): LIVE_CURRENT,  # B2: the places of a district
+    (clarify, "_ANY_KEYS"): LIVE_CURRENT,  # PRD 7 (#602): whether any key is one the person sees
     # The numbers in answers: the same, in every CTE.
     (fixed_queries, "_AVAILABLE_FIELDS"): LIVE_CURRENT,
     (fixed_queries, "_TOP_GROUP"): LIVE_CURRENT,

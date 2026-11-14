@@ -4,7 +4,9 @@ PR 6's walled organisation. Five of its files get the same content (``_ask_org``
 held are hidden from the plain reviewer, sales and given are not; Finance's member sees fin, held
 and given but not sal. Each file has two pieces: the first holds a word of its own and "ledger",
 with a vector of its own (one axis each); and a section, a topic, a card and the reviewer's own
-story. Every Ask and search statement is called as the person, so it is proved by itself: nothing
+story; a total, an invoice date, a seller, an unchecked card figure and an invoice row; a land
+record (an owner named after it, a village of its own in Satara); an unreadable page and an OCR word
+mark. Every Ask and search statement is called as the person, so it is proved by itself: nothing
 of a hidden file, not as a row, a count, a weight or a slot before a LIMIT, and the member still
 finds fin."""
 
@@ -17,11 +19,19 @@ from typing import Any
 import pytest
 from sqlalchemy import Connection, event, text
 
+from kaagaz.answering import exhaustive, fixed_queries
+from kaagaz.answering.clarify import Entity, Pending, PgVocabulary, latin_key, picked_page
+from kaagaz.answering.exhaustive import PgExhaustive
+from kaagaz.answering.fixed_queries import PgFixedQueries
+from kaagaz.answering.hard_to_read import PgReadingQuality
+from kaagaz.answering.owners import OWNING, PgOwners
+from kaagaz.answering.unchecked import PgUncheckedValues
 from kaagaz.db.engine import Database
 from kaagaz.search import hybrid
 from kaagaz.search.hybrid import FusedPiece
 from kaagaz.search.scope import EVERYTHING
 from kaagaz.search.story_search import read_stories
+from tests.db_support import insert_key
 from tests.test_api_support import Api
 from tests.test_isolation_access_views import Org, _app, _walled
 from tests.test_operator_auth_db import _owner
@@ -41,6 +51,44 @@ _TOPIC = text(
     "INSERT INTO document_topics (customer_id, document_id, topic, aliases, piece_seqs)"
     " VALUES (:c, :d, :t, '{}', '{0, 1}')"
 )
+_VALUE = (
+    "INSERT INTO extracted_values (customer_id, document_id, record_key, field, value_text, value_raw,"
+    " value_number, value_date, page_no, region, reader, label, label_reason)"
+    ' VALUES (:c, :d, :key, :f, :t, :t, :n, :day, 1, \'{"kind": "box", "page": 1, "box": [0.1, 0.1,'
+    " 0.2, 0.2]}', 'test', :label, 'readers_agree')"
+)
+AMOUNTS = {name: 7001 + n for n, name in enumerate(FILES)}
+
+
+def _figures(api: Api, org: Org, name: str) -> None:
+    """A total, an invoice date and a seller on the document record, an unchecked card figure,
+    an invoice row, a land record keyed by #245, an unreadable page and an OCR word mark."""
+    db, c, d, word = api.db, org.c, org.files[name], WORDS[name]
+    rows = [
+        ("document", "total_amount", str(AMOUNTS[name]), AMOUNTS[name], None, "verified"),
+        ("document", "invoice_date", "2026-08-10", None, "2026-08-10", "verified"),
+        ("document", "seller_name", f"Seller {word}", None, None, "verified"),
+        ("card", "total_amount", str(AMOUNTS[name]), AMOUNTS[name], None, "needs_review"),
+    ]
+    if name == "fin":
+        rows.append(("document", "gst_amount", "18", 18, None, "verified"))
+    for key, field, said, number, day, label in rows:
+        params = {"c": c, "d": d, "key": key, "f": field, "t": said, "n": number, "day": day, "label": label}
+        _owner(db, _VALUE, params)
+    _owner(
+        db,
+        "INSERT INTO invoices (customer_id, document_id, invoice_date, label, check_status)"
+        " VALUES (:c, :d, '2026-08-10', 'verified', 'passed')",
+        {"c": c, "d": d},
+    )
+    with db.customer(c) as conn:
+        insert_key(conn, c, d, "person", f"Ramesh {word}")
+        insert_key(conn, c, d, "place", f"{word}pur")
+        insert_key(conn, c, d, "place", "Satara", "district")
+    api.add_page(c, d)
+    _owner(db, "UPDATE pages SET read_quality = 'unreadable' WHERE document_id = :d", {"d": d})
+    mark = {"text": word, "raw": word, "origin": "ocr", "quality": "unsure"}
+    api.add_reader_output(c, d, [{**mark, "region": {"kind": "box", "page": 1, "box": [0.1, 0.1, 0.2, 0.2]}}])
 
 
 @dataclass
@@ -78,6 +126,7 @@ def _ask_org(api: Api) -> AskOrg:
             " VALUES (:c, :u, :d, :s, :s)",
             {"c": c, "u": org.people["plain"].user_id, "d": d, "s": f"my {word} story"},
         )
+        _figures(api, org, name)
     return AskOrg(db, org, pieces, axes)
 
 
@@ -323,3 +372,284 @@ def test_a_random_id_and_a_hidden_one_answer_alike(db: Database, ask: AskOrg) ->
             for d in (ask.id("fin"), str(uuid.uuid4()))
         ]
     assert replies == [[], []]
+
+
+# --- the answering statements (commit 2) --------------------------------------------------
+
+
+def _value_id(ask: AskOrg, name: str, field: str = "total_amount") -> str:
+    rows = _owner(
+        ask.db,
+        "SELECT id FROM extracted_values WHERE document_id = :d AND field = :f AND record_key = 'document'",
+        {"d": ask.id(name), "f": field},
+    )
+    return str(rows[0][0])
+
+
+def _ports(ask: AskOrg) -> dict[str, Any]:
+    app = _app(ask.db)
+    return {
+        "exhaustive": PgExhaustive(app),
+        "fixed": PgFixedQueries(app),
+        "owners": PgOwners(app),
+        "unchecked": PgUncheckedValues(app),
+        "reading": PgReadingQuality(app),
+        "vocabulary": PgVocabulary(app),
+    }
+
+
+def _refs(rows: Any) -> set[str]:
+    return {ref.document_id for row in rows for ref in [*row.values, *row.unsure, *row.totals]}
+
+
+def _rows(ask: AskOrg, user: str, statement: Any, params: dict[str, Any]) -> list[Any]:
+    with _app(ask.db).user(ask.org.c, user) as conn:
+        return list(conn.execute(statement, params))
+
+
+def _value_refs_as(ask: AskOrg, user: str, ids: list[str]) -> dict[str, Any]:
+    with _app(ask.db).user(ask.org.c, user) as conn:
+        return fixed_queries._value_refs(conn, ask.org.c, ids, EVERYTHING)
+
+
+def _pieces(p: dict[str, Any], a: AskOrg, u: str) -> tuple[set[str], int | None]:
+    params = {"c": a.org.c, "w": WORDS["fin"], "l": WORDS["fin"], "documents": [a.id("fin")]}
+    return {str(r[1]) for r in _rows(a, u, exhaustive._PIECES, params)}, None
+
+
+def _documents_with(p: dict[str, Any], a: AskOrg, u: str) -> tuple[set[str], int | None]:
+    total, found = p["exhaustive"].documents_with(a.org.c, "ledger", EVERYTHING, 10, user_id=u)
+    return {h.document_id for hits in found for h in hits}, total
+
+
+def _mentions(p: dict[str, Any], a: AskOrg, u: str) -> tuple[set[str], int | None]:
+    total, rows = p["exhaustive"].mentions(a.org.c, ["ledger"], EVERYTHING, [], 10, user_id=u)
+    return {r["document_id"] for r in rows}, total
+
+
+def _figures_of(invoices: bool) -> "_Answering":
+    def call(p: dict[str, Any], a: AskOrg, u: str) -> tuple[set[str], int | None]:
+        found = p["fixed"].figures(
+            a.org.c, "total_amount", ["invoice_date"], None, None, invoices=invoices, user_id=u
+        )
+        return {f.value.document_id for f in found if f.value}, len(found)
+
+    return call
+
+
+def _counted(rows: Any) -> tuple[set[str], int | None]:
+    return _refs(rows), int(rows[0].number) if rows else 0
+
+
+def _candidates(p: dict[str, Any], a: AskOrg, u: str) -> tuple[set[str], int | None]:
+    asked = [Entity("person", f"Ramesh {WORDS['fin']}")]
+    found = p["vocabulary"].candidates(a.org.c, asked, user_id=u)
+    return {d for entries in found for entry in entries for d in entry.documents}, None
+
+
+def _flagged(p: dict[str, Any], a: AskOrg, u: str) -> tuple[set[str], int | None]:
+    pages, total = p["reading"].flagged_pages(a.org.c, user_id=u)
+    return {f.document_id for f in pages}, total
+
+
+def _every(p: dict[str, Any], a: AskOrg, u: str) -> tuple[set[str], int | None]:
+    total, rows = p["owners"].every(a.org.c, list(OWNING), EVERYTHING, 50, user_id=u)
+    return {d for d, _ in rows}, total
+
+
+def _fin_if(found: Any, a: AskOrg) -> set[str]:
+    return {a.id("fin")} if found else set()
+
+
+# Each answering statement: (name, call(ports, ask, user) -> (document ids, a count or None)).
+_Answering = Callable[[dict[str, Any], AskOrg, str], tuple[set[str], int | None]]
+_FIN_PERSON = latin_key(f"Ramesh {WORDS['fin']}")
+_FIN_PLACE = latin_key(f"{WORDS['fin']}pur")
+_ANSWERING: list[tuple[str, _Answering]] = [
+    ("_DOCUMENTS", _documents_with),  # "N documents mention X": its count too
+    ("_MENTIONS", _mentions),  # "Also mentions" and its total
+    ("_PIECES", _pieces),  # a forged document
+    (  # only fin has a GST figure
+        "_AVAILABLE_FIELDS",
+        lambda p, a, u: (_fin_if(p["fixed"].available_fields(a.org.c, ["gst_amount"], user_id=u), a), None),
+    ),
+    ("_FIGURES", _figures_of(False)),
+    ("_FIGURES invoiced", _figures_of(True)),
+    (
+        "_TOP_GROUP",
+        lambda p, a, u: (lambda rows: (_refs(rows), sum(int(r.records) for r in rows)))(
+            p["fixed"].top_group(a.org.c, "total_amount", ["seller_name"], [], None, None, True, user_id=u)
+        ),
+    ),
+    (
+        "_EXTREME_VALUE",
+        lambda p, a, u: (
+            _refs(p["fixed"].extreme_value(a.org.c, "total_amount", [], None, None, True, user_id=u)),
+            None,
+        ),
+    ),
+    (  # "I found 4 documents"
+        "_COUNT_DOCUMENTS",
+        lambda p, a, u: _counted(
+            p["fixed"].count_documents(a.org.c, None, None, date_fields=["invoice_date"], user_id=u)
+        ),
+    ),
+    (  # "I found 4 invoices"
+        "_COUNT_INVOICES",
+        lambda p, a, u: _counted(p["fixed"].count_invoices(a.org.c, None, None, user_id=u)),
+    ),
+    (  # forged ids
+        "_VALUE_REFS",
+        lambda p, a, u: (
+            {
+                r.document_id
+                for r in _value_refs_as(a, u, [_value_id(a, "fin"), _value_id(a, "sales")]).values()
+            },
+            None,
+        ),
+    ),
+    (
+        "_RESOLVE",
+        lambda p, a, u: (
+            _fin_if(p["owners"].resolve(a.org.c, [_FIN_PERSON], EVERYTHING, user_id=u), a),
+            None,
+        ),
+    ),
+    (
+        "_OWNED",
+        lambda p, a, u: (
+            {d for d, _, _ in p["owners"].owned(a.org.c, [_FIN_PERSON], EVERYTHING, user_id=u)},
+            None,
+        ),
+    ),
+    (
+        "_KEYED",
+        lambda p, a, u: (
+            {d for d, _ in p["owners"].keyed(a.org.c, "place", [_FIN_PLACE], EVERYTHING, user_id=u)},
+            None,
+        ),
+    ),
+    ("_EVERY_RECORD", _every),  # the owners' total
+    (  # a forged document
+        "_SHARES_AS_PRINTED",
+        lambda p, a, u: (
+            {
+                ref.document_id
+                for _, _, ref in p["owners"].shares(a.org.c, [a.id("fin")], EVERYTHING, user_id=u)
+            },
+            None,
+        ),
+    ),
+    (
+        "_CARD_DOCUMENTS",
+        lambda p, a, u: (
+            {r["id"] for r in p["unchecked"].documents_with(a.org.c, ["total_amount"], user_id=u)},
+            None,
+        ),
+    ),
+    ("_FLAGGED_PAGES", _flagged),  # "3 pages could not be read"
+    (  # forged documents, both arms
+        "_WORD_MARKS",
+        lambda p, a, u: (
+            {
+                m.document_id
+                for m in p["reading"].word_marks(a.org.c, [a.id("fin"), a.id("sales")], user_id=u)
+            },
+            None,
+        ),
+    ),
+    ("_CANDIDATES", _candidates),  # "Did you mean"
+    (
+        "_NEAR",
+        lambda p, a, u: (
+            {d for e in p["vocabulary"].near(a.org.c, [latin_key("Satara")], user_id=u) for d in e.documents},
+            None,
+        ),
+    ),
+    (
+        "_ANY_KEYS",
+        lambda p, a, u: (
+            _fin_if(p["vocabulary"].within([a.id("fin")]).any_keys(a.org.c, user_id=u), a),
+            None,
+        ),
+    ),
+]
+# How many of each count the plain reviewer (sales, given) and Finance's member (and fin, held) see.
+_COUNTS = {"plain": 2, "member": 4}
+
+
+@pytest.mark.parametrize(("name", "call"), _ANSWERING, ids=[name for name, _ in _ANSWERING])
+def test_every_answering_statement_reads_and_counts_nothing_hidden(
+    db: Database, ask: AskOrg, name: str, call: _Answering
+) -> None:
+    ports = _ports(ask)
+    for person in ("plain", "member"):
+        found, count = call(ports, ask, ask.user(person))
+        assert not found & {ask.id(f) for f in HIDDEN[person]}, (name, person, found)
+        if count is not None:
+            assert count == _COUNTS[person], (name, person, count)
+        if person == "member":
+            assert ask.id("fin") in found, name
+
+
+def test_without_a_person_every_answering_port_finds_nothing(db: Database, ask: AskOrg) -> None:
+    """Fail closed: ``user_id=None`` in the API role reads through the view as nobody."""
+    ports = _ports(ask)
+    assert ports["fixed"].count_invoices(ask.org.c, None, None, user_id=None) == []
+    assert ports["exhaustive"].mentions(ask.org.c, ["ledger"], EVERYTHING, [], 10, user_id=None) == (0, [])
+    assert ports["vocabulary"].any_keys(ask.org.c, user_id=None) is False
+
+
+def test_a_hidden_sheet_changes_no_visible_figure(db: Database, ask: AskOrg) -> None:
+    """Question 12: the labelled and sums steps read every document's sheets, matched per document.
+    A total row added to fin's sheet leaves the plain reviewer's figures as they were."""
+    fixed, plain = _ports(ask)["fixed"], ask.user("plain")
+
+    def figures() -> list[Any]:
+        found: list[Any] = fixed.figures(
+            ask.org.c, "total_amount", [], None, None, invoices=False, user_id=plain
+        )
+        return found
+
+    before = figures()
+    for row, said in ((2, "500"), (3, "500"), (4, "1000")):
+        params = {"c": ask.org.c, "d": ask.id("fin"), "key": f"sheet:1:row:{row}", "f": "total_amount"}
+        _owner(db, _VALUE, params | {"t": said, "n": int(said), "day": None, "label": "verified"})
+    _owner(
+        db,
+        "INSERT INTO pieces (customer_id, document_id, seq, page_from, page_to, text, regions, label)"
+        " VALUES (:c, :d, 5, 1, 1, 'A: Total | C: 1,000',"
+        ' \'[{"kind": "cell", "page": 1, "row": 4, "column": 1}]\', \'verified\')',
+        {"c": ask.org.c, "d": ask.id("fin")},
+    )
+    assert figures() == before
+
+
+def test_a_did_you_mean_pick_records_its_document_and_aliases_only_for_who_sees_it(
+    db: Database, ask: AskOrg
+) -> None:
+    """Question 9: a pick of one document records it and the page its name is on, through the
+    view; an approved word tied to a hidden document makes no alias of a visible one's name."""
+    name = f"Ramesh {WORDS['fin']}"
+
+    def pick(document: str) -> Pending:
+        return Pending("Land of Rameshji?", "person", "Rameshji", (), (), 1, (name,), True, None, (document,))
+
+    for person, document, page in (("plain", "fin", None), ("member", "fin", 1), ("plain", "sales", None)):
+        with _as(db, ask, person) as conn:
+            assert picked_page(conn, ask.org.c, ask.id(document), pick(ask.id(document))) == page, person
+    with db.customer(ask.org.c) as conn:
+        insert_key(conn, ask.org.c, ask.id("sales"), "person", name)  # the same name on a visible file
+    with _as(db, ask, "plain") as conn:
+        assert picked_page(conn, ask.org.c, ask.id("sales"), pick(ask.id("sales"))) == 1
+    _owner(
+        db,
+        "INSERT INTO organization_word_suggestions (customer_id, submitted_by, word, word_fold, meaning,"
+        " meaning_fold, document_id, page_no, status, decided_by, decided_at)"
+        " VALUES (:c, :u, 'Rameshji', 'rameshji', :m, :m, :d, 1, 'approved', :u, now())",
+        {"c": ask.org.c, "u": ask.user("admin"), "m": latin_key(name), "d": ask.id("fin")},
+    )
+    vocabulary = _ports(ask)["vocabulary"]
+    for person, sees in (("plain", False), ("member", True)):
+        found = vocabulary.candidates(ask.org.c, [Entity("person", "Rameshji")], user_id=ask.user(person))
+        assert any(entry.aliased for entry in found[0]) == sees, person

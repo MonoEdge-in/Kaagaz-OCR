@@ -335,6 +335,16 @@ def test_day_one_never_runs_the_given_or_lock_lookups(db: Database) -> None:
 # still run as kaagaz_app with no person on a server, and would see nothing). A new one belongs here
 # only once its callers are checked.
 VIEW_READERS = {
+    # PR 8 (#602): Ask, reached from the API only (the SQL guard's worker test).
+    "answering/clarify.py": {"_ANY_KEYS", "_CANDIDATES", "_NEAR", "_PICKED_PAGE"},
+    "answering/exhaustive.py": {"_IN_SCOPE", "_PIECES"},
+    "answering/fixed_queries.py": {
+        "_AVAILABLE_FIELDS", "_COUNT_DOCUMENTS", "_COUNT_INVOICES", "_EXTREME_VALUE", "_FIGURES",
+        "_TOP_GROUP", "_VALUE_REFS",
+    },
+    "answering/hard_to_read.py": {"_FLAGGED_PAGES", "_WORD_MARKS"},
+    "answering/owners.py": {"_EVERY_RECORD", "_KEYED", "_OWNED", "_RESOLVE", "_SHARES_AS_PRINTED"},
+    "answering/unchecked.py": {"_CARD_DOCUMENTS"},
     "db/audit.py": {"_FOLDER_PATHS", "_OF_FAMILY", "_SEEN"},
     "db/chat.py": {"_DOCUMENT_QUESTIONS", "add_pin"},
     "db/document_stories.py": {"_DELETE", "_PUT"},
