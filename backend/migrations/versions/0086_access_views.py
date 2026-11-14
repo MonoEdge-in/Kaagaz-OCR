@@ -21,6 +21,7 @@
   back into them; so each names its customer itself.
 * Each view's columns are its table's when it is made: a migration that adds or drops a column
   of ``documents`` or ``folders`` re-creates the view (tests/test_migration_0086_db.py checks).
+* Each view column carries its table column's comment (the data dictionary, 0007).
 * Catalog only: no table is locked, read or written. The app and the worker role get the same
   rights (0083's equality test): SELECT on the views, EXECUTE on the functions; PUBLIC none.
 
@@ -131,6 +132,24 @@ VIEW_COMMENTS = {
     " folder's name); the worker role with no person, its whole organisation.",
 }
 
+# The data dictionary (0007): each view column carries its table column's comment.
+_COLUMN_COMMENTS = """
+    DO $$
+    DECLARE
+        col record;
+    BEGIN
+        FOR col IN
+            SELECT v.relname AS view, a.attname, col_description(a.attrelid, a.attnum) AS comment
+            FROM (VALUES ('visible_documents', 'public.documents'::regclass),
+                         ('visible_folders', 'public.folders'::regclass)) AS v(relname, source)
+            JOIN pg_attribute a ON a.attrelid = v.source AND a.attnum > 0 AND NOT a.attisdropped
+        LOOP
+            EXECUTE format('COMMENT ON COLUMN public.%I.%I IS %L', col.view, col.attname, col.comment);
+        END LOOP;
+    END
+    $$
+    """
+
 UPGRADE = [
     ACCESS_SET,
     *FUNCTIONS.values(),
@@ -152,6 +171,7 @@ UPGRADE = [
             f"GRANT SELECT ON public.{name} TO {ROLES}",
         )
     ],
+    _COLUMN_COMMENTS,
 ]
 
 DOWNGRADE = [
