@@ -103,8 +103,9 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     tables and columns (0084) follow 0083. Changed on purpose (#593, 14 Nov 2026): their triggers
     (0085) follow 0084. Changed on purpose (#595, 14 Nov 2026): the access views (0086) follow 0085.
     Changed on purpose (#599, 14 Nov 2026): the trashed folders' view (0087) follows 0086.
-    Changed on purpose (#600, 14 Nov 2026): page turns saved for everyone (0088) follow 0087 and
-    are the head."""
+    Changed on purpose (#600, 14 Nov 2026): page turns saved for everyone (0088) follow 0087.
+    Changed on purpose (#594, 14 Nov 2026): nothing opens by accident (0089) follows 0088 and is the
+    head."""
     scripts = _scripts()
     assert scripts.get_revision("0082").down_revision == "0081"
     assert scripts.get_revision("0083").down_revision == "0082"
@@ -113,4 +114,5 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     assert scripts.get_revision("0086").down_revision == "0085"
     assert scripts.get_revision("0087").down_revision == "0086"
     assert scripts.get_revision("0088").down_revision == "0087"
-    assert scripts.get_heads() == ["0088"]
+    assert scripts.get_revision("0089").down_revision == "0088"
+    assert scripts.get_heads() == ["0089"]

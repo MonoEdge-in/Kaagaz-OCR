@@ -143,7 +143,7 @@ def test_a_file_in_trash_is_409_in_trash_and_keeps_its_turns(db: Database) -> No
     for reply in (_save(a, document, (2, 90)), _reset(a, document)):
         assert (reply.status_code, reply.json()["error"]["code"]) == (409, "in_trash")
     with db.customer(a.customer_id) as conn:
-        trash.restore_document(conn, a.customer_id, document)
+        trash.restore_document(conn, a.customer_id, document, by=a.user_id)
     assert _turns(a, document) == [{"page_no": 1, "turn": 90}]
 
 

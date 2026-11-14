@@ -6,6 +6,9 @@ PR 6's walled organisation (``test_isolation_access_views._walled``): Finance is
 * A file restored after its folder was deleted goes into its private folder while that is live,
   else is held for the restorer (Q1); with no private folder, the top of its department while that
   is live, else held (Q2); in no department and no private folder, no folder as before.
+* A held file linked as a new version and then undone is held again for the same person (Q4: an
+  Undo that holds it for someone else is the holder's or Management's); one whose folder is gone
+  goes no wider than while it was linked.
 * A folder deleted with its contents kept is refused when what it holds would be seen by other
   people where it goes (Q5).
 * A folder restored with its folder gone goes under the private folder or department it was in,
@@ -25,7 +28,7 @@ from kaagaz.db import trash
 from kaagaz.db.engine import Database
 from tests.db_support import insert_document, insert_folder, new_customer
 from tests.test_api_support import CSRF, Api, Signed
-from tests.test_isolation_access_views import _DEPARTMENTS, Org, _app, _seen, _walled
+from tests.test_isolation_access_views import _DEPARTMENTS, _SUGGEST, Org, _app, _seen, _walled
 from tests.test_isolation_pr7_review import _private
 from tests.test_migration_0085_db import _differences
 from tests.test_operator_auth_db import _owner
@@ -102,10 +105,12 @@ def test_a_file_whose_folder_went_comes_back_at_the_top_of_its_live_department(d
     assert _differences(db, org.c) == []
 
 
+@pytest.mark.parametrize("department", ["deleted", "in Trash"])
 def test_a_file_whose_department_went_too_is_held_for_the_restorer_even_when_it_was_open(
-    db: Database,
+    db: Database, department: str
 ) -> None:
-    """Q2: Legal was open. Its file is held: the restorer and Management see it, nobody else."""
+    """Q2: Legal was open. Its file is held: the restorer and Management see it, nobody else. A
+    department in Trash is not live either."""
     api = Api(db)
     org = _walled(api)
     member = org.people["member"]
@@ -114,7 +119,10 @@ def test_a_file_whose_department_went_too_is_held_for_the_restorer_even_when_it_
     brief = api.add_document(org.c, name="brief.pdf", folder_id=briefs, uploaded_by=member.user_id)
     _bin(member, brief)
     _gone(org, briefs)
-    _gone(org, legal)
+    if department == "deleted":
+        _gone(org, legal)
+    else:
+        _trash_folder(org, legal)
     before = _version(db, org)
 
     assert _back(member, brief) == {"held": True, "folder": None}
@@ -241,6 +249,78 @@ def test_a_restore_reads_whether_the_department_is_live_only_under_the_tree_lock
     assert replies[0].status_code == 200, replies[0].text
     assert replies[0].json()["placed"] == {"held": True, "folder": None}
     assert _where(db, brief) == (None, member.user_id)
+
+
+# --- path 2: a held file linked as a new version, then undone ----------------------------------
+
+
+def _link(db: Database, org: Org, new: str, family: str, signed: Signed) -> None:
+    suggestion = str(_owner(db, _SUGGEST, {"c": org.c, "d": new, "f": family})[0][0])
+    reply = signed.client.post(f"/api/version-suggestions/{suggestion}/accept", headers=CSRF)
+    assert reply.status_code == 200, reply.text
+
+
+def _undo(signed: Signed, document: str) -> httpx.Response:
+    reply: httpx.Response = signed.client.post(f"/api/documents/{document}/version-undo", headers=CSRF)
+    return reply
+
+
+def test_a_held_file_linked_then_undone_is_held_again_for_the_same_person(db: Database) -> None:
+    """``held.pdf`` is held for ``member``; linked into Sales (open) it is in Sales. Its Undo by
+    the plain reviewer (who sees it in Sales) would hold it for another: 403, nothing changed.
+    Management's Undo holds it for ``member`` again, not for Management."""
+    api = Api(db)
+    org = _walled(api)
+    held, member = org.files["held"], org.people["member"]
+    _link(db, org, held, org.files["sales"], member)
+    assert _where(db, held) == (org.folders["sales"], None)
+    kept = "SELECT previous_held_for FROM version_suggestions WHERE document_id = :d"
+    assert [str(r[0]) for r in _owner(db, kept, {"d": held})] == [member.user_id]
+
+    refused = _undo(org.people["plain"], held)
+    assert (refused.status_code, refused.json()["error"]["code"]) == (403, "forbidden"), refused.text
+    assert _where(db, held) == (org.folders["sales"], None)
+
+    assert _undo(org.people["management"], held).status_code == 200
+    assert _where(db, held) == (None, member.user_id)
+    assert _sees(db, org, held, "member", "management", "plain", "head") == {"member", "management"}
+    assert _differences(db, org.c) == []
+
+
+def test_a_file_in_no_folder_held_for_nobody_linked_then_undone_is_open_as_before(db: Database) -> None:
+    api = Api(db)
+    org = _walled(api)
+    top, admin = org.files["top"], org.people["admin"]
+    _link(db, org, top, org.files["sales"], admin)
+
+    assert _undo(org.people["plain"], top).status_code == 200
+
+    assert _where(db, top) == (None, None)
+    assert _sees(db, org, top, "plain", "member") == {"plain", "member"}
+
+
+def test_an_undo_whose_folder_is_gone_goes_no_wider_than_the_family_it_leaves(db: Database) -> None:
+    """Inbox (open) is deleted after its files were linked. Into Budgets (in Finance, Department
+    only), the Undo puts it at the top of Finance; into Sales (open), in no folder, as before."""
+    api = Api(db)
+    org = _walled(api)
+    member = org.people["member"]
+    inbox = api.add_folder(org.c, member.user_id, "Inbox")
+    budgets = api.add_folder(org.c, member.user_id, "Budgets", org.folders["finance"])
+    family = api.add_document(org.c, name="plan.pdf", folder_id=budgets, uploaded_by=member.user_id)
+    walled = api.add_document(org.c, name="plan2.pdf", folder_id=inbox, uploaded_by=member.user_id)
+    open_one = api.add_document(org.c, name="sales2.pdf", folder_id=inbox, uploaded_by=member.user_id)
+    _link(db, org, walled, family, member)
+    _link(db, org, open_one, org.files["sales"], member)
+    _gone(org, inbox)
+
+    for document in (walled, open_one):
+        assert _undo(member, document).status_code == 200
+
+    assert _where(db, walled) == (org.folders["finance"], None)
+    assert _sees(db, org, walled, "member", "plain") == {"member"}
+    assert _where(db, open_one) == (None, None)
+    assert _differences(db, org.c) == []
 
 
 # --- path 3: a folder deleted with its contents kept ---------------------------------------------
