@@ -21,6 +21,9 @@ Why some choices:
   (``kaagaz.db.trashed_folders``).
 * A refused change raises out of the ``with`` block, so its transaction rolls
   back, audit row included.
+* **Who can see what** (PRD 7, #599): a folder the person can't see, live or in Trash, answers
+  exactly as one that never was, checked before the tree lock is taken (``_seen``). The tree and
+  the counts hold only what they may see; an Admin's delete dialog reads the true totals.
 """
 
 import uuid
@@ -39,7 +42,7 @@ from kaagaz.api.errors import ApiError
 from kaagaz.api.names import FOLDER_NAME_MAX, clean_name
 from kaagaz.api.routers.documents import ActivityCursor, ActivityLimit
 from kaagaz.api.views import folder, timeline, trashed_folder, uploaded_every_version
-from kaagaz.db import audit
+from kaagaz.db import audit, listing
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import trashed_folders as trashed_sql
 
@@ -85,6 +88,14 @@ def _refused() -> Iterator[None]:
         raise ApiError(404 if error.code == "not_found" else 409, error.code) from None
 
 
+def _seen(conn: Connection, user: CurrentUser, *folder_ids: str | None) -> None:
+    """PRD 7 (#599): each folder named is one the person may see, else FolderNotFound, as for a
+    folder that isn't there. A plain read, before any lock."""
+    asked = {folder for folder in folder_ids if folder is not None}
+    if asked and len(listing.folders_seen(conn, user.customer_id, sorted(asked))) < len(asked):
+        raise folders_sql.FolderNotFound()
+
+
 def _name(name: str | None) -> str:
     cleaned = clean_name(name or "", max_length=FOLDER_NAME_MAX)
     if cleaned is None:
@@ -123,6 +134,7 @@ def create_folder(body: NewFolderBody, user: User, context: Context) -> dict[str
     _admin_for_departments(user, body.kind)
     parent_id = None if body.parent_id is None else str(body.parent_id)
     with _refused(), context.db.user(user.customer_id, user.user_id) as conn:
+        _seen(conn, user, parent_id)
         row = folders_sql.create_folder(
             conn,
             user.customer_id,
@@ -147,6 +159,7 @@ def update_folder(
     target = str(folder_id)
     parent_id = None if body.parent_id is None else str(body.parent_id)
     with _refused(), context.db.user(user.customer_id, user.user_id) as conn:
+        _seen(conn, user, target, parent_id if "parent_id" in given else None)
         path = folders_sql.folder_path(conn, user.customer_id, target)
         if not path:
             raise folders_sql.FolderNotFound()
@@ -175,9 +188,12 @@ def update_folder(
 @router.get("/folders/{folder_id}/summary")
 def get_folder_summary(folder_id: uuid.UUID, user: User, context: Context) -> dict[str, int]:
     """#537: ``{files, folders, bytes}`` the folder holds at every depth (live files only), so
-    the Delete dialog can say it before anything is pressed. Another customer's folder is 404."""
+    the Delete dialog can say it before anything is pressed. Another customer's folder is 404.
+    PRD 7 (#599): what the person may see (a hidden folder is 404); an Admin, the true totals."""
     with _refused(), context.db.user(user.customer_id, user.user_id) as conn:
-        held = folders_sql.folder_summary(conn, user.customer_id, str(folder_id))
+        held = folders_sql.folder_summary(
+            conn, user.customer_id, str(folder_id), seen_only=user.role != "admin"
+        )
     return {"files": held.files, "folders": held.folders, "bytes": held.bytes}
 
 
@@ -200,6 +216,7 @@ def delete_folder(
         raise ApiError(400, "bad_request", "Choose where things go only when moving them.")
     target = str(folder_id)
     with _refused(), context.db.user(user.customer_id, user.user_id) as conn:
+        _seen(conn, user, target)
         path = folders_sql.folder_path(conn, user.customer_id, target)
         _admin_for_departments(user, path[-1].kind if path else None)
         if contents is None:
@@ -290,16 +307,21 @@ def restore_trashed_folder(folder_id: uuid.UUID, user: User, context: Context) -
         except folders_sql.FolderNameTaken:
             raise ApiError(409, "folder_names_taken", NAMES_TAKEN) from None
         _audit(conn, user, "folder.restore", target, trashed_sql.audit_details(restored))
+        # PRD 7 (#599): its place and what came back with it, as the person may see them. The
+        # folder itself they can see: it was their item of Trash.
+        shown = trashed_sql.as_seen(conn, user.customer_id, restored) or restored
     return {
-        "folder": folder(restored.folder),
-        "location": list(restored.location),
-        "renamed": restored.renamed,
-        "relocated": restored.relocated,
-        "files": restored.files,
-        "folders": restored.folders,
+        "folder": folder(shown.folder),
+        "location": None if shown.location is None else list(shown.location),
+        "renamed": shown.renamed,
+        "relocated": shown.relocated,
+        "files": shown.files,
+        "folders": shown.folders,
     }
 
 
+# PRD 7 section 5: a folder holding anything the person can't see needs an Admin.
+HIDDEN_INSIDE = "You can't delete this folder. Ask an admin."
 # A12 (stability pass, 7 Nov 2026): the files one delete forever request deletes at most.
 FOREVER_FAMILIES = 200
 
@@ -315,9 +337,16 @@ def delete_trashed_folder_forever(folder_id: uuid.UUID, user: CanDeleteForever, 
     Delete forever's own rule (``require_delete_forever``), and its audit marks (``by_grant``,
     ``by_password``); each request writes one row with the files it deleted: ``finished: false``
     while files are left (or it stopped part way), the folders too on the last. Another
-    customer's is 404."""
+    customer's is 404. PRD 7 (#599): one the person can't see is 404 too, and one holding a folder
+    or a file they can't see is deleted forever by an Admin only (403)."""
     target, customer_id = str(folder_id), user.customer_id
     with context.db.user(customer_id, user.user_id) as conn:
+        try:
+            item = trashed_sql.one(conn, customer_id, target)
+        except folders_sql.FolderNotFound:
+            raise ApiError(404, "not_found") from None
+        if item.hidden_inside and user.role != "admin":
+            raise ApiError(403, "forbidden", HIDDEN_INSIDE)
         found = trashed_sql.families_in(conn, customer_id, target)
     if found is None:
         raise ApiError(404, "not_found")
@@ -369,7 +398,8 @@ def get_folder_activity(
     and every folder below it, newest first (document, version and folder actions only).
     Another customer's folder, or none, is 404."""
     with context.db.user(user.customer_id, user.user_id) as conn:
-        subtree = folders_sql.descendant_ids(conn, user.customer_id, str(folder_id))
+        seen = listing.folders_seen(conn, user.customer_id, [str(folder_id)])  # PRD 7 (#599)
+        subtree = folders_sql.descendant_ids(conn, user.customer_id, str(folder_id)) if seen else []
         if not subtree:
             raise ApiError(404, "not_found")
         filters = audit.Filters(folder_ids=tuple(subtree))

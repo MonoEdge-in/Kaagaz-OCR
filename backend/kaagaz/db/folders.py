@@ -139,9 +139,12 @@ class DepartmentNotTopLevel(FolderError):
 
 _LOCK_TREE = "SELECT 1 FROM customers WHERE id = :c FOR NO KEY UPDATE"
 
+# PRD 7 (#599): only the folders the person may see; one whose parent they can't see is at the top
+# level for them, so no hidden folder's id reaches the tree.
 _LIST = (
-    "SELECT id, parent_id, name, created_at, kind, sort_order FROM folders WHERE customer_id = :c"
-    " ORDER BY lower(name), id"
+    "SELECT f.id, p.id AS parent_id, f.name, f.created_at, f.kind, f.sort_order FROM visible_folders f"
+    " LEFT JOIN visible_folders p ON p.customer_id = f.customer_id AND p.id = f.parent_id"
+    " WHERE f.customer_id = :c ORDER BY lower(f.name), f.id"
 )
 
 _INSERT = (
@@ -254,6 +257,12 @@ _SUMMARY = (
     " AND d.deleted_at IS NULL AND d.folder_id IN (SELECT id FROM down))"
     " SELECT (SELECT count(*) FROM down), (SELECT count(DISTINCT family_id) FROM live),"
     " (SELECT coalesce(sum(size_bytes), 0) FROM live)"
+)
+# PRD 7 (#599): the same, of what the person may see: a hidden folder is not there (0 folders), and
+# its files and the hidden ones inside a visible folder are not counted. An Admin's delete dialog
+# reads the true totals (_SUMMARY, PRD 7 section 5).
+_SUMMARY_SEEN = _SUMMARY.replace(" folders f", " visible_folders f").replace(
+    " documents d", " visible_documents d"
 )
 # A folder upload (a zip the worker unpacks too) whose plan holds one of :ids, that still has a
 # file waiting, and that planned, registered or sent something since :since: the uploads with
@@ -444,10 +453,14 @@ def delete_folder(conn: Connection, customer_id: str, folder_id: str) -> None:
     prune_empty(conn, customer_id, [None if deleted[1] is None else str(deleted[1])])
 
 
-def folder_summary(conn: Connection, customer_id: str, folder_id: str) -> FolderSummary:
-    """What the folder holds at every depth (FolderSummary). Raises FolderNotFound.
+def folder_summary(
+    conn: Connection, customer_id: str, folder_id: str, *, seen_only: bool = False
+) -> FolderSummary:
+    """What the folder holds at every depth (FolderSummary); with ``seen_only`` only what the
+    person may see (PRD 7). Raises FolderNotFound (with ``seen_only`` a hidden folder too).
     One statement, O(s log F + n log D) for the s folders and n documents of its subtree."""
-    count, files, size = conn.execute(text(_SUMMARY), {"c": customer_id, "f": folder_id}).one()
+    statement = _SUMMARY_SEEN if seen_only else _SUMMARY
+    count, files, size = conn.execute(text(statement), {"c": customer_id, "f": folder_id}).one()
     if not count:
         raise FolderNotFound()
     return FolderSummary(files=int(files), folders=int(count) - 1, bytes=int(size))

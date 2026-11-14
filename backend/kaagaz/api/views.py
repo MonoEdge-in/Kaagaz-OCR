@@ -6,6 +6,7 @@ named after the type it builds, so a reviewer can hold the two side by side.
 
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
@@ -15,7 +16,7 @@ from sqlalchemy import Connection, RowMapping
 from kaagaz.answering.clarify import without_resume
 from kaagaz.answering.hard_to_read import FlaggedPage, not_found_note
 from kaagaz.api.auth import CurrentUser, needs_google_link
-from kaagaz.db import audit, word_review
+from kaagaz.db import audit, listing, word_review
 from kaagaz.db import ensemble as ensemble_sql
 from kaagaz.db.folder_upload_items import ItemRow
 from kaagaz.db.folders import FolderRow
@@ -577,9 +578,30 @@ def trashed_folder(row: TrashedFolder, user: CurrentUser) -> dict[str, Any]:
     }
 
 
+def seen_items(conn: Connection, customer_id: str, rows: Sequence[ItemRow]) -> list[ItemRow]:
+    """PRD 7 (#599): the items as the person may see them: an item whose document they can't see
+    (a copy of a hidden file) names no document, only that it is hidden. One statement."""
+    ids = [row.document_id for row in rows if row.document_id is not None]
+    seen = listing.documents_seen(conn, customer_id, ids) if ids else set()
+    return [
+        row
+        if row.document_id is None or row.document_id in seen
+        else replace(
+            row,
+            document_id=None,
+            document_status=None,
+            document_failure_code=None,
+            document_folder_id=None,
+            in_trash=False,
+            hidden=True,
+        )
+        for row in rows
+    ]
+
+
 def folder_upload_item(row: ItemRow) -> dict[str, Any]:
     """``FolderUploadItem`` (#484): the item, and its document's state (null with none, or one
-    deleted for good)."""
+    deleted for good). PRD 7: ``hidden`` for a copy of a file the person can't see."""
     document = None
     if row.document_status is not None:
         document = {
@@ -599,6 +621,7 @@ def folder_upload_item(row: ItemRow) -> dict[str, Any]:
         "failure_code": row.failure_code,
         "document_id": row.document_id,
         "document": document,
+        "hidden": row.hidden,
     }
 
 

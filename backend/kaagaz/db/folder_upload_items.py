@@ -81,6 +81,7 @@ class ItemRow:
     document_failure_code: str | None
     document_folder_id: str | None
     in_trash: bool
+    hidden: bool = False  # PRD 7 (#599): its document is one the person can't see (a hidden copy)
 
 
 @dataclass(frozen=True, slots=True)

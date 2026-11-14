@@ -159,9 +159,9 @@ _LIST = (
     " WHERE d.customer_id = :c AND d.deleted_at IS NULL AND d.is_current"
 )
 
-# The same, in Trash (trashed=true).
+# The same, in Trash (trashed=true). PRD 7 (#599): what the person may see, as the list.
 _TRASH_LIST = (
-    " FROM documents d"
+    " FROM visible_documents d"
     " LEFT JOIN users u ON u.customer_id = d.customer_id AND u.id = d.uploaded_by"
     " WHERE d.customer_id = :c AND d.deleted_at IS NOT NULL AND d.is_current"
 )
@@ -183,8 +183,13 @@ _FILTERS = (
 )
 
 _TOP_LEVEL = " AND d.folder_id IS NULL"
-# #542: Trash's loose files, not those inside a folder in Trash; or one such folder's files.
-_LOOSE_IN_TRASH = " AND d.trashed_folder_id IS NULL"
+# #542: Trash's loose files, not those inside a folder in Trash; or one such folder's files. PRD 7
+# (#599): a file inside a folder in Trash the person can't see is loose for them (a file given to
+# them alone), so it is never out of reach.
+_LOOSE_IN_TRASH = (
+    " AND (d.trashed_folder_id IS NULL OR NOT EXISTS (SELECT 1 FROM visible_trashed_folders tf"
+    " WHERE tf.customer_id = :c AND tf.id = d.trashed_folder_id))"
+)
 _IN_TRASHED_FOLDER = " AND d.trashed_folder_id = CAST(:trashed_folder AS uuid)"
 _IN_FOLDERS = " AND d.folder_id = ANY(CAST(:folders AS uuid[]))"
 # Every tag must match: the documents holding all :tag_count distinct tags asked for.
@@ -461,6 +466,18 @@ def folders_seen(conn: Connection, customer_id: str, folder_ids: Sequence[str]) 
     """Which of ``folder_ids`` the person may see (PRD 7, #595): a path or a folder filter
     never names one they can't. One statement on the folders' key."""
     return {str(row[0]) for row in conn.execute(_FOLDERS_SEEN, {"c": customer_id, "ids": list(folder_ids)})}
+
+
+_DOCUMENTS_SEEN = text(
+    "SELECT id FROM visible_documents WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
+)
+
+
+def documents_seen(conn: Connection, customer_id: str, document_ids: Sequence[str]) -> set[str]:
+    """Which of ``document_ids`` the person may see (PRD 7, #599): a duplicate upload or a stored
+    reply never names one they can't. One statement on the documents' key."""
+    found = conn.execute(_DOCUMENTS_SEEN, {"c": customer_id, "ids": list(document_ids)})
+    return {str(row[0]) for row in found}
 
 
 def get_document(conn: Connection, customer_id: str, document_id: str) -> RowMapping | None:

@@ -74,6 +74,7 @@ export function rowKind(entry: Pick<UploadEntry, "state">): RowKind {
     case "error":
       return "failed";
     case "duplicate":
+    case "elsewhere":
     case "restoring":
     case "restored":
       return "already";

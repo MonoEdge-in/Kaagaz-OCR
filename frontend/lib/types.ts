@@ -473,7 +473,7 @@ export type FolderBack = Omit<FolderRestored, "files" | "folders">;
 /** #542: a restored folder, where it went ([] the top level), and why it is not as it was. */
 export interface FolderRestored {
   folder: Folder;
-  location: string[];
+  location: string[] | null; // PRD 7: null when a folder on its path is one you can't see
   renamed: boolean; // a folder there had its name: it is "Name (2)" now
   relocated: boolean; // its folder no longer exists: it is at the top level
   files: number;
@@ -768,6 +768,7 @@ export interface FolderUploadItem {
     folder_id: string | null;
     in_trash: boolean;
   } | null;
+  hidden?: boolean; // PRD 7 (#599): a copy of a file this person can't see; document_id and document are null
 }
 
 /** GET /folder-uploads/previous: this person's latest upload of a folder of that name whose folder is still there. */
@@ -827,11 +828,15 @@ export interface UploadReader {
   default?: boolean; // a model: the organisation's default scan model (MS4, R14); Auto has none
 }
 
-export interface UploadResult {
-  document: DocumentSummary;
-  duplicate: boolean;
-  in_trash: boolean; // a duplicate of a document that is in Trash
-}
+export type UploadResult =
+  | {
+      document: DocumentSummary;
+      duplicate: boolean;
+      in_trash: boolean; // a duplicate of a document that is in Trash
+      hidden?: false;
+    }
+  // PRD 7 (#599): the file is already in Kaagaz, in a place this person can't see. Nothing more.
+  | { document: null; duplicate: true; in_trash: false; hidden: true };
 
 export interface SheetCells {
   page_no: number;

@@ -46,8 +46,8 @@ from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import DOCUMENT_NAME_MAX, FOLDER_NAME_MAX, shown_upload_name, upload_name
 from kaagaz.api.routers.documents import same_user, storage_full, user_upload_policy
-from kaagaz.api.views import folder_upload_item, held_message, iso
-from kaagaz.db import audit
+from kaagaz.api.views import folder_upload_item, held_message, iso, seen_items
+from kaagaz.db import audit, listing
 from kaagaz.db import folder_upload_items as items_sql
 from kaagaz.db.folder_upload_items import NewItem, Summary
 from kaagaz.db.folder_uploads import (
@@ -61,7 +61,7 @@ from kaagaz.db.folder_uploads import (
     effective_limits,
     plan_folders,
 )
-from kaagaz.db.folders import MAX_DEPTH, FolderError
+from kaagaz.db.folders import MAX_DEPTH, FolderError, FolderNotFound
 from kaagaz.db.storage_limits import storage_room
 
 router = APIRouter()
@@ -180,6 +180,8 @@ def _plan(context: AppContext, user: CurrentUser, body: PlanBody) -> dict[str, A
                 )
                 if room.used_bytes + unsent > room.limit_bytes:
                     raise storage_full(room)
+            if parent is not None and not listing.folders_seen(conn, customer_id, [parent]):
+                raise FolderNotFound()  # PRD 7 (#599): a folder the person can't see isn't there
             plan = _plan_and_audit(conn, user, body, folders, parent, limits)
     except FolderError as refused:  # out of the block first: the plan is rolled back
         if refused.code == "not_found":
@@ -290,6 +292,7 @@ def _register(
         except items_sql.ItemsRefused as refused:
             status = {"not_found": 404, "bad_request": 400}.get(refused.code, 409)
             raise ApiError(status, refused.code, _words(refused.code, limits) or None) from None
+        rows = seen_items(conn, customer_id, rows)  # PRD 7 (#599): a hidden copy names no document
     return {"items": [folder_upload_item(row) for row in rows]}
 
 
@@ -351,6 +354,7 @@ def list_folder_upload_items(
         rows = items_sql.list_items(
             conn, customer_id, str(upload_id), view=view, after_seq=after, limit=limit
         )
+        rows = seen_items(conn, customer_id, rows)  # PRD 7 (#599): a hidden copy names no document
     return {
         "items": [folder_upload_item(row) for row in rows],
         "next_after": rows[-1].seq if len(rows) == limit else None,

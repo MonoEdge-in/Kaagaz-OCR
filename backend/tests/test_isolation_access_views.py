@@ -322,17 +322,28 @@ def test_day_one_never_runs_the_given_or_lock_lookups(db: Database) -> None:
 # still run as kaagaz_app with no person on a server, and would see nothing). A new one belongs here
 # only once its callers are checked.
 VIEW_READERS = {
-    "db/audit.py": {"_OF_FAMILY", "_SEEN", "_FOLDER_PATHS"},
+    "db/audit.py": {"_FOLDER_PATHS", "_OF_FAMILY", "_SEEN"},
     "db/chat.py": {"_DOCUMENT_QUESTIONS", "add_pin"},
     "db/document_stories.py": {"_DELETE"},
+    "db/folders.py": {"_LIST", "_SUMMARY_SEEN"},
     "db/listing.py": {
-        "_LAST_UPLOAD", "_LAST_UPLOADER", "_FILE_COLUMNS", "_COLUMNS", "_SELECT", "_LIST", "_VERSIONS",
-        "_OUTSIDE_DEPARTMENTS", "_BATCH", "document_facts", "_LINKS", "_WORD_LINES", "_DASHBOARD_TILES",
-        "_DASHBOARD_TYPES", "_DASHBOARD_DEPARTMENTS", "_DASHBOARD_RECENT", "_FOLDERS_SEEN",
+        "_BATCH", "_COLUMNS", "_DASHBOARD_DEPARTMENTS", "_DASHBOARD_RECENT",
+        "_DASHBOARD_TILES", "_DASHBOARD_TYPES", "_DOCUMENTS_SEEN", "_FILE_COLUMNS", "_FOLDERS_SEEN",
+        "_HAS_NEWER", "_LAST_UPLOAD", "_LAST_UPLOADER", "_LINKS", "_LIST", "_LOOSE_IN_TRASH",
+        "_OUTSIDE_DEPARTMENTS", "_SELECT", "_TRASH_LIST", "_VERSIONS", "_WORD_LINES", "document_facts",
     },
-    "db/versions.py": {"_LIVE", "_CANDIDATE", "_VIEW", "_ALLOWED"},
+    "db/trashed_folders.py": {
+        "_CHILD_ITEMS", "_EXISTS", "_HELD", "_ONE_ITEM", "_PATHS", "_SEEN", "_SEEN_RESTORE", "_TOP_ITEMS",
+    },
+    "db/versions.py": {"_ALLOWED", "_CANDIDATE", "_FOR_DOCUMENT", "_IN_BATCH", "_LIVE", "_VIEW"},
     "db/visibility.py": {"LIVE_SUGGESTION"},
 }  # fmt: skip
+
+
+# Changed on purpose (#599): the trashed folders' view (0087), and visibility.py's fragments that
+# read a view, named in a statement rather than written in it.
+_VIEWS = ("visible_documents", "visible_folders", "visible_trashed_folders")
+_FRAGMENTS = {"LIVE_SUGGESTION", "SEEN_DOCUMENT"}
 
 
 def test_only_the_reviewed_statements_read_a_view() -> None:
@@ -346,7 +357,8 @@ def test_only_the_reviewed_statements_read_a_view() -> None:
             texts = [
                 n.value for n in ast.walk(node) if isinstance(n, ast.Constant) and isinstance(n.value, str)
             ]
-            if names and any("visible_documents" in t or "visible_folders" in t for t in texts):
+            named = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+            if names and (any(view in t for t in texts for view in _VIEWS) or named & _FRAGMENTS):
                 found.setdefault(path.relative_to(root).as_posix(), set()).update(names)
     assert found == VIEW_READERS
 
@@ -755,7 +767,7 @@ def test_no_module_outside_the_api_calls_a_function_that_reads_a_view() -> None:
     root = Path(kaagaz.__file__).parent
     readers: dict[str, set[str]] = {}
     for file, names in VIEW_READERS.items():
-        tree, tainted = ast.parse((root / file).read_text(encoding="utf-8")), set(names) | {"LIVE_SUGGESTION"}
+        tree, tainted = ast.parse((root / file).read_text(encoding="utf-8")), set(names) | _FRAGMENTS
         for _ in range(len(tree.body)):  # until nothing new is tainted
             for node in tree.body:
                 name = getattr(node, "name", None) or next(

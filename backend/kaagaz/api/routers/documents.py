@@ -179,6 +179,7 @@ from kaagaz.api.views import (
     iso,
     page_readings,
     page_summary,
+    seen_items,
     timeline,
 )
 from kaagaz.api.views import (
@@ -652,6 +653,8 @@ def _department(context: AppContext, user: CurrentUser, department_id: str) -> s
     further (``db/autofile.py``)."""
     with context.db.user(user.customer_id, user.user_id) as conn:
         path = folders_sql.folder_path(conn, user.customer_id, department_id)
+        if not listing.folders_seen(conn, user.customer_id, [department_id]):  # PRD 7 (#599)
+            path = []
     if len(path) != 1 or path[0].kind != "department":
         raise ApiError(404, "not_found")
     return department_id
@@ -665,9 +668,24 @@ def _accept(
     folder_id: str | None,
     batch_id: str | None,
     asked: _Asked,
-    item: ItemRow | None = None,
 ) -> dict[str, Any]:
-    """``item``: a folder upload's file (#484, module notes), in its folder and batch."""
+    """An upload's file stored (``_store``), and its reply."""
+    result, reading = _store(context, user, upload, policy, folder_id, batch_id, asked)
+    return _upload_reply(context, user, result, action="document.upload", details=reading.details() or None)
+
+
+def _store(
+    context: AppContext,
+    user: CurrentUser,
+    upload: UploadFile,
+    policy: UploadPolicy,
+    folder_id: str | None,
+    batch_id: str | None,
+    asked: _Asked,
+    item: ItemRow | None = None,
+) -> tuple[UploadResult, ReadingChoice]:
+    """The file stored, or refused before anything is. ``item``: a folder upload's file (#484,
+    module notes), in its folder and batch."""
     customer_id, cap = user.customer_id, context.settings.max_files_per_batch
     reading = ReadingChoice(SINGLE)  # keyless, nothing asked: read as before, no query
     if (
@@ -678,7 +696,8 @@ def _accept(
     ):
         with context.db.user(customer_id, user.user_id) as conn:
             reading = _checked_reading(conn, user, context.settings, asked)  # before anything is stored
-            if folder_id is not None and not folders_sql.folder_path(conn, customer_id, folder_id):
+            # PRD 7 (#599): a folder the person can't see is one that isn't there.
+            if folder_id is not None and not listing.folders_seen(conn, customer_id, [folder_id]):
                 if item is not None:
                     raise ApiError(409, "folder_gone", _FOLDER_GONE)
                 raise ApiError(404, "not_found")  # before anything is stored or queued
@@ -707,7 +726,7 @@ def _accept(
         if item is not None:
             raise ApiError(409, "folder_gone", _FOLDER_GONE) from None
         raise ApiError(404, "not_found") from None
-    return _upload_reply(context, user, result, action="document.upload", details=reading.details() or None)
+    return result, reading
 
 
 def _upload_reply(
@@ -734,6 +753,8 @@ def _upload_reply(
             )
         row = listing.get_document(conn, customer_id, result.document_id)
         tags = tags_sql.tags_for_documents(conn, customer_id, [result.document_id])
+    if row is None and result.duplicate:  # PRD 7 (#599): a copy of a file the person can't see
+        return dict(HIDDEN_COPY)
     if row is None:  # deleted in the moment since; nothing to show
         raise ApiError(404, "not_found")
     summary = document_summary(
@@ -747,6 +768,10 @@ def _upload_reply(
     return {"document": summary, "duplicate": result.duplicate, "in_trash": in_trash}
 
 
+# PRD 7 section 5 (#599): the file is already in Kaagaz, where the uploader can't see it. No
+# name, no place, no link; the screen says "This file is already in Kaagaz, in a place you can't
+# see. Ask your admin if you need it."
+HIDDEN_COPY: dict[str, Any] = {"document": None, "duplicate": True, "in_trash": False, "hidden": True}
 _FOLDER_GONE = "The folder this file was meant for was deleted after the upload started."
 _SIZE_CHANGED = "This file changed after you chose the folder. Choose the folder again with Continue upload."
 _OWN_PLACE = "A folder upload's file goes to the folder it was registered for."
@@ -776,7 +801,7 @@ def _fail_if_folder_gone(context: AppContext, user: CurrentUser, item: ItemRow) 
     reply is 409: it never lands at the top level. One transaction."""
     customer_id = user.customer_id
     with context.db.user(customer_id, user.user_id) as conn:
-        gone = not folders_sql.folder_path(conn, customer_id, item.folder_id)
+        gone = not listing.folders_seen(conn, customer_id, [item.folder_id])  # PRD 7: hidden is gone
         if gone:
             items_sql.fail_item(conn, customer_id, item.id, "folder_gone")
     if gone:
@@ -795,21 +820,26 @@ def _send_slot(context: AppContext, user: CurrentUser) -> AbstractContextManager
 
 
 def _item_reply(context: AppContext, user: CurrentUser, item: ItemRow) -> dict[str, Any]:
-    """#484: the reply for an item already in (stored or duplicate), nothing stored again."""
+    """#484: the reply for an item already in (stored or duplicate), nothing stored again. PRD 7
+    (#599): one whose document the person can't see names none."""
     customer_id, document, in_trash = user.customer_id, None, False
-    if item.document_id is not None:
-        with context.db.user(customer_id, user.user_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
+        (item,) = seen_items(conn, customer_id, [item])
+        if item.document_id is not None:
             row = listing.get_document(conn, customer_id, item.document_id)
             tags = tags_sql.tags_for_documents(conn, customer_id, [item.document_id])
-        if row is not None:
-            now, pages = context.clock(), context.settings.max_pages
-            document = document_summary(row, max_pages=pages, tags=tags[item.document_id], user=user, now=now)
-            in_trash = row["deleted_at"] is not None
+            if row is not None:
+                now, pages = context.clock(), context.settings.max_pages
+                document = document_summary(
+                    row, max_pages=pages, tags=tags[item.document_id], user=user, now=now
+                )
+                in_trash = row["deleted_at"] is not None
     duplicate = item.state == "duplicate"
     return {
         "document": document,
         "duplicate": duplicate,
         "in_trash": in_trash,
+        **({"hidden": True} if item.hidden else {}),
         "item": folder_upload_item(item),
     }
 
@@ -826,7 +856,11 @@ def _accept_item(
     the file's refusal). Duplicate is the item's own state."""
     customer_id = user.customer_id
     try:
-        body = _accept(context, user, upload, policy, item.folder_id, item.batch_id, asked, item=item)
+        result, reading = _store(
+            context, user, upload, policy, item.folder_id, item.batch_id, asked, item=item
+        )
+        details = reading.details() or None
+        body = _upload_reply(context, user, result, action="document.upload", details=details)
     except ApiError as refused:
         if refused.code in items_sql.FAILURE_CODES:
             with context.db.user(customer_id, user.user_id) as conn:
@@ -837,11 +871,13 @@ def _accept_item(
             conn,
             customer_id,
             item.id,
-            document_id=body["document"]["id"],
+            document_id=result.document_id,
             duplicate=body["duplicate"],
             user_id=user.user_id,
         )
         done = items_sql.item(conn, customer_id, item.id, user_id=user.user_id)
+        if done is not None:
+            (done,) = seen_items(conn, customer_id, [done])
     if done is None:  # its customer was deleted meanwhile
         raise ApiError(404, "not_found")
     return {**body, "duplicate": done.state == "duplicate", "item": folder_upload_item(done)}
@@ -1029,7 +1065,7 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
             raise ApiError(404, "not_found")
         done = cast(dict[str, Any], row["metadata"]).get("completed")
         if done is not None:  # a Retry after a lost reply: its stored reply (review of #564)
-            return cast(dict[str, Any], done)
+            return _checked_again(context, user, cast(dict[str, Any], done))
         return {"id": session_id, "part_size": _UPLOAD_PART_BYTES, "part_count": count}
 
     folder_id = _form_uuid(body.folder_id) if item is None else item.folder_id
@@ -1058,8 +1094,8 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
     ):
         with context.db.user(user.customer_id, user.user_id) as conn:
             _checked_reading(conn, user, context.settings, asked)
-            if folder_id is not None and not folders_sql.folder_path(conn, user.customer_id, folder_id):
-                raise ApiError(404, "not_found")
+            if folder_id is not None and not listing.folders_seen(conn, user.customer_id, [folder_id]):
+                raise ApiError(404, "not_found")  # PRD 7 (#599): hidden is missing
             if (
                 batch_id is not None
                 and item is None
@@ -1145,7 +1181,7 @@ def complete_resumable_upload(session_id: uuid.UUID, user: User, context: Contex
         raise ApiError(404, "not_found")
     metadata = cast(dict[str, Any], session["metadata"])
     if metadata.get("completed") is not None:  # sent again after a lost reply (production QA T1)
-        return JSONResponse(metadata["completed"], status_code=200)
+        return JSONResponse(_checked_again(context, user, metadata["completed"]), status_code=200)
     customer_id, user_id, key = user.customer_id, user.user_id, str(session_id)
     with context.db.user(customer_id, user.user_id) as conn:
         claimed = upload_sessions_sql.claim(conn, customer_id, user_id, key)
@@ -1154,7 +1190,7 @@ def complete_resumable_upload(session_id: uuid.UUID, user: User, context: Contex
     if not claimed:
         done = None if latest is None else cast(dict[str, Any], latest["metadata"]).get("completed")
         if done is not None:
-            return JSONResponse(done, status_code=200)
+            return JSONResponse(_checked_again(context, user, done), status_code=200)
         raise ApiError(429, "rate_limited", _STILL_STORING, headers={"Retry-After": "2"})
     try:
         result, status = _store_completed(context, user, session_id, session, metadata)
@@ -1172,6 +1208,21 @@ def complete_resumable_upload(session_id: uuid.UUID, user: User, context: Contex
 
 
 _STILL_STORING = "This file is still being saved. It is checked again in a moment."
+
+
+def _checked_again(context: AppContext, user: CurrentUser, reply: dict[str, Any]) -> dict[str, Any]:
+    """PRD 7 section 9 (#599): a finished upload's stored reply, sent again, names its document
+    only while the person may see it; else it says only that the file is in Kaagaz."""
+    document = reply.get("document")
+    if not isinstance(document, dict):
+        return reply
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        if listing.documents_seen(conn, user.customer_id, [str(document["id"])]):
+            return reply
+    hidden = {**reply, **HIDDEN_COPY, "duplicate": reply.get("duplicate", True)}
+    if isinstance(reply.get("item"), dict):
+        hidden["item"] = {**reply["item"], "document_id": None, "document": None, "hidden": True}
+    return hidden
 
 
 def _store_completed(
@@ -1958,18 +2009,21 @@ def restore_document(document_id: uuid.UUID, user: User, context: Context) -> di
         )
         row = _document_or_404(conn, user, document_id)
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
+        # PRD 7 (#599): a folder that came back is named only when the person may see it, and its
+        # place only when they may see every folder on it (a file given to them alone).
+        shown = None if chain is None else trashed_sql.as_seen(conn, customer_id, chain)
     summary = document_summary(
         row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
     )
     # #542: the folders that came back with it, so the screen can say where (null: none did).
     summary["restored_folder"] = (
         None
-        if chain is None
+        if shown is None
         else {
-            "folder": folder_view(chain.folder),
-            "location": list(chain.location),
-            "renamed": chain.renamed,
-            "relocated": chain.relocated,
+            "folder": folder_view(shown.folder),
+            "location": None if shown.location is None else list(shown.location),
+            "renamed": shown.renamed,
+            "relocated": shown.relocated,
         }
     )
     return summary

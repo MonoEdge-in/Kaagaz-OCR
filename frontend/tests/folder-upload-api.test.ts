@@ -38,7 +38,7 @@ describe("sending one file of a folder upload", () => {
     const sent = fakePosts([]);
     const file = new File(["%PDF-1"], "bill.pdf");
     const result = await uploadFolderItem(file, "item-1", "u1", () => undefined, free, { read_mode: "dynamic" });
-    expect(result.document.id).toBe("d1");
+    expect(result.document?.id).toBe("d1");
     expect(sent).toHaveLength(1);
     expect(sent[0]?.method).toBe("POST");
     // In the query: the server's rate limit gives it the folder upload's bucket before reading the body.
