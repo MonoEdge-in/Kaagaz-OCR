@@ -6,12 +6,14 @@ import type { PdfEngine, PdfPageObject } from "@embedpdf/models";
 import { ScrollPlugin, ScrollPluginPackage, ScrollStrategy } from "@embedpdf/plugin-scroll";
 import type { VirtualItem } from "@embedpdf/plugin-scroll";
 import { ViewportPluginPackage } from "@embedpdf/plugin-viewport";
-import { ZoomPluginPackage } from "@embedpdf/plugin-zoom";
+import { VerticalZoomFocus, ZoomMode, ZoomPlugin, ZoomPluginPackage } from "@embedpdf/plugin-zoom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  holdScrollTop,
   PageTurnsPlugin,
   PageTurnsPluginPackage,
   scrollTopKeepingPage,
+  searchHitTarget,
   turnedSpreadPages,
   turnPages,
   turnPagesTo,
@@ -64,6 +66,7 @@ describe("the turn menu", () => {
 // methods are called on a stand-in for the plugin, so a change inside the engine fails here.
 type Strategy = {
   createVirtualItems(spreads: unknown): VirtualItem[];
+  getTotalContentSize(items: VirtualItem[]): { width: number; height: number };
   getScrollPositionForPage(page: number, items: VirtualItem[], scale: number, rotation: number): { y: number } | null;
   handleScroll(viewport: object, items: VirtualItem[], scale: number): { currentPage: number };
 };
@@ -72,13 +75,14 @@ const engine = ScrollPlugin.prototype as unknown as {
   getSpreadPagesWithRotatedSize(this: object, documentId: string): unknown;
 };
 const GAP = 24;
+const standIn = (filePages: readonly PdfPageObject[], pageTurns: PageTurns) => ({
+  coreState: { core: { documents: { d: { document: { pages: filePages }, rotation: 0 } } } },
+  spread: { forDocument: () => ({ getSpreadPages: () => turnedSpreadPages(filePages, pageTurns) }) },
+  state: { defaultPageGap: GAP, defaultBufferSize: 2 },
+  viewport: { getViewportGap: () => GAP },
+});
 function laidOut(filePages: readonly PdfPageObject[], pageTurns: PageTurns) {
-  const plugin = {
-    coreState: { core: { documents: { d: { document: { pages: filePages }, rotation: 0 } } } },
-    spread: { forDocument: () => ({ getSpreadPages: () => turnedSpreadPages(filePages, pageTurns) }) },
-    state: { defaultPageGap: GAP, defaultBufferSize: 2 },
-    viewport: { getViewportGap: () => GAP },
-  };
+  const plugin = standIn(filePages, pageTurns);
   const strategy = engine.createStrategy.call(plugin, ScrollStrategy.Vertical);
   return { strategy, items: strategy.createVirtualItems(engine.getSpreadPagesWithRotatedSize.call(plugin, "d")) };
 }
@@ -112,6 +116,60 @@ describe("the pages laid out as turned", () => {
     expect(after.strategy.handleScroll(view(kept), after.items, 0.7).currentPage).toBe(150);
   });
 
+  it("keeps the reader's page through the fit zoom's own late scroll, the zoom unchanged", () => {
+    // 300 A4 pages, the first wide by its file's own turn, so fit to width keeps its zoom when
+    // every page is turned right. The fit zoom answers the new layout (setPageTurns) with a
+    // scroll to the old place, which the viewport applies a frame later.
+    const pages = a4(300).map((page, index) => (index === 0 ? { ...page, rotation: 1 } : page));
+    const before = laidOut(pages, turns([]));
+    const after = laidOut(pages, every(300, 1));
+    const fit = Math.floor(((1000 - 2 * GAP) / 842) * 1e3) / 1e3;
+    const area = { scrollTop: before.strategy.getScrollPositionForPage(200, before.items, fit, 0)!.y + 100 };
+    const frames: (() => void)[] = [];
+    vi.stubGlobal("window", { requestAnimationFrame: (frame: () => void) => frames.push(frame) });
+    const scales: number[] = [];
+    const zoom = Object.create(ZoomPlugin.prototype) as { recalcAuto(id: string, focus: VerticalZoomFocus): void };
+    Object.defineProperties(zoom, {
+      state: { value: { documents: { d: { zoomLevel: ZoomMode.FitWidth, currentZoomLevel: fit } } } },
+      coreState: { value: { core: { documents: { d: { document: { pages }, rotation: 0, scale: fit } } } } },
+    });
+    Object.assign(zoom, {
+      minZoom: 0.25,
+      maxZoom: 10,
+      getActiveDocumentId: () => "d",
+      viewport: {
+        getViewportGap: () => GAP,
+        isGated: () => false,
+        forDocument: () => ({
+          getMetrics: () => ({ clientWidth: 1000, clientHeight: 700, scrollTop: area.scrollTop, scrollLeft: 0 }),
+          // as the viewport applies a scroll request: in the next frame
+          scrollTo: ({ y }: { y: number }) => frames.push(() => (area.scrollTop = y)),
+        }),
+      },
+      viewportPlugin: { setViewportScrollMetrics: () => undefined },
+      scroll: {
+        getPageGap: () => GAP,
+        forDocument: () => ({
+          getSpreadPagesWithRotatedSize: () => engine.getSpreadPagesWithRotatedSize.call(standIn(pages, every(300, 1)), "d"),
+          getLayout: () => ({ virtualItems: after.items, totalContentSize: after.strategy.getTotalContentSize(after.items) }),
+        }),
+      },
+      dispatch: () => undefined,
+      dispatchCoreAction: (action: { payload: { scale: number } }) => scales.push(action.payload.scale),
+      zoom$: { emit: () => undefined },
+    });
+    const kept = scrollTopKeepingPage(200, area.scrollTop, GAP, { ...before, scale: fit }, { ...after, scale: fit })!;
+    zoom.recalcAuto("d", VerticalZoomFocus.Top);
+    holdScrollTop(area, kept);
+    expect(scales).toEqual([fit]); // the zoom did not change
+    const shown = () => after.strategy.handleScroll(view(area.scrollTop), after.items, fit).currentPage;
+    frames.shift()!(); // the zoom's own scroll, to the old place
+    expect(shown()).not.toBe(200);
+    for (const frame of frames.splice(0)) frame();
+    expect(shown()).toBe(200);
+    vi.unstubAllGlobals();
+  });
+
   it("lays a 200-page file opened with every page made wide out in order, and goes to each page's turned top", () => {
     const { strategy, items } = laidOut(a4(200), every(200, 1));
     const scale = 1.5;
@@ -140,6 +198,17 @@ describe("the pages laid out as turned", () => {
     const { items } = laidOut(a4(3, 1), turns([[1, 1]]));
     expect(items.map((item) => item.height)).toEqual([595, 842, 595]);
     expect(turnedSpreadPages(a4(3, 1), turns([[1, 1]])).map(([page]) => page!.rotation)).toEqual([1, 2, 1]);
+  });
+});
+
+describe("a search hit", () => {
+  const hit = { pageIndex: 4, rects: [{ origin: { x: 40, y: 300 } }] };
+  it("goes to the hit on a page as its file has it", () => {
+    expect(searchHitTarget(hit, turns([[3, 1]]))).toEqual({ pageNumber: 5, pageCoordinates: { x: 40, y: 300 }, alignY: 30 });
+  });
+  it("goes to the page's top on a page the person turned, or with no spot", () => {
+    expect(searchHitTarget(hit, turns([[4, 2]]))).toEqual({ pageNumber: 5 });
+    expect(searchHitTarget({ pageIndex: 4, rects: [] }, turns([]))).toEqual({ pageNumber: 5 });
   });
 });
 

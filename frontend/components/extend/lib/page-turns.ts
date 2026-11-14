@@ -87,6 +87,38 @@ export function scrollTopKeepingPage(
   return gap + (now.offset + share * now.height) * after.scale
 }
 
+/**
+ * Scroll there now and again in the next frame: a fit zoom answers each new layout with its own
+ * scroll back to the old place, applied a frame later (the viewport's scroll request), even
+ * when the zoom stays the same.
+ */
+export function holdScrollTop(viewport: { scrollTop: number }, scrollTop: number) {
+  viewport.scrollTop = scrollTop
+  window.requestAnimationFrame(() => {
+    viewport.scrollTop = scrollTop
+  })
+}
+
+/**
+ * Where a search hit scrolls: to the hit, or to its page's top on a page the person turned, as
+ * the engine aims a spot on a page by the file's own turn only and would land past it.
+ */
+export function searchHitTarget(
+  hit: { pageIndex: number; rects: readonly { origin: { x: number; y: number } }[] },
+  turns: PageTurns
+) {
+  const firstRect = hit.rects[0]
+  return {
+    pageNumber: hit.pageIndex + 1,
+    ...(firstRect && !turns.get(hit.pageIndex)
+      ? {
+          pageCoordinates: { x: firstRect.origin.x, y: firstRect.origin.y },
+          alignY: 30,
+        }
+      : {}),
+  }
+}
+
 type PageTurnsCapability = {
   forDocument: (documentId: string) => { getSpreadPages: () => PdfPageObject[][] }
   onSpreadChange: (listener: (event: { documentId: string }) => void) => () => void

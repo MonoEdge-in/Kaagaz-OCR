@@ -68,10 +68,13 @@ import {
 import { flushSync } from "react-dom"
 
 import {
+  holdScrollTop,
   normalizeRotation,
+  type PageTurns,
   PageTurnsPlugin,
   PageTurnsPluginPackage,
   scrollTopKeepingPage,
+  searchHitTarget,
   turnPages,
   turnPagesTo,
 } from "@/components/extend/lib/page-turns"
@@ -639,15 +642,23 @@ function PDFViewerPageNumberControl({
     </div>
   )
 }
+// Changed for Kaagaz (#589): a hit on a page the person turned goes to its page's top
+// (searchHitTarget).
 function PDFViewerSearchControl({
   documentId,
   controlsDisabled,
+  pageTurns,
 }: {
   documentId: string
   controlsDisabled: boolean
+  pageTurns: PageTurns
 }) {
   const { state, provides } = useSearch(documentId)
   const { provides: scroll } = useScroll(documentId)
+  const pageTurnsRef = React.useRef(pageTurns)
+  React.useEffect(() => {
+    pageTurnsRef.current = pageTurns
+  }, [pageTurns])
   const [searchDraft, setSearchDraft] = React.useState("")
   const [searchQuery, setSearchQuery] = React.useState("")
   const [isSearching, setIsSearching] = React.useState(false)
@@ -666,18 +677,8 @@ function PDFViewerSearchControl({
     (index: number) => {
       const result = state.results[index]
       if (!result || !scroll) return
-      const firstRect = result.rects[0]
       scroll.scrollToPage({
-        pageNumber: result.pageIndex + 1,
-        ...(firstRect
-          ? {
-              pageCoordinates: {
-                x: firstRect.origin.x,
-                y: firstRect.origin.y,
-              },
-              alignY: 30,
-            }
-          : {}),
+        ...searchHitTarget(result, pageTurnsRef.current),
         behavior: "auto",
       })
     },
@@ -711,18 +712,8 @@ function PDFViewerSearchControl({
         const firstResult = result.results[0]
         if (firstResult && scrollProvider) {
           searchProvider.goToResult(0)
-          const firstRect = firstResult.rects[0]
           scrollProvider.scrollToPage({
-            pageNumber: firstResult.pageIndex + 1,
-            ...(firstRect
-              ? {
-                  pageCoordinates: {
-                    x: firstRect.origin.x,
-                    y: firstRect.origin.y,
-                  },
-                  alignY: 30,
-                }
-              : {}),
+            ...searchHitTarget(firstResult, pageTurnsRef.current),
             behavior: "auto",
           })
         }
@@ -2118,13 +2109,7 @@ function PDFViewerInner({
             )
           : null
       if (viewport && keptScrollTop !== null) {
-        viewport.scrollTop = keptScrollTop
-        // A fit zoom that changed scrolls a frame later (the viewport's scroll request): after it.
-        if (after.scale !== before.scale) {
-          window.requestAnimationFrame(() => {
-            viewport.scrollTop = keptScrollTop
-          })
-        }
+        holdScrollTop(viewport, keptScrollTop)
       }
       ;(
         thumbnailPlugin as {
@@ -2273,6 +2258,7 @@ function PDFViewerInner({
               key={documentId}
               documentId={documentId}
               controlsDisabled={controlsDisabled}
+              pageTurns={pageRotationDeltas}
             />
           }
           sidebarOpen={sidebarOpen}
