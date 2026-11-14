@@ -2,7 +2,7 @@
 // unit tested in node (tests/viewer-*.test.ts): zoom steps, which rows and
 // columns of a sheet to fetch and show, how a page is drawn, and how it was read.
 
-import type { DetectedType, DocumentSummary, PageSummary, ReadIssue, Region, SheetCells } from "@/lib/types";
+import type { DetectedType, DocumentSummary, PageSummary, PageTurnSaved, ReadIssue, Region, SheetCells } from "@/lib/types";
 import type { ViewRect } from "./canvasPlan";
 import { sameRegion } from "./selection";
 
@@ -323,4 +323,42 @@ export function savePageTurns(userId: string, documentId: string, turns: Readonl
   } catch {
     // Storage blocked or full: the turns last for this visit only.
   }
+}
+
+// --- Page turns saved for everyone (#600): the server keeps a page by its number (from 1) and its
+// turn in degrees; the viewer by page index (from 0) and quarter turns. Converted here only.
+
+/** The saved turns as the viewer keeps them: page index to quarter turns right. */
+export function fromServer(saved: readonly PageTurnSaved[]): Map<number, number> {
+  return new Map(saved.map(({ page_no, turn }) => [page_no - 1, turn / 90]));
+}
+
+/** What to send to save the turns shown: each page whose turn differs from the saved one (0, unturned). */
+export function pageTurnChanges(
+  saved: ReadonlyMap<number, number>,
+  shown: ReadonlyMap<number, number>,
+): { page_no: number; turn: 0 | 90 | 180 | 270 }[] {
+  const pages = [...new Set([...saved.keys(), ...shown.keys()])].sort((a, b) => a - b);
+  return pages
+    .filter((index) => (saved.get(index) ?? 0) !== (shown.get(index) ?? 0))
+    .map((index) => ({ page_no: index + 1, turn: ((shown.get(index) ?? 0) * 90) as 0 | 90 | 180 | 270 }));
+}
+
+/** A file opens with its saved turns; only a file with none opens with this browser's own. */
+export function openingTurns(
+  saved: ReadonlyMap<number, number>,
+  local: ReadonlyMap<number, number>,
+): ReadonlyMap<number, number> {
+  return saved.size > 0 ? saved : local;
+}
+
+/**
+ * The CSS transform (from the top left) that draws a width x height page turned clockwise by
+ * `turn` degrees inside a box of the turned size; undefined when it is not turned.
+ */
+export function turnedStageTransform(width: number, height: number, turn: number): string | undefined {
+  if (turn === 90) return `translate(${height}px, 0px) rotate(90deg)`;
+  if (turn === 180) return `translate(${width}px, ${height}px) rotate(180deg)`;
+  if (turn === 270) return `translate(0px, ${width}px) rotate(270deg)`;
+  return undefined;
 }

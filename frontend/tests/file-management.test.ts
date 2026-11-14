@@ -168,6 +168,7 @@ const detail = (over: Partial<DocumentDetail> = {}): DocumentDetail => ({
   read_model: null,
   author_name: "Priya",
   version_suggestion: suggestion(),
+  page_turns: [],
   ...over,
 });
 
