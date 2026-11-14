@@ -37,12 +37,15 @@ alone, 0084 leaves every stored value NULL, which ``check-access`` reports.
 
 Cost, so the migration can run while the app serves (infra/ec2/deploy.sh): no table is rewritten
 and no row is written (the new columns are NULL or constant defaults). ``documents`` is locked
-first (0004's order), then read once for its two new CHECKs (one ALTER) and once for each of its
-two new keys; ``folders`` once for its CHECK, ``learned_corrections`` once for its key. The other
-tables take their own locks, the busy ones last: ``customers``, ``users`` and ``audit_log`` are
-held ACCESS EXCLUSIVE only for the catalog-only statements at the end (the new keys hold
-``customers`` and ``users`` SHARE ROW EXCLUSIVE from the first of them: reads go on, writes wait).
-Every lock is held until the commit.
+first (0004's order). Its two new keys and two CHECKs, and ``learned_corrections``' key, are added
+NOT VALID, so neither table is read: new rows are checked at once, and 0085 validates the old ones
+outside the transaction (SHARE UPDATE EXCLUSIVE, writes go on). ``folders`` is read once for its
+CHECK. The other tables take their own locks, the busy ones last: ``customers``, ``users`` and
+``audit_log`` are held ACCESS EXCLUSIVE only for the catalog-only statements at the end (the new
+keys hold ``customers`` and ``users`` SHARE ROW EXCLUSIVE from the first of them: reads go on,
+writes wait). Every lock is held until the commit. A request that reads one of those tables and
+then documents (the activity feed, kaagaz/db/audit.py) can still meet the migration the other way
+round; PostgreSQL then ends one of the two, and the short catalog-only window keeps it rare.
 
 The downgrade drops the four tables and every column (their rows are lost), puts back 0001's
 status CHECK (refused while a document is ``locked``), 0007's status comment and 0068's finish.
@@ -80,7 +83,7 @@ ROLES = ("kaagaz_app", "kaagaz_worker")
 POLICY = "customer_id = kaagaz_current_customer()"
 TABLES = ("department_members", "private_folder_members", "document_shares", "lock_grants")
 # Taken first, as 0004's: the statements after it that reach documents (its ALTER, the keys of
-# learned_corrections, document_shares and lock_grants) then queue behind the app, never deadlock.
+# learned_corrections, document_shares and lock_grants) then need no lock on it they lack.
 LOCK = "LOCK TABLE documents IN ACCESS EXCLUSIVE MODE"
 STATUSES = "'received', 'clean', 'rejected', 'needs_reader', 'ready', 'failed'"  # 0001's
 
@@ -237,13 +240,16 @@ UPGRADE = [
     LOCK,
     "ALTER TABLE documents ADD COLUMN department_id uuid NULL, ADD COLUMN private_folder_id uuid NULL,"
     " ADD COLUMN held_for uuid NULL, ADD COLUMN locked_at timestamptz NULL, ADD COLUMN locked_by uuid NULL,"
-    " ADD CONSTRAINT documents_held_for_fk FOREIGN KEY (customer_id, held_for) REFERENCES users (customer_id, id),"
-    " ADD CONSTRAINT documents_locked_by_fk FOREIGN KEY (customer_id, locked_by) REFERENCES users (customer_id, id),"
-    " ADD CONSTRAINT documents_locked CHECK ((locked_at IS NULL) = (locked_by IS NULL)),"
-    + _status_check(STATUSES + ", 'locked'"),
+    " ADD CONSTRAINT documents_held_for_fk FOREIGN KEY (customer_id, held_for) REFERENCES users (customer_id, id)"
+    " NOT VALID,"
+    " ADD CONSTRAINT documents_locked_by_fk FOREIGN KEY (customer_id, locked_by) REFERENCES users (customer_id, id)"
+    " NOT VALID,"
+    " ADD CONSTRAINT documents_locked CHECK ((locked_at IS NULL) = (locked_by IS NULL)) NOT VALID,"
+    + _status_check(STATUSES + ", 'locked'")
+    + " NOT VALID",
     "ALTER TABLE learned_corrections ADD COLUMN source_document_id uuid NULL,"
     " ADD CONSTRAINT learned_corrections_source_fk FOREIGN KEY (customer_id, source_document_id)"
-    " REFERENCES documents (customer_id, id) ON DELETE SET NULL (source_document_id)",
+    " REFERENCES documents (customer_id, id) ON DELETE SET NULL (source_document_id) NOT VALID",
     # A document's delete forever finds its corrections on this, not by reading them all.
     "CREATE INDEX learned_corrections_source ON learned_corrections (customer_id, source_document_id)"
     " WHERE source_document_id IS NOT NULL",
