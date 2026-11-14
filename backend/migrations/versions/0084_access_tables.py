@@ -1,5 +1,5 @@
-"""Who can see what: the tables and columns, with their backfill (PRD 7 section 10, migration (a),
-#590, Tushar, 14 Nov 2026). NEEDS VRUSHIT'S APPROVAL: schema.
+"""Who can see what: the tables and columns (PRD 7 section 10, migration (a), #590, Tushar,
+14 Nov 2026). NEEDS VRUSHIT'S APPROVAL: schema.
 
 Every new setting defaults to today's behaviour, so nothing changes on release day: no code reads
 the new columns yet but the two Trash copies (``kaagaz.db.folders._TRASH_TREE``,
@@ -15,8 +15,8 @@ the new columns yet but the two Trash copies (``kaagaz.db.folders._TRASH_TREE``,
 * ``documents.department_id`` and ``private_folder_id`` (its folder's), ``held_for`` (NULL: a
   file in no folder stays open), ``locked_at`` and ``locked_by`` (both NULL or both set,
   ``documents_locked``); ``documents_status_check`` takes ``locked`` (unused until PR 12).
-* ``audit_log.subject_user_id`` (the person an entry is about; no key, as ``actor_user_id``)
-  with a partial index, empty; ``audit_log_kept`` keeps it. ``learned_corrections
+* ``audit_log.subject_user_id`` (the person an entry is about; no key, as ``actor_user_id``),
+  empty; ``audit_log_kept`` keeps it. ``learned_corrections
   .source_document_id`` (the document a correction was made on; old rows NULL), its key SET NULL
   when that document is deleted for good, so the correction stays as an old row does.
 * ``department_members``, ``private_folder_members``, ``document_shares`` and ``lock_grants``,
@@ -30,22 +30,19 @@ the new columns yet but the two Trash copies (``kaagaz.db.folders._TRASH_TREE``,
   command reports a member row whose folder is in neither table.
 * Every grant goes to ``kaagaz_app`` and ``kaagaz_worker`` alike (0083's equality test).
 
-Backfill, as the table owner (row level security does not hold it): every department's folders,
-live or in Trash, get its id, walked down from each top-level department over ``folders`` and
-``trashed_folders`` (a trashed folder's parent is live, trashed or gone; under a gone one it stays
-NULL). Each document takes its folder's, or for one deleted with its folder its trashed folder's
-(``trashed_folder_id``); a file trashed alone whose folder was deleted since has neither and stays
-NULL, as nothing remembers where it was. Nothing is private yet, so every ``private_folder_id``
-stays NULL. The touch trigger is off for it, as in 0002 and 0078, so ``updated_at`` keeps each
-row's real last change.
+Schema only: every stored department and private folder starts NULL. The backfill from the folder
+tree and ``audit_log_subject`` (the index on ``subject_user_id``) are 0085's (PR 5), with the
+triggers that keep the values right from then on, so 0084 and 0085 must run in the same release:
+alone, 0084 leaves every stored value NULL, which ``check-access`` reports.
 
-Cost: documents, folders, trashed_folders, customers, users, learned_corrections, audit_log and
-audit_log_kept are locked first, documents first (0004's order), so the migration queues behind
-the app instead of deadlocking with it (env.py's lock_timeout). The new columns are NULL or
-constant defaults: no table is rewritten. ``documents`` is read once for its new CHECKs and once
-per new key; the backfill reads it once more and writes each document in a department once (one
-set-based UPDATE: in one transaction batches would only hold the lock longer). ``audit_log`` is
-read once for the empty partial index. All of it holds the locks until the commit.
+Cost, so the migration can run while the app serves (infra/ec2/deploy.sh): no table is rewritten
+and no row is written (the new columns are NULL or constant defaults). ``documents`` is locked
+first (0004's order), then read once for its two new CHECKs (one ALTER) and once for each of its
+two new keys; ``folders`` once for its CHECK, ``learned_corrections`` once for its key. The other
+tables take their own locks, the busy ones last: ``customers``, ``users`` and ``audit_log`` are
+held ACCESS EXCLUSIVE only for the catalog-only statements at the end (the new keys hold
+``customers`` and ``users`` SHARE ROW EXCLUSIVE from the first of them: reads go on, writes wait).
+Every lock is held until the commit.
 
 The downgrade drops the four tables and every column (their rows are lost), puts back 0001's
 status CHECK (refused while a document is ``locked``), 0007's status comment and 0068's finish.
@@ -78,18 +75,14 @@ def _load(name: str) -> ModuleType:
 
 _0047 = _load("0047_purge_organization_words.py")
 _0068 = _load("0068_audit_keeping.py")
+_literal = _0068._literal
 ROLES = ("kaagaz_app", "kaagaz_worker")
 POLICY = "customer_id = kaagaz_current_customer()"
 TABLES = ("department_members", "private_folder_members", "document_shares", "lock_grants")
-LOCK = (
-    "LOCK TABLE documents, folders, trashed_folders, customers, users, learned_corrections, audit_log,"
-    " audit_log_kept IN ACCESS EXCLUSIVE MODE"
-)
+# Taken first, as 0004's: the statements after it that reach documents (its ALTER, the keys of
+# learned_corrections, document_shares and lock_grants) then queue behind the app, never deadlock.
+LOCK = "LOCK TABLE documents IN ACCESS EXCLUSIVE MODE"
 STATUSES = "'received', 'clean', 'rejected', 'needs_reader', 'ready', 'failed'"  # 0001's
-
-
-def _literal(words: str) -> str:
-    return "'" + words.replace("'", "''") + "'"
 
 
 def _status_check(statuses: str) -> str:
@@ -152,27 +145,6 @@ CREATE_TABLES = (
     )
     """,
 )
-
-# Each folder's department, live or in Trash: walked down from every top-level department over
-# both tables. Bounded as every folder walk (kaagaz.db.folders.MAX_DEPTH).
-_DEPARTMENTS = (
-    "WITH RECURSIVE node (customer_id, id, parent_id, kind) AS ("
-    " SELECT customer_id, id, parent_id, kind FROM folders"
-    " UNION ALL SELECT customer_id, id, parent_id, kind FROM trashed_folders),"
-    " tree (customer_id, id, department_id, depth) AS ("
-    " SELECT customer_id, id, id, 1 FROM node WHERE parent_id IS NULL AND kind = 'department'"
-    " UNION ALL"
-    " SELECT n.customer_id, n.id, t.department_id, t.depth + 1 FROM tree t"
-    " JOIN node n ON n.customer_id = t.customer_id AND n.parent_id = t.id WHERE t.depth < 101)"
-)
-BACKFILL = [
-    f"{_DEPARTMENTS} UPDATE folders f SET department_id = t.department_id FROM tree t"
-    " WHERE f.customer_id = t.customer_id AND f.id = t.id",
-    f"{_DEPARTMENTS} UPDATE trashed_folders f SET department_id = t.department_id FROM tree t"
-    " WHERE f.customer_id = t.customer_id AND f.id = t.id",
-    f"{_DEPARTMENTS} UPDATE documents d SET department_id = t.department_id FROM tree t"
-    " WHERE d.customer_id = t.customer_id AND t.id = coalesce(d.folder_id, d.trashed_folder_id)",
-]
 
 _ACCESS_ROWS = "".join(
     f"\n    DELETE FROM public.{table} x WHERE x.customer_id = p_customer;" for table in TABLES
@@ -263,26 +235,12 @@ OLD_STATUS_COMMENT = (  # 0007's
 
 UPGRADE = [
     LOCK,
-    "ALTER TABLE customers ADD COLUMN access_version bigint NOT NULL DEFAULT 1 CHECK (access_version >= 1),"
-    " ADD COLUMN department_pointer boolean NOT NULL DEFAULT false",
-    "ALTER TABLE users ADD COLUMN management boolean NOT NULL DEFAULT false",
-    "ALTER TABLE folders ADD COLUMN department_only boolean NOT NULL DEFAULT false,"
-    " ADD COLUMN private boolean NOT NULL DEFAULT false,"
-    " ADD COLUMN department_id uuid NULL, ADD COLUMN private_folder_id uuid NULL,"
-    " ADD CONSTRAINT folders_department_only CHECK (kind = 'department' OR NOT department_only)",
-    "ALTER TABLE trashed_folders ADD COLUMN department_only boolean NOT NULL DEFAULT false,"
-    " ADD COLUMN private boolean NOT NULL DEFAULT false,"
-    " ADD COLUMN department_id uuid NULL, ADD COLUMN private_folder_id uuid NULL",
     "ALTER TABLE documents ADD COLUMN department_id uuid NULL, ADD COLUMN private_folder_id uuid NULL,"
     " ADD COLUMN held_for uuid NULL, ADD COLUMN locked_at timestamptz NULL, ADD COLUMN locked_by uuid NULL,"
     " ADD CONSTRAINT documents_held_for_fk FOREIGN KEY (customer_id, held_for) REFERENCES users (customer_id, id),"
     " ADD CONSTRAINT documents_locked_by_fk FOREIGN KEY (customer_id, locked_by) REFERENCES users (customer_id, id),"
     " ADD CONSTRAINT documents_locked CHECK ((locked_at IS NULL) = (locked_by IS NULL)),"
     + _status_check(STATUSES + ", 'locked'"),
-    "ALTER TABLE audit_log ADD COLUMN subject_user_id uuid NULL",
-    "CREATE INDEX audit_log_subject ON audit_log (customer_id, subject_user_id, created_at DESC)"
-    " WHERE subject_user_id IS NOT NULL",
-    "ALTER TABLE audit_log_kept ADD COLUMN subject_user_id uuid NULL",
     "ALTER TABLE learned_corrections ADD COLUMN source_document_id uuid NULL,"
     " ADD CONSTRAINT learned_corrections_source_fk FOREIGN KEY (customer_id, source_document_id)"
     " REFERENCES documents (customer_id, id) ON DELETE SET NULL (source_document_id)",
@@ -292,12 +250,21 @@ UPGRADE = [
     *CREATE_TABLES,
     # A person's own rows (their access, their Access page): the key serves the other way.
     *[f"CREATE INDEX {table}_user ON {table} (customer_id, user_id)" for table in TABLES],
-    "ALTER TABLE documents DISABLE TRIGGER documents_touch",
-    *BACKFILL,
-    "ALTER TABLE documents ENABLE TRIGGER documents_touch",
+    "ALTER TABLE folders ADD COLUMN department_only boolean NOT NULL DEFAULT false,"
+    " ADD COLUMN private boolean NOT NULL DEFAULT false,"
+    " ADD COLUMN department_id uuid NULL, ADD COLUMN private_folder_id uuid NULL,"
+    " ADD CONSTRAINT folders_department_only CHECK (kind = 'department' OR NOT department_only)",
+    "ALTER TABLE trashed_folders ADD COLUMN department_only boolean NOT NULL DEFAULT false,"
+    " ADD COLUMN private boolean NOT NULL DEFAULT false,"
+    " ADD COLUMN department_id uuid NULL, ADD COLUMN private_folder_id uuid NULL",
+    "ALTER TABLE audit_log_kept ADD COLUMN subject_user_id uuid NULL",
+    # The busy tables last, catalog only: held ACCESS EXCLUSIVE for the end of the migration alone.
+    "ALTER TABLE customers ADD COLUMN access_version bigint NOT NULL DEFAULT 1 CHECK (access_version >= 1),"
+    " ADD COLUMN department_pointer boolean NOT NULL DEFAULT false",
+    "ALTER TABLE users ADD COLUMN management boolean NOT NULL DEFAULT false",
+    "ALTER TABLE audit_log ADD COLUMN subject_user_id uuid NULL",
     *[f"COMMENT ON TABLE {table} IS {_literal(comment)}" for table, comment in TABLE_COMMENTS.items()],
     *[f"COMMENT ON COLUMN {column} IS {_literal(comment)}" for column, comment in COMMENTS.items()],
-    "COMMENT ON INDEX audit_log_subject IS 'The entries about one person, newest first (PRD 7).'",
     *[
         statement
         for table in TABLES
@@ -319,7 +286,6 @@ DOWNGRADE = [
     "DROP INDEX IF EXISTS learned_corrections_source",
     "ALTER TABLE learned_corrections DROP COLUMN IF EXISTS source_document_id",
     "ALTER TABLE audit_log_kept DROP COLUMN IF EXISTS subject_user_id",
-    "DROP INDEX IF EXISTS audit_log_subject",
     "ALTER TABLE audit_log DROP COLUMN IF EXISTS subject_user_id",
     "ALTER TABLE documents" + _status_check(STATUSES),
     f"COMMENT ON COLUMN documents.status IS {_literal(OLD_STATUS_COMMENT)}",
