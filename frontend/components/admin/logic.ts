@@ -59,6 +59,11 @@ export const TABS = [
 
 export type TabId = (typeof TABS)[number]["id"];
 
+/** The tab /admin?tab=… opens (PRD 7 lead decision 12): a tab's id, else Users. */
+export function tabFrom(asked: string | undefined): TabId {
+  return TABS.find((tab) => tab.id === asked)?.id ?? "users";
+}
+
 /** Arrow keys, Home and End move between tabs (the WAI-ARIA tabs pattern). */
 export function tabAfterKey(index: number, key: string, count: number): number | null {
   switch (key) {
