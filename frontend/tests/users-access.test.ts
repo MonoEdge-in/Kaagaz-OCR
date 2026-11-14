@@ -26,7 +26,7 @@ describe("the Access column", () => {
         { id: "d2", name: "Sales", head: false },
       ],
     });
-    expect(html).toContain('title="Sees all files">Management</span>');
+    expect(html).toContain('title="Sees all files">Management<span class="visually-hidden">: sees all files</span></span>');
     expect(html.indexOf("Management")).toBeLessThan(html.indexOf("Finance (head), Sales"));
   });
 
@@ -59,7 +59,8 @@ describe("the menu", () => {
   it("asks first, and asks for your password only when you make yourself Management", () => {
     expect(items).toMatch(/label: "Make Management"[^}]*onSelect: \(\) => setConfirming\("makeManagement"\)/);
     expect(items).toMatch(/label: "Stop Management"[^}]*onSelect: \(\) => setConfirming\("stopManagement"\)/);
-    expect(panel).toContain("step.run(MANAGEMENT_WHAT, (password) => setManagement(user.id, on, password), isSelf && on)");
+    // Which way asks first is asksFirst's (tests/access-password-step.test.ts), with these values.
+    expect(panel).toContain("asksFirst({ myId, targetId: user.id, on })");
     expect(panel).toContain("makeManagement: makeManagementQuestion,");
     expect(panel).toContain('stopManagement: "Stop Management",');
     // Stop takes something away: the danger style; Make is the plain action.

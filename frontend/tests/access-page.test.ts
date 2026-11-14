@@ -11,7 +11,9 @@ import type { AdminUser, PersonAccess } from "@/lib/types";
 
 vi.mock("@/lib/session", () => ({ useSession: () => ({ me: { user: { id: "me" } } }) }));
 
-const { AccessPageView } = await import("@/components/admin/AccessPage");
+const { AccessPageView, accessLoadFailure } = await import("@/components/admin/AccessPage");
+const { ApiError } = await import("@/lib/api");
+const { SERVER_PROBLEM } = await import("@/lib/errorWords");
 
 const USERS = [
   { id: "u1", display_name: "Priya", email: "priya@example.com" },
@@ -79,9 +81,7 @@ describe("the Access page", () => {
 
   it("gives a turned-off person nothing: the banner, no Give access, no Management, no Head ticks", () => {
     const html = render({ access: access({ disabled: true }, FULL), users: USERS });
-    expect(html).toContain(
-      "Priya&#x27;s account is turned off, so they can see nothing. Turn it on from the Users tab to give access again.",
-    );
+    expect(html).toContain("This account is disabled. Enable it from the Users tab to give access again.");
     expect(html).not.toContain("Give access");
     expect(html).not.toContain("Make Management");
     expect(html).toMatch(/<input type="checkbox" disabled="" checked=""\/>Head/);
@@ -107,13 +107,28 @@ describe("the Access page", () => {
     expect(html).toContain("Try again");
   });
 
-  it("asks for the password first on your own gives and on Head or Management turned on, never on a take", () => {
+  it("keeps the lists after a failed reload, with the banner and Try again above them", () => {
+    const html = render({ access: access({}, FULL), users: USERS }, "Kaagaz had a problem. Try again in a minute.");
+    expect(html).toContain("Could not load this person&#x27;s access.");
+    expect(html.indexOf("Try again")).toBeLessThan(html.indexOf(">Departments<"));
+    expect(html).toContain("Finance / Salaries");
+  });
+
+  it("says a person who isn't there, or an id that can't be one, as not found", () => {
+    expect(accessLoadFailure(new ApiError(404, "not_found", "x"))).toBe("missing");
+    expect(accessLoadFailure(new ApiError(422, "bad_request", "x"))).toBe("missing");
+    expect(accessLoadFailure(new ApiError(500, "error", "x"))).toBe(SERVER_PROBLEM);
+  });
+
+  it("works without the users list: no email, and no 'by' for who gave what", () => {
+    const html = render({ access: access({}, FULL), users: [] });
+    expect(html).toContain("<p>Member</p>");
+    expect(html).toMatch(/Added \d{1,2} Nov 2026</);
+  });
+
+  it("asks before taking the Head tick away", () => {
     const page = readFileSync(join(__dirname, "..", "components/admin/AccessPage.tsx"), "utf8");
-    expect(page).toContain("step.run(MANAGEMENT_WHAT, (password) => setManagement(user.id, on, password), isSelf && on)");
-    expect(page).toContain("putMembership(user.id, department.id, { head: on, password }), isSelf && on)");
-    expect(page).toContain("step.run(what, send, isSelf)");
-    expect(page).toMatch(/removeMembership\(user\.id, department\.id\), ACCESS_REMOVED/);
-    expect(page).toMatch(/takeFile\(file\.id, user\.id\), ACCESS_REMOVED/);
+    expect(page).toContain("ask(removeHeadQuestion(user.name, department.name), REMOVE_AS_HEAD, () => void setHead(department, false))");
   });
 
   it("is a route with a fixed tab title that never names the person", () => {

@@ -44,4 +44,15 @@ describe("the access calls", () => {
       "DELETE /api/documents/doc1/shares/u1",
     ]);
   });
+
+  it("encodes each id, so one typed into the address bar stays one path part", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      calls.push(url);
+      return new Response("{}", { status: 200 });
+    });
+    await api.getPersonAccess("a/b?c");
+    await api.removeNamed("f/1", "u?2");
+    expect(calls).toEqual(["/api/admin/users/a%2Fb%3Fc/access", "/api/folders/f%2F1/named/u%3F2"]);
+  });
 });

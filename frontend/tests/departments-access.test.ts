@@ -82,20 +82,21 @@ describe("the Department only dialog", () => {
   it("checks who would lose access first, and its button waits for the names", () => {
     const html = view(FINANCE, null);
     expect(html).toContain("Keep Finance to its people?");
-    expect(html).toContain("Checking who would lose access…");
+    expect(html).toContain('<div role="status"><p class="muted">Checking who would lose access…</p></div>');
     expect(html).toMatch(/<button type="button" class="btn btn-danger" disabled="">Keep to its people<\/button>/);
   });
 
   it("says a failed check, with Try again, and still waits", () => {
     const html = view(FINANCE, null, true);
-    expect(html).toContain("Couldn&#x27;t check who would lose access.");
+    expect(html).toContain('<div role="status"><p class="error-text">Couldn&#x27;t check who would lose access.</p></div>');
     expect(html).toContain("Try again");
     expect(html).toMatch(/disabled="">Keep to its people/);
   });
 
   it("names who loses access, Show all for the rest, then Cancel, Add people to Finance, Keep to its people", () => {
     const html = view(FINANCE, { losing: people(14), gaining: [], files: 120 });
-    expect(html).toContain("14 people will no longer see Finance files: Person 0, Person 1 and 12 more.");
+    // The names are read in the same live region that said "Checking…".
+    expect(html).toContain('<div role="status"><p>14 people will no longer see Finance files: Person 0, Person 1 and 12 more.');
     expect(html).toContain("<summary>Show all 14</summary>");
     expect(html.match(/<li>Person \d+<\/li>/g)).toHaveLength(14);
     const at = ['data-autofocus="true">Cancel', ">Add people to Finance<", ">Keep to its people<"].map((words) => html.indexOf(words));
@@ -120,9 +121,7 @@ describe("the Department only dialog", () => {
 
   it("asks for the password first when the admin is among those who gain the files", () => {
     const dialog = readFileSync(join(__dirname, "..", "components/admin/DepartmentOnlyDialog.tsx"), "utf8");
-    expect(dialog).toContain("onConfirm(includesMe(preview.gaining, myId))");
-    const panel = readFileSync(join(__dirname, "..", "components/admin/DepartmentsPanel.tsx"), "utf8");
-    expect(panel).toContain("step.run(department.name, (password) => setDepartmentOnly(department.id, on, password), passwordFirst)");
+    expect(dialog).toContain("onConfirm(asksFirst({ myId, gaining: preview.gaining }))"); // values: access-password-step
   });
 });
 
@@ -133,6 +132,7 @@ describe("a department's people", () => {
         department: { id: "d1", name: "Finance" },
         me: { id: "me", name: "Ravi" },
         adding: true,
+        onAdding: nothing,
         run: async () => null,
         onChanged: nothing,
         onNotice: nothing,
@@ -143,10 +143,10 @@ describe("a department's people", () => {
     expect(html).toMatch(/disabled="">Add to Finance<\/button>/); // nobody chosen yet
   });
 
-  it("asks for the password when you add yourself or tick yourself Head, not when you untick", () => {
+  it("asks before taking a Head tick away, in its own words", () => {
     const source = readFileSync(join(__dirname, "..", "components/admin/DepartmentPeople.tsx"), "utf8");
-    expect(source).toContain("person.id === me.id && head !== false");
-    expect(source).toContain("removeDepartmentQuestion(removing.name, department.name)");
+    expect(source).toContain('else setAsking({ member, kind: "head" });');
+    expect(source).toContain('asking.kind === "head" ? REMOVE_AS_HEAD');
   });
 });
 
@@ -160,13 +160,14 @@ describe("the new department's head step", () => {
         onDone: nothing,
       }),
     );
-    expect(html).toContain("Who heads Finance?");
+    // An h3 under the tab's h2, which takes focus when the step opens.
+    expect(html).toMatch(/<h3 [^>]*tab[iI]ndex="-1"[^>]*>Who heads Finance\?<\/h3>/);
     expect(html).toContain("The head sees every Finance file, including its private folders, and chooses who is named on them.");
     for (const button of ["Choose a person", "Me", "Decide later"]) expect(html).toContain(`>${button}</button>`);
   });
 
-  it("asks Me for the password, and anyone else without", () => {
-    const step = readFileSync(join(__dirname, "..", "components/admin/NewDepartmentHead.tsx"), "utf8");
-    expect(step).toContain("putMembership(head.id, department.id, { head: true, password }), head.id === me.id)");
+  it("is keyed by the department, so a second one starts fresh", () => {
+    const panel = readFileSync(join(__dirname, "..", "components/admin/DepartmentsPanel.tsx"), "utf8");
+    expect(panel).toContain("key={heading.id}");
   });
 });

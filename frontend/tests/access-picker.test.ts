@@ -6,7 +6,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { PeopleList, pickable } from "@/components/access/PeoplePicker";
-import { tabFrom } from "@/components/admin/logic";
+import { adminSignInPath, tabFrom } from "@/components/admin/logic";
 
 const PEOPLE = [
   { id: "u1", name: "Priya Shah" },
@@ -32,6 +32,31 @@ describe("the people picker", () => {
 
   it("says it is loading until the people come", () => {
     expect(list([], null)).toContain("Loading people…");
+  });
+
+  it("says how many are chosen, and when nobody matches", () => {
+    expect(list(PEOPLE.slice(0, 1))).toContain("1 chosen");
+    expect(list([])).not.toContain("chosen");
+    expect(list([], [])).toContain("No one matches.");
+  });
+
+  it("scrolls in itself only on the page, never inside a dialog", () => {
+    const scrolled = renderToStaticMarkup(
+      createElement(PeopleList, { legend: "People", people: PEOPLE, chosen: [], onChange: () => undefined, cap: 2, scroll: true }),
+    );
+    expect(scrolled).toMatch(/<ul class="[^"]*pickerScroll/);
+    expect(list([])).not.toContain("pickerScroll");
+  });
+});
+
+describe("signing in again from an admin screen", () => {
+  it("comes back to the same screen, the person's Access page too; anything odd comes back to /admin", () => {
+    expect(adminSignInPath("/admin")).toBe("/login?next=/admin");
+    expect(adminSignInPath("/admin/people/0b6f7a1c-1d2e-4f00-9a8b-123456789abc")).toBe(
+      "/login?next=/admin/people/0b6f7a1c-1d2e-4f00-9a8b-123456789abc",
+    );
+    expect(adminSignInPath("/admin/people/a b")).toBe("/login?next=/admin");
+    expect(adminSignInPath("//evil.example/admin")).toBe("/login?next=/admin");
   });
 });
 

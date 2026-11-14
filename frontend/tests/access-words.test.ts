@@ -2,7 +2,9 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  DISABLED_BANNER,
   accessErrorText,
+  addedPeopleText,
   addedPeopleToast,
   byLine,
   departmentOnlyText,
@@ -19,6 +21,7 @@ import {
   removeDepartmentQuestion,
   removeFileQuestion,
   removeFolderQuestion,
+  removeHeadQuestion,
   selfGrantText,
   sharedToast,
   stopManagementQuestion,
@@ -70,6 +73,11 @@ describe("toasts", () => {
     expect(newDepartmentToast("Finance", "Priya")).toBe("Finance added. Priya heads it.");
     expect(newDepartmentToast("Finance", null)).toBe("Finance added. No head yet.");
     expect(addedPeopleToast(3, "Finance")).toBe("Added 3 people to Finance.");
+    expect(addedPeopleText(2, "Finance", [{ person: { id: "r", name: "Ravi" }, reason: "This account is disabled. Enable it before giving access." }])).toBe(
+      "Added 2 people to Finance. Couldn't add Ravi: This account is disabled. Enable it before giving access.",
+    );
+    expect(addedPeopleText(0, "Finance", [])).toBeNull(); // they were all in it already
+    expect(DISABLED_BANNER).toBe("This account is disabled. Enable it from the Users tab to give access again.");
   });
 });
 
@@ -83,6 +91,10 @@ describe("questions", () => {
     );
     expect(departmentOnlyText("Finance", people("Priya"), 0)).toBe(
       "1 person will no longer see Finance files: Priya. Management and anyone you add to Finance still will. No one is in Finance yet, so only Management will see its files.",
+    );
+    // Changed on purpose (#604 review): nobody loses and nobody is in it says only what is true.
+    expect(departmentOnlyText("Finance", [], 0)).toBe(
+      "Nobody loses access. No one is in Finance yet, so only Management will see its files.",
     );
     expect(openText("Finance", 120)).toBe("Everyone in the organisation will be able to see Finance's 120 files.");
     expect(openText("Finance", 1)).toBe("Everyone in the organisation will be able to see Finance's 1 file.");
@@ -98,6 +110,9 @@ describe("questions", () => {
     expect(removeDepartmentQuestion("Priya", "Finance")).toBe("Remove Priya from Finance? Files given to Priya directly stay given.");
     expect(removeFolderQuestion("Priya", "Salaries")).toBe(
       "Take Priya off “Salaries”? Priya won't see this folder any more, unless they are Management or head of its department.",
+    );
+    expect(removeHeadQuestion("Priya", "Finance")).toBe(
+      "Remove Priya as head of Finance? Priya won't see Finance's private folders any more, unless they are named on them.",
     );
     expect(removeFileQuestion("Priya", "Sale deed.pdf")).toBe(
       "Remove Priya's access to “Sale deed.pdf”? This takes away every version of the file.",
@@ -117,7 +132,7 @@ describe("accessErrorText", () => {
   it("says each access refusal in its own words", () => {
     expect(accessErrorText(refused(400, "wrong_password"))).toBe("That password isn't right. Try again.");
     expect(accessErrorText(refused(400, "password_locked", "Try again in 15 minutes."))).toBe("Try again in 15 minutes.");
-    expect(accessErrorText(refused(409, "disabled"))).toBe("This account is turned off. Turn it on before giving access.");
+    expect(accessErrorText(refused(409, "disabled"))).toBe("This account is disabled. Enable it before giving access.");
     expect(accessErrorText(refused(409, "not_a_department"))).toBe("This isn't a department any more. Reload the page.");
     expect(accessErrorText(refused(409, "not_private"))).toBe("This folder isn't private any more. Reload the page.");
     expect(accessErrorText(refused(409, "in_trash"))).toBe("This file is in Trash. Restore it first.");

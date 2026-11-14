@@ -5,7 +5,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { includesMe, passwordRetryText, withPassword } from "@/components/access/passwordStep";
+import { asksFirst, includesMe, passwordRetryText, stepAttempt, withPassword } from "@/components/access/passwordStep";
 import type { AskPassword } from "@/components/access/passwordStep";
 import { SelfPasswordDialog } from "@/components/access/SelfPasswordDialog";
 import { ApiError } from "@/lib/api";
@@ -105,6 +105,66 @@ describe("withPassword", () => {
     const gaining = [{ id: "u2", name: "Amit" }, { id: "me", name: "Ravi" }];
     expect(includesMe(gaining, "me")).toBe(true);
     expect(includesMe(gaining, "u9")).toBe(false);
+  });
+});
+
+describe("stepAttempt, the open step's send", () => {
+  function step(outcome: () => Promise<string>) {
+    const seen: string[] = [];
+    const send = stepAttempt(outcome, {
+      close: () => seen.push("close"),
+      resolve: (reply) => seen.push(`resolve ${reply}`),
+      reject: (caught) => seen.push(`reject ${(caught as ApiError).code}`),
+    });
+    return { send, seen };
+  }
+
+  it("stays open after a wrong password: it throws for the dialog to say, and closes nothing", async () => {
+    const { send, seen } = step(async () => {
+      throw WRONG;
+    });
+    await expect(send("wrong")).rejects.toBe(WRONG);
+    expect(seen).toEqual([]);
+    expect(passwordRetryText(WRONG)).toBe("That password isn't right. Try again.");
+  });
+
+  it("stays open on the sign-in lock, with the server's lock words", async () => {
+    const { send, seen } = step(async () => {
+      throw LOCKED;
+    });
+    await expect(send("x")).rejects.toBe(LOCKED);
+    expect(seen).toEqual([]);
+    expect(passwordRetryText(LOCKED)).toBe("Too many wrong passwords were tried on this account. Try again in 15 minutes.");
+  });
+
+  it("closes and rejects the caller's wait on any other failure", async () => {
+    const { send, seen } = step(async () => {
+      throw new ApiError(409, "disabled", "This person is switched off.");
+    });
+    await expect(send("right")).resolves.toBeUndefined();
+    expect(seen).toEqual(["close", "reject disabled"]);
+  });
+
+  it("closes and resolves with the reply on success", async () => {
+    const { send, seen } = step(async () => "done");
+    await send("right");
+    expect(seen).toEqual(["close", "resolve done"]);
+  });
+});
+
+describe("asksFirst", () => {
+  it("asks first for a give or a tick turned on for me, never for someone else or a tick taken away", () => {
+    expect(asksFirst({ myId: "me", targetId: "me" })).toBe(true); // a department, folder or file
+    expect(asksFirst({ myId: "me", targetId: "me", on: true })).toBe(true); // Head or Management on
+    expect(asksFirst({ myId: "me", targetId: "me", on: false })).toBe(false);
+    expect(asksFirst({ myId: "me", targetId: "u2" })).toBe(false);
+    expect(asksFirst({ myId: "me", targetId: "u2", on: true })).toBe(false);
+  });
+
+  it("asks first when a preview's gaining holds me", () => {
+    expect(asksFirst({ myId: "me", gaining: [{ id: "u2", name: "Amit" }, { id: "me", name: "Ravi" }] })).toBe(true);
+    expect(asksFirst({ myId: "me", gaining: [{ id: "u2", name: "Amit" }] })).toBe(false);
+    expect(asksFirst({ myId: "me", gaining: [] })).toBe(false);
   });
 });
 
