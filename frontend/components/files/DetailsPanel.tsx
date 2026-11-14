@@ -159,7 +159,10 @@ export function DetailsPanel({
         </dd>
 
         <dt>{FILES_TEXT.departmentPath}</dt>
-        {/* PRD 7 (#604): in a folder this person can't see, never "Not in a department". */}
+        {/* PRD 7 (#604): in a folder this person can't see, never "Not in a department".
+            shortcut: 10b follow-up: the list row reads the summary's flag and Details the detail's,
+            so the two can disagree if the detail ever sends a path with the flag set; 10b should
+            send folder: null with shared_with_you on the detail, as the summary does. */}
         <dd>{detail.shared_with_you ? SHARED.row : path.length > 0 ? path.join(" / ") : FILES_TEXT.notFiled}</dd>
 
         <dt>{FILES_TEXT.type}</dt>

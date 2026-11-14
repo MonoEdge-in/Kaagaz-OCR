@@ -15,11 +15,11 @@ import { usePasswordStep } from "./SelfPasswordDialog";
 import {
   CHOOSE_FILES_CAP,
   CHOOSE_PEOPLE_CAP,
-  GIVE_TEXT,
   MAX_GIVE_FILES,
   MAX_GIVE_PEOPLE,
   accessErrorText,
   filesWhat,
+  giveText,
   giveTitle,
   sharedToast,
 } from "./words";
@@ -74,7 +74,7 @@ export function GiveAccessDialog({
     <>
       <ActionDialog title={giveTitle(files)} onClose={onClose} onClosed={onClosed} canClose={() => !busy}>
         <GiveAccessForm
-          tooMany={files.length > MAX_GIVE_FILES}
+          files={files.length}
           chosen={chosen}
           onChoose={setChosen}
           problem={problem}
@@ -91,7 +91,7 @@ export function GiveAccessDialog({
 
 /** The form, for the render tests. */
 export function GiveAccessForm({
-  tooMany,
+  files,
   chosen,
   onChoose,
   problem,
@@ -100,7 +100,7 @@ export function GiveAccessForm({
   onCancel,
   onGive,
 }: {
-  tooMany: boolean;
+  files: number;
   chosen: readonly Person[];
   onChoose(chosen: Person[]): void;
   problem: string | null;
@@ -111,13 +111,12 @@ export function GiveAccessForm({
 }) {
   return (
     <div className="stack">
-      <p>{GIVE_TEXT}</p>
-      {tooMany ? (
+      <p>{giveText(files)}</p>
+      <PeoplePicker legend="People" chosen={chosen} onChange={onChoose} cap={MAX_GIVE_PEOPLE} />
+      {problem && (
         <p className="error-text" role="alert">
-          {CHOOSE_FILES_CAP}
+          {problem}
         </p>
-      ) : (
-        <PeoplePicker legend="People" chosen={chosen} onChange={onChoose} cap={MAX_GIVE_PEOPLE} />
       )}
       {error && (
         <p className="error-text" role="alert">

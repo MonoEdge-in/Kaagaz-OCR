@@ -25,7 +25,7 @@
 // in the toast, and the folder tree is asked for again. Search, filters and pages are for files.
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import { accessAbilities } from "@/components/access/abilities";
 import { AudiencePanel } from "@/components/access/AudiencePanel";
@@ -522,6 +522,8 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
     );
   }
 
+  const focusPlace = useCallback(() => headingRef.current?.focus(), []);
+
   function navigated(placeName: string) {
     setAnnouncement(`Showing ${placeName}.`);
   }
@@ -697,6 +699,8 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                   key={current.folder.id}
                   folder={current.folder}
                   me={me}
+                  version={reload}
+                  onEmptied={focusPlace}
                   onChanged={(message) => {
                     setToast({ message });
                     setReload((n) => n + 1);

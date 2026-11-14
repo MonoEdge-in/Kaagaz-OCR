@@ -1345,6 +1345,8 @@ export interface PlacePreview {
   losing: Person[];
   gaining: Person[];
   files: number;
+  // Make private's preview (PR 10b, coming): the people named on it before, who see it again.
+  named_before?: Person[];
 }
 
 /** PRD 7 (#601), GET /{documents|folders}/{id}/audience: who can see it, grouped by why, in the

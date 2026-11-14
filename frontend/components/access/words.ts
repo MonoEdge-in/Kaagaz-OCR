@@ -222,8 +222,9 @@ export function reasonHeading(reason: string, place: string | null): string | nu
   }
 }
 
-/** Why one person can see it, after "as": the first reason the server gives. */
-function reasonWhy(reason: string | undefined, places: Readonly<Record<string, string>>): string {
+/** Why one person can see it, after "as": the first reason the server gives; null for one this
+ * screen doesn't word (the answer then says only yes). */
+function reasonWhy(reason: string | undefined, places: Readonly<Record<string, string>>): string | null {
   switch (reason) {
     case "management":
       return "Management";
@@ -238,16 +239,21 @@ function reasonWhy(reason: string | undefined, places: Readonly<Record<string, s
     case "held":
       return "the person who uploaded it";
     default:
-      return "this place is open to everyone";
+      return null;
   }
 }
 
 /** Check a person's answer: "Yes. Priya can see this, as a member of Finance." */
 export function checkAnswer(name: string, canSee: boolean, reasons: readonly string[], places: Readonly<Record<string, string>>): string {
   if (!canSee) return `No. ${name} can't see this.`;
-  const why = reasons[0] === "everyone" || reasons.length === 0 ? "because this place is open to everyone" : `as ${reasonWhy(reasons[0], places)}`;
-  return `Yes. ${name} can see this, ${why}.`;
+  if (reasons[0] === "everyone") return `Yes. ${name} can see this, because this place is open to everyone.`;
+  const why = reasonWhy(reasons[0], places);
+  return why ? `Yes. ${name} can see this, as ${why}.` : `Yes. ${name} can see this.`;
 }
+
+/** Past this many people, a group's names fold behind "Show all" (Everyone, in a large organisation). */
+export const FOLD_AT = 10;
+export const PEOPLE_FAILED = "Couldn't load the people to check.";
 
 export const everyoneElseText = (n: number) =>
   n === 0 ? "Everyone in the organisation can see it." : `Everyone else (${peopleCount(n)}) can't see it.`;
@@ -270,8 +276,22 @@ export function privateText(department: string | null, losing: readonly Person[]
   if (losing.length === 0) return `${who} Nobody loses access.`;
   return `${who} ${peopleCount(losing.length)} will lose access: ${namesPreview(losing)}.`;
 }
+/** The people named on it before (making it private again brings them back), kept unless unticked. */
+export const namedBeforeText = (people: readonly Person[]) =>
+  `These people were named before and will see it again: ${people.map((person) => person.name).join(", ")}.`;
+export const NAMED_BEFORE_LEGEND = "Named before";
+export const keepNamed = (name: string) => `Keep ${name} named`;
+export const notTakenOff = (names: readonly string[]) => `Couldn't take ${names.join(", ")} off. Try again from the named list.`;
+
+/** Who loses access: the preview's, and the people named before who are unticked (taken off
+ * once it is private). */
+export function privateLosing(losing: readonly Person[], namedBefore: readonly Person[], dropped: readonly string[]): Person[] {
+  const off = namedBefore.filter((person) => dropped.includes(person.id) && !losing.some((each) => each.id === person.id));
+  return [...losing, ...off];
+}
+
 export function openAgainText(department: string | null, files: number): string {
-  const these = files === 1 ? "this file" : `these ${files} files`;
+  const these = files === 0 ? "this folder" : files === 1 ? "this file" : `these ${files} files`;
   return department ? `Everyone who can see ${department} will see ${these}.` : `Everyone in the organisation will see ${these}.`;
 }
 
@@ -283,7 +303,10 @@ export const MAX_NAMED = 50;
 export const CHOOSE_FILES_CAP = `Choose ${MAX_GIVE_FILES} files or fewer.`;
 export const giveTitle = (files: readonly { display_name: string }[]) =>
   files.length === 1 ? `Give access to ${quoted(files[0]?.display_name ?? "")}` : `Give access to ${files.length} files`;
-export const GIVE_TEXT = "They can open it, and Ask, search and totals can use it for them. Every version is given, now and later.";
+export const giveText = (files: number) =>
+  files === 1
+    ? "They can open it, and Ask, search and totals can use it for them. Every version is given, now and later."
+    : "They can open them, and Ask, search and totals can use these files for them. Every version is given, now and later.";
 /** The password step's "access to …" for the files given. */
 export const filesWhat = (files: readonly { display_name: string }[]) =>
   files.length === 1 ? quoted(files[0]?.display_name ?? "") : plural(files.length, "file", "files");
@@ -302,13 +325,13 @@ export const GIVE_MYSELF = "Give myself access";
 // The menus' plain lines (a document's menu, ACTION_HELP, and the names list's).
 export const GIVE_HELP = "Let named people open this file, with every version.";
 export const AUDIENCE_HELP = "See who can open this file, and why.";
-export const MYSELF_HELP = "Open this file yourself. Asks for your password and tells Management.";
+export const MYSELF_HELP = "Asks for your password, tells Management, then lets you open this file.";
 
 // --- moves and folder deletes refused (PR 10c's rules; p1:194-204) -----------------------------
 
 export const MOVE_REFUSED = "You can't move this here, because it would change who can see it. Ask an admin.";
 export const FOLDER_DELETE_REFUSED = "You can't delete this folder. Ask an admin.";
-/** 403 codes PR 10c is to send (not on this base yet; the follow-up names them there). */
+/** PR 10c's 403 codes, exactly these (its backend test pins them). */
 export const LIBRARY_REFUSALS: Readonly<Record<string, string>> = {
   move_changes_access: MOVE_REFUSED,
   hidden_inside: FOLDER_DELETE_REFUSED,

@@ -231,3 +231,24 @@
   color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
+
+/* The names list: a long name wraps anywhere; on a phone, Kind and Date go under the name. */
+.keptName {
+  overflow-wrap: anywhere;
+}
+
+.keptFacts {
+  display: none;
+}
+
+@media (max-width: 639.98px) {
+  .keptWide {
+    display: none;
+  }
+
+  .keptFacts {
+    display: block;
+    color: var(--text-secondary);
+    font-size: var(--fs-sm);
+  }
+}

@@ -6,7 +6,7 @@
 // loads, nothing on any failure and nothing for 0: never a "0", never a count to anyone but an
 // Admin. Each name's menu: Give access, Who can see this, and Give myself access (my password).
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { adminGate } from "@/components/admin/logic";
 import { RowMenu } from "@/components/admin/RowMenu";
 import { ActionDialog } from "@/components/documents/ActionDialog";
@@ -39,39 +39,57 @@ type KeptFile = Kept["items"][number];
 export function KeptFromMe({
   folder,
   me,
+  version,
   onChanged,
+  onEmptied,
 }: {
   folder: { id: string; name: string };
   me: Me;
-  /** Access given: the toast's words; the screen reads the list again. */
+  /** The screen's reload count: any access change there (Make private, a give) asks again. */
+  version: number;
+  /** Access given: the toast's words; the screen reads the list again (and `version` moves). */
   onChanged(message: string): void;
+  /** The last kept file was given: the strip is gone, so focus goes to the place heading. */
+  onEmptied?(): void;
 }) {
   const admin = adminGate(me) === "allow";
   const [kept, setKept] = useState<{ folderId: string; reply: Kept } | null>(null);
-  const [attempt, setAttempt] = useState(0);
   const [open, setOpen] = useState(false);
   const [acting, setActing] = useState<{ kind: "give" | "audience"; file: KeptFile } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The last change's words, kept in the names list as well as the toast (which sits behind it).
+  const [notice, setNotice] = useState("");
   const passwordStep = usePasswordStep();
 
   useEffect(() => {
     if (!admin) return; // never asked for anyone else
     let live = true;
     keptFromMe(folder.id).then(
-      (reply) => live && setKept({ folderId: folder.id, reply }),
+      (reply) => {
+        if (!live) return;
+        setKept({ folderId: folder.id, reply });
+        if (reply.count === 0) setOpen(false); // never reopened by itself when files are kept again
+      },
       () => live && setKept(null), // any failure: nothing at all
     );
     return () => {
       live = false;
     };
-  }, [admin, folder.id, attempt]);
+  }, [admin, folder.id, version]);
 
   const shown = admin && kept?.folderId === folder.id ? kept.reply : null;
+  const count = shown?.count ?? null;
+  const before = useRef<number | null>(null);
+  useEffect(() => {
+    // After the commit that took the names list away, so its dialog has handed focus back first.
+    if (count === 0 && (before.current ?? 0) > 0) onEmptied?.();
+    before.current = count;
+  }, [count, onEmptied]);
   if (!shown || keptStripText(shown.count) === null) return null;
 
   const changed = (message: string) => {
     onChanged(message);
-    setAttempt((n) => n + 1);
+    setNotice(message);
   };
   async function giveMyself(file: KeptFile) {
     setError(null);
@@ -91,6 +109,7 @@ export function KeptFromMe({
           <KeptNamesView
             kept={shown}
             error={error}
+            notice={notice}
             onGive={(file) => setActing({ kind: "give", file })}
             onAudience={(file) => setActing({ kind: "audience", file })}
             onMyself={(file) => void giveMyself(file)}
@@ -140,12 +159,14 @@ export function KeptStripView({ count, onShow }: { count: number; onShow(): void
 export function KeptNamesView({
   kept,
   error,
+  notice = "",
   onGive,
   onAudience,
   onMyself,
 }: {
   kept: Kept;
   error: string | null;
+  notice?: string;
   onGive(file: KeptFile): void;
   onAudience(file: KeptFile): void;
   onMyself(file: KeptFile): void;
@@ -159,14 +180,22 @@ export function KeptNamesView({
           {error}
         </p>
       )}
-      {/* No scroller of its own: the cells wrap, and the dialog's body scrolls. */}
+      <p className="hint" role="status">
+        {notice}
+      </p>
+      {/* No scroller of its own: the cells wrap, and the dialog's body scrolls. On a phone, Kind
+          and Date go under the name (Access.module.css). */}
       <table className="table">
         <thead>
           <tr>
             <th scope="col">Name</th>
-            <th scope="col">Kind</th>
+            <th scope="col" className={styles.keptWide}>
+              Kind
+            </th>
             <th scope="col">Uploaded by</th>
-            <th scope="col">Date</th>
+            <th scope="col" className={styles.keptWide}>
+              Date
+            </th>
             <th scope="col">
               <span className="visually-hidden">Actions</span>
             </th>
@@ -175,10 +204,13 @@ export function KeptNamesView({
         <tbody>
           {kept.items.map((file) => (
             <tr key={file.id}>
-              <td>{file.name}</td>
-              <td>{typeLabel(file.kind as DetectedType)}</td>
+              <td className={styles.keptName}>
+                {file.name}
+                <span className={styles.keptFacts}>{`${typeLabel(file.kind as DetectedType)} · ${formatDate(file.created_at)}`}</span>
+              </td>
+              <td className={styles.keptWide}>{typeLabel(file.kind as DetectedType)}</td>
               <td>{file.uploader ?? "—"}</td>
-              <td>{formatDate(file.created_at)}</td>
+              <td className={styles.keptWide}>{formatDate(file.created_at)}</td>
               <td>
                 <RowMenu
                   name={file.name}

@@ -36,15 +36,18 @@ import {
   AUDIENCE_FORBIDDEN,
   AUDIENCE_LOADING,
   CHECK_PERSON,
+  FOLD_AT,
   MAKE_OPEN,
   MAKE_PRIVATE,
   MAX_NAMED,
+  NAMED_BEFORE_LEGEND,
   NAMED_HEADING,
   NAME_PEOPLE,
   NOT_FOUND_DOCUMENT,
   NOT_FOUND_FOLDER,
   NOT_FOUND_TEXT,
   NO_ONE_NAMED,
+  PEOPLE_FAILED,
   PREVIEW_FAILED,
   PREVIEW_LOADING,
   TAKE_OFF,
@@ -54,9 +57,13 @@ import {
   canNowSeeToast,
   checkAnswer,
   everyoneElseText,
+  keepNamed,
   makeOpenQuestion,
   makePrivateQuestion,
+  namedBeforeText,
+  notTakenOff,
   openAgainText,
+  privateLosing,
   privateRefusalText,
   privateText,
   privateToast,
@@ -113,8 +120,12 @@ export function AudiencePanel(props: PanelProps) {
   const [mode, setMode] = useState<Mode>({ kind: "view" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The last change's words, kept in the dialog as well as the toast (which sits behind it).
+  const [notice, setNotice] = useState("");
+  // Seeded from the tree, then from the server's reply to Make private / Make open again.
+  const [isPrivate, setIsPrivate] = useState(place?.isPrivate === true);
   const passwordStep = usePasswordStep();
-  const withNamed = target.kind === "folder" && place?.isPrivate === true && abilities.editNamed;
+  const withNamed = target.kind === "folder" && isPrivate && abilities.editNamed;
 
   useEffect(() => {
     let live = true;
@@ -151,7 +162,10 @@ export function AudiencePanel(props: PanelProps) {
     try {
       const done = await change();
       if (done === undefined) return;
-      if (done !== null) onChanged(done);
+      if (done !== null) {
+        onChanged(done);
+        setNotice(done);
+      }
       back();
       setAttempt((n) => n + 1);
     } catch (caught) {
@@ -161,20 +175,33 @@ export function AudiencePanel(props: PanelProps) {
     }
   }
 
-  const said = (reply: unknown, done: string) => (reply === null ? undefined : done);
-  const switchPrivate = (on: boolean, chosen: readonly Person[], preview: PlacePreview) =>
+  const switchPrivate = (on: boolean, chosen: readonly Person[], preview: PlacePreview, dropped: readonly Person[]) =>
     send(async () => {
       const first = asksFirst({ myId, gaining: [...preview.gaining, ...chosen] }); // naming myself is a self-grant too
       const ids = chosen.map((person) => person.id);
       const reply = await passwordStep.run(quoted(target.name), (password) => setPrivate(target.id, on, ids, password), first);
-      return said(reply, privateToast(target.name, on));
+      if (reply === null) return undefined;
+      setIsPrivate(reply.private);
+      // The people named before and unticked: taken off now it is private (the list needs it so).
+      const failed: string[] = [];
+      for (const person of dropped) {
+        try {
+          await removeNamed(target.id, person.id);
+        } catch {
+          failed.push(person.name);
+        }
+      }
+      return [privateToast(target.name, on), ...(failed.length ? [notTakenOff(failed)] : [])].join(" ");
     });
   const addChosen = (chosen: readonly Person[]) =>
     send(async () => {
       const result = await addPeople(
         chosen,
         myId,
-        (person, first) => passwordStep.run(quoted(target.name), (password) => addNamed(target.id, person.id, password), first),
+        // A Head names themselves with no password (the server asks it of an Admin only); a 403
+        // password_required still opens the step.
+        (person, first) =>
+          passwordStep.run(quoted(target.name), (password) => addNamed(target.id, person.id, password), first && abilities.makePrivate),
         accessErrorText,
       );
       if (result.cancelled && result.added === 0) return undefined;
@@ -196,6 +223,7 @@ export function AudiencePanel(props: PanelProps) {
         {mode.kind === "view" && (
           <AudienceView
             {...props}
+            place={place ? { ...place, isPrivate } : null}
             audience={audience}
             failed={failed}
             named={withNamed ? named : null}
@@ -248,6 +276,9 @@ export function AudiencePanel(props: PanelProps) {
             </div>
           </div>
         )}
+        <p className="hint" role="status">
+          {notice}
+        </p>
       </ActionDialog>
       {passwordStep.dialog}
     </>
@@ -311,11 +342,15 @@ export function AudienceView({
           heading && (
             <section key={group.reason} className={styles.group}>
               <h3>{heading}</h3>
-              <ul className={styles.names}>
-                {group.people.map((person) => (
-                  <li key={person.id}>{person.name}</li>
-                ))}
-              </ul>
+              {group.people.length > FOLD_AT ? (
+                // A large organisation's Everyone: folded, so the reasons above stay in view.
+                <details className={styles.disclosure}>
+                  <summary>{showAll(group.people.length)}</summary>
+                  <NameList people={group.people} />
+                </details>
+              ) : (
+                <NameList people={group.people} />
+              )}
             </section>
           )
         );
@@ -354,6 +389,14 @@ export function AudienceView({
     </div>
   );
 }
+
+const NameList = ({ people }: { people: readonly Person[] }) => (
+  <ul className={styles.names}>
+    {people.map((person) => (
+      <li key={person.id}>{person.name}</li>
+    ))}
+  </ul>
+);
 
 /** A private folder's named list; [Add people] and [Remove] only when the server says `can_edit`. */
 function NamedSection({ named, onMode }: { named: NamedList; onMode(mode: Mode): void }) {
@@ -397,7 +440,11 @@ function CheckPerson({ target, places }: { target: AudienceTarget; places: Reado
     let live = true;
     listPeople().then(
       (reply) => live && setPeople(reply.items),
-      () => live && setPeople([]),
+      () => {
+        if (!live) return;
+        setPeople([]);
+        setAnswer(PEOPLE_FAILED);
+      },
     );
     return () => {
       live = false;
@@ -454,9 +501,10 @@ function PlaceChange({
   busy: boolean;
   error: string | null;
   onCancel(): void;
-  onConfirm(on: boolean, chosen: readonly Person[], preview: PlacePreview): void;
+  onConfirm(on: boolean, chosen: readonly Person[], preview: PlacePreview, dropped: readonly Person[]): void;
 }) {
   const [chosen, setChosen] = useState<Person[]>([]);
+  const [dropped, setDropped] = useState<string[]>([]); // the people named before, unticked
   const [attempt, setAttempt] = useState(0);
   const [preview, setPreview] = useState<{ key: string; reply: PlacePreview } | null>(null);
   const [failedKey, setFailedKey] = useState<string | null>(null);
@@ -478,13 +526,15 @@ function PlaceChange({
       department={department}
       chosen={chosen}
       onChoose={setChosen}
+      dropped={dropped}
+      onDrop={setDropped}
       preview={preview?.key === key ? preview.reply : null}
       failed={failedKey === key}
       busy={busy}
       error={error}
       onRetry={() => setAttempt((n) => n + 1)}
       onCancel={onCancel}
-      onConfirm={(reply) => onConfirm(on, chosen, reply)}
+      onConfirm={(reply) => onConfirm(on, chosen, reply, (reply.named_before ?? []).filter((person) => dropped.includes(person.id)))}
     />
   );
 }
@@ -495,6 +545,8 @@ export function PlaceChangeView({
   department,
   chosen,
   onChoose,
+  dropped = [],
+  onDrop = () => undefined,
   preview,
   failed,
   busy,
@@ -507,6 +559,8 @@ export function PlaceChangeView({
   department: string | null;
   chosen: readonly Person[];
   onChoose(chosen: Person[]): void;
+  dropped?: readonly string[];
+  onDrop?(dropped: string[]): void;
   preview: PlacePreview | null;
   failed: boolean;
   busy: boolean;
@@ -515,6 +569,9 @@ export function PlaceChangeView({
   onCancel(): void;
   onConfirm(preview: PlacePreview): void;
 }) {
+  const namedBefore = (on && preview?.named_before) || [];
+  const losing = preview ? privateLosing(preview.losing, namedBefore, dropped) : [];
+  const back = namedBefore.filter((person) => !dropped.includes(person.id));
   return (
     <div className="stack">
       {/* One live region: "Checking…", then who loses (or the failure) where it was. */}
@@ -524,7 +581,7 @@ export function PlaceChangeView({
         ) : preview === null ? (
           <p className="muted">{PREVIEW_LOADING}</p>
         ) : (
-          <p>{on ? privateText(department, preview.losing) : openAgainText(department, preview.files)}</p>
+          <p>{on ? privateText(department, losing) : openAgainText(department, preview.files)}</p>
         )}
       </div>
       {failed && (
@@ -535,15 +592,34 @@ export function PlaceChangeView({
           </button>
         </div>
       )}
-      {on && preview && preview.losing.length > 3 && (
+      {on && losing.length > 3 && (
         <details className={styles.disclosure}>
-          <summary>{showAll(preview.losing.length)}</summary>
-          <ul className={styles.names}>
-            {preview.losing.map((person) => (
-              <li key={person.id}>{person.name}</li>
+          <summary>{showAll(losing.length)}</summary>
+          <NameList people={losing} />
+        </details>
+      )}
+      {/* Making it private again brings back who was named on it: each can be taken off first. */}
+      {namedBefore.length > 0 && (
+        <fieldset className={styles.picker}>
+          <legend>{NAMED_BEFORE_LEGEND}</legend>
+          {back.length > 0 && <p>{namedBeforeText(back)}</p>}
+          <ul className={styles.pickerList}>
+            {namedBefore.map((person) => (
+              <li key={person.id}>
+                <label className={styles.pickerRow}>
+                  <input
+                    type="checkbox"
+                    checked={!dropped.includes(person.id)}
+                    onChange={(event) =>
+                      onDrop(event.target.checked ? dropped.filter((id) => id !== person.id) : [...dropped, person.id])
+                    }
+                  />
+                  {keepNamed(person.name)}
+                </label>
+              </li>
             ))}
           </ul>
-        </details>
+        </fieldset>
       )}
       {on && <PeoplePicker legend={NAME_PEOPLE} chosen={chosen} onChange={onChoose} cap={MAX_NAMED} />}
       {error && (

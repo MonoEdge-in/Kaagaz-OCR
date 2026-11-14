@@ -584,12 +584,13 @@ export function DocumentsTable({
                   {/* PRD 7 (#604): an admin session's, at most 100 files at once. */}
                   {movable.length > 0 && adminGate(me) === "allow" && (
                     <>
+                      {/* Past 100: it stays reachable and says why, but does nothing. */}
                       <button
                         type="button"
                         className="btn"
-                        disabled={movable.length > MAX_GIVE_FILES}
+                        aria-disabled={movable.length > MAX_GIVE_FILES || undefined}
                         aria-describedby={movable.length > MAX_GIVE_FILES ? "bulk-give-cap" : undefined}
-                        onClick={() => setGivingMany(true)}
+                        onClick={() => movable.length <= MAX_GIVE_FILES && setGivingMany(true)}
                       >
                         Give access ({movable.length})
                       </button>
