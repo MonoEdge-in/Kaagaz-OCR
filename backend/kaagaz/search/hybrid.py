@@ -284,24 +284,27 @@ _MEANING = text(
 
 # ponytail: the exact fallback (PROVISIONAL, plan item 4) for a scope the index
 # walk came back short on, because hnsw.max_scan_tuples (20,000 tuples) ran out
-# first: a small customer or document in a big table. The same filters, with no
-# order inside the MATERIALIZED step, so the index is never used: O(n * dim) for
-# the scope's n vectors. Upgrade path: a per-customer partial or partitioned
-# index, or a higher max_scan_tuples, once a scope is too big to scan exactly.
+# first: a small customer or document in a big table; and PRD 7's small-set path. The
+# same filters, with no order inside the MATERIALIZED step, so the index is never used:
+# O(n * dim) for the scope's n vectors. Driven from the documents the person can see
+# (#602, measured in PR 8): each one's pieces through pieces_document (OFFSET 0 keeps the
+# planner from flattening it into a scan of every piece of the customer), so a person
+# who sees a few files reads only theirs. Upgrade path: a per-customer partial or
+# partitioned index, or a higher max_scan_tuples, once a scope is too big to scan exactly.
 _MEANING_EXACT = text(
     "WITH candidates AS MATERIALIZED ("
     " SELECT p.id, p.document_id, p.embedding <=> CAST(:vec AS halfvec(1024)) AS distance"
-    " FROM pieces p"
-    " JOIN visible_documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
-    " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
-    " AND p.embedding_model = :recipe"
+    " FROM visible_documents d"
+    " CROSS JOIN LATERAL (SELECT q.id, q.document_id, q.embedding FROM pieces q"
+    " WHERE q.customer_id = :c AND q.document_id = d.id AND q.embedding_model = :recipe OFFSET 0) p"
+    " WHERE d.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
     " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
     " WHERE dt.customer_id = :c AND dt.tag_id = ANY(CAST(:s_tags AS uuid[])) GROUP BY dt.document_id"
     " HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))"
     " AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))"
     " AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))"
-    " AND (CAST(:s_documents AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:s_documents AS uuid[])))"
+    " AND (CAST(:s_documents AS uuid[]) IS NULL OR d.id = ANY(CAST(:s_documents AS uuid[])))"
     " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
     " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
     " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
@@ -309,19 +312,20 @@ _MEANING_EXACT = text(
 )
 
 # PRD 7 section 7 (#602): how many vectors the person can see in the scope, counted up to :most
-# only (SEARCH_EXACT_BELOW), so it costs O(:most) at worst. Below :most, only _MEANING_EXACT runs.
+# only (SEARCH_EXACT_BELOW), driven from their documents as _MEANING_EXACT is: O(the visible
+# documents + :most). Below :most, only _MEANING_EXACT runs.
 _VISIBLE_VECTORS = text(
-    "SELECT count(*) FROM (SELECT 1 FROM pieces p"
-    " JOIN visible_documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
-    " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
-    " AND p.embedding_model = :recipe"
+    "SELECT count(*) FROM (SELECT 1 FROM visible_documents d"
+    " CROSS JOIN LATERAL (SELECT 1 FROM pieces q WHERE q.customer_id = :c AND q.document_id = d.id"
+    " AND q.embedding_model = :recipe OFFSET 0) p"
+    " WHERE d.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
     " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
     " WHERE dt.customer_id = :c AND dt.tag_id = ANY(CAST(:s_tags AS uuid[])) GROUP BY dt.document_id"
     " HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))"
     " AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))"
     " AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))"
-    " AND (CAST(:s_documents AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:s_documents AS uuid[])))"
+    " AND (CAST(:s_documents AS uuid[]) IS NULL OR d.id = ANY(CAST(:s_documents AS uuid[])))"
     " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
     " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
     " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
