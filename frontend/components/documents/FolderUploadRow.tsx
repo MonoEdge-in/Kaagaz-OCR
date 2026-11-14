@@ -244,8 +244,9 @@ function AttentionItem({ item, tree, limits }: { item: FolderUploadItem; tree: F
   );
 }
 
-/** "Already in Kaagaz, in <path>": Open, and Move it here (after asking), or Restore. */
-function DuplicateItem({ item, tree }: { item: FolderUploadItem; tree: FolderTree }) {
+/** "Already in Kaagaz, in <path>": Open, and Move it here (after asking), or Restore; for a copy of a
+ * file this person can't see (PRD 7, #599), only that it is in Kaagaz. */
+export function DuplicateItem({ item, tree }: { item: FolderUploadItem; tree: FolderTree }) {
   const document = item.document;
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);

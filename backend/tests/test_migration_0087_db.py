@@ -25,10 +25,18 @@ def test_the_revision_follows_0086() -> None:
     assert (M0087.revision, M0087.down_revision) == ("0087", "0086")
 
 
-def test_the_rule_is_0086s_folders_rule_word_for_word() -> None:
-    """One rule text: the trashed folders' view is 0086's folders view on another table."""
+def test_the_rule_is_0086s_with_one_change_fail_closed() -> None:
+    """One rule text: each view is 0086's with an open department read from ``a.open`` (a
+    department still there and open), and the trashed folders' view is the folders' view on
+    another table."""
+    changed = {"d": "d.department_id", "f": "f.department_id", "t": "t.department_id"}
+    for name, view in M0086.VIEWS.items():
+        alias = changed["d" if name == "visible_documents" else "f"]
+        expected = view.replace(f"{alias} <> ALL (a.closed)", f"{alias} = ANY (a.open)")
+        assert expected.replace("CREATE VIEW", "CREATE OR REPLACE VIEW") == M0087.VIEWS[name]
     folders = M0086.VIEWS["visible_folders"].replace("visible_folders", "visible_trashed_folders")
-    expected = folders.replace("public.folders f", "public.trashed_folders t").replace("f.", "t.")
+    trashed = folders.replace("public.folders f", "public.trashed_folders t").replace("f.", "t.")
+    expected = trashed.replace(f"{changed['t']} <> ALL (a.closed)", f"{changed['t']} = ANY (a.open)")
     assert expected == M0087.VIEW
 
 

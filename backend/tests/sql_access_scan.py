@@ -55,9 +55,23 @@ CONTENT = frozenset(
     ]
 )
 PLACES = frozenset({"documents", "folders", "trashed_folders"})
-_TABLE = r"(?:public\.)?([a-z_]+)\b(?!\s*\()"
-_READ = re.compile(r"(?<!DELETE )\b(?:FROM|JOIN|USING)\s+" + _TABLE)
-_COMMA = re.compile(r"\bFROM\s+(?:public\.)?[a-z_]+(?:\s+(?:AS\s+)?[a-z_]+)?\s*,\s*" + _TABLE)
+# A table named after a keyword: ONLY, brackets (a bracketed join), quotes and the schema allowed;
+# never a function (``FROM unnest(``).
+_NAME = r'(?:ONLY\s+)?\(*\s*"?(?:public"?\s*\.\s*"?)?([a-z_]+)"?(?!\s*\()'
+_SOURCE = r"(?<!DELETE )\b(?:FROM|JOIN|USING)\s+" + _NAME
+_WRITE = r"\b(?:UPDATE|DELETE\s+FROM)\s+" + _NAME
+_FROM = r"(?<!DELETE )\bFROM\b"
+# Where a FROM list ends, at its own depth of brackets.
+_END = re.compile(
+    r"\b(?:WHERE|JOIN|LEFT|RIGHT|INNER|FULL|CROSS|GROUP|ORDER|LIMIT|OFFSET|HAVING|UNION|EXCEPT|INTERSECT"
+    r"|RETURNING|ON|WINDOW|FOR|SET|LATERAL)\b",
+    re.IGNORECASE,
+)
+_ITEM = re.compile(r"\s*" + _NAME, re.IGNORECASE)
+# SQL written in small letters: read too, but only in a string that is plainly a statement.
+_LOWER_SQL = re.compile(
+    r"\bselect\b[\s\S]*\bfrom\b|\bupdate\s+\w+\s+set\b|\bdelete\s+from\b|\binsert\s+into\b"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,12 +82,41 @@ class Owner:
     view: bool  # it, or a constant it names (at any depth), reads visible_documents
 
 
+def _listed(sql: str, start: int) -> list[str]:
+    """The items of the FROM list that starts at ``start`` (``a x, b y, c z``), up to where it ends."""
+    items, depth, begin, at = [], 0, start, start
+    while at < len(sql):
+        char = sql[at]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                break
+        elif depth == 0 and char == ",":
+            items.append(sql[begin:at])
+            begin = at + 1
+        elif depth == 0 and sql[at - 1].isspace() and _END.match(sql, at):
+            break
+        at += 1
+    items.append(sql[begin:at])
+    return items
+
+
 def reads(sql: str) -> set[str]:
-    """The tables ``sql`` reads directly (FROM, JOIN, USING; not DELETE's target)."""
-    found = {m.group(1).lower() for m in _READ.finditer(sql)} | {
-        m.group(1).lower() for m in _COMMA.finditer(sql)
-    }
-    return found & (CONTENT | PLACES)
+    """The tables ``sql`` reads directly: after FROM, JOIN and USING (every item of a FROM list,
+    ONLY, quotes and a bracketed join too), and the target of an UPDATE or DELETE that returns
+    rows (RETURNING); not a DELETE's or an UPDATE's target otherwise. Keywords in capitals, or in
+    small letters in a string that is plainly a statement (``_LOWER_SQL``)."""
+    flags = re.IGNORECASE if _LOWER_SQL.search(sql) else 0
+    found = {m.group(1) for m in re.finditer(_SOURCE, sql, flags)}
+    for start in re.finditer(_FROM, sql, flags):
+        for item in _listed(sql, start.end()):
+            if (named := _ITEM.match(item)) is not None:
+                found.add(named.group(1))
+    if re.search(r"\bRETURNING\b", sql, flags):
+        found |= {m.group(1) for m in re.finditer(_WRITE, sql, flags)}
+    return {name.lower() for name in found} & (CONTENT | PLACES)
 
 
 def _name(node: ast.stmt) -> str | None:

@@ -122,6 +122,9 @@ def decide(
                 "UPDATE organization_word_suggestions SET status = :status,"
                 " decided_by = :u, decided_at = now()"
                 " WHERE customer_id = :c AND id = :id AND status = 'pending' AND submitted_by <> :u"
+                # PRD 7 (#599): one made on a page of a file the person can't see is not theirs to decide.
+                " AND (document_id IS NULL OR EXISTS (SELECT 1 FROM visible_documents d"
+                " WHERE d.customer_id = :c AND d.id = document_id))"
                 " RETURNING id, word, meaning, status, submitted_by, created_at, document_id, page_no"
             ),
             {"c": customer_id, "id": suggestion_id, "u": reviewer_id, "status": status},

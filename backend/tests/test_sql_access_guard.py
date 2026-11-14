@@ -66,11 +66,19 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ("db/autofile.py", "_INVOICE"): (SHARED_WITH_WORKER, "auto-filing reads the file's own invoice"),
     ("db/autofile.py", "_MOST_SEEN"): (SHARED_WITH_WORKER, "auto-filing reads the file's own invoice"),
     ("db/autofile.py", "_CHILD_NAMED"): (SHARED_WITH_WORKER, "auto-filing finds its folder"),
+    ("db/document_stories.py", "_SET_EMBEDDING"): (
+        WRITE_AFTER_CHECK,
+        "a story's vector, after put_story (SEEN_DOCUMENT); shared with the CLI",
+    ),
     ("db/document_stories.py", "_GET"): (
         SHARED_WITH_WORKER,
         "GET /documents/{id}/my-story: get_document first",
     ),
     ("db/document_stories.py", "_PUT"): (WRITE_AFTER_CHECK, "the family of :d, under SEEN_DOCUMENT"),
+    ("db/documents.py", "delete_forever"): (
+        WRITE_AFTER_CHECK,
+        "delete forever: _document_or_404 or the trashed folder's one() first",
+    ),
     ("db/documents.py", "_SELECT"): (DUPLICATE_LOOKUP, f"the upload's own row and its copy; {_UPLOAD}"),
     ("db/documents.py", "REFUSED_ALONE"): (DUPLICATE_LOOKUP, "a refused copy is replaced, not a duplicate"),
     ("db/documents.py", "_REFUSED_COPY"): (DUPLICATE_LOOKUP, "a refused copy is replaced, not a duplicate"),
@@ -114,6 +122,7 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ),
     ("db/documents.py", "_COPY_TAGS"): (WRITE_AFTER_CHECK, "a new version takes its family's tags"),
     ("db/documents.py", "PgDocuments"): (SHARED_WITH_WORKER, f"the upload and pipeline store; {_UPLOAD}"),
+    ("db/ensemble.py", "_STOP"): (WRITE_AFTER_CHECK, "POST .../ensemble/{run}/stop: get_document first"),
     ("db/ensemble.py", "_RUN"): (SHARED_WITH_WORKER, _ENSEMBLE),
     ("db/ensemble.py", "_ACTIVE_RUN"): (SHARED_WITH_WORKER, _ENSEMBLE),
     ("db/ensemble.py", "_RUNS_THIS_HOUR"): (
@@ -132,10 +141,6 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ),
     ("db/folder_upload_items.py", "_FINISH"): (WRITE_AFTER_CHECK, "the item's own stored copy"),
     ("db/folder_upload_items.py", "_PROGRESS"): (EXISTENCE_ONLY, "counts of the uploader's own stored files"),
-    ("db/folder_upload_items.py", "_PREVIOUS"): (
-        EXISTENCE_ONLY,
-        "whether the uploader's last root is still there",
-    ),
     ("db/folder_uploads.py", "_REUSE"): (
         SHARED_WITH_WORKER,
         "a folder upload's plan; its parent through folders_seen first",
@@ -158,7 +163,9 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ),
     ("db/folders.py", "_PATH"): (
         TREE_WALK,
-        "every API caller checks folders_seen (the viewer: the whole path)",
+        "a folder's kind and depth after folders_seen (PATCH, DELETE /folders, the upload's department);"
+        " the viewer shows a path only when folders_seen holds all of it; a restore names a place only"
+        " when visible_folders holds all of it (trashed_folders.as_seen)",
     ),
     ("db/folders.py", "_DEPTH"): (TREE_WALK, "create and move: _seen first"),
     ("db/folders.py", "_DESCENDANTS"): (TREE_WALK, "a folder's subtree, after folders_seen on the folder"),
@@ -173,6 +180,22 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ("db/folders.py", "_MOVE_FREE"): (WRITE_AFTER_CHECK, "DELETE /folders/{id}?contents=keep, an Admin's"),
     ("db/folders.py", "_LEFT"): (WRITE_AFTER_CHECK, "DELETE /folders/{id}?contents=keep, an Admin's"),
     ("db/folders.py", "_TRASH_TREE"): (WRITE_AFTER_CHECK, "DELETE /folders/{id}?contents=trash, an Admin's"),
+    ("db/folders.py", "_DELETE"): (
+        WRITE_AFTER_CHECK,
+        "DELETE /folders/{id}: _seen first; RETURNING its parent",
+    ),
+    ("db/folders.py", "_MOVE"): (
+        WRITE_AFTER_CHECK,
+        "PATCH /folders/{id}: _seen first; the reply through shown_folder",
+    ),
+    ("db/folders.py", "_RENAME"): (
+        WRITE_AFTER_CHECK,
+        "PATCH /folders/{id}: _seen first; the reply through shown_folder",
+    ),
+    ("db/folders.py", "_SET_KIND"): (
+        WRITE_AFTER_CHECK,
+        "PATCH /folders/{id}: _seen first; the reply through shown_folder",
+    ),
     ("db/folders.py", "_FREE"): (TREE_WALK, "a free sibling name, under the tree lock"),
     ("db/folders.py", "_PRUNE"): (
         WRITE_AFTER_CHECK,
@@ -188,7 +211,7 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ("db/listing.py", "_NAME_OF"): (WRITE_AFTER_CHECK, "rename: _document_or_404 first"),
     ("db/listing.py", "_MOVE_FAMILY"): (
         WRITE_AFTER_CHECK,
-        "PATCH /documents/{id}: the file and the folder first",
+        "PATCH /documents/{id}: _document_or_404, then the folder through folders_seen, before the locks",
     ),
     ("db/listing.py", "_FAMILY_FOLDERS"): (WRITE_AFTER_CHECK, "PATCH /documents/{id}: the file first"),
     ("db/listing.py", "_VALUES_FOUND"): (CORRELATED, "inside _BATCH, on visible_documents d"),
@@ -265,6 +288,12 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ("db/usage.py", "_REPORT"): (ADMIN_NUMBERS, "GET /admin/usage: names and spend"),
     ("db/value_keys.py", "_BY_ID"): (SHARED_WITH_WORKER, f"a value's keys; {_WORDS}"),
     ("db/value_keys.py", "_UPSERT"): (SHARED_WITH_WORKER, f"a value's keys; {_WORDS}"),
+    ("db/versions.py", "_KEPT_APART_AGAIN"): (WRITE_AFTER_CHECK, "separate: the view first"),
+    ("db/versions.py", "_DECIDE"): (
+        WRITE_AFTER_CHECK,
+        "accept and reject: _LIVE (both sides through the view) first",
+    ),
+    ("db/versions.py", "_ACCEPT"): (WRITE_AFTER_CHECK, "accept: _LIVE (both sides through the view) first"),
     ("db/versions.py", "_TEXT"): (
         SHARED_WITH_WORKER,
         "version spotting; compare: both documents through the view first",
@@ -400,6 +429,22 @@ class SqlAccessGuardTest(unittest.TestCase):
             scan.reads(" FROM visible_documents d JOIN folders f ON f.id = d.folder_id"), {"folders"}
         )
         self.assertEqual(scan.reads("DELETE FROM pages WHERE customer_id = :c"), set())
+        # #599 review: what returns rows reads them; ONLY, quotes, brackets, long lists, small letters.
+        self.assertEqual(scan.reads("DELETE FROM pages WHERE customer_id = :c RETURNING id"), {"pages"})
+        self.assertEqual(scan.reads("UPDATE documents SET x = 1 WHERE id = :d"), set())
+        self.assertEqual(scan.reads("UPDATE documents SET x = 1 WHERE id = :d RETURNING id"), {"documents"})
+        self.assertEqual(scan.reads("SELECT 1 FROM ONLY documents"), {"documents"})
+        self.assertEqual(scan.reads('SELECT 1 FROM "documents" d, public."pages" p'), {"documents", "pages"})
+        self.assertEqual(
+            scan.reads("SELECT 1 FROM (documents d JOIN pages p ON p.id = d.id)"), {"documents", "pages"}
+        )
+        self.assertEqual(
+            scan.reads("SELECT 1 FROM visible_documents d, users u, pieces p WHERE true"), {"pieces"}
+        )
+        self.assertEqual(scan.reads("select 1 from pages where customer_id = :c"), {"pages"})
+        self.assertEqual(
+            scan.reads("SELECT 1 FROM unnest(CAST(:x AS uuid[])) AS w (k), pieces p"), {"pieces"}
+        )
         self.assertEqual(scan.reads("SELECT 1 FROM documents d, pieces p"), {"documents", "pieces"})
         self.assertEqual(scan.reads("Answer only from pages the person sent"), set())  # prose
         found = _found()

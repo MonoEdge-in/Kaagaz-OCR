@@ -40,8 +40,8 @@ from kaagaz.api.auth import CanDeleteForever, CurrentUser, User, deletes_forever
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import FOLDER_NAME_MAX, clean_name
-from kaagaz.api.routers.documents import ActivityCursor, ActivityLimit
-from kaagaz.api.views import folder, timeline, trashed_folder, uploaded_every_version
+from kaagaz.api.routers.documents import ASK_AN_ADMIN, ActivityCursor, ActivityLimit
+from kaagaz.api.views import folder, shown_folder, timeline, trashed_folder, uploaded_every_version
 from kaagaz.db import audit, listing
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import trashed_folders as trashed_sql
@@ -145,7 +145,7 @@ def create_folder(body: NewFolderBody, user: User, context: Context) -> dict[str
             sort_order=body.sort_order,
         )
         _audit(conn, user, "folder.create", row.id, {"parent_id": parent_id})
-    return folder(row)
+        return shown_folder(conn, user.customer_id, row)
 
 
 @router.patch("/folders/{folder_id}")
@@ -182,7 +182,7 @@ def update_folder(
                 order="sort_order" in given,
             )
             _audit(conn, user, "folder.kind", target, {"kind": row.kind, "sort_order": row.sort_order})
-    return folder(row)
+        return shown_folder(conn, user.customer_id, row)  # PRD 7 (#599): no hidden parent's id
 
 
 @router.get("/folders/{folder_id}/summary")
@@ -302,22 +302,35 @@ def restore_trashed_folder(folder_id: uuid.UUID, user: User, context: Context) -
             raise ApiError(403, "forbidden")
         try:
             restored = trashed_sql.restore_folder(conn, user.customer_id, target, admin=user.role == "admin")
-        except trashed_sql.DepartmentAdminOnly:
-            raise ApiError(403, "forbidden", "Only an admin can restore a department.") from None
+        except trashed_sql.DepartmentAdminOnly as refused:
+            raise ApiError(403, "forbidden", department_only_admin(conn, user, refused)) from None
         except folders_sql.FolderNameTaken:
             raise ApiError(409, "folder_names_taken", NAMES_TAKEN) from None
         _audit(conn, user, "folder.restore", target, trashed_sql.audit_details(restored))
-        # PRD 7 (#599): its place and what came back with it, as the person may see them. The
-        # folder itself they can see: it was their item of Trash.
-        shown = trashed_sql.as_seen(conn, user.customer_id, restored) or restored
+        # PRD 7 (#599): what came back, its place and what came with it, as the person may see
+        # them: the folder they asked for is theirs to see (it was their item of Trash).
+        shown = trashed_sql.as_seen(conn, user.customer_id, restored)
+        if shown is None:  # can't happen: the folder asked for was found visible above
+            raise folders_sql.FolderNotFound()
+        reply = shown_folder(conn, user.customer_id, shown.folder)
     return {
-        "folder": folder(shown.folder),
+        "folder": reply,
         "location": None if shown.location is None else list(shown.location),
         "renamed": shown.renamed,
         "relocated": shown.relocated,
         "files": shown.files,
         "folders": shown.folders,
     }
+
+
+def department_only_admin(
+    conn: Connection, user: CurrentUser, refused: trashed_sql.DepartmentAdminOnly
+) -> str:
+    """The words for a restore only an admin may make, as it brings a department back (F1); PRD 7
+    (#599): the department is named as such only to a person who may see it."""
+    if trashed_sql.seen(conn, user.customer_id, [refused.folder_id]):
+        return "Only an admin can restore a department."
+    return ASK_AN_ADMIN
 
 
 # PRD 7 section 5: a folder holding anything the person can't see needs an Admin.

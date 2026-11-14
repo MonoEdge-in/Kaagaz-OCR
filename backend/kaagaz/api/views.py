@@ -549,6 +549,13 @@ def document_folder(path: Sequence[FolderRow]) -> dict[str, Any] | None:
     return {"id": here.id, "name": here.name, "path": [{"id": each.id, "name": each.name} for each in path]}
 
 
+def shown_folder(conn: Connection, customer_id: str, row: FolderRow) -> dict[str, Any]:
+    """``Folder`` in a write's reply (PRD 7, #599): as ``GET /folders`` shows it to the person, so a
+    parent they can't see is null. One statement when it has a parent."""
+    hidden = row.parent_id is not None and not listing.folders_seen(conn, customer_id, [row.parent_id])
+    return folder(replace(row, parent_id=None) if hidden else row)
+
+
 def folder(row: FolderRow) -> dict[str, Any]:
     """``Folder``."""
     return {
@@ -564,7 +571,8 @@ def folder(row: FolderRow) -> dict[str, Any]:
 def trashed_folder(row: TrashedFolder, user: CurrentUser) -> dict[str, Any]:
     """``TrashedFolder`` (#542): a folder in Trash with what it holds at every depth, the live
     folder it goes back into (``was_in``, root first: [] the top level, null gone), and whether
-    this user may restore it (``can_delete``'s rule over every version of every file in it)."""
+    this user may restore it (``can_delete``'s rule over every version of every file in it; and
+    an admin's only, when its restore brings a department back, F1)."""
     return {
         "id": row.id,
         "name": row.name,
@@ -574,7 +582,8 @@ def trashed_folder(row: TrashedFolder, user: CurrentUser) -> dict[str, Any]:
         "folders": row.folders,
         "deleted_at": iso(row.deleted_at),
         "deleted_by_name": row.deleted_by_name,
-        "can_restore": uploaded_every_version(row.uploaders, user),
+        "can_restore": uploaded_every_version(row.uploaders, user)
+        and (user.role == "admin" or not row.needs_admin),
     }
 
 

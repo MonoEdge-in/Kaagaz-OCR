@@ -180,10 +180,8 @@ from kaagaz.api.views import (
     page_readings,
     page_summary,
     seen_items,
+    shown_folder,
     timeline,
-)
-from kaagaz.api.views import (
-    folder as folder_view,
 )
 from kaagaz.db import audit, autofile, listing, reading_days, storage_limits, trash
 from kaagaz.db import chat as chat_sql
@@ -772,6 +770,8 @@ def _upload_reply(
 # name, no place, no link; the screen says "This file is already in Kaagaz, in a place you can't
 # see. Ask your admin if you need it."
 HIDDEN_COPY: dict[str, Any] = {"document": None, "duplicate": True, "in_trash": False, "hidden": True}
+# PRD 7 (#599): a restore that would bring back a department the person can't see names none.
+ASK_AN_ADMIN = "Ask an admin to restore this folder."
 _FOLDER_GONE = "The folder this file was meant for was deleted after the upload started."
 _SIZE_CHANGED = "This file changed after you chose the folder. Choose the folder again with Continue upload."
 _OWN_PLACE = "A folder upload's file goes to the folder it was registered for."
@@ -1719,6 +1719,9 @@ def update_document(
     try:
         with context.db.user(customer_id, user.user_id) as conn:
             _document_or_404(conn, user, document_id)  # PRD 7 (#595): a hidden file is not found, first
+            # PRD 7 (#599): a folder the person can't see is one that isn't there, before any lock.
+            if folder_id is not None and not listing.folders_seen(conn, customer_id, [folder_id]):
+                raise folders_sql.FolderNotFound()
             if "folder_id" in given:  # a move can change who sees it: the tree lock first (0085)
                 folders_sql._lock_tree(conn, customer_id)
             if trash.lock_live_family(conn, customer_id, target) is None:
@@ -1977,10 +1980,10 @@ def restore_document(document_id: uuid.UUID, user: User, context: Context) -> di
         _may_trash(user, _document_or_404(conn, user, document_id))
         try:
             found, chain = trashed_sql.restore_document(conn, customer_id, target, admin=user.role == "admin")
-        except trashed_sql.DepartmentAdminOnly:  # its folders could not come back: nothing changed
-            raise ApiError(
-                403, "forbidden", "Its folder is a department, which only an admin can restore."
-            ) from None
+        except trashed_sql.DepartmentAdminOnly as refused:  # its folders could not come back: nothing changed
+            seen = trashed_sql.seen(conn, customer_id, [refused.folder_id])  # PRD 7 (#599)
+            words = "Its folder is a department, which only an admin can restore." if seen else ASK_AN_ADMIN
+            raise ApiError(403, "forbidden", words) from None
         except folders_sql.FolderNameTaken:
             raise ApiError(
                 409, "folder_names_taken", "Its folder can't come back: too many folders there have its name."
@@ -2012,6 +2015,7 @@ def restore_document(document_id: uuid.UUID, user: User, context: Context) -> di
         # PRD 7 (#599): a folder that came back is named only when the person may see it, and its
         # place only when they may see every folder on it (a file given to them alone).
         shown = None if chain is None else trashed_sql.as_seen(conn, customer_id, chain)
+        folder_shown = None if shown is None else shown_folder(conn, customer_id, shown.folder)
     summary = document_summary(
         row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
     )
@@ -2020,7 +2024,7 @@ def restore_document(document_id: uuid.UUID, user: User, context: Context) -> di
         None
         if shown is None
         else {
-            "folder": folder_view(shown.folder),
+            "folder": folder_shown,
             "location": None if shown.location is None else list(shown.location),
             "renamed": shown.renamed,
             "relocated": shown.relocated,

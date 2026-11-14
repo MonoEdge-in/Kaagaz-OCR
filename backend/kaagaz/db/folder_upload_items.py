@@ -432,11 +432,13 @@ class Previous:
     created_at: datetime
 
 
-# Newest first on folder_uploads_owner; a root deleted since is passed over.
+# Newest first on folder_uploads_owner; a root deleted since is passed over. PRD 7 (#599): so is one
+# the person can't see now, and a parent they can't see is not named (null).
 _PREVIOUS = text(
-    "SELECT u.id, u.target, u.parent_folder_id, u.root_folder_id, u.created_at FROM folder_uploads u"
+    "SELECT u.id, u.target, p.id, u.root_folder_id, u.created_at FROM folder_uploads u"
+    " LEFT JOIN visible_folders p ON p.customer_id = u.customer_id AND p.id = u.parent_folder_id"
     " WHERE u.customer_id = :c AND u.user_id = :usr AND u.source_name = :name"
-    " AND EXISTS (SELECT 1 FROM folders f WHERE f.customer_id = :c AND f.id = u.root_folder_id)"
+    " AND EXISTS (SELECT 1 FROM visible_folders f WHERE f.customer_id = :c AND f.id = u.root_folder_id)"
     " ORDER BY u.created_at DESC LIMIT 1"
 )
 

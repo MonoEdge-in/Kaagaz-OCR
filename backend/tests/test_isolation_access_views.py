@@ -33,7 +33,8 @@ _DEPARTMENTS = (
     "INSERT INTO department_members (customer_id, department_id, user_id, is_head, added_by)"
     " VALUES (:c, :d, :u, :head, :by)"
 )
-_ACCESS = "SELECT departments, heads, named, closed FROM kaagaz_access()"
+# Changed on purpose (#599, 0087): the open departments, where 0086 listed the closed ones.
+_ACCESS = "SELECT departments, heads, named, open FROM kaagaz_access()"
 _SUGGEST = (
     "INSERT INTO version_suggestions (customer_id, document_id, candidate_family_id, text_overlap,"
     " name_similarity, outcome, status) VALUES (:c, :d, :f, 0.86, 0.31, 'suggested', 'pending') RETURNING id"
@@ -148,12 +149,15 @@ def _expected(db: Database, org: Org, user: str, *, folders: bool = False) -> se
         str(r[0])
         for r in _owner(db, "SELECT folder_id FROM private_folder_members WHERE user_id = :u", {"u": user})
     }
-    closed = {
+    # Changed on purpose (#599, 0087): open is a department still there (live or in Trash) and not
+    # Department only; one deleted since is closed (fail closed).
+    opened = {
         str(r[0])
         for r in _owner(
             db,
-            "SELECT id FROM folders WHERE customer_id = :c AND department_only"
-            " UNION ALL SELECT id FROM trashed_folders WHERE customer_id = :c AND department_only",
+            "SELECT id FROM folders WHERE customer_id = :c AND parent_id IS NULL AND kind = 'department'"
+            " AND NOT department_only UNION ALL SELECT id FROM trashed_folders WHERE customer_id = :c"
+            " AND parent_id IS NULL AND kind = 'department' AND NOT department_only",
             {"c": c},
         )
     }
@@ -163,7 +167,7 @@ def _expected(db: Database, org: Org, user: str, *, folders: bool = False) -> se
         r5 = (
             private is None
             and held is None
-            and (department is None or department not in closed or department in member)
+            and (department is None or department in opened or department in member)
         )
         r4 = private is not None and (private in named or department in heads)
         return r5 or r4
@@ -258,8 +262,8 @@ def test_who_asks(db: Database) -> None:
 
 
 def test_the_access_arrays_are_never_null(db: Database) -> None:
-    """Condition 2 on #595: an empty array, never NULL, so ``<> ALL (a.closed)`` can't become
-    NULL and hide every open file."""
+    """Condition 2 on #595: an empty array, never NULL, so ``= ANY (a.open)`` (0087; 0086's
+    ``<> ALL (a.closed)``) can't become NULL."""
     api = Api(db)
     org = _walled(api)
     bare, bare_user = api.customer()
@@ -326,6 +330,7 @@ VIEW_READERS = {
     "db/chat.py": {"_DOCUMENT_QUESTIONS", "add_pin"},
     "db/document_stories.py": {"_DELETE", "_PUT"},
     "db/ensemble.py": {"_COUNTS", "_LATEST", "_LATEST_READINGS", "_PENDING", "_READING"},
+    "db/folder_upload_items.py": {"_PREVIOUS"},
     "db/folders.py": {"_LIST", "_SUMMARY_SEEN"},
     "db/listing.py": {
         "_BATCH", "_CLEAR_COPY_MARKS", "_COLUMNS", "_DASHBOARD_DEPARTMENTS", "_DASHBOARD_RECENT",
@@ -335,7 +340,7 @@ VIEW_READERS = {
         "_TRASH_LIST", "_VERSIONS", "_WORD_LINES", "document_facts", "get_page", "list_pages",
         "list_values", "reviewer_fix_count", "sheet_cells",
     },
-    "db/organization_words.py": {"visible"},
+    "db/organization_words.py": {"decide", "visible"},
     "db/review.py": {"_COUNT", "_COUNT_FOR_DOCUMENT", "_ITEM", "_LOCK_VALUE", "_NEXT_CHUNK"},
     "db/tags.py": {"_FOR_DOCUMENTS"},
     "db/trashed_folders.py": {
