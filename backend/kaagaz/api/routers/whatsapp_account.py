@@ -41,9 +41,11 @@ The Admin (``/admin/whatsapp``):
 
 * ``GET``: the switches (WhatsApp, the roles that may connect, Management, voice notes, uploads),
   ``available`` (the super admin's switches) and who is connected, when, and when last used.
-* ``PUT`` {enabled, roles, management, voice, uploads, password?}: all at once. Turning WhatsApp
-  on needs the Admin's password (400 without, counted like a sign-in) and the super admin's switch
-  (409 ``not_available``); it is emailed to Management and the other Admins. A change is audited
+* ``PUT`` {enabled, roles, management, voice, uploads, rules_confirmed?, password?}: all at once.
+  Turning WhatsApp on needs the Admin's tick "our organisation's data rules allow WhatsApp" (400
+  without; stored with when and who, and in the audit row), the Admin's password (400 without,
+  counted like a sign-in) and the super admin's switch (409 ``not_available``); it is emailed to
+  Management and the other Admins. A change is audited
   (``settings.whatsapp_on``, ``_off`` or ``settings.whatsapp``, the values in its details), then the
   sweep ends at once the connections no longer allowed.
 * ``POST /admin/whatsapp/{user_id}/disconnect``: ends that person's connection (audited by the
@@ -123,6 +125,7 @@ NUMBER_TAKEN = "This WhatsApp is already connected to another Kaagaz account."
 NOT_CONNECTED = "No WhatsApp number is connected."
 NOT_AVAILABLE = "WhatsApp isn't available for your organisation yet."
 ON_NEEDS_PROOF = "Type your Kaagaz password to turn WhatsApp on."
+RULES_NOT_CONFIRMED = "Confirm that your organisation's data rules allow WhatsApp."
 _REFUSALS = {"off": OFF, "not_allowed": NOT_ALLOWED}
 
 
@@ -161,6 +164,7 @@ class SettingsBody(BaseModel):
     management: bool
     voice: bool
     uploads: bool
+    rules_confirmed: bool = False  # "our organisation's data rules allow WhatsApp", to turn it on
     password: str | None = Field(default=None, min_length=1, max_length=MAX_PASSWORD)
 
 
@@ -416,6 +420,8 @@ def save_whatsapp(
     if turned_on:
         if not before["available"]:
             raise ApiError(409, "not_available", NOT_AVAILABLE)
+        if not body.rules_confirmed:
+            raise ApiError(400, "bad_request", RULES_NOT_CONFIRMED)
         if body.password is None:
             raise ApiError(400, "bad_request", ON_NEEDS_PROOF)
         _succeeded(
@@ -432,7 +438,8 @@ def save_whatsapp(
     if (wanted, roles) == (was, [role for role in ROLES if role in before["roles"]]):
         return admin_whatsapp(user, context)
     with context.db.user(user.customer_id, user.user_id) as conn:
-        wa.save_settings(conn, user.customer_id, roles=roles, **wanted)
+        confirmed_by = user.user_id if turned_on else None
+        wa.save_settings(conn, user.customer_id, roles=roles, confirmed_by=confirmed_by, **wanted)
         action = "settings.whatsapp"
         if body.enabled != before["enabled"]:
             action = "settings.whatsapp_on" if body.enabled else "settings.whatsapp_off"
@@ -443,7 +450,7 @@ def save_whatsapp(
             action=action,
             target_type="customer",
             target_id=user.customer_id,
-            details={**wanted, "roles": ",".join(roles)},
+            details={**wanted, "roles": ",".join(roles), **({"rules_confirmed": True} if turned_on else {})},
         )
     with context.db.system() as conn:
         wa.sweep(conn)  # the connections no longer allowed end now, not at the next hourly sweep

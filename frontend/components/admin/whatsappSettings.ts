@@ -12,6 +12,9 @@ export const TURN_ON_TEXT =
   "People can ask about their files and get links to them from WhatsApp. Files never leave Kaagaz: each link needs a Kaagaz sign-in.";
 export const SENT_STAYS = "Answers already sent stay on the person's phone, even after their access is removed.";
 export const VOICE_LABEL = "Allow voice notes";
+/** Every organisation's Admin confirms it before turning WhatsApp on (lead's decision, 15 Nov 2026). */
+export const RULES_LABEL = "I confirm our organisation's data rules allow WhatsApp.";
+export const RULES_MISSING = "Tick the box to confirm your organisation's data rules allow WhatsApp.";
 export const UPLOADS_LABEL = "Allow saving files from WhatsApp";
 export const TURN_OFF_TEXT = "Everyone's WhatsApp is disconnected at once. You can turn it on again later.";
 export const NOT_AVAILABLE = "WhatsApp isn't available for your organisation yet.";

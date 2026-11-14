@@ -16,6 +16,7 @@ import {
 } from "@/components/account/whatsapp";
 import {
   ROLE_TICKS,
+  RULES_LABEL,
   SENT_STAYS,
   TURN_ON_TEXT,
   formChanged,
@@ -101,6 +102,7 @@ describe("the Admin's switches", () => {
       "People can ask about their files and get links to them from WhatsApp. Files never leave Kaagaz: each link needs a Kaagaz sign-in.",
     );
     expect(SENT_STAYS).toBe("Answers already sent stay on the person's phone, even after their access is removed.");
+    expect(RULES_LABEL).toBe("I confirm our organisation's data rules allow WhatsApp.");
   });
 
   it("keep the roles in order, Admins an extra tick", () => {

@@ -5,7 +5,8 @@ section 15, W1, #603, Tushar, 14 Nov 2026). NEEDS VRUSHIT'S APPROVAL: schema and
 
 * ``whatsapp_org_settings``: the organisation Admin's switches, one row an organisation (no row:
   off). WhatsApp itself, the roles that may connect (members and reviewers by default; Admins
-  need the role ticked), Management (an extra tick), voice notes (on) and uploads (off).
+  need the role ticked), Management (an extra tick), voice notes (on) and uploads (off); and (W3)
+  when and by which Admin it was last turned on with "our data rules allow WhatsApp" ticked.
 * ``whatsapp_links``: a person's connected number, sealed (``api/secret_box.py``) with a keyed
   hash to find it by and its last 4 digits (the screens and the audit), the person's sign-in
   version when it was connected (any change ends it),
@@ -145,7 +146,9 @@ CREATE_TABLES = (
         roles text[] NOT NULL DEFAULT ARRAY['member', 'reviewer']::text[] CHECK (roles <@ {ROLE_NAMES}),
         management boolean NOT NULL DEFAULT false,
         voice boolean NOT NULL DEFAULT true,
-        uploads boolean NOT NULL DEFAULT false
+        uploads boolean NOT NULL DEFAULT false,
+        rules_confirmed_at timestamptz NULL,
+        rules_confirmed_by uuid NULL
     )
     """,
     f"""
@@ -255,7 +258,10 @@ INDEXES = (
 # What the app may write beyond SELECT and INSERT (column grants): never a connection's person,
 # number or sign-in version, a code's number or hash, or a message's id, kind or times.
 GRANTS = {
-    "whatsapp_org_settings": ("SELECT, INSERT", "UPDATE (enabled, roles, management, voice, uploads)"),
+    "whatsapp_org_settings": (
+        "SELECT, INSERT",
+        "UPDATE (enabled, roles, management, voice, uploads, rules_confirmed_at, rules_confirmed_by)",
+    ),
     "whatsapp_links": ("SELECT, INSERT", "UPDATE (last_used_at, recent_folder_ids, busy_until)"),
     "whatsapp_link_codes": ("SELECT, INSERT", "UPDATE (tries, used_at)"),
     "whatsapp_messages": (
@@ -552,6 +558,10 @@ COMMENTS = {
     "whatsapp_org_settings.management": "Management may connect a number too (an extra tick). Default false.",
     "whatsapp_org_settings.voice": "Questions by voice note are allowed. Default true.",
     "whatsapp_org_settings.uploads": "Saving files sent on WhatsApp is allowed. Default false.",
+    "whatsapp_org_settings.rules_confirmed_at": "When an Admin last confirmed, turning WhatsApp on, that the"
+    " organisation's data rules allow it (W3). NULL: never.",
+    "whatsapp_org_settings.rules_confirmed_by": "users.id (same customer; no key, as audit_log.actor_user_id)"
+    " of that Admin. NULL: never.",
     "whatsapp_links.customer_id": "The organisation of the person connected.",
     "whatsapp_links.id": "The connection's id.",
     "whatsapp_links.user_id": "users.id (same customer) of the person whose number it is.",

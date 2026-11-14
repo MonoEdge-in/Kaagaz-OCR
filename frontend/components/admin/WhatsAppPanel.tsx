@@ -2,7 +2,7 @@
 
 // Admin, Settings, WhatsApp (#603, PRD 7 section 15): off by default. "Turn on WhatsApp…" opens the
 // one dialog (what people can do, Allow voice notes ticked, Allow saving files not, answers already
-// sent stay on the phone) and asks for the Admin's password; the server audits it and emails
+// sent stay on the phone, and the tick "our data rules allow WhatsApp") and asks for the Admin's password; the server audits it and emails
 // Management and the other Admins. Once on: the roles that may connect (Members and Reviewers by
 // default; Admins and Management are extra ticks), voice notes and uploads, saved by Save; Turn off
 // asks first (everyone is disconnected). While the super admin has it off, a line says so. Shown
@@ -23,6 +23,8 @@ import {
   MANAGEMENT_LABEL,
   NOT_AVAILABLE,
   ROLE_TICKS,
+  RULES_LABEL,
+  RULES_MISSING,
   SENT_STAYS,
   TURN_OFF_TEXT,
   TURN_ON_TEXT,
@@ -223,14 +225,15 @@ function TurnOn({
 }) {
   const [voice, setVoice] = useState(true);
   const [uploads, setUploads] = useState(false);
+  const [rules, setRules] = useState(false);
   const [password, setPassword] = useState("");
-  const [missing, setMissing] = useState(false);
+  const [missing, setMissing] = useState<{ rules: boolean; password: boolean }>({ rules: false, password: false });
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return;
-    setMissing(password === "");
-    if (password !== "") onTurnOn({ ...form, enabled: true, voice, uploads }, password);
+    setMissing({ rules: !rules, password: password === "" });
+    if (rules && password !== "") onTurnOn({ ...form, enabled: true, voice, uploads }, password);
   }
 
   return (
@@ -246,6 +249,15 @@ function TurnOn({
           {UPLOADS_LABEL}
         </label>
         <p>{SENT_STAYS}</p>
+        <label className={libraryStyles.check}>
+          <input type="checkbox" checked={rules} onChange={(event) => setRules(event.target.checked)} />
+          {RULES_LABEL}
+        </label>
+        {missing.rules && (
+          <span className="error-text" role="alert">
+            {RULES_MISSING}
+          </span>
+        )}
         <PasswordField
           id="whatsapp-admin-password"
           label="Your Kaagaz password"
@@ -253,7 +265,7 @@ function TurnOn({
           onChange={setPassword}
           autoComplete="current-password"
           required
-          error={missing ? "Enter your password." : null}
+          error={missing.password ? "Enter your password." : null}
         />
         {error && (
           <p className="error-text" role="alert">

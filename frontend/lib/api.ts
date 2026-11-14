@@ -1369,8 +1369,12 @@ export const removeConnections = (id: string) =>
 export const adminWhatsApp = () => request<WhatsAppAdmin>("GET", "/admin/whatsapp");
 export const saveAdminWhatsApp = (
   settings: Pick<WhatsAppAdmin, "enabled" | "roles" | "management" | "voice" | "uploads">,
-  password?: string,
-) => request<WhatsAppAdmin>("PUT", "/admin/whatsapp", { ...settings, ...(password === undefined ? {} : { password }) });
+  password?: string, // with the data rules tick: turning it on
+) =>
+  request<WhatsAppAdmin>("PUT", "/admin/whatsapp", {
+    ...settings,
+    ...(password === undefined ? {} : { password, rules_confirmed: true }),
+  });
 export const adminDisconnectWhatsApp = (userId: string) =>
   request<WhatsAppAdmin>("POST", `/admin/whatsapp/${encodeURIComponent(userId)}/disconnect`);
 /** ``autofileOn`` left out: the switch is left as it is (feature 28). ``google`` (#507), when

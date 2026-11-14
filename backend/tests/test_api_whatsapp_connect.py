@@ -625,10 +625,20 @@ def test_the_admin_turns_it_on_with_the_password_and_management_and_admins_are_t
         "available": True,
         "people": [],
     }
-    assert _error(_save(admin, enabled=True))[2] == "Type your Kaagaz password to turn WhatsApp on."
-    assert _error(_save(admin, "not the password!!", enabled=True))[0] == 400
+    no_tick = _save(admin, PASSWORD, enabled=True)
+    assert _error(no_tick)[2] == "Confirm that your organisation's data rules allow WhatsApp."
+    assert (
+        _error(_save(admin, enabled=True, rules_confirmed=True))[2]
+        == "Type your Kaagaz password to turn WhatsApp on."
+    )
+    assert _error(_save(admin, "not the password!!", enabled=True, rules_confirmed=True))[0] == 400
     assert world.api.user_state(admin.customer_id, admin.user_id)["failed_logins"] == 1
-    on = _save(admin, PASSWORD, enabled=True)
+    on = _save(admin, PASSWORD, enabled=True, rules_confirmed=True)
+    confirmed = (
+        "SELECT rules_confirmed_by::text, rules_confirmed_at IS NOT NULL FROM whatsapp_org_settings"
+        " WHERE customer_id = :c"
+    )
+    assert _owner(db, confirmed, {"c": admin.customer_id}) == [(admin.user_id, True)]
     assert on.status_code == 200 and on.json()["enabled"] is True
     told = _owner(db, "SELECT email FROM users WHERE customer_id = :c AND (role = 'admin' OR management)"
                   " AND id <> :u ORDER BY email", {"c": admin.customer_id, "u": admin.user_id})  # fmt: skip
@@ -644,7 +654,10 @@ def test_the_admin_turns_it_on_with_the_password_and_management_and_admins_are_t
     assert _save(admin).json()["enabled"] is False
     common = {"management": False, "uploads": False}
     assert _settings_audit(db, admin.customer_id) == [
-        ("settings.whatsapp_on", {**common, "enabled": True, "voice": True, "roles": "member,reviewer"}),
+        (
+            "settings.whatsapp_on",
+            {**common, "enabled": True, "voice": True, "roles": "member,reviewer", "rules_confirmed": True},
+        ),
         ("settings.whatsapp", {**common, "enabled": True, "voice": False, "roles": "member,reviewer,admin"}),
         ("settings.whatsapp_off", {**common, "enabled": False, "voice": True, "roles": "member,reviewer"}),
     ]
@@ -658,7 +671,7 @@ def test_it_turns_on_only_where_the_super_admin_leaves_it(db: Database, fake: Wh
                " VALUES (:c, 'whatsapp', false)",
            {"c": admin.customer_id})  # fmt: skip
     assert admin.client.get("/api/admin/whatsapp").json()["available"] is False
-    assert _error(_save(admin, PASSWORD, enabled=True))[:2] == (409, "not_available")
+    assert _error(_save(admin, PASSWORD, enabled=True, rules_confirmed=True))[:2] == (409, "not_available")
 
 
 def test_switching_off_or_narrowing_the_roles_ends_those_connections_at_once(

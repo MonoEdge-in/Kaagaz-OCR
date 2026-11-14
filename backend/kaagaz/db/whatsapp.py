@@ -182,11 +182,18 @@ _ORG_SETTINGS = text(
     "  WHERE o.customer_id = c.id AND o.feature = 'whatsapp'), true) AS available"
     " FROM customers c LEFT JOIN whatsapp_org_settings s ON s.customer_id = c.id WHERE c.id = :c"
 )
+# ``confirmed_by``: the Admin who just ticked "our data rules allow WhatsApp" (turning it on); None
+# keeps the last confirmation.
 _SAVE_SETTINGS = text(
-    "INSERT INTO whatsapp_org_settings (customer_id, enabled, roles, management, voice, uploads)"
-    " VALUES (:c, :enabled, :roles, :management, :voice, :uploads) ON CONFLICT (customer_id) DO UPDATE"
+    "INSERT INTO whatsapp_org_settings AS s (customer_id, enabled, roles, management, voice, uploads,"
+    " rules_confirmed_at, rules_confirmed_by)"
+    " VALUES (:c, :enabled, :roles, :management, :voice, :uploads,"
+    " CASE WHEN CAST(:by AS uuid) IS NOT NULL THEN now() END, CAST(:by AS uuid))"
+    " ON CONFLICT (customer_id) DO UPDATE"
     " SET enabled = EXCLUDED.enabled, roles = EXCLUDED.roles, management = EXCLUDED.management,"
-    " voice = EXCLUDED.voice, uploads = EXCLUDED.uploads"
+    " voice = EXCLUDED.voice, uploads = EXCLUDED.uploads,"
+    " rules_confirmed_at = coalesce(EXCLUDED.rules_confirmed_at, s.rules_confirmed_at),"
+    " rules_confirmed_by = coalesce(EXCLUDED.rules_confirmed_by, s.rules_confirmed_by)"
 )
 _FINISH = text(
     "UPDATE whatsapp_messages SET state = :state, body = NULL,"
@@ -430,8 +437,10 @@ def save_settings(
     management: bool,
     voice: bool,
     uploads: bool,
+    confirmed_by: str | None = None,
 ) -> None:
     params = {
+        "by": confirmed_by,
         "c": customer_id,
         "enabled": enabled,
         "roles": list(roles),

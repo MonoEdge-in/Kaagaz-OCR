@@ -224,7 +224,16 @@ FROM_0088 = {
     "whatsapp_pickers": (True, True, False, True),
 }
 UPDATES_0088 = {
-    "whatsapp_org_settings": {"enabled", "roles", "management", "voice", "uploads"},
+    # Changed on purpose (W3): the Admin's "our data rules allow WhatsApp", when and who.
+    "whatsapp_org_settings": {
+        "enabled",
+        "roles",
+        "management",
+        "voice",
+        "uploads",
+        "rules_confirmed_at",
+        "rules_confirmed_by",
+    },
     "whatsapp_links": {"last_used_at", "recent_folder_ids", "busy_until"},
     "whatsapp_link_codes": {"tries", "used_at"},
     "whatsapp_messages": {"state", "tries", "body", "batch_id", "document_id", "reply_sent_at"},
