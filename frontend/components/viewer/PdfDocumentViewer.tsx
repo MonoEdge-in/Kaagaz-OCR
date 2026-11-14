@@ -25,14 +25,16 @@
 // WORD_MARK_CAP, never a mark far taller than a word).
 //
 // #589: the pages as this person turned them, kept in this browser (readPageTurns): opened with
-// them, and each change kept.
+// them, and each change kept. #600: a file with turns saved for everyone opens with those instead,
+// and "Save for everyone" saves the turns shown (SavePageTurns.tsx); the reply's turns, others'
+// included, are handed to the viewer, which shows them keeping the reader's place.
 
 import "@/components/extend/extend.css";
 import { DownloadIcon, HandIcon, HighlighterIcon, PrinterIcon, SpellCheckIcon } from "lucide-react";
 import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { PDFViewer } from "@/components/extend/pdf-viewer";
 import type { PDFViewerHandle, PDFViewerPageOverlayProps } from "@/components/extend/pdf-viewer";
-import { Button } from "@/components/extend/ui/button";
+import { Button, buttonVariants } from "@/components/extend/ui/button";
 import { flagDomId, markLabel } from "@/components/review/wordReview";
 import { markerId } from "@/components/words/ViewerWords";
 import { markerRect, unturnedBox } from "@/components/words/spots";
@@ -40,7 +42,7 @@ import type { Marker } from "@/components/words/spots";
 import { fileUrl } from "@/lib/api";
 import { MOTION_MS, play } from "@/lib/motion";
 import type { Frame } from "@/lib/motion";
-import type { ReadingMark, Region, Role, WordFlag } from "@/lib/types";
+import type { PageTurnSaved, ReadingMark, Region, Role, WordFlag } from "@/lib/types";
 import {
   focusFirstWord,
   isWordMark,
@@ -52,7 +54,8 @@ import {
   wordsChipText,
 } from "./readingMarks";
 import styles from "./PageViewer.module.css";
-import { centredScroll, mostVisiblePage, panTo, readPageTurns, savePageTurns } from "./viewer";
+import { SaveForEveryone, usePageTurns } from "./SavePageTurns";
+import { centredScroll, mostVisiblePage, panTo } from "./viewer";
 import { wordColour } from "./YourWords";
 
 /** How long a scroll the screen asked for takes to settle (a smooth scroll across pages). */
@@ -65,7 +68,7 @@ const NO_WORDS: Region[] = []; // a stable default, so the overlay is not made a
 const NO_HITS: number[] = [];
 
 export interface PdfDocumentViewerProps {
-  document: { id: string; display_name: string };
+  document: { id: string; display_name: string; page_turns: PageTurnSaved[] };
   /** The page the screen shows (its selection's page). */
   pageNo: number;
   onPageChange: (pageNo: number) => void;
@@ -158,11 +161,8 @@ export function PdfDocumentViewer({
   userId,
 }: PdfDocumentViewerProps) {
   const viewer = useRef<PDFViewerHandle>(null);
-  const [pageTurns] = useState(() => readPageTurns(userId, document.id));
-  const keepPageTurns = useCallback(
-    (turns: ReadonlyMap<number, number>) => savePageTurns(userId, document.id, turns),
-    [userId, document.id],
-  );
+  const turns = usePageTurns(document.id, document.page_turns, userId);
+  const [handedTurns, setHandedTurns] = useState(turns.opening);
   const [showHighlights, setShowHighlights] = useState(true);
   const [showWords, setShowWords] = useState(() => showWordsByDefault(role));
   const [crowdedOpen, setCrowdedOpen] = useState<readonly number[]>([]); // pages whose chip was pressed
@@ -417,13 +417,24 @@ export function PdfDocumentViewer({
         fileName={document.display_name}
         defaultZoom="fit-width"
         showDownload={false}
-        pageRotations={pageTurns}
-        onPageRotationsChange={keepPageTurns}
+        pageRotations={handedTurns}
+        onPageRotationsChange={turns.show}
         renderPageOverlay={overlay}
         onActivePageChange={pageChanged}
         onDocumentLoadSuccess={() => setOpen(true)}
         toolbarActions={
           <>
+            <SaveForEveryone
+              documentId={document.id}
+              userId={userId}
+              saved={turns.saved}
+              shown={turns.shown}
+              onSaved={(saved) => {
+                turns.setSaved(saved);
+                setHandedTurns(saved);
+              }}
+              className={buttonVariants({ variant: "ghost", size: "sm" })}
+            />
             <Button
               type="button"
               variant="ghost"
