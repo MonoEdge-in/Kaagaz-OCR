@@ -72,7 +72,7 @@ describe("Give access", () => {
   const form = (over: Partial<Parameters<typeof GiveAccessForm>[0]> = {}) =>
     renderToStaticMarkup(
       createElement(GiveAccessForm, {
-        tooMany: false,
+        files: 1,
         chosen: [],
         onChoose: nothing,
         problem: null,
@@ -94,11 +94,14 @@ describe("Give access", () => {
     expect(form({ chosen: [{ id: "u1", name: "Priya" }] })).not.toMatch(/disabled=""[^>]*>Give access<\/button>/);
   });
 
-  it("past 100 files says so and can't be sent", () => {
-    const html = form({ tooMany: true, problem: "Choose 100 files or fewer." });
-    expect(html).toContain("Choose 100 files or fewer.");
-    expect(html).not.toContain("<legend>People</legend>");
+  it("says what stops it, and can't be sent then", () => {
+    const html = form({ chosen: [{ id: "u1", name: "Priya" }], problem: "Choose 20 people or fewer." });
+    expect(html).toContain("Choose 20 people or fewer.");
     expect(html).toMatch(/disabled=""[^>]*>Give access<\/button>/);
+  });
+
+  it("says them for many files", () => {
+    expect(form({ files: 8 })).toContain("They can open them, and Ask, search and totals can use these files for them.");
   });
 
   it("names the files in its title, the password step and the toast", () => {

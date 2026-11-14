@@ -45,19 +45,20 @@ describe("the names list", () => {
   it("says why the names show, how many are listed, and each one's name, kind, uploader and date", () => {
     expect(html).toContain("You can see their names because you&#x27;re an admin. You can&#x27;t open them.");
     expect(html).toContain("Showing the first 2 of 5, by name.");
-    for (const heading of ["Name", "Kind", "Uploaded by", "Date"]) expect(html).toContain(`<th scope="col">${heading}</th>`);
-    expect(html).toContain("<td>Salary sheet.xlsx</td>");
+    for (const heading of ["Name", "Kind", "Uploaded by", "Date"]) expect(html).toMatch(new RegExp(`<th scope="col"[^>]*>${heading}</th>`));
+    // The name wraps anywhere; on a phone its kind and date go under it (the columns hide).
+    expect(html).toMatch(/<td class="[^"]*keptName[^"]*">Salary sheet\.xlsx<span class="[^"]*keptFacts[^"]*">[^<]+ · 3 Nov 2026<\/span><\/td>/);
     expect(html).toContain("<td>Priya</td>");
     expect(html).toContain("<td>—</td>"); // an uploader no longer known
     expect(html).not.toContain("href="); // a name, never a link to a file they can't open
   });
 
   it("gives each one Give access, Who can see this and Give myself access", () => {
-    const menu = html.slice(html.indexOf("Salary sheet.xlsx</td>"), html.indexOf("Bonus.pdf</td>"));
+    const menu = html.slice(html.indexOf(">Salary sheet.xlsx<"), html.indexOf(">Bonus.pdf<"));
     expect(menu).toContain(">Give access<");
     expect(menu).toContain(">Who can see this<");
     expect(menu).toContain(">Give myself access<");
-    expect(menu).toContain("Open this file yourself. Asks for your password and tells Management.");
+    expect(menu).toContain("Asks for your password, tells Management, then lets you open this file.");
   });
 });
 
@@ -77,13 +78,26 @@ function serve(reply: Kept | number) {
   });
 }
 
-async function show(me: Me, reply: Kept | number) {
+let container: FakeElement;
+const strip = (me: Me, version: number, onEmptied = nothing) =>
+  createElement(KeptFromMe, { folder: { id: "sal", name: "Salaries" }, me, version, onChanged: nothing, onEmptied });
+const settle = () => act(async () => void (await new Promise((resolve) => setTimeout(resolve, 0))));
+
+async function show(me: Me, reply: Kept | number, onEmptied = nothing) {
   serve(reply);
-  const container = doc.body.appendChild(doc.createElement("div")) as FakeElement;
+  container = doc.body.appendChild(doc.createElement("div")) as FakeElement;
   const { createRoot } = await import("react-dom/client");
   root = createRoot(container as unknown as Element);
-  await act(async () => root!.render(createElement(KeptFromMe, { folder: { id: "sal", name: "Salaries" }, me, onChanged: nothing })));
-  await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 0))));
+  await act(async () => root!.render(strip(me, 0, onEmptied)));
+  await settle();
+  return container.textContent;
+}
+
+/** The screen's reload count moves (Make private, a give): the strip asks again. */
+async function reload(me: Me, reply: Kept | number, version: number, onEmptied = nothing) {
+  serve(reply);
+  await act(async () => root!.render(strip(me, version, onEmptied)));
+  await settle();
   return container.textContent;
 }
 
@@ -111,6 +125,23 @@ describe("the strip in a folder", () => {
       await act(async () => root?.unmount());
       expect(await show(person("admin", "admin"), status), String(status)).toBe("");
     }
+  });
+
+  it("asks again when the screen reloads: 5 to 0 hides it and hands focus on; 0 to 5 shows it", async () => {
+    const admin = person("admin", "admin");
+    const emptied = vi.fn();
+    expect(await show(admin, KEPT, emptied)).toContain("5 files here are kept from you.");
+    expect(await reload(admin, { count: 0, items: [] }, 1, emptied)).toBe("");
+    expect(asked).toEqual(["/api/folders/sal/kept-from-me"]);
+    expect(emptied).toHaveBeenCalledTimes(1);
+    expect(await reload(admin, KEPT, 2, emptied)).toContain("5 files here are kept from you.");
+    expect(emptied).toHaveBeenCalledTimes(1);
+  });
+
+  it("from 0, shows 5 once the screen reloads", async () => {
+    const admin = person("admin", "admin");
+    expect(await show(admin, { count: 0, items: [] })).toBe("");
+    expect(await reload(admin, KEPT, 1)).toContain("5 files here are kept from you.");
   });
 
   it("never asks for anyone else: Management, a Head, a member, an admin with an app session", async () => {

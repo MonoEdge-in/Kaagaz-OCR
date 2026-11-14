@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import type { AccessAbilities } from "@/components/access/abilities";
 import { AudienceView, PlaceChangeView, audienceFailure } from "@/components/access/AudiencePanel";
 import type { FolderPlace } from "@/components/access/places";
-import { checkAnswer, everyoneElseText, openAgainText, privateText, reasonHeading } from "@/components/access/words";
+import { checkAnswer, everyoneElseText, openAgainText, privateLosing, privateText, reasonHeading } from "@/components/access/words";
 import { ApiError } from "@/lib/api";
 import type { Audience, NamedList, PlacePreview } from "@/lib/types";
 
@@ -89,6 +89,9 @@ describe("who can see it, and why", () => {
     expect(checkAnswer("Meera", true, ["management"], {})).toBe("Yes. Meera can see this, as Management.");
     expect(checkAnswer("Om", true, ["everyone"], {})).toBe("Yes. Om can see this, because this place is open to everyone.");
     expect(checkAnswer("Amit", false, [], places)).toBe("No. Amit can't see this.");
+    // A reason this screen doesn't word yet (locks, PR 12), or none: yes, and no made-up why.
+    expect(checkAnswer("Priya", true, ["may_open_locked"], places)).toBe("Yes. Priya can see this.");
+    expect(checkAnswer("Priya", true, [], places)).toBe("Yes. Priya can see this.");
   });
 
   it("says the loading words while it loads", () => {
@@ -176,7 +179,72 @@ describe("Make private and Make open again", () => {
     expect(privateText(null, [PRIYA, AMIT])).toBe("Only people you name and Management will see it. 2 people will lose access: Priya and Amit.");
     expect(privateText("Finance", [])).toBe("Only people you name, the Finance head and Management will see it. Nobody loses access.");
     expect(openAgainText(null, 1)).toBe("Everyone in the organisation will see this file.");
-    expect(openAgainText(null, 0)).toBe("Everyone in the organisation will see these 0 files.");
+    expect(openAgainText(null, 0)).toBe("Everyone in the organisation will see this folder.");
+    expect(openAgainText("Finance", 0)).toBe("Everyone who can see Finance will see this folder.");
+  });
+});
+
+describe("Make private brings back who was named before", () => {
+  const form = (dropped: string[]) =>
+    renderToStaticMarkup(
+      createElement(PlaceChangeView, {
+        on: true,
+        department: "Finance",
+        chosen: [],
+        onChoose: nothing,
+        dropped,
+        onDrop: nothing,
+        preview: { losing: [person("u9", "Om")], gaining: [], files: 4, named_before: [PRIYA, AMIT] },
+        failed: false,
+        busy: false,
+        error: null,
+        onRetry: nothing,
+        onCancel: nothing,
+        onConfirm: nothing,
+      }),
+    );
+
+  it("names them, each ticked to keep, and counts no one of them as losing it", () => {
+    const html = form([]);
+    expect(html).toContain("These people were named before and will see it again: Priya, Amit.");
+    expect(html).toMatch(/<input type="checkbox" checked=""\/>Keep Priya named/);
+    expect(html).toContain("1 person will lose access: Om.");
+  });
+
+  it("counts one taken off as losing it, and leaves them out of who comes back", () => {
+    const html = form(["u2"]);
+    expect(html).toContain("These people were named before and will see it again: Priya.");
+    expect(html).toMatch(/<input type="checkbox"\/>Keep Amit named/);
+    expect(html).toContain("2 people will lose access: Om and Amit.");
+    expect(privateLosing([PRIYA], [PRIYA, AMIT], ["u1", "u2"]).map((p) => p.name)).toEqual(["Priya", "Amit"]); // never twice
+  });
+
+  it("says nothing of it when the preview has none (PR 10b not yet sending it)", () => {
+    const html = renderToStaticMarkup(
+      createElement(PlaceChangeView, {
+        on: true,
+        department: "Finance",
+        chosen: [],
+        onChoose: nothing,
+        preview: { losing: [], gaining: [], files: 4 },
+        failed: false,
+        busy: false,
+        error: null,
+        onRetry: nothing,
+        onCancel: nothing,
+        onConfirm: nothing,
+      }),
+    );
+    expect(html).not.toContain("named before");
+  });
+});
+
+describe("a large organisation's Everyone", () => {
+  it("folds its names behind Show all, past ten people", () => {
+    const html = view({ audience: { groups: [{ reason: "everyone", people: people(40) }], everyone_else: 0 } });
+    expect(html).toContain("Everyone (this place is open)");
+    expect(html).toContain("<summary>Show all 40</summary>");
+    expect(view({ audience: { groups: [{ reason: "everyone", people: people(3) }], everyone_else: 0 } })).not.toContain("<summary>");
   });
 });
 
