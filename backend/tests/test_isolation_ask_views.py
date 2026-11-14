@@ -20,7 +20,8 @@ from typing import Any
 import pytest
 from sqlalchemy import Connection, event, text
 
-from kaagaz.answering import exhaustive, fixed_queries, ready
+from kaagaz.ai.client import ModelUnavailable
+from kaagaz.answering import exhaustive, fixed_queries, ready, rewrite
 from kaagaz.answering.clarify import Entity, Pending, PgVocabulary, latin_key, picked_page
 from kaagaz.answering.exhaustive import PgExhaustive
 from kaagaz.answering.fixed_queries import PgFixedQueries
@@ -28,6 +29,7 @@ from kaagaz.answering.hard_to_read import PgReadingQuality
 from kaagaz.answering.memory import NO_MEMORY
 from kaagaz.answering.owners import OWNING, PgOwners
 from kaagaz.answering.rewrite import Turn
+from kaagaz.answering.service import AnswerService
 from kaagaz.answering.unchecked import PgUncheckedValues
 from kaagaz.api.routers.chat import CLARIFY_GONE
 from kaagaz.api.views import NO_ACCESS, NO_ACCESS_LINE
@@ -39,9 +41,12 @@ from kaagaz.search.hybrid import FusedPiece
 from kaagaz.search.scope import EVERYTHING
 from kaagaz.search.story_search import read_stories
 from tests.db_support import insert_key, insert_tag, tag_document
+from tests.settings_factory import make_settings
+from tests.test_answering_golden import NOW, evidence_blocks
 from tests.test_api_chat import _cited_answer
 from tests.test_api_chat_clarify import _clarify
 from tests.test_api_support import CSRF, Api, answer_json
+from tests.test_ask_speed_db import Model
 from tests.test_isolation_access_views import Org, _app, _walled
 from tests.test_operator_auth_db import _owner
 from tests.test_search_db import EF_SEARCH, RECIPE, add_pieces, axis
@@ -942,3 +947,88 @@ def test_homes_list_is_made_again_when_access_changes(db: Database, ask: AskOrg)
     assert land in offered()
     _share(ask, "fin", give=False)
     assert land not in offered()
+
+
+# --- red team and differential (commit 6) ------------------------------------------------------
+
+
+class _Recording(Model):
+    """test_ask_speed_db's model (every text on axis 0, fin's own; the draft quotes its first
+    evidence block), keeping every prompt and every embedded text; ``down``: every chat call fails."""
+
+    def __init__(self, down: bool = False) -> None:
+        self.down = down
+        self.prompts: list[str] = []
+        self.embedded: list[str] = []
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self.embedded.extend(texts)
+        return super().embed(texts)
+
+    def chat_json(self, *, system: str, user: str, schema: Any, **kwargs: Any) -> dict[str, Any]:
+        self.prompts.append(f"{system}\n{user}")
+        if self.down:
+            raise ModelUnavailable("down")
+        if system != rewrite.SYSTEM_PROMPT and not evidence_blocks(user):
+            return {"status": "not_found", "sentences": []}
+        return super().chat_json(system=system, user=user, schema=schema, **kwargs)
+
+
+RED_TEAM = (
+    "What is the total amount?",
+    "ledger",
+    "Who owns the land in Satara?",
+    "How many invoices are there?",
+    "Which seller has the highest total?",
+    "Which pages could not be read?",
+    "Tell me about aardvark",
+)
+
+
+def _hidden_marks(ask: AskOrg) -> list[str]:
+    """What of the plain reviewer's hidden files must never reach a prompt, an embedded text or a reply."""
+    marks = []
+    for name in HIDDEN["plain"]:
+        word = WORDS[name]
+        marks += [ask.id(name), *ask.pieces[name], f"{name}.pdf", str(AMOUNTS[name]), f"Invoice {word}"]
+        marks += [f"Seller {word}", f"Ramesh {word}".casefold(), f"{word}pur", f"topic {word}"]
+    return marks
+
+
+def _answers(ask: AskOrg, model: Any, scope: Any = EVERYTHING) -> list[str]:
+    settings = make_settings(model_embed="test-embed")
+    service = AnswerService(db=_app(ask.db), model=model, settings=settings, clock=lambda: NOW)
+    return [
+        json.dumps(
+            service.answer(ask.org.c, q, scope=scope, user_id=ask.user("plain")).to_json(), sort_keys=True
+        )
+        for q in RED_TEAM
+    ]
+
+
+@pytest.mark.parametrize("mode", ["model", "model down", "no model"])
+def test_red_team_nothing_hidden_reaches_a_prompt_or_a_reply(db: Database, ask: AskOrg, mode: str) -> None:
+    """PRD 7 part 3: the real AnswerService, as the plain reviewer, every route these questions
+    take (search, whole scope, totals, counts, owners, pages not read, Did you mean)."""
+    model = None if mode == "no model" else _Recording(down=mode == "model down")
+    replies = _answers(ask, model)
+    seen = "\n".join(replies + ([] if model is None else model.prompts + model.embedded)).casefold()
+    assert [m for m in _hidden_marks(ask) if m.casefold() in seen] == []
+    assert any(ask.id("sales") in reply for reply in replies)  # the visible file does answer
+
+
+def test_a_scope_of_a_hidden_file_answers_as_a_random_one(db: Database, ask: AskOrg) -> None:
+    from kaagaz.search.scope import Scope
+
+    _approved_word(ask, ask.id("fin"), "secretword")
+    replies = [
+        _answers(ask, _Recording(), Scope(document_ids=(d,))) for d in (ask.id("fin"), str(uuid.uuid4()))
+    ]
+    assert replies[0] == replies[1]
+
+
+def test_differential_the_hidden_file_deleted_forever_changes_no_reply(db: Database, ask: AskOrg) -> None:
+    """The plain reviewer's replies with fin there and hidden equal their replies once it is gone."""
+    before = _answers(ask, _Recording())
+    _owner(db, "DELETE FROM documents WHERE id = :d", {"d": ask.id("fin")})
+    assert _answers(ask, _Recording()) == before

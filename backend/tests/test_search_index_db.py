@@ -7,10 +7,12 @@ counter (the same every run). The truth is an exact scan of the same column.
 """
 
 import hashlib
+import json
 import math
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 from sqlalchemy import Connection, create_engine, text
@@ -46,6 +48,7 @@ class Clusters:
     big: str
     small: str
     questions: list[tuple[str, list[float]]]  # (customer, vector)
+    big_user: str = ""  # the big customer's Admin, to ask as a person (#602)
 
 
 def _numbers(seed: str, count: int) -> list[float]:
@@ -82,7 +85,7 @@ def clusters() -> Iterator[Clusters]:
             noise = _numbers(f"{SEED}:noise:{drawn}", DIM)
             return _unit([value + NOISE * extra for value, extra in zip(centre, noise, strict=True)])
 
-        big, _ = new_customer(database)
+        big, big_user = new_customer(database)
         small, _ = new_customer(database)
         for customer, count in ((big, BIG), (small, SMALL)):
             document = add_document(database, customer)
@@ -91,7 +94,7 @@ def clusters() -> Iterator[Clusters]:
         with database.engine.begin() as conn:
             conn.execute(text("ANALYZE pieces, documents"))
         questions = [(big if n < 20 else small, draw()) for n in range(QUESTIONS)]
-        yield Clusters(database, big, small, questions)
+        yield Clusters(database, big, small, questions, big_user)
     finally:
         database.engine.dispose()
         m0002._recreate(database_url(), name, create=False)
@@ -253,3 +256,31 @@ def test_a_word_or_typo_list_past_the_timeout_fails_the_search_as_503(
     assert getattr(cancelled.value.orig, "sqlstate", None) == "57014"
     response = _client_raising(cancelled.value).get("/api/boom")
     assert (response.status_code, response.json()["error"]["code"]) == (503, "backend_unavailable")
+
+
+def _nodes(node: dict[str, Any]) -> list[dict[str, Any]]:
+    return [node] + [each for child in node.get("Plans", []) for each in _nodes(child)]
+
+
+def test_the_walk_through_the_view_keeps_the_index_and_works_out_access_once(clusters: Clusters) -> None:
+    """PRD 7 PR 8 (#602): _MEANING as a person in the API role still walks pieces_embedding in
+    distance order, once, and the person's access (kaagaz_access) is one row; nothing walled, so the
+    given and lock sets are never read."""
+    customer, vector = clusters.questions[0]
+    params = {"c": customer, "vec": vector_literal(vector), "recipe": RECIPE, "n": CANDIDATES}
+    with Database(clusters.db.engine, APP_ROLE).user(customer, clusters.big_user) as conn:
+        conn.execute(hybrid._SET_INDEX_SCAN, {"ef": str(EF_SEARCH), "tuples": str(hybrid.MAX_SCAN_TUPLES)})
+        found = conn.execute(
+            text("EXPLAIN (ANALYZE, FORMAT JSON) " + hybrid._MEANING.text), params | EVERYTHING.params()
+        ).scalar_one()
+    nodes = _nodes((json.loads(found) if isinstance(found, str) else found)[0]["Plan"])
+    walks = [n for n in nodes if n.get("Index Name") == "pieces_embedding"]
+    assert walks and all("Order By" in n and n["Actual Loops"] == 1 for n in walks)
+    access = [n for n in nodes if n.get("Function Name") == "kaagaz_access"]
+    # One row; as the inner side of the walk's nested loop it is rescanned from its stored row (a
+    # Function Scan with no parameter keeps its result), never run again per tuple.
+    assert access and all(n["Actual Rows"] == 1 for n in access)
+    given = [
+        n for n in nodes if n.get("Function Name") in ("kaagaz_shared_with_me", "kaagaz_lock_open_to_me")
+    ]
+    assert all(n["Actual Loops"] == 0 for n in given)
