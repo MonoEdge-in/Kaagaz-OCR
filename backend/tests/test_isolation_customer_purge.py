@@ -79,6 +79,8 @@ GONE_FIRST = {
     ("learning_removals", "users"),  # 0051, PRD 6 F3: cascades from its document, SET NULL to its admin
     ("user_identities", "users"),  # 0062, #457: cascades with its user, SET NULL to the admin who approved it
     ("page_rotations", "users"),  # 0088, #600: cascades from its document, NO ACTION to who saved it
+    # 0089, #594: cascades from its document, NO ACTION to whom it was held for
+    ("version_suggestions", "users"),
 }
 
 
