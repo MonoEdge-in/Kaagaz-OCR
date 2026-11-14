@@ -35,6 +35,25 @@
   overflow-wrap: anywhere;
 }
 
+/* The Access page: Back to Users, as a document's back link. */
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--h-lg);
+  font-size: var(--fs-base);
+  font-weight: 600;
+  align-self: flex-start;
+}
+
+.line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+}
+
 /* One row of an access list: the name and its line, then the controls at the end. */
 .list {
   display: flex;

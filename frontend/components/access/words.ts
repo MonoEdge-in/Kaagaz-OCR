@@ -89,9 +89,9 @@ export const ACCESS_PAGE = {
   noPrivateFolders: "There are no private folders yet. Make a folder private from Who can see this in Documents.",
   fileSearch: "Find a file",
   noFiles: "No files match.",
+  noDepartments: "There is no other department to add.",
 } as const;
 export const accessTitle = (name: string) => `Access for ${name}`;
-export const loadingAccess = (name: string) => `Loading ${name}'s access…`;
 export const filesHeading = (name: string) => `Files given to ${name}`;
 export const turnedOffBanner = (name: string) =>
   `${name}'s account is turned off, so they can see nothing. Turn it on from the Users tab to give access again.`;
