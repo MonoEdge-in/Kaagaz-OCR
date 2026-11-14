@@ -16,7 +16,10 @@ Why:
   council 3 Nov 2026) has a bucket of its own, ``{key}:folder``, of
   FOLDER_UPLOAD_CALLS_PER_MINUTE: one call a file, so 50,000 files go in hours, not days;
   planning, registering and progress stay on the general bucket. The route checks the item
-  before it reads the body, so a made-up id gets a 404, never an upload. A refusal's
+  before it reads the body, so a made-up id gets a 404, never an upload. Meta's WhatsApp
+  webhook (``/api/whatsapp/webhook``, #603) has its own, ``{key}:whatsapp``, of
+  WHATSAPP_WEBHOOK_CALLS_PER_MINUTE: every delivery comes from a few of Meta's addresses, which the
+  general bucket per address would refuse (Meta then retries, late). A refusal's
   ``Retry-After`` is the honest wait for the next token
   (about a second at 120 a minute), not a flat minute, and each refusal is logged at
   WARNING with the path, the ids and the bucket. PROVISIONAL: behind the Next.js proxy every visitor who is
@@ -48,7 +51,13 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from kaagaz.api.auth import OPERATOR_COOKIE, OPERATOR_PATH, read_operator, session_claims
+from kaagaz.api.auth import (
+    OPERATOR_COOKIE,
+    OPERATOR_PATH,
+    WHATSAPP_WEBHOOK_PATH,
+    read_operator,
+    session_claims,
+)
 from kaagaz.api.context import get_context
 from kaagaz.api.errors import error_response
 
@@ -189,10 +198,18 @@ def client_address(request: Request) -> str:
 
 
 class RequestMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app: ASGIApp, *, limiter: RateLimiter, folder_limiter: RateLimiter) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        limiter: RateLimiter,
+        folder_limiter: RateLimiter,
+        whatsapp_limiter: RateLimiter,
+    ) -> None:
         super().__init__(app)
         self._limiter = limiter
         self._folder_limiter = folder_limiter
+        self._whatsapp_limiter = whatsapp_limiter
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         started = time.perf_counter()
@@ -209,10 +226,11 @@ class RequestMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         upload = path == UPLOAD_PATH or path.startswith(UPLOAD_PATH + "/")
         folder = request.method == "POST" and path == FOLDER_FILE_PATH and FOLDER_ITEM in request.query_params
-        bucket = "folder" if folder else "upload" if upload else "general"
+        whatsapp = path == WHATSAPP_WEBHOOK_PATH
+        bucket = "folder" if folder else "upload" if upload else "whatsapp" if whatsapp else "general"
         if bucket != "general":
             key += f":{bucket}"
-        limiter = self._folder_limiter if folder else self._limiter
+        limiter = self._folder_limiter if folder else self._whatsapp_limiter if whatsapp else self._limiter
         if limiter.allow(key):
             response = await call_next(request)
         else:

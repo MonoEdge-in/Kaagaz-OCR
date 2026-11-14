@@ -187,6 +187,16 @@ services:
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
 
+  # Kaagaz on WhatsApp (#603): never started unless the deploy names --profile whatsapp, and it
+  # stops at once unless .env sets WHATSAPP_ENABLED=true. Not while the test server shares
+  # production's database (#577). PROVISIONAL limit (Vrushit's budget).
+  whatsapp:
+    logging: *logging # restart: unless-stopped is already in docker-compose.yml
+    mem_limit: 1g
+    memswap_limit: 1g
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
   # HTTPS in front of everything (infra/caddy/Caddyfile): the Let's Encrypt
   # certificate for KAAGAZ_DOMAIN, /api/* to api, the rest to frontend.
   caddy:

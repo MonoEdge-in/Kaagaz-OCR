@@ -23,7 +23,10 @@ LOGGING = 'x-logging: &logging\n  driver: json-file\n  options:\n    max-size: "
 ONE_SHOT = {"migrate"}  # runs once per deploy and exits
 CLEARED = {"postgres", "seaweedfs", "elasticmq", "clamav", "api", "frontend"}
 # PRD 5 section 7: the scan reader and the model run outside the stack, so these are all.
-BASE_SERVICES = ["postgres", "seaweedfs", "elasticmq", "clamav", "migrate", "api", "worker", "frontend"]
+# Changed on purpose (#603): the WhatsApp channel, started only with --profile whatsapp.
+BASE_SERVICES = [
+    "postgres", "seaweedfs", "elasticmq", "clamav", "migrate", "api", "worker", "frontend", "whatsapp",
+]  # fmt: skip
 _NEXT_KEY = re.compile(r"^ {0,2}[a-z]", re.MULTILINE)  # the next service, or a top-level key
 
 
@@ -333,6 +336,7 @@ NETWORKS = {
     "api": ["data", "edge"],
     "worker": ["data", "scan"],
     "frontend": ["edge"],
+    "whatsapp": ["data"],  # Changed on purpose (#603): the database, and Meta out on the internet
 }
 
 
@@ -352,6 +356,21 @@ def test_each_service_is_only_on_its_closed_lines() -> None:
     assert {name: networks_of(service(name)) for name in BASE_SERVICES} == NETWORKS
     assert networks_of(service("caddy", PROD)) == ["edge"]
     assert [name for name in services(PROD) if "networks" in keys(service(name, PROD))] == ["caddy"]
+
+
+def test_the_whatsapp_channel_starts_only_with_its_profile_and_logs_in_as_the_api() -> None:
+    """#603: never on a plain `up`; x-backend's login (the API's) and no workers' role, so it works as
+    the person (kaagaz/channel_main.py), with the server's limits."""
+    block = service("whatsapp")
+    assert has(block, 'profiles: ["whatsapp"]')
+    assert has(block, 'command: ["python", "-m", "kaagaz.channel_main"]')
+    assert "    <<: *backend\n" in block
+    assert "DATABASE_URL" not in block and "DB_WORKER_ROLE" not in block and "environment" not in keys(block)
+    prod = service("whatsapp", PROD)
+    assert all(
+        has(prod, line)
+        for line in ("mem_limit: 1g", "cap_drop: [ALL]", "security_opt: [no-new-privileges:true]")
+    )
 
 
 def test_only_migrate_gets_the_storage_admin_key() -> None:

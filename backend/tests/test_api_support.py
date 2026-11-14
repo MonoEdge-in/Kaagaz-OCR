@@ -583,6 +583,11 @@ OIDC_ROUTES = (
 )
 
 
+# Kaagaz on WhatsApp (#603): Meta's webhook, 404 while WhatsApp is off, whoever asks
+# (tests/test_api_whatsapp_webhook.py).
+WHATSAPP_ROUTES = (("GET", "/api/whatsapp/webhook"), ("POST", "/api/whatsapp/webhook"))
+
+
 def route_calls(app: FastAPI, prefix: str = "/api") -> list[tuple[str, str]]:
     """Every (method, path) the app serves under ``prefix``, with each path
     parameter filled in: 1 for a number, a well-formed unknown id otherwise.
