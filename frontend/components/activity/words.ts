@@ -40,6 +40,12 @@ export const ACTIVITY_WORDS: Record<string, (entry: Entry) => string> = {
   "document.autofile": (entry) => `filed it in ${place(entry) ?? "a folder"}`,
   "document.autofile_undo": () => "undid the automatic filing",
   "document.reprocess": () => "asked to read it again",
+  // #600: pages turned for everyone; pages is how many the save changed.
+  "document.page_turns": ({ details: { pages } }) =>
+    typeof pages === "number"
+      ? `turned ${formatNumber(pages)} ${pages === 1 ? "page" : "pages"} for everyone`
+      : "turned the pages for everyone",
+  "document.page_turns_reset": () => "put the pages back as scanned",
   "audit.export": () => "exported the activity",
   "folder.upload": (entry) =>
     typeof entry.details.files === "number" ? `uploaded a folder of ${formatNumber(entry.details.files)} files` : "uploaded a folder",

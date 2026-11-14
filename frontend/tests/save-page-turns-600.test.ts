@@ -6,9 +6,10 @@
 import { act, createElement } from "react";
 import type { Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PageTurnMenu } from "@/components/viewer/PageTurnMenu";
 import { OFFLINE, SAVED, SaveForEveryone, usePageTurns } from "@/components/viewer/SavePageTurns";
 import { pageTurnsKey } from "@/components/viewer/viewer";
-import type { PageTurnSaved } from "@/lib/types";
+import type { PageSummary, PageTurnSaved } from "@/lib/types";
 import { FakeDocument, FakeElement, fire, install } from "./fake-dom";
 
 let doc: FakeDocument;
@@ -41,7 +42,7 @@ function Harness({ saved, turn }: { saved: PageTurnSaved[]; turn: Map<number, nu
       userId: "u1",
       saved: turns.saved,
       shown: turns.shown,
-      onSaved: turns.setSaved,
+      onSaved: turns.takeSaved,
     }),
   );
 }
@@ -109,6 +110,7 @@ describe("Save for everyone", () => {
       { method: "PATCH", url: "/api/documents/d1/page-turns", body: { changes: [{ page_no: 1, turn: 270 }], user_id: "u1" } },
     ]);
     expect(byId("saved")).toBe("[[0,3],[1,1],[8,2]]"); // someone else's page 9 too
+    expect(byId("shown")).toBe("[[0,3],[1,1],[8,2]]");
     expect(status()).toBe(SAVED);
     expect(store.size).toBe(0);
   });
@@ -136,5 +138,44 @@ describe("Save for everyone", () => {
     await press(button("Put back"));
     expect(sent).toEqual([{ method: "DELETE", url: "/api/documents/d1/page-turns?user_id=u1", body: null }]);
     expect(byId("saved")).toBe("[]");
+  });
+});
+
+describe("the photo turn menu", () => {
+  const photo = (page_no: number, width: number, height: number) => ({ page_no, width, height }) as PageSummary;
+  const pages = [photo(1, 3000, 4000), photo(2, 4000, 3000)]; // a tall photo, then a wide one
+
+  async function openMenu(saved: PageTurnSaved[]) {
+    screen = doc.body.appendChild(doc.createElement("div")) as FakeElement;
+    const { createRoot } = await import("react-dom/client");
+    root = createRoot(screen as unknown as Element);
+    function Menu() {
+      const turns = usePageTurns("d1", saved, "u1");
+      return createElement(
+        "div",
+        null,
+        createElement("output", { id: "shown" }, JSON.stringify([...turns.shown])),
+        createElement(PageTurnMenu, { turns, pages, pageNo: 2, documentId: "d1", userId: "u1" }),
+      );
+    }
+    await act(async () => root!.render(createElement(Menu)));
+  }
+  const inGroup = (group: string, text: string) =>
+    screen
+      .all()
+      .find((element) => element.getAttribute("aria-label") === group)
+      ?.all()
+      .find((element) => element.tagName === "BUTTON" && element.textContent.trim() === text) ?? null;
+
+  it("turns this page or all of them, makes them wide, resets, and offers the save", async () => {
+    await openMenu([]);
+    await press(inGroup("This page", "Turn right"));
+    expect(byId("shown")).toBe("[[1,1]]"); // page 2, the page on screen
+    await press(inGroup("All pages", "Turn left"));
+    expect(byId("shown")).toBe("[[0,3]]");
+    await press(button("Reset to original"));
+    await press(button("Make all pages wide"));
+    expect(byId("shown")).toBe("[[0,1]]"); // only the tall photo
+    expect(button("Save for everyone")).not.toBeNull();
   });
 });

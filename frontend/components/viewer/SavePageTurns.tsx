@@ -37,7 +37,12 @@ export function usePageTurns(documentId: string, pageTurns: readonly PageTurnSav
     },
     [anySaved, userId, documentId],
   );
-  return { saved, setSaved, opening, shown, show };
+  /** A save's reply: the saved set, others' turns included, is now what shows. */
+  const takeSaved = useCallback((next: Turns) => {
+    setSaved(next);
+    setShown(next);
+  }, []);
+  return { saved, takeSaved, opening, shown, show };
 }
 
 export function SaveForEveryone({

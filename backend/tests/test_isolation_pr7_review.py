@@ -300,13 +300,18 @@ def test_a_member_cannot_delete_forever_a_trashed_folder_holding_only_a_hidden_f
 
 def test_trash_of_a_department_only_department_deleted_since_stays_closed(db: Database) -> None:
     """Budgets (in Finance, Department only) goes to Trash with its file; then Finance itself is
-    deleted, emptied first (#594: a keep-delete of Finance is refused now). The plain reviewer sees
-    neither then; Management still does, and the worker with no person sees its whole organisation."""
+    deleted, emptied first (#594: a keep-delete of Finance is refused now). The organisation still
+    keeps something to some people (Legal is Department only too), so the plain reviewer sees neither
+    then; Management still does, and the worker with no person sees its whole organisation. (Known
+    gap, #594: had Finance been its last Department only department, its stranded Trash would fall
+    back to open.)"""
     api = Api(db)
     org = _walled(api)
     admin, plain = org.people["admin"], org.people["plain"]
     with db.customer(org.c) as conn:
         budgets = insert_folder(conn, org.c, admin.user_id, "Budgets", org.folders["finance"])
+        legal = insert_folder(conn, org.c, admin.user_id, "Legal")
+    _owner(db, "UPDATE folders SET kind = 'department', department_only = true WHERE id = :f", {"f": legal})
     budget = api.add_document(org.c, name="budget.pdf", folder_id=budgets, uploaded_by=admin.user_id)
     _trash(org, budgets)
     assert "Budgets" not in plain.client.get("/api/documents/trash/folders").text
@@ -325,6 +330,47 @@ def test_trash_of_a_department_only_department_deleted_since_stays_closed(db: Da
     assert budget in _seen(worker, org.c, None) and budgets in _seen(
         worker, org.c, None, "visible_trashed_folders"
     )
+
+
+def _gone_department(api: Api, org: Org, name: str) -> tuple[str, str]:
+    """A department ``name`` (open) with a file the member uploaded and sent to Trash; then the
+    department itself is deleted for good (its Trash file goes to the top level, keeping the
+    department it had). Returns (department, file)."""
+    db, admin, member = api.db, org.people["admin"], org.people["member"]
+    with db.customer(org.c) as conn:
+        department = insert_folder(conn, org.c, admin.user_id, name)
+    _owner(db, "UPDATE folders SET kind = 'department' WHERE id = :f", {"f": department})
+    document = api.add_document(org.c, name=f"{name}.pdf", folder_id=department, uploaded_by=member.user_id)
+    assert member.client.delete(f"/api/documents/{document}", headers=CSRF).status_code == 204
+    assert admin.client.delete(f"/api/folders/{department}", headers=CSRF).status_code == 204
+    assert _owner(db, "SELECT department_id FROM documents WHERE id = :d", {"d": document}) == [
+        (uuid.UUID(department),)
+    ]
+    return department, document
+
+
+def test_day_one_a_file_whose_department_is_gone_stays_its_uploaders_in_trash(db: Database) -> None:
+    """Day one changes nothing (PRD 7): nothing is Department only, so a department deleted since
+    is open as every department is; the member sees their file in Trash and restores it."""
+    api = Api(db)
+    c, _ = api.customer()  # no wall: nothing is Department only
+    org = Org(c, {"admin": api.admin_sign_in(c), "member": api.sign_in(c, "member")}, {}, {})
+    _, document = _gone_department(api, org, "Ops")
+    member = org.people["member"].client
+    assert document in {i["id"] for i in member.get("/api/documents?trashed=true&limit=100").json()["items"]}
+    assert member.post(f"/api/documents/{document}/restore", headers=CSRF).status_code == 200
+
+
+def test_once_walled_a_file_whose_department_is_gone_is_closed_but_to_management(db: Database) -> None:
+    """The walled organisation has a Department only department, so a department deleted since is
+    closed (fail closed): the member who uploaded the file can't see it in Trash; Management can."""
+    api = Api(db)
+    org = _walled(api)
+    _, document = _gone_department(api, org, "Ops")
+    trash = "/api/documents?trashed=true&limit=100"
+    assert document not in {i["id"] for i in org.people["member"].client.get(trash).json()["items"]}
+    assert document not in {i["id"] for i in org.people["plain"].client.get(trash).json()["items"]}
+    assert document in {i["id"] for i in org.people["management"].client.get(trash).json()["items"]}
 
 
 # --- gaps the mutation runs found ------------------------------------------------------------------

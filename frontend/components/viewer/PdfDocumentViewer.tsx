@@ -430,7 +430,7 @@ export function PdfDocumentViewer({
               saved={turns.saved}
               shown={turns.shown}
               onSaved={(saved) => {
-                turns.setSaved(saved);
+                turns.takeSaved(saved);
                 setHandedTurns(saved);
               }}
               className={buttonVariants({ variant: "ghost", size: "sm" })}
