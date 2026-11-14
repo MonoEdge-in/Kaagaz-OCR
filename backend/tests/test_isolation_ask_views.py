@@ -171,6 +171,14 @@ def _search(
     )
 
 
+def _list_rows(statement: Any, ask: AskOrg, conn: Connection, query: str) -> list[Any]:
+    """A word or typo list's own documents: search() fetches details through the view again, so the
+    list itself is checked here."""
+    conn.execute(hybrid._SET_FUZZY_THRESHOLD, {"t": str(hybrid.FUZZY_THRESHOLD)})
+    words = {"c": ask.org.c, "q": query, "k": query, "ql": query, "g": "", "sk": "", "n": 50}
+    return [r[1] for r in conn.execute(statement, words | EVERYTHING.params())]
+
+
 def _meaning_rows(statement: Any, ask: AskOrg) -> Callable[[Connection], list[Any]]:
     params = {"c": ask.org.c, "vec": hybrid.vector_literal(axis(ask.axes["fin"])), "recipe": RECIPE, "n": 50}
     return lambda conn: [r[1] for r in conn.execute(statement, params | EVERYTHING.params())]
@@ -206,8 +214,10 @@ def _documents(found: Any) -> set[str]:
 # finds fin for Finance's member, and nothing hidden for the plain reviewer.
 _Call = Callable[[Connection, AskOrg], Any]
 _CALLS: list[tuple[str, _Call]] = [
-    ("_WORD", lambda conn, a: _search(conn, a, WORDS["fin"])),
-    ("_FUZZY", lambda conn, a: _search(conn, a, "aardvrk")),
+    ("search, words", lambda conn, a: _search(conn, a, WORDS["fin"])),
+    ("search, typos", lambda conn, a: _search(conn, a, "aardvrk")),
+    ("_WORD", lambda conn, a: _list_rows(hybrid._WORD, a, conn, WORDS["fin"])),
+    ("_FUZZY", lambda conn, a: _list_rows(hybrid._FUZZY, a, conn, "aardvrk")),
     ("search, meaning", lambda conn, a: _search(conn, a, "", axis(a.axes["fin"]))),
     ("_MEANING", lambda conn, a: _meaning_rows(hybrid._MEANING, a)(conn)),
     ("_MEANING_EXACT", lambda conn, a: _meaning_rows(hybrid._MEANING_EXACT, a)(conn)),
