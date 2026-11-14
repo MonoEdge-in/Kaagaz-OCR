@@ -4,7 +4,8 @@
 ``check-access``, run as the workers' role, names the values the tree gives that are not stored,
 is clean once they are stored by hand, then names each value made wrong and a member row whose
 folder is gone, but no file in Trash. Up, down (the schema, comments and grants as at 0083, the
-rows kept) and up again. The new keys and CHECKs refuse what they should (shared database). The
+rows kept) and up again. The keys and CHECKs on documents and learned_corrections are added NOT
+VALID (0085 validates them) and still refuse what they should (shared database). The
 tables' locks and grants: test_isolation_schema; another organisation's rows:
 test_isolation_access_tables; the organisation delete: test_isolation_customer_purge."""
 
@@ -30,6 +31,15 @@ pytestmark = pytest.mark.db
 fresh = base.fresh
 M0084 = _load("0084_access_tables.py")
 NOW = datetime(2026, 11, 1, tzinfo=UTC)
+# Added NOT VALID, so 0084 reads neither table; 0085 validates them outside its transaction.
+NOT_VALID = (
+    "documents_held_for_fk",
+    "documents_locked",
+    "documents_locked_by_fk",
+    "documents_status_check",
+    "learned_corrections_source_fk",
+)
+_VALIDATED = "SELECT conname, convalidated FROM pg_constraint WHERE conname = ANY(:n) ORDER BY 1"
 # How many rows hold anything but the new columns' defaults: none after 0084.
 _SET = (
     "SELECT (SELECT count(*) FROM folders WHERE customer_id = :c"
@@ -129,6 +139,7 @@ def test_up_writes_no_row_the_check_finds_what_is_wrong_and_down_and_up_again(
         assert _run(settings, db, t["c"]) == [(1, False)]
         assert _run("SELECT bool_or(management) FROM users WHERE customer_id = :c", db, t["c"]) == [(False,)]
     assert _rights(db, WORKER) == _rights(db, APP_ROLE)
+    assert _run(_VALIDATED, db, a["c"], n=list(NOT_VALID)) == [(name, False) for name in NOT_VALID]
     code, lines = _check(db)
     assert (code, sorted(lines)) == (1, sorted([*_missing(a), *_missing(b), "10 differences"]))
 

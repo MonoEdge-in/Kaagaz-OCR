@@ -306,12 +306,12 @@ def restore_document(
     """Bring the document's family back from Trash (``trash.restore_document``); one that went
     with a folder delete goes back into its folder, which becomes live with its chain of folders
     above it (``restore_folder``'s rules), their other files staying in Trash. (False, None) when
-    there is no such document; the Restored when folders came back. Only such a restore takes the
-    tree lock, before the family's, as every tree change; a document in Trash never gains a
-    trashed folder, so one read with none needs no tree lock. O(v log D + d) for v versions, depth d."""
+    there is no such document; the Restored when folders came back. Every restore takes the tree
+    lock before the family's, as every tree change: one can change who sees the file (0085).
+    O(v log D + d) for v versions, depth d."""
+    _lock_tree(conn, customer_id)
     if conn.execute(text(_FILED_IN), {"c": customer_id, "f": document_id}).scalar() is None:
         return trash.restore_document(conn, customer_id, document_id), None
-    _lock_tree(conn, customer_id)
     family_id = trash.lock_family(conn, customer_id, document_id)
     if family_id is None:
         return False, None

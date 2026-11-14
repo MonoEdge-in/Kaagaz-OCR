@@ -33,26 +33,45 @@ or writes one organisation's rows, keyed on the customer of the rows the stateme
   statement's own rows, so a correction's key cleared by a document's delete forever (0084's SET
   NULL) does not count as a change either.
 
-The upgrade first builds ``audit_log_subject`` (the entries about one person, on 0084's column)
-CONCURRENTLY outside the transaction (as 0068), which commits what ran before it. Then, with the tables the triggers go on locked
-(documents first, 0004's order) against writes only, every stored value is worked out again from
-the tree over ``folders`` and ``trashed_folders``: a live row's always (none when no top-level
-folder reaches it), a row in Trash only where its tree still reaches it, as 0084 would have; it
-stops if a folder is deeper than 100 (kaagaz.db.folders.MAX_DEPTH). Only rows whose values differ
-are written, with the touch trigger off. Cost: the folder tree is walked five times (the depth
-check and one per UPDATE); documents are read twice (live, then in Trash).
+Locks. Raising the access version takes the organisation's ``customers`` row, which is the app's
+tree lock (``kaagaz.db.folders._lock_tree``). So every path that can change a file's stored values
+takes the tree lock before the family lock, as auto-filing and every folder change already do: a
+person's move and Undo of auto-filing, the zip's move into its folder, a family's restore, and a
+version's link and Undo. ``kaagaz_folder_access`` also takes that row itself before it walks, so
+two folder changes that skipped the app's lock run one after the other, the second walking from
+what the first committed.
+
+Open until the app changes PR 9 needs (#594): a file restored after its folder was deleted, a held
+file joined to a family and then undone, and the files of a top-level folder deleted with its
+contents kept (``folders._MOVE_DOCUMENTS``) all end in no folder, held for no one: open to
+everyone, as today.
+
+The upgrade first, outside the transaction (as 0068; it commits what ran before it), builds
+``audit_log_subject`` (the entries about one person, on 0084's column) CONCURRENTLY unless a valid
+one is there, then validates 0084's NOT VALID keys and CHECKs (``VALIDATED``: SHARE UPDATE
+EXCLUSIVE, so writes go on while documents is read). Then it sets env.py's lock_timeout again and,
+with documents, folders and trashed_folders locked against writes (documents first, 0004's order),
+works out every stored value again from the tree over ``folders`` and ``trashed_folders``: a live
+row's always (none when no top-level folder reaches it), a row in Trash only where its tree still
+reaches it, as 0084 would have; it stops if a folder is deeper than 100
+(kaagaz.db.folders.MAX_DEPTH). Only rows whose values differ are written, with the touch trigger
+off. Cost: the folder tree is walked five times (the depth check and one per UPDATE); documents
+are read twice (live, then in Trash). Every other table is locked only by its CREATE TRIGGER at
+the end.
 
 On every statement the triggers add one small query on what it changed; a folder change walks its
-subtree. A document move or a change of access also takes the organisation's row until the commit.
+subtree. A document move or a change of access also holds the organisation's row until the commit.
 
-The downgrade drops the triggers, the functions and the index, and puts back 0001's touch
-triggers; the stored values stay as they are.
+The downgrade (documents locked first) drops the triggers, the functions and the index, and puts
+back 0001's touch triggers; the stored values stay as they are, and so do 0084's keys and CHECKs,
+now validated.
 
 Revision ID: 0085
 Revises: 0084
 """
 
 from alembic import op
+from sqlalchemy import text
 
 revision = "0085"
 down_revision = "0084"
@@ -60,10 +79,17 @@ branch_labels = None
 depends_on = None
 
 INDEX = "audit_log_subject"
-LOCK = (
-    "LOCK TABLE documents, folders, trashed_folders, users, learned_corrections, department_members,"
-    " private_folder_members, document_shares, lock_grants IN SHARE ROW EXCLUSIVE MODE"
-)
+LOCK_TIMEOUT = "10s"  # as env.py's
+# What the backfill reads and writes, documents first: writes wait, reads go on.
+LOCK = "LOCK TABLE documents, folders, trashed_folders IN SHARE ROW EXCLUSIVE MODE"
+# 0084's, added NOT VALID: {constraint: its table}.
+VALIDATED = {
+    "documents_held_for_fk": "documents",
+    "documents_locked_by_fk": "documents",
+    "documents_locked": "documents",
+    "documents_status_check": "documents",
+    "learned_corrections_source_fk": "learned_corrections",
+}
 MEMBER_TABLES = ("department_members", "private_folder_members")
 GIVEN_TABLES = ("document_shares", "lock_grants")
 
@@ -73,8 +99,10 @@ def _literal(words: str) -> str:
 
 
 def _raise(customers: str) -> str:
+    """Up by one for each organisation in the uuid[] ``customers``; no statement when it is empty."""
     return (
-        f"UPDATE public.customers c SET access_version = c.access_version + 1 WHERE c.id = ANY ({customers});"
+        f"IF cardinality({customers}) > 0 THEN UPDATE public.customers c"
+        f" SET access_version = c.access_version + 1 WHERE c.id = ANY ({customers}); END IF;"
     )
 
 
@@ -138,6 +166,13 @@ FUNCTIONS = {
             INTO v_roots, v_switched
             FROM new_rows n JOIN old_rows o ON o.customer_id = n.customer_id AND o.id = n.id;
         END IF;
+        IF v_roots IS NULL AND v_switched IS NULL THEN
+            RETURN NULL;  -- a rename or a new order
+        END IF;
+        -- The tree lock (kaagaz.db.folders._lock_tree), which the app takes first: a change that
+        -- skipped it waits here for another, then walks from what that one committed.
+        PERFORM 1 FROM public.customers c WHERE c.id IN (SELECT n.customer_id FROM new_rows n)
+        FOR NO KEY UPDATE;
         IF v_roots IS NOT NULL THEN
             -- Down from each changed folder, starting from its parent's stored values; a folder
             -- under two changed ones takes the walk from the higher (its longer path).
@@ -348,6 +383,7 @@ def _touch(table: str, when: str) -> str:
 INDEX_COMMENT = "The entries about one person, newest first (PRD 7)."
 
 UPGRADE = [
+    f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'",  # the autocommit block ended env.py's
     LOCK,
     f"COMMENT ON INDEX {INDEX} IS {_literal(INDEX_COMMENT)}",
     *BACKFILL,
@@ -365,6 +401,7 @@ UPGRADE = [
 ]
 
 DOWNGRADE = [
+    "LOCK TABLE documents IN ACCESS EXCLUSIVE MODE",  # first, 0004's order
     *[f"DROP TRIGGER IF EXISTS {name} ON {table}" for name, (table, _) in TRIGGERS.items()],
     *[f"DROP FUNCTION IF EXISTS public.{name}()" for name in FUNCTIONS],
     *[_touch(table, "") for table in TOUCH],
@@ -372,13 +409,19 @@ DOWNGRADE = [
 ]
 
 
+_VALID_INDEX = text(f"SELECT i.indisvalid FROM pg_index i WHERE i.indexrelid = to_regclass('public.{INDEX}')")
+
+
 def upgrade() -> None:
     with op.get_context().autocommit_block():
-        op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS public.{INDEX}")  # a failed build's leftover
-        op.execute(
-            f"CREATE INDEX CONCURRENTLY {INDEX} ON public.audit_log (customer_id, subject_user_id, created_at DESC)"
-            " WHERE subject_user_id IS NOT NULL"
-        )
+        if not op.get_bind().execute(_VALID_INDEX).scalar():  # none yet, or a failed build's leftover
+            op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS public.{INDEX}")
+            op.execute(
+                f"CREATE INDEX CONCURRENTLY {INDEX} ON public.audit_log"
+                " (customer_id, subject_user_id, created_at DESC) WHERE subject_user_id IS NOT NULL"
+            )
+        for constraint, table in VALIDATED.items():
+            op.execute(f"ALTER TABLE {table} VALIDATE CONSTRAINT {constraint}")
     for statement in UPGRADE:
         op.execute(statement)
 

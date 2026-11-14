@@ -42,6 +42,7 @@ from sqlalchemy import Connection, RowMapping, text
 
 from kaagaz import versions
 from kaagaz.db import ai_settings, audit
+from kaagaz.db.folders import _lock_tree
 from kaagaz.db.trash import lock_family, lock_live_family
 from kaagaz.db.visibility import LIVE_SUGGESTION
 
@@ -273,6 +274,7 @@ def link(conn: Connection, customer_id: str, suggestion_id: str, *, by: str | No
     if first is None:
         raise Refused("not_found")
     new, family = str(first["document_id"]), str(first["candidate_family_id"])
+    _lock_tree(conn, customer_id)  # first: the join moves the document (0085)
     for document in sorted((new, family)):
         if lock_family(conn, customer_id, document) is None:
             raise Refused("not_found")  # deleted for good
@@ -389,6 +391,7 @@ def undo(conn: Connection, customer_id: str, document_id: str, *, by: str) -> No
     once a later version exists; trash.InTrash in Trash. O(v log D).
     ponytail: "the previous current" is the highest ready one left (one made current by hand
     since the link stays); a version made current by hand before the link is not remembered."""
+    _lock_tree(conn, customer_id)  # first: Undo moves the document back (0085)
     family = lock_live_family(conn, customer_id, document_id)
     if family is None:
         raise Refused("not_found")
