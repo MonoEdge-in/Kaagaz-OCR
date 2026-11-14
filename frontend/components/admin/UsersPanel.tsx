@@ -25,10 +25,26 @@
 //
 // A reset password comes back once, in the reply. It is shown in a card above
 // the list, with Copy, until Done or until the tab is left; it is never stored.
+//
+// PRD 7 (#604): an Access column (Management, then the person's departments), read only; the
+// menu's Access opens their Access page, where it is changed; Make or Stop Management asks first
+// (on yourself, Make Management asks for your password too), hidden for a turned-off account.
 
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import type { FormEvent } from "react";
+import { usePasswordStep } from "@/components/access/SelfPasswordDialog";
+import {
+  MANAGEMENT_CHIP,
+  MANAGEMENT_TITLE,
+  MANAGEMENT_WHAT,
+  accessErrorText,
+  departmentsText,
+  makeManagementQuestion,
+  managementToast,
+  stopManagementQuestion,
+} from "@/components/access/words";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { useMinuteNow } from "@/components/chat/hooks";
 import { roleName } from "@/components/shell/nav";
@@ -48,6 +64,7 @@ import {
   resetUser2fa,
   resetUserPassword,
   setDeleteForever,
+  setManagement,
   unlockUser,
   updateUser,
 } from "@/lib/api";
@@ -208,6 +225,9 @@ export function UsersPanel({
                   <th scope="col" role="columnheader" className={styles.roleColumn}>
                     Role
                   </th>
+                  <th scope="col" role="columnheader">
+                    Access
+                  </th>
                   <th scope="col" role="columnheader" className={styles.statusColumn}>
                     Status
                   </th>
@@ -267,7 +287,7 @@ export function UsersPanel({
 
 /** Disabling and the two resets ask first (each signs the user out on every device), and
  * so does allowing Delete forever (UI audit AD2: every action that takes something away). */
-type Confirming = "disable" | "password" | "2fa" | "forever" | "connections";
+type Confirming = "disable" | "password" | "2fa" | "forever" | "connections" | "makeManagement" | "stopManagement";
 
 const CONFIRM_TEXT: Record<Confirming, (name: string, providers: readonly string[], ways?: readonly string[]) => string> = {
   connections: (name, providers) => removeConnectionsQuestion(name, providers),
@@ -276,6 +296,8 @@ const CONFIRM_TEXT: Record<Confirming, (name: string, providers: readonly string
   "2fa": (name) =>
     `Reset ${name}'s two-step code? They are signed out, and can sign in with their password, then set up a new code.`,
   forever: allowForeverQuestion,
+  makeManagement: makeManagementQuestion,
+  stopManagement: stopManagementQuestion,
 };
 
 // Plain words (25 Oct 2026): the confirm button says the menu item's own verb, and the
@@ -286,6 +308,8 @@ const CONFIRM_BUTTON: Record<Confirming, string> = {
   "2fa": "Reset two-step code",
   forever: "Allow Delete forever",
   connections: "Remove connected accounts",
+  makeManagement: "Make Management",
+  stopManagement: "Stop Management",
 };
 
 /** What each item in a user's menu does, in one plain line under it (plain words, 25 Oct 2026). */
@@ -298,7 +322,31 @@ export const USER_MENU_HELP = {
   twoStep: "For a lost phone: turns off their two-step code and signs them out, so they can set up a new one.",
   disable: "Signs them out and stops them signing in until you enable them again.",
   connections: "Stops them signing in with Google. Their password still works.",
+  // PRD 7 (#604)
+  access: "See and change which departments, private folders and files they can see.",
+  makeManagement: "They see every file in the organisation.",
+  stopManagement: "They see only their departments' files and files given to them.",
 } as const;
+
+/** PRD 7 (#604): Make or Stop Management, or neither for a turned-off account (409 disabled). */
+export function managementItem(user: AdminUser): "make" | "stop" | null {
+  if (user.disabled) return null;
+  return user.management ? "stop" : "make";
+}
+
+/** The Access column: a Management chip, then their departments ("Finance (head), Sales"). */
+export function AccessCell({ user }: { user: AdminUser }) {
+  return (
+    <span className={styles.statusList}>
+      {user.management && (
+        <span className="status-chip" data-tone="working" title={MANAGEMENT_TITLE}>
+          {MANAGEMENT_CHIP}
+        </span>
+      )}
+      <span>{departmentsText(user.departments ?? [])}</span>
+    </span>
+  );
+}
 
 function UserRow({
   user,
@@ -321,6 +369,25 @@ function UserRow({
 }) {
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState<Confirming | null>(null);
+  const router = useRouter();
+  const step = usePasswordStep();
+
+  /** Management on or off; making yourself Management asks for your password first. */
+  async function management(on: boolean) {
+    setConfirming(null);
+    setBusy(true);
+    try {
+      const row = await step.run(MANAGEMENT_WHAT, (password) => setManagement(user.id, on, password), isSelf && on);
+      if (row) {
+        onChanged(row);
+        onNotice({ text: managementToast(user.display_name, on) });
+      }
+    } catch (caught) {
+      onNotice({ problem: true, text: accessErrorText(caught) });
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function act(send: () => Promise<AdminUser>, done: string) {
     setBusy(true);
@@ -342,6 +409,7 @@ function UserRow({
     act(() => updateUser(user.id, changes), done);
 
   const confirmed = (kind: Confirming) => {
+    if (kind === "makeManagement" || kind === "stopManagement") return management(kind === "makeManagement");
     if (kind === "disable") return change({ disabled: true }, "disabled.");
     if (kind === "forever") return act(() => setDeleteForever(user.id, true), "Delete forever allowed.");
     if (kind === "2fa") return act(() => resetUser2fa(user.id), "two-step code reset.");
@@ -357,8 +425,16 @@ function UserRow({
   const forever = foreverControl(user, { isSelf, adminTwoStep });
   const reason = forever.kind === "allow" ? forever.disabledReason : null;
   const selectId = `role-${user.id}`;
+  const managing = managementItem(user);
   // AD2: one menu per row. Safe actions first; the one that takes something away last, apart.
   const items: RowMenuItem[] = [
+    { label: "Access", description: USER_MENU_HELP.access, onSelect: () => router.push(`/admin/people/${user.id}`) },
+    ...(managing === "make"
+      ? [{ label: "Make Management", description: USER_MENU_HELP.makeManagement, onSelect: () => setConfirming("makeManagement") }]
+      : []),
+    ...(managing === "stop"
+      ? [{ label: "Stop Management", description: USER_MENU_HELP.stopManagement, onSelect: () => setConfirming("stopManagement") }]
+      : []),
     ...(can.unlock
       ? [{ label: "Unlock", description: USER_MENU_HELP.unlock, onSelect: () => void act(() => unlockUser(user.id), "unlocked.") }]
       : []),
@@ -425,6 +501,9 @@ function UserRow({
           ))}
         </select>
       </td>
+      <td role="cell" data-label="Access">
+        <AccessCell user={user} />
+      </td>
       <td role="cell" data-label="Status">
         <span className={styles.statusList}>
           {userStatus(user, now).map((part) => (
@@ -462,7 +541,7 @@ function UserRow({
               </button>
               <button
                 type="button"
-                className={`btn btn-danger ${busy ? styles.busy : ""}`}
+                className={`btn ${confirming === "makeManagement" ? "btn-primary" : "btn-danger"} ${busy ? styles.busy : ""}`}
                 disabled={busy}
                 aria-busy={busy || undefined}
                 onClick={() => void confirmed(confirming)}
@@ -473,6 +552,7 @@ function UserRow({
             </div>
           </ActionDialog>
         )}
+        {step.dialog}
       </td>
     </tr>
   );
