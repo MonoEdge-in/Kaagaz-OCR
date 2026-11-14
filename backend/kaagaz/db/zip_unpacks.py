@@ -87,7 +87,7 @@ def attach(conn: Connection, customer_id: str, upload_id: str, document_id: str)
 @dataclass(frozen=True, slots=True)
 class Unpack:
     upload_id: str
-    root_folder_id: str | None  # None once that folder is deleted
+    root_folder_id: str | None  # None once that folder is deleted (the API: or one not seen, #601)
     root_name: str
     file_count: int  # every file of the zip that isn't a Mac's own, refused ones too
     stored: int

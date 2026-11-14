@@ -70,9 +70,12 @@ _FILE_COLUMNS = (
     " (SELECT ub.display_name FROM users ub WHERE ub.customer_id = d.customer_id AND ub.id ="
     f" CASE WHEN d.details_updated_at >= {_LAST_UPLOAD} THEN d.details_updated_by ELSE {_LAST_UPLOADER} END)"
     " AS last_updated_by_name,"
+    # PRD 7 (#601): through visible_folders, so a file in a folder the person can't see names no
+    # department either.
     " (WITH RECURSIVE up (id, parent_id, depth) AS ("
-    " SELECT f.id, f.parent_id, 1 FROM folders f WHERE f.customer_id = d.customer_id AND f.id = d.folder_id"
-    " UNION ALL SELECT f.id, f.parent_id, up.depth + 1 FROM up JOIN folders f ON f.id = up.parent_id"
+    " SELECT f.id, f.parent_id, 1 FROM visible_folders f"
+    " WHERE f.customer_id = d.customer_id AND f.id = d.folder_id"
+    " UNION ALL SELECT f.id, f.parent_id, up.depth + 1 FROM up JOIN visible_folders f ON f.id = up.parent_id"
     " WHERE f.customer_id = d.customer_id AND up.depth < 101)"
     " SELECT json_build_object('id', dep.id, 'name', dep.name) FROM up"
     " JOIN visible_folders dep ON dep.customer_id = d.customer_id AND dep.id = up.id"

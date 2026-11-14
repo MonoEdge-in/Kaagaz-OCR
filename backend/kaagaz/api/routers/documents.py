@@ -144,7 +144,7 @@ import math
 import uuid
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from os.path import splitext
 from typing import Annotated, Any, Literal, cast
@@ -364,7 +364,12 @@ def _folder_scope(
     subtree = folders_sql.descendant_ids(conn, customer_id, str(folder_id))
     if not subtree:
         raise ApiError(404, "not_found")
-    return subtree if subfolders else [str(folder_id)]
+    if not subfolders:
+        return [str(folder_id)]
+    # PRD 7 (#601): only the folders the person sees, so a filter never says a file given to them
+    # sits below one (a hidden folder's place in the tree).
+    seen = listing.folders_seen(conn, customer_id, subtree)
+    return [each for each in subtree if each in seen]
 
 
 @router.get("/documents")
@@ -478,7 +483,17 @@ def zip_unpacks(conn: Connection, customer_id: str, rows: Sequence[RowMapping]) 
     """#522 PR 3: the unpacking of each zip among ``rows`` (``DocumentSummary.unpack``); no
     query when there is none."""
     zips = [str(row["id"]) for row in rows if row["detected_type"] == "zip"]
-    return unpacks_sql.unpacks(conn, customer_id, zips) if zips else {}
+    found = unpacks_sql.unpacks(conn, customer_id, zips) if zips else {}
+    # PRD 7 (#601): a root folder the person can't see is named as one gone (the worker shares
+    # unpacks, so the view is read here).
+    roots = [each.root_folder_id for each in found.values() if each.root_folder_id is not None]
+    seen = listing.folders_seen(conn, customer_id, roots) if roots else set()
+    return {
+        key: each
+        if each.root_folder_id is None or each.root_folder_id in seen
+        else replace(each, root_folder_id=None)
+        for key, each in found.items()
+    }
 
 
 def user_upload_policy(context: AppContext, user: CurrentUser) -> UploadPolicy:

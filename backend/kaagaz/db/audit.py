@@ -216,11 +216,11 @@ class Filters:
     actions: tuple[str, ...] = ()
     start: datetime | None = None
     end: datetime | None = None
-    # PRD 7 (#601): the person an entry is about; only an Admin's own access (details.self);
-    # only these kinds of action (the part before the dot).
+    # PRD 7 (#601): the person an entry is about; only access and lock entries; only an Admin's
+    # own access (details.self, an access entry).
     subject_user_id: str | None = None
+    access_only: bool = False
     self_only: bool = False
-    kinds: tuple[str, ...] = ()
 
 
 Cursor = tuple[datetime, int]
@@ -243,6 +243,8 @@ _SHOWN = (
 )
 # A5: rows written while in the family, and every row of its versions and of a document linked
 # into it (accepted, or undone since), so a linked version's upload and suggestion show too.
+# PRD 7 (#601): the linked documents come through the view, so for a family the Admin can't open
+# the Admin's log under-reports them (never a leak); PR 9's owner-rights functions can widen it.
 _OF_FAMILY = (
     " AND (a.family_id = CAST(:family AS uuid) OR (a.target_type = 'document' AND a.target_id IN ("
     "SELECT v.id::text FROM visible_documents v"
@@ -269,8 +271,9 @@ _BY = " AND a.actor_user_id = CAST(:actor AS uuid)"
 _ON_DOCUMENT = " AND a.target_type = 'document' AND a.target_id = :document"
 _ACTIONS = " AND a.action = ANY(CAST(:actions AS text[]))"
 _ABOUT = " AND a.subject_user_id = CAST(:subject AS uuid)"
-_SELF = " AND a.details @> '{\"self\": true}'"
-_KINDS = " AND split_part(a.action, '.', 1) = ANY(CAST(:only_kinds AS text[]))"
+# PRD 7 (#601): written as audit_log_access's predicate (0090), so these reads use it.
+_ACCESS = " AND (a.action LIKE 'access.%' OR a.action LIKE 'lock.%')"
+_SELF = _ACCESS + " AND a.details @> '{\"self\": true}'"
 _FROM = " AND a.created_at >= :start"
 _TO = " AND a.created_at < :end"
 _BEFORE = " AND (a.created_at, a.id) < (CAST(:before_at AS timestamptz), CAST(:before_id AS bigint))"
@@ -300,8 +303,8 @@ def _where(filters: Filters, params: dict[str, Any]) -> str:
         (filters.document_id is not None, _ON_DOCUMENT, "document", filters.document_id),
         (bool(filters.actions), _ACTIONS, "actions", list(filters.actions)),
         (filters.subject_user_id is not None, _ABOUT, "subject", filters.subject_user_id),
+        (filters.access_only, _ACCESS, "access", None),
         (filters.self_only, _SELF, "self", None),
-        (bool(filters.kinds), _KINDS, "only_kinds", list(filters.kinds)),
         (filters.start is not None, _FROM, "start", filters.start),
         (filters.end is not None, _TO, "end", filters.end),
     )

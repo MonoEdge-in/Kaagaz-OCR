@@ -383,7 +383,8 @@ def unpack_view(unpack: Unpack | None) -> dict[str, Any] | None:
     return {
         "folder_upload_id": unpack.upload_id,
         "folder_id": unpack.root_folder_id,
-        "folder_name": unpack.root_name,
+        # PRD 7 (#601): no name for a folder gone or one the person can't see.
+        "folder_name": None if unpack.root_folder_id is None else unpack.root_name,
         "files": unpack.file_count,
         "unpacked": unpack.stored,
         "already_in": unpack.duplicate,
@@ -405,7 +406,7 @@ def zip_message(status: str, failure_code: str | None, unpack: Unpack | None) ->
         if status == "needs_reader":
             return "Kept as a file, not unpacked: Kaagaz unpacks a zip only when it is uploaded on its own."
         return ZIP_FAILURES.get(failure_code or "") if status == "failed" else None
-    folder = f'folder "{unpack.root_name}"'
+    folder = "a folder" if unpack.root_folder_id is None else f'folder "{unpack.root_name}"'
     if status in _IN_PROGRESS:
         done = unpack.stored + unpack.duplicate + unpack.failed
         return f"Unpacking: {done} of {_files(unpack.file_count)} into {folder}…"
@@ -596,8 +597,11 @@ def seen_items(conn: Connection, customer_id: str, rows: Sequence[ItemRow]) -> l
     (a copy of a hidden file) names no document, only that it is hidden. One statement."""
     ids = [row.document_id for row in rows if row.document_id is not None]
     seen = listing.documents_seen(conn, customer_id, ids) if ids else set()
+    # #601: a file the person sees in a folder they don't (given to them) names no folder.
+    places = [row.document_folder_id for row in rows if row.document_id in seen and row.document_folder_id]
+    places_seen = listing.folders_seen(conn, customer_id, places) if places else set()
     return [
-        row
+        (row if row.document_folder_id in places_seen else replace(row, document_folder_id=None))
         if row.document_id is None or row.document_id in seen
         else replace(
             row,
@@ -1172,6 +1176,7 @@ def admin_user(
 
 
 DELETED_DOCUMENT = "a deleted document"
+HIDDEN_FILE = "a file you can't see"  # PRD 7 (#601): the access activity's mask
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _MICROSECOND = timedelta(microseconds=1)
 CURSOR = r"^\d{1,16}-\d{1,18}$"  # the last row's created_at in microseconds, then its id
@@ -1186,9 +1191,13 @@ def timeline(
     cursor: str | None = None,
     offset: int = 0,
     full: bool = False,
+    unseen_masked: bool = False,
 ) -> dict[str, Any]:
     """A5's ``{items, next_cursor}``: one page of ``audit.entries`` with its names (three
-    queries); ``next_cursor`` is null on the last page. ``cursor`` matches CURSOR."""
+    queries); ``next_cursor`` is null on the last page. ``cursor`` matches CURSOR.
+    ``unseen_masked`` (PRD 7, #601: a non-Admin reading entries the view doesn't filter, the
+    access activity): an entry about a file the person can't see names no file, version, family
+    or folder, and keeps only ``details.self`` (one more query)."""
     after = None
     if cursor is not None:
         moment, row_id = cursor.split("-")
@@ -1197,8 +1206,24 @@ def timeline(
     page = rows[:limit]
     found = audit.names(conn, customer_id, page)
     last = page[-1] if len(rows) > limit else None
+    items = [audit_entry(row, found, full=full) for row in page]
+    if unseen_masked:
+        files = {
+            e["document"]["id"] for e in items if e["document"] is not None and not e["document"]["deleted"]
+        }
+        seen = listing.documents_seen(conn, customer_id, sorted(files)) if files else set()
+        for entry in items:
+            if entry["document"] is not None and entry["document"]["id"] in files - seen:
+                details = entry["details"] if isinstance(entry["details"], dict) else {}
+                entry.update(
+                    target_id=None,
+                    family_id=None,
+                    folder=None,
+                    document={"id": None, "name": HIDDEN_FILE, "version_no": None, "deleted": False},
+                    details={key: details[key] for key in ("self",) if key in details},
+                )
     return {
-        "items": [audit_entry(row, found, full=full) for row in page],
+        "items": items,
         "next_cursor": None
         if last is None
         else f"{(last['created_at'] - _EPOCH) // _MICROSECOND}-{int(last['id'])}",

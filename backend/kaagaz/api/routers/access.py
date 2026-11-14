@@ -712,8 +712,7 @@ def give_files(
 
 # Why a person sees a file or folder, in the order the Audience panel shows them.
 REASONS = ("management", "head", "member", "named", "given", "held", "everyone", "may_open_locked")
-HIDDEN_FILE = "a file you can't see"
-ACTIVITY_KINDS = ("access", "lock")  # the access activity: access changes and locks (PR 12)
+MAX_KEPT = 500  # the names list's rows; its count is every file
 
 
 def _place_name(conn: Connection, user: CurrentUser, folder_id: str | None) -> dict[str, str] | None:
@@ -774,6 +773,8 @@ def document_audience(
         elif not listing.documents_seen(conn, user.customer_id, [target]):
             raise ApiError(404, "not_found")
         place = access_sql.document_place(conn, user.customer_id, target)
+        if place is None:  # gone since
+            raise ApiError(404, "not_found")
         _admin_or_head(conn, user, place[0])
         return _audience(conn, user, "document", target, place, user_id)
 
@@ -853,9 +854,9 @@ def department_only_preview(
     department_id: uuid.UUID, on: bool, user: AdminSession, context: Context
 ) -> dict[str, Any]:
     """Who would lose and who would gain the department's files if Department only were ``on``:
-    ``{losing, gaining, files}`` (true names and numbers, decision 20)."""
+    ``{losing, gaining, files}`` (true names and numbers, decision 20), from one snapshot."""
     department, customer_id = str(department_id), user.customer_id
-    with context.db.user(customer_id, user.user_id) as conn:
+    with context.db.user(customer_id, user.user_id, repeatable_read=True) as conn:
         place = _department(conn, user, department)
         before = access_sql.place_audience(conn, department, None, department_only=place.department_only)
         after = access_sql.place_audience(conn, department, None, department_only=on)
@@ -863,12 +864,27 @@ def department_only_preview(
 
 
 @router.get("/folders/{folder_id}/private/preview")
-def private_preview(folder_id: uuid.UUID, on: bool, user: User, context: Context) -> dict[str, Any]:
+def private_preview(
+    folder_id: uuid.UUID,
+    on: bool,
+    user: User,
+    context: Context,
+    named: Annotated[list[uuid.UUID] | None, Query(max_length=MAX_NAMED)] = None,
+) -> dict[str, Any]:
     """Who would lose and who would gain the folder's files if it were private (``on``), the people
-    once named on it coming back: ``{losing, gaining, files}``. Admins; refused as route 7 is."""
+    once named on it coming back and ``named`` named now: ``{losing, gaining, files}``, from one
+    snapshot. Admins; refused as route 7 is."""
     target, customer_id = str(folder_id), user.customer_id
-    with context.db.user(customer_id, user.user_id) as conn:
-        place = _admin_folder(conn, user, target)  # the true totals below: an Admin's (decision 20)
+    people = {str(each) for each in named or ()}
+    if people and not on:
+        raise ApiError(400, "bad_request", "Name people only on a private folder.")
+    with context.db.user(customer_id, user.user_id, repeatable_read=True) as conn:
+        place = _folder_seen(conn, user, target)
+        if user.role != "admin":
+            raise ApiError(403, "forbidden", ADMIN_ONLY)
+        require_admin_session(user)  # the true totals below (decision 20)
+        for person in people:
+            _enabled(conn, user, person)
         if on and not place.private:
             _may_be_private(conn, user, place)
         closed = _department_only(conn, user, place.department_id)
@@ -876,7 +892,7 @@ def private_preview(folder_id: uuid.UUID, on: bool, user: User, context: Context
         before = access_sql.place_audience(
             conn, place.department_id, place.private_folder_id, department_only=closed
         )
-        after = access_sql.place_audience(conn, place.department_id, then, department_only=closed)
+        after = access_sql.place_audience(conn, place.department_id, then, department_only=closed) | people
         inside = folders_sql.descendant_ids(conn, customer_id, target)
         return _preview(conn, user, before, after, access_sql.folder_files(conn, customer_id, inside))
 
@@ -884,14 +900,14 @@ def private_preview(folder_id: uuid.UUID, on: bool, user: User, context: Context
 @router.get("/folders/{folder_id}/kept-from-me")
 def kept_from_me(folder_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
     """The files in this folder the Admin can't open, names only (PRD 7): ``{count, items: [{id,
-    name, kind, uploader, created_at, version_no, locked}]}``. Anyone else: 404 for a folder they
-    can't see, 403 for one they can; never a count."""
+    name, kind, uploader, created_at, version_no, locked}]}``, the first MAX_KEPT by name. Anyone
+    else: 404 for a folder they can't see, 403 for one they can; never a count."""
     target = str(folder_id)
     with context.db.user(user.customer_id, user.user_id) as conn:
         _admin_folder(conn, user, target)
-        rows = access_sql.kept_from_me(conn, target)
+        count, rows = access_sql.kept_from_me(conn, target, MAX_KEPT)
     return {
-        "count": len(rows),
+        "count": count,
         "items": [
             {
                 "id": str(row["id"]),
@@ -915,8 +931,9 @@ def access_activity(
     cursor: Annotated[str | None, Query(pattern=CURSOR)] = None,
 ) -> dict[str, Any]:
     """Access changes and locks, newest first: ``{items: [AuditEntry], next_cursor}``; no export.
-    Admins and Management; anyone else 403. An Admin sees every file's name (decision 20); a
-    Management person a file's name only when they can see the file, else HIDDEN_FILE."""
+    Admins and Management; anyone else 403. An Admin sees every file's name (decision 20); for a
+    Management person an entry about a file they can't see is masked (``timeline``'s
+    ``unseen_masked``: "a file you can't see", no folder, version or details but ``self``)."""
     customer_id = user.customer_id
     with context.db.user(customer_id, user.user_id) as conn:
         admin = user.role == "admin"
@@ -924,12 +941,7 @@ def access_activity(
             require_admin_session(user)
         elif not access_sql.me(conn)[0]:
             raise ApiError(403, "forbidden", "Access activity is for Management and admins.")
-        filters = audit.Filters(shown_only=False, kinds=ACTIVITY_KINDS)
-        page = timeline(conn, customer_id, filters, limit=limit, cursor=cursor, full=True)
-        files = {e["document"]["id"] for e in page["items"] if e["document"] and not e["document"]["deleted"]}
-        seen = files if admin else listing.documents_seen(conn, customer_id, sorted(files))
-    for entry in page["items"]:
-        if entry["document"] is not None and entry["document"]["id"] in files - seen:
-            hidden = {"id": None, "name": HIDDEN_FILE, "version_no": None, "deleted": False}
-            entry.update(target_id=None, family_id=None, document=hidden)
-    return page
+        filters = audit.Filters(shown_only=False, access_only=True)
+        return timeline(
+            conn, customer_id, filters, limit=limit, cursor=cursor, full=True, unseen_masked=not admin
+        )

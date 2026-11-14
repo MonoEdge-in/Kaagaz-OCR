@@ -167,8 +167,9 @@ _NAMES = text(
 )
 _KEPT_FROM_ME = text(
     "SELECT id, display_name, detected_type, uploader, created_at, version_no, locked"
-    " FROM kaagaz_kept_from_me(:f)"
+    " FROM kaagaz_kept_from_me(:f) LIMIT :n"
 )
+_KEPT_COUNT = text("SELECT count(*) FROM kaagaz_kept_from_me(:f)")
 
 
 def me(conn: Connection) -> tuple[bool, list[str]]:
@@ -340,9 +341,13 @@ def audience(
     return conn.execute(_AUDIENCE, params).mappings().all()
 
 
-def document_place(conn: Connection, customer_id: str, document_id: str) -> tuple[str | None, str | None]:
-    """(department, private folder) ids of a file the route has already found."""
-    row = conn.execute(_DOCUMENT_PLACE, {"c": customer_id, "d": document_id}).one()
+def document_place(
+    conn: Connection, customer_id: str, document_id: str
+) -> tuple[str | None, str | None] | None:
+    """(department, private folder) ids of a file the route has already found; None once gone."""
+    row = conn.execute(_DOCUMENT_PLACE, {"c": customer_id, "d": document_id}).first()
+    if row is None:
+        return None
     return (None if row[0] is None else str(row[0])), (None if row[1] is None else str(row[1]))
 
 
@@ -378,6 +383,8 @@ def names(conn: Connection, customer_id: str, user_ids: set[str]) -> list[dict[s
     return [{"id": str(i), "name": str(n)} for i, n in rows]
 
 
-def kept_from_me(conn: Connection, folder_id: str) -> Sequence[RowMapping]:
-    """The names of the files in the folder the calling Admin can't see (``kaagaz_kept_from_me``)."""
-    return conn.execute(_KEPT_FROM_ME, {"f": folder_id}).mappings().all()
+def kept_from_me(conn: Connection, folder_id: str, limit: int) -> tuple[int, Sequence[RowMapping]]:
+    """How many files in the folder the calling Admin can't see, and the first ``limit`` of their
+    names, by name (``kaagaz_kept_from_me``)."""
+    count = int(conn.execute(_KEPT_COUNT, {"f": folder_id}).scalar_one())
+    return count, conn.execute(_KEPT_FROM_ME, {"f": folder_id, "n": limit}).mappings().all()

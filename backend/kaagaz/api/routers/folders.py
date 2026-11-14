@@ -202,7 +202,9 @@ def get_folder_summary(folder_id: uuid.UUID, user: User, context: Context) -> di
     the Delete dialog can say it before anything is pressed. Another customer's folder is 404.
     PRD 7 (#599): what the person may see (a hidden folder is 404); an Admin, the true totals."""
     if user.role == "admin":
-        require_admin_session(user)  # the true totals: an admin session's alone (decision 20)
+        # The true totals: an admin session's alone (decision 20). It can't fail here (_signed_in
+        # already refuses an admin without one); it is kept for the SQL guard's scanner.
+        require_admin_session(user)
     with _refused(), context.db.user(user.customer_id, user.user_id) as conn:
         held = folders_sql.folder_summary(
             conn, user.customer_id, str(folder_id), seen_only=user.role != "admin"
@@ -226,7 +228,9 @@ def delete_folder(
     if contents is not None and user.role != "admin":
         raise ApiError(403, "forbidden", "Only an admin can delete a folder that holds files.")
     if contents is not None:
-        require_admin_session(user)  # what's inside, by its true totals (decision 20)
+        # What's inside, by its true totals (decision 20). It can't fail here (_signed_in already
+        # refuses an admin without one); it is kept for the SQL guard's scanner.
+        require_admin_session(user)
     if to is not None and contents != "keep":
         raise ApiError(400, "bad_request", "Choose where things go only when moving them.")
     target = str(folder_id)
