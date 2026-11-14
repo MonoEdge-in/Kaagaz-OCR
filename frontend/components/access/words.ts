@@ -169,6 +169,139 @@ export const CARD = {
   notNow: "Not now",
 } as const;
 
+// --- the library (PR 11b): places, Shared with me, not found -------------------------------------
+
+/** The people icon's words: a department kept to its people, or a private folder. */
+export const PLACE_WORDS = { department_only: "Department only", private: "Private" } as const;
+export const departmentOnlyHint = (department: string) =>
+  `Only ${department}'s people, its head, Management and people given a file directly can see these files.`;
+export const privateHint = (department: string | null) =>
+  department
+    ? `Only the people named on it, the head of ${department} and Management can see this folder.`
+    : "Only the people named on it and Management can see this folder.";
+export const insidePrivateHint = (folder: string) => `Inside the private folder ${quoted(folder)}.`;
+
+export const SHARED = {
+  place: "Shared with me",
+  hint: "Files an admin gave to you directly.",
+  empty: "Nothing has been shared with you yet.",
+  row: "Shared with you", // a file in a folder this person can't see, in place of its path
+} as const;
+
+export const NOT_FOUND_TEXT = "It may have been moved or deleted, or you may not have access to it.";
+export const NOT_FOUND_DOCUMENT = "We couldn't find this document.";
+export const NOT_FOUND_FOLDER = "We couldn't find this folder.";
+
+// --- Who can see this (the Audience panel) -------------------------------------------------------
+
+export const WHO_CAN_SEE = "Who can see this";
+export const audienceTitle = (name: string) => `Who can see ${quoted(name)}`;
+export const AUDIENCE_LOADING = "Loading who can see this…";
+export const AUDIENCE_FORBIDDEN = "Only admins, and the head of this department, can see who has access.";
+export const CHECK_PERSON = "Check a person";
+
+/** A group's heading; `place` is the department (head, member) or the private folder (named). */
+export function reasonHeading(reason: string, place: string | null): string | null {
+  switch (reason) {
+    case "management":
+      return "Management (sees all files)";
+    case "head":
+      return place ? `Head of ${place}` : "Head of its department";
+    case "member":
+      return place ? `In ${place}` : "In its department";
+    case "named":
+      return place ? `Named on ${quoted(place)}` : "Named on its private folder";
+    case "given":
+      return "Given this file directly";
+    case "held":
+      return "Uploaded it, not filed yet";
+    case "everyone":
+      return "Everyone (this place is open)";
+    default:
+      return null; // a reason this screen doesn't know yet (locks, PR 12) is left out
+  }
+}
+
+/** Why one person can see it, after "as": the first reason the server gives. */
+function reasonWhy(reason: string | undefined, places: Readonly<Record<string, string>>): string {
+  switch (reason) {
+    case "management":
+      return "Management";
+    case "head":
+      return places.head ? `head of ${places.head}` : "head of its department";
+    case "member":
+      return places.member ? `a member of ${places.member}` : "a member of its department";
+    case "named":
+      return places.named ? `someone named on ${quoted(places.named)}` : "someone named on its private folder";
+    case "given":
+      return "someone given this file directly";
+    case "held":
+      return "the person who uploaded it";
+    default:
+      return "this place is open to everyone";
+  }
+}
+
+/** Check a person's answer: "Yes. Priya can see this, as a member of Finance." */
+export function checkAnswer(name: string, canSee: boolean, reasons: readonly string[], places: Readonly<Record<string, string>>): string {
+  if (!canSee) return `No. ${name} can't see this.`;
+  const why = reasons[0] === "everyone" || reasons.length === 0 ? "because this place is open to everyone" : `as ${reasonWhy(reasons[0], places)}`;
+  return `Yes. ${name} can see this, ${why}.`;
+}
+
+export const everyoneElseText = (n: number) =>
+  n === 0 ? "Everyone in the organisation can see it." : `Everyone else (${peopleCount(n)}) can't see it.`;
+
+// --- Private, and its named list ------------------------------------------------------------------
+
+export const MAKE_PRIVATE = "Make private";
+export const MAKE_OPEN = "Make open again";
+export const NAME_PEOPLE = "Name people who can still see it";
+export const NAMED_HEADING = "Named on this folder";
+export const NO_ONE_NAMED = "No one is named on this folder.";
+export const TAKE_OFF = "Take off folder";
+export const makePrivateQuestion = (folder: string) => `Make ${quoted(folder)} private?`;
+export const makeOpenQuestion = (folder: string) => `Make ${quoted(folder)} open again?`;
+export const privateToast = (folder: string, on: boolean) => (on ? `${folder} is now private.` : `${folder} is open again.`);
+
+/** Make private: who will still see it, and who loses it (the preview counts the people named). */
+export function privateText(department: string | null, losing: readonly Person[]): string {
+  const who = department ? `Only people you name, the ${department} head and Management will see it.` : "Only people you name and Management will see it.";
+  if (losing.length === 0) return `${who} Nobody loses access.`;
+  return `${who} ${peopleCount(losing.length)} will lose access: ${namesPreview(losing)}.`;
+}
+export const openAgainText = (department: string | null, files: number) =>
+  department
+    ? `Everyone who can see ${department} will see these ${plural(files, "file", "files")}.`
+    : `Everyone in the organisation will see these ${plural(files, "file", "files")}.`;
+
+// --- Give access ---------------------------------------------------------------------------------
+
+export const MAX_GIVE_FILES = 100;
+export const MAX_GIVE_PEOPLE = 20;
+export const MAX_NAMED = 50;
+export const CHOOSE_FILES_CAP = `Choose ${MAX_GIVE_FILES} files or fewer.`;
+export const giveTitle = (files: readonly { display_name: string }[]) =>
+  files.length === 1 ? `Give access to ${quoted(files[0]?.display_name ?? "")}` : `Give access to ${files.length} files`;
+export const GIVE_TEXT = "They can open it, and Ask, search and totals can use it for them. Every version is given, now and later.";
+/** The password step's "access to …" for the files given. */
+export const filesWhat = (files: readonly { display_name: string }[]) =>
+  files.length === 1 ? quoted(files[0]?.display_name ?? "") : plural(files.length, "file", "files");
+
+// --- kept from me (an Admin's names list) -------------------------------------------------------
+
+/** null for 0: the strip shows nothing then. */
+export const keptStripText = (n: number) =>
+  n <= 0 ? null : n === 1 ? "1 file here is kept from you." : `${n} files here are kept from you.`;
+export const keptHeading = (folder: string) => `Files kept from you in ${quoted(folder)}`;
+export const KEPT_HINT = "You can see their names because you're an admin. You can't open them.";
+export const SHOW_NAMES = "Show names";
+export const GIVE_MYSELF = "Give myself access";
+// The menus' plain lines (a document's menu, ACTION_HELP, and the names list's).
+export const GIVE_HELP = "Let named people open this file, with every version.";
+export const AUDIENCE_HELP = "See who can open this file, and why.";
+export const MYSELF_HELP = "Open this file yourself. Asks for your password and tells Management.";
+
 // --- errors --------------------------------------------------------------------------------------
 
 export const CHOOSE_PEOPLE_CAP = (cap: number) => `Choose ${cap} people or fewer.`;
@@ -180,7 +313,13 @@ const ACCESS_ERRORS: Record<string, string> = {
   not_private: "This folder isn't private any more. Reload the page.",
   in_trash: "This file is in Trash. Restore it first.",
   department_in_use: "This department has people or private folders. Remove them first.",
+  inside_private: "This folder is inside a private folder, so it's private already.",
+  holds_private: "A folder inside this one is private. Make that folder open again first.",
+  department: "A department can't be private. Use Department only on the Departments tab instead.",
 };
+
+/** Make private refused before asking (the same words as the server's 409s). */
+export const privateRefusalText = (code: "department" | "inside_private" | "holds_private") => ACCESS_ERRORS[code] ?? "";
 
 /** An access refusal in its own words; `password_locked` keeps the server's (how long the lock
  * lasts); anything else as `fallback` says it. */

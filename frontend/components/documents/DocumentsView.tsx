@@ -27,6 +27,8 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
+import { PlaceBadge } from "@/components/access/PlaceBadge";
+import { placeHint, placeKind } from "@/components/access/places";
 import { DepartmentPicker } from "@/components/files/DepartmentPicker";
 import { chosenDepartment, departmentsOf, rememberDepartment } from "@/components/files/departments";
 import { DocumentsGrid } from "@/components/files/DocumentsGrid";
@@ -541,6 +543,8 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   // Nothing is uploaded into Trash, and it has no folder to change.
   const canUpload = !folderGone && !library.trash;
   const withSubfolders = includeSubfoldersHref(library, current?.children.length ?? 0);
+  const badge = current ? placeKind(current.folder) : null;
+  const accessHint = current ? placeHint(tree, current.folder.id) : null;
 
   // Only an empty list shows this button, in its empty state; the page header never does
   // (Tushar, 16 Oct 2026: two upload buttons): the app header's Upload is the screen's one
@@ -662,6 +666,17 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
               </h2>
               {current && (
                 <p className={libraryStyles.placeHint}>Files you upload here go into this folder.</p>
+              )}
+              {/* PRD 7 (#604): who sees this folder's files, with the people icon's words. */}
+              {accessHint && (
+                <p className={libraryStyles.placeHint}>
+                  {badge && (
+                    <>
+                      <PlaceBadge kind={badge} />{" "}
+                    </>
+                  )}
+                  {accessHint}
+                </p>
               )}
               {library.trash && opened === null && (
                 <p className={libraryStyles.placeHint}>

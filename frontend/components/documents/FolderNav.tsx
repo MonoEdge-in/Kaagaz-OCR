@@ -18,6 +18,7 @@
 import Link from "next/link";
 import { useId, useState } from "react";
 import type { CSSProperties, DragEvent } from "react";
+import { PlaceIcon } from "@/components/access/PlaceBadge";
 import { departmentsOf, isDepartment } from "@/components/files/departments";
 import { FILES_TEXT } from "@/components/files/words";
 import { Icon } from "@/components/ui/Icon";
@@ -284,6 +285,7 @@ function FolderItem({
           depth={node.depth}
           title={node.depth > INDENT_LEVELS ? pathTitle(tree, node.folder.id) : undefined}
         />
+        <PlaceIcon folder={node.folder} />
       </Link>
     </li>
   );
