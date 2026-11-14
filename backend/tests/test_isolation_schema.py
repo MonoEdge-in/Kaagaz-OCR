@@ -1005,6 +1005,28 @@ def test_only_the_listed_tables_have_no_customer_id(db: Database) -> None:
     assert names - set(_customer_tables(db)) == NO_CUSTOMER_ID
 
 
+# Changed on purpose (#601, 0090): the access and lock entries of an organisation, newest first.
+ACCESS_INDEX = (
+    "CREATE INDEX audit_log_access ON public.audit_log USING btree (customer_id, created_at DESC, id DESC)"
+    " WHERE ((action ~~ 'access.%'::text) OR (action ~~ 'lock.%'::text))"
+)
+
+
+def test_the_access_entries_have_their_own_index(db: Database) -> None:
+    with db.system() as conn:
+        found = (
+            conn.execute(
+                text(
+                    "SELECT indexdef FROM pg_indexes"
+                    " WHERE schemaname = 'public' AND indexname = 'audit_log_access'"
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert found == [ACCESS_INDEX]
+
+
 def test_only_the_listed_owner_rights_functions_exist_and_only_their_role_may_run_them(db: Database) -> None:
     """Found from the catalog, so a new one can't be left out: what it returns, its
     fixed search path, never runnable by PUBLIC, and by the app (OWNER_RIGHTS) or
