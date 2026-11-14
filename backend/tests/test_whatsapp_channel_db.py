@@ -276,7 +276,17 @@ def test_a_reply_not_sent_rests_doubling_keeps_the_order_and_a_refusal_for_good_
         message(number, now - timedelta(seconds=1), wamid="wamid.a"),
         message(number, now, wamid="wamid.b"),
     )
-    for failure, tries, rest in ((500, 1, 30), (503, 2, 60), (429, 3, 120)):
+    # Past MAX_TRIES and up to the cap: a reply not sent is tried until its 24 hours end.
+    rests = (
+        (500, 1, 30),
+        (503, 2, 60),
+        (429, 3, 120),
+        (500, 4, 240),
+        (502, 5, 480),
+        (500, 6, 600),
+        (0, 7, 600),
+    )
+    for failure, tries, rest in rests:
         fake.failures = [failure]
         world.channel.handle(world.lease(customer, person, link))
         assert world.messages(link) == [
@@ -289,7 +299,7 @@ def test_a_reply_not_sent_rests_doubling_keeps_the_order_and_a_refusal_for_good_
     fake.failures = [400]  # Meta refuses it for good: failed at once, and b goes on
     with caplog.at_level(logging.ERROR, logger="kaagaz.channel"):
         world.channel.handle(world.lease(customer, person, link))
-    assert world.messages(link) == [("wamid.b", "done", True, True, 0), ("wamid.a", "failed", True, False, 4)]
+    assert world.messages(link) == [("wamid.b", "done", True, True, 0), ("wamid.a", "failed", True, False, 8)]
     assert world.texts_to(number) == [PLACEHOLDER]
     assert [
         (r.getMessage(), getattr(r, "code", None)) for r in caplog.records if r.levelno >= logging.ERROR
@@ -369,6 +379,25 @@ def test_a_long_run_of_one_persons_messages_keeps_its_lease(db: Database, fake: 
     ]
     held = _owner(db, "SELECT busy_until FROM whatsapp_links WHERE id = :l", {"l": link})[0][0]
     assert held == STOLEN  # the other process's lease, left as it was
+
+
+def test_a_process_that_lost_its_lease_while_sending_leaves_the_new_one(
+    db: Database, fake: WhatsAppFake
+) -> None:
+    """#603 review: a reply not sent rests the connection, but only on the lease this process holds;
+    one another process took meanwhile is left as it is."""
+
+    def steal() -> None:
+        _owner(db, "UPDATE whatsapp_links SET busy_until = :t WHERE id = :l", {"l": link, "t": STOLEN})
+
+    world = _World(db, fake, before=steal)
+    customer, person, number, link = world.person()
+    world.send(number, message(number, world.api.clock(), wamid="wamid.stolen"))
+    fake.failures = [500]
+    world.channel.handle(world.lease(customer, person, link))
+    held = _owner(db, "SELECT busy_until FROM whatsapp_links WHERE id = :l", {"l": link})[0][0]
+    assert held == STOLEN
+    assert world.messages(link) == [("wamid.stolen", "waiting", False, False, 1)]
 
 
 def test_a_crash_between_a_reply_and_its_done_sends_that_reply_once_more_only(
