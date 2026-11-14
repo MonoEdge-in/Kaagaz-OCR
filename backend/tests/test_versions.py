@@ -536,6 +536,8 @@ def test_v6_accept_losing_a_race_to_reject_is_already_decided_and_writes_nothing
             return _Result(replies[statement])
 
     monkeypatch.setattr(versions_sql, "lock_family", lambda *_args: "locked")
+    # Changed on purpose (#593, 0085): the link takes the tree lock before the family locks.
+    monkeypatch.setattr(versions_sql, "_lock_tree", lambda *_args: None)
     with pytest.raises(versions_sql.Refused) as refused:
         versions_sql.link(_Conn(), "c", "s1", by="u")  # type: ignore[arg-type]
     assert refused.value.code == "already_decided"
