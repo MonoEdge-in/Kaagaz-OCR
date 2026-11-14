@@ -152,8 +152,18 @@ def _expected(db: Database, org: Org, user: str, *, folders: bool = False) -> se
         str(r[0])
         for r in _owner(db, "SELECT folder_id FROM private_folder_members WHERE user_id = :u", {"u": user})
     }
-    # Changed on purpose (#599, 0087): open is a department still there (live or in Trash) and not
-    # Department only; one deleted since is closed (fail closed).
+    # Changed on purpose (#599, 0087): once the organisation has a Department only department (live
+    # or in Trash), open is a department still there and not Department only, so one deleted since
+    # is closed (fail closed); with none, every department is open, as on day one.
+    walled = bool(
+        _owner(
+            db,
+            "SELECT 1 FROM folders WHERE customer_id = :c AND parent_id IS NULL AND department_only"
+            " UNION ALL SELECT 1 FROM trashed_folders WHERE customer_id = :c AND parent_id IS NULL"
+            " AND department_only",
+            {"c": c},
+        )
+    )
     opened = {
         str(r[0])
         for r in _owner(
@@ -170,7 +180,7 @@ def _expected(db: Database, org: Org, user: str, *, folders: bool = False) -> se
         r5 = (
             private is None
             and held is None
-            and (department is None or department in opened or department in member)
+            and (department is None or not walled or department in opened or department in member)
         )
         r4 = private is not None and (private in named or department in heads)
         return r5 or r4
