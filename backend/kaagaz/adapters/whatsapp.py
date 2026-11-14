@@ -5,10 +5,12 @@
   Files are never sent on WhatsApp, so there is no media call.
 * No redirect is followed and no proxy is used (``build_opener``, as the OpenRouter and sign-in
   provider calls). TIMEOUT_SECONDS a call; at most MAX_REPLY_BYTES of the reply are read.
-* An error status is ``WhatsAppError("refused", status)``; no reply, a timeout or a broken
-  connection is ``WhatsAppError("unavailable")``. Neither carries the token, the number or the text.
+* An error status is ``WhatsAppError("refused", status)``; no reply, a timeout, or a broken
+  connection or reply is ``WhatsAppError("unavailable")``. Neither carries the token, the number or
+  the text.
 """
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -30,7 +32,8 @@ class WhatsAppError(Exception):
 
 class MetaWhatsApp:
     def __init__(self, graph_url: str, phone_number_id: str, access_token: str) -> None:
-        self._messages = f"{graph_url}/{phone_number_id}/messages"
+        base = graph_url.rstrip("/")  # as Settings keeps it
+        self._messages = f"{base}/{phone_number_id}/messages"
         self._token = access_token
 
     @classmethod
@@ -65,5 +68,5 @@ class MetaWhatsApp:
         except urllib.error.HTTPError as error:
             error.close()
             raise WhatsAppError("refused", error.code) from None
-        except (OSError, ValueError):  # URLError and timeouts are OSErrors
+        except (OSError, ValueError, http.client.HTTPException):  # URLError, timeouts; a broken reply
             raise WhatsAppError("unavailable") from None

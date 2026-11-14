@@ -194,6 +194,7 @@ services:
     logging: *logging # restart: unless-stopped is already in docker-compose.yml
     mem_limit: 1g
     memswap_limit: 1g
+    cpus: "1.0" # so it never starves api and postgres (as the workers', A20)
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
 

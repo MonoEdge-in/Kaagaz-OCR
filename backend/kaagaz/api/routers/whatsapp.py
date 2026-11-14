@@ -8,10 +8,13 @@ WhatsApp is off (``WHATSAPP_ENABLED``, on the router itself, as email's).
   the signature holds:
   1. the raw body, at most MAX_BODY_BYTES (Meta's own most), else 413;
   2. ``X-Hub-Signature-256`` over those bytes with the app secret, else 403, nothing said;
-  3. the messages to our own number only (``channel.inbound``); a body that is not JSON is
-     answered 200 and dropped, as Meta would only send it again;
-  4. a message sent more than MAX_AGE ago is dropped (a replay: Meta's signature has no time,
-     and Meta retries for days);
+  3. the messages to our own number only (``channel.inbound``, which drops a message with a bad
+     id or time and strips what PostgreSQL can't keep from its text); a body that is not JSON,
+     or nested too deep to read, is answered 200 and dropped, as Meta would only send it again:
+     a signed body never answers 500;
+  4. a message sent more than MAX_AGE (WhatsApp's 24 hours, the lead's decision on #603's
+     review) ago is dropped, at WARNING: it can't be answered any more. A replay inside it is
+     stopped by the message id kept 30 days (6);
   5. the number's live connection (``kaagaz_whatsapp_lookup`` on its keyed hash); none: dropped
      (W3 adds the "not connected" reply);
   6. stored in the person's own transaction, once per WhatsApp message id (a second delivery
@@ -19,6 +22,11 @@ WhatsApp is off (``WHATSAPP_ENABLED``, on the router itself, as email's).
   Then 200, at once: the channel process does the work. A lost database is 503, and Meta's own
   retries keep the message. Its own rate bucket (``api/middleware.py``). No body or number is
   ever logged.
+
+W3 must, before any real answer ships: end every connection of a number on WhatsApp's owner-change
+signal (a ``type: system`` message, ``customer_changed_number`` or an identity change) with
+``kaagaz_whatsapp_end_number``, and reply "not connected" (``kaagaz_whatsapp_tell_unknown``) to a
+number with no connection.
 """
 
 import hmac
@@ -40,7 +48,7 @@ _log = logging.getLogger("kaagaz.api.whatsapp")
 
 WEBHOOK = "/whatsapp/webhook"
 MAX_BODY_BYTES = 3 * 1024 * 1024  # Meta's webhook payloads are at most 3 MB
-MAX_AGE = timedelta(minutes=10)
+MAX_AGE = timedelta(hours=24)
 
 
 def require_whatsapp(request: Request) -> None:
@@ -87,13 +95,13 @@ def receive(body: Annotated[bytes, Depends(raw_body)], request: Request, context
         raise ApiError(403, "forbidden")
     try:
         payload = json.loads(body)
-    except ValueError:
+    except (ValueError, RecursionError):
         _log.warning("whatsapp webhook not JSON", extra={"code": "not_json"})
         return {"ok": True}
     oldest = context.clock() - MAX_AGE
     for message in inbound.messages(payload, settings.whatsapp_phone_number_id or ""):
         if message.sent_at < oldest:
-            _log.info("whatsapp message dropped", extra={"code": "too_old"})
+            _log.warning("whatsapp message dropped", extra={"code": "too_old"})
             continue
         with context.db.system() as conn:
             linked = wa.lookup(conn, number_hash(settings.whatsapp_number_key or "", message.number))

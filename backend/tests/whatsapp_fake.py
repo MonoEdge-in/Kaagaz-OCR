@@ -174,14 +174,15 @@ def connect(
         return str(
             conn.execute(
                 text(
-                    "INSERT INTO whatsapp_links (customer_id, user_id, phone_hash, phone_sealed,"
-                    " session_version) VALUES (:c, :u, :h, :s, :v) RETURNING id"
+                    "INSERT INTO whatsapp_links (customer_id, user_id, phone_hash, phone_sealed, phone_last4,"
+                    " session_version) VALUES (:c, :u, :h, :s, right(:n, 4), :v) RETURNING id"
                 ),
                 {
                     "c": customer_id,
                     "u": user_id,
                     "h": number_hash(NUMBER_KEY, number),
                     "s": seal(NUMBER_KEY, number, customer_id, user_id),
+                    "n": number,
                     "v": version,
                 },
             ).scalar_one()

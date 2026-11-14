@@ -676,6 +676,9 @@ class Settings:
             raise SettingsError("QUEUE_EXPRESS_URL must name a queue other than QUEUE_URL")
         # Off unless set to true, as EMAIL_ENABLED (#603).
         whatsapp_on = env.optional("WHATSAPP_ENABLED") is not None and env.boolean("WHATSAPP_ENABLED")
+        number_key = env.secret("WHATSAPP_NUMBER_KEY") if whatsapp_on else None
+        if number_key == totp_encryption_key:  # one key, one purpose, as TOTP_ENCRYPTION_KEY's
+            raise SettingsError("WHATSAPP_NUMBER_KEY must differ from TOTP_ENCRYPTION_KEY")
         return cls(
             database_url=env.text("DATABASE_URL"),
             ops_database_url=env.optional("OPS_DATABASE_URL") or env.text("DATABASE_URL"),
@@ -840,7 +843,7 @@ class Settings:
             whatsapp_access_token=env.token("WHATSAPP_ACCESS_TOKEN") if whatsapp_on else None,
             whatsapp_app_secret=env.token("WHATSAPP_APP_SECRET") if whatsapp_on else None,
             whatsapp_verify_token=env.token("WHATSAPP_VERIFY_TOKEN") if whatsapp_on else None,
-            whatsapp_number_key=env.secret("WHATSAPP_NUMBER_KEY") if whatsapp_on else None,
+            whatsapp_number_key=number_key,
             whatsapp_webhook_calls_per_minute=env.positive_or("WHATSAPP_WEBHOOK_CALLS_PER_MINUTE", 600),
             whatsapp_people_at_once=env.between_or("WHATSAPP_PEOPLE_AT_ONCE", 1, 10, default=4),
         )

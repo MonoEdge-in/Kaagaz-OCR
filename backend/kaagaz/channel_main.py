@@ -9,8 +9,10 @@ a browser's (tests/test_whatsapp_guard.py).
 The loop (``run``): free the finished, claim up to WHATSAPP_PEOPLE_AT_ONCE connections with
 waiting messages (``kaagaz_whatsapp_claim``: one person at a time each, different people side by
 side on a thread pool), and when nothing is waiting look again in POLL_SECONDS. The sweep
-(``kaagaz_whatsapp_sweep``) runs once at start and every SWEEP_SECONDS. A lost database pauses the
-loop; one person's error is logged by its type and place and leaves their lease to run out.
+(``kaagaz_whatsapp_sweep``, also the worker's hourly) runs once at start and every SWEEP_SECONDS,
+on its own: a sweep that fails is logged and tried again then, and never stops the claims. A lost
+database pauses the loop; one person's error is logged by its type and place and leaves their lease
+to run out.
 SIGTERM finishes the people in hand, then stops.
 """
 
@@ -25,7 +27,7 @@ from datetime import UTC, datetime
 from kaagaz.adapters.whatsapp import MetaWhatsApp
 from kaagaz.channel.loop import Channel
 from kaagaz.db.engine import Database, make_engine
-from kaagaz.db.whatsapp import Linked
+from kaagaz.db.whatsapp import Claim
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.settings import Settings
 from kaagaz.worker_main import configure_logging, crash_site, install_stop_handlers
@@ -41,16 +43,16 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def handled(channel: Channel, linked: Linked) -> None:
+def handled(channel: Channel, claim: Claim) -> None:
     """``channel.handle``, with an error logged (its type and our code's place, never its message)
     instead of lost inside the thread pool."""
     try:
-        channel.handle(linked)
+        channel.handle(claim)
     except Exception as error:  # noqa: BLE001 - one person's failure is logged, never the loop's end
         _log.error(
             "whatsapp messages not handled",
             extra={
-                "customer_id": linked.customer_id,
+                "customer_id": claim.linked.customer_id,
                 "code": type(error).__name__,
                 "where": crash_site(error),
             },
@@ -70,17 +72,23 @@ def run(
     with ThreadPoolExecutor(max_workers=people_at_once, thread_name_prefix="whatsapp") as pool:
         while not stop.is_set():
             running = {future for future in running if not future.done()}
-            try:
-                if swept_at is None or monotonic() - swept_at >= SWEEP_SECONDS:
+            if swept_at is None or monotonic() - swept_at >= SWEEP_SECONDS:
+                swept_at = monotonic()
+                try:
                     channel.sweep()
-                    swept_at = monotonic()
+                except Exception as error:  # noqa: BLE001 - logged; the claims go on, the sweep runs again later
+                    _log.error(
+                        "whatsapp sweep failed",
+                        extra={"code": type(error).__name__, "where": crash_site(error)},
+                    )
+            try:
                 free = people_at_once - len(running)
                 claimed = channel.claim(free) if free > 0 else []
             except BackendUnavailable:
                 _log.warning("database unavailable, pausing", extra={"code": "database"})
                 stop.wait(PAUSE_SECONDS)
                 continue
-            running |= {pool.submit(handled, channel, linked) for linked in claimed}
+            running |= {pool.submit(handled, channel, claim) for claim in claimed}
             if not claimed:
                 stop.wait(POLL_SECONDS)
 

@@ -215,8 +215,8 @@ def _organisation(api: Api, storage: KeyStorage, label: str) -> tuple[str, str, 
             "UPDATE documents SET reading_held = 'daily_limit' WHERE customer_id = :c AND id = :held",
             # 0088 (#603): a row in each WhatsApp table, the message one that saved the first document.
             "INSERT INTO whatsapp_org_settings (customer_id, enabled) VALUES (:c, true)",
-            "INSERT INTO whatsapp_links (customer_id, user_id, phone_hash, phone_sealed, session_version)"
-            " VALUES (:c, :u, sha256(CAST(:s AS bytea)), 'v1:x', 1)",
+            "INSERT INTO whatsapp_links (customer_id, user_id, phone_hash, phone_sealed, phone_last4,"
+            " session_version) VALUES (:c, :u, sha256(CAST(:s AS bytea)), 'v1:x', '1234', 1)",
             "INSERT INTO whatsapp_link_codes (customer_id, user_id, phone_hash, phone_sealed, code_hash,"
             " expires_at) VALUES (:c, :u, sha256(CAST(:s AS bytea)), 'v1:x', sha256('code'),"
             " now() + interval '1 hour')",

@@ -76,9 +76,10 @@ membership's Head tick is ever changed. Their triggers (0085, #593) run with the
 which no role may run.
 
 Kaagaz on WhatsApp (0088, PROVISIONAL NUMBER, #603, NEEDS VRUSHIT'S APPROVAL): the Admin's
-switches, connections, codes, messages (one person's own, as my words) and pickers, read and added
-by the app, which writes only the columns listed and deletes only a picker; a connection ends, its
-number gone, only through the owner-rights functions.
+switches, connections, codes, messages and pickers (the last three one person's own, as my words),
+read and added by the app, which writes only the columns listed and deletes only a picker; a
+connection ends, its number gone, only through the owner-rights functions; the numbers told they
+are not connected or blocked belong to no organisation and no role reads them.
 """
 
 import re
@@ -339,7 +340,13 @@ OWNER_RIGHTS = {
     # Changed on purpose (#603, 0088): WhatsApp's number lookup and the channel's claim (ids only),
     # the two ways a connection ends (a count, or yes or no) and the sweep (a count).
     "kaagaz_whatsapp_lookup": ("TABLE(customer_id uuid, user_id uuid, link_id uuid)", EMPTY_PATH),
-    "kaagaz_whatsapp_claim": ("TABLE(customer_id uuid, user_id uuid, link_id uuid)", EMPTY_PATH),
+    "kaagaz_whatsapp_claim": (
+        "TABLE(customer_id uuid, user_id uuid, link_id uuid, busy_until timestamp with time zone)",
+        EMPTY_PATH,
+    ),
+    # A number with no connection: whether it may be told so now (yes or no), and its BLOCK.
+    "kaagaz_whatsapp_tell_unknown": ("boolean", EMPTY_PATH),
+    "kaagaz_whatsapp_block": ("void", EMPTY_PATH),
     "kaagaz_whatsapp_end_number": ("bigint", EMPTY_PATH),
     "kaagaz_whatsapp_end_link": ("boolean", EMPTY_PATH),
     "kaagaz_whatsapp_sweep": ("bigint", EMPTY_PATH),
@@ -638,8 +645,10 @@ TRIGGER_RIGHTS = dict.fromkeys(
 # Changed on purpose (#463, 0064): the accuracy checks are the operator's too.
 OPERATOR_TABLES = {"operators", "platform_audit", "scan_accuracy_checks"}
 PLATFORM_DEFAULTS = {"platform_models", "platform_ai_settings", "feature_switches", "platform_model_override"}
+# Changed on purpose (#603, 0088): the WhatsApp numbers with no connection (no role reads them).
 NO_CUSTOMER_ID = (
     {"customers", "alembic_version", "reader_status", "model_catalog", "model_rate_scheduler"}
+    | {"whatsapp_unknown_numbers"}
     | PLATFORM_DEFAULTS
     | OPERATOR_TABLES
 )
@@ -789,7 +798,9 @@ def test_the_tables_of_one_user_also_have_the_restrictive_own_user_only_policy(d
                 )
             )
         }
-    own = set(FROM_0008) | set(FROM_0009) | {"whatsapp_messages"}  # Changed on purpose (#603, 0088)
+    own = (
+        set(FROM_0008) | set(FROM_0009) | {"whatsapp_messages", "whatsapp_link_codes", "whatsapp_pickers"}
+    )  # #603
     restrictive = ("ALL", "RESTRICTIVE", ["public"], OWN_USER, OWN_USER)
     assert policies == {(table, "own_user_only"): restrictive for table in own} | CATALOG_POLICIES
 
@@ -862,6 +873,25 @@ def test_the_app_may_update_only_the_listed_columns_of_whatsapps_tables(db: Data
     """0088 (#603): never a connection's person, number, sign-in version or end, a code's number or
     hash, or a message's id, person, kind or times, so none can be moved or reopened."""
     assert {table: _updatable(db, table) for table in FROM_0088} == UPDATES_0088
+
+
+def test_whatsapps_unknown_numbers_are_reached_by_no_role_only_by_their_functions(db: Database) -> None:
+    """0088 (#603): no organisation, so row level security with no policy and no right for the app
+    or the worker role; kaagaz_whatsapp_tell_unknown and kaagaz_whatsapp_block alone write it."""
+    with db.system() as conn:
+        row = conn.execute(
+            text(
+                "SELECT c.relrowsecurity, (SELECT count(*) FROM pg_policy p WHERE p.polrelid = c.oid),"
+                " array_agg(r.rolname ORDER BY r.rolname) FILTER (WHERE"
+                "  has_table_privilege(r.oid, c.oid, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES')"
+                "  OR has_any_column_privilege(r.oid, c.oid, 'SELECT,INSERT,UPDATE,REFERENCES'))"
+                " FROM pg_class c CROSS JOIN pg_roles r"
+                " WHERE c.oid = 'whatsapp_unknown_numbers'::regclass AND r.rolname IN (:a, 'kaagaz_worker')"
+                " GROUP BY c.relrowsecurity, c.oid"
+            ),
+            {"a": APP_ROLE},
+        ).one()
+    assert tuple(row) == (True, 0, None)
 
 
 def test_the_app_may_update_only_the_spellings_of_a_value_key(db: Database) -> None:

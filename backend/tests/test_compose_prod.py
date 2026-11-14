@@ -16,7 +16,18 @@ from kaagaz.api.upload_guard import MULTIPART_OVERHEAD
 ROOT = Path(__file__).resolve().parents[2]
 PROD = "docker-compose.prod.yml"
 
-PRIVATE_QUERY = ["q", "party", "w", "source_name", "property", "code", "state"]
+# Changed on purpose (#603): the WhatsApp webhook check's verify token and challenge.
+PRIVATE_QUERY = [
+    "q",
+    "party",
+    "w",
+    "source_name",
+    "property",
+    "code",
+    "state",
+    "hub.verify_token",
+    "hub.challenge",
+]
 
 PROD_COMMAND = "docker compose -f docker-compose.yml -f docker-compose.prod.yml <command>"
 LOGGING = 'x-logging: &logging\n  driver: json-file\n  options:\n    max-size: "20m"\n    max-file: "5"\n'
@@ -295,7 +306,8 @@ def test_the_caddyfile_sends_api_unchanged_to_the_api_and_the_rest_to_the_fronte
 # folder's name: q (/api/search, /api/documents, /api/stories match, and the /search and /chat
 # pages), party (/api/documents), w (/api/documents/{id}/words), source_name
 # (/api/folder-uploads/previous); review: property (/api/documents, a survey number read from a
-# document), and a Google sign-in's code and state (/api/auth/oidc/google/callback).
+# document), and a Google sign-in's code and state (/api/auth/oidc/google/callback); Meta's WhatsApp
+# webhook check's hub.verify_token and hub.challenge (/api/whatsapp/webhook, #603).
 
 
 def test_the_access_log_keeps_no_search_question_or_name() -> None:

@@ -1,11 +1,12 @@
 """Kaagaz on WhatsApp's SQL (#603, PRD 7 section 15; migration 0088).
 
 * With no organisation (``db.system``), the owner-rights functions only: ``lookup`` (a number's live
-  connection, ids only), ``claim`` (the channel's queue) and ``sweep``.
+  connection, ids only), ``claim`` (the channel's queue: ids and the lease) and ``sweep``.
 * In the person's own transaction (``db.user``): ``add_message`` (once per WhatsApp message id),
   ``next_message`` (their oldest waiting one, by WhatsApp's time), ``check`` (what every message
   checks again), ``finish``, ``not_sent``, ``end`` (``kaagaz_whatsapp_end_link``: the app has no
-  right to end a connection itself) and ``release`` (the lease).
+  right to end a connection itself), and ``renew`` and ``release``, which touch the lease only
+  while it is still the one this process holds (another may have taken it once it ran out).
 
 Each is one statement on an index: O(log n).
 """
@@ -29,6 +30,14 @@ class Linked:
 
 
 @dataclass(frozen=True, slots=True)
+class Claim:
+    """A connection a claim took, and the end of the lease this process holds on it."""
+
+    linked: Linked
+    until: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class Waiting:
     id: str
     kind: str
@@ -46,7 +55,7 @@ class Check:
 
 
 _LOOKUP = text("SELECT customer_id, user_id, link_id FROM kaagaz_whatsapp_lookup(:h)")
-_CLAIM = text("SELECT customer_id, user_id, link_id FROM kaagaz_whatsapp_claim(:n, :lease)")
+_CLAIM = text("SELECT customer_id, user_id, link_id, busy_until FROM kaagaz_whatsapp_claim(:n, :lease)")
 _SWEEP = text("SELECT kaagaz_whatsapp_sweep()")
 _ADD = text(
     "INSERT INTO whatsapp_messages (customer_id, link_id, user_id, wamid, kind, body, media_id, forwarded,"
@@ -81,14 +90,20 @@ _FINISH = text(
 _USED = text("UPDATE whatsapp_links SET last_used_at = now() WHERE customer_id = :c AND id = :l")
 _NOT_SENT = text(
     "UPDATE whatsapp_messages SET tries = tries + 1,"
-    " state = CASE WHEN tries + 1 >= :most THEN 'failed' ELSE state END,"
-    " body = CASE WHEN tries + 1 >= :most THEN NULL ELSE body END"
-    " WHERE customer_id = :c AND id = :m AND state = 'waiting' RETURNING state"
+    " state = CASE WHEN :fail OR tries + 1 >= :most THEN 'failed' ELSE state END,"
+    " body = CASE WHEN :fail OR tries + 1 >= :most THEN NULL ELSE body END"
+    " WHERE customer_id = :c AND id = :m AND state = 'waiting' RETURNING state, tries"
 )
 _END = text("SELECT kaagaz_whatsapp_end_link(:l, :reason)")
+# Only while the lease is the one this process holds (its exact end, as the claim or the last renewal
+# set it): once it ran out another process may hold the connection, and its lease is left alone.
+_RENEW = text(
+    "UPDATE whatsapp_links SET busy_until = now() + make_interval(secs => :lease)"
+    " WHERE customer_id = :c AND id = :l AND busy_until = :until RETURNING busy_until"
+)
 _RELEASE = text(
     "UPDATE whatsapp_links SET busy_until = CASE WHEN :wait > 0 THEN now() + make_interval(secs => :wait) END"
-    " WHERE customer_id = :c AND id = :l"
+    " WHERE customer_id = :c AND id = :l AND busy_until = :until"
 )
 
 
@@ -97,9 +112,9 @@ def lookup(conn: Connection, phone_hash: bytes) -> Linked | None:
     return None if row is None else Linked(str(row[0]), str(row[1]), str(row[2]))
 
 
-def claim(conn: Connection, limit: int, lease_seconds: int) -> list[Linked]:
+def claim(conn: Connection, limit: int, lease_seconds: int) -> list[Claim]:
     rows = conn.execute(_CLAIM, {"n": limit, "lease": lease_seconds}).all()
-    return [Linked(str(row[0]), str(row[1]), str(row[2])) for row in rows]
+    return [Claim(Linked(str(row[0]), str(row[1]), str(row[2])), row[3]) for row in rows]
 
 
 def sweep(conn: Connection) -> int:
@@ -142,10 +157,15 @@ def finish(conn: Connection, linked: Linked, message_id: str, state: str, *, rep
         conn.execute(_USED, {"c": linked.customer_id, "l": linked.link_id})
 
 
-def not_sent(conn: Connection, linked: Linked, message_id: str, most: int) -> bool:
-    """Its reply could not be sent: one more try counted. True once it is failed for good."""
-    row = conn.execute(_NOT_SENT, {"c": linked.customer_id, "m": message_id, "most": most}).first()
-    return row is None or row[0] == "failed"
+def not_sent(
+    conn: Connection, linked: Linked, message_id: str, *, most: int, fail: bool = False
+) -> tuple[bool, int]:
+    """Its reply could not be sent, or its handling failed: one more try counted, and failed for good
+    at ``most`` tries or at once with ``fail``. (failed for good, tries); (True, 0) for a message no
+    longer waiting."""
+    params = {"c": linked.customer_id, "m": message_id, "most": most, "fail": fail}
+    row = conn.execute(_NOT_SENT, params).first()
+    return (True, 0) if row is None else (row[0] == "failed", int(row[1]))
 
 
 def end(conn: Connection, linked: Linked, reason: str) -> bool:
@@ -153,6 +173,16 @@ def end(conn: Connection, linked: Linked, reason: str) -> bool:
     return bool(conn.execute(_END, {"l": uuid.UUID(linked.link_id), "reason": reason}).scalar_one())
 
 
-def release(conn: Connection, linked: Linked, wait_seconds: int) -> None:
-    """Free the lease, or keep it ``wait_seconds`` more (a reply to try again later)."""
-    conn.execute(_RELEASE, {"c": linked.customer_id, "l": linked.link_id, "wait": wait_seconds})
+def renew(conn: Connection, linked: Linked, until: datetime, lease_seconds: int) -> datetime | None:
+    """The lease ending ``until`` lengthened to ``lease_seconds`` from now: its new end, or None when
+    this process no longer holds it."""
+    params = {"c": linked.customer_id, "l": linked.link_id, "until": until, "lease": lease_seconds}
+    row = conn.execute(_RENEW, params).first()
+    return None if row is None else row[0]
+
+
+def release(conn: Connection, linked: Linked, until: datetime, wait_seconds: int) -> None:
+    """Free the lease ending ``until``, or keep it ``wait_seconds`` from now (a reply to try again
+    later); nothing when this process no longer holds it."""
+    params = {"c": linked.customer_id, "l": linked.link_id, "until": until, "wait": wait_seconds}
+    conn.execute(_RELEASE, params)
