@@ -995,7 +995,9 @@ export interface Answer {
   outage_reason?: "timeout";
   // "unchecked": the figure asked for is only in unchecked card values, so no
   // number is given; closest_documents says where.
-  status: "answered" | "not_found" | "unchecked" | "clarify";
+  // "no_access" (PRD 7, #602): a saved answer that names a file the person can no longer see,
+  // replaced whole by the server: one sentence (NO_ACCESS_TEXT), every list empty.
+  status: "answered" | "not_found" | "unchecked" | "clarify" | "no_access";
   // PRD 6 A, answer contract v2 (24 Oct 2026); all four missing on answers saved before it,
   // which render as they did. The opening and assumptions are code-written lines.
   version?: 2;

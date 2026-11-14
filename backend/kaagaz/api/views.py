@@ -963,6 +963,12 @@ def message(
 # The words that stand in for a sentence whose every source has been deleted.
 GONE_SENTENCE = "This part of the answer came from a document that has since been deleted."
 _GONE = ("in_trash", "deleted")
+# PRD 7 (#602, questions 1 and 3): the one line of a saved answer the person may no longer see whole.
+NO_ACCESS = "no_access"
+NO_ACCESS_LINE = (
+    "You no longer have access to a document behind this answer. Ask again to get an answer from the"
+    " files you can see."
+)
 
 
 def cited_document_ids(answer: Mapping[str, Any] | None) -> list[str]:
@@ -994,10 +1000,51 @@ def _choices(answer: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return list(clarify.get("choices", [])) if isinstance(clarify, Mapping) else []
 
 
+def no_access(answer: Mapping[str, Any] | None, states: Mapping[str, str]) -> bool:
+    """PRD 7 (#602, question 1): whether ``answer`` names a document missing from ``states``
+    (db/chat.py ``document_states``, read through the view): one the person can no longer see,
+    or deleted forever. Such an answer is never shown, quoted or fed to a prompt again."""
+    return any(document not in states for document in cited_document_ids(answer))
+
+
+def no_access_answer() -> dict[str, Any]:
+    """The whole answer replaced (question 3): status ``no_access``, NO_ACCESS_LINE, and nothing
+    else of it, no list, word, question as understood, clarify, note or opening."""
+    return {
+        "status": NO_ACCESS,
+        "label": None,
+        "sentences": [{"text": NO_ACCESS_LINE, "citations": []}],
+        "citations": [],
+        "closest_documents": [],
+        "route": "search",
+        "normalized_question": "",
+        "model_used": False,
+    }
+
+
+def shown_message(
+    row: RowMapping,
+    states: Mapping[str, str],
+    feedback: str | None = None,
+    pin: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """``message`` with its answer as it may be shown now (``answer_with_source_states``); one
+    replaced whole loses its text (the joined sentences) and its pick too."""
+    shown = message(row, feedback, pin)
+    if shown["answer"]:
+        shown["answer"] = answer_with_source_states(shown["answer"], states)
+        if shown["answer"]["status"] == NO_ACCESS:
+            shown["text"], shown["pin"] = NO_ACCESS_LINE, None
+    return shown
+
+
 def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, str]) -> dict[str, Any]:
     """A saved answer as it may be shown now (``states`` from db/chat.py
-    ``document_states``; a missing id was deleted forever).
+    ``document_states``, through the view).
 
+    * PRD 7 (#602): one naming a document missing from ``states`` (the person can no longer see
+      it, or it was deleted forever) is replaced whole (``no_access_answer``). Changed on
+      purpose: a document deleted forever was a sentence's GONE_SENTENCE before.
     * Each citation gets ``source_state``. One from a document in Trash or
       deleted loses its snippet and its highlight regions: Trash means deleted,
       so its words and its place on the page must not show any more.
@@ -1010,6 +1057,8 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
     ``older_version``: it was true of that version. The stored answer is never
     changed, so a restore brings everything back. O(citations + sentences + pages).
     """
+    if no_access(answer, states):
+        return no_access_answer()
     citations = []
     gone: set[int] = set()
     for each in answer.get("citations", []):

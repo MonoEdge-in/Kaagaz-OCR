@@ -25,8 +25,12 @@ from kaagaz.answering.clarify import Entity, Pending, PgVocabulary, latin_key, p
 from kaagaz.answering.exhaustive import PgExhaustive
 from kaagaz.answering.fixed_queries import PgFixedQueries
 from kaagaz.answering.hard_to_read import PgReadingQuality
+from kaagaz.answering.memory import NO_MEMORY
 from kaagaz.answering.owners import OWNING, PgOwners
+from kaagaz.answering.rewrite import Turn
 from kaagaz.answering.unchecked import PgUncheckedValues
+from kaagaz.api.routers.chat import CLARIFY_GONE
+from kaagaz.api.views import NO_ACCESS, NO_ACCESS_LINE
 from kaagaz.db import chat as chat_sql
 from kaagaz.db import organization_words
 from kaagaz.db.engine import Database
@@ -35,7 +39,9 @@ from kaagaz.search.hybrid import FusedPiece
 from kaagaz.search.scope import EVERYTHING
 from kaagaz.search.story_search import read_stories
 from tests.db_support import insert_key, insert_tag, tag_document
-from tests.test_api_support import Api
+from tests.test_api_chat import _cited_answer
+from tests.test_api_chat_clarify import _clarify
+from tests.test_api_support import CSRF, Api, answer_json
 from tests.test_isolation_access_views import Org, _app, _walled
 from tests.test_operator_auth_db import _owner
 from tests.test_search_db import EF_SEARCH, RECIPE, add_pieces, axis
@@ -96,6 +102,7 @@ def _figures(api: Api, org: Org, name: str) -> None:
 
 @dataclass
 class AskOrg:
+    api: Api
     db: Database
     org: Org
     pieces: dict[str, list[str]]  # file name: its two piece ids
@@ -130,7 +137,7 @@ def _ask_org(api: Api) -> AskOrg:
             {"c": c, "u": org.people["plain"].user_id, "d": d, "s": f"my {word} story"},
         )
         _figures(api, org, name)
-    return AskOrg(db, org, pieces, axes)
+    return AskOrg(api, db, org, pieces, axes)
 
 
 @pytest.fixture
@@ -780,3 +787,158 @@ def test_home_offers_only_questions_about_what_the_person_sees(db: Database, ask
     )
     with _as(db, ask, "plain") as conn:
         assert ready.stamp(conn, ask.org.c) != before
+
+
+# --- old answers, memory and kept answers (commit 4) ------------------------------------------
+
+
+def _share(ask: AskOrg, name: str, *, give: bool) -> None:
+    """Give ``name`` to the plain reviewer directly (R2), or take it back."""
+    params = {"c": ask.org.c, "d": ask.id(name), "u": ask.user("plain"), "by": ask.user("admin")}
+    if give:
+        _owner(
+            ask.db,
+            "INSERT INTO document_shares (customer_id, document_id, user_id, given_by)"
+            " VALUES (:c, :d, :u, :by)",
+            params,
+        )
+    else:
+        _owner(ask.db, "DELETE FROM document_shares WHERE document_id = :d AND user_id = :u", params)
+
+
+def _post(ask: AskOrg, person: str, body: dict[str, Any], status: int = 200) -> dict[str, Any]:
+    reply = ask.org.people[person].client.post("/api/chat", json=body, headers=CSRF)
+    assert reply.status_code == status, reply.text
+    found: dict[str, Any] = reply.json()
+    return found
+
+
+SECRET = f"The {WORDS['fin']} total is {AMOUNTS['fin']}."
+
+
+def _fin_answer(ask: AskOrg) -> dict[str, Any]:
+    """An answer citing fin and sales, its first sentence fin's own words."""
+    answer = _cited_answer(ask.id("fin"), ask.id("sales"))
+    answer["sentences"][0]["text"] = SECRET
+    return answer
+
+
+def test_an_answer_behind_a_file_taken_back_is_replaced_whole_everywhere(db: Database, ask: AskOrg) -> None:
+    """Fin given to the plain reviewer, asked about, then taken back: the conversation, the retried
+    reply and the Questions panel show only the line; a follow-up gets no fin sentence, no fin id
+    and no memory; the memory is made again from the shown answers. Given back, it all returns."""
+    plain = ask.org.people["plain"]
+    _share(ask, "fin", give=True)
+    ask.api.answers.reply = _fin_answer(ask)
+    asked = str(uuid.uuid4())
+    first = _post(ask, "plain", {"question": "What is the total?", "question_id": asked})
+    conversation = first["conversation_id"]
+    _owner(
+        db,
+        "UPDATE conversations SET summary = 'About the total', memory = CAST(:m AS jsonb) WHERE id = :id",
+        {"id": conversation, "m": json.dumps({"documents": [ask.id("fin")], "names": [WORDS["fin"]]})},
+    )
+    _share(ask, "fin", give=False)
+
+    shown = plain.client.get(f"/api/conversations/{conversation}").json()["messages"][1]
+    assert shown["answer"]["status"] == NO_ACCESS and shown["text"] == NO_ACCESS_LINE
+    retried = _post(ask, "plain", {"question": "What is the total?", "question_id": asked})["answer"]
+    panel = plain.client.get(f"/api/documents/{ask.id('sales')}/questions").json()["items"]
+    assert retried["answer"]["status"] == NO_ACCESS and retried["text"] == NO_ACCESS_LINE
+    assert [item["answer"]["status"] for item in panel] == [NO_ACCESS]
+    for seen in (shown, retried, panel):
+        assert str(AMOUNTS["fin"]) not in json.dumps(seen) and ask.id("fin") not in json.dumps(seen)
+
+    ask.api.answers.remembered, ask.api.answers.reply = None, answer_json()
+    _post(ask, "plain", {"question": "And the tax?", "conversation_id": conversation})
+    assert ask.api.answers.histories[-1] == [Turn("What is the total?", None)]
+    assert ask.api.answers.cited[-1] == [] and ask.api.answers.memories[-1] == NO_MEMORY
+    turns, previous, cited = ask.api.answers.summarised[-1]  # made again at once (question 7)
+    assert previous == NO_MEMORY and ask.id("fin") not in cited and SECRET not in repr(turns)
+
+    _share(ask, "fin", give=True)
+    again = plain.client.get(f"/api/conversations/{conversation}").json()["messages"][1]
+    assert again["answer"]["status"] == "answered" and again["text"] != NO_ACCESS_LINE
+
+
+def test_a_change_of_access_moves_the_repeat_key(db: Database, ask: AskOrg) -> None:
+    """The same question again is served from its stored answer; once a file is given (or taken
+    back), the access version moves the key, and it is answered fresh."""
+    ask.api.answers.reply = {**_cited_answer(ask.id("sales")), "model_used": True}
+    question = {"question": "What is the sales total?"}
+    _post(ask, "plain", question)
+    asked = len(ask.api.answers.asked)
+    _post(ask, "plain", question)
+    assert len(ask.api.answers.asked) == asked  # a repeat: no new answer
+    _share(ask, "fin", give=True)
+    _post(ask, "plain", question)
+    assert len(ask.api.answers.asked) == asked + 1
+    _share(ask, "fin", give=False)
+    _post(ask, "plain", question)
+    assert len(ask.api.answers.asked) == asked + 2
+
+
+def test_a_reply_to_a_clarify_whose_choices_are_hidden_is_gone(db: Database, ask: AskOrg) -> None:
+    """Question 14: 409 CLARIFY_GONE, as for a closed one; nothing is answered or suggested."""
+    _share(ask, "fin", give=True)
+    ask.api.answers.reply = _clarify(ask.id("fin"))
+    asked = _post(ask, "plain", {"question": "Land in Puny?"})
+    _share(ask, "fin", give=False)
+    body = {
+        "conversation_id": asked["conversation_id"],
+        "reply": {"message_id": asked["answer"]["id"], "choice_ids": ["c1"]},
+    }
+    gone = _post(ask, "plain", body, 409)
+    assert gone["error"]["message"] == CLARIFY_GONE and ask.api.answers.resumed == []
+
+
+def test_answer_quality_shows_source_not_visible_with_no_question_or_reason(
+    db: Database, ask: AskOrg
+) -> None:
+    """Question 4: the person named on Salaries rated an answer citing sal Not useful; an Admin
+    not named on Salaries sees the item, but not its question, reason or answer."""
+    ask.api.answers.reply = _cited_answer(ask.id("sal"))
+    named = ask.org.people["named"]
+    asked = named.client.post("/api/chat", json={"question": "Ravi's salary?"}, headers=CSRF).json()
+    rated = named.client.post(
+        f"/api/messages/{asked['answer']['id']}/feedback",
+        json={
+            "rating": "down",
+            "reason": "Ravi is wrong",
+            "reason_codes": ["wrong_figure"],
+            "notice_shown": True,
+        },
+        headers=CSRF,
+    )
+    assert rated.status_code == 204
+    items = ask.org.people["admin"].client.get("/api/admin/answer-quality").json()["items"]
+    (item,) = [i for i in items if i["message_id"] == asked["answer"]["id"]]
+    assert (item["question"], item["reason"], item["reason_codes"]) == (None, None, [])
+    assert item["answer"]["status"] == NO_ACCESS and "Ravi" not in json.dumps(item)
+
+
+def test_a_hidden_scope_id_answers_as_a_random_one(db: Database, ask: AskOrg) -> None:
+    """Hard rule 3: search inside fin answers exactly as inside a file that never was, understood
+    words included (a word made on fin's page). Ask's own: test_red_team's scoped question."""
+    _approved_word(ask, ask.id("fin"), "secretword")
+    plain = ask.org.people["plain"].client
+    replies = [
+        plain.get("/api/search", params={"q": "secretword ledger", "document_ids": [d]}).json()
+        for d in (ask.id("fin"), str(uuid.uuid4()))
+    ]
+    assert replies[0] == replies[1]
+
+
+def test_homes_list_is_made_again_when_access_changes(db: Database, ask: AskOrg) -> None:
+    """ready.SHOWN keeps Home's list with the access version it was made at: fin given, its land
+    question is offered; taken back, the list is made again without it."""
+    _owner(db, "UPDATE documents SET doc_type = 'land_record' WHERE id = :d", {"d": ask.id("fin")})
+    land, plain = ready.TYPE_QUESTIONS["land_record"], ask.org.people["plain"].client
+
+    def offered() -> list[str]:
+        return [item["text"] for item in plain.get("/api/chat/ready-questions").json()["items"]]
+
+    _share(ask, "fin", give=True)
+    assert land in offered()
+    _share(ask, "fin", give=False)
+    assert land not in offered()

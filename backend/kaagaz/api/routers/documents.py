@@ -1448,7 +1448,8 @@ def get_document_questions(document_id: uuid.UUID, user: User, context: Context)
     with context.db.user(user.customer_id, user.user_id) as conn:
         family = str(_document_or_404(conn, user, document_id)["family_id"])
         rows = chat_sql.document_questions(conn, user.customer_id, user.user_id, family)
-        # As the chat view: sources in Trash, deleted or replaced since (views.answer_with_source_states).
+        # As the chat view: sources in Trash, replaced, hidden or deleted since
+        # (views.answer_with_source_states: replaced whole for one hidden, PRD 7).
         cited = [each for row in rows if row["answer"] for each in cited_document_ids(row["answer"])]
         states = chat_sql.document_states(conn, user.customer_id, cited)
     return {

@@ -171,6 +171,11 @@ def stamp(conn: Connection, customer_id: str) -> str:
     return str(conn.execute(_STAMP, {"c": customer_id}).scalar_one())
 
 
+def access_of(made_from: str) -> str:
+    """The organisation's access version a ``stamp`` ends with (PRD 7, #602)."""
+    return made_from.rsplit("|", 1)[-1]
+
+
 def key(
     customer_id: str, user_id: str, question: str, inputs: Sequence[Any], made_from: str
 ) -> tuple[str, ...]:
@@ -251,33 +256,38 @@ class ShownQuestions:
     """Each person's questions as Home last showed them (Tushar, 24 Oct 2026: "update them only
     after the user uses one"): the same list on every visit until they ask one of them fresh,
     then made again from their habits. An empty list is never kept, so questions come as soon
-    as documents do. Oldest people dropped past MAX_ENTRIES; thread-safe."""
+    as documents do. PRD 7 (#602): a list is kept with the access version it was made at, and one
+    made at another is missing, so a question about files taken away is never offered again.
+    Oldest people dropped past MAX_ENTRIES; thread-safe."""
 
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self._clock = clock
         self._lock = threading.Lock()
-        self._kept: OrderedDict[tuple[str, str], tuple[float, list[tuple[str, bool]]]] = OrderedDict()
+        self._kept: OrderedDict[tuple[str, str], tuple[float, list[tuple[str, bool]], str]] = OrderedDict()
 
-    def get(self, customer_id: str, user_id: str) -> list[tuple[str, bool]] | None:
-        """The list Home last showed this person, while it is less than SHOWN_SECONDS old."""
+    def get(self, customer_id: str, user_id: str, version: str = "") -> list[tuple[str, bool]] | None:
+        """The list Home last showed this person, while it is less than SHOWN_SECONDS old and was
+        made at access ``version`` (``access_of``)."""
         with self._lock:
             found = self._kept.get((customer_id, user_id))
             if found is None:
                 return None
-            if self._clock() - found[0] > SHOWN_SECONDS:
+            if self._clock() - found[0] > SHOWN_SECONDS or found[2] != version:
                 del self._kept[(customer_id, user_id)]
                 return None
             self._kept.move_to_end((customer_id, user_id))
             return found[1]
 
-    def keep(self, customer_id: str, user_id: str, shown: list[tuple[str, bool]]) -> None:
-        """Keep a new list (its day starts now); the same list again keeps its first time."""
+    def keep(self, customer_id: str, user_id: str, shown: list[tuple[str, bool]], version: str = "") -> None:
+        """Keep a new list made at access ``version`` (its day starts now); the same list again
+        keeps its first time."""
         if not shown:
             return
         with self._lock:
             found = self._kept.get((customer_id, user_id))
-            since = found[0] if found is not None and found[1] == shown else self._clock()
-            self._kept[(customer_id, user_id)] = (since, shown)
+            same = found is not None and found[1] == shown and found[2] == version
+            since = found[0] if found is not None and same else self._clock()
+            self._kept[(customer_id, user_id)] = (since, shown, version)
             self._kept.move_to_end((customer_id, user_id))
             while len(self._kept) > MAX_ENTRIES:
                 self._kept.popitem(last=False)

@@ -20,11 +20,14 @@ The rules (council 9 Oct 2026):
   Ramesh); anything else, and anything that reads like
   instructions (``evidence.looks_like_instructions``), is dropped. A summary that
   reads like instructions is dropped too.
-* Its documents are the ids the answers cited, never the model's; one that is no
-  longer live (Trash, an older version, deleted forever) is dropped when the memory
-  is read (``live``), so it is never named again. The live ones' names are read with
-  them, from the documents themselves, and go to the rewrite as "Documents: ..." (so
-  "the second document you mentioned" and "page 12 of it" resolve); they are never stored.
+* Its documents are the ids the answers cited, never the model's, every one kept (at most
+  ``MAX_DOCUMENTS``; PRD 7, #602, question 6): its facts came from them, so the router can tell
+  when one is no longer the person's to see, and then neither uses the memory nor keeps it (it is
+  made again from the answers they may still see). One whose cap would drop an id is made again
+  from the turns alone. Only the live ones (``live``: not in Trash, an older version or deleted
+  forever) are named: their names are read with them, from the documents themselves, and go to the
+  rewrite as "Documents: ..." (so "the second document you mentioned" and "page 12 of it"
+  resolve); they are never stored.
 * Sizes (the CHECKs of migration 0021): a summary of at most ``MAX_SUMMARY``
   characters; at most ``MAX_ITEMS`` items a list of at most ``MAX_ITEM_CHARS``
   characters each; the JSON at most ``MAX_BYTES`` bytes, the newest items kept.
@@ -52,6 +55,7 @@ _log = logging.getLogger(__name__)
 
 MAX_SUMMARY = 1200  # the conversations.summary CHECK
 MAX_ITEMS = 20
+MAX_DOCUMENTS = 100  # PRD 7 (#602): every cited id, within the 16 KB CHECK (39 bytes each)
 MAX_ITEM_CHARS = 120
 MAX_BYTES = 16384  # the conversations.memory CHECK, octet_length(memory::text)
 KINDS = ("names", "numbers", "dates", "topics")
@@ -115,21 +119,22 @@ def from_row(summary: str | None, data: Any) -> Memory:
         name: tuple(item for item in _strings(stored.get(name)) if len(item) <= MAX_ITEM_CHARS)[-MAX_ITEMS:]
         for name in KINDS
     }
-    documents = tuple(item for item in _strings(stored.get("documents")) if _is_uuid(item))[-MAX_ITEMS:]
+    documents = tuple(item for item in _strings(stored.get("documents")) if _is_uuid(item))[-MAX_DOCUMENTS:]
     text = summary if isinstance(summary, str) and len(summary) <= MAX_SUMMARY else ""
     return _fit(Memory(text, documents, **lists))
 
 
 def live(memory: Memory, names: Mapping[str, str]) -> Memory:
-    """``memory`` with only its live documents, those in ``names`` (db/chat.py
-    ``live_document_names``: not in Trash, an older version, or deleted forever), and their
-    names in order, so the rewrite can resolve "the second document you mentioned". A name
-    is cleaned, at most ``MAX_ITEM_CHARS``, and left out when it reads like instructions.
-    O(d)."""
-    documents = tuple(document for document in memory.documents if document in names)
-    shown = (clean_text(names[document])[:MAX_ITEM_CHARS] for document in documents)
+    """``memory`` with the names of its live documents, those in ``names`` (db/chat.py
+    ``live_document_names``: not in Trash, an older version, deleted forever or hidden), in
+    order, so the rewrite can resolve "the second document you mentioned". Every tracked id is
+    kept (question 6). A name is cleaned, at most ``MAX_ITEM_CHARS``, and left out when it reads
+    like instructions. O(d)."""
+    shown = (
+        clean_text(names[document])[:MAX_ITEM_CHARS] for document in memory.documents if document in names
+    )
     kept = tuple(name for name in shown if name and not looks_like_instructions(name))
-    return replace(memory, documents=documents, document_names=kept)
+    return replace(memory, document_names=kept)
 
 
 def prompt_text(memory: Memory) -> str:
@@ -154,7 +159,11 @@ def summarise(
 ) -> Memory | None:
     """The new summary and memory from ``previous`` and ``turns`` (oldest first), with the
     documents ``cited`` since added to ``previous``'s; None (a code logged) when the model
-    is down or replies badly. One model call."""
+    is down or replies badly. One model call. When ``MAX_DOCUMENTS`` would drop a tracked id,
+    ``previous`` is left out: the memory is made from the turns alone (question 6)."""
+    documents = tuple(dict.fromkeys([*previous.documents, *cited]))
+    if len(documents) > MAX_DOCUMENTS:
+        previous, documents = NO_MEMORY, tuple(dict.fromkeys(cited))[-MAX_DOCUMENTS:]
     before, asked = prompt_text(previous), _turns_text(turns)
     user = f"<memory>\n{_escape(before)}\n</memory>\n\n<history>\n{_escape(asked)}\n</history>"
     try:
@@ -171,7 +180,6 @@ def summarise(
         return None
     source = _words("\n".join([asked, *previous.items()]))
     summary = clean_text(summary)[:MAX_SUMMARY]
-    documents = tuple(dict.fromkeys([*previous.documents, *cited]))[-MAX_ITEMS:]
     kept = {kind: _checked(reply[kind], source) for kind in KINDS}
     return _fit(Memory("" if looks_like_instructions(summary) else summary, documents, **kept))
 
@@ -207,9 +215,10 @@ def _words(text: str) -> str:
 
 
 def _fit(memory: Memory) -> Memory:
-    """``memory`` within ``MAX_BYTES``: the oldest item of the longest list goes first."""
+    """``memory`` within ``MAX_BYTES``: the oldest item of the longest list goes first; never a
+    tracked document (question 6: ``MAX_DOCUMENTS`` ids and four full lists fit)."""
     while stored_size(memory) > MAX_BYTES:
-        name = max(("documents", *KINDS), key=lambda kind: len(getattr(memory, kind)))
+        name = max(KINDS, key=lambda kind: len(getattr(memory, kind)))
         memory = replace(memory, **{name: getattr(memory, name)[1:]})
     return memory
 
