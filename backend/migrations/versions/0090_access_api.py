@@ -6,7 +6,7 @@ named in full, nothing for PUBLIC, and a check of the caller inside. An owner sk
 security, so every table and view each one reads also names ``kaagaz_current_customer()`` (the
 views carry no customer filter of their own, 0086).
 
-* ``kaagaz_access_of(p_user)``: ``kaagaz_access()``'s text (0087) with the person named instead
+* ``kaagaz_access_of(p_user)``: ``kaagaz_access()``'s text (0089's) with the person named instead
   of read from ``kaagaz.user_id``, made by checked replaces, so the rule is written once: one
   person's access (person NULL for an unknown, switched-off or other organisation's person).
   Internal: no role may run it.
@@ -69,6 +69,7 @@ def _load(name: str) -> ModuleType:
 _0061 = _load("0061_email.py")
 _0086 = _load("0086_access_views.py")
 _0087 = _load("0087_trashed_folders_view.py")
+_0089 = _load("0089_open_paths.py")
 ROLES = _0086.ROLES
 _literal = _0086._literal
 
@@ -88,7 +89,7 @@ def _rule(view: str) -> str:
 ACCESS_OF = _replaced(
     _replaced(
         _replaced(
-            _0087.ACCESS,
+            _0089.ACCESS,
             "CREATE OR REPLACE FUNCTION public.kaagaz_access()",
             "CREATE FUNCTION public.kaagaz_access_of(p_user uuid)",
         ),

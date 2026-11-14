@@ -29,9 +29,11 @@ def test_the_revision_follows_0089() -> None:
     assert (M0090.revision, M0090.down_revision) == ("0090", "0089")
 
 
-def test_the_rule_is_0087s_text_with_the_person_named() -> None:
-    """Each generated text holds 0087's rule, never the current person's own lookups."""
+def test_the_rule_is_0089s_access_and_0087s_views_with_the_person_named() -> None:
+    """Each generated text holds the last rule (0089's access, its walls_set; 0087's views), never
+    the current person's own lookups."""
     assert "kaagaz.user_id" not in M0090.ACCESS_OF and "u.id = p_user AND NOT u.disabled" in M0090.ACCESS_OF
+    assert "walls_set" in M0090.ACCESS_OF
     for rule in (M0090.DOCUMENT_RULE, M0090.FOLDER_RULE, M0090.PLACE_RULE):
         assert "current_user" not in rule and "kaagaz_shared_with_me" not in rule
     assert "p_department_only" in M0090.PLACE_RULE and "a.admin" not in M0090.PLACE_RULE
