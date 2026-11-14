@@ -237,3 +237,39 @@ def worker_view_readers() -> set[tuple[str, str]]:
         for key in _closure(edges, start)
         if key in nodes and any(view in sql for sql in _strings(nodes[key]) for view in _VIEWS)
     }
+
+
+_ROUTE_METHODS = frozenset({"get", "post", "put", "patch", "delete"})
+# PRD 7 decision 20 (#601): what asks for an admin session.
+_ADMIN_SESSION = frozenset({("api/auth.py", "require_admin_session"), ("api/auth.py", "AdminSession")})
+
+
+def _is_route(decorator: ast.expr) -> bool:
+    return (
+        isinstance(decorator, ast.Call)
+        and isinstance(decorator.func, ast.Attribute)
+        and decorator.func.attr in _ROUTE_METHODS
+        and isinstance(decorator.func.value, ast.Name)
+    )
+
+
+def routes() -> dict[tuple[str, str], tuple[set[tuple[str, str]], bool]]:
+    """Each route of kaagaz/api (a function under ``@<router>.get`` and the like) to what it reaches
+    at any depth, and whether it asks for an admin session on its way through kaagaz/api: its
+    router's dependency (the decorator names the router), an ``AdminSession`` or
+    ``require_admin_session``, itself or in a helper it calls. A name-based rule: one named on one
+    branch only counts too."""
+    trees = _parse()
+    edges = _graph(trees)
+    api = {key for key in edges if key[0].startswith("api/")}
+    found = {}
+    for rel, tree in trees.items():
+        if not rel.startswith("api/"):
+            continue
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and any(
+                map(_is_route, node.decorator_list)
+            ):
+                key = (rel, node.name)
+                found[key] = (_closure(edges, {key}), bool(_closure(edges, {key}, api) & _ADMIN_SESSION))
+    return found

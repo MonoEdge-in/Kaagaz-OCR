@@ -20,7 +20,11 @@ from tests import sql_access_scan as scan
 SHARED_WITH_WORKER = "shared with the worker, which must never read a view (#595 condition 1)"
 WRITE_AFTER_CHECK = "a write, or the read or row lock of a write, after the route's check through the view"
 TREE_WALK = "a walk of the folder tree by id; what is shown comes from a view"
-ADMIN_NUMBERS = "an Admin screen's names and numbers, never content (decision 20; PR 10)"
+# Changed on purpose (#601): permanent (decision 20, Admin screens show true names and numbers), and
+# reached only from a route that asks for an admin session (test_admin_numbers_...).
+ADMIN_NUMBERS = (
+    "permanent: an Admin screen's true names and numbers, never content, admin session only (decision 20)"
+)
 DUPLICATE_LOOKUP = "must find a copy the person can't see; the reply goes through the view"
 EXISTENCE_ONLY = "tells only whether a row exists, or names a document already checked"
 CORRELATED = "a fragment, or a correlated subquery, run only inside a statement on a view's row"
@@ -44,6 +48,16 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     # Changed on purpose (#601): the Access page's files given to a person, by their true names; the
     # rows about a file given to several people; a department's kind change, refused while in use.
     ("db/access.py", "_GIVEN_TO"): (ADMIN_NUMBERS, "GET /admin/users/{id}/access"),
+    # PR 10b (#601): the place of a file already found; the files a wall decides for, in its preview.
+    ("db/access.py", "_DOCUMENT_PLACE"): (
+        EXISTENCE_ONLY,
+        "GET /documents/{id}/audience: the view (a Head) or kaagaz_admin_document (an Admin) first",
+    ),
+    ("db/access.py", "_DEPARTMENT_FILES"): (
+        ADMIN_NUMBERS,
+        "GET /admin/departments/{id}/department-only/preview",
+    ),
+    ("db/access.py", "_FOLDER_FILES"): (ADMIN_NUMBERS, "GET /folders/{id}/private/preview: an Admin's"),
     ("db/audit.py", "_INSERT_ABOUT"): (WRITE_AFTER_CHECK, "a file given: its folder and family, by id"),
     ("db/folders.py", "_IN_USE"): (
         WRITE_AFTER_CHECK,
@@ -425,6 +439,20 @@ class SqlAccessGuardTest(unittest.TestCase):
             with self.subTest(statement=key):
                 self.assertTrue(note.strip())
                 self.assertTrue(key[0].startswith(_PR8_FILES), "only Ask and search wait for PR 8")
+
+    def test_admin_numbers_are_reached_only_from_admin_session_routes(self) -> None:
+        """Decision 20 (#601): each ADMIN_NUMBERS statement is reached from a route, and only from
+        routes that ask for an admin session (``scan.routes``: a name-based rule, so a route naming
+        require_admin_session on one branch passes too; review is the backstop)."""
+        routes = scan.routes()
+        self.assertFalse(routes[("api/routers/documents.py", "list_documents")][1])  # a plain route
+        for key, (reason, _) in ALLOWED.items():
+            if reason != ADMIN_NUMBERS:
+                continue
+            reaching = {route: admin for route, (reached, admin) in routes.items() if key in reached}
+            with self.subTest(statement=key):
+                self.assertTrue(reaching)
+                self.assertEqual({route for route, admin in reaching.items() if not admin}, set())
 
     def test_no_statement_the_worker_reaches_reads_a_view(self) -> None:
         """#595 condition 1, across modules: the worker (jobs/, worker_main, cli, pipeline, the alerts)

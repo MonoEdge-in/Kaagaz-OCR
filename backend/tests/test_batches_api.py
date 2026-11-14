@@ -64,6 +64,7 @@ SUMMARY_KEYS = {
     "department",
     "pending_suggestion",
     "stuck",  # changed on purpose (issue 407): may be read again while still in progress
+    "shared_with_you",  # changed on purpose (PRD 7, #601): in a folder the person can't see
 }
 # Changed on purpose (#239, 27 Oct 2026): V5's version suggestions (PRD 1 stage 2, d82ada4).
 BATCH_KEYS = {
