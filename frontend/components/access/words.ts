@@ -304,6 +304,16 @@ export const GIVE_HELP = "Let named people open this file, with every version.";
 export const AUDIENCE_HELP = "See who can open this file, and why.";
 export const MYSELF_HELP = "Open this file yourself. Asks for your password and tells Management.";
 
+// --- moves and folder deletes refused (PR 10c's rules; p1:194-204) -----------------------------
+
+export const MOVE_REFUSED = "You can't move this here, because it would change who can see it. Ask an admin.";
+export const FOLDER_DELETE_REFUSED = "You can't delete this folder. Ask an admin.";
+/** 403 codes PR 10c is to send (not on this base yet; the follow-up names them there). */
+export const LIBRARY_REFUSALS: Readonly<Record<string, string>> = {
+  move_changes_access: MOVE_REFUSED,
+  hidden_inside: FOLDER_DELETE_REFUSED,
+};
+
 // --- errors --------------------------------------------------------------------------------------
 
 export const CHOOSE_PEOPLE_CAP = (cap: number) => `Choose ${cap} people or fewer.`;
