@@ -9,15 +9,21 @@ department deleted since. NEEDS VRUSHIT'S APPROVAL: schema and security.
 * The rule's text is 0086's own (``_ANYONE`` and ``_PLACE``, loaded from that file), so the rule
   is written once. ``security_invoker`` and no ``security_barrier``, as 0086 (#595).
 * Each column carries its table column's comment (the data dictionary, 0007).
-* Fail closed (the lead's decision on #599's review, 14 Nov 2026): a stored department counts as
-  open only while it is an open department, live or in Trash. A file or folder in Trash keeps the
-  department it had (0085), and that department may be deleted since: 0086 counted an id no
-  department has any more as open, so a Department only department's Trash became everyone's. Now
-  ``kaagaz_access()`` works out the open departments (``open``, the type's ``closed`` renamed) and
-  every view reads ``department_id = ANY (a.open)`` where 0086 read ``<> ALL (a.closed)``: one
-  change to 0086's rule text, made here once for the three views. A deleted department's rows are
-  seen only by Management, a person given a file or holding it (R2, R3), the department's head and
-  named people of a private folder in it (R4), and, for folders, an Admin.
+* Fail closed once an organisation keeps something to some people (the lead's decisions on #599's
+  review, 14 Nov 2026). A file or folder in Trash keeps the department it had (0085), and that
+  department may be deleted since: 0086 counted an id no department has any more as open, so a
+  Department only department's Trash became everyone's. Now, while the organisation has a
+  Department only department (live or in Trash; ``walled``, one EXISTS a statement), a stored
+  department counts as open only while it is an open department, live or in Trash (``open``, the
+  type's ``closed`` renamed); with none, every department is open, as on day one and in 0086. Every
+  view reads ``NOT a.walled OR department_id = ANY (a.open)`` where 0086 read
+  ``department_id <> ALL (a.closed)``: one change to 0086's rule text, made here once for the three
+  views. A deleted department's rows are then seen only by Management, a person given a file or
+  holding it (R2, R3), the department's head and named people of a private folder in it (R4), and,
+  for folders, an Admin.
+* Known gap (#594): when the organisation's last Department only department is the one deleted for
+  good, the files it stranded in Trash fall back to open. No wall can be set before PR 10, and the
+  #594 fix (purge-time stranded files) lands first.
 * Catalog only: no table is locked, read or written. SELECT to the app and the worker role alike
   (0083's equality test); PUBLIC none.
 
@@ -61,16 +67,23 @@ def _replaced(text: str, old: str, new: str, times: int = 1) -> str:
 
 
 def _fail_closed(view: str) -> str:
-    """0086's view text with the one change: an open department is one still there and open."""
+    """0086's view text with the one change: once the organisation keeps something to some people,
+    an open department is one still there and open."""
     closed = re.compile(r"(\w+)\.department_id <> ALL \(a\.closed\)")
     if len(closed.findall(view)) != 1:
         raise RuntimeError("0086's rule text changed")
     return _replaced(
-        closed.sub(r"\1.department_id = ANY (a.open)", view), "CREATE VIEW", "CREATE OR REPLACE VIEW"
+        closed.sub(r"NOT a.walled OR \1.department_id = ANY (a.open)", view),
+        "CREATE VIEW",
+        "CREATE OR REPLACE VIEW",
     )
 
 
 _ACCESS_0086 = _0086.FUNCTIONS["kaagaz_access"].replace("CREATE FUNCTION", "CREATE OR REPLACE FUNCTION")
+# 0086's closed set, the organisation's Department only departments (live or in Trash), whole.
+_CLOSED = _ACCESS_0086[
+    _ACCESS_0086.index("SELECT f.id FROM public.folders f") : _ACCESS_0086.index(")\n        FROM (SELECT")
+]
 # The departments still there (live or in Trash) and open, where 0086 listed the Department only ones.
 ACCESS = _replaced(
     _replaced(
@@ -81,11 +94,19 @@ ACCESS = _replaced(
     "t.parent_id IS NULL AND t.department_only",
     "t.parent_id IS NULL AND t.kind = 'department' AND NOT t.department_only",
 )
+# ``walled``: the organisation keeps something to some people (it has a Department only department).
+ACCESS = _replaced(
+    ACCESS,
+    ")\n        FROM (SELECT public.kaagaz_current_customer() AS id) c",
+    "),\n            EXISTS ("
+    + _CLOSED
+    + ")\n        FROM (SELECT public.kaagaz_current_customer() AS id) c",
+)
 ACCESS_COMMENT = (
     "The current person's access, for the access views (PRD 7): who they are (NULL: no active user of"
     " this customer), whether one is named, Management, Admin, departments, heads, named private"
-    " folders, the organisation's open departments (live or in Trash; a department deleted since is"
-    " not one). Arrays are empty, never NULL."
+    " folders, the organisation's open departments (live or in Trash), whether it has a Department only"
+    " one (walled: then a department deleted since is closed). Arrays are empty, never NULL."
 )
 VIEWS = {name: _fail_closed(view) for name, view in _0086.VIEWS.items()}
 VIEW = _fail_closed(
@@ -117,8 +138,10 @@ _COLUMN_COMMENTS = """
     """
 
 _RENAME = "ALTER TYPE public.kaagaz_access_set RENAME ATTRIBUTE {} TO {}"
+_WALLED = "ALTER TYPE public.kaagaz_access_set {} ATTRIBUTE walled"
 UPGRADE = [
     _RENAME.format("closed", "open"),
+    _WALLED.format("ADD") + " boolean",
     ACCESS,
     f"COMMENT ON FUNCTION public.kaagaz_access() IS {_0086._literal(ACCESS_COMMENT)}",
     *VIEWS.values(),
@@ -130,9 +153,10 @@ UPGRADE = [
 DOWNGRADE = [
     "DROP VIEW IF EXISTS public.visible_trashed_folders",
     _RENAME.format("open", "closed"),
+    *[view.replace("CREATE VIEW", "CREATE OR REPLACE VIEW") for view in _0086.VIEWS.values()],
+    _WALLED.format("DROP"),
     _ACCESS_0086,
     f"COMMENT ON FUNCTION public.kaagaz_access() IS {_0086._literal(_0086.FUNCTION_COMMENTS['kaagaz_access'])}",
-    *[view.replace("CREATE VIEW", "CREATE OR REPLACE VIEW") for view in _0086.VIEWS.values()],
 ]
 
 
