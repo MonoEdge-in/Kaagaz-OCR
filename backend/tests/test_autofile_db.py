@@ -20,7 +20,7 @@ from kaagaz.db.documents import PgDocuments, add_version
 from kaagaz.db.engine import Database
 from kaagaz.db.folders import create_folder, delete_folder, move_folder, rename_folder
 from kaagaz.db.listing import get_document, move_family
-from kaagaz.db.trash import lock_live_family, restore_document, trash_document
+from kaagaz.db.trash import Placed, lock_live_family, restore_document, trash_document
 from kaagaz.ingestion.ports import DocumentRecord
 from tests.db_support import insert_folder, name_session, new_customer, wait_until_blocked
 from tests.test_api_support import CSRF, Api
@@ -576,9 +576,11 @@ def test_stale_flag_a_deleted_folder_of_a_filed_family_in_trash_is_not_filed_any
     # Changed on purpose (#599, 0087 fails closed): the department Kaagaz made for the family is
     # gone too (pruned once empty), so its file in Trash is closed to the member, as a file they
     # can't see: not_found, where it was in_trash. Restored, it is in no department and theirs again.
+    # Changed on purpose (#594, Q2): restored with its department gone, it is held for the restorer
+    # (here the member) until it is filed, never open to everyone.
     assert _undo(member.client, document).json()["error"]["code"] == "not_found"
     with db.customer(customer) as conn:
-        assert restore_document(conn, customer, document)
+        assert restore_document(conn, customer, document, by=member.user_id) == Placed(held=True)
     assert _undo(member.client, document).json()["error"]["code"] == "already_moved"
 
 

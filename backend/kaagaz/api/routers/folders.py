@@ -246,6 +246,13 @@ def delete_folder(
                 "folder_names_taken",
                 "The folder you chose already has too many folders with these names. Choose another.",
             ) from None
+        except folders_sql.AccessWouldChange:  # #594 (Q5)
+            raise ApiError(
+                409,
+                "access_would_change",
+                "Moving what's inside there would let more people see it."
+                " Choose another folder or send it to Trash.",
+            ) from None
         details: dict[str, audit.DetailValue] = {
             "contents": contents,
             "files": held.files,
@@ -291,10 +298,12 @@ def get_trashed_folder(folder_id: uuid.UUID, user: User, context: Context) -> di
 @router.post("/documents/trash/folders/{folder_id}/restore")
 def restore_trashed_folder(folder_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
     """Put a folder in Trash back where it was, with everything that went to Trash with it:
-    ``{folder, location, renamed, relocated, files, folders}``. ``location`` is the path it went
-    into ([] the top level); ``relocated``: its folder was gone, so the top level; ``renamed``: a
-    live folder there had its name, so "Name (n)". Another customer's is 404; a member who did not
-    upload every version of every file in it is 403."""
+    ``{folder, location, renamed, relocated, sealed, files, folders}``. ``location`` is the path it
+    went into ([] the top level); ``relocated``: its folder was gone, so ``location`` instead (#594:
+    the private folder or department it was in, else the top level); ``sealed``: a department or
+    private folder it was in is gone, so it came back private (#594, Q6); ``renamed``: a live folder
+    there had its name, so "Name (n)". Another customer's is 404; a member who did not upload every
+    version of every file in it is 403."""
     target = str(folder_id)
     with _refused(), context.db.user(user.customer_id, user.user_id) as conn:
         found = trashed_sql.one(conn, user.customer_id, target)
@@ -318,6 +327,7 @@ def restore_trashed_folder(folder_id: uuid.UUID, user: User, context: Context) -
         "location": None if shown.location is None else list(shown.location),
         "renamed": shown.renamed,
         "relocated": shown.relocated,
+        "sealed": shown.sealed,
         "files": shown.files,
         "folders": shown.folders,
     }

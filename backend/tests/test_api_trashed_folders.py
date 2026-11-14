@@ -246,6 +246,7 @@ def test_restore_brings_back_the_same_ids_parents_names_kinds_and_files_with_eve
         "location": ["Accounts"],
         "renamed": False,
         "relocated": False,
+        "sealed": False,  # #594: it was in no department or private folder that is gone
         "files": 4,
         "folders": 3,
     }
@@ -719,6 +720,7 @@ def test_restoring_a_file_says_which_folder_came_back_with_it(db: Database) -> N
         "location": ["Accounts"],
         "renamed": True,
         "relocated": False,
+        "sealed": False,  # #594
     }
     assert came["folder"] == {**came["folder"], "id": t["year"], "name": "2025 (2)"}
     assert plain is None

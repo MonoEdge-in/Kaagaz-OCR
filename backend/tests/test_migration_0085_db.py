@@ -193,9 +193,13 @@ def test_a_file_takes_its_folders_values_keeps_them_in_trash_and_gets_them_again
     assert _differences(db, c) == []
 
 
-def test_a_folder_restored_where_its_department_is_gone_comes_back_in_no_department(db: Database) -> None:
+def test_a_folder_restored_where_its_department_is_gone_comes_back_private_in_no_department(
+    db: Database,
+) -> None:
     """The restore's rows are inserted with the values they had in Trash; the trigger works them
-    out again where they land (here the top level: their department was deleted meanwhile)."""
+    out again where they land (here the top level: their department was deleted meanwhile).
+    Changed on purpose (#594, Q6): the department it was in is gone, so it comes back private
+    with nobody named, and everything in it takes it as its private folder."""
     api = Api(db)
     admin = api.new_admin()
     c = admin.customer_id
@@ -211,13 +215,15 @@ def test_a_folder_restored_where_its_department_is_gone_comes_back_in_no_departm
     assert _restore(admin, t["year"]).status_code == 200
 
     folders = _values(db, c, "folders")
-    assert {folders[t[name]] for name in ("year", "bills", "old", "bank")} == {(None, None)}
-    assert _values(db, c)[year_file] == (None, None)
+    assert {folders[t[name]] for name in ("year", "bills", "old", "bank")} == {(None, t["year"])}
+    assert _values(db, c)[year_file] == (None, t["year"])
+    assert _run(db, c, "SELECT private FROM folders WHERE id = :f", f=t["year"]) == [(True,)]
     assert _differences(db, c) == []
 
 
-def test_a_file_restored_after_its_folder_went_is_open_to_everyone_as_today(db: Database) -> None:
-    """One of #594's open paths, stated: the restore puts it in no folder, held for no one."""
+def test_a_file_restored_after_its_folder_went_is_held_for_the_restorer(db: Database) -> None:
+    """Changed on purpose (#594, Q1): what was one of #594's open paths. Its private folder is gone
+    (its department is live), so the restore holds it for the restorer instead of opening it."""
     c, u = new_customer(db)
     finance = _department(db, c, u, "Finance")
     with db.customer(c) as conn:
@@ -227,11 +233,14 @@ def test_a_file_restored_after_its_folder_went_is_open_to_everyone_as_today(db: 
     trashed = "UPDATE documents SET deleted_at = :t, deleted_by = :u, folder_id = NULL WHERE id = :d"
     _run(db, c, trashed, t=NOW, u=u, d=document)  # as a folder deleted after it went to Trash
     assert _values(db, c)[document] == (finance, secret)  # kept in Trash
+    _run(db, c, "DELETE FROM folders WHERE id = :f", f=secret)
 
-    _run(db, c, "UPDATE documents SET deleted_at = NULL, deleted_by = NULL WHERE id = :d", d=document)
+    with db.customer(c) as conn:
+        assert trash.restore_document(conn, c, document, by=u) == trash.Placed(held=True)
 
-    held = "SELECT department_id, private_folder_id, held_for FROM documents WHERE id = :d"
-    assert _run(db, c, held, d=document) == [(None, None, None)]
+    held = "SELECT folder_id, department_id, private_folder_id, held_for FROM documents WHERE id = :d"
+    assert _run(db, c, held, d=document) == [(None, None, None, uuid.UUID(u))]
+    assert _differences(db, c) == []
 
 
 def test_a_move_waits_for_the_tree_lock_so_it_and_auto_filing_both_finish(db: Database) -> None:

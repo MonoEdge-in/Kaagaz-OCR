@@ -116,6 +116,14 @@ class FolderChanged(FolderError):
         super().__init__("folder_changed")
 
 
+class AccessWouldChange(FolderError):
+    """#594: what a folder deleted with ``keep`` holds would go where other people see it (Q5).
+    shortcut: refused; the move-rules PR replaces it with the PRD's warning and confirm."""
+
+    def __init__(self) -> None:
+        super().__init__("access_would_change")
+
+
 class DestinationNotFound(FolderNotFound):
     """The folder chosen to take what is inside is not there for this customer (#537)."""
 
@@ -226,7 +234,8 @@ _MOVE_CHECK = (
 )
 
 # Trashed documents keep their folder until they are restored or purged; a
-# folder holding only those can still be deleted, and they go to the top level.
+# folder holding only those can still be deleted, and they leave it (their restore
+# then goes where trash.place_family says, #594).
 # The rows are locked in family order (each family's first version, id =
 # family_id, then by id), the order every family lock uses, so a folder delete
 # and a restore of one of its families queue instead of deadlocking. Like every
@@ -275,6 +284,18 @@ _UPLOAD_RUNNING = (
     " AND r.folder_upload_id = u.id AND r.updated_at > :since))"
     " AND EXISTS (SELECT 1 FROM folder_upload_folders m WHERE m.customer_id = :c"
     " AND m.folder_upload_id = u.id AND m.folder_id = ANY(CAST(:ids AS uuid[]))))"
+)
+# #594: what the folder :f holds sees the same people in :p (None: the top level, no department
+# and no private folder): the same department and private folder, or both open (no private folder,
+# and no department or one not Department only, read from the live department). NULL: refused.
+_SAME_ACCESS = (
+    "SELECT (f.department_id, f.private_folder_id)"
+    " IS NOT DISTINCT FROM (t.department_id, t.private_folder_id)"
+    " OR (f.private_folder_id IS NULL AND t.private_folder_id IS NULL"
+    " AND NOT EXISTS (SELECT 1 FROM folders d WHERE d.customer_id = :c"
+    " AND d.id IN (f.department_id, t.department_id) AND d.department_only))"
+    " FROM folders f LEFT JOIN folders t ON t.customer_id = :c AND t.id = CAST(:p AS uuid)"
+    " WHERE f.customer_id = :c AND f.id = :f"
 )
 # The deleted folder steps out of its siblings' names first, so a folder inside it may take its
 # name where they meet. Its id is its name only inside this transaction (36 characters).
@@ -490,15 +511,15 @@ def delete_folder_with_contents(
     being read goes too, as with a single delete.
 
     Raises FolderNotFound, DestinationNotFound (``to``), FolderCycle (``to`` is the folder or
-    inside it), FolderTooDeep, FolderUploadRunning (a folder upload into what is deleted still has
-    files waiting and was active in the last UPLOAD_QUIET_HOURS: with keep, the folder itself, as
-    its folders only move), FolderNameTaken (no free number up to 100) or FolderChanged (a file
-    arrived meanwhile: a document insert takes no tree lock). Nothing is written before
-    the checks; a refusal after a write leaves the caller's transaction to roll back. ``files``
-    in what it returns is, with trash, the families that went to Trash now, and ``trash_id`` is set.
-    O(s log F + n log D)
-    for the s folders and n documents of the subtree, in a fixed number of statements plus two a
-    clashing name.
+    inside it), FolderTooDeep, AccessWouldChange (with keep, ``to`` is seen by other people than
+    the folder, #594; Trash inside it too), FolderUploadRunning (a folder upload into what is
+    deleted still has files waiting and was active in the last UPLOAD_QUIET_HOURS: with keep, the
+    folder itself, as its folders only move), FolderNameTaken (no free number up to 100) or
+    FolderChanged (a file arrived meanwhile: a document insert takes no tree lock). Nothing is
+    written before the checks; a refusal after a write leaves the caller's transaction to roll
+    back. ``files`` in what it returns is, with trash, the families that went to Trash now, and
+    ``trash_id`` is set. O(s log F + n log D) for the s folders and n documents of the subtree, in
+    a fixed number of statements plus two a clashing name.
     """
     _lock_tree(conn, customer_id)
     held = folder_summary(conn, customer_id, folder_id)
@@ -511,6 +532,8 @@ def delete_folder_with_contents(
             raise FolderCycle()
         if int(target_depth) + int(height) - 1 > MAX_DEPTH:  # its folders land just below ``to``
             raise FolderTooDeep()
+    if contents == "keep" and not conn.execute(text(_SAME_ACCESS), params).scalar():
+        raise AccessWouldChange()
     gone = [folder_id] if contents == "keep" else descendant_ids(conn, customer_id, folder_id)
     since = now - timedelta(hours=UPLOAD_QUIET_HOURS)
     if conn.execute(text(_UPLOAD_RUNNING), {**params, "ids": gone, "since": since}).scalar_one():
