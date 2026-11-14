@@ -694,6 +694,8 @@ const ACTION_WORDS: Record<string, string> = {
   "document.read_upgrade": "Read a document again after an upgrade",
   "document.land_facts": "Read a land record's owners and places again", // PRD 6 D3
   "document.page_accept": "Kept a page as it was read",
+  "document.page_turns": "Turned the pages of a document", // #600: for everyone
+  "document.page_turns_reset": "Put a document's pages back as scanned",
   "document.line_corrected": "Corrected a line in a clean copy", // #527
   "document.line_correction_undone": "Undid a line correction in a clean copy", // #527
   "document_story.saved": "Saved a document's story",

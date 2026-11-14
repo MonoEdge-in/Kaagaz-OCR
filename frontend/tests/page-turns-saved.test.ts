@@ -3,6 +3,8 @@
 // (with its boxes) drawn turned.
 
 import { describe, expect, it } from "vitest";
+import { activitySentence } from "@/components/activity/words";
+import { describeAction } from "@/components/admin/logic";
 import { turnedBox, unturnedBox } from "@/components/words/spots";
 import {
   fromServer,
@@ -129,5 +131,21 @@ describe("a page drawn turned", () => {
     const turns = new Map([[2, 3]]);
     expect(turnOf(turns, 3)).toBe(270);
     expect(turnOf(turns, 2)).toBe(0);
+  });
+});
+
+describe("the activity", () => {
+  const entry = (action: string, pages?: number) => ({ action, actor_name: "Priya", details: pages === undefined ? {} : { pages } });
+
+  it("says who turned how many pages for everyone, and who put them back", () => {
+    expect(activitySentence(entry("document.page_turns", 1))).toBe("Priya turned 1 page for everyone");
+    expect(activitySentence(entry("document.page_turns", 3))).toBe("Priya turned 3 pages for everyone");
+    expect(activitySentence(entry("document.page_turns"))).toBe("Priya turned the pages for everyone");
+    expect(activitySentence(entry("document.page_turns_reset", 2))).toBe("Priya put the pages back as scanned");
+  });
+
+  it("names both in the admin's log", () => {
+    expect(describeAction("document.page_turns")).toBe("Turned the pages of a document");
+    expect(describeAction("document.page_turns_reset")).toBe("Put a document's pages back as scanned");
   });
 });
