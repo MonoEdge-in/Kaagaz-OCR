@@ -678,7 +678,8 @@ def test_giving_and_taking_wait_for_the_tree_lock_and_the_family_lock(
     db: Database, method: str, held: str
 ) -> None:
     """Auto-filing holds the tree lock, saving a reading the family lock: each write waits for
-    either, then succeeds (no 503)."""
+    either, then succeeds (no 503). Holding the tree lock, auto-filing then takes the family lock:
+    the write waits holding nothing of the family, so that never deadlocks."""
     org = _walled(Api(db))
     admin, member, file = org.people["admin"], org.people["member"].user_id, org.files["sales"]
     if method == "DELETE":
@@ -691,6 +692,8 @@ def test_giving_and_taking_wait_for_the_tree_lock_and_the_family_lock(
         thread, out = _in_thread(lambda: _call(admin, method, f"/api/documents/{file}/shares/{member}", {}))
         thread.join(timeout=1.5)
         assert thread.is_alive(), held
+        if held == "tree":
+            assert trash.lock_family(conn, org.c, file) == file  # as auto-filing, tree then family
     thread.join(timeout=20)
     assert out[0][0] in (200, 204), out
 
