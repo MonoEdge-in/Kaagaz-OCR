@@ -228,14 +228,14 @@ def test_search_ef_ships_at_100_and_must_be_1_to_1000() -> None:
             Settings.from_env(shipped(SEARCH_EF=bad))
 
 
-def test_the_meaning_walk_settings_ship_at_pgvectors_default_and_5000() -> None:
+def test_the_meaning_walk_settings_ship_at_pgvectors_default_and_2000() -> None:
     """PRD 7 section 7 (#602): unset, they are hybrid's defaults (an older .env still starts)."""
     from kaagaz.search import hybrid
 
     for env in (shipped(), shipped(SEARCH_MAX_SCAN_TUPLES=None, SEARCH_EXACT_BELOW=None)):
         loaded = Settings.from_env(env)
-        assert (loaded.search_max_scan_tuples, loaded.search_exact_below) == (20000, 5000)
-    assert (hybrid.MAX_SCAN_TUPLES, hybrid.EXACT_BELOW) == (20000, 5000)
+        assert (loaded.search_max_scan_tuples, loaded.search_exact_below) == (20000, 2000)
+    assert (hybrid.MAX_SCAN_TUPLES, hybrid.EXACT_BELOW) == (20000, 2000)
     assert Settings.from_env(shipped(SEARCH_EXACT_BELOW="0")).search_exact_below == 0
     for name, bad in (
         ("SEARCH_MAX_SCAN_TUPLES", "0"),

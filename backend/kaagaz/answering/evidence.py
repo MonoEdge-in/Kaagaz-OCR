@@ -337,7 +337,7 @@ class PgRetriever:
         topic_pieces: int = 0,
         min_score: float = 1.0,
         max_scan_tuples: int = 20000,
-        exact_below: int = 5000,
+        exact_below: int = 2000,
     ) -> None:
         """``recipe``: the ``embedding_model`` tag meaning search uses (vectors with
         another tag are left out; a section's ``embed_recipe`` too); ``ef_search``:

@@ -368,7 +368,8 @@ class Settings:
     search_max_documents: int
     # PRD 7 section 7 (#602): hnsw.max_scan_tuples, the most tuples one meaning walk visits (pgvector's
     # default 20,000), and how few vectors the person can see before meaning search scans them
-    # exactly, never walking the index (PROVISIONAL 5,000, from the PR 8 measurements).
+    # exactly, never walking the index (PROVISIONAL 2,000: measured
+    # in PR 8, the exact scan and its count cost about what the walk does at about 2,000 vectors).
     search_max_scan_tuples: int
     search_exact_below: int
 
@@ -779,7 +780,7 @@ class Settings:
             search_ef=env.between("SEARCH_EF", 1, 1000),
             search_max_documents=env.between("SEARCH_MAX_DOCUMENTS", 1, 100),
             search_max_scan_tuples=env.between_or("SEARCH_MAX_SCAN_TUPLES", 1, 1000000, default=20000),
-            search_exact_below=env.between_or("SEARCH_EXACT_BELOW", 0, 1000000, default=5000),
+            search_exact_below=env.between_or("SEARCH_EXACT_BELOW", 0, 1000000, default=2000),
             answer_max_evidence=env.integer("ANSWER_MAX_EVIDENCE"),
             answer_min_evidence_score=env.number("ANSWER_MIN_EVIDENCE_SCORE"),
             answer_neighbours=env.between("ANSWER_NEIGHBOURS", 0, 3),

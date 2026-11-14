@@ -157,7 +157,7 @@ FUZZY_THRESHOLD = 0.3
 STATEMENT_TIMEOUT_MS = 3000
 # PRD 7 section 7 (#602): SEARCH_MAX_SCAN_TUPLES and SEARCH_EXACT_BELOW's defaults (settings.py).
 MAX_SCAN_TUPLES = 20000  # pgvector's own default, so day one is unchanged
-EXACT_BELOW = 5000  # PROVISIONAL, from p8's measurements
+EXACT_BELOW = 2000  # PROVISIONAL: the exact scan and its count cost about what the walk does here (PR 8)
 # A fused search (search_translated: CX6's aspects, the translation) runs at most this many
 # texts' lists at once, each on its own pooled connection (Ask speed, 24 Oct 2026).
 SEARCH_FAN_OUT = 4
