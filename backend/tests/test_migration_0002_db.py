@@ -21,7 +21,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 
 from kaagaz.db.engine import Database, make_engine
-from tests.db_support import BACKEND, database_url, make_database, migrate, new_customer
+from tests.db_support import APP_ROLE, BACKEND, database_url, make_database, migrate, new_customer
 
 pytestmark = pytest.mark.db
 
@@ -88,7 +88,7 @@ def fresh() -> Iterator[tuple[str, Database]]:
     name = f"{main.database}_fresh_{os.getpid()}"
     url = main.set(database=name).render_as_string(hide_password=False)
     _recreate(database_url(), name, create=True)
-    database = make_database(url)
+    database = make_database(url, APP_ROLE)  # its migrations may predate the worker role (0083)
     try:
         yield url, database
     finally:

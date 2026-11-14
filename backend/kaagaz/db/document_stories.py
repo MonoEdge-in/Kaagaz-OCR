@@ -155,7 +155,7 @@ _PUT = (
 )
 
 _DELETE = (
-    "DELETE FROM document_stories s USING documents d"
+    "DELETE FROM document_stories s USING visible_documents d"
     " WHERE d.customer_id = :c AND d.id = :d"
     " AND s.customer_id = :c AND s.user_id = :me AND s.family_id = d.family_id"
     " RETURNING s.family_id"
