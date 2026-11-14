@@ -294,6 +294,8 @@ export const filesWhat = (files: readonly { display_name: string }[]) =>
 export const keptStripText = (n: number) =>
   n <= 0 ? null : n === 1 ? "1 file here is kept from you." : `${n} files here are kept from you.`;
 export const keptHeading = (folder: string) => `Files kept from you in ${quoted(folder)}`;
+export const keptShowing = (shown: number, count: number) => `Showing the first ${shown} of ${count}, by name.`;
+export const myselfToast = (file: string) => `You can now open ${quoted(file)}.`;
 export const KEPT_HINT = "You can see their names because you're an admin. You can't open them.";
 export const SHOW_NAMES = "Show names";
 export const GIVE_MYSELF = "Give myself access";

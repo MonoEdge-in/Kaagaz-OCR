@@ -22,6 +22,7 @@ import type {
   Audience,
   AudienceCheck,
   NamedList,
+  KeptFromMe,
   AdminCreated,
   AdminStorage,
   AdminUser,
@@ -1419,6 +1420,8 @@ export type AudienceKind = "documents" | "folders";
 export const getAudience = (kind: AudienceKind, id: string) => request<Audience>("GET", `/${kind}/${segment(id)}/audience`);
 export const checkAudience = (kind: AudienceKind, id: string, userId: string) =>
   request<AudienceCheck>("GET", `/${kind}/${segment(id)}/audience${query({ user_id: userId })}`);
+/** An admin session's alone: the files here they can't open, names only (anyone else: 403/404). */
+export const keptFromMe = (folderId: string) => request<KeptFromMe>("GET", `/folders/${segment(folderId)}/kept-from-me`);
 export const listNamed = (folderId: string) => request<NamedList>("GET", `/folders/${segment(folderId)}/named`);
 /** Who would lose and gain the folder's files were it private (`on`), with `named` named now. */
 export const privatePreview = (folderId: string, on: boolean, named: readonly string[] = []) =>

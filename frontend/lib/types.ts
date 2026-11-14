@@ -1360,6 +1360,21 @@ export interface AudienceCheck {
   reasons: string[];
 }
 
+/** PRD 7 (#601), GET /folders/{id}/kept-from-me: an Admin's names list, the files in a folder
+ * they can't open (`count`: all of them; `items`: the first 500 by name). */
+export interface KeptFromMe {
+  count: number;
+  items: {
+    id: string;
+    name: string;
+    kind: string; // the detected type
+    uploader: string | null;
+    created_at: string;
+    version_no: number;
+    locked: boolean;
+  }[];
+}
+
 /** PRD 7 (#601), GET /folders/{id}/named: a private folder's list; `can_edit`: may change it. */
 export interface NamedList {
   folder: { id: string; name: string; path: string | null };

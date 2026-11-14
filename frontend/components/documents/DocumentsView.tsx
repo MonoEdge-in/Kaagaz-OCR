@@ -29,6 +29,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import { accessAbilities } from "@/components/access/abilities";
 import { AudiencePanel } from "@/components/access/AudiencePanel";
+import { KeptFromMe } from "@/components/access/KeptFromMe";
 import type { AudienceTarget } from "@/components/access/AudiencePanel";
 import { PlaceBadge } from "@/components/access/PlaceBadge";
 import { folderPlace, placeHint, placeKind } from "@/components/access/places";
@@ -689,6 +690,18 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                   )}
                   {accessHint}
                 </p>
+              )}
+              {/* PRD 7 (#604): an admin session's alone; nothing on 0, while loading or on a failure. */}
+              {current && abilities.keptStrip && (
+                <KeptFromMe
+                  key={current.folder.id}
+                  folder={current.folder}
+                  me={me}
+                  onChanged={(message) => {
+                    setToast({ message });
+                    setReload((n) => n + 1);
+                  }}
+                />
               )}
               {library.shared && <p className={libraryStyles.placeHint}>{SHARED.hint}</p>}
               {library.trash && opened === null && (
