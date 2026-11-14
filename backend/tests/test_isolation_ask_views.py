@@ -858,7 +858,10 @@ def test_an_answer_behind_a_file_taken_back_is_replaced_whole_everywhere(db: Dat
     _owner(
         db,
         "UPDATE conversations SET summary = 'About the total', memory = CAST(:m AS jsonb) WHERE id = :id",
-        {"id": conversation, "m": json.dumps({"documents": [ask.id("fin")], "names": [WORDS["fin"]]})},
+        {
+            "id": conversation,
+            "m": json.dumps({"v": VERSION, "documents": [ask.id("fin")], "names": [WORDS["fin"]]}),
+        },
     )
     _share(ask, "fin", give=False)
 
