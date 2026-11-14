@@ -215,7 +215,7 @@ _AVAILABLE_FIELDS = text(
     WHERE EXISTS (
         SELECT 1
         FROM extracted_values v
-        JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+        JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
           AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -272,7 +272,7 @@ _TOP_GROUP = text(
                    WHERE i.customer_id = :customer_id AND i.document_id = v.document_id
                    AND i.check_status = 'failed') AS verified
         FROM extracted_values v
-        JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+        JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
           AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -300,7 +300,7 @@ _TOP_GROUP = text(
         SELECT v.document_id, v.record_key, (array_agg(v.id))[1] AS value_id,
                (array_agg(v.value_text))[1] AS name, bool_and(v.label = 'verified') AS verified
         FROM extracted_values v
-        JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+        JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
           AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -326,7 +326,7 @@ _TOP_GROUP = text(
         SELECT v.document_id, v.record_key, (array_agg(v.id))[1] AS value_id,
                bool_and(v.label = 'verified') AS verified
         FROM extracted_values v
-        JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+        JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
           AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -414,7 +414,7 @@ _FIGURES = text(
     ), tables AS (
         SELECT DISTINCT v.document_id, split_part(v.record_key, ':row:', 1) AS part, d.display_name
         FROM extracted_values v
-        JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+        JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
           AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -434,7 +434,7 @@ _FIGURES = text(
     ), invoiced AS (
         SELECT i.document_id, i.invoice_date, d.display_name
         FROM invoices i
-        JOIN documents d ON d.customer_id = i.customer_id AND d.id = i.document_id
+        JOIN visible_documents d ON d.customer_id = i.customer_id AND d.id = i.document_id
         WHERE i.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
           AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -562,7 +562,7 @@ _EXTREME_VALUE = text(
                EXISTS (SELECT 1 FROM totals x WHERE x.customer_id = :customer_id  -- reads like a total
                    AND x.document_id = v.document_id AND x.record_key = v.record_key) AS looks_total
         FROM extracted_values v
-        JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+        JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
           AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -589,7 +589,7 @@ _EXTREME_VALUE = text(
         SELECT v.document_id, v.record_key, (array_agg(v.id))[1] AS value_id,
                bool_and(v.label = 'verified') AS verified, (array_agg(v.value_date))[1] AS day
         FROM extracted_values v
-        JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+        JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
           AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -648,7 +648,7 @@ _COUNT_DOCUMENTS = text(
                    WHERE i.customer_id = :customer_id AND i.document_id = v.document_id
                    AND i.check_status = 'failed') AS verified
         FROM extracted_values v
-        JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+        JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
           AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -692,7 +692,7 @@ _COUNT_INVOICES = text(
         SELECT i.document_id, ev.value_id,
                i.label = 'verified' AND i.check_status = 'passed' AND coalesce(ev.verified, false) AS verified
         FROM invoices i
-        JOIN documents d ON d.customer_id = i.customer_id AND d.id = i.document_id
+        JOIN visible_documents d ON d.customer_id = i.customer_id AND d.id = i.document_id
         LEFT JOIN LATERAL (
             SELECT v.id AS value_id, v.label = 'verified' AS verified
             FROM extracted_values v
@@ -734,7 +734,7 @@ _VALUE_REFS = text(
                THEN 'needs_review' ELSE v.label END AS label,
            v.label_page_no, v.label_region
     FROM extracted_values v
-    JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+    JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
     WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
       AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
       AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt

@@ -41,6 +41,8 @@ export const QUALITY_TEXT = {
   handled: "Marked as handled.",
   reopened: "Opened again.",
   noReason: "No reason ticked.",
+  // PRD 7 (#602, question 4): the answer names a file this Admin can't see.
+  hidden: "Source not visible to you",
 } as const;
 
 const SHOW: { value: QualityStatus; label: string }[] = [{ value: "open", label: "Open" }, { value: "handled", label: "Handled" }];
@@ -310,12 +312,18 @@ function QualityCard({ item, status, onHandle }: { item: AnswerQualityItem; stat
           </button>
         </div>
       </div>
-      <div className={quality.body}>
-        <h4 className={quality.label}>Question</h4>
-        <p className={quality.text}>{item.question ?? "—"}</p>
-        <h4 className={quality.label}>Answer</h4>
-        <AnswerView message={answerMessage(item)} question={item.question} readOnly />
-      </div>
+      {item.answer.status === "no_access" ? (
+        <div className={quality.body}>
+          <p className={quality.text}>{QUALITY_TEXT.hidden}</p>
+        </div>
+      ) : (
+        <div className={quality.body}>
+          <h4 className={quality.label}>Question</h4>
+          <p className={quality.text}>{item.question ?? "—"}</p>
+          <h4 className={quality.label}>Answer</h4>
+          <AnswerView message={answerMessage(item)} question={item.question} readOnly />
+        </div>
+      )}
     </article>
   );
 }
