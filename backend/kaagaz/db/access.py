@@ -122,6 +122,54 @@ _SHARES = text(
 _GIVE = text("SELECT user_id, versions, added FROM kaagaz_give_file(:d, CAST(:users AS uuid[]))")
 _TAKE = text("SELECT kaagaz_take_file(:d, :u)")
 
+# PR 10b (#601): the reads.
+_AUDIENCE = text(
+    "SELECT a.user_id, u.display_name, a.management, a.head, a.member, a.named, a.given, a.held, a.everyone,"
+    " a.may_open_locked, a.sees FROM kaagaz_audience(:k, :i, :u) a"
+    " JOIN users u ON u.customer_id = :c AND u.id = a.user_id ORDER BY lower(u.display_name), u.id"
+)
+# The place of a file already found (the view, or kaagaz_admin_document for an Admin): ids only.
+_DOCUMENT_PLACE = text(
+    "SELECT department_id, private_folder_id FROM documents WHERE customer_id = :c AND id = :d"
+)
+_DEPARTMENT_LIST = text(
+    "SELECT f.id, f.name, f.department_only,"
+    " (SELECT count(*) FROM department_members m"
+    " WHERE m.customer_id = f.customer_id AND m.department_id = f.id)"
+    " AS members,"
+    " (SELECT coalesce(json_agg(json_build_object('id', u.id, 'name', u.display_name)"
+    " ORDER BY lower(u.display_name), u.id), '[]') FROM department_members m"
+    " JOIN users u ON u.customer_id = m.customer_id AND u.id = m.user_id"
+    " WHERE m.customer_id = f.customer_id AND m.department_id = f.id AND m.is_head) AS heads"
+    " FROM visible_folders f WHERE f.customer_id = :c AND f.parent_id IS NULL AND f.kind = 'department'"
+    " ORDER BY f.sort_order, lower(f.name), f.id"
+)
+_KEEPS = text(
+    "SELECT EXISTS (SELECT 1 FROM visible_folders WHERE customer_id = :c AND (department_only OR private))"
+)
+_MEMBERS_OF = text(
+    "SELECT u.id, u.display_name, m.is_head, m.added_at FROM department_members m"
+    " JOIN users u ON u.customer_id = m.customer_id AND u.id = m.user_id"
+    " WHERE m.customer_id = :c AND m.department_id = :d ORDER BY lower(u.display_name), u.id"
+)
+# The live files whose audience a wall changes (an Admin's preview: true totals, decision 20).
+_DEPARTMENT_FILES = text(
+    "SELECT count(*) FROM documents WHERE customer_id = :c AND department_id = :d"
+    " AND private_folder_id IS NULL AND held_for IS NULL AND deleted_at IS NULL AND is_current"
+)
+_FOLDER_FILES = text(
+    "SELECT count(*) FROM documents WHERE customer_id = :c AND folder_id = ANY(CAST(:f AS uuid[]))"
+    " AND held_for IS NULL AND deleted_at IS NULL AND is_current"
+)
+_NAMES = text(
+    "SELECT id, display_name FROM users WHERE customer_id = :c AND id = ANY(CAST(:u AS uuid[]))"
+    " ORDER BY lower(display_name), id"
+)
+_KEPT_FROM_ME = text(
+    "SELECT id, display_name, detected_type, uploader, created_at, version_no, locked"
+    " FROM kaagaz_kept_from_me(:f)"
+)
+
 
 def me(conn: Connection) -> tuple[bool, list[str]]:
     """The caller's Management and the departments they head (``/auth/me``, the Head checks)."""
@@ -281,3 +329,55 @@ def give(conn: Connection, document_id: str, user_ids: Sequence[str]) -> tuple[i
 def take(conn: Connection, document_id: str, user_id: str) -> int:
     """How many version rows went (every version, Trash too). Admins."""
     return int(conn.execute(_TAKE, {"d": document_id, "u": user_id}).scalar_one())
+
+
+def audience(
+    conn: Connection, customer_id: str, kind: str, target_id: str, user_id: str | None
+) -> Sequence[RowMapping]:
+    """``kaagaz_audience``'s rows with each person's name, by name: every active person (or only
+    ``user_id``, none when not of this organisation). An Admin, or the Head of its department."""
+    params = {"c": customer_id, "k": kind, "i": target_id, "u": user_id}
+    return conn.execute(_AUDIENCE, params).mappings().all()
+
+
+def document_place(conn: Connection, customer_id: str, document_id: str) -> tuple[str | None, str | None]:
+    """(department, private folder) ids of a file the route has already found."""
+    row = conn.execute(_DOCUMENT_PLACE, {"c": customer_id, "d": document_id}).one()
+    return (None if row[0] is None else str(row[0])), (None if row[1] is None else str(row[1]))
+
+
+def department_list(conn: Connection, customer_id: str) -> Sequence[RowMapping]:
+    """Every live department with Department only, its member count and its Heads, in tree order."""
+    return conn.execute(_DEPARTMENT_LIST, {"c": customer_id}).mappings().all()
+
+
+def keeps_files(conn: Connection, customer_id: str) -> bool:
+    """Whether a department is Department only or a folder private (the one-time card)."""
+    return bool(conn.execute(_KEEPS, {"c": customer_id}).scalar_one())
+
+
+def members_of(conn: Connection, customer_id: str, department_id: str) -> Sequence[RowMapping]:
+    return conn.execute(_MEMBERS_OF, {"c": customer_id, "d": department_id}).mappings().all()
+
+
+def department_files(conn: Connection, customer_id: str, department_id: str) -> int:
+    """The live files Department only decides for: the department's, outside private folders."""
+    return int(conn.execute(_DEPARTMENT_FILES, {"c": customer_id, "d": department_id}).scalar_one())
+
+
+def folder_files(conn: Connection, customer_id: str, folder_ids: Sequence[str]) -> int:
+    """The live files in these folders (a folder's subtree, for Private)."""
+    return int(conn.execute(_FOLDER_FILES, {"c": customer_id, "f": list(folder_ids)}).scalar_one())
+
+
+def names(conn: Connection, customer_id: str, user_ids: set[str]) -> list[dict[str, str]]:
+    """``[{id, name}]`` of these people, by name."""
+    if not user_ids:
+        return []
+    rows = conn.execute(_NAMES, {"c": customer_id, "u": sorted(user_ids)})
+    return [{"id": str(i), "name": str(n)} for i, n in rows]
+
+
+def kept_from_me(conn: Connection, folder_id: str) -> Sequence[RowMapping]:
+    """The names of the files in the folder the calling Admin can't see (``kaagaz_kept_from_me``)."""
+    return conn.execute(_KEPT_FROM_ME, {"f": folder_id}).mappings().all()

@@ -216,6 +216,11 @@ class Filters:
     actions: tuple[str, ...] = ()
     start: datetime | None = None
     end: datetime | None = None
+    # PRD 7 (#601): the person an entry is about; only an Admin's own access (details.self);
+    # only these kinds of action (the part before the dot).
+    subject_user_id: str | None = None
+    self_only: bool = False
+    kinds: tuple[str, ...] = ()
 
 
 Cursor = tuple[datetime, int]
@@ -223,7 +228,8 @@ Cursor = tuple[datetime, int]
 # The target document's own row (any version), for its name: NULL once deleted.
 _ENTRIES = (
     "SELECT a.id, a.action, a.actor_user_id, a.target_type, a.target_id, a.details, a.created_at,"
-    " a.folder_id, a.family_id, t.display_name AS document_name, t.version_no AS document_version_no,"
+    " a.folder_id, a.family_id, a.subject_user_id, t.display_name AS document_name,"
+    " t.version_no AS document_version_no,"
     " t.id IS NOT NULL AS document_exists"
     " FROM audit_log a"
     " LEFT JOIN documents t ON t.customer_id = a.customer_id AND t.id = CASE WHEN a.target_type = 'document'"
@@ -262,6 +268,9 @@ _IN_FOLDERS = " AND a.folder_id = ANY(CAST(:folders AS uuid[]))"
 _BY = " AND a.actor_user_id = CAST(:actor AS uuid)"
 _ON_DOCUMENT = " AND a.target_type = 'document' AND a.target_id = :document"
 _ACTIONS = " AND a.action = ANY(CAST(:actions AS text[]))"
+_ABOUT = " AND a.subject_user_id = CAST(:subject AS uuid)"
+_SELF = " AND a.details @> '{\"self\": true}'"
+_KINDS = " AND split_part(a.action, '.', 1) = ANY(CAST(:only_kinds AS text[]))"
 _FROM = " AND a.created_at >= :start"
 _TO = " AND a.created_at < :end"
 _BEFORE = " AND (a.created_at, a.id) < (CAST(:before_at AS timestamptz), CAST(:before_id AS bigint))"
@@ -290,6 +299,9 @@ def _where(filters: Filters, params: dict[str, Any]) -> str:
         (filters.actor_user_id is not None, _BY, "actor", filters.actor_user_id),
         (filters.document_id is not None, _ON_DOCUMENT, "document", filters.document_id),
         (bool(filters.actions), _ACTIONS, "actions", list(filters.actions)),
+        (filters.subject_user_id is not None, _ABOUT, "subject", filters.subject_user_id),
+        (filters.self_only, _SELF, "self", None),
+        (bool(filters.kinds), _KINDS, "only_kinds", list(filters.kinds)),
         (filters.start is not None, _FROM, "start", filters.start),
         (filters.end is not None, _TO, "end", filters.end),
     )
@@ -352,7 +364,8 @@ def names(conn: Connection, customer_id: str, rows: Sequence[RowMapping]) -> Nam
         details = row["details"] if isinstance(row["details"], dict) else {}
         owners = (details.get("from"), details.get("to")) if row["action"] == "document.owner_change" else ()
         subject = row["target_id"] if row["target_type"] == "user" else None
-        users.update(filter(None, map(_uuid, (row["actor_user_id"], *owners, subject))))
+        about = row["subject_user_id"]  # PRD 7 (#601)
+        users.update(filter(None, map(_uuid, (row["actor_user_id"], *owners, subject, about))))
         folders.update(
             filter(None, map(_uuid, (row["folder_id"], details.get("folder_id"), details.get("parent_id"))))
         )

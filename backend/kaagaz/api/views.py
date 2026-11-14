@@ -343,6 +343,8 @@ def document_summary(
         "created_at": iso(row["created_at"]),
         "uploaded_by_name": row["uploaded_by_name"],
         "folder_id": None if row["folder_id"] is None else str(row["folder_id"]),
+        # PRD 7 (#601): in a folder the person can't see (folder_id null): "Shared with you".
+        "shared_with_you": bool(row["in_a_folder"]) and row["folder_id"] is None,
         "tags": [tag(each) for each in tags],
         "deleted_at": None if row["deleted_at"] is None else iso(row["deleted_at"]),
         "version_no": int(row["version_no"]),
@@ -1208,7 +1210,8 @@ def audit_entry(row: RowMapping, names: audit.Names = audit.NO_NAMES, *, full: b
     DELETED_DOCUMENT. ``full`` (the admin's log): every detail but money; otherwise only
     ``audit.SHOWN_DETAILS``. The ids in details come with their names: ``folder_path``,
     ``parent_path``, and ``from_name`` and ``to_name`` for an owner change. An account event
-    (a ``user`` target) names the person it is about: ``subject_name`` (issue 375)."""
+    (a ``user`` target) names the person it is about: ``subject_name`` (issue 375); PRD 7 (#601):
+    so does an entry about a person (``subject_id``, an access change)."""
     raw = row["details"] if isinstance(row["details"], dict) else {}
     # Older org.models_set rows hold the operator's budget_usd: never shown to the org.
     if full:
@@ -1222,7 +1225,8 @@ def audit_entry(row: RowMapping, names: audit.Names = audit.NO_NAMES, *, full: b
         if row["action"] == "document.owner_change":
             for key in ("from", "to"):
                 details[f"{key}_name"] = names.users.get(str(details.get(key)))
-    actor, folder_id = row["actor_user_id"], row["folder_id"]
+    actor, folder_id, about = row["actor_user_id"], row["folder_id"], row.get("subject_user_id")
+    subject = row["target_id"] if row["target_type"] == "user" else about
     document = None
     if row["target_type"] == "document":
         exists = bool(row["document_exists"])
@@ -1239,7 +1243,8 @@ def audit_entry(row: RowMapping, names: audit.Names = audit.NO_NAMES, *, full: b
         "actor_name": None if actor is None else names.users.get(str(actor)),
         "target_type": row["target_type"],
         "target_id": row["target_id"],
-        **({"subject_name": names.users.get(str(row["target_id"]))} if row["target_type"] == "user" else {}),
+        "subject_id": None if about is None else str(about),  # PRD 7 (#601): whom it is about
+        **({"subject_name": names.users.get(str(subject))} if subject is not None else {}),
         "family_id": None if row["family_id"] is None else str(row["family_id"]),
         "document": document,
         "folder": None

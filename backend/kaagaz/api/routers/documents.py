@@ -392,6 +392,7 @@ def list_documents(
     doc_date_from: IsoDay = None,
     doc_date_to: IsoDay = None,
     has_newer_version: bool = False,
+    shared: bool = False,  # PRD 7 (#601): Shared with me
     sort: SortParam = "created_at",
     order: Literal["asc", "desc"] = "desc",
 ) -> dict[str, Any]:
@@ -452,6 +453,7 @@ def list_documents(
             doc_date_from=dated_from,
             doc_date_to=dated_to,
             has_newer_version=has_newer_version,
+            shared=shared,
             sort=sort,
             descending=order == "desc",
         )
