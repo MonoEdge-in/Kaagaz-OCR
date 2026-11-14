@@ -255,13 +255,12 @@ def _is_route(decorator: ast.expr) -> bool:
 
 def routes() -> dict[tuple[str, str], tuple[set[tuple[str, str]], bool]]:
     """Each route of kaagaz/api (a function under ``@<router>.get`` and the like) to what it reaches
-    at any depth, and whether it asks for an admin session on its way through kaagaz/api: its
-    router's dependency (the decorator names the router), an ``AdminSession`` or
-    ``require_admin_session``, itself or in a helper it calls. A name-based rule: one named on one
-    branch only counts too."""
+    at any depth, and whether it asks for an admin session itself: its router's dependency (the
+    decorator names the router), or an ``AdminSession`` or ``require_admin_session`` named in the
+    route (not in a helper, which may have a branch for others). A name-based rule: one named on
+    one branch of the route counts too."""
     trees = _parse()
     edges = _graph(trees)
-    api = {key for key in edges if key[0].startswith("api/")}
     found = {}
     for rel, tree in trees.items():
         if not rel.startswith("api/"):
@@ -271,5 +270,10 @@ def routes() -> dict[tuple[str, str], tuple[set[tuple[str, str]], bool]]:
                 map(_is_route, node.decorator_list)
             ):
                 key = (rel, node.name)
-                found[key] = (_closure(edges, {key}), bool(_closure(edges, {key}, api) & _ADMIN_SESSION))
+                own = edges.get(key, set())
+                routers = {(rel, d.func.value.id) for d in node.decorator_list if _is_route(d)}  # type: ignore[attr-defined]
+                admin = bool(own & _ADMIN_SESSION) or any(
+                    edges.get(r, set()) & _ADMIN_SESSION for r in routers
+                )
+                found[key] = (_closure(edges, {key}), admin)
     return found

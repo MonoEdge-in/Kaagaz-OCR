@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from kaagaz.api.routers import access as access_router
 from kaagaz.db import audit
 from kaagaz.db.engine import Database
 from tests.db_support import insert_folder
@@ -132,6 +133,12 @@ def test_every_read_answers_by_role_and_a_hidden_id_as_a_random_one(db: Database
         assert _code(_get(who[name], folder.format(f["salaries"]))) == (403, "forbidden"), name
     for name in ("head", "member", "plain", "management"):  # a Head of another department too
         assert _code(_get(who[name], doc.format(files["sales"]))) == (403, "forbidden"), name
+    _owner(db, "INSERT INTO document_shares (customer_id, document_id, user_id) VALUES (:c, :d, :u)",
+           {"c": org.c, "d": files["fin"], "u": who["sales_head"].user_id})  # fmt: skip
+    assert _code(_get(who["sales_head"], doc.format(files["fin"]))) == (
+        403,
+        "forbidden",
+    )  # given, not its Head
     for name in ("member", "plain", "sales_head"):  # hidden: Salaries, and Finance for two of them
         _hidden_like_random(who[name], doc.format(files["sal"]), doc.format(random_doc))
         _hidden_like_random(who[name], folder.format(f["salaries"]), folder.format(random_folder))
@@ -263,6 +270,11 @@ def test_the_previews_name_who_loses_and_who_gains_as_the_write_does(db: Databas
     }
     body = _get(admin, f"/api/folders/{f['loose']}/private/preview?on=true")[1]
     assert _named(body, "losing") == everyone_but_management and body["files"] == 1
+    loose = f"/api/folders/{f['loose']}/private/preview"
+    body = _get(admin, f"{loose}?on=true&named={p['member']}&named={p['plain']}")[1]
+    assert _named(body, "losing") == everyone_but_management - {p["member"], p["plain"]}
+    assert _code(_get(admin, f"{loose}?on=true&named={p['off']}")) == (409, "disabled")
+    assert _code(_get(admin, f"{loose}?on=false&named={p['member']}")) == (400, "bad_request")
     with db.customer(org.c) as conn:
         inside = insert_folder(conn, org.c, first, "Payslips", f["salaries"])
     assert _code(_get(admin, f"/api/folders/{inside}/private/preview?on=true")) == (409, "inside_private")
@@ -272,7 +284,9 @@ def test_the_previews_name_who_loses_and_who_gains_as_the_write_does(db: Databas
 # --- the names list (route 20) ------------------------------------------------------------------
 
 
-def test_kept_from_me_names_the_files_and_nothing_inside_them(db: Database) -> None:
+def test_kept_from_me_names_the_files_and_nothing_inside_them(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
     org = _walled(Api(db))
     admin, f = org.people["admin"], org.folders
     status, body = _get(admin, f"/api/folders/{f['finance']}/kept-from-me")
@@ -290,6 +304,9 @@ def test_kept_from_me_names_the_files_and_nothing_inside_them(db: Database) -> N
     [locked] = _get(admin, f"/api/folders/{f['sales']}/kept-from-me")[1]["items"]
     assert (locked["name"], locked["locked"]) == ("locked.pdf", True)
     assert _get(admin, f"/api/folders/{f['loose']}/kept-from-me")[1] == {"count": 0, "items": []}
+    monkeypatch.setattr(access_router, "MAX_KEPT", 1)
+    body = _get(admin, f"/api/folders/{f['finance']}/kept-from-me")[1]
+    assert (body["count"], [item["name"] for item in body["items"]]) == (2, ["fin.pdf"])
 
 
 # --- activity (routes 21 and 22) ----------------------------------------------------------------
@@ -332,29 +349,61 @@ def test_the_admin_log_filters_by_whom_it_is_about_and_shows_self_given_first(db
 
 
 def test_management_sees_access_activity_with_a_file_it_cant_see_unnamed(db: Database) -> None:
-    org = _walled(Api(db))
-    admin, p, files = org.people["admin"], _ids(org), org.files
-    for file in ("locked", "sales"):  # Management can't open the lock; it sees Sales
-        assert _call(admin, "PUT", f"/api/documents/{files[file]}/shares/{p['member']}", {})[0] == 200
+    api = Api(db)
+    org = _walled(api)
+    admin, p, files, f = org.people["admin"], _ids(org), org.files, org.folders
+    older = files["locked"]  # Management can't open the lock: its newer version is locked too
+    _owner(db, "UPDATE documents SET is_current = false WHERE id = :d", {"d": older})
+    newer = api.add_document(
+        org.c, name="locked v2.pdf", folder_id=f["sales"], family_id=older, version_no=2,
+        uploaded_by=p["admin"],
+    )  # fmt: skip
+    _owner(
+        db,
+        "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d",
+        {"u": p["admin"], "d": newer},
+    )
+    for file in (older, files["sales"]):  # an older version's id; a file Management sees
+        assert _call(admin, "PUT", f"/api/documents/{file}/shares/{p['member']}", {})[0] == 200
+    _owner(db, "UPDATE documents SET deleted_at = now(), deleted_by = :u WHERE family_id = :f",
+           {"u": p["admin"], "f": older})  # fmt: skip
+    assert _call(admin, "DELETE", f"/api/documents/{older}/shares/{p['member']}")[0] == 204  # in Trash
     with db.customer(org.c) as conn:
         audit.record(conn, org.c, actor_user_id=p["admin"], action="document.view", target_type="document",
                      target_id=files["sales"])  # fmt: skip
     status, body = _get(org.people["management"], "/api/access/activity")
     actions = [item["action"] for item in body["items"]]
     assert status == 200 and all(action.startswith("access.") for action in actions)  # not the view
-    seen, hidden = [item for item in body["items"] if item["action"] == "access.file_give"]
-    assert hidden["document"] == {
-        "id": None,
-        "name": "a file you can't see",
-        "version_no": None,
-        "deleted": False,
-    }
-    assert (hidden["target_id"], hidden["family_id"]) == (None, None)
-    assert files["locked"] not in str(body) and "locked.pdf" not in str(body)
-    assert (seen["document"]["name"], seen["subject_id"]) == ("sales.pdf", p["member"])
+    taken, seen, given = [item for item in body["items"] if item["action"].startswith("access.file_")]
+    assert (taken["action"], seen["action"], given["action"]) == (
+        "access.file_take",
+        "access.file_give",
+        "access.file_give",
+    )
+    for hidden in (taken, given):
+        assert hidden["document"] == {
+            "id": None,
+            "name": "a file you can't see",
+            "version_no": None,
+            "deleted": False,
+        }
+        assert (hidden["target_id"], hidden["family_id"], hidden["folder"], hidden["details"]) == (
+            None,
+            None,
+            None,
+            {},
+        )
+        assert f["sales"] not in str(hidden)
+    for leak in (older, newer, "locked.pdf", "locked v2.pdf"):
+        assert leak not in str(body), leak
+    assert (seen["document"]["name"], seen["subject_id"], seen["folder"]) == (
+        "sales.pdf",
+        p["member"],
+        {"id": f["sales"], "path": "Sales"},  # a file Management sees keeps its place
+    )
     items = _get(admin, "/api/access/activity")[1]["items"]
     names = [item["document"]["name"] for item in items if item["document"] is not None]
-    assert names == ["sales.pdf", "locked.pdf"]  # an Admin: every name (decision 20)
+    assert names == ["locked.pdf", "sales.pdf", "locked.pdf"]  # an Admin: every name (decision 20)
 
 
 # --- Shared with me and "Shared with you" (route 23, lead decision 3) ---------------------------
@@ -380,4 +429,13 @@ def test_shared_with_me_and_a_hidden_folder_never_named(db: Database) -> None:
     assert (listed[files["top"]]["folder_id"], listed[files["top"]]["shared_with_you"]) == (None, False)
     assert _call(admin, "PUT", f"/api/documents/{files['sal']}/shares/{member.user_id}", {})[0] == 200
     [sal] = _get(member, "/api/documents?shared=true")[1]["items"]
-    assert (sal["folder_id"], sal["shared_with_you"], sal["department"]["name"]) == (None, True, "Finance")
+    # Changed on purpose (#601 review): a hidden folder names no department either.
+    assert (sal["folder_id"], sal["shared_with_you"], sal["department"]) == (None, True, None)
+    for url in (f"department_id={f['finance']}", f"folder_id={f['finance']}&include_subfolders=true"):
+        ids = [item["id"] for item in _get(member, f"/api/documents?limit=100&{url}")[1]["items"]]
+        assert files["fin"] in ids and files["sal"] not in ids, url  # never placed below Finance
+    _owner(db, "UPDATE documents SET deleted_at = now(), deleted_by = :u WHERE id = :d",
+           {"u": admin.user_id, "d": files["given"]})  # fmt: skip
+    assert _get(plain, "/api/documents?shared=true")[1] == {"items": [], "total": 0}
+    trashed = _get(plain, "/api/documents?shared=true&trashed=true")[1]["items"]
+    assert [item["id"] for item in trashed] == [files["given"]]
