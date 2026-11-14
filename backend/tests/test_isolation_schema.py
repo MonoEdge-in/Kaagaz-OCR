@@ -350,6 +350,10 @@ OWNER_RIGHTS = {
     "kaagaz_whatsapp_end_number": ("bigint", EMPTY_PATH),
     "kaagaz_whatsapp_end_link": ("boolean", EMPTY_PATH),
     "kaagaz_whatsapp_sweep": ("bigint", EMPTY_PATH),
+    # Changed on purpose (W3): whether a connect code may go to a number (a word), and the second
+    # way's "Link <code>" from the number (yes or no).
+    "kaagaz_whatsapp_may_send": ("text", EMPTY_PATH),
+    "kaagaz_whatsapp_phone_code": ("boolean", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"
