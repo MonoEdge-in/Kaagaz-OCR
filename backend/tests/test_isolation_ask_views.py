@@ -11,6 +11,7 @@ of a hidden file, not as a row, a count, a weight or a slot before a LIMIT, and 
 finds fin."""
 
 import json
+import re
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -1046,7 +1047,9 @@ def test_red_team_nothing_hidden_reaches_a_prompt_or_a_reply(db: Database, ask: 
         stream.EVENTS.reset(token)
     texts = replies + events + ([] if model is None else model.prompts + model.embedded)
     seen = "\n".join(texts).casefold()
-    assert [m for m in _hidden_marks(ask) if m.casefold() in seen] == []
+    # Whole words only: an amount such as 7003 may sit inside a visible piece's random id.
+    marks = [re.escape(m.casefold()) for m in _hidden_marks(ask)]
+    assert [m for m in marks if re.search(f"(?<![0-9a-z]){m}(?![0-9a-z])", seen)] == []
     assert any(ask.id("sales") in reply for reply in replies)  # the visible file does answer
 
 
