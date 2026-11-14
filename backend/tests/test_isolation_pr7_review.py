@@ -251,7 +251,8 @@ def test_verify_all_never_verifies_a_value_of_a_hidden_file(db: Database) -> Non
     org = _walled(api)
     values = _reviewable(api, org)
     reply = org.people["plain"].client.post("/api/review/verify-all", json={}, headers=CSRF)
-    assert reply.status_code == 200, reply.text
+    # The hidden value is never even picked (nor locked): not one left out, as for a queue of one.
+    assert (reply.status_code, reply.json()) == (200, {"verified": 1, "skipped": [], "left": 0}), reply.text
     label = "SELECT label FROM extracted_values WHERE id = :v"
     assert _owner(db, label, {"v": values["fin"]}) == [("needs_review",)]
     assert _owner(db, label, {"v": values["sales"]}) != [("needs_review",)]  # the visible one was
