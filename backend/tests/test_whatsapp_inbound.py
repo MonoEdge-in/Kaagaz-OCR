@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from kaagaz.adapters import whatsapp as whatsapp_adapter
-from kaagaz.adapters.whatsapp import MetaWhatsApp, WhatsAppError
+from kaagaz.adapters.whatsapp import MetaWhatsApp, WhatsAppError, masked_email
 from kaagaz.api.secret_box import SecretBoxError
 from kaagaz.channel import inbound
 from kaagaz.channel.numbers import code_hash, e164, new_code, number_hash, open_number, seal
@@ -225,7 +225,9 @@ def test_the_templates_and_buttons_are_sent_as_meta_takes_them() -> None:
     with running_fake() as fake:
         sender = MetaWhatsApp(fake.url, NUMBER_ID, TOKEN)
         sender.send_code(NUMBER, "123456")
-        sender.send_welcome(NUMBER, "Priya\nSharma", "Shree Ganesh   CA Associates", "link-1")
+        email = masked_email("priya.k@gmail.com")
+        assert email == "p" + "\N{BULLET}" * 3 + "@gmail.com"
+        sender.send_welcome(NUMBER, "Priya\nSharma", email, "Shree Ganesh   CA Associates", "link-1")
         sender.send_disconnected(NUMBER)
         sender.send_buttons(NUMBER, "Disconnect?", [("disconnect_yes", "Disconnect"), ("keep", "Keep it")])
         bodies = [body for _, _, body in fake.requests]
@@ -247,6 +249,7 @@ def test_the_templates_and_buttons_are_sent_as_meta_takes_them() -> None:
     assert welcome["template"]["name"] == "kaagaz_welcome"
     assert welcome["template"]["components"] == [
         {"type": "body", "parameters": [{"type": "text", "text": "Priya Sharma"},
+                                        {"type": "text", "text": email},
                                         {"type": "text", "text": "Shree Ganesh CA Associates"}]},
         {"type": "button", "sub_type": "quick_reply", "index": "0",
          "parameters": [{"type": "payload", "payload": "start"}]},

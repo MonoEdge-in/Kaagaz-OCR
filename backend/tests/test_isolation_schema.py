@@ -219,7 +219,7 @@ UPDATES_0084 = {"department_members": {"is_head"}}
 FROM_0088 = {
     "whatsapp_org_settings": (True, True, False, False),
     "whatsapp_links": (True, True, False, False),
-    "whatsapp_link_codes": (True, True, False, False),
+    "whatsapp_link_codes": (True, True, False, True),  # Changed on purpose (W3): a code used is deleted
     "whatsapp_messages": (True, True, False, False),
     "whatsapp_pickers": (True, True, False, True),
 }

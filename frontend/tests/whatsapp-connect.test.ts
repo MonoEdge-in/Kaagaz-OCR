@@ -21,8 +21,9 @@ import {
   TURN_ON_TEXT,
   formChanged,
   formOf,
+  tickNeedsPassword,
   turnOnTitle,
-  whatsappCell,
+  whatsappCellState,
   withRole,
 } from "@/components/admin/whatsappSettings";
 import type { WhatsAppAdmin } from "@/lib/types";
@@ -113,6 +114,15 @@ describe("the Admin's switches", () => {
     expect(withRole(withRole(form, "admin", true), "member", false).roles).toEqual(["reviewer", "admin"]);
   });
 
+  it("ask for the password when Admins or Management are newly ticked", () => {
+    const form = formOf(SAVED);
+    expect(tickNeedsPassword(SAVED, form)).toBe(false);
+    expect(tickNeedsPassword(SAVED, withRole(form, "admin", true))).toBe(true);
+    expect(tickNeedsPassword(SAVED, { ...form, management: true })).toBe(true);
+    expect(tickNeedsPassword({ ...SAVED, management: true }, { ...form, management: true })).toBe(false);
+    expect(tickNeedsPassword(SAVED, { ...form, voice: false })).toBe(false);
+  });
+
   it("know when the form changed", () => {
     const form = formOf(SAVED);
     expect(formChanged(SAVED, form)).toBe(false);
@@ -122,9 +132,11 @@ describe("the Admin's switches", () => {
     expect(formChanged(SAVED, withRole(withRole(form, "admin", true), "admin", false))).toBe(false);
   });
 
-  it("show a connected person by the last 4 digits and since when", () => {
+  it("show the Users tab's cell while loading, after a failure, and once loaded", () => {
     const person = { user_id: "u1", last4: "3210", linked_at: "2026-11-14T06:00:00+00:00", last_used_at: null };
-    expect(whatsappCell(person)).toBe("••••3210 since 14 Nov 2026");
-    expect(whatsappCell(undefined)).toBe("");
+    expect(whatsappCellState("loading", "u1")).toEqual({ kind: "loading" });
+    expect(whatsappCellState("failed", "u1")).toEqual({ kind: "failed" }); // never "Not connected"
+    expect(whatsappCellState([person], "u1")).toEqual({ kind: "connected", text: "••••3210 since 14 Nov 2026" });
+    expect(whatsappCellState([person], "u2")).toEqual({ kind: "none" });
   });
 });

@@ -8,9 +8,11 @@ screen). Disconnect. A number not connected told once a day, BLOCK, and WhatsApp
 Admin's switches (the password to turn it on, the roles and the extra ticks, audited, emailed), who is
 connected, and the Admin's Disconnect."""
 
+import threading
 import urllib.parse
 import uuid
 from collections.abc import Iterator
+from datetime import datetime, timedelta
 from typing import Any
 
 import httpx2 as httpx
@@ -24,6 +26,7 @@ from kaagaz.api.routers.whatsapp import GO_BACK
 from kaagaz.api.routers.whatsapp_account import NUMBER_TAKEN
 from kaagaz.channel.loop import NOT_CONNECTED
 from kaagaz.channel.numbers import number_hash
+from kaagaz.db import google_rules
 from kaagaz.db import whatsapp as wa
 from kaagaz.db.engine import Database
 from tests.oidc_fake import FakeGoogle, google_settings, use_google
@@ -161,7 +164,13 @@ def test_connecting_a_number_the_bot_messaging_first(db: Database, fake: WhatsAp
     assert connected.json()["state"] == "connected" and connected.json()["last4"] == number[-4:]
     assert world.to(number)[1] == (
         "kaagaz_welcome",
-        ["Test member", "Shree Ganesh CA Associates", "start", f"not_me:{link}"],
+        [
+            "Test member",
+            f"m•••@{member.email.split('@')[1]}",
+            "Shree Ganesh CA Associates",
+            "start",
+            f"not_me:{link}",
+        ],
     )
     audited = _owner(
         db,
@@ -389,40 +398,92 @@ def test_disconnect_from_the_account_page(db: Database, fake: WhatsAppFake) -> N
 # --- the second way ---------------------------------------------------------------------------------
 
 
-def test_the_second_way_link_sent_from_the_phone_then_confirmed_on_the_screen(
+def _phone_state(signed: Signed) -> str:
+    return str(signed.client.get("/api/whatsapp/codes/phone").json()["state"])
+
+
+def _phone_confirm(signed: Signed) -> httpx.Response:
+    return signed.client.post("/api/whatsapp/codes/phone/confirm", headers=CSRF)
+
+
+def _other(code: str) -> str:
+    return "000000" if code != "000000" else "111111"
+
+
+def _second_way_connects(world: _World, member: Signed, number: str, shown: dict[str, Any]) -> None:
+    """The screen's own steps once it shows the second way: the code and its link, "Link <code>" from
+    the phone (a wrong one, and the right one from another number, change nothing), then Connect."""
+    code = shown["code"]
+    assert shown == {
+        "last4": number[-4:],
+        "sent": False,
+        "code": code,
+        "link": f"https://wa.me/{BUSINESS_NUMBER}?text=Link%20{code}",
+    }
+    assert _phone_state(member) == "waiting" and _error(_phone_confirm(member))[:2] == (409, "not_confirmed")
+    world.from_phone(new_number(), f"Link {code}")  # the right code from another number
+    world.from_phone(number, f"Link {_other(code)}")  # one wrong try
+    assert _phone_state(member) == "waiting"
+    world.from_phone(number, f"  link {code} ")
+    assert _phone_state(member) == "confirmed" and world.to(number)[-1] == GO_BACK
+    connected = _phone_confirm(member)
+    assert connected.json()["state"] == "connected" and world.live(number)
+    link = world.link_of(number)
+    # Inside the 24 hours the phone just opened: the welcome as a text with the same buttons.
+    body, buttons = world.to(number)[-1]
+    assert body.startswith("Connected to Kaagaz as Test member (m•••@example.test) at ")
+    assert buttons == ["start", f"not_me:{link}"]
+    assert _owner(
+        world.db, "SELECT count(*) FROM whatsapp_messages WHERE user_id = :u", {"u": member.user_id}
+    ) == [(0,)]
+    assert _owner(
+        world.db, "SELECT count(*) FROM whatsapp_link_codes WHERE user_id = :u", {"u": member.user_id}
+    ) == [(0,)]  # spent: every code of theirs, numbers and all
+    assert _phone_state(member) == "expired" and _error(_phone_confirm(member))[0] == 400
+
+
+def test_a_code_meta_refuses_starts_the_second_way_in_the_same_reply(
     db: Database, fake: WhatsAppFake
 ) -> None:
     world = _World(db, fake)
     member = world.person()
     number = new_number()
-    shown = world.proved_ask(member, number, "phone").json()
-    code = shown["code"]
-    assert shown == {
-        "last4": number[-4:],
-        "code": code,
-        "link": f"https://wa.me/{BUSINESS_NUMBER}?text=Link%20{code}",
-    }
-    assert world.to(number) == []  # nothing goes to the number this way
+    fake.failures = [400]
+    _second_way_connects(world, member, number, world.proved_ask(member, number).json())
 
-    def state() -> str:
-        return str(member.client.get("/api/whatsapp/codes/phone").json()["state"])
 
-    def confirm() -> httpx.Response:
-        return member.client.post("/api/whatsapp/codes/phone/confirm", headers=CSRF)
+def test_a_number_that_said_block_gets_no_code_and_the_same_reply_as_a_refusal(
+    db: Database, fake: WhatsAppFake
+) -> None:
+    world = _World(db, fake)
+    number = new_number()
+    world.from_phone(number, "BLOCK")
+    member = world.person()
+    shown = world.proved_ask(member, number).json()
+    assert world.to(number) == []  # never messaged
+    counted = "SELECT count(*) FROM whatsapp_link_codes WHERE user_id = :u AND via = 'sent'"
+    assert _owner(db, counted, {"u": member.user_id}) == [(1,)]  # counted, as a refused one is
+    _second_way_connects(world, member, number, shown)
+    blocked = "SELECT blocked_at IS NULL FROM whatsapp_unknown_numbers WHERE phone_hash = :h"
+    assert _owner(db, blocked, {"h": number_hash(NUMBER_KEY, number)}) == [(True,)]  # its owner wrote: lifted
 
-    assert state() == "waiting" and _error(confirm())[:2] == (409, "not_confirmed")
-    world.from_phone(new_number(), f"Link {code}")  # the right code from another number
-    world.from_phone(number, f"Link {'000000' if code != '000000' else '111111'}")  # one wrong try
-    assert state() == "waiting" and world.to(number) == []
-    world.from_phone(number, f"  link {code} ")
-    assert state() == "confirmed" and world.to(number) == [GO_BACK]
-    connected = confirm()
-    assert connected.json()["state"] == "connected" and world.live(number)
-    assert world.to(number)[1][0] == "kaagaz_welcome"
-    assert _owner(db, "SELECT count(*) FROM whatsapp_messages WHERE user_id = :u", {"u": member.user_id}) == [
-        (0,)
-    ]
-    assert state() == "expired" and _error(confirm())[0] == 400
+
+def test_didnt_get_it_only_after_the_bots_code_to_the_same_number(db: Database, fake: WhatsAppFake) -> None:
+    world = _World(db, fake)
+    member = world.person()
+    number = new_number()
+    assert world.prove(member).status_code == 200
+    assert _error(world.ask(member, number, "phone"))[:2] == (409, "send_first")  # never first (decision 9)
+    assert world.ask(member, number).json()["sent"] is True
+    assert _error(world.ask(member, new_number(), "phone"))[:2] == (409, "send_first")  # another number
+    _owner(db, "UPDATE whatsapp_link_codes SET created_at = created_at - interval '11 minutes',"
+               " expires_at = expires_at - interval '11 minutes' WHERE user_id = :u",
+           {"u": member.user_id})  # fmt: skip
+    assert _error(world.ask(member, number, "phone"))[:2] == (409, "send_first")  # its 10 minutes are over
+    world.ask(member, number)
+    shown = world.ask(member, number, "phone").json()
+    assert shown["sent"] is False and world.to(number)[-1][0] == "kaagaz_connect_code"
+    _second_way_connects(world, member, number, shown)
 
 
 def test_the_second_ways_code_takes_five_wrong_tries_from_the_number_then_none(
@@ -431,29 +492,68 @@ def test_the_second_ways_code_takes_five_wrong_tries_from_the_number_then_none(
     world = _World(db, fake)
     member = world.person()
     number = new_number()
-    code = world.proved_ask(member, number, "phone").json()["code"]
+    fake.failures = [400]
+    code = world.proved_ask(member, number).json()["code"]
     for wrong in ("000000", "111111", "222222", "333333", "444444", "555555"):
         if wrong != code:
             world.from_phone(number, f"Link {wrong}")
     world.from_phone(number, f"Link {code}")
-    assert member.client.get("/api/whatsapp/codes/phone").json()["state"] == "waiting"
+    assert _phone_state(member) == "waiting"
 
 
-def test_a_number_that_said_block_is_sent_no_code(db: Database, fake: WhatsAppFake) -> None:
+def test_link_matches_the_number_and_the_code_not_only_the_newest(db: Database, fake: WhatsAppFake) -> None:
+    """Two people asked for the second way for one number: each one's code works for its own."""
     world = _World(db, fake)
     number = new_number()
-    world.from_phone(number, "BLOCK")
-    member = world.person()
-    assert world.proved_ask(member, number).json() == {"last4": number[-4:], "sent": False}
-    assert world.to(number) == []
-    assert "code" in world.ask(member, number, "phone").json()  # the second way: the phone's owner acts
+    first, second = world.person(), world.person()
+    fake.failures = [400, 400]
+    older = world.proved_ask(first, number).json()["code"]
+    world.proved_ask(second, number)
+    world.from_phone(number, f"Link {older}")
+    assert _phone_state(first) == "confirmed" and _phone_state(second) == "waiting"
 
 
-def test_a_code_meta_refuses_offers_the_second_way(db: Database, fake: WhatsAppFake) -> None:
+def test_the_days_five_count_only_codes_the_bot_was_asked_to_send(db: Database, fake: WhatsAppFake) -> None:
+    world = _World(db, fake)
+    number = new_number()
+    fake.failures = [400] * 4  # each of these four makes a phone code too
+    for _ in range(5):
+        assert world.proved_ask(world.person(), number).status_code == 200
+    assert _error(world.proved_ask(world.person(), number))[0] == 429
+
+
+def test_a_welcome_meta_refuses_ends_the_new_connection(db: Database, fake: WhatsAppFake) -> None:
+    """It never fails open: no connection is left that its phone never heard of."""
     world = _World(db, fake)
     member = world.person()
-    fake.failures = [400]
-    assert world.proved_ask(member, new_number()).json()["sent"] is False
+    number = new_number()
+    world.proved_ask(member, number)
+    fake.failures = [400]  # the welcome
+    reply = world.verify(member, world.fake.code_to(number))
+    assert _error(reply)[:2] == (502, "welcome_not_sent")
+    assert not world.live(number) and world.me(member)["state"] == "none"
+    ended = _owner(db, "SELECT end_reason FROM whatsapp_links WHERE user_id = :u", {"u": member.user_id})
+    assert ended == [("unwelcomed",)]
+
+
+def test_one_request_for_codes_at_a_time_a_person(db: Database, fake: WhatsAppFake) -> None:
+    """Three an hour holds when requests for different numbers come at once: the second waits for the
+    first's commit, then counts it."""
+    world = _World(db, fake)
+    member = world.person()
+    assert world.prove(member).status_code == 200
+    result: list[httpx.Response] = []
+    with world.api.app_db.user(member.customer_id, member.user_id) as held:
+        wa.lock_codes(held, member.user_id)
+        waiting = threading.Thread(target=lambda: result.append(world.ask(member, new_number())))
+        waiting.start()
+        waiting.join(1.0)
+        assert waiting.is_alive()  # held by the lock
+        for _ in range(3):
+            wa.add_code(held, member.customer_id, member.user_id, number_hash(NUMBER_KEY, new_number()),
+                        "v1:x", b"x" * 32, "sent")  # fmt: skip
+    waiting.join(10)
+    assert _error(result[0])[0] == 429
 
 
 # --- numbers with no connection, BLOCK, and WhatsApp's owner change -------------------------------------
@@ -492,6 +592,12 @@ def test_block_from_a_connected_number_ends_it(db: Database, fake: WhatsAppFake)
     assert world.to(number) == []  # blocked: never told
 
 
+def _owner_change(world: _World, number: str, kind: str, sent_at: datetime) -> None:
+    notice = {**message(number, sent_at), "type": "system", "system": {"body": "changed", "type": kind}}
+    del notice["text"]
+    assert post(world.api.client(), delivery(notice)).status_code == 200
+
+
 @pytest.mark.parametrize(
     "kind", ["customer_changed_number", "user_changed_number", "customer_identity_changed"]
 )
@@ -503,17 +609,35 @@ def test_whatsapps_owner_change_ends_the_connection_in_every_organisation(
     person, _ = world.api.add_user(customer, "member")
     number = new_number()
     link = connect(db, customer, person, number)
-    notice = {
-        **message(number, world.api.clock()),
-        "type": "system",
-        "system": {"body": "changed", "type": kind},
-    }
-    del notice["text"]
-    assert post(world.api.client(), delivery(notice)).status_code == 200
+    sent_at = world.api.clock() - timedelta(hours=25)  # late, past the 24 hours: still heard
+    _owner(
+        db,
+        "UPDATE whatsapp_links SET linked_at = :t WHERE id = :l",
+        {"t": sent_at - timedelta(hours=1), "l": link},
+    )
+    _owner_change(world, number, kind, sent_at)
     assert _ended(db, link) == ("number_changed",)
     assert _owner(db, "SELECT count(*) FROM whatsapp_messages WHERE link_id = :l", {"l": link}) == [(0,)]
     world.from_phone(number, "hello")
     assert world.to(number) == [NOT_CONNECTED]
+
+
+def test_a_connection_made_after_an_owner_change_outlives_its_late_notice(
+    db: Database, fake: WhatsAppFake
+) -> None:
+    world = _World(db, fake)
+    customer, _ = world.api.customer()
+    person, _ = world.api.add_user(customer, "member")
+    number = new_number()
+    link = connect(db, customer, person, number)
+    sent_at = world.api.clock() - timedelta(hours=2)
+    _owner(
+        db,
+        "UPDATE whatsapp_links SET linked_at = :t WHERE id = :l",
+        {"t": sent_at + timedelta(hours=1), "l": link},
+    )
+    _owner_change(world, number, "user_changed_number", sent_at)
+    assert _ended(db, link) == (None,)
 
 
 # --- Google, for one who signs in with Google only ------------------------------------------------------
@@ -525,7 +649,7 @@ def google(monkeypatch: pytest.MonkeyPatch) -> FakeGoogle:
     return use_google(monkeypatch)
 
 
-def test_google_proves_it_is_them_only_with_their_own_connection(
+def test_google_proves_it_is_them_only_with_their_own_fresh_sign_in(
     db: Database, fake: WhatsAppFake, google: FakeGoogle
 ) -> None:
     world = _World(db, fake)
@@ -533,7 +657,7 @@ def test_google_proves_it_is_them_only_with_their_own_connection(
     api = Api(db, settings=settings)
     customer, _ = api.customer()
     _on(db, customer)
-    member, colleague = api.sign_in(customer, "member"), api.sign_in(customer, "member")
+    member, colleague, reviewer = (api.sign_in(customer, role) for role in ("member", "member", "reviewer"))
     now = int(api.clock().timestamp())
 
     def connect_google(signed: Signed) -> str:
@@ -548,23 +672,41 @@ def test_google_proves_it_is_them_only_with_their_own_connection(
         return subject
 
     subject, theirs = connect_google(member), connect_google(colleague)
+    connect_google(reviewer)
+    with api.db.customer(customer) as conn:  # members sign in with Google only; reviewers not
+        google_rules.save_rules(
+            conn, customer, allowed_roles=["member", "reviewer", "admin"], only_roles=["member"], domains=[]
+        )
+    assert member.client.get("/api/whatsapp/me").json()["google"] is True
+    not_only = reviewer.client.post("/api/whatsapp/prove/google", json={}, headers=CSRF)
+    assert _error(not_only)[:2] == (403, "not_google_only")  # they confirm with their password
 
-    def proof(sub: str) -> str:
+    def proof(sub: str, **claims: Any) -> str:
         started = member.client.post("/api/whatsapp/prove/google", json={}, headers=CSRF)
         assert started.status_code == 200, started.text
-        query = google.sign_in(started.json()["url"], sub, member.email, now)
+        assert "max_age=0" in started.json()["url"]
+        query = google.sign_in(started.json()["url"], sub, member.email, now, **claims)
         back = member.client.get("/api/auth/oidc/google/callback", params=query, follow_redirects=False)
         return urllib.parse.urlsplit(back.headers["location"]).geturl()
 
-    assert proof(f"made-up-sub-{uuid.uuid4().hex}") == "/settings/whatsapp?error=not_yours"
-    assert proof(theirs) == "/settings/whatsapp?error=not_yours"  # a colleague's, approved
-    assert _error(member.client.post("/api/whatsapp/codes", json={"number": new_number(), "agreed": True},
-                                     headers=CSRF))[:2] == (403, "proof_needed")  # fmt: skip
-    assert proof(subject) == "/settings/whatsapp?proved=google"
-    asked = member.client.post(
-        "/api/whatsapp/codes", json={"number": new_number(), "agreed": True}, headers=CSRF
+    fresh = {"auth_time": now - 10}
+    assert proof(f"made-up-sub-{uuid.uuid4().hex}", **fresh) == "/settings/whatsapp?error=not_yours"
+    assert proof(theirs, **fresh) == "/settings/whatsapp?error=not_yours"  # a colleague's, approved
+    assert proof(subject) == "/settings/whatsapp?error=not_fresh"  # no auth_time
+    assert proof(subject, auth_time=now - 301) == "/settings/whatsapp?error=not_fresh"
+    asked = {"number": new_number(), "agreed": True}
+    assert _error(member.client.post("/api/whatsapp/codes", json=asked, headers=CSRF))[:2] == (
+        403,
+        "proof_needed",
     )
-    assert asked.json()["sent"] is True
+    assert proof(subject, **fresh) == "/settings/whatsapp?proved=google"
+    assert member.client.post("/api/whatsapp/codes", json=asked, headers=CSRF).json()["sent"] is True
+    # The hourly limit is counted in the database (one audit row a start).
+    starts = "SELECT count(*) FROM audit_log WHERE actor_user_id = :u AND action = 'whatsapp.google_proof'"
+    assert _owner(db, starts, {"u": member.user_id}) == [(5,)]
+    for _ in range(5):
+        member.client.post("/api/whatsapp/prove/google", json={}, headers=CSRF)
+    assert _error(member.client.post("/api/whatsapp/prove/google", json={}, headers=CSRF))[0] == 429
 
 
 _WHATSAPP_SETTINGS = (
@@ -646,7 +788,9 @@ def test_the_admin_turns_it_on_with_the_password_and_management_and_admins_are_t
     assert sorted(sent.to for sent in mailer.sent) == [row[0] for row in told]
     assert {sent.subject for sent in mailer.sent} == {"WhatsApp was turned on for your organisation"}
     assert _save(admin, enabled=True).status_code == 200  # unchanged: no password, no audit
-    assert _save(admin, enabled=True, voice=False, roles=["reviewer", "member", "admin"]).json()["roles"] == [
+    assert _save(admin, PASSWORD, enabled=True, voice=False, roles=["reviewer", "member", "admin"]).json()[
+        "roles"
+    ] == [
         "member",
         "reviewer",
         "admin",
@@ -742,3 +886,66 @@ def test_a_codes_number_is_never_logged(
         world.proved_ask(member, number)
         world.from_phone(new_number(), "hello")
     assert number[1:] not in caplog.text and number[-7:] not in caplog.text
+
+
+def test_ticking_admins_or_management_later_asks_for_the_password(db: Database, fake: WhatsAppFake) -> None:
+    world = _World(db, fake)
+    admin = world.api.new_admin()
+    _on(db, admin.customer_id)
+    for tick in ({"roles": ["member", "reviewer", "admin"]}, {"management": True}):
+        refused = _save(admin, enabled=True, **tick)
+        assert _error(refused)[2] == "Type your Kaagaz password to let Admins or Management use WhatsApp."
+        assert _error(_save(admin, "not the password!!", enabled=True, **tick))[0] == 400
+        assert _save(admin, PASSWORD, enabled=True, **tick).status_code == 200
+        assert _save(admin, enabled=True).status_code == 200  # taking it away needs none
+
+
+def test_the_admins_disconnect_holds_when_the_number_no_longer_opens(
+    db: Database, fake: WhatsAppFake, caplog: pytest.LogCaptureFixture
+) -> None:
+    world = _World(db, fake)
+    admin = world.api.new_admin()
+    _on(db, admin.customer_id)
+    member = world.person("member", admin.customer_id)
+    number, link = world.connected(member)
+    _owner(db, "UPDATE whatsapp_links SET phone_sealed = 'v1:made-up' WHERE id = :l", {"l": link})
+    with caplog.at_level("WARNING"):
+        gone = admin.client.post(f"/api/admin/whatsapp/{member.user_id}/disconnect", headers=CSRF)
+    assert gone.status_code == 200 and _ended(db, link) == ("admin",)
+    assert ("kaagaz_disconnected", []) not in world.to(number)  # untold: no number to tell
+    assert [getattr(record, "code", None) for record in caplog.records] == ["number_sealed"]
+
+
+def test_signing_out_ends_the_proof_and_the_code_steps_need_it(db: Database, fake: WhatsAppFake) -> None:
+    world = _World(db, fake)
+    member = world.person()
+    number = new_number()
+    world.proved_ask(member, number)
+    world.api.clock.advance(10 * 60 + 1)  # the proof is over; the code is still on
+    assert _error(world.verify(member, world.fake.code_to(number)))[:2] == (403, "proof_needed")
+    assert _error(member.client.post("/api/whatsapp/codes/phone/confirm", headers=CSRF))[:2] == (
+        403,
+        "proof_needed",
+    )
+    assert world.prove(member).status_code == 200
+    out = member.client.post("/api/auth/logout", headers=CSRF)
+    assert any(
+        cookie.startswith("kaagaz_whatsapp_proof=")
+        and "Path=/api/whatsapp" in cookie
+        and "Max-Age=0" in cookie
+        for cookie in out.headers.get_list("set-cookie")
+    )
+
+
+def test_the_sweep_empties_an_expired_codes_number(db: Database, fake: WhatsAppFake) -> None:
+    """A stranger's number is never kept past its code's 10 minutes; the row stays for the limits."""
+    world = _World(db, fake)
+    member = world.person()
+    world.proved_ask(member, new_number())
+    _owner(db, "UPDATE whatsapp_link_codes SET created_at = created_at - interval '11 minutes',"
+               " expires_at = expires_at - interval '11 minutes' WHERE user_id = :u",
+           {"u": member.user_id})  # fmt: skip
+    with world.api.app_db.system() as conn:
+        wa.sweep(conn)
+    left = "SELECT phone_sealed IS NULL FROM whatsapp_link_codes WHERE user_id = :u"
+    assert _owner(db, left, {"u": member.user_id}) == [(True,)]
