@@ -740,11 +740,14 @@ def add_version(
 
     The family lock (``trash.lock_family``) comes first, so a second new version
     waits, then sees this one and takes the next number (the unique index
-    ``documents_family_version`` refuses a repeat anyway). 4 statements for a
-    new version (lock, family, insert, tags); O(v log D + t log N) time and
-    O(v + t) space for the family's v versions and t tags.
+    ``documents_family_version`` refuses a repeat anyway). The tree lock comes before it (PRD 7,
+    #601): the insert's trigger reads the folder FOR SHARE (0085), so a folder made private
+    meanwhile, which holds the folder and then needs the family, would otherwise deadlock with
+    it. 5 statements for a new version (two locks, family, insert, tags); O(v log D + t log N)
+    time and O(v + t) space for the family's v versions and t tags.
     """
     customer_id = record.customer_id
+    folders._lock_tree(conn, customer_id)
     family_id = lock_family(conn, customer_id, of_document_id)
     if family_id is None:
         return None
