@@ -111,4 +111,7 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     assert scripts.get_revision("0085").down_revision == "0084"
     assert scripts.get_revision("0086").down_revision == "0085"
     assert scripts.get_revision("0087").down_revision == "0086"
-    assert scripts.get_heads() == ["0087"]
+    # Changed on purpose (#603, 14 Nov 2026): Kaagaz on WhatsApp's tables (0088, a PROVISIONAL
+    # number, renumbered to follow PRD 7's last migration before it is raised) follow 0087.
+    assert scripts.get_revision("0088").down_revision == "0087"
+    assert scripts.get_heads() == ["0088"]
