@@ -343,10 +343,14 @@ VIEW_READERS = {
         "_TOP_GROUP", "_VALUE_REFS",
     },
     "answering/hard_to_read.py": {"_FLAGGED_PAGES", "_WORD_MARKS"},
+    "answering/ready.py": {"_TAGGED", "_TYPES", "_WORDS"},
     "answering/owners.py": {"_EVERY_RECORD", "_KEYED", "_OWNED", "_RESOLVE", "_SHARES_AS_PRINTED"},
     "answering/unchecked.py": {"_CARD_DOCUMENTS"},
     "db/audit.py": {"_FOLDER_PATHS", "_OF_FAMILY", "_SEEN"},
-    "db/chat.py": {"_DOCUMENT_QUESTIONS", "add_pin"},
+    "db/chat.py": {
+        "MARKS", "_DOCUMENT_QUESTIONS", "add_pin", "document_states", "live_document_names",
+        "messages_with_feedback", "pins_for",
+    },
     "db/document_stories.py": {"_DELETE", "_PUT"},
     "db/ensemble.py": {"_COUNTS", "_LATEST", "_LATEST_READINGS", "_PENDING", "_READING"},
     "db/folder_upload_items.py": {"_PREVIOUS"},
@@ -359,7 +363,7 @@ VIEW_READERS = {
         "_TRASH_LIST", "_VERSIONS", "_WORD_LINES", "document_facts", "get_page", "list_pages",
         "list_values", "reviewer_fix_count", "sheet_cells",
     },
-    "db/organization_words.py": {"decide", "visible"},
+    "db/organization_words.py": {"approved", "decide", "visible"},
     "db/review.py": {"_COUNT", "_COUNT_FOR_DOCUMENT", "_ITEM", "_LOCK_VALUE", "_NEXT_CHUNK"},
     "db/tags.py": {"_FOR_DOCUMENTS"},
     "db/trashed_folders.py": {
@@ -801,7 +805,9 @@ def test_deleting_a_hidden_file_forever_is_not_found_and_deletes_nothing(db: Dat
 
 def test_no_module_outside_the_api_calls_a_function_that_reads_a_view() -> None:
     """Condition 1 on #595, kept by a scan: the functions of VIEW_READERS' modules that use one of
-    its statements (or call one that does) are called only from kaagaz/api and search/scope.py."""
+    its statements (or call one that does) are called only from kaagaz/api, search/scope.py and
+    answering/expansion.py (PgWords, Ask's and search's word source, #602: reached from the API only,
+    as the SQL guard's worker test proves)."""
     root = Path(kaagaz.__file__).parent
     readers: dict[str, set[str]] = {}
     for file, names in VIEW_READERS.items():
@@ -819,7 +825,7 @@ def test_no_module_outside_the_api_calls_a_function_that_reads_a_view() -> None:
     calls = []
     for path in sorted(root.rglob("*.py")):
         where = path.relative_to(root).as_posix()
-        if where.startswith("api/") or where == "search/scope.py":
+        if where.startswith("api/") or where in ("search/scope.py", "answering/expansion.py"):
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         aliases = {

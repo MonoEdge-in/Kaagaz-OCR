@@ -10,6 +10,7 @@ mark. Every Ask and search statement is called as the person, so it is proved by
 of a hidden file, not as a row, a count, a weight or a slot before a LIMIT, and the member still
 finds fin."""
 
+import json
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -19,19 +20,21 @@ from typing import Any
 import pytest
 from sqlalchemy import Connection, event, text
 
-from kaagaz.answering import exhaustive, fixed_queries
+from kaagaz.answering import exhaustive, fixed_queries, ready
 from kaagaz.answering.clarify import Entity, Pending, PgVocabulary, latin_key, picked_page
 from kaagaz.answering.exhaustive import PgExhaustive
 from kaagaz.answering.fixed_queries import PgFixedQueries
 from kaagaz.answering.hard_to_read import PgReadingQuality
 from kaagaz.answering.owners import OWNING, PgOwners
 from kaagaz.answering.unchecked import PgUncheckedValues
+from kaagaz.db import chat as chat_sql
+from kaagaz.db import organization_words
 from kaagaz.db.engine import Database
 from kaagaz.search import hybrid
 from kaagaz.search.hybrid import FusedPiece
 from kaagaz.search.scope import EVERYTHING
 from kaagaz.search.story_search import read_stories
-from tests.db_support import insert_key
+from tests.db_support import insert_key, insert_tag, tag_document
 from tests.test_api_support import Api
 from tests.test_isolation_access_views import Org, _app, _walled
 from tests.test_operator_auth_db import _owner
@@ -653,3 +656,127 @@ def test_a_did_you_mean_pick_records_its_document_and_aliases_only_for_who_sees_
     for person, sees in (("plain", False), ("member", True)):
         found = vocabulary.candidates(ask.org.c, [Entity("person", "Rameshji")], user_id=ask.user(person))
         assert any(entry.aliased for entry in found[0]) == sees, person
+
+
+# --- the chat statements, the words and Home (commit 3) --------------------------------------
+
+
+def _answered(ask: AskOrg, user: str, cited: list[str], *, status: str = "answered") -> str:
+    """An answered message in a new conversation of ``user``, citing page 1 of ``cited``."""
+    answer = {
+        "status": status,
+        "normalized_question": "total",
+        "citations": [{"n": n, "document_id": d, "page_no": 1} for n, d in enumerate(cited, start=1)],
+        "sentences": [{"text": "The total is 7001.", "citations": list(range(1, len(cited) + 1))}],
+    }
+    rows = _owner(
+        ask.db,
+        "WITH c AS (INSERT INTO conversations (customer_id, user_id, title)"
+        " VALUES (:c, :u, 'Q') RETURNING id),"
+        " q AS (INSERT INTO messages (customer_id, conversation_id, role, text)"
+        " SELECT :c, id, 'user', 'What is the total?' FROM c)"
+        " INSERT INTO messages (customer_id, conversation_id, role, text, answer)"
+        " SELECT :c, id, 'assistant', 'The total is 7001.', CAST(:a AS jsonb) FROM c RETURNING id",
+        {"c": ask.org.c, "u": user, "a": json.dumps(answer)},
+    )
+    return str(rows[0][0])
+
+
+def _pick(ask: AskOrg, message: str, user: str, document: str) -> None:
+    _owner(
+        ask.db,
+        "INSERT INTO source_pins (customer_id, message_id, user_id, document_id, page_no, previous_rank)"
+        " VALUES (:c, :m, :u, :d, 1, 2)",
+        {"c": ask.org.c, "m": message, "u": user, "d": document},
+    )
+
+
+def _approved_word(ask: AskOrg, document: str | None, word: str) -> None:
+    _owner(
+        ask.db,
+        "INSERT INTO organization_word_suggestions (customer_id, submitted_by, word, word_fold, meaning,"
+        " meaning_fold, document_id, page_no, status, decided_by, decided_at)"
+        " VALUES (:c, :u, :w, :w, 'meaning', 'meaning', :d,"
+        " CASE WHEN CAST(:d AS uuid) IS NULL THEN NULL ELSE 1 END, 'approved', :u, now())",
+        {"c": ask.org.c, "u": ask.user("admin"), "w": word, "d": document},
+    )
+
+
+def test_the_chat_statements_name_no_hidden_document(db: Database, ask: AskOrg) -> None:
+    """document_states, live_document_names, the newest pick, Most relevant picks and other
+    people's Useful marks, each as the plain reviewer and as Finance's member."""
+    for person in ("plain", "member"):
+        me = ask.user(person)
+        message = _answered(ask, me, [ask.id("fin"), ask.id("sales")])
+        _pick(ask, message, me, ask.id("sales"))
+        _pick(ask, message, me, ask.id("fin"))  # the newest pick
+        other = _answered(ask, ask.user("admin"), [ask.id("fin"), ask.id("sales")])
+        _owner(
+            db,
+            "INSERT INTO feedback (customer_id, message_id, user_id, rating) VALUES (:c, :m, :u, 'up')",
+            {"c": ask.org.c, "m": other, "u": ask.user("admin")},
+        )
+        sees_fin = person == "member"
+        ids = [ask.id("fin"), ask.id("sales")]
+        with _as(db, ask, person) as conn:
+            states = chat_sql.document_states(conn, ask.org.c, ids)
+            names = chat_sql.live_document_names(conn, ask.org.c, ids)
+            conversation = _owner(db, "SELECT conversation_id FROM messages WHERE id = :m", {"m": message})[
+                0
+            ][0]
+            rows = chat_sql.messages_with_feedback(conn, ask.org.c, str(conversation), me)
+            pins = {row["document_id"] for row in chat_sql.pins_for(conn, ask.org.c, me, None)}
+            learned = {row["document_id"] for row in chat_sql.learned_for(conn, ask.org.c, me)}
+        assert set(states) == ({*ids} if sees_fin else {ask.id("sales")}), person
+        assert set(names) == set(states), person
+        picked = [str(row["pin_document_id"]) for row in rows if row["role"] == "assistant"]
+        assert picked == [ask.id("fin") if sees_fin else ask.id("sales")], person
+        # Most relevant reads each answer's newest pick only: fin's, so none for the plain reviewer.
+        assert pins == ({ask.id("fin")} if sees_fin else set()), person
+        assert learned == set(states), person
+
+
+def test_a_word_made_on_a_hidden_page_is_never_used_or_echoed(db: Database, ask: AskOrg) -> None:
+    """``approved`` for a scope of the hidden file answers as for a random id; the repeat key's
+    words leave it out too, so it moves no plain reviewer's key."""
+    _approved_word(ask, None, "everyone")
+    with _as(db, ask, "plain") as conn:
+        before = conn.execute(ready._WORDS, {"c": ask.org.c, "u": ask.user("plain")}).scalar_one()
+    _approved_word(ask, ask.id("fin"), "secretword")
+    for person, sees in (("plain", False), ("member", True)):
+        with _as(db, ask, person) as conn:
+            words = {w.word for w in organization_words.approved(conn, ask.org.c, document_id=ask.id("fin"))}
+            random = {
+                w.word for w in organization_words.approved(conn, ask.org.c, document_id=str(uuid.uuid4()))
+            }
+            after = conn.execute(ready._WORDS, {"c": ask.org.c, "u": ask.user(person)}).scalar_one()
+        assert ("secretword" in words) == sees and random == {"everyone"}, person
+        if not sees:
+            assert words == random and after == before
+
+
+def test_home_offers_only_questions_about_what_the_person_sees(db: Database, ask: AskOrg) -> None:
+    """Only Finance holds land records: the plain reviewer is not offered the land question; a tag
+    scope's documents are those they see; the stamp moves when who sees what does."""
+    _owner(db, "UPDATE documents SET doc_type = 'land_record' WHERE id = :d", {"d": ask.id("fin")})
+    _owner(db, "UPDATE documents SET doc_type = 'invoice' WHERE id = :d", {"d": ask.id("sales")})
+    land = ready.TYPE_QUESTIONS["land_record"]
+    with db.customer(ask.org.c) as conn:
+        tag = insert_tag(conn, ask.org.c, ask.user("admin"), "Ledgers")
+        for name in ("fin", "sales"):
+            tag_document(conn, ask.org.c, ask.id(name), tag)
+    for person, sees in (("plain", False), ("member", True)):
+        with _as(db, ask, person) as conn:
+            offered = [q for q, _ in ready.questions(conn, ask.org.c, ask.user(person))]
+            tagged = ready.tagged(conn, ask.org.c, [str(tag)])
+        assert (land in offered) == sees and ready.TYPE_QUESTIONS["invoice"] in offered, person
+        assert (len(tagged) == 2) == sees and any(ask.id("sales") in t for t in tagged), person
+    with _as(db, ask, "plain") as conn:
+        before = ready.stamp(conn, ask.org.c)
+    _owner(
+        db,
+        "INSERT INTO document_shares (customer_id, document_id, user_id, given_by) VALUES (:c, :d, :u, :by)",
+        {"c": ask.org.c, "d": ask.id("fin"), "u": ask.user("plain"), "by": ask.user("admin")},
+    )
+    with _as(db, ask, "plain") as conn:
+        assert ready.stamp(conn, ask.org.c) != before

@@ -338,16 +338,7 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
 
 # Ask and search (PRD 7 phase 4): PR 8 moves each onto the view and removes it from here.
 PENDING_PR8: dict[tuple[str, str], str] = {
-    ("answering/ready.py", "_TYPES"): "Home's ready answers",
     ("answering/ready.py", "_STAMP"): "Home's ready answers",
-    ("answering/ready.py", "_TAGGED"): "Home's ready answers",
-    ("answering/ready.py", "_WORDS"): "Home's ready answers",
-    ("db/chat.py", "messages_with_feedback"): "old conversations and their source picks",
-    ("db/chat.py", "document_states"): "old answers' sources",
-    ("db/chat.py", "live_document_names"): "chat memory",
-    ("db/chat.py", "pins_for"): "Most relevant picks fed to Ask",
-    ("db/chat.py", "MARKS"): "other people's Useful marks",
-    ("db/organization_words.py", "approved"): "word suggestions Ask uses",
 }
 # PR 8's files: Ask, search, and the chat and word statements that feed Ask.
 _PR8_FILES = ("answering/", "search/", "db/chat.py", "db/organization_words.py")

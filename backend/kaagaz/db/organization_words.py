@@ -27,6 +27,10 @@ def approved(conn: Connection, customer_id: str, *, document_id: str | None = No
             "SELECT id, word, meaning, status, submitted_by, created_at, document_id, page_no"
             " FROM organization_word_suggestions WHERE customer_id = :c AND status = 'approved'"
             " AND (document_id IS NULL OR document_id = CAST(:doc AS uuid))"
+            # PRD 7 (#602): a word made on a page only while the person can see its document, so a
+            # hidden scope id answers as a random one (understood_words).
+            " AND (document_id IS NULL OR EXISTS (SELECT 1 FROM visible_documents d"
+            " WHERE d.customer_id = :c AND d.id = document_id))"
             " ORDER BY word_fold, meaning_fold, id LIMIT 500"
         ),
         {"c": customer_id, "doc": document_id},

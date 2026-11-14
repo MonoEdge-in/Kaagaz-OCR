@@ -71,9 +71,11 @@ _HABITS = text(
     " GROUP BY lower(regexp_replace(btrim(q.text), '\\s+', ' ', 'g'))"
     " ORDER BY count(*) DESC, max(q.created_at) DESC LIMIT :n"
 )
+# PRD 7 (#602): the kinds of document the person can see, never the whole organisation's.
 _TYPES = text(
-    "SELECT doc_type FROM documents WHERE customer_id = :c AND is_current AND deleted_at IS NULL"
-    " AND doc_type IS NOT NULL GROUP BY doc_type ORDER BY count(*) DESC, doc_type"
+    "SELECT d.doc_type FROM visible_documents d WHERE d.customer_id = :c AND d.is_current"
+    " AND d.deleted_at IS NULL AND d.doc_type IS NOT NULL GROUP BY d.doc_type"
+    " ORDER BY count(*) DESC, d.doc_type"
 )
 # What a ready answer was made from: the documents (how many, how many out of Trash, A10: a change
 # Trash makes is never hidden by a newer time elsewhere) and their values (how many, newest change),
@@ -82,7 +84,9 @@ _TYPES = text(
 # pieces still without a vector and the vectors' recipes (#535: a vector filled in by the worker
 # later, or cleared by a line correction, changes what meaning search finds). A document not read
 # yet (received or clean) is left out: its progress writes move its updated_at page by page, and
-# each move made Home pay for its answers again (production QA B2).
+# each move made Home pay for its answers again (production QA B2). PRD 7 (#602, question 2): the
+# organisation's access version last, so a change of who sees what moves every ready and repeat key.
+# Hashed into a key, never shown: so it reads the tables (the SQL guard's EXISTENCE_ONLY).
 # shortcut: three scans of one customer's rows, fine at today's thousands; an index on
 # (customer_id, updated_at) or a change counter when a customer holds millions.
 _STAMP = text(
@@ -94,11 +98,14 @@ _STAMP = text(
     " FROM word_changes WHERE customer_id = :c"
     " AND before_text <> after_text) || '|' || (SELECT count(*) FILTER (WHERE embedding IS NULL) || '/'"
     " || coalesce(string_agg(DISTINCT embedding_model, ','), '') FROM pieces WHERE customer_id = :c)"
+    " || '|' || (SELECT access_version FROM customers WHERE id = :c)"
 )
-# #535: the documents a tag scope holds, with their tags, so a tag put on or taken off moves the key.
+# #535: the documents a tag scope holds, with their tags, so a tag put on or taken off moves the key;
+# those the person can see (PRD 7, #602).
 _TAGGED = text(
-    "SELECT document_id::text || ':' || tag_id::text FROM document_tags"
-    " WHERE customer_id = :c AND tag_id = ANY(CAST(:t AS uuid[])) ORDER BY 1"
+    "SELECT dt.document_id::text || ':' || dt.tag_id::text FROM document_tags dt"
+    " JOIN visible_documents d ON d.customer_id = dt.customer_id AND d.id = dt.document_id"
+    " WHERE dt.customer_id = :c AND dt.tag_id = ANY(CAST(:t AS uuid[])) ORDER BY 1"
 )
 # #535: the settings that shape an answer (its evidence, window, models and parts), so a change of
 # one on the same commit makes a repeated question's key another.
@@ -132,7 +139,9 @@ _WORDS = text(
     "SELECT coalesce((SELECT md5(jsonb_agg(jsonb_build_array(word, meaning) ORDER BY word, meaning)::text)"
     " FROM user_words WHERE customer_id = :c AND user_id = :u), '') || '|' || coalesce((SELECT"
     " md5(jsonb_agg(jsonb_build_array(word, meaning, document_id) ORDER BY word, meaning, document_id)::text)"
-    " FROM organization_word_suggestions WHERE customer_id = :c AND status = 'approved'), '')"
+    " FROM organization_word_suggestions WHERE customer_id = :c AND status = 'approved'"
+    " AND (document_id IS NULL OR EXISTS (SELECT 1 FROM visible_documents d"
+    " WHERE d.customer_id = :c AND d.id = document_id))), '')"
 )
 REPEAT_KEY = "repeat_key"  # the stored answer's field that holds it; never shown (clarify.without_resume)
 REPEAT_COPY = "repeat_copy"  # a copy served from it: never served itself, its Not useful still counts
