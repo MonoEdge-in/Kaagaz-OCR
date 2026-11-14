@@ -221,6 +221,17 @@ def test_did_you_mean_offers_no_name_of_a_hidden_or_locked_file(walled: Walled) 
     assert answered[1] == ["another.en", "menu.en"]
 
 
+def test_a_file_given_to_the_person_says_shared_with_you_never_its_hidden_folder(walled: Walled) -> None:
+    """Finance's "given" file, shared with the plain reviewer alone: its card names no Finance; a file
+    of a folder they see shows its path."""
+    ask = walled.ask
+    given = walled.tap("plain", f"file:{ask.id('given')}:en")[0].split("\n")
+    assert given[0] == "given.pdf" and given[1].startswith("Shared with you · ")
+    assert "finance" not in walled.sent()
+    sales = walled.tap("plain", f"file:{ask.id('sales')}:en")[0].split("\n")
+    assert sales[1].startswith("Sales · ")
+
+
 def test_id_numbers_never_reach_whatsapp_in_full(walled: Walled) -> None:
     ask = walled.ask
     card = ask.api.add_document(ask.org.c, name="kyc.pdf", folder_id=ask.org.folders["sales"])

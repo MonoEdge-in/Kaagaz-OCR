@@ -160,6 +160,14 @@ def test_a_photo_or_a_voice_note_gets_type_only_and_a_long_question_is_refused(w
     assert world.api.answers.asked == []
 
 
+def test_menu_leaves_which_file(world: _World) -> None:
+    person = world.person()
+    world.tap(person, "get.en")
+    world.say(person, "Menu")
+    world.say(person, "electricity")
+    assert world.api.answers.asked == [(person.c, "electricity")]  # a question, not a file's name
+
+
 # --- Ask -----------------------------------------------------------------------------------
 
 
@@ -207,6 +215,28 @@ def test_a_message_handled_again_gets_its_saved_answer_with_no_second_question(w
     for claim in world.channel.claim(100):
         world.channel.handle(claim)
     assert world.replies(person)[-1][0].startswith("The total is 1,200.")
+    assert len(world.api.answers.asked) == 1
+
+
+def test_a_saved_answer_whose_source_was_hidden_since_is_not_sent_nor_said_to_be_hidden(
+    world: _World,
+) -> None:
+    """Handled again after its source went (Ask's saved reply is replaced, PR 8): "couldn't find",
+    never Ask's "You no longer have access to a document behind this answer"."""
+    person = world.person()
+    document = world.api.add_document(person.c, uploaded_by=person.u)
+    world.api.answers.reply = _cited_answer(document)
+    world.fake.failures = [500]
+    assert (
+        post(world.client, delivery(message(person.number, world.api.clock(), "Total?"))).status_code == 200
+    )
+    for claim in world.channel.claim(100):
+        world.channel.handle(claim)
+    _owner(world.db, "DELETE FROM documents WHERE id = :d", {"d": document})
+    _owner(world.db, "UPDATE whatsapp_links SET busy_until = NULL WHERE id = :l", {"l": person.link})
+    for claim in world.channel.claim(100):
+        world.channel.handle(claim)
+    assert world.replies(person) == [(NOT_FOUND, ["another.en", "menu.en"])]
     assert len(world.api.answers.asked) == 1
 
 
