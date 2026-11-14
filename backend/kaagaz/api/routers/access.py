@@ -63,7 +63,7 @@ class ManagementBody(BaseModel):
 class MemberBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    head: bool = False
+    head: bool | None = None  # left out: a new member is not Head, a member keeps their tick
     password: Password = None
 
 
@@ -100,8 +100,9 @@ class BulkGiveBody(BaseModel):
 
 
 def _password_given(context: AppContext, user: CurrentUser, password: str | None) -> None:
-    """A password sent is checked before the tree lock, whether or not this write turns out to
-    need it (an Admin opening a wall to themselves is known only under the lock)."""
+    """A password sent is checked first, with no connection held (it opens its own short ones),
+    whether or not this write turns out to need it (an Admin opening a wall to themselves is known
+    only under the tree lock)."""
     if password is not None:
         prove_password(context, user, password)
 
@@ -151,7 +152,9 @@ def _tell(
     person: str | None,
 ) -> None:
     """After the commit: ``access_given`` to every enabled Management person and admin but the
-    actor. ``person``: who was given it (None: the actor themselves)."""
+    actor. ``person``: who was given it (None: the actor themselves). Sent for an Admin's own
+    access, every Management grant, and any access given to a person who is an Admin (lead
+    decision: an Admin's second account is still an Admin's)."""
     emails.after(background, "access_given", _send_access_given, context, user, kind, person)
 
 
@@ -246,8 +249,8 @@ def set_management(
     """Management on or off (``AdminUser``). Switched off: 409 ``disabled``. Every grant is emailed."""
     target, customer_id = str(user_id), user.customer_id
     mine = body.on and target == user.user_id
+    _password_given(context, user, body.password)
     with context.db.user(customer_id, user.user_id) as conn:
-        _password_given(context, user, body.password)
         folders_sql._lock_tree(conn, customer_id)
         found = _enabled(conn, user, target)
         if mine:
@@ -274,28 +277,31 @@ def add_member(
     background: BackgroundTasks,
     context: Context,
 ) -> dict[str, Any]:
-    """Add the person to the department, or set their Head tick: ``{head, changed}``."""
+    """Add the person to the department, or set their Head tick (left out: a new member is not
+    Head, and a member keeps theirs): ``{head, changed}``."""
     target, department, customer_id = str(user_id), str(department_id), user.customer_id
+    _password_given(context, user, body.password)
     with context.db.user(customer_id, user.user_id) as conn:
         _department(conn, user, department)
-        _password_given(context, user, body.password)
         folders_sql._lock_tree(conn, customer_id)
-        _enabled(conn, user, target)
+        found = _enabled(conn, user, target)
         _department(conn, user, department)
         before = access_sql.membership(conn, customer_id, department, target)
-        mine = target == user.user_id and (before is None or (body.head and not before))
+        head = bool(before) if body.head is None and before is not None else bool(body.head)
+        gains = before is None or (head and not before)
+        mine = target == user.user_id and gains
         if mine:
             _self_grant(user, body.password)
         added = access_sql.join(conn, customer_id, department, target, head=body.head, by=user.user_id)
         if added is not None:
-            details: dict[str, audit.DetailValue] = {"head": body.head}
+            details: dict[str, audit.DetailValue] = {"head": head}
             if mine:
                 details["self"] = True
-            action = "access.member_add" if added else ("access.head_on" if body.head else "access.head_off")
+            action = "access.member_add" if added else ("access.head_on" if head else "access.head_off")
             _audit(conn, user, action, ("folder", department), target, details)
-    if mine and added is not None:
-        _tell(background, context, user, "head" if body.head else "member", None)
-    return {"head": body.head, "changed": added is not None}
+    if added is not None and gains and (mine or found.admin):
+        _tell(background, context, user, "head" if head else "member", None if mine else found.name)
+    return {"head": head, "changed": added is not None}
 
 
 @admin_router.delete("/admin/users/{user_id}/departments/{department_id}", status_code=204)
@@ -328,9 +334,9 @@ def set_department_only(
     """Department only on or off: ``{id, department_only, members, warnings}`` (``no_members``:
     on, with nobody in it). Off, an Admin who gains the files takes the self-grant step."""
     department, customer_id = str(department_id), user.customer_id
+    _password_given(context, user, body.password)
     with context.db.user(customer_id, user.user_id) as conn:
         _department(conn, user, department)
-        _password_given(context, user, body.password)
         folders_sql._lock_tree(conn, customer_id)
         place = _department(conn, user, department)
         members = access_sql.members(conn, customer_id, department)
@@ -388,7 +394,7 @@ def set_private(
     """Make a folder private, naming people on it, or open it again (the names are kept, unused,
     so making it private again brings them back): ``{folder, private, named, you_lose_access}``.
     Admins only. Refused: 409 ``department`` (use Department only), ``inside_private``,
-    ``holds_private``."""
+    ``holds_private``. The password is proved between two transactions, holding no connection."""
     target, customer_id = str(folder_id), user.customer_id
     named = list(dict.fromkeys(str(each) for each in body.named))
     if named and not body.on:
@@ -398,11 +404,11 @@ def set_private(
         if user.role != "admin":
             raise ApiError(403, "forbidden", "Only an admin can make a folder private.")
         require_admin_session(user)
-        _password_given(context, user, body.password)
+    _password_given(context, user, body.password)
+    with context.db.user(customer_id, user.user_id) as conn:
         folders_sql._lock_tree(conn, customer_id)
         place = _folder_seen(conn, user, target)
-        for person in named:
-            _enabled(conn, user, person)
+        people = {person: _enabled(conn, user, person) for person in named}
         switched = place.private != body.on
         if switched and body.on:
             if place.parent_id is None and place.kind == "department":
@@ -439,6 +445,9 @@ def set_private(
         reply_named = _named_reply(conn, user, place)
     if mine:
         _tell(background, context, user, "named" if user.user_id in newly else "wall", None)
+    for person in newly:
+        if person != user.user_id and people[person].admin:
+            _tell(background, context, user, "named", people[person].name)
     return {
         "folder": {"id": place.id, "name": place.name},
         "private": place.private,
@@ -463,53 +472,51 @@ def _private_seen(conn: Connection, user: CurrentUser, folder_id: str) -> access
 @router.get("/folders/{folder_id}/named")
 def get_named(folder_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
     """A private folder's list: ``{folder: {id, name, path}, named, heads, can_edit}``. An Admin,
-    or the Head of its department."""
+    or the Head of its department; ``can_edit`` says which may change it."""
     target = str(folder_id)
     with context.db.user(user.customer_id, user.user_id) as conn:
         place = _private_seen(conn, user, target)
         path = access_sql.paths(conn, user.customer_id, [target]).get(target)
+        heads = access_sql.me(conn)[1]
         return {
             "folder": {"id": place.id, "name": place.name, "path": path},
             "named": access_sql.people_on(conn, user.customer_id, target),
             "heads": access_sql.heads_of(conn, user.customer_id, place.department_id),
-            "can_edit": True,
+            "can_edit": user.role == "admin" or place.department_id in heads,
         }
 
 
 def _change_named(
     context: AppContext, user: CurrentUser, folder_id: str, person: str, password: str | None, *, add: bool
-) -> tuple[bool, bool]:
-    """Name or unname, under the tree lock, with the folder and the Head tick read again there:
-    (changed, an Admin named themselves). A person unknown or switched off is 404 (one answer, for
-    a Head too)."""
+) -> tuple[bool, str | None]:
+    """Name or unname: the checks in a short first transaction, the password proved with no
+    connection held, then the write under the tree lock, with the folder and the Head tick read
+    again there. (changed, whom to tell: "" the Admin themselves, a named Admin's name, None
+    nobody). A person unknown or switched off is 404 (one answer, for a Head too)."""
     customer_id = user.customer_id
     with context.db.user(customer_id, user.user_id) as conn:
         _private_seen(conn, user, folder_id)
-        _password_given(context, user, password)
+    _password_given(context, user, password)
+    with context.db.user(customer_id, user.user_id) as conn:
         folders_sql._lock_tree(conn, customer_id)
         _private_seen(conn, user, folder_id)
         if not add:
             if not access_sql.unname(conn, customer_id, folder_id, person):
                 raise ApiError(404, "not_found")
             _audit(conn, user, "access.named_remove", ("folder", folder_id), person)
-            return True, False
+            return True, None
         found = access_sql.person(conn, customer_id, person)
         if found is None or found.disabled:
             raise ApiError(404, "not_found")
-        mine = person == user.user_id and user.role == "admin"
-        if mine:
+        mine = person == user.user_id
+        if mine and user.role == "admin":
             _self_grant(user, password)
         changed = access_sql.name(conn, customer_id, folder_id, person, by=user.user_id)
         if changed:
-            _audit(
-                conn,
-                user,
-                "access.named_add",
-                ("folder", folder_id),
-                person,
-                _self(user, person) if mine else None,
-            )
-        return changed, changed and mine
+            _audit(conn, user, "access.named_add", ("folder", folder_id), person, _self(user, person))
+    if not changed or not found.admin:  # an Admin's own, or any Admin's: emailed
+        return changed, None
+    return changed, "" if mine else found.name
 
 
 @router.put("/folders/{folder_id}/named/{user_id}")
@@ -522,9 +529,9 @@ def add_named(
     context: Context,
 ) -> dict[str, bool]:
     """Name a person on a private folder: ``{changed}`` (false: they were already)."""
-    changed, mine = _change_named(context, user, str(folder_id), str(user_id), body.password, add=True)
-    if mine:
-        _tell(background, context, user, "named", None)
+    changed, tell = _change_named(context, user, str(folder_id), str(user_id), body.password, add=True)
+    if tell is not None:
+        _tell(background, context, user, "named", tell or None)
     return {"changed": changed}
 
 
@@ -578,19 +585,28 @@ def list_shares(document_id: uuid.UUID, user: User, context: Context) -> dict[st
     }
 
 
-def _give(conn: Connection, user: CurrentUser, document: str, person: str) -> tuple[int, int]:
-    """Give one file to one person under its family lock (``kaagaz_give_file``), audited when it
-    changed something: (the versions it has now, those newly given). Sent to Trash meanwhile: 409."""
-    versions, added = access_sql.give(conn, document, person)
+def _give(conn: Connection, user: CurrentUser, document: str, people: list[str]) -> tuple[int, list[str]]:
+    """Give one file to people under its family lock (``kaagaz_give_file``: one lock, one insert),
+    with one audit row per person it changed something for, in one statement: (the versions it
+    has now, those given it now). Sent to Trash meanwhile: 409."""
+    versions, added = access_sql.give(conn, document, people)
     if not versions:
         _live(_admin_document(conn, user, document))
         raise ApiError(404, "not_found")
-    if added:
-        details: dict[str, audit.DetailValue] = {"versions": versions}
-        if person == user.user_id:
-            details["self"] = True
-        _audit(conn, user, "access.file_give", ("document", document), person, details)
-    return versions, added
+    given = [person for person in people if added.get(person)]
+    if given:
+        audit.record_about(
+            conn,
+            user.customer_id,
+            actor_user_id=user.user_id,
+            action="access.file_give",
+            document_id=document,
+            subjects={
+                person: {"versions": versions, **({"self": True} if person == user.user_id else {})}
+                for person in given
+            },
+        )
+    return versions, given
 
 
 @router.put("/documents/{document_id}/shares/{user_id}")
@@ -603,21 +619,23 @@ def give_file(
     context: Context,
 ) -> dict[str, Any]:
     """Give a file to a person on every version it has now (and every later one): ``{versions,
-    changed}``. In Trash: 409 ``in_trash``; a person switched off: 409 ``disabled``."""
+    changed}``. In Trash: 409 ``in_trash``; a person switched off: 409 ``disabled``. The password
+    is proved between two transactions, holding no connection."""
     target, person, customer_id = str(document_id), str(user_id), user.customer_id
     mine = person == user.user_id
     with context.db.user(customer_id, user.user_id) as conn:
         _admin_document(conn, user, target)
-        _password_given(context, user, body.password)
+    _password_given(context, user, body.password)
+    with context.db.user(customer_id, user.user_id) as conn:
         folders_sql._lock_tree(conn, customer_id)
         _live(_admin_document(conn, user, target))
-        _enabled(conn, user, person)
+        found = _enabled(conn, user, person)
         if mine:
             _self_grant(user, body.password)
-        versions, added = _give(conn, user, target, person)
-    if mine and added:
-        _tell(background, context, user, "file", None)
-    return {"versions": versions, "changed": bool(added)}
+        versions, given = _give(conn, user, target, [person])
+    if given and (mine or found.admin):
+        _tell(background, context, user, "file", None if mine else found.name)
+    return {"versions": versions, "changed": bool(given)}
 
 
 @router.delete("/documents/{document_id}/shares/{user_id}", status_code=204)
@@ -637,9 +655,10 @@ def take_file(document_id: uuid.UUID, user_id: uuid.UUID, user: User, context: C
 def give_files(
     body: BulkGiveBody, user: User, background: BackgroundTasks, context: Context
 ) -> dict[str, int]:
-    """Give up to 100 files to up to 20 people at once: ``{given}``, the (file, person) pairs newly
-    given. A file unknown is 404 and one in Trash 409, and nothing is written. Families are locked
-    in family order, so two at once queue instead of deadlocking."""
+    """Give up to MAX_FILES files to up to MAX_PEOPLE people at once: ``{given}``, the (file,
+    person) pairs newly given. A file unknown is 404 and one in Trash 409, and nothing is written.
+    One family lock and one insert a file, families in family order, so two at once queue instead
+    of deadlocking."""
     if user.role != "admin":
         raise ApiError(403, "forbidden", "Only an admin can give a file to someone.")
     require_admin_session(user)
@@ -650,19 +669,19 @@ def give_files(
     with context.db.user(customer_id, user.user_id) as conn:
         for document in documents:
             _admin_document(conn, user, document)
-        _password_given(context, user, body.password)
+    _password_given(context, user, body.password)
+    with context.db.user(customer_id, user.user_id) as conn:
         folders_sql._lock_tree(conn, customer_id)
         found = [_admin_document(conn, user, document) for document in documents]
         for each in found:
             _live(each)
-        for person in people:
-            _enabled(conn, user, person)
+        persons = {person: _enabled(conn, user, person) for person in people}
         if mine:
             _self_grant(user, body.password)
-        given = 0
+        given: list[str] = []
         for each in sorted(found, key=lambda row: (row.family_id, row.id)):
-            for person in people:
-                given += bool(_give(conn, user, each.id, person)[1])
-    if mine and given:
-        _tell(background, context, user, "file", None)
-    return {"given": given}
+            given += _give(conn, user, each.id, people)[1]
+    for person in dict.fromkeys(given):
+        if person == user.user_id or persons[person].admin:
+            _tell(background, context, user, "file", None if person == user.user_id else persons[person].name)
+    return {"given": len(given)}

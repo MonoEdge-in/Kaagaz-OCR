@@ -22,15 +22,18 @@ views carry no customer filter of their own, 0086).
   (PRD 7, "5 files here are kept from you"). Admins only.
 * ``kaagaz_admin_document(id)``: a file's id, family, name, whether in Trash and locked, for an
   Admin whether they can see it or not (decision 20). Admins only.
-* ``kaagaz_give_file(document, user)`` and ``kaagaz_take_file(document, user)``: a file given to a
-  person on every live version, or taken back from every version (Trash too), under the family
-  lock (``kaagaz.db.trash.lock_family``'s order). Admins only; the caller takes the tree lock
-  first. They work once PR 9's rule hides a file's rows from an Admin who can't open it.
+* ``kaagaz_give_file(document, users)`` and ``kaagaz_take_file(document, user)``: a file given to
+  people on every live version (one family lock and one insert for all of them; a person
+  switched off, unknown or another organisation's is refused, check_violation), or taken back
+  from one person on every version (Trash too), under the family lock
+  (``kaagaz.db.trash.lock_family``'s order). Admins only; the caller takes the tree lock first.
+  They work once PR 9's rule hides a file's rows from an Admin who can't open it.
 * ``users_switched`` (``kaagaz_user_switched``): when ``users.disabled`` changes either way, the
   person's memberships, names on private folders, files given and lock grants go and Management
   is cleared, so a person switched on again starts with none (PRD 7 section 9); the access version
   goes up once (by ``users_access_changed`` when Management was on), and switching off writes one
-  ``access.switched_off`` audit row about them.
+  ``access.switched_off`` audit row about them (switching on, ``access.switched_on``, only when it
+  cleared something left over).
 * ``kaagaz_op_change_admin`` (0017) takes the organisation's row FOR NO KEY UPDATE (the app's tree
   lock), not FOR SHARE: its update of ``users`` now raises the access version on that row, and the
   app takes the tree lock before ``users``. Its body is read back and that one line changed exactly
@@ -252,25 +255,33 @@ FUNCTIONS = {
     END
     $$
     """,
-    "kaagaz_give_file(uuid, uuid)": f"""
-    CREATE FUNCTION public.kaagaz_give_file(p_document uuid, p_user uuid)
-    RETURNS TABLE (versions integer, added integer)
+    "kaagaz_give_file(uuid, uuid[])": f"""
+    CREATE FUNCTION public.kaagaz_give_file(p_document uuid, p_users uuid[])
+    RETURNS TABLE (user_id uuid, versions integer, added integer)
     LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
     DECLARE
         v_customer uuid := public.kaagaz_current_customer();
     BEGIN
         {_ADMIN_ONLY}
+        IF EXISTS (SELECT 1 FROM unnest(p_users) AS p (id) WHERE NOT EXISTS (
+            SELECT 1 FROM public.users u WHERE u.customer_id = v_customer AND u.id = p.id AND NOT u.disabled
+        )) THEN
+            RAISE EXCEPTION 'only people of this organisation who are switched on' USING ERRCODE = 'check_violation';
+        END IF;
         {_LOCK_FAMILY}
         RETURN QUERY WITH live AS (
             SELECT d.id FROM public.documents d
             JOIN public.documents x ON x.customer_id = d.customer_id AND x.family_id = d.family_id
             WHERE x.customer_id = v_customer AND x.id = p_document AND d.deleted_at IS NULL
         ), given AS (
-            INSERT INTO public.document_shares (customer_id, document_id, user_id, given_by)
-            SELECT v_customer, l.id, p_user, (public.kaagaz_access()).person FROM live l
-            ON CONFLICT DO NOTHING RETURNING 1
+            INSERT INTO public.document_shares AS s (customer_id, document_id, user_id, given_by)
+            SELECT v_customer, l.id, p.id, (public.kaagaz_access()).person
+            FROM live l CROSS JOIN (SELECT DISTINCT q.id FROM unnest(p_users) AS q (id)) p
+            ON CONFLICT DO NOTHING RETURNING s.user_id
         )
-        SELECT (SELECT count(*) FROM live)::integer, (SELECT count(*) FROM given)::integer;
+        SELECT p.id, (SELECT count(*) FROM live)::integer,
+               (SELECT count(*) FROM given g WHERE g.user_id = p.id)::integer
+        FROM (SELECT DISTINCT q.id FROM unnest(p_users) AS q (id)) p ORDER BY p.id;
     END
     $$
     """,
@@ -304,8 +315,9 @@ FUNCTION_COMMENTS = {
     "kaagaz_kept_from_me(uuid)": "The names of the files in a folder the calling Admin can't see (PRD 7, #601).",
     "kaagaz_admin_document(uuid)": "A file's id, family, name, in Trash and locked, for an Admin whether they can"
     " see it or not (PRD 7 decision 20, #601).",
-    "kaagaz_give_file(uuid, uuid)": "Give a file to a person on every live version, under the family lock;"
-    " (versions, added). Admins; the caller holds the tree lock (PRD 7, #601).",
+    "kaagaz_give_file(uuid, uuid[])": "Give a file to people (switched on, of this organisation) on every"
+    " live version, under the family lock; per person (versions, added). Admins; the caller holds the tree"
+    " lock (PRD 7, #601).",
     "kaagaz_take_file(uuid, uuid)": "Take a file back from a person on every version, Trash too, under the"
     " family lock; how many rows went. Admins; the caller holds the tree lock (PRD 7, #601).",
 }
@@ -332,11 +344,12 @@ SWITCHED = """
         IF NOT OLD.management THEN  -- else users_access_changed raises it, for Management cleared
             UPDATE public.customers c SET access_version = c.access_version + 1 WHERE c.id = NEW.customer_id;
         END IF;
-        IF NEW.disabled THEN
+        IF NEW.disabled OR OLD.management OR v_departments + v_named + v_files + v_lock_grants > 0 THEN
             INSERT INTO public.audit_log (customer_id, actor_user_id, action, target_type, target_id, details,
                                           subject_user_id)
             VALUES (NEW.customer_id, NULLIF(current_setting('kaagaz.user_id', true), '')::uuid,
-                    'access.switched_off', 'user', NEW.id::text,
+                    CASE WHEN NEW.disabled THEN 'access.switched_off' ELSE 'access.switched_on' END,
+                    'user', NEW.id::text,
                     jsonb_build_object('management', OLD.management, 'departments', v_departments,
                                        'named', v_named, 'files', v_files, 'lock_grants', v_lock_grants),
                     NEW.id);
@@ -347,7 +360,8 @@ SWITCHED = """
     """
 SWITCHED_COMMENT = (
     "Trigger (PRD 7, #601): a person switched off or on starts with no access: memberships, names on"
-    " private folders, files given and lock grants go, Management is cleared; switching off is audited."
+    " private folders, files given and lock grants go, Management is cleared; switching off is audited,"
+    " and switching on when it cleared something."
 )
 TRIGGER = (
     "CREATE TRIGGER users_switched BEFORE UPDATE OF disabled ON users FOR EACH ROW"

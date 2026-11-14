@@ -43,7 +43,9 @@ class AdminDocument:
 
 
 _ME = text("SELECT management, heads FROM kaagaz_access()")
-_PERSON = text("SELECT disabled, management, display_name FROM users WHERE customer_id = :c AND id = :u")
+_PERSON = text(
+    "SELECT disabled, management, display_name, role FROM users WHERE customer_id = :c AND id = :u"
+)
 _PLACE = text(
     "SELECT id, name, parent_id, kind, private, department_only, department_id, private_folder_id"
     " FROM visible_folders WHERE customer_id = :c AND id = :f"
@@ -86,12 +88,14 @@ _MEMBERS = text("SELECT count(*) FROM department_members WHERE customer_id = :c 
 _IS_MEMBER = text(
     "SELECT is_head FROM department_members WHERE customer_id = :c AND department_id = :d AND user_id = :u"
 )
-# Added, or the Head tick changed: one row, ``added`` true for a new member; none for a no-op.
+# Added, or the Head tick changed: one row, ``added`` true for a new member; none for a no-op. A
+# Head tick left out (NULL) is false for a new member and keeps an existing member's.
 _JOIN = text(
     "INSERT INTO department_members AS m (customer_id, department_id, user_id, is_head, added_by)"
-    " VALUES (:c, :d, :u, :head, :by)"
+    " VALUES (:c, :d, :u, coalesce(CAST(:head AS boolean), false), :by)"
     " ON CONFLICT (customer_id, department_id, user_id) DO UPDATE SET is_head = EXCLUDED.is_head"
-    " WHERE m.is_head <> EXCLUDED.is_head RETURNING m.xmax = 0 AS added"
+    " WHERE CAST(:head AS boolean) IS NOT NULL AND m.is_head <> EXCLUDED.is_head"
+    " RETURNING m.xmax = 0 AS added"
 )
 _LEAVE = text(
     "DELETE FROM department_members WHERE customer_id = :c AND department_id = :d AND user_id = :u"
@@ -115,7 +119,7 @@ _SHARES = text(
     " LEFT JOIN users g ON g.customer_id = s.customer_id AND g.id = s.given_by"
     " WHERE s.customer_id = :c AND s.document_id = :d ORDER BY lower(u.display_name), u.id"
 )
-_GIVE = text("SELECT versions, added FROM kaagaz_give_file(:d, :u)")
+_GIVE = text("SELECT user_id, versions, added FROM kaagaz_give_file(:d, CAST(:users AS uuid[]))")
 _TAKE = text("SELECT kaagaz_take_file(:d, :u)")
 
 
@@ -130,12 +134,15 @@ class Person:
     disabled: bool
     management: bool
     name: str
+    admin: bool
 
 
 def person(conn: Connection, customer_id: str, user_id: str) -> Person | None:
     """A user of this organisation, or None."""
     row = conn.execute(_PERSON, {"c": customer_id, "u": user_id}).first()
-    return None if row is None else Person(disabled=bool(row[0]), management=bool(row[1]), name=str(row[2]))
+    if row is None:
+        return None
+    return Person(disabled=bool(row[0]), management=bool(row[1]), name=str(row[2]), admin=row[3] == "admin")
 
 
 def place(conn: Connection, customer_id: str, folder_id: str) -> Place | None:
@@ -210,9 +217,10 @@ def membership(conn: Connection, customer_id: str, department_id: str, user_id: 
 
 
 def join(
-    conn: Connection, customer_id: str, department_id: str, user_id: str, *, head: bool, by: str
+    conn: Connection, customer_id: str, department_id: str, user_id: str, *, head: bool | None, by: str
 ) -> bool | None:
-    """Add the member, or set their Head tick: True added, False the tick changed, None no-op."""
+    """Add the member, or set their Head tick (None: keep it): True added, False the tick changed,
+    None no-op."""
     params = {"c": customer_id, "d": department_id, "u": user_id, "head": head, "by": by}
     added = conn.execute(_JOIN, params).scalar()
     return None if added is None else bool(added)
@@ -263,10 +271,11 @@ def shares(conn: Connection, customer_id: str, document_id: str) -> Sequence[Row
     return conn.execute(_SHARES, {"c": customer_id, "d": document_id}).mappings().all()
 
 
-def give(conn: Connection, document_id: str, user_id: str) -> tuple[int, int]:
-    """(live versions, versions newly given); (0, 0) for a file in Trash or gone. Admins."""
-    versions, added = conn.execute(_GIVE, {"d": document_id, "u": user_id}).one()
-    return int(versions), int(added)
+def give(conn: Connection, document_id: str, user_ids: Sequence[str]) -> tuple[int, dict[str, int]]:
+    """(live versions, the versions newly given to each person) in one family lock and one insert;
+    0 versions for a file in Trash or gone. Admins; every person switched on (else an error)."""
+    rows = conn.execute(_GIVE, {"d": document_id, "users": list(user_ids)}).all()
+    return (int(rows[0][1]) if rows else 0), {str(user): int(added) for user, _, added in rows}
 
 
 def take(conn: Connection, document_id: str, user_id: str) -> int:

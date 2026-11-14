@@ -252,9 +252,12 @@ def _drop_refused_copy(conn: Connection, record: DocumentRecord) -> tuple[str, s
     """#554: delete this customer's refused copy of ``record``'s bytes (``REFUSED_ALONE``) under
     its family lock, so the new record can go in; its id and folder, or None. Its folder and
     file go in ``_after_refused_copy``, once the new row is in: the new one may be filed in that
-    folder, and a file deleted before an insert that fails could not come back."""
+    folder, and a file deleted before an insert that fails could not come back. The tree lock
+    comes before the family lock (#601), as for every write that can meet a folder made private."""
     params = {"c": record.customer_id, "h": record.sha256}
     old = conn.execute(text(_REFUSED_COPY), params).scalar()
+    if old is not None:
+        folders._lock_tree(conn, record.customer_id)
     if old is None or lock_family(conn, record.customer_id, str(old)) is None:
         return None  # none, or one that went while this upload waited for its lock
     dropped = conn.execute(text(_DROP_REFUSED), {**params, "old": old}).first()

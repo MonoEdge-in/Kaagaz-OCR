@@ -491,12 +491,13 @@ def logout_everywhere(user: UserAllowGoogleLink, context: Context) -> Response: 
 
 @router.get("/auth/me")
 def me(user: UserAllowPasswordChange, context: Context) -> dict[str, Any]:
+    recent, access = _recent_connections(context, user)
     return me_json(
         user,
         email_on=email_on(context),
         providers=oidc.enabled_providers(context.settings),
-        recent_connections=_recent_connections(context, user),
-        access=_access(context, user),
+        recent_connections=recent,
+        access=access,
     )
 
 
@@ -515,14 +516,10 @@ def session(request: Request) -> dict[str, Any]:
             }
         raise
     context = get_context(request)
-    recent = _recent_connections(context, user)
+    recent, access = _recent_connections(context, user)
     providers = oidc.enabled_providers(context.settings)
     me = me_json(
-        user,
-        email_on=email_on(context),
-        providers=providers,
-        recent_connections=recent,
-        access=_access(context, user),
+        user, email_on=email_on(context), providers=providers, recent_connections=recent, access=access
     )
     return {"signed_in": True, "me": me}
 
@@ -536,19 +533,23 @@ def _access(context: AppContext, user: CurrentUser) -> tuple[bool, list[str]]:
 # --- the steps they share ----------------------------------------------------------------
 
 
-def _recent_connections(context: AppContext, user: CurrentUser) -> list[dict[str, str]]:
+def _recent_connections(
+    context: AppContext, user: CurrentUser
+) -> tuple[list[dict[str, str]], tuple[bool, list[str]]]:
     """The user's approved connections made in the last RECENT_DAYS, for the app's "Google
-    connected on 30 Oct." banner (#457 phase 1); none, and nothing read, while no provider is on."""
-    if not oidc.enabled_providers(context.settings):
-        return []
+    connected on 30 Oct." banner (#457 phase 1; none, and nothing read, while no provider is on),
+    and their access (PRD 7, #601), in one transaction."""
+    providers = oidc.enabled_providers(context.settings)
     since = context.clock() - timedelta(days=RECENT_DAYS)
     with context.db.user(user.customer_id, user.user_id) as conn:
-        rows = identities.for_user(conn, user.customer_id, user.user_id)
-    return [
+        rows = identities.for_user(conn, user.customer_id, user.user_id) if providers else []
+        access = access_sql.me(conn)
+    recent = [
         {"provider": str(row["provider"]), "linked_at": iso(row["linked_at"])}
         for row in rows
         if row["status"] == "approved" and row["linked_at"] >= since
     ]
+    return recent, access
 
 
 def _check_password(context: AppContext, email: str, password: str, address: str) -> AttemptRow:

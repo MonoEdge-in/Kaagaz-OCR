@@ -126,6 +126,14 @@ class AccessWouldChange(FolderError):
         super().__init__("access_would_change")
 
 
+class DepartmentInUse(FolderError):
+    """PRD 7 lead decision 6 (#601): a department with members, Department only, or a private
+    folder inside keeps its kind."""
+
+    def __init__(self) -> None:
+        super().__init__("department_in_use")
+
+
 class DestinationNotFound(FolderNotFound):
     """The folder chosen to take what is inside is not there for this customer (#537)."""
 
@@ -148,6 +156,12 @@ class DepartmentNotTopLevel(FolderError):
 
 
 _LOCK_TREE = "SELECT 1 FROM customers WHERE id = :c FOR NO KEY UPDATE"
+# PRD 7 (#601): the department :f has members, is Department only, or holds a private folder.
+_IN_USE = (
+    "SELECT EXISTS (SELECT 1 FROM department_members m WHERE m.customer_id = :c AND m.department_id = :f)"
+    " OR EXISTS (SELECT 1 FROM folders f WHERE f.customer_id = :c AND f.department_id = :f"
+    " AND (f.department_only OR f.private))"
+)
 
 # PRD 7 (#599): only the folders the person may see; one whose parent they can't see is at the top
 # level for them, so no hidden folder's id reaches the tree.
@@ -394,6 +408,13 @@ def create_folder(
     return _folder(_write_named(conn, _INSERT, params).one())
 
 
+def department_in_use(conn: Connection, customer_id: str, folder_id: str) -> bool:
+    """Whether the department ``folder_id`` has members, is Department only or holds a private
+    folder (``_IN_USE``): its kind may not change (PRD 7 lead decision 6). The caller holds the
+    tree lock. Two index probes and its folders by department."""
+    return bool(conn.execute(text(_IN_USE), {"c": customer_id, "f": folder_id}).scalar())
+
+
 def set_kind(
     conn: Connection,
     customer_id: str,
@@ -604,6 +625,12 @@ def _write_named(conn: Connection, statement: str, params: dict[str, Any]) -> Cu
         if sqlstate(error) == UNIQUE_VIOLATION:
             raise FolderNameTaken() from None
         if sqlstate(error) == CHECK_VIOLATION:
+            # #601: folders_department_only is the other CHECK a kind change can meet.
+            if (
+                getattr(getattr(error.orig, "diag", None), "constraint_name", None)
+                == "folders_department_only"
+            ):
+                raise DepartmentInUse() from None
             raise DepartmentNotTopLevel() from None
         raise
 

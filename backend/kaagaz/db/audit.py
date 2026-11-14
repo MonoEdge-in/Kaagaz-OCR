@@ -51,6 +51,15 @@ _INSERT = text(
     " FROM (SELECT 1) AS one"
     " LEFT JOIN documents d ON d.customer_id = CAST(:c AS uuid) AND d.id = CAST(:document AS uuid)"
 )
+# PRD 7 (#601): one row about the document :document per person in :subjects, with its own details.
+_INSERT_ABOUT = text(
+    "INSERT INTO audit_log (customer_id, actor_user_id, action, target_type, target_id, details,"
+    " folder_id, family_id, subject_user_id)"
+    " SELECT CAST(:c AS uuid), CAST(:actor AS uuid), CAST(:action AS text), 'document',"
+    " CAST(:document AS text), s.details, d.folder_id, d.family_id, s.subject"
+    " FROM unnest(CAST(:subjects AS uuid[]), CAST(:details AS jsonb[])) AS s (subject, details)"
+    " LEFT JOIN documents d ON d.customer_id = CAST(:c AS uuid) AND d.id = CAST(:document AS uuid)"
+)
 # #482: views of one document by one person wait for each other here, so two at once write one row.
 _VIEW_LOCK = text("SELECT pg_advisory_xact_lock(hashtextextended(:c || ':' || :u || ':' || :d, 0))")
 # A1: on the partial index audit_log_views (0068), this person's views of it in VIEW_EVERY_MINUTES.
@@ -95,6 +104,32 @@ def record(
             "document": target if target_type == "document" else None,
             "folder": target if target_type == "folder" else None,
             "subject": subject_user_id,
+        },
+    )
+
+
+def record_about(
+    conn: Connection,
+    customer_id: str,
+    *,
+    actor_user_id: str,
+    action: str,
+    document_id: str,
+    subjects: Mapping[str, Mapping[str, DetailValue]],
+) -> None:
+    """``record`` about one document for each person in ``subjects`` (their details), in one
+    statement (PRD 7, #601: a file given to several people). O(people)."""
+    if not _ACTION.match(action):
+        raise ValueError("audit action must match ^[a-z_.]+$")
+    conn.execute(
+        _INSERT_ABOUT,
+        {
+            "c": customer_id,
+            "actor": actor_user_id,
+            "action": action,
+            "document": document_id,
+            "subjects": list(subjects),
+            "details": [json.dumps(dict(details)) for details in subjects.values()],
         },
     )
 
