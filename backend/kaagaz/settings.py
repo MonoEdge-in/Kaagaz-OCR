@@ -510,7 +510,8 @@ class Settings:
     # loopback host, the fake server in tests), the Kaagaz number's id, the access token, the app
     # secret (it signs every webhook), the webhook's verify token, and the key that seals and hashes
     # people's numbers (32+ characters); and (W3) the Kaagaz number itself, digits only, for the
-    # Connect screen's "Open WhatsApp" link. The webhook has its own rate bucket per address,
+    # Connect screen's "Open WhatsApp" link; and (W4) APP_URL, the Kaagaz address every link the bot
+    # sends opens. The webhook has its own rate bucket per address,
     # whatsapp_webhook_calls_per_minute; the channel handles whatsapp_people_at_once people at once.
     whatsapp_enabled: bool = False
     whatsapp_graph_url: str | None = None
@@ -830,7 +831,9 @@ class Settings:
             email_enabled=email_enabled,
             email_from=env.text("EMAIL_FROM") if email_enabled else env.optional("EMAIL_FROM"),
             ses_region=env.optional("SES_REGION") or "ap-south-1",
-            app_url=_app_url(env.text("APP_URL")) if email_enabled else env.optional("APP_URL"),
+            app_url=_app_url(env.text("APP_URL"))
+            if email_enabled or whatsapp_on
+            else env.optional("APP_URL"),
             ops_alert_email=env.optional("OPS_ALERT_EMAIL"),
             google_signin_enabled=google_on,
             google_client_id=env.text("GOOGLE_CLIENT_ID") if google_on else env.optional("GOOGLE_CLIENT_ID"),

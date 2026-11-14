@@ -4,7 +4,8 @@
 It refuses to start unless WHATSAPP_ENABLED is true. It is never the document worker, whose role
 sees nothing through PRD 7's views: its Database takes ``db_app_role`` (the API's) and its login is
 the API's (DATABASE_URL), so every person transaction is held to the views and the rule exactly as
-a browser's (tests/test_whatsapp_guard.py).
+a browser's (tests/test_whatsapp_guard.py). W4: the chat gets the API's own context on that one
+Database (``api.app.headless_context``), so Ask and search are the browser's.
 
 The loop (``run``): free the finished, claim up to WHATSAPP_PEOPLE_AT_ONCE connections with
 waiting messages (``kaagaz_whatsapp_claim``: one person at a time each, different people side by
@@ -25,6 +26,8 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime
 
 from kaagaz.adapters.whatsapp import MetaWhatsApp
+from kaagaz.api.app import headless_context
+from kaagaz.channel.chat import Chat
 from kaagaz.channel.loop import Channel
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.db.whatsapp import Claim
@@ -108,11 +111,13 @@ def main() -> None:
         lock_timeout_seconds=settings.db_lock_timeout_seconds,
         idle_in_transaction_timeout_seconds=settings.db_idle_in_transaction_timeout_seconds,
     )
+    database = Database(engine, settings.db_app_role)
     channel = Channel(
-        db=Database(engine, settings.db_app_role),
+        db=database,
         sender=MetaWhatsApp.from_settings(settings),
         number_key=settings.whatsapp_number_key,
         clock=_utc_now,
+        chat=Chat(headless_context(settings, database)),  # W4: Ask and search as the person
     )
     stop = threading.Event()
     install_stop_handlers(stop)

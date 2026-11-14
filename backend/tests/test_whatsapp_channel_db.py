@@ -27,7 +27,6 @@ from kaagaz.channel.loop import (
     DISCONNECTED,
     MAX_TRIES,
     NOT_CONNECTED,
-    PLACEHOLDER,
     STILL_CONNECTED,
     Channel,
 )
@@ -38,6 +37,8 @@ from kaagaz.ingestion.errors import BackendUnavailable
 from tests.test_api_support import Api
 from tests.whatsapp_fake import (
     NUMBER_KEY,
+    PLACEHOLDER,
+    Echo,
     WhatsAppFake,
     connect,
     delivery,
@@ -78,6 +79,10 @@ class _Sender:
         self.before()
         self.real.send_buttons(to, body, buttons)
 
+    def send_list(self, to: str, body: str, button: str, rows: Any) -> None:
+        self.before()
+        self.real.send_list(to, body, button, rows)
+
 
 class _World:
     """An API on the fake WhatsApp, its channel in the API's role, and connected people."""
@@ -92,6 +97,7 @@ class _World:
             sender=sender if before is None else _Sender(sender, before),
             number_key=NUMBER_KEY,
             clock=self.api.clock,
+            chat=Echo(),
         )
 
     def person(self, customer: str | None = None, role: str = "member") -> tuple[str, str, str, str]:

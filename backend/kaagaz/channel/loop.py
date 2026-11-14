@@ -14,7 +14,8 @@ other process off it) and goes through its waiting messages oldest first, by Wha
 4. (W3) STOP, Yes to "Disconnect?", or [Not me] on this connection's own welcome: the connection
    ends first (audited), then DISCONNECTED goes once (never tried again: the number is no longer
    connected). "Disconnect" (typed, or Menu's in W4) asks first, with [Disconnect] [Keep it].
-5. Otherwise the reply (PLACEHOLDER until W4 builds the steps), then the message is done.
+5. Otherwise the chat's reply (W4, ``chat.Chat``: the menu, Ask, "Did you mean", Get a file), one
+   message, then the message is done. An error while making it counts a try (below).
 
 A reply goes outside any transaction, and only to the connection's own number. One that could not
 be sent leaves the message waiting and the connection resting (the order is kept: nothing after it
@@ -36,6 +37,7 @@ from typing import Protocol
 from kaagaz.adapters.whatsapp import NOT_ME, WhatsAppError
 from kaagaz.api.secret_box import SecretBoxError
 from kaagaz.channel.numbers import open_number
+from kaagaz.channel.outgoing import Outgoing
 from kaagaz.db import whatsapp as wa
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.whatsapp import Check, Claim, Linked, Waiting
@@ -45,7 +47,6 @@ _log = logging.getLogger("kaagaz.channel")
 NOT_CONNECTED = (
     "This WhatsApp isn't connected to Kaagaz. If you use Kaagaz, connect it from Account \u203a WhatsApp."
 )
-PLACEHOLDER = "Kaagaz got your message. Asking about your files on WhatsApp is coming soon."
 DISCONNECTED = (
     "Disconnected. This chat can no longer reach your Kaagaz files. Messages already here stay on this"
     " phone. Delete them if others use it."
@@ -71,6 +72,12 @@ class Sender(Protocol):
 
     def send_buttons(self, to: str, body: str, buttons: Sequence[tuple[str, str]]) -> None: ...
 
+    def send_list(self, to: str, body: str, button: str, rows: Sequence[tuple[str, str, str]]) -> None: ...
+
+
+class Replier(Protocol):
+    def reply(self, linked: Linked, message: Waiting) -> Outgoing: ...
+
 
 @dataclass(frozen=True, slots=True)
 class Channel:
@@ -78,6 +85,7 @@ class Channel:
     sender: Sender
     number_key: str
     clock: Callable[[], datetime]
+    chat: Replier  # W4: the reply to every other message (kaagaz.channel.chat.Chat)
 
     def claim(self, limit: int) -> list[Claim]:
         """Up to ``limit`` connections, leased; BackendUnavailable when the database is lost."""
@@ -145,11 +153,10 @@ class Channel:
             sent = self._send(lambda: self.sender.send_text(number, DISCONNECTED)) is None
             return self._finish(linked, message, "done", replied=sent)
         if word == DISCONNECT:
-            error = self._send(lambda: self.sender.send_buttons(number, ASK_DISCONNECT, DISCONNECT_BUTTONS))
+            reply = Outgoing(ASK_DISCONNECT, DISCONNECT_BUTTONS)
         else:
-            error = self._send(
-                lambda: self.sender.send_text(number, STILL_CONNECTED if word == KEEP else PLACEHOLDER)
-            )
+            reply = Outgoing(STILL_CONNECTED) if word == KEEP else self.chat.reply(linked, message)
+        error = self._send(lambda: self._deliver(number, reply))
         if error is None:
             return self._finish(linked, message, "done", replied=True)
         status = error.status or 0
@@ -157,6 +164,15 @@ class Channel:
         code = f"{error.code}:{status or '-'}"
         tries = self._not_sent(linked, message, code, most=UNTIL_IT_EXPIRES, fail=for_good)
         return 0 if tries is None else min(RETRY_SECONDS * 2 ** (tries - 1), RETRY_MAX_SECONDS)
+
+    def _deliver(self, number: str, reply: Outgoing) -> None:
+        if reply.rows:
+            rows = [(row.id, row.title, row.description) for row in reply.rows]
+            self.sender.send_list(number, reply.body, reply.button, rows)
+        elif reply.buttons:
+            self.sender.send_buttons(number, reply.body, reply.buttons)
+        else:
+            self.sender.send_text(number, reply.body)
 
     def _send(self, send: Callable[[], None]) -> WhatsAppError | None:
         try:

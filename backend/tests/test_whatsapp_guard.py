@@ -23,6 +23,7 @@ FILES = sorted(
         *(PACKAGE / "channel").rglob("*.py"),
         PACKAGE / "channel_main.py",
         PACKAGE / "db" / "whatsapp.py",
+        PACKAGE / "db" / "whatsapp_chat.py",  # W4: the chat's SQL
         PACKAGE / "api" / "routers" / "whatsapp.py",
     ]
 )
