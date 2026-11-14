@@ -62,7 +62,9 @@ TO_DOCUMENTS = {
 # goes: SET NULL (document_id), never a cascade.
 # Changed on purpose (#590, 0084): and a remembered correction keeps its row, losing only the
 # document it was made on (SET NULL (source_document_id)), as one made before PRD 7.
-KEEPS_ITS_ROWS = {"model_usage", "learned_corrections"}
+# Changed on purpose (#603, 0088): a WhatsApp message keeps its row (its id stops a replay for 30
+# days); the file it saved is SET NULL.
+KEEPS_ITS_ROWS = {"model_usage", "learned_corrections", "whatsapp_messages"}
 
 
 def _runs(database: Database, customer_id: str) -> list[tuple[str, str | None]]:
