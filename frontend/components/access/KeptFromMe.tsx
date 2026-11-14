@@ -159,42 +159,41 @@ export function KeptNamesView({
           {error}
         </p>
       )}
-      <div className={styles.tableWrap}>
-        <table className="table">
-          <thead>
-            <tr>
-              <th scope="col">Name</th>
-              <th scope="col">Kind</th>
-              <th scope="col">Uploaded by</th>
-              <th scope="col">Date</th>
-              <th scope="col">
-                <span className="visually-hidden">Actions</span>
-              </th>
+      {/* No scroller of its own: the cells wrap, and the dialog's body scrolls. */}
+      <table className="table">
+        <thead>
+          <tr>
+            <th scope="col">Name</th>
+            <th scope="col">Kind</th>
+            <th scope="col">Uploaded by</th>
+            <th scope="col">Date</th>
+            <th scope="col">
+              <span className="visually-hidden">Actions</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {kept.items.map((file) => (
+            <tr key={file.id}>
+              <td>{file.name}</td>
+              <td>{typeLabel(file.kind as DetectedType)}</td>
+              <td>{file.uploader ?? "—"}</td>
+              <td>{formatDate(file.created_at)}</td>
+              <td>
+                <RowMenu
+                  name={file.name}
+                  compact
+                  items={[
+                    { label: "Give access", description: GIVE_HELP, onSelect: () => onGive(file) },
+                    { label: WHO_CAN_SEE, description: AUDIENCE_HELP, onSelect: () => onAudience(file) },
+                    { label: GIVE_MYSELF, description: MYSELF_HELP, onSelect: () => onMyself(file) },
+                  ]}
+                />
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            {kept.items.map((file) => (
-              <tr key={file.id}>
-                <td>{file.name}</td>
-                <td>{typeLabel(file.kind as DetectedType)}</td>
-                <td>{file.uploader ?? "—"}</td>
-                <td>{formatDate(file.created_at)}</td>
-                <td>
-                  <RowMenu
-                    name={file.name}
-                    compact
-                    items={[
-                      { label: "Give access", description: GIVE_HELP, onSelect: () => onGive(file) },
-                      { label: WHO_CAN_SEE, description: AUDIENCE_HELP, onSelect: () => onAudience(file) },
-                      { label: GIVE_MYSELF, description: MYSELF_HELP, onSelect: () => onMyself(file) },
-                    ]}
-                  />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

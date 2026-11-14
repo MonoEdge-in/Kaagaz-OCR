@@ -172,7 +172,7 @@
 }
 
 /* PR 11b: the people icon after a folder's name (tree, tiles, Move picker): it never shrinks, so
-   the name is the part cut with "…" (#572). */
+   the name is the part cut with "…" (issue 572). */
 .placeIcon {
   display: inline-flex;
   flex: none;
@@ -230,9 +230,4 @@
   margin: 0;
   color: var(--text-secondary);
   font-size: var(--fs-sm);
-}
-
-.tableWrap {
-  position: relative; /* hidden screen-reader text inside it cannot stretch the page */
-  overflow-x: auto;
 }
