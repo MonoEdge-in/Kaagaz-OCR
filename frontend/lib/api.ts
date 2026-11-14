@@ -1426,11 +1426,13 @@ export const listNamed = (folderId: string) => request<NamedList>("GET", `/folde
 /** Who would lose and gain the folder's files were it private (`on`), with `named` named now. */
 export const privatePreview = (folderId: string, on: boolean, named: readonly string[] = []) =>
   request<PlacePreview>("GET", `/folders/${segment(folderId)}/private/preview${query({ on, named })}`);
-/** Make it private, naming people on it, or open again (`named` only with `on`). */
-export const setPrivate = (folderId: string, on: boolean, named: readonly string[], password?: string) =>
+/** Make it private, naming people on it (and, PR 10c, `dropNamed`: people named before taken off in
+ * the same transaction; sent only when there are some), or open again (`named` only with `on`). */
+export const setPrivate = (folderId: string, on: boolean, named: readonly string[], password?: string, dropNamed: readonly string[] = []) =>
   request<{ private: boolean; named: Person[]; you_lose_access: boolean }>("PUT", `/folders/${segment(folderId)}/private`, {
     on,
     named,
+    ...(dropNamed.length ? { drop_named: dropNamed } : {}),
     password,
   });
 /** ``autofileOn`` left out: the switch is left as it is (feature 28). ``google`` (#507), when

@@ -38,14 +38,14 @@ const press = async (element: FakeElement | null) => {
   await act(async () => void fire(element!, "click", { button: 0 }));
   await settle();
 };
-async function tick(within: FakeElement, name: string) {
+async function tick(within: FakeElement, name: string, checked = true) {
   const label = all(within).find((element) => element.tagName === "LABEL" && element.textContent.trim() === name);
   const box = label!.all().find((element) => element.tagName === "INPUT")!;
-  box.checked = true;
+  box.checked = checked;
   await act(async () => void fire(box, "click", { button: 0 }));
 }
 
-async function open(abilities: AccessAbilities, routes: Record<string, unknown>) {
+async function open(abilities: AccessAbilities, routes: Record<string, unknown>, isPrivate = true) {
   serve({
     "GET /api/folders/sal/audience": { groups: [], everyone_else: 3 },
     "GET /api/folders/sal/named": NAMED,
@@ -59,7 +59,7 @@ async function open(abilities: AccessAbilities, routes: Record<string, unknown>)
     target: { kind: "folder" as const, id: "sal", name: "Salaries" },
     myId: "me",
     abilities,
-    place: { isPrivate: true, department: FINANCE, refusal: null },
+    place: { isPrivate, department: FINANCE, refusal: null },
     onClose: () => undefined,
     onChanged: vi.fn(),
   };
@@ -97,6 +97,32 @@ describe("naming yourself on a private folder", () => {
     await press(button(screen, "Add people to “Salaries”"));
     expect(calls.filter((call) => call.method === "PUT")).toEqual([]);
     expect(screen.textContent).toContain("Confirm it's you");
+  });
+});
+
+describe("Make private, taking off someone named before", () => {
+  const routes = (named: { id: string; name: string }[]) => ({
+    "GET /api/folders/sal/private/preview?on=true": { losing: [], gaining: [], files: 3, named_before: [{ id: "u2", name: "Ravi" }] },
+    "PUT /api/folders/sal/private": { private: true, named, you_lose_access: false },
+    "DELETE /api/folders/sal/named/u2": null,
+  });
+  async function makePrivate(named: { id: string; name: string }[]) {
+    const { screen } = await open(ADMIN, routes(named), false);
+    await press(button(screen, "Make private")); // the panel's
+    await tick(screen, "Keep Ravi named", false);
+    await press(button(screen, "Make private")); // the form's
+    return screen;
+  }
+
+  it("sends them as drop_named in the one call, in its transaction (PR 10c)", async () => {
+    await makePrivate([]);
+    expect(calls.find((call) => call.method === "PUT")?.body).toEqual({ on: true, named: [], drop_named: ["u2"] });
+    expect(calls.filter((call) => call.method === "DELETE")).toEqual([]);
+  });
+
+  it("takes them off after, only when an older server ignored the field and still names them", async () => {
+    await makePrivate([{ id: "u2", name: "Ravi" }]);
+    expect(calls.filter((call) => call.method === "DELETE").map((call) => call.url)).toEqual(["/api/folders/sal/named/u2"]);
   });
 });
 

@@ -179,12 +179,15 @@ export function AudiencePanel(props: PanelProps) {
     send(async () => {
       const first = asksFirst({ myId, gaining: [...preview.gaining, ...chosen] }); // naming myself is a self-grant too
       const ids = chosen.map((person) => person.id);
-      const reply = await passwordStep.run(quoted(target.name), (password) => setPrivate(target.id, on, ids, password), first);
+      const off = dropped.map((person) => person.id);
+      const reply = await passwordStep.run(quoted(target.name), (password) => setPrivate(target.id, on, ids, password, off), first);
       if (reply === null) return undefined;
       setIsPrivate(reply.private);
-      // The people named before and unticked: taken off now it is private (the list needs it so).
+      // The people named before and unticked go in the same call (drop_named, PR 10c), in Make
+      // private's own transaction. Fallback only: an older backend that ignores the field names
+      // them still in its reply, so they are taken off one by one now it is private.
       const failed: string[] = [];
-      for (const person of dropped) {
+      for (const person of dropped.filter((each) => reply.named.some((named) => named.id === each.id))) {
         try {
           await removeNamed(target.id, person.id);
         } catch {
