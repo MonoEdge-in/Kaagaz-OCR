@@ -662,15 +662,8 @@ def _whatsapp_proof(
     user = _flow_user(request, flow)
     with context.db.system() as conn:
         found = identities.lookup(conn, provider.name, identity.issuer, identity.subject)
-    if (
-        found is None
-        or found.status != "approved"
-        or (found.customer_id, found.user_id)
-        != (
-            user.customer_id,
-            user.user_id,
-        )
-    ):
+    theirs = found is not None and (found.customer_id, found.user_id) == (user.customer_id, user.user_id)
+    if not theirs or found is None or found.status != "approved":
         raise _Refused("not_yours")
     response = RedirectResponse(f"{WHATSAPP_PAGE}?proved={provider.name}", status_code=303)
     set_whatsapp_proof_cookie(response, user, context.settings, now=unix(context.clock()))

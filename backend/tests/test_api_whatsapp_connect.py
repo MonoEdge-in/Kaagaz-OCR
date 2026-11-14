@@ -533,13 +533,21 @@ def test_google_proves_it_is_them_only_with_their_own_connection(
     api = Api(db, settings=settings)
     customer, _ = api.customer()
     _on(db, customer)
-    member = api.sign_in(customer, "member")
-    subject = f"made-up-sub-{uuid.uuid4().hex}"
+    member, colleague = api.sign_in(customer, "member"), api.sign_in(customer, "member")
     now = int(api.clock().timestamp())
-    started = member.client.post("/api/auth/oidc/google/connect", json={"password": PASSWORD}, headers=CSRF)
-    query = google.sign_in(started.json()["url"], subject, member.email, now)
-    linked = member.client.get("/api/auth/oidc/google/callback", params=query, follow_redirects=False)
-    assert "connected=google" in linked.headers["location"]
+
+    def connect_google(signed: Signed) -> str:
+        """Their own Google account, approved (its email is theirs): its subject."""
+        subject = f"made-up-sub-{uuid.uuid4().hex}"
+        started = signed.client.post(
+            "/api/auth/oidc/google/connect", json={"password": PASSWORD}, headers=CSRF
+        )
+        query = google.sign_in(started.json()["url"], subject, signed.email, now)
+        linked = signed.client.get("/api/auth/oidc/google/callback", params=query, follow_redirects=False)
+        assert "connected=google" in linked.headers["location"]
+        return subject
+
+    subject, theirs = connect_google(member), connect_google(colleague)
 
     def proof(sub: str) -> str:
         started = member.client.post("/api/whatsapp/prove/google", json={}, headers=CSRF)
@@ -549,6 +557,7 @@ def test_google_proves_it_is_them_only_with_their_own_connection(
         return urllib.parse.urlsplit(back.headers["location"]).geturl()
 
     assert proof(f"made-up-sub-{uuid.uuid4().hex}") == "/settings/whatsapp?error=not_yours"
+    assert proof(theirs) == "/settings/whatsapp?error=not_yours"  # a colleague's, approved
     assert _error(member.client.post("/api/whatsapp/codes", json={"number": new_number(), "agreed": True},
                                      headers=CSRF))[:2] == (403, "proof_needed")  # fmt: skip
     assert proof(subject) == "/settings/whatsapp?proved=google"
