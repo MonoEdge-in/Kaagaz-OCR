@@ -4,7 +4,9 @@ server").
 * ``WhatsAppFake``: a stdlib HTTP server on 127.0.0.1 playing Meta's Graph API. ``POST
   /<version>/<number id>/messages`` is recorded and answered as Meta does, or with the next of
   ``failures`` (a status; 0 closes the connection with no reply). ``texts()``: (to, body) of each
-  message sent, in order. Files are never sent on WhatsApp, so there is no media endpoint.
+  text sent, in order; ``sent()`` (W3): (to, what) of every message: a text's body, a template's
+  name and its parameters, or the buttons' text and ids. Files are never sent on WhatsApp, so there
+  is no media endpoint.
 * ``whatsapp_settings``: settings with WhatsApp on, pointed at the fake.
 * ``delivery``: the JSON Meta posts for messages; ``post``: posts it to the webhook signed with
   the app secret as Meta does (or with the ``signature`` given).
@@ -25,6 +27,7 @@ from typing import Any
 
 from sqlalchemy import text
 
+from kaagaz.adapters.whatsapp import CODE_TEMPLATE
 from kaagaz.channel.numbers import number_hash, seal
 from kaagaz.db.engine import Database
 from kaagaz.settings import Settings
@@ -35,6 +38,7 @@ TOKEN = "fake-access-token-" + "t" * 20
 APP_SECRET = "fake-app-secret-" + "s" * 16
 VERIFY_TOKEN = "fake-verify-token"
 NUMBER_KEY = "fake-number-key-" + "k" * 32
+BUSINESS_NUMBER = "15550001111"  # the Kaagaz number, made up
 VERSION = "/v0.0"
 WEBHOOK = "/api/whatsapp/webhook"
 
@@ -48,7 +52,29 @@ class WhatsAppFake:
 
     def texts(self) -> list[tuple[str, str]]:
         with self.lock:
-            return [(body["to"], body["text"]["body"]) for _, _, body in self.requests]
+            return [
+                (body["to"], body["text"]["body"]) for _, _, body in self.requests if body["type"] == "text"
+            ]
+
+    def sent(self) -> list[tuple[str, Any]]:
+        with self.lock:
+            return [(body["to"], _what(body)) for _, _, body in self.requests]
+
+    def code_to(self, number: str) -> str:
+        """The last connect code the bot sent to ``number``."""
+        codes = [what[1][0] for to, what in self.sent() if to == number[1:] and what[0] == CODE_TEMPLATE]
+        return str(codes[-1])
+
+
+def _what(body: dict[str, Any]) -> Any:
+    """A text's body; (a template's name, its parameters in order); or (the text, the button ids)."""
+    if body["type"] == "text":
+        return body["text"]["body"]
+    if body["type"] == "template":
+        given = [part for component in body["template"]["components"] for part in component["parameters"]]
+        return (body["template"]["name"], [part.get("text") or part.get("payload") for part in given])
+    interactive = body["interactive"]
+    return (interactive["body"]["text"], [row["reply"]["id"] for row in interactive["action"]["buttons"]])
 
 
 def _handler(fake: WhatsAppFake) -> type[BaseHTTPRequestHandler]:
@@ -104,6 +130,7 @@ def whatsapp_settings(fake: WhatsAppFake | None = None, **overrides: Any) -> Set
         whatsapp_app_secret=APP_SECRET,
         whatsapp_verify_token=VERIFY_TOKEN,
         whatsapp_number_key=NUMBER_KEY,
+        whatsapp_business_number=BUSINESS_NUMBER,
         **overrides,
     )
 

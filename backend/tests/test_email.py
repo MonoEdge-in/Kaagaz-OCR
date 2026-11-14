@@ -127,6 +127,9 @@ TEMPLATES = (
     emails.google_declined,
     emails.google_disconnected,
     emails.connection_waiting,
+    # Changed on purpose (#603): WhatsApp connected, and turned on for the organisation.
+    emails.whatsapp_connected,
+    emails.whatsapp_turned_on,
 )
 # What an email may be told: never a document, its name or content, never an id.
 # Changed on purpose (#507): the invite's Google line is a yes or no.
@@ -165,6 +168,7 @@ def test_a_security_notice_has_no_link() -> None:
         emails.google_approved,
         emails.google_declined,
         emails.google_disconnected,
+        emails.whatsapp_connected,  # Changed on purpose (#603)
     ):
         _, text = notice(name="Ramesh")
         assert "http" not in text
