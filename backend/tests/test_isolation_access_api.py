@@ -17,6 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from kaagaz.adapters.email import MemoryMailer
+from kaagaz.api.routers import access as access_router
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import trash
 from kaagaz.db.documents import add_version
@@ -174,7 +175,7 @@ def test_who_may_ask_who_sees_what(db: Database) -> None:
         "SELECT * FROM kaagaz_place_audience(NULL, NULL, false)",
         "SELECT * FROM kaagaz_kept_from_me(:folder)",
         "SELECT * FROM kaagaz_admin_document(:file)",
-        "SELECT * FROM kaagaz_give_file(:file, :person)",
+        "SELECT * FROM kaagaz_give_file(:file, ARRAY[CAST(:person AS uuid)])",
         "SELECT kaagaz_take_file(:file, :person)",
     ):
         for who in ("head", "management", "member"):
@@ -228,6 +229,8 @@ def test_switching_a_person_off_clears_their_access_and_on_again_starts_with_non
     reply = admin.client.patch(f"/api/admin/users/{plain}", json={"disabled": False}, headers=CSRF)
     assert reply.status_code == 200
     assert _rows_of(db, org.c, plain) == (0, 0, 0, 0)  # a leftover goes too: they start with none
+    [(_, _, target, subject, details)] = _audit(db, org.c, "access.switched_on")  # and it is on record
+    assert (target, subject, details["files"]) == (plain, plain, 1)
 
 
 def test_the_operator_switching_an_admin_off_clears_their_access_too(db: Database) -> None:
@@ -345,6 +348,7 @@ def test_members_and_the_head_tick(db: Database) -> None:
     assert _call(admin, "PUT", url, {}) == (200, {"head": False, "changed": False})  # ON CONFLICT
     assert _version(db, org.c) == before + 1
     assert _call(admin, "PUT", url, {"head": True}) == (200, {"head": True, "changed": True})
+    assert _call(admin, "PUT", url, {}) == (200, {"head": True, "changed": False})  # left out: kept
     assert [row[1:4] for row in _audit(db, org.c, "access.member_add")] == [("folder", finance, plain)]
     assert [row[3] for row in _audit(db, org.c, "access.head_on")] == [plain]
     assert _call(admin, "DELETE", url)[0] == 204
@@ -487,7 +491,7 @@ def test_the_named_list_answers_its_admin_and_its_head_only(db: Database) -> Non
         assert status == 200, (who, body)
         assert [p["id"] for p in body["named"]] == [org.people["named"].user_id]
         assert [p["id"] for p in body["heads"]] == [org.people["head"].user_id]
-        assert body["folder"]["path"] == "Finance / Salaries"
+        assert body["folder"]["path"] == "Finance / Salaries" and body["can_edit"] is True
     finance = f"/api/folders/{org.folders['finance']}/named"
     assert _code(_call(org.people["head"], "GET", finance)) == (409, "not_private")
 
@@ -508,6 +512,8 @@ def test_a_head_names_and_unnames_people(db: Database) -> None:
     )
     assert _call(head, "DELETE", _named_url(org, plain))[0] == 204
     assert _code(_call(head, "DELETE", _named_url(org, plain))) == (404, "not_found")
+    assert _call(head, "PUT", _named_url(org, head.user_id), {}) == (200, {"changed": True})  # no password
+    assert _audit(db, org.c, "access.named_add")[-1][3:] == (head.user_id, {"self": True})
     for who in (org.people["off"].user_id, str(uuid.uuid4()), _walled(Api(db)).people["plain"].user_id):
         assert _code(_call(head, "PUT", _named_url(org, who), {})) == (404, "not_found")
     admin = org.people["admin"]
@@ -778,3 +784,214 @@ def test_two_operator_switches_in_one_organisation_queue_on_the_tree_lock(db: Da
     for thread, _ in switching:
         thread.join(timeout=20)
     assert [out[0].status_code for _, out in switching] == [200, 200]
+
+
+# --- review fixes (#601) ------------------------------------------------------------------------
+
+
+def test_the_password_is_proved_with_no_connection_held(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The password check opens its own short transactions: a request holding a pooled connection
+    meanwhile would starve the pool for every organisation under parallel self-grants."""
+    api = Api(db)
+    org = _walled(api)
+    admin, me = org.people["admin"], org.people["admin"].user_id
+    held: list[int] = []
+    proved = access_router.prove_password
+
+    def watched(context: Any, user: Any, password: str) -> None:
+        held.append(db.engine.pool.checkedout())
+        proved(context, user, password)
+
+    monkeypatch.setattr(access_router, "prove_password", watched)
+    with db.customer(org.c) as conn:
+        bills = insert_folder(conn, org.c, me, "Bills", org.folders["loose"])
+    for method, url, body in (
+        ("PUT", f"/api/admin/users/{me}/management", {"on": True}),
+        ("PUT", f"/api/admin/users/{me}/departments/{org.folders['sales']}", {}),
+        ("PUT", f"/api/admin/departments/{org.folders['finance']}/department-only", {"on": False}),
+        ("PUT", f"/api/folders/{bills}/private", {"on": True, "named": [me]}),
+        ("PUT", f"/api/folders/{org.folders['salaries']}/named/{me}", {}),
+        ("PUT", f"/api/documents/{org.files['top']}/shares/{me}", {}),
+        ("POST", "/api/documents/shares", {"document_ids": [org.files["loose"]], "user_ids": [me]}),
+    ):
+        status, reply = _call(admin, method, url, {**body, "password": PASSWORD})
+        assert status == 200, (url, reply)
+    assert held == [0] * 7
+
+
+def test_a_head_whose_tick_goes_while_their_naming_waits_is_refused(db: Database) -> None:
+    org = _walled(Api(db))
+    head, plain = org.people["head"], org.people["plain"].user_id
+    _owner(
+        db,
+        "INSERT INTO private_folder_members (customer_id, folder_id, user_id, added_by)"
+        " VALUES (:c, :f, :u, :u)",
+        {"c": org.c, "f": org.folders["salaries"], "u": head.user_id},
+    )  # still sees Salaries once no longer Head
+    with db.customer(org.c) as conn:
+        folders_sql._lock_tree(conn, org.c)
+        thread, out = _in_thread(lambda: _call(head, "PUT", _named_url(org, plain), {}))
+        thread.join(timeout=1.5)
+        assert thread.is_alive()
+        conn.execute(
+            text("UPDATE department_members SET is_head = false WHERE customer_id = :c AND user_id = :u"),
+            {"c": org.c, "u": head.user_id},
+        )
+    thread.join(timeout=20)
+    assert _code(out[0]) == (403, "forbidden")
+    assert _owner(db, "SELECT count(*) FROM private_folder_members WHERE user_id = :u", {"u": plain}) == [
+        (0,)
+    ]
+
+
+def test_a_folder_opened_while_a_naming_waits_is_not_private(db: Database) -> None:
+    org = _walled(Api(db))
+    head, plain = org.people["head"], org.people["plain"].user_id
+    with db.customer(org.c) as conn:
+        folders_sql._lock_tree(conn, org.c)
+        thread, out = _in_thread(lambda: _call(head, "PUT", _named_url(org, plain), {}))
+        thread.join(timeout=1.5)
+        assert thread.is_alive()
+        conn.execute(text("UPDATE folders SET private = false WHERE id = :f"), {"f": org.folders["salaries"]})
+    thread.join(timeout=20)
+    assert _code(out[0]) == (409, "not_private")
+    assert _owner(db, "SELECT count(*) FROM private_folder_members WHERE user_id = :u", {"u": plain}) == [
+        (0,)
+    ]
+
+
+def test_a_folder_moved_into_a_private_one_while_private_waits_is_refused(db: Database) -> None:
+    org = _walled(Api(db))
+    admin = org.people["admin"]
+    with db.customer(org.c) as conn:
+        bills = insert_folder(conn, org.c, admin.user_id, "Bills", org.folders["loose"])
+    with db.customer(org.c) as conn:
+        folders_sql._lock_tree(conn, org.c)
+        thread, out = _in_thread(lambda: _call(admin, "PUT", f"/api/folders/{bills}/private", {"on": True}))
+        thread.join(timeout=1.5)
+        assert thread.is_alive()
+        conn.execute(
+            text("UPDATE folders SET parent_id = :p WHERE id = :f"),
+            {"p": org.folders["salaries"], "f": bills},
+        )
+    thread.join(timeout=20)
+    assert _code(out[0]) == (409, "inside_private")
+    assert _owner(db, "SELECT private FROM folders WHERE id = :f", {"f": bills}) == [(False,)]
+
+
+def test_a_file_taken_back_while_a_new_version_is_added_leaves_no_version_given(db: Database) -> None:
+    org = _walled(Api(db))
+    admin, member, file = org.people["admin"], org.people["member"].user_id, org.files["sales"]
+    assert _call(admin, "PUT", f"/api/documents/{file}/shares/{member}", {})[0] == 200
+    record = DocumentRecord(org.c, str(uuid.uuid4()), uuid.uuid4().hex * 2, 10, "pdf")
+    with db.customer(org.c) as conn:
+        assert add_version(conn, record, of_document_id=file) is not None  # holds tree and family
+        thread, out = _in_thread(lambda: _call(admin, "DELETE", f"/api/documents/{file}/shares/{member}"))
+        thread.join(timeout=1.5)
+        assert thread.is_alive()
+    thread.join(timeout=20)
+    assert out[0][0] == 204
+    assert _owner(db, "SELECT count(*) FROM document_shares WHERE user_id = :u", {"u": member}) == [(0,)]
+
+
+def test_bulk_giving_to_the_admin_themselves_takes_the_password(db: Database) -> None:
+    api, mailer = _email_api(db)
+    org = _walled(api)
+    admin = org.people["admin"]
+    files = [org.files["top"], org.files["loose"]]
+    body = {"document_ids": files, "user_ids": [admin.user_id]}
+    before = _version(db, org.c)
+    assert _code(_call(admin, "POST", "/api/documents/shares", body)) == (403, "password_required")
+    assert (_given(db, admin.user_id, files), _version(db, org.c)) == (0, before)
+    assert _call(admin, "POST", "/api/documents/shares", {**body, "password": PASSWORD}) == (
+        200,
+        {"given": 2},
+    )
+    assert [row[4] for row in _audit(db, org.c, "access.file_give")] == [{"versions": 1, "self": True}] * 2
+    assert any("gave themselves a file" in sent.text for sent in mailer.sent)
+
+
+def test_every_kind_of_access_an_admin_gets_is_told_to_management_and_the_other_admins(db: Database) -> None:
+    """Each self-grant kind, and access given to another Admin (lead decision: an Admin's second
+    account): Management and the other Admins are emailed, never the actor."""
+    api, mailer = _email_api(db)
+    org = _walled(api)
+    admin, other = org.people["admin"], api.admin_sign_in(org.c)
+    me, sales = admin.user_id, org.folders["sales"]
+    with db.customer(org.c) as conn:
+        bills = insert_folder(conn, org.c, me, "Bills", org.folders["loose"])
+    watchers = {
+        row[0]
+        for row in _owner(
+            db,
+            "SELECT email FROM users WHERE customer_id = :c AND (management OR role = 'admin')"
+            " AND NOT disabled",
+            {"c": org.c},
+        )
+    } - {admin.email}
+    steps = (
+        (  # first: once the Admin is Management, opening a wall gains them nothing
+            "themselves access to files",
+            f"/api/admin/departments/{org.folders['finance']}/department-only",
+            {"on": False},
+        ),
+        ("themselves Management", f"/api/admin/users/{me}/management", {"on": True}),
+        ("themselves a place in a department", f"/api/admin/users/{me}/departments/{sales}", {}),
+        ("themselves the Head tick", f"/api/admin/users/{me}/departments/{sales}", {"head": True}),
+        ("themselves a place on a private", f"/api/folders/{org.folders['salaries']}/named/{me}", {}),
+        ("themselves a file", f"/api/documents/{org.files['top']}/shares/{me}", {}),
+        ("themselves a place on a private", f"/api/folders/{bills}/private", {"on": True, "named": [me]}),
+    )
+    for words, url, body in steps:
+        sent = len(mailer.sent)
+        assert _call(admin, "PUT", url, {**body, "password": PASSWORD})[0] == 200, url
+        new = [m for m in mailer.sent[sent:] if m.subject == "Access was given in Kaagaz"]
+        assert {m.to for m in new} == watchers, words
+        assert all(words in m.text for m in new), words
+    for person, told in ((other.user_id, True), (org.people["plain"].user_id, False)):
+        sent = len(mailer.sent)
+        assert _call(admin, "PUT", f"/api/documents/{org.files['loose']}/shares/{person}", {})[0] == 200
+        new = [m for m in mailer.sent[sent:] if m.subject == "Access was given in Kaagaz"]
+        assert {m.to for m in new} == (watchers if told else set()), person
+        assert all("a file, given directly" in m.text for m in new)
+
+
+def test_a_department_in_use_keeps_its_kind(db: Database) -> None:
+    """Lead decision 6: with members, Department only, or a private folder inside, 409
+    ``department_in_use`` before anything is written; an unused one may change."""
+    org = _walled(Api(db))
+    admin = org.people["admin"]
+    with db.customer(org.c) as conn:
+        legal = insert_folder(conn, org.c, admin.user_id, "Legal")
+        deeds = insert_folder(conn, org.c, admin.user_id, "Deeds", legal)
+        spare = insert_folder(conn, org.c, admin.user_id, "Spare")
+    _owner(db, "UPDATE folders SET kind = 'department' WHERE id IN (:l, :s)", {"l": legal, "s": spare})
+    _owner(db, "UPDATE folders SET private = true WHERE id = :f", {"f": deeds})
+    _owner(db, "DELETE FROM department_members WHERE department_id = :f", {"f": org.folders["finance"]})
+    _owner(
+        db,
+        "INSERT INTO department_members (customer_id, department_id, user_id, added_by)"
+        " VALUES (:c, :d, :u, :u)",
+        {"c": org.c, "d": org.folders["sales"], "u": admin.user_id},
+    )
+    for department in (
+        org.folders["finance"],
+        org.folders["sales"],
+        legal,
+    ):  # Department only, member, private
+        reply = _call(admin, "PATCH", f"/api/folders/{department}", {"kind": "custom", "name": "Renamed"})
+        assert _code(reply) == (409, "department_in_use"), department
+        state = _owner(db, "SELECT kind, name FROM folders WHERE id = :f", {"f": department})
+        assert state[0][0] == "department" and state[0][1] != "Renamed"
+    assert _call(admin, "PATCH", f"/api/folders/{spare}", {"kind": "custom"})[0] == 200
+    with pytest.raises(folders_sql.DepartmentInUse), db.customer(org.c) as conn:  # the CHECK, named
+        folders_sql.set_kind(conn, org.c, org.folders["finance"], kind="custom", sort_order=None, order=False)
+
+
+def test_a_file_is_never_given_to_a_person_switched_off_even_by_sql(db: Database) -> None:
+    org = _walled(Api(db))
+    statement = "SELECT * FROM kaagaz_give_file(:file, ARRAY[CAST(:person AS uuid)])"
+    params = {"file": org.files["top"], "person": org.people["off"].user_id}
+    assert _refused(db, org.c, org.people["admin"].user_id, statement, **params) == "23514"

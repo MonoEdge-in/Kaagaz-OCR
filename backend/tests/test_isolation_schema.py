@@ -336,7 +336,7 @@ OWNER_RIGHTS = {
         "TABLE(id uuid, family_id uuid, display_name text, in_trash boolean, locked boolean)",
         EMPTY_PATH,
     ),
-    "kaagaz_give_file": ("TABLE(versions integer, added integer)", EMPTY_PATH),
+    "kaagaz_give_file": ("TABLE(user_id uuid, versions integer, added integer)", EMPTY_PATH),
     "kaagaz_take_file": ("integer", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
