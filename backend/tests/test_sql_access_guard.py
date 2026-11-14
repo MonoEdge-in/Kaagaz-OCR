@@ -41,6 +41,8 @@ _WORDS = "word review and Ensemble routes: get_document (the view) first, in the
 _ENSEMBLE = "ensemble routes: get_document (the view) first"
 
 ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
+    # Changed on purpose (#601): the Access page's files given to a person, by their true names.
+    ("db/access.py", "_GIVEN_TO"): (ADMIN_NUMBERS, "GET /admin/users/{id}/access"),
     ("db/admin.py", "_DOCUMENTS_BY_STATUS"): (ADMIN_NUMBERS, "GET /admin/stats"),
     ("db/admin.py", "_COUNTS"): (ADMIN_NUMBERS, "GET /admin/stats"),
     ("db/admin.py", "_KEPT"): (ADMIN_NUMBERS, "GET /admin/stats"),

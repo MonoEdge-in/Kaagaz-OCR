@@ -56,6 +56,8 @@ class FolderRow:
     created_at: datetime
     kind: str = "custom"  # File management F1 (0041)
     sort_order: int | None = None
+    department_only: bool = False  # PRD 7 (0084)
+    private: bool = False
 
 
 class FolderError(Exception):
@@ -150,7 +152,8 @@ _LOCK_TREE = "SELECT 1 FROM customers WHERE id = :c FOR NO KEY UPDATE"
 # PRD 7 (#599): only the folders the person may see; one whose parent they can't see is at the top
 # level for them, so no hidden folder's id reaches the tree.
 _LIST = (
-    "SELECT f.id, p.id AS parent_id, f.name, f.created_at, f.kind, f.sort_order FROM visible_folders f"
+    "SELECT f.id, p.id AS parent_id, f.name, f.created_at, f.kind, f.sort_order, f.department_only, f.private"
+    " FROM visible_folders f"
     " LEFT JOIN visible_folders p ON p.customer_id = f.customer_id AND p.id = f.parent_id"
     " WHERE f.customer_id = :c ORDER BY lower(f.name), f.id"
 )
@@ -158,37 +161,40 @@ _LIST = (
 _INSERT = (
     "INSERT INTO folders (customer_id, parent_id, name, created_by, kind, sort_order)"
     " VALUES (:c, :p, :name, :u, :kind, :sort)"
-    " RETURNING id, parent_id, name, created_at, kind, sort_order"
+    " RETURNING id, parent_id, name, created_at, kind, sort_order, department_only, private"
 )
 
 # File management F1: a folder's kind and the department order, each only when given.
 _SET_KIND = (
     "UPDATE folders SET kind = CASE WHEN :set_kind THEN :kind ELSE kind END,"
     " sort_order = CASE WHEN :set_sort THEN CAST(:sort AS integer) ELSE sort_order END"
-    " WHERE customer_id = :c AND id = :f RETURNING id, parent_id, name, created_at, kind, sort_order"
+    " WHERE customer_id = :c AND id = :f RETURNING id, parent_id, name, created_at, kind, sort_order,"
+    " department_only, private"
 )
 
 _RENAME = (
     "UPDATE folders SET name = :name WHERE customer_id = :c AND id = :f RETURNING "
-    "id, parent_id, name, created_at, kind, sort_order"
+    "id, parent_id, name, created_at, kind, sort_order, department_only, private"
 )
 
 _MOVE = (
     "UPDATE folders SET parent_id = :p WHERE customer_id = :c AND id = :f RETURNING "
-    "id, parent_id, name, created_at, kind, sort_order"
+    "id, parent_id, name, created_at, kind, sort_order, department_only, private"
 )
 
 # The folder and its ancestors; depth 1 is the folder itself, so the largest
 # depth is the folder's own depth in the tree, and the root comes last.
 _PATH = (
-    "WITH RECURSIVE up (id, parent_id, name, created_at, kind, sort_order, depth) AS ("
-    " SELECT f.id, f.parent_id, f.name, f.created_at, f.kind, f.sort_order, 1 FROM folders f"
+    "WITH RECURSIVE up (id, parent_id, name, created_at, kind, sort_order, department_only, private, depth)"
+    " AS (SELECT f.id, f.parent_id, f.name, f.created_at, f.kind, f.sort_order, f.department_only,"
+    " f.private, 1 FROM folders f"
     " WHERE f.customer_id = :c AND f.id = :f"
     " UNION ALL"
-    " SELECT f.id, f.parent_id, f.name, f.created_at, f.kind, f.sort_order, up.depth + 1 FROM up"
-    " JOIN folders f ON f.id = up.parent_id"
+    " SELECT f.id, f.parent_id, f.name, f.created_at, f.kind, f.sort_order, f.department_only, f.private,"
+    " up.depth + 1 FROM up JOIN folders f ON f.id = up.parent_id"
     " WHERE f.customer_id = :c AND up.depth < 101)"
-    " SELECT id, parent_id, name, created_at, kind, sort_order FROM up ORDER BY depth DESC"
+    " SELECT id, parent_id, name, created_at, kind, sort_order, department_only, private FROM up"
+    " ORDER BY depth DESC"
 )
 
 _DEPTH = (
@@ -616,6 +622,8 @@ def _folder(row: Sequence[Any]) -> FolderRow:
         created_at=row[3],
         kind=str(row[4]),
         sort_order=row[5],
+        department_only=bool(row[6]),
+        private=bool(row[7]),
     )
 
 

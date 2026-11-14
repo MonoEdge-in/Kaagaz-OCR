@@ -241,7 +241,7 @@ _MAKE_LIVE = (
     " AND k.autofile_key = t.autofile_key) THEN NULL ELSE t.autofile_key END, t.department_only,"
     " t.private OR (t.id = :top AND :seal), t.department_id, t.private_folder_id"
     " FROM trashed_folders t WHERE t.customer_id = :c AND t.id = ANY(CAST(:ids AS uuid[]))"
-    " RETURNING id, parent_id, name, created_at, kind, sort_order"
+    " RETURNING id, parent_id, name, created_at, kind, sort_order, department_only, private"
 )
 _DROP = "DELETE FROM trashed_folders WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
 # Every family filed in these trashed folders back into its folder, out of Trash, in one

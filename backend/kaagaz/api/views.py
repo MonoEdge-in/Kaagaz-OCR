@@ -565,6 +565,8 @@ def folder(row: FolderRow) -> dict[str, Any]:
         "created_at": iso(row.created_at),
         "kind": row.kind,  # File management F1
         "sort_order": row.sort_order,
+        "department_only": row.department_only,  # PRD 7 (#601): the icons
+        "private": row.private,
     }
 
 
@@ -1092,6 +1094,7 @@ def me_json(
     email_on: bool,
     providers: Sequence[str],
     recent_connections: Sequence[dict[str, str]] = (),
+    access: tuple[bool, Sequence[str]],
 ) -> dict[str, Any]:
     """``Me``: who is signed in, their customer, and the session's scope ("app" for a
     member or reviewer, "admin" for an admin; the screen shows Admin only for "admin").
@@ -1103,8 +1106,10 @@ def me_json(
     sign in" only while one is. ``google_link_required`` (#507): the limited session, whose
     password lets the user only connect Google; ``google_unchecked`` (#507 review): in it, their
     connected Google account is from before its domain was checked, so they sign in with Google
-    once instead."""
+    once instead. ``access`` (PRD 7, #601): the person's Management and the departments they head,
+    so the screens show a Head's menus."""
     return {
+        "access": {"management": access[0], "heads": list(access[1])},
         "user": {
             "id": user.user_id,
             "email": user.email,
@@ -1160,6 +1165,7 @@ def admin_user(
         "two_step_turned_off": row["totp_off_at"] is not None and not row["two_step_required"],
         "must_change_password": bool(row["must_change_password"]),
         "can_delete_forever": row["delete_forever_allowed_at"] is not None and row["role"] != "admin",
+        "management": bool(row["management"]),  # PRD 7 (#601)
     }
 
 

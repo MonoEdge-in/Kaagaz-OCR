@@ -336,6 +336,7 @@ def test_day_one_never_runs_the_given_or_lock_lookups(db: Database) -> None:
 # still run as kaagaz_app with no person on a server, and would see nothing). A new one belongs here
 # only once its callers are checked.
 VIEW_READERS = {
+    "db/access.py": {"_DEPARTMENTS", "_HOLDS_PRIVATE", "_NAMED_ON", "_PLACE"},  # Changed on purpose (#601)
     "db/audit.py": {"_FOLDER_PATHS", "_OF_FAMILY", "_SEEN"},
     "db/chat.py": {"_DOCUMENT_QUESTIONS", "add_pin"},
     "db/document_stories.py": {"_DELETE", "_PUT"},
