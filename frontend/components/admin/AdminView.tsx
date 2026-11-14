@@ -127,7 +127,7 @@ function AdminTabs({ twoStep, tab }: { twoStep: ReactNode; tab?: string }) {
             {twoStep}
           </div>
         )}
-        {active === "departments" && <DepartmentsPanel />}
+        {active === "departments" && <DepartmentsPanel me={{ id: me.user.id, name: me.user.display_name }} />}
         {active === "ai" && <AiSettingsPanel scope="organisation" onUnsaved={setUnsaved} />}
         {active === "activity" && <ActivityPanel />}
         {active === "numbers" && <NumbersPanel />}

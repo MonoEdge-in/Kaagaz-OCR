@@ -6,35 +6,77 @@
 // is React text. The server refuses the change to anyone but an admin (403).
 // Issue 376: one error at a time, in the word "department". An add that failed says why under
 // its own form, on a line of its own, so the Add button never moves; typing clears it.
+// PRD 7 (#604): each department's access (GET /admin/departments): its head, how many people,
+// Department only or open, its people (DepartmentPeople) and the switch (DepartmentOnlyDialog);
+// a new department asks who heads it (NewDepartmentHead). What changed shows in a toast.
 
-import { useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import type { FormEvent } from "react";
+import { usePasswordStep } from "@/components/access/SelfPasswordDialog";
+import {
+  ADD_PEOPLE,
+  DEPARTMENT_ONLY,
+  KEEP_TO_PEOPLE,
+  OPEN_TO_EVERYONE,
+  accessErrorText,
+  departmentOnlyToast,
+  headLine,
+  newDepartmentToast,
+  noMembersWarning,
+  peopleCount,
+} from "@/components/access/words";
+import access from "@/components/access/Access.module.css";
 import { departmentNameProblem, libraryErrorText } from "@/components/documents/library";
 import { departmentsOf, nextSortOrder, reorder } from "@/components/files/departments";
 import fileStyles from "@/components/files/Files.module.css";
 import { FILES_TEXT } from "@/components/files/words";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
-import { createFolder, listFolders, updateFolder } from "@/lib/api";
+import { createFolder, listAdminDepartments, listFolders, setDepartmentOnly, updateFolder } from "@/lib/api";
 import { errorWords } from "@/lib/errorWords";
-import type { Folder } from "@/lib/types";
+import type { AdminDepartment, Folder, Person } from "@/lib/types";
+import { DepartmentOnlyDialog } from "./DepartmentOnlyDialog";
+import { DepartmentPeople } from "./DepartmentPeople";
+import { NewDepartmentHead } from "./NewDepartmentHead";
+import { Toast } from "./Toast";
+import type { Notice } from "./Toast";
 import styles from "./Admin.module.css";
 
-export function DepartmentsPanel({ initial }: { initial?: Folder[] }) {
+const NOBODY: Person = { id: "", name: "" };
+
+/** `me`: the signed-in admin (the head step's Me, and the password step). `initial` and
+ * `initialAccess`: what to show without asking (the render tests). */
+export function DepartmentsPanel({
+  initial,
+  initialAccess,
+  me = NOBODY,
+}: {
+  initial?: Folder[];
+  initialAccess?: AdminDepartment[];
+  me?: Person;
+}) {
   const [folders, setFolders] = useState<Folder[] | null>(initial ?? null);
+  const [accessOf, setAccessOf] = useState<AdminDepartment[]>(initialAccess ?? []);
   const [error, setError] = useState<string | null>(null);
   const [addError, setAddError] = useState<string | null>(null); // said under the add form
-  const [said, setSaid] = useState("");
+  const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [people, setPeople] = useState<{ id: string; adding: boolean } | null>(null); // the open people list
+  const [switching, setSwitching] = useState<AdminDepartment | null>(null); // Department only, asked
+  const [heading, setHeading] = useState<Folder | null>(null); // a new department: who heads it?
+  const closeNotice = useCallback(() => setNotice(null), []);
+  const step = usePasswordStep();
 
   useEffect(() => {
     if (initial) return;
     let cancelled = false;
-    listFolders().then(
-      (reply) => {
-        if (!cancelled) setFolders(reply.items);
+    Promise.all([listFolders(), listAdminDepartments()]).then(
+      ([reply, departmentAccess]) => {
+        if (cancelled) return;
+        setFolders(reply.items);
+        setAccessOf(departmentAccess.items);
       },
       (caught: unknown) => {
         if (!cancelled) setError(`The departments did not load. ${errorWords(caught)}`);
@@ -47,19 +89,28 @@ export function DepartmentsPanel({ initial }: { initial?: Folder[] }) {
 
   const departments = departmentsOf(folders ?? []);
 
-  async function run(work: () => Promise<unknown>, done: string, fail: (text: string) => void = setError) {
+  /** `done`: the toast, or null to say nothing (a new department: its head step says it). */
+  async function run(work: () => Promise<unknown>, done: string | null, fail: (text: string) => void = setError) {
     setBusy(true);
     setError(null);
     setAddError(null);
     try {
-      await work();
-      setSaid(done);
+      if ((await work()) !== null && done) setNotice({ text: done });
       setAttempt((n) => n + 1);
     } catch (caught) {
-      fail(libraryErrorText(caught, "department"));
+      fail(accessErrorText(caught, () => libraryErrorText(caught, "department")));
     } finally {
       setBusy(false);
     }
+  }
+
+  function switchDepartmentOnly(department: AdminDepartment, passwordFirst: boolean) {
+    const on = !department.department_only;
+    setSwitching(null);
+    void run(
+      () => step.run(department.name, (password) => setDepartmentOnly(department.id, on, password), passwordFirst),
+      departmentOnlyToast(department.name, on),
+    );
   }
 
   function move(id: string, step: -1 | 1) {
@@ -76,9 +127,6 @@ export function DepartmentsPanel({ initial }: { initial?: Folder[] }) {
         {FILES_TEXT.adminTab}
       </h2>
       <p className="muted">{FILES_TEXT.adminIntro}</p>
-      <p className="visually-hidden" aria-live="polite">
-        {said}
-      </p>
       {error && (
         <p className="error-text" role="alert">
           {error}
@@ -128,9 +176,39 @@ export function DepartmentsPanel({ initial }: { initial?: Folder[] }) {
                   />
                 </>
               )}
+              <DepartmentAccess
+                department={accessOf.find((each) => each.id === department.id)}
+                busy={busy}
+                peopleOpen={people?.id === department.id}
+                onPeople={(adding) => setPeople(people?.id === department.id && !adding ? null : { id: department.id, adding })}
+                onSwitch={setSwitching}
+              />
+              {people?.id === department.id && (
+                <DepartmentPeople
+                  key={`${department.id}-${people.adding}`}
+                  department={department}
+                  me={me}
+                  adding={people.adding}
+                  run={step.run}
+                  onChanged={() => setAttempt((n) => n + 1)}
+                  onNotice={setNotice}
+                />
+              )}
             </li>
           ))}
         </ol>
+      )}
+      {heading && (
+        <NewDepartmentHead
+          department={heading}
+          me={me}
+          run={step.run}
+          onDone={(head) => {
+            setNotice({ text: newDepartmentToast(heading.name, head?.name ?? null) });
+            setHeading(null);
+            setAttempt((n) => n + 1);
+          }}
+        />
       )}
       {folders !== null && (
         <NameForm
@@ -142,13 +220,27 @@ export function DepartmentsPanel({ initial }: { initial?: Folder[] }) {
           onEdit={() => setAddError(null)}
           onSubmit={(name) =>
             void run(
-              () => createFolder(name, null, { sort_order: nextSortOrder(departments) }),
-              `${name} added.`,
+              async () => setHeading(await createFolder(name, null, { sort_order: nextSortOrder(departments) })),
+              null,
               setAddError,
             )
           }
         />
       )}
+      {switching && (
+        <DepartmentOnlyDialog
+          department={switching}
+          myId={me.id}
+          onClose={() => setSwitching(null)}
+          onAddPeople={() => {
+            setSwitching(null);
+            setPeople({ id: switching.id, adding: true });
+          }}
+          onConfirm={(passwordFirst) => switchDepartmentOnly(switching, passwordFirst)}
+        />
+      )}
+      {step.dialog}
+      <Toast notice={notice} onClose={closeNotice} />
       {error && folders === null && (
         <button type="button" className="btn" onClick={() => setAttempt((n) => n + 1)}>
           <Icon name="refresh" />
@@ -156,6 +248,57 @@ export function DepartmentsPanel({ initial }: { initial?: Folder[] }) {
         </button>
       )}
     </section>
+  );
+}
+
+/** A department's access under its name (PRD 7, #604): its head, how many people, Department only
+ * or open, People (n) and the switch; with Department only on and nobody in it, a warning with
+ * Add people. Nothing while GET /admin/departments has not answered. */
+export function DepartmentAccess({
+  department,
+  busy,
+  peopleOpen,
+  onPeople,
+  onSwitch,
+}: {
+  department: AdminDepartment | undefined;
+  busy: boolean;
+  peopleOpen: boolean;
+  onPeople(adding: boolean): void;
+  onSwitch(department: AdminDepartment): void;
+}) {
+  if (!department) return null;
+  return (
+    <>
+      <span className={access.facts}>
+        <span>{headLine(department.heads)}</span>
+        <span>{peopleCount(department.members)}</span>
+        {department.department_only ? (
+          <span className="status-chip" data-tone="working">
+            {DEPARTMENT_ONLY}
+          </span>
+        ) : (
+          <span>{OPEN_TO_EVERYONE}</span>
+        )}
+        <button type="button" className="btn btn-quiet" aria-expanded={peopleOpen} disabled={busy} onClick={() => onPeople(false)}>
+          {`People (${department.members})`}
+          <span className="visually-hidden">{` in ${department.name}`}</span>
+        </button>
+        <button type="button" className="btn" aria-haspopup="dialog" disabled={busy} onClick={() => onSwitch(department)}>
+          {department.department_only ? OPEN_TO_EVERYONE : KEEP_TO_PEOPLE}
+          <span className="visually-hidden">{`: ${department.name}`}</span>
+        </button>
+      </span>
+      {department.warnings.includes("no_members") && (
+        <p className={access.warning} role="note">
+          <span>{noMembersWarning(department.name)}</span>
+          <button type="button" className="btn" disabled={busy} onClick={() => onPeople(true)}>
+            {ADD_PEOPLE}
+            <span className="visually-hidden">{` to ${department.name}`}</span>
+          </button>
+        </p>
+      )}
+    </>
   );
 }
 
