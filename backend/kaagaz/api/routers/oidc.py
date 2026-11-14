@@ -61,6 +61,10 @@ provider's own routes: while that one is off), before anything else is read.
   without it (it never signed in; someone else's: 404),
   audited ``auth.identity_unlinked``; every other browser is signed out, this one stays, the
   password keeps working, and a security notice is emailed. At most CONNECTS_PER_HOUR a user.
+* A WhatsApp proof (#603, ``routers/whatsapp_account.py`` starts it for a person who signs in with
+  Google only): its callback, while that very session is signed in here (else ``signed_out``),
+  needs the Google account to be the person's own approved connection (else ``not_yours``), then
+  sets the WhatsApp proof cookie and goes back to /settings/whatsapp?proved=google, or ?error=<code>.
 * ``GET /auth/oidc/notice``: "isn't connected" names the provider's email, which never goes in
   a URL (history, logs): the callback leaves it in a signed 60-second cookie, read here once.
 * ``POST /auth/oidc/code`` {code}: the second step, ``routers/auth.py``'s ``_finish_second_step``
@@ -113,6 +117,7 @@ from kaagaz.api.auth import (
     set_notice_cookie,
     set_pending_cookie,
     set_session_cookie,
+    set_whatsapp_proof_cookie,
 )
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
@@ -164,6 +169,7 @@ TOO_MANY_REMOVES = "Too many tries to disconnect an account. Try again in an hou
 PROOF_NEEDED = "Type your Kaagaz password to continue."
 LOGIN = "/login"
 WAYS = "/settings/sign-in"  # Account, Ways to sign in
+WHATSAPP_PAGE = "/settings/whatsapp"  # Account, WhatsApp (#603)
 # A plain path on this site: no scheme, host, "//", "\", "%" or fragment can get through.
 _NEXT = re.compile(r"/[A-Za-z0-9_-][A-Za-z0-9/_-]{0,199}(\?[A-Za-z0-9=&_-]{1,200})?")
 # The OidcError codes the sign-in page explains as "That sign-in expired. Try again."
@@ -289,6 +295,8 @@ def callback(
         identity = _identity(request, context, provider, flow, now)
         if flow.mode == "connect":
             response = _connect(request, context, background, provider, flow, identity)
+        elif flow.mode == "whatsapp":
+            response = _whatsapp_proof(request, context, provider, flow, identity)
         else:
             response = _sign_in(context, provider, flow, identity)
     except _Refused as refused:
@@ -309,8 +317,12 @@ def callback(
 
 
 def _back(flow: FlowClaims | None, code: str) -> RedirectResponse:
-    """Back to the page the flow started from, with why: Ways to sign in for a connect."""
-    back = f"{WAYS}?error=" if flow is not None and flow.mode == "connect" else f"{LOGIN}?oidc_error="
+    """Back to the page the flow started from, with why: Ways to sign in for a connect, WhatsApp for
+    its proof."""
+    mode = None if flow is None else flow.mode
+    back = {"connect": f"{WAYS}?error=", "whatsapp": f"{WHATSAPP_PAGE}?error="}.get(
+        mode or "", f"{LOGIN}?oidc_error="
+    )
     return RedirectResponse(back + code, status_code=303)
 
 
@@ -560,13 +572,7 @@ def _connect(
 ) -> RedirectResponse:
     """Connect ``identity`` to the user who started this connect, while that very session is
     still signed in here (link-CSRF both ways); then this browser stays signed in."""
-    try:
-        user = current_user_allow_google_link(request)
-    except ApiError:
-        raise _Refused("signed_out") from None
-    signed = (user.user_id, user.customer_id, user.session_version)
-    if signed != (flow.user_id, flow.customer_id, flow.session_version):
-        raise _Refused("signed_out")
+    user = _flow_user(request, flow)
     if not user.google_on:  # #507: the start checked these too; they may have changed since
         _link_refused(context, user, provider, "google_off")
     if not user.google_allowed:
@@ -634,6 +640,40 @@ def _connect(
         purpose, notice = ("identity_waiting", emails.google_waiting)
         emails.after(background, "approval_waiting", tell_admins, context, customer_id, user.customer_name)
     emails.after(background, purpose, emails.notify, context, customer_id, user_id, purpose, notice)
+    return response
+
+
+def _flow_user(request: Request, flow: FlowClaims) -> CurrentUser:
+    """The user who started this flow, while that very session is still signed in here."""
+    try:
+        user = current_user_allow_google_link(request)
+    except ApiError:
+        raise _Refused("signed_out") from None
+    signed = (user.user_id, user.customer_id, user.session_version)
+    if signed != (flow.user_id, flow.customer_id, flow.session_version):
+        raise _Refused("signed_out")
+    return user
+
+
+def _whatsapp_proof(
+    request: Request, context: AppContext, provider: Provider, flow: FlowClaims, identity: Identity
+) -> RedirectResponse:
+    """#603: Google proved again that it is the person who started this, for WhatsApp's Connect."""
+    user = _flow_user(request, flow)
+    with context.db.system() as conn:
+        found = identities.lookup(conn, provider.name, identity.issuer, identity.subject)
+    if (
+        found is None
+        or found.status != "approved"
+        or (found.customer_id, found.user_id)
+        != (
+            user.customer_id,
+            user.user_id,
+        )
+    ):
+        raise _Refused("not_yours")
+    response = RedirectResponse(f"{WHATSAPP_PAGE}?proved={provider.name}", status_code=303)
+    set_whatsapp_proof_cookie(response, user, context.settings, now=unix(context.clock()))
     return response
 
 

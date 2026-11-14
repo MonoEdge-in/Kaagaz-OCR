@@ -106,6 +106,11 @@ NOTICE_SECONDS = 60
 # Cookies issued before keep the end they were given.
 CAPPED_SECONDS = 24 * 3600
 WHATSAPP_WEBHOOK_PATH = "/api/whatsapp/webhook"  # #603, routers/whatsapp.py
+# WhatsApp's Connect (#603 W3): the person proved it is them (the password and code, or Google), so for
+# this long they may ask for connect codes; the cookie goes to /api/whatsapp only.
+WHATSAPP_PATH = "/api/whatsapp"
+WHATSAPP_PROOF_COOKIE = "kaagaz_whatsapp_proof"
+WHATSAPP_PROOF_SECONDS = 10 * 60
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _SCRYPT_N, _SCRYPT_R, _SCRYPT_P, _SCRYPT_LEN = 2**14, 8, 1, 32
@@ -210,6 +215,8 @@ _PENDING_PURPOSE = b"second_step"
 _PENDING_FIELDS = frozenset({"p", "uid", "cid", "ver", "exp"})
 _NOTICE_PURPOSE = b"oidc_notice"
 _NOTICE_FIELDS = frozenset({"em", "exp"})
+_WHATSAPP_PROOF_PURPOSE = b"whatsapp_proof"
+_WHATSAPP_PROOF_FIELDS = frozenset({"uid", "cid", "ver", "exp"})
 
 
 def session_seconds(scope: str, settings: Settings, idle_hours: int | None = None) -> int:
@@ -403,7 +410,7 @@ class FlowClaims:
     """One sign-in or connect at a provider, from its start to its callback (single use)."""
 
     provider: str
-    mode: str  # "signin" or "connect"
+    mode: str  # "signin", "connect", or "whatsapp" (#603: Google proves it is them, for WhatsApp)
     state: str
     nonce: str
     verifier: str  # the PKCE verifier
@@ -444,7 +451,8 @@ def sign_flow(claims: FlowClaims, secret: str) -> str:
 
 def read_flow(token: str, secret: str, now: int) -> FlowClaims | None:
     """The claims of a genuine, unexpired flow token, else None. Strict: exactly its fields,
-    each of its type; a connect carries its user, customer and session version, a sign-in none."""
+    each of its type; a connect (or a WhatsApp proof, #603) carries its user, customer and session
+    version, a sign-in none."""
     data = _verified(token, _FLOW_PURPOSE, secret)
     if not isinstance(data, dict) or set(data) != _FLOW_FIELDS:
         return None
@@ -454,7 +462,7 @@ def read_flow(token: str, secret: str, now: int) -> FlowClaims | None:
     uid, cid, ver, exp = data["uid"], data["cid"], data["ver"], data["exp"]
     if not _is_int(exp) or exp <= now:
         return None
-    if data["m"] == "connect":
+    if data["m"] in ("connect", "whatsapp"):
         if not (isinstance(uid, str) and isinstance(cid, str) and _is_uuid(uid) and _is_uuid(cid)):
             return None
         if not _is_version(ver):
@@ -516,6 +524,38 @@ def read_notice(token: str, secret: str, now: int) -> str | None:
     if not (isinstance(email, str) and email and _is_int(exp)) or exp <= now:
         return None
     return email
+
+
+def sign_whatsapp_proof(user: "CurrentUser", expires_at: int, secret: str) -> str:
+    """#603: exactly ``{uid, cid, ver, exp}``, purpose ``whatsapp_proof``."""
+    payload = {"uid": user.user_id, "cid": user.customer_id, "ver": user.session_version, "exp": expires_at}
+    return _sign(payload, _WHATSAPP_PROOF_PURPOSE, secret)
+
+
+def whatsapp_proved(token: str, user: "CurrentUser", secret: str, now: int) -> bool:
+    """Whether ``token`` is a genuine, unexpired proof of this very user at this session version."""
+    data = _verified(token, _WHATSAPP_PROOF_PURPOSE, secret)
+    if not isinstance(data, dict) or set(data) != _WHATSAPP_PROOF_FIELDS:
+        return False
+    exp = data["exp"]
+    if not _is_int(exp) or exp <= now:
+        return False
+    return (data["uid"], data["cid"], data["ver"]) == (user.user_id, user.customer_id, user.session_version)
+
+
+def set_whatsapp_proof_cookie(
+    response: Response, user: "CurrentUser", settings: Settings, *, now: int
+) -> None:
+    """HttpOnly, SameSite=Lax (it may be set on Google's redirect back), sent to /api/whatsapp only."""
+    response.set_cookie(
+        WHATSAPP_PROOF_COOKIE,
+        sign_whatsapp_proof(user, now + WHATSAPP_PROOF_SECONDS, settings.session_secret),
+        max_age=WHATSAPP_PROOF_SECONDS,
+        httponly=True,
+        samesite="lax",
+        secure=settings.cookie_secure,
+        path=WHATSAPP_PATH,
+    )
 
 
 def _set_oidc_cookie(response: Response, name: str, token: str, max_age: int, settings: Settings) -> None:

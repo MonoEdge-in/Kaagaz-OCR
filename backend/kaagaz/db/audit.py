@@ -44,9 +44,10 @@ DetailValue = str | int | bool | None
 # A3: the document's folder and family, or the folder itself, in the same statement.
 _INSERT = text(
     "INSERT INTO audit_log (customer_id, actor_user_id, action, target_type, target_id, details,"
-    " folder_id, family_id)"
+    " folder_id, family_id, subject_user_id)"
     " SELECT CAST(:c AS uuid), CAST(:actor AS uuid), CAST(:action AS text), CAST(:tt AS text),"
-    " CAST(:tid AS text), CAST(:details AS jsonb), coalesce(d.folder_id, CAST(:folder AS uuid)), d.family_id"
+    " CAST(:tid AS text), CAST(:details AS jsonb), coalesce(d.folder_id, CAST(:folder AS uuid)), d.family_id,"
+    " CAST(:subject AS uuid)"
     " FROM (SELECT 1) AS one"
     " LEFT JOIN documents d ON d.customer_id = CAST(:c AS uuid) AND d.id = CAST(:document AS uuid)"
 )
@@ -75,8 +76,10 @@ def record(
     target_type: str | None = None,
     target_id: str | None = None,
     details: Mapping[str, DetailValue] | None = None,
+    subject_user_id: str | None = None,
 ) -> None:
-    """Write one audit row. O(log n): one indexed insert, with one key lookup for a document."""
+    """Write one audit row. O(log n): one indexed insert, with one key lookup for a document.
+    ``subject_user_id``: the person it is about (0084), as WhatsApp's connect (#603)."""
     if not _ACTION.match(action):
         raise ValueError("audit action must match ^[a-z_.]+$")
     target = None if target_id is None else _uuid(target_id)
@@ -91,6 +94,7 @@ def record(
             "details": json.dumps(dict(details or {})),
             "document": target if target_type == "document" else None,
             "folder": target if target_type == "folder" else None,
+            "subject": subject_user_id,
         },
     )
 

@@ -495,6 +495,7 @@ def me(user: UserAllowPasswordChange, context: Context) -> dict[str, Any]:
         email_on=email_on(context),
         providers=oidc.enabled_providers(context.settings),
         recent_connections=_recent_connections(context, user),
+        whatsapp=context.settings.whatsapp_enabled,
     )
 
 
@@ -515,7 +516,13 @@ def session(request: Request) -> dict[str, Any]:
     context = get_context(request)
     recent = _recent_connections(context, user)
     providers = oidc.enabled_providers(context.settings)
-    me = me_json(user, email_on=email_on(context), providers=providers, recent_connections=recent)
+    me = me_json(
+        user,
+        email_on=email_on(context),
+        providers=providers,
+        recent_connections=recent,
+        whatsapp=context.settings.whatsapp_enabled,
+    )
     return {"signed_in": True, "me": me}
 
 
@@ -649,6 +656,15 @@ def _check_current_password(
 ) -> AttemptRow:
     """The signed-in user's own password, counted like a sign-in (so wrong ones
     lead to the lockout), else a 400 that says what is wrong. The counted attempt."""
+    attempt = _begin_signed_in(context, user, now)
+    if not verify_password(password, attempt.password_hash):
+        _failed(context, attempt, "wrong_password", signed_in=True)
+        raise ApiError(400, "bad_request", "Your current password is not right.")
+    return attempt
+
+
+def _begin_signed_in(context: AppContext, user: CurrentUser, now: datetime) -> AttemptRow:
+    """The signed-in user's counted attempt, else the lock's 400."""
     attempt = _begin(context, user.customer_id, user.user_id, now, signed_in=True)
     if attempt is None:
         # The lock stays on for a signed-in session too: letting a session check
@@ -661,9 +677,6 @@ def _check_current_password(
             f"Too many wrong passwords were tried on this account. Try again in {minutes} minutes,"
             " or ask an admin to unlock it.",
         )
-    if not verify_password(password, attempt.password_hash):
-        _failed(context, attempt, "wrong_password", signed_in=True)
-        raise ApiError(400, "bad_request", "Your current password is not right.")
     return attempt
 
 
@@ -673,6 +686,17 @@ def _prove(context: AppContext, user: CurrentUser, password: str, code: str | No
     else a 400 that says what is wrong; then the count starts again. Turning codes off, Change
     password and connecting an account share it."""
     attempt = _check_current_password(context, user, password, context.clock())
+    _second_proof(context, attempt, code)
+
+
+def _prove_code(context: AppContext, user: CurrentUser, code: str | None) -> None:
+    """``_prove`` when Google proved the first step (#603, WhatsApp's Connect): the code only, for
+    anyone with two-step sign-in on, counted like a sign-in. Nothing for anyone else."""
+    if user.totp_enabled:
+        _second_proof(context, _begin_signed_in(context, user, context.clock()), code)
+
+
+def _second_proof(context: AppContext, attempt: AttemptRow, code: str | None) -> None:
     if attempt.totp_enabled_at is not None:
         problem = _code_problem(context, attempt, code, signed_in=True)
         if problem is not None:
@@ -776,7 +800,11 @@ def _keep_this_browser(
         raise ApiError(401, "not_signed_in")
     renewed = dataclasses.replace(claims, session_version=user.session_version)
     providers = oidc.enabled_providers(context.settings)
-    response = JSONResponse(me_json(user, email_on=email_on(context), providers=providers))
+    response = JSONResponse(
+        me_json(
+            user, email_on=email_on(context), providers=providers, whatsapp=context.settings.whatsapp_enabled
+        )
+    )
     set_session_cookie(response, renewed, context.settings, now=_unix(now))
     return response
 
@@ -793,7 +821,11 @@ def _start_session(
     """The ``Me`` reply and a new session cookie of this scope; clears the count."""
     user, claims = _open_session(context, customer_id, user_id, scope=scope, action=action, details=details)
     providers = oidc.enabled_providers(context.settings)
-    response = JSONResponse(me_json(user, email_on=email_on(context), providers=providers))
+    response = JSONResponse(
+        me_json(
+            user, email_on=email_on(context), providers=providers, whatsapp=context.settings.whatsapp_enabled
+        )
+    )
     set_session_cookie(response, claims, context.settings, now=_unix(context.clock()))
     return response
 

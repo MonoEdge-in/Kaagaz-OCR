@@ -559,15 +559,17 @@ def contact(conn: Connection, customer_id: str, user_id: str) -> tuple[str, str]
     return None if row is None else (str(row[0]), str(row[1]))
 
 
-def admin_contacts(conn: Connection, customer_id: str) -> list[tuple[str, str]]:
+def admin_contacts(conn: Connection, customer_id: str, *, management: bool = False) -> list[tuple[str, str]]:
     """Every enabled admin's (e-mail, name) in this customer, for "Waiting for your approval"
-    (#457 phase 1). O(users of this customer)."""
+    (#457 phase 1); with ``management``, Management's too ("WhatsApp was turned on", #603).
+    O(users of this customer)."""
     rows = conn.execute(
         text(
             "SELECT email, display_name FROM users"
-            " WHERE customer_id = :c AND role = 'admin' AND NOT disabled ORDER BY email"
+            " WHERE customer_id = :c AND (role = 'admin' OR (:m AND management)) AND NOT disabled"
+            " ORDER BY email"
         ),
-        {"c": customer_id},
+        {"c": customer_id, "m": management},
     )
     return [(str(row[0]), str(row[1])) for row in rows]
 

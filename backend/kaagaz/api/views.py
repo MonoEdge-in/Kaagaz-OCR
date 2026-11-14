@@ -1091,6 +1091,7 @@ def me_json(
     email_on: bool,
     providers: Sequence[str],
     recent_connections: Sequence[dict[str, str]] = (),
+    whatsapp: bool = False,
 ) -> dict[str, Any]:
     """``Me``: who is signed in, their customer, and the session's scope ("app" for a
     member or reviewer, "admin" for an admin; the screen shows Admin only for "admin").
@@ -1102,7 +1103,7 @@ def me_json(
     sign in" only while one is. ``google_link_required`` (#507): the limited session, whose
     password lets the user only connect Google; ``google_unchecked`` (#507 review): in it, their
     connected Google account is from before its domain was checked, so they sign in with Google
-    once instead."""
+    once instead. ``whatsapp`` (#603): only while WHATSAPP_ENABLED is on, so Account shows WhatsApp."""
     return {
         "user": {
             "id": user.user_id,
@@ -1123,6 +1124,7 @@ def me_json(
         "session": {"scope": user.scope},
         "recent_connections": list(recent_connections),
         "providers": list(providers),
+        **({"whatsapp": True} if whatsapp else {}),
     }
 
 

@@ -11,8 +11,10 @@ other process off it) and goes through its waiting messages oldest first, by Wha
 2. A message older than WhatsApp's 24 hours is expired, with no reply: the reply window is shut.
 3. Refused: NOT_CONNECTED once to the connected number, then the connection ends (its number
    goes, audited). One that ended already gets no reply.
-4. Otherwise the reply (W2: PLACEHOLDER, so the loop runs end to end; W3 on build the steps), then
-   the message is done.
+4. (W3) STOP, Yes to "Disconnect?", or [Not me] on this connection's own welcome: the connection
+   ends first (audited), then DISCONNECTED goes once (never tried again: the number is no longer
+   connected). "Disconnect" (typed, or Menu's in W4) asks first, with [Disconnect] [Keep it].
+5. Otherwise the reply (PLACEHOLDER until W4 builds the steps), then the message is done.
 
 A reply goes outside any transaction, and only to the connection's own number. One that could not
 be sent leaves the message waiting and the connection resting (the order is kept: nothing after it
@@ -26,12 +28,12 @@ duplicate left.
 """
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol
 
-from kaagaz.adapters.whatsapp import WhatsAppError
+from kaagaz.adapters.whatsapp import NOT_ME, WhatsAppError
 from kaagaz.api.secret_box import SecretBoxError
 from kaagaz.channel.numbers import open_number
 from kaagaz.db import whatsapp as wa
@@ -44,6 +46,17 @@ NOT_CONNECTED = (
     "This WhatsApp isn't connected to Kaagaz. If you use Kaagaz, connect it from Account \u203a WhatsApp."
 )
 PLACEHOLDER = "Kaagaz got your message. Asking about your files on WhatsApp is coming soon."
+DISCONNECTED = (
+    "Disconnected. This chat can no longer reach your Kaagaz files. Messages already here stay on this"
+    " phone. Delete them if others use it."
+)
+ASK_DISCONNECT = "Disconnect this WhatsApp from Kaagaz? This chat will no longer reach your Kaagaz files."
+STILL_CONNECTED = "You're still connected."
+STOP = "stop"
+DISCONNECT = "disconnect"
+DISCONNECT_YES = "disconnect_yes"  # the button ids
+KEEP = "keep"
+DISCONNECT_BUTTONS = ((DISCONNECT_YES, "Disconnect"), (KEEP, "Keep it"))
 LEASE_SECONDS = 240  # an answer may take ANSWER_STREAM_MAX_SECONDS (180)
 RETRY_SECONDS = 30
 RETRY_MAX_SECONDS = 600
@@ -55,6 +68,8 @@ _AUTH = frozenset({401, 403})
 
 class Sender(Protocol):
     def send_text(self, to: str, body: str) -> None: ...
+
+    def send_buttons(self, to: str, body: str, buttons: Sequence[tuple[str, str]]) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,12 +124,32 @@ class Channel:
             _log.error("whatsapp message failed", extra=sealed)
             return self._finish(linked, message, "failed", replied=False)
         if check.refused is not None:
-            sent = self._send(number, NOT_CONNECTED) is None  # once, as it can be; it ends regardless
+            sent = (
+                self._send(lambda: self.sender.send_text(number, NOT_CONNECTED)) is None
+            )  # once; it ends regardless
             with self.db.user(linked.customer_id, linked.user_id) as conn:
                 wa.end(conn, linked, check.refused)
                 wa.finish(conn, linked, message.id, "done", replied=sent)
             return 0
-        error = self._send(number, PLACEHOLDER)
+        word = (message.body or "").strip().casefold()
+        ending = (
+            "person"
+            if word in (STOP, DISCONNECT_YES)
+            else "not_me"
+            if word == NOT_ME + linked.link_id
+            else None
+        )
+        if ending is not None:
+            with self.db.user(linked.customer_id, linked.user_id) as conn:
+                wa.end(conn, linked, ending)
+            sent = self._send(lambda: self.sender.send_text(number, DISCONNECTED)) is None
+            return self._finish(linked, message, "done", replied=sent)
+        if word == DISCONNECT:
+            error = self._send(lambda: self.sender.send_buttons(number, ASK_DISCONNECT, DISCONNECT_BUTTONS))
+        else:
+            error = self._send(
+                lambda: self.sender.send_text(number, STILL_CONNECTED if word == KEEP else PLACEHOLDER)
+            )
         if error is None:
             return self._finish(linked, message, "done", replied=True)
         status = error.status or 0
@@ -123,9 +158,9 @@ class Channel:
         tries = self._not_sent(linked, message, code, most=UNTIL_IT_EXPIRES, fail=for_good)
         return 0 if tries is None else min(RETRY_SECONDS * 2 ** (tries - 1), RETRY_MAX_SECONDS)
 
-    def _send(self, number: str, body: str) -> WhatsAppError | None:
+    def _send(self, send: Callable[[], None]) -> WhatsAppError | None:
         try:
-            self.sender.send_text(number, body)
+            send()
         except WhatsAppError as error:
             if error.status in _AUTH:
                 _log.error("whatsapp refused the access token", extra={"code": "whatsapp_auth"})

@@ -66,6 +66,7 @@ from kaagaz.api.routers import (
     tags,
     versions,
     whatsapp,
+    whatsapp_account,
     word_review,
     words,
 )
@@ -176,6 +177,8 @@ def create_app(
         email.router,
         oidc.router,
         whatsapp.router,
+        whatsapp_account.router,
+        whatsapp_account.admin_router,
         documents.router,
         versions.router,
         read_clearly.router,

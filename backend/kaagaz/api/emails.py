@@ -9,10 +9,11 @@ address nobody has proven yet, so it is never told a name (anyone can type one a
   its SHA-256 hash (``email_links``, 0061), with a purpose, an expiry and a used time. The
   token travels in the URL fragment (``#t=``), so it never reaches a server or proxy log;
   the page reads it and posts it. A new link of one purpose for one user ends the older ones.
-* A security notice (password changed or reset, two-step on, off or reset; a Google account
-  connected, waiting, approved, declined or disconnected) has no link.
+* A security notice (password changed or reset, two-step on, off or reset; a WhatsApp number
+  connected; a Google account connected, waiting, approved, declined or disconnected) has no link.
 * "Waiting for your approval" goes to each admin when a member's Google account waits, with
   the link to the approval list (Admin, people) and nobody's name or email but their own.
+* "WhatsApp was turned on" (#603) goes to Management and every other admin, with no link.
 
 ``send`` never breaks the action that asked for the email: a failure is logged as
 ``{"event": "email_failed", "purpose": ..., "error": SES's code or the type}``, never with the
@@ -268,4 +269,27 @@ def connection_waiting(name: str, organisation: str, link: str) -> Message:
         f"Hello {name},\n\nSomeone in {organisation} asked to sign in to Kaagaz with a Google"
         " account. It works only once an admin approves it. Open the approval list:\n\n"
         f"{link}\n\nIf you do not recognise the request, decline it." + _SIGN_OFF,
+    )
+
+
+def whatsapp_connected(name: str) -> Message:
+    """#603: a security notice, as Google's: a WhatsApp number was connected to the account."""
+    return (
+        "WhatsApp was connected to your Kaagaz account",
+        f"Hello {name},\n\nA WhatsApp number was connected to your Kaagaz account. From it you can ask"
+        " about your files and get links to them. Anyone who can open WhatsApp on that phone can do the"
+        " same, so keep the phone locked.\n\nIf you did not do this, disconnect it in Kaagaz, Account,"
+        " WhatsApp, change your password and tell your organisation's admin." + _SIGN_OFF,
+    )
+
+
+def whatsapp_turned_on(name: str, organisation: str) -> Message:
+    """#603: to Management and the other admins when an admin turns WhatsApp on; who did is in the log."""
+    return (
+        "WhatsApp was turned on for your organisation",
+        f"Hello {name},\n\nAn admin turned on Kaagaz on WhatsApp for {organisation}. People whose role"
+        " is allowed can now connect their WhatsApp number, ask about their files and get links to them."
+        " Files never leave Kaagaz: each link needs a Kaagaz sign-in. Answers already sent stay on the"
+        " person's phone, even after their access is removed.\n\nAdmins can turn it off in Admin,"
+        " Settings." + _SIGN_OFF,
     )
