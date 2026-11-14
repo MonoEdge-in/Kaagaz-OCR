@@ -41,6 +41,9 @@ def visible(conn: Connection, customer_id: str, user_id: str, *, reviewer: bool)
             " FROM organization_word_suggestions"
             " WHERE customer_id = :c AND"
             " (status = 'approved' OR submitted_by = :u OR (:reviewer AND status = 'pending'))"
+            # PRD 7 (#599): one made on a page shows only while its document is one the person sees.
+            " AND (document_id IS NULL OR EXISTS (SELECT 1 FROM visible_documents d"
+            " WHERE d.customer_id = :c AND d.id = document_id))"
             " ORDER BY status, word_fold, meaning_fold, id LIMIT 500"
         ),
         {"c": customer_id, "u": user_id, "reviewer": reviewer},

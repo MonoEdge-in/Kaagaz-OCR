@@ -324,19 +324,27 @@ def test_day_one_never_runs_the_given_or_lock_lookups(db: Database) -> None:
 VIEW_READERS = {
     "db/audit.py": {"_FOLDER_PATHS", "_OF_FAMILY", "_SEEN"},
     "db/chat.py": {"_DOCUMENT_QUESTIONS", "add_pin"},
-    "db/document_stories.py": {"_DELETE"},
+    "db/document_stories.py": {"_DELETE", "_PUT"},
+    "db/ensemble.py": {"_COUNTS", "_LATEST", "_LATEST_READINGS", "_PENDING", "_READING"},
     "db/folders.py": {"_LIST", "_SUMMARY_SEEN"},
     "db/listing.py": {
-        "_BATCH", "_COLUMNS", "_DASHBOARD_DEPARTMENTS", "_DASHBOARD_RECENT",
+        "_BATCH", "_CLEAR_COPY_MARKS", "_COLUMNS", "_DASHBOARD_DEPARTMENTS", "_DASHBOARD_RECENT",
         "_DASHBOARD_TILES", "_DASHBOARD_TYPES", "_DOCUMENTS_SEEN", "_FILE_COLUMNS", "_FOLDERS_SEEN",
-        "_HAS_NEWER", "_LAST_UPLOAD", "_LAST_UPLOADER", "_LINKS", "_LIST", "_LOOSE_IN_TRASH",
-        "_OUTSIDE_DEPARTMENTS", "_SELECT", "_TRASH_LIST", "_VERSIONS", "_WORD_LINES", "document_facts",
+        "_HAS_NEWER", "_INVOICE", "_INVOICE_LINES", "_LAST_UPLOAD", "_LAST_UPLOADER", "_LINKS", "_LIST",
+        "_LOOSE_IN_TRASH", "_OUTSIDE_DEPARTMENTS", "_PAGE_MARKS", "_PAGE_READINGS", "_SELECT",
+        "_TRASH_LIST", "_VERSIONS", "_WORD_LINES", "document_facts", "get_page", "list_pages",
+        "list_values", "reviewer_fix_count", "sheet_cells",
     },
+    "db/organization_words.py": {"visible"},
+    "db/review.py": {"_COUNT", "_COUNT_FOR_DOCUMENT", "_ITEM", "_LOCK_VALUE", "_NEXT_CHUNK"},
+    "db/tags.py": {"_FOR_DOCUMENTS"},
     "db/trashed_folders.py": {
         "_CHILD_ITEMS", "_EXISTS", "_HELD", "_ONE_ITEM", "_PATHS", "_SEEN", "_SEEN_RESTORE", "_TOP_ITEMS",
     },
+    "db/user_words.py": {"_SPOTS"},
     "db/versions.py": {"_ALLOWED", "_CANDIDATE", "_FOR_DOCUMENT", "_IN_BATCH", "_LIVE", "_VIEW"},
-    "db/visibility.py": {"LIVE_SUGGESTION"},
+    "db/visibility.py": {"LIVE_SUGGESTION", "SEEN_DOCUMENT"},
+    "db/word_review.py": {"_PAGES", "_PIECES_BY_ID", "_VALUES_BY_ID", "_WORDS"},
 }  # fmt: skip
 
 

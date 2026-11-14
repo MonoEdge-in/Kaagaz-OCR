@@ -1289,7 +1289,7 @@ def error_message(code: str, failed: Sequence[int], done: Sequence[int]) -> str:
 
 def run_json(conn: Connection, customer_id: str, run: RowMapping) -> dict[str, Any]:
     """``Run``: one run's progress, counts and error. One statement more."""
-    counts = ensemble_sql.run_counts(conn, customer_id, str(run["id"]))
+    counts = ensemble_sql.run_counts(conn, customer_id, str(run["document_id"]), str(run["id"]))
     pages, done, failed = list(run["pages"]), list(run["pages_done"]), list(run["pages_failed"])
     code = run["error_code"]
     return {
