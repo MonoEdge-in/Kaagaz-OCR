@@ -150,7 +150,9 @@ export interface DocumentSummary {
   page_count: number | null;
   created_at: string; // ISO 8601
   uploaded_by_name: string | null;
-  folder_id: string | null; // null: at the top level, in no folder
+  folder_id: string | null; // null: at the top level, in no folder, or in one this person can't see
+  // PRD 7 (#601): in a folder this person can't see (folder_id null): "Shared with you", never a path.
+  shared_with_you?: boolean;
   tags: Tag[];
   deleted_at: string | null; // set while the document (its whole family) is in Trash
   version_no: number; // 1 for the first upload

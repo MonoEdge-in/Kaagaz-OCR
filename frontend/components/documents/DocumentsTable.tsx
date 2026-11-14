@@ -40,6 +40,7 @@ import Link from "next/link";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, RefCallback } from "react";
 import { flushSync } from "react-dom";
+import { SHARED } from "@/components/access/words";
 import { extensionOf } from "@/components/dashboard/words";
 import { LabelChip } from "@/components/files/LabelChip";
 import { labelName } from "@/components/files/labels";
@@ -960,7 +961,7 @@ const DocumentRow = memo(function DocumentRow({
     `${typeWords} · ${formatBytes(document.size_bytes)}`,
     versionCell(document.version_no, newer),
     document.document_date && FILES_TEXT.dated(formatDate(document.document_date)),
-    folderPath && `In ${folderPath}`,
+    document.shared_with_you ? SHARED.row : folderPath && `In ${folderPath}`,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -1066,7 +1067,12 @@ const DocumentRow = memo(function DocumentRow({
           )}
           {/* Where it is filed, so a move shows in All documents too (16 Oct 2026); on the facts'
               line, not a line of its own, so a row stays short (issue 371). */}
-          {folderShort && <span className={styles.inFolder}>In {folderShort}</span>}
+          {/* PRD 7 (#604): in a folder this person can't see, the server's flag, never a path. */}
+          {document.shared_with_you ? (
+            <span className={styles.inFolder}>{SHARED.row}</span>
+          ) : (
+            folderShort && <span className={styles.inFolder}>In {folderShort}</span>
+          )}
         </span>
         {tagList(styles.factTags)}
         {document.newer_version && (

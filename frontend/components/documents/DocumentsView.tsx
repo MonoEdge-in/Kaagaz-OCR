@@ -29,6 +29,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import { PlaceBadge } from "@/components/access/PlaceBadge";
 import { placeHint, placeKind } from "@/components/access/places";
+import { NOT_FOUND_FOLDER, NOT_FOUND_TEXT, SHARED } from "@/components/access/words";
 import { DepartmentPicker } from "@/components/files/DepartmentPicker";
 import { chosenDepartment, departmentsOf, rememberDepartment } from "@/components/files/departments";
 import { DocumentsGrid } from "@/components/files/DocumentsGrid";
@@ -537,11 +538,13 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
     : (current?.folder.name ??
       (library.folderId !== null
         ? "Folder"
-        : library.departmentId === NO_DEPARTMENT
-          ? FILES_TEXT.notInDepartment // the tree's Other (issue 409)
-          : "All documents"));
-  // Nothing is uploaded into Trash, and it has no folder to change.
-  const canUpload = !folderGone && !library.trash;
+        : library.shared
+          ? SHARED.place
+          : library.departmentId === NO_DEPARTMENT
+            ? FILES_TEXT.notInDepartment // the tree's Other (issue 409)
+            : "All documents"));
+  // Nothing is uploaded into Trash, and it has no folder to change; nor into Shared with me.
+  const canUpload = !folderGone && !library.trash && !library.shared;
   const withSubfolders = includeSubfoldersHref(library, current?.children.length ?? 0);
   const badge = current ? placeKind(current.folder) : null;
   const accessHint = current ? placeHint(tree, current.folder.id) : null;
@@ -678,6 +681,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                   {accessHint}
                 </p>
               )}
+              {library.shared && <p className={libraryStyles.placeHint}>{SHARED.hint}</p>}
               {library.trash && opened === null && (
                 <p className={libraryStyles.placeHint}>
                   Documents in Trash are left out of search and chat. Restore one to use it again.
@@ -733,7 +737,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
           {folderGone ? (
             <EmptyState
               icon="search-off"
-              title="This folder isn't here any more"
+              title={NOT_FOUND_FOLDER}
               headingLevel={3}
               action={
                 <Link
@@ -745,7 +749,8 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                 </Link>
               }
             >
-              It may have been deleted, or the link is old.
+              {/* PRD 7 (#604): one text for a folder deleted, never there, or hidden. */}
+              {NOT_FOUND_TEXT}
             </EmptyState>
           ) : (
             <>
@@ -770,6 +775,8 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                 <EmptyState icon={opened ? "file" : "trash"} title={trashEmpty(opened !== null).title} headingLevel={3}>
                   {trashEmpty(opened !== null).text}
                 </EmptyState>
+              ) : library.shared ? (
+                view === "empty" && <EmptyState icon="file" title={SHARED.empty} headingLevel={3} />
               ) : view === "empty" ? (
                 <Dropzone
                   variant="full"
@@ -853,7 +860,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                         aria-label="View options"
                         className={`motion-pop ${styles.morePanel}`}
                       >
-                        {!library.trash && (
+                        {!library.trash && !library.shared && (
                           <div className={styles.moreGroup}>
                             <span className={styles.moreLabel}>Search in</span>
                             <RadioPill<SearchMode>
