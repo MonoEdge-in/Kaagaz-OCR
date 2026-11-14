@@ -480,7 +480,7 @@ def delete_folder_with_contents(
     inside it), FolderTooDeep, FolderUploadRunning (a folder upload into what is deleted still has
     files waiting and was active in the last UPLOAD_QUIET_HOURS: with keep, the folder itself, as
     its folders only move), FolderNameTaken (no free number up to 100) or FolderChanged (a file
-    arrived meanwhile: a document insert or move takes no tree lock). Nothing is written before
+    arrived meanwhile: a document insert takes no tree lock). Nothing is written before
     the checks; a refusal after a write leaves the caller's transaction to roll back. ``files``
     in what it returns is, with trash, the families that went to Trash now, and ``trash_id`` is set.
     O(s log F + n log D)

@@ -69,6 +69,7 @@ from kaagaz.db.folders import (
     FolderNameTaken,
     FolderNotFound,
     FolderTooDeep,
+    _lock_tree,
     folder_path,
 )
 from kaagaz.db.storage_limits import storage_room
@@ -249,16 +250,15 @@ class ZipUnpacker:
         return plan.upload_id, plan.root_folder_id
 
     def _move(self, customer_id: str, document_id: str, root: str) -> None:
-        """Step 4: the zip into its folder, every version (it has one), under the family lock."""
+        """Step 4: the zip into its folder, every version (it has one), under the tree lock and
+        then the family lock (0085: a move can change who sees it)."""
         try:
             with unavailable(), self._db.customer(customer_id) as conn:
                 found = zip_sql.place(conn, customer_id, document_id)
-                if (
-                    found is not None
-                    and found.folder_id != root
-                    and lock_family(conn, customer_id, document_id)
-                ):
-                    listing.move_family(conn, customer_id, document_id, folder_id=root)
+                if found is not None and found.folder_id != root:
+                    _lock_tree(conn, customer_id)
+                    if lock_family(conn, customer_id, document_id):
+                        listing.move_family(conn, customer_id, document_id, folder_id=root)
         except FolderNotFound:  # the folder was deleted in the moment since
             raise JobFailed("folder_gone", retryable=False) from None
 

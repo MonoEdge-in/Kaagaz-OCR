@@ -4,11 +4,14 @@ every version, and raise ``customers.access_version`` once per statement, withou
 ``updated_at``. After every create, move, Private and open switch, kind change, Trash, restore and
 version step below, check-access's differences for the organisation are none; the other
 organisation is never touched. Writes run as the app role, which may run none of the trigger
-functions (test_isolation_schema). Up (rows written between 0084 and 0085 worked out again), down
-(the schema as at 0084) and up again on a fresh database."""
+functions (test_isolation_schema). A move, or a folder change that skipped the app's lock, and
+another tree change on the same organisation both finish, one after the other. Up (rows written
+between 0084 and 0085 worked out again, 0084's keys and CHECKs validated, a bad row stopping it),
+down (the schema as at 0084, those kept validated) and up again on a fresh database."""
 
 import io
 import subprocess
+import threading
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -17,7 +20,8 @@ import pytest
 from sqlalchemy import text
 
 from kaagaz.cli import _ACCESS_DIFFERENCES, main
-from kaagaz.db import versions
+from kaagaz.db import folders as folders_sql
+from kaagaz.db import trash, versions
 from kaagaz.db.engine import Database
 from tests import test_migration_0002_db as base
 from tests.db_support import insert_document, insert_folder, migrate, new_customer
@@ -36,6 +40,7 @@ _TOUCH = (
     "SELECT tgname, pg_get_triggerdef(oid) FROM pg_trigger"
     " WHERE tgname IN ('documents_touch', 'learned_corrections_touch') ORDER BY 1"
 )
+_VALIDATED = "SELECT conname, convalidated FROM pg_constraint WHERE conname = ANY(:n) ORDER BY 1"
 
 
 def _run(db: Database, customer: str, statement: str, **params: Any) -> list[tuple[Any, ...]]:
@@ -83,6 +88,15 @@ def _department(db: Database, customer: str, user: str, name: str) -> str:
 
 def test_the_revision_follows_0084() -> None:
     assert (M0085.revision, M0085.down_revision) == ("0085", "0084")
+
+
+def test_the_transaction_sets_env_pys_lock_timeout_again_then_locks_only_what_the_backfill_writes() -> None:
+    """The autocommit block before it ended env.py's SET LOCAL; documents first (0004's order)."""
+    assert M0085.UPGRADE[:2] == [
+        "SET LOCAL lock_timeout = '10s'",
+        "LOCK TABLE documents, folders, trashed_folders IN SHARE ROW EXCLUSIVE MODE",
+    ]
+    assert M0085.DOWNGRADE[0] == "LOCK TABLE documents IN ACCESS EXCLUSIVE MODE"
 
 
 def test_folder_create_move_private_open_and_kind_change_keep_every_value_right(db: Database) -> None:
@@ -199,6 +213,79 @@ def test_a_folder_restored_where_its_department_is_gone_comes_back_in_no_departm
     folders = _values(db, c, "folders")
     assert {folders[t[name]] for name in ("year", "bills", "old", "bank")} == {(None, None)}
     assert _values(db, c)[year_file] == (None, None)
+    assert _differences(db, c) == []
+
+
+def test_a_file_restored_after_its_folder_went_is_open_to_everyone_as_today(db: Database) -> None:
+    """One of #594's open paths, stated: the restore puts it in no folder, held for no one."""
+    c, u = new_customer(db)
+    finance = _department(db, c, u, "Finance")
+    with db.customer(c) as conn:
+        secret = insert_folder(conn, c, u, "Secret", finance)
+        conn.execute(text("UPDATE folders SET private = true WHERE id = :f"), {"f": secret})
+        document = insert_document(conn, c, folder_id=secret)
+    trashed = "UPDATE documents SET deleted_at = :t, deleted_by = :u, folder_id = NULL WHERE id = :d"
+    _run(db, c, trashed, t=NOW, u=u, d=document)  # as a folder deleted after it went to Trash
+    assert _values(db, c)[document] == (finance, secret)  # kept in Trash
+
+    _run(db, c, "UPDATE documents SET deleted_at = NULL, deleted_by = NULL WHERE id = :d", d=document)
+
+    held = "SELECT department_id, private_folder_id, held_for FROM documents WHERE id = :d"
+    assert _run(db, c, held, d=document) == [(None, None, None)]
+
+
+def test_a_move_waits_for_the_tree_lock_so_it_and_auto_filing_both_finish(db: Database) -> None:
+    """Auto-filing takes the tree lock, then the family lock (autofile.file_document). The move
+    takes them in the same order, so it waits instead of holding the family while the access
+    version waits for the tree lock (the organisation's row): no deadlock."""
+    api = Api(db)
+    admin = api.new_admin()
+    c = admin.customer_id
+    finance = _department(db, c, admin.user_id, "Finance")
+    document = api.add_document(c, uploaded_by=admin.user_id)
+    replies: list[Any] = []
+
+    def move() -> None:
+        replies.append(
+            admin.client.patch(f"/api/documents/{document}", json={"folder_id": finance}, headers=CSRF)
+        )
+
+    with db.customer(c) as conn:  # as auto-filing
+        folders_sql._lock_tree(conn, c)
+        moving = threading.Thread(target=move)
+        moving.start()
+        moving.join(timeout=1)
+        assert moving.is_alive()  # waits for the tree lock, holding nothing of the family
+        assert trash.lock_live_family(conn, c, document) == document
+    moving.join(timeout=10)
+
+    assert replies[0].status_code == 200, replies[0].text
+    assert _values(db, c)[document] == (finance, None)
+    assert _differences(db, c) == []
+
+
+def test_two_folder_changes_that_skip_the_apps_lock_still_run_one_after_the_other(db: Database) -> None:
+    """Raw SQL, no folders._lock_tree: A moves under B while B is made private. The trigger takes
+    the organisation's row first, so the second walks from what the first committed."""
+    c, u = new_customer(db)
+    finance = _department(db, c, u, "Finance")
+    with db.customer(c) as conn:
+        a = insert_folder(conn, c, u, "A", finance)
+        b = insert_folder(conn, c, u, "B", finance)
+        document = insert_document(conn, c, folder_id=a)
+
+    def private() -> None:
+        _run(db, c, "UPDATE folders SET private = true WHERE id = :b", b=b)
+
+    with db.customer(c) as conn:
+        conn.execute(text("UPDATE folders SET parent_id = :b WHERE id = :a"), {"a": a, "b": b})
+        switching = threading.Thread(target=private)
+        switching.start()
+        switching.join(timeout=1)
+        assert switching.is_alive()  # waits for the organisation's row
+    switching.join(timeout=10)
+
+    assert _values(db, c)[document] == (finance, b)
     assert _differences(db, c) == []
 
 
@@ -384,6 +471,17 @@ def _between(db: Database) -> dict[str, str]:
     return t
 
 
+def _schema(db: Database) -> dict[str, list[tuple[Any, ...]]]:
+    """``_state``, with a key or CHECK the same validated or not: 0085 validates 0084's NOT VALID
+    ones and its downgrade keeps them validated."""
+    state = _state(db)
+    state["constraints"] = sorted(
+        (table, name, str(definition).removesuffix(" NOT VALID"))
+        for table, name, definition in state["constraints"]
+    )
+    return state
+
+
 def _check(db: Database) -> tuple[int, list[str]]:
     out = io.StringIO()
     code = main(["check-access"], db=Database(db.engine, WORKER), out=out)
@@ -396,10 +494,26 @@ def test_up_works_out_every_value_again_down_and_up_again(fresh: tuple[str, Data
     t = _between(db)
     touched = "SELECT id, updated_at FROM documents WHERE customer_id = :c"
     before = sorted(_run(db, t["c"], touched))
-    at_0084 = (_state(db), _run(db, t["c"], _TOUCH))
+    at_0084 = (_schema(db), _run(db, t["c"], _TOUCH))
+    # A row 0084's NOT VALID CHECK never saw (as one written before it): VALIDATE stops the upgrade.
+    owner = "ALTER TABLE documents {} CONSTRAINT documents_locked"
+    with db.engine.begin() as conn:
+        conn.execute(text(owner.format("DROP")))
+        bad = insert_document(conn, t["c"])
+        conn.execute(text("UPDATE documents SET locked_at = now() WHERE id = :d"), {"d": bad})
+        conn.execute(
+            text(owner.format("ADD") + " CHECK ((locked_at IS NULL) = (locked_by IS NULL)) NOT VALID")
+        )
+    with pytest.raises(subprocess.CalledProcessError) as stopped:
+        migrate(url, "0085")
+    assert b'constraint "documents_locked" of relation "documents" is violated' in stopped.value.stderr
+    _run(db, t["c"], "UPDATE documents SET locked_at = NULL WHERE id = :d", d=bad)
+    before = sorted(_run(db, t["c"], touched))
 
-    migrate(url, "0085")
+    migrate(url, "0085")  # again: the index the stopped run built is kept
     at_0085 = _state(db)
+    validated = _run(db, t["c"], _VALIDATED, n=list(M0085.VALIDATED))
+    assert validated == [(name, True) for name in sorted(M0085.VALIDATED)]
     assert _check(db) == (0, ["0 differences"])
     finance, bills = t["finance"], t["bills"]
     assert _values(db, t["c"], "folders") == {
@@ -421,7 +535,8 @@ def test_up_works_out_every_value_again_down_and_up_again(fresh: tuple[str, Data
     assert all("pg_trigger_depth() < 1" in definition for _, definition in _run(db, t["c"], _TOUCH))
 
     base._downgrade(url, "0084")
-    assert (_state(db), _run(db, t["c"], _TOUCH)) == at_0084
+    assert (_schema(db), _run(db, t["c"], _TOUCH)) == at_0084
+    assert _run(db, t["c"], _VALIDATED, n=list(M0085.VALIDATED)) == validated  # kept
 
     # A folder 101 deep: 0085 stops rather than leave its values unknown.
     with db.customer(t["c"]) as conn:
