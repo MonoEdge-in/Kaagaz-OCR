@@ -5,7 +5,7 @@
 
 import { sessionScope } from "@/components/shell/gate";
 import { ApiError, deleteDocument, restoreDocument } from "@/lib/api";
-import type { DocumentSummary, FolderBack, FolderRestored, Me, TrashedFolder } from "@/lib/types";
+import type { DocumentSummary, FilePlaced, FolderRestored, Me, TrashedFolder } from "@/lib/types";
 
 /**
  * Who may delete for good: an admin session (every admin's, from /login), or a member or
@@ -96,22 +96,42 @@ export function heldText(folder: Pick<TrashedFolder, "files" | "folders">): stri
   return parts.filter(Boolean).join(", ") || "Empty";
 }
 
+const placeText = (location: string[] | null) =>
+  location === null ? "a folder you can't see" : location.length === 0 ? "Top level" : location.join(" › ");
+
+/** #594: a folder that came back private, because a department or private folder it was in is gone. */
+export const SEALED = "It came back private, because a department or private folder it was in no longer exists. Only Management can see it until an admin names people.";
+
+type Back = Pick<FolderRestored, "folder" | "location" | "renamed" | "relocated"> & { sealed?: boolean };
+
 /** The toast once a folder is back: where it went, or why it is not where it was. */
-export function folderRestoredMessage(restored: Pick<FolderRestored, "folder" | "location" | "renamed" | "relocated">): string {
+export function folderRestoredMessage(restored: Back): string {
   const said: string[] = [];
-  if (restored.relocated) said.push("Restored to Top level, because its folder no longer exists.");
+  if (restored.relocated) said.push(`Restored to ${placeText(restored.location)}, because its folder no longer exists.`);
   if (restored.renamed) said.push(`Restored as “${restored.folder.name}”, because a folder with that name already exists.`);
+  if (restored.sealed) said.push(SEALED);
   if (said.length > 0) return said.join(" ");
   if (restored.location === null) return "Folder restored.";
-  return `Folder restored to ${restored.location.length === 0 ? "Top level" : restored.location.join(" › ")}.`;
+  return `Folder restored to ${placeText(restored.location)}.`;
 }
 
 /** A file restored from a folder in Trash brought its folder back: where, or why not where it was. */
-export function folderBackMessage(back: FolderBack): string {
-  if (back.relocated) return "Its folder is back at Top level, because the folder it was in no longer exists.";
-  if (back.renamed) return `Its folder is back as “${back.folder.name}”, because a folder with that name already exists.`;
-  if (back.location === null) return `Its folder “${back.folder.name}” is back.`;
-  return `Its folder “${back.folder.name}” is back in ${back.location.length === 0 ? "Top level" : back.location.join(" › ")}.`;
+export function folderBackMessage(back: Back): string {
+  const sealed = back.sealed ? ` ${SEALED}` : "";
+  if (back.relocated) {
+    const where = back.location?.length === 0 ? "at Top level" : `in ${placeText(back.location)}`;
+    return `Its folder is back ${where}, because the folder it was in no longer exists.${sealed}`;
+  }
+  if (back.renamed) return `Its folder is back as “${back.folder.name}”, because a folder with that name already exists.${sealed}`;
+  if (back.location === null) return `Its folder “${back.folder.name}” is back.${sealed}`;
+  return `Its folder “${back.folder.name}” is back in ${placeText(back.location)}.${sealed}`;
+}
+
+/** #594: a file restored after its folder was deleted: where it went instead. */
+export function placedMessage(placed: FilePlaced): string {
+  if (placed.held) return "Its folder no longer exists. Only you and Management can see it until it's filed.";
+  if (placed.folder === null) return "Its folder no longer exists, so it went into the folder above it.";
+  return `Its folder no longer exists: it's in “${placed.folder.name}”.`;
 }
 
 /** Asked before a folder in Trash is deleted for good, with every file in it, in foreverQuestion's words. */
