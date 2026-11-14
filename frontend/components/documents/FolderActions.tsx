@@ -16,6 +16,7 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, MouseEvent } from "react";
+import { WHO_CAN_SEE } from "@/components/access/words";
 import { Icon } from "@/components/ui/Icon";
 import { createFolder, deleteFolder, folderSummary, updateFolder } from "@/lib/api";
 import type { FolderSummary } from "@/lib/types";
@@ -41,6 +42,8 @@ export interface FolderActionsProps {
   askNew?: number;
   /** Names to offer for a new folder (folderNameSuggestions). */
   suggestions?: readonly string[];
+  /** PRD 7 (#604): "Who can see this" opens the Audience panel; left out for who may not use it. */
+  onAudience?(): void;
 }
 
 /** The suggested names as square chips; pressing one puts it in the name box. */
@@ -68,7 +71,7 @@ export function NameChips({ names, picked, onPick }: { names: readonly string[];
   );
 }
 
-export function FolderActions({ tree, current, onChanged, askNew = 0, suggestions = [], admin = false }: FolderActionsProps) {
+export function FolderActions({ tree, current, onChanged, askNew = 0, suggestions = [], admin = false, onAudience }: FolderActionsProps) {
   const [mode, setMode] = useState<Mode | null>(null);
   const [summary, setSummary] = useState<FolderSummary | null>(null); // #537: what Delete would take
   const [heardNew, setHeardNew] = useState(askNew);
@@ -258,6 +261,11 @@ export function FolderActions({ tree, current, onChanged, askNew = 0, suggestion
     <div className={styles.folderActions}>
       {current && (
         <div className={styles.folderButtons}>
+          {onAudience && (
+            <button type="button" className="btn btn-quiet" aria-haspopup="dialog" onClick={onAudience}>
+              {WHO_CAN_SEE}
+            </button>
+          )}
           <button
             type="button"
             className="btn btn-quiet"

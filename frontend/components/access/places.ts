@@ -35,6 +35,23 @@ export function placeHint(tree: FolderTree, folderId: string): string | null {
   return above ? insidePrivateHint(above.name) : null;
 }
 
+/** What the Audience panel needs of a folder: whether it is private, its department (for who may
+ * change it, and the words), and why Make private would be refused. */
+export interface FolderPlace {
+  isPrivate: boolean;
+  department: { id: string; name: string } | null;
+  refusal: ReturnType<typeof privateRefusal>;
+}
+
+export function folderPlace(tree: FolderTree, folderId: string): FolderPlace {
+  const department = departmentOf(tree, folderId);
+  return {
+    isPrivate: tree.byId.get(folderId)?.folder.private === true,
+    department: department && { id: department.id, name: department.name },
+    refusal: privateRefusal(tree, folderId),
+  };
+}
+
 /** Why this folder can't be made private (the server's 409s, known from the tree an Admin sees);
  * null when it can. A private folder itself is made open again, never refused here. */
 export function privateRefusal(tree: FolderTree, folderId: string): "department" | "inside_private" | "holds_private" | null {

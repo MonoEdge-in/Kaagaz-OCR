@@ -1347,6 +1347,27 @@ export interface PlacePreview {
   files: number;
 }
 
+/** PRD 7 (#601), GET /{documents|folders}/{id}/audience: who can see it, grouped by why, in the
+ * Audience panel's order; `place`: the department (head, member) or the private folder (named). */
+export interface Audience {
+  groups: { reason: string; place?: { id: string; name: string }; people: Person[] }[];
+  everyone_else: number; // how many people of the organisation can't see it
+}
+
+/** The same with ?user_id= (Check a person): the reasons in the same order. */
+export interface AudienceCheck {
+  can_see: boolean;
+  reasons: string[];
+}
+
+/** PRD 7 (#601), GET /folders/{id}/named: a private folder's list; `can_edit`: may change it. */
+export interface NamedList {
+  folder: { id: string; name: string; path: string | null };
+  named: Person[];
+  heads: Person[];
+  can_edit: boolean;
+}
+
 /** POST /admin/users: the new user; with email on (#457), whether the invite email went. */
 export interface AddedUser extends AdminUser {
   invited?: boolean;

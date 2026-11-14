@@ -204,3 +204,34 @@
   color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
+
+/* The Audience panel: its groups, each a heading over its names. */
+.audience:focus {
+  outline: none; /* focused only to bring a screen reader back to the list after a form */
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.group h3 {
+  margin: 0;
+  font-size: var(--fs-base);
+}
+
+/* The kept-from-me strip, under the place heading. */
+.kept {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+.tableWrap {
+  overflow-x: auto;
+}

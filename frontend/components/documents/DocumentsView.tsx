@@ -27,8 +27,11 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
+import { accessAbilities } from "@/components/access/abilities";
+import { AudiencePanel } from "@/components/access/AudiencePanel";
+import type { AudienceTarget } from "@/components/access/AudiencePanel";
 import { PlaceBadge } from "@/components/access/PlaceBadge";
-import { placeHint, placeKind } from "@/components/access/places";
+import { folderPlace, placeHint, placeKind } from "@/components/access/places";
 import { NOT_FOUND_FOLDER, NOT_FOUND_TEXT, SHARED } from "@/components/access/words";
 import { DepartmentPicker } from "@/components/files/DepartmentPicker";
 import { chosenDepartment, departmentsOf, rememberDepartment } from "@/components/files/departments";
@@ -193,6 +196,8 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const [viewMode, setViewMode] = useState<ViewMode>(() => readViewMode(me.user.id));
   const [departmentChoice, setDepartmentChoice] = useState<string | null | undefined>(undefined);
   const [versionFile, setVersionFile] = useState<{ file: File; of: DocumentSummary } | null>(null);
+  // PRD 7 (#604): the folder whose Audience panel is open.
+  const [audienceOf, setAudienceOf] = useState<AudienceTarget | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -548,6 +553,10 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const withSubfolders = includeSubfoldersHref(library, current?.children.length ?? 0);
   const badge = current ? placeKind(current.folder) : null;
   const accessHint = current ? placeHint(tree, current.folder.id) : null;
+  // PRD 7 (#604): who may use the access controls here (the server checks again).
+  const place = current ? folderPlace(tree, current.folder.id) : null;
+  const abilities = accessAbilities(me, { departmentId: place?.department?.id ?? null });
+  const audiencePlace = audienceOf ? folderPlace(tree, audienceOf.id) : null;
 
   // Only an empty list shows this button, in its empty state; the page header never does
   // (Tushar, 16 Oct 2026: two upload buttons): the app header's Upload is the screen's one
@@ -730,6 +739,11 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                 admin={me?.user.role === "admin"}
                 askNew={newFolderAsk}
                 suggestions={nameSuggestions}
+                onAudience={
+                  current && abilities.audience
+                    ? () => setAudienceOf({ kind: "folder", id: current.folder.id, name: current.folder.name })
+                    : undefined
+                }
               />
             )}
           </div>
@@ -1073,6 +1087,20 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
         onUndo={toastUndo ? () => undoMove(toastUndo, toast?.undone ?? "") : undefined}
         onClose={() => setToast(null)}
       />
+      {audienceOf && (
+        <AudiencePanel
+          target={audienceOf}
+          myId={me.user.id}
+          abilities={accessAbilities(me, { departmentId: audiencePlace?.department?.id ?? null })}
+          place={audiencePlace}
+          onClose={() => setAudienceOf(null)}
+          onChanged={(message) => {
+            setToast({ message });
+            foldersEdited(); // its people icon and the named list follow
+            setReload((n) => n + 1);
+          }}
+        />
+      )}
       {versionFile && (
         <VersionNoteDialog
           documentName={versionFile.of.display_name}

@@ -270,10 +270,10 @@ export function privateText(department: string | null, losing: readonly Person[]
   if (losing.length === 0) return `${who} Nobody loses access.`;
   return `${who} ${peopleCount(losing.length)} will lose access: ${namesPreview(losing)}.`;
 }
-export const openAgainText = (department: string | null, files: number) =>
-  department
-    ? `Everyone who can see ${department} will see these ${plural(files, "file", "files")}.`
-    : `Everyone in the organisation will see these ${plural(files, "file", "files")}.`;
+export function openAgainText(department: string | null, files: number): string {
+  const these = files === 1 ? "this file" : `these ${files} files`;
+  return department ? `Everyone who can see ${department} will see ${these}.` : `Everyone in the organisation will see ${these}.`;
+}
 
 // --- Give access ---------------------------------------------------------------------------------
 

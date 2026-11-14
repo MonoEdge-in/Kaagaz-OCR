@@ -19,6 +19,9 @@ import type {
   DepartmentMember,
   PersonAccess,
   PlacePreview,
+  Audience,
+  AudienceCheck,
+  NamedList,
   AdminCreated,
   AdminStorage,
   AdminUser,
@@ -1407,6 +1410,23 @@ export const giveFile = (documentId: string, userId: string, password?: string) 
   request<{ versions: number; changed: boolean }>("PUT", `/documents/${segment(documentId)}/shares/${segment(userId)}`, { password });
 export const takeFile = (documentId: string, userId: string) =>
   request<void>("DELETE", `/documents/${segment(documentId)}/shares/${segment(userId)}`);
+
+// PR 11b: the library's access.
+export type AudienceKind = "documents" | "folders";
+export const getAudience = (kind: AudienceKind, id: string) => request<Audience>("GET", `/${kind}/${segment(id)}/audience`);
+export const checkAudience = (kind: AudienceKind, id: string, userId: string) =>
+  request<AudienceCheck>("GET", `/${kind}/${segment(id)}/audience${query({ user_id: userId })}`);
+export const listNamed = (folderId: string) => request<NamedList>("GET", `/folders/${segment(folderId)}/named`);
+/** Who would lose and gain the folder's files were it private (`on`), with `named` named now. */
+export const privatePreview = (folderId: string, on: boolean, named: readonly string[] = []) =>
+  request<PlacePreview>("GET", `/folders/${segment(folderId)}/private/preview${query({ on, named })}`);
+/** Make it private, naming people on it, or open again (`named` only with `on`). */
+export const setPrivate = (folderId: string, on: boolean, named: readonly string[], password?: string) =>
+  request<{ private: boolean; named: Person[]; you_lose_access: boolean }>("PUT", `/folders/${segment(folderId)}/private`, {
+    on,
+    named,
+    password,
+  });
 /** ``autofileOn`` left out: the switch is left as it is (feature 28). ``google`` (#507), when
  * given, replaces the three Google sign-in rules; left out, they stay. */
 export const updateSettings = (maxUploadMb: number | null, autofileOn?: boolean, google?: GoogleRulesChange) =>
