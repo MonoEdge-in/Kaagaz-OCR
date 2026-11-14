@@ -109,6 +109,8 @@ ANSWER_SHAPING = (
     "model_answer_max_tokens",
     "model_context_tokens",
     "search_ef",
+    "search_max_scan_tuples",
+    "search_exact_below",
     "answer_max_evidence",
     "answer_min_evidence_score",
     "answer_neighbours",

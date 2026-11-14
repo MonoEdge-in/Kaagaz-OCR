@@ -336,19 +336,23 @@ class PgRetriever:
         neighbours: int,
         topic_pieces: int = 0,
         min_score: float = 1.0,
+        max_scan_tuples: int = 20000,
+        exact_below: int = 5000,
     ) -> None:
         """``recipe``: the ``embedding_model`` tag meaning search uses (vectors with
         another tag are left out; a section's ``embed_recipe`` too); ``ef_search``:
         SEARCH_EF; ``neighbours``: ANSWER_NEIGHBOURS, the pieces on each side of a hit (0:
         none); ``topic_pieces``: TOPIC_EXPAND_MAX_PIECES, a topic's pieces a document and a
         section's pieces (0: none); ``min_score``: ANSWER_MIN_EVIDENCE_SCORE, the cosine
-        similarity a section's summary needs to match by meaning (1: the same direction)."""
+        similarity a section's summary needs to match by meaning (1: the same direction);
+        ``max_scan_tuples`` and ``exact_below``: SEARCH_MAX_SCAN_TUPLES and SEARCH_EXACT_BELOW."""
         self._db = db
         self._recipe = recipe
         self._ef_search = ef_search
         self._neighbours = neighbours
         self._topic_pieces = topic_pieces
         self._min_score = min_score
+        self._max_scan_tuples, self._exact_below = max_scan_tuples, exact_below
 
     def search(
         self,
@@ -376,6 +380,8 @@ class PgRetriever:
                 ef_search=self._ef_search,
                 scope=scope,
                 expansion=expansion,
+                max_scan_tuples=self._max_scan_tuples,
+                exact_below=self._exact_below,
             )
 
     def search_translated(
@@ -406,6 +412,8 @@ class PgRetriever:
             scope=scope,
             expansion=expansion,
             asked=asked,
+            max_scan_tuples=self._max_scan_tuples,
+            exact_below=self._exact_below,
         )
         return Translated(hits, original, lists)
 

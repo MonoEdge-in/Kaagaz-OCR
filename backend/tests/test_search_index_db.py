@@ -98,6 +98,8 @@ def clusters() -> Iterator[Clusters]:
 
 
 def _search(conn: Connection, customer: str, vector: list[float], limit: int, query: str = "") -> list[str]:
+    """Changed on purpose (#602): ``exact_below=0``, so these tests keep walking the index, which a
+    scope this small would otherwise never do (PRD 7 section 7)."""
     hits = search(
         conn,
         customer_id=customer,
@@ -106,6 +108,7 @@ def _search(conn: Connection, customer: str, vector: list[float], limit: int, qu
         limit=limit,
         recipe=RECIPE,
         ef_search=EF_SEARCH,
+        exact_below=0,
     )
     return [hit.piece_id for hit in hits]
 
@@ -162,10 +165,11 @@ def test_a_short_index_walk_falls_back_to_the_exact_scan(clusters: Clusters) -> 
     assert customer == clusters.small
     exact = _exact(clusters.db, customer, vector, CANDIDATES)
     with clusters.db.customer(customer) as conn:
-        conn.execute(text("SELECT set_config('hnsw.max_scan_tuples', '130', true)"))
         conn.execute(text("SELECT set_config('enable_sort', 'off', true)"))
         found = _search(conn, customer, vector, CANDIDATES)
-        # The index walk alone, with the settings search() just set:
+        # The index walk alone, with the settings search() just set; changed on purpose (#602):
+        # search() sets max_scan_tuples itself now, so the walk is cut to 130 tuples after it.
+        conn.execute(text("SELECT set_config('hnsw.max_scan_tuples', '130', true)"))
         assert "pieces_embedding" in _plan(conn, hybrid._MEANING.text, customer, vector)
         params = {"c": customer, "vec": vector_literal(vector), "recipe": RECIPE, "n": CANDIDATES}
         short = conn.execute(hybrid._MEANING, params | EVERYTHING.params()).all()
@@ -179,7 +183,7 @@ def test_the_search_settings_end_with_their_transaction(db: Database) -> None:
     """One pooled connection, two transactions: the second sees the defaults again."""
     engine = create_engine(normalise_url(database_url()), pool_size=1, max_overflow=0)
     pooled = Database(engine, APP_ROLE)
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     add_pieces(db, customer, add_document(db, customer), [("Invoice total", axis(0))])
     settings = text(
         "SELECT pg_backend_pid(), current_setting('hnsw.ef_search'), current_setting('hnsw.iterative_scan'),"
@@ -187,10 +191,11 @@ def test_the_search_settings_end_with_their_transaction(db: Database) -> None:
         " current_setting('plan_cache_mode')"
     )
     try:
-        with pooled.customer(customer) as conn:
+        # Changed on purpose (#602): as a person; the API role with none sees nothing (PRD 7).
+        with pooled.user(customer, user) as conn:
             assert len(_search(conn, customer, axis(0), 10, "invoice")) == 1
             during = conn.execute(settings).one()
-        with pooled.customer(customer) as conn:
+        with pooled.user(customer, user) as conn:
             after = conn.execute(settings).one()
     finally:
         engine.dispose()
@@ -203,18 +208,20 @@ def test_the_search_settings_end_with_their_transaction(db: Database) -> None:
 def test_a_meaning_list_past_the_timeout_is_dropped_and_words_still_answer(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The meaning statement is swapped for one that sleeps past a short timeout."""
+    """The meaning statements are swapped for one that sleeps past a short timeout (changed on
+    purpose, #602: the exact scan too, which a small scope runs alone)."""
     customer, _ = new_customer(db)
     (piece,) = add_pieces(db, customer, add_document(db, customer), [("Invoice INV-3003", axis(0))])
     monkeypatch.setattr(hybrid, "STATEMENT_TIMEOUT_MS", 200)
-    monkeypatch.setattr(
-        hybrid,
-        "_MEANING",
-        text(
-            "SELECT p.id, 0.0 FROM pieces p CROSS JOIN pg_sleep(5)"
-            " WHERE p.customer_id = :c AND :recipe <> '' AND :n > 0 AND length(:vec) > 0"
-        ),
-    )
+    for statement in ("_MEANING", "_MEANING_EXACT"):
+        monkeypatch.setattr(
+            hybrid,
+            statement,
+            text(
+                "SELECT p.id, 0.0 FROM pieces p CROSS JOIN pg_sleep(5)"
+                " WHERE p.customer_id = :c AND :recipe <> '' AND :n > 0 AND length(:vec) > 0"
+            ),
+        )
 
     hits = run(db, customer, "INV-3003", axis(0))
 

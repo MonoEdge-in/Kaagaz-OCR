@@ -46,6 +46,7 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (hybrid, "_FUZZY"): LIVE_CURRENT,
     (hybrid, "_MEANING"): LIVE_CURRENT,
     (hybrid, "_MEANING_EXACT"): LIVE_CURRENT,
+    (hybrid, "_VISIBLE_VECTORS"): LIVE_CURRENT,  # PRD 7 section 7: the small-set count before them
     (hybrid, "_DETAILS"): LIVE_CURRENT,
     (hybrid, "_NEIGHBOURS"): LIVE_CURRENT,  # Q4: the pieces next to an answer's hits
     # PRD 5: whole documents (CX5), topic and section pieces (CX6) and cards (M2).

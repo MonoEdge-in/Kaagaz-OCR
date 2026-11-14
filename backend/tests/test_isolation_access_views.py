@@ -21,11 +21,14 @@ from sqlalchemy import text
 import kaagaz
 from kaagaz.db import audit, listing
 from kaagaz.db.engine import Database
+from kaagaz.search import hybrid
+from kaagaz.search.scope import EVERYTHING
 from tests.db_support import APP_ROLE, insert_folder
 from tests.test_api_delete_forever_grant import _confirm, _grant
 from tests.test_api_support import CSRF, PDF_BYTES, Api, Signed
 from tests.test_isolation_logins import WORKER
 from tests.test_operator_auth_db import _owner
+from tests.test_search_db import RECIPE, add_pieces, axis
 
 pytestmark = pytest.mark.db
 
@@ -305,9 +308,15 @@ def test_day_one_never_runs_the_given_or_lock_lookups(db: Database) -> None:
     page = text(
         listing._COLUMNS + listing._LIST + listing._FILTERS + " ORDER BY d.created_at DESC LIMIT 50"
     ).text
+    # PR 8 (#602): the meaning walk and the word list too.
+    add_pieces(db, c, document, [("Invoice ledger", axis(0))])
+    words = {"q": "ledger", "k": "ledger", "g": "", "sk": "", "n": 50}
+    vector = {"vec": hybrid.vector_literal(axis(0)), "recipe": RECIPE, "n": 50}
     for statement, params in (
         (listing._SELECT, {"c": c, "d": document}),
         (page, {"c": c, "status": None, "pattern": None}),
+        (hybrid._MEANING.text, {"c": c, **vector, **EVERYTHING.params()}),
+        (hybrid._WORD.text, {"c": c, **words, **EVERYTHING.params()}),
     ):
         nodes = _nodes(_plan(db, c, first, statement, params))
         given = [
@@ -350,6 +359,12 @@ VIEW_READERS = {
     "db/versions.py": {"_ALLOWED", "_CANDIDATE", "_FOR_DOCUMENT", "_IN_BATCH", "_LIVE", "_VIEW"},
     "db/visibility.py": {"LIVE_SUGGESTION", "SEEN_DOCUMENT"},
     "db/word_review.py": {"_PAGES", "_PIECES_BY_ID", "_VALUES_BY_ID", "_WORDS"},
+    # PR 8 (#602): Ask and search, reached from the API only (the SQL guard's worker test).
+    "search/hybrid.py": {
+        "_CARDS", "_DETAILS", "_FUZZY", "_MEANING", "_MEANING_EXACT", "_NEIGHBOURS", "_SECTION_PIECES",
+        "_TOPIC_PIECES", "_VISIBLE_VECTORS", "_WHOLE", "_WHOLE_SIZE", "_WORD",
+    },
+    "search/story_search.py": {"_STORIES"},
 }  # fmt: skip
 
 

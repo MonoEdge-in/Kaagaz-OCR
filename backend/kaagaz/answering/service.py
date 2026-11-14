@@ -611,6 +611,8 @@ class AnswerService:
             neighbours=settings.answer_neighbours,
             topic_pieces=settings.topic_expand_max_pieces,
             min_score=settings.answer_min_evidence_score,
+            max_scan_tuples=settings.search_max_scan_tuples,
+            exact_below=settings.search_exact_below,
         )
         self._retriever: Retriever = pg if retriever is None else retriever
         self._translated: TranslatedSearch | None = pg if retriever is None else translated_search
