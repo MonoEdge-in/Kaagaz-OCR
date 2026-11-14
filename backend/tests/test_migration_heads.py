@@ -101,10 +101,12 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     """A13 (stability pass, 7 Nov 2026). Changed on purpose (#587, 14 Nov 2026): the workers'
     role and login (0083) follow 0082. Changed on purpose (#590, 14 Nov 2026): who-can-see-what's
     tables and columns (0084) follow 0083. Changed on purpose (#593, 14 Nov 2026): their triggers
-    (0085) follow 0084 and are the head."""
+    (0085) follow 0084. Changed on purpose (#595, 14 Nov 2026): the access views (0086) follow 0085
+    and are the head."""
     scripts = _scripts()
     assert scripts.get_revision("0082").down_revision == "0081"
     assert scripts.get_revision("0083").down_revision == "0082"
     assert scripts.get_revision("0084").down_revision == "0083"
     assert scripts.get_revision("0085").down_revision == "0084"
-    assert scripts.get_heads() == ["0085"]
+    assert scripts.get_revision("0086").down_revision == "0085"
+    assert scripts.get_heads() == ["0086"]
