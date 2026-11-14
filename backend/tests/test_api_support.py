@@ -277,9 +277,10 @@ class Api:
         self.storage = storage or ApiFakeStorage()
         self.queue = queue or ApiFakeQueue()
         self.answers = FakeAnswers()
+        self.app_db = Database(db.engine, APP_ROLE)  # PRD 7 (#595): the app in the API role, as on a server
         self.app = create_app(
             self.settings,
-            db=Database(db.engine, APP_ROLE),  # PRD 7 (#595): the app in the API role, as on a server
+            db=self.app_db,
             storage=self.storage,
             queue=self.queue,
             answers=self.answers if answers is None else answers,

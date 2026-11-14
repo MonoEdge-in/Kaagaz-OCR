@@ -38,9 +38,10 @@ pytestmark = pytest.mark.db
 Opened = list[tuple[str, tuple[str, ...], str, int]]  # (kind, ids, opened by, thread)
 
 
-def watch(db: Database, monkeypatch: pytest.MonkeyPatch) -> Opened:
-    """Every ``customer``, ``user`` and ``system`` transaction ``db`` opens from now on: the function
-    that asked for it (through ``user_or_customer``: its caller) and its thread."""
+def watch(db: Database, monkeypatch: pytest.MonkeyPatch, *more: Database) -> Opened:
+    """Every ``customer``, ``user`` and ``system`` transaction ``db`` (and ``more``) opens from now on:
+    the function that asked for it (through ``user_or_customer``: its caller) and its thread.
+    Changed on purpose (#595): the app under test has its own database, in the API role."""
     opened: Opened = []
 
     def watched(kind: str, real: Callable[..., Any]) -> Callable[..., Any]:
@@ -53,8 +54,9 @@ def watch(db: Database, monkeypatch: pytest.MonkeyPatch) -> Opened:
 
         return each
 
-    for kind in ("customer", "user", "system"):
-        monkeypatch.setattr(db, kind, watched(kind, getattr(db, kind)))
+    for database in (db, *more):
+        for kind in ("customer", "user", "system"):
+            monkeypatch.setattr(database, kind, watched(kind, getattr(database, kind)))
     return opened
 
 
@@ -92,7 +94,7 @@ def test_a_streamed_ask_runs_as_the_asker_beyond_the_api(
 ) -> None:
     w = world(db, openrouter)
     openrouter.script("completions", json_stream(DRAFT, size=9))
-    opened = watch(db, monkeypatch)
+    opened = watch(db, monkeypatch, w.api.app_db)
 
     found = w.stream()
     _stopped()
@@ -111,7 +113,7 @@ def test_an_upload_runs_as_the_uploader_and_a_workers_documents_stay_on_the_orga
 ) -> None:
     api = Api(db)
     signed = api.new_signed()
-    opened = watch(db, monkeypatch)
+    opened = watch(db, monkeypatch, api.app_db)
 
     first = upload(signed, PDF_BYTES)
     again = upload(signed, PDF_BYTES)  # the duplicate check finds the first
