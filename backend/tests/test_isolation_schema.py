@@ -624,6 +624,7 @@ TRIGGER_RIGHTS = dict.fromkeys(
         "kaagaz_version_access",
         "kaagaz_access_removed",
         "kaagaz_access_changed",
+        "kaagaz_walls_set",  # 0089 (#594)
         "kaagaz_user_switched",  # Changed on purpose (#601, 0090)
     ),
     ("trigger", EMPTY_PATH),

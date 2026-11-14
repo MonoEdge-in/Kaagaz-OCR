@@ -3,8 +3,17 @@
 // (with its boxes) drawn turned.
 
 import { describe, expect, it } from "vitest";
+import { activitySentence } from "@/components/activity/words";
+import { describeAction } from "@/components/admin/logic";
 import { turnedBox, unturnedBox } from "@/components/words/spots";
-import { fromServer, openingTurns, pageTurnChanges, turnedStageTransform } from "@/components/viewer/viewer";
+import {
+  fromServer,
+  openingTurns,
+  pageTurnChanges,
+  turnOf,
+  turnedStageTransform,
+  unturnedView,
+} from "@/components/viewer/viewer";
 
 describe("saved turns", () => {
   it("are page index and quarter turns in the viewer, page number and degrees on the server", () => {
@@ -95,5 +104,48 @@ describe("a page drawn turned", () => {
       expect(ys[0]).toBeCloseTo(y0);
       expect(ys[1]).toBeCloseTo(y1);
     }
+  });
+
+  it("maps a part of the turned page (a crop, or what shows zoomed in) back to the page before its turn", () => {
+    // A 200 x 100 page shown turned 90: 100 wide, 200 tall. Its top 50 px as shown are the page's
+    // left quarter: x 0 to 50 of 200, all of its height.
+    expect(unturnedView({ x: 0, y: 0, width: 100, height: 50 }, { width: 100, height: 200 }, 90)).toEqual({
+      x: 0,
+      y: 0,
+      width: 50,
+      height: 100,
+    });
+    const rect = { x: 10, y: 20, width: 30, height: 40 };
+    expect(unturnedView(rect, { width: 100, height: 200 }, 0)).toBe(rect);
+    for (const turn of [90, 180, 270]) {
+      const shown = turn === 180 ? { width: 200, height: 100 } : { width: 100, height: 200 };
+      const back = unturnedView(rect, shown, turn);
+      const page = { width: 200, height: 100 };
+      const box = [back.x / page.width, back.y / page.height, (back.x + back.width) / page.width, (back.y + back.height) / page.height] as const;
+      const [x0, y0, x1, y1] = turnedBox(box, turn);
+      expect([x0 * shown.width, y0 * shown.height, (x1 - x0) * shown.width, (y1 - y0) * shown.height].map(Math.round)).toEqual([10, 20, 30, 40]);
+    }
+  });
+
+  it("reads a page's turn in degrees from the turns by page index", () => {
+    const turns = new Map([[2, 3]]);
+    expect(turnOf(turns, 3)).toBe(270);
+    expect(turnOf(turns, 2)).toBe(0);
+  });
+});
+
+describe("the activity", () => {
+  const entry = (action: string, pages?: number) => ({ action, actor_name: "Priya", details: pages === undefined ? {} : { pages } });
+
+  it("says who turned how many pages for everyone, and who put them back", () => {
+    expect(activitySentence(entry("document.page_turns", 1))).toBe("Priya turned 1 page for everyone");
+    expect(activitySentence(entry("document.page_turns", 3))).toBe("Priya turned 3 pages for everyone");
+    expect(activitySentence(entry("document.page_turns"))).toBe("Priya turned the pages for everyone");
+    expect(activitySentence(entry("document.page_turns_reset", 2))).toBe("Priya put the pages back as scanned");
+  });
+
+  it("names both in the admin's log", () => {
+    expect(describeAction("document.page_turns")).toBe("Turned the pages of a document");
+    expect(describeAction("document.page_turns_reset")).toBe("Put a document's pages back as scanned");
   });
 });

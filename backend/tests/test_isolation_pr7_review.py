@@ -302,9 +302,9 @@ def test_trash_of_a_department_only_department_deleted_since_stays_closed(db: Da
     """Budgets (in Finance, Department only) goes to Trash with its file; then Finance itself is
     deleted, emptied first (#594: a keep-delete of Finance is refused now). The organisation still
     keeps something to some people (Legal is Department only too), so the plain reviewer sees neither
-    then; Management still does, and the worker with no person sees its whole organisation. (Known
-    gap, #594: had Finance been its last Department only department, its stranded Trash would fall
-    back to open.)"""
+    then; Management still does, and the worker with no person sees its whole organisation. (#594
+    closed the known gap: had Finance been its last Department only department, its stranded Trash
+    stays closed too, test_isolation_open_paths.)"""
     api = Api(db)
     org = _walled(api)
     admin, plain = org.people["admin"], org.people["plain"]
