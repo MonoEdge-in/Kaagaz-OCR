@@ -1,21 +1,26 @@
 "use client";
 
 // A department's people (PRD 7 PR 11a, #604), opened from its row on the Departments tab: each with
-// the Head tick and Remove (asked first), and Add people (the picker, then one add per person).
-// Adding yourself, or ticking yourself Head, goes through the password step. Read each time it
-// opens (GET /admin/departments/{id}/members), never kept.
+// the Head tick (taking it away asks first) and Remove (asked first), and Add people (the picker,
+// then one add per person: me first, so my password is asked before anyone is added; a person who
+// can't be added is said, stays ticked, and the others are still added). Ticking yourself Head
+// asks for your password. Read each time it opens (GET /admin/departments/{id}/members), never kept.
 
 import { useEffect, useState } from "react";
+import { addPeople } from "@/components/access/addPeople";
 import { PeoplePicker } from "@/components/access/PeoplePicker";
+import { asksFirst } from "@/components/access/passwordStep";
 import {
   ACCESS_REMOVED,
   ADD_PEOPLE,
+  REMOVE_AS_HEAD,
   accessErrorText,
-  addedPeopleToast,
+  addedPeopleText,
   headToast,
   loadingMembers,
   noMembers,
   removeDepartmentQuestion,
+  removeHeadQuestion,
 } from "@/components/access/words";
 import access from "@/components/access/Access.module.css";
 import { ActionDialog } from "@/components/documents/ActionDialog";
@@ -26,17 +31,24 @@ import type { Notice } from "./Toast";
 
 const MAX_PEOPLE = 50;
 
+interface Asking {
+  member: DepartmentMember;
+  kind: "remove" | "head";
+}
+
 export function DepartmentPeople({
   department,
   me,
-  adding: startAdding,
+  adding,
+  onAdding,
   run,
   onChanged,
   onNotice,
 }: {
   department: { id: string; name: string };
   me: Person;
-  adding: boolean; // open with the picker (the dialog's and the warning's Add people)
+  adding: boolean; // the picker is open (also from the dialog's and the warning's Add people)
+  onAdding(adding: boolean): void;
   run<T>(what: string, send: (password?: string) => Promise<T>, first: boolean): Promise<T | null>;
   onChanged(): void; // the department's counts changed
   onNotice(notice: Notice): void;
@@ -44,9 +56,8 @@ export function DepartmentPeople({
   const [attempt, setAttempt] = useState(0);
   const [members, setMembers] = useState<DepartmentMember[] | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
-  const [adding, setAdding] = useState(startAdding);
   const [chosen, setChosen] = useState<Person[]>([]);
-  const [removing, setRemoving] = useState<DepartmentMember | null>(null);
+  const [asking, setAsking] = useState<Asking | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -64,11 +75,11 @@ export function DepartmentPeople({
     };
   }, [department.id, attempt]);
 
-  async function change(work: () => Promise<string | null>) {
+  async function change(work: () => Promise<Notice | null>) {
     setBusy(true);
     try {
-      const done = await work();
-      if (done) onNotice({ text: done });
+      const notice = await work();
+      if (notice) onNotice(notice);
     } catch (caught) {
       onNotice({ problem: true, text: accessErrorText(caught) });
     } finally {
@@ -78,17 +89,28 @@ export function DepartmentPeople({
     }
   }
 
-  const join = (person: Person, head?: boolean) =>
-    run(department.name, (password) => putMembership(person.id, department.id, { head, password }), person.id === me.id && head !== false);
+  const head = (member: DepartmentMember, on: boolean) =>
+    change(async () => {
+      const first = asksFirst({ myId: me.id, targetId: member.id, on });
+      const reply = await run(department.name, (password) => putMembership(member.id, department.id, { head: on, password }), first);
+      return reply?.changed ? { text: headToast(member.name, department.name, on) } : null;
+    });
 
   function add() {
     const people = chosen;
-    setAdding(false);
-    setChosen([]);
     void change(async () => {
-      let added = 0;
-      for (const person of people) if ((await join(person)) !== null) added += 1;
-      return added ? addedPeopleToast(added, department.name) : null;
+      const result = await addPeople(
+        people,
+        me.id,
+        (person, first) => run(department.name, (password) => putMembership(person.id, department.id, { password }), first),
+        accessErrorText,
+      );
+      if (result.cancelled) return null; // nobody was added; the picker stays as it was
+      const kept = result.failed.map((each) => each.person);
+      setChosen(kept); // who failed stays ticked, to try again
+      if (kept.length === 0) onAdding(false);
+      const text = addedPeopleText(result.added, department.name, result.failed);
+      return text ? { text, problem: kept.length > 0 } : null;
     });
   }
 
@@ -113,13 +135,13 @@ export function DepartmentPeople({
                     checked={member.head}
                     disabled={busy}
                     onChange={(event) => {
-                      const on = event.target.checked;
-                      void change(async () => ((await join(member, on)) === null ? null : headToast(member.name, department.name, on)));
+                      if (event.target.checked) void head(member, true);
+                      else setAsking({ member, kind: "head" });
                     }}
                   />
                   Head<span className="visually-hidden">{` of ${department.name}: ${member.name}`}</span>
                 </label>
-                <button type="button" className="btn btn-quiet" disabled={busy} onClick={() => setRemoving(member)}>
+                <button type="button" className="btn btn-quiet" disabled={busy} onClick={() => setAsking({ member, kind: "remove" })}>
                   Remove
                   <span className="visually-hidden">{` ${member.name}`}</span>
                 </button>
@@ -136,9 +158,10 @@ export function DepartmentPeople({
             onChange={setChosen}
             cap={MAX_PEOPLE}
             exclude={(members ?? []).map((member) => member.id)}
+            scroll
           />
           <div className="actions">
-            <button type="button" className="btn" onClick={() => setAdding(false)}>
+            <button type="button" className="btn" onClick={() => onAdding(false)}>
               Cancel
             </button>
             <button type="button" className="btn" disabled={busy || chosen.length === 0} onClick={add}>
@@ -148,31 +171,37 @@ export function DepartmentPeople({
         </div>
       ) : (
         <div>
-          <button type="button" className="btn" disabled={busy} onClick={() => setAdding(true)}>
+          <button type="button" className="btn" disabled={busy} onClick={() => onAdding(true)}>
             {ADD_PEOPLE}
           </button>
         </div>
       )}
-      {removing && (
-        <ActionDialog title={removing.name} onClose={() => setRemoving(null)}>
-          <p>{removeDepartmentQuestion(removing.name, department.name)}</p>
+      {asking && (
+        <ActionDialog title={asking.member.name} onClose={() => setAsking(null)}>
+          <p>
+            {asking.kind === "head"
+              ? removeHeadQuestion(asking.member.name, department.name)
+              : removeDepartmentQuestion(asking.member.name, department.name)}
+          </p>
           <div className="actions">
-            <button type="button" className="btn" data-autofocus onClick={() => setRemoving(null)}>
+            <button type="button" className="btn" data-autofocus onClick={() => setAsking(null)}>
               Cancel
             </button>
             <button
               type="button"
               className="btn btn-danger"
               onClick={() => {
-                const member = removing;
-                setRemoving(null);
-                void change(async () => {
-                  await removeMembership(member.id, department.id);
-                  return ACCESS_REMOVED;
-                });
+                const { member, kind } = asking;
+                setAsking(null);
+                if (kind === "head") void head(member, false);
+                else
+                  void change(async () => {
+                    await removeMembership(member.id, department.id);
+                    return { text: ACCESS_REMOVED };
+                  });
               }}
             >
-              {`Remove from ${department.name}`}
+              {asking.kind === "head" ? REMOVE_AS_HEAD : `Remove from ${department.name}`}
             </button>
           </div>
         </ActionDialog>

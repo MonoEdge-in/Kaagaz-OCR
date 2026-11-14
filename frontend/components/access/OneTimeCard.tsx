@@ -44,7 +44,7 @@ export function OneTimeCard() {
   const [closed, setClosed] = useState(false);
 
   useEffect(() => {
-    if (!allowed) return;
+    if (!allowed || cardDismissed(me.user.id)) return; // dismissed: not even asked
     let live = true;
     listAdminDepartments().then(
       (reply) => {
@@ -55,7 +55,7 @@ export function OneTimeCard() {
     return () => {
       live = false;
     };
-  }, [allowed]);
+  }, [allowed, me.user.id]);
 
   if (closed || !showCard(me, keeps)) return null;
   return (

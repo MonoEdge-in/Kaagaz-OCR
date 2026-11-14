@@ -26,6 +26,45 @@ export function passwordRetryText(caught: unknown): string | null {
 /** A preview's `gaining` (or the people chosen) holds me: ask for the password first. */
 export const includesMe = (people: readonly Person[], myId: string) => people.some((person) => person.id === myId);
 
+/** Whether to ask for the password before sending: a preview whose `gaining` holds me, or a
+ * change to me (`targetId`) that gives access; `on` false (a Head tick or Management taken away)
+ * gives nothing, so it never asks. */
+export function asksFirst({
+  myId,
+  targetId,
+  on,
+  gaining,
+}: {
+  myId: string;
+  targetId?: string;
+  on?: boolean;
+  gaining?: readonly Person[];
+}): boolean {
+  if (gaining) return includesMe(gaining, myId);
+  return targetId === myId && on !== false;
+}
+
+/** The open step's send: a refused password throws (the dialog stays open and says why); any
+ * other failure closes the step and rejects the caller's wait; success closes it and resolves. */
+export function stepAttempt<T>(
+  attempt: (password: string) => Promise<T>,
+  done: { close(): void; resolve(reply: T): void; reject(caught: unknown): void },
+): (password: string) => Promise<void> {
+  return async (password) => {
+    let reply: T;
+    try {
+      reply = await attempt(password);
+    } catch (caught) {
+      if (passwordRetryText(caught) !== null) throw caught;
+      done.close();
+      done.reject(caught);
+      return;
+    }
+    done.close();
+    done.resolve(reply);
+  };
+}
+
 export async function withPassword<T>(
   send: (password?: string) => Promise<T>,
   ask: AskPassword,

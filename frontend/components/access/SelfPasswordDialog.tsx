@@ -5,11 +5,11 @@
 // back in it; any other failure closes it and goes to the caller; Cancel sends nothing. Screens
 // use it through usePasswordStep: `run(what, send, first)` and render `dialog`.
 
-import { useCallback, useId, useState } from "react";
+import { useCallback, useId, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { PasswordField } from "@/components/ui/PasswordField";
-import { passwordRetryText, withPassword } from "./passwordStep";
+import { passwordRetryText, stepAttempt, withPassword } from "./passwordStep";
 import { PASSWORD_BUTTON, PASSWORD_LABEL, PASSWORD_TITLE, selfGrantText } from "./words";
 
 export function SelfPasswordDialog({
@@ -70,6 +70,7 @@ export function SelfPasswordDialog({
 }
 
 interface OpenStep {
+  key: number;
   what: string;
   attempt(password: string): Promise<void>;
   cancel(): void;
@@ -80,39 +81,41 @@ interface OpenStep {
  * admin cancelled. `dialog`: render it where the screen keeps its dialogs. */
 export function usePasswordStep() {
   const [open, setOpen] = useState<OpenStep | null>(null);
+  // One step at a time: a second ask waits for the first to close, so the dialog never says the
+  // wrong "access to …".
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
+  const steps = useRef(0);
 
   const run = useCallback(
     <T,>(what: string, send: (password?: string) => Promise<T>, first: boolean) =>
       withPassword(
         send,
-        <R,>(attempt: (password: string) => Promise<R>) =>
-          new Promise<R | null>((resolve, reject) => {
-            setOpen({
-              what,
-              attempt: async (password) => {
-                let reply: R;
-                try {
-                  reply = await attempt(password);
-                } catch (caught) {
-                  if (passwordRetryText(caught) !== null) throw caught; // the dialog stays open
-                  setOpen(null);
-                  reject(caught);
-                  return;
-                }
-                setOpen(null);
-                resolve(reply);
-              },
-              cancel: () => {
-                setOpen(null);
-                resolve(null);
-              },
-            });
-          }),
+        <R,>(attempt: (password: string) => Promise<R>) => {
+          const turn = queue.current.then(
+            () =>
+              new Promise<R | null>((resolve, reject) => {
+                const close = () => setOpen(null);
+                steps.current += 1;
+                setOpen({
+                  key: steps.current,
+                  what,
+                  attempt: stepAttempt(attempt, { close, resolve, reject }),
+                  cancel: () => {
+                    close();
+                    resolve(null);
+                  },
+                });
+              }),
+          );
+          queue.current = turn.catch(() => undefined);
+          return turn;
+        },
         first,
       ),
     [],
   );
 
-  const dialog = open && <SelfPasswordDialog what={open.what} attempt={open.attempt} onCancel={open.cancel} />;
+  // A new key each step: nothing typed for one step is left in the next.
+  const dialog = open && <SelfPasswordDialog key={open.key} what={open.what} attempt={open.attempt} onCancel={open.cancel} />;
   return { run, dialog };
 }

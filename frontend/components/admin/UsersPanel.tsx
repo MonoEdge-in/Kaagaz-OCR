@@ -34,9 +34,11 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import type { FormEvent } from "react";
+import { asksFirst } from "@/components/access/passwordStep";
 import { usePasswordStep } from "@/components/access/SelfPasswordDialog";
 import {
   MANAGEMENT_CHIP,
+  MANAGEMENT_MEANS,
   MANAGEMENT_TITLE,
   MANAGEMENT_WHAT,
   accessErrorText,
@@ -248,6 +250,7 @@ export function UsersPanel({
                     key={user.id}
                     user={user}
                     isSelf={user.id === currentUserId}
+                    myId={currentUserId}
                     adminTwoStep={adminTwoStep}
                     providers={providers}
                     now={now}
@@ -341,6 +344,7 @@ export function AccessCell({ user }: { user: AdminUser }) {
       {user.management && (
         <span className="status-chip" data-tone="working" title={MANAGEMENT_TITLE}>
           {MANAGEMENT_CHIP}
+          <span className="visually-hidden">{MANAGEMENT_MEANS}</span>
         </span>
       )}
       <span>{departmentsText(user.departments ?? [])}</span>
@@ -351,6 +355,7 @@ export function AccessCell({ user }: { user: AdminUser }) {
 function UserRow({
   user,
   isSelf,
+  myId,
   adminTwoStep,
   providers,
   now,
@@ -360,6 +365,7 @@ function UserRow({
 }: {
   user: AdminUser;
   isSelf: boolean;
+  myId: string;
   adminTwoStep: boolean;
   providers: readonly string[];
   now: number;
@@ -370,14 +376,15 @@ function UserRow({
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState<Confirming | null>(null);
   const router = useRouter();
-  const step = usePasswordStep();
+  const passwordStep = usePasswordStep();
 
   /** Management on or off; making yourself Management asks for your password first. */
   async function management(on: boolean) {
     setConfirming(null);
     setBusy(true);
     try {
-      const row = await step.run(MANAGEMENT_WHAT, (password) => setManagement(user.id, on, password), isSelf && on);
+      const first = asksFirst({ myId, targetId: user.id, on });
+      const row = await passwordStep.run(MANAGEMENT_WHAT, (password) => setManagement(user.id, on, password), first);
       if (row) {
         onChanged(row);
         onNotice({ text: managementToast(user.display_name, on) });
@@ -552,7 +559,7 @@ function UserRow({
             </div>
           </ActionDialog>
         )}
-        {step.dialog}
+        {passwordStep.dialog}
       </td>
     </tr>
   );

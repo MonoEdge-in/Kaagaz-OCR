@@ -7,7 +7,7 @@
 // the panel's (onConfirm), once this dialog has closed.
 
 import { useEffect, useState } from "react";
-import { includesMe } from "@/components/access/passwordStep";
+import { asksFirst } from "@/components/access/passwordStep";
 import {
   ADD_PEOPLE,
   KEEP_TO_PEOPLE,
@@ -84,38 +84,33 @@ export function DepartmentOnlyView({
   const on = !department.department_only;
   return (
     <ActionDialog title={on ? keepQuestion(department.name) : openQuestion(department.name)} onClose={onClose}>
-      {failed ? (
-        <div className="stack">
-          <p className="error-text" role="alert">
-            {PREVIEW_FAILED}
-          </p>
-          <div>
-            <button type="button" className="btn" onClick={onRetry}>
-              <Icon name="refresh" />
-              Try again
-            </button>
-          </div>
+      {/* One live region: "Checking…", then the names (or the failure) are read where it was. */}
+      <div role="status">
+        {failed ? (
+          <p className="error-text">{PREVIEW_FAILED}</p>
+        ) : preview === null ? (
+          <p className="muted">{PREVIEW_LOADING}</p>
+        ) : (
+          <p>{on ? departmentOnlyText(department.name, preview.losing, department.members) : openText(department.name, preview.files)}</p>
+        )}
+      </div>
+      {failed && (
+        <div>
+          <button type="button" className="btn" onClick={onRetry}>
+            <Icon name="refresh" />
+            Try again
+          </button>
         </div>
-      ) : preview === null ? (
-        <p className="muted" role="status">
-          {PREVIEW_LOADING}
-        </p>
-      ) : on ? (
-        <>
-          <p>{departmentOnlyText(department.name, preview.losing, department.members)}</p>
-          {preview.losing.length > 3 && (
-            <details>
-              <summary>{showAll(preview.losing.length)}</summary>
-              <ul className={access.names}>
-                {preview.losing.map((person) => (
-                  <li key={person.id}>{person.name}</li>
-                ))}
-              </ul>
-            </details>
-          )}
-        </>
-      ) : (
-        <p>{openText(department.name, preview.files)}</p>
+      )}
+      {on && preview && preview.losing.length > 3 && (
+        <details className={access.disclosure}>
+          <summary>{showAll(preview.losing.length)}</summary>
+          <ul className={access.names}>
+            {preview.losing.map((person) => (
+              <li key={person.id}>{person.name}</li>
+            ))}
+          </ul>
+        </details>
       )}
       {/* [Cancel] then the action; Cancel has focus, so Enter never acts by accident. */}
       <div className="actions">
@@ -131,7 +126,7 @@ export function DepartmentOnlyView({
           type="button"
           className={`btn ${on ? "btn-danger" : "btn-primary"}`}
           disabled={preview === null}
-          onClick={() => preview && onConfirm(includesMe(preview.gaining, myId))}
+          onClick={() => preview && onConfirm(asksFirst({ myId, gaining: preview.gaining }))}
         >
           {on ? KEEP_TO_PEOPLE : OPEN_TO_EVERYONE}
         </button>

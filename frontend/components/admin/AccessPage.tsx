@@ -9,12 +9,15 @@
 // buttons, Management and the Head ticks go. Locked files wait for PR 12. Admin sessions only.
 
 import Link from "next/link";
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { usePasswordStep } from "@/components/access/SelfPasswordDialog";
+import { asksFirst } from "@/components/access/passwordStep";
 import {
   ACCESS_PAGE,
   ACCESS_REMOVED,
+  DISABLED_BANNER,
+  REMOVE_AS_HEAD,
   MANAGEMENT_WHAT,
   accessErrorText,
   accessTitle,
@@ -32,13 +35,14 @@ import {
   removeDepartmentQuestion,
   removeFileQuestion,
   removeFolderQuestion,
+  removeHeadQuestion,
   sharedToast,
   stopManagementQuestion,
-  turnedOffBanner,
 } from "@/components/access/words";
 import access from "@/components/access/Access.module.css";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { buildTree, pathLabel } from "@/components/documents/folderTree";
+import type { FolderTree } from "@/components/documents/folderTree";
 import { roleName } from "@/components/shell/nav";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
@@ -90,7 +94,8 @@ function AccessLoader({ userId }: { userId: string }) {
 
   useEffect(() => {
     let live = true;
-    Promise.all([getPersonAccess(userId), listUsers()]).then(
+    // The users list only adds emails and who gave what: without it the page still works.
+    Promise.all([getPersonAccess(userId), listUsers().catch(() => ({ items: [] }))]).then(
       ([found, users]) => {
         if (!live) return;
         setData({ access: found, users: users.items });
@@ -98,7 +103,7 @@ function AccessLoader({ userId }: { userId: string }) {
       },
       (caught: unknown) => {
         if (!live) return;
-        setFailed(caught instanceof ApiError && caught.status === 404 ? "missing" : errorWords(caught));
+        setFailed(accessLoadFailure(caught));
       },
     );
     return () => {
@@ -107,6 +112,12 @@ function AccessLoader({ userId }: { userId: string }) {
   }, [userId, attempt]);
 
   return <AccessPageView data={data} failed={failed} myId={me.user.id} onRetry={reload} onChanged={reload} />;
+}
+
+/** "missing" for a person who isn't there (404) or an id that can't be one (422), as one text;
+ * else the words of a failed load. */
+export function accessLoadFailure(caught: unknown): string {
+  return caught instanceof ApiError && (caught.status === 404 || caught.status === 422) ? "missing" : errorWords(caught);
 }
 
 interface Confirming {
@@ -138,7 +149,7 @@ export function AccessPageView({
   const [confirming, setConfirming] = useState<Confirming | null>(null);
   const [giving, setGiving] = useState<Giving | null>(null);
   const closeNotice = useCallback(() => setNotice(null), []);
-  const step = usePasswordStep();
+  const passwordStep = usePasswordStep();
 
   if (failed === "missing") {
     return (
@@ -161,17 +172,7 @@ export function AccessPageView({
       <div className="page">
         <BackLink />
         {failed ? (
-          <div className={styles.errorBanner} role="alert">
-            <Icon name="alert" className={styles.errorIcon} />
-            <div className={styles.errorBody}>
-              <p className={styles.errorTitle}>{ACCESS_PAGE.loadFailed}</p>
-              <p>{failed}</p>
-            </div>
-            <button type="button" className="btn" onClick={onRetry}>
-              <Icon name="refresh" />
-              Try again
-            </button>
-          </div>
+          <LoadFailed failed={failed} onRetry={onRetry} />
         ) : (
           <>
             <p className="visually-hidden" role="status">
@@ -194,25 +195,34 @@ export function AccessPageView({
   const isSelf = user.id === myId;
   const open = !user.disabled; // a turned-off person can be given nothing
 
-  /** Sends one change; null (the password step cancelled) changes nothing. */
+  /** Sends one change and reads the page again, whatever happened (another admin may have changed
+   * it). Null (the password step cancelled) changes nothing; a reply with `changed: false` (it was
+   * so already) says nothing. */
   async function change(send: () => Promise<unknown>, done: string) {
     setBusy(true);
     try {
-      if ((await send()) !== null) {
-        setNotice({ text: done });
-        onChanged();
-      }
+      const reply = await send();
+      if (reply === null) return;
+      if (!(typeof reply === "object" && reply !== null && "changed" in reply && reply.changed === false)) setNotice({ text: done });
+      onChanged();
     } catch (caught) {
       setNotice({ problem: true, text: accessErrorText(caught) });
+      onChanged();
     } finally {
       setBusy(false);
     }
   }
+  const first = (on?: boolean) => asksFirst({ myId, targetId: user.id, on });
+  const setHead = (department: { id: string; name: string }, on: boolean) =>
+    change(
+      () => passwordStep.run(department.name, (password) => putMembership(user.id, department.id, { head: on, password }), first(on)),
+      headToast(user.name, department.name, on),
+    );
 
   const ask = (text: string, button: string, go: () => void, danger = true) => setConfirming({ text, button, danger, go });
   const management = (on: boolean) =>
     change(
-      () => step.run(MANAGEMENT_WHAT, (password) => setManagement(user.id, on, password), isSelf && on),
+      () => passwordStep.run(MANAGEMENT_WHAT, (password) => setManagement(user.id, on, password), first(on)),
       managementToast(user.name, on),
     );
 
@@ -228,11 +238,12 @@ export function AccessPageView({
           </p>
         </div>
       </header>
+      {failed && <LoadFailed failed={failed} onRetry={onRetry} />}
       {!open && (
         <div className={styles.errorBanner} role="note">
           <Icon name="alert" className={styles.errorIcon} />
           <div className={styles.errorBody}>
-            <p>{turnedOffBanner(user.name)}</p>
+            <p>{DISABLED_BANNER}</p>
           </div>
         </div>
       )}
@@ -270,11 +281,8 @@ export function AccessPageView({
                   checked={department.head}
                   disabled={busy || !open}
                   onChange={(event) => {
-                    const on = event.target.checked;
-                    void change(
-                      () => step.run(department.name, (password) => putMembership(user.id, department.id, { head: on, password }), isSelf && on),
-                      headToast(user.name, department.name, on),
-                    );
+                    if (event.target.checked) void setHead(department, true);
+                    else ask(removeHeadQuestion(user.name, department.name), REMOVE_AS_HEAD, () => void setHead(department, false));
                   }}
                 />
                 Head<span className="visually-hidden">{` of ${department.name}`}</span>
@@ -364,7 +372,7 @@ export function AccessPageView({
           onClose={() => setGiving(null)}
           onGive={(place) => {
             setGiving(null);
-            const self = (what: string, send: (password?: string) => Promise<unknown>) => step.run(what, send, isSelf);
+            const self = (what: string, send: (password?: string) => Promise<unknown>) => passwordStep.run(what, send, first());
             if (place.kind === "department")
               void change(() => self(place.name, (password) => putMembership(user.id, place.id, { password })), canNowSeeToast(user.name, place.name));
             if (place.kind === "folder")
@@ -377,8 +385,24 @@ export function AccessPageView({
           }}
         />
       )}
-      {step.dialog}
+      {passwordStep.dialog}
       <Toast notice={notice} onClose={closeNotice} />
+    </div>
+  );
+}
+
+function LoadFailed({ failed, onRetry }: { failed: string; onRetry(): void }) {
+  return (
+    <div className={styles.errorBanner} role="alert">
+      <Icon name="alert" className={styles.errorIcon} />
+      <div className={styles.errorBody}>
+        <p className={styles.errorTitle}>{ACCESS_PAGE.loadFailed}</p>
+        <p>{failed}</p>
+      </div>
+      <button type="button" className="btn" onClick={onRetry}>
+        <Icon name="refresh" />
+        Try again
+      </button>
     </div>
   );
 }
@@ -439,6 +463,7 @@ interface Place {
   id: string;
   name: string;
   label: string; // a private folder's path, else its name
+  path?: string; // a file's folder
 }
 
 const GIVE_TITLE: Record<Giving, string> = {
@@ -465,6 +490,7 @@ function GiveDialog({
   const [failed, setFailed] = useState<string | null>(null);
   const [find, setFind] = useState("");
   const [chosen, setChosen] = useState("");
+  const tree = useRef<Promise<FolderTree> | null>(null); // the folders, read once, for a file's path
   const { departments, private_folders: folders, files } = data.access;
 
   useEffect(() => {
@@ -487,10 +513,23 @@ function GiveDialog({
           .map((each) => ({ kind: giving, id: each.id, name: each.name, label: pathLabel(tree, each.id) || each.name }));
       }
       const taken = has(files);
-      const reply = await listDocuments({ q: find.trim() || undefined, limit: 10 });
+      tree.current ??= listFolders().then(
+        (reply) => buildTree(reply.items),
+        (caught: unknown) => {
+          tree.current = null; // asked again with the next search
+          throw caught;
+        },
+      );
+      const [reply, folderTree] = await Promise.all([listDocuments({ q: find.trim() || undefined, limit: 10 }), tree.current]);
       return reply.items
         .filter((each) => !taken.has(each.id))
-        .map((each) => ({ kind: giving, id: each.id, name: each.display_name, label: each.display_name }));
+        .map((each) => ({
+          kind: giving,
+          id: each.id,
+          name: each.display_name,
+          label: each.display_name,
+          path: each.folder_id ? pathLabel(folderTree, each.folder_id) : undefined,
+        }));
     };
     const timer = window.setTimeout(
       () =>
@@ -522,7 +561,12 @@ function GiveDialog({
         {giving === "file" && (
           <div className="field">
             <label htmlFor={`${id}-find`}>{ACCESS_PAGE.fileSearch}</label>
-            <input id={`${id}-find`} className="input" type="search" autoComplete="off" value={find} onChange={(event) => setFind(event.target.value)} />
+            <input id={`${id}-find`} className="input" type="search" autoComplete="off" value={find}
+              onChange={(event) => {
+                setFind(event.target.value);
+                setFailed(null); // a new search: the last failure goes
+              }}
+            />
           </div>
         )}
         {failed && <p className="error-text">{failed}</p>}
@@ -542,7 +586,10 @@ function GiveDialog({
                 <li key={option.id}>
                   <label className={access.pickerRow}>
                     <input type="radio" name={id} value={option.id} checked={chosen === option.id} onChange={() => setChosen(option.id)} />
-                    {option.label}
+                    <span className={access.rowText}>
+                      <span>{option.label}</span>
+                      {option.path && <span className={access.rowLine}>{option.path}</span>}
+                    </span>
                   </label>
                 </li>
               ))}

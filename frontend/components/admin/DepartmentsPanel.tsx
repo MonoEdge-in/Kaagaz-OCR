@@ -19,6 +19,8 @@ import {
   KEEP_TO_PEOPLE,
   OPEN_TO_EVERYONE,
   accessErrorText,
+  accessLoadFailed,
+  departmentAdded,
   departmentOnlyToast,
   headLine,
   newDepartmentToast,
@@ -58,6 +60,7 @@ export function DepartmentsPanel({
   const [folders, setFolders] = useState<Folder[] | null>(initial ?? null);
   const [accessOf, setAccessOf] = useState<AdminDepartment[]>(initialAccess ?? []);
   const [error, setError] = useState<string | null>(null);
+  const [accessError, setAccessError] = useState<string | null>(null); // GET /admin/departments failed
   const [addError, setAddError] = useState<string | null>(null); // said under the add form
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState(false);
@@ -67,19 +70,28 @@ export function DepartmentsPanel({
   const [switching, setSwitching] = useState<AdminDepartment | null>(null); // Department only, asked
   const [heading, setHeading] = useState<Folder | null>(null); // a new department: who heads it?
   const closeNotice = useCallback(() => setNotice(null), []);
-  const step = usePasswordStep();
+  const passwordStep = usePasswordStep();
 
   useEffect(() => {
     if (initial) return;
     let cancelled = false;
-    Promise.all([listFolders(), listAdminDepartments()]).then(
-      ([reply, departmentAccess]) => {
-        if (cancelled) return;
-        setFolders(reply.items);
-        setAccessOf(departmentAccess.items);
+    listFolders().then(
+      (reply) => {
+        if (!cancelled) setFolders(reply.items);
       },
       (caught: unknown) => {
         if (!cancelled) setError(`The departments did not load. ${errorWords(caught)}`);
+      },
+    );
+    // Apart, so a failed access read never stops Rename and the order buttons.
+    listAdminDepartments().then(
+      (reply) => {
+        if (cancelled) return;
+        setAccessOf(reply.items);
+        setAccessError(null);
+      },
+      (caught: unknown) => {
+        if (!cancelled) setAccessError(accessLoadFailed(errorWords(caught)));
       },
     );
     return () => {
@@ -108,7 +120,7 @@ export function DepartmentsPanel({
     const on = !department.department_only;
     setSwitching(null);
     void run(
-      () => step.run(department.name, (password) => setDepartmentOnly(department.id, on, password), passwordFirst),
+      () => passwordStep.run(department.name, (password) => setDepartmentOnly(department.id, on, password), passwordFirst),
       departmentOnlyToast(department.name, on),
     );
   }
@@ -132,6 +144,7 @@ export function DepartmentsPanel({
           {error}
         </p>
       )}
+      {accessError && <p className="error-text">{accessError}</p>}
       {folders === null && error === null && (
         <p className="muted" role="status">
           Loading the departments…
@@ -185,11 +198,11 @@ export function DepartmentsPanel({
               />
               {people?.id === department.id && (
                 <DepartmentPeople
-                  key={`${department.id}-${people.adding}`}
                   department={department}
                   me={me}
                   adding={people.adding}
-                  run={step.run}
+                  onAdding={(adding) => setPeople({ id: department.id, adding })}
+                  run={passwordStep.run}
                   onChanged={() => setAttempt((n) => n + 1)}
                   onNotice={setNotice}
                 />
@@ -200,9 +213,10 @@ export function DepartmentsPanel({
       )}
       {heading && (
         <NewDepartmentHead
+          key={heading.id}
           department={heading}
           me={me}
-          run={step.run}
+          run={passwordStep.run}
           onDone={(head) => {
             setNotice({ text: newDepartmentToast(heading.name, head?.name ?? null) });
             setHeading(null);
@@ -221,7 +235,7 @@ export function DepartmentsPanel({
           onSubmit={(name) =>
             void run(
               async () => setHeading(await createFolder(name, null, { sort_order: nextSortOrder(departments) })),
-              null,
+              departmentAdded(name), // said at once; the head step's toast says who heads it
               setAddError,
             )
           }
@@ -239,7 +253,7 @@ export function DepartmentsPanel({
           onConfirm={(passwordFirst) => switchDepartmentOnly(switching, passwordFirst)}
         />
       )}
-      {step.dialog}
+      {passwordStep.dialog}
       <Toast notice={notice} onClose={closeNotice} />
       {error && folders === null && (
         <button type="button" className="btn" onClick={() => setAttempt((n) => n + 1)}>

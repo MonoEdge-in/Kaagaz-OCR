@@ -59,6 +59,7 @@ export const stopManagementQuestion = (name: string) =>
   `Stop Management for ${name}? ${name} will see only their departments' files, private folders they are named on and files given to them.`;
 export const MANAGEMENT_CHIP = "Management";
 export const MANAGEMENT_TITLE = "Sees all files";
+export const MANAGEMENT_MEANS = ": sees all files"; // read after the chip, for screen readers
 export const NO_DEPARTMENT = "No department";
 
 /** The Users tab's Access cell: "Finance (head), Sales", or "No department". */
@@ -75,6 +76,10 @@ export const removeFolderQuestion = (name: string, folder: string) =>
   `Take ${name} off ${quoted(folder)}? ${name} won't see this folder any more, unless they are Management or head of its department.`;
 export const removeFileQuestion = (name: string, file: string) =>
   `Remove ${name}'s access to ${quoted(file)}? This takes away every version of the file.`;
+/** Lead decision (#604 review): taking the Head tick away asks first. */
+export const removeHeadQuestion = (name: string, department: string) =>
+  `Remove ${name} as head of ${department}? ${name} won't see ${department}'s private folders any more, unless they are named on them.`;
+export const REMOVE_AS_HEAD = "Remove as head";
 
 // --- the Access page -----------------------------------------------------------------------------
 
@@ -93,8 +98,8 @@ export const ACCESS_PAGE = {
 } as const;
 export const accessTitle = (name: string) => `Access for ${name}`;
 export const filesHeading = (name: string) => `Files given to ${name}`;
-export const turnedOffBanner = (name: string) =>
-  `${name}'s account is turned off, so they can see nothing. Turn it on from the Users tab to give access again.`;
+// Lead decision (#604 review): the app's own word for a turned-off account, "disabled".
+export const DISABLED_BANNER = "This account is disabled. Enable it from the Users tab to give access again.";
 export const managementLine = (on: boolean) => `Sees all files (Management): ${on ? "Yes" : "No"}`;
 export const noDepartmentsText = (name: string) => `${name} isn't in any department yet.`;
 export const noFoldersText = (name: string) => `${name} isn't named on any private folder.`;
@@ -113,7 +118,20 @@ export const noMembersWarning = (department: string) =>
   `No one is in ${department} yet. Only Management and people given a file directly will see its files.`;
 export const loadingMembers = (department: string) => `Loading the people in ${department}…`;
 export const noMembers = (department: string) => `No one is in ${department} yet.`;
-export const headOf = (department: string) => `Head of ${department}`;
+export const NO_ONE_MATCHES = "No one matches.";
+export const chosenCount = (n: number) => `${n} chosen`;
+export const departmentAdded = (department: string) => `${department} added.`;
+export const accessLoadFailed = (why: string) => `Who can see each department did not load. ${why}`;
+
+/** One toast for adding people: who was added, then each person who wasn't and why; null when
+ * nothing changed and nothing failed (they were all in it already). */
+export function addedPeopleText(added: number, department: string, failed: readonly { person: Person; reason: string }[]): string | null {
+  const parts = [
+    ...(added > 0 ? [addedPeopleToast(added, department)] : []),
+    ...failed.map(({ person, reason }) => `Couldn't add ${person.name}: ${reason.replace(/\.$/, "")}.`),
+  ];
+  return parts.length ? parts.join(" ") : null;
+}
 
 export const headQuestion = (department: string) => `Who heads ${department}?`;
 export const headExplained = (department: string) =>
@@ -127,11 +145,15 @@ export const openQuestion = (department: string) => `Open ${department} to every
 
 /** Department only, on: who loses Finance's files, from the preview. */
 export function departmentOnlyText(department: string, losing: readonly Person[], members: number): string {
-  const lose =
-    losing.length === 0
-      ? `Nobody loses access: everyone who sees ${department} files today is in ${department} or is Management.`
-      : `${peopleCount(losing.length)} will no longer see ${department} files: ${namesPreview(losing)}. Management and anyone you add to ${department} still will.`;
-  return members === 0 ? `${lose} No one is in ${department} yet, so only Management will see its files.` : lose;
+  const nobody = `No one is in ${department} yet, so only Management will see its files.`;
+  if (losing.length === 0) {
+    // With nobody in it, "everyone who sees its files is in it" would be wrong.
+    return members === 0
+      ? `Nobody loses access. ${nobody}`
+      : `Nobody loses access: everyone who sees ${department} files today is in ${department} or is Management.`;
+  }
+  const lose = `${peopleCount(losing.length)} will no longer see ${department} files: ${namesPreview(losing)}. Management and anyone you add to ${department} still will.`;
+  return members === 0 ? `${lose} ${nobody}` : lose;
 }
 export const openText = (department: string, files: number) =>
   `Everyone in the organisation will be able to see ${department}'s ${plural(files, "file", "files")}.`;
@@ -153,7 +175,7 @@ export const CHOOSE_PEOPLE_CAP = (cap: number) => `Choose ${cap} people or fewer
 
 const ACCESS_ERRORS: Record<string, string> = {
   wrong_password: WRONG_PASSWORD,
-  disabled: "This account is turned off. Turn it on before giving access.",
+  disabled: "This account is disabled. Enable it before giving access.",
   not_a_department: "This isn't a department any more. Reload the page.",
   not_private: "This folder isn't private any more. Reload the page.",
   in_trash: "This file is in Trash. Restore it first.",

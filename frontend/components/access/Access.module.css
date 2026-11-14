@@ -25,6 +25,14 @@
   border-radius: var(--k-r-4);
 }
 
+/* On the page (a department's people), the list keeps a height and scrolls in itself. */
+.pickerScroll {
+  position: relative; /* hidden screen-reader text inside can't stretch the page */
+  max-height: 16rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .pickerRow {
   display: flex;
   align-items: center;
@@ -101,6 +109,15 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
+  min-height: var(--control-h); /* a finger's room */
+}
+
+/* "Show all 14" in the Department only dialog. */
+.disclosure summary {
+  display: flex;
+  align-items: center;
+  min-height: var(--control-h);
+  cursor: pointer;
 }
 
 /* A department's access, under its name on the Departments tab. */
@@ -143,7 +160,8 @@
   gap: var(--space-2);
 }
 
-.card h2 {
+.card h2,
+.card h3 {
   margin: 0;
   font-size: var(--fs-lg);
 }

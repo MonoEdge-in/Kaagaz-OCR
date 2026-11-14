@@ -1377,34 +1377,36 @@ export const removeConnections = (id: string) =>
 // Every write that can give the admin themselves access takes their `password` (403
 // password_required without it; components/access/passwordStep.ts).
 
-export const getPersonAccess = (userId: string) => request<PersonAccess>("GET", `/admin/users/${userId}/access`);
+/** A path part: an id typed into the address bar may hold "/" or "?". */
+const segment = (part: string) => encodeURIComponent(part);
+export const getPersonAccess = (userId: string) => request<PersonAccess>("GET", `/admin/users/${segment(userId)}/access`);
 export const setManagement = (userId: string, on: boolean, password?: string) =>
-  request<AdminUser>("PUT", `/admin/users/${userId}/management`, { on, password });
+  request<AdminUser>("PUT", `/admin/users/${segment(userId)}/management`, { on, password });
 /** Adds the person to the department, or sets their Head tick; `head` left out keeps the tick. */
 export const putMembership = (userId: string, departmentId: string, change: { head?: boolean; password?: string } = {}) =>
-  request<{ head: boolean; changed: boolean }>("PUT", `/admin/users/${userId}/departments/${departmentId}`, change);
+  request<{ head: boolean; changed: boolean }>("PUT", `/admin/users/${segment(userId)}/departments/${segment(departmentId)}`, change);
 export const removeMembership = (userId: string, departmentId: string) =>
-  request<void>("DELETE", `/admin/users/${userId}/departments/${departmentId}`);
+  request<void>("DELETE", `/admin/users/${segment(userId)}/departments/${segment(departmentId)}`);
 export const listAdminDepartments = () =>
   request<{ items: AdminDepartment[]; keeps_files_to_some_people: boolean }>("GET", "/admin/departments");
 export const listDepartmentMembers = (departmentId: string) =>
-  request<{ items: DepartmentMember[] }>("GET", `/admin/departments/${departmentId}/members`);
+  request<{ items: DepartmentMember[] }>("GET", `/admin/departments/${segment(departmentId)}/members`);
 export const departmentOnlyPreview = (departmentId: string, on: boolean) =>
-  request<PlacePreview>("GET", `/admin/departments/${departmentId}/department-only/preview${query({ on })}`);
+  request<PlacePreview>("GET", `/admin/departments/${segment(departmentId)}/department-only/preview${query({ on })}`);
 export const setDepartmentOnly = (departmentId: string, on: boolean, password?: string) =>
   request<{ department_only: boolean; members: number; warnings: string[] }>(
     "PUT",
-    `/admin/departments/${departmentId}/department-only`,
+    `/admin/departments/${segment(departmentId)}/department-only`,
     { on, password },
   );
 export const addNamed = (folderId: string, userId: string, password?: string) =>
-  request<{ changed: boolean }>("PUT", `/folders/${folderId}/named/${userId}`, { password });
+  request<{ changed: boolean }>("PUT", `/folders/${segment(folderId)}/named/${segment(userId)}`, { password });
 export const removeNamed = (folderId: string, userId: string) =>
-  request<void>("DELETE", `/folders/${folderId}/named/${userId}`);
+  request<void>("DELETE", `/folders/${segment(folderId)}/named/${segment(userId)}`);
 export const giveFile = (documentId: string, userId: string, password?: string) =>
-  request<{ versions: number; changed: boolean }>("PUT", `/documents/${documentId}/shares/${userId}`, { password });
+  request<{ versions: number; changed: boolean }>("PUT", `/documents/${segment(documentId)}/shares/${segment(userId)}`, { password });
 export const takeFile = (documentId: string, userId: string) =>
-  request<void>("DELETE", `/documents/${documentId}/shares/${userId}`);
+  request<void>("DELETE", `/documents/${segment(documentId)}/shares/${segment(userId)}`);
 /** ``autofileOn`` left out: the switch is left as it is (feature 28). ``google`` (#507), when
  * given, replaces the three Google sign-in rules; left out, they stay. */
 export const updateSettings = (maxUploadMb: number | null, autofileOn?: boolean, google?: GoogleRulesChange) =>

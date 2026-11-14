@@ -27,7 +27,16 @@ import { AnswerQualityPanel } from "./AnswerQualityPanel";
 import { DepartmentsPanel } from "./DepartmentsPanel";
 import { FailedPanel } from "./FailedPanel";
 import { LearnedList } from "./LearnedList";
-import { LEAVE_UNSAVED, SETTINGS_DRAFT, TABS, adminGate, aiSettingsDraft, tabChangeAllowed, tabFrom } from "./logic";
+import {
+  LEAVE_UNSAVED,
+  SETTINGS_DRAFT,
+  TABS,
+  adminGate,
+  adminSignInPath,
+  aiSettingsDraft,
+  tabChangeAllowed,
+  tabFrom,
+} from "./logic";
 import type { TabId } from "./logic";
 import { NumbersPanel } from "./NumbersPanel";
 import { SettingsPanel } from "./SettingsPanel";
@@ -52,7 +61,7 @@ export function AdminGate({ children }: { children: ReactNode }) {
 
   // A full page load: someone else may sign in there (critical #5).
   useEffect(() => {
-    if (gate === "admin_sign_in") leavePage("/login?next=/admin");
+    if (gate === "admin_sign_in") leavePage(adminSignInPath(window.location.pathname));
   }, [gate]);
 
   if (gate === "no_access") {
