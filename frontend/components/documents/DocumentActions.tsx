@@ -40,7 +40,7 @@ import {
   movedMessage,
   tagNameProblem,
 } from "./library";
-import type { EditAction, MenuEntry, RowAction } from "./library";
+import type { EditAction, MenuAccess, MenuEntry, RowAction } from "./library";
 import { documentsCount, runEach } from "./trash";
 import styles from "./Library.module.css";
 
@@ -58,6 +58,8 @@ export interface RowMenuProps {
   /** The document screen's other actions (24 Oct 2026: Ensemble, Export as Data, Download original),
    * after the menu's own and before Move to Trash, each with one plain line; disabled ones say why. */
   more?: readonly MoreItem[];
+  /** PRD 7 (#604): Give access and Who can see this, for who may use them. */
+  access?: MenuAccess;
 }
 
 export interface MoreItem {
@@ -77,13 +79,14 @@ export function RowMenu({
   place = "list",
   readAgain = false,
   more = [],
+  access,
 }: RowMenuProps) {
   const [open, setOpen] = useState(false);
   const [at, setAt] = useState<{ top: number; left: number } | null>(null);
   const button = useRef<HTMLButtonElement | null>(null);
   const list = useRef<HTMLUListElement>(null);
   const menuId = useId();
-  const entries = menuEntries(item, canForever, place, readAgain);
+  const entries = menuEntries(item, canForever, place, readAgain, access);
 
   const setButton = useCallback(
     (element: HTMLButtonElement | null) => {

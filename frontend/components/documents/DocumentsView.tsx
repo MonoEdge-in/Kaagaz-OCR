@@ -1040,6 +1040,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                       onFocusList={() => headingRef.current?.focus()}
                       onTagCreated={() => setTagsVersion((n) => n + 1)}
                       onUploadVersion={chooseVersion}
+                      onShared={(message) => setToast({ message })}
                       trashFolders={folderRows}
                       onOpenFolder={(folder) => openTrashFolder(folder.id)}
                       onFolderDone={opened ? undefined : afterTrashFolder}

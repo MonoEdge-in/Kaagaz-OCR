@@ -40,7 +40,11 @@ import Link from "next/link";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, RefCallback } from "react";
 import { flushSync } from "react-dom";
-import { SHARED } from "@/components/access/words";
+import { accessAbilities } from "@/components/access/abilities";
+import { AudiencePanel } from "@/components/access/AudiencePanel";
+import { GiveAccessDialog } from "@/components/access/GiveAccessDialog";
+import { CHOOSE_FILES_CAP, MAX_GIVE_FILES, SHARED } from "@/components/access/words";
+import { adminGate } from "@/components/admin/logic";
 import { extensionOf } from "@/components/dashboard/words";
 import { LabelChip } from "@/components/files/LabelChip";
 import { labelName } from "@/components/files/labels";
@@ -129,6 +133,8 @@ export interface RowEvents {
   onFolderCreated(): void;
   /** "Upload new version": the screen opens the file picker for this document. */
   onUploadVersion(document: DocumentSummary): void;
+  /** PRD 7 (#604): files given to people: the toast's words. */
+  onShared?(message: string): void;
 }
 
 interface Props extends RowEvents {
@@ -254,6 +260,7 @@ export function DocumentsTable({
     ...deletableItems.map((item) => item.id),
   ];
   const [moving, setMoving] = useState(false);
+  const [givingMany, setGivingMany] = useState(false); // PRD 7 (#604): the bar's Give access
   const bulkMoved = useRef(false);
   const [password, setPassword] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
@@ -311,6 +318,7 @@ export function DocumentsTable({
       onTagCreated: () => latestEvents.current.onTagCreated(),
       onFolderCreated: () => latestEvents.current.onFolderCreated(),
       onUploadVersion: (document) => latestEvents.current.onUploadVersion(document),
+      onShared: (message) => latestEvents.current.onShared?.(message),
     }),
     [],
   );
@@ -517,6 +525,7 @@ export function DocumentsTable({
               suggestions={suggestions}
               movedLeaves={movedLeaves}
               events={rowEvents}
+              me={me}
             />
           ))}
         </tbody>
@@ -571,6 +580,25 @@ export function DocumentsTable({
                     <button type="button" className="btn" onClick={() => setMoving(true)}>
                       Move to folder ({movable.length})
                     </button>
+                  )}
+                  {/* PRD 7 (#604): an admin session's, at most 100 files at once. */}
+                  {movable.length > 0 && adminGate(me) === "allow" && (
+                    <>
+                      <button
+                        type="button"
+                        className="btn"
+                        disabled={movable.length > MAX_GIVE_FILES}
+                        aria-describedby={movable.length > MAX_GIVE_FILES ? "bulk-give-cap" : undefined}
+                        onClick={() => setGivingMany(true)}
+                      >
+                        Give access ({movable.length})
+                      </button>
+                      {movable.length > MAX_GIVE_FILES && (
+                        <span id="bulk-give-cap" className="hint">
+                          {CHOOSE_FILES_CAP}
+                        </span>
+                      )}
+                    </>
                   )}
                   {readableIds.length > 0 && (
                     <button type="button" className="btn" onClick={() => setConfirming("read")}>
@@ -661,6 +689,18 @@ export function DocumentsTable({
             events.onSaved(message, undo);
           }}
           onFolderCreated={events.onFolderCreated}
+        />
+      )}
+      {givingMany && (
+        <GiveAccessDialog
+          files={movable}
+          myId={me.user.id}
+          onClose={() => setGivingMany(false)}
+          onGiven={(message) => {
+            setGivingMany(false);
+            clearSelection();
+            events.onShared?.(message);
+          }}
         />
       )}
     </>
@@ -763,6 +803,7 @@ const DocumentRow = memo(function DocumentRow({
   suggestions,
   movedLeaves,
   events,
+  me,
 }: {
   document: DocumentSummary;
   whenShort: string;
@@ -779,9 +820,12 @@ const DocumentRow = memo(function DocumentRow({
   suggestions: readonly string[];
   movedLeaves: boolean;
   events: RowEvents;
+  me: Me;
 }) {
   const [confirming, setConfirming] = useState<Confirming>(null);
   const [editing, setEditing] = useState<EditAction | null>(null);
+  const [sharing, setSharing] = useState<"give" | "audience" | null>(null); // PRD 7 (#604)
+  const abilities = accessAbilities(me, { departmentId: document.department?.id ?? null });
   const [busy, setBusy] = useState(false);
   // What the row says while Restore or Retry runs (Trash and Delete forever say it in their dialog).
   const [working, setWorking] = useState(BUSY_WORDS.restore);
@@ -836,6 +880,10 @@ const DocumentRow = memo(function DocumentRow({
       return;
     }
     if (action === "read") return; // only the document screen's menu offers it
+    if (action === "give" || action === "audience") {
+      setSharing(action);
+      return;
+    }
     afterEdit.current = "actions";
     setEditing(action);
   }
@@ -1155,6 +1203,29 @@ const DocumentRow = memo(function DocumentRow({
             canForever={canForever}
             onPick={pick}
             toggleRef={holdActions}
+            access={abilities}
+          />
+        )}
+        {sharing === "give" && (
+          <GiveAccessDialog
+            files={[document]}
+            myId={me.user.id}
+            onClose={() => setSharing(null)}
+            onClosed={() => actionsButton.current?.focus()}
+            onGiven={(message) => {
+              setSharing(null);
+              events.onShared?.(message);
+            }}
+          />
+        )}
+        {sharing === "audience" && (
+          <AudiencePanel
+            target={{ kind: "document", id: document.id, name: document.display_name }}
+            myId={me.user.id}
+            abilities={abilities}
+            onClose={() => setSharing(null)}
+            onClosed={() => actionsButton.current?.focus()}
+            onChanged={(message) => events.onShared?.(message)}
           />
         )}
         {confirming !== null && (

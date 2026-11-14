@@ -233,5 +233,6 @@
 }
 
 .tableWrap {
+  position: relative; /* hidden screen-reader text inside it cannot stretch the page */
   overflow-x: auto;
 }

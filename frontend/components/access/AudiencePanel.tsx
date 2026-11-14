@@ -80,6 +80,8 @@ interface PanelProps {
   /** A folder's: private or not, its department, why Make private is refused (places.ts). */
   place?: FolderPlace | null;
   onClose(): void;
+  /** Shut: the screen puts focus back where it was (a row's menu button). */
+  onClosed?(): void;
   /** A change was saved: the toast's words; the screen reads the folders again. */
   onChanged(message: string): void;
 }
@@ -190,7 +192,7 @@ export function AudiencePanel(props: PanelProps) {
     mode.kind === "private" ? makePrivateQuestion(target.name) : mode.kind === "open" ? makeOpenQuestion(target.name) : audienceTitle(target.name);
   return (
     <>
-      <ActionDialog title={title} onClose={props.onClose} canClose={() => !busy} wide>
+      <ActionDialog title={title} onClose={props.onClose} onClosed={props.onClosed} canClose={() => !busy} wide>
         {mode.kind === "view" && (
           <AudienceView
             {...props}

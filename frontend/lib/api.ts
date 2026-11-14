@@ -1412,6 +1412,9 @@ export const takeFile = (documentId: string, userId: string) =>
   request<void>("DELETE", `/documents/${segment(documentId)}/shares/${segment(userId)}`);
 
 // PR 11b: the library's access.
+/** Give files to people at once (at most 100 files and 20 people): how many pairs were new. */
+export const giveFiles = (documentIds: readonly string[], userIds: readonly string[], password?: string) =>
+  request<{ given: number }>("POST", "/documents/shares", { document_ids: documentIds, user_ids: userIds, password });
 export type AudienceKind = "documents" | "folders";
 export const getAudience = (kind: AudienceKind, id: string) => request<Audience>("GET", `/${kind}/${segment(id)}/audience`);
 export const checkAudience = (kind: AudienceKind, id: string, userId: string) =>
