@@ -72,7 +72,8 @@ never updated.
 
 Who can see what (0084, PRD 7, #590, NEEDS VRUSHIT'S APPROVAL): department members, the people
 named on a private folder, files given and lock grants, read, added and deleted by the app; only a
-membership's Head tick is ever changed.
+membership's Head tick is ever changed. Their triggers (0085, #593) run with the owner's rights,
+which no role may run.
 """
 
 import re
@@ -585,6 +586,18 @@ OPERATOR_RIGHTS = {
         EMPTY_PATH,
     ),
 }
+# Changed on purpose (#593, 0085): who-can-see-what's triggers, owner's rights so a person's rule
+# never hides a row from them; no role may run them, only their triggers do.
+TRIGGER_RIGHTS = dict.fromkeys(
+    (
+        "kaagaz_folder_access",
+        "kaagaz_document_access",
+        "kaagaz_version_access",
+        "kaagaz_access_removed",
+        "kaagaz_access_changed",
+    ),
+    ("trigger", EMPTY_PATH),
+)
 # The only tables without customer_id: the customers themselves, alembic's own, the
 # platform operator's (0015), the workers' reader status (0022) and the model catalogue
 # (0023) and the platform AI defaults (0026), which belong to no customer.
@@ -956,7 +969,7 @@ def test_only_the_listed_tables_have_no_customer_id(db: Database) -> None:
 def test_only_the_listed_owner_rights_functions_exist_and_only_their_role_may_run_them(db: Database) -> None:
     """Found from the catalog, so a new one can't be left out: what it returns, its
     fixed search path, never runnable by PUBLIC, and by the app (OWNER_RIGHTS) or
-    the operator (OPERATOR_RIGHTS), never both."""
+    the operator (OPERATOR_RIGHTS), never both; a trigger's (TRIGGER_RIGHTS) by neither."""
     with db.system() as conn:
         functions = conn.execute(
             text(
@@ -969,7 +982,7 @@ def test_only_the_listed_owner_rights_functions_exist_and_only_their_role_may_ru
         ).all()
     assert {
         name: (result, config) for name, result, config, *_ in functions
-    } == OWNER_RIGHTS | OPERATOR_RIGHTS
+    } == OWNER_RIGHTS | OPERATOR_RIGHTS | TRIGGER_RIGHTS
     for name, *_, public_may_run, app_may_run, operator_may_run in functions:
         expected = (False, name in OWNER_RIGHTS, name in OPERATOR_RIGHTS)
         assert (public_may_run, app_may_run, operator_may_run) == expected, name
