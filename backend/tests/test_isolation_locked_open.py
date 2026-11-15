@@ -145,13 +145,11 @@ def test_one_view_row_per_person_file_and_ten_minutes(db: Database) -> None:
         assert _page(org.given, org.locked, page).status_code == 200
     views = [row for row in _actions(api, org.c) if row[0] == "lock.view"]
     assert views == [("lock.view", org.locked, {})]
-    earlier = (
-        "UPDATE audit_log SET created_at = created_at - interval '11 minutes' WHERE action = 'lock.view'"
-    )
-    _owner(db, earlier, {})
+    earlier = "UPDATE audit_log SET created_at = created_at - interval '11 minutes' WHERE customer_id = :c"
+    _owner(db, earlier, {"c": org.c})
     assert _page(org.given, org.locked, 2).status_code == 200
     assert [row[0] for row in _actions(api, org.c)].count("lock.view") == 2
-    assert _owner(db, "SELECT count(*) FROM audit_log WHERE action = 'document.view'", {}) == [(0,)]
+    assert "document.view" not in [row[0] for row in _actions(api, org.c, "document.")]
 
 
 def test_a_person_who_may_not_open_it_gets_an_id_that_never_was(db: Database) -> None:
