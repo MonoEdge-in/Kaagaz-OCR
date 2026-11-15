@@ -109,7 +109,7 @@ class QueryCanceled(Exception):
             OperationalError("SELECT secret FROM pieces", {"q": ROW_VALUE}, QueryCanceled()),
             ("OperationalError", "QueryCanceled", "57014"),
         ),
-        (BackendUnavailable("database"), ("BackendUnavailable", None, None)),
+        (BackendUnavailable("queue"), ("BackendUnavailable", None, None)),
         (PoolTimeout("QueuePool limit of size 10 overflow 5 reached"), ("TimeoutError", None, None)),
     ],
 )
@@ -130,6 +130,13 @@ def test_every_503_logs_why_by_class_sqlstate_and_path_only(
     )
     assert (line["error_class"], line["driver_error"], line["sqlstate"]) == fields
     assert "secret" not in caplog.text and ROW_VALUE not in caplog.text
+
+
+def test_a_database_503_is_logged_once_where_it_was_made(caplog: pytest.LogCaptureFixture) -> None:
+    """#620 review: unavailable() logged the database error already; the 503 adds no second line."""
+    caplog.set_level(logging.WARNING, logger="kaagaz.db.sqlstate")
+    assert _client_raising(BackendUnavailable("database")).get("/api/boom").status_code == 503
+    assert [r for r in caplog.records if r.name == "kaagaz.db.sqlstate"] == []
 
 
 # A real uvicorn server on a free local port: uvicorn.Config sets up uvicorn's own

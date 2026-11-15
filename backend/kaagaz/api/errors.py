@@ -146,7 +146,10 @@ async def _http_error(request: Request, exc: Exception) -> Response:
 
 
 async def _unavailable(request: Request, exc: Exception) -> Response:
-    log_unavailable(exc, path=request.url.path)  # #620: every 503 says why, never silently
+    # #620: every 503 says why, once: the database's BackendUnavailable was logged where it was made
+    # (engine.unavailable, Database.ping); any other error is logged here.
+    if not (isinstance(exc, BackendUnavailable) and exc.args == ("database",)):
+        log_unavailable(exc, path=request.url.path)
     return error_response(503, "backend_unavailable")
 
 
