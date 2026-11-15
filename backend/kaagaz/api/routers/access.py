@@ -1035,11 +1035,11 @@ def move_kept(document_id: uuid.UUID, body: KeptMoveBody, user: User, context: C
     target, customer_id = str(document_id), user.customer_id
     folder = None if body.folder_id is None else str(body.folder_id)
     with context.db.user(customer_id, user.user_id) as conn:
-        _live(_admin_document(conn, user, target))
+        _admin_document(conn, user, target)
         if folder is not None and not listing.folders_seen(conn, customer_id, [folder]):
             raise ApiError(404, "not_found", "The folder you chose isn't there any more. Choose another.")
         folders_sql._lock_tree(conn, customer_id)  # a move can change who sees it (0085)
-        _live(_admin_document(conn, user, target))  # read again under the lock
+        _live(_admin_document(conn, user, target))  # under the lock: in Trash meanwhile is 409
         moved = _move_rule(conn, user, target, folder)
         listing.admin_move_family(conn, customer_id, target, folder_id=folder)
         _audit(

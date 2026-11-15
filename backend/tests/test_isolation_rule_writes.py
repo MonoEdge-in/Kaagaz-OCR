@@ -330,6 +330,47 @@ def test_a_person_deletes_forever_no_family_with_a_version_they_cant_see(db: Dat
     assert _owner(db, "SELECT count(*) FROM documents WHERE family_id = :f", {"f": first}) == [(2,)]
 
 
+def test_a_persons_delete_forever_never_waits_on_a_family_hidden_from_them(db: Database) -> None:
+    """Another transaction holds sal's family lock (Salaries', hidden from the plain reviewer). Their
+    delete forever of it answers at once, as for a random id: waiting for the lock would tell them
+    the family exists."""
+    org = _walled(Api(db))
+    family = org.files["sal"]
+    _owner(db, "UPDATE documents SET deleted_at = now() WHERE family_id = :f", {"f": family})
+    with db.customer(org.c) as holder:
+        holder.execute(
+            text("SELECT id FROM documents WHERE family_id = :f FOR NO KEY UPDATE"), {"f": family}
+        ).all()
+        with _app(db).user(org.c, org.people["plain"].user_id) as conn:
+            conn.execute(text("SET LOCAL lock_timeout = '500ms'"))
+            assert (
+                conn.execute(text("SELECT count(*) FROM kaagaz_purge_family(:f)"), {"f": family}).scalar()
+                == 0
+            )
+
+
+def test_a_private_folder_whose_department_went_is_not_sealed_again(db: Database) -> None:
+    """Ops (a department) holds Vault (private already); Vault goes to Trash, then Ops. Vault's
+    restore comes back at the top level: relocated, but not "sealed", as it was private before the
+    restore (10c, #594 A); nobody new is named on it."""
+    api = Api(db)
+    org = _walled(api)
+    admin = org.people["admin"]
+    ops = api.add_folder(org.c, admin.user_id, "Ops")
+    _owner(db, "UPDATE folders SET kind = 'department' WHERE id = :f", {"f": ops})
+    vault = api.add_folder(org.c, admin.user_id, "Vault", ops)
+    _owner(db, "UPDATE folders SET private = true WHERE id = :f", {"f": vault})
+    api.add_document(org.c, name="v.pdf", folder_id=vault, uploaded_by=admin.user_id)
+    _trash_folder(org, vault)
+    _trash_folder(org, ops)
+    reply = admin.client.post(f"/api/documents/trash/folders/{vault}/restore", headers=CSRF)
+    assert reply.status_code == 200, reply.text
+    body = reply.json()
+    assert (body["relocated"], body["sealed"], body["folder"]["private"]) == (True, False, True)
+    named = "SELECT count(*) FROM private_folder_members WHERE folder_id = :f"
+    assert _owner(db, named, {"f": vault}) == [(0,)]
+
+
 def test_a_restore_names_no_folder_the_person_cant_see(db: Database) -> None:
     """Finance > Payroll > Inner (private, names ``named``, their file): Payroll goes to Trash, and
     ``named`` restores Inner. The topmost row (Payroll, hidden from them) carries no name; the
