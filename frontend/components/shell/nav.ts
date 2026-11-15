@@ -12,6 +12,8 @@ export interface NavLink {
   icon: IconName;
   /** "review": the link shows the values waiting in Review (D-7). */
   count?: "review";
+  /** The phone tab bar's shorter words, when the label is too long for it. */
+  short?: string;
 }
 
 const LINKS: { link: NavLink; roles: readonly Role[]; scope?: SessionScope; management?: true }[] = [
@@ -25,9 +27,9 @@ const LINKS: { link: NavLink; roles: readonly Role[]; scope?: SessionScope; mana
   // My words: each user's own, so every role has it.
   { link: { href: "/words", label: "My words", icon: "words" }, roles: ["member", "reviewer", "admin"] },
   { link: { href: "/review", label: "Review", icon: "review", count: "review" }, roles: ["reviewer", "admin"] },
-  // PRD 7 (#601): Management's, a flag not a role. The server asks an Admin for an admin session.
+  // PRD 7 (#601): Management's, a flag not a role. An Admin reads the same in the Admin tab.
   {
-    link: { href: "/access-activity", label: "Access activity", icon: "history" },
+    link: { href: "/access-activity", label: "Access activity", icon: "history", short: "Access" },
     roles: ["member", "reviewer", "admin"],
     management: true,
   },
@@ -36,8 +38,8 @@ const LINKS: { link: NavLink; roles: readonly Role[]; scope?: SessionScope; mana
 ];
 
 export function navLinks(role: Role, scope: SessionScope, management = false): NavLink[] {
-  // An Admin with an app session is refused the access activity, Management or not.
-  const access = management && (role !== "admin" || scope === "admin");
+  // An Admin has it all in the Admin tab's Activity, Management or not.
+  const access = management && role !== "admin";
   return LINKS.filter(
     (entry) =>
       entry.roles.includes(role) &&

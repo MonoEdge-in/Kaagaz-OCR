@@ -57,7 +57,7 @@ export const ACTIVITY_WORDS: Record<string, (entry: Entry) => string> = {
   // PRD 7 (#601): who can see what ("Ravi added Priya to Finance").
   "access.management_on": (entry) => `made ${whom(entry)} Management`,
   "access.management_off": (entry) => `took Management away from ${whom(entry)}`,
-  "access.member_add": (entry) => `added ${whom(entry)} to ${where(entry)}`,
+  "access.member_add": (entry) => `added ${whom(entry)} to ${where(entry)}${entry.details.head === true ? " as head" : ""}`,
   "access.member_remove": (entry) => `removed ${whom(entry)} from ${where(entry)}`,
   "access.head_on": (entry) => `made ${whom(entry)} head of ${where(entry)}`,
   "access.head_off": (entry) => `removed ${whom(entry)} as head of ${where(entry)}`,
@@ -72,8 +72,11 @@ export const ACTIVITY_WORDS: Record<string, (entry: Entry) => string> = {
     `removed ${mine(entry) ? "their own" : `${entry.subject_name ?? "someone"}'s`} access to ${where(entry)}`,
 };
 
-/** PRD 7 (#601): an Admin gave themselves access, with their password (the chip's words). */
-export const SELF_GIVEN = "Admin gave themselves access";
+/** PRD 7 (#601): someone gave themselves access (the chip's words). The audit says `self` for an
+ * Admin's password-proved grant and for a Head naming themselves (10a), so the words name no role. */
+export const SELF_GIVEN = "Gave themselves access";
+/** The Admin tab's block of those entries, first. */
+export const SELF_GIVEN_HEADING = "People who gave themselves access";
 export const selfGiven = (entry: Pick<ActivityEntry, "details">) => entry.details.self === true;
 
 /** The action in words; one this table does not know falls back to the admin log's words. */

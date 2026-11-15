@@ -1,4 +1,4 @@
-// PRD 7 PR 11c (#604): the access changes in words, the "Admin gave themselves access" chip, the
+// PRD 7 PR 11c (#604): the access changes in words, the "Gave themselves access" chip, the
 // Admin tab's About a person filter and self-given block, and Management's Access activity link and
 // call.
 
@@ -9,7 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NO_AUDIT_FILTERS, auditChipTexts, auditFilterCount, auditParams } from "@/components/activity/auditFilters";
 import { TimelineRow } from "@/components/activity/Timeline";
-import { ACTIVITY_WORDS, SELF_GIVEN, activitySentence } from "@/components/activity/words";
+import { ACTIVITY_WORDS, SELF_GIVEN, SELF_GIVEN_HEADING, activitySentence } from "@/components/activity/words";
 import { ActivityFilters, ActivityTable, SelfGivenBlock } from "@/components/admin/ActivityPanel";
 import { navLinks } from "@/components/shell/nav";
 import * as api from "@/lib/api";
@@ -54,6 +54,8 @@ describe("the access changes in words", () => {
       ["access.management_on", { target_type: "user", folder: null }, "Ravi made Priya Management"],
       ["access.management_off", { target_type: "user", folder: null }, "Ravi took Management away from Priya"],
       ["access.member_add", {}, "Ravi added Priya to Finance"],
+      ["access.member_add", { details: { head: true } }, "Ravi added Priya to Finance as head"],
+      ["access.member_add", { details: { head: false } }, "Ravi added Priya to Finance"],
       ["access.member_remove", {}, "Ravi removed Priya from Finance"],
       ["access.head_on", {}, "Ravi made Priya head of Finance"],
       ["access.head_off", {}, "Ravi removed Priya as head of Finance"],
@@ -97,11 +99,29 @@ describe("the access changes in words", () => {
   });
 });
 
-describe("the Admin gave themselves access chip", () => {
+describe("the Gave themselves access chip", () => {
   const mine = entry("access.member_add", { subject_id: "ravi", details: { self: true, head: false } });
   const chip = `<span class="status-chip" data-tone="neutral">${SELF_GIVEN}</span>`;
 
-  it("marks only the entries in which an Admin gave themselves access, in the table and the timeline", () => {
+  it("names no role: 10a audits a Head naming themselves on a private folder as self too", () => {
+    expect(SELF_GIVEN).toBe("Gave themselves access");
+    expect(SELF_GIVEN_HEADING).toBe("People who gave themselves access");
+    const head = entry("access.named_add", {
+      actor_id: "asha",
+      actor_name: "Asha",
+      subject_id: "asha",
+      subject_name: "Asha",
+      folder: { id: "sal", path: "Finance / Salaries" },
+      details: { self: true },
+    });
+    const html = renderToStaticMarkup(createElement(ActivityTable, { items: [head] }));
+    expect(html).toContain("named themselves on Finance / Salaries");
+    expect(html).toContain(chip);
+    expect(html).not.toMatch(/>[^<]*admin[^<]*</i); // no text names a role
+    expect(renderToStaticMarkup(createElement(SelfGivenBlock, { items: [head] }))).not.toMatch(/>[^<]*admin[^<]*</i);
+  });
+
+  it("marks only the entries in which someone gave themselves access, in the table and the timeline", () => {
     expect(renderToStaticMarkup(createElement(ActivityTable, { items: [mine] }))).toContain(chip);
     expect(renderToStaticMarkup(createElement(ActivityTable, { items: [entry("access.member_add")] }))).not.toContain(SELF_GIVEN);
     const row = (item: ActivityEntry) => renderToStaticMarkup(createElement(TimelineRow, { entry: item, showDocument: false }));
@@ -113,8 +133,8 @@ describe("the Admin gave themselves access chip", () => {
 
   it("puts the self-given entries first under their own heading, as a table", () => {
     const html = renderToStaticMarkup(createElement(SelfGivenBlock, { items: [mine] }));
-    expect(html).toMatch(/^<div class="stack"><h3[^>]*>Admin gave themselves access<\/h3>/);
-    expect(html).toContain('<caption class="visually-hidden">Admin gave themselves access, newest first</caption>');
+    expect(html).toMatch(/^<div class="stack"><h3[^>]*>People who gave themselves access<\/h3>/);
+    expect(html).toContain('<caption class="visually-hidden">People who gave themselves access, newest first</caption>');
     expect(html).toContain("added themselves to Finance");
   });
 });
@@ -147,14 +167,19 @@ describe("Management's Access activity link and call", () => {
   const labels = (role: Role, scope: SessionScope, management?: boolean) =>
     navLinks(role, scope, management).map((link) => link.label);
 
-  it("shows the link to Management only, never to an Admin's app session", () => {
+  it("shows the link to Management only, never to an Admin (the Admin tab has it all)", () => {
     expect(labels("member", "app", true)).toEqual(["Home", "Documents", "Ask", "My words", "Access activity"]);
     expect(labels("reviewer", "app", true)).toContain("Access activity");
-    expect(labels("admin", "admin", true)).toEqual(["Home", "Documents", "Ask", "My words", "Review", "Access activity", "Admin"]);
-    expect(labels("admin", "app", true)).not.toContain("Access activity"); // the server asks for the admin session
+    expect(labels("admin", "admin", true)).toEqual(["Home", "Documents", "Ask", "My words", "Review", "Admin"]);
+    expect(labels("admin", "app", true)).not.toContain("Access activity");
     expect(labels("member", "app", false)).not.toContain("Access activity");
     expect(labels("admin", "admin")).not.toContain("Access activity");
-    expect(navLinks("member", "app", true).find((link) => link.label === "Access activity")?.href).toBe("/access-activity");
+    const link = navLinks("member", "app", true).find((each) => each.label === "Access activity");
+    expect(link?.href).toBe("/access-activity");
+    // The phone tab bar says "Access"; the drawer and the page keep "Access activity".
+    expect(link?.short).toBe("Access");
+    expect(read("components/shell/AppShell.tsx")).toContain("<span>{link.short ?? link.label}</span>");
+    expect(read("components/shell/ShellMenu.tsx")).toContain("<span>{link.label}</span>");
     expect(read("components/shell/AppShell.tsx")).toContain(
       "navLinks(me.user.role, sessionScope(me), me.access?.management === true)",
     );

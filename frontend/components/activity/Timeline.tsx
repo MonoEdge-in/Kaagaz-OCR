@@ -3,7 +3,8 @@
 // A timeline (File management A5): the rows newest first, each "Priya viewed" with the
 // document (a deleted one says so), where it is and when; "Show more" asks for the next
 // page by its cursor. Used by the document page's Activity tab and the dashboard, and (PRD 7,
-// #601) Management's Access activity page, where an entry an Admin gave themselves has its chip.
+// #601) Management's Access activity page, where an entry someone gave themselves has its chip.
+// A row about no document says no folder (an access change's place is already in its words).
 // Every name is React text, never markup.
 
 import Link from "next/link";
@@ -128,7 +129,7 @@ export function TimelineRow({ entry, showDocument }: { entry: ActivityEntry; sho
           <span className={styles.document}>{document}</span>
         ))}
       <span className={styles.meta}>
-        {entry.folder?.path ? `${entry.folder.path} · ` : ""}
+        {entry.document && entry.folder?.path ? `${entry.folder.path} · ` : ""}
         <time dateTime={entry.created_at}>{formatDateTime(entry.created_at)}</time>
       </span>
     </li>

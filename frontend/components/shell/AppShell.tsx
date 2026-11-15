@@ -219,7 +219,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                       </span>
                     )}
                   </span>
-                  <span>{link.label}</span>
+                  <span>{link.short ?? link.label}</span>
                 </Link>
               );
             })}

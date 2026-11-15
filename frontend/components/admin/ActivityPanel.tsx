@@ -7,7 +7,7 @@
 // Action, Document and Folder, in the activity words (components/activity/words.ts); filter
 // chips for person, folder (with its subfolders), file, action and date range, with Clear
 // all; "Show more" by the reply's cursor; and Export to Excel, the filtered rows as a file.
-// PRD 7 (#601): first the entries in which an Admin gave themselves access (the first page's
+// PRD 7 (#601): first the entries in which someone gave themselves access (the first page's
 // self_given), each row of that kind with its chip; and the About a person chip (subject_id).
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
@@ -23,6 +23,7 @@ import {
   ACTION_CHOICES,
   ACTIVITY_TEXT,
   SELF_GIVEN,
+  SELF_GIVEN_HEADING,
   activityTarget,
   activityWho,
   activityWords,
@@ -210,13 +211,13 @@ export function ActivityEmpty({ filtered, onClear }: { filtered: boolean; onClea
   );
 }
 
-/** PRD 7 (#601): the entries in which an Admin gave themselves access, first, under their own
+/** PRD 7 (#601): the entries in which someone gave themselves access, first, under their own
  * heading; they show in the whole list below as well. Exported for the render test. */
 export function SelfGivenBlock({ items }: { items: readonly ActivityEntry[] }) {
   return (
     <div className="stack">
-      <h3 className={styles.tilesHeading}>{SELF_GIVEN}</h3>
-      <ActivityTable items={items} caption={`${SELF_GIVEN}, newest first`} />
+      <h3 className={styles.tilesHeading}>{SELF_GIVEN_HEADING}</h3>
+      <ActivityTable items={items} caption={`${SELF_GIVEN_HEADING}, newest first`} />
     </div>
   );
 }

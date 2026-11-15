@@ -117,6 +117,7 @@ describe("Management's Access activity page", () => {
     expect(rows[0]).toContain("Ravi gave Priya access to Sale deed.pdf");
     expect(rows[0]).toContain("Finance / Invoices · ");
     expect(rows[1]).toContain("Ravi added Priya to Finance");
+    expect(rows[1]).not.toContain("Finance · "); // about no document: the place is in the words only
     expect(container.querySelector("ol")?.getAttribute("aria-label")).toBe("Access changes, newest first");
     expect(button(container, "Show more")).toBeUndefined(); // the last page
     expect(container.textContent).not.toMatch(/export/i);
@@ -127,7 +128,7 @@ describe("Management's Access activity page", () => {
     const container = await mount(createElement(AccessActivity));
     const row = container.querySelector("li")!;
     expect(row.textContent).toContain("Ravi gave Priya access to a file you can't see");
-    expect(row.textContent).toContain("Admin gave themselves access"); // the mask keeps `self`
+    expect(row.textContent).toContain("Gave themselves access"); // the mask keeps `self`
     expect(container.querySelector("a")).toBeNull();
     expect(row.querySelector("time")?.parentNode?.textContent).not.toContain(" · ");
   });
@@ -187,11 +188,11 @@ describe("the Admin's Activity tab", () => {
     api.listFolders.mockResolvedValue({ items: [] });
   });
 
-  it("shows the entries in which an Admin gave themselves access first, then all the activity", async () => {
+  it("shows the entries in which someone gave themselves access first, then all the activity", async () => {
     api.listAudit.mockResolvedValue(page([given, mine], null, { total: 2, self_given: [mine] }));
     const container = await mount(createElement(ActivityPanel));
     const headings = tagged(container, "H3").map((heading) => heading.textContent);
-    expect(headings).toEqual(["Admin gave themselves access", "All activity"]);
+    expect(headings).toEqual(["People who gave themselves access", "All activity"]);
     const tables = container.querySelectorAll("table");
     expect(tables).toHaveLength(2);
     expect(tables[0]!.textContent).toContain("made themselves Management");
