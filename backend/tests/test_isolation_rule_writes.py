@@ -160,6 +160,18 @@ def test_a_hidden_id_is_a_random_id_for_a_person(db: Database) -> None:
         random = _call(db, org, plain, function)
         for one in hidden:
             assert _call(db, org, plain, function, a=one) == random, (function, one)
+    # 0091's F6, made to see only the trashed folders the person sees (0092, the lead's decision): Finance
+    # holds files hidden from them, and answers as a random id.
+    inside = (
+        "SELECT hidden_files, hidden_folders, any_files FROM kaagaz_hidden_inside(ARRAY[CAST(:a AS uuid)])"
+    )
+    with _as(db, org, plain) as conn:
+        answers = {
+            one: tuple(conn.execute(text(inside), {"a": one}).one()) for one in (*hidden, str(uuid.uuid4()))
+        }
+    assert set(answers.values()) == {(0, 0, False)}, answers
+    with _as(db, org, "admin") as conn:  # who sees it is still told what is hidden inside
+        assert conn.execute(text(inside), {"a": org.folders["finance"]}).one()[2] is True
     assert _documents(db, org.c) == before
 
 

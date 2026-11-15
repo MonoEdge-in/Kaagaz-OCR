@@ -37,6 +37,10 @@ the statement the app ran before, after checking the caller:
 * ``kaagaz_admin_move_documents(ids, folder)`` and ``kaagaz_admin_trash_documents(ids, now)``: the
   names list's Move and Send to Trash (PRD 7 section 3) for files the Admin can't see: whole
   families, live ones only; the folder a live one of this organisation, or the top level. An Admin.
+  Their route comes with the names list's screen.
+* 0091's ``kaagaz_hidden_inside(trashed)`` counts only the trashed folders given that the person
+  sees (the lead's decision on PR 9b's review): one they can't see answers as an id that isn't
+  there (0, 0, false). Made from 0091's own text by a checked replace; the downgrade puts it back.
 
 Every function: SECURITY DEFINER, an empty search path, every table named in full and filtered on
 ``kaagaz_current_customer()`` (the owner skips the organisation rule too), nothing for PUBLIC,
@@ -48,11 +52,16 @@ family locks in family order (each family's first version, then by id), and read
 them; but ``kaagaz_purge_family``, which takes its family's lock only, as delete forever always
 has (the stored files are deleted in its transaction, and no tree lock is held across them).
 
-Catalog only: no table is locked, read or written. The downgrade drops the functions.
+Catalog only: no table is locked, read or written. The downgrade drops the new functions and puts
+0091's ``kaagaz_hidden_inside`` back.
 
 Revision ID: 0092
 Revises: 0091
 """
+
+import importlib.util
+from pathlib import Path
+from types import ModuleType
 
 from alembic import op
 
@@ -62,6 +71,19 @@ branch_labels = None
 depends_on = None
 
 ROLES = "kaagaz_app, kaagaz_worker"  # 0086's: the app and the worker role alike (0083)
+
+
+def _load(name: str) -> ModuleType:
+    path = Path(__file__).with_name(name)
+    spec = importlib.util.spec_from_file_location(f"migration_{path.stem}_for_0092", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_0091 = _load("0091_database_rule.py")
 
 
 def _literal(value: str) -> str:
@@ -486,7 +508,28 @@ FUNCTION_COMMENTS = {
     + _ADMIN,
 }
 
+# 0091's F6, its walk started only from the trashed folders the person sees (its caller is always an
+# active person, 0091's _A_PERSON).
+_HIDDEN_INSIDE_0091 = _0091.FUNCTIONS["kaagaz_hidden_inside(uuid[])"].replace(
+    "CREATE FUNCTION", "CREATE OR REPLACE FUNCTION"
+)
+_START = "WHERE t.customer_id = public.kaagaz_current_customer() AND t.id = ANY (p_trashed)\n"
+if _HIDDEN_INSIDE_0091.count(_START) != 1:
+    raise RuntimeError("0091's kaagaz_hidden_inside text changed")
+HIDDEN_INSIDE = _HIDDEN_INSIDE_0091.replace(
+    _START,
+    "WHERE t.customer_id = public.kaagaz_current_customer() AND t.id = ANY (p_trashed)"
+    " AND EXISTS (SELECT 1 FROM public.visible_trashed_folders v\n"
+    "                         WHERE v.customer_id = t.customer_id AND v.id = t.id)\n",
+)
+HIDDEN_INSIDE_COMMENT = (
+    "How many files and folders the current person can't see inside these trashed folders, of those they"
+    " see, and whether any file is (PRD 7, #606). An active person; numbers only."
+)
+
 UPGRADE = [
+    HIDDEN_INSIDE,
+    f"COMMENT ON FUNCTION public.kaagaz_hidden_inside(uuid[]) IS {_literal(HIDDEN_INSIDE_COMMENT)}",
     *FUNCTIONS.values(),
     *[
         statement
@@ -498,7 +541,12 @@ UPGRADE = [
         )
     ],
 ]
-DOWNGRADE = [f"DROP FUNCTION IF EXISTS public.{name}" for name in reversed(FUNCTIONS)]
+DOWNGRADE = [
+    *[f"DROP FUNCTION IF EXISTS public.{name}" for name in reversed(FUNCTIONS)],
+    _HIDDEN_INSIDE_0091,
+    "COMMENT ON FUNCTION public.kaagaz_hidden_inside(uuid[])"
+    f" IS {_literal(_0091.READ_COMMENTS['kaagaz_hidden_inside(uuid[])'])}",
+]
 
 
 def upgrade() -> None:
