@@ -155,6 +155,9 @@ FUZZY_THRESHOLD = 0.3
 # time is dropped, a code logged, and the others still answer (#619: the word and fuzzy lists
 # too, since 15 Nov 2026).
 STATEMENT_TIMEOUT_MS = 3000
+# After a list is dropped, the transaction's other statements have this long (principal review of
+# #619): one slow text never holds its pooled connection for every list's full timeout.
+DROPPED_TIMEOUT_MS = 1000
 # The sound rung (_SOUND) ranks at most this many sound-only pieces, the heaviest by their
 # words' rarity (#619): a question whose sound keys match most pieces ranks only these.
 SOUND_RANKED = 10 * CANDIDATES
@@ -1044,8 +1047,9 @@ def _word(conn: Connection, params: dict[str, Any]) -> list[Sequence[Any]]:
 
 def _in_time[T](conn: Connection, code: str, run: Callable[[], T]) -> T | None:
     """``run()`` in a savepoint, or None when the statement timeout cancelled it (57014): the
-    savepoint keeps the transaction usable for the other lists, and ``code`` is logged (never
-    the question or a statement). Any other error is raised."""
+    savepoint keeps the transaction usable for the other lists, which then have
+    DROPPED_TIMEOUT_MS each, and ``code`` is logged (never the question or a statement). Any
+    other error is raised."""
     try:
         with conn.begin_nested():
             return run()
@@ -1053,4 +1057,5 @@ def _in_time[T](conn: Connection, code: str, run: Callable[[], T]) -> T | None:
         if getattr(error.orig, "sqlstate", None) != _QUERY_CANCELED:
             raise
         _log.warning("search list dropped", extra={"code": code})
+        conn.execute(_SET_SEARCH, {"ms": str(min(DROPPED_TIMEOUT_MS, STATEMENT_TIMEOUT_MS))})
         return None

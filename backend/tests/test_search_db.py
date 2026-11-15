@@ -701,3 +701,28 @@ def test_a_name_change_affidavit_is_still_found_without_the_word_name(db: Databa
 
     assert hits[0].piece_id == affidavit  # the receipt follows, by meaning alone
     assert hits[0].word_score is not None and hits[0].meaning_score == pytest.approx(1.0)
+
+
+def test_after_a_dropped_list_the_others_have_one_second(
+    db: Database, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Principal review of #619: once a list is dropped, the transaction's other statements have
+    DROPPED_TIMEOUT_MS, so one slow text cannot hold its pooled connection for every list's 3 s.
+    The typo list here takes 1.5 s: inside the 2 s timeout, past the 1 s left after the drop."""
+    customer, _ = new_customer(db)
+    add_pieces(db, customer, add_document(db, customer), [("Invoice from Sharma", None)])
+    monkeypatch.setattr(hybrid, "STATEMENT_TIMEOUT_MS", 2000)
+    word = (
+        "SELECT p.id, p.document_id, 1.0 FROM pieces p CROSS JOIN pg_sleep(3)"
+        " WHERE p.customer_id = :c LIMIT :n"
+    )
+    fuzzy = (
+        "SELECT p.id, p.document_id, 1.0, p.text, p.text_latin FROM pieces p CROSS JOIN pg_sleep(1.5)"
+        " WHERE p.customer_id = :c LIMIT :n"
+    )
+    monkeypatch.setattr(hybrid, "_WORD", text(word))
+    monkeypatch.setattr(hybrid, "_FUZZY", text(fuzzy))
+    caplog.set_level(logging.WARNING, logger="kaagaz.search.hybrid")
+
+    assert run(db, customer, "invoice sharma") == []
+    assert [getattr(r, "code", None) for r in caplog.records] == ["word_timeout", "fuzzy_timeout"]
