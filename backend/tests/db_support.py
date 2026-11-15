@@ -97,6 +97,20 @@ def _owner_database() -> Iterator[Database]:
 
 
 @contextmanager
+def rule_on() -> Iterator[None]:
+    """PRD 7 (#606): the per-person rule on for every organisation for a test of the rule itself, in
+    a baseline session too (KAAGAZ_TEST_PERSON_RULE=off), and put back as it was after."""
+    with _owner_database() as db:
+        was_on = rule_on_everywhere()
+        person_rule(db, on=True)
+        try:
+            yield
+        finally:
+            if not was_on:
+                person_rule(db, on=False)
+
+
+@contextmanager
 def rule_off() -> Iterator[None]:
     """PRD 7 (#606): the database rule off for every organisation (``person-rule off --all``), put
     back as it was after. Changed on purpose (PR 9b): was ``until_0092``, which ran an Admin's write

@@ -365,7 +365,8 @@ VIEW_READERS = {
     "db/document_stories.py": {"_DELETE", "_PUT"},
     "db/ensemble.py": {"_COUNTS", "_LATEST", "_LATEST_READINGS", "_PENDING", "_READING"},
     "db/folder_upload_items.py": {"_PREVIOUS"},
-    "db/folders.py": {"_HIDDEN_INSIDE", "_LIST", "_SUMMARY_SEEN"},
+    # Changed on purpose (PR 9b, #606): _HIDDEN_INSIDE reads kaagaz_hidden_inside (0091), no view.
+    "db/folders.py": {"_LIST", "_SUMMARY_SEEN"},
     "db/listing.py": {
         "_BATCH", "_CLEAR_COPY_MARKS", "_COLUMNS", "_DASHBOARD_DEPARTMENTS", "_DASHBOARD_RECENT",
         "_DASHBOARD_TILES", "_DASHBOARD_TYPES", "_DOCUMENTS_SEEN", "_FILE_COLUMNS", "_FOLDERS_SEEN",

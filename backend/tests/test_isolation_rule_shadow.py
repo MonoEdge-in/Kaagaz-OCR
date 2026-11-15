@@ -2,16 +2,26 @@
 under the rule is reported, with its counts; one that reads the same is not; and the real statement
 still runs, in its own transaction, with the rule on."""
 
+from collections.abc import Iterator
+
 import pytest
 from sqlalchemy import text
 
 from kaagaz.db.engine import Database, make_engine
 from tests import rule_shadow
-from tests.db_support import APP_ROLE, database_url
+from tests.db_support import APP_ROLE, database_url, rule_on
 from tests.test_api_support import Api
 from tests.test_isolation_access_views import _all, _expected, _walled
 
 pytestmark = pytest.mark.db
+
+
+@pytest.fixture(autouse=True)
+def _the_rule_on(db: Database) -> Iterator[None]:
+    """A test of the rule itself: on for every organisation, in a baseline session too (after the
+    session's database is migrated)."""
+    with rule_on():
+        yield
 
 
 def test_a_statement_that_reads_fewer_under_the_rule_is_reported(db: Database) -> None:
