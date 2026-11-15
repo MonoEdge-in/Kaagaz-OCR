@@ -92,6 +92,7 @@ const STATUSES = Object.keys({
   needs_reader: 1,
   ready: 1,
   failed: 1,
+  locked: 1,
 } satisfies Record<DocumentStatus, 1>) as DocumentStatus[];
 
 // Changed on purpose (plain words, 25 Oct 2026): "flagged", "extraction", "pipeline" and "RPM" too.

@@ -6,18 +6,23 @@
 // in the documents list (DocumentActions.tsx). The folders and tags load the first time
 // a dialog needs them. Move to Trash asks first, Cancel focused; focus goes back to the
 // menu button when a dialog shuts. The server checks every rule again.
+// PRD 7 (PR 13): an Admin's Lock, after the menu's own items (LockDialog.tsx); a locked file
+// has its own screen, with Unlock (LockedDocument.tsx).
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { RefObject } from "react";
 import { BusyLabel } from "@/components/documents/BusyLabel";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { EditDialog, RowMenu } from "@/components/documents/DocumentActions";
+import { LockDialog } from "@/components/documents/LockDialog";
 import { buildTree } from "@/components/documents/folderTree";
 import type { EditAction, RowAction } from "@/components/documents/library";
 import libraryStyles from "@/components/documents/Library.module.css";
 import { deletedMessage } from "@/components/documents/logic";
 import { placedMessage, restoredMessage, trashQuestion } from "@/components/documents/trash";
+import { LOCK_TEXT } from "@/components/viewer/locked";
 import { ApiError, deleteDocument, listFolders, listTags, restoreDocument } from "@/lib/api";
+import { useSession } from "@/lib/session";
 import type { DocumentDetail, Folder, Tag } from "@/lib/types";
 import type { MoreItem } from "@/components/documents/DocumentActions";
 
@@ -47,6 +52,12 @@ export function DocumentMenu({
   const [error, setError] = useState<string | null>(null);
   const [folders, setFolders] = useState<Folder[] | null>(null);
   const [tags, setTags] = useState<Tag[] | null>(null);
+  const [locking, setLocking] = useState(false);
+  const { me } = useSession();
+  const canLock = me.user.role === "admin" && me.session.scope === "admin" && detail.deleted_at === null;
+  const items = canLock
+    ? [...(more ?? []), { label: LOCK_TEXT.menu, hint: LOCK_TEXT.menuHint, onSelect: () => setLocking(true) }]
+    : more;
   const holdToggle = useCallback(
     (element: HTMLButtonElement | null) => {
       buttonRef.current = element;
@@ -114,7 +125,7 @@ export function DocumentMenu({
         canForever={false}
         place="document"
         readAgain={readAgain}
-        more={more}
+        more={items}
         onPick={pick}
         toggleRef={holdToggle}
       />
@@ -136,6 +147,17 @@ export function DocumentMenu({
             onChanged(message);
           }}
           onTagCreated={() => listTags().then((result) => setTags(result.items), () => undefined)}
+        />
+      )}
+      {locking && (
+        <LockDialog
+          documents={[detail]}
+          onClose={() => setLocking(false)}
+          onClosed={() => buttonRef.current?.focus()}
+          onLocked={(message) => {
+            setLocking(false);
+            onChanged(message);
+          }}
         />
       )}
       {trashing && (

@@ -99,6 +99,9 @@ import type {
   PlatformHealth,
   LearnedDocument,
   LineSaved,
+  LockedOpen,
+  LockPerson,
+  PlaceLockedFiles,
   QualityReply,
   ReasonCode,
   ReviewChoice,
@@ -1629,3 +1632,47 @@ export const startTestModel = (body: { scan_model: string | null; chat_model: st
   request<TestModel>("POST", "/operator/test-model", { ...body, code });
 /** Undo it: every organisation back on its own settings, with a fresh code (step-up). */
 export const stopTestModel = (code: string) => request<TestModel>("DELETE", "/operator/test-model", { code });
+
+// --- locked files (PRD 7 section 6: PR 12's lock, unlock and grants; PR 13's opening) ---
+
+/** One page picture of a locked file, for <img src> only: no original, no text (PR 13). */
+export const lockedPageUrl = (documentId: string, pageNo: number) =>
+  `/api/documents/${encodeURIComponent(documentId)}/locked-pages/${pageNo}`;
+/** Whether this browser's 10-minute check is live, and how this person confirms. */
+export const getLockedOpen = () => request<LockedOpen>("GET", "/documents/locked-open");
+/** The person's own Kaagaz password, never a two-step code (decision 5): opens every locked file
+ * they may open for 10 minutes in this browser. */
+export const openLocked = (password: string) => request<LockedOpen>("POST", "/documents/locked-open", { password });
+/** A person who signs in with Google only confirms with a fresh Google sign-in; Google comes back
+ * to `next`. */
+export const confirmWithGoogle = (next: string) =>
+  request<{ url: string }>("POST", "/auth/oidc/google/confirm", { next });
+/** The lock dialog's people: everyone who can see the file today, and the Admin (you). */
+export const lockPreview = (id: string) =>
+  request<{ people: LockPerson[] }>("GET", `/documents/${encodeURIComponent(id)}/lock-preview`);
+/** The bulk bar's: everyone who can see any of the files. */
+export const lockPreviewMany = (ids: readonly string[]) =>
+  request<{ people: LockPerson[] }>("POST", "/documents/lock-preview", { document_ids: ids });
+export const lockDocument = (id: string, openTo: readonly string[], password: string) =>
+  request<{ locked: true; versions: number; open_to: number }>("POST", `/documents/${encodeURIComponent(id)}/lock`, {
+    open_to: openTo,
+    password,
+  });
+/** All or nothing: a 409 carries `refused: [{id, reason}]` in its details. */
+export const lockDocuments = (ids: readonly string[], openTo: readonly string[], password: string) =>
+  request<{ locked: number }>("POST", "/documents/lock", { document_ids: ids, open_to: openTo, password });
+export const unlockDocument = (id: string, password: string) =>
+  request<{ unlocked: number; reading: boolean }>("POST", `/documents/${encodeURIComponent(id)}/unlock`, { password });
+/** Take back one person's permission to open a locked file (the Access page's Remove). */
+export const revokeLock = (id: string, userId: string) =>
+  request<void>("DELETE", `/documents/${encodeURIComponent(id)}/lock-grants/${encodeURIComponent(userId)}`);
+/** The locked files a department gives (with its private folders for a Head), for the give
+ * pop-up; `open` says who already may open each (userId). */
+export const departmentLockedFiles = (departmentId: string, userId?: string, head?: boolean) =>
+  request<PlaceLockedFiles>(
+    "GET",
+    `/admin/departments/${encodeURIComponent(departmentId)}/locked-files${query({ user: userId, head })}`,
+  );
+/** The same for a private folder. */
+export const folderLockedFiles = (folderId: string, userId?: string) =>
+  request<PlaceLockedFiles>("GET", `/folders/${encodeURIComponent(folderId)}/locked-files${query({ user: userId })}`);

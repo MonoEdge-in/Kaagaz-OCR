@@ -35,6 +35,7 @@
 // (rowsInPlace), so nothing is put in above the pointer.
 // #542: in Trash, its folders are rows above the documents (TrashFolderRow), ticked with them for
 // the selection's Restore and Delete forever (each one call, a folder's to its own route).
+// PRD 7 (PR 13): an Admin locks the ticked files together (LockDialog.tsx), all or nothing.
 
 import Link from "next/link";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -64,6 +65,7 @@ import { docTypeLabel, fileTypeLabel, formatBytes, formatDate, formatDateTime, f
 import type { DocumentSummary, FilePlaced, FolderBack, FolderRestored, Me, Tag, TrashedFolder } from "@/lib/types";
 import { ActionDialog } from "./ActionDialog";
 import { EditDialog, MoveDialog, RowMenu } from "./DocumentActions";
+import { LockDialog } from "./LockDialog";
 import { DOCUMENT_DRAG } from "./FolderNav";
 import { pathLabel, shortPathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
@@ -253,6 +255,7 @@ export function DocumentsTable({
     ...deletableItems.map((item) => item.id),
   ];
   const [moving, setMoving] = useState(false);
+  const [locking, setLocking] = useState(false);
   const bulkMoved = useRef(false);
   const [password, setPassword] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
@@ -282,6 +285,11 @@ export function DocumentsTable({
   ];
   const selectedFolders = [...visibleSelectedIds].filter(isFolderKey).length;
   const movable = movableItems(items, visibleSelectedIds);
+  // PRD 7 (PR 13): the ticked files an Admin's session may lock, not locked yet.
+  const lockable =
+    !inTrash && me.user.role === "admin" && me.session.scope === "admin"
+      ? items.filter((item) => !item.locked && visibleSelectedIds.has(item.id))
+      : [];
   const readableIds = items
     .filter((item) => readable(item) && visibleSelectedIds.has(item.id))
     .map((item) => item.id);
@@ -577,6 +585,11 @@ export function DocumentsTable({
                       Read again ({readableIds.length})
                     </button>
                   )}
+                  {lockable.length > 0 && (
+                    <button type="button" className="btn" onClick={() => setLocking(true)}>
+                      {`Lock ${lockable.length} ${lockable.length === 1 ? "file" : "files"}`}
+                    </button>
+                  )}
                   {restorableIds.length > 0 && (
                     <button type="button" className="btn btn-danger" onClick={() => setConfirming("trash")}>
                       <Icon name="trash" />
@@ -638,6 +651,17 @@ export function DocumentsTable({
           )}
           {error && <p className={`error-text ${styles.selectionError}`} role="alert">{error}</p>}
         </div>
+      )}
+      {locking && (
+        <LockDialog
+          documents={lockable}
+          onClose={() => setLocking(false)}
+          onLocked={(message) => {
+            setLocking(false);
+            clearSelection();
+            events.onSaved(message);
+          }}
+        />
       )}
       {moving && (
         <MoveDialog

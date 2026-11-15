@@ -9,7 +9,8 @@ export type DocumentStatus =
   | "rejected"
   | "needs_reader"
   | "ready"
-  | "failed";
+  | "failed"
+  | "locked"; // PRD 7 (PR 12): a locked version whose page pictures are drawn
 
 /**
  * The file's type: at upload, the one sniffed from its first bytes (pdf, png, jpeg, tiff, heic,
@@ -192,6 +193,8 @@ export interface DocumentSummary {
   // #522: a zip only: where it was unpacked, null until it is (or when it is kept as a file).
   // Its status_message already says "Unpacked: 120 files into folder "X", 3 skipped (...)".
   unpack?: ZipUnpack | null;
+  // PRD 7 (PR 12): the file is locked; it opens only as page pictures (LockedDocument.tsx).
+  locked?: boolean;
 }
 
 /** #522: a zip upload unpacked into a folder by the server: its files counted, and the first
@@ -2229,4 +2232,51 @@ export interface TestModel {
   started_at: string | null;
   since: { pages: number; questions: number; cost_usd: number | null; avg_seconds_per_page: number | null } | null; // null when none runs
   note: string | null;
+}
+
+// --- locked files (PRD 7 section 6, PRs 12 and 13) ---
+
+/** GET /documents/locked-open: whether this browser's 10-minute check is live, until when, and
+ * how this person confirms (Google for a person whose role signs in with Google only). */
+export interface LockedOpen {
+  open: boolean;
+  until: string | null; // ISO 8601
+  via: "password" | "google";
+}
+
+/** Someone the lock dialog may tick (GET /documents/{id}/lock-preview): everyone who can see
+ * the file today, and the Admin locking it (you). */
+export interface LockPerson {
+  id: string;
+  name: string;
+  you: boolean;
+}
+
+/** One file a bulk lock refused (409), and why. */
+export interface LockRefusal {
+  id: string;
+  reason: string;
+}
+
+/** A locked file of a place, for the give pop-up: `open` when the person may open it already. */
+export interface PlaceLockedFile {
+  id: string;
+  name: string;
+  path: string | null;
+  open: boolean;
+}
+
+/** GET /admin/departments/{id}/locked-files and /folders/{id}/locked-files. */
+export interface PlaceLockedFiles {
+  files: number; // every file the place gives
+  locked: PlaceLockedFile[];
+}
+
+/** The Access page's locked files a person may open (GET /admin/users/{id}/access, `locked`). */
+export interface LockedGrant {
+  id: string;
+  name: string;
+  path: string | null;
+  given_at: string;
+  given_by: string | null;
 }

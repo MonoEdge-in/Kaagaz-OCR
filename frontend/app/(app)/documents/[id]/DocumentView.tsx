@@ -143,6 +143,7 @@ import type {
 import { usePoll } from "@/lib/usePoll";
 import { AttentionPanel, RelatedPanel, attentionCount } from "./DocumentPanels";
 import { DocumentMenu } from "./DocumentMenu";
+import { LockedDocument } from "./LockedDocument";
 import { PageProblems } from "./PageProblems";
 import { ReadAgain } from "./ReadAgain";
 import { ReviewPanel } from "./ReviewPanel";
@@ -158,6 +159,7 @@ export interface DocumentViewProps {
   scannedParam: string | null;
   wordsParam: string | null;
   fromParam: string | null;
+  openErrorParam?: string | null; // PRD 7 (PR 13): a Google confirm that did not open locked files
 }
 
 // Said after "Highlighted: <field>" when the spot came in a link (a source card, a search
@@ -187,6 +189,7 @@ export function DocumentView({
   scannedParam,
   wordsParam,
   fromParam,
+  openErrorParam = null,
 }: DocumentViewProps) {
   const { me } = useSession();
   const [attempt, setAttempt] = useState(0);
@@ -237,7 +240,8 @@ export function DocumentView({
   const reviewButton = useRef<HTMLButtonElement | null>(null);
   const reviewHeading = useRef<HTMLHeadingElement | null>(null);
   // KZ-007: a rejected file has no words to review, so nothing is asked for it.
-  const loadedStatus = loaded && "detail" in loaded ? loaded.detail.status : null;
+  // PRD 7 (PR 13): a locked file asks for no words, readings or review (LockedDocument.tsx).
+  const loadedStatus = loaded && "detail" in loaded && !loaded.detail.locked ? loaded.detail.status : null;
   // #443: after a word change the whole document is asked for again only when it may have kept its
   // page as is (useWordReview's reload), so the fix box below stays mounted otherwise.
   const review = useWordReview(documentId, reloads, loadedStatus !== null && loadedStatus !== "rejected", () =>
@@ -325,7 +329,7 @@ export function DocumentView({
   // A retry shows the loading state again until its own answer arrives.
   const current = loaded && loaded.attempt === attempt ? loaded : null;
   const shown = current && "detail" in current ? current.detail : null;
-  const selection = !shown
+  const selection = !shown || shown.locked
     ? null
     : chosen && chosen.linkKey === linkKey
       ? chosen.selection
@@ -383,6 +387,23 @@ export function DocumentView({
   }
 
   const detail = current.detail;
+  if (detail.locked) {
+    const unlocked = (message: string) => {
+      setToast(message);
+      setToastUndo(null);
+      setReloads((n) => n + 1);
+    };
+    return (
+      <LockedDocument
+        detail={detail}
+        back={backFrom(fromParam) ?? { href: "/documents", name: "documents" }}
+        openError={openErrorParam}
+        onChanged={unlocked}
+      >
+        <Toast message={toast} onClose={() => setToast(null)} />
+      </LockedDocument>
+    );
+  }
   const page = selection ? detail.pages.find((p) => p.page_no === selection.pageNo) : undefined;
   const pageNumbers = detail.pages.map((p) => p.page_no);
 
