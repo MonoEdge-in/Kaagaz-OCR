@@ -32,6 +32,7 @@ import {
   FIX_MEMBER_NOTE,
   FIX_NOTE,
   fixBox,
+  fixBoxKey,
   fixesFor,
   lineHolding,
   lineMarked,
@@ -78,7 +79,7 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [role, setRole] = useState<"first" | "second">("first");
   const [allFor, setAllFor] = useState<string | null>(null);
-  // The fix box open (#417): the word's key, the text typed, saving, and what went wrong.
+  // The fix box open (#417): its row and word (fixBoxKey, #614), the text typed, saving, and what went wrong.
   const [fixing, setFixing] = useState<{ key: string; text: string; busy: boolean; error: string | null } | null>(null);
   const fixInput = useRef<HTMLInputElement>(null);
   const fixId = useId();
@@ -127,8 +128,10 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
   const fixKey = fixing?.key ?? null;
   useEffect(() => fixInput.current?.focus(), [fixKey]); // the box opened: its field takes the keys
 
-  const openFix = (flag: WordFlag, draft: string) =>
-    setFixing((now) => (now?.key === flag.word_key ? now : { key: flag.word_key, text: draft, busy: false, error: null }));
+  const openFix = (flag: WordFlag, draft: string, index: number) => {
+    const key = fixBoxKey(index, flag);
+    setFixing((now) => (now?.key === key ? now : { key, text: draft, busy: false, error: null }));
+  };
   const closeFix = (index: number) => {
     setFixing(null);
     rows.current[index]?.querySelector("button")?.focus();
@@ -228,7 +231,7 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                 const text = visibleText(read);
                 // The line's own flag is asked for as the line shows now (#431: its words fixed).
                 const ask = toFix ? fixBox(toFix.kind === "line" ? { text: read } : toFix) : null;
-                const box = toFix && fixing?.key === toFix.word_key ? fixing : null;
+                const box = toFix && fixing?.key === fixBoxKey(index, toFix) ? fixing : null;
                 const boxId = `${fixId}-${index}`;
                 return (
                   <li
@@ -246,7 +249,7 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                         aria-pressed={active !== null && sameRegion(active, line.region)}
                         onClick={() => {
                           onShow({ name: `line ${index + 1}`, region: line.region, label: null });
-                          if (toFix && ask) openFix(toFix, ask.draft);
+                          if (toFix && ask) openFix(toFix, ask.draft, index);
                         }}
                       >
                         {flag ? (
@@ -270,7 +273,7 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                           type="button"
                           className={`btn btn-quiet ${styles.addMeaning}`}
                           aria-expanded={false}
-                          onClick={() => openFix(toFix, ask.draft)}
+                          onClick={() => openFix(toFix, ask.draft, index)}
                         >
                           Fix text<span className="visually-hidden">{` in line ${index + 1}`}</span>
                         </button>
