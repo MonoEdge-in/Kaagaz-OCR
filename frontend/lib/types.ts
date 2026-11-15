@@ -9,7 +9,8 @@ export type DocumentStatus =
   | "rejected"
   | "needs_reader"
   | "ready"
-  | "failed";
+  | "failed"
+  | "locked"; // PRD 7 (#605): locked, pictured and never read
 
 /**
  * The file's type: at upload, the one sniffed from its first bytes (pdf, png, jpeg, tiff, heic,
@@ -162,6 +163,8 @@ export interface DocumentSummary {
   understanding?: boolean; // Ready first (16 Oct 2026): ready and usable, its card and map still coming
   // Issue 407: still being read 6 hours after it was uploaded or last read again, so it may be read again (Retry).
   stuck?: boolean;
+  // PRD 7 (#605): locked: found by its name only, never read, opened only as page pictures (PR 13).
+  locked?: boolean;
   doc_type: DocType | null; // from the AI model's document card; null without one (PRD 2, D6)
   languages: string[]; // "en", "hi", "mr", "other"; [] when not known
   // PRD 5 F4: pages unreadable or uncertain still on the attention list (a page kept as is
@@ -1010,7 +1013,9 @@ export interface Answer {
   outage_reason?: "timeout";
   // "unchecked": the figure asked for is only in unchecked card values, so no
   // number is given; closest_documents says where.
-  status: "answered" | "not_found" | "unchecked" | "clarify";
+  // "no_access" (PRD 7, #605): a saved answer that used a file now locked, replaced whole by one line.
+  status: "answered" | "not_found" | "unchecked" | "clarify" | "no_access";
+  reason?: "locked";
   // PRD 6 A, answer contract v2 (24 Oct 2026); all four missing on answers saved before it,
   // which render as they did. The opening and assumptions are code-written lines.
   version?: 2;
@@ -1207,6 +1212,7 @@ export interface ChatResponse {
   conversation_id: string;
   question: Message;
   answer: Message;
+  locked_note?: string | null; // PRD 7 (#605): Ask's fixed line for a person who may open a locked file
 }
 
 export interface ConversationSummary {
@@ -1219,6 +1225,7 @@ export interface Conversation {
   id: string;
   title: string;
   messages: Message[];
+  locked_note?: string | null; // PRD 7 (#605): as ChatResponse's
 }
 
 export interface ReviewItem {

@@ -21,9 +21,10 @@ import { documentsCount } from "./trash";
 const SERVABLE: readonly DocumentStatus[] = ["clean", "ready", "needs_reader"];
 
 /** Where "Download original" points: always through the API, with ?download=1 so the
- * download is logged (File management A2). null when the server would refuse. */
-export function downloadHref(document: Pick<DocumentSummary, "id" | "status">): string | null {
-  return SERVABLE.includes(document.status) ? downloadUrl(document.id) : null;
+ * download is logged (File management A2). null when the server would refuse: a locked file is
+ * never downloaded (PRD 7, #605), whatever its status. */
+export function downloadHref(document: Pick<DocumentSummary, "id" | "status" | "locked">): string | null {
+  return SERVABLE.includes(document.status) && document.locked !== true ? downloadUrl(document.id) : null;
 }
 
 export type EditAction = "rename" | "move" | "tags";
@@ -57,7 +58,7 @@ export type MenuEntry =
  * Upload new version (the reading problems' Upload a better scan).
  */
 export function menuEntries(
-  item: Pick<DocumentSummary, "id" | "status" | "deleted_at" | "can_delete">,
+  item: Pick<DocumentSummary, "id" | "status" | "deleted_at" | "can_delete" | "locked">,
   canForever: boolean,
   place: "list" | "document" = "list",
   readAgain = false,

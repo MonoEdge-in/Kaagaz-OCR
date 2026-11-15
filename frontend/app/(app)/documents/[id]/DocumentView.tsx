@@ -164,6 +164,8 @@ export interface DocumentViewProps {
 // hit or a review item), not from a pick on this screen.
 const FROM_LINK = ", from the link you opened";
 // The status under the title: its words (lib/format.ts statusChip) with an icon.
+// PRD 7 (#605): the routes' own words for a locked file (backend/kaagaz/api/locked.py).
+const LOCKED_TEXT = "This file is locked. It can only be viewed.";
 const STATUS_ICONS: Record<StatusTone, KIconName> = { ready: "check-circle", working: "clock", neutral: "info", danger: "alert" };
 const DETAILS_ID = "document-details"; // More details: the kind, pages, counts, tags and versions
 
@@ -383,6 +385,19 @@ export function DocumentView({
   }
 
   const detail = current.detail;
+  // PRD 7 (#605): a locked file shows its name only, with no page, panel or action; PR 13 opens it
+  // as page pictures after the person's password.
+  if (detail.locked) {
+    return (
+      <div className="page page-wide">
+        <BackLink to={backFrom(fromParam) ?? { href: "/documents", name: "documents" }} />
+        <h1 className={styles.title}>
+          <KIcon name="lock" size="sm" /> <ScriptText text={detail.display_name} />
+        </h1>
+        <p role="note">{LOCKED_TEXT}</p>
+      </div>
+    );
+  }
   const page = selection ? detail.pages.find((p) => p.page_no === selection.pageNo) : undefined;
   const pageNumbers = detail.pages.map((p) => p.page_no);
 
