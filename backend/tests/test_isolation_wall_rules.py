@@ -547,6 +547,36 @@ def test_auto_filing_where_the_uploader_cant_see_gives_them_the_file_and_undo_ho
     assert document not in _seen(_app(db), org.c, org.people["member"].user_id)
 
 
+def test_an_auto_filing_from_before_the_walls_undone_after_them_is_held_for_its_uploader(
+    db: Database,
+) -> None:
+    """Lead decision 3 on #601: filed on day one (open, in no folder before), its type folder moved
+    out of any department, then the organisation keeps something to some people: Undo fails
+    closed, held for the uploader, never open to everyone; and only they or Management undo it."""
+    api = Api(db)
+    c, _ = api.customer()
+    uploader, other = api.sign_in(c), api.sign_in(c)
+    _owner(db, _GRANT, {"c": c})
+    document = _worker(db, c, uploader.user_id)
+    assert _place(db, document) == (None, None)  # day one: open
+    worker = PgDocuments(Database(db.engine, WORKER))
+    _owner(db, "UPDATE documents SET doc_type = 'invoice' WHERE id = :d", {"d": document})
+    worker.mark_ready(c, document, 1)
+    worker.file_document(c, document)
+    filed = _place(db, document)[0]
+    assert filed is not None
+    _owner(db, "UPDATE folders SET parent_id = NULL WHERE id = :f", {"f": filed})  # out of its department
+    with db.customer(c) as conn:
+        sales = insert_folder(conn, c, uploader.user_id, "Sales")
+    _owner(db, "UPDATE folders SET kind = 'department', department_only = true WHERE id = :f", {"f": sales})
+    assert _owner(db, "SELECT walls_set FROM customers WHERE id = :c", {"c": c})[0][0] is True
+
+    assert _call(other, "POST", f"/api/documents/{document}/autofile/undo", {})[0] == 403
+    assert _call(uploader, "POST", f"/api/documents/{document}/autofile/undo", {})[0] == 200
+    assert _place(db, document) == (None, uploader.user_id)
+    assert document not in _seen(_app(db), c, other.user_id)
+
+
 def test_auto_filing_where_the_uploader_sees_gives_nothing(db: Database) -> None:
     org = _walled(Api(db))
     document = _filed_invoice(db, org, "member")  # into Finance, the member's department
