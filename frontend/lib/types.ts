@@ -93,7 +93,9 @@ export interface Me {
   // app's "Google connected on 30 Oct." banner. Empty while no provider is on (always sent).
   recent_connections?: { provider: string; linked_at: string }[];
   // PRD 7 (#601): Management, and the departments this person heads. Older servers leave it out.
-  access?: { management: boolean; heads: string[] };
+  // in_department (PR 10c): a member of a live department; walled (PR 11c): the organisation has
+  // kept something to some people, ever.
+  access?: { management: boolean; heads: string[]; in_department?: boolean; walled?: boolean };
 }
 
 /** One connected account of the signed-in user (GET /auth/identities). */
