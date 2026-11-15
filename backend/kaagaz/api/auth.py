@@ -402,7 +402,7 @@ class FlowClaims:
     """One sign-in or connect at a provider, from its start to its callback (single use)."""
 
     provider: str
-    mode: str  # "signin" or "connect"
+    mode: str  # "signin", "connect", or "locked_open" (#605: Google proves it is them, for locked files)
     state: str
     nonce: str
     verifier: str  # the PKCE verifier
@@ -443,7 +443,8 @@ def sign_flow(claims: FlowClaims, secret: str) -> str:
 
 def read_flow(token: str, secret: str, now: int) -> FlowClaims | None:
     """The claims of a genuine, unexpired flow token, else None. Strict: exactly its fields,
-    each of its type; a connect carries its user, customer and session version, a sign-in none."""
+    each of its type; a connect (or a locked files' confirm, #605) carries its user, customer and
+    session version, a sign-in none."""
     data = _verified(token, _FLOW_PURPOSE, secret)
     if not isinstance(data, dict) or set(data) != _FLOW_FIELDS:
         return None
@@ -453,7 +454,7 @@ def read_flow(token: str, secret: str, now: int) -> FlowClaims | None:
     uid, cid, ver, exp = data["uid"], data["cid"], data["ver"], data["exp"]
     if not _is_int(exp) or exp <= now:
         return None
-    if data["m"] == "connect":
+    if data["m"] in ("connect", "locked_open"):
         if not (isinstance(uid, str) and isinstance(cid, str) and _is_uuid(uid) and _is_uuid(cid)):
             return None
         if not _is_version(ver):

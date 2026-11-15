@@ -351,6 +351,7 @@ VIEW_READERS = {
         "_TRASH_LIST", "_VERSIONS", "_WORD_LINES", "document_facts", "get_page", "list_pages",
         "list_values", "reviewer_fix_count", "sheet_cells",
     },
+    "db/locked_open.py": {"_DOCUMENT", "_PICTURE"},  # Changed on purpose (#605): a locked file's pictures
     "db/organization_words.py": {"decide", "visible"},
     "db/page_turns.py": {"_FOR_DOCUMENT"},  # Changed on purpose (#600): page turns saved for everyone
     "db/review.py": {"_COUNT", "_COUNT_FOR_DOCUMENT", "_ITEM", "_LOCK_VALUE", "_NEXT_CHUNK"},

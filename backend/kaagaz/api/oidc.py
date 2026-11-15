@@ -99,6 +99,7 @@ class Identity:
     email: str | None  # a label only, lower case
     email_verified: bool
     hosted_domain: str | None = None  # Google's "hd", lower case: a Workspace account's domain
+    auth_time: int | None = None  # when the person signed in at the provider (asked with max_age)
 
 
 def _client(settings: Settings, name: str) -> tuple[bool, str | None, str | None, str | None]:
@@ -130,8 +131,17 @@ def _configured(settings: Settings, provider: Provider) -> tuple[str, str, str]:
     return client_id, secret, redirect
 
 
-def authorize_url(provider: Provider, settings: Settings, *, state: str, nonce: str, verifier: str) -> str:
-    """The provider's account chooser for this client, with the state, nonce and PKCE challenge."""
+def authorize_url(
+    provider: Provider,
+    settings: Settings,
+    *,
+    state: str,
+    nonce: str,
+    verifier: str,
+    max_age: int | None = None,
+) -> str:
+    """The provider's account chooser for this client, with the state, nonce and PKCE challenge;
+    with ``max_age`` (WhatsApp's proof, #603: 0), a sign-in at most that old, its ``auth_time`` given."""
     client_id, _, redirect = _configured(settings, provider)
     query = {
         "response_type": "code",
@@ -144,6 +154,8 @@ def authorize_url(provider: Provider, settings: Settings, *, state: str, nonce: 
         "code_challenge": _b64url(hashlib.sha256(verifier.encode("ascii")).digest()),
         "code_challenge_method": "S256",
     }
+    if max_age is not None:
+        query["max_age"] = str(max_age)
     return provider.authorize_endpoint + "?" + urllib.parse.urlencode(query)
 
 
@@ -208,6 +220,7 @@ def verified_identity(
     email = claims.get("email")
     email = email.strip().lower() if isinstance(email, str) and email.strip() else None
     hosted = claims.get("hd")
+    signed_in_at = claims.get("auth_time")
     return Identity(
         provider=provider.name,
         issuer=provider.issuer,
@@ -215,6 +228,7 @@ def verified_identity(
         email=email,
         email_verified=email is not None and claims.get("email_verified") is True,
         hosted_domain=hosted.strip().lower() if isinstance(hosted, str) and hosted.strip() else None,
+        auth_time=signed_in_at if type(signed_in_at) is int else None,
     )
 
 

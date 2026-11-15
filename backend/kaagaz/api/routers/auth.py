@@ -126,7 +126,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from sqlalchemy import Connection
 
-from kaagaz.api import emails, oidc, totp
+from kaagaz.api import emails, locked_open, oidc, totp
 from kaagaz.api.auth import (
     GOOGLE_LINK_REQUIRED,
     CurrentUser,
@@ -476,6 +476,7 @@ def logout(request: Request, user: UserAllowPasswordChange, context: Context) ->
         _record(conn, user.customer_id, "auth.logout", actor=user.user_id, target=user.user_id)
     response = Response(status_code=204)
     clear_session_cookie(response, context.settings)
+    locked_open.clear_cookie(response, context.settings)  # PRD 7 decision 6: it ends at sign-out
     return response
 
 
@@ -486,6 +487,7 @@ def logout_everywhere(user: UserAllowGoogleLink, context: Context) -> Response: 
         _record(conn, user.customer_id, "auth.logout_everywhere", actor=user.user_id, target=user.user_id)
     response = Response(status_code=204)
     clear_session_cookie(response, context.settings)
+    locked_open.clear_cookie(response, context.settings)
     return response
 
 
