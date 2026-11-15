@@ -153,6 +153,9 @@ def _expected(db: Database, org: Org, user: str, *, folders: bool = False) -> se
     # or in Trash), open is a department still there and not Department only, so one deleted since
     # is closed (fail closed); with none, every department is open, as on day one.
     # Changed on purpose (#594, 0089): once it ever had one (customers.walls_set, never cleared).
+    # The oracle reads the flag as kaagaz_access() does; that the flag is set right (from folders and
+    # trashed folders, never cleared, worked out for old rows) is test_isolation_open_paths's and
+    # test_migration_0089_db's.
     walled = bool(_owner(db, "SELECT walls_set FROM customers WHERE id = :c", {"c": c})[0][0])
     opened = {
         str(r[0])

@@ -111,6 +111,7 @@ def _row(
         "created_at": NOW,
         "uploaded_by": USER.user_id,
         "folder_id": None,
+        "in_a_folder": False,  # Changed on purpose (PR 10b, #601): Shared with you
         "deleted_at": None,
         "family_id": document_id,
         "version_no": 1,

@@ -269,7 +269,7 @@ def delete_folder(
             raise ApiError(
                 409,
                 "access_would_change",
-                "Moving what's inside there would let more people see it."
+                "Moving what's inside there would change who can see it."
                 " Choose another folder or send it to Trash.",
             ) from None
         details: dict[str, audit.DetailValue] = {
@@ -329,7 +329,9 @@ def restore_trashed_folder(folder_id: uuid.UUID, user: User, context: Context) -
         if not uploaded_every_version(found.uploaders, user):
             raise ApiError(403, "forbidden")
         try:
-            restored = trashed_sql.restore_folder(conn, user.customer_id, target, admin=user.role == "admin")
+            restored = trashed_sql.restore_folder(
+                conn, user.customer_id, target, admin=user.role == "admin", by=user.user_id
+            )
         except trashed_sql.DepartmentAdminOnly as refused:
             raise ApiError(403, "forbidden", department_only_admin(conn, user, refused)) from None
         except folders_sql.FolderNameTaken:
@@ -338,7 +340,8 @@ def restore_trashed_folder(folder_id: uuid.UUID, user: User, context: Context) -
         # PRD 7 (#599): what came back, its place and what came with it, as the person may see
         # them: the folder they asked for is theirs to see (it was their item of Trash).
         shown = trashed_sql.as_seen(conn, user.customer_id, restored)
-        if shown is None:  # can't happen: the folder asked for was found visible above
+        if shown is None:  # can't happen: the folder asked for was found visible above, and a seal
+            # names the restorer (#594)
             raise folders_sql.FolderNotFound()
         reply = shown_folder(conn, user.customer_id, shown.folder)
     return {

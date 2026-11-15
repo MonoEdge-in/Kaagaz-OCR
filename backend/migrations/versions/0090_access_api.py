@@ -39,9 +39,15 @@ views carry no customer filter of their own, 0086).
   app takes the tree lock before ``users``. Its body is read back and that one line changed exactly
   once (0061's way).
 
-EXECUTE goes to the app and the worker role alike (0083's equality test). Catalog only, but for
-the trigger's CREATE TRIGGER (``users`` locked a moment). The downgrade drops the trigger and the
-functions and puts the operator's line back.
+* ``audit_log_access`` (the lead's addition, from PR 10b's review): the organisation's access and
+  lock entries, newest first, so an Admin's self-given block and Management's Activity read only
+  those rows, never the whole log.
+
+EXECUTE goes to the app and the worker role alike (0083's equality test). The index is built first,
+outside the transaction (as 0085: it commits what ran before it), CONCURRENTLY unless a valid one
+is there, so ``audit_log`` takes writes while it is read; then env.py's lock_timeout is set again.
+The rest is catalog only, but for the trigger's CREATE TRIGGER (``users`` locked a moment). The
+downgrade drops the trigger, the functions and the index, and puts the operator's line back.
 
 Revision ID: 0090
 Revises: 0089
@@ -52,6 +58,7 @@ from pathlib import Path
 from types import ModuleType
 
 from alembic import op
+from sqlalchemy import text
 
 revision = "0090"
 down_revision = "0089"
@@ -368,11 +375,22 @@ TRIGGER = (
     " WHEN (OLD.disabled IS DISTINCT FROM NEW.disabled) EXECUTE FUNCTION kaagaz_user_switched()"
 )
 
+INDEX = "audit_log_access"
+INDEX_SQL = (
+    f"CREATE INDEX CONCURRENTLY {INDEX} ON public.audit_log (customer_id, created_at DESC, id DESC)"
+    " WHERE action LIKE 'access.%' OR action LIKE 'lock.%'"
+)
+INDEX_COMMENT = "The organisation's access and lock entries, newest first (PRD 7, #601)."
+LOCK_TIMEOUT = "10s"  # as env.py's
+_VALID_INDEX = text(f"SELECT i.indisvalid FROM pg_index i WHERE i.indexrelid = to_regclass('public.{INDEX}')")
+
 CHANGE_ADMIN = "kaagaz_op_change_admin(uuid, uuid, uuid, text, bigint)"
 SHARE_LINE = "FROM public.customers c WHERE c.id = p_customer FOR SHARE;"
 TREE_LINE = "FROM public.customers c WHERE c.id = p_customer FOR NO KEY UPDATE;"
 
 UPGRADE = [
+    f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'",  # the autocommit block ended env.py's
+    f"COMMENT ON INDEX public.{INDEX} IS {_literal(INDEX_COMMENT)}",
     *FUNCTIONS.values(),
     *[
         statement
@@ -395,10 +413,15 @@ DOWNGRADE = [
     "DROP TRIGGER IF EXISTS users_switched ON users",
     "DROP FUNCTION IF EXISTS public.kaagaz_user_switched()",
     *[f"DROP FUNCTION IF EXISTS public.{name}" for name in reversed(FUNCTIONS)],
+    f"DROP INDEX IF EXISTS public.{INDEX}",
 ]
 
 
 def upgrade() -> None:
+    with op.get_context().autocommit_block():
+        if not op.get_bind().execute(_VALID_INDEX).scalar():  # none yet, or a failed build's leftover
+            op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS public.{INDEX}")
+            op.execute(INDEX_SQL)
     for statement in UPGRADE:
         op.execute(statement)
 

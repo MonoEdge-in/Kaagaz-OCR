@@ -267,12 +267,20 @@ def test_the_previews_name_who_loses_and_who_gains_as_the_write_does(db: Databas
         "losing": [],
         "gaining": [],
         "files": 1,
+        "named_before": [],
     }
     body = _get(admin, f"/api/folders/{f['loose']}/private/preview?on=true")[1]
     assert _named(body, "losing") == everyone_but_management and body["files"] == 1
     loose = f"/api/folders/{f['loose']}/private/preview"
+    for person in (p["named"], p["off"]):  # named before; one switched off since
+        _owner(db, "INSERT INTO private_folder_members (customer_id, folder_id, user_id, added_by)"
+               " VALUES (:c, :f, :u, :u)", {"c": org.c, "f": f["loose"], "u": person})  # fmt: skip
+    body = _get(admin, f"{loose}?on=true")[1]
+    assert [person["id"] for person in body["named_before"]] == [p["named"]]  # they see it again
+    assert _named(body, "losing") == everyone_but_management - {p["named"]}
+    assert _get(admin, f"{loose}?on=false")[1]["named_before"] == []
     body = _get(admin, f"{loose}?on=true&named={p['member']}&named={p['plain']}")[1]
-    assert _named(body, "losing") == everyone_but_management - {p["member"], p["plain"]}
+    assert _named(body, "losing") == everyone_but_management - {p["member"], p["plain"], p["named"]}
     assert _code(_get(admin, f"{loose}?on=true&named={p['off']}")) == (409, "disabled")
     assert _code(_get(admin, f"{loose}?on=false&named={p['member']}")) == (400, "bad_request")
     with db.customer(org.c) as conn:

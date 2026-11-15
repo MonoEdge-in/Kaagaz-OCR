@@ -39,6 +39,14 @@ def test_up_down_and_up_again(fresh: tuple[str, Database]) -> None:
     migrate(url, "0088")
     walled, first = new_customer(db)
     open_one, user = new_customer(db)
+    trashed, someone = new_customer(db)
+    _owner(
+        db,
+        "INSERT INTO trashed_folders (id, customer_id, parent_id, name, kind, created_by, created_at,"
+        " trash_id, root, deleted_at, deleted_by, department_only) VALUES (gen_random_uuid(), :c, NULL,"
+        " 'Old', 'department', :u, now(), gen_random_uuid(), true, now(), :u, true)",
+        {"c": trashed, "u": someone},
+    )
     with db.customer(open_one) as conn:
         insert_folder(conn, open_one, user, "Sales")
     with db.customer(walled) as conn:
@@ -48,11 +56,9 @@ def test_up_down_and_up_again(fresh: tuple[str, Database]) -> None:
     with db.system() as conn:
         access_0088 = conn.execute(text(_ACCESS)).scalar_one()
     migrate(url, "0089")
-    walls = "SELECT id, walls_set FROM customers WHERE id IN (:a, :b)"
-    assert {str(c): w for c, w in _owner(db, walls, {"a": walled, "b": open_one})} == {
-        walled: True,
-        open_one: False,
-    }
+    walls = "SELECT id, walls_set FROM customers WHERE id IN (:a, :b, :t)"
+    flags = {str(c): w for c, w in _owner(db, walls, {"a": walled, "b": open_one, "t": trashed})}
+    assert flags == {walled: True, open_one: False, trashed: True}
     at_0089 = _state(db)
     with db.system() as conn:
         assert conn.execute(text(_COLUMN)).scalar_one() == M0089.HELD_COMMENT

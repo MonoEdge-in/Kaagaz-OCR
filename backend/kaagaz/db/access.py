@@ -77,7 +77,8 @@ _GIVEN_TO = text(
 _PEOPLE_ON = text(
     "SELECT u.id, u.display_name FROM private_folder_members p"
     " JOIN users u ON u.customer_id = p.customer_id AND u.id = p.user_id"
-    " WHERE p.customer_id = :c AND p.folder_id = :f ORDER BY lower(u.display_name), u.id"
+    " WHERE p.customer_id = :c AND p.folder_id = :f AND (NOT :active OR NOT u.disabled)"
+    " ORDER BY lower(u.display_name), u.id"
 )
 _HEADS_OF = text(
     "SELECT u.id, u.display_name FROM department_members m"
@@ -241,11 +242,12 @@ def paths(conn: Connection, customer_id: str, folder_ids: Sequence[str]) -> dict
     return {str(row[0]): str(row[1]) for row in rows}
 
 
-def people_on(conn: Connection, customer_id: str, folder_id: str) -> list[dict[str, str]]:
-    return [
-        {"id": str(i), "name": str(n)}
-        for i, n in conn.execute(_PEOPLE_ON, {"c": customer_id, "f": folder_id})
-    ]
+def people_on(
+    conn: Connection, customer_id: str, folder_id: str, *, active: bool = False
+) -> list[dict[str, str]]:
+    """The people named on the folder (kept while it is open); ``active``: those switched on only."""
+    params = {"c": customer_id, "f": folder_id, "active": active}
+    return [{"id": str(i), "name": str(n)} for i, n in conn.execute(_PEOPLE_ON, params)]
 
 
 def heads_of(conn: Connection, customer_id: str, department_id: str | None) -> list[dict[str, str]]:
