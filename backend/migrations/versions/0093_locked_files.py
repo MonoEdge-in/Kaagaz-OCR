@@ -429,28 +429,26 @@ REFUSE = """
         v_locked boolean;
     BEGIN
         -- Every version written to, locked FOR SHARE whether locked or not: a lock under way is
-        -- waited for and then seen (the row is read again once it commits). A link's other file
-        -- and every version of a suggestion's family too.
+        -- waited for and then seen (the row is read again once it commits).
+        SELECT bool_or(x.locked) INTO v_locked FROM (
+            SELECT d.locked_at IS NOT NULL AS locked FROM public.documents d
+            WHERE (d.customer_id, d.id) IN (SELECT n.customer_id, n.document_id FROM new_rows n)
+            FOR SHARE OF d
+        ) x;
+        -- A link's other file, and every version of a suggestion's family, read with no row lock:
+        -- two saves that link to each other hold their own families, so waiting on the other's
+        -- would deadlock them. A row written as a lock commits can stay: a link is shown only
+        -- between ready files, and kaagaz.db.versions.link refuses a locked family under its locks.
         IF TG_TABLE_NAME = 'document_links' THEN
-            SELECT bool_or(x.locked) INTO v_locked FROM (
-                SELECT d.locked_at IS NOT NULL AS locked FROM public.documents d
-                WHERE (d.customer_id, d.id) IN (SELECT n.customer_id, n.document_id FROM new_rows n
-                                                UNION SELECT n.customer_id, n.linked_document_id FROM new_rows n)
-                FOR SHARE OF d
-            ) x;
+            v_locked := coalesce(v_locked, false) OR EXISTS (
+                SELECT 1 FROM public.documents d
+                WHERE (d.customer_id, d.id) IN (SELECT n.customer_id, n.linked_document_id FROM new_rows n)
+                AND d.locked_at IS NOT NULL);
         ELSIF TG_TABLE_NAME = 'version_suggestions' THEN
-            SELECT bool_or(x.locked) INTO v_locked FROM (
-                SELECT d.locked_at IS NOT NULL AS locked FROM public.documents d
-                WHERE (d.customer_id, d.id) IN (SELECT n.customer_id, n.document_id FROM new_rows n)
-                OR (d.customer_id, d.family_id) IN (SELECT n.customer_id, n.candidate_family_id FROM new_rows n)
-                FOR SHARE OF d
-            ) x;
-        ELSE
-            SELECT bool_or(x.locked) INTO v_locked FROM (
-                SELECT d.locked_at IS NOT NULL AS locked FROM public.documents d
-                WHERE (d.customer_id, d.id) IN (SELECT n.customer_id, n.document_id FROM new_rows n)
-                FOR SHARE OF d
-            ) x;
+            v_locked := coalesce(v_locked, false) OR EXISTS (
+                SELECT 1 FROM public.documents d
+                WHERE (d.customer_id, d.family_id) IN (SELECT n.customer_id, n.candidate_family_id FROM new_rows n)
+                AND d.locked_at IS NOT NULL);
         END IF;
         IF v_locked THEN
             RAISE EXCEPTION 'kaagaz_locked: a locked document''s content is never written'
