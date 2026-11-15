@@ -36,6 +36,16 @@ def pytest_collection_modifyitems(items: list[Any]) -> None:
             item.add_marker("isolation")
 
 
+@pytest.fixture
+def the_rule_on(db: Database) -> Iterator[None]:
+    """PRD 7 (#606): a test of the rule itself: on for every organisation, in a baseline session too
+    (after the session's database is migrated). Asked for by ``usefixtures``."""
+    from tests.db_support import rule_on
+
+    with rule_on():
+        yield
+
+
 @pytest.fixture(scope="session")
 def db() -> Iterator[Database]:
     """A real database, migrated once per session (tests marked ``db`` only). PRD 7 (#606): the

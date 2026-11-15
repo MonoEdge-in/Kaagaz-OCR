@@ -19,21 +19,13 @@ from sqlalchemy.exc import ProgrammingError
 from kaagaz.db import storage_limits
 from kaagaz.db.engine import Database
 from kaagaz.db.sqlstate import INSUFFICIENT_PRIVILEGE, sqlstate
-from tests.db_support import APP_ROLE, WORKER_ROLE, new_customer, person_rule, rule_on, until_0092
+from tests.db_support import APP_ROLE, WORKER_ROLE, new_customer, person_rule, until_0092
 from tests.test_api_support import CSRF, PDF_BYTES, Api
 from tests.test_isolation_access_views import Org, _all, _expected, _walled
 from tests.test_isolation_schema import PERSON_RULE_TABLES
 from tests.test_operator_auth_db import _owner
 
-pytestmark = pytest.mark.db
-
-
-@pytest.fixture(autouse=True)
-def _the_rule_on(db: Database) -> Iterator[None]:
-    """A test of the rule itself: on for every organisation, in a baseline session too (after the
-    session's database is migrated)."""
-    with rule_on():
-        yield
+pytestmark = [pytest.mark.db, pytest.mark.usefixtures("the_rule_on")]
 
 
 _BOX = '{"kind": "box", "page": 1, "box": [0.1, 0.1, 0.2, 0.2]}'
@@ -199,6 +191,25 @@ def test_the_worker_role_reads_every_row_and_the_views_its_person(db: Database, 
         assert _ids(conn, "SELECT id FROM visible_documents") == _expected(
             db, org, org.people["plain"].user_id
         )
+
+
+def test_a_files_place_is_read_only_by_who_sees_it_an_admin_or_the_worker(db: Database, org: Org) -> None:
+    """kaagaz_document_place (0091) reads the table whole, so it asks who calls: a hidden id is no row
+    for a member, Management or the API role with no person; an Admin and the worker role read it."""
+    place = "SELECT folder_id FROM kaagaz_document_place(CAST(:d AS uuid))"
+    member, management = (_expected(db, org, org.people[n].user_id) for n in ("member", "management"))
+    hidden = _all(db, org.c) - member - management - {org.files["trashed"]}
+    assert hidden
+    for name, role in (("member", APP_ROLE), ("management", APP_ROLE), (None, APP_ROLE)):
+        with _as(db, org, name, role) as conn:
+            for document in hidden:
+                assert conn.execute(text(place), {"d": document}).all() == [], (name, document)
+    with _as(db, org, "member") as conn:
+        assert len(conn.execute(text(place), {"d": org.files["fin"]}).all()) == 1  # one they see
+    for name, role in (("admin", APP_ROLE), (None, WORKER_ROLE)):
+        with _as(db, org, name, role) as conn:
+            for document in hidden:
+                assert len(conn.execute(text(place), {"d": document}).all()) == 1, (name, document)
 
 
 def test_the_switch_is_per_organisation(db: Database, org: Org) -> None:

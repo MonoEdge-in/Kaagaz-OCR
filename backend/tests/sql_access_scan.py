@@ -220,6 +220,17 @@ def owners(tables: frozenset[str] = CONTENT | PLACES) -> Iterator[tuple[Owner, b
         yield Owner(key[0], key[1], frozenset(direct), view), key in reached
 
 
+def calling(prefix: str) -> set[tuple[str, str]]:
+    """PR 9a (#606): every (file, name) whose own SQL calls a function named ``prefix...(``."""
+    found = re.compile(rf"\b{re.escape(prefix)}[a-z_]*\(")
+    return {
+        (rel, name)
+        for rel, tree in _parse().items()
+        for node in tree.body
+        if (name := _name(node)) and any(found.search(sql) for sql in _strings(node))
+    }
+
+
 # PR 9a (#606): a statement that reads "not in this covered table" as gone or empty fails open once
 # the database rule hides a row of it.
 _NOT_IN = re.compile(r"NOT EXISTS \(SELECT 1 FROM (?:public\.)?([a-z_]+)", re.IGNORECASE)

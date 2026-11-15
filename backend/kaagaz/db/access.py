@@ -174,7 +174,10 @@ _DOCUMENT_HOLD = text(
     " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 _MANAGEMENT = text("SELECT id FROM users WHERE customer_id = :c AND management AND NOT disabled")
-_CLOSED = text("SELECT department_only FROM folders WHERE customer_id = :c AND id = :d")
+# PRD 7 (#606): read whole (kaagaz_folder_place, 0091), as folders._SAME_PLACE.
+_CLOSED = text(
+    "SELECT department_only FROM kaagaz_folder_place(:d) WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
+)
 _NAMES = text(
     "SELECT id, display_name FROM users WHERE customer_id = :c AND id = ANY(CAST(:u AS uuid[]))"
     " ORDER BY lower(display_name), id"

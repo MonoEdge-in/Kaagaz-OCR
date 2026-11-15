@@ -365,6 +365,10 @@ OWNER_RIGHTS = {
         "TABLE(department_id uuid, private_folder_id uuid, held_for uuid, folder_id uuid, family_id uuid)",
         EMPTY_PATH,
     ),
+    "kaagaz_folder_place": (
+        "TABLE(department_id uuid, private_folder_id uuid, private boolean, department_only boolean)",
+        EMPTY_PATH,
+    ),
     "kaagaz_admin_files": ("bigint", EMPTY_PATH),
     "kaagaz_folder_depth": ("TABLE(depth integer, cycle boolean, height integer)", EMPTY_PATH),
     "kaagaz_storage_used": ("bigint", EMPTY_PATH),

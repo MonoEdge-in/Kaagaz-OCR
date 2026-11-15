@@ -28,6 +28,8 @@ CALLS = {
     "folder_summary": "SELECT * FROM kaagaz_admin_folder_summary(CAST(:finance AS uuid))",
     "names": "SELECT * FROM kaagaz_admin_document_names(CAST(:hidden AS uuid[]))",
     "given_to": "SELECT * FROM kaagaz_admin_given_to(CAST(:plain AS uuid))",
+    "department_files": "SELECT kaagaz_admin_files(CAST(:finance AS uuid), NULL) AS files",
+    "folder_files": "SELECT kaagaz_admin_files(NULL, CAST(:folders AS uuid[])) AS files",
 }
 
 
@@ -60,6 +62,7 @@ def _read(database: Database, customer: str, user: str | None, name: str, org: O
         "finance": org.folders["finance"],
         "hidden": [org.files["fin"], org.files["sal"]],
         "plain": org.people["plain"].user_id,
+        "folders": [org.folders["finance"], org.folders["salaries"]],
     }
     with database.customer(customer) if user is None else database.user(customer, user) as conn:
         return [dict(row) for row in conn.execute(text(CALLS[name]), params).mappings()]
@@ -85,6 +88,8 @@ def test_an_admin_who_cant_see_finance_gets_its_names_and_numbers(db: Database) 
     assert [(row["folders"], row["files"]) for row in got["folder_summary"]] == [(2, 3)]
     assert sorted(row["display_name"] for row in got["names"]) == ["fin.pdf", "sal.pdf"]
     assert [str(row["id"]) for row in got["given_to"]] == [org.files["given"]]
+    # Finance's open files (fin and given), and every live file in Finance and Salaries (sal too).
+    assert (got["department_files"], got["folder_files"]) == ([{"files": 2}], [{"files": 3}])
     # The worker role with no person reads the same (it sees the whole organisation anyway).
     assert _read(db, c, None, "stats", org) == got["stats"]
 
@@ -124,4 +129,5 @@ def test_another_organisations_admin_reads_none_of_it(db: Database) -> None:
     assert [row["dimension"] for row in got["usage"]] == ["total"] and got["usage"][0]["calls"] is None
     assert got["usage_rows"] == [] and got["names"] == [] and got["given_to"] == []
     assert [row["folders"] for row in got["folder_summary"]] == [0]
+    assert (got["department_files"], got["folder_files"]) == ([{"files": 0}], [{"files": 0}])
     assert not any(name in str(got) for name in ("fin.pdf", "sal.pdf", org.files["fin"]))

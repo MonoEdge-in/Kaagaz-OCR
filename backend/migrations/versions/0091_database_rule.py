@@ -305,15 +305,31 @@ READS = {
     $$
     """,
     # A file's department, private folder, whom it is held for, folder and family (PR 10b/10c's
-    # "Who can see this" and move rules; an audit row's folder and family, A3), as the table holds them: the routes find the file through the view (or, an
-    # Admin, kaagaz_admin_document) first, and under the tree lock a person who stopped seeing it
-    # since is refused by the move rule, as before the rule (decision 18). Ids only.
+    # "Who can see this" and move rules; an audit row's folder and family, A3), read whole: for a
+    # caller who sees the file, an Admin (any file, decision 20), the worker role with no person, or
+    # anyone while the rule is off for the organisation; no row for anyone else. Ids only.
     "kaagaz_document_place(uuid)": f"""
     CREATE FUNCTION public.kaagaz_document_place(p_document uuid)
     RETURNS TABLE (department_id uuid, private_folder_id uuid, held_for uuid, folder_id uuid, family_id uuid)
     LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
-        SELECT d.department_id, d.private_folder_id, d.held_for, d.folder_id, d.family_id FROM public.documents d
+        SELECT d.department_id, d.private_folder_id, d.held_for, d.folder_id, d.family_id
+        FROM public.documents d, public.kaagaz_access() a
         WHERE d.customer_id = {_ME} AND d.id = p_document
+        AND (public.kaagaz_sees_everything() OR a.admin
+             OR (NOT a.asked AND current_setting('role') = 'kaagaz_worker')
+             OR {_SEES.format(view="documents", me=_ME, id="d.id")})
+    $$
+    """,
+    # A folder's stored department, private folder and Private, and whether it is Department only, read
+    # whole: the move rules ask it of a department or a target the person may not see (a file given
+    # to them, from a Department only department; under the rule that department reads as no row, so
+    # as open). Ids and flags of the folder named only; none for another organisation's.
+    "kaagaz_folder_place(uuid)": f"""
+    CREATE FUNCTION public.kaagaz_folder_place(p_folder uuid)
+    RETURNS TABLE (department_id uuid, private_folder_id uuid, private boolean, department_only boolean)
+    LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
+        SELECT f.department_id, f.private_folder_id, f.private, f.department_only FROM public.folders f
+        WHERE f.customer_id = {_ME} AND f.id = p_folder
     $$
     """,
     # The topmost folder of p_folder's delete above it (itself when none is), on the whole table:
@@ -410,8 +426,10 @@ READ_COMMENTS = {
     " these live and trashed folders, and whether any file is (PRD 7, #606). An active person; numbers only.",
     "kaagaz_folder_depth(uuid, uuid)": "A folder's depth, whether a move makes a cycle, and a subtree's height,"
     " on the whole tree, for the 100-level limit (PRD 7, #606). Numbers only.",
-    "kaagaz_document_place(uuid)": "A file's department, private folder, holder, folder and family, of a"
-    " file the caller found first (PRD 7, #606). Ids only.",
+    "kaagaz_document_place(uuid)": "A file's department, private folder, holder, folder and family, for a"
+    " caller who sees it, an Admin or the worker, or with the rule off (PRD 7, #606). Ids only.",
+    "kaagaz_folder_place(uuid)": "A folder's department, private folder, Private and Department only, read"
+    " whole for the move rules (PRD 7, #606). Ids and flags only.",
     "kaagaz_trash_top(uuid)": "The topmost folder of a trashed folder's delete, its id and kind (PRD 7, #606).",
     "kaagaz_storage_used()": "The bytes the organisation's documents hold (#516, PRD 7 #606).",
     "kaagaz_spent(timestamp with time zone, timestamp with time zone)": "The organisation's model spend in a"
