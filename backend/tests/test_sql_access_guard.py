@@ -274,6 +274,28 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ("db/storage_limits.py", "_ROOM"): (SHARED_WITH_WORKER, "the organisation's bytes; no row shown"),
     ("db/tags.py", "_REMOVE_OTHERS"): (WRITE_AFTER_CHECK, "PUT /documents/{id}/tags: _document_or_404 first"),
     ("db/tags.py", "_ADD"): (WRITE_AFTER_CHECK, "PUT /documents/{id}/tags: _document_or_404 first"),
+    # #594's restore (missing from this list until #601's PR 10c).
+    ("db/trash.py", "_KEPT_PLACE"): (WRITE_AFTER_CHECK, "a restore, after the view check: ids only"),
+    ("db/trash.py", "LIVE_FOLDERS"): (WRITE_AFTER_CHECK, "a restore, after the view check: which are live"),
+    # PRD 7 PR 10c (#601): the move rules, the move previews, a folder holding what is hidden, and
+    # the place of an upload with no folder.
+    ("db/folders.py", "_SAME_PLACE"): (WRITE_AFTER_CHECK, "a move's rule: _seen or the view first, ids only"),
+    ("db/folders.py", "_PLACE_OF"): (WRITE_AFTER_CHECK, "a move's places: _seen or the view first, ids only"),
+    ("db/folders.py", "_PRIVATE_AMONG"): (TREE_WALK, "the private folders a move carries, ids only"),
+    ("db/folders.py", "_HIDDEN_INSIDE"): (EXISTENCE_ONLY, "DELETE /folders/{id}: whether anything is hidden"),
+    ("db/access.py", "_DOCUMENT_HOLD"): (
+        EXISTENCE_ONLY,
+        "a file found through the view: its place, ids only",
+    ),
+    ("db/access.py", "_CLOSED"): (EXISTENCE_ONLY, "a move preview: whether a department is Department only"),
+    ("db/documents.py", "_NO_FOLDER"): (
+        SHARED_WITH_WORKER,
+        "an upload with no folder: its uploader's departments",
+    ),
+    ("db/autofile.py", "_HOLD_FOR"): (
+        WRITE_AFTER_CHECK,
+        "POST /documents/{id}/autofile/undo: _document_or_404 first",
+    ),
     ("db/trash.py", "_LOCK_FAMILY"): (WRITE_AFTER_CHECK, "the family lock, after the view check (#595)"),
     ("db/trash.py", "_TRASH_IN_FOLDERS"): (
         WRITE_AFTER_CHECK,

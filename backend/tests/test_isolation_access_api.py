@@ -171,8 +171,26 @@ def test_who_may_ask_who_sees_what(db: Database) -> None:
         assert _refused(db, org.c, p[who], _AUDIENCE, k="document", i=files[file]) == "42501", who
     assert _as(db, org.c, p["admin"], _AUDIENCE, k="document", i=other.files["top"]) == []
     ids = {"folder": org.folders["finance"], "file": files["given"], "person": p["plain"]}
+    # Changed on purpose (#601, 0090b): Management and the department's Head may ask about a place
+    # (the move previews); a Head about another place, and a member, may not.
+    assert (
+        _refused(db, org.c, p["management"], "SELECT * FROM kaagaz_place_audience(NULL, NULL, false)") is None
+    )
+    assert (
+        _refused(db, org.c, p["head"], "SELECT * FROM kaagaz_place_audience(:f, NULL, true)", f=ids["folder"])
+        is None
+    )
+    for who in ("head", "member"):
+        assert (
+            _refused(db, org.c, p[who], "SELECT * FROM kaagaz_place_audience(NULL, NULL, false)") == "42501"
+        )
+    assert (
+        _refused(
+            db, org.c, p["member"], "SELECT * FROM kaagaz_place_audience(:f, NULL, true)", f=ids["folder"]
+        )
+        == "42501"
+    )
     for statement in (
-        "SELECT * FROM kaagaz_place_audience(NULL, NULL, false)",
         "SELECT * FROM kaagaz_kept_from_me(:folder)",
         "SELECT * FROM kaagaz_admin_document(:file)",
         "SELECT * FROM kaagaz_give_file(:file, ARRAY[CAST(:person AS uuid)])",
@@ -646,7 +664,8 @@ def test_bulk_giving_gives_every_pair_or_nothing(db: Database) -> None:
 def test_me_says_management_and_heads_and_the_folders_say_their_walls(db: Database) -> None:
     org = _walled(Api(db))
     me = org.people["head"].client.get("/api/auth/me").json()
-    assert me["access"] == {"management": False, "heads": [org.folders["finance"]]}
+    # Changed on purpose (#601, PR 10c): in_department.
+    assert me["access"] == {"management": False, "heads": [org.folders["finance"]], "in_department": True}
     assert org.people["management"].client.get("/api/auth/me").json()["access"]["management"] is True
     folders = {f["id"]: f for f in org.people["admin"].client.get("/api/folders").json()["items"]}
     assert (

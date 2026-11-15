@@ -310,7 +310,8 @@ def test_an_undo_whose_folder_is_gone_goes_no_wider_than_the_family_it_leaves(db
     family = api.add_document(org.c, name="plan.pdf", folder_id=budgets, uploaded_by=member.user_id)
     walled = api.add_document(org.c, name="plan2.pdf", folder_id=inbox, uploaded_by=member.user_id)
     open_one = api.add_document(org.c, name="sales2.pdf", folder_id=inbox, uploaded_by=member.user_id)
-    _link(db, org, walled, family, member)
+    # Changed on purpose (#601, PR 10c): the join into Finance changes who sees it, so Management's.
+    _link(db, org, walled, family, org.people["management"])
     _link(db, org, open_one, org.files["sales"], member)
     _gone(org, inbox)
 
