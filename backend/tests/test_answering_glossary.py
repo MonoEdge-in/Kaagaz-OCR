@@ -32,7 +32,9 @@ def test_every_term_is_pure_nfc_devanagari_letters_and_marks(keyword: str) -> No
     assert normalise(keyword).keywords == ([] if keyword == "name" else [keyword])
     for term in terms:
         assert unicodedata.is_normalized("NFC", term), term
-        assert all("ऀ" <= ch <= "ॿ" and unicodedata.category(ch)[0] in "LM" for ch in term), term
+        # Changed on purpose (#625): or a Latin spelling, ASCII lower case letters only (gat, gut).
+        latin = term.isascii() and term.isalpha() and term.islower()
+        assert latin or all("ऀ" <= ch <= "ॿ" and unicodedata.category(ch)[0] in "LM" for ch in term), term
 
 
 def test_generic_words_are_listed_but_never_count_as_present() -> None:
