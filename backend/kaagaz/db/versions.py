@@ -340,10 +340,12 @@ def link(
 
 def _join_rule(conn: Connection, customer_id: str, state: RowMapping, rights: Rights, by: str | None) -> None:
     """PRD 7 decision 18 (#601): a join is a move, of the family into the document's folder when
-    the family is in none and the document in one (issue 414), else of the document into the
-    family's: one that changes who can see the side that moves needs ``rights`` (MoveChangesAccess).
-    A side held for ``by`` is theirs to file."""
-    if state["folder_id"] is None and state["from_folder"] is not None:
+    the family is in none, held for no one, and the document in one (issue 414), else of the
+    document into the family's place (into a held family: held for its holder, #594): one that
+    changes who can see the side that moves needs ``rights`` (MoveChangesAccess). A side held for
+    ``by``, or a document going into ``by``'s own hold, is theirs to file."""
+    family_held = None if state["family_held"] is None else str(state["family_held"])
+    if state["folder_id"] is None and state["from_folder"] is not None and family_held is None:
         moving, into = state["family_place"] or (None, None, None), state["from_folder"]
     else:
         moving, into = (
@@ -351,11 +353,15 @@ def _join_rule(conn: Connection, customer_id: str, state: RowMapping, rights: Ri
             state["folder_id"],
         )
     department, private, held = (None if v is None else str(v) for v in moving)
-    if held is not None and held == by:
+    if (held is not None and held == by) or (into is None and family_held is not None and family_held == by):
         return
     target = None if into is None else str(into)
     move = Move(before=(department, private), after=place_of(conn, customer_id, target), private=[])
-    changed = held is not None or changes_access(conn, customer_id, move.before, move.after)
+    changed = (
+        held is not None
+        or (into is None and family_held is not None)
+        or changes_access(conn, customer_id, move.before, move.after)
+    )
     if changed and not rights.allow(move.before[0], move.after[0]):
         raise MoveChangesAccess()
 

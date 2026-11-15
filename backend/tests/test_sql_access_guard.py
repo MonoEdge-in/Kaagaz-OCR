@@ -280,9 +280,6 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ("db/storage_limits.py", "_ROOM"): (SHARED_WITH_WORKER, "the organisation's bytes; no row shown"),
     ("db/tags.py", "_REMOVE_OTHERS"): (WRITE_AFTER_CHECK, "PUT /documents/{id}/tags: _document_or_404 first"),
     ("db/tags.py", "_ADD"): (WRITE_AFTER_CHECK, "PUT /documents/{id}/tags: _document_or_404 first"),
-    # #594's restore (missing from this list until #601's PR 10c).
-    ("db/trash.py", "_KEPT_PLACE"): (WRITE_AFTER_CHECK, "a restore, after the view check: ids only"),
-    ("db/trash.py", "LIVE_FOLDERS"): (WRITE_AFTER_CHECK, "a restore, after the view check: which are live"),
     # PRD 7 PR 10c (#601): the move rules, the move previews, a folder holding what is hidden, and
     # the place of an upload with no folder.
     ("db/folders.py", "_SAME_PLACE"): (EXISTENCE_ONLY, "a move's rule: _seen or the view first, ids only"),

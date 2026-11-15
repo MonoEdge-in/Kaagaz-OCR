@@ -867,9 +867,9 @@ class PgDocuments:
                     text(
                         "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes,"  # noqa: S608 - a fixed fragment, APPLIES
                         " detected_type, uploaded_by, read_requested_by, folder_id, family_id, version_no,"
-                        " ocr_choice, batch_id, owner_id, held_for, autofile)"
+                        " ocr_choice, batch_id, owner_id" + (", held_for" if held else "") + ", autofile)"
                         " VALUES (:d, :c, :name, :h, :size, :type, :by, :by, :folder, :family, :version,"
-                        " :ocr, :batch, :by, :held,"
+                        " :ocr, :batch, :by," + (" :held," if held else "") +
                         # File management F2: no folder, or a department (filed inside it, F3);
                         # never a folder upload's file (#484, keep_place).
                         " CASE WHEN CAST(:keep AS boolean) THEN NULL ELSE"
