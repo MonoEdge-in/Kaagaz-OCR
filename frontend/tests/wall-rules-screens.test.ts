@@ -5,20 +5,46 @@
 // changes who can see it is a warning, then "Move anyway and delete" sends confirm=true; an admin
 // who moves a file where they can't see it gets `{id, hidden: true}`, and no Undo.
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { act, createElement } from "react";
 import type { Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hiddenMovedText, moveEffectText } from "@/components/access/words";
 import { MoveForm } from "@/components/documents/DocumentActions";
+import { DocumentsTable } from "@/components/documents/DocumentsTable";
 import { FolderActions } from "@/components/documents/FolderActions";
 import { buildTree } from "@/components/documents/folderTree";
-import { libraryErrorText } from "@/components/documents/library";
+import { libraryErrorText, savedToast } from "@/components/documents/library";
 import { lostTheRight } from "@/components/documents/trash";
 import { errorWords } from "@/lib/errorWords";
 import * as api from "@/lib/api";
 import { ApiError } from "@/lib/api";
-import type { DocumentSummary, Folder } from "@/lib/types";
+import type { DocumentSummary, Folder, Me } from "@/lib/types";
 import { FakeDocument, FakeElement, fire, install } from "./fake-dom";
+
+// The list's menu reads who is signed in: an admin session.
+vi.mock("@/lib/session", () => ({
+  useSession: () => ({
+    me: {
+      user: {
+        id: "me",
+        email: "asha@example.in",
+        display_name: "Asha",
+        role: "admin",
+        must_change_password: false,
+        totp_enabled: true,
+        two_step_turned_off: false,
+        can_delete_forever: false,
+        email_confirmed: true,
+      },
+      customer: { id: "c1", name: "Sharma Traders" },
+      session: { scope: "admin" },
+      providers: [],
+    },
+    refresh: () => undefined,
+  }),
+}));
 
 const folder = (id: string, name: string, parent_id: string | null = null): Folder => ({
   id,
@@ -72,7 +98,17 @@ describe("a move's effect, before it is made", () => {
 
   it("says when an admin's move can't be undone here", () => {
     expect(hiddenMovedText(1, 1)).toBe("You can't see it there, so it can't be undone here.");
-    expect(hiddenMovedText(2, 5)).toBe("You can't see 2 of them there, so this can't be undone here.");
+    expect(hiddenMovedText(2, 5)).toBe("You can't see 2 of them there, so those can't be undone here.");
+    expect(hiddenMovedText(1, 2)).toBe("You can't see 1 of them there, so that one can't be undone here.");
+  });
+
+  it("puts a move in the toast, with Undo when it has one and without when it can't be undone", () => {
+    const undo = async () => undefined;
+    expect(savedToast("Moved.", undo, true)).toEqual({ message: "Moved.", undo, undone: "Moved back." });
+    expect(savedToast("Moved. You can't see it there, so it can't be undone here.", undefined, true)).toEqual({
+      message: "Moved. You can't see it there, so it can't be undone here.",
+    });
+    expect(savedToast("Renamed to a.pdf.", undefined, false)).toBeNull(); // announced only
   });
 });
 
@@ -126,7 +162,9 @@ function serve(routes: Record<string, unknown>) {
   vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
     const method = init.method ?? "GET";
     calls.push({ url, method, body: init.body ? JSON.parse(String(init.body)) : undefined });
-    const reply = routes[`${method} ${url}`];
+    const route = routes[`${method} ${url}`];
+    // A function answers each call afresh (a 403 the first time, say).
+    const reply: unknown = typeof route === "function" ? (route as () => unknown)() : route;
     if (reply === undefined) throw new Error(`no route for ${method} ${url}`);
     if (reply === null) return new Response(null, { status: 204 });
     const { status, body } = (reply as { status?: number; body?: unknown }).status
@@ -163,6 +201,18 @@ async function submit(element: FakeElement | null) {
   await settle();
 }
 
+/** The open "Confirm it's you" step: type the password and press Give myself access, or Cancel. */
+const passwordStep = (within: FakeElement) =>
+  all(within).find((element) => element.tagName === "DIALOG" && element.textContent.includes("Confirm it's you")) ?? null;
+async function typePassword(within: FakeElement, password: string) {
+  const step = passwordStep(within)!;
+  const box = step.all().find((element) => element.tagName === "INPUT")!;
+  box.value = password;
+  await act(async () => void fire(box, "input"));
+  await submit(button(step, "Give myself access"));
+}
+const cancelStep = async (within: FakeElement) => press(button(passwordStep(within)!, "Cancel"));
+
 async function mount(element: ReturnType<typeof createElement>) {
   const container = doc.body.appendChild(doc.createElement("div")) as FakeElement;
   const { createRoot } = await import("react-dom/client");
@@ -195,13 +245,19 @@ describe("a folder's Move", () => {
   };
 
   it("says who loses and gains what it holds, and asks the password first when the admin gains it", async () => {
-    const { screen } = await moveTo({
+    const { screen, onChanged } = await moveTo({
       "GET /api/folders/f/move-preview?parent_id=s": { losing: [RAVI], gaining: [ME], files: 3 },
+      "PATCH /api/folders/f": folder("f", "Bills", "s"),
     });
     expect(screen.textContent).toContain("1 person will lose access: Ravi. 1 person will be able to see it: Asha.");
     await submit(button(screen, "Move folder"));
     expect(calls.filter((call) => call.method === "PATCH")).toEqual([]);
     expect(screen.textContent).toContain("Confirm it's you");
+    await typePassword(screen, "pw-typed");
+    expect(calls.filter((call) => call.method === "PATCH")).toEqual([
+      { url: "/api/folders/f", method: "PATCH", body: { parent_id: "s", password: "pw-typed" } },
+    ]);
+    expect(onChanged).toHaveBeenCalledWith("Moved the folder Bills to Suppliers.");
   });
 
   it("asks on 403 password_required when the preview didn't say, and sends nothing more on Cancel", async () => {
@@ -233,28 +289,78 @@ describe("a folder's Move", () => {
 describe("deleting a folder and keeping what's inside", () => {
   const WARNING = "Moving what's inside there changes who can see it. Confirm to move it, choose another folder, or send it to Trash.";
 
+  let onChanged = vi.fn();
   async function open(routes: Record<string, unknown>) {
     serve({ "GET /api/folders/f/summary": { files: 3, folders: 0, bytes: 30 }, ...routes });
+    onChanged = vi.fn();
     const screen = await mount(
-      createElement(FolderActions, { tree: TREE, current: TREE.byId.get("f")!, onChanged: vi.fn(), admin: true, myId: "me" }),
+      createElement(FolderActions, { tree: TREE, current: TREE.byId.get("f")!, onChanged, admin: true, myId: "me" }),
     );
     await press(button(screen, "Delete this folder"));
     return screen;
   }
+  const deletes = () => calls.filter((call) => call.method === "DELETE");
+  /** The confirmed keep: 403 password_required the first time, then done. */
+  const confirmed = () => {
+    let asked = 0;
+    return () => {
+      asked += 1;
+      return asked === 1 ? refused(403, "password_required", "Type your password.") : { files: 3, folders: 0 };
+    };
+  };
 
-  it("warns first, then Move anyway sends it again confirmed, asking the password on 403", async () => {
+  it("warns first, then Move anyway sends it again confirmed, the password typed going in its body", async () => {
+    const screen = await open({
+      "DELETE /api/folders/f?contents=keep&to=p": refused(409, "access_would_change", WARNING),
+      "DELETE /api/folders/f?contents=keep&to=p&confirm=true": confirmed(),
+    });
+    await press(button(screen, "Move and delete folder"));
+    expect(screen.textContent).toContain(WARNING);
+    await press(button(screen, "Move anyway and delete"));
+    expect(deletes().map((call) => call.url)).toEqual([
+      "/api/folders/f?contents=keep&to=p",
+      "/api/folders/f?contents=keep&to=p&confirm=true",
+    ]);
+    expect(screen.textContent).toContain("Confirm it's you");
+    await typePassword(screen, "pw-typed");
+    const sent = deletes()[2]!;
+    expect(sent).toEqual({
+      url: "/api/folders/f?contents=keep&to=p&confirm=true",
+      method: "DELETE",
+      body: { password: "pw-typed" },
+    });
+    expect(sent.url).not.toContain("pw-typed");
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancelled at the password step: nothing more sent, nothing deleted, the warning still shown", async () => {
     const screen = await open({
       "DELETE /api/folders/f?contents=keep&to=p": refused(409, "access_would_change", WARNING),
       "DELETE /api/folders/f?contents=keep&to=p&confirm=true": refused(403, "password_required", "Type your password."),
     });
     await press(button(screen, "Move and delete folder"));
-    expect(screen.textContent).toContain(WARNING);
     await press(button(screen, "Move anyway and delete"));
-    expect(calls.filter((call) => call.method === "DELETE").map((call) => call.url)).toEqual([
-      "/api/folders/f?contents=keep&to=p",
-      "/api/folders/f?contents=keep&to=p&confirm=true",
-    ]);
-    expect(screen.textContent).toContain("Confirm it's you");
+    await cancelStep(screen);
+    expect(deletes()).toHaveLength(2);
+    expect(screen.textContent).toContain(WARNING);
+    expect(passwordStep(screen)).toBeNull();
+    expect(button(screen, "Move anyway and delete")).not.toBeNull();
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it("Esc in the password step closes only the step: the delete dialog stays, and nothing more is sent", async () => {
+    const screen = await open({
+      "DELETE /api/folders/f?contents=keep&to=p": refused(409, "access_would_change", WARNING),
+      "DELETE /api/folders/f?contents=keep&to=p&confirm=true": refused(403, "password_required", "Type your password."),
+    });
+    await press(button(screen, "Move and delete folder"));
+    await press(button(screen, "Move anyway and delete"));
+    await act(async () => void fire(passwordStep(screen)!, "cancel"));
+    await settle();
+    expect(passwordStep(screen)).toBeNull();
+    expect(button(screen, "Move anyway and delete")).not.toBeNull();
+    expect(deletes()).toHaveLength(2);
+    expect(onChanged).not.toHaveBeenCalled();
   });
 
   it("takes the warning back when another place is chosen", async () => {
@@ -268,9 +374,40 @@ describe("deleting a folder and keeping what's inside", () => {
     expect(button(screen, "Move and delete folder")).not.toBeNull();
     expect(screen.textContent).not.toContain(WARNING);
   });
+
+  it("takes the warning back when Trash is chosen instead", async () => {
+    const screen = await open({
+      "DELETE /api/folders/f?contents=keep&to=p": refused(409, "access_would_change", WARNING),
+    });
+    await press(button(screen, "Move and delete folder"));
+    await choose(radio(screen, "Delete the folder and everything inside"));
+    expect(screen.textContent).not.toContain(WARNING);
+    await choose(radio(screen, "Move what’s inside, then delete the folder"));
+    expect(button(screen, "Move anyway and delete")).toBeNull();
+    expect(button(screen, "Move and delete folder")).not.toBeNull();
+  });
 });
 
 describe("a file's Move", () => {
+  it("of several, some moved where the admin can't see them: Undo puts back only the others", async () => {
+    const one = { id: "d1", display_name: "a.pdf", folder_id: "p" } as unknown as DocumentSummary;
+    const two = { id: "d2", display_name: "b.pdf", folder_id: "p" } as unknown as DocumentSummary;
+    serve({
+      "PATCH /api/documents/d1": { id: "d1", hidden: true },
+      "PATCH /api/documents/d2": { id: "d2", display_name: "b.pdf", folder_id: "s" },
+    });
+    const onSaved = vi.fn();
+    const screen = await mount(createElement(MoveForm, { items: [one, two], tree: TREE, onSaved, onCancel: () => undefined }));
+    await choose(radio(screen, "Suppliers"));
+    await submit(button(screen, "Move"));
+    const [message, moved, undo] = onSaved.mock.calls[0] as [string, boolean, () => Promise<void>];
+    expect(message).toBe("Moved 2 documents to Suppliers. You can't see 1 of them there, so that one can't be undone here.");
+    expect(moved).toBe(true);
+    calls = [];
+    await act(async () => undo());
+    expect(calls).toEqual([{ url: "/api/documents/d2", method: "PATCH", body: { folder_id: "p" } }]);
+  });
+
   const ITEM = { id: "d1", display_name: "deed.pdf", folder_id: "p", detected_type: "pdf" } as unknown as DocumentSummary;
 
   async function moveOne(routes: Record<string, unknown>) {
@@ -299,5 +436,98 @@ describe("a file's Move", () => {
     expect(message).toBe("Moved to Suppliers. You can't see it there, so it can't be undone here.");
     expect(moved).toBe(true);
     expect(undo).toBeUndefined();
+  });
+});
+
+describe("a hidden move from the list's Move dialog", () => {
+  const ADMIN: Me = {
+    user: {
+      id: "me",
+      email: "asha@example.in",
+      display_name: "Asha",
+      role: "admin",
+      must_change_password: false,
+      totp_enabled: true,
+      two_step_turned_off: false,
+      can_delete_forever: false,
+      email_confirmed: true,
+    },
+    customer: { id: "c1", name: "Sharma Traders" },
+    session: { scope: "admin" },
+    providers: [],
+  };
+  const ROW = {
+    id: "d1",
+    display_name: "deed.pdf",
+    detected_type: "pdf",
+    size_bytes: 1000,
+    status: "ready",
+    failure_code: null,
+    status_message: "Ready.",
+    page_count: 1,
+    created_at: "2026-11-15T10:00:00Z",
+    uploaded_by_name: "Priya",
+    folder_id: "p",
+    tags: [],
+    deleted_at: null,
+    version_no: 1,
+    family_id: "d1",
+    can_delete: true,
+    attempts: 1,
+    max_attempts: 5,
+    newer_version: null,
+    progress: null,
+    time_left: null,
+    doc_type: null,
+    languages: [],
+    pages_unreadable: 0,
+    pages_uncertain: 0,
+    values_to_review: 0,
+  } as unknown as DocumentSummary;
+
+  it("reaches the screen as a move with no Undo, so it shows in the toast as the tree's drop does", async () => {
+    vi.stubGlobal("self", { setTimeout, clearTimeout }); // next/link's prefetch waits on it
+    serve({
+      "GET /api/documents/d1/move-preview?folder_id=s": { losing: [ME], gaining: [], files: 1 },
+      "PATCH /api/documents/d1": { id: "d1", hidden: true },
+    });
+    const onSaved = vi.fn();
+    const props = {
+      items: [ROW],
+      inTrash: false,
+      me: ADMIN,
+      now: Date.parse("2026-11-15T10:00:00Z"),
+      tree: TREE,
+      tags: [],
+      suggestions: [],
+      movedLeaves: true,
+      sorting: { sort: "name", order: "asc", onSort: () => undefined },
+      onRemoved: () => undefined,
+      onSaved,
+      onFocusList: () => undefined,
+      onTagCreated: () => undefined,
+      onFolderCreated: () => undefined,
+      onUploadVersion: () => undefined,
+    } as unknown as Parameters<typeof DocumentsTable>[0];
+    const screen = await mount(createElement(DocumentsTable, props));
+    const labelled = (label: string) =>
+      all(screen).find(
+        (element) =>
+          element.getAttribute("aria-label") === label || (element.tagName === "BUTTON" && element.textContent.trim() === label),
+      ) ?? null;
+    await press(labelled("More actions for deed.pdf"));
+    await press(labelled("Move to folder"));
+    await choose(radio(screen, "Suppliers"));
+    await submit(button(screen, "Move"));
+    expect(onSaved).toHaveBeenCalledWith(
+      "Moved to Suppliers. You can't see it there, so it can't be undone here.",
+      undefined,
+      true,
+    );
+  });
+
+  it("is toasted by the screen through savedToast (tested above), with no Undo", () => {
+    const view = readFileSync(join(__dirname, "../components/documents/DocumentsView.tsx"), "utf8");
+    expect(view).toContain("const toast = savedToast(message, undo, moved);");
   });
 });
