@@ -491,6 +491,7 @@ def test_no_mentions_for_a_count_no_key_term_or_none_found() -> None:
         ("Which clause of this document mentions penalty?", False),
         ("list the owners in this document", False),
         ("list the papers of Wagholi", False),  # "list" is not a which word any more
+        ("List files of Gat 61", False),  # not even right before a document word
     ],
 )
 def test_which_documents_questions_are_read_in_every_script(question: str, asks: bool) -> None:

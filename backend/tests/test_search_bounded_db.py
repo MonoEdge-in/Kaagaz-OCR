@@ -290,6 +290,24 @@ def test_a_database_that_is_down_stops_the_rebuilds(db: Database, monkeypatch: p
         rebuild_word_counts(db, NOW, lambda: 0.0)
 
 
+class _ConnectionFailure(Exception):
+    sqlstate = "08006"  # connection_failure
+
+
+def test_a_connection_exception_stops_the_rebuilds(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A SQLSTATE of class 08 (connection exception) is the database itself: raised."""
+    customer, _ = new_customer(db)
+    add_pieces(db, customer, add_document(db, customer), [("Jindal", None)])
+
+    def failing(conn: Connection, customer: str, now: datetime, most: int) -> None:
+        raise ProgrammingError("SELECT", {}, _ConnectionFailure("connection failure"))
+
+    monkeypatch.setattr(word_counts, "rebuild", failing)
+
+    with pytest.raises(ProgrammingError):
+        rebuild_word_counts(db, NOW, lambda: 0.0)
+
+
 def test_the_never_counted_go_first_and_a_turn_stops_after_its_time(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
