@@ -853,16 +853,22 @@ def test_join_again_under_the_move_rule(db: Database, who: str, status: int) -> 
 
 def test_the_holder_previews_filing_their_own_held_file(db: Database) -> None:
     """Review part 2: a file held for the person is theirs to file, so theirs to preview: Sales'
-    people would gain it."""
+    people would gain it, told as a count, never by name (lead decision)."""
     org = _walled(Api(db))
     member, held = org.people["member"], org.files["held"]
     status, preview = _call(
         member, "GET", f"/api/documents/{held}/move-preview?folder_id={org.folders['sales']}"
     )
     assert status == 200, preview
-    gaining = {each["id"] for each in preview["gaining"]}
-    assert org.people["plain"].user_id in gaining and preview["losing"] == []
-    assert preview["files"] == 1
+    assert (preview["losing"], preview["gaining"], preview["files"]) == ([], [], 1)
+    assert preview["losing_count"] == 0 and preview["gaining_count"] >= 1
+    assert org.people["plain"].user_id not in str(preview)
+    management = org.people["management"]  # filing someone else's held file: by name, as before
+    _, named = _call(
+        management, "GET", f"/api/documents/{held}/move-preview?folder_id={org.folders['sales']}"
+    )
+    assert org.people["plain"].user_id in {each["id"] for each in named["gaining"]}
+    assert "gaining_count" not in named
     plain = org.people["plain"]  # not theirs: a reviewer who can't see it is not found
     assert _call(plain, "GET", f"/api/documents/{held}/move-preview")[0] == 404
 

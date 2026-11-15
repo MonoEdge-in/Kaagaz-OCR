@@ -949,7 +949,9 @@ def document_move_preview(
     """Who would lose and who would gain the file if it moved into ``folder_id`` (left out: the top
     level): ``{losing, gaining, files}``, from one snapshot, as the move's audit row counts them.
     404 for a file or folder the person can't see, as for one that never was; then 403 for anyone
-    but an Admin, Management, a Head inside their department, or the person the file is held for."""
+    but an Admin, Management, a Head inside their department, or the person the file is held for,
+    who gets how many only: empty ``losing`` and ``gaining`` with ``losing_count`` and
+    ``gaining_count``, never anyone's name."""
     target, customer_id = str(document_id), user.customer_id
     with context.db.user(customer_id, user.user_id, repeatable_read=True) as conn:
         if not listing.documents_seen(conn, customer_id, [target]):
@@ -966,6 +968,11 @@ def document_move_preview(
         if found[1] != user.user_id:  # a file held for the person is theirs to file (PATCH)
             _may_move(conn, user, move)
         losing, gaining = access_sql.moved(conn, customer_id, move, found[1])
+        rights = access_sql.rights(conn, user.role == "admin")
+        if found[1] == user.user_id and not rights.allow(move.before[0], move.after[0]):
+            # The holder alone (lead decision on #601): how many, never who.
+            counts = {"losing_count": len(losing), "gaining_count": len(gaining)}
+            return _moved(conn, user, set(), set(), 1) | counts
         return _moved(conn, user, losing, gaining, 1)
 
 
