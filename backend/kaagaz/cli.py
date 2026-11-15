@@ -1538,17 +1538,27 @@ def _person_rule(db: Database, args: argparse.Namespace, settings: Settings, mai
         raise CliError("say --customer ID or --all")
     customer = None if args.all else args.customer
     if customer is not None:
-        uuid.UUID(customer)  # a malformed id fails here
+        try:
+            uuid.UUID(customer)
+        except ValueError:
+            raise CliError("no such organisation") from None
     try:
         with db.engine.begin() as conn:
             if args.action == "status":
                 rows = person_rule.status(conn)
                 said = [f"on for {c or 'every organisation'} since {at} by {by}" for c, at, by in rows]
                 return "\n".join(said) or "off"
+            if customer is not None and not person_rule.is_customer(conn, customer):
+                raise CliError("no such organisation")
             if args.action == "on":
                 person_rule.turn_on(conn, customer, getpass.getuser())
             else:
-                person_rule.turn_off(conn, customer)
+                gone = person_rule.turn_off(conn, customer)
+                # Off for one organisation is no way back while the rule is on for every one.
+                if customer is not None and person_rule.on_everywhere(conn):
+                    raise CliError("still on for every organisation: use off --all")
+                if customer is not None and not gone:
+                    raise CliError("it was not on for that organisation")
     except person_rule.Refused as refused:
         raise CliError(f"person-rule on refused: {refused}") from None
     except DBAPIError as error:

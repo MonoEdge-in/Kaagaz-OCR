@@ -17,6 +17,9 @@ from collections.abc import Sequence
 from sqlalchemy import Connection, text
 
 WORKER_ROLE = "kaagaz_worker"
+# PR 9b's migration: an Admin's writes over files they can't see (delete, restore, delete forever)
+# work under the rule only through its owner-rights functions, so the rule waits for it.
+NEEDS_REVISION = "0092"
 
 _WORKERS = text(
     "SELECT count(*), count(*) FILTER (WHERE role <> :w) FROM reader_status"
@@ -30,6 +33,9 @@ _ON = text(
     "INSERT INTO kaagaz_person_rule (for_customer_id, turned_on_by) VALUES (CAST(:c AS uuid), :by)"
     " ON CONFLICT DO NOTHING"
 )
+_REVISION = text("SELECT max(version_num) FROM alembic_version")
+_CUSTOMER = text("SELECT EXISTS (SELECT 1 FROM customers WHERE id = CAST(:c AS uuid))")
+_EVERYWHERE = text("SELECT EXISTS (SELECT 1 FROM kaagaz_person_rule WHERE for_customer_id IS NULL)")
 _OFF_ONE = text("DELETE FROM kaagaz_person_rule WHERE for_customer_id = CAST(:c AS uuid)")
 _OFF_ALL = text("DELETE FROM kaagaz_person_rule")
 _STATUS = text(
@@ -43,8 +49,8 @@ class Refused(Exception):
 
 
 def turn_on(conn: Connection, customer_id: str | None, by: str) -> None:
-    """On for ``customer_id`` (None: every organisation), after the two checks (module notes).
-    ``conn`` is the owner's own. Three statements."""
+    """On for ``customer_id`` (None: every organisation), after the checks (module notes) and once
+    PR 9b's migration is in. ``conn`` is the owner's own. Four statements."""
     reports, others = conn.execute(_WORKERS, {"w": WORKER_ROLE}).one()
     if not reports:
         raise Refused("no worker reported in the last 10 minutes: start the workers first")
@@ -55,6 +61,8 @@ def turn_on(conn: Connection, customer_id: str | None, by: str) -> None:
         )
     if conn.execute(_API_REACHES_WORKER, {"w": WORKER_ROLE}).scalar():
         raise Refused(f"the API login kaagaz_api can switch into {WORKER_ROLE}: revoke it first")
+    if str(conn.execute(_REVISION).scalar() or "") < NEEDS_REVISION:
+        raise Refused(f"PR 9b (migration {NEEDS_REVISION}) is not in yet")
     conn.execute(_ON, {"c": customer_id, "by": by})
 
 
@@ -63,6 +71,16 @@ def turn_off(conn: Connection, customer_id: str | None) -> int:
     if customer_id is None:
         return int(conn.execute(_OFF_ALL).rowcount or 0)
     return int(conn.execute(_OFF_ONE, {"c": customer_id}).rowcount or 0)
+
+
+def is_customer(conn: Connection, customer_id: str) -> bool:
+    """Is there an organisation with this id? One key lookup."""
+    return bool(conn.execute(_CUSTOMER, {"c": customer_id}).scalar())
+
+
+def on_everywhere(conn: Connection) -> bool:
+    """Is the rule on for every organisation (the NULL row)?"""
+    return bool(conn.execute(_EVERYWHERE).scalar())
 
 
 def status(conn: Connection) -> Sequence[tuple[str | None, str, str]]:

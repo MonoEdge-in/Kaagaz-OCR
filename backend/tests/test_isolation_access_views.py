@@ -704,7 +704,9 @@ def test_a_closed_department_in_trash_stays_closed(db: Database) -> None:
     """Finance (Department only) goes to Trash with its files: the plain reviewer still can't see
     its files, its member still can, and every person still sees exactly the written rule."""
     org = _walled(Api(db))
-    with until_0092():  # an Admin who can't see Finance's files deletes it with them
+    # Changed on purpose (PR 9a, #606): an Admin who can't see Finance's files deletes it with them: PR 9b's
+    # functions (0092); until then with the rule off.
+    with until_0092():
         reply = org.people["admin"].client.delete(
             f"/api/folders/{org.folders['finance']}?contents=trash", headers=CSRF
         )

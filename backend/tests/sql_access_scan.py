@@ -240,6 +240,31 @@ def not_exists_readers() -> dict[tuple[str, str], frozenset[str]]:
     return found
 
 
+# PR 9a (#606): an organisation-wide count, sum or max, or a "LEFT JOIN <covered> ... IS NULL", that
+# names no document: once the rule hides rows it counts fewer, or reads a hidden row as missing.
+_AGGREGATE = re.compile(r"\b(?:count|sum|max)\s*\(", re.IGNORECASE)
+_BY_ID = re.compile(r"(?:document_id|\bid)\s*=\s*(?::|CAST\s*\(\s*:|ANY)", re.IGNORECASE)
+_NULL_JOIN = re.compile(
+    r"LEFT JOIN (?:public\.)?(" + "|".join(sorted(CONTENT | PLACES)) + r")\s+(\w+)\b.*?\b\2\.\w+ IS NULL",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def aggregate_readers() -> set[tuple[str, str]]:
+    """Every (file, name) the API reaches that reads a covered table directly with a count, sum or
+    max and no document id, or a LEFT JOIN of one tested for NULL."""
+    trees = _parse()
+    nodes = {(rel, name): node for rel, tree in trees.items() for node in tree.body if (name := _name(node))}
+    found = set()
+    for owner, by_api in owners():
+        joined = " ".join(_strings(nodes[(owner.file, owner.name)]))
+        if by_api and (
+            (_AGGREGATE.search(joined) and not _BY_ID.search(joined)) or _NULL_JOIN.search(joined)
+        ):
+            found.add((owner.file, owner.name))
+    return found
+
+
 # The worker's own entry points (#595 condition 1).
 _WORKER_FILES = ("worker_main.py", "cli.py", "pipeline.py", "ops_alert.py", "worker_heartbeat.py")
 _VIEWS = ("visible_documents", "visible_folders", "visible_trashed_folders")

@@ -54,7 +54,9 @@ def _bin(signed: Signed, document: str) -> None:
 
 def _gone(org: Org, folder: str) -> None:
     """An empty folder deleted (a file in Trash in it loses its folder link)."""
-    with until_0092():  # #606: an Admin's write over files in Trash they can't see is PR 9b's
+    with (
+        until_0092()
+    ):  # Changed on purpose (PR 9a, #606): an Admin's write over files in Trash they can't see is PR 9b's
         reply = org.people["admin"].client.delete(f"/api/folders/{folder}", headers=CSRF)
     assert reply.status_code == 204, reply.text
 
@@ -343,7 +345,7 @@ def _state(db: Database, org: Org) -> tuple[Any, ...]:
 
 def _keep(org: Org, folder: str, to: str | None = None) -> httpx.Response:
     where = "" if to is None else f"&to={to}"
-    with until_0092():  # #606: an Admin moving files they can't see is PR 9b's
+    with until_0092():  # Changed on purpose (PR 9a, #606): an Admin moving files they can't see is PR 9b's
         return org.people["admin"].client.delete(f"/api/folders/{folder}?contents=keep{where}", headers=CSRF)
 
 
@@ -378,7 +380,9 @@ def test_a_restricted_folder_holding_only_a_folder_in_trash_is_refused_too(db: D
     budgets = api.add_folder(org.c, admin.user_id, "Budgets", org.folders["finance"])
     inner = api.add_folder(org.c, admin.user_id, "Inner", budgets)
     api.add_document(org.c, name="inner.pdf", folder_id=inner, uploaded_by=admin.user_id)
-    with until_0092():  # #606: PR 9b's
+    with (
+        until_0092()
+    ):  # Changed on purpose (PR 9a, #606): an Admin deleting a folder with files they can't see is PR 9b's
         assert admin.client.delete(f"/api/folders/{inner}?contents=trash", headers=CSRF).status_code == 200
     before = _state(db, org)
     _refused(_keep(org, budgets))
@@ -407,13 +411,15 @@ def test_keeping_contents_where_the_same_people_see_them_still_works(db: Databas
 
 
 def _trash_folder(org: Org, folder: str) -> None:
-    with until_0092():  # #606: an Admin deleting a folder with files they can't see is PR 9b's
+    with (
+        until_0092()
+    ):  # Changed on purpose (PR 9a, #606): an Admin deleting a folder with files they can't see is PR 9b's
         reply = org.people["admin"].client.delete(f"/api/folders/{folder}?contents=trash", headers=CSRF)
     assert reply.status_code == 200, reply.text
 
 
 def _restore_folder(org: Org, folder: str) -> dict[str, Any]:
-    with until_0092():  # #606: an Admin restoring files they can't see is PR 9b's
+    with until_0092():  # Changed on purpose (PR 9a, #606): an Admin restoring files they can't see is PR 9b's
         reply = org.people["admin"].client.post(
             f"/api/documents/trash/folders/{folder}/restore", headers=CSRF
         )

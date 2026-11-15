@@ -728,6 +728,13 @@ def _approved_word(ask: AskOrg, document: str | None, word: str) -> None:
     )
 
 
+def _rule_on(db: Database) -> bool:
+    """PRD 7 (#606): is the per-person database rule on for every organisation (the session's)?"""
+    every = "SELECT EXISTS (SELECT 1 FROM kaagaz_person_rule WHERE for_customer_id IS NULL)"
+    with db.engine.begin() as conn:
+        return bool(conn.execute(text(every)).scalar())
+
+
 def test_the_chat_statements_name_no_hidden_document(db: Database, ask: AskOrg) -> None:
     """document_states, live_document_names, the newest pick, Most relevant picks and other
     people's Useful marks, each as the plain reviewer and as Finance's member."""
@@ -758,11 +765,11 @@ def test_the_chat_statements_name_no_hidden_document(db: Database, ask: AskOrg) 
         picked = [str(row["pin_document_id"]) for row in rows if row["role"] == "assistant"]
         assert picked == [ask.id("fin") if sees_fin else ask.id("sales")], person
         # Most relevant reads each answer's newest pick only: fin's, so none for the plain reviewer.
-        # Changed on purpose (#606): under the database rule fin's pick is not in source_pins for
-        # them, so their own older pick of sales is the newest they have (FEWER_OK; nothing hidden).
-        assert pins == ({ask.id("fin")} if sees_fin else set()) or (
-            not sees_fin and pins == {ask.id("sales")}
-        ), person
+        # Changed on purpose (PR 9a, #606): under the database rule fin's pick is not in source_pins
+        # for the plain reviewer, so their own older pick of sales is the newest they have (nothing
+        # hidden); with the rule off, none.
+        expected = {ask.id("fin")} if sees_fin else ({ask.id("sales")} if _rule_on(db) else set())
+        assert pins == expected, person
         assert learned == set(states), person
 
 

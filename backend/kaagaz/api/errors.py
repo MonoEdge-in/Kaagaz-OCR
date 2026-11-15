@@ -159,12 +159,22 @@ async def _unavailable(request: Request, exc: Exception) -> Response:
 
 
 async def _refused_by_rule(request: Request, exc: Exception) -> Response:
-    """PRD 7 (#606, Q8): the database rule refused a statement (42501, a row the person can't see):
-    a route's own check missed it, so it is logged critical, and the reply is 409, never a 500.
-    Any other ProgrammingError is a bug, left to ErrorMiddleware."""
-    if not isinstance(exc, ProgrammingError) or sqlstate(exc) != INSUFFICIENT_PRIVILEGE:
+    """PRD 7 (#606, Q8): the database rule refused a row (42501 with PostgreSQL's row-level security
+    message, a row the person can't see): a route's own check missed it, so it is logged critical
+    with the method and path (never the statement or a value), and the reply is 409, never a 500.
+    Any other ProgrammingError, 42501 for a missing right included, is a bug: ErrorMiddleware's 500."""
+    diag = getattr(getattr(exc, "orig", None), "diag", None)
+    said = str(getattr(diag, "message_primary", None) or "")
+    if (
+        not isinstance(exc, ProgrammingError)
+        or sqlstate(exc) != INSUFFICIENT_PRIVILEGE
+        or "row-level security" not in said
+    ):
         raise exc
-    _log.critical("the database rule refused a statement", extra={"code": "access_would_change"})
+    _log.critical(
+        "the database rule refused a statement",
+        extra={"code": "access_would_change", "method": request.method, "path": request.url.path},
+    )
     return error_response(409, "access_would_change")
 
 

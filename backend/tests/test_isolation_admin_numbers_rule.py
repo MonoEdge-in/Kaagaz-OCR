@@ -89,6 +89,16 @@ def test_an_admin_who_cant_see_finance_gets_its_names_and_numbers(db: Database) 
     assert _read(db, c, None, "stats", org) == got["stats"]
 
 
+def test_the_api_role_with_no_person_is_refused(db: Database) -> None:
+    """Only the worker role passes with no person named: the API role with none gets 42501, so an
+    API transaction that forgot the person never reads an Admin's names."""
+    org = _walled(Api(db))
+    for name in CALLS:
+        with pytest.raises(DBAPIError) as refused:
+            _read(_app(db), org.c, None, name, org)
+        assert violation(refused.value)[0] == "42501", name
+
+
 @pytest.mark.parametrize("person", ["plain", "member", "management", "head", "off"])
 def test_a_person_who_is_not_an_admin_is_refused(db: Database, person: str) -> None:
     """Management and a Head too; a person switched off is no Admin either."""

@@ -46,7 +46,9 @@ def _fill(value: Any, **ids: str) -> Any:
 
 
 def _trash(org: Org, folder: str) -> None:
-    with until_0092():  # #606: an Admin deleting a folder with files they can't see is PR 9b's
+    with (
+        until_0092()
+    ):  # Changed on purpose (PR 9a, #606): an Admin deleting a folder with files they can't see is PR 9b's
         reply = org.people["admin"].client.delete(f"/api/folders/{folder}?contents=trash", headers=CSRF)
     assert reply.status_code == 200, reply.text
 
@@ -280,7 +282,9 @@ def test_an_admin_deletes_forever_a_trashed_folder_holding_files_they_cant_open(
     org = _walled(Api(db))
     admin = org.people["admin"]
     _trash(org, org.folders["finance"])
-    with until_0092():  # #606: an Admin deleting forever files they can't see is PR 9b's
+    with (
+        until_0092()
+    ):  # Changed on purpose (PR 9a, #606): an Admin deleting forever files they can't see is PR 9b's
         reply = admin.client.delete(
             f"/api/documents/trash/folders/{org.folders['finance']}/permanent", headers=CSRF
         )

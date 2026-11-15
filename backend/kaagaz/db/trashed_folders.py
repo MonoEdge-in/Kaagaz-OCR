@@ -195,10 +195,11 @@ _HELD = (
     " EXISTS (SELECT 1 FROM folders l WHERE l.customer_id = :c AND l.id = i.parent_id),"
     # PRD 7 (#606): what is hidden inside, from the whole tables (kaagaz_hidden_inside, 0091): the
     # walk above, under the database rule, would find no hidden folder or file to count.
-    " (SELECT x.hidden_files > 0 OR x.hidden_folders > 0 FROM kaagaz_hidden_inside(NULL, ARRAY[i.id]) x),"
+    " (SELECT x.hidden_files > 0 OR x.hidden_folders > 0 FROM kaagaz_hidden_inside(ARRAY[i.id]) x),"
     # Its restore brings its delete's department back: the department is the delete's top (F1).
-    " EXISTS (SELECT 1 FROM trashed_folders r WHERE r.customer_id = :c AND r.trash_id = i.trash_id"
-    " AND r.parent_id IS NULL AND r.kind = 'department')"
+    # PRD 7 (#606): read on the whole table (kaagaz_trash_top, 0091): a department the person can't
+    # see is still the one its restore would bring back.
+    " coalesce((SELECT x.kind = 'department' FROM kaagaz_trash_top(i.id) x), false)"
     " FROM item i JOIN held h ON h.item = i.id LEFT JOIN filed f ON f.item = i.id"
     " LEFT JOIN users u ON u.customer_id = :c AND u.id = i.deleted_by"
     " ORDER BY i.deleted_at DESC, lower(i.name), i.id"
@@ -285,7 +286,7 @@ _EXISTS = "SELECT EXISTS (SELECT 1 FROM visible_trashed_folders WHERE customer_i
 # PRD 7 (#606): any file inside, seen or not, the whole subtree walked from the whole tables
 # (kaagaz_hidden_inside, 0091): a hidden file left in it must stop the delete.
 _ANY_FILED = (
-    "SELECT x.any_files FROM kaagaz_hidden_inside(NULL, ARRAY[CAST(:f AS uuid)]) x"
+    "SELECT x.any_files FROM kaagaz_hidden_inside(ARRAY[CAST(:f AS uuid)]) x"
     " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 # A delete's folders past TRASH_DAYS once none of its documents is left (they go first).
@@ -293,6 +294,19 @@ _PURGE = (
     "DELETE FROM trashed_folders t WHERE t.customer_id = :c AND t.deleted_at < :before"
     " AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.customer_id = :c AND d.trash_id = t.trash_id)"
 )
+
+
+# PRD 7 (#606): the top of a delete, read on the whole table (kaagaz_trash_top, 0091).
+_DELETE_TOP = "SELECT id, kind FROM kaagaz_trash_top(:f) WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
+
+
+def _admin_for_the_top(conn: Connection, customer_id: str, folder_id: str, *, admin: bool) -> None:
+    """A restore brings back every folder of its delete above it, so one whose top is a department
+    is an Admin's (F1), whether the person can see that department or not: under the database rule
+    a walk on the table stops below one they can't see. Raises DepartmentAdminOnly. One statement."""
+    top = conn.execute(text(_DELETE_TOP), {"c": customer_id, "f": folder_id}).first()
+    if top is not None and top.kind == "department" and not admin:
+        raise DepartmentAdminOnly(str(top.id))
 
 
 def audit_details(restored: Restored) -> dict[str, str | int | bool | None]:
@@ -359,6 +373,7 @@ def restore_folder(conn: Connection, customer_id: str, folder_id: str, *, admin:
     chain = [str(i) for i, _ in conn.execute(text(_CHAIN), {"c": customer_id, "f": folder_id})]
     if not chain:
         raise FolderNotFound()
+    _admin_for_the_top(conn, customer_id, folder_id, admin=admin)
     subtree = conn.execute(text(_SUBTREE), {"c": customer_id, "f": folder_id}).all()
     inside = [str(row[0]) for row in subtree]
     above = chain[:-1]
@@ -395,6 +410,8 @@ def restore_document(
     if folder is None:  # restored meanwhile, under the lock we waited for
         return trash.restore_document(conn, customer_id, document_id, by=by), None
     chain = [str(i) for i, _ in conn.execute(text(_CHAIN), {"c": customer_id, "f": folder})]
+    if chain:
+        _admin_for_the_top(conn, customer_id, str(folder), admin=admin)
     restored = _make_live(conn, customer_id, chain, len(chain), admin=admin) if chain else None
     # Its folder missing can't happen; then where trash.place_family says (#594), never the top level.
     placed = trash.Placed(into=str(folder)) if chain else trash.place_family(conn, customer_id, family_id)

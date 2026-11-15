@@ -215,7 +215,7 @@ docs/runbooks/prd5-cpu-server-switch.md.
 
    Write the numbers into docs/architecture.md, Decisions (the t3.xlarge
    row). A real document's steps, upload to Ready and the indexing after it,
-   for the last 5 documents read: `dc exec -T worker python -m kaagaz.cli scan-times --last 5`.
+   for the last 5 documents read: `dc run --rm migrate python -m kaagaz.cli scan-times --last 5` (PRD 7, #606: the CLI runs as `kaagaz_worker`, so it runs in migrate, `dc run --rm migrate python -m kaagaz.cli <command>`, until JOBS_DATABASE_URL is set, then in worker; in api it is refused).
 
 **RapidOCR, the fallback.** If Gemini misbehaves, set `OCR_ENGINE=rapidocr` in
 `.env` and restart both: `dc up -d --no-deps api worker`. Change it back the same way.
@@ -448,7 +448,9 @@ names `kaagaz_jobs`. Test server first, then production:
 3. `dc up -d --no-deps worker`. Check: the `pg_stat_activity` query of step 3 above shows
    `kaagaz_jobs`; `dc logs --tail 50 worker` shows no `permission denied`; an upload reaches Ready.
 4. From then on the CLI's work commands run in worker, as the workers do:
-   `dc run --rm worker python -m kaagaz.cli <command>` (in api they run as `kaagaz_app`).
+   `dc run --rm worker python -m kaagaz.cli <command>`. Until this step, `dc run --rm migrate python -m
+   kaagaz.cli <command>`; in api they are refused (PRD 7, #606: the CLI runs as `kaagaz_worker`,
+   which `kaagaz_api` can't switch into).
 5. The connections, PROVISIONAL: `kaagaz_jobs` may hold 65 (3 workers and one CLI run, 15 each,
    and 5 to spare). Before `WORKER_REPLICAS` goes above 3,
    `ALTER ROLE kaagaz_jobs CONNECTION LIMIT <15 x (replicas + 1) + 5>`. Only once EVERY server

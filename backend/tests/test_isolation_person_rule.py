@@ -303,3 +303,93 @@ def test_the_whole_organisation_reads_count_what_the_person_cant_see_and_no_othe
             ).scalar()
             == 1
         )
+
+
+# The tables that point at a file but carry no person rule, and why (a new one fails the test below).
+EXEMPT = {
+    "learned_corrections": "Q1: read only by the worker; the SQL guard stops any API read of it",
+    "document_shares": "Q2: an access table (who sees what, not what is in a file)",
+    "lock_grants": "Q2: an access table",
+    "folder_upload_items": "the uploader's own items; a hidden copy is blanked by views.seen_items",
+    "folder_uploads": "a zip's own document id; its items and their files go through the view",
+}
+
+
+def test_every_table_that_points_at_a_file_has_the_rule_or_a_reason(db: Database) -> None:
+    """The catalog: each table with a key to documents, or a column named like a document id, is
+    held by person_only (test_isolation_schema pins those) or listed in EXEMPT with why."""
+    with db.engine.begin() as conn:
+        pointing = {
+            str(row[0])
+            for row in conn.execute(
+                text(
+                    "SELECT conrelid::regclass::text FROM pg_constraint"
+                    " WHERE contype = 'f' AND confrelid = 'public.documents'::regclass"
+                    " UNION SELECT c.relname FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid"
+                    " WHERE c.relnamespace = 'public'::regnamespace AND c.relkind = 'r'"
+                    " AND a.attname LIKE '%document_id' AND NOT a.attisdropped"
+                )
+            )
+        } - {"documents"}
+    assert pointing - PERSON_RULE_TABLES - set(EXEMPT) == set()
+    assert set(EXEMPT) & PERSON_RULE_TABLES == set()
+
+
+def test_an_admin_uploading_where_they_cant_see_the_files_is_refused_and_nothing_is_kept(
+    db: Database,
+) -> None:
+    """Q6: an Admin sees Finance (every folder) but not its files: the rule refuses the new row, the
+    reply is 409 upload_place_hidden, and the stored file is deleted again."""
+    api = Api(db)
+    org = _walled(api)
+    stored = api.storage.count()
+    reply = org.people["admin"].client.post(
+        "/api/documents",
+        data={"folder_id": org.folders["finance"]},
+        files={"file": ("bill.pdf", PDF_BYTES + b"q6", "application/pdf")},
+        headers=CSRF,
+    )
+    assert (reply.status_code, reply.json()["error"]["code"]) == (409, "upload_place_hidden"), reply.text
+    assert api.storage.count() == stored
+
+
+def _refused(db: Database, org: Org, statement: str) -> ProgrammingError:
+    with pytest.raises(ProgrammingError) as refused, _as(db, org, "plain") as conn:
+        conn.execute(text(statement), {"c": org.c, "d": org.files["fin"]})
+    return refused.value
+
+
+def test_the_rules_refusal_is_a_409_and_a_critical_line_and_any_other_42501_a_500(
+    db: Database, org: Org, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Q8: a statement the rule refused (a route's own check missed it) is 409 access_would_change,
+    logged critical with the method and path; a 42501 for a missing right is a bug, a 500."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from kaagaz.api import errors
+
+    rule = _refused(db, org, _ROWS["pages"].replace("1, 1, 1", "3, 1, 1"))
+    right = _refused(db, org, "SELECT * FROM kaagaz_person_rule")
+    app = FastAPI()
+    errors.install(app)
+
+    @app.get("/rule")
+    def by_the_rule() -> None:
+        raise rule
+
+    @app.get("/right")
+    def by_a_right() -> None:
+        raise right
+
+    client = TestClient(app, raise_server_exceptions=False)
+    with caplog.at_level("CRITICAL"):
+        reply = client.get("/rule")
+    assert (reply.status_code, reply.json()["error"]["code"]) == (409, "access_would_change")
+    (line,) = [r for r in caplog.records if getattr(r, "code", None) == "access_would_change"]
+    assert (line.levelname, getattr(line, "method", None), getattr(line, "path", None)) == (
+        "CRITICAL",
+        "GET",
+        "/rule",
+    )
+    assert client.get("/right").status_code == 500

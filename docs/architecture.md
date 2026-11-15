@@ -281,9 +281,11 @@ setenv(){ if grep -qE "^$1=" .env; then sed -i "s|^$1=.*|$1=$2|" .env; else echo
 **Measure** what the last documents did (reads the run config only; no model call):
 
 ```
-dc exec -T worker python -m kaagaz.cli cost-saving --last 50
-dc exec -T worker python -m kaagaz.cli cost-saving --last 50 --customer <customer id>
+dc run --rm migrate python -m kaagaz.cli cost-saving --last 50
+dc run --rm migrate python -m kaagaz.cli cost-saving --last 50 --customer <customer id>
 ```
+
+PRD 7 (#606): the CLI runs as `kaagaz_worker`, so it runs in migrate, `dc run --rm migrate python -m kaagaz.cli <command>`, until JOBS_DATABASE_URL is set, then in worker; in api it is refused.
 
 Lines that start `measured` are counts from the runs: pages read, pages that kept the quick
 read, pages read through the words path, pages read whole again, and the Careful tokens spent.

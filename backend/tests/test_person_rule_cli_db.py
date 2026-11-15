@@ -3,12 +3,14 @@ owner's login, refused until the workers run as kaagaz_worker; and every databas
 the worker role."""
 
 import io
+import uuid
 from collections.abc import Iterator
 
 import pytest
 from sqlalchemy import text
 
 from kaagaz.cli import _cli_role, main
+from kaagaz.db import person_rule
 from kaagaz.db.engine import Database
 from tests.db_support import new_customer, until_0092
 from tests.settings_factory import make_settings
@@ -54,8 +56,8 @@ def _rows(db: Database, customer: str) -> int:
         return int(conn.execute(text(found), {"c": customer}).scalar_one())
 
 
-def test_on_is_refused_until_every_recent_worker_runs_as_kaagaz_worker(
-    db: Database, workers: None, capsys: pytest.CaptureFixture[str]
+def test_on_is_refused_until_every_recent_worker_runs_as_kaagaz_worker_and_9b_is_in(
+    db: Database, workers: None, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     customer, _ = new_customer(db)
     assert _run(db, "on", "--customer", customer)[0] == 2  # no worker reported
@@ -64,14 +66,32 @@ def test_on_is_refused_until_every_recent_worker_runs_as_kaagaz_worker(
     _report(db, "w-2", "kaagaz_app")
     assert _run(db, "on", "--customer", customer)[0] == 2  # one still runs as the app role
     assert "another role than kaagaz_worker" in capsys.readouterr().err
-    assert _rows(db, customer) == 0
     with db.engine.begin() as conn:
         conn.execute(text("DELETE FROM reader_status WHERE worker = 'w-2'"))
+    assert _run(db, "on", "--customer", customer)[0] == 2  # 0091 is the head: PR 9b is not in
+    assert "PR 9b (migration 0092) is not in yet" in capsys.readouterr().err
+    assert _rows(db, customer) == 0
+    monkeypatch.setattr(person_rule, "NEEDS_REVISION", "0091")  # as once 0092 is in
     code, said = _run(db, "on", "--customer", customer)
     assert (code, _rows(db, customer)) == (0, 1)
     assert said.startswith(f"person rule on for {customer}")
     assert f"on for {customer} since" in _run(db, "status")[1]
-    assert _run(db, "off", "--customer", customer)[0] == 0 and _rows(db, customer) == 0
+    # Off for one organisation while it is on for every one is no way back: refused, nothing changed.
+    assert _run(db, "off", "--customer", customer)[0] == 2
+    assert "still on for every organisation: use off --all" in capsys.readouterr().err
+    assert _rows(db, customer) == 1
+    with until_0092():  # the every-organisation row out of the way, put back after
+        assert _run(db, "off", "--customer", customer)[0] == 0 and _rows(db, customer) == 0
+        assert _run(db, "off", "--customer", customer)[0] == 2  # it was not on any more
+        assert "it was not on for that organisation" in capsys.readouterr().err
+
+
+def test_an_unknown_or_malformed_organisation_is_refused(
+    db: Database, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for customer in ("not-a-uuid", str(uuid.uuid4())):
+        assert _run(db, "off", "--customer", customer)[0] == 2
+        assert "no such organisation" in capsys.readouterr().err
 
 
 def test_off_needs_nothing_and_off_all_is_the_way_back(db: Database, workers: None) -> None:

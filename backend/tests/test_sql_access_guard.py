@@ -366,7 +366,7 @@ OWNER_FN: dict[tuple[str, str], str] = {
     ("db/trashed_folders.py", "_ANY_LIVE"): "F5 kaagaz_existing",
     ("db/usage.py", "_REPORT"): "F12 kaagaz_admin_usage",
 }
-_SAME_BY_REASON = frozenset({WRITE_AFTER_CHECK, SHARED_WITH_WORKER, CORRELATED})
+_SAME_BY_REASON = frozenset({WRITE_AFTER_CHECK})
 # PR 9a (#606): each statement the API reaches that asks "NOT EXISTS (... FROM <covered>", and why the
 # rule hiding a row there is right (a new one fails the test until it is reviewed here).
 _ALL_OR_NONE = "FEWER_OK:a family's versions are seen all or none (shares go to every live version)"
@@ -436,6 +436,125 @@ PR9: dict[tuple[str, str], str] = {
     ("db/trashed_folders.py", "_HELD"): "FIXED:F6 for what is hidden inside",
     ("db/trashed_folders.py", "_PATHS"): "FIXED:a path must reach the top",
     ("db/trashed_folders.py", "_SUBTREE"): "FEWER_OK:an Admin sees every folder; a member's is refused (F6)",
+    # Shared with the worker (no rule) or a fragment: each said, never assumed (PR 9a review).
+    (
+        "db/autofile.py",
+        "_BY_KEY",
+    ): "FEWER_OK:auto-filing runs as the worker; a folder hidden from a person is not reused (Q12)",
+    (
+        "db/autofile.py",
+        "_BY_NAME",
+    ): "FEWER_OK:auto-filing runs as the worker; a folder hidden from a person is not reused (Q12)",
+    (
+        "db/autofile.py",
+        "_CHILD",
+    ): "FEWER_OK:auto-filing runs as the worker; a folder hidden from a person is not reused (Q12)",
+    (
+        "db/autofile.py",
+        "_CHILD_NAMED",
+    ): "FEWER_OK:auto-filing runs as the worker; a folder hidden from a person is not reused (Q12)",
+    (
+        "db/autofile.py",
+        "_DEPARTMENTS",
+    ): "FEWER_OK:auto-filing runs as the worker; a person's run sees their departments",
+    ("db/autofile.py", "_INVOICE"): "SAME",
+    (
+        "db/autofile.py",
+        "_MOST_SEEN",
+    ): "FEWER_OK:auto-filing runs as the worker; a person's run learns from what they see",
+    ("db/autofile.py", "_PRE_CHECK"): "SAME",
+    (
+        "db/autofile.py",
+        "_SAME_NUMBER",
+    ): "FEWER_OK:auto-filing runs as the worker; a folder hidden from a person is not reused (Q12)",
+    ("db/autofile.py", "_STATE"): "SAME",
+    ("db/document_stories.py", "_GET"): "SAME",
+    (
+        "db/documents.py",
+        "PgDocuments",
+    ): "FIXED:F4 and _copy_already_in; no RETURNING or ON CONFLICT on a new version",
+    ("db/documents.py", "_ENSEMBLE_RUNNING"): "SAME",
+    ("db/documents.py", "_PAGES_TO_READ_AGAIN"): "SAME",
+    ("db/documents.py", "_READY_STATE"): "SAME",
+    ("db/documents.py", "_READ_BEFORE"): "SAME",
+    ("db/documents.py", "_REGIONS_TO_READ_AGAIN"): "SAME",
+    ("db/ensemble.py", "_ACTIVE_RUN"): "SAME",
+    ("db/ensemble.py", "_LINES"): "SAME",
+    ("db/ensemble.py", "_RUN"): "SAME",
+    ("db/ensemble.py", "_SCANNED"): "SAME",
+    (
+        "db/folder_uploads.py",
+        "_DEPTHS",
+    ): "FEWER_OK:class H, depths of the folders the person sees; the limit is kaagaz_folder_depth's",
+    (
+        "db/folder_uploads.py",
+        "_FIND_LEVEL",
+    ): "FEWER_OK:Q12, a hidden folder of that name is not reused; its unique index refuses the name",
+    (
+        "db/folder_uploads.py",
+        "_INSERT_LEVEL",
+    ): "FEWER_OK:Q12, a hidden folder of that name is not reused; its unique index refuses the name",
+    (
+        "db/folder_uploads.py",
+        "_REUSE",
+    ): "FEWER_OK:Q12, a hidden folder of that name is not reused; its unique index refuses the name",
+    (
+        "db/folder_uploads.py",
+        "_SAME_NAME",
+    ): "FEWER_OK:Q12, a hidden folder of that name is not reused; its unique index refuses the name",
+    ("db/listing.py", "_CLEAR_COPY"): "SAME",
+    ("db/listing.py", "_FIRST_UNREADABLE"): "SAME",
+    ("db/listing.py", "_NEEDS_ATTENTION"): "SAME",
+    ("db/listing.py", "_PAGE"): "SAME",
+    ("db/listing.py", "_VALUES_FOUND"): "SAME",
+    ("db/listing.py", "_WITH_TAGS"): "SAME",
+    ("db/models.py", "_AREA"): "FEWER_OK:Q14, an estimate of model use from what the person sees",
+    ("db/models.py", "_DOCUMENT"): "SAME",
+    ("db/reading_days.py", "_STATE"): "FIXED:F8 for the month's spend; the asked document by id",
+    ("db/review.py", "add_correction"): "SAME",
+    ("db/runs.py", "_OPEN"): "SAME",
+    ("db/value_keys.py", "_BY_ID"): "SAME",
+    ("db/value_keys.py", "_UPSERT"): "SAME",
+    (
+        "db/versions.py",
+        "_CANDIDATES",
+    ): "FEWER_OK:p1, version spotting compares only with files the uploader sees",
+    ("db/versions.py", "_ME"): "SAME",
+    ("db/versions.py", "_MY_MINHASH"): "SAME",
+    ("db/versions.py", "_TEXT"): "SAME",
+    ("db/word_review.py", "_CHANGES"): "SAME",
+    ("db/word_review.py", "_DOCUMENT_STATE"): "SAME",
+    ("db/word_review.py", "_FLAG_SPANS"): "SAME",
+    ("db/word_review.py", "_FLAG_VALUES"): "SAME",
+    ("db/word_review.py", "_INSERT_CHANGE"): "SAME",
+    ("db/word_review.py", "_PAGE_PIECES"): "SAME",
+    ("db/word_review.py", "_PAGE_TO_KEEP"): "SAME",
+    ("db/word_review.py", "_PAGE_VALUES"): "SAME",
+    ("db/zip_unpacks.py", "_COUNTS"): "SAME",
+}
+# PR 9a (#606, plan 3.2): an organisation-wide count, sum or max with no document id, or a LEFT JOIN
+# of a covered table tested for NULL, reads fewer once the rule is on; each reviewed here.
+AGGREGATES_CHECKED: dict[tuple[str, str], str] = {
+    (
+        "db/autofile.py",
+        "_MOST_SEEN",
+    ): "FEWER_OK:auto-filing runs as the worker; a person's run learns from what they see",
+    ("db/folder_upload_items.py", "_PROGRESS"): "SAME:the uploader's own stored files",
+    ("db/listing.py", "_BATCH_SIZE"): "SAME:the uploader's own batch",
+    ("db/listing.py", "_COLUMNS"): "SAME:per row of visible_documents",
+    ("db/listing.py", "_DASHBOARD_DEPARTMENTS"): "FEWER_OK:the person's dashboard counts what they see",
+    ("db/listing.py", "_DASHBOARD_TILES"): "FEWER_OK:the person's dashboard counts what they see",
+    ("db/listing.py", "_FILE_COLUMNS"): "SAME:per row of visible_documents",
+    ("db/listing.py", "_PAGE"): "SAME:per row of visible_documents",
+    ("db/listing.py", "_VALUES_FOUND"): "SAME:per row of visible_documents",
+    ("db/listing.py", "_WITH_TAGS"): "SAME:per row of visible_documents",
+    ("db/models.py", "_AREA"): "FEWER_OK:Q14, an estimate of model use",
+    ("db/review.py", "_COUNT"): "FEWER_OK:the review queue the person may work",
+    (
+        "db/trashed_folders.py",
+        "_HELD",
+    ): "FIXED:F6 for what is hidden inside; counts shown are of what they see",
+    ("db/versions.py", "_VIEW"): "SAME:one family the person sees",
 }
 
 
@@ -467,6 +586,12 @@ class SqlAccessGuardTest(unittest.TestCase):
                 self.assertRegex(verdict, r"^(SAME|FEWER_OK:.+|FIXED:.+)$")
         self.assertEqual(set(PR9) - set(ALLOWED), set(), "a verdict for no listed statement")
         self.assertEqual(set(OWNER_FN) & (set(ALLOWED) | set(_found())), set())
+
+    def test_each_organisation_wide_aggregate_on_a_covered_table_is_reviewed(self) -> None:
+        """PR 9a (#606, plan 3.2, classes B and C): a new one fails until it is reviewed here."""
+        self.assertEqual(scan.aggregate_readers(), set(AGGREGATES_CHECKED))
+        for verdict in AGGREGATES_CHECKED.values():
+            self.assertRegex(verdict, r"^(SAME|FEWER_OK|FIXED):.+$")
 
     def test_each_not_exists_on_a_covered_table_is_reviewed(self) -> None:
         """PR 9a (#606, classes B and C): "not in the table" reads as gone once the rule hides a row."""

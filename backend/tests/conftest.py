@@ -14,6 +14,7 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
+from sqlalchemy import text
 
 from kaagaz.db.engine import Database
 
@@ -45,7 +46,12 @@ def db() -> Iterator[Database]:
     url = database_url()
     migrate(url)
     database = make_database(url)
-    person_rule(database, on=os.environ.get("KAAGAZ_TEST_PERSON_RULE", "on") != "off")
+    with database.engine.begin() as conn:  # put back as found: a laptop's database keeps its own
+        was_on = conn.execute(
+            text("SELECT EXISTS (SELECT 1 FROM kaagaz_person_rule WHERE for_customer_id IS NULL)")
+        ).scalar()
+    on = os.environ.get("KAAGAZ_TEST_PERSON_RULE", "on") != "off"
+    person_rule(database, on=on)
     shadow = os.environ.get("KAAGAZ_RULE_SHADOW", "")
     if shadow:  # PRD 7 (#606): the shadow diff harness (tests/rule_shadow.py)
         from tests import rule_shadow
@@ -54,4 +60,6 @@ def db() -> Iterator[Database]:
     yield database
     if shadow:
         rule_shadow.write(shadow, rule_shadow.found)
+    if on != was_on:
+        person_rule(database, on=bool(was_on))
     database.engine.dispose()

@@ -358,6 +358,7 @@ OWNER_RIGHTS = {
         "TABLE(hidden_files bigint, hidden_folders bigint, any_files boolean)",
         EMPTY_PATH,
     ),
+    "kaagaz_trash_top": ("TABLE(id uuid, kind text)", EMPTY_PATH),
     "kaagaz_folder_depth": ("TABLE(depth integer, cycle boolean, height integer)", EMPTY_PATH),
     "kaagaz_storage_used": ("bigint", EMPTY_PATH),
     "kaagaz_spent": ("TABLE(spent numeric, unknown boolean)", EMPTY_PATH),

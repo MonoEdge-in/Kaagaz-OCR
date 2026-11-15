@@ -107,7 +107,7 @@ SWITCHED_OFF = "NOT (SELECT public.kaagaz_person_rule_on())"
 _KEPT = "d.private_folder_id IS NOT NULL OR d.held_for IS NOT NULL OR d.locked_at IS NOT NULL"
 KEPT_INDEX = "documents_kept"
 KEPT_INDEX_SQL = (
-    f"CREATE INDEX CONCURRENTLY {KEPT_INDEX} ON public.documents (customer_id)"
+    f"CREATE INDEX CONCURRENTLY {KEPT_INDEX} ON public.documents (customer_id, locked_at)"
     " WHERE private_folder_id IS NOT NULL OR held_for IS NOT NULL OR locked_at IS NOT NULL"
 )
 KEPT_INDEX_COMMENT = (
@@ -268,42 +268,50 @@ READS = {
             RETURN QUERY SELECT d.id FROM public.documents d WHERE d.customer_id = {_ME} AND d.id = ANY (p_ids);
         ELSIF p_kind = 'folder' THEN
             RETURN QUERY SELECT f.id FROM public.folders f WHERE f.customer_id = {_ME} AND f.id = ANY (p_ids);
-        ELSIF p_kind = 'trashed_folder' THEN
-            RETURN QUERY SELECT t.id FROM public.trashed_folders t WHERE t.customer_id = {_ME} AND t.id = ANY (p_ids);
         ELSE
-            RAISE EXCEPTION 'a document, a folder or a trashed folder' USING ERRCODE = 'check_violation';
+            RAISE EXCEPTION 'a document or a folder' USING ERRCODE = 'check_violation';
         END IF;
     END
     $$
     """,
-    # F6: what the person can't see inside these live folders and trashed folders, each walked down
+    # F6: what the person can't see inside these trashed folders, each walked down
     # whole (100 levels, kaagaz.db.folders.MAX_DEPTH): numbers only.
-    "kaagaz_hidden_inside(uuid[], uuid[])": f"""
-    CREATE FUNCTION public.kaagaz_hidden_inside(p_folders uuid[], p_trashed uuid[])
+    "kaagaz_hidden_inside(uuid[])": f"""
+    CREATE FUNCTION public.kaagaz_hidden_inside(p_trashed uuid[])
     RETURNS TABLE (hidden_files bigint, hidden_folders bigint, any_files boolean)
     LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '' AS $$
     BEGIN
         {_A_PERSON}
-        RETURN QUERY WITH RECURSIVE live (id, depth) AS (
-            SELECT f.id, 1 FROM public.folders f WHERE f.customer_id = {_ME} AND f.id = ANY (p_folders)
-            UNION ALL SELECT f.id, live.depth + 1 FROM live
-            JOIN public.folders f ON f.customer_id = {_ME} AND f.parent_id = live.id WHERE live.depth < 101
-        ), trashed (id, trash_id, depth) AS (
+        RETURN QUERY WITH RECURSIVE trashed (id, trash_id, depth) AS (
             SELECT t.id, t.trash_id, 1 FROM public.trashed_folders t
             WHERE t.customer_id = {_ME} AND t.id = ANY (p_trashed)
             UNION ALL SELECT t.id, t.trash_id, trashed.depth + 1 FROM trashed
             JOIN public.trashed_folders t ON t.customer_id = {_ME} AND t.parent_id = trashed.id
             AND t.trash_id = trashed.trash_id WHERE trashed.depth < 101
         ), files AS (
-            SELECT d.id FROM live JOIN public.documents d ON d.customer_id = {_ME} AND d.folder_id = live.id
-            UNION ALL SELECT d.id FROM trashed JOIN public.documents d
+            SELECT d.id FROM trashed JOIN public.documents d
             ON d.customer_id = {_ME} AND d.trashed_folder_id = trashed.id AND d.trash_id = trashed.trash_id
         )
         SELECT (SELECT count(*) FROM files x WHERE NOT {_SEES.format(view="documents", me=_ME, id="x.id")}),
-            (SELECT count(*) FROM live x WHERE NOT {_SEES.format(view="folders", me=_ME, id="x.id")})
-            + (SELECT count(*) FROM trashed x WHERE NOT {_SEES.format(view="trashed_folders", me=_ME, id="x.id")}),
+            (SELECT count(*) FROM trashed x WHERE NOT {_SEES.format(view="trashed_folders", me=_ME, id="x.id")}),
             EXISTS (SELECT 1 FROM files);
     END
+    $$
+    """,
+    # The topmost folder of p_folder's delete above it (itself when none is), on the whole table:
+    # a restore brings it back, so a department there makes the restore an Admin's (F1) even when
+    # the person can't see it. Its id and kind only.
+    "kaagaz_trash_top(uuid)": f"""
+    CREATE FUNCTION public.kaagaz_trash_top(p_folder uuid) RETURNS TABLE (id uuid, kind text)
+    LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
+        WITH RECURSIVE up (id, parent_id, trash_id, kind, depth) AS (
+            SELECT t.id, t.parent_id, t.trash_id, t.kind, 1 FROM public.trashed_folders t
+            WHERE t.customer_id = {_ME} AND t.id = p_folder
+            UNION ALL SELECT t.id, t.parent_id, t.trash_id, t.kind, up.depth + 1 FROM up
+            JOIN public.trashed_folders t ON t.customer_id = {_ME} AND t.id = up.parent_id
+            AND t.trash_id = up.trash_id WHERE up.depth < 101
+        )
+        SELECT up.id, up.kind FROM up ORDER BY up.depth DESC LIMIT 1
     $$
     """,
     # kaagaz.db.folders._MOVE_CHECK, on the whole tree (a folder the person can't see would end a
@@ -378,12 +386,13 @@ READS = {
 READ_COMMENTS = {
     "kaagaz_duplicate(text[], bigint[])": "A copy already in, by fingerprint (PRD 7 section 5, #606): none, visible,"
     " locked_open (with its id) or hidden (no id); a refused copy alone is not in. An active person.",
-    "kaagaz_existing(text, uuid[])": "Which of these documents, folders or trashed folders still exist, seen or"
+    "kaagaz_existing(text, uuid[])": "Which of these documents or folders still exist, seen or"
     " not (PRD 7, #606): gone for good is not hidden. Ids only, of the ids given.",
-    "kaagaz_hidden_inside(uuid[], uuid[])": "How many files and folders the current person can't see inside"
-    " these live and trashed folders, and whether any file is (PRD 7, #606). An active person; numbers only.",
+    "kaagaz_hidden_inside(uuid[])": "How many files and folders the current person can't see inside"
+    " these trashed folders, and whether any file is (PRD 7, #606). An active person; numbers only.",
     "kaagaz_folder_depth(uuid, uuid)": "A folder's depth, whether a move makes a cycle, and a subtree's height,"
     " on the whole tree, for the 100-level limit (PRD 7, #606). Numbers only.",
+    "kaagaz_trash_top(uuid)": "The topmost folder of a trashed folder's delete, its id and kind (PRD 7, #606).",
     "kaagaz_storage_used()": "The bytes the organisation's documents hold (#516, PRD 7 #606).",
     "kaagaz_spent(timestamp with time zone, timestamp with time zone)": "The organisation's model spend in a"
     " window, and whether part of it is unknown (PRD 7, #606).",
@@ -661,6 +670,9 @@ UPGRADE = [
             f"GRANT EXECUTE ON FUNCTION public.{name} TO {ROLES}",
         )
     ],
+    # Each lock waits 2 seconds at most, so a busy table stops the migration before it queues every
+    # request behind it: it is run by hand, at a quiet time.
+    "SET LOCAL lock_timeout = '2s'",
     *[f"LOCK TABLE public.{table} IN ACCESS EXCLUSIVE MODE" for table in POLICIES],
     *[
         statement

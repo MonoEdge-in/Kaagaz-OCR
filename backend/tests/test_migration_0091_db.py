@@ -24,7 +24,7 @@ _OURS = (
 )
 _INDEX = (
     "SELECT i.indisvalid,"
-    " pg_get_indexdef(i.indexrelid) LIKE '%(customer_id) WHERE ((private_folder_id IS NOT NULL)%'"
+    " pg_get_indexdef(i.indexrelid) LIKE '%(customer_id, locked_at) WHERE ((private_folder_id IS NOT NULL)%'"
     " FROM pg_index i WHERE i.indexrelid = to_regclass('public.documents_kept')"
 )
 

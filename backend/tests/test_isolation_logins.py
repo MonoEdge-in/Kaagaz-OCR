@@ -16,6 +16,7 @@ import secrets
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from unittest import mock
 
 import psycopg
 import pytest
@@ -512,6 +513,16 @@ def test_the_workers_run_in_their_own_role_on_their_own_login(db: Database, logi
     finally:
         engine.dispose()
     assert Job(customer, held) in released
+
+
+def test_with_db_login_check_refuse_the_worker_stops_before_any_job() -> None:
+    """PRD 7 (#606): _serve checks its login before it builds storage or takes a job."""
+    settings = make_settings(database_url=_owner_url(), db_login_check="refuse", db_worker_role=APP_ROLE)
+    with (
+        mock.patch.object(worker_main, "S3Storage", side_effect=AssertionError("a job's set-up ran")),
+        pytest.raises(RuntimeError, match="DB_LOGIN_CHECK"),
+    ):
+        worker_main._serve(settings)
 
 
 def test_with_db_login_check_refuse_a_worker_starts_only_as_kaagaz_worker_on_its_login(
