@@ -205,6 +205,26 @@ def exhaustive_query(question: str) -> tuple[str, tuple[str, ...]] | None:
     return (term, kinds) if len(term) <= MAX_TERM_CHARS else None
 
 
+# #617 item 5: "which" and "list" words (not "all" or "number", which also ask about one value).
+_WHICH = _words(
+    {"which", "list"},
+    {"kaun", "kaunse", "kaunsa", "kaunsi", "kon", "konse", "konsa", "konsi", "kis", "kin"},
+    {"konte", "kontya", "konti", "konta"},
+    {"कौन", "कौनसे", "कौनसा", "कौनसी", "कौन-से", "कौन-सा", "कौन-सी", "किन", "किस", "सूची", "लिस्ट"},
+    {"कोणते", "कोणती", "कोणत्या", "कोणता", "यादी"},
+)
+
+
+def asks_documents(question: str) -> bool:
+    """Whether the question asks which (or how many) documents: a "which" or "list" word, or "how
+    many", and a document word, in any script ("which document have krishna jindal name",
+    "कोणत्या कागदपत्रात गट ६१ आहे"). The search then answers from documents, each once
+    (#617 item 5). O(n)."""
+    folded = [_fold(word) for word in spaced_words(fold_digits(question))]
+    asked = bool(_WHICH.intersection(folded)) or ("how", "many") in pairwise(folded)
+    return asked and bool(_THINGS.intersection(folded))
+
+
 def latin_term(term: str) -> str:
     """The phrase's Latin spelling (``latin_spelling``, the recipe ``pieces.text_latin`` is
     stored with) when it has Devanagari letters, so जालना also finds a Latin text that spells

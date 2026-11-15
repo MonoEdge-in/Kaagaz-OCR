@@ -13,6 +13,7 @@ import pytest
 from kaagaz.answering.evidence import Hit, has_word, word_text
 from kaagaz.answering.exhaustive import (
     MAX_LISTED,
+    asks_documents,
     count_sentence,
     document_sentence,
     exhaustive_query,
@@ -22,6 +23,7 @@ from kaagaz.answering.exhaustive import (
     pages_with,
 )
 from kaagaz.answering.service import Answer, AnswerService
+from kaagaz.search.hybrid import MAX_LIMIT
 from kaagaz.search.scope import Scope
 from tests.test_answering_golden import (
     NOW,
@@ -30,8 +32,10 @@ from tests.test_answering_golden import (
     A,
     FakeFixedQueries,
     FakeHit,
+    FakeModel,
     FakeRetriever,
     FakeUnchecked,
+    evidence_blocks,
     piece,
 )
 from tests.test_word_review_text import BANNED
@@ -462,3 +466,55 @@ def test_no_mentions_for_a_count_no_key_term_or_none_found() -> None:
     empty = FakeMentions(total=0)
     answer = mentioned("Where is the shop on Jalna road?", empty)
     assert empty.calls and answer.mentions is None and "mentions" not in answer.to_json()
+
+
+# --- which documents, from the search (#617 item 5) -------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("question", "asks"),
+    [
+        ("which document have krishna jindal name", True),
+        ("Which files mention Gat 61?", True),
+        ("How many documents have the name Patil?", True),
+        ("list the papers of Wagholi", True),
+        ("kaun se documents me Jindal ka naam hai", True),
+        ("कोणत्या कागदपत्रात गट ६१ आहे", True),
+        ("किन दस्तावेज़ों में जिंदल है", True),
+        ("What is the invoice number in this document?", False),  # one value of one document
+        ("all documents total", False),
+        ("Which invoice is the largest?", False),  # no document word
+        ("Who is the owner of Gat 61?", False),
+    ],
+)
+def test_which_documents_questions_are_read_in_every_script(question: str, asks: bool) -> None:
+    assert asks_documents(question) is asks
+
+
+def test_a_which_documents_question_reads_each_document_once() -> None:
+    """#617 item 5: the search keeps MAX_LIMIT hits and the draft reads each document's best
+    one, so a document with many matching pieces no longer fills the evidence alone."""
+    many = [piece("a.pdf", f"Krishna Jindal signed page {n}") for n in range(6)]
+    pieces = [*many, piece("b.pdf", "Buyer: Krishna Jindal"), piece("c.pdf", "Witness: Krishna Jindal")]
+    retriever = FakeRetriever({A: pieces})
+    model = FakeModel(lambda system, user: {"status": "not_found", "sentences": []})
+    service = AnswerService(
+        db=UNUSED_DB,
+        model=model,
+        settings=SETTINGS,
+        clock=lambda: NOW,
+        retriever=retriever,
+        fixed_queries=FakeFixedQueries({A: []}),
+        unchecked=FakeUnchecked(),
+    )
+
+    service.answer(A, "which document have krishna jindal name")
+
+    assert [call[3] for call in retriever.calls] == [MAX_LIMIT]
+    drafted = [list(blocks.values()) for _, user in model.prompts if (blocks := evidence_blocks(user))]
+    assert len(drafted[0]) == 3  # a.pdf's best piece, then b.pdf's and c.pdf's
+    for hit in (pieces[0], pieces[6], pieces[7]):
+        assert sum(hit.text in block for block in drafted[0]) == 1, hit.document_name
+
+    service.answer(A, "Where did Krishna Jindal sign?")  # any other question: as before
+    assert retriever.calls[-1][3] == SETTINGS.answer_max_evidence
