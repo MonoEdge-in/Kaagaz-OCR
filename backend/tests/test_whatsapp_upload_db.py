@@ -606,6 +606,7 @@ def test_files_past_the_hourly_limit_are_refused(world: World, monkeypatch: pyte
     monkeypatch.setattr(upload_module, "MAX_FILES_AN_HOUR", 1)
     person = world.person()
     world.file(person, pdf("1"))
+    world.tap(person, "up:cancel::en")  # nothing waits: only the hour's count stands in the way
     assert world.file(person, pdf("2")) == say("too_many_files", "en")
 
 

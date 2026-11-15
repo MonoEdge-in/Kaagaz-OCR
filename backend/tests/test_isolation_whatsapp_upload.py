@@ -189,6 +189,36 @@ def test_a_typed_name_finds_only_folders_the_person_sees(walled: Walled) -> None
     assert "salaries" not in walled.sent_to("plain") and "finance" not in walled.sent_to("plain")
 
 
+def _hidden_departments(walled: Walled, names: list[str]) -> None:
+    """Top-level Department only departments with no members: hidden from the plain reviewer."""
+    for name in names:
+        _owner(
+            walled.db,
+            "INSERT INTO folders (customer_id, name, created_by, kind, department_only)"
+            " SELECT :c, :n, created_by, 'department', true FROM folders WHERE id = :f",
+            {"c": walled.org.c, "n": name, "f": walled.org.folders["finance"]},
+        )
+
+
+def test_a_page_and_a_search_are_filled_only_with_folders_the_person_sees(walled: Walled) -> None:
+    """Filtered in the statement before the page or the search is cut, never after: hidden folders
+    sorted first never take a visible one's place."""
+    _hidden_departments(
+        walled, [f"Aa hidden {n}" for n in range(10)] + [f"Fin hidden {n}" for n in range(10)]
+    )
+    _choose(walled, "plain")
+    assert [t for _, t, _ in walled.rows("plain")] == ["Loose", "Sales", "Type a folder name"]
+    _owner(
+        walled.db,
+        "INSERT INTO folders (customer_id, name, created_by) SELECT :c, 'Finland trip', created_by"
+        " FROM folders WHERE id = :f",
+        {"c": walled.org.c, "f": walled.org.folders["finance"]},
+    )
+    walled.tap("plain", walled.row("plain", "Type a folder name"))
+    walled.say("plain", "fin")
+    assert [t for _, t, _ in walled.rows("plain")] == ["Finland trip", "Type a folder name"]
+
+
 def test_a_folder_hidden_between_the_list_and_the_tap_gives_choose_again(walled: Walled) -> None:
     _choose(walled, "named")
     salaries = walled.row("named", "Salaries")
