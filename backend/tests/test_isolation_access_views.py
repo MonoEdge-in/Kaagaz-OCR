@@ -819,7 +819,8 @@ def test_no_module_outside_the_api_calls_a_function_that_reads_a_view() -> None:
     """Condition 1 on #595, kept by a scan: the functions of VIEW_READERS' modules that use one of
     its statements (or call one that does) are called only from kaagaz/api, search/scope.py and
     answering/expansion.py (PgWords, Ask's and search's word source, #602: reached from the API only,
-    as the SQL guard's worker test proves)."""
+    as the SQL guard's worker test proves). Changed on purpose (#603 W4): and channel/chat.py, the
+    WhatsApp channel, as the person, in the app's role; never a worker (tests/test_whatsapp_guard.py)."""
     root = Path(kaagaz.__file__).parent
     readers: dict[str, set[str]] = {}
     for file, names in VIEW_READERS.items():
@@ -837,7 +838,11 @@ def test_no_module_outside_the_api_calls_a_function_that_reads_a_view() -> None:
     calls = []
     for path in sorted(root.rglob("*.py")):
         where = path.relative_to(root).as_posix()
-        if where.startswith("api/") or where in ("search/scope.py", "answering/expansion.py"):
+        if where.startswith("api/") or where in (
+            "search/scope.py",
+            "answering/expansion.py",
+            "channel/chat.py",
+        ):
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         aliases = {
