@@ -8,9 +8,11 @@ written down (``kaagaz.channel.voice.Voice``) and handled exactly as the same wo
 words, "Which file?", a folder's name, Ask; never STOP or Disconnect, which are typed only), in the
 language spoken; the reply starts "I heard: ..." (masked, as every reply), with room kept for it
 (``_ROOM``) so a cut never takes a link. A note the model was unsure of first asks "I heard: ...
-Is that right?" [Yes] [No, say again] (``heard:<yes|no>:<language>``), the words waiting in the
-person's step row with the step they were in; only Yes goes on. [Ask a question] and [Get a file]
-say a voice note may be sent while the Admin allows them.
+Is that right?" [Yes] [No, say again] (``heard:<yes|no>:<token>:<language>``, the token random
+and kept with them, so an older card's tap never answers a newer note), the words waiting in the
+person's step row with the step they were in; only Yes goes on. Any other message or tap first
+puts that step back (``_unwrapped``), so the note never hides "Which file?" or waiting files.
+[Ask a question] and [Get a file] say a voice note may be sent while the Admin allows them.
 
 Everything runs as the person (``auth.load_user``, then ``db.user`` only), through PRD 7's views:
 * **Ask** is the browser's own (``chat.ask``, its limits, outage lines and billing), asked on the
@@ -51,6 +53,7 @@ import dataclasses
 import functools
 import logging
 import re
+import secrets
 import uuid
 from contextvars import ContextVar
 from typing import Any
@@ -132,6 +135,8 @@ HEARD_CHARS = 300  # W6: the words heard, in "I heard: ...", masked first
 # W6: the characters a reply keeps free at its start for "I heard: ..." (set while a voice note's
 # reply is made, ``_heard``), so an answer or a card is cut short of WhatsApp's body with its links.
 _ROOM: ContextVar[int] = ContextVar("whatsapp_heard_room", default=0)
+# W6: "1234, 5678": groups of a number read out (an amount's commas have no space after them).
+_DICTATED = re.compile(r"(?<=\d),\s(?=\d)")
 
 
 class Chat:
@@ -153,7 +158,7 @@ class Chat:
         if message.kind in ("interactive", "button"):
             return self._tapped(user, linked, message, body)
         with self.context.db.user(user.customer_id, user.user_id) as conn:
-            step = wa_chat.step(conn, user.customer_id, user.user_id)
+            step = self._unwrapped(conn, user)
         stepped = None if step is None else _lang(str(step.get("lang")))
         if message.kind in ("image", "document"):  # W5: a file to save
             return self.upload.files(user, linked, message, stepped or "en")
@@ -218,6 +223,9 @@ class Chat:
         return user
 
     def _tapped(self, user: CurrentUser, linked: Linked, message: Waiting, tapped: str) -> Outgoing:
+        if not tapped.startswith("heard:"):  # W6: an unsure note's step gives way to the one it hid
+            with self.context.db.user(user.customer_id, user.user_id) as conn:
+                self._unwrapped(conn, user)
         if tapped == START:
             return self._menu(user, "en")
         if tapped.startswith("up:"):  # W5: an upload's button or folder row
@@ -476,12 +484,13 @@ class Chat:
         lang = heard.lang
         if not heard.text:
             return Outgoing(say("voice_unclear", lang), lang=lang)
-        if not heard.sure:
-            before = step.get("before") if step is not None and step.get("step") == "heard" else step
-            self._set_step(user, {"step": "heard", "text": heard.text, "lang": lang, "before": before})
+        if not heard.sure:  # ``step`` is never a "heard" one here (``_unwrapped``)
+            token = secrets.token_hex(3)
+            waiting = {"step": "heard", "text": heard.text, "lang": lang, "before": step, "token": token}
+            self._set_step(user, waiting)
             buttons = (
-                (f"heard:yes:{lang}", say("yes_button", lang)),
-                (f"heard:no:{lang}", say("say_again_button", lang)),
+                (f"heard:yes:{token}:{lang}", say("yes_button", lang)),
+                (f"heard:no:{token}:{lang}", say("say_again_button", lang)),
             )
             return Outgoing(
                 _cut(say("heard_sure", lang, self._said(heard.text)), MAX_BODY), buttons, lang=lang
@@ -491,21 +500,38 @@ class Chat:
     def _confirmed(self, user: CurrentUser, linked: Linked, message: Waiting, tapped: str) -> Outgoing:
         """[Yes]: the words waiting go on as typed, in the step the person was in; [No, say again]:
         the step they were in again. Nothing waiting (expired, answered or never): CHOICE_GONE."""
-        _, answer, lang_code = [*tapped.split(":"), "", ""][:3]
+        _, answer, token, lang_code = [*tapped.split(":"), "", "", ""][:4]
         lang = _lang(lang_code)
         with self.context.db.user(user.customer_id, user.user_id) as conn:
             step = wa_chat.step(conn, user.customer_id, user.user_id)
-            if step is None or step.get("step") != "heard" or not step.get("text"):
+            if (
+                step is None
+                or step.get("step") != "heard"
+                or not step.get("text")
+                or step.get("token") != token
+            ):
                 return Outgoing(say("choice_gone", lang), self._after(lang), lang=lang)
-            before = step.get("before") if isinstance(step.get("before"), dict) else None
-            if before is None:
-                wa_chat.clear_step(conn, user.customer_id, user.user_id)
-            else:  # an upload's waiting files keep their own time
-                minutes = PICKER_MINUTES if before.get("step") == "upload" else STEP_MINUTES
-                wa_chat.set_step(conn, user.customer_id, user.user_id, before, minutes)
+            before = self._put_back(conn, user, step)
         if answer != "yes":
             return Outgoing(say("say_again", lang), lang=lang)
         return self._heard(user, linked, message, str(step["text"]), _lang(str(step.get("lang"))), before)
+
+    def _unwrapped(self, conn: Any, user: CurrentUser) -> dict[str, Any] | None:
+        """The person's step; an unsure note's ("heard", waiting for [Yes]) gives way to the step it
+        hid, put back first."""
+        step = wa_chat.step(conn, user.customer_id, user.user_id)
+        return self._put_back(conn, user, step) if step is not None and step.get("step") == "heard" else step
+
+    def _put_back(self, conn: Any, user: CurrentUser, heard: dict[str, Any]) -> dict[str, Any] | None:
+        """The step the "heard" one hid, put back in the person's row (an upload's waiting files with
+        their own time), or the row cleared when there was none; that step."""
+        before = heard.get("before") if isinstance(heard.get("before"), dict) else None
+        if before is None:
+            wa_chat.clear_step(conn, user.customer_id, user.user_id)
+        else:
+            minutes = PICKER_MINUTES if before.get("step") == "upload" else STEP_MINUTES
+            wa_chat.set_step(conn, user.customer_id, user.user_id, before, minutes)
+        return before
 
     def _heard(
         self,
@@ -528,7 +554,9 @@ class Chat:
         return dataclasses.replace(reply, body=body, heard=line)
 
     def _said(self, text: str) -> str:
-        return _cut(_masked(text), HEARD_CHARS)  # masked before the cut, which could leave part whole
+        """The words heard as "I heard" shows them: a number dictated in groups ("1234, 5678, 9012")
+        joined by spaces first, so it is masked whole; masked before the cut, which could leave part."""
+        return _cut(_masked(_DICTATED.sub(" ", text)), HEARD_CHARS)
 
     # --- Get a file --------------------------------------------------------------------------
 

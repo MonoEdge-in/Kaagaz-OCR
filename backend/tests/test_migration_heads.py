@@ -114,4 +114,7 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     # Changed on purpose (#603, 14 Nov 2026): Kaagaz on WhatsApp's tables (0088, a PROVISIONAL
     # number, renumbered to follow PRD 7's last migration before it is raised) follow 0087.
     assert scripts.get_revision("0088").down_revision == "0087"
-    assert scripts.get_heads() == ["0088"]
+    # Changed on purpose (#603 W6, 15 Nov 2026): voice notes in the operator's spend split (0089, a
+    # PROVISIONAL number, renumbered with the WhatsApp drafts) follow 0088 and are the head.
+    assert scripts.get_revision("0089").down_revision == "0088"
+    assert scripts.get_heads() == ["0089"]
