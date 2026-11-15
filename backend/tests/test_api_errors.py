@@ -9,11 +9,13 @@ import subprocess
 import sys
 
 import pytest
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeout
 
 from kaagaz.api.app import create_app
 from kaagaz.db.engine import Database, make_engine
+from kaagaz.ingestion.errors import BackendUnavailable
+from kaagaz.worker_main import JsonFormatter
 from tests.db_support import BACKEND
 from tests.settings_factory import make_settings
 from tests.test_api_support import NOW, ApiFakeQueue, ApiFakeStorage, FakeAnswers, TestClient
@@ -92,6 +94,42 @@ def test_no_free_database_connection_is_a_503_busy() -> None:
 
     assert reply.status_code == 503
     assert reply.json()["error"]["code"] == "backend_unavailable"
+
+
+class QueryCanceled(Exception):
+    """The driver's error for a statement its timeout cancelled."""
+
+    sqlstate = "57014"
+
+
+@pytest.mark.parametrize(
+    ("error", "fields"),
+    [
+        (
+            OperationalError("SELECT secret FROM pieces", {"q": ROW_VALUE}, QueryCanceled()),
+            ("OperationalError", "QueryCanceled", "57014"),
+        ),
+        (BackendUnavailable("database"), ("BackendUnavailable", None, None)),
+        (PoolTimeout("QueuePool limit of size 10 overflow 5 reached"), ("TimeoutError", None, None)),
+    ],
+)
+def test_every_503_logs_why_by_class_sqlstate_and_path_only(
+    caplog: pytest.LogCaptureFixture, error: Exception, fields: tuple[str, str | None, str | None]
+) -> None:
+    """#620: production's 503s logged nothing at all (the search's statement timeout reached the
+    API as a raw OperationalError). Each now logs one line, through the server's own JSON
+    formatter, with its code, class, SQLSTATE and the route's path; never the statement or values."""
+    caplog.set_level(logging.WARNING, logger="kaagaz.db.sqlstate")
+    reply = _client_raising(error).get("/api/boom", params={"q": ROW_VALUE})
+
+    assert reply.status_code == 503 and reply.json()["error"]["code"] == "backend_unavailable"
+    formatter = JsonFormatter()
+    (line,) = [json.loads(formatter.format(r)) for r in caplog.records if r.name == "kaagaz.db.sqlstate"]
+    assert (
+        line["level"] == "WARNING" and line["code"] == "backend_unavailable" and line["path"] == "/api/boom"
+    )
+    assert (line["error_class"], line["driver_error"], line["sqlstate"]) == fields
+    assert "secret" not in caplog.text and ROW_VALUE not in caplog.text
 
 
 # A real uvicorn server on a free local port: uvicorn.Config sets up uvicorn's own

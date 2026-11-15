@@ -31,6 +31,7 @@ from sqlalchemy import Connection, Engine, create_engine, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeout
 
+from kaagaz.db.sqlstate import log_unavailable
 from kaagaz.ingestion.errors import BackendUnavailable
 
 
@@ -88,10 +89,12 @@ def make_engine(
 def unavailable() -> Iterator[None]:
     """Turn "cannot reach the database" (OperationalError, or no free pooled connection)
     into BackendUnavailable, the error the upload service undoes and retries on and the
-    worker retries the job on. Constraint errors stay what they are: they are bugs, not outages."""
+    worker retries the job on. Constraint errors stay what they are: they are bugs, not outages.
+    The error's class and SQLSTATE are logged first (#620, ``log_unavailable``)."""
     try:
         yield
-    except (OperationalError, PoolTimeout):
+    except (OperationalError, PoolTimeout) as error:
+        log_unavailable(error)
         raise BackendUnavailable("database") from None
 
 
@@ -189,6 +192,7 @@ class Database:
             with self.system() as conn:
                 conn.execute(text("SELECT 1"))
         except (OperationalError, PoolTimeout) as error:
+            log_unavailable(error)
             raise BackendUnavailable("database") from error
 
     @contextmanager

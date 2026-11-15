@@ -5,6 +5,7 @@ CLI and the migrations set none. A statement or lock wait cut short reaches the 
 BackendUnavailable, as a lost database does, never as a crash.
 """
 
+import logging
 from typing import Any
 from unittest import mock
 
@@ -134,3 +135,22 @@ def test_a_statement_cut_short_is_backend_unavailable() -> None:
             conn.execute(text("SELECT pg_sleep(3)"))
     finally:
         engine.dispose()
+
+
+@pytest.mark.db
+def test_the_error_behind_backend_unavailable_is_logged_by_class_and_sqlstate_only(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """#620: production's 503s logged only BackendUnavailable; now the class and SQLSTATE of the
+    database error behind it, never the statement or its values."""
+    engine = make_engine(database_url(), statement_timeout_seconds=1)
+    caplog.set_level(logging.WARNING, logger="kaagaz.db.sqlstate")
+    try:
+        with pytest.raises(BackendUnavailable), unavailable(), engine.connect() as conn:
+            conn.execute(text("SELECT pg_sleep(3), :secret"), {"secret": "ABCDE1234F"})
+    finally:
+        engine.dispose()
+    (record,) = [r for r in caplog.records if r.name == "kaagaz.db.sqlstate"]
+    fields = {key: getattr(record, key) for key in ("error_class", "driver_error", "sqlstate")}
+    assert fields == {"error_class": "OperationalError", "driver_error": "QueryCanceled", "sqlstate": "57014"}
+    assert "pg_sleep" not in caplog.text and "ABCDE1234F" not in caplog.text
