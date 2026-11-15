@@ -120,8 +120,8 @@ def open_locked_files(body: OpenBody, request: Request, user: User, context: Con
         tries = locked_sql.begin_try(conn, customer_id, user_id, now=now)
     if tries is None:
         with context.db.user(customer_id, user_id) as conn:
-            until = locked_sql.blocked_until(conn, customer_id, user_id, now=now)
-        wait = max(1, int(((until or now) - now).total_seconds()))
+            blocked = locked_sql.blocked_until(conn, customer_id, user_id, now=now)
+        wait = max(1, int(((blocked or now) - now).total_seconds()))
         minutes = -(-wait // 60)
         raise ApiError(
             429,

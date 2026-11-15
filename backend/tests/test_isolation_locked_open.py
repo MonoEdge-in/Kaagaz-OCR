@@ -233,6 +233,7 @@ def test_sign_out_everywhere_and_a_new_password_end_it(db: Database) -> None:
     other = api.client()  # the same person in a second browser, with this browser's check copied in
     assert other.post("/api/auth/login", json={"email": org.given.email, "password": PASSWORD}, headers=CSRF)
     kept = org.given.client.cookies.get(locked_open.LOCKED_OPEN_COOKIE, path="/api/documents")
+    assert kept
     other.cookies.set(locked_open.LOCKED_OPEN_COOKIE, kept, path="/api/documents")
     assert _code(_page(other, org.locked)) == (403, "locked_open_required")  # its sid is this browser's
     assert _page(org.given, org.locked).status_code == 200
@@ -261,6 +262,7 @@ def test_the_delete_forever_confirm_never_opens_a_locked_file_nor_the_other_way(
     trashed = api.add_document(org.c, deleted_at=api.clock())
     assert _open(reader).status_code == 200
     check = reader.client.cookies.get(locked_open.LOCKED_OPEN_COOKIE, path="/api/documents")
+    assert check
     reader.client.cookies.set("kaagaz_confirm", check, path="/api/documents")
     forever = reader.client.delete(f"/api/documents/{trashed}/permanent", headers=CSRF)
     assert _code(forever) == (403, "password_confirm_required")

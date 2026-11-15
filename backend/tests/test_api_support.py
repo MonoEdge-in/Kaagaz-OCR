@@ -576,6 +576,7 @@ OIDC_ROUTES = (
     ("GET", "/api/auth/oidc/{provider}/start"),
     ("GET", "/api/auth/oidc/{provider}/callback"),
     ("POST", "/api/auth/oidc/{provider}/connect"),
+    ("POST", "/api/auth/oidc/{provider}/confirm"),  # PRD 7 (#605): Google opens locked files
     ("GET", "/api/auth/oidc/notice"),
     ("POST", "/api/auth/oidc/code"),
     ("GET", "/api/auth/identities"),
