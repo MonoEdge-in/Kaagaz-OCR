@@ -83,6 +83,9 @@ class _Sender:
         self.before()
         self.real.send_list(to, body, button, rows)
 
+    def typing(self, message_id: str) -> None:  # W5: not a reply, so not one ``before`` is for
+        self.real.typing(message_id)
+
 
 class _World:
     """An API on the fake WhatsApp, its channel in the API's role, and connected people."""

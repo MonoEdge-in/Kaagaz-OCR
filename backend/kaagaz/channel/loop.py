@@ -21,6 +21,16 @@ other process off it) and goes through its waiting messages oldest first, by Wha
    again (refused: as in 3) and so is every document the reply names (``Chat.recheck``: one hidden,
    locked or deleted since gives "couldn't find" instead). Once it was sent, a preview card's
    ``whatsapp.file_link`` is audited with the message's "done", and Ask's memory is written.
+6. (W5) While the reply is made, WhatsApp shows the person's message read with its typing
+   indicator; a reply not made within SLOW_SECONDS sends LOOKING first ("Looking through your
+   files…", always before the reply). Files (a photo or a document) the person sends one after
+   another are answered together: their first waits until QUIET_SECONDS have passed since the
+   newest of them by WhatsApp's time (or another kind of message came after them), resting the
+   connection meanwhile; the reply then finishes them all (``Outgoing.finished``).
+7. (W5) A saved file's message waits again for its "ready" notice (``document_id``), behind every
+   message the person sent (``wa.next_message``): ``Chat.notice`` while the file is being read
+   rests the connection NOTICE_SECONDS (no try counted; it expires with its 24 hours, unsent);
+   once read it goes as any reply, checked again just before; a file hidden since sends nothing.
 
 A reply goes outside any transaction, and only to the connection's own number. One that could not
 be sent leaves the message waiting and the connection resting (the order is kept: nothing after it
@@ -34,6 +44,8 @@ duplicate left.
 """
 
 import logging
+import math
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -43,8 +55,10 @@ from kaagaz.adapters.whatsapp import NOT_ME, WhatsAppError
 from kaagaz.api.secret_box import SecretBoxError
 from kaagaz.channel.numbers import open_number
 from kaagaz.channel.outgoing import Outgoing
+from kaagaz.channel.texts import LANGUAGES, Language, language, say
 from kaagaz.db import audit
 from kaagaz.db import whatsapp as wa
+from kaagaz.db import whatsapp_upload as wa_up
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.whatsapp import Check, Claim, Linked, Waiting
 
@@ -72,6 +86,12 @@ UNTIL_IT_EXPIRES = 32767  # a reply not sent is tried until REPLY_WINDOW ends (s
 REPLY_WINDOW = timedelta(hours=24)
 _AUTH = frozenset({401, 403})
 MAX_MADE = 1000  # replies held to send again (each one message's, a few KB)
+SLOW_SECONDS = 8.0  # W5: a reply not made by then sends "Looking through your files…" first
+QUIET_SECONDS = 15  # W5: files sent one after another are answered once none came for this long
+# W5: how often a saved file is looked at while Kaagaz reads it. shortcut: the rest holds the whole
+# connection, so a message sent meanwhile waits up to this long; a notice time of its own on
+# whatsapp_messages (a migration) would let the claim skip it.
+NOTICE_SECONDS = 3
 
 
 class Sender(Protocol):
@@ -81,11 +101,15 @@ class Sender(Protocol):
 
     def send_list(self, to: str, body: str, button: str, rows: Sequence[tuple[str, str, str]]) -> None: ...
 
+    def typing(self, message_id: str) -> None: ...
+
 
 class Replier(Protocol):
     def reply(self, linked: Linked, message: Waiting) -> Outgoing: ...
 
     def recheck(self, linked: Linked, reply: Outgoing) -> Outgoing: ...
+
+    def notice(self, linked: Linked, message: Waiting) -> Outgoing | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +121,7 @@ class Channel:
     chat: Replier  # W4: the reply to every other message (kaagaz.channel.chat.Chat)
     # W4: the replies made and not yet sent, by (customer, person, message): kept until sent or failed.
     made: dict[tuple[str, str, str], Outgoing] = field(default_factory=dict)
+    slow_seconds: float = SLOW_SECONDS
 
     def claim(self, limit: int) -> list[Claim]:
         """Up to ``limit`` connections, leased; BackendUnavailable when the database is lost."""
@@ -166,9 +191,19 @@ class Channel:
         else:
             made = self.made.get(key)
             if made is None:
+                if message.document_id is not None:  # W5: a saved file's notice
+                    notice = self.chat.notice(linked, message)
+                    if notice is None:  # still being read
+                        return NOTICE_SECONDS
+                    made = notice
+                else:
+                    rest = self._quiet(linked, message)
+                    if rest:  # W5: more files may still come
+                        return rest
+                    made = self._made(number, message, lambda: self.chat.reply(linked, message))
                 if len(self.made) >= MAX_MADE:  # never more than this held: the oldest goes
                     self.made.pop(next(iter(self.made)))
-                made = self.made[key] = self.chat.reply(linked, message)
+                self.made[key] = made
             with self.db.user(linked.customer_id, linked.user_id) as conn:  # just before it goes
                 again = wa.check(conn, linked)
             if again.sealed is None or again.refused is not None:
@@ -177,10 +212,13 @@ class Channel:
                     return self._finish(linked, message, "done", replied=False)
                 return self._refused(linked, message, number, again.refused or "account")
             reply = self.chat.recheck(linked, made)
+            if not reply.body:  # W5: a notice whose file was hidden, locked or deleted since
+                self.made.pop(key, None)
+                return self._finish(linked, message, "done", replied=False)
         error = self._send(lambda: self._deliver(number, reply))
         if error is None:
             self.made.pop(key, None)
-            self._finish(linked, message, "done", replied=True, link=reply.link)
+            self._finish(linked, message, "done", replied=True, link=reply.link, also=reply.finished)
             for later in reply.later:  # Ask's memory, once the reply was sent
                 try:
                     later()
@@ -194,6 +232,40 @@ class Channel:
         if tries is None:
             self.made.pop(key, None)
         return 0 if tries is None else min(RETRY_SECONDS * 2 ** (tries - 1), RETRY_MAX_SECONDS)
+
+    def _quiet(self, linked: Linked, message: Waiting) -> int:
+        """W5: 0 when ``message`` may be answered now; for a file, the seconds until QUIET_SECONDS
+        have passed since the newest file sent with it, unless another kind of message came after."""
+        if message.kind not in wa_up.UPLOAD_KINDS:
+            return 0
+        with self.db.user(linked.customer_id, linked.user_id) as conn:
+            files, over = wa_up.run(conn, linked.customer_id, linked.link_id)
+        if over or not files:
+            return 0
+        left = (max(each.sent_at for each in files) + timedelta(seconds=QUIET_SECONDS)) - self.clock()
+        return max(0, math.ceil(left.total_seconds()))
+
+    def _made(self, number: str, message: Waiting, make: Callable[[], Outgoing]) -> Outgoing:
+        """W5: ``make()`` while WhatsApp shows the message read and the typing indicator; a reply
+        not made within ``slow_seconds`` sends LOOKING first. The lock keeps LOOKING before the
+        reply: once the reply is made, LOOKING never goes."""
+        self._send(lambda: self.sender.typing(message.wamid))
+        made, lock = threading.Event(), threading.Lock()
+
+        def slow() -> None:
+            with lock:
+                if not made.is_set():
+                    self._send(lambda: self.sender.send_text(number, say("looking", _language_of(message))))
+
+        timer = threading.Timer(self.slow_seconds, slow)
+        timer.daemon = True
+        timer.start()
+        try:
+            return make()
+        finally:
+            timer.cancel()
+            with lock:
+                made.set()
 
     def _refused(self, linked: Linked, message: Waiting, number: str, reason: str) -> int:
         """NOT_CONNECTED once to the number; the connection ends regardless (audited)."""
@@ -235,11 +307,20 @@ class Channel:
         return None
 
     def _finish(
-        self, linked: Linked, message: Waiting, state: str, *, replied: bool, link: str | None = None
+        self,
+        linked: Linked,
+        message: Waiting,
+        state: str,
+        *,
+        replied: bool,
+        link: str | None = None,
+        also: Sequence[str] = (),
     ) -> int:
-        """The message's end; ``link``: the document whose card was just sent, audited with it."""
+        """The message's end; ``link``: the document whose card was just sent, audited with it;
+        ``also`` (W5): the person's other messages the reply answered too."""
         with self.db.user(linked.customer_id, linked.user_id) as conn:
-            wa.finish(conn, linked, message.id, state, replied=replied)
+            for each in (message.id, *also):
+                wa.finish(conn, linked, each, state, replied=replied)
             if link is not None:
                 audit.record(
                     conn,
@@ -256,3 +337,12 @@ class Channel:
 
 def _key(linked: Linked, message: Waiting) -> tuple[str, str, str]:
     return (linked.customer_id, linked.user_id, message.id)
+
+
+def _language_of(message: Waiting) -> Language:
+    """A text's language; a tap's, from its id's last part (``ask.hi``, ``up:...:mr``); else English."""
+    body = message.body or ""
+    if message.kind == "text":
+        return language(body) or "en"
+    last = body.replace(":", ".").rsplit(".", 1)[-1]
+    return next((each for each in LANGUAGES if each == last), "en")

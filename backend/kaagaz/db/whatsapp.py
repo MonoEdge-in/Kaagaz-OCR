@@ -58,10 +58,17 @@ class Claim:
 
 @dataclass(frozen=True, slots=True)
 class Waiting:
+    """A waiting message. W5: ``wamid`` (WhatsApp's id, for its typing indicator), ``media_id``, and
+    ``document_id``: a file it saved, whose "ready" notice it now waits to send (``body`` is then
+    that notice's language)."""
+
     id: str
     kind: str
     body: str | None
     sent_at: datetime
+    wamid: str = ""
+    media_id: str | None = None
+    document_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,10 +115,11 @@ _ADD = text(
     " ON CONFLICT (customer_id, wamid) DO NOTHING RETURNING id"
 )
 # On whatsapp_messages_waiting: WhatsApp's time first (its deliveries come in any order), then ours.
+# W5: a file's "ready" notice (document_id set) waits behind every message the person sent.
 _NEXT = text(
-    "SELECT id, kind, body, sent_at FROM whatsapp_messages"
+    "SELECT id, kind, body, sent_at, wamid, media_id, document_id FROM whatsapp_messages"
     " WHERE customer_id = :c AND link_id = :l AND state = 'waiting'"
-    " ORDER BY sent_at, received_at, id LIMIT 1"
+    " ORDER BY document_id IS NOT NULL, sent_at, received_at, id LIMIT 1"
 )
 # WhatsApp on for the person's organisation (u): the Admin's switch and the super admin's two (no row
 # is on, 0038 and 0039); and their role allowed (Management only with its extra tick). As 0088's sweep.
@@ -263,7 +271,10 @@ def add_message(conn: Connection, linked: Linked, message: Inbound) -> bool:
 
 def next_message(conn: Connection, linked: Linked) -> Waiting | None:
     row = conn.execute(_NEXT, {"c": linked.customer_id, "l": linked.link_id}).first()
-    return None if row is None else Waiting(str(row[0]), str(row[1]), row[2], row[3])
+    if row is None:
+        return None
+    document = None if row[6] is None else str(row[6])
+    return Waiting(str(row[0]), str(row[1]), row[2], row[3], str(row[4]), row[5], document)
 
 
 def check(conn: Connection, linked: Linked) -> Check:
