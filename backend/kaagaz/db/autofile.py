@@ -109,7 +109,8 @@ _PRE_CHECK = (
 _STATE = (
     "SELECT r.autofile, d.family_id, d.status, d.is_current, d.doc_type, d.uploaded_by,"
     " c.status AS org_status, c.autofile_on, c.autofile_granted,"
-    " d.folder_id, fo.kind AS folder_kind, d.card, d.document_date, d.created_at FROM documents d"
+    " d.folder_id, fo.kind AS folder_kind, d.card, d.document_date, d.created_at, d.held_for"
+    " FROM documents d"
     " JOIN documents r ON r.customer_id = d.customer_id AND r.id = d.family_id"
     " JOIN customers c ON c.id = d.customer_id"
     " LEFT JOIN folders fo ON fo.customer_id = d.customer_id AND fo.id = d.folder_id"
@@ -151,11 +152,26 @@ _CHILD = (
     "SELECT id, autofile_key FROM folders"
     " WHERE customer_id = :c AND parent_id = :p AND lower(name) = lower(:name)"
 )
-# The family into a folder (filed) or back to the top level (undone), its state with it.
+# The family into a folder (filed) or back to the top level (undone, held again for :held), its
+# state with it.
 _FILE_FAMILY = (
-    "UPDATE documents SET folder_id = :folder,"
+    "UPDATE documents SET folder_id = :folder, held_for = CAST(:held AS uuid),"
     " autofile = CASE WHEN id = family_id THEN CAST(:state AS text) END"
     " WHERE customer_id = :c AND family_id = :f"
+)
+# PRD 7 (#601): when it filed the file where its uploader can't see it, the file given to them.
+_GIVE_UPLOADER = "SELECT kaagaz_give_uploader(:d)"
+# PRD 7 decision 10 (#601; #594's note on this Undo): whom the family was held for when it was
+# filed (its filing's audit row says), so its Undo holds it for them again.
+_HELD_BEFORE = (
+    "SELECT details ->> 'held_for' FROM audit_log WHERE customer_id = :c AND family_id = :f"
+    " AND action = 'document.autofile' ORDER BY id DESC LIMIT 1"
+)
+# An Undo back to no folder of a file that was open there holds it for its uploader once the
+# organisation keeps something to some people (fail closed).
+_HOLD_FOR = (
+    "SELECT r.uploaded_by FROM documents r JOIN customers c ON c.id = r.customer_id"
+    " WHERE r.customer_id = :c AND r.id = :f AND c.walls_set"
 )
 _FILED_IN = "SELECT autofile, folder_id FROM documents WHERE customer_id = :c AND id = :f"
 # Undo's way back (File management F3): the department above the filed folder (the top-level
@@ -240,7 +256,9 @@ def file_document(conn: Connection, customer_id: str, document_id: str) -> str |
             _set(conn, customer_id, family, SKIPPED)
             return "no_department"
         folder = _in_department(conn, customer_id, department, state, own)
-    conn.execute(text(_FILE_FAMILY), {"c": customer_id, "f": family, "folder": folder, "state": FILED})
+    filing = {"c": customer_id, "f": family, "folder": folder, "state": FILED, "held": None}
+    conn.execute(text(_FILE_FAMILY), filing)
+    given = conn.execute(text(_GIVE_UPLOADER), {"d": document_id}).scalar_one()
     audit.record(
         conn,
         customer_id,
@@ -248,7 +266,11 @@ def file_document(conn: Connection, customer_id: str, document_id: str) -> str |
         action="document.autofile",
         target_type="document",
         target_id=document_id,
-        details={"folder_id": folder},
+        details={
+            "folder_id": folder,
+            **({"given": given} if given else {}),
+            **({"held_for": str(state["held_for"])} if state["held_for"] is not None else {}),
+        },
     )
     return FILED
 
@@ -500,17 +522,33 @@ def _set(conn: Connection, customer_id: str, family_id: str, state: str | None) 
     conn.execute(text(_SET_STATE), {"c": customer_id, "f": family_id, "state": state})
 
 
-def undo(conn: Connection, customer_id: str, family_id: str) -> str | None:
+class HeldForAnother(Exception):
+    """PRD 7 (#601): the Undo would hold the file for its uploader, and the person undoing it is
+    neither them nor Management (as #594's Q4 for a version's Undo)."""
+
+
+def undo(
+    conn: Connection, customer_id: str, family_id: str, *, by: str | None = None, management: bool = False
+) -> str | None:
     """Move a family Kaagaz filed back where it was before filing (R16): its department when
-    it was filed inside one (F3), else the top level; the folder it leaves, and its parents,
+    it was filed inside one (F3), else the top level. PRD 7 decision 10 (#601): a family held when
+    it was filed is held again for the same person, and one open in no folder is held for its
+    uploader once the organisation keeps something to some people (HeldForAnother when ``by`` is
+    neither the holder nor ``management``). The folder it leaves, and its parents,
     go when that leaves them empty (``folders.prune_empty``). Returns the folder it was in;
     None when it is not filed now (a person moved it since, or its folder was deleted), and
-    nothing changes. The caller holds the family lock (``trash.lock_live_family``).
-    O(v log D + depth)."""
+    nothing changes. The caller holds the tree lock and the family lock
+    (``trash.lock_live_family``). O(v log D + depth)."""
     row = conn.execute(text(_FILED_IN), {"c": customer_id, "f": family_id}).first()
     if row is None or row[0] != FILED or row[1] is None:
         return None
-    back = conn.execute(text(_DEPARTMENT_ABOVE), {"c": customer_id, "folder": row[1]}).scalar()
-    conn.execute(text(_FILE_FAMILY), {"c": customer_id, "f": family_id, "folder": back, "state": None})
+    params = {"c": customer_id, "f": family_id, "folder": row[1]}
+    held = conn.execute(text(_HELD_BEFORE), params).scalar()
+    back = None if held is not None else conn.execute(text(_DEPARTMENT_ABOVE), params).scalar()
+    if held is None and back is None:
+        held = conn.execute(text(_HOLD_FOR), params).scalar()
+    if held is not None and str(held) != by and not management:
+        raise HeldForAnother()
+    conn.execute(text(_FILE_FAMILY), {**params, "folder": back, "state": None, "held": held})
     prune_empty(conn, customer_id, [str(row[1])])
     return str(row[1])

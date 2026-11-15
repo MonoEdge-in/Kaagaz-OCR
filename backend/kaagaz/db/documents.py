@@ -125,6 +125,18 @@ _DROP_REFUSED = (
     + " RETURNING d.folder_id"
 )
 
+# PRD 7 decision 10 (#601): an upload with no folder, once the organisation keeps something to some
+# people (customers.walls_set), goes into the uploader's one live department, else it is held for
+# them; on day one it stays in no folder, open, as before. Tables only: the worker stores a zip's
+# files through the same insert, and it never reads a view.
+_NO_FOLDER = (
+    "SELECT c.walls_set, (SELECT (array_agg(m.department_id))[1] FROM department_members m"
+    " JOIN folders f ON f.customer_id = m.customer_id AND f.id = m.department_id"
+    " AND f.parent_id IS NULL AND f.kind = 'department'"
+    " WHERE m.customer_id = :c AND m.user_id = :by HAVING count(*) = 1)"
+    " FROM customers c WHERE c.id = :c"
+)
+
 
 # The highest ready version_no is current (PRD 1 F6, PROVISIONAL plan 7.3): is a
 # newer version of this document's family ready already?
@@ -821,9 +833,19 @@ class PgDocuments:
     def add_if_absent(self, record: DocumentRecord) -> tuple[DocumentRecord, bool]:
         """Atomic per (customer, fingerprint): the unique index decides the race.
         Raises UnknownFolder when the record's folder is not this customer's. With the
-        storage, a refused copy alone is replaced (#554, module notes)."""
+        storage, a refused copy alone is replaced (#554, module notes). PRD 7 (#601): a record
+        with no folder is placed by ``_NO_FOLDER``; the record returned has the folder it went in."""
         with unavailable(), user_or_customer(self._db, record.customer_id, self._user_id) as conn:
             refused = None if self._storage is None else _drop_refused_copy(conn, record)
+            held = None
+            if record.folder_id is None and record.uploaded_by is not None:
+                walled, department = conn.execute(
+                    text(_NO_FOLDER), {"c": record.customer_id, "by": record.uploaded_by}
+                ).one()
+                if walled and department is not None:
+                    record = dataclasses.replace(record, folder_id=str(department))
+                elif walled:
+                    held = record.uploaded_by
             params = {
                 "d": record.document_id,
                 "c": record.customer_id,
@@ -838,14 +860,16 @@ class PgDocuments:
                 "ocr": record.ocr_choice,
                 "batch": record.batch_id,
                 "keep": record.keep_place,
+                "held": held,
             }
             try:
                 inserted = conn.execute(
                     text(
                         "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes,"  # noqa: S608 - a fixed fragment, APPLIES
                         " detected_type, uploaded_by, read_requested_by, folder_id, family_id, version_no,"
-                        " ocr_choice, batch_id, owner_id, autofile) VALUES (:d, :c, :name, :h, :size, :type,"
-                        " :by, :by, :folder, :family, :version, :ocr, :batch, :by,"
+                        " ocr_choice, batch_id, owner_id, held_for, autofile)"
+                        " VALUES (:d, :c, :name, :h, :size, :type, :by, :by, :folder, :family, :version,"
+                        " :ocr, :batch, :by, :held,"
                         # File management F2: no folder, or a department (filed inside it, F3);
                         # never a folder upload's file (#484, keep_place).
                         " CASE WHEN CAST(:keep AS boolean) THEN NULL ELSE"

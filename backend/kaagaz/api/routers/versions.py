@@ -30,9 +30,11 @@ from kaagaz.api.auth import CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import DOCUMENT_NAME_MAX, upload_name
-from kaagaz.api.routers.documents import clean_note
+from kaagaz.api.routers.documents import MOVE_REFUSED, clean_note
 from kaagaz.api.views import document_summary
+from kaagaz.db import access as access_sql
 from kaagaz.db import audit, listing, trash
+from kaagaz.db import folders as folders_sql
 from kaagaz.db import tags as tags_sql
 from kaagaz.db import versions as versions_sql
 
@@ -63,6 +65,13 @@ def _refused(refused: versions_sql.Refused) -> ApiError:
             403, "forbidden", "Only the person this file was kept for, or Management, can undo this."
         )
     return ApiError(409, refused.code, _MESSAGES[refused.code])
+
+
+def _rights(conn: Connection, user: CurrentUser) -> folders_sql.Rights:
+    """PRD 7 decision 18 (#601): the person's rights to a join that changes who can see a file,
+    read under the tree lock (taken here first; the join takes it again)."""
+    folders_sql._lock_tree(conn, user.customer_id)
+    return access_sql.rights(conn, user.role == "admin")
 
 
 def _visible(conn: Connection, user: CurrentUser, document_id: str) -> None:
@@ -96,11 +105,16 @@ def accept_suggestion(
             # PRD 7 (#595): a suggestion is accepted only by a person who sees both its sides.
             if not versions_sql.is_live(conn, customer_id, str(suggestion_id)):
                 raise ApiError(404, "not_found")
-            document = versions_sql.link(conn, customer_id, str(suggestion_id), by=user.user_id)
+            rights = _rights(conn, user)
+            document = versions_sql.link(
+                conn, customer_id, str(suggestion_id), by=user.user_id, rights=rights
+            )
             listing.set_details(conn, customer_id, document, by=user.user_id, **changes)
             return _summary(conn, context, user, document)
     except versions_sql.Refused as refused:
         raise _refused(refused) from None
+    except folders_sql.MoveChangesAccess:
+        raise ApiError(403, "move_changes_access", MOVE_REFUSED) from None
 
 
 @router.post("/version-suggestions/{suggestion_id}/reject")
@@ -211,12 +225,17 @@ def join_again(document_id: uuid.UUID, body: JoinAgainBody, user: User, context:
         with context.db.user(customer_id, user.user_id) as conn:
             _visible(conn, user, document)
             _visible(conn, user, str(body.family_id))  # the family it rejoins too, before any lock
-            versions_sql.join_again(conn, customer_id, document, str(body.family_id), by=user.user_id)
+            rights = _rights(conn, user)
+            versions_sql.join_again(
+                conn, customer_id, document, str(body.family_id), by=user.user_id, rights=rights
+            )
             if name is not None:
                 listing.rename_document(conn, customer_id, document, name=name)
             return _summary(conn, context, user, document)
     except versions_sql.Refused as refused:
         raise _refused(refused) from None
+    except folders_sql.MoveChangesAccess:
+        raise ApiError(403, "move_changes_access", MOVE_REFUSED) from None
 
 
 @router.get("/documents/{document_id}/compare")

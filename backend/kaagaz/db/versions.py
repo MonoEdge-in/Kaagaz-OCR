@@ -43,7 +43,7 @@ from sqlalchemy import Connection, RowMapping, text
 
 from kaagaz import versions
 from kaagaz.db import ai_settings, audit
-from kaagaz.db.folders import _lock_tree
+from kaagaz.db.folders import Move, MoveChangesAccess, Rights, _lock_tree, changes_access, place_of
 from kaagaz.db.trash import lock_family, lock_live_family
 from kaagaz.db.visibility import LIVE_SUGGESTION
 
@@ -218,8 +218,12 @@ _SUGGESTION = text(
     " s.name_similarity, s.shared_identifier FROM version_suggestions s"
     " WHERE s.customer_id = :c AND s.id = :s"
 )
+# PRD 7 (#601): each side's place (department, private folder, hold), for the move rule.
 _LINK_STATE = text(
     "SELECT n.status, n.deleted_at IS NOT NULL AS in_trash, n.folder_id AS from_folder, n.held_for,"
+    " n.department_id, n.private_folder_id,"
+    " (SELECT ARRAY[cur.department_id, cur.private_folder_id, cur.held_for] FROM documents cur"
+    " WHERE cur.customer_id = n.customer_id AND cur.family_id = :f AND cur.is_current) AS family_place,"
     " n.family_id = n.id AND NOT EXISTS (SELECT 1 FROM documents o WHERE o.customer_id = n.customer_id"
     " AND o.family_id = n.family_id AND o.id <> n.id) AS alone,"
     " (SELECT cur.id FROM documents cur WHERE cur.customer_id = n.customer_id"
@@ -263,14 +267,18 @@ _ACCEPT = text(
 )
 
 
-def link(conn: Connection, customer_id: str, suggestion_id: str, *, by: str | None) -> str:
+def link(
+    conn: Connection, customer_id: str, suggestion_id: str, *, by: str | None, rights: Rights | None = None
+) -> str:
     """Make the suggestion's document the next version of its candidate family (V6): both
     families locked in id order, then in this transaction the family, number, folder, tags,
     owner and label, current; the suggestion accepted by ``by`` (None: Kaagaz's own ``auto``
     links, made only before #521), and
     one ``version.accepted`` row naming the folders. The accept route writes the note (V9) and
     the details stamp in the same transaction. Returns the document's id. Raises Refused:
-    not_found (no such live suggestion), already_decided, or not_ready. O(v log D)."""
+    not_found (no such live suggestion), already_decided, or not_ready; with ``rights`` (the
+    person's, read under the tree lock), MoveChangesAccess for a join that changes who can see
+    either side (PRD 7 decision 18, ``_join_rule``). O(v log D)."""
     params: dict[str, Any] = {"c": customer_id, "s": suggestion_id}
     first = conn.execute(_SUGGESTION, params).mappings().first()
     if first is None:
@@ -288,6 +296,8 @@ def link(conn: Connection, customer_id: str, suggestion_id: str, *, by: str | No
         raise Refused("already_decided")
     if state["status"] != "ready":
         raise Refused("not_ready")
+    if rights is not None:
+        _join_rule(conn, customer_id, state, rights, by)
     # First, and only while still pending: a reject (no family locks) racing this one wins or loses
     # here, before anything else is written.
     accepted = {**params, "by": by, "previous": state["from_folder"], "held": state["held_for"]}
@@ -320,6 +330,28 @@ def link(conn: Connection, customer_id: str, suggestion_id: str, *, by: str | No
         },
     )
     return new
+
+
+def _join_rule(conn: Connection, customer_id: str, state: RowMapping, rights: Rights, by: str | None) -> None:
+    """PRD 7 decision 18 (#601): a join is a move, of the family into the document's folder when
+    the family is in none and the document in one (issue 414), else of the document into the
+    family's: one that changes who can see the side that moves needs ``rights`` (MoveChangesAccess).
+    A side held for ``by`` is theirs to file."""
+    if state["folder_id"] is None and state["from_folder"] is not None:
+        moving, into = state["family_place"] or (None, None, None), state["from_folder"]
+    else:
+        moving, into = (
+            (state["department_id"], state["private_folder_id"], state["held_for"]),
+            state["folder_id"],
+        )
+    department, private, held = (None if v is None else str(v) for v in moving)
+    if held is not None and held == by:
+        return
+    target = None if into is None else str(into)
+    move = Move(before=(department, private), after=place_of(conn, customer_id, target), private=[])
+    changed = held is not None or changes_access(conn, customer_id, move.before, move.after)
+    if changed and not rights.allow(move.before[0], move.after[0]):
+        raise MoveChangesAccess()
 
 
 _LIVE = text(
@@ -524,7 +556,15 @@ def separate(conn: Connection, customer_id: str, document_id: str, *, name: str,
     return rest
 
 
-def join_again(conn: Connection, customer_id: str, document_id: str, family_id: str, *, by: str) -> str:
+def join_again(
+    conn: Connection,
+    customer_id: str,
+    document_id: str,
+    family_id: str,
+    *,
+    by: str,
+    rights: Rights | None = None,
+) -> str:
     """Undo of Make it a separate file (#521): the pair kept apart is asked again and accepted at
     once (``link``), so the document is its family's newest, current version again. Raises
     Refused: not_found (no such pair kept apart), and ``link``'s refusals."""
@@ -532,7 +572,7 @@ def join_again(conn: Connection, customer_id: str, document_id: str, family_id: 
     suggestion = conn.execute(_KEPT_APART_AGAIN, params).scalar()
     if suggestion is None:
         raise Refused("not_found")
-    return link(conn, customer_id, str(suggestion), by=by)
+    return link(conn, customer_id, str(suggestion), by=by, rights=rights)
 
 
 # --- V10: make current ------------------------------------------------------------------

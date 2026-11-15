@@ -46,8 +46,9 @@ from kaagaz.api.auth import (
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import FOLDER_NAME_MAX, clean_name
-from kaagaz.api.routers.documents import ASK_AN_ADMIN, ActivityCursor, ActivityLimit
+from kaagaz.api.routers.documents import ASK_AN_ADMIN, MOVE_REFUSED, ActivityCursor, ActivityLimit
 from kaagaz.api.views import folder, shown_folder, timeline, trashed_folder, uploaded_every_version
+from kaagaz.db import access as access_sql
 from kaagaz.db import audit, listing
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import trashed_folders as trashed_sql
@@ -85,12 +86,20 @@ def _admin_for_departments(user: CurrentUser, *kinds: str | None) -> None:
         raise ApiError(403, "forbidden", "Only an admin can change departments.")
 
 
+# PRD 7 section 5: a folder holding anything the person can't see needs an Admin.
+HIDDEN_INSIDE = "You can't delete this folder. Ask an admin."
+# PRD 7 (#601): refusals the screens show as they are; the codes are the screens' contract.
+_FORBIDDEN = {"move_changes_access": MOVE_REFUSED, "hidden_inside": HIDDEN_INSIDE}
+
+
 @contextmanager
 def _refused() -> Iterator[None]:
     """A folder change the helpers refused becomes its API error."""
     try:
         yield
     except folders_sql.FolderError as error:
+        if error.code in _FORBIDDEN:
+            raise ApiError(403, error.code, _FORBIDDEN[error.code]) from None
         raise ApiError(404 if error.code == "not_found" else 409, error.code) from None
 
 
@@ -178,8 +187,9 @@ def update_folder(
         # The body names at least one change (checked above), so ``row`` is always set.
         # The move goes first: it takes the tree lock before anything is written.
         if "parent_id" in given:
+            details = _move_rule(conn, user, target, parent_id)
             row = folders_sql.move_folder(conn, user.customer_id, target, parent_id=parent_id)
-            _audit(conn, user, "folder.move", target, {"parent_id": parent_id})
+            _audit(conn, user, "folder.move", target, {"parent_id": parent_id, **details})
         if name is not None:
             row = folders_sql.rename_folder(conn, user.customer_id, target, name=name)
             _audit(conn, user, "folder.rename", target)
@@ -194,6 +204,23 @@ def update_folder(
             )
             _audit(conn, user, "folder.kind", target, {"kind": row.kind, "sort_order": row.sort_order})
         return shown_folder(conn, user.customer_id, row)  # PRD 7 (#599): no hidden parent's id
+
+
+def _move_rule(
+    conn: Connection, user: CurrentUser, folder_id: str, parent_id: str | None
+) -> dict[str, audit.DetailValue]:
+    """PRD 7 decision 18 (#601), under the tree lock, before anything is written: a move that
+    changes who can see what the folder holds is an Admin's, Management's or (inside their
+    department) a Head's; a private folder never goes into another (409 ``inside_private``).
+    Returns the audit's ``losing`` and ``gaining`` counts of one that changes access, as its
+    preview counts them."""
+    folders_sql._lock_tree(conn, user.customer_id)
+    move = folders_sql.folder_move(conn, user.customer_id, folder_id, parent_id)
+    rights = access_sql.rights(conn, user.role == "admin")
+    if not folders_sql.check_move(conn, user.customer_id, rights, move):
+        return {}
+    losing, gaining = access_sql.moved(conn, user.customer_id, move)
+    return {"losing": len(losing), "gaining": len(gaining)}
 
 
 @router.get("/folders/{folder_id}/summary")
@@ -219,19 +246,22 @@ def delete_folder(
     context: Context,
     contents: Literal["keep", "trash"] | None = None,
     to: uuid.UUID | None = None,
+    confirm: bool = False,
 ) -> Response:
-    """Today's delete of an empty folder, for anyone. #537, an admin only: ``contents=keep``
-    moves what is inside into ``to`` (left out: the top level) and deletes the folder;
-    ``contents=trash`` sends every file at every depth to Trash and deletes the folder with
-    every folder inside it (``folders_sql.delete_folder_with_contents``). Those two reply 200
-    with ``{files, folders}``: what moved, or the files that went to Trash."""
+    """Today's delete of an empty folder, for anyone (PRD 7, #601: one holding a folder or a file
+    the person can't see is an Admin's, 403 ``hidden_inside``). #537, an admin only:
+    ``contents=keep`` moves what is inside into ``to`` (left out: the top level) and deletes the
+    folder (#601: 409 ``access_would_change`` when that changes who can see it, until it is sent
+    again with ``confirm=true``); ``contents=trash`` sends every file at every depth to Trash and
+    deletes the folder with every folder inside it (``folders_sql.delete_folder_with_contents``).
+    Those two reply 200 with ``{files, folders}``: what moved, or the files that went to Trash."""
     if contents is not None and user.role != "admin":
         raise ApiError(403, "forbidden", "Only an admin can delete a folder that holds files.")
     if contents is not None:
         # What's inside, by its true totals (decision 20). It can't fail here (_signed_in already
         # refuses an admin without one); it is kept for the SQL guard's scanner.
         require_admin_session(user)
-    if to is not None and contents != "keep":
+    if (to is not None or confirm) and contents != "keep":
         raise ApiError(400, "bad_request", "Choose where things go only when moving them.")
     target = str(folder_id)
     with _refused(), context.db.user(user.customer_id, user.user_id) as conn:
@@ -239,7 +269,7 @@ def delete_folder(
         path = folders_sql.folder_path(conn, user.customer_id, target)
         _admin_for_departments(user, path[-1].kind if path else None)
         if contents is None:
-            folders_sql.delete_folder(conn, user.customer_id, target)
+            folders_sql.delete_folder(conn, user.customer_id, target, seen_only=user.role != "admin")
             _audit(conn, user, "folder.delete", target)
             return Response(status_code=204)
         destination = None if to is None else str(to)
@@ -252,6 +282,7 @@ def delete_folder(
                 to=destination,
                 by=user.user_id,
                 now=context.clock(),
+                confirm=confirm,
             )
         except folders_sql.FolderCycle:
             raise ApiError(400, "bad_request", "Choose a folder outside the one you are deleting.") from None
@@ -265,12 +296,12 @@ def delete_folder(
                 "folder_names_taken",
                 "The folder you chose already has too many folders with these names. Choose another.",
             ) from None
-        except folders_sql.AccessWouldChange:  # #594 (Q5)
+        except folders_sql.AccessWouldChange:  # #594 (Q5); PRD 7 (#601): a warning, then confirm
             raise ApiError(
                 409,
                 "access_would_change",
-                "Moving what's inside there would let more people see it."
-                " Choose another folder or send it to Trash.",
+                "Moving what's inside there changes who can see it."
+                " Confirm to move it, choose another folder, or send it to Trash.",
             ) from None
         details: dict[str, audit.DetailValue] = {
             "contents": contents,
@@ -279,6 +310,8 @@ def delete_folder(
         }
         if contents == "keep":
             details["to"] = destination
+            if confirm:
+                details["confirmed"] = True
         else:
             details["trash_id"] = held.trash_id  # #542: the folder is in Trash, restorable
         _audit(conn, user, "folder.delete" if contents == "keep" else "folder.trash", target, details)
@@ -362,8 +395,6 @@ def department_only_admin(
     return ASK_AN_ADMIN
 
 
-# PRD 7 section 5: a folder holding anything the person can't see needs an Admin.
-HIDDEN_INSIDE = "You can't delete this folder. Ask an admin."
 # A12 (stability pass, 7 Nov 2026): the files one delete forever request deletes at most.
 FOREVER_FAMILIES = 200
 
@@ -388,7 +419,7 @@ def delete_trashed_folder_forever(folder_id: uuid.UUID, user: CanDeleteForever, 
         except folders_sql.FolderNotFound:
             raise ApiError(404, "not_found") from None
         if item.hidden_inside and user.role != "admin":
-            raise ApiError(403, "forbidden", HIDDEN_INSIDE)
+            raise ApiError(403, "hidden_inside", HIDDEN_INSIDE)  # PRD 7 (#601): the screens' code
         found = trashed_sql.families_in(conn, customer_id, target)
     if found is None:
         raise ApiError(404, "not_found")
