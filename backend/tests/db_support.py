@@ -6,7 +6,6 @@ test session. Tests never clean up: each one makes its own customers with
 random names, so tests cannot see each other's rows (row level security).
 """
 
-import functools
 import os
 import re
 import subprocess
@@ -80,9 +79,21 @@ def person_rule(db: Database, *, on: bool, customer_id: str | None = None) -> No
             )
 
 
-@functools.cache
-def _owner_database() -> Database:
-    return make_database(database_url())
+def rule_on_everywhere() -> bool:
+    """PRD 7 (#606): is the per-person rule on for every organisation (the test session's row)?"""
+    with _owner_database() as db, db.engine.begin() as conn:
+        every = "SELECT EXISTS (SELECT 1 FROM kaagaz_person_rule WHERE for_customer_id IS NULL)"
+        return bool(conn.execute(text(every)).scalar())
+
+
+@contextmanager
+def _owner_database() -> Iterator[Database]:
+    """The owner's own engine for one step, disposed after (none is left to the collector)."""
+    db = make_database(database_url())
+    try:
+        yield db
+    finally:
+        db.engine.dispose()
 
 
 @contextmanager
@@ -91,15 +102,15 @@ def until_0092() -> Iterator[None]:
     deleted forever with them) works under the database rule only through PR 9b's owner-rights
     functions (0092). Until then a test's step of that kind runs with the rule off, and the rule is
     put back as it was after."""
-    db = _owner_database()
-    with db.engine.begin() as conn:
-        was_on = conn.execute(text("SELECT EXISTS (SELECT 1 FROM kaagaz_person_rule)")).scalar()
-    person_rule(db, on=False)
-    try:
-        yield
-    finally:
-        if was_on:
-            person_rule(db, on=True)
+    with _owner_database() as db:
+        with db.engine.begin() as conn:
+            was_on = conn.execute(text("SELECT EXISTS (SELECT 1 FROM kaagaz_person_rule)")).scalar()
+        person_rule(db, on=False)
+        try:
+            yield
+        finally:
+            if was_on:
+                person_rule(db, on=True)
 
 
 # PRD 7 (#606): KAAGAZ_TEST_WALLED_ELSEWHERE=1 marks every new organisation as having kept something
