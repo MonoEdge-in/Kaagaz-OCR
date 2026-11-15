@@ -28,7 +28,7 @@ Admin ever gets a kept-from-me count.
 """
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response
@@ -73,6 +73,8 @@ class MemberBody(BaseModel):
 
     head: bool | None = None  # left out: a new member is not Head, a member keeps their tick
     password: Password = None
+    # PR 13 (#605): the department's locked files the person may open too (the give pop-up)
+    locked_files: list[uuid.UUID] = Field(default=[], max_length=MAX_FILES)
 
 
 class SwitchBody(BaseModel):
@@ -97,6 +99,11 @@ class PasswordBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     password: Password = None
+
+
+class NamedBody(PasswordBody):
+    # PR 13 (#605): the private folder's locked files the person may open too (the give pop-up)
+    locked_files: list[uuid.UUID] = Field(default=[], max_length=MAX_FILES)
 
 
 class PreviewBody(BaseModel):
@@ -331,6 +338,16 @@ def add_member(
         if mine:
             _self_grant(user, body.password)
         added = access_sql.join(conn, customer_id, department, target, head=body.head, by=user.user_id)
+        _give_locked(
+            conn,
+            user,
+            target,
+            body.locked_files,
+            (department, None),
+            head=head,
+            via="member",
+            password=body.password,
+        )
         if added is not None:
             details: dict[str, audit.DetailValue] = {"head": head}
             if mine:
@@ -549,7 +566,14 @@ def get_named(folder_id: uuid.UUID, user: User, context: Context) -> dict[str, A
 
 
 def _change_named(
-    context: AppContext, user: CurrentUser, folder_id: str, person: str, password: str | None, *, add: bool
+    context: AppContext,
+    user: CurrentUser,
+    folder_id: str,
+    person: str,
+    password: str | None,
+    *,
+    add: bool,
+    give: Callable[[Connection, access_sql.Place], None] | None = None,
 ) -> tuple[bool, str | None, list[tuple[str, str]]]:
     """Name or unname: the checks in a short first transaction, the password proved with no
     connection held, then the write under the tree lock, with the folder and the Head tick read
@@ -562,7 +586,7 @@ def _change_named(
     _password_given(context, user, password)
     with context.db.user(customer_id, user.user_id) as conn:
         folders_sql._lock_tree(conn, customer_id)
-        _private_seen(conn, user, folder_id)
+        place = _private_seen(conn, user, folder_id)
         if not add:
             if not access_sql.unname(conn, customer_id, folder_id, person):
                 raise ApiError(404, "not_found")
@@ -577,6 +601,8 @@ def _change_named(
         changed = access_sql.name(conn, customer_id, folder_id, person, by=user.user_id)
         if changed:
             _audit(conn, user, "access.named_add", ("folder", folder_id), person, _self(user, person))
+        if give is not None:  # PR 13: the locked files ticked with it, in this transaction
+            give(conn, place)
         watchers = _watchers(conn, context, user)
     if not changed or not found.admin:  # an Admin's own, or any Admin's: emailed
         return changed, None, []
@@ -587,14 +613,23 @@ def _change_named(
 def add_named(
     folder_id: uuid.UUID,
     user_id: uuid.UUID,
-    body: PasswordBody,
+    body: NamedBody,
     user: User,
     background: BackgroundTasks,
     context: Context,
 ) -> dict[str, bool]:
-    """Name a person on a private folder: ``{changed}`` (false: they were already)."""
+    """Name a person on a private folder: ``{changed}`` (false: they were already), with the
+    folder's locked files ticked in the give pop-up (``locked_files``: an Admin's session only, PR 13)."""
+    person, wanted = str(user_id), body.locked_files
+
+    def give(conn: Connection, place: access_sql.Place) -> None:
+        where = (place.department_id, place.id)
+        _give_locked(conn, user, person, wanted, where, head=False, via="named", password=body.password)
+
+    if wanted:
+        require_admin_session(user)
     changed, tell, watchers = _change_named(
-        context, user, str(folder_id), str(user_id), body.password, add=True
+        context, user, str(folder_id), person, body.password, add=True, give=give if wanted else None
     )
     if tell is not None:
         _tell(background, context, user, "named", tell or None, watchers)
@@ -1104,7 +1139,40 @@ def access_activity(
         )
 
 
-# --- locked files: the pop-ups' reads (PR 13, #605) ----------------------------------------------
+# --- locked files: the pop-ups (PR 13, #605) ------------------------------------------------------
+
+
+def _give_locked(
+    conn: Connection,
+    user: CurrentUser,
+    person: str,
+    files: list[uuid.UUID],
+    place: tuple[str | None, str | None],
+    *,
+    head: bool,
+    via: str,
+    password: str | None,
+) -> None:
+    """The locked files ticked in the give pop-up (PRD 7 section 6), in the place's own write, under
+    its tree lock: each must be a locked file the place gives (409 ``not_in_place``, nothing
+    written); then the person may open it, on every version (``kaagaz_lock_grant``), audited
+    ``lock.grant`` {via}. Its routes ask for an Admin's session; the Admin themselves: the password,
+    as any self-grant. None ticked: nothing (the person gets the place's other files)."""
+    wanted = list(dict.fromkeys(str(each) for each in files))
+    if not wanted:
+        return
+    if person == user.user_id:
+        _self_grant(user, password)
+    in_place = lock_places.locked(conn, user.customer_id, place[0], place[1], head=head, user_id=None)
+    if not set(wanted) <= {str(row["id"]) for row in in_place}:
+        raise ApiError(409, "not_in_place", "Choose only locked files of this place.")
+    for document in wanted:
+        if locks_sql.grant(conn, document, person) == "granted":
+            details: dict[str, audit.DetailValue] = {
+                "via": via,
+                **({"self": True} if person == user.user_id else {}),
+            }
+            _audit(conn, user, "lock.grant", ("document", document), person, details)
 
 
 def _who_can_see(conn: Connection, user: CurrentUser, documents: list[str]) -> list[dict[str, str | bool]]:

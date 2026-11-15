@@ -17,6 +17,8 @@ import httpx2 as httpx
 import pytest
 
 from kaagaz.api import locked_open
+from kaagaz.api.routers.locked_open import OPENS_PER_HOUR
+from kaagaz.db import locked_open as locked_sql
 from kaagaz.db.engine import Database
 from tests.oidc_fake import google_settings, use_google
 from tests.test_api_delete_forever_grant import _confirm, _grant
@@ -116,11 +118,12 @@ def test_a_given_person_sees_the_pictures_only_after_their_password(db: Database
     api = Api(db)
     org = _org(api)
     assert _code(_page(org.given, org.locked)) == (403, "locked_open_required")
-    assert org.given.client.get(OPEN).json() == {"open": False, "until": None, "via": "password"}
+    closed = {"open": False, "until": None, "seconds": None, "via": "password"}
+    assert org.given.client.get(OPEN).json() == closed
     opened = _open(org.given)
     assert opened.status_code == 200, opened.text
     until = int(api.clock().timestamp()) + locked_open.LOCKED_OPEN_SECONDS
-    assert opened.json()["open"] is True
+    assert opened.json()["open"] is True and opened.json()["seconds"] == 600
     assert opened.json() == org.given.client.get(OPEN).json()
     cookie = opened.headers["set-cookie"].lower()
     assert "kaagaz_locked_open=" in cookie and "httponly" in cookie and "samesite=strict" in cookie
@@ -135,6 +138,21 @@ def test_a_given_person_sees_the_pictures_only_after_their_password(db: Database
         assert _code(_page(org.given, org.locked, page)) == (404, "not_found")
     _owner(db, "UPDATE pages SET has_image = false WHERE document_id = :d AND page_no = 2", {"d": org.locked})
     assert _code(_page(org.given, org.locked, 2)) == (404, "not_found")
+    api.clock.advance(100)
+    assert org.given.client.get(OPEN).json()["seconds"] == 500  # by the server's clock
+
+
+def test_a_picture_asked_for_as_anything_but_an_image_is_not_found(db: Database) -> None:
+    """It deters only: opening the picture as a page, saving it or framing it (developer tools and a
+    photograph of the screen remain)."""
+    api = Api(db)
+    org = _org(api)
+    assert _open(org.given).status_code == 200
+    path = f"/api/documents/{org.locked}/locked-pages/1"
+    for where in ("document", "iframe", "empty", "object"):
+        reply = org.given.client.get(path, headers={"Sec-Fetch-Dest": where})
+        assert _code(reply) == (404, "not_found"), where
+    assert org.given.client.get(path, headers={"Sec-Fetch-Dest": "image"}).content == PICTURE
 
 
 def test_one_view_row_per_person_file_and_ten_minutes(db: Database) -> None:
@@ -224,7 +242,17 @@ def test_sign_out_ends_it_and_a_new_sign_in_does_not_bring_it_back(db: Database)
     assert _code(_page(org.given, org.locked)) == (403, "locked_open_required")  # another browser session
 
 
-def test_sign_out_everywhere_and_a_new_password_end_it(db: Database) -> None:
+def test_sign_out_everywhere_clears_it(db: Database) -> None:
+    api = Api(db)
+    org = _org(api)
+    assert _open(org.given).status_code == 200
+    out = org.given.client.post("/api/auth/logout-everywhere", headers=CSRF)
+    assert out.status_code == 204
+    cleared = [c for c in out.headers.get_list("set-cookie") if c.startswith("kaagaz_locked_open=")]
+    assert len(cleared) == 1 and "max-age=0" in cleared[0].lower()
+
+
+def test_another_browser_and_a_new_password_end_it(db: Database) -> None:
     api = Api(db)
     org = _org(api)
     assert _open(org.given).status_code == 200
@@ -334,8 +362,44 @@ def test_while_the_sign_in_lock_is_on_no_password_is_checked(db: Database) -> No
         "UPDATE users SET locked_until = :t WHERE id = :u",
         {"t": api.clock().replace(year=2027), "u": org.given.user_id},
     )
-    assert _code(_open(org.given)) == (400, "password_locked")
+    for _ in range(locked_sql.MAX_TRIES):  # never counted here: no block comes of them
+        assert _code(_open(org.given)) == (400, "password_locked")
     assert _actions(api, org.c) == []
+    state = "SELECT locked_open_failures, locked_open_until FROM users WHERE id = :u"
+    assert _owner(db, state, {"u": org.given.user_id}) == [(0, None)]
+
+
+def test_an_admin_unlocking_the_account_ends_the_block_too(db: Database) -> None:
+    api = Api(db)
+    org = _org(api)
+    for _ in range(locked_sql.MAX_TRIES):
+        assert _code(_open(org.given, "wrong")) == (400, "wrong_password")
+    assert _code(_open(org.given)) == (429, "open_blocked")
+    unlocked = org.admin.client.post(f"/api/admin/users/{org.given.user_id}/unlock", headers=CSRF)
+    assert unlocked.status_code == 200, unlocked.text
+    assert _open(org.given).status_code == 200
+
+
+def test_more_than_thirty_tries_an_hour_are_refused(db: Database) -> None:
+    api = Api(db)
+    org = _org(api)
+    for _ in range(OPENS_PER_HOUR):
+        assert _code(_open(org.given, "wrong"))[0] in (400, 429)
+    assert _code(_open(org.given)) == (429, "rate_limited")
+
+
+def test_one_minute_left_says_one_minute(db: Database) -> None:
+    api = Api(db)
+    org = _org(api)
+    for _ in range(locked_sql.MAX_TRIES):
+        assert _code(_open(org.given, "wrong")) == (400, "wrong_password")
+    api.clock.advance(14 * 60 + 30)
+    _owner(
+        api.db, "UPDATE users SET locked_until = NULL WHERE id = :u", {"u": org.given.user_id}
+    )  # sign-in lock
+    blocked = _open(org.given)
+    assert blocked.headers["retry-after"] == "30"
+    assert blocked.json()["error"]["message"] == "Too many wrong passwords. Try again in 1 minute."
 
 
 # --- Google, for a person who signs in with Google only ----------------------------------------
@@ -388,18 +452,24 @@ def test_a_google_only_person_confirms_with_a_fresh_google_sign_in(
 
 @pytest.mark.parametrize(
     ("case", "code"),
-    [("old", "not_fresh"), ("missing", "not_fresh"), ("text", "not_fresh"), ("another", "not_yours")],
+    [
+        ("old", "not_fresh"),
+        ("missing", "not_fresh"),
+        ("text", "not_fresh"),
+        ("future", "not_fresh"),
+        ("another", "not_yours"),
+    ],
 )
 def test_an_old_or_missing_google_sign_in_or_another_account_is_refused(
     db: Database, monkeypatch: pytest.MonkeyPatch, case: str, code: str
 ) -> None:
-    """Older than 5 minutes; missing (refused, never ``iat``); not a number; another person's
-    approved Google account."""
+    """Older than 5 minutes; missing (refused, never ``iat``); not a number; more than the clocks'
+    leeway ahead; another person's approved Google account."""
     api = Api(db, settings=google_settings())
     org = _org(api)
     google, subject = _google_only(api, org, monkeypatch)
     now = int(api.clock().timestamp())
-    times: dict[str, Any] = {"old": now - 301, "missing": None, "text": str(now)}
+    times: dict[str, Any] = {"old": now - 301, "missing": None, "text": str(now), "future": now + 61}
     given: dict[str, Any] = {"auth_time": times.get(case, now - 10)}
     if case == "another":
         other = api.sign_in(org.c, "member")
@@ -429,3 +499,28 @@ def test_the_google_confirm_needs_the_session_that_started_it(
     back = org.given.client.get("/api/auth/oidc/google/callback", params=query, follow_redirects=False)
     assert (back.status_code, back.headers["location"]) == (303, "/x?open_error=signed_out")
     assert re.search(r"kaagaz_locked_open=[^;\"]", back.headers.get("set-cookie", "")) is None
+
+
+def test_a_google_connection_no_longer_approved_is_refused(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Between the start and Google's answer, the person's own connection goes back to waiting (an
+    admin's re-approval): no longer a person who confirms with Google, so refused, nothing opened."""
+    api = Api(db, settings=google_settings())
+    org = _org(api)
+    google, subject = _google_only(api, org, monkeypatch)
+    now = int(api.clock().timestamp())
+    started = org.given.client.post("/api/auth/oidc/google/confirm", json={"next": "/x"}, headers=CSRF)
+    query = google.sign_in(
+        started.json()["url"], subject, "given@sharma.in", now, auth_time=now, hd="sharma.in"
+    )
+    _owner(
+        db,
+        "UPDATE user_identities SET status = 'pending', approved_at = NULL, approved_by = NULL"
+        " WHERE subject = :s",
+        {"s": subject},
+    )
+    back = org.given.client.get("/api/auth/oidc/google/callback", params=query, follow_redirects=False)
+    assert back.headers["location"] == "/x?open_error=signed_out"
+    assert re.search(r"kaagaz_locked_open=[^;\"]", back.headers.get("set-cookie", "")) is None
+    assert _actions(api, org.c) == []

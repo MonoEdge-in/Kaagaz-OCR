@@ -30,11 +30,13 @@ from kaagaz.api.auth import (
     _verified,
     session_claims,
 )
+from kaagaz.api.errors import ApiError
 from kaagaz.settings import Settings
 
 LOCKED_OPEN_COOKIE = "kaagaz_locked_open"
 LOCKED_OPEN_SECONDS = 10 * 60  # PRD 7 decision 6
 LOCKED_OPEN_PATH = "/api/documents"
+OPEN_FIRST = "Enter your password to open locked files."
 
 _PURPOSE = b"locked_open"
 _FIELDS = frozenset({"uid", "cid", "ver", "sid", "exp"})
@@ -42,8 +44,17 @@ _FIELDS = frozenset({"uid", "cid", "ver", "sid", "exp"})
 
 def confirms_with_google(user: CurrentUser, settings: Settings) -> bool:
     """The person signs in with Google only (Google on, the role uses it only, a passing link), so
-    they confirm with Google, never a password: the test a password sign-in refuses them by."""
-    return settings.google_signin_enabled and user.google_on and user.google_only and user.google_linked
+    they confirm with Google, never a password: the test a password sign-in refuses them by
+    (``routers/auth.py`` ``_google_only``, its admin still setting up two-step included, whom
+    ``current_user`` stops first)."""
+    enrolling = user.role == "admin" and not user.totp_enabled and not user.two_step_turned_off
+    return (
+        settings.google_signin_enabled
+        and user.google_on
+        and user.google_only
+        and user.google_linked
+        and not enrolling
+    )
 
 
 def sign(user: CurrentUser, session_id: str, expires_at: int, secret: str) -> str:
@@ -76,6 +87,12 @@ def open_until(request: Request, user: CurrentUser, settings: Settings, now: int
     if (data["uid"], data["cid"], data["ver"], sid) != mine:
         return None
     return int(exp)
+
+
+def require_open(request: Request, user: CurrentUser, settings: Settings, now: int) -> None:
+    """403 ``locked_open_required`` unless this browser's check is live (``open_until``)."""
+    if open_until(request, user, settings, now) is None:
+        raise ApiError(403, "locked_open_required", OPEN_FIRST)
 
 
 def set_cookie(

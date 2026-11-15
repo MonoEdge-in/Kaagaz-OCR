@@ -441,6 +441,11 @@ REFUSED = {
     ("POST", "/api/documents/{document_id}/separate"),
     ("POST", "/api/documents/{document_id}/separate/undo"),
     ("GET", "/api/documents/{document_id}/compare"),
+}
+# Changed on purpose (PR 13): what a person who may open it does only while their 10-minute check
+# is live (403 locked_open_required without it): its page pictures, and turning its pages.
+OPENED = {
+    ("GET", "/api/documents/{document_id}/locked-pages/{page_no}"),
     ("PATCH", "/api/documents/{document_id}/page-turns"),
     ("DELETE", "/api/documents/{document_id}/page-turns"),
 }
@@ -471,6 +476,7 @@ ADMINS = {
     ("DELETE", "/api/documents/{document_id}/shares/{user_id}"),
     ("GET", "/api/documents/{document_id}/audience"),
     ("GET", "/api/documents/{document_id}/move-preview"),
+    ("GET", "/api/documents/{document_id}/lock-preview"),  # PR 13: the lock dialog's people
 }
 # The body or query a refused route needs to reach its lookup (an empty one is 422 first).
 _BODIES: dict[str, Any] = {
@@ -520,20 +526,37 @@ def test_every_route_of_a_file_is_classified_and_refuses_a_locked_one(
     locked: tuple[Api, Org, str, str],
 ) -> None:
     api, org, v1, v2 = locked
-    assert _templates(api) == REFUSED | ALLOWED | ADMINS
+    assert _templates(api) == REFUSED | OPENED | ALLOWED | ADMINS
     plain, member = org.people["plain"], org.people["member"]
-    for method, path in sorted(REFUSED):
-        body = _BODIES.get(path)
-        reply = plain.client.request(method, _filled(path, v2, v1), json=body, headers=CSRF)
-        assert reply.status_code == 409 and reply.json()["error"]["code"] == "locked", (
-            method,
-            path,
-            reply.text,
-        )
-        for who in (member, org.people["admin"]):
-            hidden = who.client.request(method, _filled(path, v2, v1), json=body, headers=CSRF)
-            never = who.client.request(method, _filled(path, ANY_ID, v1), json=body, headers=CSRF)
-            assert (hidden.status_code, hidden.content) == (never.status_code, never.content), (method, path)
+    api.storage.page_images[(org.c, v2, 1)] = b"RIFF made-up page"
+    for checked in (False, True):  # PR 13: a live 10-minute check opens nothing REFUSED
+        if checked:
+            opened = plain.client.post(
+                "/api/documents/locked-open", json={"password": PASSWORD}, headers=CSRF
+            )
+            assert opened.status_code == 200, opened.text
+        for method, path in sorted(REFUSED | OPENED):
+            body = _BODIES.get(path)
+            reply = plain.client.request(method, _filled(path, v2, v1), json=body, headers=CSRF)
+            if (method, path) in OPENED:
+                code = None if reply.status_code < 400 else reply.json()["error"]["code"]
+                assert (reply.status_code < 400) if checked else code == "locked_open_required", (
+                    path,
+                    reply.text,
+                )
+                continue
+            assert reply.status_code == 409 and reply.json()["error"]["code"] == "locked", (
+                method,
+                path,
+                reply.text,
+            )
+            for who in (member, org.people["admin"]):
+                hidden = who.client.request(method, _filled(path, v2, v1), json=body, headers=CSRF)
+                never = who.client.request(method, _filled(path, ANY_ID, v1), json=body, headers=CSRF)
+                assert (hidden.status_code, hidden.content) == (never.status_code, never.content), (
+                    method,
+                    path,
+                )
     for method, path in sorted(ALLOWED):
         if method == "GET":
             reply = plain.client.request(method, _filled(path, v2, v1), headers=CSRF)

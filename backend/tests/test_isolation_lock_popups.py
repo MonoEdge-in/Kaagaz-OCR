@@ -229,3 +229,77 @@ def test_the_access_page_lists_the_locked_files_a_person_may_open(db: Database) 
         "given_by": org.first,
     }
     assert _get(org.admin, f"/api/admin/users/{org.people['sam'].user_id}/access").json()["locked"] == []
+
+
+# --- the give pop-up's ticks, written with the place (needs PR 12's kaagaz_lock_grant) ----------------
+
+
+def _grants(db: Database, document: str) -> set[str]:
+    rows = _owner(db, "SELECT user_id::text FROM lock_grants WHERE document_id = :d", {"d": document})
+    return {str(row[0]) for row in rows}
+
+
+def _member(db: Database, org: Org, person: str) -> bool:
+    found = _owner(
+        db,
+        "SELECT count(*) FROM department_members WHERE department_id = :d AND user_id = :u",
+        {"d": org.folders["land"], "u": person},
+    )
+    return bool(found[0][0])
+
+
+def test_giving_a_department_gives_the_ticked_locked_files_in_the_same_step(db: Database) -> None:
+    api = Api(db)
+    org = _org(api)
+    sam = org.people["sam"].user_id
+    path = f"/api/admin/users/{sam}/departments/{org.folders['land']}"
+    wrong = org.admin.client.put(
+        path, json={"locked_files": [org.files["loan"], org.files["sales"]]}, headers=CSRF
+    )
+    assert _code(wrong) == (409, "not_in_place")
+    assert not _member(db, org, sam) and sam not in _grants(db, org.files["loan"])  # nothing written
+    given = org.admin.client.put(path, json={"locked_files": [org.files["loan"]]}, headers=CSRF)
+    assert given.status_code == 200, given.text
+    assert _member(db, org, sam)
+    assert sam in _grants(db, org.files["loan"]) and sam not in _grants(db, org.files["deed"])
+    rows = _owner(
+        db,
+        "SELECT target_id, subject_user_id::text, details FROM audit_log"
+        " WHERE customer_id = :c AND action = 'lock.grant'",
+        {"c": org.c},
+    )
+    assert [tuple(row) for row in rows] == [(org.files["loan"], sam, {"via": "member"})]
+    listed = _get(org.admin, f"/api/admin/departments/{org.folders['land']}/locked-files?user={sam}").json()
+    assert [(item["name"], item["open"]) for item in listed["locked"]] == [
+        ("bank loan.pdf", True),
+        ("Sale deed.pdf", False),
+    ]
+
+
+def test_naming_on_a_private_folder_gives_its_ticked_locked_files(db: Database) -> None:
+    api = Api(db)
+    org = _org(api)
+    sam, hema = org.people["sam"].user_id, org.people["hema"]
+    path = f"/api/folders/{org.folders['deeds']}/named/{sam}"
+    by_head = hema.client.put(path, json={"locked_files": [org.files["will"]]}, headers=CSRF)
+    assert _code(by_head) == (403, "admin_session_required")  # a Head names people; only an Admin gives locks
+    named = _owner(db, "SELECT count(*) FROM private_folder_members WHERE user_id = :u", {"u": sam})
+    assert named == [(0,)]
+    assert hema.client.put(path, json={}, headers=CSRF).status_code == 200  # naming alone is the Head's
+    given = org.admin.client.put(path, json={"locked_files": [org.files["will"]]}, headers=CSRF)
+    assert given.status_code == 200, given.text
+    assert sam in _grants(db, org.files["will"])
+    assert _code(org.admin.client.put(path, json={"locked_files": [org.files["loan"]]}, headers=CSRF)) == (
+        409,
+        "not_in_place",
+    )
+
+
+def test_an_admin_ticking_themselves_types_their_password(db: Database) -> None:
+    api = Api(db)
+    org = _org(api)
+    me = org.admin.user_id
+    path = f"/api/admin/users/{me}/departments/{org.folders['land']}"
+    reply = org.admin.client.put(path, json={"locked_files": [org.files["loan"]]}, headers=CSRF)
+    assert _code(reply) == (403, "password_required")
+    assert me not in _grants(db, org.files["loan"])

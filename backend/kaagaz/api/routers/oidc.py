@@ -65,12 +65,13 @@ provider's own routes: while that one is off), before anything else is read.
   in with Google only opens locked files with a fresh Google sign-in (anyone else: 409
   ``use_password``; at most CONFIRMS_PER_HOUR a person). A ``locked_open`` flow cookie with the
   user, customer and session version, and ``{url}`` asking Google for a fresh sign-in
-  (``max_age=0``). Its callback, while that very session is signed in here (else ``signed_out``),
-  needs the Google account to be the person's own approved connection (else ``not_yours``) and
-  Google's ``auth_time`` within FRESH_SECONDS (else ``not_fresh``; a missing one too, never
-  ``iat``), each audited ``lock.open_failed`` {via, reason}; then ``lock.open`` {via: google}, the
-  10-minute check (``kaagaz/api/locked_open.py``) for this browser session, and back to ``next``;
-  a refusal goes back to ``next`` with ``open_error=<code>``.
+  (``max_age=0``). Its callback, while that very session is signed in here and the person still
+  signs in with Google only (else ``signed_out``), needs the Google account to be the person's own
+  approved connection (else ``not_yours``) and Google's ``auth_time`` within FRESH_SECONDS and no
+  more than LEEWAY_SECONDS ahead (else ``not_fresh``; a missing one too, never ``iat``), each
+  audited ``lock.open_failed`` {via, reason}; then ``lock.open`` {via: google}, the 10-minute
+  check (``kaagaz/api/locked_open.py``) for this browser session, and back to ``next``; a refusal
+  goes back to ``next`` with ``open_error=<code>``.
 * ``GET /auth/oidc/notice``: "isn't connected" names the provider's email, which never goes in
   a URL (history, logs): the callback leaves it in a signed 60-second cookie, read here once.
 * ``POST /auth/oidc/code`` {code}: the second step, ``routers/auth.py``'s ``_finish_second_step``
@@ -695,15 +696,16 @@ def _locked_open(
     approved connection: the 10-minute check for locked files, for this browser session. Each
     outcome is audited about the person."""
     user = _flow_user(request, flow)
+    if not locked_open.confirms_with_google(user, context.settings):  # changed since the start
+        raise _Refused("signed_out")
     now = unix(context.clock())
     session = session_claims(request, context.settings, now)
     with context.db.system() as conn:
         found = identities.lookup(conn, provider.name, identity.issuer, identity.subject)
     mine = (user.customer_id, user.user_id)
     theirs = found is not None and found.status == "approved" and (found.customer_id, found.user_id) == mine
-    fresh = (
-        identity.auth_time is not None and now - FRESH_SECONDS <= identity.auth_time <= now + FRESH_SECONDS
-    )
+    signed_in_at = identity.auth_time
+    fresh = signed_in_at is not None and now - FRESH_SECONDS <= signed_in_at <= now + oidc.LEEWAY_SECONDS
     reason = "not_yours" if not theirs else None if fresh else "not_fresh"
     details: dict[str, audit.DetailValue] = {"via": provider.name}
     if reason is not None:
