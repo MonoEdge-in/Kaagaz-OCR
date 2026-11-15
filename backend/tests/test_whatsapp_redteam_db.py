@@ -15,15 +15,16 @@ make, and W4's follow-up.
 import dataclasses
 import logging
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import timedelta
 from typing import Any
 
 import pytest
 
 from kaagaz.channel.loop import MAX_TRIES, NOT_CONNECTED
-from kaagaz.channel.outgoing import Outgoing
+from kaagaz.channel.outgoing import Outgoing, Row
 from kaagaz.channel.texts import Language, say
+from kaagaz.db import whatsapp as wa
 from kaagaz.db.engine import Database
 from kaagaz.db.whatsapp import Linked, Waiting
 from tests.test_api_chat import _cited_answer
@@ -227,3 +228,141 @@ def test_the_verify_token_and_challenge_are_never_logged(
     assert world.client.get(WEBHOOK, params=wrong).status_code == 403
     logged = _logged(caplog)
     assert VERIFY_TOKEN not in logged and challenge not in logged and "guessed-token-123" not in logged
+
+
+# --- review of W7 (#603) -------------------------------------------------------------------------
+
+
+def test_a_file_named_only_a_link_still_has_a_title(world: _World) -> None:
+    """A row or button title stripped to nothing would make Meta refuse the whole list for good."""
+    person = world.person()
+    for n in range(2):
+        _filed(world, person, f"https://{EVIL}/{n}.pdf", "water bill")
+    world.tap(person, "get.en")
+    world.say(person, "water")
+    rows = world.raw(person)["interactive"]["action"]["sections"][0]["rows"]
+    assert len(rows) == 2 and all(row["title"].strip() for row in rows)
+
+
+def test_the_last_check_before_sending_keeps_only_kaagazs_links_and_a_title(world: _World) -> None:
+    """Whatever made a reply, ``Chat.recheck`` (just before each try to send) is the last word."""
+    person = world.person()
+    made = Outgoing(
+        f"See https://{EVIL}/pay or {APP_URL}/documents/1",
+        rows=(Row("r", f"https://{EVIL}/x", f"www.{EVIL}"),),
+        button="Choose",
+    )
+    checked = world.chat.recheck(Linked(person.c, person.u, person.link), made)
+    assert checked.body == f"See  or {APP_URL}/documents/1"
+    assert checked.rows == (Row("r", "…", ""),)
+
+
+class _BrokenThen:
+    """The chat failing on every message (its notices too); just before its last try fails,
+    ``meddle`` runs: the connection ends, is refused, or another process answers the message."""
+
+    def __init__(self, meddle: Callable[[], object]) -> None:
+        self.meddle, self.tries = meddle, 0
+
+    def _fail(self) -> Outgoing:
+        self.tries += 1
+        if self.tries == MAX_TRIES:
+            self.meddle()
+        raise RuntimeError("broken")
+
+    def reply(self, linked: Linked, message: Waiting) -> Outgoing:
+        return self._fail()
+
+    def recheck(self, linked: Linked, reply: Outgoing) -> Outgoing:
+        return reply
+
+    def notice(self, linked: Linked, message: Waiting) -> Outgoing | None:
+        return self._fail()
+
+
+MEDDLES: dict[str, str | None] = {
+    "ended": "UPDATE whatsapp_links SET ended_at = now(), end_reason = 'person', phone_hash = NULL,"
+    " phone_sealed = NULL WHERE id = :l",
+    "refused": "UPDATE users SET session_version = session_version + 1"
+    " WHERE id = (SELECT user_id FROM whatsapp_links WHERE id = :l)",
+    "answered elsewhere": "UPDATE whatsapp_messages SET state = 'done', body = NULL WHERE link_id = :l",
+    "nothing": None,
+}
+
+
+@pytest.mark.parametrize("meddle", list(MEDDLES))
+@pytest.mark.parametrize("notice", [False, True])
+def test_went_wrong_goes_only_to_a_live_connection_for_a_message_that_failed_for_good(
+    world: _World, meddle: str, notice: bool
+) -> None:
+    person = world.person()
+    sql = MEDDLES[meddle]
+    world.channel = dataclasses.replace(
+        world.channel,
+        chat=_BrokenThen(lambda: None if sql is None else _owner(world.db, sql, {"l": person.link})),
+    )
+    if notice:  # a saved file's "ready" notice, waiting
+        document = world.api.add_document(person.c, uploaded_by=person.u)
+        _owner(
+            world.db,
+            "INSERT INTO whatsapp_messages (customer_id, link_id, user_id, wamid, kind, body, sent_at,"
+            " document_id) VALUES (:c, :l, :u, :w, 'document', 'en', now(), :d)",
+            {"c": person.c, "l": person.link, "u": person.u, "w": f"wamid.{uuid.uuid4().hex}", "d": document},
+        )
+    else:
+        assert (
+            post(world.client, delivery(message(person.number, world.api.clock(), "Total?"))).status_code
+            == 200
+        )
+    for _ in range(MAX_TRIES):
+        with pytest.raises(RuntimeError):
+            _handled_again(world, person.link)
+    expected = [say("went_wrong", "en")] if meddle == "nothing" and not notice else []
+    assert world.replies(person) == expected
+
+
+def _silent(world: _World, link: str, since: str) -> None:
+    _owner(
+        world.db,
+        "UPDATE whatsapp_links SET linked_at = now() - CAST(:since AS interval),"
+        " last_used_at = now() - CAST(:since AS interval) WHERE id = :l",
+        {"l": link, "since": since},
+    )
+
+
+def test_silence_ends_a_connection_after_60_days_not_before(world: _World) -> None:
+    almost, past = world.person(), world.person()
+    _silent(world, almost.link, "59 days 23 hours")
+    _silent(world, past.link, "60 days 1 minute")
+    assert world.say(almost, "What is the total?")[0].startswith("The total is 1,200.")
+    assert world.say(past, "What is the total?") == NOT_CONNECTED
+
+
+def test_a_recycled_number_is_told_once_a_day_as_any_number_not_connected(world: _World) -> None:
+    person = world.person()
+    _silent(world, person.link, "61 days")
+    world.say(person, "What is the total?")
+    world.say(person, "Hello?")  # not connected now: the webhook's once-a-day reply
+    assert world.replies(person) == [NOT_CONNECTED]
+
+
+def test_a_sweep_that_fails_never_repeats_not_connected(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    person = world.person()
+    _silent(world, person.link, "61 days")
+
+    def down(conn: Any) -> int:
+        raise RuntimeError("sweep down")
+
+    monkeypatch.setattr(wa, "sweep", down)
+    assert (
+        post(world.client, delivery(message(person.number, world.api.clock(), "Total?"))).status_code == 200
+    )
+    for _ in range(3):
+        with pytest.raises(RuntimeError):
+            _handled_again(world, person.link)
+    assert world.replies(person) == []
+    monkeypatch.undo()
+    _handled_again(world, person.link)
+    assert world.replies(person) == [NOT_CONNECTED]

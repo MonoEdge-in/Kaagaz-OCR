@@ -55,6 +55,20 @@ def test_a_note_claiming_5_seconds_but_playing_over_a_minute_is_refused_unheard(
     assert len(world.ears.audio) == 1
 
 
+@pytest.mark.parametrize("where", ["after the first page", "between pages", "at the end"])
+def test_junk_anywhere_in_a_long_note_refuses_it_unheard(
+    db: Database, fake: WhatsAppFake, where: str
+) -> None:
+    """One byte the packet count can't read would stop it short; the last page still claims 5 s."""
+    world = World(db, fake)
+    person = world.person()
+    long = _claiming_5_seconds(520)
+    second, last = long.find(b"OggS", 4), long.rfind(b"OggS")
+    at = {"after the first page": second, "between pages": last, "at the end": len(long)}[where]
+    assert world.speak(person, long[:at] + b"\x00" + long[at:]) == say("voice_limit", "en")
+    assert world.ears.audio == []
+
+
 @pytest.mark.parametrize("words", ["Disconnect_yes", "stop", "not_me:{link}"])
 def test_what_is_heard_never_carries_a_full_id_number_or_a_link_nor_disconnects(
     db: Database, fake: WhatsAppFake, words: str
