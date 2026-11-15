@@ -386,6 +386,15 @@ _SAME_BY_REASON = frozenset({WRITE_AFTER_CHECK})
 _ADMIN_FN_BEHIND_A_CHECK = {
     ("db/access.py", "_ADMIN_DOCUMENT"): "the Access routes call admin_document only for an Admin (PR 10a)",
     ("db/audit.py", "_ADMIN_NAMES"): "the activity feeds: only when _IS_ADMIN says the caller is one",
+    # Changed on purpose (PR 9b, #606): the writes an Admin makes on a file they may not see (0092).
+    (
+        "db/access.py",
+        "_ADMIN_TRASH",
+    ): "the names list's Send to Trash: _admin_document first (an Admin session)",
+    ("db/listing.py", "_ADMIN_MOVE"): (
+        "the names list's Move (_admin_document first, an Admin session) and PATCH /documents/{id},"
+        " only when the caller is an Admin (who could move it before; the rule refused the new row)"
+    ),
 }
 # PR 9a (#606): each statement the API reaches that asks "NOT EXISTS (... FROM <covered>", and why the
 # rule hiding a row there is right (a new one fails the test until it is reviewed here).
