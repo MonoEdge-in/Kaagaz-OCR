@@ -32,6 +32,7 @@ import {
 } from "@/lib/api";
 import { errorWords } from "@/lib/errorWords";
 import type { WhatsAppCode, WhatsAppMe } from "@/lib/types";
+import { usePoll } from "@/lib/usePoll";
 import {
   CONSENT_TEXT,
   NOT_AGREED,
@@ -52,7 +53,6 @@ type Step =
   | { kind: "code"; number: string }
   | { kind: "phone"; number: string; shown: WhatsAppCode };
 
-const POLL_MS = 3000;
 
 /** The message of a refusal, or the plain words for a lost connection. */
 function said(caught: unknown): string {
@@ -353,13 +353,15 @@ function PhoneStep({ number, shown, onConnected }: { number: string; shown: What
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    if (state !== "waiting") return;
-    const timer = setInterval(() => {
-      phoneCodeState().then((reply) => setState(reply.state), () => undefined); // asked again next time
-    }, POLL_MS);
-    return () => clearInterval(timer);
-  }, [state]);
+  // The app's one poller (lib/usePoll.ts): every 3 then 5 seconds while it waits, paused while hidden.
+  const poll = usePoll<"waiting" | "confirmed" | "expired">({
+    load: async () => (await phoneCodeState()).state,
+    onResult: setState,
+    onFailure: () => undefined, // asked again next time
+    again: (next) => next === "waiting",
+    signature: (next) => next,
+  });
+  useEffect(() => poll.later(), [poll]);
 
   async function confirm() {
     setBusy(true);

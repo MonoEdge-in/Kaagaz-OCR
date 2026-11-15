@@ -754,6 +754,13 @@ const ACTION_WORDS: Record<string, string> = {
   "org.google_signin_set": "Google sign-in changed for the organisation",
   "settings.auto_approve_on": "Turned on automatic approval of sign-in connections",
   "settings.auto_approve_off": "Turned off automatic approval of sign-in connections",
+  // #603: Kaagaz on WhatsApp.
+  "settings.whatsapp_on": "Turned WhatsApp on",
+  "settings.whatsapp_off": "Turned WhatsApp off",
+  "settings.whatsapp": "Changed the WhatsApp settings",
+  "whatsapp.connected": "Connected a WhatsApp number",
+  "whatsapp.disconnected": "A WhatsApp number was disconnected",
+  "whatsapp.google_proof": "Confirmed with Google to connect WhatsApp",
   "user.unlock": "Unlocked a user",
   "user.reset_password": "Reset a user's password",
   "user.reset_totp": "Reset a user's two-step sign-in",
