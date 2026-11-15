@@ -23,7 +23,7 @@ import pytest
 
 from kaagaz.channel.loop import MAX_TRIES, NOT_CONNECTED
 from kaagaz.channel.outgoing import Outgoing
-from kaagaz.channel.texts import say
+from kaagaz.channel.texts import Language, say
 from kaagaz.db.engine import Database
 from kaagaz.db.whatsapp import Linked, Waiting
 from tests.test_api_chat import _cited_answer
@@ -159,7 +159,7 @@ class _Broken:
 
 @pytest.mark.parametrize(("words", "lang"), [("What is the total?", "en"), ("कुल रकम क्या है?", "hi")])
 def test_a_message_whose_handling_keeps_failing_gets_one_plain_reply(
-    world: _World, words: str, lang: str
+    world: _World, words: str, lang: Language
 ) -> None:
     world.channel = dataclasses.replace(world.channel, chat=_Broken())
     person = world.person()
