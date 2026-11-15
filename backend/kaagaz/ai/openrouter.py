@@ -1213,6 +1213,9 @@ class OpenRouterClient:
         self.gate = ModelGate(settings) if gate is None else gate
         self._opener = build_opener()
         self._lock = threading.Lock()
+        # Chat models whose endpoints refused temperature (404 no_endpoints, then a 200 without it):
+        # sent none again in this process, so one 404 a model, never one a call (``_chat_reply``).
+        self._no_temperature: set[str] = set()
         self._input_tokens = 0
         self._output_tokens = 0
         self._cost: float | None = None
@@ -1382,7 +1385,8 @@ class OpenRouterClient:
             provider_slug=slug,
             stream=stream,
         )
-        if temperature is not None and chosen.split("/", 1)[0] in TEMPERATURE_VENDORS:
+        known = chosen in self._no_temperature
+        if temperature is not None and chosen.split("/", 1)[0] in TEMPERATURE_VENDORS and not known:
             body["temperature"] = temperature
         return body, output_limit, ends
 
@@ -1574,6 +1578,8 @@ class OpenRouterClient:
                 "temperature dropped", extra={"code": "temperature_dropped", "model": str(body["model"])}
             )
             reply = self._call(CHAT_PATH, body, ends, on_text=on_text)
+            with self._lock:  # principal review: one 404 a model in this process, never one a call
+                self._no_temperature.add(str(body["model"]))
         text, _ = _billed_text(reply, before)
         input_tokens, output_tokens = reply_usage(reply)
         spent = (before[0] + input_tokens, before[1] + output_tokens)

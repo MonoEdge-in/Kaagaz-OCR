@@ -1513,6 +1513,12 @@ def test_a_404_for_no_endpoint_is_sent_once_more_without_temperature(
     dropped = _lines(caplog, "temperature dropped")
     assert [(line["code"], line["model"]) for line in dropped] == [("temperature_dropped", client.chat_model)]
 
+    # Principal review: the model is remembered, so its next call sends none and is one request.
+    fake.script("completions", json_reply({"question": rewritten}))
+    assert rewrite(client, "And the expenses?", history) == (rewritten, ())
+    assert len(fake.bodies()) == 3 and "temperature" not in fake.bodies()[2]
+    assert len(_lines(caplog, "temperature dropped")) == 1
+
 
 def test_a_404_without_temperature_too_is_not_sent_a_third_time(fake: OpenRouterFake) -> None:
     fake.script("completions", *[error_reply(404, message=NO_TEMPERATURE)] * 3)
