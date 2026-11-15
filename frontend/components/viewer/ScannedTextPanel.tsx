@@ -138,12 +138,13 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
   };
   // Save sends the text typed; Confirm (asRead) sends each word's own text, so it is confirmed.
   const saveFix = async (flag: WordFlag, index: number, asRead = false) => {
-    if (!onFix || !fixing || fixing.busy) return;
+    const row = shown[index]; // #614: the line the Save came from
+    if (!onFix || !fixing || fixing.busy || !row) return;
     const typed = fixing.text.trim();
     if (typed === "" && !asRead) return setFixing({ ...fixing, error: "Type the word you see on the page." });
     setFixing({ ...fixing, busy: true, error: null });
     let done = { ok: true, message: "" };
-    for (const each of fixesFor(flag, flags)) if (done.ok) done = await onFix(each, asRead ? each.text : typed);
+    for (const each of fixesFor(flag, flags, row)) if (done.ok) done = await onFix(each, asRead ? each.text : typed);
     if (done.ok) closeFix(index);
     else setFixing((now) => now && { ...now, busy: false, error: done.message });
   };
@@ -226,7 +227,7 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                 const meta = confidenceText(line.confidence, line.origin);
                 const first = reader?.role === "first";
                 const flag = first ? flags.find((each) => sameRegion(each.region, line.region)) : undefined;
-                const toFix = first && onFix ? wordToFix(flags, line) : undefined;
+                const toFix = first && onFix ? wordToFix(flags, line, lines) : undefined;
                 const read = first ? withFixes(line, fixed) : line.text;
                 const text = visibleText(read);
                 // The line's own flag is asked for as the line shows now (#431: its words fixed).

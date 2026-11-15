@@ -191,11 +191,20 @@ function centreIn(inner: Region, outer: Region): boolean {
   return x >= rx0 - e && x <= rx1 + e && y >= ry0 - e && y <= ry1 + e;
 }
 
-/** #614: a flag is on a row when it is the row's own line flag (the same spot), or a word or
+const squash = (text: string) => text.replace(/\s+/g, " ").trim();
+const area = (region: Region) =>
+  region.kind === "box" ? (region.box[2] - region.box[0]) * (region.box[3] - region.box[1]) : 0;
+
+/** #614: a flag is on a row when it is the row's own line flag (the same spot and the same text
+ * as read: a reader gives every line of a block the block's box, or the page's), or a word or
  * value whose centre is in the row. Never lineMarked's #523 test: it hung a table-sized line
  * flag on every row inside it, so Fix text on one row saved over another line. */
-function onRow(flag: Pick<WordFlag, "region"> & { kind?: WordFlag["kind"] }, row: Region): boolean {
-  return flag.kind === "line" ? sameRegion(flag.region, row) : centreIn(flag.region, row);
+function onRow(
+  flag: Pick<WordFlag, "region" | "as_read"> & { kind?: WordFlag["kind"] },
+  row: Pick<ReadLine, "region" | "text">,
+): boolean {
+  if (flag.kind === "line") return sameRegion(flag.region, row.region) && squash(flag.as_read) === squash(row.text);
+  return centreIn(flag.region, row.region);
 }
 
 /** #614: the key of a row's open fix box, the row and its flag, so one box opens at a time. */
@@ -228,20 +237,29 @@ export function fixBox(flag: Pick<WordFlag, "text">): { hint: string; draft: str
  * The flagged word a line's Fix text works on (#431): a word mark ([?] or an unsure word) before
  * the line's own flag (a line whose spot is not confirmed also holds its marks, and comes first),
  * so a Save replaces that word, never the whole line; the line's own flag once its words are done.
+ * #614: a word or value is only the smallest of the page's `lines` holding its centre, never a
+ * big line's around that line. O(flags + the line's words x lines).
  */
-export function wordToFix<T extends Pick<WordFlag, "kind" | "region">>(
+export function wordToFix<T extends Pick<WordFlag, "kind" | "region" | "as_read">>(
   flags: readonly T[],
-  line: Pick<ReadLine, "region">,
+  line: Pick<ReadLine, "region" | "text">,
+  lines: readonly Pick<ReadLine, "region">[],
 ): T | undefined {
-  const inLine = flags.filter((each) => onRow(each, line.region));
+  const size = area(line.region);
+  const inSmaller = (each: T) => lines.some((other) => area(other.region) < size && centreIn(each.region, other.region));
+  const inLine = flags.filter((each) => onRow(each, line) && (each.kind === "line" || !inSmaller(each)));
   return inLine.find((each) => each.kind === "mark") ?? inLine[0];
 }
 
 /** What a Save in the fix box settles (#431): the word, and its line's own flag when the line is
- * only that word (a signature read as [?]: one word on the page, flagged twice). */
-export function fixesFor<T extends Pick<WordFlag, "kind" | "region" | "text">>(flag: T, flags: readonly T[]): T[] {
-  const lineIsWord = (each: T) =>
-    each !== flag && each.kind === "line" && each.text === flag.text && onRow(flag, each.region);
+ * only that word (a signature read as [?]: one word on the page, flagged twice). #614: only the
+ * flag of `row`, the line the Save came from, never another line around it or in its box. */
+export function fixesFor<T extends Pick<WordFlag, "kind" | "region" | "text" | "as_read">>(
+  flag: T,
+  flags: readonly T[],
+  row: Pick<ReadLine, "region" | "text">,
+): T[] {
+  const lineIsWord = (each: T) => each !== flag && each.kind === "line" && each.text === flag.text && onRow(each, row);
   return [flag, ...flags.filter(lineIsWord)];
 }
 
@@ -259,7 +277,7 @@ export function withFixes(
 ): string {
   const left = (word: Pick<WordFlag, "region">) => (word.region.kind === "box" ? word.region.box[0] : 0);
   const inLine = words
-    .filter((word) => onRow(word, line.region) && !(word.kind === "line" && word.text === word.as_read))
+    .filter((word) => onRow(word, line) && !(word.kind === "line" && word.text === word.as_read))
     .sort((a, b) => left(a) - left(b));
   let text = line.text;
   let from = 0;
