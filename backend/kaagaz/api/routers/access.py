@@ -41,6 +41,7 @@ from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.routers.admin import MAX_PASSWORD
 from kaagaz.api.routers.auth import prove_password
+from kaagaz.api.routers.documents import _move_rule
 from kaagaz.api.views import CURSOR, admin_user, iso, timeline
 from kaagaz.db import access as access_sql
 from kaagaz.db import audit, listing
@@ -96,6 +97,12 @@ class PasswordBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     password: Password = None
+
+
+class KeptMoveBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    folder_id: uuid.UUID | None  # required; null: the top level
 
 
 class BulkGiveBody(BaseModel):
@@ -1014,6 +1021,43 @@ def folder_move_preview(
         losing, gaining = access_sql.moved(conn, customer_id, move)
         held = folders_sql.folder_summary(conn, customer_id, target, seen_only=user.role != "admin")
         return _moved(conn, user, losing, gaining, held.files)
+
+
+# The names list's Move and Send to Trash (PRD 7 section 3, #606): an Admin's, on a file they may
+# not be able to see, through 0092's owner-rights functions; the file is found by
+# kaagaz_admin_document (anyone else: 404 for a file they can't see, as for one that never was,
+# then 403). The replies name no file.
+@router.post("/documents/{document_id}/kept/move")
+def move_kept(document_id: uuid.UUID, body: KeptMoveBody, user: User, context: Context) -> dict[str, Any]:
+    """Move the file's whole family into ``folder_id`` (null: the top level): ``{id, folder_id}``. A
+    folder that isn't there is 404; a file in Trash, 409 ``in_trash``. Audited ``document.move``
+    with the counts of who loses and gains it, as a move from the Documents list."""
+    target, customer_id = str(document_id), user.customer_id
+    folder = None if body.folder_id is None else str(body.folder_id)
+    with context.db.user(customer_id, user.user_id) as conn:
+        _live(_admin_document(conn, user, target))
+        if folder is not None and not listing.folders_seen(conn, customer_id, [folder]):
+            raise ApiError(404, "not_found", "The folder you chose isn't there any more. Choose another.")
+        folders_sql._lock_tree(conn, customer_id)  # a move can change who sees it (0085)
+        _live(_admin_document(conn, user, target))  # read again under the lock
+        moved = _move_rule(conn, user, target, folder)
+        listing.admin_move_family(conn, customer_id, target, folder_id=folder)
+        _audit(
+            conn, user, "document.move", ("document", target), None, {"folder_id": folder, **(moved or {})}
+        )
+    return {"id": target, "folder_id": folder}
+
+
+@router.post("/documents/{document_id}/kept/trash", status_code=204)
+def trash_kept(document_id: uuid.UUID, user: User, context: Context) -> Response:
+    """Send the file's whole family to Trash (one already there keeps its first time). Audited
+    ``document.trash``."""
+    target, customer_id = str(document_id), user.customer_id
+    with context.db.user(customer_id, user.user_id) as conn:
+        _admin_document(conn, user, target)
+        access_sql.admin_trash(conn, customer_id, target, now=context.clock())
+        _audit(conn, user, "document.trash", ("document", target), None)
+    return Response(status_code=204)
 
 
 @router.get("/folders/{folder_id}/kept-from-me")

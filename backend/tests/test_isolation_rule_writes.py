@@ -524,3 +524,91 @@ def test_a_full_length_name_beside_a_clash_comes_back_cut_with_no_trailing_space
     reply = admin.client.post(f"/api/documents/trash/folders/{folder}/restore", headers=CSRF)
     assert reply.status_code == 200, reply.text
     assert (reply.json()["folder"]["name"], reply.json()["renamed"]) == ("a" * 95 + " (2)", True)
+
+
+# --- the names list's Move and Send to Trash (PRD 7 section 3; PR 11 adds the buttons) --------------
+
+_MOVE_KEPT = "/api/documents/{d}/kept/move"
+_TRASH_KEPT = "/api/documents/{d}/kept/trash"
+
+
+def _post(signed: Any, path: str, body: Any = None) -> tuple[int, Any]:
+    reply = signed.client.post(path, json=body, headers=CSRF)
+    return reply.status_code, (reply.json() if reply.content else None)
+
+
+def _audited(db: Database, customer: str, action: str, document: str) -> list[tuple[Any, ...]]:
+    return [
+        tuple(row)
+        for row in _owner(
+            db,
+            "SELECT actor_user_id::text, family_id::text, details FROM audit_log"
+            " WHERE customer_id = :c AND action = :a AND target_id = :d",
+            {"c": customer, "a": action, "d": document},
+        )
+    ]
+
+
+def test_an_admin_moves_and_trashes_a_file_they_cant_see_from_the_names_list(db: Database) -> None:
+    """fin and sal are hidden from the Admin: Move puts fin's family in Loose, Send to Trash puts
+    sal's in Trash, each audited with its family; the replies name no file."""
+    org = _walled(Api(db))
+    admin, fin, sal = org.people["admin"], org.files["fin"], org.files["sal"]
+    loose = org.folders["loose"]
+    assert _post(admin, _MOVE_KEPT.format(d=fin), {"folder_id": loose}) == (
+        200,
+        {"id": fin, "folder_id": loose},
+    )
+    assert _owner(db, "SELECT folder_id::text FROM documents WHERE id = :d", {"d": fin}) == [(loose,)]
+    [(actor, family, details)] = _audited(db, org.c, "document.move", fin)
+    assert (actor, family, details["folder_id"]) == (admin.user_id, fin, loose)
+    assert _post(admin, _TRASH_KEPT.format(d=sal)) == (204, None)
+    deleted = _owner(
+        db, "SELECT deleted_at IS NOT NULL, deleted_by::text FROM documents WHERE id = :d", {"d": sal}
+    )
+    assert deleted == [(True, admin.user_id)]
+    assert [(a, f) for a, f, _ in _audited(db, org.c, "document.trash", sal)] == [(admin.user_id, sal)]
+
+
+def test_the_names_lists_actions_find_no_other_organisations_file_or_folder(db: Database) -> None:
+    """Another organisation's file, or its folder as the place, answers as a random id (404), and
+    changes nothing on either side; a file in Trash can't move (409)."""
+    api = Api(db)
+    org, other = _walled(api), _walled(api)
+    admin = org.people["admin"]
+    before = (_documents(db, org.c), _documents(db, other.c))
+    for path in (_MOVE_KEPT, _TRASH_KEPT):
+        body = {"folder_id": None} if path == _MOVE_KEPT else None
+        random = _post(admin, path.format(d=uuid.uuid4()), body)
+        assert random[0] == 404, path
+        assert _post(admin, path.format(d=other.files["fin"]), body) == random, path
+    to_random = _post(admin, _MOVE_KEPT.format(d=org.files["fin"]), {"folder_id": str(uuid.uuid4())})
+    assert to_random[0] == 404
+    assert (
+        _post(admin, _MOVE_KEPT.format(d=org.files["fin"]), {"folder_id": other.folders["loose"]})
+        == to_random
+    )
+    assert (_documents(db, org.c), _documents(db, other.c)) == before
+    trashed = _post(admin, _MOVE_KEPT.format(d=org.files["trashed"]), {"folder_id": None})
+    assert (trashed[0], trashed[1]["error"]["code"]) == (409, "in_trash")
+
+
+@pytest.mark.parametrize("who", ["management", "member", "plain"])
+def test_only_an_admin_uses_the_names_lists_actions(db: Database, who: str) -> None:
+    """Anyone else: a file they can see is 403; one hidden from them is a random id (404); nothing
+    changes."""
+    org = _walled(Api(db))
+    signed = org.people[who]
+    before = _documents(db, org.c)
+    seen = _seen(_app(db), org.c, signed.user_id)
+    for path in (_MOVE_KEPT, _TRASH_KEPT):
+        body = {"folder_id": None} if path == _MOVE_KEPT else None
+        random = _post(signed, path.format(d=uuid.uuid4()), body)
+        for name in ("fin", "sal", "sales"):
+            document = org.files[name]
+            got = _post(signed, path.format(d=document), body)
+            if document in seen:
+                assert got[0] == 403, (path, name)
+            else:
+                assert got == random, (path, name)
+    assert _documents(db, org.c) == before
