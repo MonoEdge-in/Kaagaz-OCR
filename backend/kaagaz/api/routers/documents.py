@@ -1797,12 +1797,13 @@ def _move_rule(
     a move that changes who can see the file is an Admin's, Management's or (inside their
     department) a Head's, else MoveChangesAccess; one that changes nothing is anyone's, and so is a
     file held for the person (theirs to file, PRD 7 section 4). Returns the audit's ``losing`` and
-    ``gaining`` counts of a move that changes access (as its preview counts them), else None."""
+    ``gaining`` counts of a move that changes access (as its preview counts them), else None; a
+    held file left in no folder moves nowhere."""
     found = access_sql.document_hold(conn, user.customer_id, document_id)
     if found is None:  # can't happen: the family is locked and was found above
         raise ApiError(404, "not_found")
     place, held = found
-    if held == user.user_id:
+    if held is not None and folder_id is None:
         return None
     move = folders_sql.Move(
         before=place, after=folders_sql.place_of(conn, user.customer_id, folder_id), private=[]
@@ -1810,7 +1811,8 @@ def _move_rule(
     changed = held is not None or folders_sql.changes_access(conn, user.customer_id, move.before, move.after)
     if not changed:
         return None
-    if not access_sql.rights(conn, user.role == "admin").allow(move.before[0], move.after[0]):
+    rights = access_sql.rights(conn, user.role == "admin")
+    if held != user.user_id and not rights.allow(move.before[0], move.after[0]):
         raise folders_sql.MoveChangesAccess()
     losing, gaining = access_sql.moved(conn, user.customer_id, move, held)
     return {"losing": len(losing), "gaining": len(gaining)}
@@ -1828,8 +1830,11 @@ def undo_autofile(document_id: uuid.UUID, user: User, context: Context) -> dict[
             family_id = trash.lock_live_family(conn, customer_id, target)
             if family_id is None:
                 raise ApiError(404, "not_found")
-            management = access_sql.me(conn)[0]  # under the tree lock (#601)
-            folder_id = autofile.undo(conn, customer_id, family_id, by=user.user_id, management=management)
+            rights = access_sql.rights(conn, user.role == "admin")  # under the tree lock (#601)
+            management = access_sql.me(conn)[0]
+            folder_id = autofile.undo(
+                conn, customer_id, family_id, by=user.user_id, management=management, rights=rights
+            )
             if folder_id is None:
                 raise ApiError(409, "already_moved", "This document was moved since. Nothing was changed.")
             audit.record(
@@ -1845,6 +1850,8 @@ def undo_autofile(document_id: uuid.UUID, user: User, context: Context) -> dict[
             tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
     except trash.InTrash:
         raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.") from None
+    except folders_sql.MoveChangesAccess:  # PRD 7 decision 18 (#601): Undo is a move
+        raise ApiError(403, "move_changes_access", MOVE_REFUSED) from None
     except autofile.HeldForAnother:  # PRD 7 (#601)
         raise ApiError(
             403, "forbidden", "Only the person this file was kept for, or Management, can undo this."

@@ -949,7 +949,7 @@ def document_move_preview(
     """Who would lose and who would gain the file if it moved into ``folder_id`` (left out: the top
     level): ``{losing, gaining, files}``, from one snapshot, as the move's audit row counts them.
     404 for a file or folder the person can't see, as for one that never was; then 403 for anyone
-    but an Admin, Management or a Head inside their department."""
+    but an Admin, Management, a Head inside their department, or the person the file is held for."""
     target, customer_id = str(document_id), user.customer_id
     with context.db.user(customer_id, user.user_id, repeatable_read=True) as conn:
         if not listing.documents_seen(conn, customer_id, [target]):
@@ -961,7 +961,10 @@ def document_move_preview(
         move = folders_sql.Move(
             before=found[0], after=folders_sql.place_of(conn, customer_id, into), private=[]
         )
-        _may_move(conn, user, move)
+        if found[1] is not None and into is None:  # a held file left in no folder: nothing moves
+            return _moved(conn, user, set(), set(), 1)
+        if found[1] != user.user_id:  # a file held for the person is theirs to file (PATCH)
+            _may_move(conn, user, move)
         losing, gaining = access_sql.moved(conn, customer_id, move, found[1])
         return _moved(conn, user, losing, gaining, 1)
 

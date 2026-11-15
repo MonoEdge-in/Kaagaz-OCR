@@ -134,10 +134,13 @@ def undo_version(document_id: uuid.UUID, user: User, context: Context) -> dict[s
     try:
         with context.db.user(user.customer_id, user.user_id) as conn:
             _visible(conn, user, str(document_id))
-            versions_sql.undo(conn, user.customer_id, str(document_id), by=user.user_id)
+            rights = _rights(conn, user)
+            versions_sql.undo(conn, user.customer_id, str(document_id), by=user.user_id, rights=rights)
             return _summary(conn, context, user, str(document_id))
     except versions_sql.Refused as refused:
         raise _refused(refused) from None
+    except folders_sql.MoveChangesAccess:
+        raise ApiError(403, "move_changes_access", MOVE_REFUSED) from None
     except trash.InTrash:
         raise ApiError(409, "in_trash", _IN_TRASH) from None
 

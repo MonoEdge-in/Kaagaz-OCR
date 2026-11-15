@@ -31,7 +31,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection
@@ -46,6 +46,7 @@ from kaagaz.api.auth import (
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import FOLDER_NAME_MAX, clean_name
+from kaagaz.api.routers.access import Password, PasswordBody, _password_given, _self_grant, _tell
 from kaagaz.api.routers.documents import ASK_AN_ADMIN, MOVE_REFUSED, ActivityCursor, ActivityLimit
 from kaagaz.api.views import folder, shown_folder, timeline, trashed_folder, uploaded_every_version
 from kaagaz.db import access as access_sql
@@ -78,6 +79,7 @@ class FolderChangesBody(BaseModel):
     parent_id: uuid.UUID | None = None  # an explicit null: the top level; left out: don't move
     kind: FolderKind | None = None  # left out or null: keep it
     sort_order: SortOrder | None = None  # an explicit null clears it; left out: keep it
+    password: Password = None  # PRD 7 (#601): an Admin's move that opens a wall to themselves
 
 
 def _admin_for_departments(user: CurrentUser, *kinds: str | None) -> None:
@@ -165,14 +167,19 @@ def create_folder(body: NewFolderBody, user: User, context: Context) -> dict[str
 
 @router.patch("/folders/{folder_id}")
 def update_folder(
-    folder_id: uuid.UUID, body: FolderChangesBody, user: User, context: Context
+    folder_id: uuid.UUID, body: FolderChangesBody, user: User, background: BackgroundTasks, context: Context
 ) -> dict[str, Any]:
-    given = body.model_fields_set
+    """Rename, move, or set a folder's kind or order. PRD 7 (#601): a move that opens what the
+    folder holds to the Admin making it asks their password (403 ``password_required``), as giving
+    themselves access does; it is audited ``self`` and Management and the other Admins are told."""
+    given = body.model_fields_set - {"password"}
     if not given:
         raise ApiError(400, "bad_request", "Say what to change: the name, the place, or both.")
     name = _name(body.name) if "name" in given else None
     target = str(folder_id)
     parent_id = None if body.parent_id is None else str(body.parent_id)
+    _password_given(context, user, body.password)  # holding no connection (access.py)
+    details: dict[str, audit.DetailValue] = {}
     with _refused(), context.db.user(user.customer_id, user.user_id) as conn:
         _seen(conn, user, target, parent_id if "parent_id" in given else None)
         path = folders_sql.folder_path(conn, user.customer_id, target)
@@ -187,7 +194,11 @@ def update_folder(
         # The body names at least one change (checked above), so ``row`` is always set.
         # The move goes first: it takes the tree lock before anything is written.
         if "parent_id" in given:
-            details = _move_rule(conn, user, target, parent_id)
+            folders_sql._lock_tree(conn, user.customer_id)
+            move = folders_sql.folder_move(conn, user.customer_id, target, parent_id)
+            rights = access_sql.rights(conn, user.role == "admin")
+            if folders_sql.check_move(conn, user.customer_id, rights, move):
+                details = _wall_moved(conn, user, move, body.password)
             row = folders_sql.move_folder(conn, user.customer_id, target, parent_id=parent_id)
             _audit(conn, user, "folder.move", target, {"parent_id": parent_id, **details})
         if name is not None:
@@ -203,24 +214,25 @@ def update_folder(
                 order="sort_order" in given,
             )
             _audit(conn, user, "folder.kind", target, {"kind": row.kind, "sort_order": row.sort_order})
-        return shown_folder(conn, user.customer_id, row)  # PRD 7 (#599): no hidden parent's id
+        reply = shown_folder(conn, user.customer_id, row)  # PRD 7 (#599): no hidden parent's id
+    if details.get("self"):
+        _tell(background, context, user, "wall", None)
+    return reply
 
 
-def _move_rule(
-    conn: Connection, user: CurrentUser, folder_id: str, parent_id: str | None
+def _wall_moved(
+    conn: Connection, user: CurrentUser, move: folders_sql.Move, password: str | None
 ) -> dict[str, audit.DetailValue]:
-    """PRD 7 decision 18 (#601), under the tree lock, before anything is written: a move that
-    changes who can see what the folder holds is an Admin's, Management's or (inside their
-    department) a Head's; a private folder never goes into another (409 ``inside_private``).
-    Returns the audit's ``losing`` and ``gaining`` counts of one that changes access, as its
-    preview counts them."""
-    folders_sql._lock_tree(conn, user.customer_id)
-    move = folders_sql.folder_move(conn, user.customer_id, folder_id, parent_id)
-    rights = access_sql.rights(conn, user.role == "admin")
-    if not folders_sql.check_move(conn, user.customer_id, rights, move):
-        return {}
+    """A move that changes who can see what it carries (PRD 7 decision 18, #601; the caller has
+    checked the person may make it, under the tree lock): its audit's ``losing`` and ``gaining``
+    counts, as its preview counts them, and ``self`` when it opens what it carries to the Admin
+    making it, who then must have typed their password (``_self_grant``, access.py)."""
     losing, gaining = access_sql.moved(conn, user.customer_id, move)
-    return {"losing": len(losing), "gaining": len(gaining)}
+    details: dict[str, audit.DetailValue] = {"losing": len(losing), "gaining": len(gaining)}
+    if user.user_id in gaining:
+        _self_grant(user, password)
+        details["self"] = True
+    return details
 
 
 @router.get("/folders/{folder_id}/summary")
@@ -244,9 +256,11 @@ def delete_folder(
     folder_id: uuid.UUID,
     user: User,
     context: Context,
+    background: BackgroundTasks,
     contents: Literal["keep", "trash"] | None = None,
     to: uuid.UUID | None = None,
     confirm: bool = False,
+    body: PasswordBody | None = None,
 ) -> Response:
     """Today's delete of an empty folder, for anyone (PRD 7, #601: one holding a folder or a file
     the person can't see is an Admin's, 403 ``hidden_inside``). #537, an admin only:
@@ -254,7 +268,9 @@ def delete_folder(
     folder (#601: 409 ``access_would_change`` when that changes who can see it, until it is sent
     again with ``confirm=true``); ``contents=trash`` sends every file at every depth to Trash and
     deletes the folder with every folder inside it (``folders_sql.delete_folder_with_contents``).
-    Those two reply 200 with ``{files, folders}``: what moved, or the files that went to Trash."""
+    Those two reply 200 with ``{files, folders}``: what moved, or the files that went to Trash.
+    A confirmed keep counts who loses and gains it, and one that opens it to the Admin asks their
+    password (``body.password``; 403 ``password_required``), as a move does."""
     if contents is not None and user.role != "admin":
         raise ApiError(403, "forbidden", "Only an admin can delete a folder that holds files.")
     if contents is not None:
@@ -264,6 +280,9 @@ def delete_folder(
     if (to is not None or confirm) and contents != "keep":
         raise ApiError(400, "bad_request", "Choose where things go only when moving them.")
     target = str(folder_id)
+    password = None if body is None else body.password
+    _password_given(context, user, password)  # holding no connection (access.py)
+    moved: dict[str, audit.DetailValue] = {}
     with _refused(), context.db.user(user.customer_id, user.user_id) as conn:
         _seen(conn, user, target)
         path = folders_sql.folder_path(conn, user.customer_id, target)
@@ -273,6 +292,11 @@ def delete_folder(
             _audit(conn, user, "folder.delete", target)
             return Response(status_code=204)
         destination = None if to is None else str(to)
+        if contents == "keep" and confirm:  # an Admin's: who loses and gains it, before the delete
+            folders_sql._lock_tree(conn, user.customer_id)
+            move = folders_sql.folder_move(conn, user.customer_id, target, destination, contents=True)
+            if folders_sql.check_move(conn, user.customer_id, access_sql.rights(conn, True), move):
+                moved = _wall_moved(conn, user, move, password)
         try:
             held = folders_sql.delete_folder_with_contents(
                 conn,
@@ -311,10 +335,12 @@ def delete_folder(
         if contents == "keep":
             details["to"] = destination
             if confirm:
-                details["confirmed"] = True
+                details |= {"confirmed": True, **moved}
         else:
             details["trash_id"] = held.trash_id  # #542: the folder is in Trash, restorable
         _audit(conn, user, "folder.delete" if contents == "keep" else "folder.trash", target, details)
+    if moved.get("self"):
+        _tell(background, context, user, "wall", None)
     return JSONResponse({"files": held.files, "folders": held.folders})
 
 

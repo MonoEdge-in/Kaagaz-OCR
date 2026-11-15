@@ -440,14 +440,18 @@ def _way_back(state: RowMapping) -> tuple[str | None, str | None]:
     return str(state["private_folder_id"] or state["department_id"]), None
 
 
-def undo(conn: Connection, customer_id: str, document_id: str, *, by: str) -> None:
+def undo(
+    conn: Connection, customer_id: str, document_id: str, *, by: str, rights: Rights | None = None
+) -> None:
     """V7: a document linked from a suggestion (accepted or auto) gets its own family back,
     as version 1, where ``_way_back`` says (#594: the folder it had before, or held again for
     whom it was held for; never open to more people than while it was linked); the
     family's highest ready version is current again; the suggestion is ``undone`` and one
     ``version.undone`` row is written. Raises Refused: not_found, not_linked, or not_newest
     once a later version exists, forbidden when it would be held for someone else and ``by`` is
-    not Management (Q4); trash.InTrash in Trash. O(v log D).
+    not Management (Q4); with ``rights`` (the person's, under the tree lock), MoveChangesAccess
+    when going back changes who can see it (PRD 7 decision 18, #601); trash.InTrash in Trash.
+    O(v log D).
     ponytail: "the previous current" is the highest ready one left (one made current by hand
     since the link stays); a version made current by hand before the link is not remembered."""
     _lock_tree(conn, customer_id)  # first: Undo moves the document back (0085)
@@ -463,6 +467,15 @@ def undo(conn: Connection, customer_id: str, document_id: str, *, by: str) -> No
     folder, held = _way_back(state)
     if held is not None and held != by and not state["management"]:
         raise Refused("forbidden")
+    if held is None and rights is not None:
+        department, private = (
+            None if v is None else str(v) for v in (state["department_id"], state["private_folder_id"])
+        )
+        after = place_of(conn, customer_id, folder)
+        if changes_access(conn, customer_id, (department, private), after) and not rights.allow(
+            department, after[0]
+        ):
+            raise MoveChangesAccess()
     suggestion = str(state["suggestion_id"])
     # Before the split, so the row carries the family and shows on its timeline (A5).
     audit.record(

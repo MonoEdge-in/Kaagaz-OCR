@@ -62,7 +62,16 @@ from sqlalchemy import Connection, RowMapping, text
 
 from kaagaz.chunking.script import fold_digits, is_devanagari, latin_spelling, sound_key
 from kaagaz.db import ai_settings, audit
-from kaagaz.db.folders import _DEPTH, MAX_DEPTH, _lock_tree, prune_empty
+from kaagaz.db.folders import (
+    _DEPTH,
+    MAX_DEPTH,
+    MoveChangesAccess,
+    Rights,
+    _lock_tree,
+    changes_access,
+    place_of,
+    prune_empty,
+)
 from kaagaz.db.trash import InTrash, lock_live_family
 from kaagaz.extraction.checks import gstin_valid
 
@@ -173,7 +182,10 @@ _HOLD_FOR = (
     "SELECT r.uploaded_by FROM documents r JOIN customers c ON c.id = r.customer_id"
     " WHERE r.customer_id = :c AND r.id = :f AND c.walls_set"
 )
-_FILED_IN = "SELECT autofile, folder_id FROM documents WHERE customer_id = :c AND id = :f"
+_FILED_IN = (
+    "SELECT autofile, folder_id, department_id, private_folder_id FROM documents"
+    " WHERE customer_id = :c AND id = :f"
+)
 # Undo's way back (File management F3): the department above the filed folder (the top-level
 # folder at most 100 levels up, when it is of kind department), where a file uploaded into a
 # department was before filing; NULL (the top level) otherwise.
@@ -528,13 +540,20 @@ class HeldForAnother(Exception):
 
 
 def undo(
-    conn: Connection, customer_id: str, family_id: str, *, by: str | None = None, management: bool = False
+    conn: Connection,
+    customer_id: str,
+    family_id: str,
+    *,
+    by: str | None = None,
+    management: bool = False,
+    rights: Rights | None = None,
 ) -> str | None:
     """Move a family Kaagaz filed back where it was before filing (R16): its department when
     it was filed inside one (F3), else the top level. PRD 7 decision 10 (#601): a family held when
     it was filed is held again for the same person, and one open in no folder is held for its
     uploader once the organisation keeps something to some people (HeldForAnother when ``by`` is
-    neither the holder nor ``management``). The folder it leaves, and its parents,
+    neither the holder nor ``management``); one not held is a move, under ``rights``, the person's
+    (MoveChangesAccess, PRD 7 decision 18). The folder it leaves, and its parents,
     go when that leaves them empty (``folders.prune_empty``). Returns the folder it was in;
     None when it is not filed now (a person moved it since, or its folder was deleted), and
     nothing changes. The caller holds the tree lock and the family lock
@@ -549,6 +568,13 @@ def undo(
         held = conn.execute(text(_HOLD_FOR), params).scalar()
     if held is not None and str(held) != by and not management:
         raise HeldForAnother()
+    if held is None and rights is not None:
+        before = tuple(None if v is None else str(v) for v in (row[2], row[3]))
+        after = place_of(conn, customer_id, None if back is None else str(back))
+        if changes_access(conn, customer_id, (before[0], before[1]), after) and not rights.allow(
+            before[0], after[0]
+        ):
+            raise MoveChangesAccess()
     conn.execute(text(_FILE_FAMILY), {**params, "folder": back, "state": None, "held": held})
     prune_empty(conn, customer_id, [str(row[1])])
     return str(row[1])
