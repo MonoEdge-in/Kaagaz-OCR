@@ -260,6 +260,7 @@ export function DocumentsTable({
   ];
   const [moving, setMoving] = useState(false);
   const [locking, setLocking] = useState(false);
+  const bulkLocked = useRef(false);
   const bulkMoved = useRef(false);
   const [password, setPassword] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
@@ -660,7 +661,16 @@ export function DocumentsTable({
         <LockDialog
           documents={lockable}
           onClose={() => setLocking(false)}
+          onClosed={() => {
+            // Cancelled: focus goes back to Lock. Locked: the bar's buttons are gone (as a move).
+            if (!bulkLocked.current) return;
+            bulkLocked.current = false;
+            const box = selectAll.current.find((input) => input.isConnected && input.offsetParent !== null);
+            if (box) box.focus();
+            else events.onFocusList();
+          }}
           onLocked={(message) => {
+            bulkLocked.current = true;
             setLocking(false);
             clearSelection();
             events.onSaved(message);

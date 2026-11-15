@@ -7,7 +7,8 @@
 // a dialog needs them. Move to Trash asks first, Cancel focused; focus goes back to the
 // menu button when a dialog shuts. The server checks every rule again.
 // PRD 7 (PR 13): an Admin's Lock, after the menu's own items (LockDialog.tsx); a locked file
-// has its own screen, with Unlock (LockedDocument.tsx).
+// has its own screen, with Unlock (LockedDocument.tsx). Locked, this menu goes with the screen:
+// once the file is loaded again, focus goes to the locked screen's heading (onLocked).
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { RefObject } from "react";
@@ -35,6 +36,7 @@ export function DocumentMenu({
   readAgain,
   onReadAgain,
   onChanged,
+  onLocked,
   more,
 }: {
   buttonRef: RefObject<HTMLButtonElement | null>; // the menu's button: focus comes back to it
@@ -45,6 +47,8 @@ export function DocumentMenu({
   onReadAgain(): void;
   /** Renamed, moved, tagged, trashed or restored: say it and load the document again. */
   onChanged(message: string): void;
+  /** Locked (PR 13): say it, load it again, and focus its locked screen's heading; else onChanged. */
+  onLocked?(message: string): void;
 }) {
   const [editing, setEditing] = useState<EditAction | null>(null);
   const [trashing, setTrashing] = useState(false);
@@ -156,7 +160,7 @@ export function DocumentMenu({
           onClosed={() => buttonRef.current?.focus()}
           onLocked={(message) => {
             setLocking(false);
-            onChanged(message);
+            (onLocked ?? onChanged)(message);
           }}
         />
       )}

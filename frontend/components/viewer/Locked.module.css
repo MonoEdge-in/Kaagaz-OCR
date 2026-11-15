@@ -1,6 +1,6 @@
 /* Locked files (PRD 7 section 6, PR 13): the open prompt, the page-picture viewer, and the
-   checkbox lists of the lock dialog and the give pop-up. The viewer never prints: a print
-   of the page shows nothing of it (decision 7, view only). */
+   lock dialog's checkbox list. The viewer and its pictures never print: a print of the page
+   shows nothing of them (decision 7, view only; it deters, it cannot stop a photograph). */
 
 .prompt {
   display: flex;
@@ -45,21 +45,32 @@
   background: var(--paper-frame);
 }
 
+/* The page in its turned shape (locked.ts turnedPicture: the frame's aspect ratio), the picture
+   turned about the middle inside it. */
+.page {
+  position: relative;
+  width: 100%;
+  max-width: 60rem;
+}
+
 .picture {
+  position: absolute;
+  top: 50%;
+  left: 50%;
   display: block;
-  max-width: 100%;
-  height: auto;
+  max-width: none;
   background: var(--paper);
   user-select: none;
 }
 
 @media print {
-  .viewer {
+  .viewer,
+  .picture {
     display: none !important;
   }
 }
 
-/* The lock dialog's people and the give pop-up's files: one checkbox a line. */
+/* The lock dialog's people: one checkbox a line. */
 .ticks {
   display: flex;
   flex-direction: column;

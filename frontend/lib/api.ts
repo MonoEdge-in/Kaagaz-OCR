@@ -101,7 +101,6 @@ import type {
   LineSaved,
   LockedOpen,
   LockPerson,
-  PlaceLockedFiles,
   QualityReply,
   ReasonCode,
   ReviewChoice,
@@ -1661,18 +1660,6 @@ export const lockDocument = (id: string, openTo: readonly string[], password: st
 /** All or nothing: a 409 carries `refused: [{id, reason}]` in its details. */
 export const lockDocuments = (ids: readonly string[], openTo: readonly string[], password: string) =>
   request<{ locked: number }>("POST", "/documents/lock", { document_ids: ids, open_to: openTo, password });
+/** `reading`: its current version is read again (PR 12's unlock_file). */
 export const unlockDocument = (id: string, password: string) =>
-  request<{ unlocked: number; reading: boolean }>("POST", `/documents/${encodeURIComponent(id)}/unlock`, { password });
-/** Take back one person's permission to open a locked file (the Access page's Remove). */
-export const revokeLock = (id: string, userId: string) =>
-  request<void>("DELETE", `/documents/${encodeURIComponent(id)}/lock-grants/${encodeURIComponent(userId)}`);
-/** The locked files a department gives (with its private folders for a Head), for the give
- * pop-up; `open` says who already may open each (userId). */
-export const departmentLockedFiles = (departmentId: string, userId?: string, head?: boolean) =>
-  request<PlaceLockedFiles>(
-    "GET",
-    `/admin/departments/${encodeURIComponent(departmentId)}/locked-files${query({ user: userId, head })}`,
-  );
-/** The same for a private folder. */
-export const folderLockedFiles = (folderId: string, userId?: string) =>
-  request<PlaceLockedFiles>("GET", `/folders/${encodeURIComponent(folderId)}/locked-files${query({ user: userId })}`);
+  request<{ unlocked: true; reading: boolean }>("POST", `/documents/${encodeURIComponent(id)}/unlock`, { password });

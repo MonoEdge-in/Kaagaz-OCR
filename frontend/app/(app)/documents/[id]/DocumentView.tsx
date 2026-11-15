@@ -143,6 +143,7 @@ import type {
 import { usePoll } from "@/lib/usePoll";
 import { AttentionPanel, RelatedPanel, attentionCount } from "./DocumentPanels";
 import { DocumentMenu } from "./DocumentMenu";
+import { useHeadingAfterReload } from "@/components/viewer/useHeadingAfterReload";
 import { LockedDocument } from "./LockedDocument";
 import { PageProblems } from "./PageProblems";
 import { ReadAgain } from "./ReadAgain";
@@ -345,6 +346,8 @@ export function DocumentView({
   const marksAround = useMemo(() => [...marksByPage.values()].flat(), [marksByPage]);
   const yourWords = linkWords(wordsParam);
   const wordsFound = useDocumentWords(documentId, yourWords, reloads);
+  // PRD 7 (PR 13): after a lock or unlock, the heading of the screen loaded again takes the focus.
+  const { headingRef, focusAfterReload } = useHeadingAfterReload(shown);
 
   // While it loads, only the skeleton (SoW 19 Oct: "Back to documents" flashed for half a second).
   if (!current) {
@@ -389,6 +392,7 @@ export function DocumentView({
   const detail = current.detail;
   if (detail.locked) {
     const unlocked = (message: string) => {
+      focusAfterReload();
       setToast(message);
       setToastUndo(null);
       setReloads((n) => n + 1);
@@ -399,6 +403,7 @@ export function DocumentView({
         back={backFrom(fromParam) ?? { href: "/documents", name: "documents" }}
         openError={openErrorParam}
         onChanged={unlocked}
+        headingRef={headingRef}
       >
         <Toast message={toast} onClose={() => setToast(null)} />
       </LockedDocument>
@@ -676,7 +681,7 @@ export function DocumentView({
                 Back to <ScriptText text={back.name} />
               </span>
             </Link>
-            <h1 className={styles.title}>
+            <h1 ref={headingRef} tabIndex={-1} className={styles.title}>
               <ScriptText text={detail.display_name} />
             </h1>
             <p className={styles.state}>
@@ -849,6 +854,10 @@ export function DocumentView({
                 readAgain={canReprocess(me.user.role, detail)}
                 onReadAgain={() => setReadAgainKey((n) => n + 1)}
                 onChanged={reloadWith}
+                onLocked={(message) => {
+                  focusAfterReload();
+                  reloadWith(message);
+                }}
                 more={documentMoreItems(review.status, {
                   onEnsemble: (scope) => void ensemble.ask(scope),
                   onExport: () => setExporting(true),

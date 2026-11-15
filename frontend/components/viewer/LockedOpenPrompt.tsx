@@ -5,7 +5,7 @@
 // A person who signs in with Google only (`via` "google", or the server's 409
 // google_confirm_required) confirms with a fresh Google sign-in instead: Google comes back to
 // this page (`next`), with ?open_error= when it did not work. A wrong password says so; five in
-// a row block opening for 15 minutes (429 open_blocked, with when to try again).
+// a row block opening for 15 minutes (429 open_blocked: the server's words say when to try again).
 
 import { useState } from "react";
 import type { FormEvent } from "react";
@@ -36,7 +36,7 @@ export function LockedOpenPrompt({ via, next, openError, onOpened }: LockedOpenP
       const state = await openLocked(password);
       onOpened(state);
     } catch (caught) {
-      const failure = openFailure(caught, Date.now());
+      const failure = openFailure(caught);
       setGoogle(failure.google);
       setError(failure.message || null);
       setPassword("");
@@ -51,7 +51,7 @@ export function LockedOpenPrompt({ via, next, openError, onOpened }: LockedOpenP
       const { url } = await confirmWithGoogle(next);
       window.location.href = url; // Google's sign-in; it comes back to this page
     } catch (caught) {
-      setError(openFailure(caught, Date.now()).message);
+      setError(openFailure(caught).message);
       setBusy(false);
     }
   }

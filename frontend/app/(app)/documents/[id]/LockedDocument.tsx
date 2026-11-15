@@ -7,7 +7,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 import { UnlockDialog } from "@/components/documents/LockDialog";
 import { Icon } from "@/components/ui/Icon";
 import { LOCK_TEXT, LOCKED_TEXT } from "@/components/viewer/locked";
@@ -23,12 +23,14 @@ export function LockedDocument({
   back,
   openError,
   onChanged,
+  headingRef,
   children,
 }: {
   detail: DocumentDetail;
   back: { href: string; name: string };
   openError: string | null; // ?open_error= after the Google confirm
   onChanged(message: string): void; // unlocked: say it and load the document again
+  headingRef?: Ref<HTMLHeadingElement>; // the screen's heading, focused after a lock or unlock
   children?: ReactNode; // the screen's toast
 }) {
   const { me } = useSession();
@@ -55,7 +57,10 @@ export function LockedDocument({
     };
   }, [ready, asks]);
 
-  const ended = useCallback(() => setState((now) => (now ? { ...now, open: false, until: null } : now)), []);
+  const ended = useCallback(
+    () => setState((now) => (now ? { ...now, open: false, until: null, seconds: null } : now)),
+    [],
+  );
 
   let body: ReactNode;
   if (detail.deleted_at !== null) body = <p>{LOCKED_TEXT.inTrash}</p>;
@@ -79,14 +84,14 @@ export function LockedDocument({
       </>
     );
   } else if (state === null) body = <p className="muted">{LOCKED_TEXT.checking}</p>;
-  else if (state.open && state.until) {
+  else if (state.open && state.seconds !== null) {
     body = (
       <LockedViewer
         documentId={detail.id}
         name={detail.display_name}
         pages={detail.pages}
         turns={detail.page_turns}
-        until={state.until}
+        seconds={state.seconds}
         onEnded={ended}
       />
     );
@@ -109,7 +114,9 @@ export function LockedDocument({
         Back to {back.name}
       </Link>
       <header className={styles.headActions}>
-        <h1>{detail.display_name}</h1>
+        <h1 ref={headingRef} tabIndex={-1}>
+          {detail.display_name}
+        </h1>
         {admin && (
           <button type="button" className="btn" onClick={() => setUnlocking(true)}>
             {LOCK_TEXT.unlockMenu}

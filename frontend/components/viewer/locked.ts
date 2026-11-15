@@ -1,12 +1,14 @@
 // Locked files (PRD 7 section 6, PR 13): the words and the small rules of opening one, locking
-// and unlocking, and the give pop-up, kept pure so they are unit tested in node
-// (tests/locked-files.test.ts). A locked file opens only as page pictures, after the person's
-// own Kaagaz password (or a fresh Google sign-in for a person who signs in with Google only),
-// for 10 minutes in this browser; it is never downloaded, printed or read as text.
+// and unlocking, kept pure so they are unit tested in node (tests/locked-open.test.ts). A locked
+// file opens only as page pictures, after the person's own Kaagaz password (or a fresh Google
+// sign-in for a person who signs in with Google only), for 10 minutes in this browser; it is never
+// downloaded, printed or read as text.
 
+import type { CSSProperties } from "react";
 import { ApiError } from "@/lib/api";
 import { formatNumber } from "@/lib/format";
-import type { LockRefusal, PlaceLockedFile } from "@/lib/types";
+import { pageAspect } from "@/lib/regions";
+import type { LockRefusal, PageSummary } from "@/lib/types";
 
 export const LOCKED_TEXT = {
   heading: "This file is locked",
@@ -23,7 +25,7 @@ export const LOCKED_TEXT = {
   checkFailed: "Kaagaz couldn't check whether locked files are open. Try again.",
   preparing: "This file is still being prepared. Its pages show here once they are ready.",
   inTrash: "This file is in the Trash. Restore it first.",
-  pageFailed: "This page couldn't be shown. Try again.",
+  pageFailed: "This page couldn't be shown.",
   viewOnly: "View only: locked files can't be downloaded, printed or copied.",
   previous: "Previous page",
   next: "Next page",
@@ -40,22 +42,19 @@ export function openErrorText(code: string | null): string | null {
   return "Google couldn't confirm it was you. Try again.";
 }
 
-/** Why the password did not open locked files: the server's words, and when to try again after
- * a block (its Retry-After); `google` when this person confirms with Google instead. */
-export function openFailure(caught: unknown, now: number): { message: string; google: boolean } {
+/** Why the password did not open locked files: the server's words alone, which already say when
+ * to try again after a block ("Try again in 15 minutes.", "1 minute" for one), so one wait shows;
+ * `google` when this person confirms with Google instead. */
+export function openFailure(caught: unknown): { message: string; google: boolean } {
   if (!(caught instanceof ApiError)) return { message: OFFLINE, google: false };
   if (caught.code === "google_confirm_required") return { message: "", google: true };
-  if (caught.status === 429 && caught.retryAfter !== undefined) {
-    return { message: `${caught.message} You can try again at ${clockTime(now + caught.retryAfter * 1000)}.`, google: false };
-  }
   return { message: caught.message, google: false };
 }
 
-const clockTime = (at: number) => new Date(at).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" });
-
-/** Whole seconds left of the 10 minutes (never below 0). */
-export function secondsLeft(until: string, now: number): number {
-  return Math.max(0, Math.ceil((Date.parse(until) - now) / 1000));
+/** Whole seconds left of the check: the server's `seconds` when it was read, less the time
+ * since by performance.now() (never this PC's clock, which may be set wrong), never below 0. */
+export function secondsLeft(seconds: number, readAt: number, now: number): number {
+  return Math.max(0, Math.ceil(seconds - Math.max(0, now - readAt) / 1000));
 }
 
 /** "Open for 9:05": the countdown beside the pages. */
@@ -67,8 +66,26 @@ export function openForText(seconds: number): string {
 /** "Page 2 of 5". */
 export const pageOfText = (index: number, total: number) => `Page ${index + 1} of ${total}`;
 
-/** The page's turn for everyone (PRD 7 section 14), as a CSS rotation. */
-export const turnStyle = (turn: number) => (turn === 0 ? undefined : { transform: `rotate(${turn}deg)` });
+/** A page picture with its turn for everyone (PRD 7 section 14), sized as PageViewer.tsx sizes a
+ * turned page: turned 90 or 270 it shows sideways, so the frame takes the turned aspect ratio
+ * (`shownAspect`) and the picture, at its own proportions, is turned about its middle, never
+ * clipped. In percentages of the frame, so it needs no measuring. */
+export function turnedPicture(
+  page: Pick<PageSummary, "width" | "height">,
+  turn: number,
+): { frame: CSSProperties; picture: CSSProperties } {
+  const aspect = pageAspect(page);
+  const sideways = turn === 90 || turn === 270;
+  const shownAspect = sideways ? 1 / aspect : aspect; // the page as it shows, turned
+  return {
+    frame: { aspectRatio: String(shownAspect) },
+    picture: {
+      width: sideways ? `${100 * aspect}%` : "100%", // its own width: the frame's height
+      height: sideways ? `${100 / aspect}%` : "100%", // its own height: the frame's width
+      transform: `translate(-50%, -50%)${turn === 0 ? "" : ` rotate(${turn}deg)`}`,
+    },
+  };
+}
 
 // --- locking and unlocking (Admins) ---
 
@@ -131,35 +148,3 @@ export function refusalsOf(caught: unknown): LockRefusal[] {
 
 /** A failed lock or unlock in words: the server's own (wrong password, not lockable, in Trash). */
 export const lockFailureText = (caught: unknown) => (caught instanceof ApiError ? caught.message : OFFLINE);
-
-// --- the give pop-up (giving a place that holds locked files) ---
-
-/** A search box shows past this many locked files. */
-export const SEARCH_FROM = 10;
-
-const files = (count: number) => `${formatNumber(count)} ${count === 1 ? "file" : "files"}`;
-
-/** "Give Ravi access to Land & Legal. Land & Legal has 120 files. 5 are locked. Choose which
- * locked files Ravi can open:" */
-export function giveIntroText(person: string, place: string, total: number, locked: number): string {
-  const intro = `Give ${person} access to ${place}. ${place} has ${files(total)}.`;
-  if (locked === 0) return `${intro} None are locked.`;
-  const are = locked === 1 ? "1 is locked" : `${formatNumber(locked)} are locked`;
-  return `${intro} ${are}. Choose which locked files ${person} can open:`;
-}
-
-/** "3 of 5 chosen". */
-export const chosenText = (chosen: number, of: number) => `${formatNumber(chosen)} of ${formatNumber(of)} chosen`;
-
-/** With none ticked: "Ravi will get the 115 other files, but none of the locked ones." */
-export const noneChosenText = (person: string, others: number) =>
-  `${person} will get the ${formatNumber(others)} other ${others === 1 ? "file" : "files"}, but none of the locked ones.`;
-
-/** "Sale deed – Survey 72.pdf (Land & Legal / Daregaon)", or the name alone at the place's top. */
-export const lockedFileLabel = (file: Pick<PlaceLockedFile, "name" | "path">) => (file.path ? `${file.name} (${file.path})` : file.name);
-
-/** The files whose name or path holds `query` (any case); all of them for an empty query. */
-export function matchingFiles(items: readonly PlaceLockedFile[], query: string): PlaceLockedFile[] {
-  const wanted = query.trim().toLowerCase();
-  return wanted === "" ? [...items] : items.filter((file) => lockedFileLabel(file).toLowerCase().includes(wanted));
-}

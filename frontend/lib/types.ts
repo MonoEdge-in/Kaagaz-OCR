@@ -2240,11 +2240,13 @@ export interface TestModel {
 
 // --- locked files (PRD 7 section 6, PRs 12 and 13) ---
 
-/** GET /documents/locked-open: whether this browser's 10-minute check is live, until when, and
+/** GET /documents/locked-open: whether this browser's 10-minute check is live, until when, how
+ * many seconds it has left by the server's clock (the countdown never trusts this PC's clock), and
  * how this person confirms (Google for a person whose role signs in with Google only). */
 export interface LockedOpen {
   open: boolean;
   until: string | null; // ISO 8601
+  seconds: number | null; // whole seconds left by the server's clock; null when not open
   via: "password" | "google";
 }
 
@@ -2260,27 +2262,4 @@ export interface LockPerson {
 export interface LockRefusal {
   id: string;
   reason: string;
-}
-
-/** A locked file of a place, for the give pop-up: `open` when the person may open it already. */
-export interface PlaceLockedFile {
-  id: string;
-  name: string;
-  path: string | null;
-  open: boolean;
-}
-
-/** GET /admin/departments/{id}/locked-files and /folders/{id}/locked-files. */
-export interface PlaceLockedFiles {
-  files: number; // every file the place gives
-  locked: PlaceLockedFile[];
-}
-
-/** The Access page's locked files a person may open (GET /admin/users/{id}/access, `locked`). */
-export interface LockedGrant {
-  id: string;
-  name: string;
-  path: string | null;
-  given_at: string;
-  given_by: string | null;
 }
