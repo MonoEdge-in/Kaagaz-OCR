@@ -79,7 +79,8 @@ def test_a_files_name_never_carries_a_link_to_anywhere_but_kaagaz(world: _World)
     world.say(person, "water")  # a list of the four
     card, _ = world.tap(person, f"file:{named}:en", row=True)
     cited = _cited_answer(named, alike)
-    for citation, name in zip(cited["citations"], (f"Pay at https://{EVIL}/pay.pdf", alike_name), strict=True):
+    names = (f"Pay at https://{EVIL}/pay.pdf", alike_name)
+    for citation, name in zip(cited["citations"], names, strict=True):
         citation["document_name"] = name  # each source line names its file
     world.api.answers.reply = cited
     answered, _ = world.say(person, "What is the water bill?")
