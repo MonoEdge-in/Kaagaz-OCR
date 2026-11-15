@@ -117,7 +117,7 @@ from kaagaz.adapters.storage import S3Storage
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.ai.openrouter import KEY_PROBLEM as READER_KEY_PROBLEM
 from kaagaz.ai.openrouter import OpenRouterClient, process_gate
-from kaagaz.db import ai_settings, reader_status, versions
+from kaagaz.db import ai_settings, person_rule, reader_status, versions
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -295,6 +295,28 @@ class RecordAttempt:
             self._record(job.customer_id, job.document_id, attempt, self._max_attempts)
         elif self._record_run is not None:
             self._record_run(job.customer_id, job.run_id, attempt)
+
+
+# PRD 7 (#606, decision 22): what a worker's login may not be, past its own switch into kaagaz_worker.
+_WORKER_UNSAFE = ("superuser_login", "bypassrls_login", "owner_login", "operator_reachable")
+
+
+def check_worker_login(db_login_check: str, worker_role: str, db: Database) -> None:
+    """PRD 7 (#606, decision 22): the per-person rule is written for kaagaz_app, so a worker on a
+    server must run as kaagaz_worker, on a login that is neither the owner, a superuser, one that
+    skips row level security nor one that reaches the operator's role. Each problem is one error
+    line; with DB_LOGIN_CHECK=refuse, RuntimeError before any job (a login not read counts). One
+    read."""
+    problems = [] if worker_role == person_rule.WORKER_ROLE else [f"the worker runs as {worker_role}"]
+    try:
+        with db.system() as conn:
+            problems += [code for code in person_rule.login_risks(conn) if code in _WORKER_UNSAFE]
+    except SQLAlchemyError as error:
+        problems.append(f"the login could not be checked ({type(error).__name__})")
+    for problem in problems:
+        logger.error("unsafe worker login: %s", problem, extra={"code": "unsafe_config"})
+    if problems and db_login_check == "refuse":
+        raise RuntimeError("the worker's database login can't be held by the database rule (DB_LOGIN_CHECK)")
 
 
 def check_queue_redrive(max_receives: int, max_attempts: int) -> None:
@@ -866,6 +888,7 @@ def _serve(settings: Settings) -> None:
         idle_in_transaction_timeout_seconds=settings.db_idle_in_transaction_timeout_seconds,
     )
     db = Database(engine, settings.db_worker_role)
+    check_worker_login(settings.db_login_check, settings.db_worker_role, db)
     storage = S3Storage(settings)
     queue = SqsQueue(settings)
     max_receives = queue.max_receives()  # once; no redrive policy stops the worker here

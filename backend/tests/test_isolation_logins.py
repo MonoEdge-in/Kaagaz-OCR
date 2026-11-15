@@ -28,6 +28,7 @@ from kaagaz import worker_main
 from kaagaz.api import app as app_module
 from kaagaz.api.app import create_app
 from kaagaz.cli import main
+from kaagaz.db import person_rule
 from kaagaz.db.engine import Database, OperatorDatabase, make_engine
 from kaagaz.db.sqlstate import sqlstate
 from kaagaz.db.storage_limits import GIB
@@ -256,7 +257,10 @@ def test_the_app_works_under_its_own_login(logins: dict[str, str]) -> None:
         app_db = Database(app_engine, APP_ROLE)
         api = Api(app_db)
         signed = api.new_signed("member")
-        document = api.add_document(signed.customer_id, uploaded_by=signed.user_id)
+        # Changed on purpose (#606): written as the person; under the database rule the app role with
+        # no person writes no file.
+        with app_db.user(signed.customer_id, signed.user_id) as conn:
+            document = insert_document(conn, signed.customer_id, uploaded_by=signed.user_id)
         listed = signed.client.get("/api/documents")
         assert listed.status_code == 200 and document in listed.text, listed.text
         with first_free_lock(app_engine, [f"kaagaz.test:{uuid.uuid4()}"]) as held:
@@ -386,9 +390,11 @@ def test_unsafe_settings_never_stop_the_start_and_the_operator_sees_them(
     """A6 (stability pass, 7 Nov 2026): at start-up a setting unsafe on a server is logged and
     alerted, and the operator's Health page shows it; the API starts all the same (a refusal could
     take the test server down on a deploy). The limited app login is no superuser; the owner is."""
+    with db.engine.connect() as conn:
+        owner = person_rule.login_risks(conn)  # Changed on purpose (#606): every way past the rule
     for url, expected in (
         (logins[API], ["eicar_scanner"]),
-        (_owner_url(), ["eicar_scanner", "superuser_login"]),
+        (_owner_url(), ["eicar_scanner", *owner]),
     ):
         settings = make_settings(database_url=url, ops_database_url=logins[OPS], scanner="eicar_dev")
         app = create_app(settings, storage=ApiFakeStorage(), queue=ApiFakeQueue(), answers=FakeAnswers())
@@ -396,7 +402,31 @@ def test_unsafe_settings_never_stop_the_start_and_the_operator_sees_them(
             assert client.get("/api/health").json() == {"status": "ok"}
             assert app.state.kaagaz.unsafe_config == expected
     said = [r for r in caplog.records if r.getMessage() in app_module.UNSAFE_SAID.values()]
-    assert len(said) == 3
+    assert len(said) == 2 + len(owner)
+
+
+def test_with_db_login_check_refuse_only_a_login_the_rule_holds_starts(
+    logins: dict[str, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """PRD 7 (#606, decision 22): DB_LOGIN_CHECK=refuse stops the API on the owner's login (it owns
+    the tables and can switch into kaagaz_worker), with one critical line; the limited one starts."""
+    refuse = {"scanner": "clamav", "db_login_check": "refuse"}
+    owner = make_settings(database_url=_owner_url(), ops_database_url=logins[OPS], **refuse)
+    app = create_app(owner, storage=ApiFakeStorage(), queue=ApiFakeQueue(), answers=FakeAnswers())
+    with (
+        caplog.at_level(logging.CRITICAL),
+        pytest.raises(RuntimeError, match="owns the tables"),
+        TestClient(app),
+    ):
+        pass
+    assert [r.code for r in caplog.records if getattr(r, "code", None) == "login_refused"] == [
+        "login_refused"
+    ]
+    limited = make_settings(database_url=logins[API], ops_database_url=logins[OPS], **refuse)
+    with TestClient(
+        create_app(limited, storage=ApiFakeStorage(), queue=ApiFakeQueue(), answers=FakeAnswers())
+    ):
+        pass
 
 
 def test_a_database_it_cannot_reach_is_said_as_such_never_as_a_login_to_fix(
@@ -482,6 +512,22 @@ def test_the_workers_run_in_their_own_role_on_their_own_login(db: Database, logi
     finally:
         engine.dispose()
     assert Job(customer, held) in released
+
+
+def test_with_db_login_check_refuse_a_worker_starts_only_as_kaagaz_worker_on_its_login(
+    db: Database, logins: dict[str, str]
+) -> None:
+    """PRD 7 (#606, decision 22): the worker's start-up check passes kaagaz_jobs in kaagaz_worker;
+    under refuse it stops the owner's login, or the app role; under warn it only logs."""
+    engine = make_engine(logins[JOBS])
+    try:
+        worker_main.check_worker_login("refuse", WORKER, Database(engine, WORKER))
+    finally:
+        engine.dispose()
+    for role in (WORKER, APP_ROLE):
+        with pytest.raises(RuntimeError, match="DB_LOGIN_CHECK"):
+            worker_main.check_worker_login("refuse", role, Database(db.engine, role))
+        worker_main.check_worker_login("warn", role, Database(db.engine, role))
 
 
 def test_the_worker_role_is_held_by_the_organisation_rule(db: Database, logins: dict[str, str]) -> None:
