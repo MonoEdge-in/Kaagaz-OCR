@@ -510,6 +510,20 @@ def test_an_unsure_note_while_files_wait_keeps_every_file_waiting(world: World) 
     assert not set(files) & set(world.fake.fetched)  # no file fetched before a tap (the note was)
 
 
+def test_a_tap_after_an_unsure_note_finds_the_files_still_waiting(world: World) -> None:
+    """A tap (not [Yes] or [No]) puts back the step an unsure note hid, as a message does."""
+    person = world.person()
+    _owner(world.db, "UPDATE whatsapp_org_settings SET uploads = true WHERE customer_id = :c", {"c": person.c})
+    sent = world.api.clock() - timedelta(seconds=20)
+    media = world.fake.add_media(b"%PDF-1.7 a")
+    world.send(person, file_message(person.number, sent, media, filename="a.pdf"))
+    world.ears.heard["sure"] = False
+    world.speak(person)
+    body, _ = world.tap(person, "up:choose::en")
+    assert body == say("pick_folder", "en", "a.pdf")  # the folder list, not "nothing waiting"
+    assert len(_waiting_files(world, person)) == 1
+
+
 def test_an_unsure_note_is_masked_too(world: World) -> None:
     person = world.person()
     world.ears.heard.update(text="account 001234567890", sure=False)
