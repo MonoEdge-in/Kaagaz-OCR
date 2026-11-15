@@ -32,11 +32,8 @@ DEVANAGARI_12000 = "\u0967\u0968,\u0966\u0966\u0966"  # 12,000 in Devanagari dig
         ),  # fillers and a pinned "that month" may go
         ("And the lowest?", "Whose profit was the lowest in September?", "rewrite_adds_facts"),  # a party
         ("And the expenses?", "Whose expenses were highest in September?", "rewrite_adds_facts"),
-        (
-            "And the expenses?",
-            "Which of my expenses were 12000 in September?",
-            "rewrite_adds_facts",
-        ),  # an answer's
+        # Changed on purpose (#621): an answer's number may be used now; one of no turn may not.
+        ("And the expenses?", "What were the expenses of 15000 in September?", "rewrite_adds_facts"),
         ("And the expenses?", "What were the expenses in September 2025?", "rewrite_adds_facts"),  # edge 8
         ("And the expenses?", "What were Mehta's expenses in September?", "rewrite_adds_facts"),
         ("And the expenses?", "Mehta expenses in September?", "rewrite_adds_facts"),  # a name first
@@ -187,11 +184,48 @@ def test_this_resolves_to_a_document_cited_three_turns_back() -> None:
     """Three compact turns always fit, so the first turn's document is still there to name."""
     long = "The figure is shown on the page. " * 25  # about 800 characters, cut to 300
     turns = [
-        Turn("Which document holds the lease?", long, ("Lease Kusgaon 2019.pdf",)),
+        Turn("Which document holds the lease?", long, ("Lease Kusgaon Wagholi.pdf",)),
         Turn("And the rent?", long, ("Rent register.xlsx",)),
         Turn("And the deposit?", long, ("Deposit receipts.pdf",)),
     ]
     history = history_text(turns)
 
-    assert "Documents: Lease Kusgaon 2019" in history and len(history) <= 3000  # no ".pdf"
-    assert guard("Who signed the Lease Kusgaon 2019?", "Who signed this?", history) is None
+    assert "Documents: Lease Kusgaon Wagholi" in history and len(history) <= 3000  # no ".pdf"
+    assert guard("Who signed the Lease Kusgaon Wagholi?", "Who signed this?", history) is None
+
+
+# --- #621 reviews --------------------------------------------------------------------------------
+
+LAST_MONTH = history_text([Turn("What were the expenses last month?", "The expenses were 4,000.")])
+
+
+@pytest.mark.parametrize(
+    ("question", "rewritten"),
+    [
+        ("And this month?", "What were the expenses last month?"),  # "this month" is kept
+        ("What was the profit this month?", "What was the profit last month?"),
+        ("And the profit?", "What was the profit this month?"),  # "this" is never free to add
+    ],
+)
+def test_this_month_is_a_period_never_dropped_nor_added(question: str, rewritten: str) -> None:
+    assert guard(rewritten, question, LAST_MONTH) is not None
+
+
+def test_a_date_comes_from_a_question_never_from_an_answer() -> None:
+    history = history_text([Turn("Show me the sale deed", "It was registered on 24 February 2003.")])
+    asked = "How much stamp duty was paid in total?"
+    rewritten = "How much stamp duty was paid in total in February 2003?"
+    assert guard(rewritten, asked, history) == "rewrite_adds_facts"
+
+
+def test_document_names_are_words_at_most_five_a_turn_and_a_date_in_one_stays_whole() -> None:
+    names = (
+        "Sale-Deed_Wagholi.pdf",
+        "Sale Deed 24.02.2003.pdf",
+        *(f"{'Long name ' * 12}{n}.pdf" for n in range(13)),
+    )
+    history = history_text([Turn("Who signed it?", "Ramesh Patil signed it.", names)])
+    documents = history.splitlines()[-1].removeprefix("Documents: ").split("; ")
+    assert documents[:2] == ["Sale Deed Wagholi", "Sale Deed 24.02.2003"]
+    assert len(documents) == 5 and all(len(name) <= 80 for name in documents)
+    assert history.startswith("Question: Who signed it?\nAnswer: Ramesh Patil signed it.")
