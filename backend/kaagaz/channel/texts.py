@@ -9,17 +9,18 @@ masking.
 * ``mask``: Aadhaar, PAN, bank account and card numbers (Meta's Business Messaging Policy forbids
   sending them) as ``••••`` and their last 4 characters: a PAN (5 letters, 4 digits, a letter), and
   any run of 9 or more digits (of any script) in groups split by up to 3 spaces, tabs, new lines,
-  hyphens or dashes of any kind, so a phone number goes too. W7: what draws nothing (zero-width
-  spaces, the soft hyphen, marks of direction) goes first, so a number with it between its digits is
-  masked as the whole it reads as. An amount (``₹18,50,000``: commas) or a date is
-  left as it is. True when anything was masked, so the reply can say how to see it in full. Only
+  hyphens or dashes of any kind (a dash with a space each side splits two numbers), so a phone
+  number goes too. W7: what draws nothing (``_visible``) and every link go first, so a number with
+  either between its digits is masked as the whole it reads as. An amount (``₹18,50,000``: commas)
+  or a date is left as it is. True when anything was masked, so the reply can say how to see it in full. Only
   replies sent on WhatsApp are masked (Meta's policy, PRD 7 section 15): nothing stored changes,
   and the browser shows every number in full.
 * WhatsApp's limits, ``cut``, ``lang_of`` and ``masked`` (W4's, kept in kaagaz/channel/chat.py
   until W5's uploads shared them).
-* ``kaagaz_links_only`` (W7): a reply without any link but Kaagaz's own. WhatsApp makes a link of an
-  address with its scheme, of ``www.`` and of a domain with a path; whoever wrote one (a file's or
-  folder's name, a translation a document's words talked into it), it never goes from Kaagaz's bot.
+* ``kaagaz_links_only`` (W7): a reply without any link but Kaagaz's own: an address with a scheme,
+  ``mailto:`` or ``www.`` goes, and a host with none is made safe (``evil[.]com/pay``, still read
+  but no link). Whoever wrote one (a file's or folder's name, a translation a document's words
+  talked into it), it never goes from Kaagaz's bot as a link.
 """
 
 import re
@@ -432,15 +433,26 @@ def say(key: str, lang: Language, *values: object) -> str:
     return TEXTS[key][LANGUAGES.index(lang)].format(*values)
 
 
-_PAN = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]{5}[0-9]{4}[A-Za-z](?![A-Za-z0-9])")
+# A PAN: 5 letters, 4 digits (of any script), a letter, half or full width; in capitals, a space or
+# hyphen may split its parts (W7). Never next to another letter or digit.
+_PAN_LETTER, _PAN_CAPITAL = r"A-Za-z\uff21-\uff3a\uff41-\uff5a", r"A-Z\uff21-\uff3a"
+_PAN = re.compile(
+    rf"(?<![^\W_])(?:[{_PAN_LETTER}]{{5}}\d{{4}}[{_PAN_LETTER}]"
+    rf"|[{_PAN_CAPITAL}]{{5}}[ \-]?\d{{4}}[ \-]?[{_PAN_CAPITAL}])(?![^\W_])"
+)
+_PAN_SPLIT = re.compile(r"[ \-]")
 # 9 digits or more: groups of digits split by up to 3 spaces (any, a no-break space, a tab or a new
-# line too), hyphens or dashes (W7: Unicode's hyphens and dashes U+2010 to U+2015, the minus, the
-# small and full-width hyphen-minus), never next to another digit.
-_NUMBER = re.compile(r"(?<!\d)\d+(?:[\s\-\u2010-\u2015\u2212\ufe58\ufe63\uff0d]{1,3}\d+)*(?!\d)")
-# W7: the joiner and non-joiner shape a Devanagari word after one of its letters or signs (not a digit).
-_SHAPED = re.compile("[\u0900-\u0965\u0970-\u097f]")
+# line too), or a hyphen or dash (W7: Unicode's hyphens and dashes U+2010 to U+2015, the minus, the
+# small and full-width hyphen-minus) with a space on one side at most (a range of dates, or a sum,
+# written with a spaced dash or minus, is two numbers); never next to another digit.
+_DASH = r"\-\u2010-\u2015\u2212\ufe58\ufe63\uff0d"
+_NUMBER = re.compile(rf"(?<!\d)\d+(?:(?:\s{{1,3}}|\s?[{_DASH}]\s?(?<!\s[{_DASH}]\s))\d+)*(?!\d)")
 MASK = "••••"
 MASKED_DIGITS = 9  # the shortest bank account number; Aadhaar is 12, a card 13 to 19
+# W7: what draws nothing beyond the format characters (Cf): the variation selectors, the combining
+# grapheme joiner, the Hangul and half-width fillers, the braille blank.
+_BLANK = frozenset("\u034f\u115f\u1160\u3164\uffa0\u2800") | frozenset(map(chr, range(0xFE00, 0xFE10)))
+_JOINERS = "\u200c\u200d"
 
 
 def _digits(found: re.Match[str]) -> str:
@@ -450,38 +462,69 @@ def _digits(found: re.Match[str]) -> str:
 
 
 def _visible(text: str) -> str:
-    """W7: ``text`` without what draws nothing (Unicode's format characters), but the joiner and
-    non-joiner that shape a Devanagari word. O(len(text))."""
+    """W7: ``text`` without what draws nothing: the format characters (but the joiner and
+    non-joiner after anything but a digit, which shape a word or an emoji), ``_BLANK``, and a
+    combining mark after a digit. O(len(text))."""
     if text.isascii():
         return text  # none of them is ASCII
-    return "".join(
-        ch
-        for i, ch in enumerate(text)
-        if unicodedata.category(ch) != "Cf" or (ch in "\u200c\u200d" and i > 0 and _SHAPED.match(text[i - 1]))
-    )
+    kept: list[str] = []
+    for ch in text:
+        after_digit = bool(kept) and kept[-1].isdigit()
+        kind = unicodedata.category(ch)
+        if ch in _BLANK or (kind == "Mn" and after_digit):
+            continue
+        if kind == "Cf" and not (ch in _JOINERS and kept and not after_digit):
+            continue
+        kept.append(ch)
+    return "".join(kept)
 
 
 def mask(text: str) -> tuple[str, bool]:
-    """``text`` with its ID and account numbers masked, and whether any was. O(len(text))."""
-    visible = _visible(text)
-    masked = _PAN.sub(lambda found: MASK + found.group(0)[-4:].upper(), visible)
+    """``text`` with its ID and account numbers masked, and whether any was. W7: what draws nothing
+    goes first, then every link (``kaagaz_links_only``, none kept: a masked text never holds
+    Kaagaz's own), so a number split by either reads as the whole it is. O(len(text))."""
+    visible = kaagaz_links_only(_visible(text), "")
+    masked = _PAN.sub(lambda found: MASK + _PAN_SPLIT.sub("", found.group(0))[-4:].upper(), visible)
     masked = _NUMBER.sub(_digits, masked)
     return masked, masked != visible
 
 
-# W7: an address with a scheme, or starting www., or a domain with a path (WhatsApp links each).
+# W7, links. What a link may hold (a link is cut at a character no address has).
+_IN_LINK = r"[^\s" + re.escape('"<>|{}^`' + chr(92)) + "]"
+_LABEL = r"[^\W_]+(?:-+[^\W_]+)*"  # Unicode letters and digits, hyphens inside
+_TOP = r"(?=[^\W_]*[^\W\d_])[^\W_]{2,}"  # the last label: 2 or more, a letter among them
 _LINK = re.compile(
-    r"\b(?:[a-z][a-z0-9+.-]*://|www\.)\S+|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}/\S*", re.IGNORECASE
+    rf"(?<![^\W_])(?:[a-z][a-z0-9+.\-]*://|www\.|mailto:){_IN_LINK}+"
+    rf"|(?<![.\-])(?<![^\W_])(?P<host>(?:{_LABEL}\.)+{_TOP}|\d{{1,3}}(?:\.\d{{1,3}}){{3}}(?=[/:?#]))"
+    rf"(?![^\W_])(?P<rest>[/:?#]{_IN_LINK}+)?",  # a path, port, query or fragment
+    re.IGNORECASE,
+)
+# A word that ends in one of these, with no path, is a file's name, not a host (none is a top level).
+FILE_TYPES = frozenset(
+    {
+        *("pdf", "jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "tif", "tiff", "bmp", "svg"),
+        *("doc", "docx", "xls", "xlsx", "xlsm", "csv", "txt", "ppt", "pptx", "odt", "ods", "odp"),
+        *("rtf", "xml", "json", "htm", "html", "eml", "msg", "vcf", "ics", "log", "bak", "tmp"),
+        *("ogg", "opus", "mp3", "m4a", "mp4", "aac", "amr", "3gp", "wav", "flac", "avi", "mkv"),
+        *("webm", "bin", "dat", "exe", "dll", "apk", "rar", "7z", "tar", "gz", "tgz", "iso", "dmg"),
+        *("msi", "bat", "js", "css", "ico", "psd", "eps", "dwg", "dxf"),
+    }
 )
 
 
 def kaagaz_links_only(text: str, home: str) -> str:
-    """``text`` without its links but Kaagaz's own (``home``, APP_URL: it, or it and a path).
-    O(len(text))."""
+    """``text`` with no link but Kaagaz's own (``home``, APP_URL: it, or it and a path). An address
+    with a scheme, ``mailto:`` or starting ``www.`` goes; a host with none (``evil.com``,
+    ``evil.com/pay``, ``1.2.3.4/x``; any script) is made safe, its dots as ``[.]``, so its text
+    still reads (``Ref[.]No[.]KMC/123/2024``) but is no link. O(len(text))."""
 
     def kept(found: re.Match[str]) -> str:
-        link = found.group(0)
-        return link if home and (link == home or link.startswith(home + "/")) else ""
+        link, host, rest = found.group(0), found.group("host"), found.group("rest")
+        if host is None:  # a scheme, mailto: or www.
+            return link if home and (link == home or link.startswith(home + "/")) else ""
+        if rest is None and host.rsplit(".", 1)[-1].casefold() in FILE_TYPES:
+            return link
+        return host.replace(".", "[.]") + (rest or "")
 
     return _LINK.sub(kept, text)
 
