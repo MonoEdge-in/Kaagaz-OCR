@@ -1589,6 +1589,7 @@ export type UsageKind =
   | "ensemble_scan" // Ensemble's other readers (feature 27)
   | "ensemble_chat" // Ensemble's other answer drafts (feature 27)
   | "land" // PRD 6 D: reading owners, shares and places of land records
+  | "transcribe" // #603 W6: WhatsApp voice notes written down
   | "ulc_scan"; // #488: a page read under Ultra low cost
 
 /** Tokens of some model calls: all an org admin sees (no money, Tushar, 15 Oct 2026). */

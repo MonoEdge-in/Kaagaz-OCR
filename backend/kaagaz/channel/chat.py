@@ -3,7 +3,14 @@ Ask, "Did you mean", and Get a file with its text preview card and a link. One m
 message out (``Outgoing``), which ``Channel`` sends. W5: the menu is [Ask a question] [Upload a
 file] [Get a file]; More (its list: the languages, Help, Disconnect) and Help are typed words; a
 photo or document sent, and every upload button and folder row (``up:...``), go to
-``kaagaz.channel.upload.Upload``, as a saved file's "ready" notice does. Voice notes (W6) come later.
+``kaagaz.channel.upload.Upload``, as a saved file's "ready" notice does. W6: a voice note is
+written down (``kaagaz.channel.voice.Voice``) and handled exactly as the same words typed (the menu
+words, "Which file?", a folder's name, Ask; never STOP or Disconnect, which are typed only), in the
+language spoken; the reply starts "I heard: ..." (masked, as every reply), with room kept for it
+(``_ROOM``) so a cut never takes a link. A note the model was unsure of first asks "I heard: ...
+Is that right?" [Yes] [No, say again] (``heard:<yes|no>:<language>``), the words waiting in the
+person's step row with the step they were in; only Yes goes on. [Ask a question] and [Get a file]
+say a voice note may be sent while the Admin allows them.
 
 Everything runs as the person (``auth.load_user``, then ``db.user`` only), through PRD 7's views:
 * **Ask** is the browser's own (``chat.ask``, its limits, outage lines and billing), asked on the
@@ -45,6 +52,7 @@ import functools
 import logging
 import re
 import uuid
+from contextvars import ContextVar
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -61,6 +69,7 @@ from kaagaz.api.context import AppContext
 from kaagaz.api.errors import ApiError
 from kaagaz.api.routers import chat as chat_router
 from kaagaz.api.views import NO_ACCESS, cited_document_ids
+from kaagaz.channel.loop import keep_lease
 from kaagaz.channel.outgoing import Outgoing, Row
 from kaagaz.channel.texts import (  # the limits and helpers W4 kept here, shared with uploads (W5)
     BUTTON_CHARS,
@@ -79,7 +88,8 @@ from kaagaz.channel.texts import (  # the limits and helpers W4 kept here, share
 from kaagaz.channel.texts import cut as _cut
 from kaagaz.channel.texts import lang_of as _lang
 from kaagaz.channel.texts import masked as _masked
-from kaagaz.channel.upload import Upload
+from kaagaz.channel.upload import PICKER_MINUTES, Upload
+from kaagaz.channel.voice import Voice
 from kaagaz.chunking.script import ascii_digits
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import listing
@@ -119,12 +129,17 @@ _TRANSLATE_PROMPT = (
 _LANGUAGE_FOR_MODEL = {"hi": "Hindi", "mr": "Marathi"}
 _PATH = " " + chr(0x203A) + " "  # between the folders of a path, as the browser shows it
 _NUMBER = re.compile("[0-9]+(?:[.,][0-9]+)*")
+HEARD_CHARS = 300  # W6: the words heard, in "I heard: ...", masked first
+# W6: the characters a reply keeps free at its start for "I heard: ..." (set while a voice note's
+# reply is made, ``_heard``), so an answer or a card is cut short of WhatsApp's body with its links.
+_ROOM: ContextVar[int] = ContextVar("whatsapp_heard_room", default=0)
 
 
 class Chat:
     def __init__(self, context: AppContext) -> None:
         self.context = context
         self.upload = Upload(context)  # W5
+        self.voice = Voice(context)  # W6
 
     # --- the way in --------------------------------------------------------------------------
 
@@ -143,10 +158,25 @@ class Chat:
         stepped = None if step is None else _lang(str(step.get("lang")))
         if message.kind in ("image", "document"):  # W5: a file to save
             return self.upload.files(user, linked, message, stepped or "en")
+        if message.kind == "audio":  # W6: a voice note, handled as the words typed
+            return self._voice(user, linked, message, step, stepped or "en")
         if message.kind == "video":
             return Outgoing(say("no_video", stepped or "en"), lang=stepped or "en")
         if message.kind != "text":
             return Outgoing(say("typed_only", stepped or "en"), lang=stepped or "en")
+        return self._typed(user, linked, message, body, lang, step, stepped)
+
+    def _typed(
+        self,
+        user: CurrentUser,
+        linked: Linked,
+        message: Waiting,
+        body: str,
+        lang: Language,
+        step: dict[str, Any] | None,
+        stepped: Language | None,
+    ) -> Outgoing:
+        """A text typed (W6: or said in a voice note), in ``lang``, in the step the person is in."""
         word = body.casefold()
         if word in GREETINGS:
             return self._menu(user, lang)
@@ -177,9 +207,9 @@ class Chat:
                 lang = _lang(reply.lang)
                 if reply.notice:
                     return Outgoing("", lang=lang, notice=True)
-                return Outgoing(
-                    say("not_found", lang), ((f"menu.{lang}", say("menu_button", lang)),), lang=lang
-                )
+                body = "\n\n".join(part for part in (reply.heard, say("not_found", lang)) if part)  # W6
+                menu = ((f"menu.{lang}", say("menu_button", lang)),)
+                reply = Outgoing(body, menu, lang=lang, heard=reply.heard)
         home = self._url("")
 
         def kept(text: str) -> str:
@@ -203,6 +233,8 @@ class Chat:
             return self._menu(user, "en")
         if tapped.startswith("up:"):  # W5: an upload's button or folder row
             return self.upload.tapped(user, linked, tapped)
+        if tapped.startswith("heard:"):  # W6: [Yes] or [No, say again] to an unsure voice note
+            return self._confirmed(user, linked, message, tapped)
         if tapped.startswith("pick:"):
             _, message_id, choice, lang = [*tapped.split(":"), "", "", ""][:4]
             return self._picked(user, message, message_id, choice, _lang(lang))
@@ -215,12 +247,12 @@ class Chat:
         lang = _lang(lang_code)
         if action in ("ask", "another"):
             self._set_step(user, None)
-            return Outgoing(say("ask", lang), lang=lang)
+            return Outgoing(say("ask_voice" if self.voice.on(user) else "ask", lang), lang=lang)
         if action == "upload":  # W5
             return self.upload.start(user, lang)
         if action == "get":
             self._set_step(user, {"step": "file", "lang": lang})
-            return Outgoing(say("which_file", lang), lang=lang)
+            return Outgoing(say("which_file_voice" if self.voice.on(user) else "which_file", lang), lang=lang)
         if action == "not_this":
             self._set_step(user, {"step": "file", "lang": lang})
             return Outgoing(say("not_here", lang), lang=lang)
@@ -373,7 +405,7 @@ class Chat:
         notes = [say("masked", lang)] if hidden else []
         full = say("full_answer", lang, self._url(f"/chat?c={conversation}"))
         rest = "\n\n".join([*sources, *notes])
-        room = MAX_BODY - len(rest) - len(full) - 4
+        room = MAX_BODY - _ROOM.get() - len(rest) - len(full) - 4
         if len(text) > min(MAX_ANSWER_CHARS, room):
             text = _cut(text, max(min(MAX_ANSWER_CHARS, room), 1), lines=True) + "\n" + full
         body = "\n\n".join(part for part in (text, rest) if part)
@@ -440,6 +472,74 @@ class Chat:
         return Outgoing(
             question, rows=rows[:MAX_ROWS], button=say("choose", lang), documents=documents, lang=lang
         )
+
+    # --- voice notes (W6) ---------------------------------------------------------------------
+
+    def _voice(
+        self, user: CurrentUser, linked: Linked, message: Waiting, step: dict[str, Any] | None, lang: Language
+    ) -> Outgoing:
+        """A voice note: its words handled as typed (``_heard``); one the model was unsure of asks
+        first, its words waiting in the person's step row with the step they were in."""
+        heard = self.voice.hear(user, message)
+        keep_lease()  # the note's fetch and hearing took their time; Ask may take its own
+        if isinstance(heard, str):
+            return Outgoing(say(heard, lang), lang=lang)
+        lang = heard.lang
+        if not heard.text:
+            return Outgoing(say("voice_unclear", lang), lang=lang)
+        if not heard.sure:
+            before = step.get("before") if step is not None and step.get("step") == "heard" else step
+            self._set_step(user, {"step": "heard", "text": heard.text, "lang": lang, "before": before})
+            buttons = (
+                (f"heard:yes:{lang}", say("yes_button", lang)),
+                (f"heard:no:{lang}", say("say_again_button", lang)),
+            )
+            return Outgoing(
+                _cut(say("heard_sure", lang, self._said(heard.text)), MAX_BODY), buttons, lang=lang
+            )
+        return self._heard(user, linked, message, heard.text, lang, step)
+
+    def _confirmed(self, user: CurrentUser, linked: Linked, message: Waiting, tapped: str) -> Outgoing:
+        """[Yes]: the words waiting go on as typed, in the step the person was in; [No, say again]:
+        the step they were in again. Nothing waiting (expired, answered or never): CHOICE_GONE."""
+        _, answer, lang_code = [*tapped.split(":"), "", ""][:3]
+        lang = _lang(lang_code)
+        with self.context.db.user(user.customer_id, user.user_id) as conn:
+            step = wa_chat.step(conn, user.customer_id, user.user_id)
+            if step is None or step.get("step") != "heard" or not step.get("text"):
+                return Outgoing(say("choice_gone", lang), self._after(lang), lang=lang)
+            before = step.get("before") if isinstance(step.get("before"), dict) else None
+            if before is None:
+                wa_chat.clear_step(conn, user.customer_id, user.user_id)
+            else:  # an upload's waiting files keep their own time
+                minutes = PICKER_MINUTES if before.get("step") == "upload" else STEP_MINUTES
+                wa_chat.set_step(conn, user.customer_id, user.user_id, before, minutes)
+        if answer != "yes":
+            return Outgoing(say("say_again", lang), lang=lang)
+        return self._heard(user, linked, message, str(step["text"]), _lang(str(step.get("lang"))), before)
+
+    def _heard(
+        self,
+        user: CurrentUser,
+        linked: Linked,
+        message: Waiting,
+        text: str,
+        lang: Language,
+        step: dict[str, Any] | None,
+    ) -> Outgoing:
+        """The reply to ``text`` as if typed, starting "I heard: ..." (masked), room kept for it."""
+        line = say("heard", lang, self._said(text))
+        stepped = None if step is None else _lang(str(step.get("lang")))
+        room = _ROOM.set(len(line) + 2)
+        try:
+            reply = self._typed(user, linked, message, text, lang, step, stepped)
+        finally:
+            _ROOM.reset(room)
+        body = _cut(f"{line}\n\n{reply.body}", MAX_BODY, lines=True)
+        return dataclasses.replace(reply, body=body, heard=line)
+
+    def _said(self, text: str) -> str:
+        return _cut(_masked(text), HEARD_CHARS)  # masked before the cut, which could leave part whole
 
     # --- Get a file --------------------------------------------------------------------------
 
@@ -536,8 +636,8 @@ class Chat:
         hidden = hidden or masked
         link = say("open_in_kaagaz", lang, self._url(f"/documents/{target}"))
         tail = "\n".join([*([say("masked", lang)] if hidden else []), link])  # never cut: the link
-        if len(text) + 1 + len(tail) > MAX_BODY:
-            text = _cut(text, MAX_BODY - len(tail) - 1, lines=True)
+        if _ROOM.get() + len(text) + 1 + len(tail) > MAX_BODY:
+            text = _cut(text, MAX_BODY - _ROOM.get() - len(tail) - 1, lines=True)
         buttons = ((f"not_this.{lang}", say("not_this_button", lang)), *menu)
         return Outgoing(f"{text}\n{tail}", buttons, documents=(target,), link=target, lang=lang)
 

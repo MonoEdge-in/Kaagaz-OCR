@@ -61,7 +61,7 @@ class Claim:
 class Waiting:
     """A waiting message. W5: ``wamid`` (WhatsApp's id, for its typing indicator), ``media_id``, and
     ``document_id``: a file it saved, whose "ready" notice it now waits to send (``body`` is then
-    that notice's language)."""
+    that notice's language). W6: ``forwarded``, as WhatsApp marked it (a voice note's refusal)."""
 
     id: str
     kind: str
@@ -70,6 +70,7 @@ class Waiting:
     wamid: str = ""
     media_id: str | None = None
     document_id: str | None = None
+    forwarded: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +119,7 @@ _ADD = text(
 # On whatsapp_messages_waiting: WhatsApp's time first (its deliveries come in any order), then ours.
 # W5: a file's "ready" notice (document_id set) waits behind every message the person sent.
 _NEXT = text(
-    "SELECT id, kind, body, sent_at, wamid, media_id, document_id FROM whatsapp_messages"
+    "SELECT id, kind, body, sent_at, wamid, media_id, document_id, forwarded FROM whatsapp_messages"
     " WHERE customer_id = :c AND link_id = :l AND state = 'waiting'"
     " ORDER BY document_id IS NOT NULL, sent_at, received_at, id LIMIT 1"
 )
@@ -277,7 +278,7 @@ def next_message(conn: Connection, linked: Linked) -> Waiting | None:
     if row is None:
         return None
     document = None if row[6] is None else str(row[6])
-    return Waiting(str(row[0]), str(row[1]), row[2], row[3], str(row[4]), row[5], document)
+    return Waiting(str(row[0]), str(row[1]), row[2], row[3], str(row[4]), row[5], document, bool(row[7]))
 
 
 def check(conn: Connection, linked: Linked) -> Check:

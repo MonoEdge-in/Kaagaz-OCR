@@ -152,16 +152,17 @@ def test_the_menu_is_in_the_language_of_the_message_and_after_the_welcomes_start
     )
     assert world.tap(person, "menu.mr", row=True)[1] == ["ask.mr", "upload.mr", "get.mr"]  # a language
     assert world.tap(person, "made up")[1] == ["ask.en", "upload.en", "get.en"]  # an unknown tap: the menu
-    assert world.tap(person, "ask.mr") == say("ask", "mr")
+    assert world.tap(person, "ask.mr") == say("ask_voice", "mr")  # Changed on purpose (#603 W6): voice too
     assert world.tap(person, "disconnect", row=True)[1] == ["disconnect_yes", "keep"]  # W3's, asked first
     assert world.tap(person, "help.en")[0] == say("help", "en", APP_URL)
 
 
-def test_a_voice_note_gets_type_only_and_a_long_question_is_refused(world: _World) -> None:
+def test_a_sticker_gets_type_only_and_a_long_question_is_refused(world: _World) -> None:
     person = world.person()
-    # Changed on purpose (#603 W5): a photo is a file to save now (tests/test_whatsapp_upload_db.py).
-    voice = {**message(person.number, world.api.clock()), "type": "audio", "audio": {"id": "1"}}
-    assert world.send(person, voice) == say("typed_only", "en")
+    # Changed on purpose (#603 W5, W6): a photo is a file to save now (tests/test_whatsapp_upload_db.py),
+    # a voice note a question (tests/test_whatsapp_voice_db.py); a sticker is still typed only.
+    sticker = {**message(person.number, world.api.clock()), "type": "sticker", "sticker": {"id": "1"}}
+    assert world.send(person, sticker) == say("typed_only", "en")
     assert world.say(person, "x" * 1001) == say("too_long", "en")
     assert world.api.answers.asked == []
 
@@ -380,7 +381,7 @@ def test_get_a_file_one_match_is_its_card_with_a_link(world: _World) -> None:
         " created_at = '2026-09-27 10:00+00' WHERE id = :d",
         {"d": document},
     )
-    assert world.tap(person, "get.en") == say("which_file", "en")
+    assert world.tap(person, "get.en") == say("which_file_voice", "en")  # Changed on purpose (#603 W6)
     body, buttons = world.say(person, "electricity")
     assert body == (
         "MSEB March.pdf\nBills · Invoice · 2 pages · added 27 Sep 2026\n"
@@ -717,12 +718,13 @@ def test_a_person_who_must_set_a_new_password_gets_only_that(world: _World) -> N
     assert world.api.answers.asked == []
 
 
-def test_a_voice_note_after_which_file_is_answered_in_its_language(world: _World) -> None:
+def test_a_sticker_after_which_file_is_answered_in_its_language(world: _World) -> None:
     person = world.person()
     world.tap(person, "get.mr")
-    # Changed on purpose (#603 W5): a photo is a file to save now; a voice note is still typed only.
-    voice = {**message(person.number, world.api.clock()), "type": "audio", "audio": {"id": "1"}}
-    assert world.send(person, voice) == say("typed_only", "mr")
+    # Changed on purpose (#603 W5, W6): a photo is a file to save now, a voice note a question; a
+    # sticker is still typed only.
+    sticker = {**message(person.number, world.api.clock()), "type": "sticker", "sticker": {"id": "1"}}
+    assert world.send(person, sticker) == say("typed_only", "mr")
 
 
 def test_a_number_is_masked_before_it_is_translated(db: Database, fake: WhatsAppFake) -> None:
