@@ -351,10 +351,16 @@ _SAME_PLACE = (
     "SELECT (CAST(:d1 AS uuid), CAST(:p1 AS uuid))"
     " IS NOT DISTINCT FROM (CAST(:d2 AS uuid), CAST(:p2 AS uuid))"
     " OR (CAST(:p1 AS uuid) IS NULL AND CAST(:p2 AS uuid) IS NULL AND NOT :inner"
-    " AND NOT EXISTS (SELECT 1 FROM folders d WHERE d.customer_id = :c"
-    " AND d.id IN (CAST(:d1 AS uuid), CAST(:d2 AS uuid)) AND d.department_only))"
+    " AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY[CAST(:d1 AS uuid), CAST(:d2 AS uuid)]) AS d (id),"
+    " kaagaz_folder_place(d.id) p WHERE p.department_only))"
+    " FROM (SELECT 1) one WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
-_PLACE_OF = "SELECT department_id, private_folder_id, private FROM folders WHERE customer_id = :c AND id = :f"
+# PRD 7 (#606): both read whole (kaagaz_folder_place, 0091): under the database rule a Department only
+# department, or a target folder, the person can't see reads as no row, so as open or the top level.
+_PLACE_OF = (
+    "SELECT department_id, private_folder_id, private FROM kaagaz_folder_place(:f)"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
+)
 _PRIVATE_AMONG = (
     "SELECT id FROM folders WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[])) AND private ORDER BY id"
 )

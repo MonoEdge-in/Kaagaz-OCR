@@ -237,10 +237,7 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ("db/tags.py", "_ADD"): (WRITE_AFTER_CHECK, "PUT /documents/{id}/tags: _document_or_404 first"),
     # PRD 7 PR 10c (#601): the move rules, the move previews, a folder holding what is hidden, and
     # the place of an upload with no folder.
-    ("db/folders.py", "_SAME_PLACE"): (EXISTENCE_ONLY, "a move's rule: _seen or the view first, ids only"),
-    ("db/folders.py", "_PLACE_OF"): (EXISTENCE_ONLY, "a move's places: _seen or the view first, ids only"),
     ("db/folders.py", "_PRIVATE_AMONG"): (TREE_WALK, "the private folders a move carries, ids only"),
-    ("db/access.py", "_CLOSED"): (EXISTENCE_ONLY, "a move preview: whether a department is Department only"),
     ("db/documents.py", "_NO_FOLDER"): (
         SHARED_WITH_WORKER,
         "an upload with no folder: its uploader's departments",
@@ -348,6 +345,11 @@ OWNER_FN: dict[tuple[str, str], str] = {
     ("db/access.py", "_DOCUMENT_HOLD"): "kaagaz_document_place",
     ("db/access.py", "_DOCUMENT_PLACE"): "kaagaz_document_place",
     ("db/access.py", "_FOLDER_FILES"): "kaagaz_admin_files",
+    # The merge review: a file given to a person, out of a Department only department they can't
+    # see, or into a folder they can't see, is a move that changes access (read whole).
+    ("db/access.py", "_CLOSED"): "kaagaz_folder_place",
+    ("db/folders.py", "_PLACE_OF"): "kaagaz_folder_place",
+    ("db/folders.py", "_SAME_PLACE"): "kaagaz_folder_place",
     ("db/folders.py", "_HIDDEN_INSIDE"): "F6 kaagaz_hidden_inside",
     ("answering/ready.py", "_STAMP"): "F11 kaagaz_ready_stamp",
     ("db/access.py", "_GIVEN_TO"): "F12 kaagaz_admin_given_to",
@@ -379,6 +381,12 @@ OWNER_FN: dict[tuple[str, str], str] = {
     ("db/trashed_folders.py", "_RESTORE_IN"): "kaagaz_restore_folder",
 }
 _SAME_BY_REASON = frozenset({WRITE_AFTER_CHECK})
+# PR 9a (#606): the statements calling a kaagaz_admin_* function that a route for everyone reaches,
+# each behind that route's own Admin check (the function refuses anyone else with 42501 too).
+_ADMIN_FN_BEHIND_A_CHECK = {
+    ("db/access.py", "_ADMIN_DOCUMENT"): "the Access routes call admin_document only for an Admin (PR 10a)",
+    ("db/audit.py", "_ADMIN_NAMES"): "the activity feeds: only when _IS_ADMIN says the caller is one",
+}
 # PR 9a (#606): each statement the API reaches that asks "NOT EXISTS (... FROM <covered>", and why the
 # rule hiding a row there is right (a new one fails the test until it is reviewed here).
 _ALL_OR_NONE = "FEWER_OK:a family's versions are seen all or none (shares go to every live version)"
@@ -393,7 +401,6 @@ NOT_EXISTS_CHECKED: dict[tuple[str, str], str] = {
     ("db/folders.py", "_FREE"): "FEWER_OK:Q12, a hidden sibling's name meets its unique index",
     ("db/folders.py", "_MOVE_FREE"): "FEWER_OK:Q12, a hidden sibling's name meets its unique index",
     ("db/folders.py", "_PRUNE"): "FEWER_OK:a hidden child's key refuses the delete (prune_empty keeps it)",
-    ("db/folders.py", "_SAME_PLACE"): "SAME:the departments of two places the person sees",
     ("db/versions.py", "_CANDIDATES"): _ALL_OR_NONE,
     ("db/versions.py", "_HIGHEST_READY_CURRENT"): _ALL_OR_NONE,
     ("db/versions.py", "_LINK_STATE"): _ALL_OR_NONE,
@@ -446,17 +453,11 @@ PR9: dict[tuple[str, str], str] = {
     ("db/trashed_folders.py", "_PATHS"): "FIXED:a path must reach the top",
     ("db/trashed_folders.py", "_SUBTREE"): "FEWER_OK:an Admin sees every folder; a member's is refused (F6)",
     # PR 10b and 10c (#601), after the merge.
-    (
-        "db/access.py",
-        "_CLOSED",
-    ): "SAME:the department of a place the person sees (an Admin sees every folder)",
     ("db/documents.py", "_NO_FOLDER"): "SAME:the uploader's own departments, which they see",
-    ("db/folders.py", "_PLACE_OF"): "SAME:a folder the person sees (an Admin sees every folder)",
     (
         "db/folders.py",
         "_PRIVATE_AMONG",
     ): "FEWER_OK:class H, the private folders of the subtree the person sees; an Admin sees every folder",
-    ("db/folders.py", "_SAME_PLACE"): "SAME:the departments of two places the person sees",
     # Shared with the worker (no rule) or a fragment: each said, never assumed (PR 9a review).
     (
         "db/autofile.py",
@@ -652,9 +653,13 @@ class SqlAccessGuardTest(unittest.TestCase):
         AdminSession or require_admin_session named in the route, never only in a helper)."""
         routes = scan.routes()
         self.assertFalse(routes[("api/routers/documents.py", "list_documents")][1])  # a plain route
-        for key, (reason, _) in ALLOWED.items():
-            if reason != ADMIN_NUMBERS:
-                continue
+        # PR 9a (#606): and each statement that calls a kaagaz_admin_* function (where 0091 moved the
+        # OWNER_FN ones), but the pinned few a plain route reaches behind its own Admin check.
+        calling = scan.calling("kaagaz_admin_")
+        self.assertEqual(set(_ADMIN_FN_BEHIND_A_CHECK) - calling, set())
+        admin_only = [key for key, (reason, _) in ALLOWED.items() if reason == ADMIN_NUMBERS]
+        admin_only += sorted(calling - set(_ADMIN_FN_BEHIND_A_CHECK))
+        for key in admin_only:
             reaching = {route: admin for route, (reached, admin) in routes.items() if key in reached}
             with self.subTest(statement=key):
                 self.assertTrue(reaching)

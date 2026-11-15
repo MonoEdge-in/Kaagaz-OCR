@@ -11,27 +11,18 @@ organisation that never walled anything is run again as walled (``walls_set``), 
 consistent (every department still open)."""
 
 import random
-from collections.abc import Iterator
 from typing import Any
 
 import pytest
 from sqlalchemy import text
 
 from kaagaz.db.engine import Database
-from tests.db_support import APP_ROLE, insert_document, new_customer, rule_on
+from tests.db_support import APP_ROLE, insert_document, new_customer
 from tests.test_api_support import Api
 from tests.test_isolation_access_views import Org, _all, _expected
 from tests.test_operator_auth_db import _owner
 
-pytestmark = pytest.mark.db
-
-
-@pytest.fixture(autouse=True)
-def _the_rule_on(db: Database) -> Iterator[None]:
-    """A test of the rule itself: on for every organisation, in a baseline session too (after the
-    session's database is migrated)."""
-    with rule_on():
-        yield
+pytestmark = [pytest.mark.db, pytest.mark.usefixtures("the_rule_on")]
 
 
 SEEDS = range(8)

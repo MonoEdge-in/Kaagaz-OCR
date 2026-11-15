@@ -85,6 +85,8 @@ DOCUMENT_MOVES = [
     ("head", "sales", "finance", 403),  # into their department, from another place
     ("plain", "sales", "finance", 404),
     ("plain", "fin", "loose", 404),  # a file they can't see
+    ("plain", "given", "sales", 403),  # given to them, out of Department only Finance (read whole)
+    ("plain", "given", None, 403),
     ("member", "held", "sales", 200),  # held for them: theirs to file
     ("management", "held", "finance", 200),
 ]
@@ -138,8 +140,8 @@ def test_rights_are_read_under_the_tree_lock(db: Database) -> None:
     thread.join(timeout=20)
     # Changed on purpose (PR 9a, #606): with the database rule on, the file is gone from their
     # sight under the tree lock too, so the refusal is the 404 of a file they can't see.
-    refused = {(403, "move_changes_access")} | ({(404, "not_found")} if rule_on_everywhere() else set())
-    assert _code(out[0]) in refused, out
+    expected = (404, "not_found") if rule_on_everywhere() else (403, "move_changes_access")
+    assert _code(out[0]) == expected, out
 
 
 # --- the previews and the audit row ----------------------------------------------------------------
@@ -344,6 +346,28 @@ def test_a_join_inside_the_same_place_is_anyones(db: Database) -> None:
     suggestion = str(_owner(db, _SUGGEST, {"c": org.c, "d": new, "f": org.files["sales"]})[0][0])
     reply = _call(org.people["plain"], "POST", f"/api/version-suggestions/{suggestion}/accept", {})
     assert reply[0] == 200, reply
+
+
+def test_a_join_or_undo_with_a_file_given_to_them_in_department_only_needs_the_right(db: Database) -> None:
+    """PR 9a (#606, merge review): the reviewer was given a Finance file. Joining an open file into
+    its family moves it into Finance, a folder they can't see; its Undo moves it out of Department
+    only Finance. Both change who sees it, with the database rule on too (read whole)."""
+    org = _walled(Api(db))
+    plain, new = org.people["plain"], org.files["top"]
+    suggestion = str(_owner(db, _SUGGEST, {"c": org.c, "d": new, "f": org.files["given"]})[0][0])
+    accept = f"/api/version-suggestions/{suggestion}/accept"
+    assert _code(_call(plain, "POST", accept, {})) == (403, "move_changes_access")
+    assert _place(db, new)[0] is None
+    assert _call(org.people["management"], "POST", accept, {})[0] == 200
+    assert _place(db, new)[0] == org.folders["finance"]
+    _owner(  # a share reaches the versions live when it is given: this one is given to them too
+        db,
+        "INSERT INTO document_shares (customer_id, document_id, user_id) VALUES (:c, :d, :u)",
+        {"c": org.c, "d": new, "u": plain.user_id},
+    )
+    undo = _call(plain, "POST", f"/api/documents/{new}/version-undo", {})
+    assert _code(undo) == (403, "move_changes_access")
+    assert _place(db, new)[0] == org.folders["finance"]
 
 
 # --- #594's keep-delete: a warning, then confirm --------------------------------------------------
