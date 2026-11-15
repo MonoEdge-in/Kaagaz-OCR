@@ -9,6 +9,7 @@ Changing what CI selects is Vrushit's call; this file needs his OK before any
 pull request.
 """
 
+import os
 from collections.abc import Iterator
 from typing import Any
 
@@ -30,11 +31,14 @@ def pytest_collection_modifyitems(items: list[Any]) -> None:
 
 @pytest.fixture(scope="session")
 def db() -> Iterator[Database]:
-    """A real database, migrated once per session (tests marked ``db`` only)."""
-    from tests.db_support import database_url, make_database, migrate
+    """A real database, migrated once per session (tests marked ``db`` only). PRD 7 (#606): the
+    per-person database rule is on for every organisation, unless KAAGAZ_TEST_PERSON_RULE=off (the
+    baseline run)."""
+    from tests.db_support import database_url, make_database, migrate, person_rule
 
     url = database_url()
     migrate(url)
     database = make_database(url)
+    person_rule(database, on=os.environ.get("KAAGAZ_TEST_PERSON_RULE", "on") != "off")
     yield database
     database.engine.dispose()

@@ -66,13 +66,10 @@ _NAMED_ON = text(
     " WHERE p.customer_id = :c AND p.user_id = :u ORDER BY lower(f.name), f.id"
 )
 # The files given to :u, one per family (its current version's name and folder): an Admin's screen.
+# PRD 7 (#606): by their true names, the files the Admin can't see too (decision 20): the
+# owner-rights kaagaz_admin_given_to (0091) checks the caller; ``:c`` keeps another customer's id at none.
 _GIVEN_TO = text(
-    "SELECT DISTINCT ON (c.family_id) c.id, c.display_name, c.folder_id, s.given_at, s.given_by"
-    " FROM document_shares s"
-    " JOIN documents v ON v.customer_id = s.customer_id AND v.id = s.document_id"
-    " JOIN documents c ON c.customer_id = v.customer_id AND c.family_id = v.family_id AND c.is_current"
-    " WHERE s.customer_id = :c AND s.user_id = :u AND c.deleted_at IS NULL"
-    " ORDER BY c.family_id, s.given_at"
+    "SELECT * FROM kaagaz_admin_given_to(CAST(:u AS uuid)) WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 _PEOPLE_ON = text(
     "SELECT u.id, u.display_name FROM private_folder_members p"

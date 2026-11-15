@@ -104,7 +104,7 @@ def _listed(sql: str, start: int) -> list[str]:
     return items
 
 
-def reads(sql: str) -> set[str]:
+def reads(sql: str, tables: frozenset[str] = CONTENT | PLACES) -> set[str]:
     """The tables ``sql`` reads directly: after FROM, JOIN and USING (every item of a FROM list,
     ONLY, quotes and a bracketed join too), and the target of an UPDATE or DELETE that returns
     rows (RETURNING); not a DELETE's or an UPDATE's target otherwise. Keywords in capitals, or in
@@ -117,7 +117,7 @@ def reads(sql: str) -> set[str]:
                 found.add(named.group(1))
     if re.search(r"\bRETURNING\b", sql, flags):
         found |= {m.group(1) for m in re.finditer(_WRITE, sql, flags)}
-    return {name.lower() for name in found} & (CONTENT | PLACES)
+    return {name.lower() for name in found} & tables
 
 
 def _name(node: ast.stmt) -> str | None:
@@ -202,9 +202,9 @@ def _closure(
     return seen
 
 
-def owners() -> Iterator[tuple[Owner, bool]]:
+def owners(tables: frozenset[str] = CONTENT | PLACES) -> Iterator[tuple[Owner, bool]]:
     """Every owner whose own SQL reads documents, folders, trashed_folders or a content table
-    directly, and whether kaagaz/api reaches it."""
+    (or, PR 9a #606, any of ``tables``) directly, and whether kaagaz/api reaches it."""
     trees = _parse()
     edges = _graph(trees)
     reached = _closure(edges, {key for key in edges if key[0].startswith("api/")})
@@ -212,12 +212,32 @@ def owners() -> Iterator[tuple[Owner, bool]]:
     texts = {key: _strings(node) for key, node in nodes.items()}
     constants = {key for key, node in nodes.items() if isinstance(node, ast.Assign | ast.AnnAssign)}
     for key, own in texts.items():
-        direct = set().union(*(reads(sql) for sql in own)) if own else set()
+        direct = set().union(*(reads(sql, tables) for sql in own)) if own else set()
         if not direct:
             continue
         named = _closure(edges, {key}, constants)
         view = any("visible_documents" in sql for each in named for sql in texts.get(each, ()))
         yield Owner(key[0], key[1], frozenset(direct), view), key in reached
+
+
+# PR 9a (#606): a statement that reads "not in this covered table" as gone or empty fails open once
+# the database rule hides a row of it.
+_NOT_IN = re.compile(r"NOT EXISTS \(SELECT 1 FROM (?:public\.)?([a-z_]+)", re.IGNORECASE)
+
+
+def not_exists_readers() -> dict[tuple[str, str], frozenset[str]]:
+    """Every (file, name) the API reaches whose own SQL has ``NOT EXISTS (SELECT 1 FROM <covered>``,
+    with those tables."""
+    trees = _parse()
+    nodes = {(rel, name): node for rel, tree in trees.items() for node in tree.body if (name := _name(node))}
+    found = {}
+    for owner, by_api in owners():
+        tables = {
+            m.group(1) for sql in _strings(nodes[(owner.file, owner.name)]) for m in _NOT_IN.finditer(sql)
+        }
+        if by_api and tables & (CONTENT | PLACES):
+            found[(owner.file, owner.name)] = frozenset(tables & (CONTENT | PLACES))
+    return found
 
 
 # The worker's own entry points (#595 condition 1).

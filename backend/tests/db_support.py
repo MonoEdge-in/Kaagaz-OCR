@@ -6,12 +6,15 @@ test session. Tests never clean up: each one makes its own customers with
 random names, so tests cannot see each other's rows (row level security).
 """
 
+import functools
 import os
 import re
 import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -55,6 +58,56 @@ def make_database(url: str, role: str = WORKER_ROLE) -> Database:
     return Database(make_engine(url), role)
 
 
+def person_rule(db: Database, *, on: bool, customer_id: str | None = None) -> None:
+    """PRD 7 (#606): turn the per-person database rule on or off, as the owner (``person-rule``'s
+    row): for ``customer_id``, or every organisation (None). O(1)."""
+    with db.engine.begin() as conn:
+        if on:
+            conn.execute(
+                text(
+                    "INSERT INTO kaagaz_person_rule (for_customer_id, turned_on_by) VALUES (:c, 'tests')"
+                    " ON CONFLICT DO NOTHING"
+                ),
+                {"c": customer_id},
+            )
+        else:
+            conn.execute(
+                text(
+                    "DELETE FROM kaagaz_person_rule"
+                    " WHERE for_customer_id IS NOT DISTINCT FROM CAST(:c AS uuid)"
+                ),
+                {"c": customer_id},
+            )
+
+
+@functools.cache
+def _owner_database() -> Database:
+    return make_database(database_url())
+
+
+@contextmanager
+def until_0092() -> Iterator[None]:
+    """PRD 7 (#606): an Admin's write over files they can't see (a folder deleted, restored or
+    deleted forever with them) works under the database rule only through PR 9b's owner-rights
+    functions (0092). Until then a test's step of that kind runs with the rule off, and the rule is
+    put back as it was after."""
+    db = _owner_database()
+    with db.engine.begin() as conn:
+        was_on = conn.execute(text("SELECT EXISTS (SELECT 1 FROM kaagaz_person_rule)")).scalar()
+    person_rule(db, on=False)
+    try:
+        yield
+    finally:
+        if was_on:
+            person_rule(db, on=True)
+
+
+# PRD 7 (#606): KAAGAZ_TEST_WALLED_ELSEWHERE=1 marks every new organisation as having kept something
+# to some people (customers.walls_set), with every department still open: nobody loses a file, but
+# the rule's fast path is off, so every statement runs the per-row rule and the views' walled path.
+WALLED_ELSEWHERE = os.environ.get("KAAGAZ_TEST_WALLED_ELSEWHERE", "") == "1"
+
+
 def new_customer(db: Database, *, name: str = "Test customer") -> tuple[str, str]:
     """A fresh customer and its first admin user. Returns (customer_id, admin_user_id)."""
     email = f"admin-{uuid.uuid4().hex}@example.test"
@@ -65,6 +118,9 @@ def new_customer(db: Database, *, name: str = "Test customer") -> tuple[str, str
                 {"name": name, "email": email},
             ).scalar_one()
         )
+    if WALLED_ELSEWHERE:
+        with db.engine.begin() as conn:  # the owner: the app may not write walls_set
+            conn.execute(text("UPDATE customers SET walls_set = true WHERE id = :c"), {"c": customer})
     with db.customer(customer) as conn:
         user_id = str(conn.execute(text("SELECT id FROM users WHERE email = :e"), {"e": email}).scalar_one())
     return customer, user_id

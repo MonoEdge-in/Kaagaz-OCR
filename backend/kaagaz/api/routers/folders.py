@@ -196,8 +196,9 @@ def get_folder_summary(folder_id: uuid.UUID, user: User, context: Context) -> di
     the Delete dialog can say it before anything is pressed. Another customer's folder is 404.
     PRD 7 (#599): what the person may see (a hidden folder is 404); an Admin, the true totals."""
     with _refused(), context.db.user(user.customer_id, user.user_id) as conn:
+        admin = user.role == "admin"
         held = folders_sql.folder_summary(
-            conn, user.customer_id, str(folder_id), seen_only=user.role != "admin"
+            conn, user.customer_id, str(folder_id), seen_only=not admin, admin=admin
         )
     return {"files": held.files, "folders": held.folders, "bytes": held.bytes}
 

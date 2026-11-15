@@ -230,6 +230,19 @@ _ENTRIES = (
     " AND a.target_id ~ '^[0-9a-f-]{36}$' THEN CAST(a.target_id AS uuid) END"
     " WHERE a.customer_id = :c"
 )
+# PRD 7 (#606): the Admin's log (shown_only false) names every file, the ones the Admin can't see too
+# (decision 20): a page's rows whose join found no name take it from the owner-rights
+# kaagaz_admin_document_names (0091, one call a page), which checks the caller.
+_ADMIN_NAMES = (
+    "WITH e AS ({page}) SELECT e.id, e.action, e.actor_user_id, e.target_type, e.target_id, e.details,"
+    " e.created_at, e.folder_id, e.family_id, coalesce(e.document_name, n.display_name) AS document_name,"
+    " coalesce(e.document_version_no, n.version_no) AS document_version_no,"
+    " e.document_exists OR n.id IS NOT NULL AS document_exists"
+    " FROM e LEFT JOIN kaagaz_admin_document_names(ARRAY(SELECT CAST(x.target_id AS uuid) FROM e x"
+    " WHERE x.target_type = 'document' AND NOT x.document_exists AND x.target_id ~ '^[0-9a-f-]{{36}}$')) n"
+    " ON e.target_type = 'document' AND NOT e.document_exists AND n.id::text = e.target_id"
+    " ORDER BY e.created_at DESC, e.id DESC"
+)
 _COUNT = "SELECT count(*) FROM audit_log a WHERE a.customer_id = :c"
 # #484: "Add new files only"'s check of a page of files is the admin's alone.
 _SHOWN = (
@@ -248,15 +261,16 @@ _OF_FAMILY = (
 # about a document the person cannot see, and each other entry in a folder they cannot see (an
 # entry about a file follows the file alone, so a file given to them shows its history); one about
 # a document or folder that is gone shows as before. The admin's log (shown_only false) keeps all.
+# PRD 7 (#606): "gone" is asked of kaagaz_existing (0091), which reads the whole table: under the
+# database rule a hidden file is missing from documents too, and would read as gone.
 _TARGET = "CASE WHEN a.target_id ~ '^[0-9a-f-]{36}$' THEN CAST(a.target_id AS uuid) END"
 _SEEN = (
-    " AND (a.target_type <> 'document' OR NOT EXISTS (SELECT 1 FROM documents x"  # noqa: S608 - fixed fragments only
-    f" WHERE x.customer_id = a.customer_id AND x.id = {_TARGET})"
-    " OR EXISTS (SELECT 1 FROM visible_documents v"
-    f" WHERE v.customer_id = a.customer_id AND v.id = {_TARGET}))"
-    " AND (a.target_type = 'document' OR a.folder_id IS NULL OR NOT EXISTS (SELECT 1 FROM folders x"
-    " WHERE x.customer_id = a.customer_id AND x.id = a.folder_id)"
-    " OR EXISTS (SELECT 1 FROM visible_folders v WHERE v.customer_id = a.customer_id AND v.id = a.folder_id))"
+    " AND (a.target_type <> 'document' OR EXISTS (SELECT 1 FROM visible_documents v"  # noqa: S608 - fixed fragments only
+    f" WHERE v.customer_id = a.customer_id AND v.id = {_TARGET})"
+    f" OR NOT EXISTS (SELECT 1 FROM kaagaz_existing('document', ARRAY[{_TARGET}])))"
+    " AND (a.target_type = 'document' OR a.folder_id IS NULL"
+    " OR EXISTS (SELECT 1 FROM visible_folders v WHERE v.customer_id = a.customer_id AND v.id = a.folder_id)"
+    " OR NOT EXISTS (SELECT 1 FROM kaagaz_existing('folder', ARRAY[a.folder_id])))"
 )
 _IN_FOLDERS = " AND a.folder_id = ANY(CAST(:folders AS uuid[]))"
 _BY = " AND a.actor_user_id = CAST(:actor AS uuid)"
@@ -320,7 +334,10 @@ def entries(
     if cursor is not None:
         where += _BEFORE
         params["before_at"], params["before_id"] = cursor
-    return conn.execute(text(_ENTRIES + where + _ORDER), params).mappings().all()
+    statement = _ENTRIES + where + _ORDER
+    if not filters.shown_only:  # the Admin's log: every file named
+        statement = _ADMIN_NAMES.format(page=statement)
+    return conn.execute(text(statement), params).mappings().all()
 
 
 def count(conn: Connection, customer_id: str, filters: Filters) -> int:

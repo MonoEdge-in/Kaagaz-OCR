@@ -220,6 +220,424 @@ FUNCTION_COMMENTS = {
     " this folder (PRD 7, #606)? The documents rule's check of a new version.",
 }
 
+# --- the reads the rule would narrow (PRD 7 PR 9a, #606) -------------------------------------------
+# Each reads the tables as the owner, for kaagaz_current_customer() only (the owner skips the
+# organisation rule too), and answers what the person may know: ids they can see, numbers.
+_ME = "public.kaagaz_current_customer()"
+_A_PERSON = """
+        IF (public.kaagaz_access()).person IS NULL THEN
+            RAISE EXCEPTION 'only an active person of this organisation' USING ERRCODE = 'insufficient_privilege';
+        END IF;"""
+# db/documents.py's REFUSED_ALONE (#554): refused by its scan, its family's only version.
+_REFUSED_ALONE = (
+    "d.status = 'rejected' AND NOT EXISTS (SELECT 1 FROM public.documents o"
+    " WHERE o.customer_id = d.customer_id AND o.family_id = d.family_id AND o.id <> d.id)"
+)
+_SEES = "EXISTS (SELECT 1 FROM public.visible_{view} v WHERE v.customer_id = {me} AND v.id = {id})"
+READS = {
+    # F4: a copy already in, by fingerprint and, when given, size (a folder upload's "Add new files
+    # only": the browser's hash of a file of another size is not it) (PRD 7 section 5): none, visible
+    # or locked_open (with its id), or hidden (no id). A refused copy alone is not in (#554). The
+    # size comes back as given, never the document's.
+    "kaagaz_duplicate(text[], bigint[])": f"""
+    CREATE FUNCTION public.kaagaz_duplicate(p_sha256 text[], p_size bigint[] DEFAULT NULL)
+    RETURNS TABLE (sha256 text, size_bytes bigint, answer text, document_id uuid)
+    LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '' AS $$
+    BEGIN
+        {_A_PERSON}
+        RETURN QUERY SELECT h.sha256, h.size,
+            CASE WHEN d.id IS NULL THEN 'none' WHEN NOT s.seen THEN 'hidden'
+                 WHEN d.locked_at IS NOT NULL THEN 'locked_open' ELSE 'visible' END,
+            CASE WHEN s.seen THEN d.id END
+        FROM (SELECT DISTINCT x.sha256, x.size FROM unnest(p_sha256, p_size) AS x (sha256, size)) h
+        LEFT JOIN public.documents d ON d.customer_id = {_ME} AND d.sha256 = h.sha256
+            AND (h.size IS NULL OR d.size_bytes = h.size) AND NOT ({_REFUSED_ALONE})
+        CROSS JOIN LATERAL (SELECT {_SEES.format(view="documents", me=_ME, id="d.id")} AS seen) s
+        ORDER BY h.sha256, h.size;
+    END
+    $$
+    """,
+    # F5: which of these ids are still in the table, seen or not ("gone for good" is not "hidden").
+    # Any session of the organisation: the truth fails closed (a hidden row is never "gone"), and it
+    # runs once a feed row, so it reads no person.
+    "kaagaz_existing(text, uuid[])": f"""
+    CREATE FUNCTION public.kaagaz_existing(p_kind text, p_ids uuid[]) RETURNS SETOF uuid
+    LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '' ROWS 10 AS $$
+    BEGIN
+        IF p_kind = 'document' THEN
+            RETURN QUERY SELECT d.id FROM public.documents d WHERE d.customer_id = {_ME} AND d.id = ANY (p_ids);
+        ELSIF p_kind = 'folder' THEN
+            RETURN QUERY SELECT f.id FROM public.folders f WHERE f.customer_id = {_ME} AND f.id = ANY (p_ids);
+        ELSIF p_kind = 'trashed_folder' THEN
+            RETURN QUERY SELECT t.id FROM public.trashed_folders t WHERE t.customer_id = {_ME} AND t.id = ANY (p_ids);
+        ELSE
+            RAISE EXCEPTION 'a document, a folder or a trashed folder' USING ERRCODE = 'check_violation';
+        END IF;
+    END
+    $$
+    """,
+    # F6: what the person can't see inside these live folders and trashed folders, each walked down
+    # whole (100 levels, kaagaz.db.folders.MAX_DEPTH): numbers only.
+    "kaagaz_hidden_inside(uuid[], uuid[])": f"""
+    CREATE FUNCTION public.kaagaz_hidden_inside(p_folders uuid[], p_trashed uuid[])
+    RETURNS TABLE (hidden_files bigint, hidden_folders bigint, any_files boolean)
+    LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '' AS $$
+    BEGIN
+        {_A_PERSON}
+        RETURN QUERY WITH RECURSIVE live (id, depth) AS (
+            SELECT f.id, 1 FROM public.folders f WHERE f.customer_id = {_ME} AND f.id = ANY (p_folders)
+            UNION ALL SELECT f.id, live.depth + 1 FROM live
+            JOIN public.folders f ON f.customer_id = {_ME} AND f.parent_id = live.id WHERE live.depth < 101
+        ), trashed (id, trash_id, depth) AS (
+            SELECT t.id, t.trash_id, 1 FROM public.trashed_folders t
+            WHERE t.customer_id = {_ME} AND t.id = ANY (p_trashed)
+            UNION ALL SELECT t.id, t.trash_id, trashed.depth + 1 FROM trashed
+            JOIN public.trashed_folders t ON t.customer_id = {_ME} AND t.parent_id = trashed.id
+            AND t.trash_id = trashed.trash_id WHERE trashed.depth < 101
+        ), files AS (
+            SELECT d.id FROM live JOIN public.documents d ON d.customer_id = {_ME} AND d.folder_id = live.id
+            UNION ALL SELECT d.id FROM trashed JOIN public.documents d
+            ON d.customer_id = {_ME} AND d.trashed_folder_id = trashed.id AND d.trash_id = trashed.trash_id
+        )
+        SELECT (SELECT count(*) FROM files x WHERE NOT {_SEES.format(view="documents", me=_ME, id="x.id")}),
+            (SELECT count(*) FROM live x WHERE NOT {_SEES.format(view="folders", me=_ME, id="x.id")})
+            + (SELECT count(*) FROM trashed x WHERE NOT {_SEES.format(view="trashed_folders", me=_ME, id="x.id")}),
+            EXISTS (SELECT 1 FROM files);
+    END
+    $$
+    """,
+    # kaagaz.db.folders._MOVE_CHECK, on the whole tree (a folder the person can't see would end a
+    # walk early): the depth of p_parent, whether p_folder is on its way up (a cycle), and the
+    # height of p_folder's subtree, so the 100-level limit and the cycle check hold for a member too.
+    # NULL depth or height: no such folder. Numbers only.
+    "kaagaz_folder_depth(uuid, uuid)": f"""
+    CREATE FUNCTION public.kaagaz_folder_depth(p_parent uuid, p_folder uuid)
+    RETURNS TABLE (depth integer, cycle boolean, height integer)
+    LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
+        WITH RECURSIVE up (id, parent_id, depth) AS (
+            SELECT f.id, f.parent_id, 1 FROM public.folders f WHERE f.customer_id = {_ME} AND f.id = p_parent
+            UNION ALL SELECT f.id, f.parent_id, up.depth + 1 FROM up
+            JOIN public.folders f ON f.customer_id = {_ME} AND f.id = up.parent_id WHERE up.depth < 101
+        ), down (id, depth) AS (
+            SELECT f.id, 1 FROM public.folders f WHERE f.customer_id = {_ME} AND f.id = p_folder
+            UNION ALL SELECT f.id, down.depth + 1 FROM down
+            JOIN public.folders f ON f.customer_id = {_ME} AND f.parent_id = down.id WHERE down.depth < 101
+        )
+        SELECT (SELECT max(up.depth) FROM up), EXISTS (SELECT 1 FROM up WHERE up.id = p_folder),
+            (SELECT max(down.depth) FROM down)
+    $$
+    """,
+    # F7 to F11: the organisation's numbers the caps and Home's key count, whole. Any session of the
+    # organisation (the worker's too, which reads them for the same caps); numbers only.
+    "kaagaz_storage_used()": f"""
+    CREATE FUNCTION public.kaagaz_storage_used() RETURNS bigint
+    LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
+        SELECT coalesce(sum(d.size_bytes), 0)::bigint FROM public.documents d WHERE d.customer_id = {_ME}
+    $$
+    """,
+    "kaagaz_spent(timestamp with time zone, timestamp with time zone)": f"""
+    CREATE FUNCTION public.kaagaz_spent(p_start timestamptz, p_end timestamptz)
+    RETURNS TABLE (spent numeric, unknown boolean)
+    LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
+        SELECT coalesce(sum(u.cost_usd), 0), coalesce(bool_or(u.cost_usd IS NULL), false) FROM public.model_usage u
+        WHERE u.customer_id = {_ME} AND u.kind <> 'accuracy_check' AND u.created_at >= p_start AND u.created_at < p_end
+    $$
+    """,
+    "kaagaz_ensemble_runs_this_hour()": f"""
+    CREATE FUNCTION public.kaagaz_ensemble_runs_this_hour() RETURNS bigint
+    LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
+        SELECT count(*) FROM public.ensemble_runs r
+        WHERE r.customer_id = {_ME} AND r.created_at > now() - interval '1 hour'
+    $$
+    """,
+    "kaagaz_word_suggestions_count()": f"""
+    CREATE FUNCTION public.kaagaz_word_suggestions_count() RETURNS bigint
+    LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
+        SELECT count(*) FROM public.organization_word_suggestions s
+        WHERE s.customer_id = {_ME} AND s.status IN ('pending', 'approved')
+    $$
+    """,
+    # answering/ready.py's _STAMP, as it was: hashed into a key, never shown.
+    "kaagaz_ready_stamp()": f"""
+    CREATE FUNCTION public.kaagaz_ready_stamp() RETURNS text
+    LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
+        SELECT (SELECT count(*) || '/' || count(*) FILTER (WHERE d.deleted_at IS NULL) || '/'
+                || coalesce(max(d.updated_at)::text, '') FROM public.documents d WHERE d.customer_id = {_ME}
+                AND d.status NOT IN ('received', 'clean'))
+            || '|' || (SELECT count(*) || '/' || coalesce(max(v.updated_at)::text, '')
+                       FROM public.extracted_values v WHERE v.customer_id = {_ME})
+            || '|' || (SELECT count(*) || '/' || coalesce(max(greatest(w.created_at, w.undone_at))::text, '')
+                       FROM public.word_changes w WHERE w.customer_id = {_ME} AND w.before_text <> w.after_text)
+            || '|' || (SELECT count(*) FILTER (WHERE p.embedding IS NULL) || '/'
+                       || coalesce(string_agg(DISTINCT p.embedding_model, ','), '')
+                       FROM public.pieces p WHERE p.customer_id = {_ME})
+            || '|' || (SELECT c.access_version FROM public.customers c WHERE c.id = {_ME})
+    $$
+    """,
+}
+READ_COMMENTS = {
+    "kaagaz_duplicate(text[], bigint[])": "A copy already in, by fingerprint (PRD 7 section 5, #606): none, visible,"
+    " locked_open (with its id) or hidden (no id); a refused copy alone is not in. An active person.",
+    "kaagaz_existing(text, uuid[])": "Which of these documents, folders or trashed folders still exist, seen or"
+    " not (PRD 7, #606): gone for good is not hidden. Ids only, of the ids given.",
+    "kaagaz_hidden_inside(uuid[], uuid[])": "How many files and folders the current person can't see inside"
+    " these live and trashed folders, and whether any file is (PRD 7, #606). An active person; numbers only.",
+    "kaagaz_folder_depth(uuid, uuid)": "A folder's depth, whether a move makes a cycle, and a subtree's height,"
+    " on the whole tree, for the 100-level limit (PRD 7, #606). Numbers only.",
+    "kaagaz_storage_used()": "The bytes the organisation's documents hold (#516, PRD 7 #606).",
+    "kaagaz_spent(timestamp with time zone, timestamp with time zone)": "The organisation's model spend in a"
+    " window, and whether part of it is unknown (PRD 7, #606).",
+    "kaagaz_ensemble_runs_this_hour()": "The organisation's Ensemble runs in the last hour (PRD 7, #606).",
+    "kaagaz_word_suggestions_count()": "The organisation's pending and approved word suggestions (PRD 7, #606).",
+    "kaagaz_ready_stamp()": "Home's ready-answer key, organisation-wide, hashed and never shown (PRD 7, #602,"
+    " #606).",
+}
+# F12 and F13: an Admin's names and numbers, whole (decision 20): today's statements, read as the
+# owner for kaagaz_current_customer() only. An Admin, or the worker role with no person named
+# (it sees the whole organisation anyway; the tests read these as it): the role a session SET ROLE
+# to, which an owner-rights function doesn't change and kaagaz_app can't take. Anyone else (the
+# API role with no person; a person who is not an Admin, switched off or unknown) gets
+# insufficient_privilege.
+_AN_ADMIN = """
+    #variable_conflict use_column
+    BEGIN
+        IF NOT coalesce((SELECT x.admin OR (NOT x.asked AND current_setting('role') = 'kaagaz_worker')
+                         FROM public.kaagaz_access() x), false) THEN
+            RAISE EXCEPTION 'only an Admin' USING ERRCODE = 'insufficient_privilege';
+        END IF;"""
+_ADMIN_HEAD = "LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '' AS $$"
+ADMIN = {
+    # admin._DOCUMENTS_BY_STATUS (as an object, status to count), _COUNTS and _KEPT.
+    "kaagaz_admin_stats()": f"""
+    CREATE FUNCTION public.kaagaz_admin_stats()
+    RETURNS TABLE (documents_by_status jsonb, questions_total bigint, answered bigint, not_found bigint,
+                   verified_answers bigint, needs_review_answers bigint, feedback_up bigint, feedback_down bigint,
+                   open_review_items bigint, older_versions bigint, in_trash bigint)
+    {_ADMIN_HEAD}{_AN_ADMIN}
+        RETURN QUERY SELECT
+            (SELECT coalesce(jsonb_object_agg(s.status, s.n), '{{}}'::jsonb) FROM (
+                SELECT d.status, count(*) AS n FROM public.documents d
+                WHERE d.customer_id = {_ME} AND d.deleted_at IS NULL AND d.is_current GROUP BY d.status) s),
+            m.questions_total, m.answered, m.not_found, m.verified_answers, m.needs_review_answers,
+            f.feedback_up, f.feedback_down, r.open_review_items, k.older_versions, k.in_trash
+        FROM (SELECT count(*) FILTER (WHERE g.answer ->> 'status' IS DISTINCT FROM 'clarify') AS questions_total,
+                     count(*) FILTER (WHERE g.answer ->> 'status' = 'answered') AS answered,
+                     count(*) FILTER (WHERE g.answer ->> 'status' = 'not_found') AS not_found,
+                     count(*) FILTER (WHERE g.answer ->> 'label' = 'verified') AS verified_answers,
+                     count(*) FILTER (WHERE g.answer ->> 'label' = 'needs_review') AS needs_review_answers
+              FROM public.messages g WHERE g.customer_id = {_ME} AND g.role = 'assistant') m,
+             (SELECT count(*) FILTER (WHERE b.rating = 'up') AS feedback_up,
+                     count(*) FILTER (WHERE b.rating = 'down') AS feedback_down
+              FROM public.feedback b WHERE b.customer_id = {_ME}) f,
+             (SELECT count(*) AS open_review_items FROM public.extracted_values v
+              JOIN public.documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+              WHERE v.customer_id = {_ME} AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
+              AND v.label = 'needs_review') r,
+             (SELECT count(*) FILTER (WHERE d.deleted_at IS NULL AND NOT d.is_current) AS older_versions,
+                     count(DISTINCT d.family_id) FILTER (WHERE d.deleted_at IS NOT NULL) AS in_trash
+              FROM public.documents d WHERE d.customer_id = {_ME}) k;
+    END
+    $$
+    """,
+    # admin._MEMBERS (#386): every user with their numbers in [p_lo, p_hi); NULL, no bound.
+    "kaagaz_admin_member_numbers(timestamp with time zone, timestamp with time zone)": f"""
+    CREATE FUNCTION public.kaagaz_admin_member_numbers(p_lo timestamptz, p_hi timestamptz)
+    RETURNS TABLE (id uuid, display_name text, email text, role text, disabled boolean,
+                   last_active_at timestamptz, documents_uploaded bigint, pages_read numeric,
+                   questions_asked bigint, values_verified bigint)
+    {_ADMIN_HEAD}{_AN_ADMIN}
+        RETURN QUERY WITH w AS (SELECT coalesce(p_lo, '-infinity'::timestamptz) AS lo,
+                                       coalesce(p_hi, 'infinity'::timestamptz) AS hi)
+        SELECT u.id, u.display_name, u.email, u.role, u.disabled, GREATEST(u.last_seen_at, u.last_login_at),
+            coalesce(d.documents, 0), coalesce(d.pages, 0), coalesce(q.questions, 0), coalesce(v.verified, 0)
+        FROM public.users u
+        LEFT JOIN (SELECT d.uploaded_by, count(*) AS documents, sum(p.pages) AS pages FROM public.documents d
+                   CROSS JOIN w CROSS JOIN LATERAL (SELECT count(*) AS pages FROM public.pages p
+                       WHERE p.customer_id = d.customer_id AND p.document_id = d.id AND p.route IS NOT NULL) p
+                   WHERE d.customer_id = {_ME} AND d.uploaded_by IS NOT NULL AND d.created_at >= w.lo
+                   AND d.created_at < w.hi GROUP BY d.uploaded_by) d ON d.uploaded_by = u.id
+        LEFT JOIN (SELECT c.user_id, count(*) AS questions FROM public.conversations c
+                   JOIN public.messages m ON m.customer_id = c.customer_id AND m.conversation_id = c.id CROSS JOIN w
+                   WHERE c.customer_id = {_ME} AND m.role = 'assistant'
+                   AND m.answer ->> 'status' IS DISTINCT FROM 'clarify'
+                   AND m.created_at >= w.lo AND m.created_at < w.hi GROUP BY c.user_id) q ON q.user_id = u.id
+        LEFT JOIN (SELECT k.corrected_by, count(*) AS verified FROM public.corrections k CROSS JOIN w
+                   WHERE k.customer_id = {_ME} AND k.created_at >= w.lo AND k.created_at < w.hi
+                   GROUP BY k.corrected_by) v ON v.corrected_by = u.id
+        WHERE u.customer_id = {_ME} ORDER BY lower(u.display_name), u.id;
+    END
+    $$
+    """,
+    # admin._FAILED and _FAILED_COUNT (PRD 3 Z1): the page, and the total on every row; one row with
+    # no id (the total alone) when the page is empty.
+    "kaagaz_admin_failed(integer, integer)": f"""
+    CREATE FUNCTION public.kaagaz_admin_failed(p_limit integer, p_offset integer)
+    RETURNS TABLE (id uuid, display_name text, detected_type text, status text, failure_code text,
+                   page_count integer, attempts integer, max_attempts integer, last_run_at timestamptz,
+                   total bigint)
+    {_ADMIN_HEAD}{_AN_ADMIN}
+        RETURN QUERY SELECT p.id, p.display_name, p.detected_type, p.status, p.failure_code, p.page_count,
+            p.attempts, p.max_attempts, p.last_run_at, t.total
+        FROM (SELECT count(*) AS total FROM public.documents d WHERE d.customer_id = {_ME}
+              AND d.deleted_at IS NULL AND d.is_current AND d.status IN ('failed', 'needs_reader')) t
+        LEFT JOIN LATERAL (
+            SELECT d.id, d.display_name, d.detected_type, d.status, d.failure_code, d.page_count, d.attempts,
+                d.max_attempts, r.started_at AS last_run_at, d.created_at
+            FROM public.documents d
+            LEFT JOIN LATERAL (SELECT pr.started_at FROM public.processing_runs pr
+                               WHERE pr.customer_id = {_ME} AND pr.document_id = d.id
+                               ORDER BY pr.started_at DESC LIMIT 1) r ON true
+            WHERE d.customer_id = {_ME} AND d.deleted_at IS NULL AND d.is_current
+            AND d.status IN ('failed', 'needs_reader')
+            ORDER BY d.created_at DESC, d.id DESC LIMIT p_limit OFFSET p_offset
+        ) p ON true
+        ORDER BY p.created_at DESC, p.id DESC;
+    END
+    $$
+    """,
+    # runs._PAGES_BY_ROUTE and _READER_PAGES: the pages of the runs started in [p_start, p_end).
+    "kaagaz_admin_reader_pages(timestamp with time zone, timestamp with time zone)": f"""
+    CREATE FUNCTION public.kaagaz_admin_reader_pages(p_start timestamptz, p_end timestamptz)
+    RETURNS TABLE (pages_cells bigint, pages_text_layer bigint, pages_ocr bigint, pages_blank bigint,
+                   pages_gemini bigint, pages_local bigint, pages_cached bigint, pages_read_again bigint,
+                   input_tokens bigint, output_tokens bigint)
+    {_ADMIN_HEAD}{_AN_ADMIN}
+        RETURN QUERY SELECT coalesce(sum(r.pages_cells), 0)::bigint, coalesce(sum(r.pages_text_layer), 0)::bigint,
+            coalesce(sum(r.pages_ocr), 0)::bigint, coalesce(sum(r.pages_blank), 0)::bigint,
+            coalesce(sum(r.pages_gemini), 0)::bigint, coalesce(sum(r.pages_local), 0)::bigint,
+            coalesce(sum(r.pages_cached), 0)::bigint, coalesce(sum(r.pages_read_again), 0)::bigint,
+            coalesce(sum(r.input_tokens), 0)::bigint, coalesce(sum(r.output_tokens), 0)::bigint
+        FROM public.processing_runs r
+        WHERE r.customer_id = {_ME} AND r.started_at >= p_start AND r.started_at < p_end;
+    END
+    $$
+    """,
+    # usage._REPORT (SP2): the period's spend grouped six ways, names looked up after the grouping.
+    "kaagaz_admin_usage(timestamp with time zone, timestamp with time zone, text, uuid)": f"""
+    CREATE FUNCTION public.kaagaz_admin_usage(p_start timestamptz, p_end timestamptz, p_tz text, p_user uuid)
+    RETURNS TABLE (dimension text, user_id uuid, model text, kind text, day date, document_id uuid,
+                   of_document boolean, calls bigint, cached_calls bigint, input_tokens numeric,
+                   output_tokens numeric, reasoning_tokens numeric, cost_usd numeric, cost_estimated boolean,
+                   cost_part_unknown boolean, user_name text, model_name text, document_name text)
+    {_ADMIN_HEAD}{_AN_ADMIN}
+        RETURN QUERY WITH r AS (
+            SELECT u.user_id, u.model, u.kind, CAST(timezone(p_tz, u.created_at) AS date) AS day, u.document_id,
+                (u.document_id IS NOT NULL OR (u.conversation_id IS NULL AND u.kind IN
+                 ('scan', 'upgrade', 'card', 'invoice', 'land', 'map', 'careful', 'ensemble_scan', 'ulc_scan')))
+                AS of_document,
+                u.cached, u.calls, u.input_tokens, u.output_tokens, u.reasoning_tokens, u.cost_usd, u.cost_estimated
+            FROM public.model_usage u
+            WHERE u.customer_id = {_ME} AND u.kind <> 'accuracy_check'
+            AND u.created_at >= p_start AND u.created_at < p_end AND (p_user IS NULL OR u.user_id = p_user)
+        ), g AS (
+            SELECT CASE WHEN GROUPING(r.user_id) = 0 THEN 'user' WHEN GROUPING(r.model) = 0 THEN 'model'
+                WHEN GROUPING(r.kind) = 0 THEN 'kind' WHEN GROUPING(r.day) = 0 THEN 'day'
+                WHEN GROUPING(r.document_id) = 0 THEN 'document' ELSE 'total' END AS dimension,
+                r.user_id, r.model, r.kind, r.day, r.document_id, r.of_document,
+                sum(r.calls) AS calls, coalesce(sum(r.calls) FILTER (WHERE r.cached), 0) AS cached_calls,
+                sum(r.input_tokens) AS input_tokens, sum(r.output_tokens) AS output_tokens,
+                sum(r.reasoning_tokens) AS reasoning_tokens, sum(r.cost_usd) AS cost_usd,
+                bool_or(r.cost_estimated) AS cost_estimated, bool_or(r.cost_usd IS NULL) AS cost_part_unknown
+            FROM r
+            GROUP BY GROUPING SETS ((), (r.user_id), (r.model), (r.kind), (r.day), (r.document_id, r.of_document))
+        )
+        SELECT g.dimension, g.user_id, g.model, g.kind, g.day, g.document_id, g.of_document, g.calls,
+            g.cached_calls, g.input_tokens, g.output_tokens, g.reasoning_tokens, g.cost_usd, g.cost_estimated,
+            g.cost_part_unknown, x.display_name, m.name, d.display_name
+        FROM g
+        LEFT JOIN public.users x ON x.customer_id = {_ME} AND x.id = g.user_id
+        LEFT JOIN public.model_catalog m ON m.id = g.model
+        LEFT JOIN public.documents d ON d.customer_id = {_ME} AND d.id = g.document_id
+        ORDER BY g.dimension, g.day, g.cost_usd DESC NULLS LAST, g.calls DESC,
+            g.user_id, g.model, g.kind, g.document_id;
+    END
+    $$
+    """,
+    # listing._USAGE_ROWS (SP2): the spend CSV, one row per day, user, model and kind.
+    "kaagaz_admin_usage_rows(timestamp with time zone, timestamp with time zone, text, uuid)": f"""
+    CREATE FUNCTION public.kaagaz_admin_usage_rows(p_start timestamptz, p_end timestamptz, p_tz text, p_user uuid)
+    RETURNS TABLE (day date, user_name text, model text, kind text, calls bigint, tokens numeric,
+                   cost_usd numeric, cost_estimated boolean, cost_part_unknown boolean)
+    {_ADMIN_HEAD}{_AN_ADMIN}
+        RETURN QUERY SELECT (u.created_at AT TIME ZONE p_tz)::date, max(us.display_name), u.model, u.kind,
+            sum(u.calls), sum(u.input_tokens + u.output_tokens), sum(u.cost_usd), bool_or(u.cost_estimated),
+            bool_or(u.cost_usd IS NULL)
+        FROM public.model_usage u
+        LEFT JOIN public.users us ON us.customer_id = u.customer_id AND us.id = u.user_id
+        WHERE u.customer_id = {_ME} AND u.kind <> 'accuracy_check'
+        AND u.created_at >= p_start AND u.created_at < p_end AND (p_user IS NULL OR u.user_id = p_user)
+        GROUP BY 1, u.user_id, u.model, u.kind ORDER BY 1, 2 NULLS FIRST, u.model, u.kind;
+    END
+    $$
+    """,
+    # folders._SUMMARY (#537): what the folder holds at every depth, its own row counted in folders
+    # (0: no such folder).
+    "kaagaz_admin_folder_summary(uuid)": f"""
+    CREATE FUNCTION public.kaagaz_admin_folder_summary(p_folder uuid)
+    RETURNS TABLE (folders bigint, files bigint, size_bytes numeric)
+    {_ADMIN_HEAD}{_AN_ADMIN}
+        RETURN QUERY WITH RECURSIVE down (id, depth) AS (
+            SELECT f.id, 1 FROM public.folders f WHERE f.customer_id = {_ME} AND f.id = p_folder
+            UNION ALL SELECT f.id, down.depth + 1 FROM down
+            JOIN public.folders f ON f.customer_id = {_ME} AND f.parent_id = down.id WHERE down.depth < 101
+        ), live AS (
+            SELECT d.family_id, d.size_bytes FROM public.documents d WHERE d.customer_id = {_ME}
+            AND d.deleted_at IS NULL AND d.folder_id IN (SELECT down.id FROM down)
+        )
+        SELECT (SELECT count(*) FROM down), (SELECT count(DISTINCT live.family_id) FROM live),
+            (SELECT coalesce(sum(live.size_bytes), 0) FROM live);
+    END
+    $$
+    """,
+    # F13: the names of documents (any version) for the Admin's log, where its join found none.
+    "kaagaz_admin_document_names(uuid[])": f"""
+    CREATE FUNCTION public.kaagaz_admin_document_names(p_ids uuid[])
+    RETURNS TABLE (id uuid, display_name text, version_no integer)
+    {_ADMIN_HEAD}{_AN_ADMIN}
+        RETURN QUERY SELECT d.id, d.display_name, d.version_no FROM public.documents d
+        WHERE d.customer_id = {_ME} AND d.id = ANY (p_ids);
+    END
+    $$
+    """,
+    # access._GIVEN_TO (#601): the live files given to a person, one per family, by their true names.
+    "kaagaz_admin_given_to(uuid)": f"""
+    CREATE FUNCTION public.kaagaz_admin_given_to(p_user uuid)
+    RETURNS TABLE (id uuid, display_name text, folder_id uuid, given_at timestamptz, given_by uuid)
+    {_ADMIN_HEAD}{_AN_ADMIN}
+        RETURN QUERY SELECT DISTINCT ON (c.family_id) c.id, c.display_name, c.folder_id, s.given_at, s.given_by
+        FROM public.document_shares s
+        JOIN public.documents v ON v.customer_id = s.customer_id AND v.id = s.document_id
+        JOIN public.documents c ON c.customer_id = v.customer_id AND c.family_id = v.family_id AND c.is_current
+        WHERE s.customer_id = {_ME} AND s.user_id = p_user AND c.deleted_at IS NULL
+        ORDER BY c.family_id, s.given_at;
+    END
+    $$
+    """,
+}
+_NUMBERS = " An Admin (or the worker role); names and numbers only (PRD 7 decision 20, #606)."
+ADMIN_COMMENTS = {
+    "kaagaz_admin_stats()": "The admin screen's numbers, whole: documents by status, questions, feedback,"
+    " review items, older versions and Trash." + _NUMBERS,
+    "kaagaz_admin_member_numbers(timestamp with time zone, timestamp with time zone)": "Each member's numbers"
+    " in a window (#386)." + _NUMBERS,
+    "kaagaz_admin_failed(integer, integer)": "A page of the failed or unreadable files and their total (PRD 3"
+    " Z1); one row with no id when the page is empty." + _NUMBERS,
+    "kaagaz_admin_reader_pages(timestamp with time zone, timestamp with time zone)": "The pages read in a"
+    " window by route and by reader, and the tokens billed (PRD 2 R6, PRD 5 U9)." + _NUMBERS,
+    "kaagaz_admin_usage(timestamp with time zone, timestamp with time zone, text, uuid)": "The Usage screen's"
+    " spend in a window, grouped six ways (SP2)." + _NUMBERS,
+    "kaagaz_admin_usage_rows(timestamp with time zone, timestamp with time zone, text, uuid)": "The spend CSV:"
+    " one row per day, user, model and kind (SP2)." + _NUMBERS,
+    "kaagaz_admin_folder_summary(uuid)": "What a folder holds at every depth, its own row counted in folders"
+    " (#537)." + _NUMBERS,
+    "kaagaz_admin_document_names(uuid[])": "The names of these documents, any version, for the Admin's log."
+    + _NUMBERS,
+    "kaagaz_admin_given_to(uuid)": "The live files given to a person, one per family, by their true names"
+    " (#601)." + _NUMBERS,
+}
+FUNCTIONS |= READS | ADMIN
+FUNCTION_COMMENTS |= READ_COMMENTS | ADMIN_COMMENTS
+
 UPGRADE = [
     f"SET LOCAL lock_timeout = '{_0090.LOCK_TIMEOUT}'",  # the autocommit block ended env.py's
     f"COMMENT ON INDEX public.{KEPT_INDEX} IS {_literal(KEPT_INDEX_COMMENT)}",

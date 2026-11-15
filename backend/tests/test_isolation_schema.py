@@ -351,6 +351,63 @@ OWNER_RIGHTS = {
     "kaagaz_person_rule_on": ("boolean", EMPTY_PATH),
     "kaagaz_sees_everything": ("boolean", EMPTY_PATH),
     "kaagaz_family_visible": ("boolean", EMPTY_PATH),
+    # Changed on purpose (#606, 0091): what the rule would narrow, read whole; ids and numbers only.
+    "kaagaz_duplicate": ("TABLE(sha256 text, size_bytes bigint, answer text, document_id uuid)", EMPTY_PATH),
+    "kaagaz_existing": ("SETOF uuid", EMPTY_PATH),
+    "kaagaz_hidden_inside": (
+        "TABLE(hidden_files bigint, hidden_folders bigint, any_files boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_folder_depth": ("TABLE(depth integer, cycle boolean, height integer)", EMPTY_PATH),
+    "kaagaz_storage_used": ("bigint", EMPTY_PATH),
+    "kaagaz_spent": ("TABLE(spent numeric, unknown boolean)", EMPTY_PATH),
+    "kaagaz_ensemble_runs_this_hour": ("bigint", EMPTY_PATH),
+    "kaagaz_word_suggestions_count": ("bigint", EMPTY_PATH),
+    "kaagaz_ready_stamp": ("text", EMPTY_PATH),
+    # Changed on purpose (#606, 0091): an Admin's names and numbers, whole (decision 20).
+    "kaagaz_admin_stats": (
+        "TABLE(documents_by_status jsonb, questions_total bigint, answered bigint, not_found bigint,"
+        " verified_answers bigint, needs_review_answers bigint, feedback_up bigint, feedback_down bigint,"
+        " open_review_items bigint, older_versions bigint, in_trash bigint)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_member_numbers": (
+        "TABLE(id uuid, display_name text, email text, role text, disabled boolean,"
+        " last_active_at timestamp with time zone, documents_uploaded bigint, pages_read numeric,"
+        " questions_asked bigint, values_verified bigint)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_failed": (
+        "TABLE(id uuid, display_name text, detected_type text, status text, failure_code text,"
+        " page_count integer, attempts integer, max_attempts integer,"
+        " last_run_at timestamp with time zone, total bigint)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_reader_pages": (
+        "TABLE(pages_cells bigint, pages_text_layer bigint, pages_ocr bigint, pages_blank bigint,"
+        " pages_gemini bigint, pages_local bigint, pages_cached bigint, pages_read_again bigint,"
+        " input_tokens bigint, output_tokens bigint)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_usage": (
+        "TABLE(dimension text, user_id uuid, model text, kind text, day date, document_id uuid,"
+        " of_document boolean, calls bigint, cached_calls bigint, input_tokens numeric,"
+        " output_tokens numeric, reasoning_tokens numeric, cost_usd numeric, cost_estimated boolean,"
+        " cost_part_unknown boolean,"
+        " user_name text, model_name text, document_name text)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_usage_rows": (
+        "TABLE(day date, user_name text, model text, kind text, calls bigint, tokens numeric,"
+        " cost_usd numeric, cost_estimated boolean, cost_part_unknown boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_folder_summary": ("TABLE(folders bigint, files bigint, size_bytes numeric)", EMPTY_PATH),
+    "kaagaz_admin_document_names": ("TABLE(id uuid, display_name text, version_no integer)", EMPTY_PATH),
+    "kaagaz_admin_given_to": (
+        "TABLE(id uuid, display_name text, folder_id uuid, given_at timestamp with time zone, given_by uuid)",
+        EMPTY_PATH,
+    ),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"

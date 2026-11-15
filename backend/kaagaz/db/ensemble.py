@@ -80,8 +80,10 @@ _RUNS_LOCK = text(
 )
 # ponytail: reads the customer's runs of every document (the index's first column); a
 # (customer_id, created_at) index if one customer makes thousands of runs.
+# PRD 7 (#606): the whole organisation's runs (kaagaz_ensemble_runs_this_hour, 0091), never only
+# those of files the person can see, so the cap can't fail open.
 _RUNS_THIS_HOUR = text(
-    "SELECT count(*) FROM ensemble_runs WHERE customer_id = :c AND created_at > now() - interval '1 hour'"
+    "SELECT kaagaz_ensemble_runs_this_hour() WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 _INSERT_RUN = text(
     "INSERT INTO ensemble_runs (customer_id, document_id, scope, pages, models, requested_by, retry_of,"
