@@ -43,7 +43,7 @@ from kaagaz.api.routers.admin import MAX_PASSWORD
 from kaagaz.api.routers.auth import prove_password
 from kaagaz.api.views import CURSOR, admin_user, iso, timeline
 from kaagaz.db import access as access_sql
-from kaagaz.db import audit, listing
+from kaagaz.db import audit, listing, lock_places
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import users as users_sql
 
@@ -96,6 +96,12 @@ class PasswordBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     password: Password = None
+
+
+class PreviewBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    document_ids: list[uuid.UUID] = Field(min_length=1, max_length=MAX_FILES)
 
 
 class BulkGiveBody(BaseModel):
@@ -207,8 +213,9 @@ def _department_only(conn: Connection, user: CurrentUser, department_id: str | N
 
 @admin_router.get("/admin/users/{user_id}/access")
 def get_user_access(user_id: uuid.UUID, user: AdminSession, context: Context) -> dict[str, Any]:
-    """The Access page: ``{user, departments, private_folders, files, locked}`` (PR 12 fills
-    ``locked``). True names (decision 20). Another organisation's person is 404."""
+    """The Access page: ``{user, departments, private_folders, files, locked}``: ``locked``, the
+    locked files they may open (PR 13, #605). True names (decision 20). Another organisation's
+    person is 404."""
     target, customer_id = str(user_id), user.customer_id
     with context.db.user(customer_id, user.user_id) as conn:
         found = access_sql.person(conn, customer_id, target)
@@ -218,7 +225,10 @@ def get_user_access(user_id: uuid.UUID, user: AdminSession, context: Context) ->
         member_of = access_sql.departments(conn, customer_id, target)
         named = access_sql.named_on(conn, customer_id, target)
         given = access_sql.given_to(conn, customer_id, target)
-        places = [str(row["id"]) for row in named] + [str(r["folder_id"]) for r in given if r["folder_id"]]
+        locked = lock_places.locked_for(conn, customer_id, target)
+        places = [str(row["id"]) for row in named] + [
+            str(r["folder_id"]) for r in [*given, *locked] if r["folder_id"]
+        ]
         paths = access_sql.paths(conn, customer_id, places)
     return {
         "user": {
@@ -251,7 +261,16 @@ def get_user_access(user_id: uuid.UUID, user: AdminSession, context: Context) ->
             }
             for row in given
         ],
-        "locked": [],
+        "locked": [
+            {
+                "id": str(row["id"]),
+                "name": row["display_name"],
+                "path": None if row["folder_id"] is None else paths.get(str(row["folder_id"])),
+                "given_at": iso(row["given_at"]),
+                "given_by": str(row["given_by"]),
+            }
+            for row in locked
+        ],
     }
 
 
@@ -1064,3 +1083,105 @@ def access_activity(
         return timeline(
             conn, customer_id, filters, limit=limit, cursor=cursor, full=True, unseen_masked=not admin
         )
+
+
+# --- locked files: the pop-ups' reads (PR 13, #605) ----------------------------------------------
+
+
+def _who_can_see(conn: Connection, user: CurrentUser, documents: list[str]) -> list[dict[str, str | bool]]:
+    """Everyone who can see any of these files today (``kaagaz_audience``'s ``sees``), and the Admin
+    asking (``you``, ticked by default), by name."""
+    people: dict[str, str] = {user.user_id: user.display_name}
+    for document in documents:
+        for row in access_sql.audience(conn, user.customer_id, "document", document, None):
+            if row["sees"]:
+                people[str(row["user_id"])] = row["display_name"]
+    ordered = sorted(people.items(), key=lambda each: (each[1].lower(), each[0]))
+    return [{"id": person, "name": name, "you": person == user.user_id} for person, name in ordered]
+
+
+@router.get("/documents/{document_id}/lock-preview")
+def lock_preview(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
+    """The lock dialog's people (PRD 7 section 6): ``{people: [{id, name, you}]}``, everyone who can
+    see the file today, unticked, and the locking Admin. An Admin about any file (names only); anyone
+    else: 404 for a file they can't see, then 403."""
+    target = str(document_id)
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        if user.role != "admin":
+            if listing.get_document(conn, user.customer_id, target) is None:
+                raise ApiError(404, "not_found")
+            raise ApiError(403, "forbidden", "Only an admin can lock a file.")
+        _admin_document(conn, user, target)
+        return {"people": _who_can_see(conn, user, [target])}
+
+
+@admin_router.post("/documents/lock-preview")
+def lock_preview_many(body: PreviewBody, user: AdminSession, context: Context) -> dict[str, Any]:
+    """The bulk bar's: ``{people}`` who can see any of the files, and the Admin. A file unknown: 404."""
+    documents = list(dict.fromkeys(str(each) for each in body.document_ids))
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        for document in documents:
+            _admin_document(conn, user, document)
+        return {"people": _who_can_see(conn, user, documents)}
+
+
+def _locked_files(
+    conn: Connection,
+    user: CurrentUser,
+    department: str | None,
+    private: str | None,
+    person: uuid.UUID | None,
+    *,
+    head: bool,
+) -> dict[str, Any]:
+    customer_id = user.customer_id
+    rows = lock_places.locked(
+        conn, customer_id, department, private, head=head, user_id=None if person is None else str(person)
+    )
+    paths = access_sql.paths(conn, customer_id, [str(row["folder_id"]) for row in rows if row["folder_id"]])
+    return {
+        "files": lock_places.files(conn, customer_id, department, private, head=head),
+        "locked": [
+            {
+                "id": str(row["id"]),
+                "name": row["display_name"],
+                "path": None if row["folder_id"] is None else paths.get(str(row["folder_id"])),
+                "open": bool(row["open"]),
+            }
+            for row in rows
+        ],
+    }
+
+
+@admin_router.get("/admin/departments/{department_id}/locked-files")
+def department_locked_files(
+    department_id: uuid.UUID,
+    user: AdminSession,
+    context: Context,
+    user_id: Annotated[uuid.UUID | None, Query(alias="user")] = None,
+    head: bool = False,
+) -> dict[str, Any]:
+    """Giving a person a department that holds locked files (PRD 7 section 6): ``{files, locked:
+    [{id, name, path, open}]}``, the files a membership gives (``head``: its private folders' too)
+    and which of them are locked, by name; ``open`` when ``user`` may open one already. 404 none;
+    409 ``not_a_department``."""
+    department = str(department_id)
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        _department(conn, user, department)
+        return _locked_files(conn, user, department, None, user_id, head=head)
+
+
+@admin_router.get("/folders/{folder_id}/locked-files")
+def folder_locked_files(
+    folder_id: uuid.UUID,
+    user: AdminSession,
+    context: Context,
+    user_id: Annotated[uuid.UUID | None, Query(alias="user")] = None,
+) -> dict[str, Any]:
+    """The same for naming a person on a private folder. 404 none; 409 ``not_private``."""
+    target = str(folder_id)
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        place = _folder_seen(conn, user, target)
+        if not place.private:
+            raise ApiError(409, "not_private", "This folder isn't private.")
+        return _locked_files(conn, user, place.department_id, target, user_id, head=False)
