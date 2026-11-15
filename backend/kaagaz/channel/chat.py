@@ -223,8 +223,11 @@ class Chat:
         return dataclasses.replace(
             reply,
             body=kept(reply.body),
-            buttons=tuple((each, kept(title)) for each, title in reply.buttons),
-            rows=tuple(Row(row.id, kept(row.title), kept(row.description)) for row in reply.rows),
+            # A title left empty would make Meta refuse the whole message for good.
+            buttons=tuple((each, kept(title).strip() or "…") for each, title in reply.buttons),
+            rows=tuple(
+                Row(row.id, kept(row.title).strip() or "…", kept(row.description)) for row in reply.rows
+            ),
         )
 
     def _user(self, linked: Linked) -> CurrentUser:
