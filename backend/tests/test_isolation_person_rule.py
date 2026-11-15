@@ -19,7 +19,7 @@ from sqlalchemy.exc import ProgrammingError
 from kaagaz.db import storage_limits
 from kaagaz.db.engine import Database
 from kaagaz.db.sqlstate import INSUFFICIENT_PRIVILEGE, sqlstate
-from tests.db_support import APP_ROLE, WORKER_ROLE, new_customer, person_rule, until_0092
+from tests.db_support import APP_ROLE, WORKER_ROLE, new_customer, person_rule, rule_off
 from tests.test_api_support import CSRF, PDF_BYTES, Api
 from tests.test_isolation_access_views import Org, _all, _expected, _walled
 from tests.test_isolation_schema import PERSON_RULE_TABLES
@@ -202,7 +202,7 @@ def test_the_switch_is_per_organisation(db: Database, org: Org) -> None:
         "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d",
         {"u": other_admin, "d": hidden},
     )
-    with until_0092():
+    with rule_off():  # Changed on purpose (PR 9b, #606): the helper's new name
         person_rule(db, on=True, customer_id=other)
         try:
             plain = org.people["plain"].user_id

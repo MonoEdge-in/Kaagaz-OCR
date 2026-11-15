@@ -86,11 +86,10 @@ def _owner_database() -> Database:
 
 
 @contextmanager
-def until_0092() -> Iterator[None]:
-    """PRD 7 (#606): an Admin's write over files they can't see (a folder deleted, restored or
-    deleted forever with them) works under the database rule only through PR 9b's owner-rights
-    functions (0092). Until then a test's step of that kind runs with the rule off, and the rule is
-    put back as it was after."""
+def rule_off() -> Iterator[None]:
+    """PRD 7 (#606): the database rule off for every organisation (``person-rule off --all``), put
+    back as it was after. Changed on purpose (PR 9b): was ``until_0092``, which ran an Admin's write
+    over files they can't see with the rule off until 0092's owner-rights functions; none does now."""
     db = _owner_database()
     with db.engine.begin() as conn:
         was_on = conn.execute(text("SELECT EXISTS (SELECT 1 FROM kaagaz_person_rule)")).scalar()
