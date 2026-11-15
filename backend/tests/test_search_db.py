@@ -683,3 +683,21 @@ def test_the_sound_rung_ranks_only_its_heaviest_pieces(db: Database, monkeypatch
     found = _word_list(db, customer, "gaikwad shinde")
 
     assert len(found) == 2 and found[0] == ids[-1]
+
+
+def test_a_name_change_affidavit_is_still_found_without_the_word_name(db: Database) -> None:
+    """#622 made "name" a request word ("which document have krishna jindal name"), so it is never
+    searched as a word. A question about a name change still finds its document: by its other
+    words, and by meaning, which reads the whole question."""
+    customer, _ = new_customer(db)
+    affidavit, _ = add_pieces(
+        db,
+        customer,
+        add_document(db, customer),
+        [("Affidavit for change of name: Ramesh Patil to Ramesh Pawar", axis(3)), ("Rent receipt", axis(4))],
+    )
+
+    hits = run(db, customer, "name change affidavit", axis(3))
+
+    assert hits[0].piece_id == affidavit  # the receipt follows, by meaning alone
+    assert hits[0].word_score is not None and hits[0].meaning_score == pytest.approx(1.0)
