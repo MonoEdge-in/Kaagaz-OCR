@@ -15,8 +15,10 @@ import base64
 import logging
 import os
 import tempfile
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -24,6 +26,7 @@ import pytest
 from kaagaz.adapters.whatsapp import MetaWhatsApp
 from kaagaz.ai import usage
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
+from kaagaz.api.routers import chat as chat_router
 from kaagaz.channel import chat as chat_module
 from kaagaz.channel import voice as voice_module
 from kaagaz.channel.chat import Chat
@@ -40,6 +43,7 @@ from tests.whatsapp_fake import (
     WhatsAppFake,
     connect,
     delivery,
+    file_message,
     message,
     new_number,
     ogg_opus,
@@ -72,9 +76,21 @@ class Ears:
         self.heard = {"text": text, "language": lang, "sure": sure}
         self.down, self.translated = down, translated
         self.audio: list[bytes] = []  # every note it was given
+        self.systems: list[str] = []  # and its instructions
 
-    def transcribe(self, *, system: str, audio: bytes, audio_format: str, **_: Any) -> dict[str, Any]:
-        assert audio_format == "ogg" and "untrusted" in system
+    def transcribe(
+        self,
+        *,
+        system: str,
+        audio: bytes,
+        audio_format: str,
+        max_tokens: int,
+        deadline: float | None,
+        **_: Any,
+    ) -> dict[str, Any]:
+        assert audio_format == "ogg" and "untrusted" in system and max_tokens == voice_module.MAX_HEARD_TOKENS
+        assert deadline is not None and deadline <= time.monotonic() + voice_module.TRANSCRIBE_SECONDS
+        self.systems.append(system)
         self.audio.append(audio)
         if self.down is not None:
             raise self.down
@@ -362,22 +378,30 @@ def test_meta_down_or_no_model_to_hear_it_gets_a_plain_reply(db: Database, fake:
     assert world.api.answers.asked == deaf.api.answers.asked == [] and fake.fetched == []
 
 
-def test_ask_off_and_asks_limit_come_before_the_note_is_written_down(
-    db: Database, fake: WhatsAppFake
-) -> None:
+def test_asks_limit_comes_before_the_note_is_written_down(db: Database, fake: WhatsAppFake) -> None:
     world = World(db, fake, chat_questions_per_minute=2)
     person = world.person()
     world.speak(person)  # its hearing and its question: Ask's limit counts both, as a search and a card
     assert world.speak(person) == say("too_many", "en")
     assert len(world.ears.audio) == 1
+
+
+def test_ask_off_refuses_a_question_but_a_file_named_by_voice_still_comes(world: World) -> None:
+    """Ask's switch is Ask's: a note naming a file after [Get a file] is not a question."""
+    person = world.person()
     _owner(
-        db,
+        world.db,
         "INSERT INTO org_feature_switches (customer_id, feature, enabled) VALUES (:c, 'ask', false)",
         {"c": person.c},
     )
-    other = world.person(person.c)
-    assert world.speak(other) == say("ask_off", "en")
-    assert len(world.ears.audio) == 1
+    assert world.speak(person) == f'I heard: "{QUESTION}"\n\n' + say("ask_off", "en")
+    world.ears.heard["text"] = "electricity"
+    document = world.api.add_document(person.c, name="MSEB March.pdf", uploaded_by=person.u)
+    add_pieces(world.db, person.c, document, [("electricity bill march", None)])
+    world.tap(person, "get.en")
+    body, _ = world.speak(person)
+    assert body.startswith('I heard: "electricity"\n\nMSEB March.pdf\n')
+    assert world.api.answers.asked == []
 
 
 # --- unclear and unsure ------------------------------------------------------------------------
@@ -393,16 +417,32 @@ def test_a_note_with_no_words_asks_again(world: World) -> None:
 def test_an_unsure_note_is_confirmed_before_anything_is_searched(world: World) -> None:
     person = world.person()
     world.ears.heard["sure"] = False
-    assert world.speak(person) == (say("heard_sure", "en", QUESTION), ["heard:yes:en", "heard:no:en"])
+    body, (yes, no) = world.speak(person)
+    assert body == say("heard_sure", "en", QUESTION)
+    assert yes.startswith("heard:yes:") and no.startswith("heard:no:") and yes.endswith(":en")
     assert world.api.answers.asked == []
-    assert world.tap(person, "heard:no:en") == say("say_again", "en")
+    assert world.tap(person, no) == say("say_again", "en")
     assert world.api.answers.asked == []
-    assert world.tap(person, "heard:yes:en") == (say("choice_gone", "en"), ["another.en", "menu.en"])  # gone
-    world.speak(person)
-    body, _ = world.tap(person, "heard:yes:en")
+    assert world.tap(person, yes) == (say("choice_gone", "en"), ["another.en", "menu.en"])  # gone
+    _, (again, _) = world.speak(person)
+    body, _ = world.tap(person, again)
     assert body.startswith(f'I heard: "{QUESTION}"\n\n')
     assert world.api.answers.asked == [(person.c, QUESTION)]
-    assert world.tap(person, "heard:yes:en")[0] == say("choice_gone", "en")  # once
+    assert world.tap(person, again)[0] == say("choice_gone", "en")  # once
+
+
+def test_an_older_cards_yes_never_answers_a_newer_note(world: World) -> None:
+    person = world.person()
+    world.ears.heard.update(text="the older words", sure=False)
+    _, (older, _) = world.speak(person)
+    world.ears.heard["text"] = QUESTION
+    _, (newer, _) = world.speak(person)
+    assert older != newer
+    assert world.tap(person, older)[0] == say("choice_gone", "en")
+    assert world.tap(person, older.replace(older.split(":")[2], "made-up"))[0] == say("choice_gone", "en")
+    assert world.api.answers.asked == []
+    world.tap(person, newer)
+    assert world.api.answers.asked == [(person.c, QUESTION)]
 
 
 def test_an_unsure_note_in_which_file_still_names_the_file(world: World) -> None:
@@ -411,10 +451,79 @@ def test_an_unsure_note_in_which_file_still_names_the_file(world: World) -> None
     document = world.api.add_document(person.c, name="MSEB March.pdf", uploaded_by=person.u)
     add_pieces(world.db, person.c, document, [("electricity bill march", None)])
     world.tap(person, "get.en")
-    world.speak(person)
-    body, _ = world.tap(person, "heard:yes:en")
+    _, (yes, _) = world.speak(person)
+    body, _ = world.tap(person, yes)
     assert body.startswith('I heard: "electricity"\n\nMSEB March.pdf\n')
     assert world.api.answers.asked == []
+
+
+def test_a_number_dictated_in_groups_is_one_number_and_masked(world: World) -> None:
+    person = world.person()
+    world.ears.heard["text"] = "Is Aadhaar 1234, 5678, 9012 in my files?"
+    world.api.answers.reply = {**_cited_answer(), "sentences": [{"text": "No.", "citations": []}]}
+    body, _ = world.speak(person)
+    assert body.startswith(f'I heard: "Is Aadhaar {MASK}9012 in my files?"')
+    assert "one unbroken number" in world.ears.systems[0]  # what the model is asked to write
+    assert "5678" not in repr([body for _, _, body in world.fake.requests])  # the text sent, not the URL
+
+
+def test_an_unsure_note_in_which_file_then_the_name_typed_still_names_the_file(world: World) -> None:
+    """Any other message puts back the step an unsure note hid ("Which file?" here)."""
+    person = world.person()
+    world.ears.heard.update(text="something unclear", sure=False)
+    document = world.api.add_document(person.c, name="MSEB March.pdf", uploaded_by=person.u)
+    add_pieces(world.db, person.c, document, [("electricity bill march", None)])
+    world.tap(person, "get.en")
+    _, (yes, _) = world.speak(person)
+    body, _ = world.say(person, "electricity")
+    assert body.startswith("MSEB March.pdf\n")
+    assert world.tap(person, yes)[0] == say("choice_gone", "en")  # stale now
+    assert world.api.answers.asked == []
+
+
+def _waiting_files(world: World, person: Person) -> list[str]:
+    rows = _owner(
+        world.db,
+        "SELECT state FROM whatsapp_pickers WHERE customer_id = :c AND user_id = :u",
+        {"c": person.c, "u": person.u},
+    )
+    return [each["m"] for each in (rows[0][0].get("files") or [])] if rows else []
+
+
+def test_an_unsure_note_while_files_wait_keeps_every_file_waiting(world: World) -> None:
+    person = world.person()
+    _owner(
+        world.db, "UPDATE whatsapp_org_settings SET uploads = true WHERE customer_id = :c", {"c": person.c}
+    )
+    sent = world.api.clock() - timedelta(seconds=20)  # answered at once (W5's QUIET_SECONDS)
+    files = [world.fake.add_media(b"%PDF-1.7 a"), world.fake.add_media(b"x")]
+    world.send(person, file_message(person.number, sent, files[0], filename="a.pdf"))
+    first = _waiting_files(world, person)
+    assert len(first) == 1
+    world.ears.heard["sure"] = False
+    _, (yes, _) = world.speak(person)
+    world.send(person, file_message(person.number, sent, files[1], kind="image"))
+    waiting = _waiting_files(world, person)
+    assert len(waiting) == 2 and waiting[0] == first[0]
+    assert world.tap(person, yes)[0] == say("choice_gone", "en")  # stale: nothing asked, nothing lost
+    assert _waiting_files(world, person) == waiting and world.api.answers.asked == []
+    assert not set(files) & set(world.fake.fetched)  # no file fetched before a tap (the note was)
+
+
+def test_a_tap_after_an_unsure_note_finds_the_files_still_waiting(world: World) -> None:
+    """A tap (not [Yes] or [No]) puts back the step an unsure note hid, as a message does."""
+    person = world.person()
+    _owner(
+        world.db, "UPDATE whatsapp_org_settings SET uploads = true WHERE customer_id = :c", {"c": person.c}
+    )
+    sent = world.api.clock() - timedelta(seconds=20)
+    media = world.fake.add_media(b"%PDF-1.7 a")
+    world.send(person, file_message(person.number, sent, media, filename="a.pdf"))
+    world.ears.heard["sure"] = False
+    world.speak(person)
+    body, _ = world.tap(person, "up:choose::en")
+    assert body == say("pick_folder", "en", "a.pdf")  # the folder list, not "nothing waiting"
+    assert len(_waiting_files(world, person)) == 1
 
 
 def test_an_unsure_note_is_masked_too(world: World) -> None:
@@ -456,8 +565,8 @@ def test_the_words_heard_are_never_logged(world: World, caplog: pytest.LogCaptur
     world.ears.heard["text"] = "secret electricity question 4821"
     world.speak(person)
     world.ears.heard["sure"] = False
-    world.speak(person)
-    world.tap(person, "heard:yes:en")
+    _, (yes, _) = world.speak(person)
+    world.tap(person, yes)
     world.ears.down = ModelUnavailable("timeout")
     world.speak(person)
     assert len(world.api.answers.asked) == 2
@@ -484,3 +593,58 @@ def test_the_lease_is_renewed_once_the_note_is_heard(world: World, monkeypatch: 
     person = world.person()
     world.speak(person)
     assert renewed == [1] and world.api.answers.asked == [(person.c, QUESTION)]
+
+
+def _usage_rows(world: World, person: Person) -> list[tuple[str, int]]:
+    rows = _owner(
+        world.db, "SELECT kind, calls FROM model_usage WHERE customer_id = :c ORDER BY kind", {"c": person.c}
+    )
+    return [(row[0], row[1]) for row in rows]
+
+
+def _run_again(world: World, person: Person) -> Any:
+    """The connection's rest (a reply not sent, or an error) over: handled again; the last reply."""
+    _owner(world.db, "UPDATE whatsapp_links SET busy_until = NULL WHERE id = :l", {"l": person.link})
+    while claimed := world.channel.claim(100):
+        for claim in claimed:
+            world.channel.handle(claim)
+    return [what for to, what in world.fake.sent() if to == person.number.removeprefix("+")][-1]
+
+
+def test_a_reply_not_sent_once_is_sent_later_with_the_note_heard_once(world: World) -> None:
+    person = world.person()
+    world.fake.failures = [500]  # Meta refuses the reply once
+    media = world.fake.add_media(ogg_opus(5))
+    assert (
+        post(world.client, delivery(voice_message(person.number, world.api.clock(), media))).status_code
+        == 200
+    )
+    while claimed := world.channel.claim(100):
+        for claim in claimed:
+            world.channel.handle(claim)
+    body, _ = _run_again(world, person)
+    assert body.startswith(f'I heard: "{QUESTION}"')
+    assert len(world.ears.audio) == 1 and world.fake.fetched == [media]
+    assert _usage_rows(world, person) == [("transcribe", 1)]
+
+
+def test_a_note_whose_ask_fails_once_is_heard_once(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ask (or the database) fails while the reply is made: the message is tried again, and its note
+    is never fetched, sent or billed again (``Voice`` keeps what it heard by message id)."""
+    person = world.person()
+    real, failed = chat_router.ask, list[bool]()
+
+    def ask_once(*args: Any, **kwargs: Any) -> Any:
+        if not failed:
+            failed.append(True)
+            raise RuntimeError("the database went away")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(chat_router, "ask", ask_once)
+    media = world.fake.add_media(ogg_opus(5))
+    with pytest.raises(RuntimeError):
+        world.send(person, voice_message(person.number, world.api.clock(), media))
+    body, _ = _run_again(world, person)
+    assert body.startswith(f'I heard: "{QUESTION}"') and failed == [True]
+    assert len(world.ears.audio) == 1 and world.fake.fetched == [media]
+    assert _usage_rows(world, person) == [("transcribe", 1)]
