@@ -316,6 +316,7 @@ def check_worker_login(db_login_check: str, worker_role: str, db: Database) -> N
     for problem in problems:
         logger.error("unsafe worker login: %s", problem, extra={"code": "unsafe_config"})
     if problems and db_login_check == "refuse":
+        db.engine.dispose()  # the start stops here: no pooled connection is left behind
         raise RuntimeError("the worker's database login can't be held by the database rule (DB_LOGIN_CHECK)")
 
 

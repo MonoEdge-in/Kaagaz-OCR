@@ -23,7 +23,7 @@ from kaagaz.db import audit, listing
 from kaagaz.db.engine import Database
 from kaagaz.search import hybrid
 from kaagaz.search.scope import EVERYTHING
-from tests.db_support import APP_ROLE, insert_folder
+from tests.db_support import APP_ROLE, insert_folder, until_0092
 from tests.test_api_delete_forever_grant import _confirm, _grant
 from tests.test_api_support import CSRF, PDF_BYTES, Api, Signed
 from tests.test_isolation_logins import WORKER
@@ -365,7 +365,7 @@ VIEW_READERS = {
     "db/document_stories.py": {"_DELETE", "_PUT"},
     "db/ensemble.py": {"_COUNTS", "_LATEST", "_LATEST_READINGS", "_PENDING", "_READING"},
     "db/folder_upload_items.py": {"_PREVIOUS"},
-    # Changed on purpose (PR 9b, #606): _HIDDEN_INSIDE reads kaagaz_hidden_inside (0091), no view.
+    # Changed on purpose (PR 9a, #606): _HIDDEN_INSIDE reads kaagaz_hidden_inside (0091) now.
     "db/folders.py": {"_LIST", "_SUMMARY_SEEN"},
     "db/listing.py": {
         "_BATCH", "_CLEAR_COPY_MARKS", "_COLUMNS", "_DASHBOARD_DEPARTMENTS", "_DASHBOARD_RECENT",
@@ -712,11 +712,12 @@ def test_a_closed_department_in_trash_stays_closed(db: Database) -> None:
     """Finance (Department only) goes to Trash with its files: the plain reviewer still can't see
     its files, its member still can, and every person still sees exactly the written rule."""
     org = _walled(Api(db))
-    # Changed on purpose (PR 9b, #606): an Admin who can't see Finance's files deletes it with them, with the
-    # rule on (0092's owner-rights functions).
-    reply = org.people["admin"].client.delete(
-        f"/api/folders/{org.folders['finance']}?contents=trash", headers=CSRF
-    )
+    # Changed on purpose (PR 9a, #606): an Admin who can't see Finance's files deletes it with them: PR 9b's
+    # functions (0092); until then with the rule off.
+    with until_0092():
+        reply = org.people["admin"].client.delete(
+            f"/api/folders/{org.folders['finance']}?contents=trash", headers=CSRF
+        )
     assert reply.status_code == 200, reply.text
     app = _app(db)
     assert org.files["fin"] not in _seen(app, org.c, org.people["plain"].user_id)
