@@ -573,11 +573,9 @@ def test_stale_flag_a_deleted_folder_of_a_filed_family_in_trash_is_not_filed_any
 
     assert state(db, customer, document) == (None, None)
     assert view(db, customer, document) is None
-    # Changed on purpose (#594, Q2): restored with its department gone, it is held for the restorer
-    # (here the member) until it is filed, never open to everyone.
     assert _undo(member.client, document).json()["error"]["code"] == "in_trash"
     with db.customer(customer) as conn:
-        assert restore_document(conn, customer, document, by=member.user_id) == Placed(held=True)
+        assert restore_document(conn, customer, document, by=member.user_id) == Placed()  # unwalled (#594)
     assert _undo(member.client, document).json()["error"]["code"] == "already_moved"
 
 

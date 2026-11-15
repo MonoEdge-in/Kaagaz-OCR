@@ -12,10 +12,10 @@ the statement the app ran before, after checking the caller:
 * ``kaagaz_detach_trashed(folders)``: the files in Trash filed in these folders leave them
   (``folders._DETACH_TRASHED``); how many (to an Admin only: the count holds the hidden ones). An
   Admin, or a person who sees every one of the folders (a folder they delete).
-* ``kaagaz_admin_move_folder_documents(from, to)``: every file directly in ``from``, Trash too,
+* ``kaagaz_admin_move_folder_documents(from, to, confirmed)``: every file directly in ``from``, Trash too,
   into ``to`` (``folders._MOVE_DOCUMENTS``, a folder deleted with ``keep``), after #594's keep
-  gate read again (``folders._SAME_ACCESS``: refused, insufficient_privilege, when other people
-  would see them there); how many. An Admin.
+  gate read again (``folders._SAME_PLACE``: refused, insufficient_privilege, when other people
+  would see them there, unless ``confirmed``, PR 10c's warn-then-confirm); how many. An Admin.
 * ``kaagaz_restore_folder(folder)`` and ``kaagaz_restore_with_folders(document)``: a folder in Trash
   restored with every folder and file of its delete inside it and the folders of its delete above
   it; or one file filed in a folder in Trash, with that folder and the ones above it
@@ -39,8 +39,8 @@ the statement the app ran before, after checking the caller:
   names list's Move and Send to Trash (PRD 7 section 3) for files the Admin can't see: whole
   families, live ones only; the folder a live one of this organisation, or the top level. An Admin.
   Their route comes with the names list's screen.
-* 0091's ``kaagaz_hidden_inside(trashed)`` counts only the trashed folders given that the person
-  sees (the lead's decision on PR 9b's review): one they can't see answers as an id that isn't
+* 0091's ``kaagaz_hidden_inside(folders, trashed)`` counts only the live and trashed folders given
+  that the person sees (the lead's decision on PR 9b's review): one they can't see answers as an id that isn't
   there (0, 0, false). Made from 0091's own text by a checked replace; the downgrade puts it back.
 
 Every function: SECURITY DEFINER, an empty search path, every table named in full and filtered on
@@ -125,7 +125,8 @@ _LOCKED = (
     "(SELECT x.id FROM public.documents x WHERE x.customer_id = v_customer AND {where}"
     " ORDER BY x.family_id, (x.id <> x.family_id), x.id FOR NO KEY UPDATE) l"
 )
-# #594 (folders._SAME_ACCESS): what folder p_from holds sees the same people in p_to.
+# #594's keep gate (PR 10c's folders._SAME_PLACE, for the files directly in p_from): they are seen by
+# the same people in p_to. 10c refuses first, carried private folders too, unless confirmed.
 _SAME_ACCESS = """
         SELECT (f.department_id, f.private_folder_id) IS NOT DISTINCT FROM (t.department_id, t.private_folder_id)
             OR (f.private_folder_id IS NULL AND t.private_folder_id IS NULL
@@ -170,7 +171,9 @@ _CHAIN = """
         END IF;"""
 # Where the topmost goes, under which name, as trashed_folders._make_live (#594's _out_of_folder):
 # its folder when live; else its private folder while live, else its department while live, else
-# the top level, private when one it inherited is gone; 100 levels; the first free "Name (n)".
+# the top level, private when one it inherited is gone and the organisation is walled (then its
+# restorer, unless an Admin or Management, is named on it: #594 A, PR 10c); 100 levels; the first
+# free "Name (n)".
 # A refusal returns one row saying why, before anything is written.
 _MAKE_LIVE = """
         IF EXISTS (SELECT 1 FROM public.folders f WHERE f.customer_id = v_customer AND f.id = ANY (v_ids)) THEN
@@ -199,6 +202,9 @@ _MAKE_LIVE = """
                     v_seal := true;
                 END IF;
             END LOOP;
+            IF v_seal THEN  -- #594 (decision 3): private only once the organisation is walled
+                v_seal := (SELECT c.walls_set FROM public.customers c WHERE c.id = v_customer);
+            END IF;
         END IF;
         IF v_parent IS NOT NULL THEN
             SELECT d.depth INTO v_depth FROM public.kaagaz_folder_depth(v_parent, NULL) d;
@@ -230,7 +236,13 @@ _MAKE_LIVE = """
             CASE WHEN EXISTS (SELECT 1 FROM public.folders k WHERE k.customer_id = v_customer
                               AND k.autofile_key = t.autofile_key) THEN NULL ELSE t.autofile_key END,
             t.department_only, t.private OR (t.id = v_top.id AND v_seal), t.department_id, t.private_folder_id
-        FROM public.trashed_folders t WHERE t.customer_id = v_customer AND t.id = ANY (v_ids);"""
+        FROM public.trashed_folders t WHERE t.customer_id = v_customer AND t.id = ANY (v_ids);
+        v_seal := v_seal AND NOT v_top.private;  -- sealed: only when the seal made it private
+        IF v_seal AND NOT v_admin THEN  -- #594 (A): its restorer named on it, unless Management
+            INSERT INTO public.private_folder_members (customer_id, folder_id, user_id, added_by)
+            SELECT v_customer, v_top.id, u.id, u.id FROM public.users u
+            WHERE u.customer_id = v_customer AND u.id = v_person AND NOT u.management;
+        END IF;"""
 # The rest of a chain's files stay in Trash, now in their live folder (trashed_folders._INTO_LIVE);
 # the folders made live leave Trash; the rows of the topmost and the asked folder.
 _FINISH = f"""
@@ -284,13 +296,14 @@ FUNCTIONS = {
     END
     $$
     """,
-    "kaagaz_admin_move_folder_documents(uuid, uuid)": f"""
-    CREATE FUNCTION public.kaagaz_admin_move_folder_documents(p_from uuid, p_to uuid) RETURNS integer
+    "kaagaz_admin_move_folder_documents(uuid, uuid, boolean)": f"""
+    CREATE FUNCTION public.kaagaz_admin_move_folder_documents(p_from uuid, p_to uuid, p_confirmed boolean)
+    RETURNS integer
     {_HEAD}{_DECLARE}
         v_moved integer;
     BEGIN
         {_AN_ADMIN}{_TREE_LOCK}
-        IF NOT coalesce(({_SAME_ACCESS}), true) THEN  -- no such folder: nothing to move
+        IF NOT p_confirmed AND NOT coalesce(({_SAME_ACCESS}), true) THEN  -- no such folder: nothing to move
             RAISE EXCEPTION 'other people would see them there' USING ERRCODE = 'insufficient_privilege';
         END IF;
         UPDATE public.documents d SET folder_id = p_to, autofile = NULL
@@ -399,7 +412,7 @@ FUNCTIONS = {
         {_A_PERSON}
         IF NOT v_admin AND (
             NOT EXISTS (SELECT 1 FROM public.visible_trashed_folders v WHERE v.customer_id = v_customer AND v.id = p_folder)
-            OR (SELECT h.hidden_files > 0 OR h.hidden_folders > 0 FROM public.kaagaz_hidden_inside(ARRAY[p_folder]) h)
+            OR (SELECT h.hidden_files > 0 OR h.hidden_folders > 0 FROM public.kaagaz_hidden_inside(NULL, ARRAY[p_folder]) h)
         ) THEN
             RAISE EXCEPTION 'something inside is hidden from them: an Admin deletes it' USING ERRCODE = 'insufficient_privilege';
         END IF;
@@ -495,7 +508,8 @@ FUNCTION_COMMENTS = {
     " to Trash with them, under one trash_id; how many families (#537, #542)." + _ADMIN,
     "kaagaz_detach_trashed(uuid[])": "The files in Trash filed in these folders leave them (a folder deleted);"
     " how many. An Admin, or a person who sees every one of the folders (PRD 7, #606).",
-    "kaagaz_admin_move_folder_documents(uuid, uuid)": "Every file directly in a folder deleted with keep, Trash too,"
+    "kaagaz_admin_move_folder_documents(uuid, uuid, boolean)": "Every file directly in a folder deleted with keep,"
+    " Trash too,"
     " into another, while the same people see them there (#537, #594); how many." + _ADMIN,
     "kaagaz_restore_folder(uuid)": "A folder in Trash restored with its whole delete inside it and the folders of"
     " its delete above it (#542, #594). The person sees it; a department by an Admin only, a folder by an Admin"
@@ -517,26 +531,37 @@ FUNCTION_COMMENTS = {
 
 # 0091's F6, its walk started only from the trashed folders the person sees (its caller is always an
 # active person, 0091's _A_PERSON).
-_HIDDEN_INSIDE_0091 = _0091.FUNCTIONS["kaagaz_hidden_inside(uuid[])"].replace(
+_HIDDEN_INSIDE_0091 = _0091.FUNCTIONS["kaagaz_hidden_inside(uuid[], uuid[])"].replace(
     "CREATE FUNCTION", "CREATE OR REPLACE FUNCTION"
 )
-_START = "WHERE t.customer_id = public.kaagaz_current_customer() AND t.id = ANY (p_trashed)\n"
-if _HIDDEN_INSIDE_0091.count(_START) != 1:
-    raise RuntimeError("0091's kaagaz_hidden_inside text changed")
-HIDDEN_INSIDE = _HIDDEN_INSIDE_0091.replace(
-    _START,
-    "WHERE t.customer_id = public.kaagaz_current_customer() AND t.id = ANY (p_trashed)"
-    " AND EXISTS (SELECT 1 FROM public.visible_trashed_folders v\n"
-    "                         WHERE v.customer_id = t.customer_id AND v.id = t.id)\n",
-)
+# Both its walks (live folders and trashed ones) start only from the ones the person sees.
+_STARTS = {
+    "WHERE f.customer_id = public.kaagaz_current_customer() AND f.id = ANY (p_folders)\n": (
+        "visible_folders",
+        "f",
+    ),
+    "WHERE t.customer_id = public.kaagaz_current_customer() AND t.id = ANY (p_trashed)\n": (
+        "visible_trashed_folders",
+        "t",
+    ),
+}
+HIDDEN_INSIDE = _HIDDEN_INSIDE_0091
+for _start, (_view, _alias) in _STARTS.items():
+    if HIDDEN_INSIDE.count(_start) != 1:
+        raise RuntimeError("0091's kaagaz_hidden_inside text changed")
+    HIDDEN_INSIDE = HIDDEN_INSIDE.replace(
+        _start,
+        _start[:-1] + f" AND EXISTS (SELECT 1 FROM public.{_view} v\n"
+        f"                         WHERE v.customer_id = {_alias}.customer_id AND v.id = {_alias}.id)\n",
+    )
 HIDDEN_INSIDE_COMMENT = (
-    "How many files and folders the current person can't see inside these trashed folders, of those they"
-    " see, and whether any file is (PRD 7, #606). An active person; numbers only."
+    "How many files and folders the current person can't see inside these live and trashed folders, of"
+    " those they see, and whether any file is (PRD 7, #606). An active person; numbers only."
 )
 
 UPGRADE = [
     HIDDEN_INSIDE,
-    f"COMMENT ON FUNCTION public.kaagaz_hidden_inside(uuid[]) IS {_literal(HIDDEN_INSIDE_COMMENT)}",
+    f"COMMENT ON FUNCTION public.kaagaz_hidden_inside(uuid[], uuid[]) IS {_literal(HIDDEN_INSIDE_COMMENT)}",
     *FUNCTIONS.values(),
     *[
         statement
@@ -551,8 +576,8 @@ UPGRADE = [
 DOWNGRADE = [
     *[f"DROP FUNCTION IF EXISTS public.{name}" for name in reversed(FUNCTIONS)],
     _HIDDEN_INSIDE_0091,
-    "COMMENT ON FUNCTION public.kaagaz_hidden_inside(uuid[])"
-    f" IS {_literal(_0091.READ_COMMENTS['kaagaz_hidden_inside(uuid[])'])}",
+    "COMMENT ON FUNCTION public.kaagaz_hidden_inside(uuid[], uuid[])"
+    f" IS {_literal(_0091.READ_COMMENTS['kaagaz_hidden_inside(uuid[], uuid[])'])}",
 ]
 
 

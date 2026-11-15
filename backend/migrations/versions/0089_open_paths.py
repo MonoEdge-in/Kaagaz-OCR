@@ -11,12 +11,14 @@ schema and security.
   gets Department only. ``kaagaz_access()`` is 0087's with its ``walled`` read from this flag where
   0087 asked whether a Department only department exists, so a Department only department deleted
   for good no longer lets the files it left in Trash fall back to open (0087's known gap). Day one
-  nothing changes: the flag starts false, and is set now for an organisation that has one.
+  nothing changes: the flag starts false, and is set now for an organisation that has one. The
+  app's restores hold or seal only once it is set (decision 3).
 * The trigger function follows the house pattern (0085): the owner's rights, an empty search path,
   no right for PUBLIC or any role. It takes the organisation's row, which is the app's tree lock
   (``kaagaz.db.folders._lock_tree``): every folder writer takes that first, and 0085's folder trigger
   takes it after the folder rows too, so the lock order is 0085's. It writes only while the flag is
-  false, so it locks nothing once set.
+  false, so it locks nothing once set. It raises the access version too (0085's folder trigger
+  already does for an UPDATE of folders, so once a statement).
 
 Cost: the key is added NOT VALID (0084's pattern), then validated in the same transaction: the
 column is new, so the check reads ``version_suggestions`` once and finds nothing, while it and
@@ -85,14 +87,20 @@ FUNCTION = """
     LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
     BEGIN
         -- The organisation's row: the app's tree lock, taken first by every folder writer (0085).
-        UPDATE public.customers c SET walls_set = true WHERE c.id = NEW.customer_id AND NOT c.walls_set;
+        -- Its access changes, so the access version goes up, once a statement: 0085's folder
+        -- trigger raises it itself for an UPDATE of folders.
+        UPDATE public.customers c SET walls_set = true,
+            access_version = c.access_version
+                + CASE WHEN TG_OP = 'UPDATE' AND TG_TABLE_NAME = 'folders' THEN 0 ELSE 1 END
+        WHERE c.id = NEW.customer_id AND NOT c.walls_set;
         RETURN NULL;
     END
     $$
     """
 FUNCTION_COMMENT = (
     "Trigger (#594): sets customers.walls_set, never clears it, when a folder or a trashed folder is"
-    " Department only."
+    " Department only, and raises the access version (0085's folder trigger does for an UPDATE of"
+    " folders)."
 )
 TABLES = ("folders", "trashed_folders")
 TRIGGERS = {
@@ -109,14 +117,15 @@ BACKFILL = (
     " OR EXISTS (SELECT 1 FROM trashed_folders t WHERE t.customer_id = c.id AND t.department_only)"
 )
 
+# customers first, the app's order (its tree lock), so it can't deadlock with a live Accept.
 UPGRADE = [
+    "ALTER TABLE customers ADD COLUMN walls_set boolean NOT NULL DEFAULT false",
+    f"COMMENT ON COLUMN customers.walls_set IS {_literal(WALLS_COMMENT)}",
     "ALTER TABLE version_suggestions ADD COLUMN previous_held_for uuid NULL,"
     f" ADD CONSTRAINT {KEY} FOREIGN KEY (customer_id, previous_held_for) REFERENCES users (customer_id, id)"
     " NOT VALID",
     f"ALTER TABLE version_suggestions VALIDATE CONSTRAINT {KEY}",
     f"COMMENT ON COLUMN version_suggestions.previous_held_for IS {_literal(HELD_COMMENT)}",
-    "ALTER TABLE customers ADD COLUMN walls_set boolean NOT NULL DEFAULT false",
-    f"COMMENT ON COLUMN customers.walls_set IS {_literal(WALLS_COMMENT)}",
     FUNCTION,
     f"COMMENT ON FUNCTION public.kaagaz_walls_set() IS {_literal(FUNCTION_COMMENT)}",
     "REVOKE ALL ON FUNCTION public.kaagaz_walls_set() FROM PUBLIC",

@@ -1523,6 +1523,7 @@ def _cli_role(engine: Any, settings: Settings) -> str:
         reaches = conn.execute(
             text("SELECT pg_has_role(session_user, :w, 'MEMBER')"), {"w": person_rule.WORKER_ROLE}
         ).scalar()
+    engine.dispose()  # a command that never reads the database leaves no open connection behind
     if not reaches:
         raise CliError(
             f"the CLI runs as {person_rule.WORKER_ROLE}, which this login can't switch into: run it in the"

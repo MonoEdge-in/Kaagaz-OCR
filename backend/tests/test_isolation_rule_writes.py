@@ -38,7 +38,7 @@ pytestmark = pytest.mark.db
 CALLS = {
     "kaagaz_admin_trash_in_folders": "SELECT kaagaz_admin_trash_in_folders(CAST(:ids AS uuid[]), :a, now())",
     "kaagaz_detach_trashed": "SELECT kaagaz_detach_trashed(CAST(:ids AS uuid[]))",
-    "kaagaz_admin_move_folder_documents": "SELECT kaagaz_admin_move_folder_documents(:a, :b)",
+    "kaagaz_admin_move_folder_documents": "SELECT kaagaz_admin_move_folder_documents(:a, :b, false)",
     "kaagaz_restore_folder": "SELECT count(*) FROM kaagaz_restore_folder(:a)",
     "kaagaz_restore_with_folders": "SELECT count(*) FROM kaagaz_restore_with_folders(:a)",
     "kaagaz_trash_uploaders": "SELECT kaagaz_trash_uploaders(:a)",
@@ -155,6 +155,12 @@ def test_a_hidden_id_is_a_random_id_for_a_person(db: Database) -> None:
     )
     assert _documents(db, org.c) == before  # fin is still filed in Finance
     _owner(db, "UPDATE documents SET deleted_at = NULL WHERE id = :d", {"d": org.files["fin"]})
+    # 0091's F6, made to see only the folders the person sees (0092, the lead's decision): Finance, live,
+    # holds files hidden from them, and answers as a random id.
+    live = "SELECT * FROM kaagaz_hidden_inside(ARRAY[CAST(:a AS uuid)], NULL)"
+    with _as(db, org, plain) as conn:
+        for one in (org.folders["finance"], org.folders["salaries"], str(uuid.uuid4())):
+            assert tuple(conn.execute(text(live), {"a": one}).one()) == (0, 0, False), one
     _trash_folder(org, org.folders["finance"])
     before = _documents(db, org.c)
     hidden = (org.folders["finance"], org.folders["salaries"], org.files["fin"], org.files["sal"])
@@ -162,11 +168,8 @@ def test_a_hidden_id_is_a_random_id_for_a_person(db: Database) -> None:
         random = _call(db, org, plain, function)
         for one in hidden:
             assert _call(db, org, plain, function, a=one) == random, (function, one)
-    # 0091's F6, made to see only the trashed folders the person sees (0092, the lead's decision): Finance
-    # holds files hidden from them, and answers as a random id.
-    inside = (
-        "SELECT hidden_files, hidden_folders, any_files FROM kaagaz_hidden_inside(ARRAY[CAST(:a AS uuid)])"
-    )
+    # And in Trash.
+    inside = "SELECT * FROM kaagaz_hidden_inside(NULL, ARRAY[CAST(:a AS uuid)])"
     with _as(db, org, plain) as conn:
         answers = {
             one: tuple(conn.execute(text(inside), {"a": one}).one()) for one in (*hidden, str(uuid.uuid4()))
@@ -283,6 +286,28 @@ def test_detach_tells_only_an_admin_how_many_files_left_a_folder(db: Database) -
         (None,)
     ]
     assert _call(db, org, "admin", "kaagaz_detach_trashed", ids=[org.folders["loose"]]) == 1
+
+
+def test_a_confirmed_keep_moves_what_its_warning_was_about(db: Database) -> None:
+    """10c's warn-then-confirm keep-delete (#601) through 0092: Salaries' files (hidden from the
+    Admin, sal and one in Trash) into Finance would show them to Finance's members. Unconfirmed it
+    is refused and nothing moves; confirmed, both move."""
+    org = _walled(Api(db))
+    salaries, finance = org.folders["salaries"], org.folders["finance"]
+    move = "SELECT kaagaz_admin_move_folder_documents(:a, :b, :confirmed)"
+    before = _documents(db, org.c)
+    with pytest.raises(DBAPIError) as refused, _as(db, org, "admin") as conn:
+        conn.execute(text(move), {"a": salaries, "b": finance, "confirmed": False})
+    assert sqlstate(refused.value) == INSUFFICIENT_PRIVILEGE
+    assert _documents(db, org.c) == before
+    with _as(db, org, "admin") as conn:
+        assert conn.execute(text(move), {"a": salaries, "b": finance, "confirmed": True}).scalar() == 2
+    moved = _owner(
+        db,
+        "SELECT folder_id::text FROM documents WHERE id IN (:s, :t)",
+        {"s": org.files["sal"], "t": org.files["trashed"]},
+    )
+    assert moved == [(finance,), (finance,)]
 
 
 def test_a_person_deletes_forever_no_family_with_a_version_they_cant_see(db: Database) -> None:

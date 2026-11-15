@@ -194,7 +194,7 @@ _HELD = (
     " EXISTS (SELECT 1 FROM folders l WHERE l.customer_id = :c AND l.id = i.parent_id),"
     # PRD 7 (#606): what is hidden inside, from the whole tables (kaagaz_hidden_inside, 0091): the
     # walk above, under the database rule, would find no hidden folder or file to count.
-    " (SELECT x.hidden_files > 0 OR x.hidden_folders > 0 FROM kaagaz_hidden_inside(ARRAY[i.id]) x),"
+    " (SELECT x.hidden_files > 0 OR x.hidden_folders > 0 FROM kaagaz_hidden_inside(NULL, ARRAY[i.id]) x),"
     # Its restore brings its delete's department back: the department is the delete's top (F1).
     # PRD 7 (#606): read on the whole table (kaagaz_trash_top, 0091): a department the person can't
     # see is still the one its restore would bring back.
@@ -265,7 +265,7 @@ _EXISTS = "SELECT EXISTS (SELECT 1 FROM visible_trashed_folders WHERE customer_i
 # PRD 7 (#606): any file inside, seen or not, the whole subtree walked from the whole tables
 # (kaagaz_hidden_inside, 0091): a hidden file left in it must stop the delete.
 _ANY_FILED = (
-    "SELECT x.any_files FROM kaagaz_hidden_inside(ARRAY[CAST(:f AS uuid)]) x"
+    "SELECT x.any_files FROM kaagaz_hidden_inside(NULL, ARRAY[CAST(:f AS uuid)]) x"
     " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 # A delete's folders past TRASH_DAYS once none of its documents is left (they go first).

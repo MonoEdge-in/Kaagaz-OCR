@@ -44,7 +44,7 @@ from kaagaz.search import hybrid
 from kaagaz.search.hybrid import FusedPiece
 from kaagaz.search.scope import EVERYTHING
 from kaagaz.search.story_search import read_stories
-from tests.db_support import insert_key, insert_tag, tag_document
+from tests.db_support import insert_key, insert_tag, rule_on_everywhere, tag_document
 from tests.settings_factory import make_settings
 from tests.test_answering_golden import NOW, evidence_blocks
 from tests.test_api_chat import _cited_answer
@@ -728,13 +728,6 @@ def _approved_word(ask: AskOrg, document: str | None, word: str) -> None:
     )
 
 
-def _rule_on(db: Database) -> bool:
-    """PRD 7 (#606): is the per-person database rule on for every organisation (the session's)?"""
-    every = "SELECT EXISTS (SELECT 1 FROM kaagaz_person_rule WHERE for_customer_id IS NULL)"
-    with db.engine.begin() as conn:
-        return bool(conn.execute(text(every)).scalar())
-
-
 def test_the_chat_statements_name_no_hidden_document(db: Database, ask: AskOrg) -> None:
     """document_states, live_document_names, the newest pick, Most relevant picks and other
     people's Useful marks, each as the plain reviewer and as Finance's member."""
@@ -768,7 +761,7 @@ def test_the_chat_statements_name_no_hidden_document(db: Database, ask: AskOrg) 
         # Changed on purpose (PR 9a, #606): under the database rule fin's pick is not in source_pins
         # for the plain reviewer, so their own older pick of sales is the newest they have (nothing
         # hidden); with the rule off, none.
-        expected = {ask.id("fin")} if sees_fin else ({ask.id("sales")} if _rule_on(db) else set())
+        expected = {ask.id("fin")} if sees_fin else ({ask.id("sales")} if rule_on_everywhere() else set())
         assert pins == expected, person
         assert learned == set(states), person
 

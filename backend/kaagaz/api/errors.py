@@ -48,6 +48,7 @@ MESSAGES = {
     "method_not_allowed": "This action is not available here.",
     "conflict": "That already exists.",
     "folder_cycle": "A folder can't go inside itself or one of its own folders.",
+    "inside_private": "A private folder can't go inside another private folder.",  # PRD 7 (#601)
     "folder_too_deep": "Folders can be at most 100 levels deep.",
     "folder_not_empty": "This folder isn't empty. Move or delete what is inside it first.",
     "folder_upload_running": "An upload into this folder is still running. Try again when it finishes.",

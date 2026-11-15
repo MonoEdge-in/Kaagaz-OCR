@@ -354,6 +354,8 @@ OWNER_RIGHTS = {
     ),
     "kaagaz_give_file": ("TABLE(user_id uuid, versions integer, added integer)", EMPTY_PATH),
     "kaagaz_take_file": ("integer", EMPTY_PATH),
+    # Changed on purpose (#601, 0090b): auto-filing gives the uploader the file; no person only.
+    "kaagaz_give_uploader": ("integer", EMPTY_PATH),
     # Changed on purpose (#606, 0091): the database rule's switch, fast path and new-version check.
     "kaagaz_person_rule_on": ("boolean", EMPTY_PATH),
     "kaagaz_sees_everything": ("boolean", EMPTY_PATH),
@@ -366,6 +368,11 @@ OWNER_RIGHTS = {
         EMPTY_PATH,
     ),
     "kaagaz_trash_top": ("TABLE(id uuid, kind text)", EMPTY_PATH),
+    "kaagaz_document_place": (
+        "TABLE(department_id uuid, private_folder_id uuid, held_for uuid, folder_id uuid, family_id uuid)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_files": ("bigint", EMPTY_PATH),
     "kaagaz_folder_depth": ("TABLE(depth integer, cycle boolean, height integer)", EMPTY_PATH),
     "kaagaz_storage_used": ("bigint", EMPTY_PATH),
     "kaagaz_spent": ("TABLE(spent numeric, unknown boolean)", EMPTY_PATH),

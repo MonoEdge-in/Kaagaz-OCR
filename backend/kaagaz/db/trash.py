@@ -74,6 +74,9 @@ LIVE_FOLDERS = "SELECT id FROM folders WHERE customer_id = :c AND id = ANY(CAST(
 # PRD 7 (#606): live is asked of the whole table (kaagaz_existing, 0091): under the database rule a
 # folder the person can't see is missing from folders, and would read as gone.
 _EXISTING = "SELECT id FROM kaagaz_existing('folder', CAST(:ids AS uuid[])) AS e (id)"
+# #594 (decision 3): the organisation has kept something to some people (0089); read under the tree
+# lock, which is this row's lock, so it can't change before the restore commits.
+WALLED = "SELECT walls_set FROM customers WHERE id = :c"
 
 
 def live_folders(conn: Connection, customer_id: str, folder_ids: Sequence[str]) -> set[str]:
@@ -182,14 +185,23 @@ def place_out_of_folder(
     conn: Connection, customer_id: str, department_id: str | None, private_folder_id: str | None
 ) -> Placed:
     """Where a file whose folder is gone goes back (#594), from the department and private folder
-    it kept: its private folder while that is live, else held (the top of its department would
-    show it to more people, Q1); with no private folder, the top of its department while that is
-    live, else held; with neither, no folder, as it was. A folder in Trash is not live. The caller
-    holds the tree lock and the family's. One statement."""
+    it kept: its private folder while that is live; else the top of its department while that is
+    live; else no folder. Once the organisation is walled (``WALLED``), held for the restorer
+    instead when its private folder is gone (the top of its department would show it to more
+    people, Q1) or its department is (Q2). Day one, unwalled, it is the old result (decision 3). A
+    folder in Trash is not live. The caller holds the tree lock and the family's. Two statements."""
     kept = [f for f in (private_folder_id, department_id) if f is not None]
     if not kept:
         return Placed()
-    return Placed(into=kept[0]) if kept[0] in live_folders(conn, customer_id, kept) else Placed(held=True)
+    live = live_folders(conn, customer_id, kept)
+    walled = bool(conn.execute(text(WALLED), {"c": customer_id}).scalar())
+    if private_folder_id in live:
+        return Placed(into=private_folder_id)
+    if private_folder_id is not None and walled:
+        return Placed(held=True)
+    if department_id in live:
+        return Placed(into=department_id)
+    return Placed(held=walled)
 
 
 def place_family(conn: Connection, customer_id: str, family_id: str) -> Placed:
