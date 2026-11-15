@@ -5,6 +5,8 @@ characters between its digits that draw nothing, reads whole on a phone, so it i
 import pytest
 
 from kaagaz.channel.texts import MASK, mask
+from kaagaz.channel.voice import opus_packets_seconds
+from tests.whatsapp_fake import ogg_opus
 
 ZWJ = "\u200d"  # the zero-width joiner
 
@@ -45,3 +47,11 @@ def test_the_joiners_that_shape_a_devanagari_word_are_kept() -> None:
     eyelash = "\u0930\u094d" + ZWJ + "\u092f\u093e"  # Marathi's eyelash ra is drawn with the joiner
     assert mask(f"{eyelash} 2026") == (f"{eyelash} 2026", False)
     assert mask("invoice 2026\u200b") == ("invoice 2026", False)  # gone, but nothing was masked
+
+
+def test_a_voice_notes_audio_plays_as_long_as_its_packets_whatever_its_pages_claim() -> None:
+    """W6's length is the last page's granule position, which the sender writes: the packets' own
+    frame sizes say how long the audio plays (each of the fake's packets: 20 ms)."""
+    assert opus_packets_seconds(ogg_opus(5, pad=200 * 100)) == pytest.approx(2.0)
+    assert opus_packets_seconds(ogg_opus(5, pad=200 * 3100)) == pytest.approx(62.0)
+    assert opus_packets_seconds(b"not ogg") == 0
