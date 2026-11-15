@@ -371,21 +371,60 @@ def recent_messages(
 def document_states(conn: Connection, customer_id: str, document_ids: Sequence[str]) -> dict[str, str]:
     """What became of each document a saved answer cites: ``live`` (the current
     version, out of Trash), ``older_version`` (a newer version replaced it),
-    ``in_trash``. A document deleted forever is simply missing from the result.
+    ``in_trash``, or ``locked`` (PRD 7, #605: locked since, in Trash or not; the answer is
+    replaced whole). A document deleted forever is simply missing from the result.
     One query, O(k log D) for k ids."""
     if not document_ids:
         return {}
     rows = conn.execute(
         text(
-            "SELECT id, deleted_at IS NOT NULL AS in_trash, is_current FROM documents"
-            " WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
+            "SELECT id, deleted_at IS NOT NULL AS in_trash, is_current, locked_at IS NOT NULL AS locked"
+            " FROM documents WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
         ),
         {"c": customer_id, "ids": sorted(set(document_ids))},
     ).all()
     return {
-        str(row.id): "in_trash" if row.in_trash else "live" if row.is_current else "older_version"
+        str(row.id): "locked"
+        if row.locked
+        else "in_trash"
+        if row.in_trash
+        else "live"
+        if row.is_current
+        else "older_version"
         for row in rows
     }
+
+
+def locked_documents(conn: Connection, customer_id: str, document_ids: Sequence[str]) -> set[str]:
+    """PRD 7 (#605): which of ``document_ids`` are locked now, so an old answer citing one gives
+    nothing to the next question or the chat memory. One query, O(k log D) for k ids."""
+    if not document_ids:
+        return set()
+    rows = conn.execute(
+        text(
+            "SELECT id FROM documents WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
+            " AND locked_at IS NOT NULL"
+        ),
+        {"c": customer_id, "ids": sorted(set(document_ids))},
+    )
+    return {str(row[0]) for row in rows}
+
+
+def opens_locked(conn: Connection, customer_id: str, user_id: str) -> bool:
+    """PRD 7 (#605, p2:79): whether the person may open a locked file out of Trash: one of their
+    lock grants (its index) on a file the access view shows them, read as them, so Ask's fixed
+    line shows to them alone. One query, O(g log D) for their g grants."""
+    return bool(
+        conn.execute(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM lock_grants g JOIN visible_documents d"
+                " ON d.customer_id = g.customer_id AND d.id = g.document_id"
+                " WHERE g.customer_id = :c AND g.user_id = :u AND d.locked_at IS NOT NULL"
+                " AND d.deleted_at IS NULL)"
+            ),
+            {"c": customer_id, "u": user_id},
+        ).scalar()
+    )
 
 
 def live_document_names(conn: Connection, customer_id: str, document_ids: Sequence[str]) -> dict[str, str]:
@@ -424,7 +463,8 @@ def add_pin(
             " SELECT m.customer_id, m.id, :u, d.id, :page, :ref, :rank"
             " FROM messages m JOIN conversations cv"
             " ON cv.customer_id = m.customer_id AND cv.id = m.conversation_id"
-            " JOIN visible_documents d ON d.customer_id = m.customer_id AND d.id = :d"
+            # PRD 7 (#605): never a locked document, as for a replaced answer.
+            " JOIN visible_documents d ON d.customer_id = m.customer_id AND d.id = :d AND d.locked_at IS NULL"
             " WHERE m.customer_id = :c AND m.id = :m AND m.role = 'assistant' AND cv.user_id = :u"
             " RETURNING id"
         ),

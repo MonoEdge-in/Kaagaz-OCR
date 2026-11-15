@@ -97,7 +97,11 @@ from kaagaz.reading.ocr import Region
 from kaagaz.scanning.gate import DocumentStatus
 
 if TYPE_CHECKING:
-    from kaagaz.pipeline import FinishedRun, Progress  # the processor's records; pipeline builds this store
+    from kaagaz.pipeline import (
+        FinishedRun,
+        PageRecord,
+        Progress,
+    )  # the processor's records; pipeline builds this store
 
 _log = logging.getLogger(__name__)
 
@@ -106,7 +110,7 @@ WAITING_FOR_READER = {"step": "waiting"}
 
 _SELECT = (
     "SELECT customer_id, id, sha256, size_bytes, detected_type, display_name, uploaded_by,"
-    " folder_id, family_id, version_no, ocr_choice, deleted_at IS NOT NULL"
+    " folder_id, family_id, version_no, ocr_choice, deleted_at IS NOT NULL, locked_at IS NOT NULL"
     " FROM documents WHERE customer_id = :c"
 )
 
@@ -139,10 +143,11 @@ _NO_FOLDER = (
 
 
 # The highest ready version_no is current (PRD 1 F6, PROVISIONAL plan 7.3): is a
-# newer version of this document's family ready already?
+# newer version of this document's family ready already? PRD 7 (#605): a locked version, once
+# pictured (``locked``), counts as ready: it is never read, so it would never become current.
 _READY_STATE = (
     "SELECT d.status, d.display_name, EXISTS (SELECT 1 FROM documents newer WHERE newer.customer_id = :c"
-    " AND newer.family_id = d.family_id AND newer.status = 'ready'"
+    " AND newer.family_id = d.family_id AND newer.status IN ('ready', 'locked')"
     " AND newer.version_no > d.version_no) AS newer_ready"
     " FROM documents d WHERE d.customer_id = :c AND d.id = :d"
 )
@@ -242,6 +247,70 @@ def mark_ready(
         finish_run(conn, customer_id, run)
 
 
+# PRD 7 (#605): a locked version's prepare-only run saves its pages' sizes and pictures, never a
+# reading (a reading result keeps its default: good, nobody named).
+_LOCKED_CLEAN = (
+    "SELECT locked_at IS NOT NULL AND status = 'clean' FROM documents WHERE customer_id = :c AND id = :d"
+)
+_DROP_PAGES = "DELETE FROM pages WHERE customer_id = :c AND document_id = :d"
+_LOCKED_PAGE = (
+    "INSERT INTO pages (customer_id, document_id, page_no, width, height, unit, has_image, effective_dpi,"
+    " low_resolution) VALUES (:c, :d, :page_no, :width, :height, :unit, :has_image, :effective_dpi,"
+    " :low_resolution)"
+)
+_LOCKED = (
+    "UPDATE documents SET status = 'locked', failure_code = NULL, page_count = :pages, progress = NULL,"
+    " is_current = :current WHERE customer_id = :c AND id = :d"
+)
+# The run, and the version not locked: one query on two primary keys.
+_STILL_OPEN = (
+    "SELECT EXISTS (SELECT 1 FROM processing_runs r JOIN documents d ON d.customer_id = r.customer_id"
+    " AND d.id = r.document_id WHERE r.customer_id = :c AND r.document_id = :d AND r.id = :r"
+    " AND r.status = 'running' AND d.locked_at IS NULL)"
+)
+
+
+def save_locked_pages(
+    conn: Connection,
+    customer_id: str,
+    document_id: str,
+    pages: "Sequence[PageRecord]",
+    run: "FinishedRun | None",
+) -> None:
+    """PRD 7 (#605): a locked version, scanned and pictured, is ``locked``: its page rows (sizes and
+    pictures only), its page count, current unless a newer version is ready or locked (as
+    ``mark_ready``), and ``run`` finished ``locked``. Under the family lock, Superseded and nothing
+    written unless the run is still open and the version still locked and clean (an unlock, a newer
+    run). O(v log D + p) for the family's v versions and p pages."""
+    family_id = lock_family(conn, customer_id, document_id)
+    params = {"c": customer_id, "d": document_id, "f": family_id}
+    fenced = run is not None and not is_run_open(conn, customer_id, document_id, run.run_id)
+    if family_id is None or fenced or not conn.execute(text(_LOCKED_CLEAN), params).scalar():
+        raise Superseded("" if run is None else run.run_id)
+    current = not conn.execute(text(_READY_STATE), params).one().newer_ready
+    conn.execute(text(_DROP_PAGES), params)
+    if pages:
+        rows = [
+            {
+                **params,
+                "page_no": page.info.page,
+                "width": page.info.width,
+                "height": page.info.height,
+                "unit": page.info.unit,
+                "has_image": page.has_image,
+                "effective_dpi": page.effective_dpi,
+                "low_resolution": page.low_resolution,
+            }
+            for page in pages
+        ]
+        conn.execute(text(_LOCKED_PAGE), rows)
+    if current:
+        conn.execute(text(_OTHERS_NOT_CURRENT), params)
+    conn.execute(text(_LOCKED), {**params, "pages": len(pages), "current": current})
+    if run is not None:
+        finish_run(conn, customer_id, run)
+
+
 def delete_forever(conn: Connection, storage: BlobStorage, customer_id: str, document_id: str) -> None:
     """Delete one document for good: its row, with its pages, pieces, values and
     the rest (cascade), then its stored files.
@@ -307,10 +376,11 @@ REPROCESS_COOLDOWN_MINUTES = 10
 # step and hand-back moves it, so a document that keeps waiting would never get old enough.
 # Never one held by a reading pause (#478 review, 3 Nov 2026): it waits on purpose, and the
 # release sweep queues it; once queued, it is asked for again then (``document.reading_released``,
-# QA P2, 4 Nov 2026).
+# QA P2, 4 Nov 2026). Never a locked one (PRD 7, #605): it is prepared, never read.
 RETRY_STUCK_HOURS = 6
 STUCK = (
-    "CASE WHEN d.status IN ('received', 'clean') AND d.reading_held IS NULL THEN GREATEST(d.created_at,"  # noqa: S608 - a fixed number
+    "CASE WHEN d.status IN ('received', 'clean') AND d.reading_held IS NULL AND d.locked_at IS NULL"  # noqa: S608 - a fixed number
+    " THEN GREATEST(d.created_at,"
     " (SELECT max(a.created_at) FROM audit_log a WHERE a.customer_id = d.customer_id"
     " AND a.family_id = d.family_id AND a.target_id = d.id::text"
     " AND a.action IN ('document.reprocess', 'document.read_upgrade', 'document.reading_released')))"
@@ -319,7 +389,7 @@ STUCK = (
 
 
 class NotReprocessable(Exception):
-    """The document is being read, was rejected, or is in Trash."""
+    """The document is being read, was rejected, is locked (PRD 7), or is in Trash."""
 
 
 class EnsembleRunning(NotReprocessable):
@@ -337,7 +407,8 @@ class ReprocessLimited(Exception):
 
 
 _REPROCESS_STATE = (
-    f"SELECT d.status, d.deleted_at IS NOT NULL AS in_trash, {STUCK} AS stuck"  # noqa: S608 - a fixed fragment, STUCK
+    "SELECT d.status, d.deleted_at IS NOT NULL AS in_trash, d.locked_at IS NOT NULL AS locked,"  # noqa: S608 - a fixed fragment, STUCK
+    f" {STUCK} AS stuck"
     " FROM documents d WHERE d.customer_id = :c AND d.id = :d"
 )
 # A queued or running Ensemble run of the document (0030's ensemble_runs_one_active index).
@@ -377,6 +448,7 @@ _REPROCESS = (
     " read_also = CASE WHEN CAST(:mode AS text) IS NULL THEN read_also ELSE CAST(:also AS text[]) END"
     " WHERE d.customer_id = :c AND d.id = :d"
     f" AND (d.status IN ('ready', 'failed', 'needs_reader') OR {STUCK}) AND d.deleted_at IS NULL"
+    " AND d.locked_at IS NULL"  # PRD 7 (#605): a locked file is never read
 )
 
 
@@ -416,7 +488,7 @@ def mark_for_reprocess(
         return None
     params: dict[str, Any] = {"c": customer_id, "d": document_id}
     state = conn.execute(text(_REPROCESS_STATE), params).one()
-    if state.in_trash or (state.status not in REPROCESSABLE and not state.stuck):
+    if state.in_trash or state.locked or (state.status not in REPROCESSABLE and not state.stuck):
         raise NotReprocessable(document_id)
     if conn.execute(text(_ENSEMBLE_RUNNING), params).scalar_one():
         raise EnsembleRunning(document_id)
@@ -704,6 +776,7 @@ def _record(row: Sequence[Any]) -> DocumentRecord:
         version_no=int(str(row[9])),
         ocr_choice=None if row[10] is None else str(row[10]),
         in_trash=bool(row[11]),
+        locked=bool(row[12]),
     )
 
 
@@ -991,6 +1064,24 @@ class PgDocuments:
 
         with unavailable():
             retry_on_deadlock(transaction, customer_id=customer_id, document_id=document_id)
+
+    def save_locked_pages(
+        self, customer_id: str, document_id: str, pages: "Sequence[PageRecord]", *, run: "FinishedRun | None"
+    ) -> None:
+        """``save_locked_pages`` in its own transaction, run again on a deadlock (PRD 7, #605)."""
+
+        def transaction() -> None:
+            with user_or_customer(self._db, customer_id, self._user_id) as conn:
+                save_locked_pages(conn, customer_id, document_id, pages, run)
+
+        with unavailable():
+            retry_on_deadlock(transaction, customer_id=customer_id, document_id=document_id)
+
+    def still_open(self, customer_id: str, document_id: str, run_id: str) -> bool:
+        """PRD 7 (#605): ``run_id`` is still running and the version is not locked. One query."""
+        with unavailable(), user_or_customer(self._db, customer_id, self._user_id) as conn:
+            params = {"c": customer_id, "d": document_id, "r": run_id}
+            return bool(conn.execute(text(_STILL_OPEN), params).scalar())
 
     def file_document(self, customer_id: str, document_id: str) -> None:
         """Auto-filing (feature 28) in its own transaction, run again on a deadlock, right

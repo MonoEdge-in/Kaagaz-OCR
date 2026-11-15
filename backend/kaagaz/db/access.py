@@ -41,6 +41,7 @@ class AdminDocument:
     id: str
     family_id: str
     in_trash: bool
+    locked: bool = False  # PRD 7 (#605)
 
 
 # PRD 7 (#601): in_department, a member of a live department (11c's "Ask your admin for access").
@@ -120,7 +121,7 @@ _UNNAME = text(
     " RETURNING user_id"
 )
 _PLACE_AUDIENCE = text("SELECT user_id, sees FROM kaagaz_place_audience(:d, :p, :only)")
-_ADMIN_DOCUMENT = text("SELECT id, family_id, in_trash FROM kaagaz_admin_document(:d)")
+_ADMIN_DOCUMENT = text("SELECT id, family_id, in_trash, locked FROM kaagaz_admin_document(:d)")
 _SHARES = text(
     "SELECT s.user_id, u.display_name, s.given_at, s.given_by, g.display_name AS given_by_name"
     " FROM document_shares s JOIN users u ON u.customer_id = s.customer_id AND u.id = s.user_id"
@@ -334,9 +335,9 @@ def place_audience(
 def admin_document(conn: Connection, document_id: str) -> AdminDocument | None:
     """A file for an Admin, seen or not (``kaagaz_admin_document``)."""
     row = conn.execute(_ADMIN_DOCUMENT, {"d": document_id}).first()
-    return (
-        None if row is None else AdminDocument(id=str(row[0]), family_id=str(row[1]), in_trash=bool(row[2]))
-    )
+    if row is None:
+        return None
+    return AdminDocument(id=str(row[0]), family_id=str(row[1]), in_trash=bool(row[2]), locked=bool(row[3]))
 
 
 def shares(conn: Connection, customer_id: str, document_id: str) -> Sequence[RowMapping]:

@@ -29,6 +29,7 @@ from kaagaz import versions
 from kaagaz.api.auth import CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
+from kaagaz.api.locked import UNLOCK_FIRST, refuse_locked
 from kaagaz.api.names import DOCUMENT_NAME_MAX, upload_name
 from kaagaz.api.routers.documents import MOVE_REFUSED, clean_note
 from kaagaz.api.views import document_summary
@@ -48,6 +49,7 @@ _MESSAGES = {
     "not_ready": "This version is still being read. Try again once it is ready.",
     "not_linked": "This version was uploaded, not linked from a suggestion, so there is nothing to undo.",
     "not_newest": "A newer version was added since, so this link can't be undone.",
+    "locked": UNLOCK_FIRST,  # PRD 7 (#605, question 11)
 }
 
 
@@ -75,9 +77,14 @@ def _rights(conn: Connection, user: CurrentUser) -> folders_sql.Rights:
 
 
 def _visible(conn: Connection, user: CurrentUser, document_id: str) -> None:
-    """PRD 7 (#595): a file the person cannot see is not found, before anything else is checked."""
-    if listing.get_document(conn, user.customer_id, document_id) is None:
+    """PRD 7 (#595): a file the person cannot see is not found, before anything else is checked.
+    PRD 7 (#605, question 11): then a locked one is 409 ``locked``, "Unlock it first." (the version
+    functions refuse a locked family again under its lock)."""
+    row = listing.get_document(conn, user.customer_id, document_id)
+    if row is None:
         raise ApiError(404, "not_found")
+    if row["locked"]:
+        raise ApiError(409, "locked", UNLOCK_FIRST)
 
 
 def _summary(conn: Connection, context: AppContext, user: CurrentUser, document_id: str) -> dict[str, Any]:
@@ -257,6 +264,9 @@ def compare(
         rows = [listing.get_document(conn, customer_id, each) for each in (left, right)]
         if any(row is None for row in rows) or not versions_sql.may_compare(conn, customer_id, left, right):
             raise ApiError(404, "not_found")
+        for row in rows:
+            if row is not None:
+                refuse_locked(row)  # PRD 7 (#605): either side locked
         if any(row is not None and row["deleted_at"] is not None for row in rows):
             raise ApiError(409, "in_trash", _IN_TRASH)
         texts = [versions_sql.page_texts(conn, customer_id, each) for each in (left, right)]

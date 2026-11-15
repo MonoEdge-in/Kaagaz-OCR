@@ -368,7 +368,8 @@ def test_management_sees_access_activity_with_a_file_it_cant_see_unnamed(db: Dat
     )  # fmt: skip
     _owner(
         db,
-        "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d",
+        # Changed on purpose (#605, 0093): a locked version is never ready.
+        "UPDATE documents SET locked_at = now(), locked_by = :u, status = 'locked' WHERE id = :d",
         {"u": p["admin"], "d": newer},
     )
     for file in (older, files["sales"]):  # an older version's id; a file Management sees
@@ -381,7 +382,10 @@ def test_management_sees_access_activity_with_a_file_it_cant_see_unnamed(db: Dat
                      target_id=files["sales"])  # fmt: skip
     status, body = _get(org.people["management"], "/api/access/activity")
     actions = [item["action"] for item in body["items"]]
-    assert status == 200 and all(action.startswith("access.") for action in actions)  # not the view
+    # Changed on purpose (#605): giving a locked file gives its lock too, audited lock.grant.
+    assert status == 200 and all(
+        action.startswith(("access.", "lock.")) for action in actions
+    )  # not the view
     taken, seen, given = [item for item in body["items"] if item["action"].startswith("access.file_")]
     assert (taken["action"], seen["action"], given["action"]) == (
         "access.file_take",
@@ -411,7 +415,9 @@ def test_management_sees_access_activity_with_a_file_it_cant_see_unnamed(db: Dat
     )
     items = _get(admin, "/api/access/activity")[1]["items"]
     names = [item["document"]["name"] for item in items if item["document"] is not None]
-    assert names == ["locked.pdf", "sales.pdf", "locked.pdf"]  # an Admin: every name (decision 20)
+    # An Admin: every name (decision 20). Changed on purpose (#605): giving the locked file gave its
+    # lock too (lock.grant), one more row naming it.
+    assert names == ["locked.pdf", "sales.pdf", "locked.pdf", "locked.pdf"]
 
 
 # --- Shared with me and "Shared with you" (route 23, lead decision 3) ---------------------------

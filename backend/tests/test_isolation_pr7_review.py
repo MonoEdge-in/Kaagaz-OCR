@@ -50,7 +50,8 @@ def _private(db: Database, org: Org, folder: str, *named: str) -> None:
 def _lock(db: Database, org: Org, document: str) -> None:
     _owner(
         db,
-        "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d",
+        # Changed on purpose (#605, 0093): a locked version is never ready.
+        "UPDATE documents SET locked_at = now(), locked_by = :u, status = 'locked' WHERE id = :d",
         {"u": org.people["admin"].user_id, "d": document},
     )
 

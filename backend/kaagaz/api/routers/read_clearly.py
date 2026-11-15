@@ -21,6 +21,7 @@ from kaagaz.api import views
 from kaagaz.api.auth import User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
+from kaagaz.api.locked import refuse_locked
 from kaagaz.db import audit, listing, word_review
 
 router = APIRouter()
@@ -32,6 +33,7 @@ def _readable(conn: Connection, customer_id: str, document_id: uuid.UUID) -> Row
     row = listing.get_document(conn, customer_id, str(document_id))
     if row is None or row["status"] == "rejected":
         raise ApiError(404, "not_found")
+    refuse_locked(row)  # PRD 7 (#605)
     return row
 
 

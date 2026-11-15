@@ -110,8 +110,12 @@ _HELD_RUNS = text(
     " ORDER BY created_at, id LIMIT :n"
 )
 _UNHOLD = text(f"UPDATE ensemble_runs SET error_code = NULL WHERE customer_id = :c AND id = :r AND {_HELD}")  # noqa: S608 - fixed
+# PRD 7 (#605): a run gone (a lock deletes it) or a document locked is a stop too, so no further
+# page goes to a model.
 _STOP_ASKED = text(
-    "SELECT stop_requested_at IS NOT NULL FROM ensemble_runs WHERE customer_id = :c AND id = :r"
+    "SELECT coalesce((SELECT r.stop_requested_at IS NOT NULL OR d.locked_at IS NOT NULL FROM ensemble_runs r"
+    " JOIN documents d ON d.customer_id = r.customer_id AND d.id = r.document_id"
+    " WHERE r.customer_id = :c AND r.id = :r), true)"
 )
 _ATTEMPT = text(
     "UPDATE ensemble_runs SET attempts = greatest(attempts, :a) WHERE customer_id = :c AND id = :r"
