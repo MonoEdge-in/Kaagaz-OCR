@@ -731,12 +731,16 @@ _INSERT_VERSION = (
     " (SELECT o.owner_id FROM documents o WHERE o.customer_id = :c AND o.id = :of),"
     " (SELECT o.sensitivity FROM documents o WHERE o.customer_id = :c AND o.id = :of),"
     " (SELECT o.sensitivity_set_by_person FROM documents o WHERE o.customer_id = :c AND o.id = :of))"
-    " ON CONFLICT (customer_id, sha256) DO NOTHING"  # no RETURNING: PRD 7 (#606), _copy_already_in
 )
+# PRD 7 (#606): no ON CONFLICT and no RETURNING: either has the database rule check the new row as
+# one the person sees, and a new version given to them through a share is seen only once its
+# statement ends (0085's trigger copies the share). The unique key on the fingerprint decides.
+_SAME_BYTES = "documents_customer_id_sha256_key"
 
 
 def _copy_already_in(conn: Connection, record: DocumentRecord) -> DocumentRecord:
-    """The copy of ``record``'s bytes that made its insert do nothing, as the connection may see it.
+    """The copy of ``record``'s bytes that made its insert do nothing (or fail on the fingerprint's
+    key), as the connection may see it.
     PRD 7 (#606): under the database rule a copy the person can't see reads as no row, and then the
     upload's own record comes back, whose id names no row, so every reply says it is hidden (no
     name, no place, no link). That is also why the inserts read no RETURNING: it is checked against
@@ -797,8 +801,13 @@ def add_version(
         version=stored.version_no,
         ocr=stored.ocr_choice,
     )
-    if not conn.execute(text(_INSERT_VERSION), params).rowcount:  # this customer has these bytes
-        return _copy_already_in(conn, record), False
+    try:
+        with conn.begin_nested():
+            conn.execute(text(_INSERT_VERSION), params)
+    except IntegrityError as error:
+        if getattr(getattr(error.orig, "diag", None), "constraint_name", None) != _SAME_BYTES:
+            raise
+        return _copy_already_in(conn, record), False  # this customer has these bytes
     conn.execute(text(_COPY_TAGS), params)
     return stored, True
 

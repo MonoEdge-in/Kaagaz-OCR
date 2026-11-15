@@ -19,7 +19,7 @@ from kaagaz.api.routers.documents import HIDDEN_COPY
 from kaagaz.api.routers.folders import HIDDEN_INSIDE
 from kaagaz.db.engine import Database
 from kaagaz.search.scope import ScopeBody, resolve
-from tests.db_support import insert_folder
+from tests.db_support import insert_folder, until_0092
 from tests.test_api_delete_forever_grant import _confirm, _grant
 from tests.test_api_folder_upload_files import ResumableStorage, _fingerprint
 from tests.test_api_folder_uploads import item, plan, register
@@ -46,7 +46,8 @@ def _fill(value: Any, **ids: str) -> Any:
 
 
 def _trash(org: Org, folder: str) -> None:
-    reply = org.people["admin"].client.delete(f"/api/folders/{folder}?contents=trash", headers=CSRF)
+    with until_0092():  # #606: an Admin deleting a folder with files they can't see is PR 9b's
+        reply = org.people["admin"].client.delete(f"/api/folders/{folder}?contents=trash", headers=CSRF)
     assert reply.status_code == 200, reply.text
 
 
@@ -279,9 +280,10 @@ def test_an_admin_deletes_forever_a_trashed_folder_holding_files_they_cant_open(
     org = _walled(Api(db))
     admin = org.people["admin"]
     _trash(org, org.folders["finance"])
-    reply = admin.client.delete(
-        f"/api/documents/trash/folders/{org.folders['finance']}/permanent", headers=CSRF
-    )
+    with until_0092():  # #606: an Admin deleting forever files they can't see is PR 9b's
+        reply = admin.client.delete(
+            f"/api/documents/trash/folders/{org.folders['finance']}/permanent", headers=CSRF
+        )
     assert reply.status_code == 204, reply.text
 
 

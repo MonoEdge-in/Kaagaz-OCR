@@ -22,6 +22,12 @@ def pytest_configure(config: Any) -> None:
     config.addinivalue_line("markers", "isolation: proves one customer cannot reach another customer's data")
 
 
+def pytest_runtest_setup(item: Any) -> None:
+    from tests import rule_shadow
+
+    rule_shadow.test_name = item.nodeid
+
+
 def pytest_collection_modifyitems(items: list[Any]) -> None:
     for item in items:
         module_name = item.module.__name__.rsplit(".", 1)[-1]
@@ -40,5 +46,12 @@ def db() -> Iterator[Database]:
     migrate(url)
     database = make_database(url)
     person_rule(database, on=os.environ.get("KAAGAZ_TEST_PERSON_RULE", "on") != "off")
+    shadow = os.environ.get("KAAGAZ_RULE_SHADOW", "")
+    if shadow:  # PRD 7 (#606): the shadow diff harness (tests/rule_shadow.py)
+        from tests import rule_shadow
+
+        rule_shadow.install(database.engine)
     yield database
+    if shadow:
+        rule_shadow.write(shadow, rule_shadow.found)
     database.engine.dispose()

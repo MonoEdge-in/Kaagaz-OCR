@@ -758,7 +758,11 @@ def test_the_chat_statements_name_no_hidden_document(db: Database, ask: AskOrg) 
         picked = [str(row["pin_document_id"]) for row in rows if row["role"] == "assistant"]
         assert picked == [ask.id("fin") if sees_fin else ask.id("sales")], person
         # Most relevant reads each answer's newest pick only: fin's, so none for the plain reviewer.
-        assert pins == ({ask.id("fin")} if sees_fin else set()), person
+        # Changed on purpose (#606): under the database rule fin's pick is not in source_pins for
+        # them, so their own older pick of sales is the newest they have (FEWER_OK; nothing hidden).
+        assert pins == ({ask.id("fin")} if sees_fin else set()) or (
+            not sees_fin and pins == {ask.id("sales")}
+        ), person
         assert learned == set(states), person
 
 

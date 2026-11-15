@@ -461,6 +461,25 @@ the `JOBS_DATABASE_URL` line from `.env` and `dc up -d --no-deps worker`; the wo
 `kaagaz_api`. Do this BEFORE any `alembic downgrade 0082`: the downgrade takes every right from
 `kaagaz_worker`, and workers still on it would fail.
 
+**The per-person database rule** (PRD 7 PR 9a, #606, migration 0091, Vrushit's approval). 0091
+ships it off: nothing changes until it is turned on, one organisation at a time. Never before all
+of: #577 (the test server has its own database), both 0091 and 0092 (PR 9b) deployed, and the
+steps above done (the API on `kaagaz_api`, the workers on `kaagaz_jobs`). Test server first:
+
+1. In `.env`: `DB_LOGIN_CHECK=refuse`, then `dc up -d --no-deps api worker`. The API and each
+   worker now refuse to start on a login the rule can't hold (the owner, a superuser, or one that
+   can switch into `kaagaz_worker` or `kaagaz_operator`); `dc logs --tail 50 api worker` says which.
+2. `dc run --rm migrate python -m kaagaz.cli person-rule status` (the owner's login: only it may
+   touch the switch). It says `off`.
+3. `... person-rule on --customer <the organisation's id>`. It refuses while any worker report of
+   the last 10 minutes came from another role than `kaagaz_worker`, or `kaagaz_api` can switch
+   into it. It logs and sends an ops alert. Then the red team (PRD 7 section 11).
+4. Every organisation: `... person-rule on --all`. Production only after phase 8, the same way.
+
+**The way back, at once:** `... person-rule off --all` (or `--customer <id>`): no deploy, no
+migration, never refused; the views still keep each person to what they may see. Turn it off
+before rolling the code back past PR 9a: older code reads hidden rows as gone.
+
 **The closed lines and the storage keys (#477), by hand at a quiet time.** The
 release that adds the `data`, `scan` and `edge` networks moves postgres and
 seaweedfs to `data` in deploy step 2 (`run migrate` recreates them), while the

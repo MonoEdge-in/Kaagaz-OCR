@@ -23,7 +23,7 @@ from kaagaz.db import audit, listing
 from kaagaz.db.engine import Database
 from kaagaz.search import hybrid
 from kaagaz.search.scope import EVERYTHING
-from tests.db_support import APP_ROLE, insert_folder
+from tests.db_support import APP_ROLE, insert_folder, until_0092
 from tests.test_api_delete_forever_grant import _confirm, _grant
 from tests.test_api_support import CSRF, PDF_BYTES, Api, Signed
 from tests.test_isolation_logins import WORKER
@@ -704,9 +704,10 @@ def test_a_closed_department_in_trash_stays_closed(db: Database) -> None:
     """Finance (Department only) goes to Trash with its files: the plain reviewer still can't see
     its files, its member still can, and every person still sees exactly the written rule."""
     org = _walled(Api(db))
-    reply = org.people["admin"].client.delete(
-        f"/api/folders/{org.folders['finance']}?contents=trash", headers=CSRF
-    )
+    with until_0092():  # an Admin who can't see Finance's files deletes it with them
+        reply = org.people["admin"].client.delete(
+            f"/api/folders/{org.folders['finance']}?contents=trash", headers=CSRF
+        )
     assert reply.status_code == 200, reply.text
     app = _app(db)
     assert org.files["fin"] not in _seen(app, org.c, org.people["plain"].user_id)
