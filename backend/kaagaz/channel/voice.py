@@ -33,6 +33,7 @@ the person's question, kept as a typed one is (Ask's history), and, while an uns
 
 import http.client
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -215,8 +216,10 @@ def ogg_opus_seconds(data: bytes) -> float | None:
 
 def opus_packets_seconds(data: bytes) -> float:
     """W7: how long an Ogg recording's Opus packets play, from each packet's first byte (its frame
-    size and count, RFC 6716 section 3.1), whatever its pages' granule positions claim (the sender
-    writes those). Nothing is decoded; 0 for data that is not Ogg. O(len(data))."""
+    size and count; for code 3 its second byte too: RFC 6716 section 3.1), whatever its pages'
+    granule positions claim (the sender writes those). Nothing is decoded. Infinite unless the walk
+    page by page ends exactly at the data's end: a byte it can't read (junk between pages, a page cut
+    short) would stop the count early. O(len(data))."""
     total, packet, at = 0.0, bytearray(), 0
     while data.startswith(b"OggS", at) and at + 27 <= len(data):
         lacing = data[at + 27 : at + 27 + data[at + 26]]
@@ -228,7 +231,7 @@ def opus_packets_seconds(data: bytes) -> float:
                 total += _packet_seconds(bytes(packet))
                 packet.clear()
         at = body
-    return total
+    return total if at == len(data) else math.inf
 
 
 def _packet_seconds(packet: bytes) -> float:
