@@ -106,7 +106,9 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     Changed on purpose (#600, 14 Nov 2026): page turns saved for everyone (0088) follow 0087.
     Changed on purpose (#594, 14 Nov 2026): nothing opens by accident (0089) follows 0088.
     Changed on purpose (#601, 14 Nov 2026): the access API (0090) follows 0089.
-    Changed on purpose (#601, 15 Nov 2026): the wall rules (0090b) follow 0090 and are the head."""
+    Changed on purpose (#601, 15 Nov 2026): the wall rules (0090b) follow 0090.
+    Changed on purpose (#605, 15 Nov 2026): locked files (0093, PROVISIONAL: after 0092 once PR 9
+    merges) follow 0090b and are the head."""
     scripts = _scripts()
     assert scripts.get_revision("0082").down_revision == "0081"
     assert scripts.get_revision("0083").down_revision == "0082"
@@ -118,4 +120,5 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     assert scripts.get_revision("0089").down_revision == "0088"
     assert scripts.get_revision("0090").down_revision == "0089"
     assert scripts.get_revision("0090b").down_revision == "0090"
-    assert scripts.get_heads() == ["0090b"]
+    assert scripts.get_revision("0093").down_revision == "0090b"
+    assert scripts.get_heads() == ["0093"]
