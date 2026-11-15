@@ -420,9 +420,8 @@ def test_with_db_login_check_refuse_only_a_login_the_rule_holds_starts(
         TestClient(app),
     ):
         pass
-    assert [r.code for r in caplog.records if getattr(r, "code", None) == "login_refused"] == [
-        "login_refused"
-    ]
+    codes = [getattr(r, "code", None) for r in caplog.records]
+    assert codes.count("login_refused") == 1
     limited = make_settings(database_url=logins[API], ops_database_url=logins[OPS], **refuse)
     with TestClient(
         create_app(limited, storage=ApiFakeStorage(), queue=ApiFakeQueue(), answers=FakeAnswers())
