@@ -176,8 +176,13 @@ class World:
         return [dict(zip(keys, [None if v is None else str(v) for v in row], strict=True)) for row in rows]
 
     def free(self, person: Person) -> None:
-        """The connection's lease freed (a rest for files still coming, or a notice still being read)."""
+        """The connection's lease freed (a rest for files still coming or a reply to try again), and
+        its notices put aside brought back as their time came (``Channel.revive``)."""
         _owner(self.db, "UPDATE whatsapp_links SET busy_until = NULL WHERE id = :l", {"l": person.link})
+        key = (person.c, person.u, person.link)
+        if key in self.channel.notices:
+            self.channel.notices[key] = self.api.clock()
+        self.channel.revive()
 
 
 @pytest.fixture
@@ -1079,26 +1084,32 @@ def test_looking_goes_once_a_message_and_never_for_an_uploads_tap(world: World) 
     assert world.replies(person)[before:] == [(say("cancelled", "en"), ["menu.en"])]
 
 
-def test_a_notice_rests_longer_as_it_ages(world: World) -> None:
+def test_a_notice_is_looked_at_again_later_as_it_ages(world: World) -> None:
     person = world.person()
-    _saved(world, person)  # its file sent 20 seconds ago, still being read
-    world.free(person)
-    world.run()
-    rest = _owner(
-        world.db,
-        "SELECT extract(epoch FROM busy_until - now()) FROM whatsapp_links WHERE id = :l",
-        {"l": person.link},
-    )
-    assert 3 < float(rest[0][0]) <= 5  # 3 + 20 // 10
+    _saved(world, person)  # its file sent 20 seconds ago, still being read: put aside
+    key = (person.c, person.u, person.link)
+    assert world.channel.notices[key] - world.api.clock() == timedelta(seconds=5)  # 3 + 20 // 10
     world.api.clock.advance(3600)
-    world.free(person)
+    world.free(person)  # its time came: back in line, still being read, put aside again
     world.run()
-    rest = _owner(
-        world.db,
-        "SELECT extract(epoch FROM busy_until - now()) FROM whatsapp_links WHERE id = :l",
-        {"l": person.link},
-    )
-    assert 50 < float(rest[0][0]) <= 60
+    assert world.channel.notices[key] - world.api.clock() == timedelta(seconds=60)
+    world.api.clock.advance(30)
+    assert world.channel.revive() == 0  # not yet
+
+
+def test_a_waiting_notice_never_delays_the_persons_own_messages(world: World) -> None:
+    person = world.person()
+    document = _saved(world, person)  # its notice waits: the file is read slowly
+    busy = _owner(world.db, "SELECT busy_until FROM whatsapp_links WHERE id = :l", {"l": person.link})
+    assert busy == [(None,)]  # the lease freed, not held while the file is read
+    assert post(world.client, delivery(message(person.number, world.api.clock(), "Hi"))).status_code == 200
+    world.run()  # one turn, nothing freed by hand
+    assert world.replies(person)[-1][1] == ["ask.en", "upload.en", "get.en"]
+    _owner(world.db, "UPDATE documents SET status = 'ready' WHERE id = :d", {"d": document})
+    world.api.clock.advance(5)
+    assert world.channel.revive() == 1  # its time came: back in line
+    world.run()
+    assert world.replies(person)[-1].startswith("Ready.")
 
 
 def test_one_ready_notice_for_a_batch_once_all_are_read(world: World) -> None:

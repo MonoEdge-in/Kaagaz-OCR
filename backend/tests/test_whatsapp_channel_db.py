@@ -549,6 +549,7 @@ class _Loop:
         self.claims = claims
         self.handled: list[Claim] = []
         self.sweeps = 0
+        self.revived = 0
         self.sweep_fails = sweep_fails
         self.done = threading.Event()
 
@@ -570,6 +571,10 @@ class _Loop:
         self.sweeps += 1
         if self.sweep_fails:
             raise RuntimeError("the sweep failed")
+        return 0
+
+    def revive(self) -> int:  # W5: no notices put aside here
+        self.revived += 1
         return 0
 
 
@@ -595,6 +600,7 @@ def test_the_loop_sweeps_claims_and_handles_until_stopped(monkeypatch: pytest.Mo
     handled = sorted(claim.linked.link_id for claim in loop.handled)
     assert handled == ["boom", "one", "two"]  # one failure stops nothing
     assert loop.sweeps == 1  # at start, then hourly
+    assert loop.revived >= 3  # W5: every turn, before the claims
 
 
 def test_a_sweep_that_fails_never_stops_the_claims(

@@ -31,10 +31,12 @@ other process off it) and goes through its waiting messages oldest first, by Wha
    connection meanwhile; the reply then finishes them all (``Outgoing.finished``).
 7. (W5) A saved file's message waits again for its "ready" notice (``document_id``), behind every
    message the person sent (``wa.next_message``): ``Chat.notice`` while the file is being read
-   rests the connection (``notice_rest``: NOTICE_SECONDS, longer as it ages, up to a minute; no
-   try counted); once read it goes as any reply, checked
-   again just before; a file hidden since sends nothing. A notice past 24 hours since the person's
-   newest message is put aside (``expired``) and goes after their next message.
+   is put aside (``expired``) and the lease freed, so it never holds back the person's own
+   messages; ``revive`` (the poll loop's, every turn) puts it back in line after ``notice_rest``
+   (3 seconds, longer as it ages, up to a minute), and so does the person's next message. Once read
+   it goes as any reply, checked again just before; a file hidden since sends nothing. A notice
+   past 24 hours since the person's newest message is put aside the same way and goes after their
+   next message.
 
 A reply goes outside any transaction, and only to the connection's own number. One that could not
 be sent leaves the message waiting and the connection resting (the order is kept: nothing after it
@@ -93,9 +95,8 @@ _AUTH = frozenset({401, 403})
 MAX_MADE = 1000  # replies held to send again (each one message's, a few KB)
 SLOW_SECONDS = 8.0  # W5: a reply not made by then sends "Looking through your files…" first
 QUIET_SECONDS = 15  # W5: files sent one after another are answered once none came for this long
-# W5: how often a saved file is looked at while Kaagaz reads it (``notice_rest``). shortcut: the rest
-# holds the whole connection, so a message sent meanwhile waits up to that rest (a minute at most);
-# a notice time of its own on whatsapp_messages (a migration) would let the claim skip it.
+# W5: how soon a saved file is looked at again while Kaagaz reads it (``notice_rest``); meanwhile its
+# notice is put aside and the connection free (``Channel._later``, ``Channel.revive``).
 NOTICE_SECONDS = 3
 NOTICE_MOST_SECONDS = 60  # the rest grows with the notice's age: 3 s, then 1 s more every 10 s
 # W5: the renewal of the lease of the connection this thread answers (set by ``Channel.handle``).
@@ -115,8 +116,8 @@ def keep_lease() -> None:
 
 
 def notice_rest(age: timedelta) -> int:
-    """W5: the seconds a notice rests while its file is read: NOTICE_SECONDS, then 1 more for every
-    10 seconds of its age, at most NOTICE_MOST_SECONDS."""
+    """W5: the seconds before a notice is looked at again while its file is read: NOTICE_SECONDS,
+    then 1 more for every 10 seconds of its age, at most NOTICE_MOST_SECONDS."""
     return min(NOTICE_MOST_SECONDS, NOTICE_SECONDS + max(0, int(age.total_seconds())) // 10)
 
 
@@ -150,6 +151,11 @@ class Channel:
     slow_seconds: float = SLOW_SECONDS
     # W5: the messages LOOKING went for already (in order, MAX_MADE at most), so a retry never repeats it.
     looked: dict[tuple[str, str, str], None] = field(default_factory=dict)
+    # W5: by (customer, person, connection), when its notices put aside are looked at again (``revive``).
+    # shortcut: kept in memory: a restart, or more than MAX_MADE at once, loses the time, and those
+    # notices then go after the person's next message (a notice time of its own would need a migration).
+    notices: dict[tuple[str, str, str], datetime] = field(default_factory=dict)
+    notices_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def claim(self, limit: int) -> list[Claim]:
         """Up to ``limit`` connections, leased; BackendUnavailable when the database is lost."""
@@ -159,6 +165,33 @@ class Channel:
     def sweep(self) -> int:
         with unavailable(), self.db.system() as conn:
             return wa.sweep(conn)
+
+    def revive(self) -> int:
+        """W5: the notices put aside (``_later``) whose time came are put back in line, behind the
+        person's own messages; how many connections. BackendUnavailable when the database is lost."""
+        now = self.clock()
+        with self.notices_lock:
+            due = [key for key, when in self.notices.items() if when <= now]
+            for key in due:
+                del self.notices[key]
+        for customer_id, user_id, link_id in due:
+            with unavailable(), self.db.user(customer_id, user_id) as conn:
+                wa_up.unpark_notices(conn, customer_id, link_id)
+        return len(due)
+
+    def _later(self, linked: Linked, message: Waiting) -> int:
+        """W5: a notice whose file is still being read is put aside (``expired``) and its time to look
+        again kept (``notice_rest``, longer as it ages): the lease is freed, so it never holds back
+        the person's own messages. 0: go on."""
+        with self.db.user(linked.customer_id, linked.user_id) as conn:
+            wa_up.park_notice(conn, linked.customer_id, message.id)
+        when = self.clock() + timedelta(seconds=notice_rest(self.clock() - message.sent_at))
+        key = (linked.customer_id, linked.user_id, linked.link_id)
+        with self.notices_lock:
+            if key not in self.notices and len(self.notices) >= MAX_MADE:  # the oldest goes
+                self.notices.pop(next(iter(self.notices)))
+            self.notices[key] = min(when, self.notices.get(key, when))
+        return 0
 
     def handle(self, claim: Claim) -> None:
         """Every waiting message of one claimed connection, in order; then its lease is freed, or kept
@@ -244,8 +277,8 @@ class Channel:
             if made is None:
                 if message.document_id is not None:  # W5: a saved file's notice
                     notice = self.chat.notice(linked, message)
-                    if notice is None:  # still being read: a longer rest the older it is
-                        return notice_rest(self.clock() - message.sent_at)
+                    if notice is None:  # still being read: put aside, the person's lease freed
+                        return self._later(linked, message)
                     made = notice
                 else:
                     rest = self._quiet(linked, message)
