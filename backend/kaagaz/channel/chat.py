@@ -161,7 +161,7 @@ class Chat:
             (f"get.{lang}", say("get_button", lang)),
             (f"more.{lang}", say("more_button", lang)),
         )
-        return Outgoing(_masked(say("menu", lang, _cut(name, 40))), buttons)
+        return Outgoing(say("menu", lang, _cut(_masked(name), 40)), buttons)
 
     def _more(self, lang: Language) -> Outgoing:
         rows = [
@@ -274,8 +274,9 @@ class Chat:
         text, hidden = mask(text)
         sources: list[str] = []
         for document_id, name, page in self._sources(answer):
-            line, masked = mask(say("source", lang, _cut(name, 80), page) if page else _cut(name, 80))
+            name, masked = mask(name)  # before any cut, which could leave part of a number whole
             hidden = hidden or masked
+            line = say("source", lang, _cut(name, 80), page) if page else _cut(name, 80)
             link = self._url(f"/documents/{document_id}" + (f"?page={page}" if page else ""))
             sources.append(f"{line}\n{say('open', lang, link)}")
         notes = [say("masked", lang)] if hidden else []
@@ -367,7 +368,7 @@ class Chat:
             return Outgoing(say("not_found", lang), ((f"menu.{lang}", say("menu_button", lang)),))
         if len(kept) == 1:
             return self._card(user, kept[0], lang)
-        if len(kept) > MAX_ROWS or found.capped:
+        if len(kept) > MAX_ROWS:  # counts only of what may be named here
             heading = say("found_more", lang, len(rows), len(rows))
         else:
             heading = say("found", lang, len(kept))
@@ -383,8 +384,8 @@ class Chat:
         description = " · ".join(part for part in (where, when) if part)
         return Row(
             f"file:{document_id}:{lang}",
-            _masked(_cut(name, ROW_CHARS)),
-            _masked(_cut(description, DESCRIPTION_CHARS)),
+            _cut(_masked(name), ROW_CHARS),  # masked before the cut, which could leave part of a number
+            _cut(_masked(description), DESCRIPTION_CHARS),
         )
 
     def _where(self, conn: Any, user: CurrentUser, row: Any, lang: Language) -> str:
@@ -420,11 +421,14 @@ class Chat:
         facts = " · ".join(
             p for p in (where, kind, pages, say("added", lang, self._date(row["created_at"]))) if p
         )
-        lines = [_cut(str(row["display_name"]), 200), facts]
+        # Masked before any cut, which could leave part of a number whole.
+        hidden = any(mask(str(row[key] or ""))[1] for key in ("display_name", "summary"))
+        lines = [_cut(_masked(str(row["display_name"])), 200), facts]
         if row["summary"]:
-            summary = self._in_language(user, _cut(str(row["summary"]), MAX_SUMMARY_CHARS), lang, None)
-            lines.append(say("summary", lang, summary))
-        text, hidden = mask("\n".join(lines))
+            summary = _cut(_masked(str(row["summary"])), MAX_SUMMARY_CHARS)
+            lines.append(say("summary", lang, self._in_language(user, summary, lang, None)))
+        text, masked = mask("\n".join(lines))
+        hidden = hidden or masked
         link = say("open_in_kaagaz", lang, self._url(f"/documents/{target}"))
         tail = "\n".join([*([say("masked", lang)] if hidden else []), link])  # never cut: the link
         if len(text) + 1 + len(tail) > MAX_BODY:

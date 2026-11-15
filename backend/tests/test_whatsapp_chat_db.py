@@ -415,6 +415,27 @@ def test_a_hidden_locked_missing_or_made_up_file_gets_the_same_reply(world: _Wor
     assert "whatsapp.file_link" not in [row[0] for row in world.api.audit_rows(person.c)]
 
 
+def test_a_locked_match_is_left_out_of_the_list_and_its_count(world: _World) -> None:
+    person = world.person()
+    seen = _filed(world, person, "seen.pdf", "gas bill")
+    _lock(world, person, _filed(world, person, "locked.pdf", "gas bill"))
+    world.tap(person, "get.en")
+    body, buttons = world.say(person, "gas")
+    assert body.startswith("seen.pdf\n") and buttons == ["not_this.en", "menu.en"]  # one match: its card
+    assert "locked.pdf" not in repr(world.fake.requests) and seen in body
+
+
+def test_a_list_row_is_masked_before_it_is_cut(world: _World) -> None:
+    person = world.person()
+    _filed(world, person, "My PAN and Aadhaar 1234 5678 9012.pdf", "kyc papers")
+    _filed(world, person, "Other.pdf", "kyc papers")
+    world.tap(person, "get.en")
+    world.say(person, "kyc")
+    rows = world.raw(person)["interactive"]["action"]["sections"][0]["rows"]
+    assert "My PAN and Aadhaar ••••…" in [row["title"] for row in rows]
+    assert "1234" not in repr(rows)
+
+
 def test_a_card_masks_id_numbers(world: _World) -> None:
     person = world.person()
     document = _filed(world, person, "Aadhaar 1234 5678 9012.pdf", "identity card")
