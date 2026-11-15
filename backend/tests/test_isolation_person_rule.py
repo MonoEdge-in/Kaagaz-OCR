@@ -16,6 +16,7 @@ import pytest
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import ProgrammingError
 
+from kaagaz.db import storage_limits
 from kaagaz.db.engine import Database
 from kaagaz.db.sqlstate import INSUFFICIENT_PRIVILEGE, sqlstate
 from tests.db_support import APP_ROLE, WORKER_ROLE, new_customer, person_rule, until_0092
@@ -287,6 +288,7 @@ def test_the_whole_organisation_reads_count_what_the_person_cant_see_and_no_othe
     sha = _owner(db, "SELECT sha256 FROM documents WHERE id = :d", {"d": org.files["fin"]})[0][0]
     with _as(db, org, "plain") as conn:
         assert conn.execute(text("SELECT kaagaz_storage_used()")).scalar() == stored
+        assert storage_limits.storage_room(conn, org.c).used_bytes == stored  # the cap can't fail open
         assert conn.execute(
             text("SELECT spent >= 0 FROM kaagaz_spent(now() - interval '1 day', now())")
         ).scalar()
