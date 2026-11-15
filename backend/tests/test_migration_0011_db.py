@@ -91,7 +91,7 @@ def test_the_word_statement_reads_the_stored_keys(db: Database) -> None:
     words = {"c": customer, "q": "zzz", "k": "zzz", "g": "", "sk": hybrid.sound_query("bhogwatdar"), "n": 50}
     words |= {"exact": [], "ranked": hybrid.SOUND_RANKED}
     # Changed on purpose (#617): the sound candidates come from kaagaz_word_candidates (0094).
-    words |= {"skc": words["sk"], "docs": None, "cap": hybrid.CANDIDATE_CAP}
+    words |= {"skc": str(words["sk"]).replace(";", "|"), "docs": None, "cap": hybrid.CANDIDATE_CAP}
     with db.customer(customer) as conn:
         plan = "\n".join(
             conn.execute(text("EXPLAIN VERBOSE " + hybrid._SOUND.text), words | EVERYTHING.params()).scalars()

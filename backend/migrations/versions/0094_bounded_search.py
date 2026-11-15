@@ -21,15 +21,16 @@ piece of the organisation (0011's note; #631's measurements), and ``tsv_sound`` 
    with no match chose that scan at the default). An empty search path; only ``kaagaz_app``
    may run it, never PUBLIC.
 3. ``term_df`` and ``customer_stats``: how many of an organisation's live pieces hold each word
-   of each word column, and how many live pieces it has and their average length, rebuilt by
-   the worker with ``ts_stat`` (kaagaz/search/word_counts.py), never counted per upload.
+   of ``tsv_simple`` and ``tsv_sound`` (the columns whose ORed queries are judged), and how many
+   live pieces it has, rebuilt by the worker with ``ts_stat`` (kaagaz/search/word_counts.py),
+   never counted per upload.
    ``customer_id`` in every key, a foreign key to the customer (its delete removes them), the
    ``customer_only`` policy (USING and WITH CHECK), and the least grants the rebuild needs:
    SELECT, INSERT and DELETE, never UPDATE. ``term`` sorts byte by byte (COLLATE "C"), so a
    prefix is one range of the key.
 
-The downgrade drops the function, the two tables (derived: the worker writes them again) and
-the index; no other data is touched.
+The downgrade drops the function and the two tables (derived: the worker writes them again),
+then the index CONCURRENTLY in an autocommit block; no other data is touched.
 
 PROVISIONAL (Vrushit): the number. PRD 7's 0083 to 0093 are open on their branches; this takes
 0094 after this base's 0082 and is renumbered to follow whichever merges first.
@@ -49,7 +50,7 @@ APP_ROLE = "kaagaz_app"
 LOCK_TIMEOUT = "10s"  # as env.py's
 INDEX = "pieces_tsv_sound"
 CAP_MOST = 2000  # #617: a word search's candidates per column, at most
-FIELDS = ("tsv", "tsv_simple", "tsv_sound")
+FIELDS = ("tsv_simple", "tsv_sound")  # the counted columns (word_counts.FIELDS)
 SIGNATURE = "kaagaz_word_candidates(text, tsquery, uuid[], integer)"
 
 
@@ -103,24 +104,23 @@ TABLE_COMMENTS = {
     "term_df": "How many of an organisation's live pieces (current, ready, out of Trash) hold each word"
     " of each word column, from ts_stat. Rebuilt by the worker (nightly, or when the live pieces"
     " change by 5% or more); the search reads it to skip common words.",
-    "customer_stats": "An organisation's live pieces per word column: how many, and their average"
-    " length in words, with when they were counted. Rebuilt with term_df.",
+    "customer_stats": "How many live pieces an organisation has, per counted word column, and when"
+    " they were counted. Rebuilt with term_df.",
 }
 COLUMN_COMMENTS = {
     "term_df": {
         "customer_id": "→ customers.id, the organisation the count belongs to (row level security filters"
         " on it). Deleted with it.",
-        "field": "The pieces column counted: tsv (English stems), tsv_simple (words as written and their"
-        " Latin spelling) or tsv_sound (sound keys).",
+        "field": "The pieces column counted: tsv_simple (words as written and their Latin spelling) or"
+        " tsv_sound (sound keys).",
         "term": "One word of that column as stored (a lexeme), compared byte by byte.",
         "df": "How many live pieces hold it, at least 1.",
     },
     "customer_stats": {
         "customer_id": "→ customers.id, the organisation (row level security filters on it). Deleted with"
         " it.",
-        "field": "The pieces column counted: tsv, tsv_simple or tsv_sound.",
+        "field": "The pieces column counted: tsv_simple or tsv_sound.",
         "n": "How many live pieces the organisation has.",
-        "avgdl": "Their average length: distinct words of the column per piece.",
         "built_at": "When the worker counted them.",
     },
 }
@@ -141,7 +141,6 @@ UPGRADE = [
         customer_id uuid NOT NULL REFERENCES customers (id) ON DELETE CASCADE,
         field text NOT NULL {_FIELD_CHECK},
         n integer NOT NULL CHECK (n >= 0),
-        avgdl double precision NOT NULL CHECK (avgdl >= 0),
         built_at timestamptz NOT NULL,
         PRIMARY KEY (customer_id, field)
     )
@@ -177,7 +176,6 @@ DOWNGRADE = [
     f"DROP FUNCTION IF EXISTS public.{SIGNATURE}",
     "DROP TABLE IF EXISTS customer_stats",
     "DROP TABLE IF EXISTS term_df",
-    f"DROP INDEX IF EXISTS public.{INDEX}",
 ]
 
 
@@ -192,3 +190,5 @@ def upgrade() -> None:
 def downgrade() -> None:
     for statement in DOWNGRADE:
         op.execute(statement)
+    with op.get_context().autocommit_block():
+        op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS public.{INDEX}")

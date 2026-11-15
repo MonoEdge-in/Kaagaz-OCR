@@ -24,7 +24,7 @@ from kaagaz.answering.exhaustive import (
 )
 from kaagaz.answering.service import Answer, AnswerService
 from kaagaz.search.hybrid import MAX_LIMIT
-from kaagaz.search.scope import Scope
+from kaagaz.search.scope import EVERYTHING, Scope
 from tests.test_answering_golden import (
     NOW,
     SETTINGS,
@@ -477,7 +477,6 @@ def test_no_mentions_for_a_count_no_key_term_or_none_found() -> None:
         ("which document have krishna jindal name", True),
         ("Which files mention Gat 61?", True),
         ("How many documents have the name Patil?", True),
-        ("list the papers of Wagholi", True),
         ("kaun se documents me Jindal ka naam hai", True),
         ("कोणत्या कागदपत्रात गट ६१ आहे", True),
         ("किन दस्तावेज़ों में जिंदल है", True),
@@ -485,6 +484,13 @@ def test_no_mentions_for_a_count_no_key_term_or_none_found() -> None:
         ("all documents total", False),
         ("Which invoice is the largest?", False),  # no document word
         ("Who is the owner of Gat 61?", False),
+        # Review of #617 part 1: kaun, कौन and kis also mean "who"; the document word must follow.
+        ("is document me owner kaun hai", False),
+        ("इस दस्तावेज़ में मालिक कौन है", False),
+        ("list the items in this document", False),
+        ("Which clause of this document mentions penalty?", False),
+        ("list the owners in this document", False),
+        ("list the papers of Wagholi", False),  # "list" is not a which word any more
     ],
 )
 def test_which_documents_questions_are_read_in_every_script(question: str, asks: bool) -> None:
@@ -518,3 +524,35 @@ def test_a_which_documents_question_reads_each_document_once() -> None:
 
     service.answer(A, "Where did Krishna Jindal sign?")  # any other question: as before
     assert retriever.calls[-1][3] == SETTINGS.answer_max_evidence
+
+
+def _drafted(pieces: list[FakeHit], question: str, scope: Scope = EVERYTHING) -> tuple[int, list[str]]:
+    """The search's limit and the evidence the draft read, for ``question``."""
+    retriever = FakeRetriever({A: pieces})
+    model = FakeModel(lambda system, user: {"status": "not_found", "sentences": []})
+    service = AnswerService(
+        db=UNUSED_DB,
+        model=model,
+        settings=SETTINGS,
+        clock=lambda: NOW,
+        retriever=retriever,
+        fixed_queries=FakeFixedQueries({A: []}),
+        unchecked=FakeUnchecked(),
+    )
+    service.answer(A, question, scope=scope)
+    drafted = [list(blocks.values()) for _, user in model.prompts if (blocks := evidence_blocks(user))]
+    return retriever.calls[-1][3], drafted[0]
+
+
+def test_one_document_is_read_as_before() -> None:
+    """Review of #617 part 1: when every hit is one document's, or the scope names one, the
+    evidence is that document's best pieces, never cut to one."""
+    many = [piece("a.pdf", f"Krishna Jindal signed page {n}") for n in range(8)]
+
+    limit, read = _drafted(many, "which document have krishna jindal name")
+    assert (limit, len(read)) == (MAX_LIMIT, SETTINGS.answer_max_evidence)
+
+    scope = Scope(document_ids=(many[0].document_id,))
+    others = [piece("b.pdf", "Buyer: Krishna Jindal")]
+    limit, read = _drafted([*many, *others], "which document have krishna jindal name", scope)
+    assert (limit, len(read)) == (SETTINGS.answer_max_evidence, SETTINGS.answer_max_evidence)

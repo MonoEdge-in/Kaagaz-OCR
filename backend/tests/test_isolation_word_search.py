@@ -100,7 +100,17 @@ def test_the_word_statement_naming_another_customer_finds_nothing(db: Database) 
     a, _ = new_customer(db)
     b, _ = new_customer(db)
     add_pieces(db, a, add_document(db, a), [("Jindal", None)])
-    words = {"q": "jindal", "k": "jindal", "g": "", "gc": "", "sk": "", "n": 50, "docs": None, "cap": 2000}
+    words = {
+        "q": "jindal",
+        "k": "jindal",
+        "g": "",
+        "gc": "",
+        "gk": "",
+        "sk": "",
+        "n": 50,
+        "docs": None,
+        "cap": 2000,
+    }
     for transaction, named in ((a, b), (b, a)):
         with db.customer(transaction) as conn:
             params = words | {"c": named} | Scope().params()

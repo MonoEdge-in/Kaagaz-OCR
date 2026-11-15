@@ -814,7 +814,7 @@ class AnswerService:
         lists: Lists | None = None
         if query_text:
             vector = self._embed_all([spoken])[0]
-            limit = self._search_limit(question)
+            limit = self._search_limit(question, scope)
             if fused and self._translated is not None:
                 found = self._translated.search_translated(
                     customer_id, query_text, vector, [], limit, scope, expansion
@@ -1466,7 +1466,7 @@ class AnswerService:
                 extra = [
                     (_search_text(text), meaning) for text, meaning in zip(aspects, meanings, strict=True)
                 ]
-                limit = self._search_limit(question)
+                limit = self._search_limit(question, scope)
                 hits = self._hits(
                     customer_id, query_text, vector, extra, scope, expansion, limit, early.lists
                 )
@@ -1478,7 +1478,13 @@ class AnswerService:
                     (_search_text(text), meaning) for text, meaning in zip(aspects, meanings, strict=True)
                 ]
                 hits = self._hits(
-                    customer_id, query_text, vector, extra, scope, expansion, self._search_limit(question)
+                    customer_id,
+                    query_text,
+                    vector,
+                    extra,
+                    scope,
+                    expansion,
+                    self._search_limit(question, scope),
                 )
             if self._model is not None and (vector is None or any(m is None for _, m in extra)):
                 _timing().vectorless = True  # #535: no outage, but never reused for a repeat
@@ -1488,10 +1494,10 @@ class AnswerService:
                 customer_id, question, query_text, vector, hits, scope, expansion, extra
             )
             if translated is not None:
-                own = number_evidence(self._documents_once(question, hits))
+                own = number_evidence(self._documents_once(question, scope, hits))
                 first = enough_evidence(own, normalised.keywords, min_score, numbers, expansion)
                 hits = translated.hits
-            evidence = number_evidence(self._documents_once(question, hits))
+            evidence = number_evidence(self._documents_once(question, scope, hits))
         hits_only = list(evidence)  # the search's own hits, before widening adds to the list
 
         # Only usable evidence counts as close: an instruction-like piece is not. A whole
@@ -1695,7 +1701,7 @@ class AnswerService:
             return None
         texts = [*extra, *((query.text, self._embed(query.text)) for query in queries)]
         return self._translated.search_translated(
-            customer_id, query_text, vector, texts, self._search_limit(question), scope, expansion
+            customer_id, query_text, vector, texts, self._search_limit(question, scope), scope, expansion
         )
 
     def _hits(
@@ -1717,24 +1723,27 @@ class AnswerService:
             return fused(customer_id, query_text, vector, extra, limit, scope, expansion, asked).hits
         return self._retriever.search(customer_id, query_text, vector, limit, scope, expansion)
 
-    def _search_limit(self, question: str) -> int:
+    def _search_limit(self, question: str, scope: Scope) -> int:
         """How many hits a search of ``question`` keeps: ANSWER_MAX_EVIDENCE, or MAX_LIMIT when it
-        asks which documents (#617 item 5), whose hits are then kept one a document
-        (``_documents_once``), so the evidence spans more documents."""
-        if asks_documents(question):
+        asks which documents (#617 item 5) of a scope that names more than one, whose hits are then
+        kept one a document (``_documents_once``), so the evidence spans more documents."""
+        if asks_documents(question) and not _one_document(scope):
             return MAX_LIMIT
         return max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
 
-    def _documents_once(self, question: str, hits: Sequence[Hit]) -> Sequence[Hit]:
+    def _documents_once(self, question: str, scope: Scope, hits: Sequence[Hit]) -> Sequence[Hit]:
         """#617 item 5: for a question that asks which documents, each document's best hit only
-        (hits come best first), at most ANSWER_MAX_EVIDENCE; any other question's hits as they are.
-        O(h)."""
+        (hits come best first); all of them when they are one document's or the scope names one.
+        At most ANSWER_MAX_EVIDENCE either way; any other question's hits as they are. O(h)."""
         if not asks_documents(question):
             return hits
+        most = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
+        if _one_document(scope) or len({hit.document_id for hit in hits}) <= 1:
+            return list(hits)[:most]
         best: dict[str, Hit] = {}
         for hit in hits:
             best.setdefault(hit.document_id, hit)
-        return list(best.values())[: max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))]
+        return list(best.values())[:most]
 
     def _widened(
         self,
@@ -2237,6 +2246,11 @@ def _searched_as(question: str, normalised: NormalisedQuestion) -> tuple[Normali
         query_text = question.strip()
     spoken = question if has_other_script_letters(question) else normalised.english
     return normalised, query_text, spoken
+
+
+def _one_document(scope: Scope) -> bool:
+    """The scope names exactly one document (#617 item 5: then "which documents" is that one)."""
+    return scope.document_ids is not None and len(scope.document_ids) == 1
 
 
 def _search_text(aspect: str) -> str:

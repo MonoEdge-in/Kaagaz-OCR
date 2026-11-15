@@ -406,8 +406,10 @@ def test_an_empty_glossary_query_matches_nothing(db: Database) -> None:
     words = {"c": customer, "q": "zzz", "k": "zzz", "sk": "", "n": 50} | EVERYTHING.params()
     words |= {"docs": None, "cap": hybrid.CANDIDATE_CAP}  # Changed on purpose (#617): the candidates' bounds
     with db.customer(customer) as conn:
-        assert conn.execute(hybrid._WORD, words | {"g": "", "gc": ""}).all() == []
-        assert len(conn.execute(hybrid._WORD, words | {"g": "कर", "gc": "कर"}).all()) == 1  # the control
+        assert conn.execute(hybrid._WORD, words | {"g": "", "gc": "", "gk": ""}).all() == []
+        assert (
+            len(conn.execute(hybrid._WORD, words | {"g": "कर", "gc": "कर", "gk": ""}).all()) == 1
+        )  # the control
 
     assert run(db, customer, "zzz") == []  # no keyword listed: :g is "", and nothing else matches
 
@@ -472,7 +474,7 @@ def _word_rows(db: Database, customer_id: str, question: str) -> list[tuple[str,
     candidates' bounds."""
     words = {"c": customer_id, "q": question, "k": question, "g": "", "sk": hybrid.sound_query(question)}
     params = words | {"n": hybrid.CANDIDATES} | EVERYTHING.params()
-    bounds = {"gc": "", "docs": None, "cap": hybrid.CANDIDATE_CAP}
+    bounds = {"gc": "", "gk": "", "docs": None, "cap": hybrid.CANDIDATE_CAP}
     with db.customer(customer_id) as conn:
         exact = {str(row[0]) for row in conn.execute(hybrid._WORD, params | bounds)}
         return [(str(row[0]), float(row[2]), str(row[0]) in exact) for row in hybrid._word(conn, params)]

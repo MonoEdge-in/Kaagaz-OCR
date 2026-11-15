@@ -1,23 +1,24 @@
 """How rare each word is in one organisation (#617 part 1, migration 0094's ``term_df`` and
 ``customer_stats``).
 
-**Kept by the worker, never per upload.** ``refresh`` rebuilds an organisation's counts when
-they are a day old (``REBUILD_EVERY``), missing, or its live pieces (current, ready, out of
-Trash) have changed by ``CHANGE_SHARE`` or more since they were counted; it is checked on the
-worker's hourly turn. A rebuild is one transaction: the old rows deleted, then ``ts_stat`` over
-each word column (``FIELDS``) of the live pieces, and each column's piece count and average
-length (distinct words a piece). A search meanwhile reads the old counts.
+**Kept by the worker, never per upload.** ``due`` says an organisation's counts need a rebuild
+when there are none yet, its live pieces (current, ready, out of Trash) have changed by
+``CHANGE_SHARE`` or more since they were counted, or they are a day old (``REBUILD_EVERY``) and
+the live pieces are not as many as counted; the worker checks on its hourly turn. A rebuild is
+one transaction: the old rows deleted, then ``ts_stat`` over each word column (``FIELDS``) of the
+live pieces, and how many there are. An organisation with no more live pieces than a word query
+can give candidates (``most``, ``hybrid.CANDIDATE_CAP``) gets its piece count only: nothing is
+common there. A search meanwhile reads the old counts.
 
 **Read by the word search** (kaagaz/search/hybrid.py): ``shares`` gives the share of the live
 pieces that hold each of a query's alternatives (each one or more ``to_tsquery`` terms, ORed).
 One on more than ``COMMON_SHARE`` only scores; it never brings candidates. A prefix term
 (``jamin:*``) counts every word it starts, summed (pieces holding two of them count twice, so
-it can only look more common than it is). No counts yet, or no more live pieces than a word
-column can give candidates (``hybrid.CANDIDATE_CAP``): no shares, so nothing is common, as the
-cap already bounds the work.
+it can only look more common than it is). No counts yet, or no more live pieces than ``most``:
+no shares, so nothing is common, as the cap already bounds the work.
 
 Cost: the check is one count over the organisation's pieces index; a rebuild reads each live
-piece's three columns once (O(P) for P pieces) and writes one row a distinct word; ``shares`` is
+piece's two columns once (O(P) for P pieces) and writes one row a distinct word; ``shares`` is
 one indexed range read a term.
 """
 
@@ -26,11 +27,13 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import Connection, text
 
-FIELDS = ("tsv", "tsv_simple", "tsv_sound")
+FIELDS = ("tsv_simple", "tsv_sound")  # the columns whose ORed queries are judged (hybrid._word)
 COMMON_SHARE = 0.2  # #617: a word on more than this share of the live pieces only scores
 CHANGE_SHARE = 0.05  # #617: rebuilt when the live pieces change by this share or more
-REBUILD_EVERY = timedelta(hours=24)  # and at least nightly
-REBUILD_TIMEOUT_MS = 600_000  # one organisation's rebuild, in the worker
+REBUILD_EVERY = timedelta(hours=24)  # and at least nightly, unless the count is the same
+# Each statement of one organisation's rebuild, at most (its transaction only): the worker's own
+# statement timeout may be shorter than a big organisation's ts_stat.
+REBUILD_TIMEOUT_MS = 300_000
 
 _STATS = text("SELECT min(built_at), min(n) FROM customer_stats WHERE customer_id = :c")
 _LIVE = text(
@@ -49,15 +52,8 @@ _COUNT_TERMS = text(
     " CAST(:f AS text), CAST(:c AS uuid))) AS s"
 )
 _COUNT_PIECES = text(
-    "INSERT INTO customer_stats (customer_id, field, n, avgdl, built_at)"
-    " SELECT :c, f.field, s.n, f.avgdl, :now FROM ("
-    "SELECT count(*) AS n, coalesce(avg(length(p.tsv)), 0) AS tsv,"
-    " coalesce(avg(length(p.tsv_simple)), 0) AS tsv_simple,"
-    " coalesce(avg(length(p.tsv_sound)), 0) AS tsv_sound"
-    " FROM pieces p JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
-    " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready') AS s"
-    " CROSS JOIN LATERAL (VALUES ('tsv', s.tsv), ('tsv_simple', s.tsv_simple), ('tsv_sound', s.tsv_sound))"
-    " AS f (field, avgdl)"
+    "INSERT INTO customer_stats (customer_id, field, n, built_at)"
+    " SELECT :c, f.field, :n, :now FROM unnest(CAST(:fields AS text[])) AS f (field)"
 )
 _SET_TIMEOUT = text("SELECT set_config('statement_timeout', :ms, true)")
 # Each term's pieces: the stored words from :lows up to :highs (byte order, term's COLLATE "C"),
@@ -75,24 +71,28 @@ _SHARES = text(
 _AFTER_PREFIX, _AFTER_WORD = "\U0010ffff", "\x01"
 
 
-def due(conn: Connection, customer_id: str, now: datetime) -> bool:
-    """Whether the organisation's counts need a rebuild: none yet, a day old, or its live pieces
-    changed by CHANGE_SHARE or more. ``conn`` comes from ``Database.customer(customer_id)``."""
+def due(conn: Connection, customer_id: str, now: datetime) -> tuple[bool, datetime | None]:
+    """Whether the organisation's counts need a rebuild (the module docstring), and when they
+    were built (None: never). ``conn`` comes from ``Database.customer(customer_id)``."""
     built_at, counted = conn.execute(_STATS, {"c": customer_id}).one()
-    if built_at is None or built_at <= now - REBUILD_EVERY:
-        return True
+    if built_at is None:
+        return True, None
     live = int(conn.execute(_LIVE, {"c": customer_id}).scalar_one())
-    return abs(live - int(counted)) >= CHANGE_SHARE * max(int(counted), 1)
+    changed = abs(live - int(counted)) >= CHANGE_SHARE * max(int(counted), 1)
+    return changed or (built_at <= now - REBUILD_EVERY and live != int(counted)), built_at
 
 
-def rebuild(conn: Connection, customer_id: str, now: datetime) -> None:
-    """The organisation's counts written again from its live pieces (the module docstring)."""
+def rebuild(conn: Connection, customer_id: str, now: datetime, most: int) -> None:
+    """The organisation's counts written again from its live pieces; with at most ``most`` live
+    pieces, their count only (the module docstring)."""
     conn.execute(_SET_TIMEOUT, {"ms": str(REBUILD_TIMEOUT_MS)})
+    live = int(conn.execute(_LIVE, {"c": customer_id}).scalar_one())
     conn.execute(_CLEAR_TERMS, {"c": customer_id})
     conn.execute(_CLEAR_STATS, {"c": customer_id})
-    for field in FIELDS:
-        conn.execute(_COUNT_TERMS, {"c": customer_id, "f": field})
-    conn.execute(_COUNT_PIECES, {"c": customer_id, "now": now})
+    if live > most:
+        for field in FIELDS:
+            conn.execute(_COUNT_TERMS, {"c": customer_id, "f": field})
+    conn.execute(_COUNT_PIECES, {"c": customer_id, "n": live, "now": now, "fields": list(FIELDS)})
 
 
 def shares(

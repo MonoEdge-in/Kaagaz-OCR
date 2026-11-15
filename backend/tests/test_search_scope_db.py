@@ -204,6 +204,7 @@ def test_an_empty_array_in_the_sql_matches_nothing_too(db: Database) -> None:
         "n": 50,
         # Changed on purpose (#617): the candidates' bounds, every document (the scope filters after).
         "gc": "",
+        "gk": "",
         "docs": None,
         "cap": hybrid.CANDIDATE_CAP,
     }

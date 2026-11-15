@@ -7,8 +7,10 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import Connection, text
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
+from kaagaz import worker_main
 from kaagaz.answering.expansion import NO_EXPANSION
 from kaagaz.db.engine import Database
 from kaagaz.search import hybrid, word_counts
@@ -48,9 +50,21 @@ def word_list(db: Database, customer: str, question: str, scope: Scope = EVERYTH
     return [str(row[0]) for row in rows]
 
 
-def counted(db: Database, customer: str, when: datetime = NOW) -> None:
+def counted(db: Database, customer: str, when: datetime = NOW, most: int = 0) -> None:
+    """The organisation's word counts rebuilt; ``most`` 0, so its words are counted however few."""
     with db.customer(customer) as conn:
-        word_counts.rebuild(conn, customer, when)
+        word_counts.rebuild(conn, customer, when, most)
+
+
+def built(db: Database, customer: str) -> tuple[object, ...]:
+    """(rows of term_df, min(built_at) and min(n) of customer_stats) of the organisation."""
+    with db.customer(customer) as conn:
+        statement = text(
+            "SELECT (SELECT count(*) FROM term_df WHERE customer_id = :c),"
+            " (SELECT min(built_at) FROM customer_stats WHERE customer_id = :c),"
+            " (SELECT min(n) FROM customer_stats WHERE customer_id = :c)"
+        )
+        return tuple(conn.execute(statement, {"c": customer}).one())
 
 
 # --- the candidates ---------------------------------------------------------------------
@@ -96,10 +110,12 @@ def test_the_candidates_are_live_pieces_inside_the_documents_given(db: Database)
 
 
 def test_the_word_statements_take_each_query_on_its_own_never_one_or() -> None:
-    """#617: one capped call a word column's query, joined by UNION, the glossary's by :gc."""
+    """#617: one capped call a word column's query, joined by UNION; the glossary's rare (:gc)
+    and common (:gk) alternatives each a call of their own."""
     word, sound = hybrid._WORD.text, hybrid._SOUND.text
-    assert word.count("kaagaz_word_candidates(") == 3 and word.count(" UNION SELECT w.id") == 2
-    assert "'tsv', websearch_to_tsquery('english', :q)" in word and "CAST(:gc AS text)" in word
+    assert word.count("kaagaz_word_candidates(") == 4 and word.count(" UNION SELECT w.id") == 3
+    assert "'tsv', websearch_to_tsquery('english', :q)" in word
+    assert "CAST(:gc AS text)" in word and "CAST(:gk AS text)" in word
     assert sound.count("kaagaz_word_candidates('tsv_sound'") == 1 and "CAST(:skc AS text)" in sound
     assert all(":cap" in statement and ":docs" in statement for statement in (word, sound))
 
@@ -131,6 +147,28 @@ def test_a_folder_scope_takes_its_candidates_from_its_own_documents(
     assert word_list(db, customer, "jindal", Scope(folder_ids=())) == []
 
 
+def test_a_scope_of_too_many_documents_is_left_to_the_statement(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of #617 part 1: past SCOPE_DOCUMENTS_MOST the list is not passed (None); the word
+    statement still applies the scope, so nothing outside it is found."""
+    customer, user = new_customer(db)
+    with db.customer(customer) as conn:
+        folder = insert_folder(conn, customer, user, "Land")
+        inside = [insert_document(conn, customer, folder_id=folder) for _ in range(2)]
+    wanted = [add_pieces(db, customer, d, [("Jindal inside", None)])[0] for d in inside]
+    add_pieces(db, customer, add_document(db, customer), [("Jindal outside", None)])
+    scope = Scope(folder_ids=(folder,))
+    with db.customer(customer) as conn:
+        assert sorted(hybrid._candidate_documents(conn, {"c": customer} | scope.params()) or []) == sorted(
+            inside
+        )
+        monkeypatch.setattr(hybrid, "SCOPE_DOCUMENTS_MOST", 1)
+        assert hybrid._candidate_documents(conn, {"c": customer} | scope.params()) is None
+
+    assert sorted(word_list(db, customer, "jindal", scope)) == sorted(wanted)
+
+
 # --- word counts ----------------------------------------------------------------------
 
 
@@ -149,22 +187,32 @@ def test_the_counts_are_the_live_pieces_words_per_column(db: Database) -> None:
         rows = conn.execute(listed, {"c": customer})
         terms = {str(row[0]): int(row[1]) for row in rows}
         stats = conn.execute(
-            text(
-                "SELECT field, n, avgdl, built_at FROM customer_stats WHERE customer_id = :c ORDER BY field"
-            ),
+            text("SELECT field, n, built_at FROM customer_stats WHERE customer_id = :c ORDER BY field"),
             {"c": customer},
         ).all()
-    assert terms["tsv:jindal"] == 2 and terms["tsv_simple:jindal"] == 2  # never the binned piece
-    assert terms["tsv:paid"] == 1 and "tsv_simple:binned" not in terms
+    assert terms["tsv_simple:jindal"] == 2 and terms["tsv_simple:paid"] == 1  # never the binned piece
+    assert "tsv_simple:binned" not in terms and not any(term.startswith("tsv:") for term in terms)
     assert [df for term, df in terms.items() if term.startswith("tsv_sound:bogvt")] == [1]
-    assert [(field, n) for field, n, _, _ in stats] == [("tsv", 3), ("tsv_simple", 3), ("tsv_sound", 3)]
-    assert all(avgdl > 0 and built_at == NOW for _, _, avgdl, built_at in stats)
+    assert [tuple(row) for row in stats] == [("tsv_simple", 3, NOW), ("tsv_sound", 3, NOW)]
 
     counted(db, customer)  # again: replaced, never added to
     with db.customer(customer) as conn:
-        jindal = text("SELECT df FROM term_df WHERE customer_id = :c AND field = 'tsv' AND term = 'jindal'")
+        jindal = text(
+            "SELECT df FROM term_df WHERE customer_id = :c AND field = 'tsv_simple' AND term = 'jindal'"
+        )
         again = conn.execute(jindal, {"c": customer}).scalar_one()
     assert again == 2
+
+
+def test_an_organisation_with_few_pieces_gets_its_count_only(db: Database) -> None:
+    """Review of #617 part 1: with no more live pieces than the cap, no word is ever common, so
+    only the count is written."""
+    customer, _ = new_customer(db)
+    add_pieces(db, customer, add_document(db, customer), [("Jindal paid", None), ("Jindal rent", None)])
+
+    counted(db, customer, most=hybrid.CANDIDATE_CAP)
+
+    assert built(db, customer) == (0, NOW, 2)
 
 
 def test_counts_are_due_when_missing_a_day_old_or_the_pieces_changed_by_5_percent(db: Database) -> None:
@@ -174,14 +222,14 @@ def test_counts_are_due_when_missing_a_day_old_or_the_pieces_changed_by_5_percen
 
     def due(when: datetime = NOW) -> bool:
         with db.customer(customer) as conn:
-            return word_counts.due(conn, customer, when)
+            return word_counts.due(conn, customer, when)[0]
 
     assert due()
     counted(db, customer)
     assert not due() and not due(NOW + timedelta(hours=23))
-    assert due(NOW + timedelta(hours=24))
+    assert not due(NOW + timedelta(hours=24))  # a day old, but as many live pieces: kept
     add_pieces(db, customer, add_document(db, customer), [("Patil", None)])  # 1 of 40: 2.5%
-    assert not due()
+    assert not due() and due(NOW + timedelta(hours=24))  # changed a little: nightly
     add_pieces(db, customer, add_document(db, customer), [("Patil", None)])  # 2 of 40: 5%
     assert due()
 
@@ -193,21 +241,70 @@ def test_the_worker_rebuilds_only_the_organisations_due(db: Database) -> None:
     stale, _ = new_customer(db)
     add_pieces(db, stale, add_document(db, stale), [("Patil", None)])
 
-    rebuilt = rebuild_word_counts(db, NOW + timedelta(minutes=5))
+    rebuilt = rebuild_word_counts(db, NOW + timedelta(minutes=5), lambda: 0.0)
 
     assert rebuilt >= 1
-    with db.customer(stale) as conn:
-        assert (
-            conn.execute(
-                text("SELECT count(*) FROM customer_stats WHERE customer_id = :c"), {"c": stale}
-            ).scalar_one()
-            == 3
-        )
-    with db.customer(fresh) as conn:
-        built = conn.execute(
-            text("SELECT min(built_at) FROM customer_stats WHERE customer_id = :c"), {"c": fresh}
-        ).scalar_one()
-    assert built == NOW  # not due: left as it was
+    assert built(db, stale)[1:] == (NOW + timedelta(minutes=5), 1)
+    assert built(db, fresh)[1] == NOW  # not due: left as it was
+
+
+def test_one_organisation_failing_never_stops_the_others(
+    db: Database, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Review of #617 part 1: the first organisation's rebuild fails; it is logged with its id
+    and error class, and the rest are rebuilt."""
+    first, _ = new_customer(db)
+    second, _ = new_customer(db)
+    for customer in (first, second):
+        add_pieces(db, customer, add_document(db, customer), [("Jindal", None)])
+    real = word_counts.rebuild
+
+    def failing(conn: Connection, customer: str, now: datetime, most: int) -> None:
+        if customer == first:
+            raise ProgrammingError("SELECT", {}, Exception("broken"))
+        real(conn, customer, now, most)
+
+    monkeypatch.setattr(word_counts, "rebuild", failing)
+    caplog.set_level("ERROR", logger="kaagaz.worker")
+
+    rebuild_word_counts(db, NOW, lambda: 0.0)
+
+    assert built(db, first)[1] is None and built(db, second)[1] == NOW
+    failed = [r for r in caplog.records if r.getMessage() == "word counts not rebuilt"]
+    assert [(getattr(r, "customer_id", None), getattr(r, "code", None)) for r in failed] == [
+        (first, "ProgrammingError")
+    ]
+
+
+def test_a_database_that_is_down_stops_the_rebuilds(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A lost connection (an OperationalError with no SQLSTATE) is raised, for the hourly turn."""
+    customer, _ = new_customer(db)
+    add_pieces(db, customer, add_document(db, customer), [("Jindal", None)])
+
+    def down(conn: Connection, customer: str, now: datetime, most: int) -> None:
+        raise OperationalError("SELECT", {}, Exception("server closed the connection"))
+
+    monkeypatch.setattr(word_counts, "rebuild", down)
+
+    with pytest.raises(OperationalError):
+        rebuild_word_counts(db, NOW, lambda: 0.0)
+
+
+def test_the_never_counted_go_first_and_a_turn_stops_after_its_time(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of #617 part 1: with no time left after the first rebuild, that one is a never
+    counted organisation, never one whose counts are only old."""
+    old, _ = new_customer(db)
+    add_pieces(db, old, add_document(db, old), [(f"Jindal {n}", None) for n in range(10)])
+    counted(db, old, NOW - timedelta(days=2))
+    add_pieces(db, old, add_document(db, old), [("Patil", None)])  # changed: due
+    fresh, _ = new_customer(db)
+    add_pieces(db, fresh, add_document(db, fresh), [("Jindal", None)])
+    monkeypatch.setattr(worker_main, "WORD_COUNTS_SECONDS", 0.0)
+
+    assert rebuild_word_counts(db, NOW, lambda: 0.0) == 1
+    assert built(db, old)[1] == NOW - timedelta(days=2)
 
 
 def test_shares_read_prefixes_as_sums_and_are_none_without_counts(db: Database) -> None:
@@ -247,8 +344,49 @@ def test_a_common_sound_word_only_scores(db: Database, monkeypatch: pytest.Monke
     counted(db, customer)
 
     assert word_list(db, customer, "patil gaikwad") == [both, alone]
-    # Every sound word common: no sound rung (#617 item 2); "paatil" is Patil by sound only.
+    # One sound word, common: no sound rung (#617 item 2); "paatil" is Patil by sound only.
     assert word_list(db, customer, "paatil") == []
+
+
+def test_two_common_sound_words_are_searched_together(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review of #617 part 1: no word rare, but two of them: their keys ANDed bring candidates."""
+    customer, _ = new_customer(db)
+    pieces = [(f"Krishna {n}", None) for n in range(6)] + [(f"Patil {n}", None) for n in range(6)]
+    *_, first, second = add_pieces(
+        db, customer, add_document(db, customer), [*pieces, ("Krishna Patil", None), ("Patil Krishna", None)]
+    )
+    monkeypatch.setattr(hybrid, "CANDIDATE_CAP", 4)
+    counted(db, customer)
+
+    assert sorted(word_list(db, customer, "krushna pateel")) == sorted([first, second])
+
+
+def test_a_word_is_judged_by_its_own_key(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review of #617 part 1: "krushnarao"'s own key is rare, though its start (Krishna's) is on
+    most pieces; it brings its piece by its rare terms only, never crowded out by Krishna's."""
+    customer, _ = new_customer(db)
+    pieces = [(f"Krishna {n}", None) for n in range(10)]
+    *_, wanted = add_pieces(db, customer, add_document(db, customer), [*pieces, ("Krishnarao Jadhav", None)])
+    monkeypatch.setattr(hybrid, "CANDIDATE_CAP", 4)
+    counted(db, customer)
+
+    assert word_list(db, customer, "krushnarao") == [wanted]
+
+
+def test_a_word_new_since_the_counts_brings_its_piece(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review of #617 part 1: a word on no piece when counted (share 0) is rare, by sound and in
+    the glossary, so a piece added after the rebuild is found before the next one."""
+    customer, _ = new_customer(db)
+    common: list[tuple[str, list[float] | None]] = [(f"भोगवटादार पाटील {n}", None) for n in range(10)]
+    add_pieces(db, customer, add_document(db, customer), common)
+    monkeypatch.setattr(hybrid, "CANDIDATE_CAP", 4)
+    counted(db, customer)
+    owner, named = add_pieces(
+        db, customer, add_document(db, customer), [("मालक राम", None), ("गायकवाड", None)]
+    )
+
+    assert owner in word_list(db, customer, "owner")
+    assert word_list(db, customer, "gaikwad") == [named]
 
 
 def test_a_rare_glossary_word_is_never_crowded_out_by_a_common_one(
@@ -263,14 +401,14 @@ def test_a_rare_glossary_word_is_never_crowded_out_by_a_common_one(
     monkeypatch.setattr(hybrid, "CANDIDATE_CAP", 4)
     alternatives = ["भोगवटादार:*", "मालक:*", "खातेदार:*"]  # glossary.word_query(["owner"])
 
-    def rare() -> list[str]:
+    def generated() -> tuple[str, str]:
         with db.customer(customer) as conn:
-            return hybrid._rare(conn, customer, "tsv_simple", alternatives)
+            return hybrid._glossary_candidates(conn, {"c": customer, "g": " | ".join(alternatives)}, None)
 
-    assert rare() == alternatives  # the control: no counts, so the cap takes the first matches
+    assert generated() == (" | ".join(alternatives), "")  # the control: no counts, one call
     counted(db, customer)
 
-    assert rare() == ["मालक:*"]  # खातेदार is on no piece
+    assert generated() == ("मालक:* | खातेदार:*", "")  # मालक is held, so the common call is left out
     assert word_list(db, customer, "owner") == [owner]
 
 
@@ -282,7 +420,27 @@ def test_when_every_glossary_word_is_common_they_all_still_bring_candidates(
     monkeypatch.setattr(hybrid, "CANDIDATE_CAP", 4)
     counted(db, customer)
 
-    assert 0 < len(word_list(db, customer, "owner")) <= 4
+    assert 0 < len(word_list(db, customer, "owner")) <= 4  # भोगवटादार, by the common call (:gk)
+
+
+def test_inside_a_scope_a_common_glossary_word_still_brings_its_piece(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of #617 part 1: a scope's documents already bound the candidates, so every
+    alternative brings them there: भोगवटादार is common and मालक is held, yet the folder's
+    भोगवटादार piece is found."""
+    customer, user = new_customer(db)
+    outside: list[tuple[str, list[float] | None]] = [(f"भोगवटादार {n}", None) for n in range(10)]
+    outside.append(("मालक राम", None))
+    add_pieces(db, customer, add_document(db, customer), outside)
+    with db.customer(customer) as conn:
+        folder = insert_folder(conn, customer, user, "Land")
+        inside = insert_document(conn, customer, folder_id=folder)
+    (wanted,) = add_pieces(db, customer, inside, [("भोगवटादार रामचंद्र", None)])
+    monkeypatch.setattr(hybrid, "CANDIDATE_CAP", 4)
+    counted(db, customer)
+
+    assert word_list(db, customer, "owner", Scope(folder_ids=(folder,))) == [wanted]
 
 
 # --- identifiers by exact lookup (#617 item 9) ----------------------------------------
@@ -302,30 +460,53 @@ def _land(db: Database, customer: str, survey: str, text_: str = LAND_TEXT) -> t
     "question",
     ["gat 61", "Gat No. 61", "gut number 61", "survey no 61", "गट नं. ६१", "गट नंबर ६१", "सर्व्हे ६१", "s.no. 61"],
 )
-def test_a_survey_number_in_either_script_finds_its_stored_value(db: Database, question: str) -> None:
+def test_a_survey_number_in_either_script_finds_its_stored_value_first(db: Database, question: str) -> None:
     customer, _ = new_customer(db)
     _, wanted = _land(db, customer, "६१")
-    add_pieces(db, customer, add_document(db, customer), [("Paid Rs 61 for gat stamps गट ६१ नाही", None)])
+    add_pieces(db, customer, add_document(db, customer), [("Paid Rs 61 for gat stamps", None)])
 
-    assert word_list(db, customer, question) == [wanted]
+    assert word_list(db, customer, question)[0] == wanted
 
 
-def test_the_number_is_never_a_word_or_sound_term_once_a_value_holds_it(db: Database) -> None:
-    """The other words are searched in the property's documents only; 61 itself is matched by
-    equality on the stored value, so a piece elsewhere holding "61" or "area" is not listed."""
+def test_the_stored_property_comes_first_then_the_words_as_typed(db: Database) -> None:
+    """The other words are searched in the property's documents first, the stored value giving 61;
+    then the question as typed over the whole scope: "gat 61 area" elsewhere comes next, and
+    "area 61" (no gat) only after it, by sound."""
     customer, _ = new_customer(db)
     document = add_land(db, customer, "7-12.pdf", survey="गट नं. ६१")
     on_page, later = add_pieces(
         db, customer, document, [(LAND_TEXT, None), ("Area of the plot in the map", None)]
     )
-    elsewhere = add_pieces(
+    bare, labelled = add_pieces(
         db, customer, add_document(db, customer), [("area 61", None), ("gat 61 area", None)]
     )
 
     found = word_list(db, customer, "area of gat 61")
 
-    assert set(found) == {on_page, later} and not set(elsewhere) & set(found)
+    assert set(found[:2]) == {on_page, later} and found[2] == labelled and bare not in found[:3]
     assert word_list(db, customer, "क्षेत्र गट ६१")[0] == on_page  # the piece the words matched first
+
+
+def test_a_document_without_the_stored_value_is_found_after_one_with_it(db: Database) -> None:
+    """Review of #617 part 1: one document has the value stored, another only prints it; both."""
+    customer, _ = new_customer(db)
+    _, stored = _land(db, customer, "61")
+    (printed,) = add_pieces(db, customer, add_document(db, customer), [("Gut No. 61, Kusgaon", None)])
+
+    assert word_list(db, customer, "gat 61") == [stored, printed]
+
+
+def test_each_number_is_looked_up_with_its_own_kind(db: Database) -> None:
+    """Review of #617 part 1: "gat 61 khata 12" is survey 61 and khata 12, never survey 12."""
+    customer, _ = new_customer(db)
+    survey_61 = add_land(db, customer, "a.pdf", survey="61")
+    survey_12 = add_land(db, customer, "b.pdf", survey="12")
+    khata_12 = add_land(db, customer, "c.pdf", printed=[("khata_number", "12")])
+    pieces = {d: add_pieces(db, customer, d, [("उतारा", None)])[0] for d in (survey_61, survey_12, khata_12)}
+
+    found = word_list(db, customer, "gat 61 khata 12")
+
+    assert set(found) == {pieces[survey_61], pieces[khata_12]}
 
 
 def test_a_card_identifier_is_found_too(db: Database) -> None:
@@ -344,7 +525,7 @@ def test_a_card_identifier_is_found_too(db: Database) -> None:
         )
 
     assert word_list(db, customer, "survey no. 45/2") == [wanted]
-    assert word_list(db, customer, "survey no. 45") != [wanted]  # equality, never a prefix
+    assert word_list(db, customer, "survey no. 45") == []  # the whole number, never its start
 
 
 def test_the_kind_must_match_khata_is_not_survey(db: Database) -> None:
@@ -382,6 +563,11 @@ def test_identifiers_are_read_with_their_kind_and_never_from_a_bare_number() -> 
         "sarvhe nan 45/2": [(survey, "45/2")],
         "khate kramank 12": [(khata, "12")],
         "plot nambar 7": [(("land_plot_number",), "7")],
+        # Review of #617 part 1: Sy. No., ग.नं. and khasra (खसरा).
+        "Sy. No. 12": [(survey, "12")],
+        "ग.नं. ६१": [(survey, "61")],
+        "khasra 45": [(survey, "45")],
+        "खसरा ४५": [(survey, "45")],
         "61": [],
         "invoice 61": [],
         "gateway 61": [],  # a word that starts like gat is not gat

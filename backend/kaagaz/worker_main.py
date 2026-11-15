@@ -36,9 +36,10 @@ until it is told to stop:
   the jobs go on: the purge can never stop the worker, or crash it again on
   every restart. The same turn then removes the organisations whose deletion
   is due (super admin PR 4, ``purge_deleted_customers``), a batch of families
-  at a time, and sweeps their storage once more a day after each purge. Last, each
-  organisation's word counts are rebuilt when due (#617, kaagaz/search/word_counts.py: a day
-  old, or its live pieces changed by 5% or more).
+  at a time, and sweeps their storage once more a day after each purge. Last, the
+  organisations' word counts that are due are rebuilt (#617, kaagaz/search/word_counts.py),
+  never counted or oldest first, for at most WORD_COUNTS_SECONDS a turn; one that fails is
+  logged with its id and skipped, unless the database itself is down.
 * With the model on, pieces left without a meaning vector (the model was down
   while their document was read, or the job's indexing ran out of time) get one later: at
   most 32 pieces a minute, only on a turn the queue had nothing for, so never before an
@@ -110,7 +111,8 @@ from types import FrameType
 from typing import TYPE_CHECKING
 
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError, SQLAlchemyError
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 
 from kaagaz import worker_heartbeat
 from kaagaz.adapters.queue import SqsQueue
@@ -122,6 +124,7 @@ from kaagaz.ai.openrouter import OpenRouterClient, process_gate
 from kaagaz.db import ai_settings, reader_status, versions
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database, make_engine
+from kaagaz.db.sqlstate import sqlstate
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.catalog import RefreshCatalog, Refreshed, check_env_models, last_refreshed, refresh
@@ -161,6 +164,7 @@ from kaagaz.jobs.worker import (
     retry_delay,
 )
 from kaagaz.search import word_counts
+from kaagaz.search.hybrid import CANDIDATE_CAP
 from kaagaz.search.indexing import MissingPass, customer_ids, embed_missing
 from kaagaz.search.story_vectors import StoryKey, StoryPass, embed_missing_stories
 from kaagaz.settings import Settings
@@ -184,6 +188,8 @@ STORY_PASS_STORIES = 32
 # File management section 7: the one-time fingerprint sweep, a pass a minute on idle turns.
 FINGERPRINT_EVERY = timedelta(minutes=1)
 FINGERPRINT_PASS = 50
+# #617: the hourly turn rebuilds word counts for about this long, then leaves the rest for the next.
+WORD_COUNTS_SECONDS = 60.0
 
 # The only extra fields a log line may carry. Anything else passed in
 # ``extra`` is dropped, so a careless call cannot log document data.
@@ -711,19 +717,54 @@ def _purge(db: Database, storage: CustomerStorage, trash_days: int) -> int:
     return families
 
 
-def rebuild_word_counts(db: Database, now: datetime) -> int:
-    """#617: each organisation's word counts rebuilt when due (``word_counts.due``), each in its
-    own transaction as that organisation; how many were. O(C) checks for C organisations, plus
-    each rebuild's own cost."""
+def rebuild_word_counts(db: Database, now: datetime, clock: Callable[[], float] = time.monotonic) -> int:
+    """#617: the organisations' word counts that are due (``word_counts.due``), never counted
+    first, then the oldest, each checked and rebuilt in its own transaction as that organisation,
+    until WORD_COUNTS_SECONDS have passed (at least one is rebuilt); how many were. One that fails
+    is logged with its id and error class and skipped; a database that is down raises (the
+    hourly turn logs it). O(C) checks for C organisations, plus each rebuild's own cost."""
     with db.system() as conn:
         customers = customer_ids(conn)
-    rebuilt = 0
+    waiting: list[tuple[bool, datetime, str]] = []
     for customer in customers:
-        with db.customer(customer) as conn:
-            if word_counts.due(conn, customer, now):
-                word_counts.rebuild(conn, customer, now)
-                rebuilt += 1
+        try:
+            with db.customer(customer) as conn:
+                is_due, built_at = word_counts.due(conn, customer, now)
+        except SQLAlchemyError as error:
+            _word_counts_failed(customer, error)
+            continue
+        if is_due:
+            waiting.append((built_at is not None, built_at or now, customer))
+    start, rebuilt = clock(), 0
+    for _, _, customer in sorted(waiting):
+        try:
+            with db.customer(customer) as conn:
+                word_counts.rebuild(conn, customer, now, CANDIDATE_CAP)
+            rebuilt += 1
+        except SQLAlchemyError as error:
+            _word_counts_failed(customer, error)
+        if clock() - start >= WORD_COUNTS_SECONDS:
+            break
     return rebuilt
+
+
+def _word_counts_failed(customer: str, error: SQLAlchemyError) -> None:
+    """One organisation's word counts failed: raised again when the database itself is down (no
+    connection, a lost one, a pool wait), else logged with its id, class and SQLSTATE only."""
+    state = sqlstate(error) if isinstance(error, DBAPIError) else None
+    lost = isinstance(error, DBAPIError) and error.connection_invalidated
+    if (
+        lost
+        or isinstance(error, InterfaceError | PoolTimeout)
+        or (isinstance(error, OperationalError) and state is None)
+    ):
+        raise error
+    if state is not None and state.startswith("08"):  # connection exception
+        raise error
+    logger.error(
+        "word counts not rebuilt",
+        extra={"customer_id": customer, "code": type(error).__name__, "sqlstate": state},
+    )
 
 
 def _story_pass(db: Database, model: "ModelClient", after: StoryKey | None) -> StoryPass:

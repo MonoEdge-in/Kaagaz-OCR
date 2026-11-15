@@ -43,12 +43,15 @@ The three searches (docs/architecture.md, "Search, in simple terms"):
    each query its own call; the pieces are then ranked here as before. Of the glossary's and the
    sound query's ORed alternatives, those on more than a fifth of the organisation's live pieces
    (``word_counts``, rebuilt by the worker) only score: the rest bring the candidates (the
-   glossary's all of them when none is rare; the sound rung none). A scope with a folder, tag,
+   glossary's common ones in a call of their own when no rare one is held; the sound words ANDed
+   when none is rare, and a single common word not at all). Inside a scope's documents every
+   alternative brings candidates. A scope with a folder, tag,
    type or date lists its documents first (``_SCOPE_DOCUMENTS``), so the cap never takes others.
    **Identifiers** (#617 item 9): a Gat, Survey, Khata or Plot number named with its kind, in
-   either script, is matched by equality on the stored values (``_IDENTIFIED``: land values'
-   ``value_keys``, cards' identifiers); then the other words are searched in those documents
-   only, and the pieces on the value's page come next. No stored value: searched as typed.
+   either script, is compared with the stored values' numbers (``_IDENTIFIED``: land values'
+   ``value_keys``, cards' identifiers); its pieces come first (the other words searched in its
+   documents, then the value's page), then the question as typed over the whole scope, so a
+   document that prints the number with no stored value still comes. None stored: as typed.
 2. **Typo tolerant:** pg_trgm ``word_similarity(q, ...)`` with ``q <% ...``
    against the text and its Latin spelling (W2), the higher of the two, so
    "invioce" still finds "invoice" and "shindey" finds "शिंदे". The ``<%``
@@ -197,6 +200,9 @@ _SOUND_TERM = re.compile(f"[a-z]{{{SOUND_KEY_MIN},}}")
 CANDIDATE_CAP = 2000
 # The scope's filters other than its documents: with one set, its documents are listed first.
 _NARROWING = ("s_folders", "s_tags", "s_doc_types", "s_detected_type", "s_from", "s_to")
+# A scope's documents passed to kaagaz_word_candidates, at most; more, and the outer statement
+# applies the scope alone (review of #617 part 1).
+SCOPE_DOCUMENTS_MOST = 5000
 # #617 item 9: a Gat, Survey, Khata or Plot number asked, in either script, and the fields that
 # hold it. Its kind word, then perhaps "No.", "number", नं or क्रमांक, then the number (digits,
 # "/" and "-" between them); the number is compared in Latin digits. Chat searches a Devanagari
@@ -205,7 +211,7 @@ _DIGIT = r"[0-9\u0966-\u096f]"
 _IDENTIFIER_KINDS = {
     "survey": (
         ("land_survey_number", "survey_number"),
-        r"g[au]t|survey|sarvhe|sarve|s\.?\s?no|गट|सर्व्हे|सर्वे|स\.?\s?नं",
+        r"g[au]t|survey|sarvhe|sarve|sy\.?\s?no|s\.?\s?no|khasra|गट|ग\.?\s?नं|सर्व्हे|सर्वे|स\.?\s?नं|खसरा",
     ),
     "khata": (("land_khata_number", "khata_number"), r"khata|khate|खाते|खाता"),
     "plot": (("land_plot_number",), r"plot|bhukhanda?|प्लॉट|भूखंड"),
@@ -231,8 +237,10 @@ IDENTIFIER_SCORE = 1.0
 # the sound query matches. A piece's score is the highest ts_rank_cd of the four queries.
 # #617: the candidates come first, at most :cap a query, from kaagaz_word_candidates (0094: the
 # GIN indexes, which row level security cannot use), each query its own call (UNION, never one
-# OR); the glossary's by its rare alternatives only (:gc). The pieces are then read and ranked
-# here, under row level security, with every filter and the scope.
+# OR); the glossary's rare alternatives (:gc) and, only when none of them is held, its common
+# ones (:gk) in a call of their own, so a new or rare word is never crowded out by a common one.
+# The pieces are then read and ranked here, under row level security, with every filter and
+# the scope.
 _WORD = text(
     "WITH ids AS MATERIALIZED ("
     "SELECT w.id FROM kaagaz_word_candidates('tsv', websearch_to_tsquery('english', :q),"
@@ -240,7 +248,9 @@ _WORD = text(
     " UNION SELECT w.id FROM kaagaz_word_candidates('tsv_simple', websearch_to_tsquery('simple', :k),"
     " CAST(:docs AS uuid[]), :cap) AS w (id)"
     " UNION SELECT w.id FROM kaagaz_word_candidates('tsv_simple', CASE WHEN CAST(:gc AS text) = '' THEN NULL"
-    " ELSE to_tsquery('simple', CAST(:gc AS text)) END, CAST(:docs AS uuid[]), :cap) AS w (id))"
+    " ELSE to_tsquery('simple', CAST(:gc AS text)) END, CAST(:docs AS uuid[]), :cap) AS w (id)"
+    " UNION SELECT w.id FROM kaagaz_word_candidates('tsv_simple', CASE WHEN CAST(:gk AS text) = '' THEN NULL"
+    " ELSE to_tsquery('simple', CAST(:gk AS text)) END, CAST(:docs AS uuid[]), :cap) AS w (id))"
     " SELECT p.id, p.document_id,"
     " GREATEST(ts_rank_cd(p.tsv, e.q), ts_rank_cd(p.tsv_simple, s.q),"
     " ts_rank_cd(p.tsv_simple, g.q), ts_rank_cd(p.tsv_sound, sk.q)) AS score"
@@ -271,14 +281,15 @@ _WORD = text(
 # tsquery per word, heard the words a piece matches, and rare each word's weight,
 # ln(candidates / candidates matching it), over the candidates: the sound matches and :exact,
 # the exact rung's pieces (all of them, as it found fewer than :n). A word on every candidate
-# weighs 0. #617: the sound matches are at most :cap, from kaagaz_word_candidates, by the rare
-# words only (:skc); every word (:sk) still scores. Only the SOUND_RANKED heaviest sound-only
+# weighs 0. #617: the sound matches are at most :cap, from kaagaz_word_candidates, by :skc (the
+# rare words ORed, or every word ANDed when none is rare: ``_sound_candidates``); every word
+# (:sk) still scores. Only the SOUND_RANKED heaviest sound-only
 # pieces (then the oldest) are ranked, on tsv_sound alone: the exact queries do not match them,
 # so their ts_rank_cd is 0.
 _SOUND = text(
     "WITH ids AS MATERIALIZED ("
-    "SELECT w.id FROM kaagaz_word_candidates('tsv_sound', to_tsquery('simple', replace(CAST(:skc AS text),"
-    " ';', '|')), CAST(:docs AS uuid[]), :cap) AS w (id)"
+    "SELECT w.id FROM kaagaz_word_candidates('tsv_sound', to_tsquery('simple', CAST(:skc AS text)),"
+    " CAST(:docs AS uuid[]), :cap) AS w (id)"
     " UNION SELECT unnest(CAST(:exact AS uuid[]))),"
     " c AS MATERIALIZED ("
     "SELECT p.id, p.document_id, p.seq, d.created_at, p.id = ANY(CAST(:exact AS uuid[])) AS exact,"
@@ -328,21 +339,24 @@ _SCOPE_DOCUMENTS = text(
     " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
 )
 
-# #617 item 9: the pieces on the pages of the property values whose number is one asked
-# (:numbers, Latin digits) in one of :fields: a land record's (value_keys, by its b-tree) or a
-# card's or document's own identifier. Each stored number is read from its first digit, Indic
-# digits folded (links.normalise_identifier, as value_keys.latin holds it): "गट नं. ६१" is 61.
+# #617 item 9: the pieces on the pages of the property values that hold a number asked in its
+# own kind's field (:fields and :numbers, pairs: "gat 61 khata 12" is survey 61 and khata 12,
+# never khata 61): a land record's (value_keys) or a card's or document's own identifier. Each
+# stored number is its first run of digits (with "/" or "-" between), Indic digits folded
+# (links.normalise_identifier, as value_keys.latin holds it): "गट नं. ६१" is 61. That run is
+# compared, not the stored text, so it is read for every property value of the organisation.
 _IDENTIFIED = text(
-    "WITH v AS ("
-    "SELECT x.document_id, x.page_no FROM value_keys k"
+    "WITH a AS (SELECT * FROM unnest(CAST(:fields AS text[]), CAST(:numbers AS text[]))"
+    " AS a (field, number)),"
+    " v AS (SELECT x.document_id, x.page_no FROM value_keys k"
     " JOIN extracted_values x ON x.customer_id = k.customer_id AND x.id = k.value_id"
-    " WHERE k.customer_id = :c AND k.kind = 'property' AND x.field = ANY(CAST(:fields AS text[]))"
-    " AND substring(k.latin from '[0-9]+(?:[/-][0-9]+)*') = ANY(CAST(:numbers AS text[]))"
+    " JOIN a ON a.field = x.field AND a.number = substring(k.latin from '[0-9]+(?:[/-][0-9]+)*')"
+    " WHERE k.customer_id = :c AND k.kind = 'property'"
     " UNION SELECT x.document_id, x.page_no FROM extracted_values x"
-    " WHERE x.customer_id = :c AND x.field = ANY(CAST(:fields AS text[]))"
-    " AND x.record_key IN ('card', 'document') AND substring(translate(lower("
+    " JOIN a ON a.field = x.field AND a.number = substring(translate(lower("
     r"regexp_replace(x.value_text, '\s', '', 'g')), '०१२३४५६७८९', '0123456789')"
-    " from '[0-9]+(?:[/-][0-9]+)*') = ANY(CAST(:numbers AS text[])))"
+    " from '[0-9]+(?:[/-][0-9]+)*')"
+    " WHERE x.customer_id = :c AND x.record_key IN ('card', 'document'))"
     " SELECT DISTINCT p.id, p.document_id, d.created_at, p.seq FROM v"
     " JOIN pieces p ON p.customer_id = :c AND p.document_id = v.document_id"
     " AND v.page_no BETWEEN p.page_from AND p.page_to"
@@ -782,8 +796,8 @@ def _identified(
     named = identifiers(question)
     if not named:
         return None
-    fields = sorted({field for kinds, _, _ in named for field in kinds})
-    params = {"c": customer_id, "fields": fields, "numbers": sorted({number for _, number, _ in named})}
+    pairs = sorted({(field, number) for kinds, number, _ in named for field in kinds})
+    params = {"c": customer_id, "fields": [f for f, _ in pairs], "numbers": [n for _, n in pairs]}
     rows = conn.execute(_IDENTIFIED, params | scope.params() | {"cap": CANDIDATE_CAP}).all()
     if not rows:
         return None
@@ -1023,42 +1037,92 @@ def _word_params(customer_id: str, words: str, expansion: Expansion) -> dict[str
 def _word_list(
     conn: Connection, customer_id: str, query_text: str, scope: Scope, expansion: Expansion
 ) -> list[Sequence[Any]]:
-    """The word list's rows (piece, document, score), best first. A question naming a stored
-    Gat, Survey, Khata or Plot number (#617 item 9, ``_identified``) is searched in that
-    property's documents only, without its name: the number is matched by equality on the
-    stored values, never as a word or a sound (``_identifier_first``). Otherwise ``_word``."""
+    """The word list's rows (piece, document, score), best first (``_word``). A question naming
+    a stored Gat, Survey, Khata or Plot number (#617 item 9, ``_identified``) lists first that
+    property's pieces: its other words searched in its documents only, the number compared with
+    the stored values (``_identifier_first``); then, after them, the question as typed over the
+    whole scope, so a document that prints the number but has no stored value still comes
+    (review of #617 part 1). Each piece once, at most CANDIDATES."""
     identified = _in_time(conn, "word_timeout", lambda: _identified(conn, customer_id, query_text, scope))
+    typed = _word_params(customer_id, query_text, expansion) | scope.params()
     if identified is None:
-        return _word(conn, _word_params(customer_id, query_text, expansion) | scope.params())
+        return _word(conn, typed)
     on_pages, rest = identified
     within = replace(scope, document_ids=tuple(sorted({document for _, document in on_pages})))
     rows = _word(conn, _word_params(customer_id, rest, expansion) | within.params()) if rest else []
-    return _identifier_first(on_pages, rows)[:CANDIDATES]
+    first = _identifier_first(on_pages, rows)[:CANDIDATES]
+    if len(first) == CANDIDATES:
+        return first
+    seen = {str(row[0]) for row in first}
+    return [*first, *(row for row in _word(conn, typed) if str(row[0]) not in seen)][:CANDIDATES]
 
 
 def _candidate_documents(conn: Connection, params: dict[str, Any]) -> list[str] | None:
     """The documents a word query's candidates are taken from (#617): the scope's own list, or
-    with a folder, tag, type or date, the documents it keeps (one statement); None: any."""
-    if all(params[name] is None for name in _NARROWING):
-        documents: list[str] | None = params["s_documents"]
-        return documents
-    return [str(row[0]) for row in conn.execute(_SCOPE_DOCUMENTS, params)]
+    with a folder, tag, type or date, the documents it keeps (one statement); None: any, and so
+    for more than SCOPE_DOCUMENTS_MOST (the statement applies the scope then)."""
+    documents: list[str] | None = params["s_documents"]
+    if not all(params[name] is None for name in _NARROWING):
+        documents = [str(row[0]) for row in conn.execute(_SCOPE_DOCUMENTS, params)]
+    return None if documents is not None and len(documents) > SCOPE_DOCUMENTS_MOST else documents
 
 
-def _rare(conn: Connection, customer_id: str, field: str, alternatives: Sequence[str]) -> list[str]:
-    """#617: the ``alternatives`` of an ORed query (each its terms ORed by " | ") that bring
-    candidates: those some live piece of the organisation's ``field`` holds, on at most
-    COMMON_SHARE of them (``word_counts.shares``), and a user's own words, "( a & b )"; all of
-    them when the organisation has no counts or few pieces. One statement."""
-    terms = [[] if alternative.startswith("(") else alternative.split(" | ") for alternative in alternatives]
-    held = word_counts.shares(conn, customer_id, field, terms, CANDIDATE_CAP)
-    if held is None:
-        return list(alternatives)
-    return [
-        alternative
-        for alternative, share in zip(alternatives, held, strict=True)
-        if alternative.startswith("(") or 0 < share <= word_counts.COMMON_SHARE
+def _shares(
+    conn: Connection, customer_id: str, field: str, alternatives: Sequence[str]
+) -> list[float] | None:
+    """#617: each glossary alternative's share of the organisation's live pieces of ``field`` (a
+    user's own words, "( a & b )", 0); None: no counts, or few pieces (``word_counts.shares``).
+    One statement."""
+    terms = [
+        [] if alternative.startswith("(") else alternative.split(" | ")[:1] for alternative in alternatives
     ]
+    return word_counts.shares(conn, customer_id, field, terms, CANDIDATE_CAP)
+
+
+def _glossary_candidates(conn: Connection, params: dict[str, Any], docs: list[str] | None) -> tuple[str, str]:
+    """(:gc, :gk) of ``_WORD``: the glossary's alternatives that are rare (on at most
+    COMMON_SHARE of the live pieces; one new since the counts is 0, so rare too), and its common
+    ones only when no rare one is held, each a capped call of its own. Every alternative as :gc
+    when the counts can't tell or ``docs`` already bounds the candidates. One statement."""
+    if not params["g"]:
+        return "", ""
+    alternatives = params["g"].split(" | ")
+    shares = None if docs is not None else _shares(conn, params["c"], "tsv_simple", alternatives)
+    if shares is None:
+        return params["g"], ""
+    rare = [a for a, share in zip(alternatives, shares, strict=True) if share <= word_counts.COMMON_SHARE]
+    common = [a for a in alternatives if a not in rare]
+    held = any(
+        0 < share <= word_counts.COMMON_SHARE or a.startswith("(")
+        for a, share in zip(alternatives, shares, strict=True)
+    )
+    return " | ".join(rare), "" if held else " | ".join(common)
+
+
+def _sound_candidates(conn: Connection, params: dict[str, Any], docs: list[str] | None) -> str:
+    """The sound rung's :skc. A word (its own key, then its shorter starts: ``sound_query``) is rare
+    when its own key is on at most COMMON_SHARE of the live pieces (a key new since the counts is
+    0, so rare too); the rare words bring candidates by their terms that are not common
+    themselves, ORed. With no rare word, two or more words ANDed, and one word not at all (""
+    skips the rung: #617 item 2, sound for rare words). Every word ORed when the counts can't tell
+    or ``docs`` bounds the candidates. One statement."""
+    words = params["sk"].split(" ; ")
+    if docs is not None:
+        return " | ".join(words)
+    terms = [word.split(" | ") for word in words]
+    flat = [term for group in terms for term in group]
+    shares = word_counts.shares(conn, params["c"], "tsv_sound", [[term] for term in flat], CANDIDATE_CAP)
+    if shares is None:
+        return " | ".join(words)
+    share = dict(zip(flat, shares, strict=True))
+    rare = [
+        " | ".join(term for term in group if share[term] <= word_counts.COMMON_SHARE)
+        for group in terms
+        if share[group[0]] <= word_counts.COMMON_SHARE
+    ]
+    if rare:
+        return " | ".join(rare)
+    return " & ".join(f"( {word} )" for word in words) if len(words) > 1 else ""
 
 
 def _ranked(rows: Iterable[Sequence[Any]], owners: dict[str, str]) -> list[tuple[str, float]]:
@@ -1240,16 +1304,13 @@ def _word(conn: Connection, params: dict[str, Any]) -> list[Sequence[Any]]:
     while it found fewer than CANDIDATES and the question has sound terms, the sound rung for
     the rest. A rung that times out is dropped (the exact rung's drop is the whole list's).
     #617: each query's candidates are at most CANDIDATE_CAP, from the scope's documents
-    (``_candidate_documents``). Of the glossary's alternatives only the rare ones held bring
-    candidates (all of them when none is, so "owner" still finds भोगवटादार); of the sound words
-    only the rare ones held, and none at all when none is (#617 item 2: sound only for rare,
-    name-like words)."""
+    (``_candidate_documents``); common glossary and sound words only score
+    (``_glossary_candidates``, ``_sound_candidates``)."""
 
     def exact_rung() -> tuple[list[str] | None, Sequence[Sequence[Any]]]:
         docs = _candidate_documents(conn, params)
-        alternatives = params["g"].split(" | ") if params["g"] else []
-        rare = " | ".join(_rare(conn, params["c"], "tsv_simple", alternatives)) or params["g"]
-        bounds = {"docs": docs, "cap": CANDIDATE_CAP, "gc": rare}
+        gc, gk = _glossary_candidates(conn, params, docs)
+        bounds = {"docs": docs, "cap": CANDIDATE_CAP, "gc": gc, "gk": gk}
         return docs, conn.execute(_WORD, params | bounds).all()
 
     done = _in_time(conn, "word_timeout", exact_rung)
@@ -1261,7 +1322,7 @@ def _word(conn: Connection, params: dict[str, Any]) -> list[Sequence[Any]]:
         exact = [str(row[0]) for row in found]
 
         def sound_rung() -> Sequence[Sequence[Any]]:
-            rare = " ; ".join(_rare(conn, params["c"], "tsv_sound", params["sk"].split(" ; ")))
+            rare = _sound_candidates(conn, params, docs)
             if not rare:
                 return []
             rest = {"exact": exact, "n": CANDIDATES - len(found), "ranked": SOUND_RANKED}
