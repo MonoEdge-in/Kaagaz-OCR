@@ -46,7 +46,7 @@ from kaagaz.api.auth import (
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import FOLDER_NAME_MAX, clean_name
-from kaagaz.api.routers.access import Password, PasswordBody, _password_given, _self_grant, _tell
+from kaagaz.api.routers.access import Password, PasswordBody, _password_given, _self_grant, _tell, _watchers
 from kaagaz.api.routers.documents import ASK_AN_ADMIN, MOVE_REFUSED, ActivityCursor, ActivityLimit
 from kaagaz.api.views import folder, shown_folder, timeline, trashed_folder, uploaded_every_version
 from kaagaz.db import access as access_sql
@@ -215,8 +215,9 @@ def update_folder(
             )
             _audit(conn, user, "folder.kind", target, {"kind": row.kind, "sort_order": row.sort_order})
         reply = shown_folder(conn, user.customer_id, row)  # PRD 7 (#599): no hidden parent's id
+        watchers = _watchers(conn, context, user) if details.get("self") else []
     if details.get("self"):
-        _tell(background, context, user, "wall", None)
+        _tell(background, context, user, "wall", None, watchers)
     return reply
 
 
@@ -339,8 +340,9 @@ def delete_folder(
         else:
             details["trash_id"] = held.trash_id  # #542: the folder is in Trash, restorable
         _audit(conn, user, "folder.delete" if contents == "keep" else "folder.trash", target, details)
+        watchers = _watchers(conn, context, user) if moved.get("self") else []
     if moved.get("self"):
-        _tell(background, context, user, "wall", None)
+        _tell(background, context, user, "wall", None, watchers)
     return JSONResponse({"files": held.files, "folders": held.folders})
 
 
@@ -388,7 +390,9 @@ def restore_trashed_folder(folder_id: uuid.UUID, user: User, context: Context) -
         if not uploaded_every_version(found.uploaders, user):
             raise ApiError(403, "forbidden")
         try:
-            restored = trashed_sql.restore_folder(conn, user.customer_id, target, admin=user.role == "admin")
+            restored = trashed_sql.restore_folder(
+                conn, user.customer_id, target, admin=user.role == "admin", by=user.user_id
+            )
         except trashed_sql.DepartmentAdminOnly as refused:
             raise ApiError(403, "forbidden", department_only_admin(conn, user, refused)) from None
         except folders_sql.FolderNameTaken:
@@ -397,7 +401,8 @@ def restore_trashed_folder(folder_id: uuid.UUID, user: User, context: Context) -
         # PRD 7 (#599): what came back, its place and what came with it, as the person may see
         # them: the folder they asked for is theirs to see (it was their item of Trash).
         shown = trashed_sql.as_seen(conn, user.customer_id, restored)
-        if shown is None:  # can't happen: the folder asked for was found visible above
+        if shown is None:  # can't happen: the folder asked for was found visible above, and a seal
+            # names the restorer (#594)
             raise folders_sql.FolderNotFound()
         reply = shown_folder(conn, user.customer_id, shown.folder)
     return {

@@ -230,6 +230,9 @@ _LINK_STATE = text(
     " AND cur.family_id = :f AND cur.is_current AND cur.deleted_at IS NULL) AS current_id,"
     " (SELECT cur.folder_id FROM documents cur WHERE cur.customer_id = n.customer_id"
     " AND cur.family_id = :f AND cur.is_current) AS folder_id,"
+    # #594: whom the family is held for (none: not held).
+    " (SELECT cur.held_for FROM documents cur WHERE cur.customer_id = n.customer_id"
+    " AND cur.family_id = :f AND cur.is_current) AS family_held,"
     " (SELECT max(v.version_no) FROM documents v WHERE v.customer_id = n.customer_id"
     " AND v.family_id = :f) + 1 AS version_no"
     " FROM documents n WHERE n.customer_id = :c AND n.id = :n"
@@ -242,7 +245,9 @@ _FAMILY_NOT_CURRENT = text(
 _JOIN = text(
     "UPDATE documents n SET family_id = :f, version_no = :v, folder_id = cur.folder_id,"
     " owner_id = cur.owner_id, sensitivity = cur.sensitivity,"
-    " sensitivity_set_by_person = cur.sensitivity_set_by_person, autofile = NULL, is_current = true"
+    " sensitivity_set_by_person = cur.sensitivity_set_by_person, autofile = NULL, is_current = true,"
+    # #594: a held family stays held, the joiner with it (the trigger clears it in a folder).
+    " held_for = coalesce(cur.held_for, n.held_for)"
     " FROM documents cur WHERE n.customer_id = :c AND n.id = :n AND cur.customer_id = :c AND cur.id = :cur"
 )
 # Issue 414: a family in no folder joins the folder of the document linked to it, so the
@@ -305,7 +310,8 @@ def link(
         raise Refused("already_decided")
     ids = {**params, "n": new, "f": family, "cur": str(state["current_id"]), "v": int(state["version_no"])}
     folder_id = state["folder_id"]
-    if folder_id is None and state["from_folder"] is not None:
+    # #594: never a held family, which would leave its hold and be seen by whoever sees that folder.
+    if folder_id is None and state["from_folder"] is not None and state["family_held"] is None:
         folder_id = state["from_folder"]
         conn.execute(_FAMILY_INTO, {**ids, "folder": folder_id})
     conn.execute(_FAMILY_NOT_CURRENT, ids)
@@ -401,6 +407,7 @@ _UNDO_STATE = text(
     "SELECT d.version_no, (SELECT max(v.version_no) FROM documents v WHERE v.customer_id = :c"
     " AND v.family_id = :f) AS newest, s.id AS suggestion_id, fo.id AS folder_id,"
     " s.previous_folder_id IS NULL AS had_none, s.previous_held_for,"
+    " d.folder_id AS now_in, d.held_for AS now_held,"
     " d.private_folder_id, d.department_id, coalesce(dep.department_only, false) AS department_only,"
     " coalesce((SELECT u.management FROM users u WHERE u.customer_id = :c AND u.id = :by), false)"
     " AS management"
@@ -427,13 +434,14 @@ _HIGHEST_READY_CURRENT = text(
 def _way_back(state: RowMapping) -> tuple[str | None, str | None]:
     """Where an Undo puts the document (#594): (its folder, whom it is held for). Its previous
     folder while live; no folder, held for whom it was held for, when it had none (nobody: open, as
-    before the link); its previous folder gone: no folder while it is open to everyone where it is
-    now (day one), else its private folder, else the top of its department, both live as it is in
-    them, so it is never wider than while it was linked."""
+    before the link); its previous folder gone: in no folder now (its family held by a restore),
+    held as it is; else no folder while it is open to everyone where it is now (day one), else its
+    private folder, else the top of its department, both live as it is in them, so it is never
+    wider than while it was linked."""
     if state["folder_id"] is not None:
         return str(state["folder_id"]), None
-    if state["had_none"]:
-        held = state["previous_held_for"]
+    if state["had_none"] or state["now_in"] is None:
+        held = state["previous_held_for"] if state["had_none"] else state["now_held"]
         return None, None if held is None else str(held)
     if state["private_folder_id"] is None and not state["department_only"]:
         return None, None
@@ -485,7 +493,12 @@ def undo(
         action="version.undone",
         target_type="document",
         target_id=document_id,
-        details={"suggestion_id": suggestion, "family_id": family, "folder_id": folder},
+        details={
+            "suggestion_id": suggestion,
+            "family_id": family,
+            "folder_id": folder,
+            **({"held": True} if held is not None else {}),  # #594: held again
+        },
     )
     conn.execute(_ALONE_AGAIN, {**params, "folder": folder, "held": held})
     conn.execute(_HIGHEST_READY_CURRENT, params)

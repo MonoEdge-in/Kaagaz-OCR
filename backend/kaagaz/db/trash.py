@@ -71,6 +71,9 @@ _KEPT_PLACE = (
 # it waits for this restore instead of deleting one under it. One constant, for PR 9's owner-rights
 # functions to reuse.
 LIVE_FOLDERS = "SELECT id FROM folders WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[])) FOR SHARE"
+# #594 (decision 3): the organisation has kept something to some people (0089); read under the tree
+# lock, which is this row's lock, so it can't change before the restore commits.
+WALLED = "SELECT walls_set FROM customers WHERE id = :c"
 
 _CUSTOMERS_WITH_TRASH = "SELECT t.id FROM kaagaz_customer_ids_with_trash(:before) AS t (id) ORDER BY t.id"
 
@@ -169,15 +172,23 @@ def place_out_of_folder(
     conn: Connection, customer_id: str, department_id: str | None, private_folder_id: str | None
 ) -> Placed:
     """Where a file whose folder is gone goes back (#594), from the department and private folder
-    it kept: its private folder while that is live, else held (the top of its department would
-    show it to more people, Q1); with no private folder, the top of its department while that is
-    live, else held; with neither, no folder, as it was. A folder in Trash is not live. The caller
-    holds the tree lock and the family's. One statement."""
+    it kept: its private folder while that is live; else the top of its department while that is
+    live; else no folder. Once the organisation is walled (``WALLED``), held for the restorer
+    instead when its private folder is gone (the top of its department would show it to more
+    people, Q1) or its department is (Q2). Day one, unwalled, it is the old result (decision 3). A
+    folder in Trash is not live. The caller holds the tree lock and the family's. Two statements."""
     kept = [f for f in (private_folder_id, department_id) if f is not None]
     if not kept:
         return Placed()
     live = {str(f) for f in conn.execute(text(LIVE_FOLDERS), {"c": customer_id, "ids": kept}).scalars()}
-    return Placed(into=kept[0]) if kept[0] in live else Placed(held=True)
+    walled = bool(conn.execute(text(WALLED), {"c": customer_id}).scalar())
+    if private_folder_id in live:
+        return Placed(into=private_folder_id)
+    if private_folder_id is not None and walled:
+        return Placed(held=True)
+    if department_id in live:
+        return Placed(into=department_id)
+    return Placed(held=walled)
 
 
 def place_family(conn: Connection, customer_id: str, family_id: str) -> Placed:
