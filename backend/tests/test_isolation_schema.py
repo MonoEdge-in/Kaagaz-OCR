@@ -267,6 +267,13 @@ RUN_OUTCOME = {
 # each narrow: {name: (what it returns, its search path)}. Those that list across
 # customers or users give ids only.
 EMPTY_PATH = ['search_path=""']
+# A restore's rows (0092): the topmost folder made live and the one asked for, or why nothing was done.
+RESTORED = (
+    "TABLE(id uuid, parent_id uuid, name text, created_at timestamp with time zone, kind text,"
+    " sort_order integer, department_only boolean, private boolean, is_top boolean, is_asked boolean,"
+    " trash_id uuid, refused text, renamed boolean, relocated boolean, sealed boolean, below uuid[],"
+    " families uuid[])"
+)
 OWNER_RIGHTS = {
     # Changed on purpose (#479, 3 Nov 2026): 0067 gives 0001's two the empty path as well.
     "kaagaz_login_lookup": (
@@ -409,6 +416,17 @@ OWNER_RIGHTS = {
         "TABLE(id uuid, display_name text, folder_id uuid, given_at timestamp with time zone, given_by uuid)",
         EMPTY_PATH,
     ),
+    # Changed on purpose (#606, PR 9b, 0092): the writes over rows the person can't see; ids and counts.
+    "kaagaz_admin_trash_in_folders": ("integer", EMPTY_PATH),
+    "kaagaz_detach_trashed": ("integer", EMPTY_PATH),
+    "kaagaz_admin_move_folder_documents": ("integer", EMPTY_PATH),
+    "kaagaz_restore_folder": (RESTORED, EMPTY_PATH),
+    "kaagaz_restore_with_folders": (RESTORED, EMPTY_PATH),
+    "kaagaz_trash_uploaders": ("uuid[]", EMPTY_PATH),
+    "kaagaz_trash_families": ("SETOF uuid", EMPTY_PATH),
+    "kaagaz_purge_family": ("TABLE(document_id uuid, folder_id uuid)", EMPTY_PATH),
+    "kaagaz_admin_move_documents": ("TABLE(document_id uuid, family_id uuid, from_folder uuid)", EMPTY_PATH),
+    "kaagaz_admin_trash_documents": ("TABLE(document_id uuid, family_id uuid)", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"
