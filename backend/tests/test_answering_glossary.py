@@ -27,7 +27,9 @@ def test_every_term_is_pure_nfc_devanagari_letters_and_marks(keyword: str) -> No
     quote or operator (& | ! : * ( ) < - ' \\)."""
     terms = glossary.equivalents(keyword)
     assert 1 <= len(terms) <= 3 and len(set(terms)) == len(terms)
-    assert keyword == normalise(keyword).keywords[0]  # written as normalise gives it
+    # Written as normalise gives it. Changed on purpose (#622): "name" is a request word now, never
+    # a keyword ("which document have krishna jindal name"), and still the answer check's English.
+    assert normalise(keyword).keywords == ([] if keyword == "name" else [keyword])
     for term in terms:
         assert unicodedata.is_normalized("NFC", term), term
         assert all("ऀ" <= ch <= "ॿ" and unicodedata.category(ch)[0] in "LM" for ch in term), term

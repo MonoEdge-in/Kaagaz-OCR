@@ -110,12 +110,15 @@ _HINDI_STOP = frozenset(
 )
 _SHARED_STOP = frozenset({"the", "me"})
 
-# Not topics: question words and English filler.
+# Not topics: question words and English filler. The last line (#622, production 15 Nov 2026):
+# request words ("Can you find me ... in any other document", "which document have ... name"),
+# which matched most pieces by sound and named "Can" and "find" in the not-found line.
 _NOT_KEYWORDS = frozenset(
     {"a", "an", "is", "was", "were", "are", "be", "been", "of", "in", "on", "at", "for", "to"}
     | {"from", "by", "and", "or", "with", "what", "which", "who", "whose", "whom", "when", "where"}
     | {"how", "much", "many", "my", "our", "us", "we", "i", "you", "show", "tell", "give", "list"}
     | {"please", "did", "do", "does", "has", "have", "had", "there", "that", "it", "its", "any"}
+    | {"can", "find", "seen", "if", "other", "document", "documents", "name"}
 )
 
 # Date words (dates.py reads them). A year and the number in "last 30 days" are

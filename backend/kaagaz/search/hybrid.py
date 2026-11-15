@@ -26,7 +26,9 @@ The three searches (docs/architecture.md, "Search, in simple terms"):
    checked to be ``[a-z]`` letters, never from the question's text; "" is
    NULL, as for ``g``. A piece scores the highest ``ts_rank_cd`` of the four,
    and every piece one of the three exact queries matched comes first, so a
-   piece found only by sound fills the slots the exact matches leave. The exact
+   piece found only by sound fills the slots the exact matches leave. So the sound query
+   runs only when the exact ones matched fewer than ``CANDIDATES`` pieces (#619, 15 Nov
+   2026: ``_WORD``, then ``_SOUND``), and ranks at most ``SOUND_RANKED`` pieces. The exact
    queries need every word, the sound one any word: when no exact query
    matches, the list is "any word", not "every word". So in the sound tier a
    piece ranks by the words it matches, each weighed by how rare it is among
@@ -56,8 +58,10 @@ The three searches (docs/architecture.md, "Search, in simple terms"):
    again by exact distance. The walk stops after ``hnsw.max_scan_tuples``
    (20,000) tuples, so a small scope in a big table can come back short: then
    the same filters run as an exact scan. A search statement past
-   ``STATEMENT_TIMEOUT_MS`` is cancelled; a meaning list that times out is
-   dropped and the words and typos still answer.
+   ``STATEMENT_TIMEOUT_MS`` is cancelled; a list that times out is dropped, with
+   ``word_timeout``, ``sound_timeout``, ``fuzzy_timeout`` or ``meaning_timeout`` logged,
+   and the others still answer (#619: until 15 Nov 2026 a word or typo list that timed
+   out failed the question with 503).
 
 Every query filters on ``p.customer_id = :c`` itself, on top of row level
 security (two locks, docs/architecture.md), and sees only pieces of documents
@@ -102,13 +106,15 @@ The meaning list is about O(ef_search * log N * dim) on the index for N vectors
 when the scope is large, at worst O(min(max_scan_tuples, N) * dim); the exact
 fallback is O(n * dim) over the scope's n vectors. The merge is O(150 log 150)
 and the grouping O(150); then one indexed fetch of at most ``limit`` (or
-``max_documents``) pieces. At most ten statements in the caller's transaction
-(with the meaning list's savepoint).
+``max_documents``) pieces. The sound rung is O(m) for the m pieces its terms match, and
+ranks at most ``SOUND_RANKED`` of them. At most eleven statements in the caller's
+transaction, each list in a savepoint.
 
 ponytail: the GIN posting lists span all customers (the customer filter comes
 after the index); fine at this size, a per-customer partition is the upgrade.
 """
 
+import logging
 import math
 import re
 from collections.abc import Callable, Iterable, Sequence
@@ -135,6 +141,8 @@ from kaagaz.search.scope import EVERYTHING, Scope
 if TYPE_CHECKING:
     from kaagaz.answering.evidence import Hit  # evidence imports this module
 
+_log = logging.getLogger(__name__)
+
 # Candidates taken from each of the three lists before merging.
 CANDIDATES = 50
 # The reciprocal rank fusion constant; 60 is the usual starting value.
@@ -143,9 +151,13 @@ RRF_K = 60
 MAX_LIMIT = 100
 # pg_trgm word similarity cut-off for the typo tolerant list. PROVISIONAL.
 FUZZY_THRESHOLD = 0.3
-# Every search statement is cancelled after this long (PROVISIONAL). A meaning
-# list that runs out of time is dropped; the word and fuzzy lists still answer.
+# Every search statement is cancelled after this long (PROVISIONAL). A list that runs out of
+# time is dropped, a code logged, and the others still answer (#619: the word and fuzzy lists
+# too, since 15 Nov 2026).
 STATEMENT_TIMEOUT_MS = 3000
+# The sound rung (_SOUND) ranks at most this many sound-only pieces, the heaviest by their
+# words' rarity (#619): a question whose sound keys match most pieces ranks only these.
+SOUND_RANKED = 10 * CANDIDATES
 # A fused search (search_translated: CX6's aspects, the translation) runs at most this many
 # texts' lists at once, each on its own pooled connection (Ask speed, 24 Oct 2026).
 SEARCH_FAN_OUT = 4
@@ -167,16 +179,13 @@ _SOUND_TERM = re.compile(f"[a-z]{{{SOUND_KEY_MIN},}}")
 # is written out in each one, before any LIMIT (tests/test_visibility_guard.py),
 # and so is the scope (the s_* parameters, Scope.params; tests/test_search_scope_db.py).
 
-# The sound query's words are separated by ";" (sound_query): sw holds one tsquery per word,
-# heard the words a piece matches, and rare each word's weight, ln(candidates / candidates
-# matching it): a word on every candidate weighs 0.
+# The word list is a ladder (#619, production 15 Nov 2026): _WORD, the pieces the three exact
+# queries match, best first; then, only when they are fewer than :n, _SOUND, the pieces only
+# the sound query matches. A piece's score is the highest ts_rank_cd of the four queries.
 _WORD = text(
-    "WITH c AS MATERIALIZED ("
-    "SELECT p.id, p.document_id, p.seq, d.created_at,"
+    "SELECT p.id, p.document_id,"
     " GREATEST(ts_rank_cd(p.tsv, e.q), ts_rank_cd(p.tsv_simple, s.q),"
-    " ts_rank_cd(p.tsv_simple, g.q), ts_rank_cd(p.tsv_sound, sk.q)) AS score,"
-    " coalesce(p.tsv @@ e.q OR p.tsv_simple @@ s.q OR p.tsv_simple @@ g.q, false) AS exact,"
-    " ARRAY(SELECT u.i FROM unnest(sw.qs) WITH ORDINALITY AS u (q, i) WHERE p.tsv_sound @@ u.q) AS heard"
+    " ts_rank_cd(p.tsv_simple, g.q), ts_rank_cd(p.tsv_sound, sk.q)) AS score"
     " FROM pieces p"
     " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " CROSS JOIN websearch_to_tsquery('english', :q) AS e (q)"
@@ -185,6 +194,35 @@ _WORD = text(
     " ELSE to_tsquery('simple', CAST(:g AS text)) END) AS g (q)"
     " CROSS JOIN (SELECT CASE WHEN CAST(:sk AS text) = '' THEN NULL"
     " ELSE to_tsquery('simple', replace(CAST(:sk AS text), ';', '|')) END) AS sk (q)"
+    " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
+    " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
+    " WHERE dt.customer_id = :c AND dt.tag_id = ANY(CAST(:s_tags AS uuid[])) GROUP BY dt.document_id"
+    " HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))"
+    " AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))"
+    " AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))"
+    " AND (CAST(:s_documents AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:s_documents AS uuid[])))"
+    " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
+    " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
+    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
+    " AND (p.tsv @@ e.q OR p.tsv_simple @@ s.q OR p.tsv_simple @@ g.q)"
+    " ORDER BY score DESC, d.created_at, p.document_id, p.seq, p.id LIMIT :n"
+)
+
+# The sound rung. The sound query's words are separated by ";" (sound_query): sw holds one
+# tsquery per word, heard the words a piece matches, and rare each word's weight,
+# ln(candidates / candidates matching it), over the same candidates as before the ladder: the
+# sound matches and :exact, the exact rung's pieces (all of them, as it found fewer than :n). A
+# word on every candidate weighs 0. Only the SOUND_RANKED heaviest sound-only pieces (then the
+# oldest) are ranked, on tsv_sound alone: the exact queries do not match them, so their
+# ts_rank_cd is 0.
+_SOUND = text(
+    "WITH c AS MATERIALIZED ("
+    "SELECT p.id, p.document_id, p.seq, d.created_at, p.id = ANY(CAST(:exact AS uuid[])) AS exact,"
+    " ARRAY(SELECT u.i FROM unnest(sw.qs) WITH ORDINALITY AS u (q, i) WHERE p.tsv_sound @@ u.q) AS heard"
+    " FROM pieces p"
+    " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
+    " CROSS JOIN (SELECT to_tsquery('simple', replace(CAST(:sk AS text), ';', '|'))) AS sk (q)"
     " CROSS JOIN (SELECT ARRAY(SELECT to_tsquery('simple', w)"
     " FROM unnest(string_to_array(CAST(:sk AS text), ';')) AS w WHERE w <> '')) AS sw (qs)"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
@@ -198,13 +236,16 @@ _WORD = text(
     " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
     " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
     " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
-    " AND (p.tsv @@ e.q OR p.tsv_simple @@ s.q OR p.tsv_simple @@ g.q OR p.tsv_sound @@ sk.q)),"
+    " AND (p.tsv_sound @@ sk.q OR p.id = ANY(CAST(:exact AS uuid[])))),"
     " rare AS MATERIALIZED (SELECT h.i, ln((SELECT count(*) FROM c) / CAST(count(*) AS float8)) AS w"
-    " FROM c CROSS JOIN unnest(c.heard) AS h (i) GROUP BY h.i)"
-    " SELECT c.id, c.document_id, c.score, c.exact FROM c"
-    " ORDER BY c.exact DESC,"
-    " CASE WHEN c.exact THEN 0 ELSE (SELECT sum(r.w) FROM rare r WHERE r.i = ANY(c.heard)) END DESC,"
-    " c.score DESC, c.created_at, c.document_id, c.seq, c.id LIMIT :n"
+    " FROM c CROSS JOIN unnest(c.heard) AS h (i) GROUP BY h.i),"
+    " heavy AS MATERIALIZED (SELECT c.id, c.document_id, c.seq, c.created_at,"
+    " (SELECT sum(r.w) FROM rare r WHERE r.i = ANY(c.heard)) AS weight FROM c WHERE NOT c.exact"
+    " ORDER BY weight DESC, c.created_at, c.document_id, c.seq, c.id LIMIT :ranked)"
+    " SELECT h.id, h.document_id, ts_rank_cd(p.tsv_sound, sk.q) AS score FROM heavy h"
+    " JOIN pieces p ON p.customer_id = :c AND p.id = h.id"
+    " CROSS JOIN (SELECT to_tsquery('simple', replace(CAST(:sk AS text), ';', '|'))) AS sk (q)"
+    " ORDER BY h.weight DESC, score DESC, h.created_at, h.document_id, h.seq, h.id LIMIT :n"
 )
 
 # set_config(..., true) is SET LOCAL with a bound value (SET LOCAL takes none):
@@ -800,10 +841,12 @@ def _lists(
             "ql": latin,
             "n": CANDIDATES,
         }
-        word = _ranked(conn.execute(_WORD, {**params, **scope.params()}), owners)
+        word = _ranked(_word(conn, {**params, **scope.params()}), owners)
         conn.execute(_SET_FUZZY_THRESHOLD, {"t": str(FUZZY_THRESHOLD)})
-        typo_rows = conn.execute(_FUZZY, {**params, **scope.params()}).all()
-        fuzzy = _ranked(_numbers_as_written(typo_rows, number_words(query_text)), owners)
+        typo_rows = _in_time(
+            conn, "fuzzy_timeout", lambda: conn.execute(_FUZZY, {**params, **scope.params()}).all()
+        )
+        fuzzy = _ranked(_numbers_as_written(typo_rows or [], number_words(query_text)), owners)
     if embedding is not None:
         vector = {"c": customer_id, "vec": vector_literal(embedding), "recipe": recipe, "n": CANDIDATES}
         meaning = _meaning(conn, vector | scope.params(), ef_search, owners)
@@ -974,15 +1017,40 @@ def _meaning(
     is scanned exactly too, which is cheap). Empty when the statement timeout
     cancels it: the savepoint keeps the transaction usable for the rest."""
     conn.execute(_SET_INDEX_SCAN, {"ef": str(ef_search)})
+
+    def walk() -> Sequence[Sequence[Any]]:
+        rows = conn.execute(_MEANING, params).all()
+        return rows if len(rows) >= CANDIDATES else conn.execute(_MEANING_EXACT, params).all()
+
+    # A zero vector has no direction: its distance is NaN and says nothing.
+    found = [row for row in _in_time(conn, "meaning_timeout", walk) or [] if math.isfinite(float(row[2]))]
+    return _ranked([(row[0], row[1], 1.0 - float(row[2])) for row in found], owners)
+
+
+def _word(conn: Connection, params: dict[str, Any]) -> list[Sequence[Any]]:
+    """The word list's rows (piece, document, score), best first (#619): the exact rung, then,
+    while it found fewer than CANDIDATES and the question has sound terms, the sound rung for
+    the rest. A rung that times out is dropped (the exact rung's drop is the whole list's)."""
+    rows = _in_time(conn, "word_timeout", lambda: conn.execute(_WORD, params).all())
+    if rows is None:
+        return []
+    found: list[Sequence[Any]] = list(rows)
+    if len(found) < CANDIDATES and params["sk"]:
+        exact = [str(row[0]) for row in found]
+        rest = {"exact": exact, "n": CANDIDATES - len(found), "ranked": SOUND_RANKED}
+        found += _in_time(conn, "sound_timeout", lambda: conn.execute(_SOUND, params | rest).all()) or []
+    return found
+
+
+def _in_time[T](conn: Connection, code: str, run: Callable[[], T]) -> T | None:
+    """``run()`` in a savepoint, or None when the statement timeout cancelled it (57014): the
+    savepoint keeps the transaction usable for the other lists, and ``code`` is logged (never
+    the question or a statement). Any other error is raised."""
     try:
         with conn.begin_nested():
-            rows = conn.execute(_MEANING, params).all()
-            if len(rows) < CANDIDATES:
-                rows = conn.execute(_MEANING_EXACT, params).all()
+            return run()
     except OperationalError as error:
         if getattr(error.orig, "sqlstate", None) != _QUERY_CANCELED:
             raise
-        return []
-    # A zero vector has no direction: its distance is NaN and says nothing.
-    found = [row for row in rows if math.isfinite(float(row[2]))]
-    return _ranked([(row[0], row[1], 1.0 - float(row[2])) for row in found], owners)
+        _log.warning("search list dropped", extra={"code": code})
+        return None

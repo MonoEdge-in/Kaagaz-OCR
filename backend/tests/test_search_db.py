@@ -10,6 +10,7 @@ indexing tests.
 """
 
 import json
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -17,6 +18,8 @@ from typing import Any
 import pytest
 from sqlalchemy import text
 
+from kaagaz.answering.expansion import NO_EXPANSION
+from kaagaz.answering.hinglish import normalise
 from kaagaz.chunking.script import piece_latin
 from kaagaz.db.engine import Database
 from kaagaz.search import hybrid
@@ -412,10 +415,11 @@ def test_an_empty_glossary_query_matches_nothing(db: Database) -> None:
 
 
 def by_sound(db: Database, customer_id: str, question: str, scope: Scope = EVERYTHING) -> list[str]:
-    """The word statement with only its sound query able to match: the pieces it finds."""
+    """The word list with only its sound query able to match: the pieces it finds. Changed on
+    purpose (#619): the sound query is its own rung, after the exact queries."""
     words = {"c": customer_id, "q": "zzz", "k": "zzz", "g": "", "sk": hybrid.sound_query(question), "n": 50}
     with db.customer(customer_id) as conn:
-        return [str(row[0]) for row in conn.execute(hybrid._WORD, words | scope.params())]
+        return [str(row[0]) for row in hybrid._word(conn, words | scope.params())]
 
 
 @pytest.mark.parametrize(
@@ -456,17 +460,19 @@ def test_an_empty_sound_query_matches_nothing(db: Database) -> None:
     customer, _ = new_customer(db)
     add_pieces(db, customer, add_document(db, customer), [("गायकवाड सुरेश", None)])
     words = {"c": customer, "q": "zzz", "k": "zzz", "g": "", "n": 50} | EVERYTHING.params()
-    with db.customer(customer) as conn:
-        assert conn.execute(hybrid._WORD, words | {"sk": ""}).all() == []
-        assert len(conn.execute(hybrid._WORD, words | {"sk": "gikvd"}).all()) == 1  # the control
+    with db.customer(customer) as conn:  # Changed on purpose (#619): the word list's two rungs
+        assert hybrid._word(conn, words | {"sk": ""}) == []
+        assert len(hybrid._word(conn, words | {"sk": "gikvd"})) == 1  # the control
 
 
 def _word_rows(db: Database, customer_id: str, question: str) -> list[tuple[str, float, bool]]:
-    """(piece id, score, matched exactly) of the word statement for ``question``, in order."""
+    """(piece id, score, matched exactly) of the word list for ``question``, in order. Changed
+    on purpose (#619): the exact rung (_WORD) says which matched exactly."""
     words = {"c": customer_id, "q": question, "k": question, "g": "", "sk": hybrid.sound_query(question)}
+    params = words | {"n": hybrid.CANDIDATES} | EVERYTHING.params()
     with db.customer(customer_id) as conn:
-        rows = conn.execute(hybrid._WORD, words | {"n": hybrid.CANDIDATES} | EVERYTHING.params())
-        return [(str(row[0]), float(row[2]), bool(row[3])) for row in rows]
+        exact = {str(row[0]) for row in conn.execute(hybrid._WORD, params)}
+        return [(str(row[0]), float(row[2]), str(row[0]) in exact) for row in hybrid._word(conn, params)]
 
 
 def test_an_exact_match_comes_before_a_sound_match_that_ranks_higher(db: Database) -> None:
@@ -570,3 +576,110 @@ def test_the_sound_list_sees_only_the_current_version_out_of_trash_and_in_scope(
 
     assert set(by_sound(db, customer, "bhogwatdar")) == {pieces[current], pieces[other]}
     assert by_sound(db, customer, "bhogwatdar", Scope(document_ids=(current,))) == [pieces[current]]
+
+
+# --- #619 and #622: production's "Kaagaz is busy" (15 Nov 2026) -------------------------
+
+
+def _word_list(db: Database, customer_id: str, question: str) -> list[str]:
+    """The pieces of ``question``'s word list, as the search runs it (``_lists``)."""
+    with db.customer(customer_id) as conn:
+        word, _, _ = hybrid._lists(
+            conn, customer_id, question, None, RECIPE, EF_SEARCH, EVERYTHING, NO_EXPANSION, {}
+        )
+    return [piece for piece, _ in word]
+
+
+def test_request_words_are_never_searched(db: Database) -> None:
+    """Both production questions: their request words ("find", "seen", "other", "document",
+    "name") matched most pieces by sound. Now only the name and the topic are searched."""
+    customer, _ = new_customer(db)
+    sound, exact, measured, filler = add_pieces(
+        db,
+        customer,
+        add_document(db, customer),
+        [
+            ("Buyer: Krishna Jindaal, Wagholi", None),  # by sound only: jindaal is jindl
+            ("Signed by Jindal Krishna", None),
+            ("Measurement of the plot: 20 m by 30 m", None),
+            ("Document name: land register. Other details are seen on page 2. Find it here.", None),
+        ],
+    )
+
+    assert set(_word_list(db, customer, "which document have krishna jindal name")) == {sound, exact}
+    asked = "Can you find me the measurement of this if it is seen in any other document?"
+    assert _word_list(db, customer, asked) == [measured]
+    # Chat searches the question's keywords (service._searched_as), so the typo list skips them too.
+    searched = " ".join(normalise(asked).keywords)
+    assert filler not in {hit.piece_id for hit in run(db, customer, searched)}
+
+
+# A word or typo statement that takes a second, past a 100 ms statement timeout (``_slow``).
+SLOW_WORD = (
+    "SELECT p.id, p.document_id, 1.0 FROM pieces p CROSS JOIN pg_sleep(1) WHERE p.customer_id = :c LIMIT :n"
+)
+SLOW_FUZZY = (
+    "SELECT p.id, p.document_id, 1.0, p.text, p.text_latin FROM pieces p CROSS JOIN pg_sleep(1)"
+    " WHERE p.customer_id = :c LIMIT :n"
+)
+
+
+def _slow(monkeypatch: pytest.MonkeyPatch, name: str, statement: str) -> None:
+    """``hybrid.<name>`` is ``statement``, and the statement timeout 100 ms."""
+    monkeypatch.setattr(hybrid, "STATEMENT_TIMEOUT_MS", 100)
+    monkeypatch.setattr(hybrid, name, text(statement))
+
+
+def test_a_word_list_that_times_out_is_dropped_and_the_typo_list_still_answers(
+    db: Database, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    customer, _ = new_customer(db)
+    pieces: list[tuple[str, list[float] | None]] = [("Invoice from Sharma", None), ("Rent", None)]
+    wanted, _ = add_pieces(db, customer, add_document(db, customer), pieces)
+    _slow(monkeypatch, "_WORD", SLOW_WORD)
+    caplog.set_level(logging.WARNING, logger="kaagaz.search.hybrid")
+
+    hits = run(db, customer, "invioce sharma")  # until #619: OperationalError, then 503
+
+    assert [hit.piece_id for hit in hits] == [wanted] and hits[0].word_score is None
+    assert [getattr(r, "code", None) for r in caplog.records] == ["word_timeout"]
+    assert "invioce" not in caplog.text
+
+
+def test_a_typo_list_that_times_out_is_dropped_and_the_word_list_still_answers(
+    db: Database, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    customer, _ = new_customer(db)
+    pieces: list[tuple[str, list[float] | None]] = [("Invoice from Sharma", None), ("Rent", None)]
+    wanted, _ = add_pieces(db, customer, add_document(db, customer), pieces)
+    _slow(monkeypatch, "_FUZZY", SLOW_FUZZY)
+    caplog.set_level(logging.WARNING, logger="kaagaz.search.hybrid")
+
+    hits = run(db, customer, "invoice sharma")
+
+    assert [hit.piece_id for hit in hits] == [wanted] and hits[0].fuzzy_score is None
+    assert [getattr(r, "code", None) for r in caplog.records] == ["fuzzy_timeout"]
+
+
+def test_the_sound_rung_runs_only_when_the_exact_rung_found_too_few(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#619: a question whose exact words fill the list never runs the sound query."""
+    customer, _ = new_customer(db)
+    pieces: list[tuple[str, list[float] | None]] = [("Shetkari list", None)] * hybrid.CANDIDATES
+    add_pieces(db, customer, add_document(db, customer), [*pieces, ("शेतकरी", None)])
+    monkeypatch.setattr(hybrid, "_SOUND", text("SELECT 1 / 0"))  # it would fail if it ran
+
+    assert len(_word_list(db, customer, "shetkari")) == hybrid.CANDIDATES
+
+
+def test_the_sound_rung_ranks_only_its_heaviest_pieces(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#619: at most SOUND_RANKED sound-only pieces are ranked, the rarest words' first."""
+    customer, _ = new_customer(db)
+    pieces: list[tuple[str, list[float] | None]] = [(f"गायकवाड {n}", None) for n in range(5)]
+    ids = add_pieces(db, customer, add_document(db, customer), [*pieces, ("गायकवाड शिंदे", None)])
+    monkeypatch.setattr(hybrid, "SOUND_RANKED", 2)
+
+    found = _word_list(db, customer, "gaikwad shinde")
+
+    assert len(found) == 2 and found[0] == ids[-1]
