@@ -428,6 +428,7 @@ def _ask(
     chosen = body.scope
     recent: Sequence[RowMapping] = []
     memory, summary_turn, turns = NO_MEMORY, 0, 0
+    last_cited: list[str] = []
     earlier: list[str | None] = []  # the conversation's openings so far (PRD 6 A)
     pending: Pending | None = None
     with context.db.customer(user.customer_id) as conn:
@@ -439,6 +440,8 @@ def _ask(
             summary_turn, turns = int(state["summary_turn"]), int(state["turns"])
             pairs = max(context.settings.chat_history_turns, 1)
             recent = chat_sql.recent_messages(conn, user.customer_id, conversation_id, 2 * pairs)
+            # #629: the last answer's documents the asker can still see (current, out of Trash).
+            last_cited = list(chat_sql.live_document_names(conn, user.customer_id, _cited(recent[:1])))
             earlier = chat_sql.openings(conn, user.customer_id, conversation_id)
             if chosen is None:
                 chosen = _saved_scope(recent)
@@ -509,6 +512,7 @@ def _ask(
                     pending=pending,
                     clarify=switched["nlq_clarify"],
                     cited=_cited(recent),
+                    last_cited=last_cited,
                 )
             )
             # KZ-006: an outage is never "not found": the reply says the AI is not responding

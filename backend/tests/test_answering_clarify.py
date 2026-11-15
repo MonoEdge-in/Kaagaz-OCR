@@ -1,6 +1,7 @@
 """PRD 6 B1: the plan's checks, the resolve tiers and the clarify turns, with fakes."""
 
 import logging
+import re
 from collections.abc import Sequence
 from typing import Any
 
@@ -8,10 +9,12 @@ import pytest
 
 from kaagaz.answering import draft, rewrite
 from kaagaz.answering.clarify import (
+    NO_PROPERTY,
     Entity,
     Entry,
     Kind,
     answers_clarify,
+    property_choice,
     distance,
     latin_key,
     outcome,
@@ -39,7 +42,8 @@ def plan(people: Sequence[str] = (), places: Sequence[str] = (), missing: Sequen
 
 
 def entry(kind: str, printed: str, aliased: bool = False) -> Entry:
-    return Entry(kind, latin_key(printed, kind), printed, ("d1",), aliased)
+    # Changed on purpose (#629): a property choice names its place, else its document.
+    return Entry(kind, latin_key(printed, kind), printed, ("d1",), aliased, doc_name="7-12.pdf")
 
 
 class FakeVocabulary:
@@ -268,7 +272,9 @@ def test_a_missing_subject_is_asked_unless_the_scope_narrows_it() -> None:
     properties = (entry("property", "Survey 45/2"), entry("property", "Gat 118"))
     which = asked(question, plan(missing=["property"]), *properties)
     assert which["clarify"]["question"] == "Which property do you mean?"
-    assert [c["label"] for c in which["clarify"]["choices"]] == ["Survey 45/2", "Gat 118", "Something else"]
+    # Changed on purpose (#629): a property choice names its document when it has no village.
+    labels = [c["label"] for c in which["clarify"]["choices"]]
+    assert labels == ["Survey 45/2, 7-12.pdf", "Gat 118, 7-12.pdf", "Something else"]
     pending = reply_to(which, ["c2"])
     assert pending is not None and pending.as_typed is None
 
@@ -279,7 +285,7 @@ def test_a_missing_subject_is_asked_unless_the_scope_narrows_it() -> None:
 def test_a_missing_subject_offers_the_chats_own_properties_first_newest_turn_first() -> None:  # PRD 6 B
     question = "What is the area?"
     gats = [entry("property", f"Gat {n}") for n in range(1, 8)]
-    survey, older = (Entry("property", latin_key(s, "property"), s, (d,)) for s, d in SURVEYS)
+    survey, older = (Entry("property", latin_key(s, "property"), s, (d,), doc_name=f"{d}.pdf") for s, d in SURVEYS)
     entries = [gats[0], survey, *gats[1:], older]  # the company's newest first: 12/1 past the cap
 
     def choices(*cited: str) -> tuple[list[str], FakeVocabulary]:
@@ -287,13 +293,15 @@ def test_a_missing_subject_offers_the_chats_own_properties_first_newest_turn_fir
         clarify = answers.answer(A, question, cited=cited).to_json()["clarify"]
         return [c["label"] for c in clarify["choices"]], vocabulary
 
+    # Changed on purpose (#629): at most five property choices, each naming its document.
+    gat = [f"Gat {n}, 7-12.pdf" for n in range(1, 5)]
     labels, vocabulary = choices()  # no earlier answer: as before
-    assert labels == ["Gat 1", "Survey 45/2", "Gat 2", "Gat 3", "Gat 4", "Gat 5", "Something else"]
+    assert labels == [gat[0], "Survey 45/2, d45.pdf", *gat[1:], "Something else"]
     assert (vocabulary.scoped, vocabulary.calls) == ([None], 1)
-    assert choices("d45")[0] == ["Survey 45/2", "Gat 1", "Gat 2", "Gat 3", "Gat 4", "Gat 5", "Something else"]
-    # The newest turn's first, each once, still six and "Something else".
+    assert choices("d45")[0] == ["Survey 45/2, d45.pdf", *gat, "Something else"]
+    # The newest turn's first, each once, still five and "Something else".
     labels, vocabulary = choices("d12", "d45", "d99")
-    assert labels == ["Survey 12/1", "Survey 45/2", "Gat 1", "Gat 2", "Gat 3", "Gat 4", "Something else"]
+    assert labels == ["Survey 12/1, d12.pdf", "Survey 45/2, d45.pdf", *gat[:3], "Something else"]
     assert vocabulary.scoped == [None, ("d12", "d45", "d99")]
 
 
@@ -365,3 +373,66 @@ def test_typed_words_answer_the_open_clarify_only_as_a_short_name() -> None:
         ("", False),
     ):
         assert answers_clarify(typed) is answers, typed
+
+
+# --- #629 (Tushar, 15 Nov 2026): property choices built by code -----------------------------
+
+
+def land(printed: str, document: str, *, village: str = "", taluka: str = "", name: str = "") -> Entry:
+    """A land record's survey number, its record's village and taluka, and its document."""
+    fields = {"field": "land_survey_number", "village": village, "taluka": taluka}
+    fields |= {"doc_type": "land_record", "doc_name": name}
+    return Entry("property", latin_key(printed, "property"), printed, (document,), **fields)
+
+
+# Production's shape: a date, a joined value and bare numbers, one of them twice (two scripts).
+SCREENSHOT = (
+    land("६१", "d1", village="Kusgaon", taluka="Maval"),
+    land("१३.०६.००", "d2", village="Kusgaon"),
+    land("६५/३, ८१, ८५/२", "d3", village="Kusgaon"),
+    land("८१", "d4", name="7-12 Kusgaon.pdf"),
+    land("61", "d5", village="Kusgaon", taluka="Maval"),
+    land("गट नंबर ८५/२", "d6", village="Kusgaon"),
+    land("Rs. 12,000.00", "d7", village="Kusgaon"),
+)
+
+
+def test_property_choices_name_their_kind_number_and_place_and_never_a_date_or_joined_numbers() -> None:
+    question = "Can you find me the measurement in any other document?"
+    which = asked(question, plan(missing=["property"]), *SCREENSHOT)
+
+    choices = which["clarify"]["choices"]
+    assert [c["label"] for c in choices] == [
+        "Survey ६१ (61), Kusgaon, Maval · Land record",  # ६१ and 61: one property, both documents
+        "Survey ८१ (81), 7-12 Kusgaon.pdf",
+        "Gat ८५/२ (85/2), Kusgaon · Land record",
+        "Something else",
+    ]
+    assert [c.get("document_ids") for c in choices] == [["d1", "d5"], ["d4"], ["d6"], None]
+    # The eval's expectation: every pick has a kind, a number and a place or document name.
+    for choice in choices[:-1]:
+        assert re.fullmatch(r"(Gat|Survey|Khata|Plot|CTS) \S*\d\S*( \([0-9/]+\))?, .+", choice["label"])
+    pending = reply_to(which, ["c1"])
+    assert pending is not None and pending.picked == ("६१",) and pending.documents == ("d1", "d5")
+
+
+@pytest.mark.parametrize(
+    "printed", ["१३.०६.००", "13/06/2000", "६५/३, ८१, ८५/२", "45/2 and 46", "₹ 12,000", "Rs 500.00", "Kusgaon"]
+)
+def test_a_date_money_joined_numbers_or_no_number_is_never_a_choice(printed: str) -> None:
+    assert property_choice(land(printed, "d1", village="Kusgaon")) is None
+    assert property_choice(land("45/2", "d1")) is None  # no village and no document name
+
+
+def test_one_good_property_asks_nothing_and_says_so() -> None:
+    question = "Can you find me the measurement in any other document?"
+    answer = asked(question, plan(missing=["property"]), *SCREENSHOT[1:4])  # 81 is the only good one
+    assert answer["status"] != "clarify" and NO_PROPERTY in answer["assumptions"]
+
+
+def test_this_after_an_answer_citing_one_document_asks_no_property() -> None:
+    question = "What is the measurement of this?"
+    answers = service(PlanModel(question, plan(missing=["property"])), *SCREENSHOT)[0]
+    assert answers.answer(A, question, last_cited=("d1",)).status != "clarify"
+    assert answers.answer(A, question, last_cited=("d1", "d4")).status == "clarify"  # two: which?
+    assert answers.answer(A, "What is the measurement?", last_cited=("d1",)).status == "clarify"

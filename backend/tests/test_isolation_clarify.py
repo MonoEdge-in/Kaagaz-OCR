@@ -11,6 +11,8 @@ from kaagaz.answering.rewrite import Plan
 from kaagaz.db.engine import Database
 from tests.db_support import insert_document, insert_key, new_customer
 
+NAME = "document.pdf"  # insert_document's name
+
 pytestmark = pytest.mark.db
 
 ASKED = [Entity("person", "Nikhil"), Entity("place", "Puny"), Entity("place", "Punewadi")]
@@ -83,7 +85,8 @@ def test_a_pick_moved_to_trash_since_is_dropped_when_it_is_answered(db: Database
 
 def test_a_missing_subject_offers_the_chats_cited_properties_of_its_own_company_only(db: Database) -> None:
     a, _ = company(db)  # PRD 6 B: the documents cited earlier, never another company's
-    b, b_document = company(db, ("property", "Survey 99/9"))
+    # Changed on purpose (#629): B has two properties, as one alone is no question.
+    b, b_document = company(db, ("property", "Survey 99/9"), ("property", "Survey 98/1"))
     with db.customer(a) as conn:
         old = insert_document(conn, a, created_at=datetime(2026, 1, 5, tzinfo=UTC))
         insert_key(conn, a, old, "property", "Survey 45/2")
@@ -97,11 +100,16 @@ def test_a_missing_subject_offers_the_chats_cited_properties_of_its_own_company_
         assert asked is not None
         return [(c["label"], c.get("document_ids", [])) for c in asked["choices"]]
 
-    gats = [(f"Gat {n}", [new]) for n in range(101, 106)]
+    # Changed on purpose (#629): at most five property choices, each naming its document.
+    gats = [(f"Gat {n}, {NAME}", [new]) for n in range(101, 106)]
     other: tuple[str, list[str]] = ("Something else", [])
-    assert choices(a) == [*gats, ("Gat 106", [new]), other]  # 45/2 is not among the newest
-    assert choices(a, b_document, old) == [("Survey 45/2", [old]), *gats, other]  # never B's 99/9
-    assert choices(b, old) == [("Survey 99/9", [b_document]), other]  # never A's 45/2
+    assert choices(a) == [*gats, other]  # 45/2 is not among the newest
+    assert choices(a, b_document, old) == [(f"Survey 45/2, {NAME}", [old]), *gats[:4], other]  # never B's
+    assert choices(b, old) == [  # never A's 45/2
+        (f"Survey 98/1, {NAME}", [b_document]),
+        (f"Survey 99/9, {NAME}", [b_document]),
+        other,
+    ]
 
 
 def test_any_keys_sees_one_companys_own_keys_only(db: Database) -> None:  # Ask speed, 24 Oct 2026
