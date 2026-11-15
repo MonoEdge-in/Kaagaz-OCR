@@ -10,8 +10,8 @@ the statement the app ran before, after checking the caller:
 * ``kaagaz_admin_trash_in_folders(folders, trash_id, now)``: every family filed in these folders to
   Trash with them (``trash._TRASH_IN_FOLDERS``); how many families. An Admin.
 * ``kaagaz_detach_trashed(folders)``: the files in Trash filed in these folders leave them
-  (``folders._DETACH_TRASHED``); how many. An Admin, or a person who sees every one of the folders
-  (a folder they delete).
+  (``folders._DETACH_TRASHED``); how many (to an Admin only: the count holds the hidden ones). An
+  Admin, or a person who sees every one of the folders (a folder they delete).
 * ``kaagaz_admin_move_folder_documents(from, to)``: every file directly in ``from``, Trash too,
   into ``to`` (``folders._MOVE_DOCUMENTS``, a folder deleted with ``keep``), after #594's keep
   gate read again (``folders._SAME_ACCESS``: refused, insufficient_privilege, when other people
@@ -33,7 +33,8 @@ the statement the app ran before, after checking the caller:
   forever. An Admin, or a person who sees the folder and nothing hidden inside it (0091's F6).
 * ``kaagaz_purge_family(family)``: one family deleted for good, every version, when every version
   is in Trash (else nothing); each version's id and folder, for the app to delete its stored files
-  in the same transaction and prune the folder. An Admin, or a person who sees the family.
+  in the same transaction and prune the folder. An Admin, or a person who sees every version of
+  the family (one they can't see is an Admin's to delete).
 * ``kaagaz_admin_move_documents(ids, folder)`` and ``kaagaz_admin_trash_documents(ids, now)``: the
   names list's Move and Send to Trash (PRD 7 section 3) for files the Admin can't see: whole
   families, live ones only; the folder a live one of this organisation, or the top level. An Admin.
@@ -269,17 +270,17 @@ FUNCTIONS = {
     {_HEAD}{_DECLARE}
         v_detached integer;
     BEGIN
-        {_A_PERSON}
+        {_A_PERSON}{_TREE_LOCK}
         IF NOT v_admin AND EXISTS (SELECT 1 FROM unnest(p_folders) AS p (id) WHERE NOT EXISTS (
             SELECT 1 FROM public.visible_folders v WHERE v.customer_id = v_customer AND v.id = p.id
         )) THEN
             RAISE EXCEPTION 'a folder the person can''t see' USING ERRCODE = 'insufficient_privilege';
-        END IF;{_TREE_LOCK}
+        END IF;
         UPDATE public.documents d SET folder_id = NULL, autofile = NULL
         FROM {_LOCKED.format(where="x.folder_id = ANY (p_folders) AND x.deleted_at IS NOT NULL")}
         WHERE d.customer_id = v_customer AND d.id = l.id AND d.deleted_at IS NOT NULL;
         GET DIAGNOSTICS v_detached = ROW_COUNT;
-        RETURN v_detached;
+        RETURN CASE WHEN v_admin THEN v_detached END;  -- how many, the hidden ones too: an Admin's only
     END
     $$
     """,
@@ -428,6 +429,12 @@ FUNCTIONS = {
                                 AND d.family_id = p_family AND d.deleted_at IS NULL) THEN
             RETURN;
         END IF;
+        IF NOT v_admin AND EXISTS (SELECT 1 FROM public.documents d WHERE d.customer_id = v_customer
+                                   AND d.family_id = p_family AND NOT EXISTS (
+                                       SELECT 1 FROM public.visible_documents v
+                                       WHERE v.customer_id = v_customer AND v.id = d.id)) THEN
+            RETURN;  -- a version the person can't see: an Admin's to delete
+        END IF;
         RETURN QUERY DELETE FROM public.documents d WHERE d.customer_id = v_customer AND d.family_id = p_family
         RETURNING d.id, d.folder_id;
     END
@@ -500,7 +507,7 @@ FUNCTION_COMMENTS = {
     "kaagaz_trash_families(uuid)": "The families a folder in Trash holds at every depth, for delete forever (#542)."
     " An Admin, or a person who sees it and nothing hidden inside it (PRD 7, #606); ids only.",
     "kaagaz_purge_family(uuid)": "One family deleted for good when every version is in Trash; each version's id and"
-    " folder, for its stored files. An Admin, or a person who sees the family (PRD 7, #606).",
+    " folder, for its stored files. An Admin, or a person who sees every version (PRD 7, #606).",
     "kaagaz_admin_move_documents(uuid[], uuid)": "The names list's Move (PRD 7 section 3): these files' live families"
     " into a live folder or the top level; each asked id, its family and the folder it was in." + _ADMIN,
     "kaagaz_admin_trash_documents(uuid[], timestamp with time zone)": "The names list's Send to Trash (PRD 7 section"

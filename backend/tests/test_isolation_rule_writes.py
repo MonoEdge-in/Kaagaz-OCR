@@ -22,9 +22,11 @@ import pytest
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import DBAPIError
 
+from kaagaz.db import trashed_folders as trashed_sql
 from kaagaz.db.engine import Database
+from kaagaz.db.folders import FolderNotFound
 from kaagaz.db.sqlstate import CHECK_VIOLATION, INSUFFICIENT_PRIVILEGE, sqlstate
-from tests.db_support import name_session, wait_until_blocked
+from tests.db_support import insert_document, insert_folder, name_session, rule_off, wait_until_blocked
 from tests.test_api_support import CSRF, Api
 from tests.test_isolation_access_views import Org, _app, _seen, _walled
 from tests.test_operator_auth_db import _owner
@@ -266,6 +268,66 @@ def test_each_function_holds_its_rule_without_the_routes_check(db: Database) -> 
     assert _documents(db, org.c) == before
 
 
+def test_a_person_deletes_forever_no_family_with_a_version_they_cant_see(db: Database) -> None:
+    """Finance's member sees version 1 of a family in Trash; version 2 is locked, hidden from them.
+    Their delete forever of that family deletes nothing (an Admin's would delete both)."""
+    org = _walled(Api(db))
+    first = org.files["fin"]
+    with db.customer(org.c) as conn:
+        second = insert_document(
+            conn, org.c, family_id=first, version_no=2, is_current=False, folder_id=org.folders["finance"]
+        )
+    _owner(
+        db,
+        "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d",
+        {"u": org.people["admin"].user_id, "d": second},
+    )
+    _owner(db, "UPDATE documents SET deleted_at = now() WHERE family_id = :f", {"f": first})
+    assert first in _seen(_app(db), org.c, org.people["member"].user_id)
+    assert _call(db, org, "member", "kaagaz_purge_family", a=first) == 0
+    assert _owner(db, "SELECT count(*) FROM documents WHERE family_id = :f", {"f": first}) == [(2,)]
+
+
+def test_a_restore_names_no_folder_the_person_cant_see(db: Database) -> None:
+    """Finance > Payroll > Inner (private, names ``named``, their file): Payroll goes to Trash, and
+    ``named`` restores Inner. The topmost row (Payroll, hidden from them) carries no name; the
+    asked one (Inner) its own."""
+    api = Api(db)
+    org = _walled(api)
+    named = org.people["named"]
+    with db.customer(org.c) as conn:
+        payroll = insert_folder(conn, org.c, named.user_id, "Payroll", org.folders["finance"])
+        inner = insert_folder(conn, org.c, named.user_id, "Inner", payroll)
+    _owner(db, "UPDATE folders SET private = true WHERE id = :f", {"f": inner})
+    _owner(
+        db,
+        "INSERT INTO private_folder_members (customer_id, folder_id, user_id, added_by)"
+        " VALUES (:c, :f, :u, :u)",
+        {"c": org.c, "f": inner, "u": named.user_id},
+    )
+    api.add_document(org.c, name="slip.pdf", folder_id=inner, uploaded_by=named.user_id)
+    _trash_folder(org, payroll)
+    with _as(db, org, "named") as conn:
+        rows = conn.execute(
+            text("SELECT id::text, name, is_top, is_asked FROM kaagaz_restore_folder(:f)"), {"f": inner}
+        )
+        found = sorted(tuple(row) for row in rows)
+    assert found == sorted([(payroll, None, True, False), (inner, "Inner", False, True)])
+
+
+def test_delete_forever_drops_no_trashed_folder_the_person_cant_see(db: Database) -> None:
+    """Its last step (drop_folder) reads again that the person sees the folder: with the rule off
+    (the views alone), the plain reviewer's drop of Finance in Trash, holding files hidden from
+    them, is a folder that isn't there, and Finance stays whole."""
+    org = _walled(Api(db))
+    _trash_folder(org, org.folders["finance"])
+    count = "SELECT count(*) FROM trashed_folders WHERE customer_id = :c"
+    before = _owner(db, count, {"c": org.c})
+    with rule_off(), pytest.raises(FolderNotFound), _app(db).user(org.c, org.people["plain"].user_id) as conn:
+        trashed_sql.drop_folder(conn, org.c, org.folders["finance"], files=0)
+    assert _owner(db, count, {"c": org.c}) == before
+
+
 def test_the_names_lists_move_and_send_to_trash_act_on_whole_live_families(db: Database) -> None:
     """The Admin moves fin (hidden from them) into Loose and sends sal (hidden too) to Trash; a
     family in Trash doesn't move; a folder in Trash, another organisation's or none is no place to
@@ -351,3 +413,72 @@ def test_each_write_waits_for_the_tree_lock(db: Database, function: str) -> None
             calling = pool.submit(call)
             wait_until_blocked(db, application_name=session)
         calling.result(timeout=10)
+
+
+# --- the restore's branches, written in SQL by 0092 (as trashed_folders._make_live was) ---------------
+
+
+def _tree_state(db: Database, customer: str) -> list[Any]:
+    return [
+        _owner(
+            db,
+            f"SELECT id, parent_id, name, autofile_key FROM {table} WHERE customer_id = :c ORDER BY 1",  # noqa: S608
+            {"c": customer},
+        )
+        for table in ("folders", "trashed_folders")
+    ] + [_documents(db, customer)]
+
+
+def test_a_restore_101_levels_deep_is_refused_and_changes_nothing(db: Database) -> None:
+    """Live folders 99 deep; X (with Y in it, holding a file) went to Trash from the deepest. Back,
+    X would be at 100 and Y at 101: both the folder's restore (its height, 2) and the file's with its
+    chain (X and Y, 2) are 409 folder_too_deep, and nothing changes."""
+    api = Api(db)
+    admin = api.new_admin()
+    c = admin.customer_id
+    parent = None
+    for level in range(99):
+        parent = api.add_folder(c, admin.user_id, f"L{level}", parent)
+    x = api.add_folder(c, admin.user_id, "X", parent)
+    y = api.add_folder(c, admin.user_id, "Y", x)
+    document = api.add_document(c, name="deep.pdf", folder_id=y, uploaded_by=admin.user_id)
+    assert admin.client.delete(f"/api/folders/{x}?contents=trash", headers=CSRF).status_code == 200
+    before = _tree_state(db, c)
+    for path in (f"/api/documents/trash/folders/{x}/restore", f"/api/documents/{document}/restore"):
+        reply = admin.client.post(path, headers=CSRF)
+        assert (reply.status_code, reply.json()["error"]["code"]) == (409, "folder_too_deep"), path
+        assert _tree_state(db, c) == before, path
+
+
+def test_a_restored_folder_whose_auto_filing_key_was_taken_comes_back_without_it(db: Database) -> None:
+    api = Api(db)
+    admin = api.new_admin()
+    c = admin.customer_id
+    folder = api.add_folder(c, admin.user_id, "Invoices")
+    _owner(db, "UPDATE folders SET autofile_key = 'type:invoice' WHERE id = :f", {"f": folder})
+    assert admin.client.delete(f"/api/folders/{folder}?contents=trash", headers=CSRF).status_code == 200
+    taker = api.add_folder(c, admin.user_id, "Invoices 2026")
+    _owner(db, "UPDATE folders SET autofile_key = 'type:invoice' WHERE id = :f", {"f": taker})
+    reply = admin.client.post(f"/api/documents/trash/folders/{folder}/restore", headers=CSRF)
+    assert reply.status_code == 200, reply.text
+    keys = _owner(
+        db,
+        "SELECT id::text, autofile_key FROM folders WHERE id IN (:f, :t) ORDER BY name",
+        {"f": folder, "t": taker},
+    )
+    assert keys == [(folder, None), (taker, "type:invoice")]
+
+
+def test_a_full_length_name_beside_a_clash_comes_back_cut_with_no_trailing_space(db: Database) -> None:
+    """A 100-character name whose 96th character is a space: beside a live folder of that name it
+    comes back as its first 95 characters and " (2)", as folders._numbered cuts it."""
+    api = Api(db)
+    admin = api.new_admin()
+    c = admin.customer_id
+    name = "a" * 95 + " " + "b" * 4
+    folder = api.add_folder(c, admin.user_id, name)
+    assert admin.client.delete(f"/api/folders/{folder}?contents=trash", headers=CSRF).status_code == 200
+    api.add_folder(c, admin.user_id, name)
+    reply = admin.client.post(f"/api/documents/trash/folders/{folder}/restore", headers=CSRF)
+    assert reply.status_code == 200, reply.text
+    assert (reply.json()["folder"]["name"], reply.json()["renamed"]) == ("a" * 95 + " (2)", True)

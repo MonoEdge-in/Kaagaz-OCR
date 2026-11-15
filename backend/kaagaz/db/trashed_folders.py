@@ -414,9 +414,14 @@ def families_in(conn: Connection, customer_id: str, folder_id: str) -> tuple[str
 
 def drop_folder(conn: Connection, customer_id: str, folder_id: str, *, files: int) -> Deleted:
     """Delete forever's last step, once its families are gone: the trashed folder and every one
-    of its delete inside it, under the tree lock. Raises FolderNotFound (gone meanwhile) or
-    FolderNotEmptied (a document still names one of them: none is deleted). Four statements."""
+    of its delete inside it, under the tree lock. Raises FolderNotFound (gone meanwhile, or no
+    longer one the person may see) or FolderNotEmptied (a document still names one of them: none
+    is deleted). Five statements."""
     _lock_tree(conn, customer_id)
+    # PRD 7 (#606): read again under the lock: "any file left" (kaagaz_hidden_inside) counts only a
+    # folder the person sees, so one they can't see must stop here, not read as empty.
+    if not exists(conn, customer_id, folder_id):
+        raise FolderNotFound()
     top = conn.execute(text(_TOP), {"c": customer_id, "f": folder_id}).first()
     if top is None:
         raise FolderNotFound()
