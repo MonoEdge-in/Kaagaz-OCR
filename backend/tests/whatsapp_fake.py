@@ -66,7 +66,7 @@ class Echo:
         return reply
 
     def notice(self, linked: Linked, message: Waiting) -> Outgoing | None:
-        return Outgoing(PLACEHOLDER)
+        return None  # W5: a notice is still being read; the queue's tests are about replies
 
 
 class WhatsAppFake:
@@ -79,6 +79,7 @@ class WhatsAppFake:
         self.media: dict[str, bytes] = {}  # W5: media id: the file's bytes
         self.sizes: dict[str, int] = {}  # a size Meta says instead of the real one
         self.gone: set[str] = set()
+        self.broken: set[str] = set()  # media ids Meta answers 500 for (down for a moment)
         self.media_seconds = 300.0
         self.addresses: dict[str, tuple[str, float]] = {}  # token: (media id, until)
         self.fetched: list[str] = []
@@ -148,6 +149,9 @@ def _handler(fake: WhatsAppFake) -> type[BaseHTTPRequestHandler]:
                 self._reply(401, b'{"error": {"code": 190}}')
                 return
             name = self.path.rsplit("/", 1)[-1]
+            if name in fake.broken:
+                self._reply(500, b'{"error": {"code": 2}}')
+                return
             with fake.lock:
                 if self.path.startswith("/media/"):
                     media_id, until = fake.addresses.get(name, ("", 0.0))

@@ -4,7 +4,7 @@ address that is not Meta's kind, the typing indicator), a document's file name k
 a tap, and every new fixed word within WhatsApp's limits."""
 
 import io
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pypdfium2 as pdfium
 import pytest
@@ -13,7 +13,7 @@ from PIL import Image
 from kaagaz.adapters.whatsapp import MetaWhatsApp, WhatsAppError
 from kaagaz.channel.chat import BUTTON_CHARS, ROW_CHARS
 from kaagaz.channel.inbound import messages
-from kaagaz.channel.loop import _language_of
+from kaagaz.channel.loop import _language_of, notice_rest
 from kaagaz.channel.photos import A4_SHORT_POINTS, PhotosPdf, jpeg_size
 from kaagaz.channel.texts import LANGUAGES, TEXTS, say
 from kaagaz.db.whatsapp import Waiting
@@ -112,6 +112,9 @@ def test_only_an_address_of_meta_s_kind_is_read() -> None:
         "https://lookaside.fbsbx.com/x#part",
         "file:///etc/passwd",
         "ftp://x/y",
+        "https://evil.example/x",  # any other host: the access token never goes there
+        "https://lookaside.fbsbx.com.evil.example/x",
+        "https://notfbsbx.com/x",
     ):
         assert not meta._meta_address(refused), refused
     with pytest.raises(WhatsAppError), meta.download("http://lookaside.fbsbx.com/x"):
@@ -119,6 +122,23 @@ def test_only_an_address_of_meta_s_kind_is_read() -> None:
     assert MetaWhatsApp("http://127.0.0.1:9/v0.0", NUMBER_ID, TOKEN)._meta_address(
         "http://127.0.0.1:9/media/x"
     )
+
+
+def test_a_media_address_on_the_graph_apis_own_host_or_metas_is_read() -> None:
+    meta = MetaWhatsApp("https://graph.facebook.com/v21.0", NUMBER_ID, TOKEN)
+    for allowed in (
+        "https://graph.facebook.com/media/1",
+        "https://lookaside.fbsbx.com/whatsapp_business/attachments/?mid=1",
+        "https://scontent.whatsapp.facebook.com/x",
+    ):
+        assert meta._meta_address(allowed), allowed
+    loopback = MetaWhatsApp("http://127.0.0.1:9/v0.0", NUMBER_ID, TOKEN)
+    assert not loopback._meta_address("http://127.0.0.2:9/media/x")  # another loopback host: no
+
+
+@pytest.mark.parametrize(("age", "rest"), [(0, 3), (20, 5), (100, 13), (3600, 60), (-5, 3)])
+def test_a_notice_rests_longer_as_it_ages_to_a_minute(age: int, rest: int) -> None:
+    assert notice_rest(timedelta(seconds=age)) == rest
 
 
 def test_the_typing_indicator_marks_the_message_read_and_is_no_message() -> None:

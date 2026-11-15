@@ -17,6 +17,8 @@ in its own CTE before it orders, pages or counts (never after).
   ``park_notice`` and ``unpark_notices``: a notice past WhatsApp's 24 hours since the person's
   newest message is put aside (``expired``, its document and language kept) until their next one.
 * ``recent`` and ``add_recent``: the connection's last 3 folders saved into, newest first.
+* ``locked``: which copies the person sees are locked, in Trash or not. ``batch_notices``: the
+  waiting notices of one batch, for one "ready" message.
 
 Each is one statement; the folder ones O(F) for the F folders the person sees (``visible_folders``
 is read once, as the browser's tree reads it).
@@ -84,6 +86,22 @@ _KEPT = text(
 _AWAIT_NOTICE = text(
     "UPDATE whatsapp_messages SET state = 'waiting', document_id = :d, body = :lang, tries = 0"
     " WHERE customer_id = :c AND id = :m"
+)
+# A copy the person sees that is locked, in Trash or not (a locked copy is never named on WhatsApp).
+_LOCKED = text(
+    "SELECT id FROM visible_documents WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
+    " AND locked_at IS NOT NULL"
+)
+# The waiting notices of this connection whose files are in the batch of :d, each a file the person
+# may still see on WhatsApp (seen, out of Trash, not locked), filtered before anything is read.
+_BATCH_NOTICES = text(
+    "WITH mine AS (SELECT b.batch_id FROM visible_documents b WHERE b.customer_id = :c AND b.id = :d)"
+    " SELECT m.id, d.id AS document_id, d.status, d.display_name, d.folder_id FROM whatsapp_messages m"
+    " JOIN visible_documents d ON d.customer_id = m.customer_id AND d.id = m.document_id"
+    " WHERE m.customer_id = :c AND m.link_id = :l AND m.state = 'waiting'"
+    " AND d.deleted_at IS NULL AND d.locked_at IS NULL"
+    " AND (d.id = :d OR d.batch_id = (SELECT batch_id FROM mine))"
+    " ORDER BY m.sent_at, m.received_at, m.id LIMIT :n"
 )
 # A notice past WhatsApp's 24 hours waits ("expired", keeping its document and language) for the
 # person's next message, which puts it back in line; the window is the person's newest message's.
@@ -166,6 +184,32 @@ def files_kept(conn: Connection, customer_id: str, user_id: str) -> int:
 def await_notice(conn: Connection, customer_id: str, message_id: str, document_id: str, lang: str) -> None:
     params = {"c": customer_id, "m": message_id, "d": document_id, "lang": lang}
     conn.execute(_AWAIT_NOTICE, params)
+
+
+@dataclass(frozen=True, slots=True)
+class Notice:
+    """A waiting "ready" notice: its message, and its file as the person sees it."""
+
+    message_id: str
+    document_id: str
+    status: str
+    name: str
+    folder_id: str | None
+
+
+def locked(conn: Connection, customer_id: str, document_ids: Sequence[str]) -> set[str]:
+    rows = conn.execute(_LOCKED, {"c": customer_id, "ids": sorted(set(document_ids))})
+    return {str(row[0]) for row in rows}
+
+
+def batch_notices(conn: Connection, customer_id: str, link_id: str, document_id: str) -> list[Notice]:
+    """The waiting notices of ``document_id``'s batch on this connection (it among them, while the
+    person may see it on WhatsApp), oldest first; at most RUN_MOST."""
+    params = {"c": customer_id, "l": link_id, "d": document_id, "n": RUN_MOST}
+    return [
+        Notice(str(r[0]), str(r[1]), str(r[2]), str(r[3]), None if r[4] is None else str(r[4]))
+        for r in conn.execute(_BATCH_NOTICES, params)
+    ]
 
 
 def last_sent(conn: Connection, customer_id: str, link_id: str) -> datetime | None:

@@ -23,13 +23,16 @@ other process off it) and goes through its waiting messages oldest first, by Wha
    ``whatsapp.file_link`` is audited with the message's "done", and Ask's memory is written.
 6. (W5) While the reply is made, WhatsApp shows the person's message read with its typing
    indicator; a reply not made within SLOW_SECONDS sends LOOKING first ("Looking through your
-   files…", always before the reply). Files (a photo or a document) the person sends one after
-   another are answered together: their first waits until QUIET_SECONDS have passed since the
+   files…", always before the reply, once a message, never for an upload's tap). While a reply is
+   made, ``keep_lease`` renews the lease (an upload's save, between its files). Files (a photo or
+   a document) the person sends one after another are answered together: their first waits until
+   QUIET_SECONDS have passed since the
    newest of them by WhatsApp's time (or another kind of message came after them), resting the
    connection meanwhile; the reply then finishes them all (``Outgoing.finished``).
 7. (W5) A saved file's message waits again for its "ready" notice (``document_id``), behind every
    message the person sent (``wa.next_message``): ``Chat.notice`` while the file is being read
-   rests the connection NOTICE_SECONDS (no try counted); once read it goes as any reply, checked
+   rests the connection (``notice_rest``: NOTICE_SECONDS, longer as it ages, up to a minute; no
+   try counted); once read it goes as any reply, checked
    again just before; a file hidden since sends nothing. A notice past 24 hours since the person's
    newest message is put aside (``expired``) and goes after their next message.
 
@@ -48,6 +51,7 @@ import logging
 import math
 import threading
 from collections.abc import Callable, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Protocol
@@ -89,10 +93,31 @@ _AUTH = frozenset({401, 403})
 MAX_MADE = 1000  # replies held to send again (each one message's, a few KB)
 SLOW_SECONDS = 8.0  # W5: a reply not made by then sends "Looking through your files…" first
 QUIET_SECONDS = 15  # W5: files sent one after another are answered once none came for this long
-# W5: how often a saved file is looked at while Kaagaz reads it. shortcut: the rest holds the whole
-# connection, so a message sent meanwhile waits up to this long; a notice time of its own on
-# whatsapp_messages (a migration) would let the claim skip it.
+# W5: how often a saved file is looked at while Kaagaz reads it (``notice_rest``). shortcut: the rest
+# holds the whole connection, so a message sent meanwhile waits up to that rest (a minute at most);
+# a notice time of its own on whatsapp_messages (a migration) would let the claim skip it.
 NOTICE_SECONDS = 3
+NOTICE_MOST_SECONDS = 60  # the rest grows with the notice's age: 3 s, then 1 s more every 10 s
+# W5: the renewal of the lease of the connection this thread answers (set by ``Channel.handle``).
+_KEEP: ContextVar[Callable[[], None] | None] = ContextVar("whatsapp_keep_lease", default=None)
+
+
+class LeaseLost(Exception):
+    """The lease ran out and another process holds the connection now."""
+
+
+def keep_lease() -> None:
+    """W5: renew the lease of the connection being answered (a long save, between its files);
+    LeaseLost when another process holds it now. Nothing outside ``Channel.handle``."""
+    keep = _KEEP.get()
+    if keep is not None:
+        keep()
+
+
+def notice_rest(age: timedelta) -> int:
+    """W5: the seconds a notice rests while its file is read: NOTICE_SECONDS, then 1 more for every
+    10 seconds of its age, at most NOTICE_MOST_SECONDS."""
+    return min(NOTICE_MOST_SECONDS, NOTICE_SECONDS + max(0, int(age.total_seconds())) // 10)
 
 
 class Sender(Protocol):
@@ -123,6 +148,8 @@ class Channel:
     # W4: the replies made and not yet sent, by (customer, person, message): kept until sent or failed.
     made: dict[tuple[str, str, str], Outgoing] = field(default_factory=dict)
     slow_seconds: float = SLOW_SECONDS
+    # W5: the messages LOOKING went for already (in order, MAX_MADE at most), so a retry never repeats it.
+    looked: dict[tuple[str, str, str], None] = field(default_factory=dict)
 
     def claim(self, limit: int) -> list[Claim]:
         """Up to ``limit`` connections, leased; BackendUnavailable when the database is lost."""
@@ -135,27 +162,40 @@ class Channel:
 
     def handle(self, claim: Claim) -> None:
         """Every waiting message of one claimed connection, in order; then its lease is freed, or kept
-        a while for a reply to try again. An error keeps the lease (see the module notes)."""
-        linked, until = claim.linked, claim.until
-        wait = 0
-        while not wait:
+        a while for a reply to try again. An error keeps the lease (see the module notes). W5: while
+        a reply is made, ``keep_lease`` renews it (a long save between its files)."""
+        linked, lease = claim.linked, [claim.until]
+
+        def keep() -> None:
             with self.db.user(linked.customer_id, linked.user_id) as conn:
-                renewed = wa.renew(conn, linked, until, LEASE_SECONDS)
-                if renewed is None:  # it ran out and another process holds it now
+                renewed = wa.renew(conn, linked, lease[0], LEASE_SECONDS)
+            if renewed is None:  # it ran out and another process holds it now: stop here
+                raise LeaseLost
+            lease[0] = renewed
+
+        wait = 0
+        held = _KEEP.set(keep)
+        try:
+            while not wait:
+                try:
+                    keep()
+                except LeaseLost:
                     return
-                until = renewed
-                message = wa.next_message(conn, linked)
-                check = None if message is None else wa.check(conn, linked)
-            if message is None or check is None:
-                break
-            try:
-                wait = self._answer(linked, message, check)
-            except Exception as error:
-                if self._not_sent(linked, message, type(error).__name__, most=MAX_TRIES) is None:
-                    self.made.pop(_key(linked, message), None)
-                raise
+                with self.db.user(linked.customer_id, linked.user_id) as conn:
+                    message = wa.next_message(conn, linked)
+                    check = None if message is None else wa.check(conn, linked)
+                if message is None or check is None:
+                    break
+                try:
+                    wait = self._answer(linked, message, check)
+                except Exception as error:
+                    if self._not_sent(linked, message, type(error).__name__, most=MAX_TRIES) is None:
+                        self.made.pop(_key(linked, message), None)
+                    raise
+        finally:
+            _KEEP.reset(held)
         with self.db.user(linked.customer_id, linked.user_id) as conn:
-            wa.release(conn, linked, until, wait)
+            wa.release(conn, linked, lease[0], wait)
 
     def _answer(self, linked: Linked, message: Waiting, check: Check) -> int:
         """One message handled: 0, or the seconds to rest before its reply is tried again."""
@@ -179,7 +219,9 @@ class Channel:
             return self._finish(linked, message, "failed", replied=False)
         if check.refused is not None:
             return self._refused(linked, message, number, check.refused)
-        word = (message.body or "").strip().casefold()
+        # W5: a word typed or tapped only; never a document's file name, nor a notice's language.
+        typed = message.kind in ("text", "interactive", "button") and message.document_id is None
+        word = (message.body or "").strip().casefold() if typed else ""
         ending = (
             "person"
             if word in (STOP, DISCONNECT_YES)
@@ -202,14 +244,14 @@ class Channel:
             if made is None:
                 if message.document_id is not None:  # W5: a saved file's notice
                     notice = self.chat.notice(linked, message)
-                    if notice is None:  # still being read
-                        return NOTICE_SECONDS
+                    if notice is None:  # still being read: a longer rest the older it is
+                        return notice_rest(self.clock() - message.sent_at)
                     made = notice
                 else:
                     rest = self._quiet(linked, message)
                     if rest:  # W5: more files may still come
                         return rest
-                    made = self._made(number, message, lambda: self.chat.reply(linked, message))
+                    made = self._made(number, linked, message, lambda: self.chat.reply(linked, message))
                 if len(self.made) >= MAX_MADE:  # never more than this held: the oldest goes
                     self.made.pop(next(iter(self.made)))
                 self.made[key] = made
@@ -227,6 +269,7 @@ class Channel:
         error = self._send(lambda: self._deliver(number, reply))
         if error is None:
             self.made.pop(key, None)
+            self.looked.pop(key, None)
             self._finish(linked, message, "done", replied=True, link=reply.link, also=reply.finished)
             for later in reply.later:  # Ask's memory, once the reply was sent
                 try:
@@ -254,16 +297,23 @@ class Channel:
         left = (max(each.sent_at for each in files) + timedelta(seconds=QUIET_SECONDS)) - self.clock()
         return max(0, math.ceil(left.total_seconds()))
 
-    def _made(self, number: str, message: Waiting, make: Callable[[], Outgoing]) -> Outgoing:
+    def _made(self, number: str, linked: Linked, message: Waiting, make: Callable[[], Outgoing]) -> Outgoing:
         """W5: ``make()`` while WhatsApp shows the message read and the typing indicator; a reply
-        not made within ``slow_seconds`` sends LOOKING first. The lock keeps LOOKING before the
+        not made within ``slow_seconds`` sends LOOKING first, at most once a message (``looked``,
+        across its tries), never for an upload's tap (``up:``). The lock keeps LOOKING before the
         reply: once the reply is made, LOOKING never goes."""
         self._send(lambda: self.sender.typing(message.wamid))
+        key = _key(linked, message)
+        if key in self.looked or (message.body or "").startswith("up:"):
+            return make()
         made, lock = threading.Event(), threading.Lock()
 
         def slow() -> None:
             with lock:
                 if not made.is_set():
+                    if len(self.looked) >= MAX_MADE:  # never more than this held: the oldest goes
+                        self.looked.pop(next(iter(self.looked)))
+                    self.looked[key] = None
                     self._send(lambda: self.sender.send_text(number, say("looking", _language_of(message))))
 
         timer = threading.Timer(self.slow_seconds, slow)

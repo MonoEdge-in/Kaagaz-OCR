@@ -92,6 +92,11 @@ class PhotosPdf:
     def pages(self) -> int:
         return len(self._pages)
 
+    @property
+    def size(self) -> int:
+        """The bytes written so far."""
+        return self._written
+
     def close(self) -> None:
         kids = " ".join(f"{page} 0 R" for page in self._pages)
         self._object(2, f"<< /Type /Pages /Kids [{kids}] /Count {len(self._pages)} >>".encode("ascii"))

@@ -55,6 +55,9 @@ WELCOME_BODY = (
     " to Kaagaz. You only get files you can already see in Kaagaz."
 )
 WELCOME_BUTTONS = ("Start", "Not me \u2013 disconnect")  # 20 characters at most each
+# W5: the hosts a media address may be on besides the Graph API's own (Meta's media is served from
+# lookaside.fbsbx.com; confirm against a real payload before release).
+MEDIA_HOSTS = (".fbsbx.com", ".facebook.com")
 _PARAMETER_CHARS = 60  # a name in a template, on one line (Meta refuses new lines in a parameter)
 
 
@@ -179,13 +182,16 @@ class MetaWhatsApp:
             yield reply
 
     def _meta_address(self, url: str) -> bool:
-        """https, or http only while WHATSAPP_GRAPH_URL is http (Settings: loopback only); never a
-        user, password or fragment."""
+        """https, or http only while WHATSAPP_GRAPH_URL is http (Settings: loopback only); on the
+        Graph API's own host or one of Meta's (MEDIA_HOSTS), so the access token never goes
+        elsewhere; never a user, password or fragment."""
         parts = urllib.parse.urlsplit(url)
         allowed = {"https"} | ({"http"} if self._graph.startswith("http://") else set())
+        host = (parts.hostname or "").lower()
         return (
             parts.scheme in allowed
-            and bool(parts.hostname)
+            and bool(host)
+            and (host == urllib.parse.urlsplit(self._graph).hostname or host.endswith(MEDIA_HOSTS))
             and parts.username is None
             and parts.password is None
             and not parts.fragment

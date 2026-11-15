@@ -243,6 +243,28 @@ TEXTS: dict[str, tuple[str, str, str]] = {
         '"{}" सेव हो गई। पढ़ने के बाद Kaagaz इसे फ़ाइल कर देगा।',
         '"{}" सेव्ह झाली. वाचल्यानंतर Kaagaz ती फाइल करेल.',
     ),
+    "saved_many": ("Saved {} files in {}.", "{} फ़ाइलें {} में सेव कीं।", "{} फाइल्स {} मध्ये सेव्ह केल्या."),
+    "saved_many_unfiled": (
+        "Saved {} files. Kaagaz will file them once it has read them.",
+        "{} फ़ाइलें सेव हो गईं। पढ़ने के बाद Kaagaz इन्हें फ़ाइल कर देगा।",
+        "{} फाइल्स सेव्ह झाल्या. वाचल्यानंतर Kaagaz त्या फाइल करेल.",
+    ),
+    "fetch_failed": (
+        "WhatsApp didn't send the rest of the files just now. Tap Save the rest to try again.",
+        "WhatsApp ने अभी बाकी फ़ाइलें नहीं भेजीं। फिर से कोशिश करने के लिए बाकी सेव करें दबाएँ।",
+        "WhatsApp ने आत्ता बाकीच्या फाइल्स पाठवल्या नाहीत. पुन्हा प्रयत्न करण्यासाठी बाकीच्या सेव्ह करा दाबा.",
+    ),
+    "save_rest_button": ("Save the rest", "बाकी सेव करें", "बाकीच्या सेव्ह करा"),
+    "ready_many": (
+        "Ready. {} files are filed in {}. You can ask me about them now.",
+        "तैयार। {} फ़ाइलें {} में फ़ाइल हैं। अब आप इनके बारे में मुझसे पूछ सकते हैं।",
+        "तयार. {} फाइल्स {} मध्ये फाइल केल्या आहेत. आता तुम्ही मला त्यांच्याबद्दल विचारू शकता.",
+    ),
+    "ready_many_kaagaz": (
+        "Ready. {} files are in Kaagaz. You can ask me about them now.",
+        "तैयार। {} फ़ाइलें Kaagaz में हैं। अब आप इनके बारे में मुझसे पूछ सकते हैं।",
+        "तयार. {} फाइल्स Kaagaz मध्ये आहेत. आता तुम्ही मला त्यांच्याबद्दल विचारू शकता.",
+    ),
     "saved_kaagaz": ('Saved "{}" in Kaagaz.', '"{}" को Kaagaz में सेव किया।', '"{}" Kaagaz मध्ये सेव्ह केली.'),
     "already": ('Already in Kaagaz: "{}".', 'Kaagaz में पहले से है: "{}"।', 'Kaagaz मध्ये आधीच आहे: "{}".'),
     "already_trash": (

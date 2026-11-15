@@ -253,7 +253,7 @@ def test_a_batch_whose_folder_is_hidden_partway_stops(
     walled.tap("named", walled.row("named", "Salaries"))
     monkeypatch.setattr(documents_router, "store_upload", hidden_after_the_first)
     body, _ = walled.tap("named", walled.replies("named")[-1][1][0])
-    assert body.startswith(say("saved", "en", "one.pdf", "Salaries")) and GONE in body
+    assert body.startswith(GONE) and say("saved", "en", "one.pdf", "Salaries") in body
     assert walled.saved("named") == [("one.pdf", walled.org.folders["salaries"])]
     walled.tap("named", walled.row("named", "Loose"))
     walled.tap("named", walled.replies("named")[-1][1][0])

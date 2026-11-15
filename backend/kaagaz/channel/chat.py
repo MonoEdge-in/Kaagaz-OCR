@@ -175,7 +175,7 @@ class Chat:
 
     def notice(self, linked: Linked, message: Waiting) -> Outgoing | None:
         """W5: the "ready" notice of the file ``message`` saved (``Upload.notice``)."""
-        return self.upload.notice(self._user(linked), message)
+        return self.upload.notice(self._user(linked), linked, message)
 
     def recheck(self, linked: Linked, reply: Outgoing) -> Outgoing:
         """``reply`` as it may go now: NOT_FOUND once a document it names is hidden, locked or

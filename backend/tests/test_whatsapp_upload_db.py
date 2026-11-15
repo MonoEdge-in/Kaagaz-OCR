@@ -36,6 +36,7 @@ from kaagaz.channel.texts import say
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database
 from kaagaz.db.whatsapp import Linked, Waiting
+from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.worker import JobFailed
 from kaagaz.scanning.gate import ScanGate, Verdict
@@ -223,7 +224,7 @@ def test_the_menu_has_ask_upload_and_get_and_more_and_help_are_typed(world: Worl
     assert world.say(person, "आणखी")[1] == ["menu.en", "menu.hi", "menu.mr", "help.mr", "disconnect"]
     assert world.say(person, "help") == (say("help", "en", APP_URL), ["another.en", "menu.en"])
     assert world.say(person, "मदद")[0] == say("help", "hi", APP_URL)
-    assert world.api.answers.asked == []  # none of them is a question
+    assert [q for c, q in world.api.answers.asked if c == person.c] == []  # none of them is a question
 
 
 def test_the_typing_indicator_shows_while_a_reply_is_made(world: World) -> None:
@@ -391,7 +392,7 @@ def test_a_folder_name_typed_lists_those_named_so(world: World) -> None:
     assert [t for t, _ in titles(world, person)] == ["Electricity bills", "Phone bills", "Type a folder name"]
     world.tap(person, row_named(world, person, "Type a folder name"))
     assert world.say(person, "receipts")[0] == say("no_folder_named", "en")
-    assert world.api.answers.asked == []  # a folder's name, never a question
+    assert [q for c, q in world.api.answers.asked if c == person.c] == []  # a folder's name, not a question
 
 
 def test_back_goes_to_the_list_the_folder_was_picked_from(world: World) -> None:
@@ -447,7 +448,7 @@ def test_files_sent_one_after_another_wait_and_are_answered_together(world: Worl
     saved = world.documents(person)
     assert [d["name"] for d in saved] == ["one.pdf", "two.pdf", "three.pdf"]
     assert len({d["batch"] for d in saved}) == 1 and {d["folder"] for d in saved} == {saved[0]["folder"]}
-    assert reply[0].count("Saved ") == 3
+    assert reply[0].startswith(say("saved_many", "en", 3, "Bills"))  # summed up, one line
 
 
 def test_a_message_of_another_kind_ends_the_files_wait(world: World) -> None:
@@ -712,6 +713,22 @@ def test_a_copy_in_trash_is_named_and_a_locked_copy_never_is(world: World) -> No
     world.file(person, pdf("locked"), "b.pdf")
     reply = save_into(world, person, "Bills")
     assert reply[0] == say("locked_copy", "en") and "secret" not in str(reply) and locked not in str(reply)
+    # Locked and in Trash: still the locked words, never its name (locked is asked first).
+    both = _browser_copy(world, person, pdf("locked trash"), "hush.pdf")
+    _owner(
+        world.db,
+        "UPDATE documents SET locked_at = now(), locked_by = uploaded_by, deleted_at = now(),"
+        " deleted_by = uploaded_by WHERE id = :d",
+        {"d": both},
+    )
+    _owner(
+        world.db,
+        "INSERT INTO lock_grants (customer_id, document_id, user_id, given_by) VALUES (:c, :d, :u, :u)",
+        {"c": person.c, "d": both, "u": person.u},
+    )
+    world.file(person, pdf("locked trash"), "c.pdf")
+    reply = save_into(world, person, "Bills")
+    assert reply[0] == say("locked_copy", "en") and "hush" not in str(reply) and both not in str(reply)
 
 
 # --- notices -----------------------------------------------------------------------------------------
@@ -868,3 +885,266 @@ def test_the_waiting_files_are_the_persons_own_row(world: World) -> None:
     other = world.person(person.c)
     with world.api.app_db.user(person.c, other.u) as conn:  # own_user_only: another person reads none of it
         assert conn.execute(text("SELECT count(*) FROM whatsapp_pickers")).scalar_one() == 0
+
+
+# --- the reviews (principal and second) ----------------------------------------------------------
+
+
+def _buttons(world: World, person: Person) -> list[str]:
+    return list(world.replies(person)[-1][1])
+
+
+def test_an_old_save_card_from_an_earlier_upload_saves_nothing(world: World) -> None:
+    person = world.person()
+    world.folder(person, "Old")
+    world.folder(person, "New")
+    world.file(person, pdf("a"), "a.pdf")
+    world.tap(person, "up:choose::en")
+    world.tap(person, row_named(world, person, "Old"))
+    old_save = _buttons(world, person)[0]
+    world.tap(person, old_save)  # a.pdf saved in Old
+    world.file(person, pdf("b"), "b.pdf")  # today's upload, its own list and buttons
+    world.tap(person, "up:choose::en")
+    world.tap(person, row_named(world, person, "New"))
+    assert world.tap(person, old_save)[0].startswith(say("list_changed", "en"))
+    assert [d["name"] for d in world.documents(person)] == ["a.pdf"]
+
+
+def test_the_waiting_list_is_capped(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(upload_module, "MAX_FILES_AN_HOUR", 2)
+    person = world.person()
+    world.file(person, pdf("1"))
+    world.file(person, pdf("2"))
+    # Out of the hour's count, still waiting: the list itself is the limit too.
+    _owner(
+        world.db,
+        "UPDATE whatsapp_messages SET received_at = now() - interval '2 hours' WHERE user_id = :u",
+        {"u": person.u},
+    )
+    assert world.file(person, pdf("3")) == say("too_many_files", "en")
+
+
+def test_a_long_save_renews_the_lease_between_files(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    person = world.person()
+    world.folder(person, "Bills")
+    leases: list[Any] = []
+    real = upload_module.documents.store_upload
+
+    def watched(*args: Any, **kwargs: Any) -> Any:
+        found = _owner(world.db, "SELECT busy_until FROM whatsapp_links WHERE id = :l", {"l": person.link})
+        leases.append(found[0][0])
+        time.sleep(0.05)
+        return real(*args, **kwargs)
+
+    sent = world.api.clock() - timedelta(seconds=20)
+    items = [
+        file_message(person.number, sent, world.fake.add_media(pdf(f"lease {n}")), filename=f"{n}.pdf")
+        for n in range(3)
+    ]
+    world.send(person, *items)
+    monkeypatch.setattr(upload_module.documents, "store_upload", watched)
+    save_into(world, person, "Bills")
+    assert len(leases) == 3 and leases[0] < leases[1] < leases[2]
+
+
+@pytest.mark.parametrize("down", ["meta", "storage"])
+def test_a_batch_that_breaks_partway_keeps_what_was_saved_and_the_rest_waits(
+    world: World, monkeypatch: pytest.MonkeyPatch, down: str
+) -> None:
+    person = world.person()
+    world.folder(person, "Bills")
+    sent = world.api.clock() - timedelta(seconds=20)
+    second = world.fake.add_media(pdf(f"second {down}"))
+    items = [
+        file_message(person.number, sent, world.fake.add_media(pdf(f"first {down}")), filename="one.pdf"),
+        file_message(person.number, sent, second, filename="two.pdf"),
+    ]
+    world.send(person, *items)
+    real = upload_module.documents.store_upload
+    if down == "meta":
+        world.fake.broken.add(second)
+    else:
+        calls: list[int] = []
+
+        def full(*args: Any, **kwargs: Any) -> Any:
+            calls.append(1)
+            if len(calls) == 2:
+                raise BackendUnavailable("storage")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(upload_module.documents, "store_upload", full)
+    body, buttons = save_into(world, person, "Bills")
+    (saved,) = world.documents(person)
+    assert body.startswith(say("fetch_failed", "en")) and say("saved", "en", "one.pdf", "Bills") in body
+    assert buttons[0].startswith("up:save:") and buttons[1] == "menu.en"
+    noticed = _owner(
+        world.db, "SELECT count(*) FROM whatsapp_messages WHERE document_id = :d", {"d": saved["id"]}
+    )
+    recent = _owner(
+        world.db, "SELECT recent_folder_ids FROM whatsapp_links WHERE id = :l", {"l": person.link}
+    )
+    assert noticed == [(1,)] and [str(f) for f in recent[0][0]] == [saved["folder"]]
+    world.fake.broken.clear()
+    monkeypatch.setattr(upload_module.documents, "store_upload", real)
+    world.tap(person, buttons[0])  # Save the rest
+    assert [d["name"] for d in world.documents(person)] == ["one.pdf", "two.pdf"]
+
+
+def test_a_long_batch_names_every_refusal_first_and_sums_up_the_saved(world: World) -> None:
+    person = world.person()
+    world.folder(person, "Bills")
+    sent = world.api.clock() - timedelta(seconds=20)
+    items = [
+        file_message(
+            person.number, sent, world.fake.add_media(b"MZ" + bytes(300)), filename=f"{'x' * 60} {n}.exe"
+        )
+        for n in range(12)
+    ]
+    items += [
+        file_message(person.number, sent, world.fake.add_media(pdf(f"ok {n}")), filename=f"ok{n}.pdf")
+        for n in range(3)
+    ]
+    world.send(person, *items)
+    body, _ = save_into(world, person, "Bills")
+    assert len(body) <= 1024 and "…" in body
+    assert body.startswith(say("wrong_type", "en", f"{'x' * 60} 0.exe"))
+    assert body.endswith(say("saved_many", "en", 3, "Bills"))  # never cut off
+
+
+def test_a_file_handled_again_is_not_added_twice(world: World) -> None:
+    person = world.person()
+    world.file(person, pdf("once"), "once.pdf")
+    # A restart before its reply was done: the message waits again and is handled again.
+    _owner(
+        world.db,
+        "UPDATE whatsapp_messages SET state = 'waiting', body = 'once.pdf'"
+        " WHERE user_id = :u AND kind = 'document'",
+        {"u": person.u},
+    )
+    world.channel.made.clear()
+    world.free(person)
+    world.run()
+    with world.api.app_db.user(person.c, person.u) as conn:
+        state = conn.execute(
+            text("SELECT state FROM whatsapp_pickers WHERE user_id = :u"), {"u": person.u}
+        ).scalar_one()
+    assert [f["name"] for f in state["files"]] == ["once.pdf"]
+
+
+def test_a_document_named_like_a_command_is_only_a_file(world: World) -> None:
+    person = world.person()
+    for name in ("STOP", "disconnect", "keep", "disconnect_yes"):
+        assert world.file(person, pdf(name), name)[0] == say("save_one", "en", name)
+        world.tap(person, "up:cancel::en")
+    live = _owner(world.db, "SELECT ended_at FROM whatsapp_links WHERE id = :l", {"l": person.link})
+    assert live == [(None,)]
+
+
+class _Flaky:
+    """The chat, slow; its first reply breaks (after LOOKING went)."""
+
+    def __init__(self, chat: Chat) -> None:
+        self.chat, self.calls = chat, 0
+
+    def reply(self, linked: Linked, message: Waiting) -> Outgoing:
+        self.calls += 1
+        time.sleep(0.3)
+        if self.calls == 1:
+            raise RuntimeError("a bug while answering")
+        return self.chat.reply(linked, message)
+
+    def recheck(self, linked: Linked, reply: Outgoing) -> Outgoing:
+        return self.chat.recheck(linked, reply)
+
+    def notice(self, linked: Linked, message: Waiting) -> Outgoing | None:
+        return self.chat.notice(linked, message)
+
+
+def test_looking_goes_once_a_message_and_never_for_an_uploads_tap(world: World) -> None:
+    person = world.person()
+    object.__setattr__(world.channel, "slow_seconds", 0.05)
+    object.__setattr__(world.channel, "chat", _Flaky(world.chat))
+    assert post(world.client, delivery(message(person.number, world.api.clock(), "Hi"))).status_code == 200
+    with pytest.raises(RuntimeError):
+        world.run()
+    world.free(person)
+    world.run()  # tried again: made this time, and slow again
+    lookings = [what for what in world.replies(person) if what == say("looking", "en")]
+    assert len(lookings) == 1 and world.replies(person)[-1][1] == ["ask.en", "upload.en", "get.en"]
+    object.__setattr__(world.channel, "chat", _Slow(world.chat, 0.3))
+    world.file(person, pdf("x"))
+    before = len(world.replies(person))
+    world.tap(person, "up:cancel::en")
+    assert world.replies(person)[before:] == [(say("cancelled", "en"), ["menu.en"])]
+
+
+def test_a_notice_rests_longer_as_it_ages(world: World) -> None:
+    person = world.person()
+    _saved(world, person)  # its file sent 20 seconds ago, still being read
+    world.free(person)
+    world.run()
+    rest = _owner(
+        world.db,
+        "SELECT extract(epoch FROM busy_until - now()) FROM whatsapp_links WHERE id = :l",
+        {"l": person.link},
+    )
+    assert 3 < float(rest[0][0]) <= 5  # 3 + 20 // 10
+    world.api.clock.advance(3600)
+    world.free(person)
+    world.run()
+    rest = _owner(
+        world.db,
+        "SELECT extract(epoch FROM busy_until - now()) FROM whatsapp_links WHERE id = :l",
+        {"l": person.link},
+    )
+    assert 50 < float(rest[0][0]) <= 60
+
+
+def test_one_ready_notice_for_a_batch_once_all_are_read(world: World) -> None:
+    person = world.person()
+    world.folder(person, "Bills")
+    sent = world.api.clock() - timedelta(seconds=20)
+    items = [
+        file_message(person.number, sent, world.fake.add_media(pdf(f"batch {n}")), filename=f"{n}.pdf")
+        for n in range(3)
+    ]
+    world.send(person, *items)
+    save_into(world, person, "Bills")
+    ids = [d["id"] for d in world.documents(person)]
+    before = len(world.replies(person))
+    _owner(
+        world.db, "UPDATE documents SET status = 'ready' WHERE id = ANY(CAST(:d AS uuid[]))", {"d": ids[:2]}
+    )
+    world.free(person)
+    world.run()
+    assert len(world.replies(person)) == before  # one still being read: nothing yet
+    _owner(world.db, "UPDATE documents SET status = 'rejected' WHERE id = :d", {"d": ids[2]})
+    world.free(person)
+    world.run()
+    said = world.replies(person)[before:]
+    assert said == [
+        f"{say('rejected', 'en', '2.pdf')}\n\n{say('ready_many', 'en', 2, 'Bills')}"
+        f"\nOpen in Kaagaz: {APP_URL}/documents"
+    ]
+    left = _owner(
+        world.db,
+        "SELECT DISTINCT state FROM whatsapp_messages WHERE document_id = ANY(CAST(:d AS uuid[]))",
+        {"d": ids},
+    )
+    assert left == [("done",)]
+
+
+def test_an_upload_tap_with_nothing_waiting_answers_in_its_language(world: World) -> None:
+    person = world.person()
+    assert world.tap(person, "up:choose::hi") == say("nothing_waiting", "hi")
+
+
+def test_photos_past_the_pdf_limit_are_saved_one_by_one(db: Database, fake: WhatsAppFake) -> None:
+    world = World(db, fake, max_upload_bytes=1200)
+    person = world.person()
+    world.folder(person, "Scans")
+    _photos(world, person, 2)
+    world.tap(person, "up:one::en")
+    world.tap(person, row_named(world, person, "Scans"))
+    reply = world.tap(person, _buttons(world, person)[0])
+    assert reply[0].startswith(say("not_joined", "en")) and len(world.documents(person)) == 2

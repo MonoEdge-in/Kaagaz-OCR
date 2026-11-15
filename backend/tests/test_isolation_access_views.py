@@ -385,7 +385,7 @@ VIEW_READERS = {
     # Changed on purpose (#603 W4): the WhatsApp channel, as the person, in the app's role; never a worker.
     "db/whatsapp_chat.py": {"_ON_WHATSAPP"},
     # Changed on purpose (#603 W5): the folder browser, as the person, in the app's role; never a worker.
-    "db/whatsapp_upload.py": {"_ABOUT", "_LEVEL", "_NAMED"},
+    "db/whatsapp_upload.py": {"_ABOUT", "_BATCH_NOTICES", "_LEVEL", "_LOCKED", "_NAMED"},
     "db/word_review.py": {"_PAGES", "_PIECES_BY_ID", "_VALUES_BY_ID", "_WORDS"},
     # PR 8 (#602): Ask and search, reached from the API only (the SQL guard's worker test).
     "search/hybrid.py": {
