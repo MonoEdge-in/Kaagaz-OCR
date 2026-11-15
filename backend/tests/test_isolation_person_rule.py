@@ -274,3 +274,30 @@ def test_every_content_tables_rule_reads_its_document_through_documents(db: Data
         column = "family_id" if table == "document_stories" else "document_id"
         assert using == check and "kaagaz_sees_everything()" in using, table
         assert "FROM documents d" in using and f"{table}.{column}" in using, table
+
+
+def test_the_whole_organisation_reads_count_what_the_person_cant_see_and_no_other(
+    db: Database, org: Org
+) -> None:
+    """F4, F7 and F8: the duplicate check names a hidden copy by no id; the storage used and the
+    spend count the files the plain reviewer can't see, and never another organisation's."""
+    other, other_admin = new_customer(db)
+    Api(db).add_document(other, uploaded_by=other_admin, data=PDF_BYTES + b"x" * 5000)
+    stored = _owner(db, "SELECT sum(size_bytes) FROM documents WHERE customer_id = :c", {"c": org.c})[0][0]
+    sha = _owner(db, "SELECT sha256 FROM documents WHERE id = :d", {"d": org.files["fin"]})[0][0]
+    with _as(db, org, "plain") as conn:
+        assert conn.execute(text("SELECT kaagaz_storage_used()")).scalar() == stored
+        assert conn.execute(
+            text("SELECT spent >= 0 FROM kaagaz_spent(now() - interval '1 day', now())")
+        ).scalar()
+        found = conn.execute(
+            text("SELECT answer, document_id FROM kaagaz_duplicate(ARRAY[:h])"), {"h": sha}
+        ).one()
+        assert tuple(found) == ("hidden", None)
+        assert (
+            conn.execute(
+                text("SELECT count(*) FROM kaagaz_existing('document', ARRAY[CAST(:d AS uuid)])"),
+                {"d": org.files["fin"]},
+            ).scalar()
+            == 1
+        )

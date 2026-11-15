@@ -58,9 +58,12 @@ def install(engine: Engine) -> None:
 
     @event.listens_for(engine, "handle_error")
     def refused(context: Any) -> None:
-        off = shadows.pop(id(context.cursor), None) if context.cursor is not None else None
+        cursor = getattr(context, "cursor", None)
+        off = shadows.pop(id(cursor), None) if cursor is not None else None
         if off is not None and getattr(context.original_exception, "sqlstate", None) == "42501":
-            found.append((test_name, off, "42501", " ".join(context.statement.split())[:160]))
+            found.append(
+                (test_name, off, "42501", " ".join(str(getattr(context, "statement", "")).split())[:160])
+            )
 
 
 def write(path: str, rows: Sequence[tuple[str, int, int | str, str]]) -> None:
