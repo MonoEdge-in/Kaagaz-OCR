@@ -19,8 +19,9 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import type { FormEvent, KeyboardEvent, ReactNode, RefCallback } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "@/components/ui/Icon";
-import { createFolder, createTag, setDocumentTags, updateDocument } from "@/lib/api";
-import type { DocumentSummary, Tag } from "@/lib/types";
+import { hiddenMovedText, moveEffectText } from "@/components/access/words";
+import { createFolder, createTag, documentMovePreview, isHiddenMove, moveDocument, setDocumentTags, updateDocument } from "@/lib/api";
+import type { DocumentSummary, MovePreview, Tag } from "@/lib/types";
 import { ActionDialog } from "./ActionDialog";
 import { BusyLabel } from "./BusyLabel";
 import { NameChips } from "./FolderActions";
@@ -451,8 +452,9 @@ export interface MoveFormProps {
   tree: FolderTree;
   /** Names for a new folder (folderNameSuggestions). */
   suggestions?: readonly string[];
-  /** Moved; undo puts each document back where it was. */
-  onSaved(message: string, moved: boolean, undo: () => Promise<void>): void;
+  /** Moved; undo puts each document back where it was (none when an admin moved one where they
+   * can't see it: PR 10c's `{id, hidden: true}`). */
+  onSaved(message: string, moved: boolean, undo?: () => Promise<void>): void;
   /** A folder was made here: the screen asks for the folders again. */
   onFolderCreated?(): void;
   onCancel(): void;
@@ -476,6 +478,24 @@ export function MoveForm({ items, tree, suggestions = [], onSaved, onFolderCreat
   const [openTo] = useState(() => [choice, current ?? null]);
   // Focus starts on the choice made, else on the first one that can be chosen.
   const focusValue = choice ?? (current === TOP ? (tree.roots[0]?.folder.id ?? NEW) : TOP);
+  // PRD 7 PR 11b (#604, PR 10c): for one file, who would lose and gain it in the place chosen
+  // (counts only for the person it is held for); nothing for a new folder, or when the person may
+  // not make such a move (the move itself then says why).
+  const [preview, setPreview] = useState<MovePreview | null>(null);
+  const one = items.length === 1 ? (items[0]?.id ?? null) : null;
+  const existing = choice !== null && choice !== NEW && choice !== SUGGESTED_NEW && choice !== current;
+  useEffect(() => {
+    if (one === null || !existing || choice === null) return;
+    let live = true;
+    documentMovePreview(one, choice || null).then(
+      (reply) => live && setPreview(reply),
+      () => live && setPreview(null),
+    );
+    return () => {
+      live = false;
+      setPreview(null);
+    };
+  }, [one, existing, choice]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -508,7 +528,10 @@ export function MoveForm({ items, tree, suggestions = [], onSaved, onFolderCreat
     }
     const before = new Map(items.map((item) => [item.id, item.folder_id]));
     const ids = items.filter((item) => (item.folder_id ?? TOP) !== target).map((item) => item.id);
-    const result = await runEach(ids, (docId) => updateDocument(docId, { folder_id: target || null }));
+    let hidden = 0; // PR 10c: an admin moved one where they can't see it
+    const result = await runEach(ids, async (docId) => {
+      if (isHiddenMove(await moveDocument(docId, target || null))) hidden += 1;
+    });
     if (result.done.length === 0) {
       setError(libraryErrorText(result.firstError, "document"));
       setBusy(false);
@@ -519,7 +542,9 @@ export function MoveForm({ items, tree, suggestions = [], onSaved, onFolderCreat
       if (back.failed.length > 0) throw back.firstError;
     };
     const reason = result.failed.length > 0 ? libraryErrorText(result.firstError, "document") : "";
-    onSaved(movedMessage(result.done.length, ids.length, where, reason), true, undo);
+    const said = movedMessage(result.done.length, ids.length, where, reason);
+    if (hidden > 0) onSaved(`${said} ${hiddenMovedText(hidden, result.done.length)}`, true);
+    else onSaved(said, true, undo);
   }
 
   const option = (value: string, key: string, words: ReactNode) => {
@@ -586,6 +611,9 @@ export function MoveForm({ items, tree, suggestions = [], onSaved, onFolderCreat
           {option(NEW, "new", "New folder…")}
         </ul>
       </fieldset>
+      <p className="hint" role="status">
+        {preview ? moveEffectText(preview) : ""}
+      </p>
       {choice === NEW && (
         <div className="field">
           <label htmlFor={`${id}-name`}>Name of the new folder</label>

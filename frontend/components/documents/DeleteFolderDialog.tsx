@@ -5,10 +5,16 @@
 // FolderPicker with validMoveTargets) and delete only the folder, or send everything inside to
 // Trash, which needs the folder's name typed exactly. The UI kit's ConfirmDialog gives the modal,
 // its focus trap, Esc and Cancel first; the server's refusal (an upload still running) shows in it.
+// PRD 7 PR 11b (#604, PR 10c): a move of what is inside that changes who can see it is a warning
+// first (409 access_would_change, in the server's words): its button becomes "Move anyway and
+// delete", which sends it again confirmed; one that opens it to the admin asks their password
+// (403 password_required). Choosing another place, or Trash, takes the warning back.
 
 import { useId, useState } from "react";
+import { usePasswordStep } from "@/components/access/SelfPasswordDialog";
+import { MOVE_ANYWAY, quoted } from "@/components/access/words";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
-import { deleteFolderWithContents } from "@/lib/api";
+import { ApiError, deleteFolderWithContents } from "@/lib/api";
 import type { FolderSummary } from "@/lib/types";
 import { RESTORE_DAYS, heldLine, keptMessage, trashButton, trashedMessage } from "./folderDelete";
 import type { FolderNoun } from "./folderDelete";
@@ -35,6 +41,19 @@ export function DeleteFolderDialog({ tree, node, summary, onDeleted, onCancel }:
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [warned, setWarned] = useState(false); // 409 access_would_change came: the next press confirms
+  const passwordStep = usePasswordStep();
+  // Another place, or Trash, takes the warning (and what it said) back.
+  const choose = (next: "keep" | "trash") => {
+    setChoice(next);
+    setWarned(false);
+    setError(null);
+  };
+  const place = (next: string) => {
+    setTo(next);
+    setWarned(false);
+    setError(null);
+  };
   const [targets] = useState(() => new Set(validMoveTargets(tree, node.folder.id, true).map((each) => each.folder.id)));
   // A name typed on Windows is NFC; one a Mac made may be stored decomposed.
   const typedRight = typed.normalize("NFC") === name.normalize("NFC");
@@ -47,13 +66,20 @@ export function DeleteFolderDialog({ tree, node, summary, onDeleted, onCancel }:
     let message: string;
     try {
       if (choice === "keep") {
-        const moved = await deleteFolderWithContents(node.folder.id, { contents: "keep", to: to || null });
+        const keep = (password?: string) =>
+          deleteFolderWithContents(node.folder.id, { contents: "keep", to: to || null, confirm: warned, password });
+        const moved = warned ? await passwordStep.run(quoted(name), keep, false) : await keep();
+        if (moved === null) {
+          setBusy(false); // the password step was cancelled: nothing was sent
+          return;
+        }
         message = keptMessage(noun, to ? pathLabel(tree, to) : null, moved.files);
       } else {
         const trashed = await deleteFolderWithContents(node.folder.id, { contents: "trash" });
         message = trashedMessage(noun, trashed.files);
       }
     } catch (caught) {
+      if (caught instanceof ApiError && caught.status === 409 && caught.code === "access_would_change") setWarned(true);
       setError(libraryErrorText(caught, noun));
       setBusy(false);
       return;
@@ -65,20 +91,21 @@ export function DeleteFolderDialog({ tree, node, summary, onDeleted, onCancel }:
     <ConfirmDialog
       open
       title={`Delete “${name}”?`}
-      confirmLabel={choice === "keep" ? `Move and delete ${noun}` : trashButton(summary.files, noun)}
+      confirmLabel={choice === "keep" ? (warned ? MOVE_ANYWAY : `Move and delete ${noun}`) : trashButton(summary.files, noun)}
       busy={busy}
       confirmDisabled={choice === "trash" && !typedRight}
       error={error}
       onConfirm={confirm}
       onCancel={onCancel}
     >
+      {passwordStep.dialog}
       <p>{heldLine(summary)}</p>
       <fieldset className={styles.fieldset}>
         <legend className="visually-hidden">What happens to what is inside</legend>
         <ul className={styles.folderChoices}>
           <li>
             <label className={styles.check}>
-              <input type="radio" name={formId} checked={choice === "keep"} disabled={busy} onChange={() => setChoice("keep")} />
+              <input type="radio" name={formId} checked={choice === "keep"} disabled={busy} onChange={() => choose("keep")} />
               Move what’s inside, then delete the {noun}
             </label>
           </li>
@@ -89,7 +116,7 @@ export function DeleteFolderDialog({ tree, node, summary, onDeleted, onCancel }:
                 <ul className={styles.folderChoices}>
                   <li>
                     <label className={styles.check}>
-                      <input type="radio" name={`${formId}-to`} value="" checked={to === ""} disabled={busy} onChange={() => setTo("")} />
+                      <input type="radio" name={`${formId}-to`} value="" checked={to === ""} disabled={busy} onChange={() => place("")} />
                       Top level
                     </label>
                   </li>
@@ -97,7 +124,7 @@ export function DeleteFolderDialog({ tree, node, summary, onDeleted, onCancel }:
                     tree={tree}
                     name={`${formId}-to`}
                     choice={to || null}
-                    onChoose={setTo}
+                    onChoose={place}
                     disabled={(each) => !targets.has(each.folder.id)}
                     busy={busy}
                   />
@@ -107,7 +134,7 @@ export function DeleteFolderDialog({ tree, node, summary, onDeleted, onCancel }:
           )}
           <li>
             <label className={styles.check}>
-              <input type="radio" name={formId} checked={choice === "trash"} disabled={busy} onChange={() => setChoice("trash")} />
+              <input type="radio" name={formId} checked={choice === "trash"} disabled={busy} onChange={() => choose("trash")} />
               Delete the {noun} and everything inside
             </label>
           </li>

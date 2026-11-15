@@ -3,7 +3,7 @@
 
 import { ApiError } from "@/lib/api";
 import { errorWords } from "@/lib/errorWords";
-import type { Person } from "@/lib/types";
+import type { MovePreview, Person } from "@/lib/types";
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
@@ -331,11 +331,31 @@ export const MYSELF_HELP = "Asks for your password, tells Management, then lets 
 
 export const MOVE_REFUSED = "You can't move this here, because it would change who can see it. Ask an admin.";
 export const FOLDER_DELETE_REFUSED = "You can't delete this folder. Ask an admin.";
-/** PR 10c's 403 codes, exactly these (its backend test pins them). */
+/** PR 10c's 403 codes, exactly these (its backend test pins them): said in the server's words, or
+ * these when it sends none. */
 export const LIBRARY_REFUSALS: Readonly<Record<string, string>> = {
   move_changes_access: MOVE_REFUSED,
   hidden_inside: FOLDER_DELETE_REFUSED,
 };
+
+// --- a move's effect, before it is made (PR 10c's previews) -------------------------------------
+
+/** "3 people will lose access: Priya, Amit and Ravi. 1 person will be able to see it." Counts only
+ * for the person a file is held for (no names come); "" when the same people see it there. */
+export function moveEffectText(preview: MovePreview): string {
+  const losing = preview.losing_count ?? preview.losing.length;
+  const gaining = preview.gaining_count ?? preview.gaining.length;
+  const named = (people: readonly Person[]) => (people.length ? `: ${namesPreview(people)}` : "");
+  const parts: string[] = [];
+  if (losing > 0) parts.push(`${peopleCount(losing)} will lose access${named(preview.losing)}.`);
+  if (gaining > 0) parts.push(`${peopleCount(gaining)} will be able to see it${named(preview.gaining)}.`);
+  return parts.join(" ");
+}
+export const MOVE_ANYWAY = "Move anyway and delete";
+/** An admin moved files where they can't see them (PATCH's `{id, hidden: true}`): the move stands,
+ * and it can't be undone from here. */
+export const hiddenMovedText = (n: number, total: number) =>
+  total === 1 ? "You can't see it there, so it can't be undone here." : `You can't see ${n} of them there, so this can't be undone here.`;
 
 // --- errors --------------------------------------------------------------------------------------
 

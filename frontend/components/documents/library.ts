@@ -246,11 +246,13 @@ export function findTagByName(tags: readonly Tag[], name: string): Tag | null {
  * What to say next to the form when a change fails. A taken name gets its own
  * words; the folder rules (folder_cycle, folder_too_deep, folder_not_empty)
  * come with the server's own message. PRD 7 (#604): a move that would change who can see the
- * files, or a delete of a folder holding what the person can't see, is refused in our words.
+ * files, or a delete of a folder holding what the person can't see, is refused in the server's
+ * words (PR 10c), ours when it sends none; so is a private folder moved inside another
+ * (409 inside_private).
  */
 export function libraryErrorText(error: unknown, what: "folder" | "department" | "tag" | "document"): string {
   if (!(error instanceof ApiError)) return "Check your internet connection, then try again.";
-  if (error.status === 403 && Object.hasOwn(LIBRARY_REFUSALS, error.code)) return LIBRARY_REFUSALS[error.code] ?? "";
+  if (error.status === 403 && Object.hasOwn(LIBRARY_REFUSALS, error.code)) return error.message || (LIBRARY_REFUSALS[error.code] ?? "");
   if (error.code === "conflict" && what === "folder") {
     return "A folder with this name is already here. Choose another name.";
   }

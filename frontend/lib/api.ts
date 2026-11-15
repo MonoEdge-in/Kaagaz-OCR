@@ -19,6 +19,8 @@ import type {
   DepartmentMember,
   PersonAccess,
   PlacePreview,
+  HiddenMove,
+  MovePreview,
   Audience,
   AudienceCheck,
   NamedList,
@@ -423,6 +425,12 @@ export const deleteDocumentForever = (id: string) =>
  * level. Renaming, moving, tagging and a new version are refused in Trash
  * (409 in_trash).
  */
+/** A move (PRD 7, #601): an admin who moves a file where they can't see it gets `{id, hidden:
+ * true}`, not the file; the move stands. */
+export const moveDocument = (id: string, folderId: string | null) =>
+  request<DocumentSummary | HiddenMove>("PATCH", `/documents/${id}`, { folder_id: folderId });
+export const isHiddenMove = (reply: DocumentSummary | HiddenMove): reply is HiddenMove =>
+  "hidden" in reply && reply.hidden === true;
 export const updateDocument = (
   id: string,
   changes: {
@@ -944,21 +952,30 @@ export const createFolder = (
     ...(parentId ? { parent_id: parentId } : {}),
     ...(department ? { kind: "department", sort_order: department.sort_order } : {}),
   });
-/** Rename, move or order. An explicit parent_id: null moves the folder to the top level. */
+/** Rename, move or order. An explicit parent_id: null moves the folder to the top level. PRD 7
+ * (#601): a move that opens what it holds to the admin making it takes their `password` (403
+ * password_required without it). */
 export const updateFolder = (
   id: string,
-  changes: { name?: string; parent_id?: string | null; sort_order?: number | null },
+  changes: { name?: string; parent_id?: string | null; sort_order?: number | null; password?: string },
 ) => request<Folder>("PATCH", `/folders/${id}`, changes);
 export const deleteFolder = (id: string) => request<void>("DELETE", `/folders/${id}`);
 /** #537, an admin's: move what is inside to `to` (null: the top level) or send it all to Trash,
- * then delete the folder. The reply: what moved, or the files that went to Trash. */
+ * then delete the folder. The reply: what moved, or the files that went to Trash. PRD 7 (#601): a
+ * keep that changes who can see it is 409 access_would_change until it is sent with `confirm`;
+ * a confirmed one that opens it to the admin takes their `password` (403 password_required). */
 export const deleteFolderWithContents = (
   id: string,
-  what: { contents: "keep"; to: string | null } | { contents: "trash" },
+  what: { contents: "keep"; to: string | null; confirm?: boolean; password?: string } | { contents: "trash" },
 ) =>
   request<{ files: number; folders: number }>(
     "DELETE",
-    `/folders/${id}${query({ contents: what.contents, to: what.contents === "keep" ? (what.to ?? undefined) : undefined })}`,
+    `/folders/${id}${query({
+      contents: what.contents,
+      to: what.contents === "keep" ? (what.to ?? undefined) : undefined,
+      confirm: what.contents === "keep" && what.confirm ? true : undefined,
+    })}`,
+    what.contents === "keep" && what.password !== undefined ? { password: what.password } : undefined,
   );
 export const folderSummary = (id: string) => request<FolderSummary>("GET", `/folders/${id}/summary`);
 /** #542: Trash's folders; one opened (its files: listDocuments with trashed_folder_id); Restore puts
@@ -1435,6 +1452,13 @@ export const setPrivate = (folderId: string, on: boolean, named: readonly string
     ...(dropNamed.length ? { drop_named: dropNamed } : {}),
     password,
   });
+/** PRD 7 PR 10c (#601): who would lose and gain a file, or what a folder holds, were it moved into
+ * `into` (null: the top level). The person a file is held for gets counts only (`losing_count`,
+ * `gaining_count`, empty lists); someone who may not make such a move gets 403. */
+export const documentMovePreview = (documentId: string, into: string | null) =>
+  request<MovePreview>("GET", `/documents/${segment(documentId)}/move-preview${query({ folder_id: into ?? undefined })}`);
+export const folderMovePreview = (folderId: string, into: string | null) =>
+  request<MovePreview>("GET", `/folders/${segment(folderId)}/move-preview${query({ parent_id: into ?? undefined })}`);
 /** ``autofileOn`` left out: the switch is left as it is (feature 28). ``google`` (#507), when
  * given, replaces the three Google sign-in rules; left out, they stay. */
 export const updateSettings = (maxUploadMb: number | null, autofileOn?: boolean, google?: GoogleRulesChange) =>

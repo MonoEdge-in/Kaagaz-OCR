@@ -13,13 +13,18 @@
 // #537 (Tushar, 7 Nov 2026): Delete first asks what the folder holds. Empty: the confirm above.
 // Holding files: a member or reviewer is told to ask an admin (no Delete that can only fail);
 // an admin chooses in DeleteFolderDialog where it goes, or Trash.
+// PRD 7 PR 11b (#604, PR 10c): Move says first who would lose and gain what the folder holds (its
+// move preview; nothing when the person may not make such a move, or the same people see it), and a
+// move that opens it to the admin asks their password first, or on 403 password_required.
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, MouseEvent } from "react";
-import { WHO_CAN_SEE } from "@/components/access/words";
+import { includesMe } from "@/components/access/passwordStep";
+import { usePasswordStep } from "@/components/access/SelfPasswordDialog";
+import { WHO_CAN_SEE, moveEffectText, quoted } from "@/components/access/words";
 import { Icon } from "@/components/ui/Icon";
-import { createFolder, deleteFolder, folderSummary, updateFolder } from "@/lib/api";
-import type { FolderSummary } from "@/lib/types";
+import { createFolder, deleteFolder, folderMovePreview, folderSummary, updateFolder } from "@/lib/api";
+import type { FolderSummary, MovePreview } from "@/lib/types";
 import { BusyLabel } from "./BusyLabel";
 import { DeleteFolderDialog } from "./DeleteFolderDialog";
 import { isEmpty, notEmptyText } from "./folderDelete";
@@ -44,6 +49,8 @@ export interface FolderActionsProps {
   suggestions?: readonly string[];
   /** PRD 7 (#604): "Who can see this" opens the Audience panel; left out for who may not use it. */
   onAudience?(): void;
+  /** PRD 7 (#604): the signed-in person, for the password step of a move that opens a folder to them. */
+  myId?: string;
 }
 
 /** The suggested names as square chips; pressing one puts it in the name box. */
@@ -71,8 +78,19 @@ export function NameChips({ names, picked, onPick }: { names: readonly string[];
   );
 }
 
-export function FolderActions({ tree, current, onChanged, askNew = 0, suggestions = [], admin = false, onAudience }: FolderActionsProps) {
+export function FolderActions({
+  tree,
+  current,
+  onChanged,
+  askNew = 0,
+  suggestions = [],
+  admin = false,
+  onAudience,
+  myId = "",
+}: FolderActionsProps) {
   const [mode, setMode] = useState<Mode | null>(null);
+  const [preview, setPreview] = useState<MovePreview | null>(null); // PR 10c: what a move changes
+  const passwordStep = usePasswordStep();
   const [summary, setSummary] = useState<FolderSummary | null>(null); // #537: what Delete would take
   const [heardNew, setHeardNew] = useState(askNew);
   const [name, setName] = useState("");
@@ -98,6 +116,22 @@ export function FolderActions({ tree, current, onChanged, askNew = 0, suggestion
   }, [mode]);
 
   const parentId = current?.parent?.folder.id ?? "";
+  const folderId = current?.folder.id ?? null;
+  const previewing = mode === "move" && folderId !== null && target !== parentId;
+  // Who would lose and gain what it holds, for the place chosen; a late answer is dropped.
+  useEffect(() => {
+    if (!previewing || folderId === null) return;
+    let live = true;
+    folderMovePreview(folderId, target || null).then(
+      (reply) => live && setPreview(reply),
+      () => live && setPreview(null),
+    );
+    return () => {
+      live = false;
+      setPreview(null);
+    };
+  }, [previewing, folderId, target]);
+
   if (askNew !== heardNew) {
     setHeardNew(askNew);
     setMode("new");
@@ -147,7 +181,12 @@ export function FolderActions({ tree, current, onChanged, askNew = 0, suggestion
         const renamed = await updateFolder(current.folder.id, { name: name.trim() });
         onChanged(`Renamed the folder to ${renamed.name}.`);
       } else if (mode === "move" && current) {
-        const moved = await updateFolder(current.folder.id, { parent_id: target || null });
+        const moved = await passwordStep.run(
+          quoted(current.folder.name),
+          (password?: string) => updateFolder(current.folder.id, { parent_id: target || null, password }),
+          preview !== null && includesMe(preview.gaining, myId),
+        );
+        if (moved === null) return; // the password step was cancelled: nothing was sent
         const where = target ? pathLabel(tree, target) : "the top level";
         onChanged(`Moved the folder ${moved.name} to ${where}.`);
       } else if (mode === "delete" && current) {
@@ -228,6 +267,9 @@ export function FolderActions({ tree, current, onChanged, askNew = 0, suggestion
           />
         </ul>
         <p className="hint">Places that would make folders deeper than {MAX_FOLDER_DEPTH} levels can’t be chosen.</p>
+        <p className="hint" role="status">
+          {preview ? moveEffectText(preview) : ""}
+        </p>
       </fieldset>
     );
   } else if (mode === "delete" && summary === null) {
@@ -259,6 +301,7 @@ export function FolderActions({ tree, current, onChanged, askNew = 0, suggestion
 
   return (
     <div className={styles.folderActions}>
+      {passwordStep.dialog}
       {current && (
         <div className={styles.folderButtons}>
           {onAudience && (

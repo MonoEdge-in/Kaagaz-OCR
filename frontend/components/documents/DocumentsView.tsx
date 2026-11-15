@@ -33,7 +33,7 @@ import { KeptFromMe } from "@/components/access/KeptFromMe";
 import type { AudienceTarget } from "@/components/access/AudiencePanel";
 import { PlaceBadge } from "@/components/access/PlaceBadge";
 import { folderPlace, placeHint, placeKind } from "@/components/access/places";
-import { NOT_FOUND_FOLDER, NOT_FOUND_TEXT, SHARED } from "@/components/access/words";
+import { NOT_FOUND_FOLDER, NOT_FOUND_TEXT, SHARED, hiddenMovedText } from "@/components/access/words";
 import { DepartmentPicker } from "@/components/files/DepartmentPicker";
 import { chosenDepartment, departmentsOf, rememberDepartment } from "@/components/files/departments";
 import { DocumentsGrid } from "@/components/files/DocumentsGrid";
@@ -57,6 +57,8 @@ import {
   listPeople,
   listTags,
   listTrashedFolders,
+  isHiddenMove,
+  moveDocument,
   searchDocuments,
   updateDocument,
 } from "@/lib/api";
@@ -467,6 +469,12 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
     setReload((n) => n + 1);
   }
 
+  /** PR 10c: a move that stands but can't be undone here still shows in the toast. */
+  function afterHiddenMove(message: string) {
+    setToast({ message });
+    setReload((n) => n + 1);
+  }
+
   function undoMove(undo: () => Promise<void>, undone: string) {
     setDropError(null);
     undo().then(
@@ -508,16 +516,19 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
     const item = shown?.list.items.find((each) => each.id === documentId);
     const name = item?.display_name ?? "The document";
     setDropError(null);
-    updateDocument(documentId, { folder_id: folderId }).then(
-      () =>
-        afterSave(
-          `Moved ${name} to ${placeName}.`,
-          item
-            ? async () => {
-                await updateDocument(documentId, { folder_id: item.folder_id });
-              }
-            : undefined,
-        ),
+    moveDocument(documentId, folderId).then(
+      (reply) =>
+        // PR 10c: an admin who moved it where they can't see it can't undo it from here.
+        isHiddenMove(reply)
+          ? afterHiddenMove(`Moved ${name} to ${placeName}. ${hiddenMovedText(1, 1)}`)
+          : afterSave(
+              `Moved ${name} to ${placeName}.`,
+              item
+                ? async () => {
+                    await updateDocument(documentId, { folder_id: item.folder_id });
+                  }
+                : undefined,
+            ),
       (caught: unknown) => setDropError(libraryErrorText(caught, "document")),
     );
   }
@@ -754,6 +765,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                 current={current}
                 onChanged={afterFolderChange}
                 admin={me?.user.role === "admin"}
+                myId={me.user.id}
                 askNew={newFolderAsk}
                 suggestions={nameSuggestions}
                 onAudience={

@@ -93,7 +93,7 @@ export interface Me {
   // app's "Google connected on 30 Oct." banner. Empty while no provider is on (always sent).
   recent_connections?: { provider: string; linked_at: string }[];
   // PRD 7 (#601): Management, and the departments this person heads. Older servers leave it out.
-  access?: { management: boolean; heads: string[] };
+  access?: { management: boolean; heads: string[]; in_department?: boolean }; // in_department: PR 10c
 }
 
 /** One connected account of the signed-in user (GET /auth/identities). */
@@ -1347,6 +1347,20 @@ export interface PlacePreview {
   files: number;
   // Make private's preview (PR 10b, coming): the people named on it before, who see it again.
   named_before?: Person[];
+}
+
+/** PRD 7 PR 10c (#601), a move's preview: for the person a file is held for, counts only (the lists
+ * empty, never anyone's name). */
+export interface MovePreview extends PlacePreview {
+  losing_count?: number;
+  gaining_count?: number;
+}
+
+/** PRD 7 PR 10c (#601), PATCH /documents/{id}: an admin moved the file where they can't see it.
+ * The move stands. */
+export interface HiddenMove {
+  id: string;
+  hidden: true;
 }
 
 /** PRD 7 (#601), GET /{documents|folders}/{id}/audience: who can see it, grouped by why, in the
