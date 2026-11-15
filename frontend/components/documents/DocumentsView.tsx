@@ -25,9 +25,16 @@
 // in the toast, and the folder tree is asked for again. Search, filters and pages are for files.
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
+import { accessAbilities } from "@/components/access/abilities";
 import { ASK_FOR_ACCESS, asksForAccess } from "@/components/access/askForAccess";
+import { AudiencePanel } from "@/components/access/AudiencePanel";
+import { KeptFromMe } from "@/components/access/KeptFromMe";
+import type { AudienceTarget } from "@/components/access/AudiencePanel";
+import { PlaceBadge } from "@/components/access/PlaceBadge";
+import { folderPlace, placeHint, placeKind } from "@/components/access/places";
+import { NOT_FOUND_FOLDER, NOT_FOUND_TEXT, SHARED, hiddenMovedText } from "@/components/access/words";
 import { DepartmentPicker } from "@/components/files/DepartmentPicker";
 import { chosenDepartment, departmentsOf, rememberDepartment } from "@/components/files/departments";
 import { DocumentsGrid } from "@/components/files/DocumentsGrid";
@@ -51,6 +58,8 @@ import {
   listPeople,
   listTags,
   listTrashedFolders,
+  isHiddenMove,
+  moveDocument,
   searchDocuments,
   updateDocument,
 } from "@/lib/api";
@@ -82,7 +91,7 @@ import {
   searchParams,
 } from "./insideSearch";
 import type { SearchMode } from "./insideSearch";
-import { folderNameSuggestions, libraryErrorText, noMatchTitle } from "./library";
+import { folderNameSuggestions, libraryErrorText, noMatchTitle, savedToast } from "./library";
 import { mergeList } from "./listMerge";
 import { LibraryFilters } from "./LibraryFilters";
 import { NO_DEPARTMENT, NO_FILTERS, SORT_KEYS, includeSubfoldersHref, isFiltered, libraryHref, listParams, nextSort } from "./libraryQuery";
@@ -191,6 +200,8 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const [viewMode, setViewMode] = useState<ViewMode>(() => readViewMode(me.user.id));
   const [departmentChoice, setDepartmentChoice] = useState<string | null | undefined>(undefined);
   const [versionFile, setVersionFile] = useState<{ file: File; of: DocumentSummary } | null>(null);
+  // PRD 7 (#604): the folder whose Audience panel is open.
+  const [audienceOf, setAudienceOf] = useState<AudienceTarget | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -452,9 +463,11 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
     else setReload((n) => n + 1);
   }
 
-  // A move shows in the toast (its own live region), with Undo; anything else is announced.
-  function afterSave(message: string, undo?: () => Promise<void>) {
-    if (undo) setToast({ message, undo, undone: "Moved back." });
+  // A move shows in the toast (its own live region), with Undo; one that can't be undone (PR 10c:
+  // an admin moved a file where they can't see it) in the toast too; anything else is announced.
+  function afterSave(message: string, undo?: () => Promise<void>, moved = false) {
+    const toast = savedToast(message, undo, moved);
+    if (toast) setToast(toast);
     else setAnnouncement(message);
     setReload((n) => n + 1);
   }
@@ -500,19 +513,24 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
     const item = shown?.list.items.find((each) => each.id === documentId);
     const name = item?.display_name ?? "The document";
     setDropError(null);
-    updateDocument(documentId, { folder_id: folderId }).then(
-      () =>
-        afterSave(
-          `Moved ${name} to ${placeName}.`,
-          item
-            ? async () => {
-                await updateDocument(documentId, { folder_id: item.folder_id });
-              }
-            : undefined,
-        ),
+    moveDocument(documentId, folderId).then(
+      (reply) =>
+        // PR 10c: an admin who moved it where they can't see it can't undo it from here.
+        isHiddenMove(reply)
+          ? afterSave(`Moved ${name} to ${placeName}. ${hiddenMovedText(1, 1)}`, undefined, true)
+          : afterSave(
+              `Moved ${name} to ${placeName}.`,
+              item
+                ? async () => {
+                    await updateDocument(documentId, { folder_id: item.folder_id });
+                  }
+                : undefined,
+            ),
       (caught: unknown) => setDropError(libraryErrorText(caught, "document")),
     );
   }
+
+  const focusPlace = useCallback(() => headingRef.current?.focus(), []);
 
   function navigated(placeName: string) {
     setAnnouncement(`Showing ${placeName}.`);
@@ -536,12 +554,20 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
     : (current?.folder.name ??
       (library.folderId !== null
         ? "Folder"
-        : library.departmentId === NO_DEPARTMENT
-          ? FILES_TEXT.notInDepartment // the tree's Other (issue 409)
-          : "All documents"));
-  // Nothing is uploaded into Trash, and it has no folder to change.
-  const canUpload = !folderGone && !library.trash;
+        : library.shared
+          ? SHARED.place
+          : library.departmentId === NO_DEPARTMENT
+            ? FILES_TEXT.notInDepartment // the tree's Other (issue 409)
+            : "All documents"));
+  // Nothing is uploaded into Trash, and it has no folder to change; nor into Shared with me.
+  const canUpload = !folderGone && !library.trash && !library.shared;
   const withSubfolders = includeSubfoldersHref(library, current?.children.length ?? 0);
+  const badge = current ? placeKind(current.folder) : null;
+  const accessHint = current ? placeHint(tree, current.folder.id) : null;
+  // PRD 7 (#604): who may use the access controls here (the server checks again).
+  const place = current ? folderPlace(tree, current.folder.id) : null;
+  const abilities = accessAbilities(me, { departmentId: place?.department?.id ?? null });
+  const audiencePlace = audienceOf ? folderPlace(tree, audienceOf.id) : null;
 
   // Only an empty list shows this button, in its empty state; the page header never does
   // (Tushar, 16 Oct 2026: two upload buttons): the app header's Upload is the screen's one
@@ -666,6 +692,32 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
               {current && (
                 <p className={libraryStyles.placeHint}>Files you upload here go into this folder.</p>
               )}
+              {/* PRD 7 (#604): who sees this folder's files, with the people icon's words. */}
+              {accessHint && (
+                <p className={libraryStyles.placeHint}>
+                  {badge && (
+                    <>
+                      <PlaceBadge kind={badge} />{" "}
+                    </>
+                  )}
+                  {accessHint}
+                </p>
+              )}
+              {/* PRD 7 (#604): an admin session's alone; nothing on 0, while loading or on a failure. */}
+              {current && abilities.keptStrip && (
+                <KeptFromMe
+                  key={current.folder.id}
+                  folder={current.folder}
+                  me={me}
+                  version={reload}
+                  onEmptied={focusPlace}
+                  onChanged={(message) => {
+                    setToast({ message });
+                    setReload((n) => n + 1);
+                  }}
+                />
+              )}
+              {library.shared && <p className={libraryStyles.placeHint}>{SHARED.hint}</p>}
               {library.trash && opened === null && (
                 <p className={libraryStyles.placeHint}>
                   Documents in Trash are left out of search and chat. Restore one to use it again.
@@ -712,8 +764,14 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                 current={current}
                 onChanged={afterFolderChange}
                 admin={me?.user.role === "admin"}
+                myId={me.user.id}
                 askNew={newFolderAsk}
                 suggestions={nameSuggestions}
+                onAudience={
+                  current && abilities.audience
+                    ? () => setAudienceOf({ kind: "folder", id: current.folder.id, name: current.folder.name })
+                    : undefined
+                }
               />
             )}
           </div>
@@ -721,7 +779,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
           {folderGone ? (
             <EmptyState
               icon="search-off"
-              title="This folder isn't here any more"
+              title={NOT_FOUND_FOLDER}
               headingLevel={3}
               action={
                 <Link
@@ -733,7 +791,8 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                 </Link>
               }
             >
-              It may have been deleted, or the link is old.
+              {/* PRD 7 (#604): one text for a folder deleted, never there, or hidden. */}
+              {NOT_FOUND_TEXT}
             </EmptyState>
           ) : (
             <>
@@ -758,6 +817,8 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                 <EmptyState icon={opened ? "file" : "trash"} title={trashEmpty(opened !== null).title} headingLevel={3}>
                   {trashEmpty(opened !== null).text}
                 </EmptyState>
+              ) : library.shared ? (
+                view === "empty" && <EmptyState icon="file" title={SHARED.empty} headingLevel={3} />
               ) : view === "empty" ? (
                 <Dropzone
                   variant="full"
@@ -843,7 +904,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                         aria-label="View options"
                         className={`motion-pop ${styles.morePanel}`}
                       >
-                        {!library.trash && (
+                        {!library.trash && !library.shared && (
                           <div className={styles.moreGroup}>
                             <span className={styles.moreLabel}>Search in</span>
                             <RadioPill<SearchMode>
@@ -1009,6 +1070,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                       onFocusList={() => headingRef.current?.focus()}
                       onTagCreated={() => setTagsVersion((n) => n + 1)}
                       onUploadVersion={chooseVersion}
+                      onShared={(message) => setToast({ message })}
                       trashFolders={folderRows}
                       onOpenFolder={(folder) => openTrashFolder(folder.id)}
                       onFolderDone={opened ? undefined : afterTrashFolder}
@@ -1056,6 +1118,20 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
         onUndo={toastUndo ? () => undoMove(toastUndo, toast?.undone ?? "") : undefined}
         onClose={() => setToast(null)}
       />
+      {audienceOf && (
+        <AudiencePanel
+          target={audienceOf}
+          myId={me.user.id}
+          abilities={accessAbilities(me, { departmentId: audiencePlace?.department?.id ?? null })}
+          place={audiencePlace}
+          onClose={() => setAudienceOf(null)}
+          onChanged={(message) => {
+            setToast({ message });
+            foldersEdited(); // its people icon and the named list follow
+            setReload((n) => n + 1);
+          }}
+        />
+      )}
       {versionFile && (
         <VersionNoteDialog
           documentName={versionFile.of.display_name}

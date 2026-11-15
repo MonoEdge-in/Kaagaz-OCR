@@ -152,7 +152,9 @@ export interface DocumentSummary {
   page_count: number | null;
   created_at: string; // ISO 8601
   uploaded_by_name: string | null;
-  folder_id: string | null; // null: at the top level, in no folder
+  folder_id: string | null; // null: at the top level, in no folder, or in one this person can't see
+  // PRD 7 (#601): in a folder this person can't see (folder_id null): "Shared with you", never a path.
+  shared_with_you?: boolean;
   tags: Tag[];
   deleted_at: string | null; // set while the document (its whole family) is in Trash
   version_no: number; // 1 for the first upload
@@ -1347,6 +1349,58 @@ export interface PlacePreview {
   losing: Person[];
   gaining: Person[];
   files: number;
+  // Make private's preview (PR 10b, coming): the people named on it before, who see it again.
+  named_before?: Person[];
+}
+
+/** PRD 7 PR 10c (#601), a move's preview: for the person a file is held for, counts only (the lists
+ * empty, never anyone's name). */
+export interface MovePreview extends PlacePreview {
+  losing_count?: number;
+  gaining_count?: number;
+}
+
+/** PRD 7 PR 10c (#601), PATCH /documents/{id}: an admin moved the file where they can't see it.
+ * The move stands. */
+export interface HiddenMove {
+  id: string;
+  hidden: true;
+}
+
+/** PRD 7 (#601), GET /{documents|folders}/{id}/audience: who can see it, grouped by why, in the
+ * Audience panel's order; `place`: the department (head, member) or the private folder (named). */
+export interface Audience {
+  groups: { reason: string; place?: { id: string; name: string }; people: Person[] }[];
+  everyone_else: number; // how many people of the organisation can't see it
+}
+
+/** The same with ?user_id= (Check a person): the reasons in the same order. */
+export interface AudienceCheck {
+  can_see: boolean;
+  reasons: string[];
+}
+
+/** PRD 7 (#601), GET /folders/{id}/kept-from-me: an Admin's names list, the files in a folder
+ * they can't open (`count`: all of them; `items`: the first 500 by name). */
+export interface KeptFromMe {
+  count: number;
+  items: {
+    id: string;
+    name: string;
+    kind: string; // the detected type
+    uploader: string | null;
+    created_at: string;
+    version_no: number;
+    locked: boolean;
+  }[];
+}
+
+/** PRD 7 (#601), GET /folders/{id}/named: a private folder's list; `can_edit`: may change it. */
+export interface NamedList {
+  folder: { id: string; name: string; path: string | null };
+  named: Person[];
+  heads: Person[];
+  can_edit: boolean;
 }
 
 /** POST /admin/users: the new user; with email on (#457), whether the invite email went. */

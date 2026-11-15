@@ -19,8 +19,9 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import type { FormEvent, KeyboardEvent, ReactNode, RefCallback } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "@/components/ui/Icon";
-import { createFolder, createTag, setDocumentTags, updateDocument } from "@/lib/api";
-import type { DocumentSummary, Tag } from "@/lib/types";
+import { hiddenMovedText, moveEffectText } from "@/components/access/words";
+import { createFolder, createTag, documentMovePreview, isHiddenMove, moveDocument, setDocumentTags, updateDocument } from "@/lib/api";
+import type { DocumentSummary, MovePreview, Tag } from "@/lib/types";
 import { ActionDialog } from "./ActionDialog";
 import { BusyLabel } from "./BusyLabel";
 import { NameChips } from "./FolderActions";
@@ -40,7 +41,7 @@ import {
   movedMessage,
   tagNameProblem,
 } from "./library";
-import type { EditAction, MenuEntry, RowAction } from "./library";
+import type { EditAction, MenuAccess, MenuEntry, RowAction } from "./library";
 import { documentsCount, runEach } from "./trash";
 import styles from "./Library.module.css";
 
@@ -58,6 +59,8 @@ export interface RowMenuProps {
   /** The document screen's other actions (24 Oct 2026: Ensemble, Export as Data, Download original),
    * after the menu's own and before Move to Trash, each with one plain line; disabled ones say why. */
   more?: readonly MoreItem[];
+  /** PRD 7 (#604): Give access and Who can see this, for who may use them. */
+  access?: MenuAccess;
 }
 
 export interface MoreItem {
@@ -77,13 +80,14 @@ export function RowMenu({
   place = "list",
   readAgain = false,
   more = [],
+  access,
 }: RowMenuProps) {
   const [open, setOpen] = useState(false);
   const [at, setAt] = useState<{ top: number; left: number } | null>(null);
   const button = useRef<HTMLButtonElement | null>(null);
   const list = useRef<HTMLUListElement>(null);
   const menuId = useId();
-  const entries = menuEntries(item, canForever, place, readAgain);
+  const entries = menuEntries(item, canForever, place, readAgain, access);
 
   const setButton = useCallback(
     (element: HTMLButtonElement | null) => {
@@ -448,8 +452,9 @@ export interface MoveFormProps {
   tree: FolderTree;
   /** Names for a new folder (folderNameSuggestions). */
   suggestions?: readonly string[];
-  /** Moved; undo puts each document back where it was. */
-  onSaved(message: string, moved: boolean, undo: () => Promise<void>): void;
+  /** Moved; undo puts each document back where it was (none when an admin moved one where they
+   * can't see it: PR 10c's `{id, hidden: true}`). */
+  onSaved(message: string, moved: boolean, undo?: () => Promise<void>): void;
   /** A folder was made here: the screen asks for the folders again. */
   onFolderCreated?(): void;
   onCancel(): void;
@@ -473,6 +478,24 @@ export function MoveForm({ items, tree, suggestions = [], onSaved, onFolderCreat
   const [openTo] = useState(() => [choice, current ?? null]);
   // Focus starts on the choice made, else on the first one that can be chosen.
   const focusValue = choice ?? (current === TOP ? (tree.roots[0]?.folder.id ?? NEW) : TOP);
+  // PRD 7 PR 11b (#604, PR 10c): for one file, who would lose and gain it in the place chosen
+  // (counts only for the person it is held for); nothing for a new folder, or when the person may
+  // not make such a move (the move itself then says why).
+  const [preview, setPreview] = useState<MovePreview | null>(null);
+  const one = items.length === 1 ? (items[0]?.id ?? null) : null;
+  const existing = choice !== null && choice !== NEW && choice !== SUGGESTED_NEW && choice !== current;
+  useEffect(() => {
+    if (one === null || !existing || choice === null) return;
+    let live = true;
+    documentMovePreview(one, choice || null).then(
+      (reply) => live && setPreview(reply),
+      () => live && setPreview(null),
+    );
+    return () => {
+      live = false;
+      setPreview(null);
+    };
+  }, [one, existing, choice]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -505,18 +528,25 @@ export function MoveForm({ items, tree, suggestions = [], onSaved, onFolderCreat
     }
     const before = new Map(items.map((item) => [item.id, item.folder_id]));
     const ids = items.filter((item) => (item.folder_id ?? TOP) !== target).map((item) => item.id);
-    const result = await runEach(ids, (docId) => updateDocument(docId, { folder_id: target || null }));
+    const hidden = new Set<string>(); // PR 10c: an admin moved these where they can't see them
+    const result = await runEach(ids, async (docId) => {
+      if (isHiddenMove(await moveDocument(docId, target || null))) hidden.add(docId);
+    });
     if (result.done.length === 0) {
       setError(libraryErrorText(result.firstError, "document"));
       setBusy(false);
       return;
     }
+    // Undo puts back only what the admin can still see; the hidden ones can't be moved from here.
+    const back = result.done.filter((docId) => !hidden.has(docId));
     const undo = async () => {
-      const back = await runEach(result.done, (docId) => updateDocument(docId, { folder_id: before.get(docId) ?? null }));
-      if (back.failed.length > 0) throw back.firstError;
+      const moved = await runEach(back, (docId) => updateDocument(docId, { folder_id: before.get(docId) ?? null }));
+      if (moved.failed.length > 0) throw moved.firstError;
     };
     const reason = result.failed.length > 0 ? libraryErrorText(result.firstError, "document") : "";
-    onSaved(movedMessage(result.done.length, ids.length, where, reason), true, undo);
+    const said = movedMessage(result.done.length, ids.length, where, reason);
+    const words = hidden.size > 0 ? `${said} ${hiddenMovedText(hidden.size, result.done.length)}` : said;
+    onSaved(words, true, back.length > 0 ? undo : undefined);
   }
 
   const option = (value: string, key: string, words: ReactNode) => {
@@ -583,6 +613,9 @@ export function MoveForm({ items, tree, suggestions = [], onSaved, onFolderCreat
           {option(NEW, "new", "New folder…")}
         </ul>
       </fieldset>
+      <p className="hint" role="status">
+        {preview ? moveEffectText(preview) : ""}
+      </p>
       {choice === NEW && (
         <div className="field">
           <label htmlFor={`${id}-name`}>Name of the new folder</label>
