@@ -7,7 +7,8 @@
 * ``messages``: the messages to our own number (``metadata.phone_number_id``) in the
   ``messages`` changes; anything else (delivery receipts, another number, a shape not known) is
   left out. Each keeps its id, sender, Meta's time, kind, its text or the id of the button or row
-  tapped, a media id, and whether WhatsApp marked it forwarded. Never logged. ``owner_changed``
+  tapped (W5: or a document's file name), a media id, and whether WhatsApp marked it forwarded.
+  Never logged. ``owner_changed``
   (W3): WhatsApp's ``system`` message saying the number's owner changed (OWNER_CHANGED: a new
   number, or a new phone or identity on it), sent from the number it is about.
 
@@ -100,13 +101,16 @@ def _inbound(message: object) -> Inbound | None:
 
 
 def _body(kind: str, part: object) -> str | None:
-    """The text typed, the id of the button or list row tapped, or a template button's payload."""
+    """The text typed, the id of the button or list row tapped, a template button's payload, or
+    (W5) a document's file name."""
     if kind == "text":
         value = _get(part, "body")
     elif kind == "interactive":
         value = _get(_get(part, "button_reply"), "id") or _get(_get(part, "list_reply"), "id")
     elif kind == "button":
         value = _get(part, "payload")
+    elif kind == "document":
+        value = _get(part, "filename")
     else:
         return None
     return _kept(value)[:MAX_BODY_CHARS] if isinstance(value, str) else None
