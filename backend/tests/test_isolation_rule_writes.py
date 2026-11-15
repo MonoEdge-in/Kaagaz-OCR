@@ -144,9 +144,15 @@ def test_a_hidden_id_is_a_random_id_for_a_person(db: Database) -> None:
     every function a person may run answers as with a random id, and nothing changes."""
     org = _walled(Api(db))
     plain = "plain"
+    _owner(
+        db, "UPDATE documents SET deleted_at = now() WHERE id = :d", {"d": org.files["fin"]}
+    )  # in Trash, filed
+    before = _documents(db, org.c)
     assert _call(db, org, plain, "kaagaz_detach_trashed", ids=[org.folders["finance"]]) == _call(
         db, org, plain, "kaagaz_detach_trashed"
     )
+    assert _documents(db, org.c) == before  # fin is still filed in Finance
+    _owner(db, "UPDATE documents SET deleted_at = NULL WHERE id = :d", {"d": org.files["fin"]})
     _trash_folder(org, org.folders["finance"])
     before = _documents(db, org.c)
     hidden = (org.folders["finance"], org.folders["salaries"], org.files["fin"], org.files["sal"])
