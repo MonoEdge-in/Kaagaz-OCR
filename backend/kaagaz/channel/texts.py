@@ -9,7 +9,9 @@ masking.
 * ``mask``: Aadhaar, PAN, bank account and card numbers (Meta's Business Messaging Policy forbids
   sending them) as ``••••`` and their last 4 characters: a PAN (5 letters, 4 digits, a letter), and
   any run of 9 or more digits (of any script) in groups split by up to 3 spaces, tabs, new lines,
-  hyphens or en dashes, so a phone number goes too. An amount (``₹18,50,000``: commas) or a date is
+  hyphens or dashes of any kind, so a phone number goes too. W7: what draws nothing (zero-width
+  spaces, the soft hyphen, marks of direction) goes first, so a number with it between its digits is
+  masked as the whole it reads as. An amount (``₹18,50,000``: commas) or a date is
   left as it is. True when anything was masked, so the reply can say how to see it in full. Only
   replies sent on WhatsApp are masked (Meta's policy, PRD 7 section 15): nothing stored changes,
   and the browser shows every number in full.
@@ -374,8 +376,11 @@ def say(key: str, lang: Language, *values: object) -> str:
 
 _PAN = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]{5}[0-9]{4}[A-Za-z](?![A-Za-z0-9])")
 # 9 digits or more: groups of digits split by up to 3 spaces (any, a no-break space, a tab or a new
-# line too), hyphens or en dashes, never next to another digit.
-_NUMBER = re.compile(r"(?<!\d)\d+(?:[\s\-\u2013]{1,3}\d+)*(?!\d)")
+# line too), hyphens or dashes (W7: Unicode's hyphens and dashes U+2010 to U+2015, the minus, the
+# small and full-width hyphen-minus), never next to another digit.
+_NUMBER = re.compile(r"(?<!\d)\d+(?:[\s\-\u2010-\u2015\u2212\ufe58\ufe63\uff0d]{1,3}\d+)*(?!\d)")
+# W7: the joiner and non-joiner shape a Devanagari word after one of its letters or signs (not a digit).
+_SHAPED = re.compile("[\u0900-\u0965\u0970-\u097f]")
 MASK = "••••"
 MASKED_DIGITS = 9  # the shortest bank account number; Aadhaar is 12, a card 13 to 19
 
@@ -386,11 +391,24 @@ def _digits(found: re.Match[str]) -> str:
     return MASK + "".join(digits[-4:]) if len(digits) >= MASKED_DIGITS else run
 
 
+def _visible(text: str) -> str:
+    """W7: ``text`` without what draws nothing (Unicode's format characters), but the joiner and
+    non-joiner that shape a Devanagari word. O(len(text))."""
+    if text.isascii():
+        return text  # none of them is ASCII
+    return "".join(
+        ch
+        for i, ch in enumerate(text)
+        if unicodedata.category(ch) != "Cf" or (ch in "\u200c\u200d" and i > 0 and _SHAPED.match(text[i - 1]))
+    )
+
+
 def mask(text: str) -> tuple[str, bool]:
     """``text`` with its ID and account numbers masked, and whether any was. O(len(text))."""
-    masked = _PAN.sub(lambda found: MASK + found.group(0)[-4:].upper(), text)
+    visible = _visible(text)
+    masked = _PAN.sub(lambda found: MASK + found.group(0)[-4:].upper(), visible)
     masked = _NUMBER.sub(_digits, masked)
-    return masked, masked != text
+    return masked, masked != visible
 
 
 def masked(text: str) -> str:
