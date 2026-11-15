@@ -114,7 +114,9 @@ def test_property_choices_read_their_records_village_and_never_a_boundary_or_tra
     customer, user = new_customer(db)
     with db.customer(customer) as conn:
         kept = insert_document(conn, customer)
-        binned = insert_document(conn, customer, deleted_at=datetime(2026, 11, 1, tzinfo=UTC), deleted_by=user)
+        binned = insert_document(
+            conn, customer, deleted_at=datetime(2026, 11, 1, tzinfo=UTC), deleted_by=user
+        )
         insert_key(conn, customer, kept, "property", "६१")
         insert_key(conn, customer, kept, "place", "Kusgaon")
         insert_key(conn, customer, binned, "property", "79")

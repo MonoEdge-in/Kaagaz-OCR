@@ -227,9 +227,18 @@ class PgVocabulary:
 
 
 def _entry(row: RowMapping) -> Entry:
-    found = (row["kind"], row["latin"], row["label"], tuple(sorted(row["documents"])), row["aliased"])
-    about = {name: row.get(name) or "" for name in ("field", "village", "taluka", "doc_type", "doc_name")}
-    return Entry(*found, **about)
+    return Entry(
+        row["kind"],
+        row["latin"],
+        row["label"],
+        tuple(sorted(row["documents"])),
+        row["aliased"],
+        field=row.get("field") or "",
+        village=row.get("village") or "",
+        taluka=row.get("taluka") or "",
+        doc_type=row.get("doc_type") or "",
+        doc_name=row.get("doc_name") or "",
+    )
 
 
 def property_choice(entry: Entry) -> tuple[str, tuple[str, str, str]] | None:
@@ -239,7 +248,9 @@ def property_choice(entry: Entry) -> tuple[str, tuple[str, str, str]] | None:
     or anything that reads like instructions. O(n) for its text."""
     printed = clean_text(entry.label)
     found = _NUMBER.search(printed)
-    kind = next((word for word, said in _PRINTED_KINDS if said.search(printed)), PROPERTY_KINDS.get(entry.field))
+    kind = next(
+        (word for word, said in _PRINTED_KINDS if said.search(printed)), PROPERTY_KINDS.get(entry.field)
+    )
     if found is None or kind is None or looks_like_instructions(printed):
         return None
     number = found[0].strip(" .:-")
@@ -458,7 +469,11 @@ def _asking(
                 merged[key]["document_ids"] = sorted({*merged[key]["document_ids"], *entry.documents})
             elif len(merged) < MAX_PROPERTY_CHOICES:
                 pick = {"id": f"c{len(merged) + 1}", "label": label, "kind": "pick"}
-                merged[key] = {**pick, "value": clean_text(entry.label), "document_ids": list(entry.documents)}
+                merged[key] = {
+                    **pick,
+                    "value": clean_text(entry.label),
+                    "document_ids": list(entry.documents),
+                }
         if len(merged) < 2:  # one, or none, is no question: an open list, saying so
             _log.info("clarify not asked", extra={"code": "clarify_property_few"})
             return Step(question, (*said, NO_PROPERTY))

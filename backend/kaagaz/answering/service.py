@@ -669,11 +669,31 @@ class AnswerService:
             keyless = copy.copy(self)  # shallow: the same ports, without the model clients
             keyless._model = keyless._translator = None
             return keyless._respond(
-                customer_id, question, scope, history, user_id, memory, None, pins, pending, clarify, cited,
+                customer_id,
+                question,
+                scope,
+                history,
+                user_id,
+                memory,
+                None,
+                pins,
+                pending,
+                clarify,
+                cited,
                 last_cited,
             )
         return self._respond(
-            customer_id, question, scope, history, user_id, memory, choice, pins, pending, clarify, cited,
+            customer_id,
+            question,
+            scope,
+            history,
+            user_id,
+            memory,
+            choice,
+            pins,
+            pending,
+            clarify,
+            cited,
             last_cited,
         )
 
@@ -696,7 +716,9 @@ class AnswerService:
         stream.emit("stage", {"stage": "understanding"})  # step 21: the rewrite and plan, when any
         if pending is not None and pending.documents:  # #629: a property pick searches its own documents
             inside = scope.document_ids
-            picked = pending.documents if inside is None else tuple(d for d in pending.documents if d in inside)
+            picked = (
+                pending.documents if inside is None else tuple(d for d in pending.documents if d in inside)
+            )
             scope = replace(scope, document_ids=picked)
         if scope.matches_nothing:
             return _not_found("search", question.strip(), [], model_used=False, reason="notfound_empty_scope")

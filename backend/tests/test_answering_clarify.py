@@ -14,10 +14,10 @@ from kaagaz.answering.clarify import (
     Entry,
     Kind,
     answers_clarify,
-    property_choice,
     distance,
     latin_key,
     outcome,
+    property_choice,
     put,
     reply_to,
 )
@@ -285,7 +285,9 @@ def test_a_missing_subject_is_asked_unless_the_scope_narrows_it() -> None:
 def test_a_missing_subject_offers_the_chats_own_properties_first_newest_turn_first() -> None:  # PRD 6 B
     question = "What is the area?"
     gats = [entry("property", f"Gat {n}") for n in range(1, 8)]
-    survey, older = (Entry("property", latin_key(s, "property"), s, (d,), doc_name=f"{d}.pdf") for s, d in SURVEYS)
+    survey, older = (
+        Entry("property", latin_key(s, "property"), s, (d,), doc_name=f"{d}.pdf") for s, d in SURVEYS
+    )
     entries = [gats[0], survey, *gats[1:], older]  # the company's newest first: 12/1 past the cap
 
     def choices(*cited: str) -> tuple[list[str], FakeVocabulary]:
@@ -380,15 +382,26 @@ def test_typed_words_answer_the_open_clarify_only_as_a_short_name() -> None:
 
 def land(printed: str, document: str, *, village: str = "", taluka: str = "", name: str = "") -> Entry:
     """A land record's survey number, its record's village and taluka, and its document."""
-    fields = {"field": "land_survey_number", "village": village, "taluka": taluka}
-    fields |= {"doc_type": "land_record", "doc_name": name}
-    return Entry("property", latin_key(printed, "property"), printed, (document,), **fields)
+    key, kind = latin_key(printed, "property"), "land_survey_number"
+    return Entry(
+        "property",
+        key,
+        printed,
+        (document,),
+        field=kind,
+        village=village,
+        taluka=taluka,
+        doc_type="land_record",
+        doc_name=name,
+    )
 
 
+# 13.06.00 in Devanagari digits, written with escapes (ruff reads its zero as a Latin o).
+DATE = "\u0967\u0969.\u0966\u096c.\u0966\u0966"
 # Production's shape: a date, a joined value and bare numbers, one of them twice (two scripts).
 SCREENSHOT = (
     land("६१", "d1", village="Kusgaon", taluka="Maval"),
-    land("१३.०६.००", "d2", village="Kusgaon"),
+    land(DATE, "d2", village="Kusgaon"),
     land("६५/३, ८१, ८५/२", "d3", village="Kusgaon"),
     land("८१", "d4", name="7-12 Kusgaon.pdf"),
     land("61", "d5", village="Kusgaon", taluka="Maval"),
@@ -417,7 +430,7 @@ def test_property_choices_name_their_kind_number_and_place_and_never_a_date_or_j
 
 
 @pytest.mark.parametrize(
-    "printed", ["१३.०६.००", "13/06/2000", "६५/३, ८१, ८५/२", "45/2 and 46", "₹ 12,000", "Rs 500.00", "Kusgaon"]
+    "printed", [DATE, "13/06/2000", "६५/३, ८१, ८५/२", "45/2 and 46", "₹ 12,000", "Rs 500.00", "Kusgaon"]
 )
 def test_a_date_money_joined_numbers_or_no_number_is_never_a_choice(printed: str) -> None:
     assert property_choice(land(printed, "d1", village="Kusgaon")) is None
