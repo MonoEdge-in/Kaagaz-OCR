@@ -57,11 +57,13 @@ from kaagaz.api.auth import CurrentUser
 from kaagaz.api.context import AppContext
 from kaagaz.api.errors import ApiError
 from kaagaz.api.routers import documents
-from kaagaz.channel.chat import DESCRIPTION_CHARS, MAX_BODY, MAX_ROWS, ROW_CHARS, _cut, _lang, _masked
 from kaagaz.channel.loop import keep_lease
 from kaagaz.channel.outgoing import Outgoing, Row
 from kaagaz.channel.photos import PhotosPdf
-from kaagaz.channel.texts import Language, say
+from kaagaz.channel.texts import DESCRIPTION_CHARS, MAX_BODY, MAX_ROWS, ROW_CHARS, Language, say
+from kaagaz.channel.texts import cut as _cut
+from kaagaz.channel.texts import lang_of as _lang
+from kaagaz.channel.texts import masked as _masked
 from kaagaz.db import autofile
 from kaagaz.db import whatsapp as wa
 from kaagaz.db import whatsapp_chat as wa_chat

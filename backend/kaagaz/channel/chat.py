@@ -44,7 +44,6 @@ import dataclasses
 import functools
 import logging
 import re
-import unicodedata
 import uuid
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -63,7 +62,23 @@ from kaagaz.api.errors import ApiError
 from kaagaz.api.routers import chat as chat_router
 from kaagaz.api.views import NO_ACCESS, cited_document_ids
 from kaagaz.channel.outgoing import Outgoing, Row
-from kaagaz.channel.texts import LANGUAGE_NAMES, LANGUAGES, Language, language, mask, say
+from kaagaz.channel.texts import (  # the limits and helpers W4 kept here, shared with uploads (W5)
+    BUTTON_CHARS,
+    DESCRIPTION_CHARS,
+    LANGUAGE_NAMES,
+    LANGUAGES,
+    MAX_BODY,
+    MAX_ROWS,
+    ROW_CHARS,
+    Language,
+    language,
+    mask,
+    say,
+)
+from kaagaz.channel.texts import cut as _cut
+from kaagaz.channel.texts import lang_of as _lang
+from kaagaz.channel.texts import masked as _masked
+from kaagaz.channel.upload import Upload
 from kaagaz.chunking.script import ascii_digits
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import listing
@@ -79,10 +94,7 @@ FOLLOW_UP_MINUTES = 30  # a follow-up continues the conversation; an open "Did y
 STEP_MINUTES = 30  # "Which file?" waits this long for a name
 MAX_QUESTION = 1000  # Ask's own (AskBody.question)
 MAX_ANSWER_CHARS = 800  # longer answers are cut, with a link to the whole one
-MAX_BODY = 1024  # WhatsApp's most for a message with reply buttons
 MAX_SOURCES = 3
-MAX_ROWS = 10  # WhatsApp's most for a list
-BUTTON_CHARS, ROW_CHARS, DESCRIPTION_CHARS = 20, 24, 72  # WhatsApp's limits
 MAX_SUMMARY_CHARS = 400
 # Question ids: uuid5 of the WhatsApp message's own id (whatsapp_messages.id).
 QUESTIONS = uuid.UUID("6f0f7d8e-9c43-4a8e-8a5e-603000000004")
@@ -105,35 +117,11 @@ _TRANSLATE_PROMPT = (
 )
 _LANGUAGE_FOR_MODEL = {"hi": "Hindi", "mr": "Marathi"}
 _PATH = " " + chr(0x203A) + " "  # between the folders of a path, as the browser shows it
-_VIRAMA = chr(0x094D)  # joins a Devanagari consonant to the next: a cut never falls after it
 _NUMBER = re.compile("[0-9]+(?:[.,][0-9]+)*")
-
-
-def _cut(text: str, most: int, *, lines: bool = False) -> str:
-    """``text`` on one line (``lines``: its lines kept), at most ``most`` characters, cut with "…"
-    at a whole letter: never between a Devanagari letter and its vowel sign, or inside a joined
-    consonant."""
-    text = text.strip() if lines else " ".join(text.split())
-    if len(text) <= most:
-        return text
-    end = most - 1
-    while end > 0 and (unicodedata.category(text[end]).startswith("M") or text[end - 1] == _VIRAMA):
-        end -= 1
-    return text[:end].rstrip() + "…"
-
-
-def _lang(value: str) -> Language:
-    return next((each for each in LANGUAGES if each == value), "en")
-
-
-def _masked(text: str) -> str:
-    return mask(text)[0]
 
 
 class Chat:
     def __init__(self, context: AppContext) -> None:
-        from kaagaz.channel.upload import Upload  # here: upload.py uses this module's helpers
-
         self.context = context
         self.upload = Upload(context)  # W5
 

@@ -13,13 +13,39 @@ masking.
   left as it is. True when anything was masked, so the reply can say how to see it in full. Only
   replies sent on WhatsApp are masked (Meta's policy, PRD 7 section 15): nothing stored changes,
   and the browser shows every number in full.
+* WhatsApp's limits, ``cut``, ``lang_of`` and ``masked`` (W4's, kept in kaagaz/channel/chat.py
+  until W5's uploads shared them).
 """
 
 import re
+import unicodedata
 from typing import Literal
 
 Language = Literal["en", "hi", "mr"]
 LANGUAGES: tuple[Language, ...] = ("en", "hi", "mr")
+MAX_BODY = 1024  # WhatsApp's most for a message with reply buttons
+MAX_ROWS = 10  # WhatsApp's most for a list
+BUTTON_CHARS, ROW_CHARS, DESCRIPTION_CHARS = 20, 24, 72  # WhatsApp's limits
+_VIRAMA = chr(0x094D)  # joins a Devanagari consonant to the next: a cut never falls after it
+
+
+def cut(text: str, most: int, *, lines: bool = False) -> str:
+    """``text`` on one line (``lines``: its lines kept), at most ``most`` characters, cut with "…"
+    at a whole letter: never between a Devanagari letter and its vowel sign, or inside a joined
+    consonant."""
+    text = text.strip() if lines else " ".join(text.split())
+    if len(text) <= most:
+        return text
+    end = most - 1
+    while end > 0 and (unicodedata.category(text[end]).startswith("M") or text[end - 1] == _VIRAMA):
+        end -= 1
+    return text[:end].rstrip() + "…"
+
+
+def lang_of(value: str) -> Language:
+    """``value`` as a language this chat speaks; English for anything else."""
+    return next((each for each in LANGUAGES if each == value), "en")
+
 
 _DEVANAGARI = re.compile("[ऀ-ॿ]")
 _WORD = re.compile(r"[ऀ-ॿ]+")
@@ -365,3 +391,8 @@ def mask(text: str) -> tuple[str, bool]:
     masked = _PAN.sub(lambda found: MASK + found.group(0)[-4:].upper(), text)
     masked = _NUMBER.sub(_digits, masked)
     return masked, masked != text
+
+
+def masked(text: str) -> str:
+    """``text`` with its ID and account numbers masked (``mask``'s text)."""
+    return mask(text)[0]
