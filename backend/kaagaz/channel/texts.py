@@ -8,9 +8,11 @@ masking.
 * ``say``: a fixed message in a language, its ``{}`` filled in.
 * ``mask``: Aadhaar, PAN, bank account and card numbers (Meta's Business Messaging Policy forbids
   sending them) as ``••••`` and their last 4 characters: a PAN (5 letters, 4 digits, a letter), and
-  any run of 9 to 19 digits (of any script) in groups split by single spaces or hyphens, so a
-  phone number goes too. An amount (``₹18,50,000``: commas) or a date is left as it is. True when
-  anything was masked, so the reply can say how to see it in full.
+  any run of 9 or more digits (of any script) in groups split by up to 3 spaces, tabs, new lines,
+  hyphens or en dashes, so a phone number goes too. An amount (``₹18,50,000``: commas) or a date is
+  left as it is. True when anything was masked, so the reply can say how to see it in full. Only
+  replies sent on WhatsApp are masked (Meta's policy, PRD 7 section 15): nothing stored changes,
+  and the browser shows every number in full.
 """
 
 import re
@@ -116,6 +118,16 @@ TEXTS: dict[str, tuple[str, str, str]] = {
         "आपकी संस्था के लिए सवाल पूछना बंद है।",
         "तुमच्या संस्थेसाठी प्रश्न विचारणे बंद आहे.",
     ),
+    "model_not_allowed": (
+        "That way of answering isn't available now. Choose another in Kaagaz, in Answer settings.",
+        "जवाब देने का यह तरीका अभी उपलब्ध नहीं है। Kaagaz में Answer settings में दूसरा चुनें।",
+        "उत्तर देण्याची ही पद्धत आता उपलब्ध नाही. Kaagaz मध्ये Answer settings मध्ये दुसरी निवडा.",
+    ),
+    "change_password": (
+        "Please sign in to Kaagaz and set a new password first.",
+        "कृपया पहले Kaagaz में साइन इन करके नया पासवर्ड सेट करें।",
+        "कृपया आधी Kaagaz मध्ये साइन इन करून नवीन पासवर्ड सेट करा.",
+    ),
     "too_long": (
         "Please keep your question under 1,000 characters.",
         "कृपया अपना सवाल 1,000 अक्षरों से छोटा रखें।",
@@ -152,15 +164,17 @@ def say(key: str, lang: Language, *values: object) -> str:
 
 
 _PAN = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]{5}[0-9]{4}[A-Za-z](?![A-Za-z0-9])")
-# 9 to 19 digits: groups of digits split by one space or hyphen, never next to another digit.
-_NUMBER = re.compile(r"(?<![\d])\d+(?:[ -]\d+)*(?![\d])")
+# 9 digits or more: groups of digits split by up to 3 spaces (any, a no-break space, a tab or a new
+# line too), hyphens or en dashes, never next to another digit.
+_NUMBER = re.compile(r"(?<!\d)\d+(?:[\s\-\u2013]{1,3}\d+)*(?!\d)")
 MASK = "••••"
+MASKED_DIGITS = 9  # the shortest bank account number; Aadhaar is 12, a card 13 to 19
 
 
 def _digits(found: re.Match[str]) -> str:
     run = found.group(0)
     digits = [ch for ch in run if ch.isdigit()]
-    return MASK + "".join(digits[-4:]) if 9 <= len(digits) <= 19 else run
+    return MASK + "".join(digits[-4:]) if len(digits) >= MASKED_DIGITS else run
 
 
 def mask(text: str) -> tuple[str, bool]:

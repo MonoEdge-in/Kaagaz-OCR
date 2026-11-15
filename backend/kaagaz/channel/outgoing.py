@@ -1,6 +1,7 @@
 """One WhatsApp reply (#603 W4): what the chat answers and ``Channel`` sends, one message per answer
 (each outgoing message is billed on its own)."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 
@@ -16,9 +17,18 @@ class Row:
 @dataclass(frozen=True, slots=True)
 class Outgoing:
     """A text; with up to 3 reply buttons, each (id, title of 20 characters); or a list of up to 10
-    ``rows``, opened by ``button``."""
+    ``rows``, opened by ``button``.
+
+    ``documents``: every document the reply names, checked again just before each try to send it
+    (``Chat.recheck``). ``link``: the document whose preview card it is, audited only once the reply
+    was sent. ``lang``: its language, for the "couldn't find" that stands in for it. ``later``: work
+    to do once it was sent (Ask's memory)."""
 
     body: str
     buttons: tuple[tuple[str, str], ...] = ()
     rows: tuple[Row, ...] = ()
     button: str = ""
+    documents: tuple[str, ...] = ()
+    link: str | None = None
+    lang: str = "en"
+    later: tuple[Callable[[], None], ...] = ()

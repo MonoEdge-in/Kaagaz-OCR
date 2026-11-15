@@ -14,21 +14,34 @@ Everything runs as the person (``auth.load_user``, then ``db.user`` only), throu
   match gives its preview card; several a list of up to MAX_ROWS (``file:<document>:<language>``).
   A card is text only: the name, folder ("Shared with you" for a file given to the person), kind,
   pages, date, the summary Kaagaz made, and a link to the document in Kaagaz. The file itself is
-  never sent; the link holds only its id and needs a Kaagaz sign-in. Audited ``whatsapp.file_link``.
+  never sent; the link holds only its id and needs a Kaagaz sign-in. ``Channel`` audits
+  ``whatsapp.file_link`` once the card was sent. A search or a card counts against Ask's own
+  per-minute limit (``chat.chat_limits``), as a question does.
 * **Never shown**: a hidden, missing, locked or deleted file gets the same NOT_FOUND reply, whether
-  asked about, searched for or tapped; counts are of what the person may see. Just before a reply
-  goes, every document it names is checked again (``whatsapp_chat.on_whatsapp``): one hidden,
-  locked or deleted since turns the whole reply into NOT_FOUND, and a "Did you mean" choice whose
-  documents are all locked is left out.
+  asked about, searched for or tapped; counts are of what the person may see. A reply carries every
+  document it names, and ``recheck`` (run by ``Channel`` just before each try to send it) turns the
+  whole reply into NOT_FOUND once one is hidden, locked or deleted. A "Did you mean" choice whose
+  documents are all locked is left out (checked after the question's translation).
+* **Locked files until PRD 7 PR 12** (shortcut): Ask still reads a locked file its asker may open,
+  so for a person holding any lock grant the WhatsApp reply leaves out Ask's assumption lines ("I
+  took X as Y") and answers a fixed query's totals and counts with NOT_FOUND: neither cites the
+  file it may have come from.
 * **Words**: the reply is in the language of the message (``texts.language``), or of the button
   tapped (its id carries it). Ask answers in English; for Hindi or Marathi its text is translated
   (``_in_language``: one model call, billed as the person's Ask; a translation whose numbers differ
-  is not used). Aadhaar, PAN, bank and card numbers are masked in every reply (``texts.mask``).
+  is not used). Aadhaar, PAN, bank and card numbers are masked in every reply (``texts.mask``),
+  before a translation and again after it, and before anything is cut.
 * **Only Kaagaz files** (Meta's rule against general AI chatbots): Ask answers only from the
   person's files; a question it finds nothing for also says ONLY_FILES.
+* A person who must set a new password gets only CHANGE_PASSWORD, as the browser lets them do
+  nothing else.
 """
 
+import dataclasses
+import functools
 import logging
+import re
+import unicodedata
 import uuid
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -49,8 +62,8 @@ from kaagaz.api.views import NO_ACCESS, cited_document_ids
 from kaagaz.channel.outgoing import Outgoing, Row
 from kaagaz.channel.texts import LANGUAGE_NAMES, LANGUAGES, Language, language, mask, say
 from kaagaz.chunking.script import ascii_digits
-from kaagaz.db import audit, listing
 from kaagaz.db import folders as folders_sql
+from kaagaz.db import listing
 from kaagaz.db import whatsapp_chat as wa_chat
 from kaagaz.db.whatsapp import Linked, Waiting
 from kaagaz.search.find import find_documents
@@ -85,11 +98,22 @@ _TRANSLATE_PROMPT = (
     'Reply with JSON only: {{"text": "..."}}.'
 )
 _LANGUAGE_FOR_MODEL = {"hi": "Hindi", "mr": "Marathi"}
+_PATH = " " + chr(0x203A) + " "  # between the folders of a path, as the browser shows it
+_VIRAMA = chr(0x094D)  # joins a Devanagari consonant to the next: a cut never falls after it
+_NUMBER = re.compile("[0-9]+(?:[.,][0-9]+)*")
 
 
-def _cut(text: str, most: int) -> str:
-    text = " ".join(text.split())
-    return text if len(text) <= most else text[: most - 1].rstrip() + "…"
+def _cut(text: str, most: int, *, lines: bool = False) -> str:
+    """``text`` on one line (``lines``: its lines kept), at most ``most`` characters, cut with "…"
+    at a whole letter: never between a Devanagari letter and its vowel sign, or inside a joined
+    consonant."""
+    text = text.strip() if lines else " ".join(text.split())
+    if len(text) <= most:
+        return text
+    end = most - 1
+    while end > 0 and (unicodedata.category(text[end]).startswith("M") or text[end - 1] == _VIRAMA):
+        end -= 1
+    return text[:end].rstrip() + "…"
 
 
 def _lang(value: str) -> Language:
@@ -112,18 +136,33 @@ class Chat:
         if user is None:  # disabled since the check: the next message's check ends the connection
             raise PermissionError("not signed in")
         body = (message.body or "").strip()
+        lang = language(body) or "en"
+        if user.must_change_password:
+            return Outgoing(say("change_password", lang), lang=lang)
         if message.kind in ("interactive", "button"):
             return self._tapped(user, message, body)
-        lang = language(body) or "en"
-        if message.kind != "text":
-            return Outgoing(say("typed_only", "en"))
-        if body.casefold() in GREETINGS:
-            return self._menu(user, lang)
         with self.context.db.user(user.customer_id, user.user_id) as conn:
             step = wa_chat.step(conn, user.customer_id, user.user_id)
+        stepped = None if step is None else _lang(str(step.get("lang")))
+        if message.kind != "text":
+            return Outgoing(say("typed_only", stepped or "en"), lang=stepped or "en")
+        if body.casefold() in GREETINGS:
+            return self._menu(user, lang)
         if step is not None and step.get("step") == "file":
-            return self._find(user, body, lang if lang != "en" else _lang(str(step.get("lang"))))
+            return self._find(user, body, lang if lang != "en" else stepped or "en")
         return self._ask(user, message, body, lang)
+
+    def recheck(self, linked: Linked, reply: Outgoing) -> Outgoing:
+        """``reply`` as it may go now: NOT_FOUND once a document it names is hidden, locked or
+        deleted since it was made. ``Channel`` runs it just before each try to send."""
+        if not reply.documents:
+            return reply
+        with self.context.db.user(linked.customer_id, linked.user_id) as conn:
+            seen = wa_chat.on_whatsapp(conn, linked.customer_id, reply.documents)
+        if set(reply.documents) <= seen:
+            return reply
+        lang = _lang(reply.lang)
+        return Outgoing(say("not_found", lang), ((f"menu.{lang}", say("menu_button", lang)),), lang=lang)
 
     def _tapped(self, user: CurrentUser, message: Waiting, tapped: str) -> Outgoing:
         if tapped == START:
@@ -133,23 +172,30 @@ class Chat:
             return self._picked(user, message, message_id, choice, _lang(lang))
         if tapped.startswith("file:"):
             _, document_id, lang = [*tapped.split(":"), "", ""][:3]
+            if not self._allowed(user):
+                return Outgoing(say("too_many", _lang(lang)), lang=lang)
             return self._card(user, document_id, _lang(lang))
         action, _, lang_code = tapped.partition(".")
         lang = _lang(lang_code)
         if action in ("ask", "another"):
             self._set_step(user, None)
-            return Outgoing(say("ask", lang))
+            return Outgoing(say("ask", lang), lang=lang)
         if action == "get":
             self._set_step(user, {"step": "file", "lang": lang})
-            return Outgoing(say("which_file", lang))
+            return Outgoing(say("which_file", lang), lang=lang)
         if action == "not_this":
             self._set_step(user, {"step": "file", "lang": lang})
-            return Outgoing(say("not_here", lang))
+            return Outgoing(say("not_here", lang), lang=lang)
         if action == "more":
             return self._more(lang)
         if action == "help":
-            return Outgoing(say("help", lang, self._url("")), self._after(lang))
+            return Outgoing(say("help", lang, self._url("")), self._after(lang), lang=lang)
         return self._menu(user, lang)  # Menu, a language from More, or a button of an older list
+
+    def _allowed(self, user: CurrentUser) -> bool:
+        """One more search or card within Ask's own per-minute limit (one limiter a process, the
+        API's and this channel's each)."""
+        return chat_router.chat_limits(self.context.settings.chat_questions_per_minute).allow(user.user_id)
 
     # --- the menu ----------------------------------------------------------------------------
 
@@ -161,14 +207,14 @@ class Chat:
             (f"get.{lang}", say("get_button", lang)),
             (f"more.{lang}", say("more_button", lang)),
         )
-        return Outgoing(say("menu", lang, _cut(_masked(name), 40)), buttons)
+        return Outgoing(say("menu", lang, _cut(_masked(name), 40)), buttons, lang=lang)
 
     def _more(self, lang: Language) -> Outgoing:
         rows = [
             Row(f"menu.{each}", LANGUAGE_NAMES[each], say("language_section", each)) for each in LANGUAGES
         ]
         rows += [Row(f"help.{lang}", say("help_row", lang)), Row("disconnect", say("disconnect_row", lang))]
-        return Outgoing(say("more", lang), rows=tuple(rows), button=say("choose", lang))
+        return Outgoing(say("more", lang), rows=tuple(rows), button=say("choose", lang), lang=lang)
 
     def _after(self, lang: Language) -> tuple[tuple[str, str], ...]:
         return ((f"another.{lang}", say("another_button", lang)), (f"menu.{lang}", say("menu_button", lang)))
@@ -184,7 +230,7 @@ class Chat:
 
     def _ask(self, user: CurrentUser, message: Waiting, question: str, lang: Language) -> Outgoing:
         if len(question) > MAX_QUESTION:
-            return Outgoing(say("too_long", lang))
+            return Outgoing(say("too_long", lang), lang=lang)
         with self.context.db.user(user.customer_id, user.user_id) as conn:
             now = wa_chat.current(conn, user.customer_id, user.user_id, FOLLOW_UP_MINUTES)
         conversation = None if now is None or not now.fresh else uuid.UUID(now.id)
@@ -212,20 +258,21 @@ class Chat:
         self, user: CurrentUser, message: Waiting, message_id: str, choice: str, lang: Language
     ) -> Outgoing:
         """A "Did you mean" choice tapped: Ask checks it again (CLARIFY_GONE)."""
+        gone = Outgoing(say("choice_gone", lang), self._after(lang), lang=lang)
         if choice == "other":
-            return Outgoing(say("type_it", lang))
+            return Outgoing(say("type_it", lang), lang=lang)
         try:
             picked = uuid.UUID(message_id)
         except ValueError:
-            return Outgoing(say("choice_gone", lang), self._after(lang))
+            return gone
         with self.context.db.user(user.customer_id, user.user_id) as conn:
             now = wa_chat.current(conn, user.customer_id, user.user_id, FOLLOW_UP_MINUTES)
         if now is None or (now.message_id == message_id and not now.fresh):  # expired
-            return Outgoing(say("choice_gone", lang), self._after(lang))
+            return gone
         try:
             reply = chat_router.ReplyBody(message_id=picked, choice_ids=[choice])
         except ValueError:  # not a choice id Ask knows
-            return Outgoing(say("choice_gone", lang), self._after(lang))
+            return gone
         body = chat_router.AskBody(
             conversation_id=uuid.UUID(now.id), reply=reply, question_id=self._question_id(message)
         )
@@ -233,45 +280,51 @@ class Chat:
             return self._asked(user, body, lang)
         except ApiError as error:
             if error.status in (404, 409):
-                return Outgoing(say("choice_gone", lang), self._after(lang))
+                return gone
             raise
 
     def _question_id(self, message: Waiting) -> uuid.UUID:
         return uuid.uuid5(QUESTIONS, message.id)
 
     def _asked(self, user: CurrentUser, body: Any, lang: Language) -> Outgoing:
-        """Ask's answer to ``body``, as one WhatsApp message. Its limits in plain words."""
+        """Ask's answer to ``body``, as one WhatsApp message; Ask's memory to write once it was sent.
+        Its limits in plain words."""
         background = BackgroundTasks()
         try:
             reply = chat_router.ask(body, user, self.context, background, channel=CHANNEL)
         except ApiError as error:
             if error.status == 429:
-                return Outgoing(say("too_many", lang))
+                return Outgoing(say("too_many", lang), lang=lang)
             if error.status == 403:
-                return Outgoing(say("ask_off", lang))
+                key = "model_not_allowed" if error.code in chat_router.NOT_ALLOWED else "ask_off"
+                return Outgoing(say(key, lang), lang=lang)
             raise
-        for task in background.tasks:  # the memory, after the answer, as the stream does
-            try:
-                task.func(*task.args, **task.kwargs)
-            except Exception as error:  # noqa: BLE001 - after the answer, as Starlette's own tasks
-                _log.warning("background task failed", extra={"code": type(error).__name__})
-        return self._answer(user, reply, lang)
+        later = tuple(functools.partial(task.func, *task.args, **task.kwargs) for task in background.tasks)
+        return dataclasses.replace(self._answer(user, reply, lang), later=later)
 
     def _answer(self, user: CurrentUser, reply: dict[str, Any], lang: Language) -> Outgoing:
         shown = reply["answer"]
         answer: dict[str, Any] = shown["answer"] or {}
         conversation = str(reply["conversation_id"])
+        not_found = Outgoing(say("not_found", lang), self._after(lang), lang=lang)
         if answer.get("status") == "clarify":
             return self._clarify(user, str(shown["id"]), answer, conversation, lang)
         if answer.get("status") == NO_ACCESS:
-            return Outgoing(say("not_found", lang), self._after(lang))
+            return not_found
         said = [line for line in answer.get("assumptions") or [] if isinstance(line, str)]
-        text = self._in_language(
-            user, "\n".join([*said, chat_router.answer_text(answer)]), lang, conversation
-        )
+        # shortcut: until PR 12 stops Ask reading locked files, a lock grant holder's reply names
+        # nothing Ask assumed and no fixed query's total or count (neither cites its file).
+        with self.context.db.user(user.customer_id, user.user_id) as conn:
+            granted = wa_chat.holds_lock_grant(conn)
+        if granted:
+            if answer.get("route") == "fixed_query":
+                return not_found
+            said = []
+        english, hidden = mask("\n".join([*said, chat_router.answer_text(answer)]))  # before and after
+        text, masked = mask(self._in_language(user, english, lang, conversation))
+        hidden = hidden or masked
         if answer.get("status") == "not_found":
             text += "\n" + say("only_files", lang)
-        text, hidden = mask(text)
         sources: list[str] = []
         for document_id, name, page in self._sources(answer):
             name, masked = mask(name)  # before any cut, which could leave part of a number whole
@@ -284,10 +337,10 @@ class Chat:
         rest = "\n\n".join([*sources, *notes])
         room = MAX_BODY - len(rest) - len(full) - 4
         if len(text) > min(MAX_ANSWER_CHARS, room):
-            text = text[: max(min(MAX_ANSWER_CHARS, room) - 1, 0)].rstrip() + "…\n" + full
-        if not self._still_shown(user, cited_document_ids(answer)):
-            return Outgoing(say("not_found", lang), self._after(lang))
-        return Outgoing("\n\n".join(part for part in (text, rest) if part), self._after(lang))
+            text = _cut(text, max(min(MAX_ANSWER_CHARS, room), 1), lines=True) + "\n" + full
+        body = "\n\n".join(part for part in (text, rest) if part)
+        documents = tuple(dict.fromkeys(cited_document_ids(answer)))
+        return Outgoing(body, self._after(lang), documents=documents, lang=lang)
 
     def _sources(self, answer: dict[str, Any]) -> list[tuple[str, str, int | None]]:
         """The cited documents and pages, in citation order, once each; with none, the closest
@@ -308,10 +361,13 @@ class Chat:
     def _clarify(
         self, user: CurrentUser, message_id: str, answer: dict[str, Any], conversation: str, lang: Language
     ) -> Outgoing:
-        """Ask's "Did you mean" as reply buttons (3 choices or fewer) or a list, its question in the
-        chat's language; a choice whose documents are all locked is left out, and with it "All of
-        these"."""
+        """Ask's "Did you mean" as reply buttons (3 choices or fewer, each title its own) or a list,
+        its question in the chat's language; then, just before it goes, a choice whose documents are
+        all locked is left out, and with it "All of these"."""
         clarify = answer.get("clarify") or {}
+        question = _masked(
+            self._in_language(user, _masked(str(clarify.get("question") or "")), lang, conversation)
+        )
         choices = [c for c in clarify.get("choices", []) if isinstance(c, dict)]
         named = [str(d) for c in choices for d in c.get("document_ids", [])]
         with self.context.db.user(user.customer_id, user.user_id) as conn:
@@ -323,7 +379,7 @@ class Chat:
             and (not c.get("document_ids") or {str(d) for d in c["document_ids"]} & seen)
         ]
         if not picks:
-            return Outgoing(say("not_found", lang), self._after(lang))
+            return Outgoing(say("not_found", lang), self._after(lang), lang=lang)
         every = len(picks) == sum(c.get("kind") == "pick" for c in choices)
         labels = {"all": say("all_of_these", lang), "other": say("something_else", lang)}
         options = [(c["id"], _masked(str(c.get("label") or ""))) for c in picks]
@@ -332,22 +388,26 @@ class Chat:
             for c in choices
             if c.get("kind") == "other" or (c.get("kind") == "all" and every)
         ]
-        question = _masked(self._in_language(user, str(clarify.get("question") or ""), lang, conversation))
+        documents = tuple(
+            dict.fromkeys(str(d) for c in picks for d in c.get("document_ids", []) if str(d) in seen)
+        )
         ids = [f"pick:{message_id}:{choice}:{lang}" for choice, _ in options]
-        if len(options) <= 3:
-            return Outgoing(
-                question,
-                tuple((i, _cut(label, BUTTON_CHARS)) for i, (_, label) in zip(ids, options, strict=True)),
-            )
+        titles = [_cut(label, BUTTON_CHARS) for _, label in options]
+        if len(options) <= 3 and len(set(titles)) == len(titles):  # a button is told apart by its title
+            return Outgoing(question, tuple(zip(ids, titles, strict=True)), documents=documents, lang=lang)
         rows = tuple(
             Row(i, _cut(label, ROW_CHARS), _cut(label, DESCRIPTION_CHARS) if len(label) > ROW_CHARS else "")
             for i, (_, label) in zip(ids, options, strict=True)
         )
-        return Outgoing(question, rows=rows[:MAX_ROWS], button=say("choose", lang))
+        return Outgoing(
+            question, rows=rows[:MAX_ROWS], button=say("choose", lang), documents=documents, lang=lang
+        )
 
     # --- Get a file --------------------------------------------------------------------------
 
     def _find(self, user: CurrentUser, words: str, lang: Language) -> Outgoing:
+        if not self._allowed(user):
+            return Outgoing(say("too_many", lang), lang=lang)
         settings = self.context.settings
         found = find_documents(
             self.context.db,
@@ -365,7 +425,7 @@ class Chat:
             kept = [document_id for document_id in ids if document_id in seen]
             rows = [self._row(conn, user, document_id, lang) for document_id in kept[:MAX_ROWS]]
         if not kept:
-            return Outgoing(say("not_found", lang), ((f"menu.{lang}", say("menu_button", lang)),))
+            return Outgoing(say("not_found", lang), ((f"menu.{lang}", say("menu_button", lang)),), lang=lang)
         if len(kept) == 1:
             return self._card(user, kept[0], lang)
         if len(kept) > MAX_ROWS:  # counts only of what may be named here
@@ -373,7 +433,11 @@ class Chat:
         else:
             heading = say("found", lang, len(kept))
         return Outgoing(
-            f"{heading}\n{say('not_here', lang)}", rows=tuple(rows), button=say("see_files", lang)
+            f"{heading}\n{say('not_here', lang)}",
+            rows=tuple(rows),
+            button=say("see_files", lang),
+            documents=tuple(kept[:MAX_ROWS]),
+            lang=lang,
         )
 
     def _row(self, conn: Any, user: CurrentUser, document_id: str, lang: Language) -> Row:
@@ -396,7 +460,7 @@ class Chat:
         if path and len(listing.folders_seen(conn, user.customer_id, [each.id for each in path])) == len(
             path
         ):
-            return " \u203a ".join(each.name for each in path)
+            return _PATH.join(each.name for each in path)
         return say("shared", lang) if wa_chat.shared_with_me(conn, str(row["id"])) else ""
 
     def _date(self, moment: Any) -> str:
@@ -405,17 +469,20 @@ class Chat:
 
     def _card(self, user: CurrentUser, document_id: str, lang: Language) -> Outgoing:
         """The preview card of one file the person may see on WhatsApp, else NOT_FOUND (a hidden,
-        missing, locked or deleted file, or an id that never was, alike)."""
+        missing, locked or deleted file, or an id that never was, alike). ``Channel`` checks it again
+        just before it goes and audits it once sent."""
         menu = ((f"menu.{lang}", say("menu_button", lang)),)
+        not_found = Outgoing(say("not_found", lang), menu, lang=lang)
         try:
             target = str(uuid.UUID(document_id))
         except ValueError:
-            return Outgoing(say("not_found", lang), menu)
+            return not_found
         with self.context.db.user(user.customer_id, user.user_id) as conn:
             row = listing.get_document(conn, user.customer_id, target)
             if row is None or not wa_chat.on_whatsapp(conn, user.customer_id, [target]):
-                return Outgoing(say("not_found", lang), menu)
+                return not_found
             where = self._where(conn, user, row, lang)
+            wa_chat.clear_step(conn, user.customer_id, user.user_id)
         kind = str(row["doc_type"] or "").replace("_", " ").capitalize()
         pages = say("pages", lang, row["page_count"]) if row["page_count"] else ""
         facts = " · ".join(
@@ -432,33 +499,11 @@ class Chat:
         link = say("open_in_kaagaz", lang, self._url(f"/documents/{target}"))
         tail = "\n".join([*([say("masked", lang)] if hidden else []), link])  # never cut: the link
         if len(text) + 1 + len(tail) > MAX_BODY:
-            text = text[: MAX_BODY - len(tail) - 2].rstrip() + "…"
-        text += "\n" + tail
-        with self.context.db.user(user.customer_id, user.user_id) as conn:  # again, just before it goes
-            if not wa_chat.on_whatsapp(conn, user.customer_id, [target]):
-                return Outgoing(say("not_found", lang), menu)
-            audit.record(
-                conn,
-                user.customer_id,
-                actor_user_id=user.user_id,
-                action="whatsapp.file_link",
-                target_type="document",
-                target_id=target,
-                details={"via": CHANNEL},
-                subject_user_id=user.user_id,
-            )
-            wa_chat.clear_step(conn, user.customer_id, user.user_id)
+            text = _cut(text, MAX_BODY - len(tail) - 1, lines=True)
         buttons = ((f"not_this.{lang}", say("not_this_button", lang)), *menu)
-        return Outgoing(text, buttons)
+        return Outgoing(f"{text}\n{tail}", buttons, documents=(target,), link=target, lang=lang)
 
     # --- shared --------------------------------------------------------------------------------
-
-    def _still_shown(self, user: CurrentUser, document_ids: list[str]) -> bool:
-        """Every document a reply names may still be shown on WhatsApp, checked just before it goes."""
-        if not document_ids:
-            return True
-        with self.context.db.user(user.customer_id, user.user_id) as conn:
-            return set(document_ids) <= wa_chat.on_whatsapp(conn, user.customer_id, document_ids)
 
     def _url(self, path: str) -> str:
         return (self.context.settings.app_url or "").rstrip("/") + path
@@ -501,13 +546,11 @@ class Chat:
 
 
 def _numbers(text: str) -> list[str]:
-    """The numbers of ``text``, digits of any script read as ASCII, sorted."""
-    digits = ascii_digits(text)
-    found, number = [], ""
-    for ch in digits + " ":
-        if ch.isascii() and ch.isdigit():
-            number += ch
-        elif number:
-            found.append(number.lstrip("0") or "0")
-            number = ""
+    """The numbers of ``text`` (digits of any script read as ASCII), each whole: its thousands
+    commas left out (``4,820`` and ``4820`` are one number, in any grouping) and its decimals kept;
+    sorted."""
+    found = []
+    for number in _NUMBER.findall(ascii_digits(text)):
+        whole, dot, part = number.replace(",", "").partition(".")
+        found.append((whole.lstrip("0") or "0") + dot + part)
     return sorted(found)

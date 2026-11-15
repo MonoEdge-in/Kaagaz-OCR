@@ -15,7 +15,12 @@ other process off it) and goes through its waiting messages oldest first, by Wha
    ends first (audited), then DISCONNECTED goes once (never tried again: the number is no longer
    connected). "Disconnect" (typed, or Menu's in W4) asks first, with [Disconnect] [Keep it].
 5. Otherwise the chat's reply (W4, ``chat.Chat``: the menu, Ask, "Did you mean", Get a file), one
-   message, then the message is done. An error while making it counts a try (below).
+   message, then the message is done. An error while making it counts a try (below). A reply is
+   made once (``made``, by the connection and message): a try to send it again sends the same one,
+   with no second search, model call or audit row. Just before each try the connection is checked
+   again (refused: as in 3) and so is every document the reply names (``Chat.recheck``: one hidden,
+   locked or deleted since gives "couldn't find" instead). Once it was sent, a preview card's
+   ``whatsapp.file_link`` is audited with the message's "done", and Ask's memory is written.
 
 A reply goes outside any transaction, and only to the connection's own number. One that could not
 be sent leaves the message waiting and the connection resting (the order is kept: nothing after it
@@ -30,7 +35,7 @@ duplicate left.
 
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Protocol
 
@@ -38,6 +43,7 @@ from kaagaz.adapters.whatsapp import NOT_ME, WhatsAppError
 from kaagaz.api.secret_box import SecretBoxError
 from kaagaz.channel.numbers import open_number
 from kaagaz.channel.outgoing import Outgoing
+from kaagaz.db import audit
 from kaagaz.db import whatsapp as wa
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.whatsapp import Check, Claim, Linked, Waiting
@@ -65,6 +71,7 @@ MAX_TRIES = 5  # errors while answering one message
 UNTIL_IT_EXPIRES = 32767  # a reply not sent is tried until REPLY_WINDOW ends (smallint's most)
 REPLY_WINDOW = timedelta(hours=24)
 _AUTH = frozenset({401, 403})
+MAX_MADE = 1000  # replies held to send again (each one message's, a few KB)
 
 
 class Sender(Protocol):
@@ -78,6 +85,8 @@ class Sender(Protocol):
 class Replier(Protocol):
     def reply(self, linked: Linked, message: Waiting) -> Outgoing: ...
 
+    def recheck(self, linked: Linked, reply: Outgoing) -> Outgoing: ...
+
 
 @dataclass(frozen=True, slots=True)
 class Channel:
@@ -86,6 +95,8 @@ class Channel:
     number_key: str
     clock: Callable[[], datetime]
     chat: Replier  # W4: the reply to every other message (kaagaz.channel.chat.Chat)
+    # W4: the replies made and not yet sent, by (customer, person, message): kept until sent or failed.
+    made: dict[tuple[str, str, str], Outgoing] = field(default_factory=dict)
 
     def claim(self, limit: int) -> list[Claim]:
         """Up to ``limit`` connections, leased; BackendUnavailable when the database is lost."""
@@ -114,7 +125,8 @@ class Channel:
             try:
                 wait = self._answer(linked, message, check)
             except Exception as error:
-                self._not_sent(linked, message, type(error).__name__, most=MAX_TRIES)
+                if self._not_sent(linked, message, type(error).__name__, most=MAX_TRIES) is None:
+                    self.made.pop(_key(linked, message), None)
                 raise
         with self.db.user(linked.customer_id, linked.user_id) as conn:
             wa.release(conn, linked, until, wait)
@@ -132,13 +144,7 @@ class Channel:
             _log.error("whatsapp message failed", extra=sealed)
             return self._finish(linked, message, "failed", replied=False)
         if check.refused is not None:
-            sent = (
-                self._send(lambda: self.sender.send_text(number, NOT_CONNECTED)) is None
-            )  # once; it ends regardless
-            with self.db.user(linked.customer_id, linked.user_id) as conn:
-                wa.end(conn, linked, check.refused)
-                wa.finish(conn, linked, message.id, "done", replied=sent)
-            return 0
+            return self._refused(linked, message, number, check.refused)
         word = (message.body or "").strip().casefold()
         ending = (
             "person"
@@ -152,18 +158,50 @@ class Channel:
                 wa.end(conn, linked, ending)
             sent = self._send(lambda: self.sender.send_text(number, DISCONNECTED)) is None
             return self._finish(linked, message, "done", replied=sent)
+        key = _key(linked, message)
         if word == DISCONNECT:
             reply = Outgoing(ASK_DISCONNECT, DISCONNECT_BUTTONS)
+        elif word == KEEP:
+            reply = Outgoing(STILL_CONNECTED)
         else:
-            reply = Outgoing(STILL_CONNECTED) if word == KEEP else self.chat.reply(linked, message)
+            made = self.made.get(key)
+            if made is None:
+                if len(self.made) >= MAX_MADE:  # never more than this held: the oldest goes
+                    self.made.pop(next(iter(self.made)))
+                made = self.made[key] = self.chat.reply(linked, message)
+            with self.db.user(linked.customer_id, linked.user_id) as conn:  # just before it goes
+                again = wa.check(conn, linked)
+            if again.sealed is None or again.refused is not None:
+                self.made.pop(key, None)
+                if again.sealed is None:
+                    return self._finish(linked, message, "done", replied=False)
+                return self._refused(linked, message, number, again.refused or "account")
+            reply = self.chat.recheck(linked, made)
         error = self._send(lambda: self._deliver(number, reply))
         if error is None:
-            return self._finish(linked, message, "done", replied=True)
+            self.made.pop(key, None)
+            self._finish(linked, message, "done", replied=True, link=reply.link)
+            for later in reply.later:  # Ask's memory, once the reply was sent
+                try:
+                    later()
+                except Exception as failed:  # noqa: BLE001 - after the reply, as Starlette's own tasks
+                    _log.warning("background task failed", extra={"code": type(failed).__name__})
+            return 0
         status = error.status or 0
         for_good = 400 <= status < 500 and status not in _AUTH and status != 429
         code = f"{error.code}:{status or '-'}"
         tries = self._not_sent(linked, message, code, most=UNTIL_IT_EXPIRES, fail=for_good)
+        if tries is None:
+            self.made.pop(key, None)
         return 0 if tries is None else min(RETRY_SECONDS * 2 ** (tries - 1), RETRY_MAX_SECONDS)
+
+    def _refused(self, linked: Linked, message: Waiting, number: str, reason: str) -> int:
+        """NOT_CONNECTED once to the number; the connection ends regardless (audited)."""
+        sent = self._send(lambda: self.sender.send_text(number, NOT_CONNECTED)) is None
+        with self.db.user(linked.customer_id, linked.user_id) as conn:
+            wa.end(conn, linked, reason)
+            wa.finish(conn, linked, message.id, "done", replied=sent)
+        return 0
 
     def _deliver(self, number: str, reply: Outgoing) -> None:
         if reply.rows:
@@ -196,7 +234,25 @@ class Channel:
         _log.error("whatsapp message failed", extra={"code": code, "customer_id": linked.customer_id})
         return None
 
-    def _finish(self, linked: Linked, message: Waiting, state: str, *, replied: bool) -> int:
+    def _finish(
+        self, linked: Linked, message: Waiting, state: str, *, replied: bool, link: str | None = None
+    ) -> int:
+        """The message's end; ``link``: the document whose card was just sent, audited with it."""
         with self.db.user(linked.customer_id, linked.user_id) as conn:
             wa.finish(conn, linked, message.id, state, replied=replied)
+            if link is not None:
+                audit.record(
+                    conn,
+                    linked.customer_id,
+                    actor_user_id=linked.user_id,
+                    action="whatsapp.file_link",
+                    target_type="document",
+                    target_id=link,
+                    details={"via": "whatsapp"},
+                    subject_user_id=linked.user_id,
+                )
         return 0
+
+
+def _key(linked: Linked, message: Waiting) -> tuple[str, str, str]:
+    return (linked.customer_id, linked.user_id, message.id)
