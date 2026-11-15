@@ -28,11 +28,13 @@ from sqlalchemy import text
 
 from kaagaz.adapters.whatsapp import MetaWhatsApp
 from kaagaz.api.errors import ApiError
+from kaagaz.api.routers import documents as documents_router
 from kaagaz.channel import upload as upload_module
 from kaagaz.channel.chat import Chat
 from kaagaz.channel.loop import Channel
 from kaagaz.channel.outgoing import Outgoing
 from kaagaz.channel.texts import say
+from kaagaz.db import autofile
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database
 from kaagaz.db.whatsapp import Linked, Waiting
@@ -416,7 +418,7 @@ def test_back_goes_to_the_list_the_folder_was_picked_from(world: World) -> None:
 def test_let_kaagaz_decide_is_the_browsers_upload_with_no_folder(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(upload_module.autofile, "applies", lambda conn, c, u: True)
+    monkeypatch.setattr(autofile, "applies", lambda conn, c, u: True)
     person = world.person()
     world.folder(person, "Bills")
     assert world.file(person, pdf("x"), "a.pdf")[1] == ["up:choose::en", "up:auto::en", "up:cancel::en"]
@@ -538,7 +540,7 @@ def test_photos_joined_but_refused_by_the_upload_are_said_so(
     def full(*args: Any, **kwargs: Any) -> Any:
         raise ApiError(413, "storage_full", "full")
 
-    monkeypatch.setattr(upload_module.documents, "store_upload", full)
+    monkeypatch.setattr(documents_router, "store_upload", full)
     body, buttons = world.tap(person, world.replies(person)[-1][1][0])
     assert body.startswith('"WhatsApp photo ') and body.endswith(
         "(2 pages).pdf\" can't be saved: your organisation's Kaagaz storage is full. Ask your admin."
@@ -745,7 +747,7 @@ def _saved(world: World, person: Person) -> str:
     world.file(person, pdf(uuid.uuid4().hex), "bill.pdf")
     save_into(world, person, "Bills")
     (saved,) = world.documents(person)
-    return saved["id"]
+    return str(saved["id"])
 
 
 def test_the_ready_notice_goes_once_kaagaz_has_read_the_file(world: World) -> None:
@@ -934,7 +936,7 @@ def test_a_long_save_renews_the_lease_between_files(world: World, monkeypatch: p
     person = world.person()
     world.folder(person, "Bills")
     leases: list[Any] = []
-    real = upload_module.documents.store_upload
+    real = documents_router.store_upload
 
     def watched(*args: Any, **kwargs: Any) -> Any:
         found = _owner(world.db, "SELECT busy_until FROM whatsapp_links WHERE id = :l", {"l": person.link})
@@ -948,7 +950,7 @@ def test_a_long_save_renews_the_lease_between_files(world: World, monkeypatch: p
         for n in range(3)
     ]
     world.send(person, *items)
-    monkeypatch.setattr(upload_module.documents, "store_upload", watched)
+    monkeypatch.setattr(documents_router, "store_upload", watched)
     save_into(world, person, "Bills")
     assert len(leases) == 3 and leases[0] < leases[1] < leases[2]
 
@@ -966,7 +968,7 @@ def test_a_batch_that_breaks_partway_keeps_what_was_saved_and_the_rest_waits(
         file_message(person.number, sent, second, filename="two.pdf"),
     ]
     world.send(person, *items)
-    real = upload_module.documents.store_upload
+    real = documents_router.store_upload
     if down == "meta":
         world.fake.broken.add(second)
     else:
@@ -978,7 +980,7 @@ def test_a_batch_that_breaks_partway_keeps_what_was_saved_and_the_rest_waits(
                 raise BackendUnavailable("storage")
             return real(*args, **kwargs)
 
-        monkeypatch.setattr(upload_module.documents, "store_upload", full)
+        monkeypatch.setattr(documents_router, "store_upload", full)
     body, buttons = save_into(world, person, "Bills")
     (saved,) = world.documents(person)
     assert body.startswith(say("fetch_failed", "en")) and say("saved", "en", "one.pdf", "Bills") in body
@@ -991,7 +993,7 @@ def test_a_batch_that_breaks_partway_keeps_what_was_saved_and_the_rest_waits(
     )
     assert noticed == [(1,)] and [str(f) for f in recent[0][0]] == [saved["folder"]]
     world.fake.broken.clear()
-    monkeypatch.setattr(upload_module.documents, "store_upload", real)
+    monkeypatch.setattr(documents_router, "store_upload", real)
     world.tap(person, buttons[0])  # Save the rest
     assert [d["name"] for d in world.documents(person)] == ["one.pdf", "two.pdf"]
 
