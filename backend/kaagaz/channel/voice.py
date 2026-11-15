@@ -8,7 +8,8 @@ note the person sends is written down, as the person, and then handled as typed 
 * Ask's own limits first, as a typed question meets them: ``ask_off`` while the organisation's Ask
   is off, ``too_many`` past Ask's per-minute limit (``chat.chat_limits``; the question then counts
   again when Ask answers it, as a search or a card does, W4);
-* ``voice_limit`` for a note over MAX_VOICE_SECONDS or MAX_VOICE_BYTES (Meta's stated size first, then
+* ``voice_limit`` for a note over MAX_VOICE_SECONDS (W7: by its last page and by its packets,
+  ``opus_packets_seconds``) or MAX_VOICE_BYTES (Meta's stated size first, then
   the bytes read), or one that is not Ogg Opus, WhatsApp's voice note (its length is read from its
   Ogg pages, ``ogg_opus_seconds``; nothing is decoded);
 * ``voice_failed`` when Meta (the media download pinned to Meta's hosts, no redirect: W5's
@@ -136,6 +137,8 @@ class Voice:
         seconds = None if audio is None else ogg_opus_seconds(audio)
         if audio is None or seconds is None or seconds >= MAX_VOICE_SECONDS + 1:
             return "voice_limit"
+        if opus_packets_seconds(audio) >= MAX_VOICE_SECONDS + 1:  # W7: whatever its last page claims
+            return "voice_limit"
         try:
             with usage_scope(
                 self.context.db,
@@ -196,3 +199,36 @@ def ogg_opus_seconds(data: bytes) -> float | None:
             return max(0, granule - pre_skip) / OPUS_RATE
         end = at
     return None
+
+
+def opus_packets_seconds(data: bytes) -> float:
+    """W7: how long an Ogg recording's Opus packets play, from each packet's first byte (its frame
+    size and count, RFC 6716 section 3.1), whatever its pages' granule positions claim (the sender
+    writes those). Nothing is decoded; 0 for data that is not Ogg. O(len(data))."""
+    total, packet, at = 0.0, bytearray(), 0
+    while data.startswith(b"OggS", at) and at + 27 <= len(data):
+        lacing = data[at + 27 : at + 27 + data[at + 26]]
+        body = at + 27 + len(lacing)
+        for size in lacing:  # a packet ends at its first segment under 255 bytes
+            packet += data[body : body + size]
+            body += size
+            if size < 255:
+                total += _packet_seconds(bytes(packet))
+                packet.clear()
+        at = body
+    return total
+
+
+def _packet_seconds(packet: bytes) -> float:
+    """One Opus packet's length by its table-of-contents byte; 0 for OpusHead, OpusTags or none."""
+    if not packet or packet.startswith((b"OpusHead", b"OpusTags")):
+        return 0.0
+    config, code = packet[0] >> 3, packet[0] & 3
+    if config < 12:  # SILK: 10, 20, 40 or 60 ms
+        ms = (10.0, 20.0, 40.0, 60.0)[config % 4]
+    elif config < 16:  # hybrid: 10 or 20 ms
+        ms = (10.0, 20.0)[config % 2]
+    else:  # CELT: 2.5, 5, 10 or 20 ms
+        ms = (2.5, 5.0, 10.0, 20.0)[config % 4]
+    frames = (1, 2, 2, packet[1] & 0x3F if len(packet) > 1 else 0)[code]
+    return ms * frames / 1000
