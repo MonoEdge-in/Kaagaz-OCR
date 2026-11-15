@@ -5,8 +5,19 @@ numbers a translation must keep, and a list as Meta takes it."""
 import pytest
 
 from kaagaz.adapters.whatsapp import MetaWhatsApp
-from kaagaz.channel.chat import BUTTON_CHARS, ROW_CHARS, _cut, _numbers
-from kaagaz.channel.texts import LANGUAGE_NAMES, LANGUAGES, MASK, TEXTS, language, mask, say
+from kaagaz.channel.chat import _numbers
+from kaagaz.channel.texts import (
+    BUTTON_CHARS,
+    LANGUAGE_NAMES,
+    LANGUAGES,
+    MASK,
+    ROW_CHARS,
+    TEXTS,
+    language,
+    mask,
+    say,
+)
+from kaagaz.channel.texts import cut as _cut
 from tests.whatsapp_fake import NUMBER_ID, TOKEN, running_fake
 
 TAB, LINE, NBSP, DASH = (

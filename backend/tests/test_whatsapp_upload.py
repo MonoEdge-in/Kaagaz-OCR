@@ -11,11 +11,10 @@ import pytest
 from PIL import Image
 
 from kaagaz.adapters.whatsapp import MetaWhatsApp, WhatsAppError
-from kaagaz.channel.chat import BUTTON_CHARS, ROW_CHARS
 from kaagaz.channel.inbound import messages
 from kaagaz.channel.loop import _language_of, notice_rest
 from kaagaz.channel.photos import A4_SHORT_POINTS, PhotosPdf, jpeg_size
-from kaagaz.channel.texts import LANGUAGES, TEXTS, say
+from kaagaz.channel.texts import BUTTON_CHARS, LANGUAGES, ROW_CHARS, TEXTS, say
 from kaagaz.db.whatsapp import Waiting
 from tests.whatsapp_fake import NUMBER_ID, TOKEN, delivery, file_message, running_fake
 
