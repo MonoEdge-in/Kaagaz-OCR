@@ -151,25 +151,32 @@ def _audit(
     )
 
 
+def _watchers(conn: Connection, context: AppContext, user: CurrentUser) -> list[tuple[str, str]]:
+    """Every enabled Management person and admin but the actor (e-mail, name), read in the
+    write's own transaction as the person; none while email is off."""
+    if not emails.email_on(context):
+        return []
+    return users_sql.access_watchers(conn, user.customer_id, but=user.user_id)
+
+
 def _tell(
     background: BackgroundTasks,
     context: AppContext,
     user: CurrentUser,
     kind: str,
     person: str | None,
+    watchers: list[tuple[str, str]],
 ) -> None:
-    """After the commit: ``access_given`` to every enabled Management person and admin but the
-    actor. ``person``: who was given it (None: the actor themselves). Sent for an Admin's own
-    access, every Management grant, and any access given to a person who is an Admin (lead
-    decision: an Admin's second account is still an Admin's)."""
-    emails.after(background, "access_given", _send_access_given, context, user, kind, person)
+    """After the commit: ``access_given`` to each of ``watchers`` (``_watchers``). ``person``: who
+    was given it (None: the actor themselves). Sent for an Admin's own access, every Management
+    grant, and any access given to a person who is an Admin (lead decision: an Admin's second
+    account is still an Admin's)."""
+    emails.after(background, "access_given", _send_access_given, context, user, kind, person, watchers)
 
 
-def _send_access_given(context: AppContext, user: CurrentUser, kind: str, person: str | None) -> None:
-    if not emails.email_on(context):
-        return
-    with context.db.customer(user.customer_id) as conn:
-        watchers = users_sql.access_watchers(conn, user.customer_id, but=user.user_id)
+def _send_access_given(
+    context: AppContext, user: CurrentUser, kind: str, person: str | None, watchers: list[tuple[str, str]]
+) -> None:
     for address, name in watchers:
         message = emails.access_given(name, user.customer_name, user.display_name, person, kind)
         emails.send(context, address, "access_given", message)
@@ -270,8 +277,9 @@ def set_management(
             details = {"self": True} if mine else None
             action = "access.management_on" if body.on else "access.management_off"
             _audit(conn, user, action, ("user", target), target, details)
+        watchers = _watchers(conn, context, user)
     if changed and body.on:
-        _tell(background, context, user, "management", None if mine else found.name)
+        _tell(background, context, user, "management", None if mine else found.name, watchers)
     return admin_user(row, now=context.clock())
 
 
@@ -306,8 +314,9 @@ def add_member(
                 details["self"] = True
             action = "access.member_add" if added else ("access.head_on" if head else "access.head_off")
             _audit(conn, user, action, ("folder", department), target, details)
+        watchers = _watchers(conn, context, user)
     if added is not None and gains and (mine or found.admin):
-        _tell(background, context, user, "head" if head else "member", None if mine else found.name)
+        _tell(background, context, user, "head" if head else "member", None if mine else found.name, watchers)
     return {"head": head, "changed": added is not None}
 
 
@@ -360,8 +369,9 @@ def set_department_only(
                 details["self"] = True
             action = "access.department_only_on" if body.on else "access.department_only_off"
             _audit(conn, user, action, ("folder", department), None, details)
+        watchers = _watchers(conn, context, user)
     if gained:
-        _tell(background, context, user, "wall", None)
+        _tell(background, context, user, "wall", None, watchers)
     return {
         "id": department,
         "department_only": body.on,
@@ -441,11 +451,12 @@ def set_private(
         for person in newly:
             _audit(conn, user, "access.named_add", ("folder", target), person, _self(user, person))
         reply_named = _named_reply(conn, user, place)
+        watchers = _watchers(conn, context, user)
     if mine:
-        _tell(background, context, user, "named" if user.user_id in newly else "wall", None)
+        _tell(background, context, user, "named" if user.user_id in newly else "wall", None, watchers)
     for person in newly:
         if person != user.user_id and people[person].admin:
-            _tell(background, context, user, "named", people[person].name)
+            _tell(background, context, user, "named", people[person].name, watchers)
     return {
         "folder": {"id": place.id, "name": place.name},
         "private": place.private,
@@ -509,11 +520,12 @@ def get_named(folder_id: uuid.UUID, user: User, context: Context) -> dict[str, A
 
 def _change_named(
     context: AppContext, user: CurrentUser, folder_id: str, person: str, password: str | None, *, add: bool
-) -> tuple[bool, str | None]:
+) -> tuple[bool, str | None, list[tuple[str, str]]]:
     """Name or unname: the checks in a short first transaction, the password proved with no
     connection held, then the write under the tree lock, with the folder and the Head tick read
     again there. (changed, whom to tell: "" the Admin themselves, a named Admin's name, None
-    nobody). A person unknown or switched off is 404 (one answer, for a Head too)."""
+    nobody; and ``_watchers``). A person unknown or switched off is 404 (one answer, for a Head
+    too)."""
     customer_id = user.customer_id
     with context.db.user(customer_id, user.user_id) as conn:
         _private_seen(conn, user, folder_id)
@@ -525,7 +537,7 @@ def _change_named(
             if not access_sql.unname(conn, customer_id, folder_id, person):
                 raise ApiError(404, "not_found")
             _audit(conn, user, "access.named_remove", ("folder", folder_id), person)
-            return True, None
+            return True, None, []
         found = access_sql.person(conn, customer_id, person)
         if found is None or found.disabled:
             raise ApiError(404, "not_found")
@@ -535,9 +547,10 @@ def _change_named(
         changed = access_sql.name(conn, customer_id, folder_id, person, by=user.user_id)
         if changed:
             _audit(conn, user, "access.named_add", ("folder", folder_id), person, _self(user, person))
+        watchers = _watchers(conn, context, user)
     if not changed or not found.admin:  # an Admin's own, or any Admin's: emailed
-        return changed, None
-    return changed, "" if mine else found.name
+        return changed, None, []
+    return changed, "" if mine else found.name, watchers
 
 
 @router.put("/folders/{folder_id}/named/{user_id}")
@@ -550,9 +563,11 @@ def add_named(
     context: Context,
 ) -> dict[str, bool]:
     """Name a person on a private folder: ``{changed}`` (false: they were already)."""
-    changed, tell = _change_named(context, user, str(folder_id), str(user_id), body.password, add=True)
+    changed, tell, watchers = _change_named(
+        context, user, str(folder_id), str(user_id), body.password, add=True
+    )
     if tell is not None:
-        _tell(background, context, user, "named", tell or None)
+        _tell(background, context, user, "named", tell or None, watchers)
     return {"changed": changed}
 
 
@@ -654,8 +669,9 @@ def give_file(
         if mine:
             _self_grant(user, body.password)
         versions, given = _give(conn, user, target, [person])
+        watchers = _watchers(conn, context, user)
     if given and (mine or found.admin):
-        _tell(background, context, user, "file", None if mine else found.name)
+        _tell(background, context, user, "file", None if mine else found.name, watchers)
     return {"versions": versions, "changed": bool(given)}
 
 
@@ -702,9 +718,11 @@ def give_files(
         given: list[str] = []
         for each in sorted(found, key=lambda row: (row.family_id, row.id)):
             given += _give(conn, user, each.id, people)[1]
+        watchers = _watchers(conn, context, user)
     for person in dict.fromkeys(given):
         if person == user.user_id or persons[person].admin:
-            _tell(background, context, user, "file", None if person == user.user_id else persons[person].name)
+            who = None if person == user.user_id else persons[person].name
+            _tell(background, context, user, "file", who, watchers)
     return {"given": len(given)}
 
 
