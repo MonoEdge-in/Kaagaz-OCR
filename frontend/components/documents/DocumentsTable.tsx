@@ -124,8 +124,10 @@ export interface RowEvents {
   /** Moved to Trash, restored or deleted for good: say it and ask for the list again; a move
    * to Trash or a restore can be undone (issue 372). */
   onRemoved(message: string, undo?: RemovalUndo): void;
-  /** Renamed, moved or tagged: announce it and ask for the list again; a move can be undone. */
-  onSaved(message: string, undo?: () => Promise<void>): void;
+  /** Renamed, moved or tagged: announce it and ask for the list again; a move can be undone.
+   * `moved`: a move, said in the toast even with no Undo (PR 10c: an admin who moved a file where
+   * they can't see it). */
+  onSaved(message: string, undo?: () => Promise<void>, moved?: boolean): void;
   /** After a move the row may be gone: focus the list's heading. */
   onFocusList(): void;
   onTagCreated(): void;
@@ -313,7 +315,7 @@ export function DocumentsTable({
   const rowEvents = useMemo<RowEvents>(
     () => ({
       onRemoved: (message, undo) => latestEvents.current.onRemoved(message, undo),
-      onSaved: (message, undo) => latestEvents.current.onSaved(message, undo),
+      onSaved: (message, undo, moved) => latestEvents.current.onSaved(message, undo, moved),
       onFocusList: () => latestEvents.current.onFocusList(),
       onTagCreated: () => latestEvents.current.onTagCreated(),
       onFolderCreated: () => latestEvents.current.onFolderCreated(),
@@ -683,11 +685,11 @@ export function DocumentsTable({
             if (box) box.focus();
             else events.onFocusList();
           }}
-          onSaved={(message, _moved, undo) => {
+          onSaved={(message, moved, undo) => {
             bulkMoved.current = true;
             setMoving(false);
             clearSelection();
-            events.onSaved(message, undo);
+            events.onSaved(message, undo, moved);
           }}
           onFolderCreated={events.onFolderCreated}
         />
@@ -892,7 +894,7 @@ const DocumentRow = memo(function DocumentRow({
   function saved(message: string, moved = false, undo?: () => Promise<void>) {
     afterEdit.current = moved && movedLeaves ? "list" : "actions";
     setEditing(null);
-    events.onSaved(message, undo);
+    events.onSaved(message, undo, moved);
   }
 
   // The dialog is shut: hand focus back to Actions, or to the list after a move.

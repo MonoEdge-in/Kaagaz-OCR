@@ -528,23 +528,25 @@ export function MoveForm({ items, tree, suggestions = [], onSaved, onFolderCreat
     }
     const before = new Map(items.map((item) => [item.id, item.folder_id]));
     const ids = items.filter((item) => (item.folder_id ?? TOP) !== target).map((item) => item.id);
-    let hidden = 0; // PR 10c: an admin moved one where they can't see it
+    const hidden = new Set<string>(); // PR 10c: an admin moved these where they can't see them
     const result = await runEach(ids, async (docId) => {
-      if (isHiddenMove(await moveDocument(docId, target || null))) hidden += 1;
+      if (isHiddenMove(await moveDocument(docId, target || null))) hidden.add(docId);
     });
     if (result.done.length === 0) {
       setError(libraryErrorText(result.firstError, "document"));
       setBusy(false);
       return;
     }
+    // Undo puts back only what the admin can still see; the hidden ones can't be moved from here.
+    const back = result.done.filter((docId) => !hidden.has(docId));
     const undo = async () => {
-      const back = await runEach(result.done, (docId) => updateDocument(docId, { folder_id: before.get(docId) ?? null }));
-      if (back.failed.length > 0) throw back.firstError;
+      const moved = await runEach(back, (docId) => updateDocument(docId, { folder_id: before.get(docId) ?? null }));
+      if (moved.failed.length > 0) throw moved.firstError;
     };
     const reason = result.failed.length > 0 ? libraryErrorText(result.firstError, "document") : "";
     const said = movedMessage(result.done.length, ids.length, where, reason);
-    if (hidden > 0) onSaved(`${said} ${hiddenMovedText(hidden, result.done.length)}`, true);
-    else onSaved(said, true, undo);
+    const words = hidden.size > 0 ? `${said} ${hiddenMovedText(hidden.size, result.done.length)}` : said;
+    onSaved(words, true, back.length > 0 ? undo : undefined);
   }
 
   const option = (value: string, key: string, words: ReactNode) => {

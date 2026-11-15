@@ -62,7 +62,7 @@ export function DeleteFolderDialog({ tree, node, summary, onDeleted, onCancel }:
 
   async function confirm() {
     setBusy(true);
-    setError(null);
+    if (!warned) setError(null); // the warning stays in view while it is confirmed (and if that is cancelled)
     let message: string;
     try {
       if (choice === "keep") {
@@ -70,7 +70,7 @@ export function DeleteFolderDialog({ tree, node, summary, onDeleted, onCancel }:
           deleteFolderWithContents(node.folder.id, { contents: "keep", to: to || null, confirm: warned, password });
         const moved = warned ? await passwordStep.run(quoted(name), keep, false) : await keep();
         if (moved === null) {
-          setBusy(false); // the password step was cancelled: nothing was sent
+          setBusy(false); // the password step was cancelled: nothing more is sent, nothing deleted
           return;
         }
         message = keptMessage(noun, to ? pathLabel(tree, to) : null, moved.files);
@@ -88,6 +88,7 @@ export function DeleteFolderDialog({ tree, node, summary, onDeleted, onCancel }:
   }
 
   return (
+    <>
     <ConfirmDialog
       open
       title={`Delete “${name}”?`}
@@ -98,7 +99,6 @@ export function DeleteFolderDialog({ tree, node, summary, onDeleted, onCancel }:
       onConfirm={confirm}
       onCancel={onCancel}
     >
-      {passwordStep.dialog}
       <p>{heldLine(summary)}</p>
       <fieldset className={styles.fieldset}>
         <legend className="visually-hidden">What happens to what is inside</legend>
@@ -158,5 +158,8 @@ export function DeleteFolderDialog({ tree, node, summary, onDeleted, onCancel }:
         </ul>
       </fieldset>
     </ConfirmDialog>
+    {/* Beside the dialog, not in it: Esc in "Confirm it's you" closes only the step. */}
+    {passwordStep.dialog}
+    </>
   );
 }

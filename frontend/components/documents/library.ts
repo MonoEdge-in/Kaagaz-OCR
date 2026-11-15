@@ -230,6 +230,18 @@ export function movableItems<T extends Pick<DocumentSummary, "id" | "deleted_at"
 }
 
 /** "Moved to Invoices.", "Moved 3 documents to Invoices.", with how many stayed and why. */
+/** How a saved change is said: a move in the toast, with Undo when it has one; PR 10c, one with no
+ * Undo (an admin moved a file where they can't see it) in the toast too; anything else is only
+ * announced (null). */
+export function savedToast(
+  message: string,
+  undo: (() => Promise<void>) | undefined,
+  moved: boolean,
+): { message: string; undo?: () => Promise<void>; undone?: string } | null {
+  if (undo) return { message, undo, undone: "Moved back." };
+  return moved ? { message } : null;
+}
+
 export function movedMessage(moved: number, total: number, where: string, reason = ""): string {
   const said = total === 1 ? `Moved to ${where}.` : `Moved ${documentsCount(moved)} to ${where}.`;
   const left = total - moved;

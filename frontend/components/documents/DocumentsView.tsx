@@ -90,7 +90,7 @@ import {
   searchParams,
 } from "./insideSearch";
 import type { SearchMode } from "./insideSearch";
-import { folderNameSuggestions, libraryErrorText, noMatchTitle } from "./library";
+import { folderNameSuggestions, libraryErrorText, noMatchTitle, savedToast } from "./library";
 import { mergeList } from "./listMerge";
 import { LibraryFilters } from "./LibraryFilters";
 import { NO_DEPARTMENT, NO_FILTERS, SORT_KEYS, includeSubfoldersHref, isFiltered, libraryHref, listParams, nextSort } from "./libraryQuery";
@@ -462,16 +462,12 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
     else setReload((n) => n + 1);
   }
 
-  // A move shows in the toast (its own live region), with Undo; anything else is announced.
-  function afterSave(message: string, undo?: () => Promise<void>) {
-    if (undo) setToast({ message, undo, undone: "Moved back." });
+  // A move shows in the toast (its own live region), with Undo; one that can't be undone (PR 10c:
+  // an admin moved a file where they can't see it) in the toast too; anything else is announced.
+  function afterSave(message: string, undo?: () => Promise<void>, moved = false) {
+    const toast = savedToast(message, undo, moved);
+    if (toast) setToast(toast);
     else setAnnouncement(message);
-    setReload((n) => n + 1);
-  }
-
-  /** PR 10c: a move that stands but can't be undone here still shows in the toast. */
-  function afterHiddenMove(message: string) {
-    setToast({ message });
     setReload((n) => n + 1);
   }
 
@@ -520,7 +516,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
       (reply) =>
         // PR 10c: an admin who moved it where they can't see it can't undo it from here.
         isHiddenMove(reply)
-          ? afterHiddenMove(`Moved ${name} to ${placeName}. ${hiddenMovedText(1, 1)}`)
+          ? afterSave(`Moved ${name} to ${placeName}. ${hiddenMovedText(1, 1)}`, undefined, true)
           : afterSave(
               `Moved ${name} to ${placeName}.`,
               item

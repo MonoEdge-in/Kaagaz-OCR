@@ -355,7 +355,9 @@ export const MOVE_ANYWAY = "Move anyway and delete";
 /** An admin moved files where they can't see them (PATCH's `{id, hidden: true}`): the move stands,
  * and it can't be undone from here. */
 export const hiddenMovedText = (n: number, total: number) =>
-  total === 1 ? "You can't see it there, so it can't be undone here." : `You can't see ${n} of them there, so this can't be undone here.`;
+  total === 1
+    ? "You can't see it there, so it can't be undone here."
+    : `You can't see ${n} of them there, so ${n === 1 ? "that one" : "those"} can't be undone here.`;
 
 // --- errors --------------------------------------------------------------------------------------
 
