@@ -19,13 +19,22 @@ from sqlalchemy.exc import ProgrammingError
 from kaagaz.db import storage_limits
 from kaagaz.db.engine import Database
 from kaagaz.db.sqlstate import INSUFFICIENT_PRIVILEGE, sqlstate
-from tests.db_support import APP_ROLE, WORKER_ROLE, new_customer, person_rule, until_0092
+from tests.db_support import APP_ROLE, WORKER_ROLE, new_customer, person_rule, rule_on, until_0092
 from tests.test_api_support import CSRF, PDF_BYTES, Api
 from tests.test_isolation_access_views import Org, _all, _expected, _walled
 from tests.test_isolation_schema import PERSON_RULE_TABLES
 from tests.test_operator_auth_db import _owner
 
 pytestmark = pytest.mark.db
+
+
+@pytest.fixture(autouse=True)
+def _the_rule_on(db: Database) -> Iterator[None]:
+    """A test of the rule itself: on for every organisation, in a baseline session too (after the
+    session's database is migrated)."""
+    with rule_on():
+        yield
+
 
 _BOX = '{"kind": "box", "page": 1, "box": [0.1, 0.1, 0.2, 0.2]}'
 # One row a file, the owner's, for each shape of the content rule.

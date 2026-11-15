@@ -12,10 +12,18 @@ from sqlalchemy import text
 from kaagaz.cli import _cli_role, main
 from kaagaz.db import person_rule
 from kaagaz.db.engine import Database
-from tests.db_support import new_customer, until_0092
+from tests.db_support import new_customer, rule_on, until_0092
 from tests.settings_factory import make_settings
 
 pytestmark = pytest.mark.db
+
+
+@pytest.fixture(autouse=True)
+def _the_rule_on(db: Database) -> Iterator[None]:
+    """A test of the rule itself: on for every organisation, in a baseline session too (after the
+    session's database is migrated)."""
+    with rule_on():
+        yield
 
 
 def _run(db: Database, *args: str) -> tuple[int, str]:

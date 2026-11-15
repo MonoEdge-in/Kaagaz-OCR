@@ -97,6 +97,20 @@ def _owner_database() -> Iterator[Database]:
 
 
 @contextmanager
+def rule_on() -> Iterator[None]:
+    """PRD 7 (#606): the per-person rule on for every organisation for a test of the rule itself, in
+    a baseline session too (KAAGAZ_TEST_PERSON_RULE=off), and put back as it was after."""
+    with _owner_database() as db:
+        was_on = rule_on_everywhere()
+        person_rule(db, on=True)
+        try:
+            yield
+        finally:
+            if not was_on:
+                person_rule(db, on=False)
+
+
+@contextmanager
 def until_0092() -> Iterator[None]:
     """PRD 7 (#606): an Admin's write over files they can't see (a folder deleted, restored or
     deleted forever with them) works under the database rule only through PR 9b's owner-rights
