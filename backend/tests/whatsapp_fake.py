@@ -54,6 +54,9 @@ class Echo:
     def reply(self, linked: Linked, message: Waiting) -> Outgoing:
         return Outgoing(PLACEHOLDER)
 
+    def recheck(self, linked: Linked, reply: Outgoing) -> Outgoing:
+        return reply
+
 
 class WhatsAppFake:
     def __init__(self) -> None:

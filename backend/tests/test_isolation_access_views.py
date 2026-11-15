@@ -341,9 +341,9 @@ def test_day_one_never_runs_the_given_or_lock_lookups(db: Database) -> None:
 
 
 # The SQL that names a view, by file and constant (or function, for SQL written inside one). Each is
-# reached from kaagaz/api only (#595, condition 1: no worker statement reads a view; the workers may
-# still run as kaagaz_app with no person on a server, and would see nothing). A new one belongs here
-# only once its callers are checked.
+# reached from kaagaz/api, or (#603) from the WhatsApp channel as the person (#595, condition 1: no
+# worker statement reads a view; the workers may still run as kaagaz_app with no person on a server,
+# and would see nothing). A new one belongs here only once its callers are checked.
 VIEW_READERS = {
     # PR 8 (#602): Ask, reached from the API only (the SQL guard's worker test).
     "answering/clarify.py": {"_ANY_KEYS", "_CANDIDATES", "_NEAR", "_PICKED_PAGE"},
@@ -382,6 +382,8 @@ VIEW_READERS = {
     "db/user_words.py": {"_SPOTS"},
     "db/versions.py": {"_ALLOWED", "_CANDIDATE", "_FOR_DOCUMENT", "_IN_BATCH", "_LIVE", "_VIEW"},
     "db/visibility.py": {"LIVE_SUGGESTION", "SEEN_DOCUMENT"},
+    # Changed on purpose (#603 W4): the WhatsApp channel, as the person, in the app's role; never a worker.
+    "db/whatsapp_chat.py": {"_ON_WHATSAPP"},
     "db/word_review.py": {"_PAGES", "_PIECES_BY_ID", "_VALUES_BY_ID", "_WORDS"},
     # PR 8 (#602): Ask and search, reached from the API only (the SQL guard's worker test).
     "search/hybrid.py": {

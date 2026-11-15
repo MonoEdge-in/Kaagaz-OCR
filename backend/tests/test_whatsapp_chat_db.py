@@ -18,11 +18,15 @@ from typing import Any
 import pytest
 
 from kaagaz.adapters.whatsapp import MetaWhatsApp
+from kaagaz.api.errors import ApiError
+from kaagaz.api.routers import chat as chat_router
 from kaagaz.channel import chat as chat_module
 from kaagaz.channel.chat import Chat
-from kaagaz.channel.loop import Channel
+from kaagaz.channel.loop import NOT_CONNECTED, Channel
 from kaagaz.channel.texts import say
+from kaagaz.db import whatsapp_chat as wa_chat
 from kaagaz.db.engine import Database
+from kaagaz.db.whatsapp_chat import Current
 from tests.test_api_chat import _cited_answer
 from tests.test_api_chat_clarify import _clarify
 from tests.test_api_support import CSRF, Api, Signed, answer_json
@@ -218,11 +222,13 @@ def test_a_message_handled_again_gets_its_saved_answer_with_no_second_question(w
     assert len(world.api.answers.asked) == 1
 
 
+@pytest.mark.parametrize("restarted", [False, True])
 def test_a_saved_answer_whose_source_was_hidden_since_is_not_sent_nor_said_to_be_hidden(
-    world: _World,
+    world: _World, restarted: bool
 ) -> None:
-    """Handled again after its source went (Ask's saved reply is replaced, PR 8): "couldn't find",
-    never Ask's "You no longer have access to a document behind this answer"."""
+    """Handled again after its source went: the reply made is checked again just before it goes;
+    after a restart (no reply held), Ask's saved reply is replaced (PR 8) and the chat says
+    "couldn't find", never Ask's "You no longer have access to a document behind this answer"."""
     person = world.person()
     document = world.api.add_document(person.c, uploaded_by=person.u)
     world.api.answers.reply = _cited_answer(document)
@@ -234,9 +240,12 @@ def test_a_saved_answer_whose_source_was_hidden_since_is_not_sent_nor_said_to_be
         world.channel.handle(claim)
     _owner(world.db, "DELETE FROM documents WHERE id = :d", {"d": document})
     _owner(world.db, "UPDATE whatsapp_links SET busy_until = NULL WHERE id = :l", {"l": person.link})
+    if restarted:
+        world.channel.made.clear()
     for claim in world.channel.claim(100):
         world.channel.handle(claim)
-    assert world.replies(person) == [(NOT_FOUND, ["another.en", "menu.en"])]
+    buttons = ["another.en", "menu.en"] if restarted else ["menu.en"]
+    assert world.replies(person) == [(NOT_FOUND, buttons)]
     assert len(world.api.answers.asked) == 1
 
 
@@ -490,3 +499,235 @@ def test_a_marathi_question_is_answered_in_marathi_unless_a_number_changes(
     assert body == ("The total is 1,200." if wrong else "एकूण रक्कम 1,200 आहे.")
     world.say(person, "What is the total?")
     assert translator.asked == 1  # English: no call
+
+
+# --- review of W4 (#603): made once, checked again just before it goes ---------------------------
+
+
+class _Meddler:
+    """The model: its "translation" is the text as given, after ``meddle`` (an Admin changing a
+    file while the reply is made)."""
+
+    def __init__(self, meddle: Any) -> None:
+        self.meddle, self.asked = meddle, 0
+        self.seen: list[str] = []  # every text it was given
+
+    def chat_json(self, *, system: str, user: str, **_: Any) -> dict[str, Any]:
+        self.asked += 1
+        self.seen.append(user)
+        self.meddle()
+        return {"text": user.split("<text>\n", 1)[1].rsplit("\n</text>", 1)[0]}
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        raise AssertionError("no embedding here")
+
+
+# How a file goes from the person while their reply is made: held for someone else (hidden),
+# locked, or moved to Trash.
+CHANGES = {
+    "hidden": "UPDATE documents SET held_for = :other WHERE id = :d",
+    "locked": "UPDATE documents SET locked_at = now(), locked_by = :other WHERE id = :d",
+    "trashed": "UPDATE documents SET deleted_at = now(), deleted_by = :other WHERE id = :d",
+}
+
+
+def _links(world: _World, person: Person) -> list[Any]:
+    return [row for row in world.api.audit_rows(person.c) if row[0] == "whatsapp.file_link"]
+
+
+def _run_again(world: _World, person: Person) -> None:
+    """The connection's rest after a reply that was not sent is over: handle it again."""
+    _owner(world.db, "UPDATE whatsapp_links SET busy_until = NULL WHERE id = :l", {"l": person.link})
+    for claim in world.channel.claim(100):
+        world.channel.handle(claim)
+
+
+@pytest.mark.parametrize("change", list(CHANGES))
+def test_a_card_whose_file_goes_while_it_is_made_is_not_sent(
+    db: Database, fake: WhatsAppFake, change: str
+) -> None:
+    given: dict[str, str] = {}
+    model = _Meddler(lambda: _owner(db, CHANGES[change], given))
+    world = _World(db, fake, model=model)
+    person = world.person()
+    document = _filed(world, person, "bill.pdf", "water bill")
+    _owner(db, "UPDATE documents SET summary = 'A water bill.' WHERE id = :d", {"d": document})
+    given.update(d=document, other=world.api.add_user(person.c, "member")[0])
+    world.tap(person, "get.mr")
+    assert world.say(person, "water") == (say("not_found", "mr"), ["menu.mr"])
+    assert model.asked == 1 and _links(world, person) == []
+    assert "bill.pdf" not in repr(world.fake.requests)
+
+
+@pytest.mark.parametrize("change", list(CHANGES))
+def test_an_answer_whose_source_goes_while_it_is_made_is_not_sent(
+    db: Database, fake: WhatsAppFake, change: str
+) -> None:
+    given: dict[str, str] = {}
+    world = _World(db, fake, model=_Meddler(lambda: _owner(db, CHANGES[change], given)))
+    person = world.person()
+    document = world.api.add_document(person.c, name="bill 1.pdf", uploaded_by=person.u)
+    given.update(d=document, other=world.api.add_user(person.c, "member")[0])
+    world.api.answers.reply = _cited_answer(document)
+    assert world.say(person, "एकूण रक्कम किती आहे?") == (say("not_found", "mr"), ["menu.mr"])
+    assert "bill 1.pdf" not in repr(world.fake.requests)
+
+
+def test_a_choice_locked_while_the_question_is_translated_is_left_out(
+    db: Database, fake: WhatsAppFake
+) -> None:
+    given: dict[str, str] = {}
+    world = _World(db, fake, model=_Meddler(lambda: _owner(db, CHANGES["locked"], given)))
+    person = world.person()
+    pune, panvel = (world.api.add_document(person.c, uploaded_by=person.u) for _ in range(2))
+    given.update(d=pune, other=world.api.add_user(person.c, "member")[0])
+    world.api.answers.reply = _clarify(pune, panvel)
+    _, ids = world.say(person, "पुण्यातील जमीन?")
+    assert [i.split(":")[2] for i in ids] == ["c2", "other"]  # Pune's file locked: its choice is gone
+
+
+def test_a_connection_ended_while_the_reply_is_made_gets_not_connected(
+    db: Database, fake: WhatsAppFake
+) -> None:
+    given: dict[str, str] = {}
+    bump = "UPDATE users SET session_version = session_version + 1 WHERE id = :u"
+    world = _World(db, fake, model=_Meddler(lambda: _owner(db, bump, given)))
+    person = world.person()
+    given.update(u=person.u)
+    world.api.answers.reply = answer_json()
+    assert world.say(person, "एकूण रक्कम किती आहे?") == NOT_CONNECTED  # its password changed, say
+    ended = _owner(db, "SELECT end_reason FROM whatsapp_links WHERE id = :l", {"l": person.link})
+    assert ended == [("session",)]
+
+
+def test_a_reply_tried_again_is_made_once_and_its_card_audited_once(db: Database, fake: WhatsAppFake) -> None:
+    translator = _Translator()
+    world = _World(db, fake, model=translator)
+    person = world.person()
+    document = _filed(world, person, "bill.pdf", "water bill")
+    _owner(db, "UPDATE documents SET summary = 'The total is 1,200.' WHERE id = :d", {"d": document})
+    world.tap(person, "get.mr")
+    world.fake.failures = [500]
+    assert post(world.client, delivery(message(person.number, world.api.clock(), "water"))).status_code == 200
+    for claim in world.channel.claim(100):
+        world.channel.handle(claim)
+    assert _links(world, person) == []  # not sent: not audited
+    _run_again(world, person)
+    assert world.replies(person)[-1][0].startswith("bill.pdf\n")
+    searched = [row for row in world.api.audit_rows(person.c) if row[0] == "search.run"]
+    assert translator.asked == 1 and len(searched) == 1 and len(_links(world, person)) == 1
+
+
+def test_a_card_refused_for_good_is_never_audited(world: _World) -> None:
+    person = world.person()
+    _filed(world, person, "bill.pdf", "water bill")
+    world.tap(person, "get.en")
+    world.fake.failures = [400]  # Meta refuses it for good: the message fails
+    assert post(world.client, delivery(message(person.number, world.api.clock(), "water"))).status_code == 200
+    for claim in world.channel.claim(100):
+        world.channel.handle(claim)
+    assert _links(world, person) == [] and world.channel.made == {}
+
+
+# --- review of W4 (#603): the fallbacks, limits and words ---------------------------------------
+
+
+def test_a_lock_grant_holder_gets_no_assumption_or_total(world: _World) -> None:
+    """shortcut: until PR 12 stops Ask reading locked files. A name only a locked file holds may be
+    in what Ask assumed, or in a fixed query's total, neither citing the file."""
+    person = world.person()
+    _lock(world, person, _filed(world, person, "Zebra Patil land.pdf", "survey"))
+    said = {**answer_json(), "assumptions": ["I took Zebr as Zebra Patil."]}
+    world.api.answers.reply = said
+    body, _ = world.say(person, "Land of Zebr?")
+    assert body.startswith("The total is 1,200.") and "Zebra" not in body
+    counted = {**answer_json(), "route": "fixed_query"}
+    world.api.answers.reply = {
+        **counted,
+        "sentences": [{"text": "2 documents name Zebra Patil.", "citations": []}],
+    }
+    assert world.say(person, "How many documents mention Zebra?") == (NOT_FOUND, ["another.en", "menu.en"])
+    other = world.person(person.c)  # no grant: the control
+    world.api.answers.reply = said
+    assert world.say(other, "Land of Zebr?")[0].startswith("I took Zebr as Zebra Patil.\nThe total")
+
+
+def test_a_typed_reply_to_a_did_you_mean_gone_since_is_a_new_question(world: _World) -> None:
+    person = world.person()
+    document = world.api.add_document(person.c, uploaded_by=person.u)
+    _clarified(world, person, document)
+    _owner(world.db, "DELETE FROM documents WHERE id = :d", {"d": document})  # Ask: CLARIFY_GONE
+    assert world.say(person, "Pune")[0].startswith("The total is 1,200.")
+    assert world.api.answers.resumed == [] and world.api.answers.asked[-1] == (person.c, "Pune")
+
+
+def test_a_conversation_deleted_meanwhile_is_asked_in_a_new_one(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    person = world.person()
+    gone = Current(str(uuid.uuid4()), str(uuid.uuid4()), "assistant", "answered", True)
+    monkeypatch.setattr(wa_chat, "current", lambda *args: gone)  # Ask: 404
+    assert world.say(person, "What is the total?")[0].startswith("The total is 1,200.")
+    assert len(person.signed.client.get("/api/conversations").json()["items"]) == 1
+
+
+def test_searches_and_cards_count_against_asks_limit(db: Database, fake: WhatsAppFake) -> None:
+    world = _World(db, fake, chat_questions_per_minute=2)
+    person = world.person()
+    document = _filed(world, person, "bill.pdf", "water bill")
+    world.say(person, "What is the total?")
+    world.tap(person, "get.en")
+    assert world.say(person, "water")[0].startswith("bill.pdf\n")
+    assert world.tap(person, f"file:{document}:en", row=True) == say("too_many", "en")
+
+
+def test_two_choices_alike_in_their_first_20_letters_are_a_list(world: _World) -> None:
+    person = world.person()
+    files = [world.api.add_document(person.c, uploaded_by=person.u) for _ in range(2)]
+    reply = _clarify(*files)
+    choices = reply["clarify"]["choices"]
+    choices[0]["label"], choices[1]["label"] = "Ramesh Patil Junior One", "Ramesh Patil Junior Two"
+    world.api.answers.reply = reply
+    world.say(person, "Land of Ramesh?")
+    raw = world.raw(person)["interactive"]
+    assert raw["type"] == "list"
+    assert [r["title"] for r in raw["action"]["sections"][0]["rows"][:2]] == [
+        "Ramesh Patil Junior One",
+        "Ramesh Patil Junior Two",
+    ]
+
+
+def test_a_model_not_allowed_is_said_so(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+    person = world.person()
+
+    def refused(*args: Any, **kwargs: Any) -> Any:
+        raise ApiError(403, "model_not_allowed", "x")
+
+    monkeypatch.setattr(chat_router, "ask", refused)
+    assert world.say(person, "What is the total?") == say("model_not_allowed", "en")
+
+
+def test_a_person_who_must_set_a_new_password_gets_only_that(world: _World) -> None:
+    person = world.person()
+    _owner(world.db, "UPDATE users SET must_change_password = true WHERE id = :u", {"u": person.u})
+    assert world.say(person, "What is the total?") == say("change_password", "en")
+    assert world.tap(person, "get.en") == say("change_password", "en")
+    assert world.api.answers.asked == []
+
+
+def test_a_photo_after_which_file_is_answered_in_its_language(world: _World) -> None:
+    person = world.person()
+    world.tap(person, "get.mr")
+    photo = {**message(person.number, world.api.clock()), "type": "image", "image": {"id": "media.1"}}
+    assert world.send(person, photo) == say("typed_only", "mr")
+
+
+def test_a_number_is_masked_before_it_is_translated(db: Database, fake: WhatsAppFake) -> None:
+    model = _Meddler(lambda: None)
+    world = _World(db, fake, model=model)
+    person = world.person()
+    sentence = {"text": "The account number is 001234567890.", "citations": []}
+    world.api.answers.reply = {**answer_json(), "sentences": [sentence]}
+    body, _ = world.say(person, "खाते क्रमांक काय आहे?")
+    assert model.asked == 1 and "001234567890" not in "".join(model.seen)
+    assert "••••7890" in body and say("masked", "mr") in body
