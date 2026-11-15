@@ -342,12 +342,12 @@ def _page(granule: int, sequence: int, packet: bytes, kind: int = 0) -> bytes:
 
 def ogg_opus(seconds: float, *, pad: int = 0) -> bytes:
     """W6: an Ogg Opus recording ``seconds`` long by its pages (OpusHead, OpusTags, then audio
-    pages, the last one's granule position its end), with ``pad`` bytes more of made-up audio."""
+    pages, each one's granule position where it ends, the last one's the end), with ``pad`` bytes
+    more of made-up audio: a recording cut short still reads as a shorter one, as a real one does."""
     head = b"OpusHead" + struct.pack("<BBHIhB", 1, 1, PRE_SKIP, 48000, 0, 0)
     pages = [_page(0, 0, head, kind=2), _page(0, 1, b"OpusTags" + b"\0" * 8)]
-    end = PRE_SKIP + round(seconds * 48000)
     chunks = [b"\xfc" + bytes([n % 251]) * 200 for n in range(max(1, pad // 200))]
-    for n, chunk in enumerate(chunks):
-        last = n == len(chunks) - 1
-        pages.append(_page(end if last else -1, n + 2, chunk, kind=4 if last else 0))
+    for n, chunk in enumerate(chunks, 1):
+        ends = PRE_SKIP + round(seconds * 48000 * n / len(chunks))
+        pages.append(_page(ends, n + 1, chunk, kind=4 if n == len(chunks) else 0))
     return b"".join(pages)

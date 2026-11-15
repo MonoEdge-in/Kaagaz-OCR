@@ -45,8 +45,10 @@ def test_a_last_page_with_no_end_counts_the_page_before() -> None:
     unfinished = (
         whole[:last] + whole[last : last + 6] + (-1).to_bytes(8, "little", signed=True) + whole[last + 14 :]
     )
-    assert ogg_opus_seconds(unfinished) is None  # no page ends a packet: no length (the headers are 0)
+    assert ogg_opus_seconds(unfinished) == pytest.approx(7 * 2 / 3, abs=1 / 48000)  # 3 pages, 2 end
     assert ogg_opus_seconds(whole + unfinished[last:]) == pytest.approx(7, abs=1 / 48000)
+    only_headers = ogg_opus(7)[: ogg_opus(7).rfind(b"OggS")]
+    assert ogg_opus_seconds(only_headers) is None  # the header pages' granule positions are 0
 
 
 @pytest.mark.parametrize(
