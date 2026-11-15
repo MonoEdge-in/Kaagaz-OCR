@@ -71,6 +71,7 @@ from kaagaz.channel.texts import (  # the limits and helpers W4 kept here, share
     MAX_ROWS,
     ROW_CHARS,
     Language,
+    kaagaz_links_only,
     language,
     mask,
     say,
@@ -167,18 +168,29 @@ class Chat:
 
     def recheck(self, linked: Linked, reply: Outgoing) -> Outgoing:
         """``reply`` as it may go now: NOT_FOUND once a document it names is hidden, locked or
-        deleted since it was made (a notice: nothing at all). ``Channel`` runs it just before each
-        try to send."""
-        if not reply.documents:
-            return reply
-        with self.context.db.user(linked.customer_id, linked.user_id) as conn:
-            seen = wa_chat.on_whatsapp(conn, linked.customer_id, reply.documents)
-        if set(reply.documents) <= seen:
-            return reply
-        lang = _lang(reply.lang)
-        if reply.notice:
-            return Outgoing("", lang=lang, notice=True)
-        return Outgoing(say("not_found", lang), ((f"menu.{lang}", say("menu_button", lang)),), lang=lang)
+        deleted since it was made (a notice: nothing at all); W7: with no link but Kaagaz's own
+        (``texts.kaagaz_links_only``). ``Channel`` runs it just before each try to send."""
+        if reply.documents:
+            with self.context.db.user(linked.customer_id, linked.user_id) as conn:
+                seen = wa_chat.on_whatsapp(conn, linked.customer_id, reply.documents)
+            if not set(reply.documents) <= seen:
+                lang = _lang(reply.lang)
+                if reply.notice:
+                    return Outgoing("", lang=lang, notice=True)
+                return Outgoing(
+                    say("not_found", lang), ((f"menu.{lang}", say("menu_button", lang)),), lang=lang
+                )
+        home = self._url("")
+
+        def kept(text: str) -> str:
+            return kaagaz_links_only(text, home)
+
+        return dataclasses.replace(
+            reply,
+            body=kept(reply.body),
+            buttons=tuple((each, kept(title)) for each, title in reply.buttons),
+            rows=tuple(Row(row.id, kept(row.title), kept(row.description)) for row in reply.rows),
+        )
 
     def _user(self, linked: Linked) -> CurrentUser:
         user = load_user(self.context.db, linked.customer_id, linked.user_id, scope="app")

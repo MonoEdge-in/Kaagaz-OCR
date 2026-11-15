@@ -17,6 +17,9 @@ masking.
   and the browser shows every number in full.
 * WhatsApp's limits, ``cut``, ``lang_of`` and ``masked`` (W4's, kept in kaagaz/channel/chat.py
   until W5's uploads shared them).
+* ``kaagaz_links_only`` (W7): a reply without any link but Kaagaz's own. WhatsApp makes a link of an
+  address with its scheme, of ``www.`` and of a domain with a path; whoever wrote one (a file's or
+  folder's name, a translation a document's words talked into it), it never goes from Kaagaz's bot.
 """
 
 import re
@@ -409,6 +412,23 @@ def mask(text: str) -> tuple[str, bool]:
     masked = _PAN.sub(lambda found: MASK + found.group(0)[-4:].upper(), visible)
     masked = _NUMBER.sub(_digits, masked)
     return masked, masked != visible
+
+
+# W7: an address with a scheme, or starting www., or a domain with a path (WhatsApp links each).
+_LINK = re.compile(
+    r"\b(?:[a-z][a-z0-9+.-]*://|www\.)\S+|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}/\S*", re.IGNORECASE
+)
+
+
+def kaagaz_links_only(text: str, home: str) -> str:
+    """``text`` without its links but Kaagaz's own (``home``, APP_URL: it, or it and a path).
+    O(len(text))."""
+
+    def kept(found: re.Match[str]) -> str:
+        link = found.group(0)
+        return link if home and (link == home or link.startswith(home + "/")) else ""
+
+    return _LINK.sub(kept, text)
 
 
 def masked(text: str) -> str:
