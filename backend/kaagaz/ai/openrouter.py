@@ -5,8 +5,9 @@ decision of 8 October 2026 (council ``2026-10-08-prd5-openrouter.md``). ``OpenRo
 implements ``ModelClient`` (``chat_json`` and ``embed``), and adds ``read_page`` for the
 Gemini reader (G1, G2, G3) and (#603 W6) ``transcribe`` for WhatsApp's voice notes.
 ``read_page`` reads with the model and provider its caller names (the document's,
-``kaagaz.db.models.resolve``; model choice, council 11 Oct 2026), or OCR_MODEL; ``MODEL_CHAT`` answers ``chat_json`` unless its caller names the answer's
-chosen model (``kaagaz.db.models.resolve_chat``, features 25-27) and ``MODEL_EMBED`` embeds.
+``kaagaz.db.models.resolve``; model choice, council 11 Oct 2026), or OCR_MODEL; ``MODEL_CHAT``
+answers ``chat_json`` unless its caller names the answer's chosen model
+(``kaagaz.db.models.resolve_chat``, features 25-27) and ``MODEL_EMBED`` embeds.
 No code here picks or switches a model.
 
 **The key is a secret.** It goes in the ``Authorization: Bearer`` header only, added with
