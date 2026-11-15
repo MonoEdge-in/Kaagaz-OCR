@@ -63,7 +63,7 @@ import math
 import threading
 import time
 import uuid
-from collections.abc import AsyncGenerator, Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
@@ -97,9 +97,11 @@ from kaagaz.answering.clarify import (
     reply_to,
     without_resume,
 )
+from kaagaz.answering.evidence import looks_like_instructions
 from kaagaz.answering.memory import NO_MEMORY, Memory, from_row, live
 from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
+from kaagaz.answering.sanitize import clean_text
 from kaagaz.answering.stream import Events, StreamCancelled
 from kaagaz.answering.voice import SOFT_NOTHING, first_name, numbers, opening, soft_line, unsupported
 from kaagaz.answering.words_text import WordTextError, check_meaning, check_word
@@ -429,6 +431,7 @@ def _ask(
     recent: Sequence[RowMapping] = []
     memory, summary_turn, turns = NO_MEMORY, 0, 0
     last_cited: list[str] = []
+    names: dict[str, str] = {}  # #621: the documents earlier answers cited that are still live
     earlier: list[str | None] = []  # the conversation's openings so far (PRD 6 A)
     pending: Pending | None = None
     with context.db.customer(user.customer_id) as conn:
@@ -441,7 +444,8 @@ def _ask(
             pairs = max(context.settings.chat_history_turns, 1)
             recent = chat_sql.recent_messages(conn, user.customer_id, conversation_id, 2 * pairs)
             # #629: the last answer's documents the asker can still see (current, out of Trash).
-            last_cited = list(chat_sql.live_document_names(conn, user.customer_id, _cited(recent[:1])))
+            names = chat_sql.live_document_names(conn, user.customer_id, _cited(recent))  # #621
+            last_cited = [document for document in _cited(recent[:1]) if document in names]
             earlier = chat_sql.openings(conn, user.customer_id, conversation_id)
             if chosen is None:
                 chosen = _saved_scope(recent)
@@ -484,7 +488,7 @@ def _ask(
     if saved is not None and len(json.dumps(saved).encode()) > MAX_SCOPE_BYTES:
         raise ApiError(400, "bad_request", "Choose fewer documents or tags.")
 
-    history = _history(recent)
+    history = _history(recent, names)
     with usage_scope(
         context.db,
         customer_id=user.customer_id,
@@ -587,6 +591,7 @@ def _save(
     """``_ask``'s one save transaction: the conversation (new, named ``landing``), both messages
     (the question as ``question_id``) and the audit row; (the conversation, the question's row,
     the answer's row)."""
+    first = conversation_id is None  # #624: Home's suggestions belong to a first answer only
     if conversation_id is None:
         conversation_id = chat_sql.create_conversation(
             conn, user.customer_id, user.user_id, short_title(question), conversation_id=landing
@@ -598,7 +603,12 @@ def _save(
         answering.message_id
     ):
         raise ApiError(409, "conflict", CLARIFY_GONE)
-    if answer.get("status") == "not_found" and not answer.get("documents") and not answer.get("outage"):
+    if (
+        first
+        and answer.get("status") == "not_found"
+        and not answer.get("documents")
+        and not answer.get("outage")
+    ):
         # Nothing close (24 Oct 2026): the best next step is a question this library answers.
         answer["suggestions"] = [
             text
@@ -1173,19 +1183,24 @@ def _suggest(conn: Connection, user: CurrentUser, pending: Pending) -> None:
         )
 
 
-def _history(recent: Sequence[RowMapping]) -> list[Turn]:
+def _history(recent: Sequence[RowMapping], names: Mapping[str, str] | None = None) -> list[Turn]:
     """The question and answer pairs of ``recent`` (newest first), oldest first. Only an
     answered answer gives its sentences, and a clarify its question: after "not found" the
-    turn is its question only (edge case 3). O(m) for m messages."""
+    turn is its question only (edge case 3). #621: each answered turn also names the documents
+    it cited that are in ``names`` (``chat_sql.live_document_names``: current, out of Trash),
+    each cleaned and never one that reads like instructions. O(m) for m messages."""
     turns: list[Turn] = []
     answer: str | None = None
+    cited: tuple[str, ...] = ()
     for row in recent:  # an answer comes just before its question
         if row["role"] == "assistant":
             saved = row["answer"] or {}
             answer = answer_text(saved) if saved.get("status") in ("answered", "clarify") else None
+            shown = (clean_text((names or {}).get(document, "")) for document in _cited([row]))
+            cited = tuple(dict.fromkeys(n for n in shown if n and not looks_like_instructions(n)))
         else:
-            turns.append(Turn(str(row["text"]), answer))
-            answer = None
+            turns.append(Turn(str(row["text"]), answer, cited))
+            answer, cited = None, ()
     return turns[::-1]
 
 

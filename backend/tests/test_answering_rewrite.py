@@ -60,11 +60,15 @@ def test_the_guard(question: str, rewritten: str, refused: str | None) -> None:
     assert guard(rewritten, question, HISTORY) == refused
 
 
-def test_a_number_or_a_name_may_come_from_an_earlier_question_only() -> None:
+def test_a_number_or_a_name_may_come_from_the_history_never_from_nowhere() -> None:
+    # Changed on purpose (#621): an answer's name or number may be used too (the chat wrote it
+    # from the documents); one in no turn is still refused.
     history = history_text([Turn("Who earned the profit in September?", "Sharma Traders earned $12,000.")])
     rewritten = "Show me the invoices of Sharma in September"
-    assert guard(rewritten, "Show me the invoices", history) == "rewrite_adds_facts"  # Sharma: an answer's
-    assert guard(rewritten, "Show me the Sharma invoices", history) is None
+    assert guard(rewritten, "Show me the invoices", history) is None  # Sharma: the answer's
+    assert guard("Show me the invoices of Mehta in September", "Show me the invoices", history) == (
+        "rewrite_adds_facts"
+    )
 
 
 def test_tokens_are_canonical() -> None:
@@ -141,9 +145,53 @@ def test_every_fallback_uses_the_question_and_logs_only_a_code(
     assert "expenses" not in caplog.text and "September" not in caplog.text
 
 
-def test_the_history_keeps_the_newest_2000_characters_from_a_line_start() -> None:
+def test_the_history_keeps_the_newest_3000_characters_from_a_line_start() -> None:
+    # Changed on purpose (#621): 3000 characters, so three compact turns always fit.
     turns = [Turn(f"Question number {n} about the profit?", "x " * 60) for n in range(30)]
     text = history_text(turns)
-    assert len(text) <= 2000 and text.endswith("Answer: " + "x " * 59 + "x")
+    assert len(text) <= 3000 and text.endswith("Answer: " + "x " * 59 + "x")
     assert text.startswith(("Question: ", "Answer: "))
     assert history_text([Turn("Was it found?", None)]) == "Question: Was it found?"
+
+
+# --- #621 (production, 15 Nov 2026): real follow-ups whose rewrite the guard refused -------------
+
+DEED = Turn(
+    "What is this document about?",
+    "This is a Sale Deed for Gat Number 61 at Wagholi, registered on 24.02.2003 between Ramesh Patil"
+    " and Suresh Shinde.",
+    ("Sale Deed 24.02.2003.pdf",),
+)
+BILL = Turn("How much was the electricity bill in September?", "The MSEDCL bill for September was ₹4,500.")
+
+
+@pytest.mark.parametrize(
+    ("question", "turn", "rewritten"),
+    [
+        (
+            "Can you find me the measurement of this if it is seen in any other document?",
+            DEED,
+            "Find the measurement of Gat Number 61 in any other document",
+        ),
+        ("who signed it", DEED, "Who signed the Sale Deed of Gat Number 61?"),
+        ("what about October", BILL, "How much was the MSEDCL electricity bill in October?"),
+    ],
+)
+def test_a_rewrite_from_the_history_its_answers_and_documents_passes(
+    question: str, turn: Turn, rewritten: str
+) -> None:
+    assert guard(rewritten, question, history_text([turn])) is None
+
+
+def test_this_resolves_to_a_document_cited_three_turns_back() -> None:
+    """Three compact turns always fit, so the first turn's document is still there to name."""
+    long = "The figure is shown on the page. " * 25  # about 800 characters, cut to 300
+    turns = [
+        Turn("Which document holds the lease?", long, ("Lease Kusgaon 2019.pdf",)),
+        Turn("And the rent?", long, ("Rent register.xlsx",)),
+        Turn("And the deposit?", long, ("Deposit receipts.pdf",)),
+    ]
+    history = history_text(turns)
+
+    assert "Documents: Lease Kusgaon 2019" in history and len(history) <= 3000  # no ".pdf"
+    assert guard("Who signed the Lease Kusgaon 2019?", "Who signed this?", history) is None
