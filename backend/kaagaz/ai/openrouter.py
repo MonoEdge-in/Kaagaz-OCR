@@ -1294,7 +1294,8 @@ class OpenRouterClient:
         ``invalid_output``. A reply longer than ``max_tokens`` (thinking not counted) raises
         ``output_truncated`` with no repair. ``deadline`` (on ``time.monotonic()``): both
         tries end by then (``timeout`` once it has passed); None, each has the chat
-        timeout. ``temperature``: sent only to a model of TEMPERATURE_VENDORS; None, the
+        timeout. ``temperature``: sent only to a model of TEMPERATURE_VENDORS, and dropped once
+        when the model's endpoints answer 404 no_endpoints (``_chat_reply``); None, the
         default."""
         body, output_limit, ends = self._chat_body(
             system, user, schema, max_tokens, model, thinking, provider, deadline, temperature
@@ -1559,7 +1560,20 @@ class OpenRouterClient:
         limit with no ``deadline`` is ANSWER_STREAM_MAX_SECONDS, the chat timeout being its idle one."""
         whole = self._chat_timeout if on_text is None else self._stream_timeout
         ends = self.now() + whole if deadline is None else deadline
-        reply = self._call(CHAT_PATH, body, ends, on_text=on_text)
+        try:
+            reply = self._call(CHAT_PATH, body, ends, on_text=on_text)
+        except ModelUnavailable as error:
+            # Production, 15 Nov 2026: Vertex's gemini-3.5-flash-lite (and 3.6 to 3.8-flash)
+            # stopped listing temperature, so with require_parameters every call was 404
+            # no_endpoints. Sent once more without it (and so is the repair: ``body`` is shared).
+            # shortcut: read each model's supported_parameters from /models/{id}/endpoints, cached.
+            if error.code != "no_endpoints" or "temperature" not in body:
+                raise
+            del body["temperature"]
+            _log.warning(
+                "temperature dropped", extra={"code": "temperature_dropped", "model": str(body["model"])}
+            )
+            reply = self._call(CHAT_PATH, body, ends, on_text=on_text)
         text, _ = _billed_text(reply, before)
         input_tokens, output_tokens = reply_usage(reply)
         spent = (before[0] + input_tokens, before[1] + output_tokens)
