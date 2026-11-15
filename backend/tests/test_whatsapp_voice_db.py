@@ -513,7 +513,9 @@ def test_an_unsure_note_while_files_wait_keeps_every_file_waiting(world: World) 
 def test_a_tap_after_an_unsure_note_finds_the_files_still_waiting(world: World) -> None:
     """A tap (not [Yes] or [No]) puts back the step an unsure note hid, as a message does."""
     person = world.person()
-    _owner(world.db, "UPDATE whatsapp_org_settings SET uploads = true WHERE customer_id = :c", {"c": person.c})
+    _owner(
+        world.db, "UPDATE whatsapp_org_settings SET uploads = true WHERE customer_id = :c", {"c": person.c}
+    )
     sent = world.api.clock() - timedelta(seconds=20)
     media = world.fake.add_media(b"%PDF-1.7 a")
     world.send(person, file_message(person.number, sent, media, filename="a.pdf"))
