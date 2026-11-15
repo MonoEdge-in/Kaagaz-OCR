@@ -364,6 +364,21 @@ def test_the_list_pages_past_whatsapps_ten_rows(world: World) -> None:
     assert len(first) <= 10
 
 
+def test_a_recent_top_level_folder_is_listed_once(world: World) -> None:
+    person = world.person()
+    for n in range(10):
+        world.folder(person, f"Folder {n:02d}")
+    world.file(person, pdf("a"))
+    save_into(world, person, "Folder 03")
+    world.file(person, pdf("b"))
+    world.tap(person, "up:choose::en")
+    first = [title for title, _ in titles(world, person)]
+    assert first[0] == "Folder 03" and first.count("Folder 03") == 1
+    world.tap(person, row_named(world, person, "More folders"))
+    shown = first + [title for title, _ in titles(world, person)]
+    assert sorted(t for t in shown if t.startswith("Folder")) == [f"Folder {n:02d}" for n in range(10)]
+
+
 def test_a_folder_name_typed_lists_those_named_so(world: World) -> None:
     person = world.person()
     world.folder(person, "Electricity bills")
@@ -782,6 +797,22 @@ def test_a_notice_not_sent_at_first_never_goes_once_its_file_is_hidden(world: Wo
     world.free(person)
     world.run()  # checked again just before the try: nothing goes, not even "couldn't find"
     assert len(world.replies(person)) == sent and world.fake.failures == []
+
+
+def test_a_notice_past_the_24_hours_waits_for_the_persons_next_message(world: World) -> None:
+    person = world.person()
+    document = _saved(world, person)
+    sent = len(world.replies(person))
+    _owner(world.db, "UPDATE documents SET status = 'ready' WHERE id = :d", {"d": document})
+    world.api.clock.advance(25 * 3600)  # WhatsApp's window shut: nothing may go
+    world.free(person)
+    world.run()
+    assert len(world.replies(person)) == sent
+    kept = _owner(world.db, "SELECT state FROM whatsapp_messages WHERE document_id = :d", {"d": document})
+    assert kept == [("expired",)]
+    world.say(person, "Hi")  # the window open again: the notice goes after the reply
+    said = world.replies(person)
+    assert said[-2][1] == ["ask.en", "upload.en", "get.en"] and said[-1].startswith("Ready.")
 
 
 def test_a_notice_waits_behind_the_persons_own_messages(world: World) -> None:

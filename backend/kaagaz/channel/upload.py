@@ -252,12 +252,15 @@ class Upload:
             recent = wa_up.recent(conn, c, linked.link_id) if top and skip == 0 else []
             seen = wa_up.about(conn, c, recent)
             recent = [each for each in recent if each in seen]
+            # The top level's pages leave out the recent folders its first page shows, once each.
+            shown_recent = recent if skip == 0 else [str(each) for each in state.get("recent") or []]
+            without = shown_recent if top else []
             auto = top and autofile.applies(conn, c, user.user_id)
             room = MAX_ROWS - len(recent) - 1 - int(auto) - int(at is not None) - 1  # the rest; More
             if named is not None:
                 ids = wa_up.named(conn, c, named.strip()[:100], room + 1)
             else:
-                ids = wa_up.level(conn, c, at, skip, room + 1)
+                ids = wa_up.level(conn, c, at, skip, room + 1, without=without)
             more, ids = named is None and len(ids) > room, ids[:room]
             seen |= wa_up.about(conn, c, [*ids, *([at] if at else [])])
             rows: dict[str, str] = {}
@@ -274,6 +277,7 @@ class Upload:
             if auto:
                 listed.append(Row(f"{TAP}:auto::{lang}", say("auto_button", lang)))
             kept = {**state, "gen": gen, "rows": rows, "at": at, "skip": skip, "next": skip + len(ids)}
+            kept["recent"] = without
             self._save(conn, user, {**kept, "picked": None, "typing": False})
         files = state.get("files") or []
         if named is not None:

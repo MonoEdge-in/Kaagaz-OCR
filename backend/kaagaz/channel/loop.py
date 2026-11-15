@@ -29,8 +29,9 @@ other process off it) and goes through its waiting messages oldest first, by Wha
    connection meanwhile; the reply then finishes them all (``Outgoing.finished``).
 7. (W5) A saved file's message waits again for its "ready" notice (``document_id``), behind every
    message the person sent (``wa.next_message``): ``Chat.notice`` while the file is being read
-   rests the connection NOTICE_SECONDS (no try counted; it expires with its 24 hours, unsent);
-   once read it goes as any reply, checked again just before; a file hidden since sends nothing.
+   rests the connection NOTICE_SECONDS (no try counted); once read it goes as any reply, checked
+   again just before; a file hidden since sends nothing. A notice past 24 hours since the person's
+   newest message is put aside (``expired``) and goes after their next message.
 
 A reply goes outside any transaction, and only to the connection's own number. One that could not
 be sent leaves the message waiting and the connection resting (the order is kept: nothing after it
@@ -158,7 +159,15 @@ class Channel:
 
     def _answer(self, linked: Linked, message: Waiting, check: Check) -> int:
         """One message handled: 0, or the seconds to rest before its reply is tried again."""
-        if message.sent_at < self.clock() - REPLY_WINDOW:
+        with self.db.user(linked.customer_id, linked.user_id) as conn:
+            if message.document_id is None:  # W5: the person wrote: notices put aside go after this
+                wa_up.unpark_notices(conn, linked.customer_id, linked.link_id)
+            else:  # W5: a notice's 24 hours are from the person's newest message
+                last = wa_up.last_sent(conn, linked.customer_id, linked.link_id)
+                if last is None or last < self.clock() - REPLY_WINDOW:
+                    wa_up.park_notice(conn, linked.customer_id, message.id)
+                    return 0
+        if message.document_id is None and message.sent_at < self.clock() - REPLY_WINDOW:
             return self._finish(linked, message, "expired", replied=False)
         if check.sealed is None:  # ended already: nothing goes to a number no longer connected
             return self._finish(linked, message, "done", replied=False)

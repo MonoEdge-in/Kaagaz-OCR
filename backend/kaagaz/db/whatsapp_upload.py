@@ -13,7 +13,9 @@ in its own CTE before it orders, pages or counts (never after).
   another, oldest first, and whether a message of another kind waits after them.
 * ``files_this_hour``: the files the person sent in the last hour (the rate).
 * ``await_notice``: a message whose file was saved waits again, with its document and the chat's
-  language, to send that file's "ready" notice (kaagaz/channel/loop.py).
+  language, to send that file's "ready" notice (kaagaz/channel/loop.py). ``last_sent``,
+  ``park_notice`` and ``unpark_notices``: a notice past WhatsApp's 24 hours since the person's
+  newest message is put aside (``expired``, its document and language kept) until their next one.
 * ``recent`` and ``add_recent``: the connection's last 3 folders saved into, newest first.
 
 Each is one statement; the folder ones O(F) for the F folders the person sees (``visible_folders``
@@ -37,6 +39,7 @@ _LEVEL = text(
     " LEFT JOIN visible_folders p ON p.customer_id = f.customer_id AND p.id = f.parent_id"
     " WHERE f.customer_id = :c)"
     " SELECT id FROM placed WHERE above IS NOT DISTINCT FROM CAST(:at AS uuid)"
+    " AND NOT id = ANY(CAST(:without AS uuid[]))"
     " ORDER BY lower(name), id OFFSET :skip LIMIT :n"
 )
 _NAMED = text(
@@ -82,6 +85,16 @@ _AWAIT_NOTICE = text(
     "UPDATE whatsapp_messages SET state = 'waiting', document_id = :d, body = :lang, tries = 0"
     " WHERE customer_id = :c AND id = :m"
 )
+# A notice past WhatsApp's 24 hours waits ("expired", keeping its document and language) for the
+# person's next message, which puts it back in line; the window is the person's newest message's.
+_LAST_SENT = text("SELECT max(sent_at) FROM whatsapp_messages WHERE customer_id = :c AND link_id = :l")
+_PARK = text(
+    "UPDATE whatsapp_messages SET state = 'expired' WHERE customer_id = :c AND id = :m AND state = 'waiting'"
+)
+_UNPARK = text(
+    "UPDATE whatsapp_messages SET state = 'waiting', tries = 0"
+    " WHERE customer_id = :c AND link_id = :l AND state = 'expired' AND document_id IS NOT NULL"
+)
 _RECENT = text("SELECT recent_folder_ids FROM whatsapp_links WHERE customer_id = :c AND id = :l")
 _ADD_RECENT = text(
     "UPDATE whatsapp_links SET recent_folder_ids ="
@@ -109,8 +122,11 @@ class Sent:
     sent_at: datetime
 
 
-def level(conn: Connection, customer_id: str, at: str | None, skip: int, most: int) -> list[str]:
-    params = {"c": customer_id, "at": at, "skip": skip, "n": most}
+def level(
+    conn: Connection, customer_id: str, at: str | None, skip: int, most: int, *, without: Sequence[str] = ()
+) -> list[str]:
+    """``without``: folders left out (the recent ones the list shows already)."""
+    params = {"c": customer_id, "at": at, "skip": skip, "n": most, "without": list(without)}
     return [str(row[0]) for row in conn.execute(_LEVEL, params)]
 
 
@@ -150,6 +166,20 @@ def files_kept(conn: Connection, customer_id: str, user_id: str) -> int:
 def await_notice(conn: Connection, customer_id: str, message_id: str, document_id: str, lang: str) -> None:
     params = {"c": customer_id, "m": message_id, "d": document_id, "lang": lang}
     conn.execute(_AWAIT_NOTICE, params)
+
+
+def last_sent(conn: Connection, customer_id: str, link_id: str) -> datetime | None:
+    """When the person last sent anything on this connection, by WhatsApp's clock (the window)."""
+    found: datetime | None = conn.execute(_LAST_SENT, {"c": customer_id, "l": link_id}).scalar()
+    return found
+
+
+def park_notice(conn: Connection, customer_id: str, message_id: str) -> None:
+    conn.execute(_PARK, {"c": customer_id, "m": message_id})
+
+
+def unpark_notices(conn: Connection, customer_id: str, link_id: str) -> None:
+    conn.execute(_UNPARK, {"c": customer_id, "l": link_id})
 
 
 def recent(conn: Connection, customer_id: str, link_id: str) -> list[str]:
