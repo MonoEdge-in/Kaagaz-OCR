@@ -359,6 +359,16 @@ export const AnswerView = memo(function AnswerView({
     );
   }
 
+  // PRD 7 (#605): a saved answer that used a file now locked, replaced whole by its one line.
+  if (answer.status === "no_access") {
+    return (
+      <div {...card} className={`${motion} ${styles.answerCard}`}>
+        <span className="visually-hidden">Answer: </span>
+        <p className={styles.plain}>{answer.sentences[0]?.text}</p>
+      </div>
+    );
+  }
+
   if (answer.status === "not_found") {
     const closest = v2 ? (answer.documents ?? []).length : answer.closest_documents.length;
     return (

@@ -109,7 +109,14 @@ from kaagaz.api.errors import MESSAGES, ApiError
 from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.names import clean_name
 from kaagaz.api.routers.health import running_commit
-from kaagaz.api.views import answer_with_source_states, cited_document_ids, conversation_summary, message
+from kaagaz.api.views import (
+    LOCKED_NOTE,
+    answer_with_source_states,
+    cited_document_ids,
+    conversation_summary,
+    message,
+    shown_locked,
+)
 from kaagaz.db import ai_settings, audit, organization_words
 from kaagaz.db import chat as chat_sql
 from kaagaz.db.models import (
@@ -374,16 +381,25 @@ def ask(body: AskBody, user: CurrentUser, context: AppContext, background: Backg
         running.wait(context.settings.answer_stream_max_seconds + 30)
         found = _saved_reply(context, user, question_id)
         if found is not None:
-            return found
+            return _with_note(context, user, found)
     if mine is None:
         raise ApiError(409, "conflict", ANSWERING_ALREADY)
     try:
         found = None if body.question_id is None else _saved_reply(context, user, question_id)
-        return found or _ask(body, user, context, background, landing, question_id)
+        reply = found or _ask(body, user, context, background, landing, question_id)
     finally:
         with _IN_PROGRESS_LOCK:
             _IN_PROGRESS.pop(question_id, None)
         mine.set()
+    return _with_note(context, user, reply)
+
+
+def _with_note(context: AppContext, user: CurrentUser, reply: dict[str, Any]) -> dict[str, Any]:
+    """PRD 7 (#605, p2:79): the reply with Ask's fixed line, ``locked_note``, for a person who may
+    open a locked file (None for anyone else). Added each time it is shown, never saved."""
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        opens = chat_sql.opens_locked(conn, user.customer_id, user.user_id)
+    return {**reply, "locked_note": LOCKED_NOTE if opens else None}
 
 
 def _saved_reply(context: AppContext, user: CurrentUser, question_id: str) -> dict[str, Any] | None:
@@ -391,15 +407,20 @@ def _saved_reply(context: AppContext, user: CurrentUser, question_id: str) -> di
     409 when it is not this person's question (nothing about it is said)."""
     with context.db.user(user.customer_id, user.user_id) as conn:
         found = chat_sql.saved_turn(conn, user.customer_id, question_id)
+        cited = [] if found is None or found[2] is None else cited_document_ids(found[2]["answer"])
+        states = chat_sql.document_states(conn, user.customer_id, cited)
     if found is None:
         return None
     owner, question, answer = found
     if owner != user.user_id or question["role"] != "user" or answer is None:
         raise ApiError(409, "conflict")
+    shown = message(answer)
+    if "locked" in states.values() and shown["answer"]:  # PRD 7 (#605): locked since it was saved
+        shown["answer"] = answer_with_source_states(shown["answer"], states)
     return {
         "conversation_id": str(question["conversation_id"]),
         "question": message(question),
-        "answer": message(answer),
+        "answer": shown_locked(shown),
     }
 
 
@@ -438,6 +459,7 @@ def _ask(
             summary_turn, turns = int(state["summary_turn"]), int(state["turns"])
             pairs = max(context.settings.chat_history_turns, 1)
             recent = chat_sql.recent_messages(conn, user.customer_id, conversation_id, 2 * pairs)
+            recent = _without_locked(conn, user.customer_id, recent)
             earlier = chat_sql.openings(conn, user.customer_id, conversation_id)
             if chosen is None:
                 chosen = _saved_scope(recent)
@@ -559,7 +581,7 @@ def _ask(
         with context.db.user(user.customer_id, user.user_id) as conn:
             states = chat_sql.document_states(conn, user.customer_id, cited_document_ids(shown["answer"]))
         shown["answer"] = answer_with_source_states(shown["answer"], states)
-    return {"conversation_id": conversation_id, "question": message(asked), "answer": shown}
+    return {"conversation_id": conversation_id, "question": message(asked), "answer": shown_locked(shown)}
 
 
 def _save(
@@ -1065,9 +1087,26 @@ def _first_allowed(
 def _live_memory(conn: Connection, customer_id: str, state: RowMapping) -> Memory:
     """The stored summary and memory, without the documents that are no longer live
     (Trash, an older version, deleted forever), with the live ones' names. One query when
-    it names documents."""
+    it names documents. PRD 7 (#605): none at all when one of its documents is locked now, as its
+    summary may hold that file's words; the next write builds it again from the answers left."""
     stored = from_row(state["summary"], state["memory"])
+    if chat_sql.locked_documents(conn, customer_id, stored.documents):
+        return NO_MEMORY
     return live(stored, chat_sql.live_document_names(conn, customer_id, stored.documents))
+
+
+def _without_locked(conn: Connection, customer_id: str, recent: Sequence[RowMapping]) -> list[RowMapping]:
+    """PRD 7 (#605): ``recent`` without the answers that name a document now locked: their turn is
+    its question only, and nothing of them reaches a prompt or the memory. One query."""
+    named = [
+        each for row in recent if row["role"] == "assistant" for each in cited_document_ids(row["answer"])
+    ]
+    locked = chat_sql.locked_documents(conn, customer_id, named)
+    return [
+        row
+        for row in recent
+        if not (row["role"] == "assistant" and locked.intersection(cited_document_ids(row["answer"])))
+    ]
 
 
 def summary_due(turn: int, summary_turn: int, every: int) -> bool:
@@ -1112,6 +1151,7 @@ def _write_memory(
             return
         previous = _live_memory(conn, customer_id, state)
         recent = chat_sql.recent_messages(conn, customer_id, conversation_id, 2 * every)
+        recent = _without_locked(conn, customer_id, recent)
     cited = [
         str(citation["document_id"])
         for row in reversed(recent)
@@ -1225,6 +1265,7 @@ def get_conversation(conversation_id: uuid.UUID, user: User, context: Context) -
         rows = chat_sql.messages_with_feedback(conn, user.customer_id, str(conversation_id), user.user_id)
         cited = [document_id for row in rows for document_id in cited_document_ids(row["answer"])]
         states = chat_sql.document_states(conn, user.customer_id, cited)
+        opens = chat_sql.opens_locked(conn, user.customer_id, user.user_id)
     messages = []
     for row in rows:
         pin = (
@@ -1240,8 +1281,13 @@ def get_conversation(conversation_id: uuid.UUID, user: User, context: Context) -
         if shown["answer"]:
             # Sources moved to Trash, deleted or replaced since: see views.answer_with_source_states.
             shown["answer"] = answer_with_source_states(shown["answer"], states)
-        messages.append(shown)
-    return {"id": str(found["id"]), "title": found["title"], "messages": messages}
+        messages.append(shown_locked(shown))
+    return {
+        "id": str(found["id"]),
+        "title": found["title"],
+        "messages": messages,
+        "locked_note": LOCKED_NOTE if opens else None,  # PRD 7 (#605, p2:79)
+    }
 
 
 @router.patch("/conversations/{conversation_id}")

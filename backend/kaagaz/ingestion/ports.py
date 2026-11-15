@@ -40,6 +40,8 @@ class DocumentRecord:
     keep_place: bool = False
     # A8: in Trash when read back (``deleted_at`` set); a new upload never is.
     in_trash: bool = False
+    # PRD 7 (#605): locked when read back (``locked_at`` set): only scanned and pictured, never read.
+    locked: bool = False
 
 
 @dataclass(frozen=True, slots=True)

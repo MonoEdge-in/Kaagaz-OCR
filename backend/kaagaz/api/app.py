@@ -55,6 +55,7 @@ from kaagaz.api.routers import (
     folders,
     health,
     locked_open,
+    locks,
     oidc,
     operator,
     operator_activity,
@@ -185,6 +186,7 @@ def create_app(
         folders.router,
         access.router,  # PRD 7 (#601): who can see what
         access.admin_router,
+        locks.router,  # PRD 7 (#605): locked files
         folder_uploads.router,
         tags.router,
         chat.router,

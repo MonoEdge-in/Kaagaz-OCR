@@ -207,6 +207,8 @@ export function statusChip(status: DocumentStatus, detectedType?: DetectedType):
   if (status === "needs_reader" && detectedType === "zip") {
     return { text: "Kept as a file", tone: "neutral", className: "status-chip" };
   }
+  // PRD 7 (#605): locked is no failure; nothing to fix.
+  if (status === "locked") return { text: "Locked", tone: "neutral", className: "status-chip" };
   const state = documentStatus(status);
   return { text: documentWords(status), tone: state === null ? "ready" : STATUS_TONES[state], className: "status-chip" };
 }

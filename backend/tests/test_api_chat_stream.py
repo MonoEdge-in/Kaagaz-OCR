@@ -209,7 +209,8 @@ def test_done_is_exactly_the_reply_post_api_chat_gives(db: Database, fake: OpenR
     plain = w.plain(signed=w.api.sign_in(w.signed.customer_id))  # its own asker: no repeat (PR 2)
     streamed = w.stream()[-1][1]["reply"]
 
-    assert streamed.keys() == plain.keys() == {"conversation_id", "question", "answer"}
+    # Changed on purpose (PRD 7, #605): Ask's fixed line for a person who may open a locked file.
+    assert streamed.keys() == plain.keys() == {"conversation_id", "question", "answer", "locked_note"}
     for side in ("question", "answer"):
         assert streamed[side].keys() == plain[side].keys()
         same = {key: value for key, value in streamed[side].items() if key not in ("id", "created_at")}

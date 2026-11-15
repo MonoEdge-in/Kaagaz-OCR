@@ -36,6 +36,7 @@ _STATUS_MESSAGES = {
     "clean": "Reading the document…",
     "ready": "Ready. You can ask about it.",
     "needs_reader": "Stored safely. This kind of file can't be read yet.",
+    "locked": "Locked. It can only be viewed.",  # PRD 7 (#605)
 }
 _IN_PROGRESS = ("received", "clean")
 # All formats (#522): a file that can never be read as it is, in words that say what to do.
@@ -331,6 +332,7 @@ def document_summary(
         ),
         "progress": in_progress(row["status"], row["progress"]),
         "stuck": bool(row["stuck"]),  # issue 407: may be read again (db/documents.py STUCK)
+        "locked": bool(row["locked"]),  # PRD 7 (#605): opened only as page pictures, never read
         "time_left": document_time_left(row, now=now),
         "understanding": understanding(row, now=now),  # ready, its card and map still coming
         "doc_type": row["doc_type"],  # PRD 2 D3: from the document card; null without one
@@ -972,6 +974,12 @@ def message(
 # The words that stand in for a sentence whose every source has been deleted.
 GONE_SENTENCE = "This part of the answer came from a document that has since been deleted."
 _GONE = ("in_trash", "deleted")
+# PRD 7 (#605, p2:80): a saved answer that used a document now locked is this one line, never its
+# words. (With PR 8's states read through the access view, a person who can't open the document
+# gets PR 8's line for any hidden source instead.)
+LOCKED_LINE = "This answer used a document that is now locked. Open it directly to read it."
+# p2:79: the fixed line for a person who may open a locked file, added when shown, never saved.
+LOCKED_NOTE = "Ask doesn't read locked files. To check one, open it directly."
 
 
 def cited_document_ids(answer: Mapping[str, Any] | None) -> list[str]:
@@ -1003,9 +1011,35 @@ def _choices(answer: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return list(clarify.get("choices", [])) if isinstance(clarify, Mapping) else []
 
 
+def locked_answer() -> dict[str, Any]:
+    """PRD 7 (#605): a saved answer that used a document now locked, replaced whole: status
+    ``no_access``, reason ``locked``, LOCKED_LINE, and nothing else of it."""
+    return {
+        "status": "no_access",
+        "reason": "locked",
+        "label": None,
+        "sentences": [{"text": LOCKED_LINE, "citations": []}],
+        "citations": [],
+        "closest_documents": [],
+        "route": "search",
+        "normalized_question": "",
+        "model_used": False,
+    }
+
+
+def shown_locked(shown: dict[str, Any]) -> dict[str, Any]:
+    """A ``message`` whose answer was replaced by ``locked_answer``: its text is the line too, and
+    its pick goes (PRD 7, #605)."""
+    if shown.get("answer") and shown["answer"].get("reason") == "locked":
+        shown["text"], shown["pin"] = LOCKED_LINE, None
+    return shown
+
+
 def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, str]) -> dict[str, Any]:
     """A saved answer as it may be shown now (``states`` from db/chat.py
     ``document_states``; a missing id was deleted forever).
+
+    * PRD 7 (#605): one naming a document now ``locked`` is replaced whole (``locked_answer``).
 
     * Each citation gets ``source_state``. One from a document in Trash or
       deleted loses its snippet and its highlight regions: Trash means deleted,
@@ -1019,6 +1053,8 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
     ``older_version``: it was true of that version. The stored answer is never
     changed, so a restore brings everything back. O(citations + sentences + pages).
     """
+    if any(states.get(document) == "locked" for document in cited_document_ids(answer)):
+        return locked_answer()
     citations = []
     gone: set[int] = set()
     for each in answer.get("citations", []):

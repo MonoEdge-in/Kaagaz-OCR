@@ -16,7 +16,7 @@ Superseded for a run that is not open, as their PostgreSQL versions do
 import io
 import threading
 import uuid
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import IO, Any
@@ -179,6 +179,12 @@ class MemoryStorage:
         with self._lock:
             self.renditions[(customer_id, document_id)] = pdf
 
+    def delete_rendition(self, customer_id: str, document_id: str) -> None:
+        if self.fail_delete:
+            raise BackendUnavailable("storage down")
+        with self._lock:
+            self.renditions.pop((customer_id, document_id), None)
+
     def get_rendition(self, customer_id: str, document_id: str) -> bytes:
         with self._lock:
             try:
@@ -271,6 +277,32 @@ class MemoryDocuments(MemoryRepository):
         self.filed: list[tuple[str, str]] = []  # feature 28: each file_document asked for
         self.file_error: Exception | None = None  # raised by file_document when set
         self.readied: list[tuple[str | None, bool]] = []  # each mark_ready that passed its fence
+        self.locked: set[tuple[str, str]] = set()  # PRD 7 (#605): the locked versions
+        self.locked_pages: dict[tuple[str, str], list[PageRecord]] = {}  # each save_locked_pages' pages
+
+    def get(self, customer_id: str, document_id: str) -> DocumentRecord | None:
+        """The record, ``locked`` when it is in ``locked`` (PgDocuments reads locked_at)."""
+        record = super().get(customer_id, document_id)
+        if record is None or (customer_id, document_id) not in self.locked:
+            return record
+        return replace(record, locked=True)
+
+    def still_open(self, customer_id: str, document_id: str, run_id: str) -> bool:
+        """PRD 7 (#605): the run is open and the version not locked, as PgDocuments.still_open."""
+        return self._open(customer_id, document_id, run_id) and (customer_id, document_id) not in self.locked
+
+    def save_locked_pages(
+        self, customer_id: str, document_id: str, pages: Sequence[PageRecord], *, run: FinishedRun | None
+    ) -> None:
+        """As PgDocuments.save_locked_pages for one version: fenced, only while locked and clean."""
+        key = (customer_id, document_id)
+        fenced = run is not None and not self._open(customer_id, document_id, run.run_id)
+        if fenced or key not in self.locked or self._statuses.get_status(*key) is not DocumentStatus.CLEAN:
+            raise Superseded("" if run is None else run.run_id)
+        self.locked_pages[key] = list(pages)
+        self.page_counts[key] = len(pages)
+        self._statuses.set_status(customer_id, document_id, DocumentStatus.LOCKED)
+        self._finish(customer_id, run)
 
     def set_failed(self, customer_id: str, document_id: str, code: str, *, run_id: str | None = None) -> None:
         """Failed, with the read-again marks cleared at once, as PgDocuments.set_failed."""

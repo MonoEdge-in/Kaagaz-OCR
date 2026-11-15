@@ -45,6 +45,7 @@ from kaagaz.api.views import CURSOR, admin_user, iso, timeline
 from kaagaz.db import access as access_sql
 from kaagaz.db import audit, listing, lock_places
 from kaagaz.db import folders as folders_sql
+from kaagaz.db import locks as locks_sql
 from kaagaz.db import users as users_sql
 
 admin_router = APIRouter(dependencies=[Depends(require_admin_session)])
@@ -650,14 +651,31 @@ def list_shares(document_id: uuid.UUID, user: User, context: Context) -> dict[st
     }
 
 
-def _give(conn: Connection, user: CurrentUser, document: str, people: list[str]) -> tuple[int, list[str]]:
+def _give(
+    conn: Connection, user: CurrentUser, found: access_sql.AdminDocument, people: list[str]
+) -> tuple[int, list[str]]:
     """Give one file to people under its family lock (``kaagaz_give_file``: one lock, one insert),
     with one audit row per person it changed something for, in one statement: (the versions it
-    has now, those given it now). Sent to Trash meanwhile: 409."""
+    has now, those given it now). Sent to Trash meanwhile: 409. A locked file also gives its lock
+    (PRD 7 section 6, #605): each person may open it too, audited ``lock.grant``."""
+    document = found.id
     versions, added = access_sql.give(conn, document, people)
     if not versions:
         _live(_admin_document(conn, user, document))
         raise ApiError(404, "not_found")
+    if found.locked:
+        for person in people:
+            if locks_sql.grant(conn, document, person) == "granted":
+                audit.record(
+                    conn,
+                    user.customer_id,
+                    actor_user_id=user.user_id,
+                    action="lock.grant",
+                    target_type="document",
+                    target_id=document,
+                    details={"via": "give", **({"self": True} if person == user.user_id else {})},
+                    subject_user_id=person,
+                )
     given = [person for person in people if added.get(person)]
     if given:
         audit.record_about(
@@ -693,11 +711,12 @@ def give_file(
     _password_given(context, user, body.password)
     with context.db.user(customer_id, user.user_id) as conn:
         folders_sql._lock_tree(conn, customer_id)
-        _live(_admin_document(conn, user, target))
+        document = _admin_document(conn, user, target)
+        _live(document)
         found = _enabled(conn, user, person)
         if mine:
             _self_grant(user, body.password)
-        versions, given = _give(conn, user, target, [person])
+        versions, given = _give(conn, user, document, [person])
         watchers = _watchers(conn, context, user)
     if given and (mine or found.admin):
         _tell(background, context, user, "file", None if mine else found.name, watchers)
@@ -746,7 +765,7 @@ def give_files(
             _self_grant(user, body.password)
         given: list[str] = []
         for each in sorted(found, key=lambda row: (row.family_id, row.id)):
-            given += _give(conn, user, each.id, people)[1]
+            given += _give(conn, user, each, people)[1]
         watchers = _watchers(conn, context, user)
     for person in dict.fromkeys(given):
         if person == user.user_id or persons[person].admin:

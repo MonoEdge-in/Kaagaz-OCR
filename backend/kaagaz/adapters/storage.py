@@ -346,6 +346,11 @@ class S3Storage:
         """The PDF rendition. BlobNotFound if this customer's document has none (not converted yet)."""
         return self._get_bytes(rendition_key(customer_id, document_id), document_id)
 
+    def delete_rendition(self, customer_id: str, document_id: str) -> None:
+        """PRD 7 (#605): the PDF rendition of a file being locked, which holds its words. Deleting
+        a missing key is fine, so a file with none, or a repeat, changes nothing."""
+        self._delete_keys([rendition_key(customer_id, document_id)])
+
     # --- Health and set-up -------------------------------------------------
 
     def ping(self) -> None:

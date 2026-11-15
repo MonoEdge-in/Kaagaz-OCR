@@ -153,6 +153,20 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ),
     ("db/documents.py", "_COPY_TAGS"): (WRITE_AFTER_CHECK, "a new version takes its family's tags"),
     ("db/documents.py", "PgDocuments"): (SHARED_WITH_WORKER, f"the upload and pipeline store; {_UPLOAD}"),
+    # PRD 7 (#605): the worker's locked path and its check before each model step (never the API's).
+    ("db/documents.py", "_LOCKED_CLEAN"): (
+        SHARED_WITH_WORKER,
+        "the pipeline's store: a locked version prepared",
+    ),
+    ("db/documents.py", "_STILL_OPEN"): (SHARED_WITH_WORKER, "the pipeline's store: before each model step"),
+    # PRD 7 (#605): whether a family is locked, under its family lock, after the route's view check.
+    ("db/versions.py", "_LOCKED_FAMILY"): (
+        EXISTENCE_ONLY,
+        "join, undo, separate, make current: the view first (_visible / _LIVE), then refused if locked",
+    ),
+    # PRD 7 (#605): which documents an old answer cites are locked now, so they feed no prompt; ids only,
+    # of answers the person's own conversation holds (PR 8 reads document_states through the view).
+    ("db/chat.py", "locked_documents"): (EXISTENCE_ONLY, "the asker's own saved answers' document ids"),
     ("db/ensemble.py", "_STOP"): (WRITE_AFTER_CHECK, "POST .../ensemble/{run}/stop: get_document first"),
     ("db/ensemble.py", "_RUN"): (SHARED_WITH_WORKER, _ENSEMBLE),
     ("db/ensemble.py", "_ACTIVE_RUN"): (SHARED_WITH_WORKER, _ENSEMBLE),

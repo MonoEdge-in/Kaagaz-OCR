@@ -200,6 +200,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   // Still on its way at mount: pending until it settles (the effect below).
   const [waiting] = useState(() => resumed !== null && !resumed.outcome);
   const [pending, setPending] = useState<string | null>(() => (waiting ? resumed!.question : null));
+  const [lockedNote, setLockedNote] = useState<string | null>(null);
   const [askError, setAskError] = useState<string | null>(() =>
     resumed?.outcome && "error" in resumed.outcome ? errorText(resumed.outcome.error) : null,
   );
@@ -446,6 +447,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
           if (request !== openRequest.current) return;
           jumpToEnd.current = true;
           setMessages(conversation.messages);
+          setLockedNote(conversation.locked_note ?? null);
           setScope(restoredScope(conversation.messages));
           setThreadState("idle");
           setStatus(LOADED_STATUS);
@@ -671,6 +673,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       if (request !== openRequest.current) return;
       jumpToEnd.current = true;
       setMessages(conversation.messages);
+      setLockedNote(conversation.locked_note ?? null);
       setScope(restoredScope(conversation.messages));
       setThreadState("idle");
       setStatus(LOADED_STATUS);
@@ -776,6 +779,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       if (precise) markPrecise(reply.answer.id);
       setSettledIn((current) => new Map(current).set(reply.answer.id, how));
       setMessages((current) => [...current, reply.question, reply.answer]);
+      setLockedNote(reply.locked_note ?? null);
       // Only after a tapped choice does focus move, to the reply; typing keeps it in the box.
       if (chose) requestAnimationFrame(() => document.getElementById(answerDomId(reply.answer.id))?.focus());
       setScope((current) => answeredScope(current, reply.question));
@@ -1102,6 +1106,8 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
             ) : (
             <>
             {keptNote !== null ? <p className={styles.composerNote}>{DRAFT_KEPT}</p> : null}
+            {/* PRD 7 (#605, p2:79): Ask's fixed line, for a person who may open a locked file. */}
+            {lockedNote !== null ? <p className={styles.composerNote}>{lockedNote}</p> : null}
             <QuestionBox
               pending={busy || search.kind === "loading"}
               onStop={busy ? () => asking_.current && stopAsk(asking_.current) : undefined}

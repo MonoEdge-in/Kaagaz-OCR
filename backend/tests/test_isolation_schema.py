@@ -340,6 +340,14 @@ OWNER_RIGHTS = {
     "kaagaz_take_file": ("integer", EMPTY_PATH),
     # Changed on purpose (#601, 0090b): auto-filing gives the uploader the file; no person only.
     "kaagaz_give_uploader": ("integer", EMPTY_PATH),
+    # Changed on purpose (#605, 0093): locked files, each an Admin's only, checked inside.
+    "kaagaz_lock": (
+        "TABLE(document_id uuid, outcome text, version_id uuid, prepare boolean, rendition boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_unlock": ("TABLE(document_id uuid, outcome text, version_id uuid, read boolean)", EMPTY_PATH),
+    "kaagaz_lock_grant": ("text", EMPTY_PATH),
+    "kaagaz_lock_revoke": ("integer", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"
@@ -628,9 +636,14 @@ TRIGGER_RIGHTS = dict.fromkeys(
         "kaagaz_access_changed",
         "kaagaz_walls_set",  # 0089 (#594)
         "kaagaz_user_switched",  # Changed on purpose (#601, 0090)
+        "kaagaz_lock_grants_follow",  # Changed on purpose (#605, 0093)
+        "kaagaz_refuse_locked_content",  # Changed on purpose (#605, 0093)
     ),
     ("trigger", EMPTY_PATH),
-) | {"kaagaz_access_of": ("kaagaz_access_set", EMPTY_PATH)}  # 0090: internal, run by none (#601)
+) | {
+    "kaagaz_access_of": ("kaagaz_access_set", EMPTY_PATH),  # 0090: internal, run by none (#601)
+    "kaagaz_clear_derived": ("void", EMPTY_PATH),  # 0093: internal, run by kaagaz_lock only (#605)
+}
 # The only tables without customer_id: the customers themselves, alembic's own, the
 # platform operator's (0015), the workers' reader status (0022) and the model catalogue
 # (0023) and the platform AI defaults (0026), which belong to no customer.
