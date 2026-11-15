@@ -724,6 +724,10 @@ class RenditionStore(Protocol):
         """#522 PR 2: a Word or PowerPoint file's PDF, beside its original, for the viewer."""
         ...
 
+    def delete_rendition(self, customer_id: str, document_id: str) -> None:
+        """PRD 7 (#605): the PDF stored as a lock came, which holds the file's words."""
+        ...
+
 
 class PipelineStore(Protocol):
     """kaagaz.db.pipeline_store.PgPipelineStore in production."""
@@ -1079,6 +1083,10 @@ class DocumentProcessor:
         try:
             if self._customer_active is not None and not self._customer_active(job.customer_id):
                 raise JobFailed("customer_disabled", retryable=False)  # marked failed below, never read
+            # PRD 7 (#605): the first progress write takes the family lock, so a lock under way is
+            # waited for; the record read again after it says whether a lock came since ``get``.
+            self._progress(job, run, "scanning", 0, 1)
+            record = self._documents.get(job.customer_id, job.document_id) or record
             if record.locked:
                 self._prepare_locked(job, record, heartbeat, run)  # PRD 7 (#605): never read
             else:
@@ -1185,13 +1193,12 @@ class DocumentProcessor:
         if record.detected_type == sniff.ZIP and record.size > ZIP_MAX_BYTES:
             # #522 PR 3: refused before the scan gate loads it into memory (policy.ZIP_MAX_BYTES).
             raise JobFailed("zip_over_limit", retryable=False)
-        self._progress(job, run, "scanning", 0, 1)
-        data = self._scan(job, run, record.display_name)
+        data = self._scan(job, run, record.display_name)  # "scanning" was shown by __call__
         if hashlib.sha256(data).hexdigest() != record.sha256:
             raise JobFailed("content_changed", retryable=False)
         record = self._resolved(record, data)
         heartbeat()
-        converted, data = self._converted(record, data)
+        converted, data = self._converted(job, run, record, data)
         # #522: a Word or PowerPoint file's PDF is read by the rendition's readers.
         reading = RENDITION if converted.detected_type == sniff.PDF != record.detected_type else None
         record = converted
@@ -1239,6 +1246,7 @@ class DocumentProcessor:
             # Closed before anything else, whatever happened; the heartbeat beats while a page
             # is being read (fast scan: a page may make several slow calls in a row).
             with self._reading_document(job, run, page_count=len(pages)), waiting(heartbeat):
+                self._still_open(job, run)  # PRD 7 (#605): a lock since the last write stops it here
                 spans = _or_fail(lambda: self._socket.read(reads_as, data, on_page=on_page))
         except NoReader:
             require_clean(self._statuses, job)
@@ -1373,13 +1381,12 @@ class DocumentProcessor:
         page rows (sizes only) and the state ``locked`` (``save_locked_pages``). No reading
         pause, no billing, no reader and no model: nothing of it is ever sent to an AI. A file
         with a page that can't be drawn fails ``cannot_draw``, still locked."""
-        self._progress(job, run, "scanning", 0, 1)
-        data = self._scan(job, run, record.display_name)
+        data = self._scan(job, run, record.display_name)  # "scanning" was shown by __call__
         if hashlib.sha256(data).hexdigest() != record.sha256:
             raise JobFailed("content_changed", retryable=False)
         record = self._resolved(record, data)
         heartbeat()
-        record, data = self._converted(record, data, store=False)
+        record, data = self._converted(job, run, record, data, store=False)
         heartbeat()
         prepared, pictured = self._draw(job, record.detected_type, data, heartbeat, run)
         if not prepared.pages or len(pictured) != len(prepared.pages):
@@ -1655,13 +1662,15 @@ class DocumentProcessor:
         return replace(record, detected_type=kind)
 
     def _converted(
-        self, record: DocumentRecord, data: bytes, *, store: bool = True
+        self, job: Job, run: _Run, record: DocumentRecord, data: bytes, *, store: bool = True
     ) -> tuple[DocumentRecord, bytes]:
         """#522 PR 2: a Word or PowerPoint file as the PDF LibreOffice makes of it, stored as its
         rendition, and an old Excel file as an XLSX; the record says what it is read as (pdf or
         xlsx) from here on, while the stored kind stays the file's own. Any other kind, or none
         with no converter, as it is. A file LibreOffice can't open fails with ``office_unreadable``.
-        ``store`` False (a locked version, PRD 7): the PDF is drawn from, never stored."""
+        ``store`` False (a locked version, PRD 7): the PDF is drawn from, never stored. PRD 7
+        (#605): the PDF holds the file's words, so it is stored only while the run is open and the
+        version not locked, and deleted again (Superseded) when a lock came while it was stored."""
         kind = record.detected_type
         if self._office is None or self._renditions is None or kind not in OFFICE_KINDS:
             return record, data
@@ -1669,7 +1678,13 @@ class DocumentProcessor:
         converted = _or_fail(lambda: convert(kind, data))
         converted_type = read_as(kind)
         if converted_type == sniff.PDF and store:
+            self._still_open(job, run)
             self._renditions.put_rendition(record.customer_id, record.document_id, converted)
+            try:
+                self._still_open(job, run)
+            except Superseded:
+                self._renditions.delete_rendition(record.customer_id, record.document_id)
+                raise
         return replace(record, detected_type=converted_type), converted
 
     def _scan(self, job: Job, run: _Run, name: str) -> bytes:

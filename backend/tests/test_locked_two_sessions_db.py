@@ -8,6 +8,7 @@ same: nothing of a locked file's content is left, and nothing deadlocks.
 * The write first: the lock waits on the family or row lock, then deletes what was written."""
 
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -18,6 +19,7 @@ from sqlalchemy.exc import DBAPIError
 
 from kaagaz.db import documents as documents_sql
 from kaagaz.db import locks as locks_sql
+from kaagaz.db import review as review_sql
 from kaagaz.db.engine import Database
 from kaagaz.db.page_reads import _PUT, PageKey, PgPageReads, _params
 from kaagaz.db.trash import lock_family
@@ -25,8 +27,8 @@ from kaagaz.jobs.worker import Superseded
 from kaagaz.pipeline import FinishedRun, PageRecord, RunTotals
 from kaagaz.reading.spans import PageInfo
 from tests.db_support import insert_document, name_session, new_customer, wait_until_blocked
-from tests.test_api_support import Api
-from tests.test_isolation_access_views import _app
+from tests.test_api_support import CSRF, PASSWORD, Api
+from tests.test_isolation_access_views import _app, _walled
 from tests.test_operator_auth_db import _owner
 
 pytestmark = pytest.mark.db
@@ -176,6 +178,22 @@ def test_ready_after_the_lock_is_refused_by_the_run_fence(db: Database) -> None:
     assert not documents_sql.PgDocuments(db).still_open(c, document, run)
 
 
+def test_the_check_before_a_model_step_waits_for_a_lock_under_way_and_then_sees_it(db: Database) -> None:
+    """Review (15 Nov 2026): ``still_open`` reads the version FOR SHARE, so a lock that has taken the
+    family but not committed yet is waited for: the worker never sends the file on in that gap."""
+    c, admin, document = _file(db)
+    _owner(db, "UPDATE documents SET status = 'clean' WHERE id = :d", {"d": document})
+    run = _run(db, c, document)
+    with _app(db).user(c, admin) as conn:
+        assert not locks_sql.lock(conn, [document], []).refused
+        thread, out = _in_thread(
+            "check", db, lambda: documents_sql.PgDocuments(db).still_open(c, document, run)
+        )
+        _wait_for_waiting(db, "FOR SHARE OF d")
+    thread.join(timeout=10)
+    assert out == [False]
+
+
 def test_two_admins_locking_at_once_one_locks_and_the_other_finds_it_locked(db: Database) -> None:
     c, admin, document = _file(db)
     second, _ = Api(db).add_user(c, "admin")
@@ -246,3 +264,49 @@ def test_a_prepared_locked_version_is_current_unless_a_newer_one_is_locked(db: D
     assert [row[0] for row in current] == [newer]
     states = _owner(db, "SELECT DISTINCT status FROM documents WHERE family_id = :f", {"f": first})
     assert [row[0] for row in states] == ["locked"]
+
+
+def _wait_for_waiting(db: Database, fragment: str, timeout: float = 5.0) -> None:
+    """Wait until a session whose statement holds ``fragment`` waits on a lock (a route's own
+    connection has no name to wait for)."""
+    deadline = time.monotonic() + timeout
+    query = text(
+        "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE :q"
+        " AND pid <> pg_backend_pid()"
+    )
+    while time.monotonic() < deadline:
+        with db.engine.connect() as conn:
+            if conn.execute(query, {"q": f"%{fragment}%"}).scalar_one():
+                return
+        time.sleep(0.02)
+    raise AssertionError(f"no session running {fragment} waited on a lock")
+
+
+def test_a_lock_deadlocked_with_a_review_save_is_run_again_and_locks(db: Database) -> None:
+    """Review (15 Nov 2026): a review save holds its value, then writes its correction (which reads
+    the version FOR SHARE); the lock holds the family, then deletes the value. PostgreSQL fails the
+    lock, which waited first; the route runs it again once the save is in, and the file is locked
+    with the save's rows gone."""
+    api = Api(db)
+    org = _walled(api)
+    c, admin, file = org.c, org.people["admin"], org.files["loose"]
+    api.add_page(c, file)
+    value = api.add_value(c, file)
+    with _app(db).user(c, admin.user_id) as conn:  # the review save, as POST /review/{id}
+        current = review_sql.lock_value(conn, c, value)
+        assert current is not None
+        body = {"password": PASSWORD}
+        thread, out = _in_thread(
+            "lock", db, lambda: admin.client.post(f"/api/documents/{file}/lock", json=body, headers=CSRF)
+        )
+        _wait_for_waiting(db, "kaagaz_lock(")  # the lock waits on the value the save holds
+        review_sql.resolve_value(
+            conn, c, current, new_text="1,250", choice="typed", remember=True, user_id=admin.user_id
+        )  # waits on the lock's family: the cycle, which PostgreSQL breaks by failing the lock
+    thread.join(timeout=20)
+    assert not thread.is_alive() and out[0].status_code == 200, out[0].text
+    assert _owner(db, "SELECT locked_at IS NOT NULL FROM documents WHERE id = :d", {"d": file})[0][0] is True
+    for table in ("extracted_values", "corrections"):
+        assert _owner(db, f"SELECT count(*) FROM {table} WHERE document_id = :d", {"d": file})[0][0] == 0  # noqa: S608
+    learned = "SELECT count(*) FROM learned_corrections WHERE customer_id = :c"
+    assert _owner(db, learned, {"c": c})[0][0] == 0

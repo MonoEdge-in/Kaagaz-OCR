@@ -276,17 +276,34 @@ def add_correction(
 
 
 def remember_correction(
-    conn: Connection, customer_id: str, *, field: str, raw_value: str, corrected_value: str, user_id: str
+    conn: Connection,
+    customer_id: str,
+    *,
+    field: str,
+    raw_value: str,
+    corrected_value: str,
+    user_id: str,
+    document_id: str,
 ) -> None:
-    """Upsert: the latest correction for (field, raw value) wins, for this customer only."""
+    """Upsert: the latest correction for (field, raw value) wins, for this customer only, with the
+    document it was made on (``source_document_id``: a lock deletes it with the file, PRD 7)."""
     conn.execute(
         text(
-            "INSERT INTO learned_corrections (customer_id, field, raw_value, corrected_value, created_by)"
-            " VALUES (:c, :f, :raw, :new, :u)"
+            "INSERT INTO learned_corrections"
+            " (customer_id, field, raw_value, corrected_value, created_by, source_document_id)"
+            " VALUES (:c, :f, :raw, :new, :u, :d)"
             " ON CONFLICT (customer_id, field, raw_value)"
-            " DO UPDATE SET corrected_value = EXCLUDED.corrected_value, created_by = EXCLUDED.created_by"
+            " DO UPDATE SET corrected_value = EXCLUDED.corrected_value, created_by = EXCLUDED.created_by,"
+            " source_document_id = EXCLUDED.source_document_id"
         ),
-        {"c": customer_id, "f": field, "raw": raw_value, "new": corrected_value, "u": user_id},
+        {
+            "c": customer_id,
+            "f": field,
+            "raw": raw_value,
+            "new": corrected_value,
+            "u": user_id,
+            "d": document_id,
+        },
     )
 
 
@@ -335,6 +352,7 @@ def resolve_value(
             raw_value=str(current["value_raw"]),
             corrected_value=new_text,
             user_id=user_id,
+            document_id=str(current["document_id"]),
         )
     audit.record(
         conn,

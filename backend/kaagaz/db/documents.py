@@ -262,11 +262,12 @@ _LOCKED = (
     "UPDATE documents SET status = 'locked', failure_code = NULL, page_count = :pages, progress = NULL,"
     " is_current = :current WHERE customer_id = :c AND id = :d"
 )
-# The run, and the version not locked: one query on two primary keys.
+# The run, and the version not locked: one query on two primary keys. The version is read FOR
+# SHARE, so a lock under way (its FOR NO KEY UPDATE) is waited for and then seen.
 _STILL_OPEN = (
-    "SELECT EXISTS (SELECT 1 FROM processing_runs r JOIN documents d ON d.customer_id = r.customer_id"
-    " AND d.id = r.document_id WHERE r.customer_id = :c AND r.document_id = :d AND r.id = :r"
-    " AND r.status = 'running' AND d.locked_at IS NULL)"
+    "SELECT r.status = 'running' AND d.locked_at IS NULL FROM documents d JOIN processing_runs r"
+    " ON r.customer_id = d.customer_id AND r.document_id = d.id AND r.id = :r"
+    " WHERE d.customer_id = :c AND d.id = :d FOR SHARE OF d"
 )
 
 
@@ -429,6 +430,7 @@ _REPROCESS_LOCK = (
 _REPROCESSED_THIS_HOUR = (
     "SELECT count(*) FROM audit_log WHERE customer_id = :c AND action = 'document.reprocess'"
     " AND created_at > now() - interval '1 hour'"
+    " AND details ->> 'via' IS DISTINCT FROM 'unlock'"  # PRD 7 (#605, p2:31): an unlock's read never counts
 )
 _REPROCESSED_LATELY = (
     "SELECT EXISTS (SELECT 1 FROM audit_log WHERE customer_id = :c AND action = 'document.reprocess'"
@@ -448,7 +450,8 @@ _REPROCESS = (
     " read_also = CASE WHEN CAST(:mode AS text) IS NULL THEN read_also ELSE CAST(:also AS text[]) END"
     " WHERE d.customer_id = :c AND d.id = :d"
     f" AND (d.status IN ('ready', 'failed', 'needs_reader') OR {STUCK}) AND d.deleted_at IS NULL"
-    " AND d.locked_at IS NULL"  # PRD 7 (#605): a locked file is never read
+    # PRD 7 (#605): a locked file is never read; one whose preparing failed is prepared again only
+    " AND (d.locked_at IS NULL OR d.status = 'failed')"
 )
 
 
@@ -476,7 +479,8 @@ def mark_for_reprocess(
     advisory lock), so the hourly count is exact. Raises NotReprocessable unless the status is ready,
     failed or needs_reader, or it is still in progress RETRY_STUCK_HOURS after it was asked for
     (``STUCK``, issue 407; a job still on it is fenced off by the new run, kaagaz/db/runs.py), and
-    it is out of Trash (EnsembleRunning while an Ensemble run of
+    it is out of Trash and not locked, but for a locked version that failed being prepared (PRD 7,
+    #605: the worker only prepares it again) (EnsembleRunning while an Ensemble run of
     it is queued or running), and ReprocessLimited when the
     customer already started ``per_hour`` in the last hour, or this document one
     in the last REPROCESS_COOLDOWN_MINUTES. Nothing is changed when it raises.
@@ -488,7 +492,8 @@ def mark_for_reprocess(
         return None
     params: dict[str, Any] = {"c": customer_id, "d": document_id}
     state = conn.execute(text(_REPROCESS_STATE), params).one()
-    if state.in_trash or state.locked or (state.status not in REPROCESSABLE and not state.stuck):
+    locked = state.locked and state.status != "failed"  # PRD 7 (#605): failed, it is prepared again
+    if state.in_trash or locked or (state.status not in REPROCESSABLE and not state.stuck):
         raise NotReprocessable(document_id)
     if conn.execute(text(_ENSEMBLE_RUNNING), params).scalar_one():
         raise EnsembleRunning(document_id)
@@ -1078,7 +1083,8 @@ class PgDocuments:
             retry_on_deadlock(transaction, customer_id=customer_id, document_id=document_id)
 
     def still_open(self, customer_id: str, document_id: str, run_id: str) -> bool:
-        """PRD 7 (#605): ``run_id`` is still running and the version is not locked. One query."""
+        """PRD 7 (#605): ``run_id`` is still running and the version is not locked (after a lock
+        under way, if any). One query."""
         with unavailable(), user_or_customer(self._db, customer_id, self._user_id) as conn:
             params = {"c": customer_id, "d": document_id, "r": run_id}
             return bool(conn.execute(text(_STILL_OPEN), params).scalar())

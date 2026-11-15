@@ -3,6 +3,8 @@ on a fresh database; the CHECKs refuse a locked version that is ready or keeps i
 version in the state locked that is not locked; a run may end locked. What the functions do:
 test_isolation_locked_files; their rights: test_isolation_schema."""
 
+import subprocess
+
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
@@ -106,3 +108,21 @@ def test_a_run_may_end_locked(db: Database) -> None:
             ),
             {"c": customer, "d": document},
         )
+
+
+def test_the_downgrade_is_refused_while_a_file_is_locked(fresh: tuple[str, Database]) -> None:
+    """Review (15 Nov 2026): downgraded, a locked file would stay locked with nothing to open or
+    unlock it. Unlocked again, the downgrade goes ahead."""
+    url, db = fresh
+    migrate(url, "0093")
+    customer, user = new_customer(db)
+    with db.customer(customer) as conn:
+        document = insert_document(conn, customer, uploaded_by=user)
+    _owner(db, _LOCKED, {"u": user, "s": "received", "d": document})
+    with pytest.raises(subprocess.CalledProcessError) as refused:
+        base._downgrade(url, "0090b")
+    assert b"unlock every file first" in refused.value.stderr
+    assert _counts(db) == [7, len(M0093.TRIGGERS), 2]  # nothing dropped
+    _owner(db, "UPDATE documents SET locked_at = NULL, locked_by = NULL WHERE id = :d", {"d": document})
+    base._downgrade(url, "0090b")
+    assert _counts(db) == [0, 0, 0]

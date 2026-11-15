@@ -6,9 +6,10 @@ the file found first with no lock held (a person who can't see it gets 404, as f
 was, then 403; an Admin finds any file by ``kaagaz_admin_document``), then the password, proved with
 no connection held (``prove_password``: counted on the sign-in lock), then one transaction: the tree
 lock, the people checked again, one owner-rights function of 0093 that takes the family locks and
-reads every file again under them (all or nothing), the audit rows, the jobs queued last, and a
-Word or PowerPoint file's stored PDF deleted last of all, so storage that is down rolls the lock
-back.
+reads every file again under them (all or nothing), the audit rows, and a Word or PowerPoint file's
+stored PDF deleted last, so storage that is down rolls the lock back; run again on a deadlock. The
+jobs are queued after the commit, so a worker never reads the state before it; a queue that is down
+leaves them to the stuck sweep.
 
 * ``POST /documents/{id}/lock`` and ``POST /documents/lock``: lock files, every version, and allow
   ``open_to`` to open them (left out: the Admin alone, "ticked by default"); 409 ``in_trash``,
@@ -23,7 +24,9 @@ back.
   Management are emailed when it lets them open the file (PRD 7 decision 11, question 17).
 """
 
+import logging
 import uuid
+from collections.abc import Callable
 from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Response
@@ -48,8 +51,11 @@ from kaagaz.api.views import iso
 from kaagaz.db import audit, listing
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import locks as locks_sql
+from kaagaz.db.sqlstate import retry_on_deadlock
+from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 Context = Annotated[AppContext, Depends(get_context)]
 TypedPassword = Annotated[str, Field(min_length=1, max_length=MAX_PASSWORD)]
@@ -124,62 +130,88 @@ def _lock(
     *,
     batch: bool,
 ) -> locks_sql.Outcome:
-    """The write transaction of a lock (the module notes)."""
+    """The write transaction of a lock (the module notes), run again on a deadlock, then its jobs."""
     customer_id = user.customer_id
     people = [user.user_id] if open_to is None else list(dict.fromkeys(str(each) for each in open_to))
-    with context.db.user(customer_id, user.user_id) as conn:
-        folders_sql._lock_tree(conn, customer_id)
-        for person in people:
-            _enabled(conn, user, person)
-        outcome = locks_sql.lock(conn, documents, people)
-        if outcome.refused:
-            raise _refused(outcome.refused, batch=batch)
-        if outcome.already and not batch:
-            raise ApiError(*_REFUSED["already_locked"])
-        versions: dict[str, int] = {}
-        for version in outcome.versions:
-            versions[version.document_id] = versions.get(version.document_id, 0) + 1
-        for document_id, count in versions.items():
-            details: dict[str, audit.DetailValue] = {"versions": count, "open_to": len(people)}
-            if batch:
-                details["batch"] = len(documents)
-            _audit(conn, user, "lock.lock", document_id, details)
-        for version in outcome.versions:  # last but one: a queue that is down rolls the lock back
-            if version.queue:
-                context.queue.enqueue(Job(customer_id, version.version_id))
-        for version in outcome.versions:  # last: storage that is down rolls everything back
-            if version.rendition:
-                context.storage.delete_rendition(customer_id, version.version_id)
+
+    def transaction() -> locks_sql.Outcome:
+        with context.db.user(customer_id, user.user_id) as conn:
+            folders_sql._lock_tree(conn, customer_id)
+            for person in people:
+                _enabled(conn, user, person)
+            outcome = locks_sql.lock(conn, documents, people)
+            if outcome.refused:
+                raise _refused(outcome.refused, batch=batch)
+            if outcome.already and not batch:
+                raise ApiError(*_REFUSED["already_locked"])
+            versions: dict[str, int] = {}
+            for version in outcome.versions:
+                versions[version.document_id] = versions.get(version.document_id, 0) + 1
+            for document_id, count in versions.items():
+                details: dict[str, audit.DetailValue] = {"versions": count, "open_to": len(people)}
+                if batch:
+                    details["batch"] = len(documents)
+                _audit(conn, user, "lock.lock", document_id, details)
+            for version in outcome.versions:  # last: storage that is down rolls everything back
+                if version.rendition:
+                    context.storage.delete_rendition(customer_id, version.version_id)
+        return outcome
+
+    outcome = _retried(transaction, customer_id, documents)
+    _queue(context, customer_id, outcome)
     return outcome
 
 
 def _unlock(
     context: AppContext, user: CurrentUser, documents: list[str], *, batch: bool
 ) -> locks_sql.Outcome:
-    """The write transaction of an unlock (the module notes)."""
+    """The write transaction of an unlock (the module notes), run again on a deadlock, then its jobs."""
     customer_id = user.customer_id
-    with context.db.user(customer_id, user.user_id) as conn:
-        folders_sql._lock_tree(conn, customer_id)
-        outcome = locks_sql.unlock(conn, documents)
-        if outcome.refused:
-            raise _refused(outcome.refused, batch=batch)
-        versions: dict[str, int] = {}
-        for version in outcome.versions:
-            versions[version.document_id] = versions.get(version.document_id, 0) + 1
-        for document_id, count in versions.items():
-            details: dict[str, audit.DetailValue] = {"versions": count}
-            if batch:
-                details["batch"] = len(documents)
-            _audit(conn, user, "lock.unlock", document_id, details)
-        for version in outcome.versions:
-            if version.queue:
-                # Read again at one reading cost billed to the Admin (``kaagaz_unlock`` named them),
-                # never counted on the hourly limit (p2:31): its audit says how it came.
-                _audit(conn, user, "document.reprocess", version.version_id, {"via": "unlock"})
-        for version in outcome.versions:  # last: a queue that is down rolls the unlock back
-            if version.queue:
-                context.queue.enqueue(Job(customer_id, version.version_id))
+
+    def transaction() -> locks_sql.Outcome:
+        with context.db.user(customer_id, user.user_id) as conn:
+            folders_sql._lock_tree(conn, customer_id)
+            outcome = locks_sql.unlock(conn, documents)
+            if outcome.refused:
+                raise _refused(outcome.refused, batch=batch)
+            versions: dict[str, int] = {}
+            for version in outcome.versions:
+                versions[version.document_id] = versions.get(version.document_id, 0) + 1
+            for document_id, count in versions.items():
+                details: dict[str, audit.DetailValue] = {"versions": count}
+                if batch:
+                    details["batch"] = len(documents)
+                _audit(conn, user, "lock.unlock", document_id, details)
+            for version in outcome.versions:
+                if version.queue:
+                    # Read again at one reading cost billed to the Admin (``kaagaz_unlock`` named
+                    # them), never counted on the hourly limit (p2:31): its audit says how it came.
+                    _audit(conn, user, "document.reprocess", version.version_id, {"via": "unlock"})
+        return outcome
+
+    outcome = _retried(transaction, customer_id, documents)
+    _queue(context, customer_id, outcome)
     return outcome
+
+
+def _retried(
+    transaction: Callable[[], locks_sql.Outcome], customer_id: str, documents: list[str]
+) -> locks_sql.Outcome:
+    """``transaction`` run again when PostgreSQL broke a deadlock by failing it (a review save, a
+    worker's write: each takes the version's row before or after the family lock)."""
+    return retry_on_deadlock(transaction, customer_id=customer_id, document_id=documents[0])
+
+
+def _queue(context: AppContext, customer_id: str, outcome: locks_sql.Outcome) -> None:
+    """The jobs, after the commit, so a worker never sees the state before it. A queue that is down
+    is logged and the reply stands: the stuck sweep (kaagaz.jobs.revive) queues them again."""
+    for version in outcome.versions:
+        if version.queue:
+            try:
+                context.queue.enqueue(Job(customer_id, version.version_id))
+            except BackendUnavailable:
+                ids = {"customer_id": customer_id, "document_id": version.version_id}
+                logger.warning("lock_job_not_queued", extra=ids)
 
 
 def _audit(
