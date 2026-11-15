@@ -70,6 +70,11 @@ export const ACTIVITY_WORDS: Record<string, (entry: Entry) => string> = {
   "access.file_give": (entry) => `gave ${whom(entry)} access to ${where(entry)}`,
   "access.file_take": (entry) =>
     `removed ${mine(entry) ? "their own" : `${entry.subject_name ?? "someone"}'s`} access to ${where(entry)}`,
+  // Written by 0090's users_switched trigger when an account is turned off or on.
+  "access.switched_off": (entry) =>
+    `turned off ${entry.subject_name ?? "someone"}'s account; their access was removed`,
+  "access.switched_on": (entry) =>
+    `turned on ${entry.subject_name ?? "someone"}'s account; their old access was cleared`,
 };
 
 /** PRD 7 (#601): someone gave themselves access (the chip's words). The audit says `self` for an

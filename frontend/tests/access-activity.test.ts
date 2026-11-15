@@ -67,12 +67,31 @@ describe("the access changes in words", () => {
       ["access.named_remove", salaries, "Ravi took Priya off Finance / Salaries"],
       ["access.file_give", onFile, "Ravi gave Priya access to Sale deed.pdf"],
       ["access.file_take", onFile, "Ravi removed Priya's access to Sale deed.pdf"],
+      [
+        "access.switched_off",
+        { target_type: "user", folder: null },
+        "Ravi turned off Priya's account; their access was removed",
+      ],
+      [
+        "access.switched_on",
+        { target_type: "user", folder: null },
+        "Ravi turned on Priya's account; their old access was cleared",
+      ],
+      [
+        "access.switched_off",
+        { target_type: "user", folder: null, subject_name: null },
+        "Ravi turned off someone's account; their access was removed",
+      ],
     ];
     for (const [action, more, sentence] of said) expect(activitySentence(entry(action, more)), action).toBe(sentence);
-    // Every access action in the backend's audit rows has its words here (kaagaz/api/routers/access.py).
-    const backend = read("../backend/kaagaz/api/routers/access.py");
-    const written = new Set(backend.match(/"access\.[a-z_]+"/g)?.map((quoted) => quoted.slice(1, -1)));
-    expect(written.size).toBe(14);
+    // Every access action the backend writes has its words here: the routes (kaagaz/api/routers/
+    // access.py) and 0090's users_switched trigger (turning an account off or on).
+    const routes = read("../backend/kaagaz/api/routers/access.py").match(/"access\.[a-z_]+"/g) ?? [];
+    const trigger = read("../backend/migrations/versions/0090_access_api.py").match(/'access\.[a-z_]+'/g) ?? [];
+    const written = new Set([...routes, ...trigger].map((quoted) => quoted.slice(1, -1)));
+    expect(written.size).toBe(16);
+    expect(written).toContain("access.switched_off");
+    expect(written).toContain("access.switched_on");
     for (const action of written) expect(Object.keys(ACTIVITY_WORDS), action).toContain(action);
   });
 
