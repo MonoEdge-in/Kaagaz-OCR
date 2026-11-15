@@ -32,8 +32,8 @@ from kaagaz.db.engine import Database
 from kaagaz.ingestion.ports import DocumentRecord
 from tests.db_support import insert_folder, name_session, wait_until_blocked
 from tests.test_api_folder_upload_files import ResumableStorage, _fingerprint
-from tests.test_api_support import CSRF, Api, Signed
-from tests.test_isolation_access_api import _audit, _call, _code, _in_thread, _version
+from tests.test_api_support import CSRF, PASSWORD, Api, Signed
+from tests.test_isolation_access_api import _audit, _call, _code, _email_api, _in_thread, _refused, _version
 from tests.test_isolation_access_views import _SUGGEST, Org, _app, _expected, _seen, _walled
 from tests.test_isolation_logins import WORKER
 from tests.test_operator_auth_db import _owner
@@ -672,3 +672,214 @@ def test_making_a_folder_private_again_can_drop_people_named_before(db: Database
     assert _code(
         _call(admin, "PUT", f"/api/folders/{salaries}/private", {"on": False, "drop_named": [ids["named"]]})
     ) == (400, "bad_request")
+
+
+# --- review fixes (#601, PR 10c review part 1) ----------------------------------------------------
+
+
+@pytest.mark.parametrize(("who", "status"), [("plain", 403), ("member", 403), ("head", 200)])
+def test_an_auto_filings_undo_is_a_move_under_the_move_rule(db: Database, who: str, status: int) -> None:
+    """Filed into Finance/Invoices, then Invoices is made private with the reviewer and a Finance
+    member named on it: their Undo would open it to Finance or more (403); Finance's Head may
+    (inside their department)."""
+    org = _walled(Api(db))
+    document = _filed_invoice(db, org, "member")
+    invoices = _place(db, document)[0]
+    _owner(db, "UPDATE folders SET private = true WHERE id = :f", {"f": invoices})
+    for named in ("plain", "member"):
+        _owner(
+            db,
+            "INSERT INTO private_folder_members (customer_id, folder_id, user_id, added_by)"
+            " VALUES (:c, :f, :u, :u)",
+            {"c": org.c, "f": invoices, "u": org.people[named].user_id},
+        )
+    reply = _call(org.people[who], "POST", f"/api/documents/{document}/autofile/undo", {})
+    assert reply[0] == status, reply
+    if status == 403:
+        assert reply[1]["error"] == {"code": "move_changes_access", "message": MOVE_REFUSED}
+        assert _place(db, document)[0] == invoices
+    else:
+        assert _place(db, document) == (org.folders["finance"], None)
+
+
+@pytest.mark.parametrize(("who", "status"), [("member", 403), ("management", 200)])
+def test_a_versions_undo_back_to_a_wider_place_needs_the_move_right(
+    db: Database, who: str, status: int
+) -> None:
+    """Sales' file joined into Finance's family by Management; its Undo would send it back to open
+    Sales: the Finance member may not, Management may."""
+    org = _walled(Api(db))
+    new, family = org.files["sales"], org.files["fin"]
+    suggestion = str(_owner(db, _SUGGEST, {"c": org.c, "d": new, "f": family})[0][0])
+    accepted = _call(org.people["management"], "POST", f"/api/version-suggestions/{suggestion}/accept", {})
+    assert accepted[0] == 200, accepted
+    reply = _call(org.people[who], "POST", f"/api/documents/{new}/version-undo", {})
+    assert reply[0] == status, reply
+    if status == 403:
+        assert reply[1]["error"]["code"] == "move_changes_access"
+        assert _place(db, new)[0] == org.folders["finance"]
+    else:
+        assert _place(db, new)[0] == org.folders["sales"]
+
+
+def test_a_private_folder_alone_keeps_files_to_some_people(db: Database) -> None:
+    """Lead decision (review): a private folder counts as a wall, as the PRD and the one-time card
+    say: walls_set is set, an upload with no folder is held, and a restore whose folder is gone is
+    held for the restorer."""
+    api = Api(db)
+    c, first = api.customer()
+    named, other = api.sign_in(c), api.sign_in(c)
+    with db.customer(c) as conn:
+        vault = insert_folder(conn, c, first, "Vault")
+    assert _owner(db, "SELECT walls_set FROM customers WHERE id = :c", {"c": c})[0][0] is False
+    _owner(db, "UPDATE folders SET private = true WHERE id = :f", {"f": vault})
+    assert _owner(db, "SELECT walls_set FROM customers WHERE id = :c", {"c": c})[0][0] is True
+    held = _worker(db, c, other.user_id)
+    assert _place(db, held) == (None, other.user_id)
+    assert held not in _seen(_app(db), c, named.user_id)
+    _owner(
+        db,
+        "INSERT INTO private_folder_members (customer_id, folder_id, user_id, added_by)"
+        " VALUES (:c, :f, :u, :u)",
+        {"c": c, "f": vault, "u": named.user_id},
+    )
+    kept = api.add_document(c, name="vault.pdf", folder_id=vault, uploaded_by=named.user_id)
+    assert named.client.delete(f"/api/documents/{kept}", headers=CSRF).status_code == 204
+    with db.customer(c) as conn:
+        folders_sql.delete_folder(conn, c, vault)
+    reply = named.client.post(f"/api/documents/{kept}/restore", headers=CSRF)
+    assert reply.status_code == 200, reply.text
+    assert _place(db, kept) == (None, named.user_id)
+    assert kept not in _seen(_app(db), c, other.user_id)
+
+
+def test_a_head_asks_who_sees_a_place_only_inside_their_department(db: Database) -> None:
+    org = _walled(Api(db))
+    head, finance = org.people["head"].user_id, org.folders["finance"]
+    vault = _sub(db, org, "vault", org.folders["sales"])
+    _owner(db, "UPDATE folders SET private = true WHERE id = :f", {"f": vault})
+    asked = "SELECT * FROM kaagaz_place_audience(:d, :p, true)"
+    assert _refused(db, org.c, head, asked, d=finance, p=org.folders["salaries"]) is None
+    assert _refused(db, org.c, head, asked, d=finance, p=vault) == "42501"  # another department's
+
+
+def test_an_admin_opening_a_folder_to_themselves_by_a_move_types_their_password(db: Database) -> None:
+    """PRD 7 section 3: Bills (in Finance, Department only) moved to open Loose by an Admin who
+    can't see its files: 403 password_required, nothing moved; with the password it moves, the
+    audit row says self, and Management is emailed."""
+    api, mailer = _email_api(db)
+    org = _walled(api)
+    admin = org.people["admin"]
+    bills = _sub(db, org, "bills", org.folders["finance"])
+    api.add_document(org.c, name="bill.pdf", folder_id=bills, uploaded_by=org.people["member"].user_id)
+    body: dict[str, Any] = {"parent_id": org.folders["loose"]}
+    assert _code(_call(admin, "PATCH", f"/api/folders/{bills}", body)) == (403, "password_required")
+    assert _moves(db, org, "folder.move") == []
+    assert _code(_call(admin, "PATCH", f"/api/folders/{bills}", {**body, "password": "wrong"}))[0] == 400
+    assert _call(admin, "PATCH", f"/api/folders/{bills}", {**body, "password": PASSWORD})[0] == 200
+    [details] = _moves(db, org, "folder.move")
+    assert details["self"] is True and details["gaining"] >= 1
+    assert any(sent.to == org.people["management"].email for sent in mailer.sent)
+
+
+def test_a_confirmed_keep_delete_counts_who_loses_and_gains_and_an_admin_gaining_types_the_password(
+    db: Database,
+) -> None:
+    org = _walled(Api(db))
+    admin = org.people["admin"]
+    box = _sub(db, org, "box", org.folders["sales"])
+    api = Api(db)
+    api.add_document(org.c, name="box.pdf", folder_id=box, uploaded_by=admin.user_id)
+    reply = _call(
+        admin, "DELETE", f"/api/folders/{box}?contents=keep&to={org.folders['finance']}&confirm=true"
+    )
+    assert reply[0] == 200, reply
+    [details] = _moves(db, org, "folder.delete")
+    assert details["losing"] >= 1 and details["gaining"] == 0 and "self" not in details
+    bills = _sub(db, org, "bills", org.folders["finance"])
+    api.add_document(org.c, name="bill.pdf", folder_id=bills, uploaded_by=org.people["member"].user_id)
+    url = f"/api/folders/{bills}?contents=keep&confirm=true"  # to the top level: the Admin gains it
+    assert _code(_call(admin, "DELETE", url)) == (403, "password_required")
+    assert _call(admin, "DELETE", url, {"password": PASSWORD})[0] == 200
+    assert _moves(db, org, "folder.delete")[-1]["self"] is True
+
+
+def test_management_moving_a_held_file_nowhere_writes_no_counts(db: Database) -> None:
+    org = _walled(Api(db))
+    reply = _call(
+        org.people["management"], "PATCH", f"/api/documents/{org.files['held']}", {"folder_id": None}
+    )
+    assert reply[0] == 200, reply
+    assert _moves(db, org, "document.move") == [{"folder_id": None}]
+    assert _place(db, org.files["held"]) == (None, org.people["member"].user_id)
+
+
+def test_a_private_folder_never_goes_into_another_with_its_words(db: Database) -> None:
+    """Review part 2: the refusal has its own words, the same from every route; the keep-delete
+    refuses it too, even confirmed, and nothing moves."""
+    org = _walled(Api(db))
+    admin = org.people["admin"]
+    box = _sub(db, org, "box", org.folders["sales"])
+    secret = _sub(db, org, "secret", box)
+    _owner(db, "UPDATE folders SET private = true WHERE id = :f", {"f": secret})
+    words = {"code": "inside_private", "message": "A private folder can't go inside another private folder."}
+    moved = _call(admin, "PATCH", f"/api/folders/{box}", {"parent_id": org.folders["salaries"]})
+    assert moved[0] == 409 and moved[1]["error"] == words
+    url = f"/api/folders/{box}?contents=keep&to={org.folders['salaries']}"
+    for sent in (url, url + "&confirm=true"):  # refused before the warning, and confirmed
+        kept = _call(admin, "DELETE", sent, {"password": PASSWORD})
+        assert kept[0] == 409 and kept[1]["error"] == words, sent
+    assert _owner(db, "SELECT parent_id::text FROM folders WHERE id = :f", {"f": secret})[0][0] == box
+
+
+@pytest.mark.parametrize(("who", "status"), [("member", 403), ("management", 200)])
+def test_join_again_under_the_move_rule(db: Database, who: str, status: int) -> None:
+    """A version made a separate file and moved to open Sales: joining it again would move it into
+    Finance (Department only): the Finance member may not, Management may."""
+    org = _walled(Api(db))
+    management, new, family = org.people["management"], org.files["sales"], org.files["fin"]
+    suggestion = str(_owner(db, _SUGGEST, {"c": org.c, "d": new, "f": family})[0][0])
+    assert _call(management, "POST", f"/api/version-suggestions/{suggestion}/accept", {})[0] == 200
+    separated = _call(management, "POST", f"/api/documents/{new}/separate", {"name": "sales.pdf"})
+    assert separated[0] == 200, separated
+    assert _call(management, "PATCH", f"/api/documents/{new}", {"folder_id": org.folders["sales"]})[0] == 200
+    body = {"family_id": family, "name": "sales.pdf"}
+    reply = _call(org.people[who], "POST", f"/api/documents/{new}/separate/undo", body)
+    assert reply[0] == status, reply
+    if status == 403:
+        assert reply[1]["error"]["code"] == "move_changes_access"
+    assert _place(db, new)[0] == (org.folders["sales"] if status == 403 else org.folders["finance"])
+
+
+def test_the_holder_previews_filing_their_own_held_file(db: Database) -> None:
+    """Review part 2: a file held for the person is theirs to file, so theirs to preview: Sales'
+    people would gain it."""
+    org = _walled(Api(db))
+    member, held = org.people["member"], org.files["held"]
+    status, preview = _call(
+        member, "GET", f"/api/documents/{held}/move-preview?folder_id={org.folders['sales']}"
+    )
+    assert status == 200, preview
+    gaining = {each["id"] for each in preview["gaining"]}
+    assert org.people["plain"].user_id in gaining and preview["losing"] == []
+    assert preview["files"] == 1
+    plain = org.people["plain"]  # not theirs: a reviewer who can't see it is not found
+    assert _call(plain, "GET", f"/api/documents/{held}/move-preview")[0] == 404
+
+
+def test_management_moves_a_file_to_a_place_no_folder_has(db: Database) -> None:
+    """The top level of an organisation whose top-level folders are all departments: no folder
+    stores (no department, no private folder), so only Management's own right lets it ask who sees
+    there (0090b), and the move counts who gains it."""
+    org = _walled(Api(db))
+    _owner(
+        db,
+        "UPDATE folders SET parent_id = :s WHERE id = :f",
+        {"s": org.folders["sales"], "f": org.folders["loose"]},
+    )
+    reply = _call(
+        org.people["management"], "PATCH", f"/api/documents/{org.files['fin']}", {"folder_id": None}
+    )
+    assert reply[0] == 200, reply
+    [details] = _moves(db, org, "document.move")
+    assert details["folder_id"] is None and details["gaining"] >= 1

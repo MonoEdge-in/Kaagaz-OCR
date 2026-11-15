@@ -171,25 +171,21 @@ def test_who_may_ask_who_sees_what(db: Database) -> None:
         assert _refused(db, org.c, p[who], _AUDIENCE, k="document", i=files[file]) == "42501", who
     assert _as(db, org.c, p["admin"], _AUDIENCE, k="document", i=other.files["top"]) == []
     ids = {"folder": org.folders["finance"], "file": files["given"], "person": p["plain"]}
-    # Changed on purpose (#601, 0090b): Management and the department's Head may ask about a place
-    # (the move previews); a Head about another place, and a member, may not.
-    assert (
-        _refused(db, org.c, p["management"], "SELECT * FROM kaagaz_place_audience(NULL, NULL, false)") is None
-    )
-    assert (
-        _refused(db, org.c, p["head"], "SELECT * FROM kaagaz_place_audience(:f, NULL, true)", f=ids["folder"])
-        is None
-    )
-    for who in ("head", "member"):
-        assert (
-            _refused(db, org.c, p[who], "SELECT * FROM kaagaz_place_audience(NULL, NULL, false)") == "42501"
-        )
-    assert (
-        _refused(
-            db, org.c, p["member"], "SELECT * FROM kaagaz_place_audience(:f, NULL, true)", f=ids["folder"]
-        )
-        == "42501"
-    )
+    # Changed on purpose (#601, 0090b): Management, and a person about a place they can see (the
+    # move previews: a Head inside their department, a holder filing their own file), may ask about
+    # a place; nobody about a place they can't see.
+    place = "SELECT * FROM kaagaz_place_audience(:d, :p, true)"
+    finance, salaries = ids["folder"], org.folders["salaries"]
+    for who, department, private in (
+        ("management", finance, salaries),
+        ("head", finance, None),
+        ("head", finance, salaries),
+        ("member", finance, None),
+        ("member", None, None),  # Loose: open, at the top level
+    ):
+        assert _refused(db, org.c, p[who], place, d=department, p=private) is None, (who, private)
+    for who, department, private in (("member", finance, salaries), ("plain", finance, None)):
+        assert _refused(db, org.c, p[who], place, d=department, p=private) == "42501", who
     for statement in (
         "SELECT * FROM kaagaz_kept_from_me(:folder)",
         "SELECT * FROM kaagaz_admin_document(:file)",

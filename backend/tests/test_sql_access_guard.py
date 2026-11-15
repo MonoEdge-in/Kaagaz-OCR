@@ -279,8 +279,8 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ("db/trash.py", "LIVE_FOLDERS"): (WRITE_AFTER_CHECK, "a restore, after the view check: which are live"),
     # PRD 7 PR 10c (#601): the move rules, the move previews, a folder holding what is hidden, and
     # the place of an upload with no folder.
-    ("db/folders.py", "_SAME_PLACE"): (WRITE_AFTER_CHECK, "a move's rule: _seen or the view first, ids only"),
-    ("db/folders.py", "_PLACE_OF"): (WRITE_AFTER_CHECK, "a move's places: _seen or the view first, ids only"),
+    ("db/folders.py", "_SAME_PLACE"): (EXISTENCE_ONLY, "a move's rule: _seen or the view first, ids only"),
+    ("db/folders.py", "_PLACE_OF"): (EXISTENCE_ONLY, "a move's places: _seen or the view first, ids only"),
     ("db/folders.py", "_PRIVATE_AMONG"): (TREE_WALK, "the private folders a move carries, ids only"),
     ("db/folders.py", "_HIDDEN_INSIDE"): (EXISTENCE_ONLY, "DELETE /folders/{id}: whether anything is hidden"),
     ("db/access.py", "_DOCUMENT_HOLD"): (
