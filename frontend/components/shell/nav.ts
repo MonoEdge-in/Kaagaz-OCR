@@ -14,7 +14,7 @@ export interface NavLink {
   count?: "review";
 }
 
-const LINKS: { link: NavLink; roles: readonly Role[]; scope?: SessionScope }[] = [
+const LINKS: { link: NavLink; roles: readonly Role[]; scope?: SessionScope; management?: true }[] = [
   // File management D1: the dashboard is the home screen, first after sign-in.
   { link: { href: "/dashboard", label: "Home", icon: "home" }, roles: ["member", "reviewer", "admin"] },
   {
@@ -25,13 +25,24 @@ const LINKS: { link: NavLink; roles: readonly Role[]; scope?: SessionScope }[] =
   // My words: each user's own, so every role has it.
   { link: { href: "/words", label: "My words", icon: "words" }, roles: ["member", "reviewer", "admin"] },
   { link: { href: "/review", label: "Review", icon: "review", count: "review" }, roles: ["reviewer", "admin"] },
+  // PRD 7 (#601): Management's, a flag not a role. The server asks an Admin for an admin session.
+  {
+    link: { href: "/access-activity", label: "Access activity", icon: "history" },
+    roles: ["member", "reviewer", "admin"],
+    management: true,
+  },
   // PRD A1: an admin signed in at /login gets no Admin menu.
   { link: { href: "/admin", label: "Admin", icon: "admin" }, roles: ["admin"], scope: "admin" },
 ];
 
-export function navLinks(role: Role, scope: SessionScope): NavLink[] {
+export function navLinks(role: Role, scope: SessionScope, management = false): NavLink[] {
+  // An Admin with an app session is refused the access activity, Management or not.
+  const access = management && (role !== "admin" || scope === "admin");
   return LINKS.filter(
-    (entry) => entry.roles.includes(role) && (entry.scope === undefined || entry.scope === scope),
+    (entry) =>
+      entry.roles.includes(role) &&
+      (entry.scope === undefined || entry.scope === scope) &&
+      (entry.management === undefined || access),
   ).map((entry) => entry.link);
 }
 

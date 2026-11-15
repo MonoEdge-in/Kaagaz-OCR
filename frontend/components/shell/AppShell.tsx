@@ -54,7 +54,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
   const chrome = appChrome(me);
-  const links = chrome ? navLinks(me.user.role, sessionScope(me)) : [];
+  const links = chrome ? navLinks(me.user.role, sessionScope(me), me.access?.management === true) : [];
   const pageName = currentPageName(links, pathname);
   const [statusBar, setStatusBar] = useState<HTMLDivElement | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
