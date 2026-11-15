@@ -21,12 +21,16 @@ server").
   queue, which are about when and to whom a reply goes, not what it says. ``sent()`` shows a
   list as (its text, its row ids).
 * ``file_message`` (W5): a document or photo as Meta delivers it.
+* ``voice_message`` (W6): a voice note as Meta delivers it (``forwarded`` as WhatsApp marks one);
+  ``ogg_opus``: a made-up Ogg Opus recording's bytes of a given length, as WhatsApp's voice notes
+  are (only its Ogg pages are real: nothing can play it).
 """
 
 import hashlib
 import hmac
 import json
 import secrets
+import struct
 import threading
 import time
 import uuid
@@ -309,3 +313,41 @@ def connect(
                 },
             ).scalar_one()
         )
+
+
+def voice_message(
+    number: str, sent_at: datetime, media_id: str, *, forwarded: bool = False
+) -> dict[str, Any]:
+    """W6: a voice note as Meta delivers it."""
+    item: dict[str, Any] = {
+        "from": number.removeprefix("+"),
+        "id": f"wamid.{uuid.uuid4().hex}",
+        "timestamp": str(int(sent_at.timestamp())),
+        "type": "audio",
+        "audio": {"id": media_id, "mime_type": "audio/ogg; codecs=opus", "sha256": "x", "voice": True},
+    }
+    if forwarded:
+        item["context"] = {"forwarded": True}
+    return item
+
+
+PRE_SKIP = 312  # samples an Opus decoder drops first, as a real OpusHead names
+
+
+def _page(granule: int, sequence: int, packet: bytes, kind: int = 0) -> bytes:
+    """One Ogg page holding ``packet`` (under 255 bytes: one lacing value); no checksum."""
+    header = b"OggS" + struct.pack("<BBqIII", 0, kind, granule, 7, sequence, 0)
+    return header + bytes([1, len(packet)]) + packet
+
+
+def ogg_opus(seconds: float, *, pad: int = 0) -> bytes:
+    """W6: an Ogg Opus recording ``seconds`` long by its pages (OpusHead, OpusTags, then audio
+    pages, the last one's granule position its end), with ``pad`` bytes more of made-up audio."""
+    head = b"OpusHead" + struct.pack("<BBHIhB", 1, 1, PRE_SKIP, 48000, 0, 0)
+    pages = [_page(0, 0, head, kind=2), _page(0, 1, b"OpusTags" + b"\0" * 8)]
+    end = PRE_SKIP + round(seconds * 48000)
+    chunks = [b"\xfc" + bytes([n % 251]) * 200 for n in range(max(1, pad // 200))]
+    for n, chunk in enumerate(chunks):
+        last = n == len(chunks) - 1
+        pages.append(_page(end if last else -1, n + 2, chunk, kind=4 if last else 0))
+    return b"".join(pages)

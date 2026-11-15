@@ -24,7 +24,9 @@ class Outgoing:
     was sent. ``lang``: its language, for the "couldn't find" that stands in for it. ``later``: work
     to do once it was sent (Ask's memory). W5: ``finished``, the person's other messages it answers
     too (the files sent with this one), done with it; ``notice``, a saved file's "ready" notice,
-    which goes not at all (an empty ``body``) once its file is hidden, locked or deleted."""
+    which goes not at all (an empty ``body``) once its file is hidden, locked or deleted. W6:
+    ``heard``, a voice note's "I heard: ..." line, which ``body`` starts with and the "couldn't find"
+    standing in for it keeps."""
 
     body: str
     buttons: tuple[tuple[str, str], ...] = ()
@@ -36,3 +38,4 @@ class Outgoing:
     later: tuple[Callable[[], None], ...] = ()
     finished: tuple[str, ...] = ()
     notice: bool = False
+    heard: str = ""

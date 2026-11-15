@@ -3,9 +3,9 @@
 Every model PRD 5 names goes through OpenRouter (https://openrouter.ai/api/v1), Tushar's
 decision of 8 October 2026 (council ``2026-10-08-prd5-openrouter.md``). ``OpenRouterClient``
 implements ``ModelClient`` (``chat_json`` and ``embed``), and adds ``read_page`` for the
-Gemini reader (G1, G2, G3). ``read_page`` reads with the model and provider its caller
-names (the document's, ``kaagaz.db.models.resolve``; model choice, council 11 Oct 2026),
-or OCR_MODEL; ``MODEL_CHAT`` answers ``chat_json`` unless its caller names the answer's
+Gemini reader (G1, G2, G3) and (#603 W6) ``transcribe`` for WhatsApp's voice notes.
+``read_page`` reads with the model and provider its caller names (the document's,
+``kaagaz.db.models.resolve``; model choice, council 11 Oct 2026), or OCR_MODEL; ``MODEL_CHAT`` answers ``chat_json`` unless its caller names the answer's
 chosen model (``kaagaz.db.models.resolve_chat``, features 25-27) and ``MODEL_EMBED`` embeds.
 No code here picks or switches a model.
 
@@ -1384,6 +1384,41 @@ class OpenRouterClient:
         if temperature is not None and chosen.split("/", 1)[0] in TEMPERATURE_VENDORS:
             body["temperature"] = temperature
         return body, output_limit, ends
+
+    def transcribe(
+        self,
+        *,
+        system: str,
+        audio: bytes,
+        audio_format: str,
+        schema: dict[str, Any],
+        max_tokens: int,
+        deadline: float | None = None,
+    ) -> dict[str, Any]:
+        """#603 W6: one voice note written down by MODEL_CHAT (an audio-capable Gemini) through
+        DEFAULT_PROVIDER, under the same ``PROVIDER`` block (Vertex only, zero data retention), as a
+        JSON object following ``schema``: ``system``, then a user message holding only the audio as
+        an ``input_audio`` part (base64, ``audio_format`` such as ``ogg``). Nothing of it is kept or
+        logged here. No repair turn (it would send the audio again): a reply that does not follow
+        ``schema`` raises ``invalid_output``, with its tokens. ``deadline`` as ``chat_json``'s."""
+        self._check_provider(DEFAULT_PROVIDER)
+        ends = None if deadline is None else self.now() + (deadline - time.monotonic())
+        sound = {"data": base64.b64encode(audio).decode("ascii"), "format": audio_format}
+        body = chat_request(
+            model=self.chat_model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": [{"type": "input_audio", "input_audio": sound}]},
+            ],
+            thinking=CHAT_THINKING_LEVEL,
+            schema=schema,
+            max_output_tokens=max_tokens + CHAT_THINKING_TOKENS[CHAT_THINKING_LEVEL],
+        )
+        content, spent = self._chat_reply(body, max_tokens, (0, 0), ends)
+        value, _ = parse_reply(content, schema)
+        if value is None:
+            raise ModelOutputError("invalid_output", input_tokens=spent[0], output_tokens=spent[1])
+        return value
 
     # The reader's call (G1, G2, G3).
 
