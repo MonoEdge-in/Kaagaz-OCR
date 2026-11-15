@@ -53,19 +53,27 @@ MAX_PROPERTY_CHOICES = 5
 NO_PROPERTY = "No one property was named, so I looked in all your documents."
 _PRINTED_KINDS = (  # the word a value prints its kind with, the first that matches
     ("CTS", re.compile(r"\bc\.?\s*t\.?\s*s\b|सि\.?\s*स", re.IGNORECASE)),
-    ("Gat", re.compile(r"\bga[tu]\b|गट", re.IGNORECASE)),
+    ("Gat", re.compile(r"\bg[au]t\b|गट", re.IGNORECASE)),
     ("Khata", re.compile(r"\bkhata\b|खाते|खाता", re.IGNORECASE)),
     ("Plot", re.compile(r"\bplot\b|प्लॉट|भूखंड", re.IGNORECASE)),
     ("Survey", re.compile(r"\bsurvey\b|\bs\.?\s*no\b|स\.?\s*नं|सर्व्हे|सर्वे", re.IGNORECASE)),
 )
 _NUMBER = re.compile(r"[0-9\u0966-\u096f].*")  # from the first digit (Latin or Devanagari) on
 _JOINED = re.compile(r"[,;&]|\band\b|आणि|(?<!\S)व(?!\S)", re.IGNORECASE)
-_DATE = re.compile(r"[0-9]{1,2}[./-][0-9]{1,2}[./-][0-9]{2,4}")
-_MONEY = re.compile(r"₹|\brs\b|\.[0-9]{2}$", re.IGNORECASE)
-_REFERS = re.compile(r"\b(?:this|that|it|these|those)\b", re.IGNORECASE)
+# A date: day, month and year (the day at most 31, the month at most 12, so survey 45/2/12 is
+# none), or ISO's year-month-day; money: a currency mark, "/-" or paise.
+_DATE = re.compile(
+    r"(?<![0-9])([0-9]{1,2})[./-]([0-9]{1,2})[./-][0-9]{2,4}(?![0-9])|[0-9]{4}-[0-9]{2}-[0-9]{2}"
+)
+_MONEY = re.compile(r"₹|रु|rs\.?\s*[0-9]|/-|\.[0-9]{2}$", re.IGNORECASE)
 _BETWEEN = re.compile(r"\bbetween\s+(.+?)\s+and\s+(.+?)(?=[?.!,]|$)", re.IGNORECASE)
 _WORD = re.compile(r"[a-z0-9]+")
 _LETTER = r"[\w\u0900-\u097F]"  # a letter, digit or Devanagari sign: a word goes on
+_REFERS = re.compile(  # "this" and its kin, in English, Marathi, Hindi and Hindi typed in English
+    f"(?<!{_LETTER})(?:this|that|it|these|those|या|याचा|याची|याचे|यात|ह्या|हा|ही|हे|यह|इस|इसका|इसकी|इसके"
+    f"|iska|iski|iske|yeh)(?!{_LETTER})",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +114,7 @@ class Pending:
     confirm: bool = False  # a "Did you mean" pick: its spelling is suggested to the company (B2)
     typed: str | None = None  # the words typed instead of a pick (B2)
     documents: tuple[str, ...] = ()  # #629: a property pick's documents, the only ones searched
+    labels: tuple[str, ...] = ()  # #629: the picks as shown, for the saved question
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,21 +250,22 @@ def _entry(row: RowMapping) -> Entry:
     )
 
 
-def property_choice(entry: Entry) -> tuple[str, tuple[str, str, str]] | None:
-    """#629: a property entry's choice label ("Gat ६१ (61), Kusgaon, Maval · Land record") and the
-    key that makes two choices one (kind, number in Latin digits, place), or None when it is not
-    a choice: no number, a date, money, several numbers joined, no village and no document name,
-    or anything that reads like instructions. O(n) for its text."""
+def property_choice(entry: Entry) -> tuple[str, tuple[str, str, str], bool] | None:
+    """#629: a property entry's choice label ("Gat ६१ (61), Kusgaon, Maval · Land record"), the
+    key that makes two choices one (its field, its number in Latin digits, its place spelled in
+    Latin letters: गट नं. ६१ and ६१ of one village are one property) and whether its value printed
+    its kind (that label is the one kept); None when it is not a choice: no number, a date, money,
+    several numbers joined, no village and no document name, or anything that reads like
+    instructions. O(n) for its text."""
     printed = clean_text(entry.label)
     found = _NUMBER.search(printed)
-    kind = next(
-        (word for word, said in _PRINTED_KINDS if said.search(printed)), PROPERTY_KINDS.get(entry.field)
-    )
+    named = next((word for word, said in _PRINTED_KINDS if said.search(printed)), None)
+    kind = named or PROPERTY_KINDS.get(entry.field)
     if found is None or kind is None or looks_like_instructions(printed):
         return None
     number = found[0].strip(" .:-")
     latin = fold_digits(number)
-    if _JOINED.search(number) or _DATE.fullmatch(latin) or _MONEY.search(printed) or len(number) > 20:
+    if _JOINED.search(number) or _dated(latin) or _MONEY.search(fold_digits(printed)) or len(number) > 20:
         return None
     where = [clean_text(part) for part in (entry.village, entry.taluka) if clean_text(part)]
     place = ", ".join(where) or clean_text(entry.doc_name)
@@ -266,11 +276,20 @@ def property_choice(entry: Entry) -> tuple[str, tuple[str, str, str]] | None:
     kind_of = _TYPES.get(entry.doc_type, "")
     if kind_of and where and len(label) + len(kind_of) + 3 <= MAX_CHOICE_CHARS:
         label += f" · {kind_of}"
-    return label[:MAX_CHOICE_CHARS], (kind, latin, place.casefold())
+    key = (entry.field, latin, " ".join(latin_spelling(place).casefold().split()))
+    return label[:MAX_CHOICE_CHARS], key, named is not None
+
+
+def _dated(text: str) -> bool:
+    """A date in ``text`` (Latin digits): a day of at most 31 and a month of at most 12, or ISO."""
+    for found in _DATE.finditer(text):
+        if found[1] is None or (int(found[1]) <= 31 and int(found[2]) <= 12):
+            return True
+    return False
 
 
 def refers_back(question: str) -> bool:
-    """The question points back at something already said ("this", "it", #629)."""
+    """The question points back at something already said ("this", "it", याचे, iska: #629)."""
     return bool(_REFERS.search(question))
 
 
@@ -461,22 +480,35 @@ def _asking(
     choices: list[dict[str, Any]] = []
     if about.kind == "property":  # #629
         merged: dict[tuple[str, str, str], dict[str, Any]] = {}
+        named: set[tuple[str, str, str]] = set()  # choices whose label printed its kind
         for entry in entries:
             if (built := property_choice(entry)) is None:
                 continue
-            label, key = built
+            label, key, printed_kind = built
             if key in merged:
                 merged[key]["document_ids"] = sorted({*merged[key]["document_ids"], *entry.documents})
+                if printed_kind and key not in named:  # "Gat ६१" rather than a bare "Survey ६१"
+                    merged[key] |= {"label": label, "value": clean_text(entry.label)}
+                    named.add(key)
             elif len(merged) < MAX_PROPERTY_CHOICES:
+                named |= {key} if printed_kind else set()
                 pick = {"id": f"c{len(merged) + 1}", "label": label, "kind": "pick"}
                 merged[key] = {
                     **pick,
                     "value": clean_text(entry.label),
                     "document_ids": list(entry.documents),
                 }
-        if len(merged) < 2:  # one, or none, is no question: an open list, saying so
+        if len(merged) < 2 and not confirm:  # one, or none, is no question ("Did you mean" still is)
             _log.info("clarify not asked", extra={"code": "clarify_property_few"})
-            return Step(question, (*said, NO_PROPERTY))
+            if not about.as_typed:  # a missing property: an open list, saying so
+                return Step(question, (*said, NO_PROPERTY))
+            if merged:  # a typed property with one good choice: that one (#629 review)
+                only, typed = next(iter(merged.values())), clean_text(about.as_typed)
+                return Step(
+                    put(question, about.as_typed, only["value"]),
+                    (*said, f"I took {typed} as {only['label']}."),
+                )
+            return Step(question, said)  # searched as typed
         choices = list(merged.values())
     for entry in entries if about.kind != "property" else ():
         if len(choices) == MAX_CHOICES:
@@ -518,7 +550,8 @@ def reply_to(
     picked_documents = () if typed or resume["kind"] != "property" else (d for i in chosen for d in held[i])
     documents = tuple(sorted({str(d) for d in picked_documents}))
     picked = () if typed else tuple(picks[i] for i in chosen)
-    return Pending(**fields, turn=clarify["turn"], picked=picked, documents=documents)
+    labels = () if typed else tuple(c["label"] for i in chosen for c in listed if c["id"] == i)
+    return Pending(**fields, turn=clarify["turn"], picked=picked, documents=documents, labels=labels)
 
 
 MAX_REPLY_WORDS = 4  # "Yes, Pune", "Survey 45/2"; "Total GST paid last month" is a new question

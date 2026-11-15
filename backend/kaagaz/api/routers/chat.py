@@ -451,7 +451,7 @@ def _ask(
                 chosen = _saved_scope(recent)
             if answering is not None:
                 pending = _pending(recent, answering, question)
-                question = ", ".join(pending.picked) or question
+                question = ", ".join(pending.labels or pending.picked) or question  # #629: as shown
         scope = (
             EVERYTHING
             if chosen is None
