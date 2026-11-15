@@ -36,7 +36,9 @@ until it is told to stop:
   the jobs go on: the purge can never stop the worker, or crash it again on
   every restart. The same turn then removes the organisations whose deletion
   is due (super admin PR 4, ``purge_deleted_customers``), a batch of families
-  at a time, and sweeps their storage once more a day after each purge.
+  at a time, and sweeps their storage once more a day after each purge. Last, each
+  organisation's word counts are rebuilt when due (#617, kaagaz/search/word_counts.py: a day
+  old, or its live pieces changed by 5% or more).
 * With the model on, pieces left without a meaning vector (the model was down
   while their document was read, or the job's indexing ran out of time) get one later: at
   most 32 pieces a minute, only on a turn the queue had nothing for, so never before an
@@ -158,6 +160,7 @@ from kaagaz.jobs.worker import (
     database_unreachable,
     retry_delay,
 )
+from kaagaz.search import word_counts
 from kaagaz.search.indexing import MissingPass, customer_ids, embed_missing
 from kaagaz.search.story_vectors import StoryKey, StoryPass, embed_missing_stories
 from kaagaz.settings import Settings
@@ -697,14 +700,30 @@ def fingerprint_missing(db: Database, limit: int = FINGERPRINT_PASS) -> int:
 def _purge(db: Database, storage: CustomerStorage, trash_days: int) -> int:
     """The hourly turn: old Trash (its count is returned and logged by PurgeHourly), then
     the organisations whose deletion is due, their second sweep a day later, and their kept
-    audit rows 365 days later (0068, #482; logged here)."""
+    audit rows 365 days later (0068, #482; logged here); last, the word counts due (#617)."""
     families = purge_expired(db, storage, _utc_now, trash_days)
     logger.info("abandoned uploads removed: %d", purge_upload_sessions(db, storage, _utc_now))
     logger.info("ended sessions swept: %d", sweep_ended_sessions(db, _utc_now))
     logger.info("deleted organisations: %d families", purge_deleted_customers(db, storage, _utc_now))
     logger.info("purged organisations swept again: %d", sweep_purged_customers(db, storage, _utc_now))
     logger.info("kept audit rows of deleted organisations removed: %d", forget_kept_audit(db, _utc_now))
+    logger.info("word counts rebuilt: %d organisations", rebuild_word_counts(db, _utc_now()))
     return families
+
+
+def rebuild_word_counts(db: Database, now: datetime) -> int:
+    """#617: each organisation's word counts rebuilt when due (``word_counts.due``), each in its
+    own transaction as that organisation; how many were. O(C) checks for C organisations, plus
+    each rebuild's own cost."""
+    with db.system() as conn:
+        customers = customer_ids(conn)
+    rebuilt = 0
+    for customer in customers:
+        with db.customer(customer) as conn:
+            if word_counts.due(conn, customer, now):
+                word_counts.rebuild(conn, customer, now)
+                rebuilt += 1
+    return rebuilt
 
 
 def _story_pass(db: Database, model: "ModelClient", after: StoryKey | None) -> StoryPass:

@@ -404,9 +404,10 @@ def test_an_empty_glossary_query_matches_nothing(db: Database) -> None:
     customer, _ = new_customer(db)
     add_pieces(db, customer, add_document(db, customer), [("कर भरला", None)])
     words = {"c": customer, "q": "zzz", "k": "zzz", "sk": "", "n": 50} | EVERYTHING.params()
+    words |= {"docs": None, "cap": hybrid.CANDIDATE_CAP}  # Changed on purpose (#617): the candidates' bounds
     with db.customer(customer) as conn:
-        assert conn.execute(hybrid._WORD, words | {"g": ""}).all() == []
-        assert len(conn.execute(hybrid._WORD, words | {"g": "कर"}).all()) == 1  # the control
+        assert conn.execute(hybrid._WORD, words | {"g": "", "gc": ""}).all() == []
+        assert len(conn.execute(hybrid._WORD, words | {"g": "कर", "gc": "कर"}).all()) == 1  # the control
 
     assert run(db, customer, "zzz") == []  # no keyword listed: :g is "", and nothing else matches
 
@@ -467,11 +468,13 @@ def test_an_empty_sound_query_matches_nothing(db: Database) -> None:
 
 def _word_rows(db: Database, customer_id: str, question: str) -> list[tuple[str, float, bool]]:
     """(piece id, score, matched exactly) of the word list for ``question``, in order. Changed
-    on purpose (#619): the exact rung (_WORD) says which matched exactly."""
+    on purpose (#619): the exact rung (_WORD) says which matched exactly; (#617) with the
+    candidates' bounds."""
     words = {"c": customer_id, "q": question, "k": question, "g": "", "sk": hybrid.sound_query(question)}
     params = words | {"n": hybrid.CANDIDATES} | EVERYTHING.params()
+    bounds = {"gc": "", "docs": None, "cap": hybrid.CANDIDATE_CAP}
     with db.customer(customer_id) as conn:
-        exact = {str(row[0]) for row in conn.execute(hybrid._WORD, params)}
+        exact = {str(row[0]) for row in conn.execute(hybrid._WORD, params | bounds)}
         return [(str(row[0]), float(row[2]), str(row[0]) in exact) for row in hybrid._word(conn, params)]
 
 

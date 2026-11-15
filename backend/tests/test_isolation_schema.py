@@ -69,6 +69,9 @@ reads in two columns only, written by the operator's two functions (step-up).
 
 A folder in Trash (0081, #542, NEEDS VRUSHIT'S APPROVAL): read, added and deleted by the app,
 never updated.
+
+Bounded word search (0094, #617, NEEDS VRUSHIT'S SECURITY SIGN-OFF): the word counts, read, added
+and deleted by the worker's rebuild, never updated; and ``kaagaz_word_candidates``, piece ids only.
 """
 
 import re
@@ -193,6 +196,8 @@ FROM_0071 = {
 FROM_0061D = {"org_storage_limits": (False, False, False, False)}
 # A folder in Trash (0081, #542): read, added and deleted (restored, forever, purged), never updated.
 FROM_0081 = {"trashed_folders": (True, True, False, True)}
+# Bounded word search (0094, #617): the word counts, deleted and added again by the rebuild.
+FROM_0094 = {"term_df": (True, True, False, True), "customer_stats": (True, True, False, True)}
 # Logout ends this browser's session (0076, #502): the app adds and reads ended sessions only;
 # the worker's sweep deletes them through kaagaz_sweep_ended_sessions.
 FROM_0076 = {"ended_sessions": (True, True, False, False)}
@@ -295,6 +300,9 @@ OWNER_RIGHTS = {
     "kaagaz_customer_ids_held": ("SETOF uuid", EMPTY_PATH),
     # 0068 (#482): the worker removes deleted organisations' audit rows after 365 days (a count).
     "kaagaz_forget_kept_audit": ("bigint", EMPTY_PATH),
+    # 0094 (#617): the word search's candidates, the current customer's piece ids only, each call
+    # planned for its own query.
+    "kaagaz_word_candidates": ("SETOF uuid", [*EMPTY_PATH, "plan_cache_mode=force_custom_plan"]),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"
@@ -627,6 +635,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0061D)
         | set(FROM_0076)
         | set(FROM_0081)  # Changed on purpose (#542, 0081)
+        | set(FROM_0094)  # Changed on purpose (#617, 0094)
     )
 
     with db.system() as conn:
@@ -707,6 +716,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0061D
         | FROM_0076
         | FROM_0081  # Changed on purpose (#542, 0081)
+        | FROM_0094  # Changed on purpose (#617, 0094)
     ).items():
         assert granted[table] == expected, table
 

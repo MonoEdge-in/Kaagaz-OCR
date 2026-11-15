@@ -101,4 +101,13 @@ def test_the_trashed_folder_parent_grant_0082_follows_0081_and_is_the_one_head()
     """A13 (stability pass, 7 Nov 2026)."""
     scripts = _scripts()
     assert scripts.get_revision("0082").down_revision == "0081"
-    assert scripts.get_heads() == ["0082"]
+    # Changed on purpose (#617 part 1): 0094, the bounded word search, follows it.
+    assert scripts.get_heads() == ["0094"]
+
+
+def test_the_bounded_word_search_0094_follows_0082() -> None:
+    """#617 part 1. PRD 7's 0083 to 0093 are open on their branches: whichever merges first,
+    0094 is renumbered after it."""
+    scripts = _scripts()
+    assert scripts.get_revision("0094").down_revision == "0082"
+    assert scripts.get_heads() == ["0094"]
