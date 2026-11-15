@@ -57,6 +57,7 @@ import {
   getConversation,
   listConversations,
   listDocuments,
+  randomId,
   renameConversation,
   savedAnswer,
 } from "@/lib/api";
@@ -222,12 +223,6 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       ? errorText(resumed.outcome.error)
       : null,
   );
-  /** Why a question got no answer: in the answer's place when the service could not finish it,
-   * else the box's alert. */
-  const failed = (error: unknown, again: Unfinished) => {
-    if (isUnfinished(error)) setUnfinished(again);
-    else setAskError(errorText(error));
-  };
   // A picked-up question that failed goes back into the box.
   // Or a question from an ordinary ?q= link, waiting for Send.
   const [draft, setDraft] = useState<string | undefined>(() =>
@@ -243,6 +238,14 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const closeNotice = useCallback(() => setNotice(null), []);
   // The one status line for screen readers.
   const [status, setStatus] = useState("");
+  /** Why a question got no answer: in the answer's place when the service could not finish it
+   * (and said on the status line, for a screen reader), else the box's alert. */
+  const failed = (error: unknown, again: Unfinished) => {
+    if (isUnfinished(error)) {
+      setUnfinished(again);
+      setStatus(unfinishedText(displayName ?? ""));
+    } else setAskError(errorText(error));
+  };
   // The newest question's story matches (storySlot.ts), mirrored in a ref so a
   // reply can read the slot it just changed.
   const [slot, setSlot] = useState<StorySlot | null>(null);
@@ -782,6 +785,9 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     // Kept outside this screen (askStore.ts), so leaving Ask never drops it.
     const choice = choiceBody(chatOptions, answerPick);
     const precise = choice?.thinking === "high"; // B13: Precision
+    // One id for both tries (hotfix): a first try the server saved is answered from its save, so
+    // the retry is never a second paid answer, turn or conversation.
+    const questionId = randomId();
     const begin = () =>
       startAsk(question, activeId, (signal, onEvent) =>
         askStream(
@@ -792,6 +798,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
           answering,
           signal,
           onEvent,
+          questionId,
         ),
       );
     let entry = begin();
@@ -809,6 +816,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
         await new Promise((resolve) => window.setTimeout(resolve, ASK_RETRY_MS));
         if (!alive.current) return false; // the next chat screen has the box back
         if (entry.stopped) {
+          updateSlot({ type: "failed", token }); // the story cards stay, at the end of the log
           setStatus(STOPPED_STATUS); // Stop pressed while it waited: the question is back in the box
           return false;
         }

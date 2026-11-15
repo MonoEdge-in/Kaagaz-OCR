@@ -430,6 +430,10 @@ describe("Ask hotfix: a question the service could not finish", () => {
     expect(text()).not.toContain(SORRY);
     await act(async () => void (await vi.advanceTimersByTimeAsync(2000)));
     expect(asked).toHaveLength(2);
+    // Review: one question id for both tries, so a first try the server saved answers the second.
+    const [first, second] = api.askStream.mock.calls.map((call) => call[7] as unknown);
+    expect(typeof first).toBe("string");
+    expect(second).toBe(first);
     await act(async () => asked[1]!.resolve(reply(answered(["Rent is ₹12,000."]))));
     await act(async () => void (await vi.advanceTimersByTimeAsync(2000))); // the card settles
     expect(text()).toContain("Rent is ₹12,000.");
@@ -451,12 +455,50 @@ describe("Ask hotfix: a question the service could not finish", () => {
     expect(alerts().map((element) => element.textContent.trim()).filter(Boolean)).toEqual([]);
     expect(text()).not.toMatch(/busy|error|server/i);
     expect(doc.body.all().find((element) => element.tagName === "TEXTAREA")!.value).toBe("Rent?");
+    // Principal review: the hidden status line says it too, for a screen reader.
+    const status = doc.body.all().find((element) => element.getAttribute("role") === "status");
+    expect(status!.textContent).toBe(SORRY);
 
     await press(buttonByText("Try again"));
     await flush();
     expect(asked).toHaveLength(3);
     expect(api.askStream.mock.calls[2]![0]).toBe("Rent?");
     expect(text()).not.toContain(SORRY);
+  });
+
+  it("Stop during the wait: no second try, the stopped line, and the question back in the box", async () => {
+    await showChat("?q=Rent%3F&send=1");
+    await act(async () => asked[0]!.reject(await unfinished()));
+    await flush();
+    await press(buttonByText("Stop"));
+    await act(async () => void (await vi.advanceTimersByTimeAsync(2000)));
+
+    expect(asked).toHaveLength(1);
+    expect(text()).toContain("Stopped. Your question is back in the box.");
+    expect(text()).not.toContain(SORRY);
+    expect(doc.body.all().find((element) => element.tagName === "TEXTAREA")!.value).toBe("Rent?");
+  });
+
+  it("a 429 is not retried and says so", async () => {
+    const { ApiError } = await import("@/lib/api");
+    await showChat("?q=Rent%3F&send=1");
+    await act(async () => asked[0]!.reject(new ApiError(429, "rate_limited", "Too many.")));
+    await act(async () => void (await vi.advanceTimersByTimeAsync(2000)));
+
+    expect(asked).toHaveLength(1);
+    expect(text()).toContain("Too many questions at once. Wait a minute, then try again.");
+    expect(text()).not.toContain(SORRY);
+  });
+
+  it("leaving the screen during the wait sends no second try", async () => {
+    await showChat("?q=Rent%3F&send=1");
+    await act(async () => asked[0]!.reject(await unfinished()));
+    await flush();
+    await act(async () => root!.unmount());
+    root = null;
+    await act(async () => void (await vi.advanceTimersByTimeAsync(2000)));
+
+    expect(asked).toHaveLength(1);
   });
 
   it("is not sent again while its answer is still being saved", async () => {
