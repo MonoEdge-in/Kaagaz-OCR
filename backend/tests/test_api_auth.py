@@ -419,7 +419,11 @@ def test_login_sets_the_cookie_and_me_works(db: Database) -> None:
 
     assert reply.status_code == 200
     assert reply.json() == {
-        "access": {"management": False, "heads": []},  # Changed on purpose (PRD 7, #601): Head menus
+        "access": {
+            "management": False,
+            "heads": [],
+            "in_department": False,
+        },  # Changed on purpose (PRD 7, #601)
         "user": {
             "id": user_id,
             "email": email,
