@@ -29,8 +29,11 @@ piece of the organisation (0011's note; #631's measurements), and ``tsv_sound`` 
    SELECT, INSERT and DELETE, never UPDATE. ``term`` sorts byte by byte (COLLATE "C"), so a
    prefix is one range of the key.
 
-The downgrade drops the function and the two tables (derived: the worker writes them again),
-then the index CONCURRENTLY in an autocommit block; no other data is touched.
+The downgrade drops the function, the two tables (derived: the worker writes them again) and
+the index, in the migration's own transaction (0068's downgrade too): a downgrade that an older
+migration then refuses must change nothing, which an autocommit block would break (the refusal
+tests of 0004, 0006 and 0021). A downgrade is a deliberate, offline step (env.py's
+KAAGAZ_ALLOW_DOWNGRADE), so the index's short lock there is fine; no other data is touched.
 
 PROVISIONAL (Vrushit): the number. PRD 7's 0083 to 0093 are open on their branches; this takes
 0094 after this base's 0082 and is renumbered to follow whichever merges first.
@@ -176,6 +179,7 @@ DOWNGRADE = [
     f"DROP FUNCTION IF EXISTS public.{SIGNATURE}",
     "DROP TABLE IF EXISTS customer_stats",
     "DROP TABLE IF EXISTS term_df",
+    f"DROP INDEX IF EXISTS public.{INDEX}",
 ]
 
 
@@ -190,5 +194,3 @@ def upgrade() -> None:
 def downgrade() -> None:
     for statement in DOWNGRADE:
         op.execute(statement)
-    with op.get_context().autocommit_block():
-        op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS public.{INDEX}")

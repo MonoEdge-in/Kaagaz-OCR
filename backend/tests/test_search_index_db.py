@@ -236,8 +236,9 @@ def test_a_word_or_typo_list_past_the_timeout_is_dropped_and_the_other_still_ans
         hybrid,
         statement,
         text(
+            # Changed on purpose (#617): the typo list binds no :k, only what _FUZZY reads.
             "SELECT p.id, 0.0 FROM pieces p CROSS JOIN pg_sleep(5)"
-            " WHERE p.customer_id = :c AND :q <> '' AND :k <> 'x' AND :n > 0"
+            " WHERE p.customer_id = :c AND :q <> '' AND :n > 0"
         ),
     )
 
@@ -245,7 +246,7 @@ def test_a_word_or_typo_list_past_the_timeout_is_dropped_and_the_other_still_ans
 
     with pytest.raises(OperationalError) as cancelled, db.customer(customer) as conn:
         conn.execute(text("SELECT set_config('statement_timeout', '200', true)"))
-        conn.execute(getattr(hybrid, statement), {"c": customer, "q": "x", "k": "y", "n": 1})
+        conn.execute(getattr(hybrid, statement), {"c": customer, "q": "x", "n": 1})
     assert getattr(cancelled.value.orig, "sqlstate", None) == "57014"
     response = _client_raising(cancelled.value).get("/api/boom")
     assert (response.status_code, response.json()["error"]["code"]) == (503, "backend_unavailable")
