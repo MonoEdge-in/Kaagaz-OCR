@@ -33,6 +33,7 @@ from kaagaz.channel.inbound import Inbound
 from kaagaz.db.sqlstate import UNIQUE_VIOLATION, sqlstate
 
 CODE_MINUTES = 10
+SILENT_DAYS = 60  # W7: as 0088's sweep: a connection with no message for this long ends
 
 
 class NumberTaken(Exception):
@@ -130,13 +131,15 @@ _OFF = (
     "  WHERE o.customer_id = u.customer_id AND o.feature = 'whatsapp'), true)"
 )
 _ROLE_REFUSED = "NOT u.role = ANY (s.roles) OR (u.management AND NOT s.management)"
-# The checks every message runs (PRD 7 section 15), each one end reason, as the sweep's (0088).
+# The checks every message runs (PRD 7 section 15), each one end reason, as the sweep's (0088); W7:
+# silent for SILENT_DAYS too, so a number given to someone new is never answered before the sweep.
 _CHECK = text(
     "SELECT l.phone_sealed,"  # noqa: S608 - fixed fragments only
     " CASE WHEN l.ended_at IS NOT NULL THEN l.end_reason"
     "  WHEN u.disabled OR c.status <> 'active' THEN 'account'"
     "  WHEN u.session_version <> l.session_version THEN 'session'"
-    f"  WHEN {_OFF} OR {_ROLE_REFUSED} THEN 'not_allowed' END"
+    f"  WHEN {_OFF} OR {_ROLE_REFUSED} THEN 'not_allowed'"
+    f"  WHEN coalesce(l.last_used_at, l.linked_at) < now() - interval '{SILENT_DAYS} days' THEN 'silent' END"
     " FROM whatsapp_links l"
     " JOIN users u ON u.customer_id = l.customer_id AND u.id = l.user_id"
     " JOIN customers c ON c.id = l.customer_id"

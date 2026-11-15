@@ -188,6 +188,11 @@ TEXTS: dict[str, tuple[str, str, str]] = {
         " संस्थेच्या Kaagaz ॲडमिनला विचारा, किंवा Kaagaz उघडा: {}",
     ),
     "looking": ("Looking through your files…", "आपकी फ़ाइलें देख रहा हूँ…", "तुमच्या फाइल्स पाहत आहे…"),
+    "went_wrong": (  # W7: a message that failed for good while it was answered
+        "Sorry, something went wrong. Please try again in a few minutes.",
+        "माफ़ कीजिए, कुछ गड़बड़ हो गई। कृपया कुछ मिनट बाद फिर से कोशिश करें।",
+        "माफ करा, काहीतरी चुकले. कृपया काही मिनिटांनी पुन्हा प्रयत्न करा.",
+    ),
     # --- uploads (W5) ---
     "send_now": ("Send the file or photos now.", "अब फ़ाइल या फ़ोटो भेजें।", "आता फाइल किंवा फोटो पाठवा."),
     "tip": (
