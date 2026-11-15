@@ -36,9 +36,11 @@ the statement the app ran before, after checking the caller:
   in the same transaction and prune the folder. An Admin, or a person who sees every version of
   the family (one they can't see is an Admin's to delete).
 * ``kaagaz_admin_move_documents(ids, folder)`` and ``kaagaz_admin_trash_documents(ids, now)``: the
-  names list's Move and Send to Trash (PRD 7 section 3) for files the Admin can't see: whole
-  families, live ones only; the folder a live one of this organisation, or the top level. An Admin.
-  Their route comes with the names list's screen.
+  names list's Move and Send to Trash (PRD 7 section 3) for files an Admin may not see: whole
+  families. Move moves live ones only (each asked id that moved, its family and the folder it was
+  in), into a live folder of this organisation or the top level; Send to Trash answers whether each
+  went to Trash now. An Admin. Their routes are ``POST /documents/{id}/kept/move`` and
+  ``.../kept/trash`` (``kaagaz.api.routers.access``); an Admin's Documents-list move uses Move too.
 * 0091's ``kaagaz_hidden_inside(folders, trashed)`` counts only the live and trashed folders given
   that the person sees (the lead's decision on PR 9b's review): one they can't see answers as an id that isn't
   there (0, 0, false). Made from 0091's own text by a checked replace; the downgrade puts it back.
@@ -303,7 +305,7 @@ FUNCTIONS = {
         v_moved integer;
     BEGIN
         {_AN_ADMIN}{_TREE_LOCK}
-        IF NOT p_confirmed AND NOT coalesce(({_SAME_ACCESS}), true) THEN  -- no such folder: nothing to move
+        IF p_confirmed IS NOT TRUE AND NOT coalesce(({_SAME_ACCESS}), true) THEN  -- no such folder: nothing to move
             RAISE EXCEPTION 'other people would see them there' USING ERRCODE = 'insufficient_privilege';
         END IF;
         UPDATE public.documents d SET folder_id = p_to, autofile = NULL
@@ -485,7 +487,7 @@ FUNCTIONS = {
     """,
     "kaagaz_admin_trash_documents(uuid[], timestamp with time zone)": f"""
     CREATE FUNCTION public.kaagaz_admin_trash_documents(p_ids uuid[], p_now timestamptz)
-    RETURNS TABLE (document_id uuid, family_id uuid)
+    RETURNS TABLE (document_id uuid, family_id uuid, trashed boolean)
     {_HEAD}
     #variable_conflict use_column{_DECLARE}
     BEGIN
@@ -493,10 +495,13 @@ FUNCTIONS = {
         PERFORM 1 FROM public.documents d WHERE d.customer_id = v_customer AND d.family_id IN (
             SELECT x.family_id FROM public.documents x WHERE x.customer_id = v_customer AND x.id = ANY (p_ids))
         ORDER BY d.family_id, (d.id <> d.family_id), d.id FOR NO KEY UPDATE;
-        UPDATE public.documents d SET deleted_at = p_now, deleted_by = v_person
-        WHERE d.customer_id = v_customer AND d.deleted_at IS NULL AND d.family_id IN (
-            SELECT x.family_id FROM public.documents x WHERE x.customer_id = v_customer AND x.id = ANY (p_ids));
-        RETURN QUERY SELECT x.id, x.family_id FROM public.documents x
+        RETURN QUERY WITH sent AS (
+            UPDATE public.documents d SET deleted_at = p_now, deleted_by = v_person
+            WHERE d.customer_id = v_customer AND d.deleted_at IS NULL AND d.family_id IN (
+                SELECT x.family_id FROM public.documents x WHERE x.customer_id = v_customer AND x.id = ANY (p_ids))
+            RETURNING d.family_id
+        )
+        SELECT x.id, x.family_id, x.family_id IN (SELECT sent.family_id FROM sent) FROM public.documents x
         WHERE x.customer_id = v_customer AND x.id = ANY (p_ids) ORDER BY x.family_id, x.id;
     END
     $$
@@ -525,8 +530,8 @@ FUNCTION_COMMENTS = {
     "kaagaz_admin_move_documents(uuid[], uuid)": "The names list's Move (PRD 7 section 3): these files' live families"
     " into a live folder or the top level; each asked id, its family and the folder it was in." + _ADMIN,
     "kaagaz_admin_trash_documents(uuid[], timestamp with time zone)": "The names list's Send to Trash (PRD 7 section"
-    " 3): these files' families to Trash (one there keeps its first time); each asked id and its family."
-    + _ADMIN,
+    " 3): these files' families to Trash (one there keeps its first time); each asked id, its family and"
+    " whether it went to Trash now." + _ADMIN,
 }
 
 # 0091's F6, its walk started only from the trashed folders the person sees (its caller is always an

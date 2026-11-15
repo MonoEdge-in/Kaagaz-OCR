@@ -22,12 +22,14 @@ import pytest
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import DBAPIError
 
+from kaagaz.db import folders as folders_sql
 from kaagaz.db import trashed_folders as trashed_sql
 from kaagaz.db.engine import Database
 from kaagaz.db.folders import FolderNotFound
 from kaagaz.db.sqlstate import CHECK_VIOLATION, INSUFFICIENT_PRIVILEGE, sqlstate
 from tests.db_support import insert_document, insert_folder, name_session, rule_off, wait_until_blocked
-from tests.test_api_support import CSRF, Api
+from tests.test_api_support import CSRF, PASSWORD, Api
+from tests.test_isolation_access_api import _email_api
 from tests.test_isolation_access_views import Org, _app, _seen, _walled
 from tests.test_operator_auth_db import _owner
 
@@ -296,9 +298,10 @@ def test_a_confirmed_keep_moves_what_its_warning_was_about(db: Database) -> None
     salaries, finance = org.folders["salaries"], org.folders["finance"]
     move = "SELECT kaagaz_admin_move_folder_documents(:a, :b, :confirmed)"
     before = _documents(db, org.c)
-    with pytest.raises(DBAPIError) as refused, _as(db, org, "admin") as conn:
-        conn.execute(text(move), {"a": salaries, "b": finance, "confirmed": False})
-    assert sqlstate(refused.value) == INSUFFICIENT_PRIVILEGE
+    for confirmed in (False, None):  # not said is not confirmed
+        with pytest.raises(DBAPIError) as refused, _as(db, org, "admin") as conn:
+            conn.execute(text(move), {"a": salaries, "b": finance, "confirmed": confirmed})
+        assert sqlstate(refused.value) == INSUFFICIENT_PRIVILEGE, confirmed
     assert _documents(db, org.c) == before
     with _as(db, org, "admin") as conn:
         assert conn.execute(text(move), {"a": salaries, "b": finance, "confirmed": True}).scalar() == 2
@@ -427,7 +430,7 @@ def test_the_names_lists_move_and_send_to_trash_act_on_whole_live_families(db: D
     assert _owner(db, "SELECT folder_id::text FROM documents WHERE id = :d", {"d": fin}) == [
         (org.folders["loose"],)
     ]
-    assert [tuple(str(v) for v in row) for row in sent] == [(sal, sal)]
+    assert [tuple(str(v) for v in row) for row in sent] == [(sal, sal, "True")]
     deleted = _owner(
         db, "SELECT deleted_at IS NOT NULL, deleted_by::text FROM documents WHERE id = :d", {"d": sal}
     )
@@ -591,18 +594,35 @@ def _audited(db: Database, customer: str, action: str, document: str) -> list[tu
 
 
 def test_an_admin_moves_and_trashes_a_file_they_cant_see_from_the_names_list(db: Database) -> None:
-    """fin and sal are hidden from the Admin: Move puts fin's family in Loose, Send to Trash puts
-    sal's in Trash, each audited with its family; the replies name no file."""
-    org = _walled(Api(db))
+    """fin and sal are hidden from the Admin. Moving fin into Loose (open) opens it to them: their
+    password first (403 ``password_required``, nothing moved), then the move, audited ``self`` with
+    who loses and gains it, and Management and the other Admins told. Send to Trash puts sal's family
+    in Trash, audited once (sent again, it is in Trash already: no second row). The replies name
+    no file."""
+    api, mailer = _email_api(db)
+    org = _walled(api)
     admin, fin, sal = org.people["admin"], org.files["fin"], org.files["sal"]
-    loose = org.folders["loose"]
-    assert _post(admin, _MOVE_KEPT.format(d=fin), {"folder_id": loose}) == (
-        200,
-        {"id": fin, "folder_id": loose},
-    )
-    assert _owner(db, "SELECT folder_id::text FROM documents WHERE id = :d", {"d": fin}) == [(loose,)]
+    loose, finance = org.folders["loose"], org.folders["finance"]
+    where = "SELECT folder_id::text FROM documents WHERE id = :d"
+    # every active person of the organisation (its first Admin too), as the move's counts are
+    active = "SELECT id::text FROM users WHERE customer_id = :c AND NOT disabled"
+    people = {str(row[0]): str(row[0]) for row in _owner(db, active, {"c": org.c})}
+    before = {name: fin in _seen(_app(db), org.c, user) for name, user in people.items()}
+    refused = _post(admin, _MOVE_KEPT.format(d=fin), {"folder_id": loose})
+    assert (refused[0], refused[1]["error"]["code"]) == (403, "password_required")
+    assert _audited(db, org.c, "document.move", fin) == []
+    assert _owner(db, where, {"d": fin}) == [(finance,)]
+    moved = _post(admin, _MOVE_KEPT.format(d=fin), {"folder_id": loose, "password": PASSWORD})
+    assert moved == (200, {"id": fin, "folder_id": loose})
+    assert _owner(db, where, {"d": fin}) == [(loose,)]
+    after = {name: fin in _seen(_app(db), org.c, user) for name, user in people.items()}
     [(actor, family, details)] = _audited(db, org.c, "document.move", fin)
-    assert (actor, family, details["folder_id"]) == (admin.user_id, fin, loose)
+    assert (actor, family, details["folder_id"], details["self"]) == (admin.user_id, fin, loose, True)
+    assert details["losing"] == sum(before[n] and not after[n] for n in people)
+    assert details["gaining"] == sum(after[n] and not before[n] for n in people) >= 1
+    told = {sent.to for sent in mailer.sent if sent.subject == "Access was given in Kaagaz"}
+    assert org.people["management"].email in told and admin.email not in told
+    assert _post(admin, _TRASH_KEPT.format(d=sal)) == (204, None)
     assert _post(admin, _TRASH_KEPT.format(d=sal)) == (204, None)
     deleted = _owner(
         db, "SELECT deleted_at IS NOT NULL, deleted_by::text FROM documents WHERE id = :d", {"d": sal}
@@ -649,7 +669,68 @@ def test_only_an_admin_uses_the_names_lists_actions(db: Database, who: str) -> N
             document = org.files[name]
             got = _post(signed, path.format(d=document), body)
             if document in seen:
-                assert got[0] == 403, (path, name)
+                assert (got[0], got[1]["error"]["message"]) == (403, "Only an admin can do this."), (
+                    path,
+                    name,
+                )
             else:
                 assert got == random, (path, name)
     assert _documents(db, org.c) == before
+
+
+def test_a_names_list_move_meeting_a_trash_meanwhile_is_409_and_writes_nothing(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A trash of fin's family holds its lock while the Admin's Move (into Sales, open, and given
+    their password) waits for it; the trash commits; the Move reads the family again under the
+    lock, finds it in Trash and is 409 ``in_trash``, with no audit row."""
+    org = _walled(Api(db))
+    admin, fin = org.people["admin"], org.files["fin"]
+    session = f"kept-move-{uuid.uuid4().hex[:16]}"
+    original = folders_sql._lock_tree
+
+    def named_lock(conn: Connection, customer_id: str) -> None:
+        name_session(conn, session)
+        original(conn, customer_id)
+
+    lock = "SELECT id FROM documents WHERE family_id = :f ORDER BY (id <> family_id), id FOR NO KEY UPDATE"
+    body = {"folder_id": org.folders["sales"], "password": PASSWORD}
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with db.customer(org.c) as conn:
+            conn.execute(text(lock), {"f": fin}).all()
+            monkeypatch.setattr(folders_sql, "_lock_tree", named_lock)
+            moving = pool.submit(_post, admin, _MOVE_KEPT.format(d=fin), body)
+            wait_until_blocked(db, application_name=session)
+            conn.execute(text("UPDATE documents SET deleted_at = now() WHERE family_id = :f"), {"f": fin})
+        status, reply = moving.result(timeout=10)
+    assert (status, reply["error"]["code"]) == (409, "in_trash")
+    assert _audited(db, org.c, "document.move", fin) == []
+    where = "SELECT folder_id::text FROM documents WHERE id = :d"
+    assert _owner(db, where, {"d": fin}) == [(org.folders["finance"],)]
+
+
+@pytest.mark.parametrize("route", ["kept", "patch"])
+def test_a_move_into_a_folder_deleted_before_the_tree_lock_is_404(
+    db: Database, monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    """The Admin's move of top.pdf into Spare: Spare is deleted just before the move takes the tree
+    lock (a folder's delete takes it too). The move reads the folder again under the lock: 404, and
+    the file stays (not 0092's refusal of a folder that isn't live, a 500)."""
+    api = Api(db)
+    org = _walled(api)
+    admin, top = org.people["admin"], org.files["top"]
+    spare = api.add_folder(org.c, admin.user_id, "Spare")
+    original = folders_sql._lock_tree
+
+    def delete_then_lock(conn: Connection, customer_id: str) -> None:
+        _owner(db, "DELETE FROM folders WHERE id = :f", {"f": spare})
+        original(conn, customer_id)
+
+    monkeypatch.setattr(folders_sql, "_lock_tree", delete_then_lock)
+    if route == "kept":
+        status, reply = _post(admin, _MOVE_KEPT.format(d=top), {"folder_id": spare})
+    else:
+        answer = admin.client.patch(f"/api/documents/{top}", json={"folder_id": spare}, headers=CSRF)
+        status, reply = answer.status_code, answer.json()
+    assert (status, reply["error"]["code"]) == (404, "not_found"), reply
+    assert _owner(db, "SELECT folder_id FROM documents WHERE id = :d", {"d": top}) == [(None,)]

@@ -285,7 +285,8 @@ _MOVE_FAMILY = (
 # see (kaagaz_admin_move_documents, 0092): under the database rule the family's new row would fail
 # the rule for them. The folder each moved family was in, for the prune.
 _ADMIN_MOVE = (
-    "SELECT from_folder FROM kaagaz_admin_move_documents(ARRAY[CAST(:d AS uuid)], CAST(:f AS uuid))"
+    "SELECT document_id, from_folder"
+    " FROM kaagaz_admin_move_documents(ARRAY[CAST(:d AS uuid)], CAST(:f AS uuid))"
     " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 # The folders the family is in now, before a move.
@@ -1045,14 +1046,17 @@ def move_family(conn: Connection, customer_id: str, document_id: str, *, folder_
     prune_empty(conn, customer_id, left)
 
 
-def admin_move_family(conn: Connection, customer_id: str, document_id: str, *, folder_id: str | None) -> None:
+def admin_move_family(conn: Connection, customer_id: str, document_id: str, *, folder_id: str | None) -> bool:
     """``move_family`` for an Admin (PRD 7, #606): every version, by the owner-rights
     ``kaagaz_admin_move_documents`` (the tree lock, then the family's), so a move into a place whose
     files they can't see is not refused by the database rule. The caller found the file and the
-    folder through the views and holds the locks. A folder Kaagaz made that the move leaves empty is
-    deleted (``prune_empty``). One statement, then one a folder left."""
-    left = conn.execute(text(_ADMIN_MOVE), {"c": customer_id, "d": document_id, "f": folder_id}).scalars()
-    prune_empty(conn, customer_id, [str(f) for f in left if f is not None and str(f) != folder_id])
+    folder and holds the tree lock. A folder Kaagaz made that the move leaves empty is deleted
+    (``prune_empty``). False, and nothing moved, when the family is in Trash (read again under its
+    lock) or gone. One statement, then one a folder left."""
+    rows = conn.execute(text(_ADMIN_MOVE), {"c": customer_id, "d": document_id, "f": folder_id}).all()
+    left = [str(row.from_folder) for row in rows if row.from_folder is not None]
+    prune_empty(conn, customer_id, [f for f in left if f != folder_id])
+    return any(str(row.document_id) == document_id for row in rows)
 
 
 # --- Model choice and AI spend (council 11 Oct 2026, MS5, SP2, SP4) -------------------

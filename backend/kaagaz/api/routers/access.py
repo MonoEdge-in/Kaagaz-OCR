@@ -41,7 +41,6 @@ from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.routers.admin import MAX_PASSWORD
 from kaagaz.api.routers.auth import prove_password
-from kaagaz.api.routers.documents import _move_rule
 from kaagaz.api.views import CURSOR, admin_user, iso, timeline
 from kaagaz.db import access as access_sql
 from kaagaz.db import audit, listing
@@ -103,6 +102,7 @@ class KeptMoveBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     folder_id: uuid.UUID | None  # required; null: the top level
+    password: Password  # when the move opens the file to the Admin making it
 
 
 class BulkGiveBody(BaseModel):
@@ -598,13 +598,18 @@ def remove_named(folder_id: uuid.UUID, user_id: uuid.UUID, user: User, context: 
 # --- files given directly (routes 10 to 13) ---------------------------------------------------
 
 
-def _admin_document(conn: Connection, user: CurrentUser, document_id: str) -> access_sql.AdminDocument:
+def _admin_document(
+    conn: Connection,
+    user: CurrentUser,
+    document_id: str,
+    refused: str = "Only an admin can give a file to someone.",
+) -> access_sql.AdminDocument:
     """An Admin finds any file (404 only for one that isn't there); anyone else gets 404 for a
-    file they can't see, as for one that never was, then 403."""
+    file they can't see, as for one that never was, then 403 with ``refused``."""
     if user.role != "admin":
         if listing.get_document(conn, user.customer_id, document_id) is None:
             raise ApiError(404, "not_found")
-        raise ApiError(403, "forbidden", "Only an admin can give a file to someone.")
+        raise ApiError(403, "forbidden", refused)
     require_admin_session(user)
     found = access_sql.admin_document(conn, document_id)
     if found is None:
@@ -1028,35 +1033,73 @@ def folder_move_preview(
 # kaagaz_admin_document (anyone else: 404 for a file they can't see, as for one that never was,
 # then 403). The replies name no file.
 @router.post("/documents/{document_id}/kept/move")
-def move_kept(document_id: uuid.UUID, body: KeptMoveBody, user: User, context: Context) -> dict[str, Any]:
+def move_kept(
+    document_id: uuid.UUID, body: KeptMoveBody, user: User, background: BackgroundTasks, context: Context
+) -> dict[str, Any]:
     """Move the file's whole family into ``folder_id`` (null: the top level): ``{id, folder_id}``. A
-    folder that isn't there is 404; a file in Trash, 409 ``in_trash``. Audited ``document.move``
-    with the counts of who loses and gains it, as a move from the Documents list."""
+    folder that isn't there is 404; a file in Trash, 409 ``in_trash``. A move that opens the file to
+    the Admin making it asks their password (403 ``password_required``), as giving themselves
+    access does; it is audited ``self`` and Management and the other Admins are told. Audited
+    ``document.move`` with the counts of who loses and gains it, as a move from the Documents list."""
     target, customer_id = str(document_id), user.customer_id
     folder = None if body.folder_id is None else str(body.folder_id)
+    _password_given(context, user, body.password)  # holding no connection
     with context.db.user(customer_id, user.user_id) as conn:
-        _admin_document(conn, user, target)
+        _admin_document(conn, user, target, ADMIN_ONLY)
+        folders_sql._lock_tree(conn, customer_id)  # a move can change who sees it (0085)
+        # Under the lock, which a folder's delete takes too: the folder is still there; the file not
+        # in Trash (a trash takes only the family's lock: the move below reads it again under it).
         if folder is not None and not listing.folders_seen(conn, customer_id, [folder]):
             raise ApiError(404, "not_found", "The folder you chose isn't there any more. Choose another.")
-        folders_sql._lock_tree(conn, customer_id)  # a move can change who sees it (0085)
-        _live(_admin_document(conn, user, target))  # under the lock: in Trash meanwhile is 409
-        moved = _move_rule(conn, user, target, folder)
-        listing.admin_move_family(conn, customer_id, target, folder_id=folder)
-        _audit(
-            conn, user, "document.move", ("document", target), None, {"folder_id": folder, **(moved or {})}
-        )
+        _live(_admin_document(conn, user, target, ADMIN_ONLY))
+        details: dict[str, audit.DetailValue] = {"folder_id": folder}
+        details |= _kept_moved(conn, user, target, folder, body.password)
+        if not listing.admin_move_family(conn, customer_id, target, folder_id=folder):
+            # In Trash meanwhile (the function read it again under the family's lock): refused before
+            # the audit, so nothing is written.
+            raise ApiError(409, "in_trash", "This file is in the Trash. Restore it first.")
+        _audit(conn, user, "document.move", ("document", target), None, details)
+        watchers = _watchers(conn, context, user) if details.get("self") else []
+    if details.get("self"):
+        _tell(background, context, user, "file", None, watchers)
     return {"id": target, "folder_id": folder}
+
+
+def _kept_moved(
+    conn: Connection, user: CurrentUser, document_id: str, folder_id: str | None, password: str | None
+) -> dict[str, audit.DetailValue]:
+    """The names list's move as the move rules see it (documents._move_rule's, an Admin's, under the
+    tree lock): its audit's ``losing`` and ``gaining`` counts when it changes who can see the file,
+    and ``self`` when it opens it to the Admin making it, who then must have typed their password
+    (``_self_grant``)."""
+    found = access_sql.document_hold(conn, user.customer_id, document_id)
+    if found is None:  # can't happen: an Admin found it above
+        raise ApiError(404, "not_found")
+    place, held = found
+    if held is not None and folder_id is None:  # a held file left in no folder moves nowhere
+        return {}
+    move = folders_sql.Move(
+        before=place, after=folders_sql.place_of(conn, user.customer_id, folder_id), private=[]
+    )
+    if held is None and not folders_sql.changes_access(conn, user.customer_id, move.before, move.after):
+        return {}
+    losing, gaining = access_sql.moved(conn, user.customer_id, move, held)
+    details: dict[str, audit.DetailValue] = {"losing": len(losing), "gaining": len(gaining)}
+    if user.user_id in gaining:
+        _self_grant(user, password)
+        details["self"] = True
+    return details
 
 
 @router.post("/documents/{document_id}/kept/trash", status_code=204)
 def trash_kept(document_id: uuid.UUID, user: User, context: Context) -> Response:
     """Send the file's whole family to Trash (one already there keeps its first time). Audited
-    ``document.trash``."""
+    ``document.trash`` when it went to Trash now (read under the family's lock)."""
     target, customer_id = str(document_id), user.customer_id
     with context.db.user(customer_id, user.user_id) as conn:
-        _admin_document(conn, user, target)
-        access_sql.admin_trash(conn, customer_id, target, now=context.clock())
-        _audit(conn, user, "document.trash", ("document", target), None)
+        _admin_document(conn, user, target, ADMIN_ONLY)
+        if access_sql.admin_trash(conn, customer_id, target, now=context.clock()):
+            _audit(conn, user, "document.trash", ("document", target), None)
     return Response(status_code=204)
 
 

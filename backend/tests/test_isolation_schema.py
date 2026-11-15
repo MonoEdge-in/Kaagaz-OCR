@@ -437,7 +437,7 @@ OWNER_RIGHTS = {
     "kaagaz_trash_families": ("SETOF uuid", EMPTY_PATH),
     "kaagaz_purge_family": ("TABLE(document_id uuid, folder_id uuid)", EMPTY_PATH),
     "kaagaz_admin_move_documents": ("TABLE(document_id uuid, family_id uuid, from_folder uuid)", EMPTY_PATH),
-    "kaagaz_admin_trash_documents": ("TABLE(document_id uuid, family_id uuid)", EMPTY_PATH),
+    "kaagaz_admin_trash_documents": ("TABLE(document_id uuid, family_id uuid, trashed boolean)", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"

@@ -190,7 +190,7 @@ _KEPT_FROM_ME = text(
 _KEPT_COUNT = text("SELECT count(*) FROM kaagaz_kept_from_me(:f)")
 # PRD 7 section 3 (#606): the names list's Send to Trash, the file's family seen or not (0092).
 _ADMIN_TRASH = text(
-    "SELECT document_id FROM kaagaz_admin_trash_documents(ARRAY[CAST(:d AS uuid)], :now)"
+    "SELECT trashed FROM kaagaz_admin_trash_documents(ARRAY[CAST(:d AS uuid)], :now)"
     " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 
@@ -416,11 +416,12 @@ def names(conn: Connection, customer_id: str, user_ids: set[str]) -> list[dict[s
     return [{"id": str(i), "name": str(n)} for i, n in rows]
 
 
-def admin_trash(conn: Connection, customer_id: str, document_id: str, *, now: datetime) -> None:
+def admin_trash(conn: Connection, customer_id: str, document_id: str, *, now: datetime) -> bool:
     """The file's whole family to Trash at ``now``, by the calling Admin, whether they can see it or
     not (``kaagaz_admin_trash_documents``: the tree lock, then the family's); one already there keeps
-    its first time. The caller found it with ``admin_document``."""
-    conn.execute(_ADMIN_TRASH, {"c": customer_id, "d": document_id, "now": now}).all()
+    its first time. Whether it went to Trash now (read under the family's lock). The caller found it
+    with ``admin_document``."""
+    return bool(conn.execute(_ADMIN_TRASH, {"c": customer_id, "d": document_id, "now": now}).scalar())
 
 
 def kept_from_me(conn: Connection, folder_id: str, limit: int) -> tuple[int, Sequence[RowMapping]]:
