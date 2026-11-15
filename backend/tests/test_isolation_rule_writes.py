@@ -268,6 +268,23 @@ def test_each_function_holds_its_rule_without_the_routes_check(db: Database) -> 
     assert _documents(db, org.c) == before
 
 
+def test_detach_tells_only_an_admin_how_many_files_left_a_folder(db: Database) -> None:
+    """Sales holds locked.pdf in Trash, hidden from Finance's member. Their detach of Sales (a folder
+    they see) takes it out of Sales, as with the rule off, but says no count, which would tell of a
+    file they can't see; the Admin's says how many."""
+    org = _walled(Api(db))
+    _owner(
+        db,
+        "UPDATE documents SET deleted_at = now() WHERE id IN (:l, :s)",
+        {"l": org.files["locked"], "s": org.files["loose"]},
+    )
+    assert _call(db, org, "member", "kaagaz_detach_trashed", ids=[org.folders["sales"]]) is None
+    assert _owner(db, "SELECT folder_id FROM documents WHERE id = :d", {"d": org.files["locked"]}) == [
+        (None,)
+    ]
+    assert _call(db, org, "admin", "kaagaz_detach_trashed", ids=[org.folders["loose"]]) == 1
+
+
 def test_a_person_deletes_forever_no_family_with_a_version_they_cant_see(db: Database) -> None:
     """Finance's member sees version 1 of a family in Trash; version 2 is locked, hidden from them.
     Their delete forever of that family deletes nothing (an Admin's would delete both)."""
