@@ -761,6 +761,7 @@ const ACTION_WORDS: Record<string, string> = {
   "whatsapp.connected": "Connected a WhatsApp number",
   "whatsapp.disconnected": "A WhatsApp number was disconnected",
   "whatsapp.google_proof": "Confirmed with Google to connect WhatsApp",
+  "whatsapp.file_link": "Got a link to a file on WhatsApp", // W4: the file itself is never sent
   "user.unlock": "Unlocked a user",
   "user.reset_password": "Reset a user's password",
   "user.reset_totp": "Reset a user's two-step sign-in",
