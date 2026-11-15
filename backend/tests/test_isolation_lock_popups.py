@@ -14,7 +14,7 @@ import pytest
 
 from kaagaz.db.engine import Database
 from tests.db_support import insert_folder
-from tests.test_api_support import CSRF, Api, Signed
+from tests.test_api_support import CSRF, PASSWORD, Api, Signed
 from tests.test_operator_auth_db import _owner
 
 pytestmark = pytest.mark.db
@@ -299,7 +299,11 @@ def test_an_admin_ticking_themselves_types_their_password(db: Database) -> None:
     api = Api(db)
     org = _org(api)
     me = org.admin.user_id
-    path = f"/api/admin/users/{me}/departments/{org.folders['land']}"
+    _owner(db, _MEMBER, {"c": org.c, "d": org.folders["land"], "u": me, "head": False, "by": org.first})
+    path = f"/api/admin/users/{me}/departments/{org.folders['land']}"  # a member already: only the tick
     reply = org.admin.client.put(path, json={"locked_files": [org.files["loan"]]}, headers=CSRF)
     assert _code(reply) == (403, "password_required")
     assert me not in _grants(db, org.files["loan"])
+    body = {"locked_files": [org.files["loan"]], "password": PASSWORD}
+    assert org.admin.client.put(path, json=body, headers=CSRF).status_code == 200
+    assert me in _grants(db, org.files["loan"])
