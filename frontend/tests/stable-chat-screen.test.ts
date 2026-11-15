@@ -10,6 +10,9 @@
 //   words, instead of refilling the box;
 // - B13: a question that took too long says Swift answers faster only when it was asked with
 //   Precision.
+// - Ask hotfix (production, 15 Nov 2026): a question the service could not finish (503) is sent
+//   once more after 2 s; failing again, it says sorry in the answer's place with Try again, never
+//   the red "Kaagaz is busy".
 
 import { act, createElement } from "react";
 import type { Root } from "react-dom/client";
@@ -35,7 +38,10 @@ vi.mock("@/lib/storyMatches", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/storyMatches")>()),
   findStoryMatches: async () => [],
 }));
-vi.mock("@/lib/session", () => ({ useSession: () => ({ me: { user: { id: "u1", role: "admin" } } }) }));
+// Changed on purpose (Ask hotfix, 15 Nov 2026): a name, for the note of a question not finished.
+vi.mock("@/lib/session", () => ({
+  useSession: () => ({ me: { user: { id: "u1", role: "admin", display_name: "Priya Shah" } } }),
+}));
 vi.mock("next/navigation", () => ({ usePathname: () => "/chat" }));
 vi.mock("next/link", async () => {
   const { createElement: make } = await import("react");
@@ -407,5 +413,58 @@ describe("after Stop, the stopped question's answer is never lost (review)", () 
     expect(withSavedAnswer(later, saved).map((each) => each.id)).toEqual(["q10", "a10", "q9", "a9"]);
     const once = withSavedAnswer(thread, saved);
     expect(withSavedAnswer(once, saved).map((each) => each.id)).toEqual(["q9", "a9", "q10", "a10"]);
+  });
+});
+
+describe("Ask hotfix: a question the service could not finish", () => {
+  const SORRY = "Sorry, Priya, I couldn't finish that just now. Please try again in a moment.";
+  const unfinished = async () => new (await import("@/lib/api")).ApiError(503, "backend_unavailable", "x");
+  const alerts = () => doc.body.all().filter((element) => element.getAttribute("role") === "alert");
+
+  it("is sent once more after 2 s, still looking through the documents, and its answer shows", async () => {
+    await showChat("?q=Rent%3F&send=1");
+    await act(async () => asked[0]!.reject(await unfinished()));
+    await flush();
+    expect(asked).toHaveLength(1);
+    expect(log()).toContain("Rent?"); // the pending card stays
+    expect(text()).not.toContain(SORRY);
+    await act(async () => void (await vi.advanceTimersByTimeAsync(2000)));
+    expect(asked).toHaveLength(2);
+    await act(async () => asked[1]!.resolve(reply(answered(["Rent is ₹12,000."]))));
+    await act(async () => void (await vi.advanceTimersByTimeAsync(2000))); // the card settles
+    expect(text()).toContain("Rent is ₹12,000.");
+    expect(text()).not.toContain(SORRY);
+  });
+
+  it("failing again, says sorry in the answer's place with Try again, never busy, error or server", async () => {
+    await showChat("?q=Rent%3F&send=1");
+    await act(async () => asked[0]!.reject(await unfinished()));
+    await act(async () => void (await vi.advanceTimersByTimeAsync(2000)));
+    await act(async () => asked[1]!.reject(await unfinished()));
+    await flush();
+
+    const note = doc.body.all().find((element) => element.tagName === "P" && element.textContent === SORRY);
+    expect(note).toBeDefined();
+    expect(log()).toContain("Rent?");
+    expect(log()).toContain(SORRY); // in the thread, where the answer would be
+    expect(note!.getAttribute("class") ?? "").not.toContain("error");
+    expect(alerts().map((element) => element.textContent.trim()).filter(Boolean)).toEqual([]);
+    expect(text()).not.toMatch(/busy|error|server/i);
+    expect(doc.body.all().find((element) => element.tagName === "TEXTAREA")!.value).toBe("Rent?");
+
+    await press(buttonByText("Try again"));
+    await flush();
+    expect(asked).toHaveLength(3);
+    expect(api.askStream.mock.calls[2]![0]).toBe("Rent?");
+    expect(text()).not.toContain(SORRY);
+  });
+
+  it("is not sent again while its answer is still being saved", async () => {
+    const { ApiError } = await import("@/lib/api");
+    await showChat("?q=Rent%3F&send=1");
+    await act(async () => asked[0]!.reject(new ApiError(503, "answer_pending", "Your answer is still being saved.")));
+    await act(async () => void (await vi.advanceTimersByTimeAsync(2000)));
+    expect(asked).toHaveLength(1);
+    expect(text()).toContain("Your answer is still being saved.");
   });
 });
