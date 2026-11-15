@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import Connection, RowMapping, text
 
+from kaagaz.db import folders
 from kaagaz.db.audit import _FOLDER_PATHS  # a folder's path through visible_folders, as the feeds show it
 
 
@@ -42,7 +43,13 @@ class AdminDocument:
     in_trash: bool
 
 
-_ME = text("SELECT management, heads FROM kaagaz_access()")
+# PRD 7 (#601): in_department, a member of a live department (11c's "Ask your admin for access").
+_ME = text(
+    "SELECT a.management, a.heads, EXISTS (SELECT 1 FROM visible_folders f"
+    " WHERE f.customer_id = kaagaz_current_customer() AND f.id = ANY (a.departments)"
+    " AND f.parent_id IS NULL AND f.kind = 'department')"
+    " FROM kaagaz_access() a"
+)
 _PERSON = text(
     "SELECT disabled, management, display_name, role FROM users WHERE customer_id = :c AND id = :u"
 )
@@ -77,7 +84,8 @@ _GIVEN_TO = text(
 _PEOPLE_ON = text(
     "SELECT u.id, u.display_name FROM private_folder_members p"
     " JOIN users u ON u.customer_id = p.customer_id AND u.id = p.user_id"
-    " WHERE p.customer_id = :c AND p.folder_id = :f ORDER BY lower(u.display_name), u.id"
+    " WHERE p.customer_id = :c AND p.folder_id = :f AND (NOT :active OR NOT u.disabled)"
+    " ORDER BY lower(u.display_name), u.id"
 )
 _HEADS_OF = text(
     "SELECT u.id, u.display_name FROM department_members m"
@@ -161,6 +169,12 @@ _FOLDER_FILES = text(
     "SELECT count(*) FROM documents WHERE customer_id = :c AND folder_id = ANY(CAST(:f AS uuid[]))"
     " AND held_for IS NULL AND deleted_at IS NULL AND is_current"
 )
+# PR 10c (#601): a file's place with whom it is held for, for a move; who sees a held file.
+_DOCUMENT_HOLD = text(
+    "SELECT department_id, private_folder_id, held_for FROM documents WHERE customer_id = :c AND id = :d"
+)
+_MANAGEMENT = text("SELECT id FROM users WHERE customer_id = :c AND management AND NOT disabled")
+_CLOSED = text("SELECT department_only FROM folders WHERE customer_id = :c AND id = :d")
 _NAMES = text(
     "SELECT id, display_name FROM users WHERE customer_id = :c AND id = ANY(CAST(:u AS uuid[]))"
     " ORDER BY lower(display_name), id"
@@ -172,10 +186,18 @@ _KEPT_FROM_ME = text(
 _KEPT_COUNT = text("SELECT count(*) FROM kaagaz_kept_from_me(:f)")
 
 
-def me(conn: Connection) -> tuple[bool, list[str]]:
-    """The caller's Management and the departments they head (``/auth/me``, the Head checks)."""
-    management, heads = conn.execute(_ME).one()
-    return bool(management), [str(each) for each in heads]
+def me(conn: Connection) -> tuple[bool, list[str], bool]:
+    """The caller's Management, the departments they head (``/auth/me``, the Head checks) and
+    whether they are a member of a live department."""
+    management, heads, in_department = conn.execute(_ME).one()
+    return bool(management), [str(each) for each in heads], bool(in_department)
+
+
+def rights(conn: Connection, admin: bool) -> folders.Rights:
+    """The caller's rights to move what changes who can see it (PRD 7 decision 18): read under the
+    tree lock, so a Head tick or Management taken away meanwhile counts."""
+    management, heads, _ = me(conn)
+    return folders.Rights(wide=admin or management, heads=frozenset(heads))
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,11 +263,12 @@ def paths(conn: Connection, customer_id: str, folder_ids: Sequence[str]) -> dict
     return {str(row[0]): str(row[1]) for row in rows}
 
 
-def people_on(conn: Connection, customer_id: str, folder_id: str) -> list[dict[str, str]]:
-    return [
-        {"id": str(i), "name": str(n)}
-        for i, n in conn.execute(_PEOPLE_ON, {"c": customer_id, "f": folder_id})
-    ]
+def people_on(
+    conn: Connection, customer_id: str, folder_id: str, *, active: bool = False
+) -> list[dict[str, str]]:
+    """The people named on the folder (kept while it is open); ``active``: those switched on only."""
+    params = {"c": customer_id, "f": folder_id, "active": active}
+    return [{"id": str(i), "name": str(n)} for i, n in conn.execute(_PEOPLE_ON, params)]
 
 
 def heads_of(conn: Connection, customer_id: str, department_id: str | None) -> list[dict[str, str]]:
@@ -302,7 +325,8 @@ def unname(conn: Connection, customer_id: str, folder_id: str, user_id: str) -> 
 def place_audience(
     conn: Connection, department_id: str | None, private_folder_id: str | None, *, department_only: bool
 ) -> set[str]:
-    """The active people who see the files of such a place (``kaagaz_place_audience``). Admins."""
+    """The active people who see the files of such a place (``kaagaz_place_audience``): an Admin,
+    Management, or the Head of ``department_id``."""
     params = {"d": department_id, "p": private_folder_id, "only": department_only}
     return {str(user) for user, sees in conn.execute(_PLACE_AUDIENCE, params) if sees}
 
@@ -388,3 +412,43 @@ def kept_from_me(conn: Connection, folder_id: str, limit: int) -> tuple[int, Seq
     names, by name (``kaagaz_kept_from_me``)."""
     count = int(conn.execute(_KEPT_COUNT, {"f": folder_id}).scalar_one())
     return count, conn.execute(_KEPT_FROM_ME, {"f": folder_id, "n": limit}).mappings().all()
+
+
+def document_hold(
+    conn: Connection, customer_id: str, document_id: str
+) -> tuple[folders.Place, str | None] | None:
+    """A file already found: its (department, private folder) and whom it is held for; None once gone."""
+    row = conn.execute(_DOCUMENT_HOLD, {"c": customer_id, "d": document_id}).first()
+    if row is None:
+        return None
+    department, private, held = (None if v is None else str(v) for v in row)
+    return (department, private), held
+
+
+def _sees(conn: Connection, customer_id: str, place: folders.Place, held: str | None = None) -> set[str]:
+    """The active people who see what is in ``place``; a file held for ``held``: them and Management."""
+    if held is not None:
+        return {str(u) for u in conn.execute(_MANAGEMENT, {"c": customer_id}).scalars()} | {held}
+    closed = place[0] is not None and bool(conn.execute(_CLOSED, {"c": customer_id, "d": place[0]}).scalar())
+    return place_audience(conn, place[0], place[1], department_only=closed)
+
+
+def moved(
+    conn: Connection, customer_id: str, move: folders.Move, held: str | None = None
+) -> tuple[set[str], set[str]]:
+    """Who loses and who gains what a move carries (PRD 7 section 5, "6 people won't see this"): the
+    files of its place (``own``; a file held for ``held``: from its holder and Management) and of each
+    private folder it carries, whose Head is the department's. Admins, Management and a Head
+    (``kaagaz_place_audience``)."""
+    pairs = (
+        [(_sees(conn, customer_id, move.before, held), _sees(conn, customer_id, move.after))]
+        if move.own
+        else []
+    )
+    pairs += [
+        (_sees(conn, customer_id, (move.before[0], p)), _sees(conn, customer_id, (move.after[0], p)))
+        for p in move.private
+    ]
+    losing: set[str] = set().union(*(before - after for before, after in pairs))
+    gaining: set[str] = set().union(*(after - before for before, after in pairs))
+    return losing, gaining

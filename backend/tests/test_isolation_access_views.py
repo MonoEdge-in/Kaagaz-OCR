@@ -153,6 +153,9 @@ def _expected(db: Database, org: Org, user: str, *, folders: bool = False) -> se
     # or in Trash), open is a department still there and not Department only, so one deleted since
     # is closed (fail closed); with none, every department is open, as on day one.
     # Changed on purpose (#594, 0089): once it ever had one (customers.walls_set, never cleared).
+    # The oracle reads the flag as kaagaz_access() does; that the flag is set right (from folders and
+    # trashed folders, never cleared, worked out for old rows) is test_isolation_open_paths's and
+    # test_migration_0089_db's.
     walled = bool(_owner(db, "SELECT walls_set FROM customers WHERE id = :c", {"c": c})[0][0])
     opened = {
         str(r[0])
@@ -330,13 +333,16 @@ def test_day_one_never_runs_the_given_or_lock_lookups(db: Database) -> None:
 # only once its callers are checked.
 VIEW_READERS = {
     # Changed on purpose (#601): the access API's writes, and 10b's Departments tab and one-time card.
-    "db/access.py": {"_DEPARTMENTS", "_DEPARTMENT_LIST", "_HOLDS_PRIVATE", "_KEEPS", "_NAMED_ON", "_PLACE"},
+    # Changed on purpose (#601, PR 10c): in_department (_ME); a folder holding what the person can't see.
+    "db/access.py": {
+        "_DEPARTMENTS", "_DEPARTMENT_LIST", "_HOLDS_PRIVATE", "_KEEPS", "_ME", "_NAMED_ON", "_PLACE",
+    },
     "db/audit.py": {"_FOLDER_PATHS", "_OF_FAMILY", "_SEEN"},
     "db/chat.py": {"_DOCUMENT_QUESTIONS", "add_pin"},
     "db/document_stories.py": {"_DELETE", "_PUT"},
     "db/ensemble.py": {"_COUNTS", "_LATEST", "_LATEST_READINGS", "_PENDING", "_READING"},
     "db/folder_upload_items.py": {"_PREVIOUS"},
-    "db/folders.py": {"_LIST", "_SUMMARY_SEEN"},
+    "db/folders.py": {"_HIDDEN_INSIDE", "_LIST", "_SUMMARY_SEEN"},
     "db/listing.py": {
         "_BATCH", "_CLEAR_COPY_MARKS", "_COLUMNS", "_DASHBOARD_DEPARTMENTS", "_DASHBOARD_RECENT",
         "_DASHBOARD_TILES", "_DASHBOARD_TYPES", "_DOCUMENTS_SEEN", "_FILE_COLUMNS", "_FOLDERS_SEEN",

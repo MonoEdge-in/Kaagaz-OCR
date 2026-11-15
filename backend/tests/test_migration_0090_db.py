@@ -25,6 +25,12 @@ _OURS = (
 )
 
 
+_INDEX = (
+    "SELECT i.indisvalid, pg_get_indexdef(i.indexrelid) LIKE '%WHERE ((action ~~ ''access.%''::text)%'"
+    " FROM pg_index i WHERE i.indexrelid = to_regclass('public.audit_log_access')"
+)
+
+
 def test_the_revision_follows_0089() -> None:
     assert (M0090.revision, M0090.down_revision) == ("0090", "0089")
 
@@ -49,6 +55,7 @@ def test_up_down_and_up_again(fresh: tuple[str, Database]) -> None:
     at_0090 = _state(db)
     with db.system() as conn:
         assert conn.execute(text(_OURS)).scalar_one() == 8
+        assert tuple(conn.execute(text(_INDEX)).one()) == (True, True)  # built CONCURRENTLY, valid
         changed = conn.execute(text(_CHANGE_ADMIN)).scalar_one()
     assert changed == before.replace(M0090.SHARE_LINE, M0090.TREE_LINE) != before
 
@@ -56,6 +63,7 @@ def test_up_down_and_up_again(fresh: tuple[str, Database]) -> None:
     assert _state(db) == at_0089
     with db.system() as conn:
         assert conn.execute(text(_OURS)).scalar_one() == 0
+        assert conn.execute(text(_INDEX)).first() is None
         assert conn.execute(text(_CHANGE_ADMIN)).scalar_one() == before
 
     migrate(url, "0090")
