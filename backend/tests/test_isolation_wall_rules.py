@@ -238,6 +238,10 @@ FOLDER_MOVES = [
     ("head", "salaries", "sales", 403),  # its Head would change
     ("management", "salaries", "sales", 200),
     ("admin", "salaries", None, 200),
+    # A private folder in open Sales, the member named on it, to open Loose: both places open, but
+    # its Head would change (the department's), so not free.
+    ("member", "vault", "loose", 403),
+    ("management", "vault", "loose", 200),
 ]
 
 
@@ -248,6 +252,14 @@ def test_a_folder_move_that_changes_who_sees_what_it_holds_needs_the_right(
     org = _walled(Api(db))
     _sub(db, org, "box", org.folders["sales"])
     _sub(db, org, "bills", org.folders["finance"])
+    vault = _sub(db, org, "vault", org.folders["sales"])
+    _owner(db, "UPDATE folders SET private = true WHERE id = :f", {"f": vault})
+    _owner(
+        db,
+        "INSERT INTO private_folder_members (customer_id, folder_id, user_id, added_by)"
+        " VALUES (:c, :f, :u, :u)",
+        {"c": org.c, "f": vault, "u": org.people["member"].user_id},
+    )
     moved, target, before = org.folders[folder], _target(org, into), _version(db, org.c)
     reply = _call(org.people[who], "PATCH", f"/api/folders/{moved}", {"parent_id": target})
     assert reply[0] == status, reply
