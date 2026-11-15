@@ -270,7 +270,7 @@ def test_only_an_admin_deletes_forever_a_trashed_folder_holding_what_they_cant_s
     )
     assert (refused.status_code, refused.json()["error"]) == (
         403,
-        {"code": "forbidden", "message": HIDDEN_INSIDE},
+        {"code": "hidden_inside", "message": HIDDEN_INSIDE},  # Changed on purpose (#601): the screens' code
     )
     assert _owner(db, "SELECT count(*) FROM documents WHERE customer_id = :c", {"c": org.c}) == before
     gone = org.people["head"].client.delete(f"/api/documents/trash/folders/{finance}/permanent", headers=CSRF)

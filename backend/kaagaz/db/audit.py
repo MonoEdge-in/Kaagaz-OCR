@@ -41,7 +41,9 @@ VIEW_EVERY_MINUTES = 30
 # Only these kinds of values may go into details: ids, statuses and counts.
 DetailValue = str | int | bool | None
 
-# A3: the document's folder and family, or the folder itself, in the same statement.
+# A3: the document's folder and family, or the folder itself, in the same statement. PRD 7 (#606):
+# read whole (kaagaz_document_place, 0091): an Admin acting on a file they can't see (giving it,
+# say) writes its folder and family too, so the Admin's log finds the row by its family.
 _INSERT = text(
     "INSERT INTO audit_log (customer_id, actor_user_id, action, target_type, target_id, details,"
     " folder_id, family_id, subject_user_id)"
@@ -49,7 +51,8 @@ _INSERT = text(
     " CAST(:tid AS text), CAST(:details AS jsonb), coalesce(d.folder_id, CAST(:folder AS uuid)), d.family_id,"
     " CAST(:subject AS uuid)"
     " FROM (SELECT 1) AS one"
-    " LEFT JOIN documents d ON d.customer_id = CAST(:c AS uuid) AND d.id = CAST(:document AS uuid)"
+    " LEFT JOIN kaagaz_document_place(CAST(:document AS uuid)) d"
+    " ON CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 # PRD 7 (#601): one row about the document :document per person in :subjects, with its own details.
 _INSERT_ABOUT = text(
@@ -58,7 +61,8 @@ _INSERT_ABOUT = text(
     " SELECT CAST(:c AS uuid), CAST(:actor AS uuid), CAST(:action AS text), 'document',"
     " CAST(:document AS text), s.details, d.folder_id, d.family_id, s.subject"
     " FROM unnest(CAST(:subjects AS uuid[]), CAST(:details AS jsonb[])) AS s (subject, details)"
-    " LEFT JOIN documents d ON d.customer_id = CAST(:c AS uuid) AND d.id = CAST(:document AS uuid)"
+    " LEFT JOIN kaagaz_document_place(CAST(:document AS uuid)) d"
+    " ON CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 # #482: views of one document by one person wait for each other here, so two at once write one row.
 _VIEW_LOCK = text("SELECT pg_advisory_xact_lock(hashtextextended(:c || ':' || :u || ':' || :d, 0))")
@@ -216,6 +220,11 @@ class Filters:
     actions: tuple[str, ...] = ()
     start: datetime | None = None
     end: datetime | None = None
+    # PRD 7 (#601): the person an entry is about; only access and lock entries; only an Admin's
+    # own access (details.self, an access entry).
+    subject_user_id: str | None = None
+    access_only: bool = False
+    self_only: bool = False
 
 
 Cursor = tuple[datetime, int]
@@ -223,8 +232,11 @@ Cursor = tuple[datetime, int]
 # The target document's own row (any version), for its name: NULL once deleted.
 _ENTRIES = (
     "SELECT a.id, a.action, a.actor_user_id, a.target_type, a.target_id, a.details, a.created_at,"
-    " a.folder_id, a.family_id, t.display_name AS document_name, t.version_no AS document_version_no,"
-    " t.id IS NOT NULL AS document_exists"
+    " a.folder_id, a.family_id, a.subject_user_id, t.display_name AS document_name,"
+    " t.version_no AS document_version_no,"
+    " (t.id IS NOT NULL OR EXISTS (SELECT 1 FROM kaagaz_existing('document', ARRAY[CASE"
+    " WHEN a.target_type = 'document' AND a.target_id ~ '^[0-9a-f-]{36}$' THEN CAST(a.target_id AS uuid)"
+    " END]))) AS document_exists"
     " FROM audit_log a"
     " LEFT JOIN documents t ON t.customer_id = a.customer_id AND t.id = CASE WHEN a.target_type = 'document'"
     " AND a.target_id ~ '^[0-9a-f-]{36}$' THEN CAST(a.target_id AS uuid) END"
@@ -232,15 +244,18 @@ _ENTRIES = (
 )
 # PRD 7 (#606): the Admin's log (shown_only false) names every file, the ones the Admin can't see too
 # (decision 20): a page's rows whose join found no name take it from the owner-rights
-# kaagaz_admin_document_names (0091, one call a page), which checks the caller.
+# kaagaz_admin_document_names (0091, one call a page), which checks the caller. For an Admin only:
+# Management's access activity (#601) reads the same entries and names no file it can't see.
+_IS_ADMIN = text("SELECT coalesce((kaagaz_access()).admin, false)")
 _ADMIN_NAMES = (
     "WITH e AS ({page}) SELECT e.id, e.action, e.actor_user_id, e.target_type, e.target_id, e.details,"
-    " e.created_at, e.folder_id, e.family_id, coalesce(e.document_name, n.display_name) AS document_name,"
+    " e.created_at, e.folder_id, e.family_id, e.subject_user_id,"
+    " coalesce(e.document_name, n.display_name) AS document_name,"
     " coalesce(e.document_version_no, n.version_no) AS document_version_no,"
-    " e.document_exists OR n.id IS NOT NULL AS document_exists"
+    " e.document_exists"
     " FROM e LEFT JOIN kaagaz_admin_document_names(ARRAY(SELECT CAST(x.target_id AS uuid) FROM e x"
-    " WHERE x.target_type = 'document' AND NOT x.document_exists AND x.target_id ~ '^[0-9a-f-]{{36}}$')) n"
-    " ON e.target_type = 'document' AND NOT e.document_exists AND n.id::text = e.target_id"
+    " WHERE x.target_type = 'document' AND x.document_name IS NULL AND x.target_id ~ '^[0-9a-f-]{{36}}$')) n"
+    " ON e.target_type = 'document' AND e.document_name IS NULL AND n.id::text = e.target_id"
     " ORDER BY e.created_at DESC, e.id DESC"
 )
 _COUNT = "SELECT count(*) FROM audit_log a WHERE a.customer_id = :c"
@@ -250,6 +265,8 @@ _SHOWN = (
 )
 # A5: rows written while in the family, and every row of its versions and of a document linked
 # into it (accepted, or undone since), so a linked version's upload and suggestion show too.
+# PRD 7 (#601): the linked documents come through the view, so for a family the Admin can't open
+# the Admin's log under-reports them (never a leak); PR 9's owner-rights functions can widen it.
 _OF_FAMILY = (
     " AND (a.family_id = CAST(:family AS uuid) OR (a.target_type = 'document' AND a.target_id IN ("
     "SELECT v.id::text FROM visible_documents v"
@@ -276,6 +293,10 @@ _IN_FOLDERS = " AND a.folder_id = ANY(CAST(:folders AS uuid[]))"
 _BY = " AND a.actor_user_id = CAST(:actor AS uuid)"
 _ON_DOCUMENT = " AND a.target_type = 'document' AND a.target_id = :document"
 _ACTIONS = " AND a.action = ANY(CAST(:actions AS text[]))"
+_ABOUT = " AND a.subject_user_id = CAST(:subject AS uuid)"
+# PRD 7 (#601): written as audit_log_access's predicate (0090), so these reads use it.
+_ACCESS = " AND (a.action LIKE 'access.%' OR a.action LIKE 'lock.%')"
+_SELF = _ACCESS + " AND a.details @> '{\"self\": true}'"
 _FROM = " AND a.created_at >= :start"
 _TO = " AND a.created_at < :end"
 _BEFORE = " AND (a.created_at, a.id) < (CAST(:before_at AS timestamptz), CAST(:before_id AS bigint))"
@@ -304,6 +325,9 @@ def _where(filters: Filters, params: dict[str, Any]) -> str:
         (filters.actor_user_id is not None, _BY, "actor", filters.actor_user_id),
         (filters.document_id is not None, _ON_DOCUMENT, "document", filters.document_id),
         (bool(filters.actions), _ACTIONS, "actions", list(filters.actions)),
+        (filters.subject_user_id is not None, _ABOUT, "subject", filters.subject_user_id),
+        (filters.access_only, _ACCESS, "access", None),
+        (filters.self_only, _SELF, "self", None),
         (filters.start is not None, _FROM, "start", filters.start),
         (filters.end is not None, _TO, "end", filters.end),
     )
@@ -335,7 +359,7 @@ def entries(
         where += _BEFORE
         params["before_at"], params["before_id"] = cursor
     statement = _ENTRIES + where + _ORDER
-    if not filters.shown_only:  # the Admin's log: every file named
+    if not filters.shown_only and conn.execute(_IS_ADMIN).scalar():  # the Admin's log: every file named
         statement = _ADMIN_NAMES.format(page=statement)
     return conn.execute(text(statement), params).mappings().all()
 
@@ -369,7 +393,8 @@ def names(conn: Connection, customer_id: str, rows: Sequence[RowMapping]) -> Nam
         details = row["details"] if isinstance(row["details"], dict) else {}
         owners = (details.get("from"), details.get("to")) if row["action"] == "document.owner_change" else ()
         subject = row["target_id"] if row["target_type"] == "user" else None
-        users.update(filter(None, map(_uuid, (row["actor_user_id"], *owners, subject))))
+        about = row["subject_user_id"]  # PRD 7 (#601)
+        users.update(filter(None, map(_uuid, (row["actor_user_id"], *owners, subject, about))))
         folders.update(
             filter(None, map(_uuid, (row["folder_id"], details.get("folder_id"), details.get("parent_id"))))
         )

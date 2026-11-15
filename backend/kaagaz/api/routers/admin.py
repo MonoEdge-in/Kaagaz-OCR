@@ -91,7 +91,7 @@ import re
 import secrets
 import uuid
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
@@ -827,9 +827,11 @@ def _audit_settings(
 @dataclass(frozen=True, slots=True)
 class AuditAsked:
     """File management A5's filter chips: a person, a folder (with its subfolders), a file
-    (every version of its family), actions, and days in TIMEZONE, both ends included."""
+    (every version of its family), actions, and days in TIMEZONE, both ends included; PRD 7
+    (#601): the person an entry is about (``subject_id``)."""
 
     user_id: uuid.UUID | None = None
+    subject_id: uuid.UUID | None = None
     folder_id: uuid.UUID | None = None
     document_id: uuid.UUID | None = None
     action: Annotated[list[str] | None, Query(max_length=MAX_AUDIT_ACTIONS)] = None
@@ -856,13 +858,15 @@ def _audit_filters(
         folders = tuple(folders_sql.descendant_ids(conn, user.customer_id, str(asked.folder_id)))
     family = document = None
     if asked.document_id is not None:
-        row = listing.get_document(conn, user.customer_id, str(asked.document_id))
-        family, document = (None, str(asked.document_id)) if row is None else (str(row["family_id"]), None)
+        # PRD 7 (#601): a file the Admin can't open filters by its whole family too (decision 20).
+        row = access_sql.admin_document(conn, str(asked.document_id))
+        family, document = (None, str(asked.document_id)) if row is None else (row.family_id, None)
     return audit.Filters(
         shown_only=False,
         family_id=family,
         folder_ids=folders,
         actor_user_id=None if asked.user_id is None else str(asked.user_id),
+        subject_user_id=None if asked.subject_id is None else str(asked.subject_id),
         document_id=document,
         actions=actions,
         start=start,
@@ -881,11 +885,17 @@ def list_audit(
 ) -> dict[str, Any]:
     """``{items: [AuditEntry], next_cursor, total}``, newest first: the next page is
     ``cursor=next_cursor`` (``offset`` still pages as before). Every action, every detail
-    but money: the admin's alone."""
+    but money: the admin's alone. PRD 7 (#601): the first page also has ``self_given``, the
+    newest ``limit`` entries the filters keep in which an Admin gave themselves access, shown
+    first ("Admin gave themselves access")."""
     with context.db.user(user.customer_id, user.user_id) as conn:
         filters = _audit_filters(conn, context, user, asked)
         page = timeline(conn, user.customer_id, filters, limit=limit, cursor=cursor, offset=offset, full=True)
-        return {**page, "total": audit.count(conn, user.customer_id, filters)}
+        reply = {**page, "total": audit.count(conn, user.customer_id, filters)}
+        if cursor is None and offset == 0:
+            mine = replace(filters, self_only=True)
+            reply["self_given"] = timeline(conn, user.customer_id, mine, limit=limit, full=True)["items"]
+        return reply
 
 
 @router.get("/admin/audit/export")
@@ -900,6 +910,7 @@ def export_audit(
         filters = _audit_filters(conn, context, user, asked)
         details: dict[str, audit.DetailValue] = {
             "user_id": None if asked.user_id is None else str(asked.user_id),
+            "subject_id": None if asked.subject_id is None else str(asked.subject_id),
             "folder_id": None if asked.folder_id is None else str(asked.folder_id),
             "document_id": None if asked.document_id is None else str(asked.document_id),
             "actions": len(filters.actions),

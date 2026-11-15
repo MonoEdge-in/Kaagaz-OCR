@@ -47,7 +47,7 @@ The downgrade (documents first) drops the policies, the functions, the switch, t
 index.
 
 Revision ID: 0091
-Revises: 0090
+Revises: 0090b
 """
 
 import importlib.util
@@ -59,7 +59,7 @@ from alembic import op
 from sqlalchemy import text
 
 revision = "0091"
-down_revision = "0090"
+down_revision = "0090b"
 branch_labels = None
 depends_on = None
 
@@ -274,28 +274,46 @@ READS = {
     END
     $$
     """,
-    # F6: what the person can't see inside these trashed folders, each walked down
+    # F6: what the person can't see inside these live and trashed folders, each walked down
     # whole (100 levels, kaagaz.db.folders.MAX_DEPTH): numbers only.
-    "kaagaz_hidden_inside(uuid[])": f"""
-    CREATE FUNCTION public.kaagaz_hidden_inside(p_trashed uuid[])
+    "kaagaz_hidden_inside(uuid[], uuid[])": f"""
+    CREATE FUNCTION public.kaagaz_hidden_inside(p_folders uuid[], p_trashed uuid[])
     RETURNS TABLE (hidden_files bigint, hidden_folders bigint, any_files boolean)
     LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '' AS $$
     BEGIN
         {_A_PERSON}
-        RETURN QUERY WITH RECURSIVE trashed (id, trash_id, depth) AS (
+        RETURN QUERY WITH RECURSIVE live (id, depth) AS (
+            SELECT f.id, 1 FROM public.folders f WHERE f.customer_id = {_ME} AND f.id = ANY (p_folders)
+            UNION ALL SELECT f.id, live.depth + 1 FROM live
+            JOIN public.folders f ON f.customer_id = {_ME} AND f.parent_id = live.id WHERE live.depth < 101
+        ), trashed (id, trash_id, depth) AS (
             SELECT t.id, t.trash_id, 1 FROM public.trashed_folders t
             WHERE t.customer_id = {_ME} AND t.id = ANY (p_trashed)
             UNION ALL SELECT t.id, t.trash_id, trashed.depth + 1 FROM trashed
             JOIN public.trashed_folders t ON t.customer_id = {_ME} AND t.parent_id = trashed.id
             AND t.trash_id = trashed.trash_id WHERE trashed.depth < 101
         ), files AS (
-            SELECT d.id FROM trashed JOIN public.documents d
+            SELECT d.id FROM live JOIN public.documents d ON d.customer_id = {_ME} AND d.folder_id = live.id
+            UNION ALL SELECT d.id FROM trashed JOIN public.documents d
             ON d.customer_id = {_ME} AND d.trashed_folder_id = trashed.id AND d.trash_id = trashed.trash_id
         )
         SELECT (SELECT count(*) FROM files x WHERE NOT {_SEES.format(view="documents", me=_ME, id="x.id")}),
-            (SELECT count(*) FROM trashed x WHERE NOT {_SEES.format(view="trashed_folders", me=_ME, id="x.id")}),
+            (SELECT count(*) FROM live x WHERE NOT {_SEES.format(view="folders", me=_ME, id="x.id")})
+            + (SELECT count(*) FROM trashed x WHERE NOT {_SEES.format(view="trashed_folders", me=_ME, id="x.id")}),
             EXISTS (SELECT 1 FROM files);
     END
+    $$
+    """,
+    # A file's department, private folder, whom it is held for, folder and family (PR 10b/10c's
+    # "Who can see this" and move rules; an audit row's folder and family, A3), as the table holds them: the routes find the file through the view (or, an
+    # Admin, kaagaz_admin_document) first, and under the tree lock a person who stopped seeing it
+    # since is refused by the move rule, as before the rule (decision 18). Ids only.
+    "kaagaz_document_place(uuid)": f"""
+    CREATE FUNCTION public.kaagaz_document_place(p_document uuid)
+    RETURNS TABLE (department_id uuid, private_folder_id uuid, held_for uuid, folder_id uuid, family_id uuid)
+    LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
+        SELECT d.department_id, d.private_folder_id, d.held_for, d.folder_id, d.family_id FROM public.documents d
+        WHERE d.customer_id = {_ME} AND d.id = p_document
     $$
     """,
     # The topmost folder of p_folder's delete above it (itself when none is), on the whole table:
@@ -388,10 +406,12 @@ READ_COMMENTS = {
     " locked_open (with its id) or hidden (no id); a refused copy alone is not in. An active person.",
     "kaagaz_existing(text, uuid[])": "Which of these documents or folders still exist, seen or"
     " not (PRD 7, #606): gone for good is not hidden. Ids only, of the ids given.",
-    "kaagaz_hidden_inside(uuid[])": "How many files and folders the current person can't see inside"
-    " these trashed folders, and whether any file is (PRD 7, #606). An active person; numbers only.",
+    "kaagaz_hidden_inside(uuid[], uuid[])": "How many files and folders the current person can't see inside"
+    " these live and trashed folders, and whether any file is (PRD 7, #606). An active person; numbers only.",
     "kaagaz_folder_depth(uuid, uuid)": "A folder's depth, whether a move makes a cycle, and a subtree's height,"
     " on the whole tree, for the 100-level limit (PRD 7, #606). Numbers only.",
+    "kaagaz_document_place(uuid)": "A file's department, private folder, holder, folder and family, of a"
+    " file the caller found first (PRD 7, #606). Ids only.",
     "kaagaz_trash_top(uuid)": "The topmost folder of a trashed folder's delete, its id and kind (PRD 7, #606).",
     "kaagaz_storage_used()": "The bytes the organisation's documents hold (#516, PRD 7 #606).",
     "kaagaz_spent(timestamp with time zone, timestamp with time zone)": "The organisation's model spend in a"
@@ -415,7 +435,20 @@ _AN_ADMIN = """
             RAISE EXCEPTION 'only an Admin' USING ERRCODE = 'insufficient_privilege';
         END IF;"""
 _ADMIN_HEAD = "LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = '' AS $$"
-ADMIN = {
+ADMIN: dict[str, str] = {
+    # PR 10b/10c's previews: the live files a Department only switch, or a folder made private, decides
+    # for, whole (the Admin's preview counts every file, the ones they can't see too).
+    "kaagaz_admin_files(uuid, uuid[])": f"""
+    CREATE FUNCTION public.kaagaz_admin_files(p_department uuid, p_folders uuid[]) RETURNS bigint
+    {_ADMIN_HEAD}{_AN_ADMIN}
+        RETURN (SELECT count(*) FROM public.documents d WHERE d.customer_id = {_ME}
+                AND d.held_for IS NULL AND d.deleted_at IS NULL AND d.is_current
+                AND CASE WHEN p_department IS NOT NULL
+                         THEN d.department_id = p_department AND d.private_folder_id IS NULL
+                         ELSE d.folder_id = ANY (p_folders) END);
+    END
+    $$
+    """,
     # admin._DOCUMENTS_BY_STATUS (as an object, status to count), _COUNTS and _KEPT.
     "kaagaz_admin_stats()": f"""
     CREATE FUNCTION public.kaagaz_admin_stats()
@@ -624,7 +657,9 @@ ADMIN = {
     """,
 }
 _NUMBERS = " An Admin (or the worker role); names and numbers only (PRD 7 decision 20, #606)."
-ADMIN_COMMENTS = {
+ADMIN_COMMENTS: dict[str, str] = {
+    "kaagaz_admin_files(uuid, uuid[])": "The live files a department's Department only (outside private"
+    " folders) or these folders' Private decides for, whole: the Admin's previews (PRD 7, #606).",
     "kaagaz_admin_stats()": "The admin screen's numbers, whole: documents by status, questions, feedback,"
     " review items, older versions and Trash." + _NUMBERS,
     "kaagaz_admin_member_numbers(timestamp with time zone, timestamp with time zone)": "Each member's numbers"

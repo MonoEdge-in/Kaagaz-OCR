@@ -1,5 +1,5 @@
 """Migration 0091 (PRD 7 PR 9a, #606): the per-person database rule, dormant behind its switch. Up,
-down (the schema as at 0090) and up again on a fresh database. What the rule does:
+down (the schema as at 0090b) and up again on a fresh database. What the rule does:
 test_isolation_person_rule and test_isolation_rule_three_way; its rights: test_isolation_schema."""
 
 import pytest
@@ -29,8 +29,8 @@ _INDEX = (
 )
 
 
-def test_the_revision_follows_0090() -> None:
-    assert (M0091.revision, M0091.down_revision) == ("0091", "0090")
+def test_the_revision_follows_0090b() -> None:
+    assert (M0091.revision, M0091.down_revision) == ("0091", "0090b")
 
 
 def test_the_rule_is_0087s_views_for_the_app_role_only() -> None:
@@ -46,7 +46,7 @@ def test_the_rule_is_0087s_views_for_the_app_role_only() -> None:
 
 def test_up_down_and_up_again(fresh: tuple[str, Database]) -> None:
     url, db = fresh
-    migrate(url, "0090")
+    migrate(url, "0090b")
     at_0090 = _state(db)
     migrate(url, "0091")
     at_0091 = _state(db)
@@ -54,7 +54,7 @@ def test_up_down_and_up_again(fresh: tuple[str, Database]) -> None:
         assert tuple(conn.execute(text(_OURS)).one()) == (30, 3, True, 1)
         assert tuple(conn.execute(text(_INDEX)).one()) == (True, True)  # built CONCURRENTLY, valid
 
-    base._downgrade(url, "0090")
+    base._downgrade(url, "0090b")
     assert _state(db) == at_0090
     with db.system() as conn:
         assert tuple(conn.execute(text(_OURS)).one()) == (0, 0, False, 0)

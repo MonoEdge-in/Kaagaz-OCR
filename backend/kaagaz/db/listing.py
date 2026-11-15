@@ -70,9 +70,12 @@ _FILE_COLUMNS = (
     " (SELECT ub.display_name FROM users ub WHERE ub.customer_id = d.customer_id AND ub.id ="
     f" CASE WHEN d.details_updated_at >= {_LAST_UPLOAD} THEN d.details_updated_by ELSE {_LAST_UPLOADER} END)"
     " AS last_updated_by_name,"
+    # PRD 7 (#601): through visible_folders, so a file in a folder the person can't see names no
+    # department either.
     " (WITH RECURSIVE up (id, parent_id, depth) AS ("
-    " SELECT f.id, f.parent_id, 1 FROM folders f WHERE f.customer_id = d.customer_id AND f.id = d.folder_id"
-    " UNION ALL SELECT f.id, f.parent_id, up.depth + 1 FROM up JOIN folders f ON f.id = up.parent_id"
+    " SELECT f.id, f.parent_id, 1 FROM visible_folders f"
+    " WHERE f.customer_id = d.customer_id AND f.id = d.folder_id"
+    " UNION ALL SELECT f.id, f.parent_id, up.depth + 1 FROM up JOIN visible_folders f ON f.id = up.parent_id"
     " WHERE f.customer_id = d.customer_id AND up.depth < 101)"
     " SELECT json_build_object('id', dep.id, 'name', dep.name) FROM up"
     " JOIN visible_folders dep ON dep.customer_id = d.customer_id AND dep.id = up.id"
@@ -97,8 +100,12 @@ _FILE_COLUMNS = (
 # customer's load never shows in it.
 _COLUMNS = (
     "SELECT d.id, d.display_name, d.detected_type, d.size_bytes, d.status, d.failure_code,"  # noqa: S608 - fixed fragments, review.WAITING_VALUE and documents.STUCK
-    " d.page_count, d.created_at, d.uploaded_by, d.folder_id, d.deleted_at, d.family_id, d.version_no,"
+    " d.page_count, d.created_at, d.uploaded_by, d.deleted_at, d.family_id, d.version_no,"
     " d.attempts, d.max_attempts, d.progress, d.doc_type, d.languages, d.summary, d.read_model,"
+    # PRD 7 (#601): the folder only when the person can see it; in_a_folder says a file is in one
+    # (in one they can't see: "Shared with you", never its id).
+    " (SELECT sf.id FROM visible_folders sf WHERE sf.customer_id = d.customer_id AND sf.id = d.folder_id)"
+    " AS folder_id, d.folder_id IS NOT NULL AS in_a_folder,"
     " u.display_name AS uploaded_by_name,"
     " (SELECT count(*) FROM pages pu WHERE pu.customer_id = d.customer_id AND pu.document_id = d.id"
     " AND pu.read_quality = 'unreadable' AND pu.accepted_at IS NULL) AS pages_unreadable,"
@@ -199,6 +206,8 @@ _WITH_TAGS = (
     " GROUP BY dt.document_id HAVING count(DISTINCT dt.tag_id) = :tag_count)"
 )
 _OF_TYPE = " AND d.detected_type = :detected_type"
+# PRD 7 (#601): Shared with me, the files given to the person directly (every version is given).
+_SHARED = " AND d.id IN (SELECT kaagaz_shared_with_me())"
 # PRD 5 U2 "Needs attention": a page unreadable or uncertain still on the attention list
 # (not kept as is), or a value to review; the same rows _COLUMNS counts.
 _NEEDS_ATTENTION = (
@@ -312,6 +321,7 @@ def list_documents(
     doc_date_from: date | None = None,
     doc_date_to: date | None = None,
     has_newer_version: bool = False,
+    shared: bool = False,
     sort: str = "created_at",
     descending: bool = True,
 ) -> tuple[Sequence[RowMapping], int]:
@@ -329,9 +339,9 @@ def list_documents(
     attention); File management Q3: ``department_folders`` (a department's subtree),
     ``outside_departments`` (the dashboard's "Not in a department"),
     ``owner_id``, ``sensitivities`` (any of), ``party``, ``property_number`` (normalised),
-    ``doc_date_from`` to ``doc_date_to`` (both inclusive) and ``has_newer_version``. All of
-    them apply in both queries, before LIMIT. A sort other than ``created_at`` reads every
-    match before the page.
+    ``doc_date_from`` to ``doc_date_to`` (both inclusive) and ``has_newer_version``; PRD 7:
+    ``shared`` (given to the person directly). All of them apply in both queries, before LIMIT.
+    A sort other than ``created_at`` reads every match before the page.
 
     Two queries (the page and the count). Cost for this customer's D documents:
     no filter, O(limit + offset) rows on the (customer_id, created_at) index; a
@@ -371,6 +381,8 @@ def list_documents(
         params["uploaded_to"] = uploaded_to
     if attention:
         chosen.append(_NEEDS_ATTENTION)
+    if shared:
+        chosen.append(_SHARED)
     chosen.append(
         file_filters(
             params,
