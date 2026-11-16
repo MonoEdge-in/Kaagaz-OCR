@@ -183,6 +183,56 @@ TEXTS: dict[str, tuple[str, str, str]] = {
         " संस्थेच्या Kaagaz ॲडमिनला विचारा, किंवा Kaagaz उघडा: {}",
     ),
     "looking": ("Looking through your files…", "आपकी फ़ाइलें देख रहा हूँ…", "तुमच्या फाइल्स पाहत आहे…"),
+    # --- voice notes (W6) ---
+    "ask_voice": (
+        "Type your question or send a voice note.",
+        "अपना सवाल लिखें या वॉइस नोट भेजें।",
+        "तुमचा प्रश्न लिहा किंवा व्हॉइस नोट पाठवा.",
+    ),
+    "which_file_voice": (
+        "Which file? Type a name, or say it in a voice note.",
+        "कौन-सी फ़ाइल? उसका नाम लिखें, या वॉइस नोट में बोलें।",
+        "कोणती फाइल? तिचे नाव लिहा, किंवा व्हॉइस नोटमध्ये सांगा.",
+    ),
+    "heard": ('I heard: "{}"', 'मैंने सुना: "{}"', 'मी ऐकले: "{}"'),
+    "heard_sure": (
+        'I heard: "{}". Is that right?',
+        'मैंने सुना: "{}"। क्या यह सही है?',
+        'मी ऐकले: "{}". हे बरोबर आहे का?',
+    ),
+    "yes_button": ("Yes", "हाँ", "हो"),
+    "say_again_button": ("No, say again", "नहीं, फिर से बोलें", "नाही, पुन्हा बोला"),
+    "say_again": (
+        "Please say it again or type it.",
+        "कृपया फिर से बोलें या लिखें।",
+        "कृपया पुन्हा बोला किंवा लिहा.",
+    ),
+    "voice_unclear": (
+        "Sorry, I couldn't hear that clearly. Please say it again or type it.",
+        "माफ़ कीजिए, मैं ठीक से सुन नहीं पाया। कृपया फिर से बोलें या लिखें।",
+        "माफ करा, मला नीट ऐकू आले नाही. कृपया पुन्हा बोला किंवा लिहा.",
+    ),
+    "voice_off": (
+        "Voice notes are switched off for your organisation. Please type your question.",
+        "आपकी संस्था के लिए वॉइस नोट बंद हैं। कृपया अपना सवाल लिखें।",
+        "तुमच्या संस्थेसाठी व्हॉइस नोट बंद आहेत. कृपया तुमचा प्रश्न लिहा.",
+    ),
+    "voice_forwarded": (
+        "I can't take a forwarded voice note. Please record your own question, or type it.",
+        "मैं फ़ॉरवर्ड किया गया वॉइस नोट नहीं ले सकता। कृपया अपना सवाल खुद रिकॉर्ड करें, या लिखें।",
+        "मी फॉरवर्ड केलेली व्हॉइस नोट घेऊ शकत नाही. कृपया तुमचा प्रश्न स्वतः रेकॉर्ड करा, किंवा लिहा.",
+    ),
+    "voice_limit": (
+        "Please send a voice note of up to 1 minute, or type your question.",
+        "कृपया 1 मिनट तक का वॉइस नोट भेजें, या अपना सवाल लिखें।",
+        "कृपया 1 मिनिटापर्यंतची व्हॉइस नोट पाठवा, किंवा तुमचा प्रश्न लिहा.",
+    ),
+    "voice_failed": (
+        "Sorry, I couldn't listen to that voice note just now. Please type your question, or send it"
+        " again in a minute.",
+        "माफ़ कीजिए, मैं अभी यह वॉइस नोट नहीं सुन पाया। कृपया अपना सवाल लिखें, या एक मिनट बाद फिर से भेजें।",
+        "माफ करा, मी आत्ता ही व्हॉइस नोट ऐकू शकलो नाही. कृपया तुमचा प्रश्न लिहा, किंवा एका मिनिटाने पुन्हा पाठवा.",
+    ),
     # --- uploads (W5) ---
     "send_now": ("Send the file or photos now.", "अब फ़ाइल या फ़ोटो भेजें।", "आता फाइल किंवा फोटो पाठवा."),
     "tip": (

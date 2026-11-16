@@ -115,8 +115,8 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     Changed on purpose (#647, 16 Nov 2026): each model's supported parameters (0095) follow 0094.
     Changed on purpose (#605, PR 13, 16 Nov 2026): the locked-file pop-ups' names (0096, 0094 on
     their branch) follow 0095.
-    Changed on purpose (#603, 16 Nov 2026): Kaagaz on WhatsApp's tables (0097) follow 0096 and are the
-    head."""
+    Changed on purpose (#603, 16 Nov 2026): Kaagaz on WhatsApp's tables (0097) follow 0096, and
+    its voice notes' spend (0098) follows 0097 and is the head."""
     scripts = _scripts()
     assert scripts.get_revision("0082").down_revision == "0081"
     assert scripts.get_revision("0083").down_revision == "0082"
@@ -135,4 +135,5 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     assert scripts.get_revision("0095").down_revision == "0094"
     assert scripts.get_revision("0096").down_revision == "0095"
     assert scripts.get_revision("0097").down_revision == "0096"
-    assert scripts.get_heads() == ["0097"]
+    assert scripts.get_revision("0098").down_revision == "0097"
+    assert scripts.get_heads() == ["0098"]
