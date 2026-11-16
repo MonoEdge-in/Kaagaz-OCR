@@ -390,6 +390,7 @@ VIEW_READERS = {
         "_CHILD_ITEMS", "_EXISTS", "_HELD", "_ONE_ITEM", "_PATHS", "_SEEN", "_SEEN_RESTORE", "_TOP_ITEMS",
     },
     "db/user_words.py": {"_SPOTS"},
+    "db/version_groups.py": {"_DECIDE", "_MEMBERS", "_PAIRS"},  # Changed on purpose (#648): possible versions
     "db/versions.py": {"_ALLOWED", "_CANDIDATE", "_FOR_DOCUMENT", "_IN_BATCH", "_LIVE", "_VIEW"},
     "db/visibility.py": {"LIVE_SUGGESTION", "SEEN_DOCUMENT"},
     # Changed on purpose (#603 W4): the WhatsApp channel, as the person, in the app's role; never a worker.

@@ -260,9 +260,11 @@ _ADMIN_NAMES = (
     " ORDER BY e.created_at DESC, e.id DESC"
 )
 _COUNT = "SELECT count(*) FROM audit_log a WHERE a.customer_id = :c"
-# #484: "Add new files only"'s check of a page of files is the admin's alone.
+# #484: "Add new files only"'s check of a page of files is the admin's alone. Changed on purpose
+# (#648 review): so are Admins' and Management's decisions on possible versions.
 _SHOWN = (
-    " AND split_part(a.action, '.', 1) = ANY(CAST(:kinds AS text[])) AND a.action <> 'folder.upload_check'"
+    " AND split_part(a.action, '.', 1) = ANY(CAST(:kinds AS text[])) AND a.action NOT IN"
+    " ('folder.upload_check', 'version.kept_apart', 'version.kept_apart_undone', 'version.later')"
 )
 # A5: rows written while in the family, and every row of its versions and of a document linked
 # into it (accepted, or undone since), so a linked version's upload and suggestion show too.

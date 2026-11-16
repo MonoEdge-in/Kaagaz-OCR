@@ -35,6 +35,10 @@ export const ACTIVITY_WORDS: Record<string, (entry: Entry) => string> = {
   "version.make_current": (entry) => `made version ${version(entry, 1)} current`,
   "document.version_separated": (entry) =>
     `made version ${typeof entry.details.version_no === "number" ? entry.details.version_no : "…"} a separate file`,
+  // #648: possible versions decided by Admins and Management; shown in the admin log only.
+  "version.kept_apart": () => "marked it as not versions",
+  "version.kept_apart_undone": () => "undid not versions",
+  "version.later": () => "left it for later",
   "document.rename": (entry) => `renamed to ${text(entry.details.to_name) ?? entry.document?.name ?? "…"}`,
   "document.move": (entry) => `moved to ${place(entry) ?? "Not in a folder"}`,
   "document.label_change": (entry) => `changed the label to ${labelName(text(entry.details.to) ?? "…")}`,

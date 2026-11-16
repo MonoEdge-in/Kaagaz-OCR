@@ -84,6 +84,9 @@ codes, messages and pickers (the last three one person's own, as my words), read
 app, which writes only the columns listed and deletes only a picker; a connection ends, its number
 gone, only through the owner-rights functions; the numbers told they are not connected or blocked
 belong to no organisation and no role reads them.
+
+The version finder (0099, #648, NEEDS VRUSHIT'S APPROVAL): its runs, pairs and group members, never
+deleted by the app; only a member's decision is ever changed.
 """
 
 import re
@@ -246,6 +249,17 @@ UPDATES_0097 = {
     "whatsapp_link_codes": {"tries", "used_at"},
     "whatsapp_messages": {"state", "tries", "body", "batch_id", "document_id", "reply_sent_at"},
     "whatsapp_pickers": {"generation", "state", "expires_at"},
+}
+# Changed on purpose (#648, 0099): the version finder's run (read, added, only its progress changed),
+# pairs (read and added) and group members (read, added, only a decision changed); none deleted.
+FROM_0099 = {
+    "version_finder_runs": (True, True, False, False),
+    "version_pairs": (True, True, False, False),
+    "version_group_members": (True, True, False, False),
+}
+UPDATES_0099 = {
+    "version_finder_runs": {"after_id", "looked_at", "finished_at", "groups"},
+    "version_group_members": {"state", "decided_by", "decided_at"},
 }
 # Logout ends this browser's session (0076, #502): the app adds and reads ended sessions only;
 # the worker's sweep deletes them through kaagaz_sweep_ended_sessions.
@@ -878,6 +892,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0088)  # Changed on purpose (#600, 0088)
         | set(FROM_0094)  # Changed on purpose (#617, 0094)
         | set(FROM_0097)  # Changed on purpose (#603, 0097)
+        | set(FROM_0099)  # Changed on purpose (#648, 0099)
     )
 
     with db.system() as conn:
@@ -962,6 +977,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0088  # Changed on purpose (#600, 0088)
         | FROM_0094  # Changed on purpose (#617, 0094)
         | FROM_0097  # Changed on purpose (#603, 0097)
+        | FROM_0099  # Changed on purpose (#648, 0099)
     ).items():
         assert granted[table] == expected, table
 
@@ -1087,6 +1103,13 @@ def test_whatsapps_unknown_numbers_are_reached_by_no_role_only_by_their_function
             {"a": APP_ROLE},
         ).one()
     assert tuple(row) == (True, 0, None)
+
+
+def test_the_app_may_update_only_the_decision_of_a_possible_version(db: Database) -> None:
+    """0099 (#648): never a member's file, group or place, so a decision can't move a file into
+    another group; never a pair's files or scores; never a run's organisation or start."""
+    assert {table: _updatable(db, table) for table in UPDATES_0099} == UPDATES_0099
+    assert _updatable(db, "version_pairs") == set()
 
 
 def test_the_app_may_update_only_the_spellings_of_a_value_key(db: Database) -> None:
@@ -1218,6 +1241,7 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
         | set(FROM_0088)  # Changed on purpose (#600, 0088)
         | set(FROM_0097)
         - {"whatsapp_org_settings"}  # Changed on purpose (#603, 0097): it has no key but its own
+        | {"version_pairs", "version_group_members"}  # Changed on purpose (#648, 0099)
         | {"pages", "model_usage", "documents"}  # documents.owner_id (0041)
     )
     for name, _table, _parent, columns, parent_columns in between:
