@@ -12,6 +12,7 @@
 import Link from "next/link";
 import { useId, useState } from "react";
 import type { FormEvent } from "react";
+import { flushSync } from "react-dom";
 import { RowMenu } from "@/components/admin/RowMenu";
 import { sortedVersions } from "@/components/viewer/versions";
 import { PasswordField } from "@/components/ui/PasswordField";
@@ -47,7 +48,8 @@ export function VersionsPanel({
   const linkable = canLink && !inTrash && detail.locked !== true;
   const canUndoLink = canLink && !inTrash && detail.version_link?.can_undo === true;
 
-  async function undoLink() {
+  async function undoLink(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
     setBusy("link");
     setError(null);
     try {
@@ -55,8 +57,12 @@ export function VersionsPanel({
       setUndoPassword(null);
       onChanged(LINK_TEXT.undone);
     } catch (caught) {
-      if (needsPassword(caught) && undoPassword === null) setUndoPassword("");
       setError(linkErrorText(caught));
+      if (needsPassword(caught) && undoPassword === null) {
+        // The password box appears, a form of its own, and takes the focus (review of #659).
+        flushSync(() => setUndoPassword(""));
+        document.getElementById("undo-link-password")?.focus();
+      }
     } finally {
       setBusy(null);
     }
@@ -89,27 +95,27 @@ export function VersionsPanel({
               {LINK_TEXT.addVersion}
             </button>
           )}
-          {canUndoLink && (
-            <button
-              type="button"
-              className="btn"
-              disabled={busy !== null || undoPassword === ""}
-              onClick={() => void undoLink()}
-            >
+          {canUndoLink && undoPassword === null && (
+            <button type="button" className="btn" disabled={busy !== null} onClick={() => void undoLink()}>
               {LINK_TEXT.undoLink}
             </button>
           )}
         </div>
       )}
       {canUndoLink && undoPassword !== null && (
-        <PasswordField
-          id="undo-link-password"
-          label={LINK_TEXT.password}
-          hint={LINK_TEXT.passwordNote}
-          autoComplete="current-password"
-          value={undoPassword}
-          onChange={setUndoPassword}
-        />
+        <form className={styles.noteForm} onSubmit={(event) => void undoLink(event)}>
+          <PasswordField
+            id="undo-link-password"
+            label={LINK_TEXT.password}
+            hint={LINK_TEXT.passwordNote}
+            autoComplete="current-password"
+            value={undoPassword}
+            onChange={setUndoPassword}
+          />
+          <button type="submit" className="btn" disabled={busy !== null || undoPassword === ""}>
+            {LINK_TEXT.undoLink}
+          </button>
+        </form>
       )}
       <ol className={styles.versions}>
         {versions.map((version) => (

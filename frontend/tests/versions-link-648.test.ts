@@ -12,7 +12,7 @@ import { FolderNav } from "@/components/documents/FolderNav";
 import { buildTree } from "@/components/documents/folderTree";
 import { menuEntries } from "@/components/documents/library";
 import { ALL_DOCUMENTS } from "@/components/documents/libraryQuery";
-import { ConfirmStep, OrderStep } from "@/components/versions/LinkDialog";
+import { ConfirmStep, LinkDialog, OrderStep } from "@/components/versions/LinkDialog";
 import {
   LINK_TEXT,
   byDate,
@@ -475,5 +475,25 @@ describe("the calls", () => {
       'POST /api/documents/y/link-versions/undo {"password":"secret"}',
       "GET /api/version-kept-apart",
     ]);
+  });
+});
+
+describe("the password step (review of #659)", () => {
+  const source = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");
+
+  it("is a form, says each step politely, and puts the focus in the password box when it appears", () => {
+    const files = [
+      { id: "x", name: "Lease 2024.pdf", date: "2024-04-01" },
+      { id: "y", name: "Lease 2025.pdf", date: "2025-04-01" },
+    ];
+    const html = render(createElement(LinkDialog, { files, start: "order", onClose: () => undefined, onLinked: () => undefined }));
+    expect(html).toMatch(/<p[^>]*tabindex="-1"[^>]*aria-live="polite"[^>]*>.*Step 2 of 3/);
+    expect(html).toContain('aria-label="This is the latest: Lease 2024.pdf"');
+    expect(html).toContain('aria-label="This is the latest: Lease 2025.pdf"');
+    expect(html).toMatch(/<form[^>]*>[\s\S]*<button type="submit" class="btn btn-primary"[^>]*>Next<\/button>/);
+    expect(source("components/versions/LinkDialog.tsx")).toContain('getElementById("link-versions-password")?.focus()');
+    const panel = source("components/versions/VersionsPanel.tsx");
+    expect(panel).toContain('getElementById("undo-link-password")?.focus()');
+    expect(panel).toMatch(/<form[^>]*onSubmit=/);
   });
 });

@@ -14,7 +14,8 @@
 
 import Image from "next/image";
 import { useEffect, useId, useMemo, useState } from "react";
-import type { DragEvent, FormEvent } from "react";
+import type { DragEvent, FormEvent, ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import library from "@/components/documents/Library.module.css";
 import { buildTree, pathLabel } from "@/components/documents/folderTree";
@@ -113,10 +114,21 @@ export function LinkDialog({
         body,
       });
     } catch (caught) {
-      if (needsPassword(caught) && password === null) setPassword("");
       setError(linkErrorText(caught));
       setBusy(false);
+      if (needsPassword(caught) && password === null) {
+        // The password box appears with the server's words, and takes the focus (review of #659).
+        flushSync(() => setPassword(""));
+        document.getElementById("link-versions-password")?.focus();
+      }
     }
+  }
+
+  /** Steps 2 and 3 are a form: Enter goes on, as the primary button does. */
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (step === 2) void toConfirm();
+    else if (step === 3 && password !== "") void link();
   }
 
   const back = (to: Step) => {
@@ -127,8 +139,9 @@ export function LinkDialog({
 
   return (
     <ActionDialog title={LINK_TEXT.title} onClose={onClose} canClose={() => !busy} wide={step !== 3}>
-      <div className={library.dialogForm}>
-        <p className={styles.stepLine}>
+      <Body form={step !== 1} onSubmit={submit}>
+        {/* Each step's line takes the focus as the step changes (MoveTwoStepDialog's way). */}
+        <p key={step} ref={focusOnMount} tabIndex={-1} className={styles.stepLine} aria-live="polite">
           <span className="muted">{LINK_TEXT.step(step)}</span> <strong>{LINK_TEXT.steps[step - 1]}</strong>
         </p>
         {step === 1 && <PickStep chosen={chosen} fixed={fixed} onChosen={setChosen} />}
@@ -164,23 +177,39 @@ export function LinkDialog({
             </button>
           )}
           {step === 2 && (
-            <button type="button" className="btn btn-primary" onClick={() => void toConfirm()} disabled={busy || !body}>
+            <button type="submit" className="btn btn-primary" disabled={busy || !body}>
               {busy ? LINK_TEXT.checking : LINK_TEXT.next}
             </button>
           )}
           {step === 3 && (
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => void link()}
-              disabled={busy || password === ""}
-            >
+            <button type="submit" className="btn btn-primary" disabled={busy || password === ""}>
               {busy ? LINK_TEXT.linking : LINK_TEXT.link}
             </button>
           )}
         </div>
-      </div>
+      </Body>
     </ActionDialog>
+  );
+}
+
+const focusOnMount = (element: HTMLElement | null) => element?.focus();
+
+/** The dialog's body: a form for steps 2 and 3; step 1 holds its own search form, so a div. */
+function Body({
+  form,
+  onSubmit,
+  children,
+}: {
+  form: boolean;
+  onSubmit(event: FormEvent<HTMLFormElement>): void;
+  children: ReactNode;
+}) {
+  return form ? (
+    <form className={library.dialogForm} onSubmit={onSubmit}>
+      {children}
+    </form>
+  ) : (
+    <div className={library.dialogForm}>{children}</div>
   );
 }
 
@@ -402,12 +431,9 @@ export function OrderStep({
                   value={id}
                   checked={latest === id}
                   onChange={() => onLatest(id)}
-                  aria-describedby={`${radio}-${at}`}
+                  aria-label={`${LINK_TEXT.latest}: ${file.name}`}
                 />
-                <span>{LINK_TEXT.latest}</span>
-                <span id={`${radio}-${at}`} className="visually-hidden">
-                  {file.name}
-                </span>
+                <span aria-hidden="true">{LINK_TEXT.latest}</span>
               </label>
               <span className={styles.arrows}>
                 <button
