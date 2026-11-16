@@ -410,7 +410,7 @@ class FlowClaims:
     """One sign-in or connect at a provider, from its start to its callback (single use)."""
 
     provider: str
-    mode: str  # "signin", "connect", or "whatsapp" (#603: Google proves it is them, for WhatsApp)
+    mode: str  # "signin", "connect", "whatsapp" (#603) or "locked_open" (#605): Google proves it is them
     state: str
     nonce: str
     verifier: str  # the PKCE verifier
@@ -451,8 +451,8 @@ def sign_flow(claims: FlowClaims, secret: str) -> str:
 
 def read_flow(token: str, secret: str, now: int) -> FlowClaims | None:
     """The claims of a genuine, unexpired flow token, else None. Strict: exactly its fields,
-    each of its type; a connect (or a WhatsApp proof, #603) carries its user, customer and session
-    version, a sign-in none."""
+    each of its type; a connect (or a WhatsApp proof, #603, or a locked files' confirm, #605)
+    carries its user, customer and session version, a sign-in none."""
     data = _verified(token, _FLOW_PURPOSE, secret)
     if not isinstance(data, dict) or set(data) != _FLOW_FIELDS:
         return None
@@ -462,7 +462,7 @@ def read_flow(token: str, secret: str, now: int) -> FlowClaims | None:
     uid, cid, ver, exp = data["uid"], data["cid"], data["ver"], data["exp"]
     if not _is_int(exp) or exp <= now:
         return None
-    if data["m"] in ("connect", "whatsapp"):
+    if data["m"] in ("connect", "whatsapp", "locked_open"):
         if not (isinstance(uid, str) and isinstance(cid, str) and _is_uuid(uid) and _is_uuid(cid)):
             return None
         if not _is_version(ver):
@@ -565,6 +565,117 @@ def clear_whatsapp_proof_cookie(response: Response, settings: Settings) -> None:
         path=WHATSAPP_PATH,
         httponly=True,
         samesite="lax",
+        secure=settings.cookie_secure,
+    )
+
+
+# --- the 10-minute check for locked files (PRD 7 section 6, #605, PR 13) ---------------------
+# The 10-minute check for locked files (PRD 7 section 6, "Opening a locked file"; decisions 5 and 6;
+# #605, PR 13).
+#
+# Why a cookie of its own: one check opens every locked file the person may open, for 10 minutes in
+# that browser, and never anything else. So it is its own signed token, ``{uid, cid, ver, sid, exp}``
+# with MAC purpose ``locked_open``: the Delete forever confirm (``kaagaz_confirm``, purpose
+# ``confirm``) can never open a locked file, nor this one confirm a delete (``p2:70``).
+#
+# * LOCKED_OPEN_SECONDS, absolute: it is set once, at the check, and never extended by use.
+# * HttpOnly, Secure (as the session), SameSite=Strict, sent to /api/documents only, where the
+#   page-picture route and the check's own routes live.
+# * It holds for this user, organisation, session version and browser session (``sid``) only: a new
+#   password, "sign out everywhere" or a switch-off raise the version; signing out ends the session
+#   (0076, so the ``sid`` is another one at the next sign-in) and clears the cookie.
+#
+# Who confirms how (decision 5, changed by Vrushit on 13 Nov 2026): the person's own Kaagaz password
+# and nothing else, no two-step code; a person whose role signs in with Google only
+# (``confirms_with_google``, the sign-in's own test, ``routers/auth.py`` ``_google_only``) has no
+# password to type and confirms with a fresh Google sign-in (``routers/oidc.py``). O(1), no query.
+
+LOCKED_OPEN_COOKIE = "kaagaz_locked_open"
+LOCKED_OPEN_SECONDS = 10 * 60  # PRD 7 decision 6
+LOCKED_OPEN_PATH = "/api/documents"
+LOCKED_OPEN_FIRST = "Enter your password to open locked files."
+
+_LOCKED_OPEN_PURPOSE = b"locked_open"
+_LOCKED_OPEN_FIELDS = frozenset({"uid", "cid", "ver", "sid", "exp"})
+
+
+def confirms_with_google(user: "CurrentUser", settings: Settings) -> bool:
+    """The person signs in with Google only (Google on, the role uses it only, a passing link), so
+    they confirm with Google, never a password: the test a password sign-in refuses them by
+    (``routers/auth.py`` ``_google_only``, its admin still setting up two-step included, whom
+    ``current_user`` stops first)."""
+    enrolling = user.role == "admin" and not user.totp_enabled and not user.two_step_turned_off
+    return (
+        settings.google_signin_enabled
+        and user.google_on
+        and user.google_only
+        and user.google_linked
+        and not enrolling
+    )
+
+
+def sign_locked_open(user: "CurrentUser", session_id: str, expires_at: int, secret: str) -> str:
+    payload = {
+        "uid": user.user_id,
+        "cid": user.customer_id,
+        "ver": user.session_version,
+        "sid": session_id,
+        "exp": expires_at,
+    }
+    return _sign(payload, _LOCKED_OPEN_PURPOSE, secret)
+
+
+def locked_open_until(request: Request, user: "CurrentUser", settings: Settings, now: int) -> int | None:
+    """When this browser's live check ends, else None: a genuine, unexpired ``locked_open`` token
+    with exactly its fields, for this very user, organisation, session version and browser session."""
+    data = _verified(
+        request.cookies.get(LOCKED_OPEN_COOKIE) or "", _LOCKED_OPEN_PURPOSE, settings.session_secret
+    )
+    if not isinstance(data, dict) or set(data) != _LOCKED_OPEN_FIELDS:
+        return None
+    exp, sid = data["exp"], data["sid"]
+    if (
+        not (_is_int(exp) and _is_version(data["ver"]) and isinstance(sid, str) and _is_uuid(sid))
+        or exp <= now
+    ):
+        return None
+    session = session_claims(request, settings, now)
+    if session is None:
+        return None
+    mine = (user.user_id, user.customer_id, user.session_version, session.session_id)
+    if (data["uid"], data["cid"], data["ver"], sid) != mine:
+        return None
+    return int(exp)
+
+
+def require_locked_open(request: Request, user: "CurrentUser", settings: Settings, now: int) -> None:
+    """403 ``locked_open_required`` unless this browser's check is live (``locked_open_until``)."""
+    if locked_open_until(request, user, settings, now) is None:
+        raise ApiError(403, "locked_open_required", LOCKED_OPEN_FIRST)
+
+
+def set_locked_open_cookie(
+    response: Response, user: "CurrentUser", session_id: str, settings: Settings, *, until: int
+) -> None:
+    """The check, ending at ``until``: LOCKED_OPEN_SECONDS from now."""
+    response.set_cookie(
+        LOCKED_OPEN_COOKIE,
+        sign_locked_open(user, session_id, until, settings.session_secret),
+        max_age=LOCKED_OPEN_SECONDS,
+        httponly=True,
+        samesite="strict",
+        secure=settings.cookie_secure,
+        path=LOCKED_OPEN_PATH,
+    )
+
+
+def clear_locked_open_cookie(response: Response, settings: Settings) -> None:
+    """Signing out ends the check (decision 6)."""
+    response.delete_cookie(
+        LOCKED_OPEN_COOKIE,
+        path=LOCKED_OPEN_PATH,
+        httponly=True,
+        samesite="strict",
         secure=settings.cookie_secure,
     )
 

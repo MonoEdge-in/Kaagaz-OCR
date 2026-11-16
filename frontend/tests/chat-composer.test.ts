@@ -44,7 +44,7 @@ describe("the composer card", () => {
   });
 
   // QA 17 Oct: the 1,000 character limit cut a pasted question silently.
-  it("says so when a question reaches the 1,000 character limit", () => {
+  it("says so when a question reaches the 20,000 character limit (#644)", () => {
     const box = (draft: string) =>
       renderToStaticMarkup(
         createElement(QuestionBox, {
@@ -56,9 +56,9 @@ describe("the composer card", () => {
           draft,
         }),
       );
-    const note = "Questions can be up to 1,000 characters. The rest was left out.";
-    expect(box("a".repeat(1000))).toContain(`role="status">${note}</p>`);
-    expect(box("a".repeat(999))).not.toContain(note);
+    const note = "Questions can be up to 20,000 characters. The rest was left out.";
+    expect(box("a".repeat(20000))).toContain(`role="status">${note}</p>`);
+    expect(box("a".repeat(3000))).not.toContain(note); // a 3,000 character question is no longer cut
   });
 
   it("lets the question grow to about eight lines, then scroll", () => {

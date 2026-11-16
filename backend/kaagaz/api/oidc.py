@@ -141,7 +141,8 @@ def authorize_url(
     max_age: int | None = None,
 ) -> str:
     """The provider's account chooser for this client, with the state, nonce and PKCE challenge;
-    with ``max_age`` (WhatsApp's proof, #603: 0), a sign-in at most that old, its ``auth_time`` given."""
+    with ``max_age`` (WhatsApp's proof, #603, and opening locked files, #605: 0), a sign-in at most that
+    old, its ``auth_time`` given."""
     client_id, _, redirect = _configured(settings, provider)
     query = {
         "response_type": "code",

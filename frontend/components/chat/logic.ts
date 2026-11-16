@@ -22,7 +22,7 @@ import type {
   Region,
   ThinkingLevel,
 } from "@/lib/types";
-import { citationRegion, linkWords, restoreAfterFailure } from "./answer";
+import { citationRegion, linkWords, MAX_QUESTION_LENGTH, restoreAfterFailure } from "./answer";
 
 // --- Grouping the conversation list by day ------------------------------------
 
@@ -334,10 +334,10 @@ export function documentFromSearch(search: string): string | null {
 
 // Home's Ask box and question suggestions open chat with an already-submitted question.
 
-/** The question an address brings (trimmed, at most 1,000 characters), or null. */
+/** The question an address brings (trimmed, at most MAX_QUESTION_LENGTH characters), or null. */
 export function questionFromSearch(search: string): string | null {
   const question = (new URLSearchParams(search).get("q") ?? "").trim();
-  return question ? question.slice(0, 1000) : null;
+  return question ? question.slice(0, MAX_QUESTION_LENGTH) : null;
 }
 
 // One ?q= contract: /chat?q= puts the words in the box (questionFromSearch); send=1 also sends them.

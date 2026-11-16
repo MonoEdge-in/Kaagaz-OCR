@@ -66,6 +66,17 @@ provider's own routes: while that one is off), before anything else is read.
   needs the Google account to be the person's own approved connection (else ``not_yours``) and a
   fresh Google sign-in (``auth_time`` within FRESH_SECONDS, else ``not_fresh``), then sets the
   WhatsApp proof cookie and goes back to /settings/whatsapp?proved=google, or ?error=<code>.
+* ``POST /auth/oidc/{provider}/confirm`` {next} (PRD 7 decision 5, #605): a person whose role signs
+  in with Google only opens locked files with a fresh Google sign-in (anyone else: 409
+  ``use_password``; at most CONFIRMS_PER_HOUR a person). A ``locked_open`` flow cookie with the
+  user, customer and session version, and ``{url}`` asking Google for a fresh sign-in
+  (``max_age=0``). Its callback, while that very session is signed in here and the person still
+  signs in with Google only (else ``signed_out``), needs the Google account to be the person's own
+  approved connection (else ``not_yours``) and Google's ``auth_time`` within FRESH_SECONDS and no
+  more than LEEWAY_SECONDS ahead (else ``not_fresh``; a missing one too, never ``iat``), each
+  audited ``lock.open_failed`` {via, reason}; then ``lock.open`` {via: google}, the 10-minute
+  check (``kaagaz/api/auth.py``) for this browser session, and back to ``next``; a refusal
+  goes back to ``next`` with ``open_error=<code>``.
 * ``GET /auth/oidc/notice``: "isn't connected" names the provider's email, which never goes in
   a URL (history, logs): the callback leaves it in a signed 60-second cookie, read here once.
 * ``POST /auth/oidc/code`` {code}: the second step, ``routers/auth.py``'s ``_finish_second_step``
@@ -97,6 +108,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from kaagaz.api import emails, oidc
 from kaagaz.api.auth import (
+    LOCKED_OPEN_SECONDS,
     NOTICE_COOKIE,
     OIDC_COOKIE,
     OIDC_SECONDS,
@@ -105,16 +117,19 @@ from kaagaz.api.auth import (
     CurrentUser,
     FlowClaims,
     PendingClaims,
+    User,
     UserAllowGoogleLink,
     clear_flow_cookie,
     clear_notice_cookie,
     clear_pending_cookie,
+    confirms_with_google,
     current_user_allow_google_link,
     read_flow,
     read_notice,
     read_pending,
     session_claims,
     set_flow_cookie,
+    set_locked_open_cookie,
     set_notice_cookie,
     set_pending_cookie,
     set_session_cookie,
@@ -167,11 +182,16 @@ TOO_MANY_CONNECTS = "Too many tries to connect an account. Try again in an hour.
 # (kaagaz/api/middleware.py), as CALLBACKS_PER_HOUR says.
 remove_limits = RateLimiter(CONNECTS_PER_HOUR, window_seconds=3600)
 TOO_MANY_REMOVES = "Too many tries to disconnect an account. Try again in an hour."
+# Locked files' Google confirms an hour for one person (PROVISIONAL, #605).
+CONFIRMS_PER_HOUR = 10
+confirm_limits = RateLimiter(CONFIRMS_PER_HOUR, window_seconds=3600)
+TOO_MANY_CONFIRMS = "Too many tries to confirm with Google. Try again in an hour."
+USE_PASSWORD = "Enter your Kaagaz password to open locked files."  # noqa: S105 - words, not a password
 PROOF_NEEDED = "Type your Kaagaz password to continue."
 LOGIN = "/login"
 WAYS = "/settings/sign-in"  # Account, Ways to sign in
 WHATSAPP_PAGE = "/settings/whatsapp"  # Account, WhatsApp (#603)
-FRESH_SECONDS = 300  # WhatsApp's proof: a Google sign-in at most this old (asked with max_age=0)
+FRESH_SECONDS = 300  # a fresh Google sign-in (asked with max_age=0): at most this old (#605, PRD 7 p2:56)
 # A plain path on this site: no scheme, host, "//", "\", "%" or fragment can get through.
 _NEXT = re.compile(r"/[A-Za-z0-9_-][A-Za-z0-9/_-]{0,199}(\?[A-Za-z0-9=&_-]{1,200})?")
 # The OidcError codes the sign-in page explains as "That sign-in expired. Try again."
@@ -191,6 +211,12 @@ class RemoveBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     password: str | None = Field(default=None, min_length=1, max_length=MAX_PASSWORD)  # not to cancel
+
+
+class ConfirmBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    next: str = Field(default="/", max_length=500)  # kept only when a plain path (``_safe_next``)
 
 
 class CodeBody(BaseModel):
@@ -280,6 +306,22 @@ def connect(
     return response
 
 
+@router.post("/auth/oidc/{provider}/confirm")
+def confirm(provider: ProviderOn, body: ConfirmBody, user: User, context: Context) -> JSONResponse:
+    """PRD 7 decision 5 (#605): a Google-only person's fresh Google sign-in opens locked files."""
+    if not confirms_with_google(user, context.settings):
+        raise ApiError(409, "use_password", USE_PASSWORD)
+    _per_user_limit(confirm_limits, user, TOO_MANY_CONFIRMS)
+    now = unix(context.clock())
+    flow = dataclasses.replace(_new_flow(provider, _safe_next(body.next), now, user), mode="locked_open")
+    url = oidc.authorize_url(
+        provider, context.settings, state=flow.state, nonce=flow.nonce, verifier=flow.verifier, max_age=0
+    )
+    response = JSONResponse({"url": url})
+    set_flow_cookie(response, flow, context.settings, now=now)
+    return response
+
+
 @router.get("/auth/oidc/{provider}/callback")
 def callback(
     provider: ProviderOn, request: Request, background: BackgroundTasks, context: Context
@@ -299,6 +341,8 @@ def callback(
             response = _connect(request, context, background, provider, flow, identity)
         elif flow.mode == "whatsapp":
             response = _whatsapp_proof(request, context, provider, flow, identity)
+        elif flow.mode == "locked_open":
+            response = _locked_open(request, context, provider, flow, identity)
         else:
             response = _sign_in(context, provider, flow, identity)
     except _Refused as refused:
@@ -320,7 +364,10 @@ def callback(
 
 def _back(flow: FlowClaims | None, code: str) -> RedirectResponse:
     """Back to the page the flow started from, with why: Ways to sign in for a connect, WhatsApp for
-    its proof."""
+    its proof (#603), the locked file's own page for a locked files' confirm (#605)."""
+    if flow is not None and flow.mode == "locked_open":
+        joined = "&" if "?" in flow.next_path else "?"
+        return RedirectResponse(f"{flow.next_path}{joined}open_error={code}", status_code=303)
     mode = None if flow is None else flow.mode
     back = {"connect": f"{WAYS}?error=", "whatsapp": f"{WHATSAPP_PAGE}?error="}.get(
         mode or "", f"{LOGIN}?oidc_error="
@@ -672,6 +719,40 @@ def _whatsapp_proof(
         raise _Refused("not_fresh")
     response = RedirectResponse(f"{WHATSAPP_PAGE}?proved={provider.name}", status_code=303)
     set_whatsapp_proof_cookie(response, user, context.settings, now=unix(context.clock()))
+    return response
+
+
+def _locked_open(
+    request: Request, context: AppContext, provider: Provider, flow: FlowClaims, identity: Identity
+) -> RedirectResponse:
+    """#605: Google proved again, freshly, that it is the person who started this, with their own
+    approved connection: the 10-minute check for locked files, for this browser session. Each
+    outcome is audited about the person."""
+    user = _flow_user(request, flow)
+    if not confirms_with_google(user, context.settings):  # changed since the start
+        raise _Refused("signed_out")
+    now = unix(context.clock())
+    session = session_claims(request, context.settings, now)
+    with context.db.system() as conn:
+        found = identities.lookup(conn, provider.name, identity.issuer, identity.subject)
+    mine = (user.customer_id, user.user_id)
+    theirs = found is not None and found.status == "approved" and (found.customer_id, found.user_id) == mine
+    signed_in_at = identity.auth_time
+    fresh = signed_in_at is not None and now - FRESH_SECONDS <= signed_in_at <= now + oidc.LEEWAY_SECONDS
+    reason = "not_yours" if not theirs else None if fresh else "not_fresh"
+    details: dict[str, audit.DetailValue] = {"via": provider.name}
+    if reason is not None:
+        details["reason"] = reason
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        action = "lock.open" if reason is None else "lock.open_failed"
+        _record(conn, user.customer_id, action, actor=user.user_id, target=user.user_id, details=details)
+    if reason is not None:
+        raise _Refused(reason)
+    if session is None:  # never: ``_flow_user`` read the user from this session
+        raise _Refused("signed_out")
+    response = RedirectResponse(flow.next_path, status_code=303)
+    until = now + LOCKED_OPEN_SECONDS
+    set_locked_open_cookie(response, user, session.session_id, context.settings, until=until)
     return response
 
 
