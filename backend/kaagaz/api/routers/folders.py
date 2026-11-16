@@ -164,6 +164,11 @@ def update_folder(
         if not path:
             raise folders_sql.FolderNotFound()
         _admin_for_departments(user, path[-1].kind, body.kind)
+        if body.kind not in (None, "department") and path[-1].kind == "department":
+            # PRD 7 lead decision 6 (#601): under the tree lock, before anything is written.
+            folders_sql._lock_tree(conn, user.customer_id)
+            if folders_sql.department_in_use(conn, user.customer_id, target):
+                raise folders_sql.DepartmentInUse()
         # The body names at least one change (checked above), so ``row`` is always set.
         # The move goes first: it takes the tree lock before anything is written.
         if "parent_id" in given:

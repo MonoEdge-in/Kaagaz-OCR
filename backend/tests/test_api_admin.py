@@ -40,6 +40,7 @@ ADMIN_USER_FIELDS = {
     "two_step_turned_off",
     "must_change_password",
     "can_delete_forever",
+    "management",  # Changed on purpose (PRD 7, #601): Management on the person
 }
 WRONG = "wrong password!!"
 
@@ -492,7 +493,8 @@ def test_the_user_list_shows_lock_2fa_and_password_status(db: Database) -> None:
     # Changed on purpose (#457 phase 1): the list says how each person signs in.
     # Changed on purpose (#507): and whether their role needs a Google account connected, or
     # (#507 review) its domain checked.
-    assert all(set(item) == ADMIN_USER_FIELDS | GOOGLE_TAG for item in items.values())
+    # Changed on purpose (PRD 7, #601): and the departments each is in.
+    assert all(set(item) == ADMIN_USER_FIELDS | GOOGLE_TAG | {"departments"} for item in items.values())
     # Changed on purpose (A2 review): the account's own lock lasts ACCOUNT_LOCK_MINUTES.
     assert items[member_id]["locked_until"] == (api.clock() + timedelta(minutes=60)).isoformat()
     assert items[member_id]["totp_enabled"] is False

@@ -241,7 +241,7 @@ _MAKE_LIVE = (
     " AND k.autofile_key = t.autofile_key) THEN NULL ELSE t.autofile_key END, t.department_only,"
     " t.private OR (t.id = :top AND :seal), t.department_id, t.private_folder_id"
     " FROM trashed_folders t WHERE t.customer_id = :c AND t.id = ANY(CAST(:ids AS uuid[]))"
-    " RETURNING id, parent_id, name, created_at, kind, sort_order"
+    " RETURNING id, parent_id, name, created_at, kind, sort_order, department_only, private"
 )
 # #594 (A): the restorer named on the folder their restore sealed, unless Management (who sees it).
 _NAME_RESTORER = (

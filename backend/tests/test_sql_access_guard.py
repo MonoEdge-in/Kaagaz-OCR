@@ -41,6 +41,14 @@ _WORDS = "word review and Ensemble routes: get_document (the view) first, in the
 _ENSEMBLE = "ensemble routes: get_document (the view) first"
 
 ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
+    # Changed on purpose (#601): the Access page's files given to a person, by their true names; the
+    # rows about a file given to several people; a department's kind change, refused while in use.
+    ("db/access.py", "_GIVEN_TO"): (ADMIN_NUMBERS, "GET /admin/users/{id}/access"),
+    ("db/audit.py", "_INSERT_ABOUT"): (WRITE_AFTER_CHECK, "a file given: its folder and family, by id"),
+    ("db/folders.py", "_IN_USE"): (
+        WRITE_AFTER_CHECK,
+        "PATCH /folders/{id}: _seen first, under the tree lock",
+    ),
     ("answering/ready.py", "_STAMP"): (
         EXISTENCE_ONLY,
         "Home's ready-answer and repeat key (#602, question 2): counts and times hashed, never shown;"

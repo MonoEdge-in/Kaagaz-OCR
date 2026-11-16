@@ -319,6 +319,25 @@ OWNER_RIGHTS = {
     "kaagaz_access": ("kaagaz_access_set", EMPTY_PATH),
     "kaagaz_shared_with_me": ("SETOF uuid", EMPTY_PATH),
     "kaagaz_lock_open_to_me": ("SETOF uuid", EMPTY_PATH),
+    # Changed on purpose (#601, 0090): the access API's, each checking its caller inside (an Admin;
+    # who sees a file or folder, also the Head of its department who can see it).
+    "kaagaz_audience": (
+        "TABLE(user_id uuid, management boolean, admin boolean, member boolean, head boolean, named boolean,"
+        " given boolean, held boolean, everyone boolean, may_open_locked boolean, sees boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_place_audience": ("TABLE(user_id uuid, sees boolean)", EMPTY_PATH),
+    "kaagaz_kept_from_me": (
+        "TABLE(id uuid, display_name text, detected_type text, uploader text,"
+        " created_at timestamp with time zone, version_no integer, locked boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_document": (
+        "TABLE(id uuid, family_id uuid, display_name text, in_trash boolean, locked boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_give_file": ("TABLE(user_id uuid, versions integer, added integer)", EMPTY_PATH),
+    "kaagaz_take_file": ("integer", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"
@@ -606,9 +625,10 @@ TRIGGER_RIGHTS = dict.fromkeys(
         "kaagaz_access_removed",
         "kaagaz_access_changed",
         "kaagaz_walls_set",  # 0089 (#594)
+        "kaagaz_user_switched",  # Changed on purpose (#601, 0090)
     ),
     ("trigger", EMPTY_PATH),
-)
+) | {"kaagaz_access_of": ("kaagaz_access_set", EMPTY_PATH)}  # 0090: internal, run by none (#601)
 # The only tables without customer_id: the customers themselves, alembic's own, the
 # platform operator's (0015), the workers' reader status (0022) and the model catalogue
 # (0023) and the platform AI defaults (0026), which belong to no customer.
@@ -983,6 +1003,28 @@ def test_only_the_listed_tables_have_no_customer_id(db: Database) -> None:
         )
         names = {str(row[0]) for row in every}
     assert names - set(_customer_tables(db)) == NO_CUSTOMER_ID
+
+
+# Changed on purpose (#601, 0090): the access and lock entries of an organisation, newest first.
+ACCESS_INDEX = (
+    "CREATE INDEX audit_log_access ON public.audit_log USING btree (customer_id, created_at DESC, id DESC)"
+    " WHERE ((action ~~ 'access.%'::text) OR (action ~~ 'lock.%'::text))"
+)
+
+
+def test_the_access_entries_have_their_own_index(db: Database) -> None:
+    with db.system() as conn:
+        found = (
+            conn.execute(
+                text(
+                    "SELECT indexdef FROM pg_indexes"
+                    " WHERE schemaname = 'public' AND indexname = 'audit_log_access'"
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert found == [ACCESS_INDEX]
 
 
 def test_only_the_listed_owner_rights_functions_exist_and_only_their_role_may_run_them(db: Database) -> None:

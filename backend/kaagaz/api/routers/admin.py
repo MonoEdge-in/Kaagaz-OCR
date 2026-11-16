@@ -109,6 +109,7 @@ from kaagaz.api.errors import ApiError
 from kaagaz.api.readers import usable
 from kaagaz.api.routers.documents import day_start
 from kaagaz.api.views import CURSOR, admin_user, failed_document, iso, timeline, without_money
+from kaagaz.db import access as access_sql
 from kaagaz.db import admin as admin_sql
 from kaagaz.db import audit, google_rules, identities, listing, reading_days, storage_limits
 from kaagaz.db import email_links as links_sql
@@ -262,9 +263,16 @@ def _people(
 
 @router.get("/admin/users")
 def list_users(user: AdminSession, context: Context) -> dict[str, Any]:
+    """Each person with their Management and departments (PRD 7, #601: ``[{id, name, head}]``)."""
     with context.db.user(user.customer_id, user.user_id) as conn:
         rows = users_sql.list_users(conn, user.customer_id)
-        return {"items": _people(conn, context, user.customer_id, rows)}
+        people = _people(conn, context, user.customer_id, rows)
+        member_of: dict[str, list[dict[str, Any]]] = {}
+        for row in access_sql.departments(conn, user.customer_id):
+            member_of.setdefault(str(row["user_id"]), []).append(
+                {"id": str(row["department_id"]), "name": row["name"], "head": bool(row["is_head"])}
+            )
+    return {"items": [{**person, "departments": member_of.get(person["id"], [])} for person in people]}
 
 
 @router.post("/admin/users", status_code=201)
@@ -326,6 +334,8 @@ def update_user(
         raise ApiError(400, "bad_request", "You can't disable yourself or remove your own admin role.")
     password_hash = None if body.password is None else hash_password(body.password)
     with context.db.user(user.customer_id, user.user_id) as conn:
+        if body.disabled is not None:  # PRD 7 (#601): users_switched raises the access version
+            folders_sql._lock_tree(conn, user.customer_id)
         promoted = body.role == "admin" and users_sql.role_of(conn, user.customer_id, target) not in (
             None,
             "admin",

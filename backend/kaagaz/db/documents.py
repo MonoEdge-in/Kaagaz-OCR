@@ -252,9 +252,12 @@ def _drop_refused_copy(conn: Connection, record: DocumentRecord) -> tuple[str, s
     """#554: delete this customer's refused copy of ``record``'s bytes (``REFUSED_ALONE``) under
     its family lock, so the new record can go in; its id and folder, or None. Its folder and
     file go in ``_after_refused_copy``, once the new row is in: the new one may be filed in that
-    folder, and a file deleted before an insert that fails could not come back."""
+    folder, and a file deleted before an insert that fails could not come back. The tree lock
+    comes before the family lock (#601), as for every write that can meet a folder made private."""
     params = {"c": record.customer_id, "h": record.sha256}
     old = conn.execute(text(_REFUSED_COPY), params).scalar()
+    if old is not None:
+        folders._lock_tree(conn, record.customer_id)
     if old is None or lock_family(conn, record.customer_id, str(old)) is None:
         return None  # none, or one that went while this upload waited for its lock
     dropped = conn.execute(text(_DROP_REFUSED), {**params, "old": old}).first()
@@ -740,11 +743,14 @@ def add_version(
 
     The family lock (``trash.lock_family``) comes first, so a second new version
     waits, then sees this one and takes the next number (the unique index
-    ``documents_family_version`` refuses a repeat anyway). 4 statements for a
-    new version (lock, family, insert, tags); O(v log D + t log N) time and
-    O(v + t) space for the family's v versions and t tags.
+    ``documents_family_version`` refuses a repeat anyway). The tree lock comes before it (PRD 7,
+    #601): the insert's trigger reads the folder FOR SHARE (0085), so a folder made private
+    meanwhile, which holds the folder and then needs the family, would otherwise deadlock with
+    it. 5 statements for a new version (two locks, family, insert, tags); O(v log D + t log N)
+    time and O(v + t) space for the family's v versions and t tags.
     """
     customer_id = record.customer_id
+    folders._lock_tree(conn, customer_id)
     family_id = lock_family(conn, customer_id, of_document_id)
     if family_id is None:
         return None
