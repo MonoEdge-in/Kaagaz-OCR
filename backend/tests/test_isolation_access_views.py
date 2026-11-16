@@ -351,6 +351,8 @@ VIEW_READERS = {
     # PR 8 (#602): Ask, reached from the API only (the SQL guard's worker test).
     "answering/clarify.py": {"_ANY_KEYS", "_CANDIDATES", "_NEAR", "_PICKED_PAGE"},
     "answering/exhaustive.py": {"_IN_SCOPE", "_PIECES"},
+    # Changed on purpose (#644): package K's focus profile and related documents, through the view.
+    "answering/focus.py": {"_MATCHES", "_PROFILE"},
     "answering/fixed_queries.py": {
         "_AVAILABLE_FIELDS", "_COUNT_DOCUMENTS", "_COUNT_INVOICES", "_EXTREME_VALUE", "_FIGURES",
         "_TOP_GROUP", "_VALUE_REFS",
@@ -379,6 +381,7 @@ VIEW_READERS = {
         "_TRASH_LIST", "_VERSIONS", "_WORD_LINES", "document_facts", "get_page", "list_pages",
         "list_values", "reviewer_fix_count", "sheet_cells",
     },
+    "db/locked_open.py": {"_DOCUMENT", "_PICTURE"},  # Changed on purpose (#605): a locked file's pictures
     "db/organization_words.py": {"approved", "decide", "visible"},
     "db/page_turns.py": {"_FOR_DOCUMENT"},  # Changed on purpose (#600): page turns saved for everyone
     "db/review.py": {"_COUNT", "_COUNT_FOR_DOCUMENT", "_ITEM", "_LOCK_VALUE", "_NEXT_CHUNK"},

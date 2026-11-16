@@ -636,7 +636,8 @@ describe("layout guards", () => {
     const head = between("<header className={styles.header}>", "</header>");
     const order = [
       "<Link href={back.href} className={styles.back}>",
-      "<h1 className={styles.title}>",
+      // Changed on purpose (PRD 7, PR 13): focused once a lock or unlock loads the file again.
+      "<h1 ref={headingRef} tabIndex={-1} className={styles.title}>",
       "<p className={styles.state}>",
       "<SummaryCard",
       "<SummaryBar",
