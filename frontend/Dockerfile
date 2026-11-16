@@ -1,3 +1,4 @@
+# path: frontend/Dockerfile
 # The frontend image: Next.js built once, then served with `next start` on 3000.
 # Built by CI (GitHub Actions) for amd64 and arm64 and pushed to ECR; servers only pull it.
 # One image serves staging and production: both build arguments below are the same for both.
@@ -20,11 +21,9 @@ RUN npm ci
 FROM node:24.22.2-slim AS build
 WORKDIR /app
 ARG BACKEND_URL=http://api:8000
-# Google Analytics on the public pages (#457 phase 4): Next.js writes a NEXT_PUBLIC_ value
-# into the build. Empty (the default, and the test server): no analytics.
-ARG GA_ID=
+# Google Analytics (#457 phase 4) is not baked in: the app reads GA_ID when it runs, from
+# the container's environment (docker-compose.yml), so one image serves every server.
 ENV BACKEND_URL=${BACKEND_URL} \
-  GA_ID=${GA_ID} \
   NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules node_modules
 COPY . .

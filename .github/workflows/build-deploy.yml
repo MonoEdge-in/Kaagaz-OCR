@@ -5,7 +5,7 @@
 # (deploy/stage or deploy/production) and the service. A production deploy waits for an
 # approval (required reviewers on the production GitHub Environment).
 #
-# Images (ap-south-1): kaagaz-backend:<commit> and kaagaz-frontend:<commit>. One
+# Images (ap-south-1): kaagaz/backend:<commit> and kaagaz/frontend:<commit>. One
 # image serves staging and production alike: each server's own .env configures it.
 # Each tag is a multi-arch index over <commit>-amd64 and <commit>-arm64, built on
 # native runners. A tag already in ECR is not built again, so a re-run, or
@@ -84,15 +84,14 @@ jobs:
         id: args
         env:
           SERVICE: ${{ matrix.service }}
-          GA_ID: ${{ vars.GA_ID }}
         run: |
           if [[ $SERVICE == backend ]]; then
             # Shown by /api/health and the operator's Release card (#246 O1).
             { echo 'list<<EOF'; echo "KAAGAZ_COMMIT=$GITHUB_SHA"; echo 'EOF'; } >>"$GITHUB_OUTPUT"
           else
-            # The same build arguments docker-compose.yml passes (BACKEND_URL, GA_ID). Next.js
-            # writes both into the build, so they are the same on every server.
-            { echo 'list<<EOF'; echo "BACKEND_URL=http://api:8000"; echo "GA_ID=$GA_ID"; echo 'EOF'; } >>"$GITHUB_OUTPUT"
+            # The same build argument docker-compose.yml passes. Next.js writes the /api
+            # argument: the frontend reads it at run time from each server's .env.
+            { echo 'list<<EOF'; echo "BACKEND_URL=http://api:8000"; echo 'EOF'; } >>"$GITHUB_OUTPUT"
           fi
 
       - uses: aws-actions/configure-aws-credentials@v4
@@ -107,7 +106,7 @@ jobs:
       - name: Already in ECR?
         id: check
         env:
-          REPO: kaagaz-${{ matrix.service }}
+          REPO: kaagaz/${{ matrix.service }}
           TAG: ${{ github.sha }}-${{ matrix.arch }}
         run: |
           if aws ecr describe-images --repository-name "$REPO" --image-ids imageTag="$TAG" >/dev/null 2>&1; then
@@ -121,7 +120,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       # The runner starts empty every time, so the build cache lives in ECR
-      # (kaagaz-buildcache), one entry per service and architecture.
+      # (kaagaz/buildcache), one entry per service and architecture.
       - if: steps.check.outputs.exists == 'false'
         uses: docker/build-push-action@v6
         with:
@@ -129,10 +128,10 @@ jobs:
           platforms: linux/${{ matrix.arch }}
           push: true
           provenance: false # one plain image per architecture; the merge job joins them
-          tags: ${{ steps.ecr.outputs.registry }}/kaagaz-${{ matrix.service }}:${{ github.sha }}-${{ matrix.arch }}
+          tags: ${{ steps.ecr.outputs.registry }}/kaagaz/${{ matrix.service }}:${{ github.sha }}-${{ matrix.arch }}
           build-args: ${{ steps.args.outputs.list }}
-          cache-from: type=registry,ref=${{ steps.ecr.outputs.registry }}/kaagaz-buildcache:${{ matrix.service }}-${{ matrix.arch }}
-          cache-to: type=registry,ref=${{ steps.ecr.outputs.registry }}/kaagaz-buildcache:${{ matrix.service }}-${{ matrix.arch }},mode=max,image-manifest=true,oci-mediatypes=true
+          cache-from: type=registry,ref=${{ steps.ecr.outputs.registry }}/kaagaz/buildcache:${{ matrix.service }}-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ steps.ecr.outputs.registry }}/kaagaz/buildcache:${{ matrix.service }}-${{ matrix.arch }},mode=max,image-manifest=true,oci-mediatypes=true
 
   merge:
     needs: [plan, build]
@@ -158,8 +157,8 @@ jobs:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
           SERVICE: ${{ matrix.service }}
         run: |
-          image="$REGISTRY/kaagaz-$SERVICE:$GITHUB_SHA"
-          if aws ecr describe-images --repository-name "kaagaz-$SERVICE" --image-ids imageTag="$GITHUB_SHA" >/dev/null 2>&1; then
+          image="$REGISTRY/kaagaz/$SERVICE:$GITHUB_SHA"
+          if aws ecr describe-images --repository-name "kaagaz/$SERVICE" --image-ids imageTag="$GITHUB_SHA" >/dev/null 2>&1; then
             echo "$image is already in ECR"
           else
             docker buildx imagetools create -t "$image" "$image-amd64" "$image-arm64"

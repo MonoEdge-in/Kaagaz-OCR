@@ -12,7 +12,7 @@
 #   2. Config: a deploy checks out <commit>'s compose files and Caddyfile and applies
 #      them to the infra services and Caddy. A rollback keeps the current ones, so
 #      every release must keep its compose files working for the release before it.
-#   3. Pull <registry>/kaagaz-<service>:<commit>.
+#   3. Pull <registry>/kaagaz/<service>:<commit>.
 #   4. Backend only, from the new image, before anything is switched:
 #      `kaagaz schema-check` (read-only, backend/kaagaz/cli.py). It stops on a
 #      database BEHIND the image (run the migration first) and, unless --rollback, on
@@ -149,9 +149,9 @@ prune_images() {
         kept=true
         continue
       fi
-      docker image rm "$KAAGAZ_REGISTRY/kaagaz-$svc:$image_tag" >/dev/null 2>&1 ||
-        log "could not remove kaagaz-$svc:$image_tag; carrying on"
-    done < <(docker image ls --format '{{.Tag}}' "$KAAGAZ_REGISTRY/kaagaz-$svc")
+      docker image rm "$KAAGAZ_REGISTRY/kaagaz/$svc:$image_tag" >/dev/null 2>&1 ||
+        log "could not remove kaagaz/$svc:$image_tag; carrying on"
+    done < <(docker image ls --format '{{.Tag}}' "$KAAGAZ_REGISTRY/kaagaz/$svc")
   done
   docker image prune -f >/dev/null || log "docker image prune failed; the deploy itself is done"
 }
@@ -180,7 +180,7 @@ fi
 reload_caddy
 
 # ---- 3. Pull the image ----
-image="$KAAGAZ_REGISTRY/kaagaz-$service:$tag"
+image="$KAAGAZ_REGISTRY/kaagaz/$service:$tag"
 aws ecr get-login-password --region "$AWS_REGION" |
   docker login --username AWS --password-stdin "$KAAGAZ_REGISTRY" >/dev/null ||
   die "ECR login (does the instance role allow ECR pulls?)"
