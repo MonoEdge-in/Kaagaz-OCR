@@ -529,6 +529,10 @@ def test_kept_apart_pairs_are_listed_for_whoever_sees_both_and_only_a_pair_made_
 # --- two sessions at once -------------------------------------------------------------------------
 
 
+class _Undone(Exception):
+    """Ends a transaction a test holds open without committing it."""
+
+
 def _in_thread(work: Callable[[], Any]) -> tuple[threading.Thread, list[Any]]:
     out: list[Any] = []
 
@@ -565,6 +569,26 @@ def test_two_links_of_the_same_files_at_once_make_one_and_refuse_the_other(db: D
     assert not thread.is_alive()
     assert isinstance(out[0], links_sql.Refused) and out[0].code == "already_versions"
     assert _owner(db, "SELECT count(*) FROM version_links WHERE customer_id = :c", {"c": org.c})[0][0] == 1
+
+
+def test_a_link_never_waits_on_a_group_decision_under_way(db: Database) -> None:
+    """V-B's NOWAIT: a decision holding x's group member, the link is refused at once ("changed",
+    try again), writing nothing; once the decision is gone, the link is made."""
+    org = _org(Api(db))
+    before = _everything(db, org)
+    with pytest.raises(_Undone), db.customer(org.c) as conn:  # a decision on x's member, never committed
+        conn.execute(
+            text("UPDATE version_group_members SET state = 'later' WHERE document_id = :d"),
+            {"d": org.files["x"]},
+        )
+        thread, out = _in_thread(lambda: _linking(db, org, ["x", "z"], "x"))
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+        assert isinstance(out[0], links_sql.Refused) and out[0].code == "changed"
+        raise _Undone
+    assert _everything(db, org) == before
+    status, reply = _link(org.people["management"], org, ["x", "z"], "x")
+    assert status == 200, reply
 
 
 def test_a_lock_waiting_on_a_link_locks_every_version_it_left(db: Database) -> None:

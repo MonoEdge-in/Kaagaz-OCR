@@ -32,9 +32,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import Connection, RowMapping, text
+from sqlalchemy.exc import OperationalError
 
 from kaagaz.db import access, audit
 from kaagaz.db.folders import Move, _lock_tree, place_of
+from kaagaz.db.sqlstate import sqlstate
 from kaagaz.db.trash import LIVE_FOLDERS, lock_live_family
 
 # A version's number while a link or its Undo renumbers (unique within a family, 0002).
@@ -101,6 +103,13 @@ _TAKE_SHARES = text(
     " AND user_id = ANY(CAST(:users AS uuid[]))"
 )
 _MOVE_STORIES = text("SELECT kaagaz_move_stories(:from, :to, CAST(:users AS uuid[]))")
+# The group members of these versions, taken in id order without waiting (V-B's NOWAIT, review on
+# #648): a decision on them under way never waits on the families held here, nor they on it.
+_MEMBERS_LOCK = text(
+    "SELECT document_id FROM version_group_members WHERE customer_id = :c"
+    " AND document_id = ANY(CAST(:ids AS uuid[])) ORDER BY document_id FOR NO KEY UPDATE NOWAIT"
+)
+LOCK_NOT_AVAILABLE = "55P03"
 _LINKED = text(
     "UPDATE version_group_members SET state = 'linked', decided_by = :by, decided_at = now()"
     " WHERE customer_id = :c AND document_id = ANY(CAST(:ids AS uuid[])) AND state <> 'linked'"
@@ -240,6 +249,17 @@ def prepare(
     )
 
 
+def _lock_members(conn: Connection, customer_id: str, versions: Sequence[str]) -> None:
+    """``_MEMBERS_LOCK``; Refused("changed") when a decision holds one (nothing is written: the
+    caller's transaction rolls back)."""
+    try:
+        conn.execute(_MEMBERS_LOCK, {"c": customer_id, "ids": list(versions)})
+    except OperationalError as error:
+        if sqlstate(error) != LOCK_NOT_AVAILABLE:
+            raise
+        raise Refused("changed") from None
+
+
 def _snapshot(row: RowMapping) -> dict[str, Any]:
     member = row["member"]
     return {
@@ -291,6 +311,7 @@ def apply(conn: Connection, customer_id: str, plan: Plan, *, by: str) -> str:
     conn.execute(_CURRENT, {"c": c, "ids": [plan.current]})
     conn.execute(_DROP_TAGS, {"c": c, "ids": joined})
     conn.execute(_COPY_TAGS, {"c": c, "ids": joined, "from": plan.current})
+    _lock_members(conn, c, every)
     conn.execute(_LINKED, {"c": c, "ids": every, "by": by})
     link = str(
         conn.execute(
@@ -401,6 +422,7 @@ def apply_undo(conn: Connection, customer_id: str, plan: UndoPlan, *, by: str) -
         for id_ in plan.order
         if (m := back[id_]["member"]) is not None
     ]
+    _lock_members(conn, c, plan.order)
     conn.execute(_MEMBERS_BACK, {"c": c, "members": json.dumps(members)})
     conn.execute(_UNDONE, {"c": c, "l": plan.link, "by": by})
     for version in plan.order:
