@@ -134,6 +134,7 @@ from kaagaz.api.auth import (
     User,
     UserAllowGoogleLink,
     UserAllowPasswordChange,
+    clear_locked_open_cookie,
     clear_session_cookie,
     clear_whatsapp_proof_cookie,
     current_user_allow_password_change,
@@ -478,6 +479,7 @@ def logout(request: Request, user: UserAllowPasswordChange, context: Context) ->
     response = Response(status_code=204)
     clear_session_cookie(response, context.settings)
     clear_whatsapp_proof_cookie(response, context.settings)  # #603
+    clear_locked_open_cookie(response, context.settings)  # PRD 7 decision 6: it ends at sign-out
     return response
 
 
@@ -489,6 +491,7 @@ def logout_everywhere(user: UserAllowGoogleLink, context: Context) -> Response: 
     response = Response(status_code=204)
     clear_session_cookie(response, context.settings)
     clear_whatsapp_proof_cookie(response, context.settings)  # #603
+    clear_locked_open_cookie(response, context.settings)
     return response
 
 
@@ -704,17 +707,22 @@ def prove_password(context: AppContext, user: CurrentUser, password: str) -> Non
     lock is on, 400 ``wrong_password``; then the count starts again."""
     attempt = _begin(context, user.customer_id, user.user_id, context.clock(), signed_in=True)
     if attempt is None:
-        minutes = context.settings.login_lock_minutes
-        raise ApiError(
-            400,
-            "password_locked",
-            f"Too many wrong passwords were tried on this account. Try again in {minutes} minutes,"
-            " or ask another admin to unlock it.",
-        )
+        raise password_locked(context)
     if not verify_password(password, attempt.password_hash):
         _failed(context, attempt, "wrong_password", signed_in=True)
         raise ApiError(400, "wrong_password", "Your password is not right.")
     _succeeded(context, attempt, signed_in=True)
+
+
+def password_locked(context: AppContext) -> ApiError:
+    """``prove_password``'s 400 while the person's sign-in lock is on."""
+    minutes = context.settings.login_lock_minutes
+    return ApiError(
+        400,
+        "password_locked",
+        f"Too many wrong passwords were tried on this account. Try again in {minutes} minutes,"
+        " or ask another admin to unlock it.",
+    )
 
 
 def _prove(context: AppContext, user: CurrentUser, password: str, code: str | None) -> None:
