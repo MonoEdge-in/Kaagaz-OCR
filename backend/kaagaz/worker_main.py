@@ -97,7 +97,6 @@ adding a setting; back-off with jitter needs Vrushit's queue settings.
 
 import contextlib
 import functools
-from collections import Counter
 import json
 import logging
 import os
@@ -108,6 +107,7 @@ import sys
 import threading
 import time
 import traceback
+from collections import Counter
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from types import FrameType
@@ -752,7 +752,7 @@ class FindVersions:
             try:
                 with self._db.customer(customer_id) as conn:
                     version_finder.look_at(conn, customer_id, document)
-            except Exception as error:  # noqa: BLE001 - one file never stalls the finder (class notes)
+            except Exception as error:  # one file never stalls the finder (class notes)
                 if isinstance(error, BackendUnavailable) or database_unreachable(error):
                     raise
                 if not self._passed_over(customer_id, document, error):

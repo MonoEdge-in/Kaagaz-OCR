@@ -47,13 +47,12 @@ GROUPS = {
              [("sales", "top", 0.9), ("top", "loose", 0.85), ("sales", "gone", 0.99)]),
     "walled": (["fin", "sal", "given", "trashed"],
                [("fin", "sal", 0.95), ("sal", "given", 0.9), ("fin", "trashed", 0.99)]),
-    "chain": (["a", "c", "b", "e", "f"], [("a", "c", 0.9), ("c", "b", 0.9), ("b", "e", 0.9), ("e", "f", 0.9)]),
+    "chain": (["a", "c", "b", "e", "f"],
+              [("a", "c", 0.9), ("c", "b", 0.9), ("b", "e", 0.9), ("e", "f", 0.9)]),
     "locked": (["locked", "x", "y"], [("locked", "x", 0.9), ("x", "y", 0.9), ("locked", "y", 0.9)]),
     "duo": (["p", "q"], [("p", "q", 0.9)]),
 }  # fmt: skip
-EXTRA = {"gone": "sales", "a": "sales", "b": "finance", "c": "sales", "e": "sales", "f": "sales"} | {
-    name: "sales" for name in ("x", "y", "p", "q")
-}
+EXTRA = dict.fromkeys(("gone", "a", "c", "e", "f", "x", "y", "p", "q"), "sales") | {"b": "finance"}
 
 
 def _org(api: Api) -> tuple[Org, dict[str, str]]:
