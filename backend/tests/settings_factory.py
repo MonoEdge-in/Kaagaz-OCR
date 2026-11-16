@@ -17,6 +17,7 @@ _BASE: dict[str, Any] = {
     "ops_database_url": TEST_DATABASE_URL or "postgresql://unused@localhost/unused",
     "db_app_role": "kaagaz_app",
     "db_worker_role": "kaagaz_app",  # as on a server until its .env names the workers' login (#587)
+    "db_login_check": "warn",  # PRD 7 (#606): the laptop's and CI's
     "storage_endpoint_url": "http://localhost:8333",
     "storage_region": "us-east-1",
     "storage_bucket": "kaagaz-test",

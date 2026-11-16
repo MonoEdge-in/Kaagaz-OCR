@@ -215,7 +215,7 @@ docs/runbooks/prd5-cpu-server-switch.md.
 
    Write the numbers into docs/architecture.md, Decisions (the t3.xlarge
    row). A real document's steps, upload to Ready and the indexing after it,
-   for the last 5 documents read: `dc exec -T worker python -m kaagaz.cli scan-times --last 5`.
+   for the last 5 documents read: `dc run --rm migrate python -m kaagaz.cli scan-times --last 5` (PRD 7, #606: the CLI runs as `kaagaz_worker`, so it runs in migrate, `dc run --rm migrate python -m kaagaz.cli <command>`, until JOBS_DATABASE_URL is set, then in worker; in api it is refused).
 
 **RapidOCR, the fallback.** If Gemini misbehaves, set `OCR_ENGINE=rapidocr` in
 `.env` and restart both: `dc up -d --no-deps api worker`. Change it back the same way.
@@ -448,7 +448,9 @@ names `kaagaz_jobs`. Test server first, then production:
 3. `dc up -d --no-deps worker`. Check: the `pg_stat_activity` query of step 3 above shows
    `kaagaz_jobs`; `dc logs --tail 50 worker` shows no `permission denied`; an upload reaches Ready.
 4. From then on the CLI's work commands run in worker, as the workers do:
-   `dc run --rm worker python -m kaagaz.cli <command>` (in api they run as `kaagaz_app`).
+   `dc run --rm worker python -m kaagaz.cli <command>`. Until this step, `dc run --rm migrate python -m
+   kaagaz.cli <command>`; in api they are refused (PRD 7, #606: the CLI runs as `kaagaz_worker`,
+   which `kaagaz_api` can't switch into).
 5. The connections, PROVISIONAL: `kaagaz_jobs` may hold 65 (3 workers and one CLI run, 15 each,
    and 5 to spare). Before `WORKER_REPLICAS` goes above 3,
    `ALTER ROLE kaagaz_jobs CONNECTION LIMIT <15 x (replicas + 1) + 5>`. Only once EVERY server
@@ -460,6 +462,25 @@ names `kaagaz_jobs`. Test server first, then production:
 the `JOBS_DATABASE_URL` line from `.env` and `dc up -d --no-deps worker`; the workers are back on
 `kaagaz_api`. Do this BEFORE any `alembic downgrade 0082`: the downgrade takes every right from
 `kaagaz_worker`, and workers still on it would fail.
+
+**The per-person database rule** (PRD 7 PR 9a, #606, migration 0091, Vrushit's approval). 0091
+ships it off: nothing changes until it is turned on, one organisation at a time. Never before all
+of: #577 (the test server has its own database), both 0091 and 0092 (PR 9b) deployed, and the
+steps above done (the API on `kaagaz_api`, the workers on `kaagaz_jobs`). Test server first:
+
+1. In `.env`: `DB_LOGIN_CHECK=refuse`, then `dc up -d --no-deps api worker`. The API and each
+   worker now refuse to start on a login the rule can't hold (the owner, a superuser, or one that
+   can switch into `kaagaz_worker` or `kaagaz_operator`); `dc logs --tail 50 api worker` says which.
+2. `dc run --rm migrate python -m kaagaz.cli person-rule status` (the owner's login: only it may
+   touch the switch). It says `off`.
+3. `... person-rule on --customer <the organisation's id>`. It refuses while any worker report of
+   the last 10 minutes came from another role than `kaagaz_worker`, or `kaagaz_api` can switch
+   into it. It logs and sends an ops alert. Then the red team (PRD 7 section 11).
+4. Every organisation: `... person-rule on --all`. Production only after phase 8, the same way.
+
+**The way back, at once:** `... person-rule off --all` (or `--customer <id>`): no deploy, no
+migration, never refused; the views still keep each person to what they may see. Turn it off
+before rolling the code back past PR 9a: older code reads hidden rows as gone.
 
 **The closed lines and the storage keys (#477), by hand at a quiet time.** The
 release that adds the `data`, `scan` and `edge` networks moves postgres and

@@ -8,13 +8,14 @@ from contextlib import contextmanager
 from typing import cast
 
 import pytest
-from sqlalchemy import Connection, create_engine, text
+from sqlalchemy import Connection, create_engine
 from sqlalchemy.exc import OperationalError
 
 from kaagaz.adapters.email import MemoryMailer
 from kaagaz.api import app as app_module
 from kaagaz.api.app import create_app
 from kaagaz.api.routers.health import running_commit
+from kaagaz.db import person_rule
 from kaagaz.db.engine import Database, make_engine, normalise_url
 from kaagaz.ingestion.errors import BackendUnavailable
 from tests.db_support import APP_ROLE, BACKEND, database_url
@@ -115,15 +116,15 @@ def test_the_image_is_given_the_deployers_commit_last_so_no_layer_above_is_rebui
 def test_unsafe_settings_are_found_by_their_codes(db: Database) -> None:
     """https with cookies not secure, the test scanner, and a superuser login (the tests' own
     login is the database owner's, a superuser in the Postgres image, as on a laptop)."""
+    # Changed on purpose (#606): what the owner's login could do past the database rule, each a code.
     with db.engine.connect() as conn:
-        superuser = bool(
-            conn.execute(text("SELECT rolsuper FROM pg_roles WHERE rolname = session_user")).scalar()
-        )
+        login = person_rule.login_risks(conn)
+    assert "owner_login" in login and "worker_reachable" in login
     unsafe = make_settings(app_url="https://kaagaz.example.com", cookie_secure=False, scanner="eicar_dev")
-    expected = ["cookie_not_secure", "eicar_scanner"] + (["superuser_login"] if superuser else [])
+    expected = ["cookie_not_secure", "eicar_scanner", *login]
     assert app_module.unsafe_config(unsafe, db) == expected
     safe = make_settings(app_url="https://kaagaz.example.com", cookie_secure=True, scanner="clamav")
-    assert app_module.unsafe_config(safe, db) == (["superuser_login"] if superuser else [])
+    assert app_module.unsafe_config(safe, db) == login
     laptop = make_settings(app_url="http://localhost:3000", cookie_secure=False, scanner="clamav")
     assert "cookie_not_secure" not in app_module.unsafe_config(laptop, db)
 

@@ -106,6 +106,7 @@ def test_b_never_gets_the_pieces_of_a_by_sound(db: Database) -> None:
         assert by_sound(db, b, question) == [], question
         assert run(db, b, question) == [], question
     words = {"q": "zzz", "k": "zzz", "g": "", "sk": hybrid.sound_query("bhogwatdar"), "n": 50}
+    words |= {"gc": "", "gk": "", "docs": None, "cap": hybrid.CANDIDATE_CAP}  # Changed on purpose (#617)
     for transaction, named in ((b, a), (a, b)):
         with db.customer(transaction) as conn:
             assert conn.execute(hybrid._WORD, words | {"c": named} | EVERYTHING.params()).all() == []

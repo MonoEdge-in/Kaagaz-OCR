@@ -57,12 +57,14 @@ TO_DOCUMENTS = {
     # Changed on purpose (#590, 0084): a file given and a lock grant go with their version.
     "document_shares",
     "lock_grants",
+    # Changed on purpose (#600, 0088): a page turn goes with its version.
+    "page_rotations",
 }
 # Changed on purpose (#239, 27 Oct 2026): 0023's spend ledger keeps its rows when a document
 # goes: SET NULL (document_id), never a cascade.
 # Changed on purpose (#590, 0084): and a remembered correction keeps its row, losing only the
 # document it was made on (SET NULL (source_document_id)), as one made before PRD 7.
-# Changed on purpose (#603, 0088): a WhatsApp message keeps its row (its id stops a replay for 30
+# Changed on purpose (#603, 0097): a WhatsApp message keeps its row (its id stops a replay for 30
 # days); the file it saved is SET NULL.
 KEEPS_ITS_ROWS = {"model_usage", "learned_corrections", "whatsapp_messages"}
 

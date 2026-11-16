@@ -7,6 +7,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { PlaceIcon } from "@/components/access/PlaceBadge";
 import type { FolderNode } from "@/components/documents/folderTree";
 import { libraryHref } from "@/components/documents/libraryQuery";
 import type { LibraryState } from "@/components/documents/libraryQuery";
@@ -57,7 +58,9 @@ export function FolderTiles({
               className={styles.tile}
             >
               <Icon name="documents" className={styles.tileIcon} />
-              <span className={styles.tileName}>{node.folder.name}</span>
+              <span className={styles.tileName}>
+                {node.folder.name} <PlaceIcon folder={node.folder} />
+              </span>
               <span className={`${styles.tileCount} tabular`}>{tileCount(shown[node.folder.id])}</span>
             </Link>
           </li>

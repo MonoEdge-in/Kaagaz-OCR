@@ -36,8 +36,16 @@ _STATUS_MESSAGES = {
     "clean": "Reading the document…",
     "ready": "Ready. You can ask about it.",
     "needs_reader": "Stored safely. This kind of file can't be read yet.",
+    "locked": "Locked. It can only be viewed.",  # PRD 7 (#605)
 }
 _IN_PROGRESS = ("received", "clean")
+# PRD 7 (#605): a locked version whose page pictures were not made (storage down, a stuck job, its
+# tries used up): Retry only prepares it again, never reads it. ``cannot_draw`` (kaagaz.pipeline
+# CANNOT_DRAW): a page of it can't be drawn at all.
+LOCKED_NOT_PREPARED = "Locked. Its page pictures couldn't be made yet. Retry to try again."
+LOCKED_CANNOT_DRAW = (
+    "Locked. Its pages can't be shown as pictures, so it can't be viewed. Unlock it to read it."
+)
 # All formats (#522): a file that can never be read as it is, in words that say what to do.
 FILE_FAILURES = {
     "corrupt_file": "This file is damaged, so it can't be opened. Save it again and upload that copy.",
@@ -128,6 +136,7 @@ def status_message(
     batch_ahead: int = 0,
     pages_unreadable: int = 0,
     waiting_code: str | None = None,
+    locked: bool = False,
 ) -> str:
     """``max_pages`` is the MAX_PAGES setting, named when a file had too many pages
     (a PDF's pages, or a TIFF's frames: ``detected_type`` says which to call it),
@@ -142,7 +151,10 @@ def status_message(
     how many are ahead. A ready document with ``pages_unreadable`` pages still flagged
     says so (council 16 Oct 2026: such a document is ready, not failed, since e01b937d).
     ``waiting_code`` is the last run's code while it waits: a key problem is READER_STOPPED
-    (issue 407), a reading pause (#478) PAUSED_FOR_TODAY or PAUSED_BUDGET."""
+    (issue 407), a reading pause (#478) PAUSED_FOR_TODAY or PAUSED_BUDGET. ``locked`` (PRD 7,
+    #605): a locked version that failed is never "read it again": its own words."""
+    if status == "failed" and locked:
+        return LOCKED_CANNOT_DRAW if failure_code == "cannot_draw" else LOCKED_NOT_PREPARED
     if status == "rejected":
         return CUSTOMER_MESSAGES.get(failure_code or "", "This file was not processed.")
     if status == "failed" and failure_code == "too_many_pages":
@@ -328,9 +340,11 @@ def document_summary(
             batch_ahead=int(row["batch_ahead"]),
             pages_unreadable=int(row["pages_unreadable"]),
             waiting_code=row["waiting_code"],
+            locked=bool(row["locked"]),
         ),
         "progress": in_progress(row["status"], row["progress"]),
         "stuck": bool(row["stuck"]),  # issue 407: may be read again (db/documents.py STUCK)
+        "locked": bool(row["locked"]),  # PRD 7 (#605): opened only as page pictures, never read
         "time_left": document_time_left(row, now=now),
         "understanding": understanding(row, now=now),  # ready, its card and map still coming
         "doc_type": row["doc_type"],  # PRD 2 D3: from the document card; null without one
@@ -343,6 +357,8 @@ def document_summary(
         "created_at": iso(row["created_at"]),
         "uploaded_by_name": row["uploaded_by_name"],
         "folder_id": None if row["folder_id"] is None else str(row["folder_id"]),
+        # PRD 7 (#601): in a folder the person can't see (folder_id null): "Shared with you".
+        "shared_with_you": bool(row["in_a_folder"]) and row["folder_id"] is None,
         "tags": [tag(each) for each in tags],
         "deleted_at": None if row["deleted_at"] is None else iso(row["deleted_at"]),
         "version_no": int(row["version_no"]),
@@ -381,7 +397,8 @@ def unpack_view(unpack: Unpack | None) -> dict[str, Any] | None:
     return {
         "folder_upload_id": unpack.upload_id,
         "folder_id": unpack.root_folder_id,
-        "folder_name": unpack.root_name,
+        # PRD 7 (#601): no name for a folder gone or one the person can't see.
+        "folder_name": None if unpack.root_folder_id is None else unpack.root_name,
         "files": unpack.file_count,
         "unpacked": unpack.stored,
         "already_in": unpack.duplicate,
@@ -403,7 +420,7 @@ def zip_message(status: str, failure_code: str | None, unpack: Unpack | None) ->
         if status == "needs_reader":
             return "Kept as a file, not unpacked: Kaagaz unpacks a zip only when it is uploaded on its own."
         return ZIP_FAILURES.get(failure_code or "") if status == "failed" else None
-    folder = f'folder "{unpack.root_name}"'
+    folder = "a folder" if unpack.root_folder_id is None else f'folder "{unpack.root_name}"'
     if status in _IN_PROGRESS:
         done = unpack.stored + unpack.duplicate + unpack.failed
         return f"Unpacking: {done} of {_files(unpack.file_count)} into {folder}…"
@@ -450,7 +467,8 @@ def batch_view(
     * waiting: in progress with no step yet (queued) or waiting for the reader (Q6);
     * reading: in progress with a step (scanning, preparing, reading, understanding);
     * attention: ready, with a page or a value that needs attention (U2's rule);
-    * ready: ready with none.
+    * ready: ready with none;
+    * locked: locked and pictured (PRD 7, #605): finished, never read.
 
     The bar is pages read over total pages: a file whose page count is not known yet
     counts as 1 page; a finished file (ready or failed) is read whole; one past reading
@@ -459,7 +477,15 @@ def batch_view(
     over ``max_active`` (MAX_ACTIVE_PER_CUSTOMER, Q5); null while no file has an estimate.
     ponytail: one rate for the whole drop; per-file estimates if drops mix scans and text.
     Only this user's files, so no other customer's load reaches it. O(files)."""
-    counts = {"total": len(rows), "ready": 0, "reading": 0, "waiting": 0, "attention": 0, "failed": 0}
+    counts = {
+        "total": len(rows),
+        "ready": 0,
+        "reading": 0,
+        "waiting": 0,
+        "attention": 0,
+        "failed": 0,
+        "locked": 0,
+    }
     pages_read = pages_total = pages_waiting = 0
     estimates = []
     for row in rows:
@@ -473,6 +499,8 @@ def batch_view(
                 int(row["pages_unreadable"]) + int(row["pages_uncertain"]) + int(row["values_to_review"])
             )
             counts["attention" if flagged else "ready"] += 1
+        elif status == "locked":
+            counts["locked"] += 1  # finished: read whole
         elif progress is None or progress.get("step") == _WAITING_STEP:
             counts["waiting"] += 1
             done = 0
@@ -565,6 +593,8 @@ def folder(row: FolderRow) -> dict[str, Any]:
         "created_at": iso(row.created_at),
         "kind": row.kind,  # File management F1
         "sort_order": row.sort_order,
+        "department_only": row.department_only,  # PRD 7 (#601): the icons
+        "private": row.private,
     }
 
 
@@ -592,8 +622,11 @@ def seen_items(conn: Connection, customer_id: str, rows: Sequence[ItemRow]) -> l
     (a copy of a hidden file) names no document, only that it is hidden. One statement."""
     ids = [row.document_id for row in rows if row.document_id is not None]
     seen = listing.documents_seen(conn, customer_id, ids) if ids else set()
+    # #601: a file the person sees in a folder they don't (given to them) names no folder.
+    places = [row.document_folder_id for row in rows if row.document_id in seen and row.document_folder_id]
+    places_seen = listing.folders_seen(conn, customer_id, places) if places else set()
     return [
-        row
+        (row if row.document_folder_id in places_seen else replace(row, document_folder_id=None))
         if row.document_id is None or row.document_id in seen
         else replace(
             row,
@@ -913,6 +946,7 @@ def review_item(row: RowMapping) -> dict[str, Any]:
         "detected_type": row["detected_type"],
         "page": page_fields(row),
         "check_reasons": list(row["check_reasons"]),
+        "page_turn": int(row["page_turn"]),  # PRD 7 section 14 (#600): saved for everyone, 0 none
     }
 
 
@@ -968,6 +1002,12 @@ NO_ACCESS_LINE = (
     "You no longer have access to a document behind this answer. Ask again to get an answer from the"
     " files you can see."
 )
+# PRD 7 (#605, p2:80): a saved answer that used a document now locked, shown to a person who may
+# open it, is this one line, never its words (one who may not gets NO_ACCESS_LINE, as for any
+# hidden source: the view leaves the document out of ``document_states``).
+LOCKED_LINE = "This answer used a document that is now locked. Open it directly to read it."
+# p2:79: the fixed line for a person who may open a locked file, added when shown, never saved.
+LOCKED_NOTE = "Ask doesn't read locked files. To check one, open it directly."
 
 
 def cited_document_ids(answer: Mapping[str, Any] | None) -> list[str]:
@@ -1026,6 +1066,22 @@ def no_access_answer() -> dict[str, Any]:
     }
 
 
+def locked_answer() -> dict[str, Any]:
+    """PRD 7 (#605): a saved answer that used a document now locked, replaced whole: status
+    ``no_access``, reason ``locked``, LOCKED_LINE, and nothing else of it."""
+    return {
+        "status": NO_ACCESS,
+        "reason": "locked",
+        "label": None,
+        "sentences": [{"text": LOCKED_LINE, "citations": []}],
+        "citations": [],
+        "closest_documents": [],
+        "route": "search",
+        "normalized_question": "",
+        "model_used": False,
+    }
+
+
 def shown_message(
     row: RowMapping,
     states: Mapping[str, str],
@@ -1040,7 +1096,8 @@ def shown_message(
     if shown["answer"]:
         shown["answer"] = answer_with_source_states(shown["answer"], states, scope)
         if shown["answer"]["status"] == NO_ACCESS:
-            shown["text"], shown["pin"] = NO_ACCESS_LINE, None
+            locked = shown["answer"].get("reason") == "locked"  # PRD 7 (#605)
+            shown["text"], shown["pin"] = LOCKED_LINE if locked else NO_ACCESS_LINE, None
     return shown
 
 
@@ -1054,6 +1111,8 @@ def answer_with_source_states(
       it, or it was deleted forever; ``no_access``, with its question's ``scope``) is replaced
       whole (``no_access_answer``). Changed on purpose: a document deleted forever was a
       sentence's GONE_SENTENCE before. So every document it names is in ``states``.
+    * PRD 7 (#605): one naming a document the person may see but that is now ``locked`` is
+      replaced whole too (``locked_answer``: LOCKED_LINE).
     * Each citation gets ``source_state``. One from a document in Trash loses its snippet and
       its highlight regions: Trash means deleted, so its words and its place on the page must
       not show any more.
@@ -1068,6 +1127,8 @@ def answer_with_source_states(
     """
     if no_access(answer, states, scope):
         return no_access_answer()
+    if any(states.get(document) == "locked" for document in cited_document_ids(answer)):
+        return locked_answer()
 
     def kept(document: Any) -> bool:
         return states.get(str(document)) not in (None, "in_trash")
@@ -1146,6 +1207,7 @@ def me_json(
     email_on: bool,
     providers: Sequence[str],
     recent_connections: Sequence[dict[str, str]] = (),
+    access: tuple[bool, Sequence[str], bool, bool],
     whatsapp: bool = False,
 ) -> dict[str, Any]:
     """``Me``: who is signed in, their customer, and the session's scope ("app" for a
@@ -1158,8 +1220,18 @@ def me_json(
     sign in" only while one is. ``google_link_required`` (#507): the limited session, whose
     password lets the user only connect Google; ``google_unchecked`` (#507 review): in it, their
     connected Google account is from before its domain was checked, so they sign in with Google
-    once instead. ``whatsapp`` (#603): only while WHATSAPP_ENABLED is on, so Account shows WhatsApp."""
+    once instead. ``access`` (PRD 7, #601): the person's Management and the departments they head,
+    so the screens show a Head's menus, and whether they are in a live department (``in_department``,
+    PR 10c: "Ask your admin for access" when not), and whether the organisation has ever kept
+    something to some people (``walled``, PR 11c: that message only once it has). ``whatsapp``
+    (#603): only while WHATSAPP_ENABLED is on, so Account shows WhatsApp."""
     return {
+        "access": {
+            "management": access[0],
+            "heads": list(access[1]),
+            "in_department": access[2],
+            "walled": access[3],
+        },
         "user": {
             "id": user.user_id,
             "email": user.email,
@@ -1216,10 +1288,12 @@ def admin_user(
         "two_step_turned_off": row["totp_off_at"] is not None and not row["two_step_required"],
         "must_change_password": bool(row["must_change_password"]),
         "can_delete_forever": row["delete_forever_allowed_at"] is not None and row["role"] != "admin",
+        "management": bool(row["management"]),  # PRD 7 (#601)
     }
 
 
 DELETED_DOCUMENT = "a deleted document"
+HIDDEN_FILE = "a file you can't see"  # PRD 7 (#601): the access activity's mask
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _MICROSECOND = timedelta(microseconds=1)
 CURSOR = r"^\d{1,16}-\d{1,18}$"  # the last row's created_at in microseconds, then its id
@@ -1234,9 +1308,13 @@ def timeline(
     cursor: str | None = None,
     offset: int = 0,
     full: bool = False,
+    unseen_masked: bool = False,
 ) -> dict[str, Any]:
     """A5's ``{items, next_cursor}``: one page of ``audit.entries`` with its names (three
-    queries); ``next_cursor`` is null on the last page. ``cursor`` matches CURSOR."""
+    queries); ``next_cursor`` is null on the last page. ``cursor`` matches CURSOR.
+    ``unseen_masked`` (PRD 7, #601: a non-Admin reading entries the view doesn't filter, the
+    access activity): an entry about a file the person can't see names no file, version, family
+    or folder, and keeps only ``details.self`` (one more query)."""
     after = None
     if cursor is not None:
         moment, row_id = cursor.split("-")
@@ -1245,8 +1323,24 @@ def timeline(
     page = rows[:limit]
     found = audit.names(conn, customer_id, page)
     last = page[-1] if len(rows) > limit else None
+    items = [audit_entry(row, found, full=full) for row in page]
+    if unseen_masked:
+        files = {
+            e["document"]["id"] for e in items if e["document"] is not None and not e["document"]["deleted"]
+        }
+        seen = listing.documents_seen(conn, customer_id, sorted(files)) if files else set()
+        for entry in items:
+            if entry["document"] is not None and entry["document"]["id"] in files - seen:
+                details = entry["details"] if isinstance(entry["details"], dict) else {}
+                entry.update(
+                    target_id=None,
+                    family_id=None,
+                    folder=None,
+                    document={"id": None, "name": HIDDEN_FILE, "version_no": None, "deleted": False},
+                    details={key: details[key] for key in ("self",) if key in details},
+                )
     return {
-        "items": [audit_entry(row, found, full=full) for row in page],
+        "items": items,
         "next_cursor": None
         if last is None
         else f"{(last['created_at'] - _EPOCH) // _MICROSECOND}-{int(last['id'])}",
@@ -1258,7 +1352,8 @@ def audit_entry(row: RowMapping, names: audit.Names = audit.NO_NAMES, *, full: b
     DELETED_DOCUMENT. ``full`` (the admin's log): every detail but money; otherwise only
     ``audit.SHOWN_DETAILS``. The ids in details come with their names: ``folder_path``,
     ``parent_path``, and ``from_name`` and ``to_name`` for an owner change. An account event
-    (a ``user`` target) names the person it is about: ``subject_name`` (issue 375)."""
+    (a ``user`` target) names the person it is about: ``subject_name`` (issue 375); PRD 7 (#601):
+    so does an entry about a person (``subject_id``, an access change)."""
     raw = row["details"] if isinstance(row["details"], dict) else {}
     # Older org.models_set rows hold the operator's budget_usd: never shown to the org.
     if full:
@@ -1272,7 +1367,8 @@ def audit_entry(row: RowMapping, names: audit.Names = audit.NO_NAMES, *, full: b
         if row["action"] == "document.owner_change":
             for key in ("from", "to"):
                 details[f"{key}_name"] = names.users.get(str(details.get(key)))
-    actor, folder_id = row["actor_user_id"], row["folder_id"]
+    actor, folder_id, about = row["actor_user_id"], row["folder_id"], row.get("subject_user_id")
+    subject = row["target_id"] if row["target_type"] == "user" else about
     document = None
     if row["target_type"] == "document":
         exists = bool(row["document_exists"])
@@ -1289,7 +1385,8 @@ def audit_entry(row: RowMapping, names: audit.Names = audit.NO_NAMES, *, full: b
         "actor_name": None if actor is None else names.users.get(str(actor)),
         "target_type": row["target_type"],
         "target_id": row["target_id"],
-        **({"subject_name": names.users.get(str(row["target_id"]))} if row["target_type"] == "user" else {}),
+        "subject_id": None if about is None else str(about),  # PRD 7 (#601): whom it is about
+        **({"subject_name": names.users.get(str(subject))} if subject is not None else {}),
         "family_id": None if row["family_id"] is None else str(row["family_id"]),
         "document": document,
         "folder": None

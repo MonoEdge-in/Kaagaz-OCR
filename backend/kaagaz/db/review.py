@@ -40,12 +40,15 @@ _ITEM = (
     " p.width, p.height, p.unit, p.has_image, p.route, p.effective_dpi, p.low_resolution,"
     " p.read_by, p.read_quality, p.read_issues, p.unsure_words, p.illegible_words, p.unpinned_lines,"
     " p.accepted_by, p.accepted_at, p.read_again_requested_at,"
-    " coalesce(i.check_reasons, '{}') AS check_reasons"
+    " coalesce(i.check_reasons, '{}') AS check_reasons, coalesce(pt.turn, 0) AS page_turn"
     " FROM extracted_values v"
     " JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
     " JOIN pages p ON p.customer_id = v.customer_id AND p.document_id = v.document_id"
     " AND p.page_no = v.page_no"
     " LEFT JOIN invoices i ON i.customer_id = v.customer_id AND i.document_id = v.document_id"
+    # PRD 7 section 14 (#600): the page's turn saved for everyone, 0 when it has none.
+    " LEFT JOIN page_rotations pt ON pt.customer_id = v.customer_id AND pt.document_id = v.document_id"
+    " AND pt.page_no = v.page_no"
     " WHERE v.customer_id = :c"
 )
 
@@ -273,17 +276,34 @@ def add_correction(
 
 
 def remember_correction(
-    conn: Connection, customer_id: str, *, field: str, raw_value: str, corrected_value: str, user_id: str
+    conn: Connection,
+    customer_id: str,
+    *,
+    field: str,
+    raw_value: str,
+    corrected_value: str,
+    user_id: str,
+    document_id: str,
 ) -> None:
-    """Upsert: the latest correction for (field, raw value) wins, for this customer only."""
+    """Upsert: the latest correction for (field, raw value) wins, for this customer only, with the
+    document it was made on (``source_document_id``: a lock deletes it with the file, PRD 7)."""
     conn.execute(
         text(
-            "INSERT INTO learned_corrections (customer_id, field, raw_value, corrected_value, created_by)"
-            " VALUES (:c, :f, :raw, :new, :u)"
+            "INSERT INTO learned_corrections"
+            " (customer_id, field, raw_value, corrected_value, created_by, source_document_id)"
+            " VALUES (:c, :f, :raw, :new, :u, :d)"
             " ON CONFLICT (customer_id, field, raw_value)"
-            " DO UPDATE SET corrected_value = EXCLUDED.corrected_value, created_by = EXCLUDED.created_by"
+            " DO UPDATE SET corrected_value = EXCLUDED.corrected_value, created_by = EXCLUDED.created_by,"
+            " source_document_id = EXCLUDED.source_document_id"
         ),
-        {"c": customer_id, "f": field, "raw": raw_value, "new": corrected_value, "u": user_id},
+        {
+            "c": customer_id,
+            "f": field,
+            "raw": raw_value,
+            "new": corrected_value,
+            "u": user_id,
+            "d": document_id,
+        },
     )
 
 
@@ -332,6 +352,7 @@ def resolve_value(
             raw_value=str(current["value_raw"]),
             corrected_value=new_text,
             user_id=user_id,
+            document_id=str(current["document_id"]),
         )
     audit.record(
         conn,

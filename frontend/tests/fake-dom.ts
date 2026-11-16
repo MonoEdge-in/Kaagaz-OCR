@@ -177,6 +177,12 @@ export class FakeElement extends FakeNode {
   close() {
     this.open = false;
   }
+  // A <select>'s options and an <option>'s choice (react-dom sets them; the Audience panel's).
+  selected = false;
+  defaultSelected = false;
+  get options(): FakeElement[] {
+    return this.all().filter((element) => element.tagName === "OPTION");
+  }
   /** Every element under this one, in document order. */
   all(): FakeElement[] {
     return this.childNodes.flatMap((child) => (child instanceof FakeElement ? [child, ...child.all()] : []));

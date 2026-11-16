@@ -28,6 +28,9 @@
 // #523: marks point, never hide the text. The word marks and word flags follow a "Show words to
 // check" switch (on at first for a reviewer or an admin), over WORD_MARK_CAP on a page they give way
 // to a chip that shows them, and one far taller than a word is never drawn (wordMarkView).
+// #600: `turn` draws the page turned (saved for everyone, or the photo turn menu's choice); the page
+// is drawn at its own size and turned into the shown size (turnedStageTransform), so its spot, words,
+// flags and marks turn with it, and a crop or the sharp overlay maps back to the page before its turn.
 
 import dynamic from "next/dynamic";
 import Image from "next/image";
@@ -36,7 +39,7 @@ import type { ReactNode } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { markerId } from "@/components/words/ViewerWords";
-import { markerRect } from "@/components/words/spots";
+import { markerRect, turnedBox } from "@/components/words/spots";
 import type { Marker } from "@/components/words/spots";
 import { flagDomId, markLabel } from "@/components/review/wordReview";
 import { pageImageUrl } from "@/lib/api";
@@ -61,7 +64,18 @@ import {
 import { SheetGrid } from "./SheetGrid";
 import { useObservedBox } from "./useObservedBox";
 import type { ViewRect } from "./canvasPlan";
-import { ZOOM_STEPS, centerScroll, fitPageSize, focusZoom, pageMode, stepZoom, visibleRect, wheelZoom } from "./viewer";
+import {
+  ZOOM_STEPS,
+  centerScroll,
+  fitPageSize,
+  focusZoom,
+  pageMode,
+  stepZoom,
+  turnedStageTransform,
+  unturnedView,
+  visibleRect,
+  wheelZoom,
+} from "./viewer";
 import styles from "./PageViewer.module.css";
 import { wordColour } from "./YourWords";
 
@@ -120,6 +134,8 @@ export interface PageViewerProps {
   wordHits?: readonly number[];
   /** #523: the viewer's role, for "Show words to check" at first (on unless a member). */
   role?: Role;
+  /** #600: the page's turn, clockwise degrees on top of its own. */
+  turn?: 0 | 90 | 180 | 270;
 }
 
 export function PageViewer({
@@ -146,6 +162,7 @@ export function PageViewer({
   wordBoxes = [],
   wordHits = [],
   role,
+  turn = 0,
 }: PageViewerProps) {
   const isCrop = crop !== undefined;
   const { ref: measureRef, box, near } = useObservedBox(isCrop);
@@ -199,6 +216,8 @@ export function PageViewer({
   const cropHere = crop && crop.page === page.page_no ? crop : undefined;
   const label = `Page ${page.page_no} of ${document.display_name}`;
   const aspect = pageAspect(page);
+  const sideways = turn === 90 || turn === 270;
+  const shownAspect = sideways ? 1 / aspect : aspect; // the page as it shows, turned
   const boxes = onThisPage.filter((r): r is BoxRegion => r.kind === "box");
   const problems = isCrop ? [] : marksOnPage(readingMarks, page.page_no);
   const marksKey = `${document.id}:${page.page_no}`;
@@ -209,9 +228,9 @@ export function PageViewer({
   const spotKey = spot ? `${marksKey}:${spot.box.join(",")}` : null;
   let spotZoom = 1;
   if (spot && box && (mode === "pdf" || mode === "image")) {
-    const fitted = fitPageSize(box.width, aspect, 1, fit === "page" ? box.height : undefined);
+    const fitted = fitPageSize(box.width, shownAspect, 1, fit === "page" ? box.height : undefined);
     const frame = { width: box.width, height: fill ? box.height : Infinity };
-    spotZoom = focusZoom(boxToPixels(spot.box, fitted.width, fitted.height), frame);
+    spotZoom = focusZoom(boxToPixels(turnedBox(spot.box, turn), fitted.width, fitted.height), frame);
   }
   const zoom = zoomChoice && zoomChoice.key === spotKey ? zoomChoice.zoom : spotZoom;
   const setZoom = (next: number) => setZoomChoice({ key: spotKey, zoom: next });
@@ -285,12 +304,12 @@ export function PageViewer({
     return () => frame.removeEventListener("wheel", listener);
   }, [wheelZooms, pageKey]);
 
-  const size = box ? fitPageSize(box.width, aspect, zoom, fit === "page" ? box.height : undefined) : null;
+  const size = box ? fitPageSize(box.width, shownAspect, zoom, fit === "page" ? box.height : undefined) : null;
   // Zoomed in on a PDF page: measure what shows 150ms after the last scroll or
   // resize (no scrollend: too new), for the sharp overlay. A rect measured at
   // another page, zoom or size is never drawn.
   const sharpKey =
-    !isCrop && mode === "pdf" && zoom > 1 && size ? `${pageKey}@${zoom}:${size.width}x${size.height}` : null;
+    !isCrop && mode === "pdf" && zoom > 1 && size ? `${pageKey}@${zoom}:${size.width}x${size.height}@${turn}` : null;
   useEffect(() => {
     const frame = frameRef.current;
     if (sharpKey === null || !frame) return;
@@ -304,7 +323,7 @@ export function PageViewer({
         right: window.innerWidth,
         bottom: window.innerHeight,
       });
-      setSeen(rect ? { key: sharpKey, rect } : null);
+      setSeen(rect ? { key: sharpKey, rect: unturnedView(rect, stage.getBoundingClientRect(), turn) } : null);
     };
     const later = () => {
       clearTimeout(timer);
@@ -324,7 +343,7 @@ export function PageViewer({
       window.removeEventListener("scroll", later);
       window.removeEventListener("resize", later);
     };
-  }, [sharpKey]);
+  }, [sharpKey, turn]);
   const sharp = seen && seen.key === sharpKey ? seen.rect : null;
 
   const failed = (
@@ -339,155 +358,168 @@ export function PageViewer({
   );
 
   /**
-   * The drawn page with its highlight boxes, at width x height pixels. With a
+   * The drawn page with its highlight boxes, shown at width x height pixels. With a
    * crop, the page-size stage is shifted into the crop's frame, and a PDF draws
-   * only that frame (a page-size canvas would be some 50 times bigger).
+   * only that frame (a page-size canvas would be some 50 times bigger). #600: inside,
+   * the page at its own size, turned into the shown size.
    */
-  const stage = (width: number, height: number, crop?: CropView) => (
-    <div
-      ref={crop ? undefined : stageRef}
-      className={styles.stage}
-      style={{
-        width: `${width}px`,
-        height: `${height}px`,
-        ...(crop ? { position: "absolute", left: -crop.offsetX, top: -crop.offsetY } : {}),
-      }}
-    >
-      {mode === "pdf" ? (
-        <PdfPage
-          key={pageKey}
-          documentId={document.id}
-          pageNo={page.page_no}
-          width={width}
-          height={height}
-          view={
-            crop
-              ? { x: crop.offsetX, y: crop.offsetY, width: crop.frameWidth, height: crop.frameHeight }
-              : undefined
-          }
-          budget={zoom > 1 ? ZOOMED_BUDGET : undefined}
-          label={label}
-          onFailed={onPdfFailed}
-          onRendered={onDrawn}
-        />
-      ) : (
-        <Image
-          key={pageKey}
-          src={pageImageUrl(document.id, page.page_no)}
-          alt={label}
-          fill
-          unoptimized
-          sizes={`${Math.round(width)}px`}
-          onLoad={onDrawn}
-          onError={() => setImageFailedFor(pageKey)}
-        />
-      )}
-      {sharp ? (
-        <PdfPage
-          key={`${pageKey}:sharp`}
-          documentId={document.id}
-          pageNo={page.page_no}
-          width={width}
-          height={height}
-          view={sharp}
-          onFailed={IGNORE}
-        />
-      ) : null}
-      {crop
-        ? null
-        : wordBoxes.map((region, index) => {
-            if (region.kind !== "box" || region.page !== page.page_no) return null;
+  const stage = (shownWidth: number, shownHeight: number, crop?: CropView) => {
+    const width = sideways ? shownHeight : shownWidth;
+    const height = sideways ? shownWidth : shownHeight;
+    const frame = crop
+      ? unturnedView(
+          { x: crop.offsetX, y: crop.offsetY, width: crop.frameWidth, height: crop.frameHeight },
+          { width: shownWidth, height: shownHeight },
+          turn,
+        )
+      : undefined;
+    return (
+      <div
+        ref={crop ? undefined : stageRef}
+        className={styles.stage}
+        style={{
+          width: `${shownWidth}px`,
+          height: `${shownHeight}px`,
+          ...(crop ? { position: "absolute", left: -crop.offsetX, top: -crop.offsetY } : {}),
+        }}
+      >
+        <div
+          className={styles.turned}
+          style={{ width: `${width}px`, height: `${height}px`, transform: turnedStageTransform(width, height, turn) }}
+        >
+          {mode === "pdf" ? (
+            <PdfPage
+              key={pageKey}
+              documentId={document.id}
+              pageNo={page.page_no}
+              width={width}
+              height={height}
+              view={frame}
+              budget={zoom > 1 ? ZOOMED_BUDGET : undefined}
+              label={label}
+              onFailed={onPdfFailed}
+              onRendered={onDrawn}
+            />
+          ) : (
+            <Image
+              key={pageKey}
+              src={pageImageUrl(document.id, page.page_no)}
+              alt={label}
+              fill
+              unoptimized
+              sizes={`${Math.round(width)}px`}
+              onLoad={onDrawn}
+              onError={() => setImageFailedFor(pageKey)}
+            />
+          )}
+          {sharp ? (
+            <PdfPage
+              key={`${pageKey}:sharp`}
+              documentId={document.id}
+              pageNo={page.page_no}
+              width={width}
+              height={height}
+              view={sharp}
+              onFailed={IGNORE}
+            />
+          ) : null}
+          {crop
+            ? null
+            : wordBoxes.map((region, index) => {
+                if (region.kind !== "box" || region.page !== page.page_no) return null;
+                const px = markerRect(region.box, width, height);
+                return (
+                  <div
+                    key={`word-${index}`}
+                    className={styles.word}
+                    data-word={wordColour(wordHits[index])}
+                    aria-hidden="true"
+                    style={{ left: px.left, top: px.top, width: px.width, height: px.height }}
+                  />
+                );
+              })}
+          {boxes.map((region, index) => {
             const px = markerRect(region.box, width, height);
             return (
               <div
-                key={`word-${index}`}
-                className={styles.word}
-                data-word={wordColour(wordHits[index])}
+                key={`${spotKey}:${index}`}
+                ref={index === 0 && !crop ? spotRef : undefined}
+                className={crop ? styles.box : `${styles.box} ${styles.pulse}`}
                 aria-hidden="true"
                 style={{ left: px.left, top: px.top, width: px.width, height: px.height }}
               />
             );
           })}
-      {boxes.map((region, index) => {
-        const px = markerRect(region.box, width, height);
-        return (
-          <div
-            key={`${spotKey}:${index}`}
-            ref={index === 0 && !crop ? spotRef : undefined}
-            className={crop ? styles.box : `${styles.box} ${styles.pulse}`}
-            aria-hidden="true"
-            style={{ left: px.left, top: px.top, width: px.width, height: px.height }}
-          />
-        );
-      })}
-      {crop
-        ? null
-        : marks.map((mark) => {
-            if (mark.region.kind !== "box") return null;
-            const px = markerRect(mark.region.box, width, height);
-            return (
-              <div
-                key={mark.id}
-                id={markerId(mark.id)}
-                className={mark.id === activeMark ? `${styles.mine} ${styles.mineActive}` : styles.mine}
-                aria-hidden="true"
-                style={{ left: px.left, top: px.top, width: px.width, height: px.height }}
-              >
-                <span className={styles.mineNumber}>{mark.n}</span>
-              </div>
-            );
-          })}
-      {crop
-        ? null
-        : flags.map((flag) => {
-            if (flag.region.kind !== "box" || flag.page_no !== page.page_no) return null;
-            if (flag.kind === "mark" && flag.word_key !== activeFlag && !words.drawn(flag.region)) return null;
-            const px = markerRect(flag.region.box, width, height);
-            const name = markLabel(flag);
-            return (
-              <button
-                key={flag.word_key}
-                id={flagDomId(flag.word_key)}
-                type="button"
-                className={styles.flag}
-                data-band={flag.band}
-                data-state={flag.state}
-                aria-current={flag.word_key === activeFlag ? "true" : undefined}
-                aria-label={name}
-                title={name}
-                style={{ left: px.left, top: px.top, width: px.width, height: px.height }}
-                onClick={() => onFlag?.(flag)}
-              />
-            );
-          })}
-      {crop || !showProblems
-        ? null
-        : problems.map((mark, index) => {
-            if (isWordMark(mark) && !words.drawn(mark.region)) return null;
-            const px = markRect(mark, width, height);
-            if (!px) return null;
-            const checked = markChecked(mark, flags);
-            const name = markName(mark, index, problems.length, checked);
-            return (
-              <button
-                key={index}
-                type="button"
-                className={styles.problem}
-                data-quality={mark.quality}
-                data-word-mark={isWordMark(mark) ? "" : undefined}
-                data-state={checked ? "checked" : undefined}
-                data-hot={hotMark === index ? "true" : undefined}
-                aria-label={name}
-                title={name}
-                style={{ left: px.left, top: px.top, width: px.width, height: px.height }}
-                onClick={() => onMark?.(mark, name)}
-                onPointerEnter={() => onHotMark?.(index)}
-                onPointerLeave={() => onHotMark?.(null)}
-              />
-            );
-          })}
-    </div>
-  );
+          {crop
+            ? null
+            : marks.map((mark) => {
+                if (mark.region.kind !== "box") return null;
+                const px = markerRect(mark.region.box, width, height);
+                return (
+                  <div
+                    key={mark.id}
+                    id={markerId(mark.id)}
+                    className={mark.id === activeMark ? `${styles.mine} ${styles.mineActive}` : styles.mine}
+                    aria-hidden="true"
+                    style={{ left: px.left, top: px.top, width: px.width, height: px.height }}
+                  >
+                    <span className={styles.mineNumber}>{mark.n}</span>
+                  </div>
+                );
+              })}
+          {crop
+            ? null
+            : flags.map((flag) => {
+                if (flag.region.kind !== "box" || flag.page_no !== page.page_no) return null;
+                if (flag.kind === "mark" && flag.word_key !== activeFlag && !words.drawn(flag.region)) return null;
+                const px = markerRect(flag.region.box, width, height);
+                const name = markLabel(flag);
+                return (
+                  <button
+                    key={flag.word_key}
+                    id={flagDomId(flag.word_key)}
+                    type="button"
+                    className={styles.flag}
+                    data-band={flag.band}
+                    data-state={flag.state}
+                    aria-current={flag.word_key === activeFlag ? "true" : undefined}
+                    aria-label={name}
+                    title={name}
+                    style={{ left: px.left, top: px.top, width: px.width, height: px.height }}
+                    onClick={() => onFlag?.(flag)}
+                  />
+                );
+              })}
+          {crop || !showProblems
+            ? null
+            : problems.map((mark, index) => {
+                if (isWordMark(mark) && !words.drawn(mark.region)) return null;
+                const px = markRect(mark, width, height);
+                if (!px) return null;
+                const checked = markChecked(mark, flags);
+                const name = markName(mark, index, problems.length, checked);
+                return (
+                  <button
+                    key={index}
+                    type="button"
+                    className={styles.problem}
+                    data-quality={mark.quality}
+                    data-word-mark={isWordMark(mark) ? "" : undefined}
+                    data-state={checked ? "checked" : undefined}
+                    data-hot={hotMark === index ? "true" : undefined}
+                    aria-label={name}
+                    title={name}
+                    style={{ left: px.left, top: px.top, width: px.width, height: px.height }}
+                    onClick={() => onMark?.(mark, name)}
+                    onPointerEnter={() => onHotMark?.(index)}
+                    onPointerLeave={() => onHotMark?.(null)}
+                  />
+                );
+              })}
+        </div>
+      </div>
+    );
+  };
 
   // --- a crop preview: review cards and answer source cards ------------------
 
@@ -512,7 +544,8 @@ export function PageViewer({
       // The frame's size comes from the page's size and the spot alone, so it holds
       // its place before the page is drawn (or near the screen): nothing jumps.
       const rect = (cropHere ? cropRect(cropHere, page) : null) ?? WHOLE_PAGE;
-      const view = framedCropView(rect, aspect, box.width, cropMaxHeight, MAX_CROP_PAGE_WIDTH, CROP_MARGIN);
+      const [x0, y0, x1, y1] = turnedBox([rect.x0, rect.y0, rect.x1, rect.y1], turn);
+      const view = framedCropView({ x0, y0, x1, y1 }, shownAspect, box.width, cropMaxHeight, MAX_CROP_PAGE_WIDTH, CROP_MARGIN);
       preview = (
         <>
           <div
@@ -565,7 +598,7 @@ export function PageViewer({
             <span
               className={`skeleton ${styles.pageSkeleton}`}
               aria-hidden="true"
-              style={{ aspectRatio: String(aspect) }}
+              style={{ aspectRatio: String(shownAspect) }}
             />
           )}
         </div>

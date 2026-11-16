@@ -227,12 +227,32 @@ export function askErrorText(error: { status: number; message: string; code?: st
     return "Could not reach Kaagaz. Check your internet connection, then try again.";
   }
   if (error.status === 429) return "Too many questions at once. Wait a minute, then try again.";
-  if (error.status === 503) return "Kaagaz is busy right now. Try again in a minute."; // the AI service is down
+  if (error.status === 503) return unfinishedText(""); // Ask hotfix (15 Nov 2026): never "busy"
   const message = error.message.trim();
   if (error.status >= 400 && error.status < 500 && message && !GENERIC_MESSAGE.test(message)) {
     return message;
   }
   return "Could not get an answer right now. Try again in a minute.";
+}
+
+/** Ask hotfix (production, 15 Nov 2026): how long a question that could not be finished waits
+ * before its one automatic retry, with "Looking through your documents…" still on screen. */
+export const ASK_RETRY_MS = 2000;
+
+/** A failure Ask retries once, then shows as `unfinishedText` in the answer's place: a 503 (the
+ * service could not finish it), but never one whose answer is still being saved (`answer_pending`). */
+export function isUnfinished(error: unknown): boolean {
+  const failed = error as { status?: unknown; code?: unknown } | null;
+  return failed?.status === 503 && failed.code !== "answer_pending";
+}
+
+/** What Ask says in the answer's place when it could not finish a question, in normal colours with
+ * Try again beside it: never "busy", "error" or "server". The first name only, as Home's greeting. */
+export function unfinishedText(displayName: string): string {
+  const first = displayName.trim().split(/\s+/)[0];
+  return first
+    ? `Sorry, ${first}, I couldn't finish that just now. Please try again in a moment.`
+    : "Sorry, I couldn't finish that just now. Please try again in a moment.";
 }
 
 /** B1: a question stopped after `started`, in the thread under the id the server saves it with,

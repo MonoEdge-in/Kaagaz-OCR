@@ -55,7 +55,7 @@ import { askAboutHref } from "@/components/chat/logic";
 import { downloadHref, folderTrail } from "@/components/documents/library";
 import libraryStyles from "@/components/documents/Library.module.css";
 import { ALL_DOCUMENTS, libraryHref } from "@/components/documents/libraryQuery";
-import { FILED_HERE_TEXT } from "@/components/documents/batchTray";
+import { FILED_HERE_TEXT, undoErrorText } from "@/components/documents/batchTray";
 import { UNDERSTANDING_TEXT } from "@/components/documents/logic";
 import { TimeLeft } from "@/components/documents/TimeLeft";
 import { AutofileNote } from "@/components/documents/UploadArea";
@@ -64,6 +64,7 @@ import { Icon as KIcon } from "@/components/ui/Icon/Icon";
 import type { KIconName } from "@/components/ui/Icon/Icon";
 import { Toast } from "@/components/ui/Toast";
 import { PageViewer } from "@/components/viewer/PageViewer";
+import { PageTurnMenu, WithPageTurns } from "@/components/viewer/PageTurnMenu";
 import {
   DRAG_THRESHOLD_PX,
   SPLIT,
@@ -71,7 +72,9 @@ import {
   bringPageForSpot,
   splitAfterDrag,
   splitAfterKey,
+  pageMode,
   tabsThatFit,
+  turnOf,
   viewsAsPdf,
 } from "@/components/viewer/viewer";
 import { CLEAN_COPY } from "@/components/viewer/clearCopy";
@@ -161,6 +164,8 @@ export interface DocumentViewProps {
 // hit or a review item), not from a pick on this screen.
 const FROM_LINK = ", from the link you opened";
 // The status under the title: its words (lib/format.ts statusChip) with an icon.
+// PRD 7 (#605): the routes' own words for a locked file (backend/kaagaz/api/locked.py).
+const LOCKED_TEXT = "This file is locked. It can only be viewed.";
 const STATUS_ICONS: Record<StatusTone, KIconName> = { ready: "check-circle", working: "clock", neutral: "info", danger: "alert" };
 const DETAILS_ID = "document-details"; // More details: the kind, pages, counts, tags and versions
 
@@ -380,6 +385,19 @@ export function DocumentView({
   }
 
   const detail = current.detail;
+  // PRD 7 (#605): a locked file shows its name only, with no page, panel or action; PR 13 opens it
+  // as page pictures after the person's password.
+  if (detail.locked) {
+    return (
+      <div className="page page-wide">
+        <BackLink to={backFrom(fromParam) ?? { href: "/documents", name: "documents" }} />
+        <h1 className={styles.title}>
+          <KIcon name="lock" size="sm" /> <ScriptText text={detail.display_name} />
+        </h1>
+        <p role="note">{LOCKED_TEXT}</p>
+      </div>
+    );
+  }
   const page = selection ? detail.pages.find((p) => p.page_no === selection.pageNo) : undefined;
   const pageNumbers = detail.pages.map((p) => p.page_no);
 
@@ -397,6 +415,8 @@ export function DocumentView({
   const showLine = (spot: Spot) =>
     showSpot(spot, `${spot.name.charAt(0).toUpperCase()}${spot.name.slice(1)} highlighted on page ${spot.region.page}.`);
   const changePage = (pageNo: number) => choose(pageChange(selection, pageNo));
+  // #600: a save of the page turns reloads the detail, so the review panel's crop shows them too.
+  const reloadAfterTurns = () => setReloads((n) => n + 1);
   // Keep as is (F5): the page's new summary, still flagged, off the attention list.
   const keepPage = (kept: PageSummary) =>
     setLoaded((now) =>
@@ -552,7 +572,8 @@ export function DocumentView({
             ? () =>
                 void toastUndo().then(
                   () => reloadWith(VERSION_TEXT.reverted),
-                  () => setToast("It could not be undone. Check your connection, then try again."),
+                  // PR 10c: a refused Undo (403 move_changes_access) says why, in the server's words.
+                  (caught: unknown) => setToast(undoErrorText(caught)),
                 )
             : undefined
         }
@@ -595,31 +616,51 @@ export function DocumentView({
                   wordBoxes={wordBoxes}
                   wordHits={wordHits}
                   role={me.user.role}
+                  userId={me.user.id}
+                  onTurnsSaved={reloadAfterTurns}
                 />
               </ViewerBoundary>
             </div>
           ) : page ? (
-            <PageViewer
-              document={detail}
-              page={page}
-              highlights={highlightsOf(selection)}
-              highlightNote={highlightNote}
-              pageNumbers={pageNumbers}
-              onPageChange={changePage}
-              marks={words.markers}
-              activeMark={words.activeId}
-              fill={stickyViewer}
-              readingMarks={readingMarks}
-              onMark={showMark}
-              hotMark={hotMark}
-              onHotMark={setHotMark}
-              flags={pageMarks}
-              activeFlag={reviewing ? currentFlag : null}
-              onFlag={pressFlag}
-              wordBoxes={wordBoxes}
-              wordHits={wordHits}
-              role={me.user.role}
-            />
+            // #600: a photo's turn menu and its turns, saved for everyone or on this screen only.
+            <WithPageTurns key={detail.id} documentId={detail.id} pageTurns={detail.page_turns} userId={me.user.id}>
+              {(turns) => (
+                <PageViewer
+                  document={detail}
+                  page={page}
+                  highlights={highlightsOf(selection)}
+                  highlightNote={highlightNote}
+                  pageNumbers={pageNumbers}
+                  onPageChange={changePage}
+                  marks={words.markers}
+                  activeMark={words.activeId}
+                  fill={stickyViewer}
+                  readingMarks={readingMarks}
+                  onMark={showMark}
+                  hotMark={hotMark}
+                  onHotMark={setHotMark}
+                  flags={pageMarks}
+                  activeFlag={reviewing ? currentFlag : null}
+                  onFlag={pressFlag}
+                  wordBoxes={wordBoxes}
+                  wordHits={wordHits}
+                  role={me.user.role}
+                  turn={turnOf(turns.shown, page.page_no)}
+                  tools={
+                    pageMode(detail, page, false) === "image" ? (
+                      <PageTurnMenu
+                        turns={turns}
+                        pages={detail.pages}
+                        pageNo={page.page_no}
+                        documentId={detail.id}
+                        userId={me.user.id}
+                        onTurnsSaved={reloadAfterTurns}
+                      />
+                    ) : undefined
+                  }
+                />
+              )}
+            </WithPageTurns>
           ) : (
             <p className={styles.noPages}>No pages to show yet.</p>
           )}

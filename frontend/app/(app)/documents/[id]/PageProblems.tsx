@@ -22,7 +22,7 @@ import Link from "next/link";
 import { useCallback, useReducer, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { BusyLabel } from "@/components/documents/BusyLabel";
-import { ACCEPT_ATTRIBUTE, HIDDEN_COPY } from "@/components/documents/logic";
+import { ACCEPT_ATTRIBUTE, HIDDEN_COPY, LOCKED_COPY } from "@/components/documents/logic";
 import { Icon } from "@/components/ui/Icon";
 import {
   KEEP_MEMBER_NOTE,
@@ -123,8 +123,10 @@ export function PageProblems({
     uploadVersion(documentId, file, userId, () => undefined).then(
       (reply) =>
         setUpload(
-          reply.hidden
-            ? { step: "sent", id: null, words: HIDDEN_COPY }
+          reply.document === null
+            ? reply.hidden
+              ? { step: "sent", id: null, words: HIDDEN_COPY }
+              : { step: "sent", id: reply.locked.id, words: LOCKED_COPY } // PRD 7 (#605): its link only
             : {
                 step: "sent",
                 id: reply.document.id,

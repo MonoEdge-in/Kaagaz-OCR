@@ -32,6 +32,8 @@ _DATA = b"%PDF-1.7\n" + b"7" * 300
 
 
 def _trash(org: Org, folder: str) -> None:
+    # Changed on purpose (PR 9b, #606): an Admin deletes a folder with files they can't see, with the rule on
+    # (0092's owner-rights functions).
     reply = org.people["admin"].client.delete(f"/api/folders/{folder}?contents=trash", headers=CSRF)
     assert reply.status_code == 200, reply.text
 
@@ -50,7 +52,8 @@ def _private(db: Database, org: Org, folder: str, *named: str) -> None:
 def _lock(db: Database, org: Org, document: str) -> None:
     _owner(
         db,
-        "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d",
+        # Changed on purpose (#605, 0093): a locked version is never ready.
+        "UPDATE documents SET locked_at = now(), locked_by = :u, status = 'locked' WHERE id = :d",
         {"u": org.people["admin"].user_id, "d": document},
     )
 
@@ -74,6 +77,8 @@ def test_restoring_a_folder_under_a_hidden_one_names_neither_nor_counts_the_hidd
     _trash(org, payroll)
     items = named.client.get("/api/documents/trash/folders").json()["items"]
     assert [(i["id"], i["can_restore"]) for i in items] == [(inner, True)], items
+    # Changed on purpose (PR 9b, #606): with the rule on, the restore still brings back Payroll, hidden from
+    # them (0092 reads the whole delete).
     back = named.client.post(f"/api/documents/trash/folders/{inner}/restore", headers=CSRF)
     assert back.status_code == 200, back.text
     body = back.json()
@@ -99,12 +104,14 @@ def test_a_restore_that_brings_back_a_hidden_department_says_only_ask_an_admin(d
         org.c, name="plan.pdf", folder_id=org.folders["finance"], uploaded_by=head.user_id
     )
     _trash(org, org.folders["finance"])
+    # Changed on purpose (PR 9a, #606): with the rule on, Finance's trashed row is hidden from them, and the
+    # Admin-only refusal still holds (kaagaz_trash_top reads the whole delete).
     items = named.client.get("/api/documents/trash/folders").json()["items"]
-    assert [(i["id"], i["can_restore"]) for i in items] == [(salaries, False)], items
     back = named.client.post(f"/api/documents/trash/folders/{salaries}/restore", headers=CSRF)
-    assert (back.status_code, back.json()["error"]) == (403, {"code": "forbidden", "message": ASK_AN_ADMIN})
     sal = org.files["sal"]
     one = named.client.post(f"/api/documents/{sal}/restore", headers=CSRF)
+    assert [(i["id"], i["can_restore"]) for i in items] == [(salaries, False)], items
+    assert (back.status_code, back.json()["error"]) == (403, {"code": "forbidden", "message": ASK_AN_ADMIN})
     assert (one.status_code, one.json()["error"]["message"]) == (403, ASK_AN_ADMIN)
     for reply in (back, one):
         assert "Finance" not in reply.text and "department" not in reply.text
@@ -300,10 +307,11 @@ def test_a_member_cannot_delete_forever_a_trashed_folder_holding_only_a_hidden_f
 
 def test_trash_of_a_department_only_department_deleted_since_stays_closed(db: Database) -> None:
     """Budgets (in Finance, Department only) goes to Trash with its file; then Finance itself is
-    deleted (its contents kept). The organisation still keeps something to some people (Legal is
-    Department only too), so the plain reviewer sees neither then; Management still does, and the
-    worker with no person sees its whole organisation. (Known gap, #594: had Finance been its last
-    Department only department, its stranded Trash would fall back to open.)"""
+    deleted, emptied first (#594: a keep-delete of Finance is refused now). The organisation still
+    keeps something to some people (Legal is Department only too), so the plain reviewer sees neither
+    then; Management still does, and the worker with no person sees its whole organisation. (#594
+    closed the known gap: had Finance been its last Department only department, its stranded Trash
+    stays closed too, test_isolation_open_paths.)"""
     api = Api(db)
     org = _walled(api)
     admin, plain = org.people["admin"], org.people["plain"]
@@ -314,8 +322,11 @@ def test_trash_of_a_department_only_department_deleted_since_stays_closed(db: Da
     budget = api.add_document(org.c, name="budget.pdf", folder_id=budgets, uploaded_by=admin.user_id)
     _trash(org, budgets)
     assert "Budgets" not in plain.client.get("/api/documents/trash/folders").text
-    gone = admin.client.delete(f"/api/folders/{org.folders['finance']}?contents=keep", headers=CSRF)
-    assert gone.status_code == 200, gone.text
+    finance, sales = org.folders["finance"], org.folders["sales"]
+    _owner(db, "UPDATE folders SET parent_id = :s WHERE parent_id = :f", {"s": sales, "f": finance})
+    _owner(db, "UPDATE documents SET folder_id = :s WHERE folder_id = :f", {"s": sales, "f": finance})
+    gone = admin.client.delete(f"/api/folders/{finance}", headers=CSRF)
+    assert gone.status_code == 204, gone.text
     assert "Budgets" not in plain.client.get("/api/documents/trash/folders").text
     files = plain.client.get(f"/api/documents?trashed=true&trashed_folder_id={budgets}")
     assert files.status_code == 404 and budget not in files.text

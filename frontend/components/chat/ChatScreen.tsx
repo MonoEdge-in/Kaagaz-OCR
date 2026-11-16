@@ -57,6 +57,7 @@ import {
   getConversation,
   listConversations,
   listDocuments,
+  randomId,
   renameConversation,
   savedAnswer,
 } from "@/lib/api";
@@ -95,6 +96,7 @@ import { ConversationList } from "./ConversationList";
 import { scrollBehavior, useAskProgress } from "./hooks";
 import {
   ASK_DRAFT,
+  ASK_RETRY_MS,
   answerScrollTop,
   askDraft,
   askDraftText,
@@ -107,12 +109,14 @@ import {
   documentFromSearch,
   hasChoices,
   isNearBottom,
+  isUnfinished,
   loadPick,
   questionFromSearch,
   savePick,
   settleWaitingDraft,
   starterQuestions,
   stoppedQuestion,
+  unfinishedText,
   usablePick,
   withSavedAnswer,
 } from "./logic";
@@ -166,6 +170,13 @@ function tabStorage(): Storage | null {
 /** What to say when a question got no answer. */
 const errorText = (error: unknown) => askErrorText(error instanceof ApiError ? error : null);
 
+/** A question the service could not finish, to send again as it was sent (Try again). */
+interface Unfinished {
+  question: string;
+  only?: ChosenScope;
+  chose?: ClarifyReply;
+}
+
 /** Keep the address bar on the open conversation, without a navigation. */
 function showInUrl(conversationId: string | null): void {
   window.history.replaceState(null, "", chatHref(conversationId));
@@ -174,7 +185,7 @@ function showInUrl(conversationId: string | null): void {
 /** `initialSearch`: the address's query string when chat opened (app/(app)/chat/page.tsx), read once. */
 export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const pathname = usePathname();
-  const userId = useSession().me.user.id;
+  const { id: userId, display_name: displayName } = useSession().me.user;
   const [conversations, setConversations] = useState<ConversationSummary[] | null>(null);
   const [listFailed, setListFailed] = useState(false);
   // A question sent before Ask was left (askStore.ts), picked up once at mount.
@@ -200,8 +211,18 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   // Still on its way at mount: pending until it settles (the effect below).
   const [waiting] = useState(() => resumed !== null && !resumed.outcome);
   const [pending, setPending] = useState<string | null>(() => (waiting ? resumed!.question : null));
+  // Ask hotfix (15 Nov 2026): a question the service could not finish, retried once already; shown
+  // in the answer's place with Try again (`unfinishedText`), never as the box's red alert.
+  const [unfinished, setUnfinished] = useState<Unfinished | null>(() =>
+    resumed?.outcome && "error" in resumed.outcome && isUnfinished(resumed.outcome.error)
+      ? { question: resumed.question }
+      : null,
+  );
+  const [lockedNote, setLockedNote] = useState<string | null>(null);
   const [askError, setAskError] = useState<string | null>(() =>
-    resumed?.outcome && "error" in resumed.outcome ? errorText(resumed.outcome.error) : null,
+    resumed?.outcome && "error" in resumed.outcome && !isUnfinished(resumed.outcome.error)
+      ? errorText(resumed.outcome.error)
+      : null,
   );
   // A picked-up question that failed goes back into the box.
   // Or a question from an ordinary ?q= link, waiting for Send.
@@ -218,6 +239,14 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const closeNotice = useCallback(() => setNotice(null), []);
   // The one status line for screen readers.
   const [status, setStatus] = useState("");
+  /** Why a question got no answer: in the answer's place when the service could not finish it
+   * (and said on the status line, for a screen reader), else the box's alert. */
+  const failed = (error: unknown, again: Unfinished) => {
+    if (isUnfinished(error)) {
+      setUnfinished(again);
+      setStatus(unfinishedText(displayName ?? ""));
+    } else setAskError(errorText(error));
+  };
   // The newest question's story matches (storySlot.ts), mirrored in a ref so a
   // reply can read the slot it just changed.
   const [slot, setSlot] = useState<StorySlot | null>(null);
@@ -420,11 +449,11 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
           setMessages((current) => withSavedAnswer(current, saved));
           setStatus(answerStatusText(saved.answer.answer)); // said: it arrives while the person may be elsewhere
         },
-        (failed: unknown) => {
+        (error: unknown) => {
           if (!alive.current || openRequest.current !== request || wait.signal.aborted) return;
           unstop(id);
-          setStatus(""); // the box's alert says why
-          setAskError(errorText(failed));
+          setStatus(""); // the box's alert, or the note in the answer's place, says why
+          failed(error, { question });
         },
       )
       .finally(() => savedWaits.current.delete(wait));
@@ -446,6 +475,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
           if (request !== openRequest.current) return;
           jumpToEnd.current = true;
           setMessages(conversation.messages);
+          setLockedNote(conversation.locked_note ?? null);
           setScope(restoredScope(conversation.messages));
           setThreadState("idle");
           setStatus(LOADED_STATUS);
@@ -516,7 +546,8 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
             }
             return;
           }
-          setAskError(errorText(error));
+          if (isUnfinished(error)) setUnfinished({ question: resumed.question }); // as `failed`
+          else setAskError(errorText(error));
           // B8: its answer is not in its conversation yet: that conversation opens, with the words
           // (as sendQuestion does); the box is refilled only if that conversation is not there.
           if (error instanceof ApiError && error.code === "answer_pending" && resumed.landing) {
@@ -664,6 +695,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     // scope; nothing of the last conversation's shows or is sent.
     setScope(keptScope());
     setAskError(null);
+    setUnfinished(null);
     setStatus("");
     setThreadState("loading");
     try {
@@ -671,6 +703,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       if (request !== openRequest.current) return;
       jumpToEnd.current = true;
       setMessages(conversation.messages);
+      setLockedNote(conversation.locked_note ?? null);
       setScope(restoredScope(conversation.messages));
       setThreadState("idle");
       setStatus(LOADED_STATUS);
@@ -691,6 +724,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     setMessages([]);
     setScope(startScope(null));
     setAskError(null);
+    setUnfinished(null);
     setStatus("");
     setThreadState("idle");
     if (noDocuments !== true) focusComposerOnDesktop(inputRef.current);
@@ -735,6 +769,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     if (only) setScope(asked);
     setPending(question);
     setAskError(null);
+    setUnfinished(null);
     setStatus(ASKING_STATUS);
     // In parallel with the answer, in the chip's scope; kept by this question's token.
     storyAbort.current?.abort();
@@ -753,21 +788,46 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     // Kept outside this screen (askStore.ts), so leaving Ask never drops it.
     const choice = choiceBody(chatOptions, answerPick);
     const precise = choice?.thinking === "high"; // B13: Precision
-    const entry = startAsk(question, activeId, (signal, onEvent) =>
-      askStream(
-        question,
-        activeId ?? undefined,
-        sentScope(asked),
-        choice,
-        answering,
-        signal,
-        onEvent,
-      ),
-    );
+    // One id for both tries (hotfix): a first try the server saved is answered from its save, so
+    // the retry is never a second paid answer, turn or conversation.
+    const questionId = randomId();
+    const begin = () =>
+      startAsk(question, activeId, (signal, onEvent) =>
+        askStream(
+          question,
+          activeId ?? undefined,
+          sentScope(asked),
+          choice,
+          answering,
+          signal,
+          onEvent,
+          questionId,
+        ),
+      );
+    let entry = begin();
     asking_.current = entry;
     setStreaming(entry);
     try {
-      const reply = await entry.done;
+      let reply: ChatResponse;
+      try {
+        reply = await entry.done;
+      } catch (first) {
+        // Ask hotfix (15 Nov 2026): a question the service could not finish is sent once more,
+        // after ASK_RETRY_MS, while "Looking through your documents…" stays on screen.
+        if (!alive.current || entry.stopped || !isUnfinished(first)) throw first;
+        settleAsk(entry);
+        await new Promise((resolve) => window.setTimeout(resolve, ASK_RETRY_MS));
+        if (!alive.current) return false; // the next chat screen has the box back
+        if (entry.stopped) {
+          updateSlot({ type: "failed", token }); // the story cards stay, at the end of the log
+          setStatus(STOPPED_STATUS); // Stop pressed while it waited: the question is back in the box
+          return false;
+        }
+        entry = begin();
+        asking_.current = entry;
+        setStreaming(entry);
+        reply = await entry.done;
+      }
       if (!alive.current) return true; // the next chat screen shows it
       const how = await settled(reply, entry.controller.signal);
       if (!alive.current) return true; // left while it revealed: the next chat screen shows it
@@ -776,6 +836,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       if (precise) markPrecise(reply.answer.id);
       setSettledIn((current) => new Map(current).set(reply.answer.id, how));
       setMessages((current) => [...current, reply.question, reply.answer]);
+      setLockedNote(reply.locked_note ?? null);
       // Only after a tapped choice does focus move, to the reply; typing keeps it in the box.
       if (chose) requestAnimationFrame(() => document.getElementById(answerDomId(reply.answer.id))?.focus());
       setScope((current) => answeredScope(current, reply.question));
@@ -808,7 +869,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       setStatus("");
       // #535: its answer is not in its conversation yet: that conversation opens, with the words.
       if (error instanceof ApiError && error.code === "answer_pending" && entry.landing) showLanding(entry.landing);
-      setAskError(errorText(error));
+      failed(error, { question, only, chose });
       return false;
     } finally {
       setPending(null);
@@ -1092,6 +1153,28 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
                   {place.at === "pending" ? storyCards() : null}
                 </>
               ) : null}
+              {unfinished !== null && pending === null ? (
+                <>
+                  {messages.at(-1)?.text !== unfinished.question ? (
+                    <div className={styles.question}>
+                      <span className="visually-hidden">You asked: </span>
+                      <p className={styles.plain}>{unfinished.question}</p>
+                    </div>
+                  ) : null}
+                  <div className={styles.threadError}>
+                    <p>{unfinishedText(displayName ?? "")}</p>
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={busy}
+                      onClick={() => void onAsk(unfinished.question, unfinished.only, unfinished.chose)}
+                    >
+                      <Icon name="refresh" size={16} />
+                      Try again
+                    </button>
+                  </div>
+                </>
+              ) : null}
               {place.at === "end" ? storyCards(place.question) : null}
             </div>
           </div>
@@ -1102,6 +1185,8 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
             ) : (
             <>
             {keptNote !== null ? <p className={styles.composerNote}>{DRAFT_KEPT}</p> : null}
+            {/* PRD 7 (#605, p2:79): Ask's fixed line, for a person who may open a locked file. */}
+            {lockedNote !== null ? <p className={styles.composerNote}>{lockedNote}</p> : null}
             <QuestionBox
               pending={busy || search.kind === "loading"}
               onStop={busy ? () => asking_.current && stopAsk(asking_.current) : undefined}

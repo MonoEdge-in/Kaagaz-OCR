@@ -2,8 +2,9 @@
 // unit tested in node (tests/viewer-*.test.ts): zoom steps, which rows and
 // columns of a sheet to fetch and show, how a page is drawn, and how it was read.
 
-import type { DetectedType, DocumentSummary, PageSummary, ReadIssue, Region, SheetCells } from "@/lib/types";
+import type { DetectedType, DocumentSummary, PageSummary, PageTurnSaved, ReadIssue, Region, SheetCells } from "@/lib/types";
 import type { ViewRect } from "./canvasPlan";
+import { unturnedBox } from "@/components/words/spots";
 import { sameRegion } from "./selection";
 
 export const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3] as const;
@@ -291,3 +292,88 @@ export function buildGrid(
   });
   return { columns, rows };
 }
+
+// --- Page turns (#589): kept in this browser per person and file, as List or Grid is
+// (components/files/viewMode.ts). The file's id is its version's, so a new version starts with
+// none. Storage can be blocked (a private window) or full, so every read and write is in
+// try/catch: then the turns last for this visit only.
+
+export const pageTurnsKey = (userId: string, documentId: string) => `kaagaz.page-turns:${userId}:${documentId}`;
+
+/** This person's turns of this file: page index to quarter turns right, 1 to 3; none when unreadable. */
+export function readPageTurns(userId: string, documentId: string): Map<number, number> {
+  const turns = new Map<number, number>();
+  try {
+    const kept: unknown = JSON.parse(localStorage.getItem(pageTurnsKey(userId, documentId)) ?? "{}");
+    if (typeof kept !== "object" || kept === null) return turns;
+    for (const [page, turn] of Object.entries(kept)) {
+      if (/^\d+$/.test(page) && (turn === 1 || turn === 2 || turn === 3)) turns.set(Number(page), turn);
+    }
+  } catch {
+    // unreadable: the file opens unturned
+  }
+  return turns;
+}
+
+/** Keep this person's turns of this file; none left removes the entry. */
+export function savePageTurns(userId: string, documentId: string, turns: ReadonlyMap<number, number>): void {
+  try {
+    const key = pageTurnsKey(userId, documentId);
+    if (turns.size === 0) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify(Object.fromEntries(turns)));
+  } catch {
+    // Storage blocked or full: the turns last for this visit only.
+  }
+}
+
+// --- Page turns saved for everyone (#600): the server keeps a page by its number (from 1) and its
+// turn in degrees; the viewer by page index (from 0) and quarter turns. Converted here only.
+
+/** The saved turns as the viewer keeps them: page index to quarter turns right. */
+export function fromServer(saved: readonly PageTurnSaved[]): Map<number, number> {
+  return new Map(saved.map(({ page_no, turn }) => [page_no - 1, turn / 90]));
+}
+
+/** What to send to save the turns shown: each page whose turn differs from the saved one (0, unturned). */
+export function pageTurnChanges(
+  saved: ReadonlyMap<number, number>,
+  shown: ReadonlyMap<number, number>,
+): { page_no: number; turn: 0 | 90 | 180 | 270 }[] {
+  const pages = [...new Set([...saved.keys(), ...shown.keys()])].sort((a, b) => a - b);
+  return pages
+    .filter((index) => (saved.get(index) ?? 0) !== (shown.get(index) ?? 0))
+    .map((index) => ({ page_no: index + 1, turn: ((shown.get(index) ?? 0) * 90) as 0 | 90 | 180 | 270 }));
+}
+
+/** A file opens with its saved turns; only a file with none opens with this browser's own. */
+export function openingTurns(
+  saved: ReadonlyMap<number, number>,
+  local: ReadonlyMap<number, number>,
+): ReadonlyMap<number, number> {
+  return saved.size > 0 ? saved : local;
+}
+
+/**
+ * The CSS transform (from the top left) that draws a width x height page turned clockwise by
+ * `turn` degrees inside a box of the turned size; undefined when it is not turned.
+ */
+export function turnedStageTransform(width: number, height: number, turn: number): string | undefined {
+  if (turn === 90) return `translate(${height}px, 0px) rotate(90deg)`;
+  if (turn === 180) return `translate(${width}px, ${height}px) rotate(180deg)`;
+  if (turn === 270) return `translate(0px, ${width}px) rotate(270deg)`;
+  return undefined;
+}
+
+/** A part of a page as it shows turned, in pixels, as the same part of the page before its turn. */
+export function unturnedView(rect: ViewRect, shown: { width: number; height: number }, turn: number): ViewRect {
+  if (turn !== 90 && turn !== 180 && turn !== 270) return rect;
+  const { width, height } = shown;
+  const box = [rect.x / width, rect.y / height, (rect.x + rect.width) / width, (rect.y + rect.height) / height] as const;
+  const [x0, y0, x1, y1] = unturnedBox(box, turn);
+  const [pageWidth, pageHeight] = turn === 180 ? [width, height] : [height, width];
+  return { x: x0 * pageWidth, y: y0 * pageHeight, width: (x1 - x0) * pageWidth, height: (y1 - y0) * pageHeight };
+}
+
+/** The turn of page `pageNo` (from 1) in degrees, from turns by page index in quarter turns. */
+export const turnOf = (turns: ReadonlyMap<number, number>, pageNo: number) =>
+  ((turns.get(pageNo - 1) ?? 0) * 90) as 0 | 90 | 180 | 270;
