@@ -2,6 +2,8 @@
 # from it; docker-compose.yml picks the command. It includes the `ocr` extra
 # (RapidOCR on onnxruntime), so the worker can read scans.
 #
+# Built by CI (GitHub Actions) for amd64 and arm64 and pushed to ECR; servers only pull it.
+#
 # Versions are pinned. PROVISIONAL: the backend has no
 # lock file yet, so `pip install` takes the newest versions pyproject.toml
 # allows at build time. A lock (and hash checking) is Vrushit's call.
@@ -35,11 +37,18 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-COPY pyproject.toml constraints.txt ./
-COPY kaagaz kaagaz
+# Dependencies first, without the code: this layer (the big one: onnxruntime, OpenCV,
+# RapidOCR and the rest) is rebuilt only when pyproject.toml or constraints.txt changes,
+# not on every commit, so CI's cached build reuses it and a server pulls only the small
+# layers below it (CI/CD Phase 3). pip needs a package to install ".[ocr]", so an empty
+# stand-in kaagaz/ is installed and then removed again; the real code comes after.
 # constraints.txt pins what indic-transliteration brings in (PRD 2 L3), so the
 # image gets the versions checked on 30 Sep 2026, not whatever is newest.
-RUN pip install -c constraints.txt ".[ocr]"
+COPY pyproject.toml constraints.txt ./
+RUN mkdir kaagaz && touch kaagaz/__init__.py \
+  && pip install -c constraints.txt ".[ocr]" \
+  && pip uninstall --yes "$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["name"])')" \
+  && rm -rf kaagaz build ./*.egg-info
 
 # Page pictures are stored as WebP (PRD 1 S1). Pillow's wheel carries libwebp;
 # stop the build here if a future Pillow or base image ever lacks it, rather
@@ -50,11 +59,17 @@ RUN python -c "from PIL import features; assert features.check('webp'), 'Pillow 
 # which the non-root user below cannot write. Load it once here, as root, so
 # the files are part of the image. Then the same for its Devanagari recogniser,
 # which the worker uses on Marathi and Hindi scans and only ever loads from disk
-# (kaagaz/reading/ocr.py): the build stops unless the file is there with the
-# SHA-256 rapidocr 3.9.2 lists for it.
+# (kaagaz/reading/ocr.py). Both need only rapidocr, so they sit above the code
+# and stay cached too.
 RUN python -c "from rapidocr import RapidOCR; RapidOCR()" \
-    && python -c "from rapidocr import LangRec, ModelType, OCRVersion, RapidOCR; RapidOCR(params={'Rec.lang_type': LangRec.DEVANAGARI, 'Rec.ocr_version': OCRVersion.PPOCRV5, 'Rec.model_type': ModelType.MOBILE})" \
-    && python -c "import hashlib; from kaagaz.reading.ocr import devanagari_model_path; assert hashlib.sha256(devanagari_model_path().read_bytes()).hexdigest() == 'd6f0a906580e3fa6b324a318718f1f31f268b6ea8ef985f91c2012a37f52c91e', 'the Devanagari model is not the one expected'"
+  && python -c "from rapidocr import LangRec, ModelType, OCRVersion, RapidOCR; RapidOCR(params={'Rec.lang_type': LangRec.DEVANAGARI, 'Rec.ocr_version': OCRVersion.PPOCRV5, 'Rec.model_type': ModelType.MOBILE})"
+
+# The code: a few MB, the only backend layer most commits change. --no-deps: the
+# dependencies are all above. Then the build stops unless the Devanagari model is
+# there with the SHA-256 rapidocr 3.9.2 lists for it (the check reads kaagaz's own path).
+COPY kaagaz kaagaz
+RUN pip install --no-deps -c constraints.txt . \
+  && python -c "import hashlib; from kaagaz.reading.ocr import devanagari_model_path; assert hashlib.sha256(devanagari_model_path().read_bytes()).hexdigest() == 'd6f0a906580e3fa6b324a318718f1f31f268b6ea8ef985f91c2012a37f52c91e', 'the Devanagari model is not the one expected'"
 
 COPY alembic.ini ./
 COPY migrations migrations
@@ -77,6 +92,6 @@ ENV FORWARDED_ALLOW_IPS="*"
 
 EXPOSE 8000
 # No "server: uvicorn" on a reply, and an idle connection kept 75 s, longer than Caddy keeps one
-# (keepalive 60s in infra/caddy/Caddyfile), so Caddy never reuses a connection uvicorn just closed
+# (transport keepalive 60s in infra/caddy/Caddyfile), so Caddy never reuses a connection uvicorn just closed
 # (a 502). docker-compose.yml's api command repeats these flags.
 CMD ["uvicorn", "kaagaz.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-server-header", "--timeout-keep-alive", "75"]

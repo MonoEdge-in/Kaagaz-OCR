@@ -1,4 +1,7 @@
+# path: frontend/Dockerfile
 # The frontend image: Next.js built once, then served with `next start` on 3000.
+# Built by CI (GitHub Actions) for amd64 and arm64 and pushed to ECR; servers only pull it.
+# One image serves staging and production: both build arguments below are the same for both.
 #
 # BACKEND_URL is read by next.config.ts when the app is built: Next.js writes
 # the /api rewrite into the build, so it is a build argument, not only a
@@ -18,12 +21,10 @@ RUN npm ci
 FROM node:24.22.2-slim AS build
 WORKDIR /app
 ARG BACKEND_URL=http://api:8000
-# Google Analytics on the public pages (#457 phase 4): Next.js writes a NEXT_PUBLIC_ value
-# into the build. Empty (the default, and the test server): no analytics.
-ARG NEXT_PUBLIC_GA_ID=
+# Google Analytics (#457 phase 4) is not baked in: the app reads GA_ID when it runs, from
+# the container's environment (docker-compose.yml), so one image serves every server.
 ENV BACKEND_URL=${BACKEND_URL} \
-    NEXT_PUBLIC_GA_ID=${NEXT_PUBLIC_GA_ID} \
-    NEXT_TELEMETRY_DISABLED=1
+  NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules node_modules
 COPY . .
 RUN npm run build
@@ -33,11 +34,14 @@ FROM node:24.22.2-slim
 WORKDIR /app
 ARG BACKEND_URL=http://api:8000
 ENV NODE_ENV=production \
-    NEXT_TELEMETRY_DISABLED=1 \
-    BACKEND_URL=${BACKEND_URL}
+  NEXT_TELEMETRY_DISABLED=1 \
+  BACKEND_URL=${BACKEND_URL}
 # The whole built app: .next, node_modules, next.config.ts (read again by
 # `next start`) and public/ if one is added later.
 COPY --from=build --chown=node:node /app ./
 USER node
 EXPOSE 3000
-CMD ["node_modules/.bin/next", "start", "--hostname", "0.0.0.0", "--port", "3000"]
+# Idle connections are kept 75 s, longer than Caddy keeps one (transport keepalive 60s in
+# infra/caddy/Caddyfile), so Caddy never reuses a connection Next.js just closed (a 502).
+# Node's own default is 5 s.
+CMD ["node_modules/.bin/next", "start", "--hostname", "0.0.0.0", "--port", "3000", "--keepAliveTimeout", "75000"]

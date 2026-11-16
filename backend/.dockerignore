@@ -1,12 +1,19 @@
-# Only pyproject.toml, kaagaz/, alembic.ini and migrations/ go into the image.
+# Kept out of the build context (CI uploads less, and nothing local leaks into the image).
+# The Dockerfile copies only pyproject.toml, constraints.txt, kaagaz/, alembic.ini and migrations/.
+.env
+.env.*
 .venv
+venv
 **/__pycache__
-**/*.py[cod]
+**/*.pyc
 .pytest_cache
 .mypy_cache
 .ruff_cache
+.coverage
+htmlcov
 tests
+build
+dist
+*.egg-info
 scripts
-.env
-.env.*
 *.log

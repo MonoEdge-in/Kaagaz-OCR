@@ -1,0 +1,15 @@
+{
+  "rules": [
+    {
+      "rulePriority": 1,
+      "description": "Keep the newest 60 images: about 20 releases (each is an index plus an amd64 and an arm64 image)",
+      "selection": {
+        "tagStatus": "tagged",
+        "tagPatternList": ["*"],
+        "countType": "imageCountMoreThan",
+        "countNumber": 60
+      },
+      "action": { "type": "expire" }
+    }
+  ]
+}

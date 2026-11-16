@@ -15,20 +15,20 @@
 	# Browsers then use only HTTPS for this site for a year (security checklist, 15 Oct 2026).
 	header Strict-Transport-Security "max-age=31536000"
 
-	# A deploy restarts api and frontend (infra/ec2/deploy.sh, #246 A7). While one cannot be
-	# reached, Caddy tries it again every half second for up to 30 s before giving up, so a
-	# request waits through the restart instead of failing at once. Only requests that never
-	# reached it are tried again, so nothing is sent twice.
-	# Streaming Ask (POST /api/chat/stream, #535) replies text/event-stream, which Caddy flushes
-	# as each event comes, so no flush_interval is needed. There is no encode (gzip) directive
-	# here, which would hold the events back.
+	# A deploy replaces api and frontend with docker rollout (infra/ec2/deploy.sh): for a moment
+	# two copies answer to the same name, then the old one stops. While one cannot be reached,
+	# Caddy tries again every half second for up to 30 s before giving up, so a request waits
+	# instead of failing at once. Only requests that never reached it are tried again, so
+	# nothing is sent twice.
+	#
+	# keepalive 60s: Caddy drops an idle connection to api or frontend after 60 s, before they
+	# do (75 s: uvicorn's --timeout-keep-alive, next start's --keepAliveTimeout), so it never
+	# sends a request down a connection the other side has just closed (a 502). Caddy's own
+	# default is 2 minutes, longer than both.
 	handle /api/* {
 		reverse_proxy api:8000 {
 			lb_try_duration 30s
 			lb_try_interval 500ms
-			# An idle connection is closed here after 60 s, before uvicorn's own 75 s
-			# (backend/Dockerfile), so Caddy never sends a request down one uvicorn just
-			# closed, which was a 502 (A5). Caddy's default is 2 minutes.
 			transport http {
 				keepalive 60s
 			}
@@ -39,6 +39,9 @@
 		reverse_proxy frontend:3000 {
 			lb_try_duration 30s
 			lb_try_interval 500ms
+			transport http {
+				keepalive 60s
+			}
 		}
 	}
 

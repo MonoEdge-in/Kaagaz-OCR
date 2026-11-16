@@ -1,7 +1,7 @@
 "use client";
 
 // The Google Analytics choice on the public pages (#457 phase 4), mounted by their frame
-// (app/login/AuthFrame.tsx) only when NEXT_PUBLIC_GA_ID is set. Nothing loads until Accept;
+// (app/login/AuthFrame.tsx) only when GA_ID is set. Nothing loads until Accept;
 // Accept and Decline are remembered on this browser (ga.ts). The banner sits in the
 // page under the form, so it never covers the form's buttons.
 

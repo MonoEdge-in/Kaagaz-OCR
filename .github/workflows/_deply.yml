@@ -1,0 +1,93 @@
+# Runs infra/ec2/deploy.sh for one service on the environment's EC2 server,
+# through SSM Run Command, and shows its output in this job's log.
+# Called by build-deploy.yml and deploy-tag.yml; not run on its own.
+#
+# The server is reached only through SSM: no SSH, no open port. The deploy role
+# may run only the Kaagaz-Deploy SSM document (infra/aws/ssm-document-kaagaz-deploy.json),
+# which does nothing but call deploy.sh with a checked service, commit and mode.
+name: Deploy (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      service:
+        type: string
+        required: true
+      tag:
+        type: string
+        required: true
+      mode:
+        description: "deploy (config from the commit, schema must match) or rollback (current config, a newer schema accepted)"
+        type: string
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: ${{ inputs.service }} → ${{ inputs.environment }} (${{ inputs.mode }})
+    runs-on: ubuntu-24.04
+    # The approval (production), the allowed branch and this environment's
+    # variables: AWS_DEPLOY_ROLE_ARN and EC2_INSTANCE_ID.
+    environment: ${{ inputs.environment }}
+    # One deploy per server at a time (deploy.sh also holds a lock).
+    concurrency:
+      group: ec2-${{ inputs.environment }}
+      cancel-in-progress: false
+    timeout-minutes: 45
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-south-1
+
+      - name: Run deploy.sh on the server
+        env:
+          INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          SERVICE: ${{ inputs.service }}
+          TAG: ${{ inputs.tag }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          params="$(jq -cn --arg s "$SERVICE" --arg t "$TAG" --arg m "$MODE" \
+            '{service: [$s], tag: [$t], mode: [$m]}')"
+          id="$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name Kaagaz-Deploy \
+            --comment "GitHub run $GITHUB_RUN_ID: $MODE $SERVICE $TAG" \
+            --parameters "$params" \
+            --query Command.CommandId --output text)"
+          echo "SSM command $id on $INSTANCE_ID"
+
+          # `aws ssm wait command-executed` gives up after about 100 s, and a
+          # backend deploy can take 15 minutes (workers finish their jobs first).
+          while :; do
+            status="$(aws ssm get-command-invocation --command-id "$id" --instance-id "$INSTANCE_ID" \
+              --query Status --output text 2>/dev/null || echo Pending)"
+            case "$status" in
+              Pending|InProgress|Delayed) sleep 10 ;;
+              *) break ;;
+            esac
+          done
+
+          echo "----- deploy.sh output -----"
+          aws ssm get-command-invocation --command-id "$id" --instance-id "$INSTANCE_ID" \
+            --query StandardOutputContent --output text
+          err="$(aws ssm get-command-invocation --command-id "$id" --instance-id "$INSTANCE_ID" \
+            --query StandardErrorContent --output text)"
+          if [[ -n $err && $err != None ]]; then
+            echo "----- deploy.sh errors -----"
+            echo "$err"
+          fi
+
+          echo "**$SERVICE** → $ENVIRONMENT ($MODE): \`$TAG\` — $status" >>"$GITHUB_STEP_SUMMARY"
+          if [[ $status != Success ]]; then
+            echo "::error::deploy.sh ended with $status"
+            exit 1
+          fi

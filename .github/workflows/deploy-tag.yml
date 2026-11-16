@@ -1,0 +1,56 @@
+# Rolls one service back (or forward again) to an image already in ECR, without
+# building (CI/CD Phase 3).
+#
+# Run it from the environment's branch (deploy/production or deploy/stage). The tags (commit
+# ids) are in the summary of each "Build and deploy" run, and in ECR.
+#
+# A rollback keeps the server's current compose files and Caddyfile, and accepts a
+# database AHEAD of the image: older code on a newer schema, safe only while
+# migrations only add (ADR 0052, M1). It still stops on a database BEHIND the image.
+name: Roll back (deploy an existing image)
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Which service
+        type: choice
+        options: [backend, frontend]
+      tag:
+        description: The image's commit id (40 characters)
+        type: string
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      environment: ${{ steps.plan.outputs.environment }}
+    steps:
+      - id: plan
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          case "$GITHUB_REF" in
+            refs/heads/deploy/production) environment=production ;;
+            refs/heads/deploy/stage) environment=staging ;;
+            *) echo "::error::Run this from deploy/production or deploy/stage, not $GITHUB_REF_NAME"; exit 1 ;;
+          esac
+          if [[ ! $TAG =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::'$TAG' is not a full commit id (40 hex characters)"
+            exit 1
+          fi
+          echo "environment=$environment" >>"$GITHUB_OUTPUT"
+
+  deploy:
+    needs: plan
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: ${{ needs.plan.outputs.environment }}
+      service: ${{ inputs.service }}
+      tag: ${{ inputs.tag }}
+      mode: rollback
