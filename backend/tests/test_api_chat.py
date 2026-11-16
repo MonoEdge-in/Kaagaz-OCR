@@ -403,7 +403,8 @@ def test_the_owner_renames_and_deletes_a_conversation_and_each_is_audited(db: Da
 
 
 @pytest.mark.db
-@pytest.mark.parametrize("question", ["", "   ", "x" * 1001])
+# Changed on purpose (#644): a longer question is answered, cut keeping its questions; past MAX_TYPED, 400.
+@pytest.mark.parametrize("question", ["", "   ", "x" * 20_001])
 def test_bad_questions_are_400(db: Database, question: str) -> None:
     api = Api(db)
     signed = api.new_signed()
