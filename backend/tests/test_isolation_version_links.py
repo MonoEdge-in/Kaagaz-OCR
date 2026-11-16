@@ -735,3 +735,17 @@ def test_the_confirm_step_counts_whom_the_files_are_given_to(db: Database) -> No
 
     assert preview("given", "fin") == {"losing": {plain}, "gaining": set()}
     assert preview("fin2", "given") == {"losing": set(), "gaining": {plain}}
+
+
+def test_undo_is_for_whoever_sees_every_version_not_only_the_one_asked(db: Database) -> None:
+    """Review 4: x, given to the Admin, linked into fin (Finance, which the Admin can't see): the
+    Admin still sees x through its gift, but Undo is the reply of a file that never was."""
+    org = _org(Api(db))
+    admin = org.people["admin"]
+    _give(db, org, "document_shares", "x", admin.user_id)
+    assert _link(org.people["management"], org, ["x", "fin"], "fin")[0] == 200
+    before = _everything(db, org)
+    hidden = _undo(admin, org, "x")
+    assert hidden[0] == 404
+    assert hidden == _post(admin, f"/documents/{uuid.uuid4()}/link-versions/undo")
+    assert _everything(db, org) == before

@@ -391,6 +391,8 @@ def prepare_undo(conn: Connection, customer_id: str, document_id: str) -> UndoPl
     if family is None:
         raise Refused("not_found")
     rows = {row["id"]: row for row in conn.execute(_STATE, {"c": c, "f": [family]}).mappings()}
+    if not all(row["seen"] for row in rows.values()):
+        raise Refused("not_found")  # review (#658): every version, not only the one asked
     if any(row["locked"] for row in rows.values()):
         raise Refused("locked")
     found = conn.execute(_NEWEST_LINK, {"c": c, "f": family}).first()
