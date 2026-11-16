@@ -56,6 +56,7 @@ from kaagaz.db import customer_purge
 from kaagaz.db import trashed_folders as trashed_sql
 from kaagaz.db import upload_sessions as upload_sessions_sql
 from kaagaz.db import users as users_sql
+from kaagaz.db import whatsapp as whatsapp_sql
 from kaagaz.db.documents import delete_forever
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.trash import customer_ids_with_trash, purge_next_family
@@ -135,6 +136,14 @@ def sweep_ended_sessions(db: Database, clock: Callable[[], datetime]) -> int:
     is refused by its own expiry now. Every organisation in one statement; how many."""
     with db.system() as conn:
         return users_sql.sweep_ended_sessions(conn, clock())
+
+
+def sweep_whatsapp(db: Database) -> int:
+    """Kaagaz on WhatsApp's retention (#603, ``kaagaz_whatsapp_sweep``), so it holds even while the
+    channel process is not running: connections no longer allowed or silent ended, old messages,
+    connections, codes and numbers deleted. Every organisation in one statement; how many rows."""
+    with db.system() as conn:
+        return whatsapp_sql.sweep(conn)
 
 
 def _purge_one_family(db: Database, storage: BlobStorage, customer_id: str, before: datetime) -> bool:

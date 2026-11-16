@@ -71,6 +71,7 @@ KINDS = (
     "ensemble_scan",
     "ensemble_chat",
     "land",  # PRD 6 D2 and D3: the land windows, on upload and in the land-facts re-read
+    "transcribe",  # #603 W6: a WhatsApp voice note written down, billed to the person who sent it
     ACCURACY_CHECK,
     ULC_SCAN,
 )

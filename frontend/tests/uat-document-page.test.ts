@@ -102,8 +102,10 @@ describe("5. Fix text: replace a [?] in the Text view", () => {
     const panel = read("components/viewer/ScannedTextPanel.tsx");
     // Changed on purpose (#431): the line's word mark before the line's own flag (wordToFix), and
     // Fix text only while the box is shut (fix-text-431.test.ts).
-    expect(panel).toContain("const toFix = first && onFix ? wordToFix(flags, line) : undefined;");
-    expect(panel).toMatch(/onClick=\{\(\) => openFix\(toFix, ask\.draft\)\}\s*>\s*Fix text/);
+    // Changed on purpose (#614): wordToFix is given the page's lines (a word is the smallest's).
+    expect(panel).toContain("const toFix = first && onFix ? wordToFix(flags, line, lines) : undefined;");
+    // Changed on purpose (#614): the box is the row's own (its index), so one box opens at a time.
+    expect(panel).toMatch(/onClick=\{\(\) => openFix\(toFix, ask\.draft, index\)\}\s*>\s*Fix text/);
     const view = read(VIEW);
     expect(view).toContain("onFix={review.status?.can_review && detail.deleted_at === null ? fixWord : undefined}");
     // Review fix (25 Oct 2026): only a person's edit shows as fixed; an Ensemble proposal keeps the text as read.

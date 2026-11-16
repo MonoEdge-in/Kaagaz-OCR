@@ -78,6 +78,11 @@ class UnknownFolder(Exception):
     """The record names a folder this customer does not have (never there, or deleted)."""
 
 
+class PlaceHidden(Exception):
+    """PRD 7 (#606, Q6): the record's folder is one whose files the uploader can't see (an Admin
+    sees every folder, not every file): the database rule refused the insert."""
+
+
 class UnknownFamily(Exception):
     """A new version names a document this customer does not have, or one whose
     family is in Trash, so there is no family to add it to."""

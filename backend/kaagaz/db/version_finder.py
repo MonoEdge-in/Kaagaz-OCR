@@ -27,7 +27,7 @@ organisation already has, in the worker, with no person (it reads tables, never 
   (``versions.groups``: strongest first, at most MAX_GROUP files), each file's place by its own
   date, else its upload date; the last is the suggested latest. Nothing is ever linked.
 * **A file locked, then unlocked, is not looked at again.** The lock deletes its pairs and its
-  place in a group (``kaagaz_clear_derived``, 0098), and the run has moved past it or finished
+  place in a group (``kaagaz_clear_derived``, 0099), and the run has moved past it or finished
   (once per organisation). Its read after the unlock is a read again, which spotting skips too, so
   it is suggested again only when a new version of it, or a near copy, is uploaded.
 """

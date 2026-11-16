@@ -205,6 +205,35 @@ def exhaustive_query(question: str) -> tuple[str, tuple[str, ...]] | None:
     return (term, kinds) if len(term) <= MAX_TERM_CHARS else None
 
 
+# #617 item 5: "which" words, never "all", "number" or "list" (they also ask about one value or
+# one document's items). kaun, कौन and kis also mean "who", so a document word must follow.
+_WHICH = _words(
+    {"which", "many"},  # "many" only after "how" (asks_documents)
+    {"kaun", "kaunse", "kaunsa", "kaunsi", "kon", "konse", "konsa", "konsi", "kis", "kin"},
+    {"konte", "kontya", "konti", "konta"},
+    {"कौन", "कौनसे", "कौनसा", "कौनसी", "कौन-से", "कौन-सा", "कौन-सी", "किन", "किस"},
+    {"कोणते", "कोणती", "कोणत्या", "कोणता"},
+)
+_WHICH_LINK = _words({"se", "si", "sa", "से", "सी", "सा"})  # "kaun se documents", "कौन से दस्तावेज़"
+
+
+def asks_documents(question: str) -> bool:
+    """Whether the question asks which (or how many) documents: a "which" word, or "how many",
+    then a document word, perhaps after "se" (कौन से), in any script ("which document have
+    krishna jindal name", "कोणत्या कागदपत्रात गट ६१ आहे", "kaun se documents"). The search then
+    answers from documents, each once (#617 item 5). O(n)."""
+    folded = [_fold(word) for word in spaced_words(fold_digits(question))]
+    for at, word in enumerate(folded):
+        if word not in _WHICH or (word == "many" and (at == 0 or folded[at - 1] != "how")):
+            continue
+        after = folded[at + 1 : at + 3]
+        right_after = bool(after) and after[0] in _THINGS
+        linked = len(after) == 2 and after[0] in _WHICH_LINK and after[1] in _THINGS
+        if right_after or linked:
+            return True
+    return False
+
+
 def latin_term(term: str) -> str:
     """The phrase's Latin spelling (``latin_spelling``, the recipe ``pieces.text_latin`` is
     stored with) when it has Devanagari letters, so जालना also finds a Latin text that spells
@@ -241,7 +270,7 @@ class Mentions(Protocol):
 
 # The pieces of the scope's current, ready documents out of Trash (hybrid.py's scope predicates).
 _IN_SCOPE = (
-    " FROM pieces p JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
+    " FROM pieces p JOIN visible_documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
     " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
@@ -290,7 +319,7 @@ _PIECES = text(
     " AND i.document_id = p.document_id AND i.check_status = 'failed') THEN 'needs_review' ELSE p.label END,"
     " d.doc_type, p.seq, p.context_header"
     " FROM pieces p"
-    " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
+    " JOIN visible_documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " CROSS JOIN (SELECT phraseto_tsquery('simple', :w) || phraseto_tsquery('simple', :l)) AS w (q)"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND p.document_id = ANY(CAST(:documents AS uuid[])) AND p.tsv_simple @@ w.q"

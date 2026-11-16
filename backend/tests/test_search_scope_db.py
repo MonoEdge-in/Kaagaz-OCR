@@ -202,6 +202,11 @@ def test_an_empty_array_in_the_sql_matches_nothing_too(db: Database) -> None:
         "ql": "INV-9001",
         "nums": "INV-9001",
         "n": 50,
+        # Changed on purpose (#617): the candidates' bounds, every document (the scope filters after).
+        "gc": "",
+        "gk": "",
+        "docs": None,
+        "cap": hybrid.CANDIDATE_CAP,
     }
     vector = {"c": customer, "vec": hybrid.vector_literal(axis(0)), "recipe": RECIPE, "n": 50}
     statements = [

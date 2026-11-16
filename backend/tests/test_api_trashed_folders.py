@@ -36,6 +36,7 @@ pytestmark = pytest.mark.db
 
 
 def _trash(signed: Signed, folder_id: str) -> httpx.Response:
+    # Changed on purpose (PR 9b, #606): an Admin deletes a folder with files they can't see, with the rule on.
     reply: httpx.Response = signed.client.delete(f"/api/folders/{folder_id}?contents=trash", headers=CSRF)
     assert reply.status_code == 200, reply.text
     return reply

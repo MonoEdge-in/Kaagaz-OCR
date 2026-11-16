@@ -60,14 +60,15 @@
 * ``verify-models [--model ID ...] [--embed-model ID] [--record]``:
   check PRD 5's verify items (section 14) against the live models through OpenRouter
   and the installed RapidOCR, and print ``VERIFY <id> PASS|FAIL|INFO <evidence>`` for
-  each (``kaagaz.verify_models``). It touches no file storage or queue, and no
-  database without ``--record``; it sends only pictures it draws itself, prints the
-  key only as set or missing, and exits 1 when an item FAILs. ``--model`` adds an
-  OpenRouter model ID to check, with the items a model must pass before the operator
-  can enable it (model choice, council 11 Oct 2026). ``--record``, with exactly one
-  ``--model``: when that model passes them all, its pass for the reader's prompt
-  version and its tokens per page are written to ``model_catalog`` as the owner
-  (``_owner``); the model must be in the catalogue (``refresh-models`` first).
+  each (``kaagaz.verify_models``). It touches no file storage or queue, and the
+  database only to read the stored parameters (#647) and for ``--record``; it sends
+  only pictures it draws itself, prints the key only as set or missing, and exits 1
+  when an item FAILs. ``--model`` adds an OpenRouter model ID to check, with the items
+  a model must pass before the operator can enable it (model choice, council 11 Oct
+  2026). ``--record``, with exactly one ``--model``: when that model passes them all,
+  its pass for the reader's prompt version and its tokens per page are written to
+  ``model_catalog`` as the owner (``_owner``); the model must be in the catalogue
+  (``refresh-models`` first).
   ``--chat`` (features 25-27) checks each ``--model`` for drafting answers instead, and
   ``--chat --record`` writes its pass for the answer prompt's hash the same way.
 * ``refresh-models``: read OpenRouter's model lists now and refresh ``model_catalog``
@@ -139,6 +140,14 @@
   the operations alerts' one rule (kaagaz.ops_alert); an email not sent fails the command.
 * ``ops-alert --subject S --text T``: the same with this subject and text (A22,
   infra/ec2/ops-alert.sh: a failed deploy or dump, an unhealthy container).
+* ``person-rule on|off|status [--customer ID | --all]`` (PRD 7, #606): the per-person database
+  rule's switch (``kaagaz.db.person_rule``), on the owner's own login (the migrate container).
+  ``on`` refuses until the workers run as kaagaz_worker; ``off`` (the way back) never refuses.
+  Both are logged and sent as an ops alert (a failed alert is said, never a failed command).
+  ``status`` lists where it is on. Ids only.
+* Every command that reads the database runs as the worker role (PRD 7, #606): DB_WORKER_ROLE,
+  else kaagaz_worker when the login may switch into it (the owner's, migrate's), else it refuses:
+  as kaagaz_app with no person it would see nothing once the rule is on.
 * ``queue-depth``: one line a lane (``main`` and ``express``) with its waiting, in-flight and
   delayed job counts, read from the queue (``SqsQueue.backlog``). It touches no database, file
   storage or model. The server's idle-stop reads it to stay awake while a job is in flight or a
@@ -157,6 +166,7 @@ import functools
 import getpass
 import hashlib
 import json
+import logging
 import math
 import os
 import sys
@@ -172,6 +182,7 @@ from typing import IO, Any, Protocol, TextIO
 
 import boto3
 from sqlalchemy import Connection, RowMapping, text
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 
 from kaagaz import ops_alert, verify_models
 from kaagaz.adapters.email import Mailer
@@ -182,7 +193,7 @@ from kaagaz.answering.draft import ANSWER_PROMPT_HASH
 from kaagaz.api import totp
 from kaagaz.api.auth import ROLES, hash_password
 from kaagaz.api.twostep import box
-from kaagaz.db import audit, customer_purge
+from kaagaz.db import audit, customer_purge, person_rule
 from kaagaz.db import customers as customers_sql
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import operator_models as operator_models_sql
@@ -190,6 +201,7 @@ from kaagaz.db import operators as operators_sql
 from kaagaz.db import users as users_sql
 from kaagaz.db.document_stories import recipe_tag as story_tag
 from kaagaz.db.engine import Database, make_engine
+from kaagaz.db.sqlstate import INSUFFICIENT_PRIVILEGE, sqlstate
 from kaagaz.extraction.checks import GSTIN_FIELDS, gstin_valid
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -255,7 +267,11 @@ LIMIT_NAMES = ("hard_lines_max", "hard_share", "crop_pad")
 BACKUP_REGION = "ap-south-1"
 BACKUP_PART_BYTES = 32 * 1024 * 1024
 # The commands that read the settings but no database.
+_log = logging.getLogger(__name__)
 NO_DATABASE = ("backup-files", "restore-files", "disk-alert", "ops-alert")
+# #647 review: verify-models waits at most this long for the database it reads the stored
+# parameters from; one that does not answer is said ``unknown``, never a failure.
+VERIFY_CONNECT_SECONDS = 3
 
 
 class CliError(Exception):
@@ -365,6 +381,12 @@ def _parser() -> argparse.ArgumentParser:
     prune.add_argument("--apply", action="store_true", help="delete them (default: only count them)")
 
     commands.add_parser("check-access", help="each stored department and private folder against the tree")
+
+    rule = commands.add_parser("person-rule", help="the per-person database rule's switch (owner only)")
+    rule.add_argument("action", choices=("on", "off", "status"))
+    where = rule.add_mutually_exclusive_group()
+    where.add_argument("--customer", help="one organisation's id")
+    where.add_argument("--all", action="store_true", help="every organisation")
 
     saving = commands.add_parser("cost-saving", help="what Cost saving read and saved in the last runs")
     saving.add_argument("--customer-id", "--customer", help="one customer only (default: every customer)")
@@ -1135,6 +1157,23 @@ def _refresh_models(db: Database, settings: Settings) -> str:
     )
 
 
+def _stored_parameters(db: Database) -> Callable[[str], str]:
+    """verify-models (#647): each model's stored parameters (``model_catalog.parameters``), read
+    once a run, as the endpoints item prints them: the names, ``none``, ``not read yet`` (NULL or
+    not in the catalogue) or ``unknown`` with the error's type when the database does not answer."""
+    try:
+        held = db.model_parameters()
+    except SQLAlchemyError as error:
+        said = f"unknown ({type(error).__name__})"
+        return lambda model: said
+
+    def printed(model: str) -> str:
+        names = held.get(model)
+        return "not read yet" if names is None else ",".join(sorted(names)) or "none"
+
+    return printed
+
+
 def _record_verified(db: Database, model: str, tokens_in: int, tokens_out: int) -> None:
     """verify-models --record: the model's pass for the reader's prompt version, as the
     owner (no app or operator role may write it), with one ``platform_audit`` row
@@ -1497,6 +1536,68 @@ def _disk_alert(settings: Settings, mailer: Mailer | None, used: int) -> None:
     )
 
 
+def _cli_role(engine: Any, settings: Settings) -> str:
+    """PRD 7 (#606): the worker role (module notes), or CliError."""
+    if settings.db_worker_role != settings.db_app_role:
+        return settings.db_worker_role
+    with engine.connect() as conn:
+        reaches = conn.execute(
+            text("SELECT pg_has_role(session_user, :w, 'MEMBER')"), {"w": person_rule.WORKER_ROLE}
+        ).scalar()
+    engine.dispose()  # a command that never reads the database leaves no open connection behind
+    if not reaches:
+        raise CliError(
+            f"the CLI runs as {person_rule.WORKER_ROLE}, which this login can't switch into: run it in the"
+            " migrate container (as kaagaz_app with no person it would see nothing under the database rule)"
+        )
+    return person_rule.WORKER_ROLE
+
+
+def _person_rule(db: Database, args: argparse.Namespace, settings: Settings, mailer: Mailer | None) -> str:
+    """person-rule (module notes), on the login itself (the owner's: nothing else may touch the
+    switch). Its line, and for on and off one log line and an ops alert, best effort."""
+    if args.action != "status" and not (args.all or args.customer):
+        raise CliError("say --customer ID or --all")
+    customer = None if args.all else args.customer
+    if customer is not None:
+        try:
+            uuid.UUID(customer)
+        except ValueError:
+            raise CliError("no such organisation") from None
+    try:
+        with db.engine.begin() as conn:
+            if args.action == "status":
+                rows = person_rule.status(conn)
+                said = [f"on for {c or 'every organisation'} since {at} by {by}" for c, at, by in rows]
+                return "\n".join(said) or "off"
+            if customer is not None and not person_rule.is_customer(conn, customer):
+                raise CliError("no such organisation")
+            if args.action == "on":
+                person_rule.turn_on(conn, customer, getpass.getuser())
+            else:
+                gone = person_rule.turn_off(conn, customer)
+                # Off for one organisation is no way back while the rule is on for every one.
+                if customer is not None and person_rule.on_everywhere(conn):
+                    raise CliError("still on for every organisation: use off --all")
+                if customer is not None and not gone:
+                    raise CliError("it was not on for that organisation")
+    except person_rule.Refused as refused:
+        raise CliError(f"person-rule on refused: {refused}") from None
+    except DBAPIError as error:
+        if sqlstate(error) == INSUFFICIENT_PRIVILEGE:
+            raise CliError("person-rule needs the owner's login: run it in the migrate container") from None
+        raise
+    line = f"person rule {args.action} for {customer or 'every organisation'}"
+    _log.warning(line, extra={"code": "person_rule"})
+    missing = ops_alert.missing(settings)
+    if missing is not None:
+        return f"{line} (no ops alert: {missing})"
+    sent = ops_alert.send_ops_alert(
+        settings, f"Kaagaz: {line}", line + "\n", purpose="person_rule", mailer=mailer
+    )
+    return line if sent else f"{line} (the ops alert was not sent: the log says why)"
+
+
 def _alert(settings: Settings, mailer: Mailer | None, subject: str, text: str, *, purpose: str) -> None:
     problem = ops_alert.missing(settings)
     if problem is not None:
@@ -1556,10 +1657,14 @@ def main(
         if args.command == "verify-models":  # no database either, but --record's one row
             checked = settings or Settings.from_env(env)
             record = record_chat = None
+            if args.record and len(set(args.model)) != 1:
+                raise CliError("--record checks exactly one --model")
+            # and the stored parameters its endpoints item prints (#647), as the worker role (PRD 7, #606)
+            owner = db or Database(
+                make_engine(checked.database_url, connect_timeout_seconds=VERIFY_CONNECT_SECONDS),
+                checked.db_worker_role,
+            )
             if args.record:
-                if len(set(args.model)) != 1:
-                    raise CliError("--record checks exactly one --model")
-                owner = db or Database(make_engine(checked.database_url), checked.db_worker_role)
                 if args.chat:
                     record_chat = functools.partial(_record_chat_verified, owner)
                 else:
@@ -1572,6 +1677,7 @@ def main(
                 record=record,
                 chat=args.chat,
                 record_chat=record_chat,
+                stored=_stored_parameters(owner),
             )
         if args.command == "queue-depth":  # the queue only, no database
             from kaagaz.adapters.queue import SqsQueue
@@ -1607,8 +1713,11 @@ def main(
             return 0
         if db is None:
             settings = settings or Settings.from_env(env)
-            db = Database(make_engine(settings.database_url), settings.db_worker_role)
-        if args.command == "refresh-models":
+            engine = make_engine(settings.database_url)
+            db = Database(engine, _cli_role(engine, settings))
+        if args.command == "person-rule":
+            stdout.write(_person_rule(db, args, settings or Settings.from_env(env), mailer) + "\n")
+        elif args.command == "refresh-models":
             stdout.write(_refresh_models(db, settings or Settings.from_env(env)) + "\n")
         elif args.command == "create-customer":
             password = _password(env, ADMIN_ENV_VAR, ask)

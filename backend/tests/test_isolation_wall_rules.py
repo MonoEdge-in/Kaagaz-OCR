@@ -30,7 +30,7 @@ from kaagaz.db import zip_unpacks as zip_sql
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database
 from kaagaz.ingestion.ports import DocumentRecord
-from tests.db_support import insert_folder, name_session, wait_until_blocked
+from tests.db_support import insert_folder, name_session, rule_on_everywhere, wait_until_blocked
 from tests.test_api_folder_upload_files import ResumableStorage, _fingerprint
 from tests.test_api_support import CSRF, PASSWORD, Api, Signed
 from tests.test_isolation_access_api import _audit, _call, _code, _email_api, _in_thread, _refused, _version
@@ -85,6 +85,8 @@ DOCUMENT_MOVES = [
     ("head", "sales", "finance", 403),  # into their department, from another place
     ("plain", "sales", "finance", 404),
     ("plain", "fin", "loose", 404),  # a file they can't see
+    ("plain", "given", "sales", 403),  # given to them, out of Department only Finance (read whole)
+    ("plain", "given", None, 403),
     ("member", "held", "sales", 200),  # held for them: theirs to file
     ("management", "held", "finance", 200),
 ]
@@ -97,6 +99,8 @@ def test_a_move_that_changes_who_sees_a_file_is_for_admins_management_and_heads(
     org = _walled(Api(db))
     document, folder, before = org.files[file], _target(org, into), _version(db, org.c)
     people = {name: _seen(_app(db), org.c, user) for name, user in _ids(org).items()}
+    # Changed on purpose (PR 9b, #606): an Admin moving a file into a place whose files they can't see,
+    # with the rule on (0092's kaagaz_admin_move_documents).
     reply = _call(org.people[who], "PATCH", f"/api/documents/{document}", {"folder_id": folder})
     assert reply[0] == status, reply
     if status == 403:
@@ -134,7 +138,10 @@ def test_rights_are_read_under_the_tree_lock(db: Database) -> None:
         assert thread.is_alive()
         conn.execute(text("UPDATE users SET management = false WHERE id = :u"), {"u": management.user_id})
     thread.join(timeout=20)
-    assert _code(out[0]) == (403, "move_changes_access"), out
+    # Changed on purpose (PR 9a, #606): with the database rule on, the file is gone from their
+    # sight under the tree lock too, so the refusal is the 404 of a file they can't see.
+    expected = (404, "not_found") if rule_on_everywhere() else (403, "move_changes_access")
+    assert _code(out[0]) == expected, out
 
 
 # --- the previews and the audit row ----------------------------------------------------------------
@@ -151,6 +158,8 @@ def test_the_file_preview_names_who_loses_and_gains_and_the_move_counts_the_same
     before = {name: document in _seen(_app(db), org.c, user) for name, user in _ids(org).items()}
     status, preview = _call(signed, "GET", f"/api/documents/{document}/move-preview?folder_id={folder}")
     assert status == 200 and set(preview) == {"losing", "gaining", "files"} and preview["files"] == 1
+    # Changed on purpose (PR 9b, #606): an Admin's move into Finance, whose files they can't see, with
+    # the rule on.
     assert _call(signed, "PATCH", f"/api/documents/{document}", {"folder_id": folder})[0] == 200
     after = {name: _place_sees(db, org, name, document) for name in before}
     gaining = {org.people[n].user_id for n in before if after[n] and not before[n]}
@@ -339,6 +348,27 @@ def test_a_join_inside_the_same_place_is_anyones(db: Database) -> None:
     assert reply[0] == 200, reply
 
 
+def test_a_join_or_undo_with_a_file_given_to_them_in_department_only_needs_the_right(db: Database) -> None:
+    """PR 9a (#606, merge review): the reviewer was given a Finance file. Joining an open file into
+    its family moves it into Finance, a folder they can't see; its Undo moves it out of Department
+    only Finance. Both change who sees it, with the database rule on too (read whole)."""
+    org = _walled(Api(db))
+    plain, new = org.people["plain"], org.files["top"]
+    suggestion = str(_owner(db, _SUGGEST, {"c": org.c, "d": new, "f": org.files["given"]})[0][0])
+    accept = f"/api/version-suggestions/{suggestion}/accept"
+    assert _code(_call(plain, "POST", accept, {})) == (403, "move_changes_access")
+    assert _place(db, new)[0] is None
+    assert _call(org.people["management"], "POST", accept, {})[0] == 200
+    assert _place(db, new)[0] == org.folders["finance"]
+    # Changed on purpose (#648, 0100): the join itself gives the joining version its family's people
+    # (kaagaz_version_joined), so the file given to them is given to them in this version already.
+    given = "SELECT 1 FROM document_shares WHERE customer_id = :c AND document_id = :d AND user_id = :u"
+    assert len(_owner(db, given, {"c": org.c, "d": new, "u": plain.user_id})) == 1
+    undo = _call(plain, "POST", f"/api/documents/{new}/version-undo", {})
+    assert _code(undo) == (403, "move_changes_access")
+    assert _place(db, new)[0] == org.folders["finance"]
+
+
 # --- #594's keep-delete: a warning, then confirm --------------------------------------------------
 
 
@@ -352,6 +382,7 @@ def test_a_keep_delete_that_changes_who_sees_it_warns_then_goes_ahead_when_confi
     url = f"/api/folders/{box}?contents=keep&to={finance}"
     assert _code(_call(admin, "DELETE", url)) == (409, "access_would_change")
     assert _place(db, inside)[0] == box
+    # Changed on purpose (PR 9b, #606): into Finance, whose files the Admin can't see, with the rule on.
     assert _call(admin, "DELETE", url + "&confirm=true")[0] == 200
     assert _place(db, inside)[0] == finance
     [details] = _moves(db, org, "folder.delete")
@@ -647,6 +678,22 @@ def test_me_says_whether_the_person_is_in_a_live_department(db: Database) -> Non
         assert me["access"]["in_department"] is inside, name
 
 
+def test_me_says_whether_the_organisation_keeps_files_to_some_people(db: Database) -> None:
+    """PR 11c (#604): "Ask your admin for access" waits for walls, so day one says nothing new. A
+    private folder the person can't see sets it for them too: it is the organisation's flag, read
+    from the table, not from what the person sees."""
+    api = Api(db)
+    c, first = api.customer()
+    member, admin = api.sign_in(c), api.admin_sign_in(c)
+    with db.customer(c) as conn:
+        vault = insert_folder(conn, c, first, "Vault")
+    for signed in (member, admin):
+        assert signed.client.get("/api/auth/me").json()["access"]["walled"] is False
+    _owner(db, "UPDATE folders SET private = true WHERE id = :f", {"f": vault})
+    for signed in (member, admin):
+        assert signed.client.get("/api/auth/me").json()["access"]["walled"] is True
+
+
 def test_making_a_folder_private_again_can_drop_people_named_before(db: Database) -> None:
     """The kept names: the Finance member, named before, dropped in the same step never sees the
     folder once it is private; one kept sees it again; an id not on the list is ignored."""
@@ -790,6 +837,7 @@ def test_a_confirmed_keep_delete_counts_who_loses_and_gains_and_an_admin_gaining
     box = _sub(db, org, "box", org.folders["sales"])
     api = Api(db)
     api.add_document(org.c, name="box.pdf", folder_id=box, uploaded_by=admin.user_id)
+    # Changed on purpose (PR 9b, #606): into Finance, whose files the Admin can't see, with the rule on.
     reply = _call(
         admin, "DELETE", f"/api/folders/{box}?contents=keep&to={org.folders['finance']}&confirm=true"
     )
@@ -799,6 +847,7 @@ def test_a_confirmed_keep_delete_counts_who_loses_and_gains_and_an_admin_gaining
     bills = _sub(db, org, "bills", org.folders["finance"])
     api.add_document(org.c, name="bill.pdf", folder_id=bills, uploaded_by=org.people["member"].user_id)
     url = f"/api/folders/{bills}?contents=keep&confirm=true"  # to the top level: the Admin gains it
+    # Changed on purpose (PR 9b, #606): a Finance file the Admin can't see moves, with the rule on.
     assert _code(_call(admin, "DELETE", url)) == (403, "password_required")
     assert _call(admin, "DELETE", url, {"password": PASSWORD})[0] == 200
     assert _moves(db, org, "folder.delete")[-1]["self"] is True

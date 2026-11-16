@@ -6,12 +6,17 @@
 // in the documents list (DocumentActions.tsx). The folders and tags load the first time
 // a dialog needs them. Move to Trash asks first, Cancel focused; focus goes back to the
 // menu button when a dialog shuts. The server checks every rule again.
+// PRD 7 (#604): Give access (an admin session) and Who can see this (an admin session, or the Head
+// of the file's department), before Move to Trash.
 // PRD 7 (PR 13): an Admin's Lock, after the menu's own items (LockDialog.tsx); a locked file
 // has its own screen, with Unlock (LockedDocument.tsx). Locked, this menu goes with the screen:
 // once the file is loaded again, focus goes to the locked screen's heading (onLocked).
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { RefObject } from "react";
+import { accessAbilities } from "@/components/access/abilities";
+import { AudiencePanel } from "@/components/access/AudiencePanel";
+import { GiveAccessDialog } from "@/components/access/GiveAccessDialog";
 import { BusyLabel } from "@/components/documents/BusyLabel";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { EditDialog, RowMenu } from "@/components/documents/DocumentActions";
@@ -50,14 +55,15 @@ export function DocumentMenu({
   /** Locked (PR 13): say it, load it again, and focus its locked screen's heading; else onChanged. */
   onLocked?(message: string): void;
 }) {
+  const { me } = useSession();
   const [editing, setEditing] = useState<EditAction | null>(null);
+  const [sharing, setSharing] = useState<"give" | "audience" | null>(null);
   const [trashing, setTrashing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [folders, setFolders] = useState<Folder[] | null>(null);
   const [tags, setTags] = useState<Tag[] | null>(null);
   const [locking, setLocking] = useState(false);
-  const { me } = useSession();
   const canLock = me.user.role === "admin" && me.session.scope === "admin" && detail.deleted_at === null;
   const items = canLock
     ? [...(more ?? []), { label: LOCK_TEXT.menu, hint: LOCK_TEXT.menuHint, onSelect: () => setLocking(true) }]
@@ -69,6 +75,7 @@ export function DocumentMenu({
     [buttonRef],
   );
   const tree = useMemo(() => buildTree(folders ?? []), [folders]);
+  const abilities = accessAbilities(me, { departmentId: detail.department?.id ?? null });
   const needsLists = editing !== null && folders === null;
 
   useEffect(() => {
@@ -105,6 +112,7 @@ export function DocumentMenu({
         (caught: unknown) => setError(failed(caught)),
       );
     } else if (action === "rename" || action === "move" || action === "tags") setEditing(action);
+    else if (action === "give" || action === "audience") setSharing(action);
   }
 
   function trash() {
@@ -132,7 +140,30 @@ export function DocumentMenu({
         more={items}
         onPick={pick}
         toggleRef={holdToggle}
+        access={abilities}
       />
+      {sharing === "give" && (
+        <GiveAccessDialog
+          files={[detail]}
+          myId={me.user.id}
+          onClose={() => setSharing(null)}
+          onClosed={() => buttonRef.current?.focus()}
+          onGiven={(message) => {
+            setSharing(null);
+            onChanged(message);
+          }}
+        />
+      )}
+      {sharing === "audience" && (
+        <AudiencePanel
+          target={{ kind: "document", id: detail.id, name: detail.display_name }}
+          myId={me.user.id}
+          abilities={abilities}
+          onClose={() => setSharing(null)}
+          onClosed={() => buttonRef.current?.focus()}
+          onChanged={onChanged}
+        />
+      )}
       {error && !trashing && (
         <p className="error-text" role="alert">
           {error}

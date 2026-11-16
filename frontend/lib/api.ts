@@ -15,6 +15,16 @@ import type {
   ActivityPage,
   AddedUser,
   AdminChange,
+  AdminDepartment,
+  DepartmentMember,
+  PersonAccess,
+  PlacePreview,
+  HiddenMove,
+  MovePreview,
+  Audience,
+  AudienceCheck,
+  NamedList,
+  KeptFromMe,
   AdminCreated,
   AdminStorage,
   AdminUser,
@@ -126,6 +136,9 @@ import type {
   TestModel,
   TwoStepSetup,
   WaysToSignIn,
+  WhatsAppAdmin,
+  WhatsAppCode,
+  WhatsAppMe,
   UploadLimits,
   UploadReading,
   UploadResult,
@@ -340,6 +353,22 @@ export const removeIdentity = (id: string, password?: string) =>
     password === undefined ? {} : { password },
   );
 
+// Kaagaz on WhatsApp (#603): Account, WhatsApp. The proof (password and code, or Google) is kept
+// 10 minutes in a cookie only /api/whatsapp reads.
+export const whatsappMe = () => request<WhatsAppMe>("GET", "/whatsapp/me");
+export const proveForWhatsApp = (password: string, code?: string) =>
+  request<{ proved: true }>("POST", "/whatsapp/prove", { password, ...(code === undefined ? {} : { code }) });
+/** For one who signs in with Google only: the code first (two-step on), then Google's address to open. */
+export const proveWithGoogle = (code?: string) =>
+  request<{ url: string }>("POST", "/whatsapp/prove/google", code === undefined ? {} : { code });
+export const askWhatsAppCode = (number: string, way: "sent" | "phone") =>
+  request<WhatsAppCode>("POST", "/whatsapp/codes", { number, agreed: true, way });
+export const verifyWhatsAppCode = (code: string) => request<WhatsAppMe>("POST", "/whatsapp/codes/verify", { code });
+export const phoneCodeState = () =>
+  request<{ state: "waiting" | "confirmed" | "expired" }>("GET", "/whatsapp/codes/phone");
+export const confirmPhoneCode = () => request<WhatsAppMe>("POST", "/whatsapp/codes/phone/confirm");
+export const disconnectWhatsApp = () => request<WhatsAppMe>("POST", "/whatsapp/disconnect");
+
 /** The first code from the set-up (sign-in or sign-up) turns two-step on and signs in. */
 export const adminEnrol = (enrolToken: string, code: string) =>
   request<Me>("POST", "/auth/admin/enrol", { enrol_token: enrolToken, code });
@@ -421,6 +450,12 @@ export const deleteDocumentForever = (id: string) =>
  * level. Renaming, moving, tagging and a new version are refused in Trash
  * (409 in_trash).
  */
+/** A move (PRD 7, #601): an admin who moves a file where they can't see it gets `{id, hidden:
+ * true}`, not the file; the move stands. */
+export const moveDocument = (id: string, folderId: string | null) =>
+  request<DocumentSummary | HiddenMove>("PATCH", `/documents/${id}`, { folder_id: folderId });
+export const isHiddenMove = (reply: DocumentSummary | HiddenMove): reply is HiddenMove =>
+  "hidden" in reply && reply.hidden === true;
 export const updateDocument = (
   id: string,
   changes: {
@@ -559,12 +594,6 @@ export const savePageTurnsForEveryone = (
     changes,
     user_id: userId,
   });
-/** Every page back as scanned, for everyone (#600). */
-export const resetPageTurnsForEveryone = (id: string, userId: string) =>
-  request<{ page_turns: PageTurnSaved[] }>(
-    "DELETE",
-    `/documents/${encodeURIComponent(id)}/page-turns${query({ user_id: userId })}`
-  );
 
 /**
  * Upload one file with progress (fetch cannot report upload progress, XHR can),
@@ -970,21 +999,30 @@ export const createFolder = (
     ...(parentId ? { parent_id: parentId } : {}),
     ...(department ? { kind: "department", sort_order: department.sort_order } : {}),
   });
-/** Rename, move or order. An explicit parent_id: null moves the folder to the top level. */
+/** Rename, move or order. An explicit parent_id: null moves the folder to the top level. PRD 7
+ * (#601): a move that opens what it holds to the admin making it takes their `password` (403
+ * password_required without it). */
 export const updateFolder = (
   id: string,
-  changes: { name?: string; parent_id?: string | null; sort_order?: number | null },
+  changes: { name?: string; parent_id?: string | null; sort_order?: number | null; password?: string },
 ) => request<Folder>("PATCH", `/folders/${id}`, changes);
 export const deleteFolder = (id: string) => request<void>("DELETE", `/folders/${id}`);
 /** #537, an admin's: move what is inside to `to` (null: the top level) or send it all to Trash,
- * then delete the folder. The reply: what moved, or the files that went to Trash. */
+ * then delete the folder. The reply: what moved, or the files that went to Trash. PRD 7 (#601): a
+ * keep that changes who can see it is 409 access_would_change until it is sent with `confirm`;
+ * a confirmed one that opens it to the admin takes their `password` (403 password_required). */
 export const deleteFolderWithContents = (
   id: string,
-  what: { contents: "keep"; to: string | null } | { contents: "trash" },
+  what: { contents: "keep"; to: string | null; confirm?: boolean; password?: string } | { contents: "trash" },
 ) =>
   request<{ files: number; folders: number }>(
     "DELETE",
-    `/folders/${id}${query({ contents: what.contents, to: what.contents === "keep" ? (what.to ?? undefined) : undefined })}`,
+    `/folders/${id}${query({
+      contents: what.contents,
+      to: what.contents === "keep" ? (what.to ?? undefined) : undefined,
+      confirm: what.contents === "keep" && what.confirm ? true : undefined,
+    })}`,
+    what.contents === "keep" && what.password !== undefined ? { password: what.password } : undefined,
   );
 export const folderSummary = (id: string) => request<FolderSummary>("GET", `/folders/${id}/summary`);
 /** #542: Trash's folders; one opened (its files: listDocuments with trashed_folder_id); Restore puts
@@ -1255,7 +1293,8 @@ export function randomId(): string {
  * once `started` has come, the server finishes and saves the answer anyway, so it is fetched
  * from that conversation (savedAnswer), never asked again; before `started`, it asks POST /chat
  * once instead. No error when either works. Stop (`signal`) aborts any of them and never falls
- * back: the server still saves the answer.
+ * back: the server still saves the answer. `questionId`: Ask's own retry (hotfix, 15 Nov 2026)
+ * sends its first try's again, so a try the server saved is answered from that save.
  */
 export async function askStream(
   question: string,
@@ -1265,8 +1304,9 @@ export async function askStream(
   reply: ClarifyReply | undefined,
   signal: AbortSignal | undefined,
   onEvent: (event: StreamEvent) => void,
+  questionId: string = randomId(),
 ): Promise<ChatResponse> {
-  const body = chatBody(question, conversationId, scope, choice, reply, randomId());
+  const body = chatBody(question, conversationId, scope, choice, reply, questionId);
   try {
     return await streamChat(body, signal, onEvent);
   } catch (caught) {
@@ -1402,6 +1442,84 @@ export const declineConnection = (id: string) =>
 /** Every connected account of this person goes, and they are signed out; the password stays. */
 export const removeConnections = (id: string) =>
   request<AdminUser>("POST", `/admin/users/${encodeURIComponent(id)}/remove-connections`);
+// Kaagaz on WhatsApp (#603): the Admin's switches and who is connected. Turning it on needs the password.
+export const adminWhatsApp = () => request<WhatsAppAdmin>("GET", "/admin/whatsapp");
+export const saveAdminWhatsApp = (
+  settings: Pick<WhatsAppAdmin, "enabled" | "roles" | "management" | "voice" | "uploads">,
+  password?: string, // with the data rules tick: turning it on
+) =>
+  request<WhatsAppAdmin>("PUT", "/admin/whatsapp", {
+    ...settings,
+    ...(password === undefined ? {} : { password, rules_confirmed: true }),
+  });
+export const adminDisconnectWhatsApp = (userId: string) =>
+  request<WhatsAppAdmin>("POST", `/admin/whatsapp/${encodeURIComponent(userId)}/disconnect`);
+
+// --- access (PRD 7, #601) --------------------------------------------------------------------
+// Every write that can give the admin themselves access takes their `password` (403
+// password_required without it; components/access/passwordStep.ts).
+
+/** A path part: an id typed into the address bar may hold "/" or "?". */
+const segment = (part: string) => encodeURIComponent(part);
+export const getPersonAccess = (userId: string) => request<PersonAccess>("GET", `/admin/users/${segment(userId)}/access`);
+export const setManagement = (userId: string, on: boolean, password?: string) =>
+  request<AdminUser>("PUT", `/admin/users/${segment(userId)}/management`, { on, password });
+/** Adds the person to the department, or sets their Head tick; `head` left out keeps the tick. */
+export const putMembership = (userId: string, departmentId: string, change: { head?: boolean; password?: string } = {}) =>
+  request<{ head: boolean; changed: boolean }>("PUT", `/admin/users/${segment(userId)}/departments/${segment(departmentId)}`, change);
+export const removeMembership = (userId: string, departmentId: string) =>
+  request<void>("DELETE", `/admin/users/${segment(userId)}/departments/${segment(departmentId)}`);
+export const listAdminDepartments = () =>
+  request<{ items: AdminDepartment[]; keeps_files_to_some_people: boolean }>("GET", "/admin/departments");
+export const listDepartmentMembers = (departmentId: string) =>
+  request<{ items: DepartmentMember[] }>("GET", `/admin/departments/${segment(departmentId)}/members`);
+export const departmentOnlyPreview = (departmentId: string, on: boolean) =>
+  request<PlacePreview>("GET", `/admin/departments/${segment(departmentId)}/department-only/preview${query({ on })}`);
+export const setDepartmentOnly = (departmentId: string, on: boolean, password?: string) =>
+  request<{ department_only: boolean; members: number; warnings: string[] }>(
+    "PUT",
+    `/admin/departments/${segment(departmentId)}/department-only`,
+    { on, password },
+  );
+export const addNamed = (folderId: string, userId: string, password?: string) =>
+  request<{ changed: boolean }>("PUT", `/folders/${segment(folderId)}/named/${segment(userId)}`, { password });
+export const removeNamed = (folderId: string, userId: string) =>
+  request<void>("DELETE", `/folders/${segment(folderId)}/named/${segment(userId)}`);
+export const giveFile = (documentId: string, userId: string, password?: string) =>
+  request<{ versions: number; changed: boolean }>("PUT", `/documents/${segment(documentId)}/shares/${segment(userId)}`, { password });
+export const takeFile = (documentId: string, userId: string) =>
+  request<void>("DELETE", `/documents/${segment(documentId)}/shares/${segment(userId)}`);
+
+// PR 11b: the library's access.
+/** Give files to people at once (at most 100 files and 20 people): how many pairs were new. */
+export const giveFiles = (documentIds: readonly string[], userIds: readonly string[], password?: string) =>
+  request<{ given: number }>("POST", "/documents/shares", { document_ids: documentIds, user_ids: userIds, password });
+export type AudienceKind = "documents" | "folders";
+export const getAudience = (kind: AudienceKind, id: string) => request<Audience>("GET", `/${kind}/${segment(id)}/audience`);
+export const checkAudience = (kind: AudienceKind, id: string, userId: string) =>
+  request<AudienceCheck>("GET", `/${kind}/${segment(id)}/audience${query({ user_id: userId })}`);
+/** An admin session's alone: the files here they can't open, names only (anyone else: 403/404). */
+export const keptFromMe = (folderId: string) => request<KeptFromMe>("GET", `/folders/${segment(folderId)}/kept-from-me`);
+export const listNamed = (folderId: string) => request<NamedList>("GET", `/folders/${segment(folderId)}/named`);
+/** Who would lose and gain the folder's files were it private (`on`), with `named` named now. */
+export const privatePreview = (folderId: string, on: boolean, named: readonly string[] = []) =>
+  request<PlacePreview>("GET", `/folders/${segment(folderId)}/private/preview${query({ on, named })}`);
+/** Make it private, naming people on it (and, PR 10c, `dropNamed`: people named before taken off in
+ * the same transaction; sent only when there are some), or open again (`named` only with `on`). */
+export const setPrivate = (folderId: string, on: boolean, named: readonly string[], password?: string, dropNamed: readonly string[] = []) =>
+  request<{ private: boolean; named: Person[]; you_lose_access: boolean }>("PUT", `/folders/${segment(folderId)}/private`, {
+    on,
+    named,
+    ...(dropNamed.length ? { drop_named: dropNamed } : {}),
+    password,
+  });
+/** PRD 7 PR 10c (#601): who would lose and gain a file, or what a folder holds, were it moved into
+ * `into` (null: the top level). The person a file is held for gets counts only (`losing_count`,
+ * `gaining_count`, empty lists); someone who may not make such a move gets 403. */
+export const documentMovePreview = (documentId: string, into: string | null) =>
+  request<MovePreview>("GET", `/documents/${segment(documentId)}/move-preview${query({ folder_id: into ?? undefined })}`);
+export const folderMovePreview = (folderId: string, into: string | null) =>
+  request<MovePreview>("GET", `/folders/${segment(folderId)}/move-preview${query({ parent_id: into ?? undefined })}`);
 /** ``autofileOn`` left out: the switch is left as it is (feature 28). ``google`` (#507), when
  * given, replaces the three Google sign-in rules; left out, they stay. */
 export const updateSettings = (maxUploadMb: number | null, autofileOn?: boolean, google?: GoogleRulesChange) =>
@@ -1416,6 +1534,7 @@ export type AuditParams = {
   offset?: number;
   cursor?: string;
   user_id?: string; // who did it
+  subject_id?: string; // PRD 7 (#601): whom it is about
   folder_id?: string; // with its subfolders
   document_id?: string;
   action?: readonly string[];
@@ -1427,6 +1546,9 @@ export const listAudit = (params: AuditParams = {}) =>
 /** A6 Export to Excel: the filtered rows as CSV, streamed; logged as audit.export. */
 export const auditExportUrl = (params: AuditParams) =>
   `/api/admin/audit/export${query({ ...params, limit: undefined, offset: undefined, cursor: undefined })}`;
+/** PRD 7 (#601): access changes, newest first, for Admins and Management; no export. */
+export const listAccessActivity = (cursor?: string) =>
+  request<ActivityPage>("GET", `/access/activity${query({ cursor })}`);
 export const getStats = () => request<Stats>("GET", "/admin/stats");
 /** #386: each member of the admin's own organisation with what they did in the period. */
 export const getMemberNumbers = (period: MemberPeriod) =>

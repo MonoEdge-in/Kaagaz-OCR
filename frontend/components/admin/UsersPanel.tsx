@@ -23,12 +23,33 @@
 // Add a user says, under the role, that the person connects Google after choosing a password,
 // while Google sign-in is on for that role (the rules from Settings, read when the form opens).
 //
+// #603: while the server has WhatsApp on, a WhatsApp column (the last 4 digits and since when) and
+// "Disconnect WhatsApp" in a connected person's menu, asked first; the bot tells them once.
+//
 // A reset password comes back once, in the reply. It is shown in a card above
 // the list, with Copy, until Done or until the tab is left; it is never stored.
+//
+// PRD 7 (#604): an Access column (Management, then the person's departments), read only; the
+// menu's Access opens their Access page, where it is changed; Make or Stop Management asks first
+// (on yourself, Make Management asks for your password too), hidden for a turned-off account.
 
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import type { FormEvent } from "react";
+import { asksFirst } from "@/components/access/passwordStep";
+import { usePasswordStep } from "@/components/access/SelfPasswordDialog";
+import {
+  MANAGEMENT_CHIP,
+  MANAGEMENT_MEANS,
+  MANAGEMENT_TITLE,
+  MANAGEMENT_WHAT,
+  accessErrorText,
+  departmentsText,
+  makeManagementQuestion,
+  managementToast,
+  stopManagementQuestion,
+} from "@/components/access/words";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { useMinuteNow } from "@/components/chat/hooks";
 import { roleName } from "@/components/shell/nav";
@@ -38,6 +59,8 @@ import { IconButton } from "@/components/ui/IconButton";
 import { PasswordField } from "@/components/ui/PasswordField";
 import {
   ApiError,
+  adminDisconnectWhatsApp,
+  adminWhatsApp,
   approveConnection,
   createUser,
   declineConnection,
@@ -48,13 +71,14 @@ import {
   resetUser2fa,
   resetUserPassword,
   setDeleteForever,
+  setManagement,
   unlockUser,
   updateUser,
 } from "@/lib/api";
 import { DRAFT_KEPT, clearDraft, readDraft, saveDraftSoon } from "@/lib/drafts";
 import { errorWords } from "@/lib/errorWords";
 import { formatDate } from "@/lib/format";
-import type { AddedUser, AdminUser, GoogleRules, PendingConnection, Role } from "@/lib/types";
+import type { AddedUser, AdminUser, GoogleRules, PendingConnection, Role, WhatsAppAdmin } from "@/lib/types";
 import table from "@/components/documents/Table.module.css";
 import { CopyButton } from "./CopyButton";
 import { MoreRows, useRowCap } from "./RowCap";
@@ -89,6 +113,8 @@ import {
   validateNewUser,
 } from "./logic";
 import type { NewUserErrors, NewUserInput } from "./logic";
+import { whatsappCellState } from "./whatsappSettings";
+import type { WhatsAppCellState, WhatsAppLoad } from "./whatsappSettings";
 import styles from "./Admin.module.css";
 
 const SKELETON_ROWS = [0, 1, 2];
@@ -101,15 +127,18 @@ interface Revealed {
   password: string;
 }
 
-/** providers: the sign-in providers switched on (Me's), named in Remove connected accounts. */
+/** providers: the sign-in providers switched on (Me's), named in Remove connected accounts.
+ * whatsapp: the server has WhatsApp on (Me's), so the WhatsApp column shows. */
 export function UsersPanel({
   currentUserId,
   adminTwoStep,
   providers,
+  whatsapp = false,
 }: {
   currentUserId: string;
   adminTwoStep: boolean;
   providers: readonly string[];
+  whatsapp?: boolean;
 }) {
   const [attempt, setAttempt] = useState(0);
   const [users, setUsers] = useState<AdminUser[] | null>(null);
@@ -121,6 +150,20 @@ export function UsersPanel({
   // Rounded to the minute, so "Locked until" and Unlock clear on their own.
   const now = useMinuteNow();
   const cap = useRowCap();
+  const [connected, setConnected] = useState<WhatsAppLoad>("loading");
+  const [whatsAppAttempt, setWhatsAppAttempt] = useState(0);
+
+  useEffect(() => {
+    if (!whatsapp) return;
+    let live = true;
+    adminWhatsApp().then(
+      (reply) => live && setConnected(reply.people),
+      () => live && setConnected("failed"), // the column says so, with Try again; never "Not connected"
+    );
+    return () => {
+      live = false;
+    };
+  }, [whatsapp, whatsAppAttempt]);
 
   useEffect(() => {
     let cancelled = false;
@@ -208,12 +251,20 @@ export function UsersPanel({
                   <th scope="col" role="columnheader" className={styles.roleColumn}>
                     Role
                   </th>
+                  <th scope="col" role="columnheader">
+                    Access
+                  </th>
                   <th scope="col" role="columnheader" className={styles.statusColumn}>
                     Status
                   </th>
                   <th scope="col" role="columnheader">
                     Signs in with
                   </th>
+                  {whatsapp && (
+                    <th scope="col" role="columnheader">
+                      WhatsApp
+                    </th>
+                  )}
                   <th scope="col" role="columnheader" className={styles.addedColumn}>
                     Added
                   </th>
@@ -228,8 +279,15 @@ export function UsersPanel({
                     key={user.id}
                     user={user}
                     isSelf={user.id === currentUserId}
+                    myId={currentUserId}
                     adminTwoStep={adminTwoStep}
                     providers={providers}
+                    whatsapp={whatsapp ? whatsappCellState(connected, user.id) : null}
+                    onWhatsApp={(reply) => setConnected(reply.people)}
+                    onWhatsAppRetry={() => {
+                      setConnected("loading");
+                      setWhatsAppAttempt((n) => n + 1);
+                    }}
                     now={now}
                     onChanged={replace}
                     onPasswordReset={setRevealed}
@@ -267,7 +325,7 @@ export function UsersPanel({
 
 /** Disabling and the two resets ask first (each signs the user out on every device), and
  * so does allowing Delete forever (UI audit AD2: every action that takes something away). */
-type Confirming = "disable" | "password" | "2fa" | "forever" | "connections";
+type Confirming = "disable" | "password" | "2fa" | "forever" | "connections" | "whatsapp" | "makeManagement" | "stopManagement";
 
 const CONFIRM_TEXT: Record<Confirming, (name: string, providers: readonly string[], ways?: readonly string[]) => string> = {
   connections: (name, providers) => removeConnectionsQuestion(name, providers),
@@ -276,6 +334,9 @@ const CONFIRM_TEXT: Record<Confirming, (name: string, providers: readonly string
   "2fa": (name) =>
     `Reset ${name}'s two-step code? They are signed out, and can sign in with their password, then set up a new code.`,
   forever: allowForeverQuestion,
+  whatsapp: (name) => `Disconnect ${name}'s WhatsApp? Their chat can no longer reach Kaagaz. The Kaagaz bot tells them once.`,
+  makeManagement: makeManagementQuestion,
+  stopManagement: stopManagementQuestion,
 };
 
 // Plain words (25 Oct 2026): the confirm button says the menu item's own verb, and the
@@ -286,6 +347,9 @@ const CONFIRM_BUTTON: Record<Confirming, string> = {
   "2fa": "Reset two-step code",
   forever: "Allow Delete forever",
   connections: "Remove connected accounts",
+  whatsapp: "Disconnect WhatsApp",
+  makeManagement: "Make Management",
+  stopManagement: "Stop Management",
 };
 
 /** What each item in a user's menu does, in one plain line under it (plain words, 25 Oct 2026). */
@@ -298,13 +362,43 @@ export const USER_MENU_HELP = {
   twoStep: "For a lost phone: turns off their two-step code and signs them out, so they can set up a new one.",
   disable: "Signs them out and stops them signing in until you enable them again.",
   connections: "Stops them signing in with Google. Their password still works.",
+  whatsapp: "Their WhatsApp chat can no longer reach their files. They can connect it again.",
+  // PRD 7 (#604)
+  access: "See and change which departments, private folders and files they can see.",
+  makeManagement: "They see every file in the organisation.",
+  stopManagement: "They see only their departments' files and files given to them.",
 } as const;
+
+/** PRD 7 (#604): Make or Stop Management, or neither for a turned-off account (409 disabled). */
+export function managementItem(user: AdminUser): "make" | "stop" | null {
+  if (user.disabled) return null;
+  return user.management ? "stop" : "make";
+}
+
+/** The Access column: a Management chip, then their departments ("Finance (head), Sales"). */
+export function AccessCell({ user }: { user: AdminUser }) {
+  return (
+    <span className={styles.statusList}>
+      {user.management && (
+        <span className="status-chip" data-tone="working" title={MANAGEMENT_TITLE}>
+          {MANAGEMENT_CHIP}
+          <span className="visually-hidden">{MANAGEMENT_MEANS}</span>
+        </span>
+      )}
+      <span>{departmentsText(user.departments ?? [])}</span>
+    </span>
+  );
+}
 
 function UserRow({
   user,
   isSelf,
+  myId,
   adminTwoStep,
   providers,
+  whatsapp,
+  onWhatsApp,
+  onWhatsAppRetry,
   now,
   onChanged,
   onPasswordReset,
@@ -312,8 +406,13 @@ function UserRow({
 }: {
   user: AdminUser;
   isSelf: boolean;
+  myId: string;
   adminTwoStep: boolean;
   providers: readonly string[];
+  /** Their WhatsApp cell (loading, failed, none, connected); null while the server has WhatsApp off. */
+  whatsapp: WhatsAppCellState | null;
+  onWhatsApp(reply: WhatsAppAdmin): void;
+  onWhatsAppRetry(): void;
   now: number;
   onChanged: (user: AdminUser) => void;
   onPasswordReset: (revealed: Revealed) => void;
@@ -321,6 +420,26 @@ function UserRow({
 }) {
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState<Confirming | null>(null);
+  const router = useRouter();
+  const passwordStep = usePasswordStep();
+
+  /** Management on or off; making yourself Management asks for your password first. */
+  async function management(on: boolean) {
+    setConfirming(null);
+    setBusy(true);
+    try {
+      const first = asksFirst({ myId, targetId: user.id, on });
+      const row = await passwordStep.run(MANAGEMENT_WHAT, (password) => setManagement(user.id, on, password), first);
+      if (row) {
+        onChanged(row);
+        onNotice({ text: managementToast(user.display_name, on) });
+      }
+    } catch (caught) {
+      onNotice({ problem: true, text: accessErrorText(caught) });
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function act(send: () => Promise<AdminUser>, done: string) {
     setBusy(true);
@@ -342,10 +461,12 @@ function UserRow({
     act(() => updateUser(user.id, changes), done);
 
   const confirmed = (kind: Confirming) => {
+    if (kind === "makeManagement" || kind === "stopManagement") return management(kind === "makeManagement");
     if (kind === "disable") return change({ disabled: true }, "disabled.");
     if (kind === "forever") return act(() => setDeleteForever(user.id, true), "Delete forever allowed.");
     if (kind === "2fa") return act(() => resetUser2fa(user.id), "two-step code reset.");
     if (kind === "connections") return act(() => removeConnections(user.id), "connected accounts removed.");
+    if (kind === "whatsapp") return disconnectWhatsApp();
     return act(async () => {
       const reset = await resetUserPassword(user.id);
       onPasswordReset({ name: user.display_name, password: reset.temporary_password });
@@ -353,12 +474,33 @@ function UserRow({
     }, "password reset.");
   };
 
+  async function disconnectWhatsApp() {
+    setBusy(true);
+    try {
+      onWhatsApp(await adminDisconnectWhatsApp(user.id));
+      onNotice({ text: `${user.display_name}: WhatsApp disconnected.` });
+    } catch (caught) {
+      onNotice({ problem: true, text: errorWords(caught) });
+    } finally {
+      setBusy(false);
+      setConfirming(null);
+    }
+  }
+
   const can = userActions(user, { isSelf, now });
   const forever = foreverControl(user, { isSelf, adminTwoStep });
   const reason = forever.kind === "allow" ? forever.disabledReason : null;
   const selectId = `role-${user.id}`;
+  const managing = managementItem(user);
   // AD2: one menu per row. Safe actions first; the one that takes something away last, apart.
   const items: RowMenuItem[] = [
+    { label: "Access", description: USER_MENU_HELP.access, onSelect: () => router.push(`/admin/people/${user.id}`) },
+    ...(managing === "make"
+      ? [{ label: "Make Management", description: USER_MENU_HELP.makeManagement, onSelect: () => setConfirming("makeManagement") }]
+      : []),
+    ...(managing === "stop"
+      ? [{ label: "Stop Management", description: USER_MENU_HELP.stopManagement, onSelect: () => setConfirming("stopManagement") }]
+      : []),
     ...(can.unlock
       ? [{ label: "Unlock", description: USER_MENU_HELP.unlock, onSelect: () => void act(() => unlockUser(user.id), "unlocked.") }]
       : []),
@@ -385,6 +527,9 @@ function UserRow({
       : []),
     ...((user.signs_in_with ?? []).some((way) => way !== "password")
       ? [{ label: "Remove connected accounts", description: USER_MENU_HELP.connections, onSelect: () => setConfirming("connections") }]
+      : []),
+    ...(whatsapp?.kind === "connected"
+      ? [{ label: "Disconnect WhatsApp", description: USER_MENU_HELP.whatsapp, onSelect: () => setConfirming("whatsapp") }]
       : []),
     ...(can.toggleDisabled && !user.disabled
       ? [{ label: "Disable", description: USER_MENU_HELP.disable, onSelect: () => setConfirming("disable"), destructive: true }]
@@ -425,6 +570,9 @@ function UserRow({
           ))}
         </select>
       </td>
+      <td role="cell" data-label="Access">
+        <AccessCell user={user} />
+      </td>
       <td role="cell" data-label="Status">
         <span className={styles.statusList}>
           {userStatus(user, now).map((part) => (
@@ -444,6 +592,21 @@ function UserRow({
           )}
         </span>
       </td>
+      {whatsapp !== null && (
+        <td role="cell" data-label="WhatsApp" className="tabular">
+          {whatsapp.kind === "connected" && whatsapp.text}
+          {whatsapp.kind === "none" && <span className="muted">Not connected</span>}
+          {whatsapp.kind === "loading" && <span className="muted">Loading…</span>}
+          {whatsapp.kind === "failed" && (
+            <span className={styles.statusList}>
+              <span className="muted">Couldn&apos;t load</span>
+              <button type="button" className="btn btn-quiet" onClick={onWhatsAppRetry}>
+                Try again
+              </button>
+            </span>
+          )}
+        </td>
+      )}
       <td role="cell" data-label="Added" className="tabular">
         <span className={styles.date}>{formatDate(user.created_at)}</span>
       </td>
@@ -462,7 +625,7 @@ function UserRow({
               </button>
               <button
                 type="button"
-                className={`btn btn-danger ${busy ? styles.busy : ""}`}
+                className={`btn ${confirming === "makeManagement" ? "btn-primary" : "btn-danger"} ${busy ? styles.busy : ""}`}
                 disabled={busy}
                 aria-busy={busy || undefined}
                 onClick={() => void confirmed(confirming)}
@@ -473,6 +636,7 @@ function UserRow({
             </div>
           </ActionDialog>
         )}
+        {passwordStep.dialog}
       </td>
     </tr>
   );

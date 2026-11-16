@@ -19,6 +19,8 @@
 import Link from "next/link";
 import { useId, useState } from "react";
 import type { CSSProperties, DragEvent } from "react";
+import { PlaceIcon } from "@/components/access/PlaceBadge";
+import { SHARED } from "@/components/access/words";
 import { departmentsOf, isDepartment } from "@/components/files/departments";
 import { FILES_TEXT } from "@/components/files/words";
 import { Icon } from "@/components/ui/Icon";
@@ -91,7 +93,7 @@ export function FolderNav({
   const others = tree.roots.filter((node) => !isDepartment(node.folder));
   // Issue 409: Other opens the documents in no department (the filter the dashboard links to).
   // It is a place like a folder, so going anywhere else in the tree leaves it.
-  const inOther = library.departmentId === NO_DEPARTMENT && library.folderId === null && !library.trash;
+  const inOther = library.departmentId === NO_DEPARTMENT && library.folderId === null && !library.trash && !library.shared;
   const away = library.departmentId === NO_DEPARTMENT ? { ...library, departmentId: null } : library;
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [showAll, setShowAll] = useState<ReadonlySet<string>>(new Set());
@@ -136,16 +138,29 @@ export function FolderNav({
       <ul className={styles.tree}>
         <li>
           <Link
-            href={libraryHref({ ...away, folderId: null, subfolders: false, trash: false })}
+            href={libraryHref({ ...away, folderId: null, subfolders: false, trash: false, shared: false })}
             scroll={false}
             className={styles.treeLink}
-            aria-current={library.folderId === null && !library.trash && !inOther ? "page" : undefined}
+            aria-current={library.folderId === null && !library.trash && !library.shared && !inOther ? "page" : undefined}
             data-drop={top.over ? "true" : undefined}
             onClick={() => onNavigate("All documents")}
             {...top.handlers}
           >
             <TreeIcon name="documents" size="sm" className={styles.treeIcon} />
             All documents
+          </Link>
+        </li>
+        {/* PRD 7 (#604): for everyone from day one, with no count (a count could say what is hidden). */}
+        <li>
+          <Link
+            href={libraryHref({ ...away, folderId: null, subfolders: false, trash: false, shared: true })}
+            scroll={false}
+            className={styles.treeLink}
+            aria-current={library.shared ? "page" : undefined}
+            onClick={() => onNavigate(SHARED.place)}
+          >
+            <TreeIcon name="user" size="sm" className={styles.treeIcon} />
+            {SHARED.place}
           </Link>
         </li>
         {departments.length > 0 && (
@@ -164,7 +179,7 @@ export function FolderNav({
           <li className={styles.treeGroup}>
             <Link
               id="tree-other"
-              href={libraryHref({ ...library, folderId: null, subfolders: false, trash: false, departmentId: NO_DEPARTMENT })}
+              href={libraryHref({ ...library, folderId: null, subfolders: false, trash: false, shared: false, departmentId: NO_DEPARTMENT })}
               scroll={false}
               className={`${styles.treeLink} ${styles.groupLink}`}
               aria-current={inOther ? "page" : undefined}
@@ -305,6 +320,7 @@ function FolderItem({
           depth={node.depth}
           title={node.depth > INDENT_LEVELS ? pathTitle(tree, node.folder.id) : undefined}
         />
+        <PlaceIcon folder={node.folder} />
       </Link>
     </li>
   );

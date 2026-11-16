@@ -1,13 +1,9 @@
 """The version finder: possible versions among the files an organisation already has (V17, #648,
 V-B; Tushar, 16 Nov 2026). NEEDS VRUSHIT'S APPROVAL: schema.
 
-PROVISIONAL number: 0098 follows 0093 on this branch. At merge it becomes **0099**, with
-``down_revision = "0098"`` (WhatsApp's transcribe spend). The final order (lead, 16 Nov 2026): 0094
-search (merged), 0095 (#652), 0096 (#651, locked places), 0097 and 0098 (WhatsApp), then this one.
-Not renumbered yet: those are not on dev-env. When renumbering, splice ``kaagaz_clear_derived``
-from the newest migration before 0099 that replaces it (grep 0094 to 0098 for
-``kaagaz_clear_derived``), not from 0093: ``_load`` that file, and ``test_isolation_locked_files``
-and ``test_migration_heads`` follow.
+0099 follows 0098 (WhatsApp's transcribe spend); it was 0098 after 0093 on its branch, renumbered
+at merge (lead's order, 16 Nov 2026: 0094 search, 0095 #652, 0096 #651, 0097 and 0098 WhatsApp).
+``kaagaz_clear_derived`` is spliced from 0093's body: none of 0094 to 0098 replaces it.
 
 * ``version_finder_runs``: one row per organisation, the worker's one look through its files (so
   it never runs twice), with where it got to (``after_id``, the documents looked at in id order) so
@@ -35,8 +31,8 @@ and ``customers`` SHARE ROW EXCLUSIVE for a moment while the empty tables are cr
 
 The downgrade puts 0093's ``kaagaz_clear_derived`` back and drops the tables; their rows are lost.
 
-Revision ID: 0098
-Revises: 0093
+Revision ID: 0099
+Revises: 0098 (WhatsApp's transcribe spend)
 """
 
 import importlib.util
@@ -45,15 +41,15 @@ from types import ModuleType
 
 from alembic import op
 
-revision = "0098"
-down_revision = "0093"  # PROVISIONAL: 0099 after "0098" at merge (module notes)
+revision = "0099"
+down_revision = "0098"
 branch_labels = None
 depends_on = None
 
 
 def _load(name: str) -> ModuleType:
     path = Path(__file__).with_name(name)
-    spec = importlib.util.spec_from_file_location(f"migration_{path.stem}_for_0098", path)
+    spec = importlib.util.spec_from_file_location(f"migration_{path.stem}_for_0099", path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load {path}")
     module = importlib.util.module_from_spec(spec)
@@ -155,8 +151,8 @@ GRANTS = {
     "version_group_members": "SELECT, INSERT, UPDATE (state, decided_by, decided_at)",
 }
 
-# 0093's function, with each version's pairs and memberships deleted after its suggestions.
-# PROVISIONAL: at 0099, the newest of 0094 to 0098 that replaces it, not 0093 (module notes).
+# 0093's function (the newest that replaces it: none of 0094 to 0098 does), with each version's
+# pairs and memberships deleted after its suggestions.
 _SUGGESTIONS = "            AND (x.document_id = p_version OR x.candidate_family_id = v_family);\n"
 _OURS = (
     "        DELETE FROM public.version_pairs x WHERE x.customer_id = v_customer\n"
@@ -169,7 +165,7 @@ _REPLACE = (
     "CREATE OR REPLACE FUNCTION public.kaagaz_clear_derived",
 )
 if _0093.CLEAR_DERIVED.count(_SUGGESTIONS) != 1 or _0093.CLEAR_DERIVED.count(_REPLACE[0]) != 1:
-    raise RuntimeError("0093's kaagaz_clear_derived is not as 0098 expects")
+    raise RuntimeError("0093's kaagaz_clear_derived is not as 0099 expects")
 OLD_CLEAR_DERIVED = _0093.CLEAR_DERIVED.replace(*_REPLACE)
 CLEAR_DERIVED = OLD_CLEAR_DERIVED.replace(_SUGGESTIONS, _SUGGESTIONS + _OURS)
 

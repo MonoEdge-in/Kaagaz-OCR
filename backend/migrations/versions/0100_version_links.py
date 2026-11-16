@@ -1,10 +1,7 @@
 """Linking files already uploaded as versions of each other, and its Undo (V13 to V16, V18 to V21,
 #648, V-A; Tushar, 16 Nov 2026). NEEDS VRUSHIT'S APPROVAL: schema.
 
-PROVISIONAL number: 0100 follows V-B's provisional 0098 on this branch. At merge it stays **0100**,
-with ``down_revision = "0099"`` (V-B's final number, after WhatsApp's 0097 and 0098). Not
-renumbered yet: V-B is not on dev-env. When renumbering, change ``down_revision`` only (nothing
-here is spliced from another migration); ``test_migration_heads`` follows.
+0100 follows V-B's version finder (0099); it followed V-B's branch number 0098 until merge.
 
 * ``version_links``: one row per link (``POST /documents/link-versions``), keyed on the family the
   files were linked into, with every version it left in that family (``document_ids``) and, per
@@ -40,7 +37,7 @@ The downgrade turns ``separated`` back into ``rejected``, puts 0041's CHECK back
 triggers, the functions and the table; the links' snapshots are lost, so no link can be undone.
 
 Revision ID: 0100
-Revises: 0098
+Revises: 0099 (the version finder)
 """
 
 import importlib.util
@@ -50,7 +47,7 @@ from types import ModuleType
 from alembic import op
 
 revision = "0100"
-down_revision = "0098"  # PROVISIONAL: "0099" at merge (module notes)
+down_revision = "0099"
 branch_labels = None
 depends_on = None
 

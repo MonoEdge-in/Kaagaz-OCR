@@ -189,6 +189,14 @@
   transition: opacity var(--t-fast) var(--ease);
 }
 
+/* Issue 603: "From WhatsApp", beside the title of a conversation asked there. */
+.itemOrigin {
+  flex: none;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
 /* A1: a conversation and its menu (Rename, Delete) on one row; the rename box in its place. */
 .itemRow {
   position: relative;

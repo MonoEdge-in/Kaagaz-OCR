@@ -1,8 +1,7 @@
 """Locked files: a lock is real and safe (PRD 7 section 6, PR 12, #605, Tushar, 15 Nov 2026).
 NEEDS VRUSHIT'S APPROVAL: schema and security.
 
-PROVISIONAL number: 0093 follows 0090b until PR 9a (0091) and PR 9b (0092) merge; then it is
-renumbered and ``down_revision`` points at 0092 (a one-line change).
+Follows 0092 (PR 9b, the database rule's writes).
 
 * ``documents_locked_state``: a version in the state ``locked`` is locked, and a locked version is
   never ``ready`` or ``needs_reader`` (only received, clean, locked, failed or rejected), so no
@@ -65,7 +64,7 @@ triggers, the functions, the columns and the CHECKs and puts back 0004's run sta
 while a run is ``locked``).
 
 Revision ID: 0093
-Revises: 0090b
+Revises: 0092
 """
 
 import importlib.util
@@ -75,7 +74,7 @@ from types import ModuleType
 from alembic import op
 
 revision = "0093"
-down_revision = "0090b"  # PROVISIONAL: 0092 once PR 9a and 9b merge
+down_revision = "0092"
 branch_labels = None
 depends_on = None
 
@@ -429,25 +428,30 @@ REFUSE = """
         v_locked boolean;
     BEGIN
         -- Every version written to, locked FOR SHARE whether locked or not: a lock under way is
-        -- waited for and then seen (the row is read again once it commits).
-        SELECT bool_or(x.locked) INTO v_locked FROM (
-            SELECT d.locked_at IS NOT NULL AS locked FROM public.documents d
-            WHERE (d.customer_id, d.id) IN (SELECT n.customer_id, n.document_id FROM new_rows n)
-            FOR SHARE OF d
-        ) x;
-        -- A link's other file, and every version of a suggestion's family, read with no row lock:
-        -- two saves that link to each other hold their own families, so waiting on the other's
-        -- would deadlock them. A row written as a lock commits can stay: a link is shown only
-        -- between ready files, and kaagaz.db.versions.link refuses a locked family under its locks.
+        -- waited for and then seen (the row is read again once it commits). But a suggestion's:
+        -- its document is not always the spotter's own (two spottings of a pair each write the
+        -- later file), so it, and every version of its family, is read with no row lock, as a
+        -- link's other file is: waiting on another writer's family would deadlock the two. A row
+        -- written as a lock commits can stay: a link is shown only between ready files, and
+        -- kaagaz.db.versions.link refuses a locked family under its own locks.
+        IF TG_TABLE_NAME = 'version_suggestions' THEN
+            v_locked := EXISTS (
+                SELECT 1 FROM public.documents d
+                WHERE ((d.customer_id, d.id) IN (SELECT n.customer_id, n.document_id FROM new_rows n)
+                       OR (d.customer_id, d.family_id) IN (SELECT n.customer_id, n.candidate_family_id
+                                                           FROM new_rows n))
+                AND d.locked_at IS NOT NULL);
+        ELSE
+            SELECT bool_or(x.locked) INTO v_locked FROM (
+                SELECT d.locked_at IS NOT NULL AS locked FROM public.documents d
+                WHERE (d.customer_id, d.id) IN (SELECT n.customer_id, n.document_id FROM new_rows n)
+                FOR SHARE OF d
+            ) x;
+        END IF;
         IF TG_TABLE_NAME = 'document_links' THEN
             v_locked := coalesce(v_locked, false) OR EXISTS (
                 SELECT 1 FROM public.documents d
                 WHERE (d.customer_id, d.id) IN (SELECT n.customer_id, n.linked_document_id FROM new_rows n)
-                AND d.locked_at IS NOT NULL);
-        ELSIF TG_TABLE_NAME = 'version_suggestions' THEN
-            v_locked := coalesce(v_locked, false) OR EXISTS (
-                SELECT 1 FROM public.documents d
-                WHERE (d.customer_id, d.family_id) IN (SELECT n.customer_id, n.candidate_family_id FROM new_rows n)
                 AND d.locked_at IS NOT NULL);
         END IF;
         IF v_locked THEN

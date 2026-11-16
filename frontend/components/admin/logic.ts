@@ -59,6 +59,17 @@ export const TABS = [
 
 export type TabId = (typeof TABS)[number]["id"];
 
+/** Where an admin with an app session signs in, coming back to this admin screen (a person's
+ * Access page too, #604); anything but a plain /admin path comes back to /admin. */
+export function adminSignInPath(pathname: string): string {
+  return /^\/admin(\/[\w-]+)*$/.test(pathname) ? `/login?next=${pathname}` : "/login?next=/admin";
+}
+
+/** The tab /admin?tab=… opens (PRD 7 lead decision 12): a tab's id, else Users. */
+export function tabFrom(asked: string | undefined): TabId {
+  return TABS.find((tab) => tab.id === asked)?.id ?? "users";
+}
+
 /** Arrow keys, Home and End move between tabs (the WAI-ARIA tabs pattern). */
 export function tabAfterKey(index: number, key: string, count: number): number | null {
   switch (key) {
@@ -696,8 +707,7 @@ const ACTION_WORDS: Record<string, string> = {
   "document.read_upgrade": "Read a document again after an upgrade",
   "document.land_facts": "Read a land record's owners and places again", // PRD 6 D3
   "document.page_accept": "Kept a page as it was read",
-  "document.page_turns": "Turned the pages of a document", // #600: for everyone
-  "document.page_turns_reset": "Put a document's pages back as scanned",
+  "document.page_turns": "Changed the turn of a document's pages", // #600: for everyone
   "document.line_corrected": "Corrected a line in a clean copy", // #527
   "document.line_correction_undone": "Undid a line correction in a clean copy", // #527
   "document_story.saved": "Saved a document's story",
@@ -758,6 +768,14 @@ const ACTION_WORDS: Record<string, string> = {
   "org.google_signin_set": "Google sign-in changed for the organisation",
   "settings.auto_approve_on": "Turned on automatic approval of sign-in connections",
   "settings.auto_approve_off": "Turned off automatic approval of sign-in connections",
+  // #603: Kaagaz on WhatsApp.
+  "settings.whatsapp_on": "Turned WhatsApp on",
+  "settings.whatsapp_off": "Turned WhatsApp off",
+  "settings.whatsapp": "Changed the WhatsApp settings",
+  "whatsapp.connected": "Connected a WhatsApp number",
+  "whatsapp.disconnected": "A WhatsApp number was disconnected",
+  "whatsapp.google_proof": "Confirmed with Google to connect WhatsApp",
+  "whatsapp.file_link": "Got a link to a file on WhatsApp", // W4: the file itself is never sent
   "user.unlock": "Unlocked a user",
   "user.reset_password": "Reset a user's password",
   "user.reset_totp": "Reset a user's two-step sign-in",
@@ -810,6 +828,8 @@ const ACTION_WORDS: Record<string, string> = {
 /** The audit action in words; an action this screen does not know is shown as is. */
 export function describeAction(action: string, details: Record<string, unknown> = {}): string {
   if (action === "folder.create" && details.auto === true) return "Kaagaz made a folder";
+  // #600: a save that left no page turned.
+  if (action === "document.page_turns" && details.turned === 0) return "Put a document's pages back as scanned";
   if (action === "lock.open" && details.via === "google") return "Opened locked files with Google";
   if (action === "lock.open_failed" && details.via === "google") return "A Google sign-in to open locked files was refused";
   return ACTION_WORDS[action] ?? action;
@@ -948,6 +968,7 @@ const KIND_WORDS: Record<UsageKind, string> = {
   ensemble_scan: "Second opinions", // Ensemble (feature 27): the other readers
   ensemble_chat: "Second opinions", // and the other answer drafts
   land: "Land records", // PRD 6 D: owners, shares and places
+  transcribe: "WhatsApp voice notes", // #603 W6
   ulc_scan: "Reading scanned pages", // #488: the org admin is never told it was Ultra low cost
 };
 

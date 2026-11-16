@@ -12,12 +12,12 @@ from typing import Any
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from kaagaz.ai.openrouter import OpenRouterClient
+from kaagaz.ai.openrouter import ModelGate, OpenRouterClient
 from kaagaz.db.engine import Database
 from kaagaz.jobs import catalog
 from tests.openrouter_fake import KEY, OpenRouterFake, Recorded, Reply, running_fake
 from tests.settings_factory import make_settings
-from tests.test_model_catalog import FIXTURE, PRO, SONNET, listed
+from tests.test_model_catalog import FIXTURE, FLASH_LITE, LISTED, PRO, SONNET, flash_lite, listed
 from tests.test_operator_auth_db import _owner
 
 pytestmark = pytest.mark.db
@@ -183,3 +183,92 @@ def test_review_564_with_the_ulc_switch_on_an_ocr_model_that_cannot_lead_it_is_n
         assert catalog.check_env_models(db, make_settings(ocr_model=PRO)) == []  # off: not asked
     finally:
         _owner(db, "UPDATE model_catalog SET efforts = :e WHERE id = :m", {"e": efforts, "m": PRO})
+
+
+_PARAMETERS = "SELECT parameters FROM model_catalog WHERE id = :m"
+
+
+@pytest.fixture
+def lite(db: Database) -> Iterator[None]:
+    """Flash-lite's row goes when the test ends, so no other test finds a model it did not list."""
+    yield
+    _owner(db, "DELETE FROM model_catalog WHERE id = :m", {"m": FLASH_LITE})
+
+
+@pytest.mark.usefixtures("lite")
+def test_647_a_refresh_stores_the_parameters_and_the_next_one_replaces_them(
+    db: Database, fake: OpenRouterFake
+) -> None:
+    """16 Nov 2026: Vertex's flash-lite endpoints list no temperature, AI Studio's do; the stored set
+    is Vertex's (OPENROUTER_PROVIDERS), and the client's gate reads it as the app role."""
+    fake.responder = flash_lite()
+    _refresh(db, fake)
+    assert _owner(db, _PARAMETERS, {"m": FLASH_LITE})[0][0] == list(LISTED)
+    settings = make_settings()
+    assert ModelGate(settings, database=db).parameters(FLASH_LITE) == frozenset(LISTED)
+
+    fake.responder = flash_lite(vertex=(*LISTED, "temperature"))  # Vertex lists it again
+    _refresh(db, fake)
+    assert _owner(db, _PARAMETERS, {"m": FLASH_LITE})[0][0] == sorted((*LISTED, "temperature"))
+
+
+def _logged(caplog: pytest.LogCaptureFixture, message: str) -> list[tuple[str, str, str, str]]:
+    return [
+        (r.levelname, r.__dict__["where"], r.__dict__["code"], r.__dict__["parameter"])
+        for r in caplog.records
+        if r.getMessage() == message
+    ]
+
+
+@pytest.mark.usefixtures("lite")
+def test_647_the_env_check_names_each_parameter_an_env_model_lacks(
+    db: Database, fake: OpenRouterFake, caplog: pytest.LogCaptureFixture
+) -> None:
+    """After a refresh and at worker start: a required parameter missing is an ERROR (every call
+    fails), the temperature MODEL_CHAT would be sent a WARNING (sent without it). Never a failure."""
+    caplog.set_level(logging.WARNING, logger="kaagaz.worker")
+    fake.responder = flash_lite()
+    env = {"ocr_model": FLASH_LITE, "model_chat": FLASH_LITE, "model_enabled": True}
+    settings = make_settings(openrouter_api_key=KEY, openrouter_base_url=fake.url, **env)
+    catalog.refresh(db, OpenRouterClient(settings), settings, today=TODAY, pause=lambda seconds: None)
+    assert _logged(caplog, "env model parameter missing") == []
+    assert _logged(caplog, "env model parameter dropped") == [
+        ("WARNING", "MODEL_CHAT", "parameter_dropped", "temperature")
+    ]
+
+    caplog.clear()
+    _owner(
+        db,
+        "UPDATE model_catalog SET parameters = '{max_tokens,response_format}' WHERE id = :m",
+        {"m": FLASH_LITE},
+    )
+    assert catalog.check_env_models(db, settings) == []  # still usable by the catalogue's rules
+    missing = _logged(caplog, "env model parameter missing")
+    assert missing == [
+        ("ERROR", "OCR_MODEL", "parameter_missing", "reasoning"),
+        ("ERROR", "OCR_MODEL", "parameter_missing", "structured_outputs"),
+        ("ERROR", "MODEL_CHAT", "parameter_missing", "reasoning"),
+        ("ERROR", "MODEL_CHAT", "parameter_missing", "structured_outputs"),
+    ]
+    assert {
+        r.__dict__["model"] for r in caplog.records if r.getMessage() == "env model parameter missing"
+    } == {FLASH_LITE}
+
+    caplog.clear()
+    _owner(
+        db,
+        "UPDATE model_catalog SET parameters = '{reasoning,response_format,structured_outputs,temperature}'"
+        " WHERE id = :m",
+        {"m": FLASH_LITE},
+    )
+    catalog.check_env_models(db, settings)
+    assert _logged(caplog, "env model parameter missing") == [
+        ("ERROR", "OCR_MODEL", "parameter_missing", "max_completion_tokens"),
+        ("ERROR", "MODEL_CHAT", "parameter_missing", "max_completion_tokens"),
+    ]
+    assert _logged(caplog, "env model parameter dropped") == []
+
+    caplog.clear()
+    _owner(db, "UPDATE model_catalog SET parameters = NULL WHERE id = :m", {"m": FLASH_LITE})
+    catalog.check_env_models(db, settings)  # not read yet: nothing to say
+    assert [r for r in caplog.records if r.getMessage().startswith("env model parameter")] == []

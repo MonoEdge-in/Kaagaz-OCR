@@ -229,7 +229,9 @@ describe("a refused Undo, in plain words (review of #659)", () => {
 
   it("is said on the document screen in those words, never a fixed connection sentence", () => {
     const view = readFileSync(join(__dirname, "..", "app/(app)/documents/[id]/DocumentView.tsx"), "utf8");
-    expect(view).toContain("setToast(linkErrorText(caught))");
+    // Changed on purpose (merge with PR 10c): the document screen's one toast Undo says the server's
+    // words through undoErrorText (batchTray.ts), for a link's Undo as for a move's.
+    expect(view).toContain("setToast(undoErrorText(caught))");
     expect(view).not.toContain("It could not be undone. Check your connection");
     const dialog = readFileSync(join(__dirname, "..", "components/versions/LinkDialog.tsx"), "utf8");
     expect(dialog).toContain("undo: () => undoLink(current)");
@@ -264,12 +266,12 @@ describe("where it starts (V13): the row menu and the selection", () => {
   it("offers Link to another version in the row menu only when the person may link", () => {
     const words = (entries: ReturnType<typeof menuEntries>) =>
       entries.map((entry) => (entry.kind === "action" ? entry.words : "Download"));
-    expect(words(menuEntries(row, false, "list", false, true))).toContain("Link to another version…");
+    expect(words(menuEntries(row, false, "list", false, undefined, true))).toContain("Link to another version…");
     expect(words(menuEntries(row, false))).not.toContain("Link to another version…");
-    expect(words(menuEntries({ ...row, deleted_at: "2026-11-01T00:00:00Z" }, false, "list", false, true))).not.toContain(
+    expect(words(menuEntries({ ...row, deleted_at: "2026-11-01T00:00:00Z" }, false, "list", false, undefined, true))).not.toContain(
       "Link to another version…",
     );
-    expect(words(menuEntries(row, false, "document", false, true))).not.toContain("Link to another version…");
+    expect(words(menuEntries(row, false, "document", false, undefined, true))).not.toContain("Link to another version…");
   });
 
   it("links the ticked files that are not locked, 2 to 20 of them", () => {

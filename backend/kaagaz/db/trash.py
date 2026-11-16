@@ -42,12 +42,12 @@ _TRASH = (
 # order (each family's first version, then by id, as _LOCK_FAMILY), every family together.
 # #542: each keeps its folder as trashed_folder_id (its folder goes to trashed_folders) and the
 # delete's trash_id, out of every folder; like every write of folder_id, auto-filing's state goes.
+# PRD 7 (#606): every family, seen or not, by the owner-rights kaagaz_admin_trash_in_folders (0092),
+# the Admin's who deletes the folder (deleted_by): under the database rule a file they can't see
+# would stay, and its key refuse the folder's delete. How many families.
 _TRASH_IN_FOLDERS = (
-    "UPDATE documents d SET deleted_at = :now, deleted_by = :by, trashed_folder_id = d.folder_id,"
-    " trash_id = CAST(:trash AS uuid), folder_id = NULL, autofile = NULL FROM ("
-    " SELECT id FROM documents WHERE customer_id = :c AND folder_id = ANY(CAST(:folders AS uuid[]))"
-    " ORDER BY family_id, (id <> family_id), id FOR NO KEY UPDATE) AS l"
-    " WHERE d.customer_id = :c AND d.id = l.id AND d.deleted_at IS NULL RETURNING d.family_id"
+    "SELECT kaagaz_admin_trash_in_folders(CAST(:folders AS uuid[]), CAST(:trash AS uuid), :now)"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 
 # #542: never a family that went to Trash with its folder (trashed_folders.restore_document's).
@@ -71,9 +71,22 @@ _KEPT_PLACE = (
 # it waits for this restore instead of deleting one under it. One constant, for PR 9's owner-rights
 # functions to reuse.
 LIVE_FOLDERS = "SELECT id FROM folders WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[])) FOR SHARE"
+# PRD 7 (#606): live is asked of the whole table (kaagaz_existing, 0091): under the database rule a
+# folder the person can't see is missing from folders, and would read as gone.
+_EXISTING = "SELECT id FROM kaagaz_existing('folder', CAST(:ids AS uuid[])) AS e (id)"
 # #594 (decision 3): the organisation has kept something to some people (0089); read under the tree
 # lock, which is this row's lock, so it can't change before the restore commits.
 WALLED = "SELECT walls_set FROM customers WHERE id = :c"
+
+
+def live_folders(conn: Connection, customer_id: str, folder_ids: Sequence[str]) -> set[str]:
+    """Which of these folders are live (``LIVE_FOLDERS``, which locks those the person can see).
+    shortcut: one they can't see is not locked, so the CLI's prune-folders could delete it meanwhile,
+    and then the write that puts something in it is refused by its key. Two statements."""
+    params = {"c": customer_id, "ids": list(folder_ids)}
+    conn.execute(text(LIVE_FOLDERS), params).all()
+    return {str(f) for f in conn.execute(text(_EXISTING), params).scalars()}
+
 
 _CUSTOMERS_WITH_TRASH = "SELECT t.id FROM kaagaz_customer_ids_with_trash(:before) AS t (id) ORDER BY t.id"
 
@@ -142,20 +155,20 @@ def trash_document(conn: Connection, customer_id: str, document_id: str, *, by: 
 
 
 def trash_in_folders(
-    conn: Connection, customer_id: str, folder_ids: Sequence[str], *, by: str, now: datetime, trash_id: str
+    conn: Connection, customer_id: str, folder_ids: Sequence[str], *, now: datetime, trash_id: str
 ) -> int:
     """``trash_document`` for every family filed in ``folder_ids`` (a folder deleted with its
     files, #537), in one statement instead of two a family: every version of a family shares
     its folder, so each family goes whole, and one already in Trash keeps its first time (and
     its folder). Each family sent now keeps its folder as ``trashed_folder_id`` with
     ``trash_id``, and leaves it (#542: the folder goes to ``trashed_folders``). Returns how
-    many families went to Trash now. O(n log D) time and O(n) space for the n documents filed
-    there.
+    many families went to Trash now. An Admin's: deleted by them (PRD 7, #606). O(n log D) time
+    and O(n) space for the n documents filed there.
 
     shortcut: the caller writes one folder.delete audit row with the count (#537's rule), no
     document.trash row a family, so a family's own timeline does not show this trash."""
-    params = {"c": customer_id, "folders": list(folder_ids), "by": by, "now": now, "trash": trash_id}
-    return len(set(conn.execute(text(_TRASH_IN_FOLDERS), params).scalars()))
+    params = {"c": customer_id, "folders": list(folder_ids), "now": now, "trash": trash_id}
+    return int(conn.execute(text(_TRASH_IN_FOLDERS), params).scalar() or 0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,7 +193,7 @@ def place_out_of_folder(
     kept = [f for f in (private_folder_id, department_id) if f is not None]
     if not kept:
         return Placed()
-    live = {str(f) for f in conn.execute(text(LIVE_FOLDERS), {"c": customer_id, "ids": kept}).scalars()}
+    live = live_folders(conn, customer_id, kept)
     walled = bool(conn.execute(text(WALLED), {"c": customer_id}).scalar())
     if private_folder_id in live:
         return Placed(into=private_folder_id)

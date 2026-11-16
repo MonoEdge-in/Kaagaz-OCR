@@ -21,7 +21,7 @@ STATES = ("working", "failing", "down", "key_problem")  # 0022's CHECK; the gate
 _REPORT = text(
     "INSERT INTO reader_status (worker, state, since, seen_at) VALUES (:w, :s, :since, now())"
     " ON CONFLICT (worker) DO UPDATE SET state = EXCLUDED.state, since = EXCLUDED.since,"
-    " seen_at = EXCLUDED.seen_at"
+    " seen_at = EXCLUDED.seen_at, role = EXCLUDED.role"  # PRD 7 (#606): the role it runs as (0091)
 )
 
 

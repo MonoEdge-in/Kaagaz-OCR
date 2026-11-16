@@ -71,9 +71,12 @@ from kaagaz.api.routers import (
     version_groups,
     version_links,
     versions,
+    whatsapp,
+    whatsapp_account,
     word_review,
     words,
 )
+from kaagaz.db import person_rule
 from kaagaz.db.engine import Database, OperatorDatabase, make_engine
 from kaagaz.db.sqlstate import sqlstate
 from kaagaz.settings import Settings
@@ -96,8 +99,21 @@ UNSAFE_SAID = {
         "the API's database login is a superuser, so it could leave the app role and reach every"
         " organisation's rows: use the limited login (docs/running-locally.md, Limited database logins)"
     ),
+    # PRD 7 (#606, decision 22): a login the database rule can't hold. DB_LOGIN_CHECK=refuse stops the
+    # start on any of these, or on superuser_unchecked.
+    "bypassrls_login": "the API's database login skips row level security: use the limited login",
+    "owner_login": (
+        "the API's database login owns the tables, which skips the database rule: use the limited login"
+        " (docs/running-locally.md, Limited database logins)"
+    ),
+    "worker_reachable": (
+        "the API's database login can switch into kaagaz_worker, which the per-person rule doesn't hold:"
+        " use the limited login"
+    ),
+    "operator_reachable": "the API's database login can switch into kaagaz_operator: use the limited login",
     "superuser_unchecked": "whether the API's database login is a superuser could not be read at start-up",
 }
+LOGIN_UNSAFE = (*person_rule.LOGIN_CODES, "superuser_unchecked")
 
 
 def _utc_now() -> datetime:
@@ -150,6 +166,7 @@ def create_app(
             if owns_db:
                 check_operator_login(operator_db)
                 context.unsafe_config.extend(unsafe_config(settings, database))
+                check_login(settings, context.unsafe_config)
                 report_unsafe_config(settings, context.unsafe_config)
             yield
         finally:  # a refused start too: its connections are closed, never left to the collector
@@ -172,6 +189,7 @@ def create_app(
         RequestMiddleware,
         limiter=RateLimiter(settings.rate_limit_per_minute),
         folder_limiter=RateLimiter(settings.folder_upload_calls_per_minute),
+        whatsapp_limiter=RateLimiter(settings.whatsapp_webhook_calls_per_minute),
     )
     app.add_middleware(ErrorMiddleware)  # added last, so it is the outermost
     for router in (
@@ -179,6 +197,9 @@ def create_app(
         auth.router,
         email.router,
         oidc.router,
+        whatsapp.router,
+        whatsapp_account.router,
+        whatsapp_account.admin_router,
         locked_open.router,  # PRD 7 (#605): before /documents/{document_id}, which would take locked-open
         version_links.router,  # V13 (#648): before /documents/{document_id}, which would take link-versions
         documents.router,
@@ -216,6 +237,20 @@ def create_app(
     return app
 
 
+def headless_context(settings: Settings, db: Database) -> AppContext:
+    """The context ``create_app`` gives its routes, for a process that answers people without a web
+    request (the WhatsApp channel, #603): the same answers, model, storage and queue, on ``db``."""
+    return AppContext(
+        settings=settings,
+        db=db,
+        storage=_default_storage(settings),
+        queue=_default_queue(settings),
+        answers=_default_answers(settings, db, _utc_now),
+        clock=_utc_now,
+        model=_default_model(settings, db),
+    )
+
+
 def check_operator_login(operator_db: OperatorDatabase) -> None:
     """One ``SELECT 1`` as kaagaz_operator. On failure, one plain log line (the SQLSTATE or the
     error's type, never its message), then RuntimeError, which stops uvicorn's start-up. On the
@@ -238,14 +273,14 @@ def check_operator_login(operator_db: OperatorDatabase) -> None:
 
 
 def unsafe_config(settings: Settings, database: Database) -> list[str]:
-    """A6: the codes (UNSAFE_SAID) of the settings unsafe on a server. One short read of whether
-    the login is a superuser; should that fail, it is ``superuser_unchecked`` (its error's type
-    logged), never raised: the start goes on."""
-    superuser: bool | None = None
+    """A6: the codes (UNSAFE_SAID) of the settings unsafe on a server. One short read of what the
+    login could do past the database rule (PRD 7 #606: ``person_rule.login_risks``); should that
+    fail, it is ``superuser_unchecked`` (its error's type logged), never raised: the start goes on
+    (``check_login`` stops it under DB_LOGIN_CHECK=refuse)."""
+    risks: list[str] | None = None
     try:
         with database.system() as conn:
-            row = conn.execute(text("SELECT rolsuper FROM pg_roles WHERE rolname = session_user")).scalar()
-        superuser = bool(row)
+            risks = person_rule.login_risks(conn)
     except SQLAlchemyError as error:
         _log.error(
             "the superuser check could not run (%s)", type(error).__name__, extra={"code": "unsafe_config"}
@@ -253,10 +288,20 @@ def unsafe_config(settings: Settings, database: Database) -> list[str]:
     found = {
         "cookie_not_secure": (settings.app_url or "").startswith("https://") and not settings.cookie_secure,
         "eicar_scanner": settings.scanner == "eicar_dev",
-        "superuser_login": superuser is True,
-        "superuser_unchecked": superuser is None,
+        **{code: risks is not None and code in risks for code in person_rule.LOGIN_CODES},
+        "superuser_unchecked": risks is None,
     }
     return [code for code, unsafe in found.items() if unsafe]
+
+
+def check_login(settings: Settings, found: list[str]) -> None:
+    """PRD 7 (#606, decision 22): with DB_LOGIN_CHECK=refuse, a login the database rule can't hold
+    (or one that could not be checked) stops the start: one critical line, then RuntimeError."""
+    refused = [code for code in found if code in LOGIN_UNSAFE]
+    if settings.db_login_check == "refuse" and refused:
+        said = "; ".join(UNSAFE_SAID[code] for code in refused)
+        _log.critical("%s (DB_LOGIN_CHECK=refuse)", said, extra={"code": "login_refused"})
+        raise RuntimeError(said)
 
 
 def report_unsafe_config(
