@@ -97,17 +97,35 @@ def test_the_file_kinds_0078_the_zip_unpack_s_0080_and_trashed_folders_0081_foll
     assert scripts.get_revision("0081").down_revision == "0080"
 
 
-def test_the_trashed_folder_parent_grant_0082_follows_0081_and_is_the_one_head() -> None:
-    """A13 (stability pass, 7 Nov 2026)."""
+def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tables_0084_follow() -> None:
+    """A13 (stability pass, 7 Nov 2026). Changed on purpose (#587, 14 Nov 2026): the workers'
+    role and login (0083) follow 0082. Changed on purpose (#590, 14 Nov 2026): who-can-see-what's
+    tables and columns (0084) follow 0083. Changed on purpose (#593, 14 Nov 2026): their triggers
+    (0085) follow 0084. Changed on purpose (#595, 14 Nov 2026): the access views (0086) follow 0085.
+    Changed on purpose (#599, 14 Nov 2026): the trashed folders' view (0087) follows 0086.
+    Changed on purpose (#600, 14 Nov 2026): page turns saved for everyone (0088) follow 0087.
+    Changed on purpose (#594, 14 Nov 2026): nothing opens by accident (0089) follows 0088.
+    Changed on purpose (#601, 14 Nov 2026): the access API (0090) follows 0089.
+    Changed on purpose (#601, 15 Nov 2026): the wall rules (0090b) follow 0090.
+    Changed on purpose (#606, 15 Nov 2026): the database rule (0091) follows 0090b.
+    Changed on purpose (#606, PR 9b, 15 Nov 2026): its writes over rows the person can't see (0092) follow
+    0091.
+    Changed on purpose (#605, PR 12, 15 Nov 2026): locked files (0093) follow 0092.
+    Changed on purpose (#617 part 1, 16 Nov 2026): the bounded word search (0094) follows 0093 and
+    is the head."""
     scripts = _scripts()
     assert scripts.get_revision("0082").down_revision == "0081"
-    # Changed on purpose (#617 part 1): 0094, the bounded word search, follows it.
-    assert scripts.get_heads() == ["0094"]
-
-
-def test_the_bounded_word_search_0094_follows_0082() -> None:
-    """#617 part 1. PRD 7's 0083 to 0093 are open on their branches: whichever merges first,
-    0094 is renumbered after it."""
-    scripts = _scripts()
-    assert scripts.get_revision("0094").down_revision == "0082"
+    assert scripts.get_revision("0083").down_revision == "0082"
+    assert scripts.get_revision("0084").down_revision == "0083"
+    assert scripts.get_revision("0085").down_revision == "0084"
+    assert scripts.get_revision("0086").down_revision == "0085"
+    assert scripts.get_revision("0087").down_revision == "0086"
+    assert scripts.get_revision("0088").down_revision == "0087"
+    assert scripts.get_revision("0089").down_revision == "0088"
+    assert scripts.get_revision("0090").down_revision == "0089"
+    assert scripts.get_revision("0090b").down_revision == "0090"
+    assert scripts.get_revision("0091").down_revision == "0090b"
+    assert scripts.get_revision("0092").down_revision == "0091"
+    assert scripts.get_revision("0093").down_revision == "0092"
+    assert scripts.get_revision("0094").down_revision == "0093"
     assert scripts.get_heads() == ["0094"]

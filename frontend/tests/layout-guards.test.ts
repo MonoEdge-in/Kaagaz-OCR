@@ -374,6 +374,9 @@ describe("layout guards", () => {
       // Changed on purpose (Tushar, 24 Oct 2026): Home's Recent and Activity lists keep one height
       // and scroll inside their cards, so a long list never stretches the page.
       "components/dashboard/Dashboard.module.css: .scroll: overscroll-behavior",
+      // Changed on purpose (PRD 7, #604): Add people on the Departments tab keeps one height and
+      // scrolls inside it, so a long organisation never stretches the tab.
+      "components/access/Access.module.css: .pickerScroll: overscroll-behavior",
       // Changed on purpose (MonoEdge design system, 16 Oct 2026): sideways only, the tabs, the
       // tables and the usage chart scroll in their own box and never hand the swipe to the page.
       "components/admin/Admin.module.css: .tabs: overscroll-behavior-x",

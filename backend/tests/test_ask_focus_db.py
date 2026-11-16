@@ -75,7 +75,7 @@ class World:
         self.model = Model()
         self.answers = answers = AnswerService(db=db, model=self.model, settings=settings, clock=lambda: NOW)
         self.api = Api(db, settings=settings, model=self.model, answers=answers)
-        self.customer, _ = self.api.customer()
+        self.customer, self.admin = self.api.customer()
         self.signed: Signed = self.api.sign_in(self.customer)
         c = self.customer
         wagholi = [("village", "Wagholi")]
@@ -363,16 +363,16 @@ def test_a_not_found_answer_in_one_document_leaves_that_document_as_the_focus(db
 def test_the_profile_statement_reads_live_current_documents_only(db: Database) -> None:
     world = World(db)
     focus = PgFocus(db)
-    assert focus.profile(world.customer, world.trashed) is None  # in Trash
+    assert focus.profile(world.customer, None, world.trashed) is None  # in Trash
     with db.customer(world.customer) as conn:
         conn.execute(
             text("UPDATE documents SET is_current = false WHERE customer_id = :c AND id = :d"),
             {"c": world.customer, "d": world.kesnand},
         )
-    assert focus.profile(world.customer, world.kesnand) is None  # replaced by a newer version
-    live = focus.profile(world.customer, world.extract)
+    assert focus.profile(world.customer, None, world.kesnand) is None  # replaced by a newer version
+    live = focus.profile(world.customer, None, world.extract)
     assert live is not None and {f.kind for f in live.facts} == {"property", "person", "place"}
-    found = {f.value.document_id for f in focus.matches(world.customer, live, EVERYTHING)}
+    found = {f.value.document_id for f in focus.matches(world.customer, None, live, EVERYTHING)}
     # Every shared key, Gat 61 of Lonikand too (ranking leaves it out); never the trashed or replaced.
     assert found == {world.deed, world.lonikand}
 

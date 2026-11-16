@@ -94,6 +94,7 @@ _ADD = (
 
 _FOR_DOCUMENTS = (
     "SELECT dt.document_id, t.id, t.name, t.created_at FROM document_tags dt"
+    " JOIN visible_documents d ON d.customer_id = dt.customer_id AND d.id = dt.document_id"  # PRD 7 (#599)
     " JOIN tags t ON t.customer_id = dt.customer_id AND t.id = dt.tag_id"
     " WHERE dt.customer_id = :c AND dt.document_id = ANY(CAST(:ids AS uuid[]))"
     " ORDER BY dt.document_id, lower(t.name), t.id"

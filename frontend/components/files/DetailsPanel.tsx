@@ -8,6 +8,7 @@
 // with a small Change button that opens its picker, so neither changes by accident.
 
 import { useEffect, useId, useRef, useState } from "react";
+import { SHARED } from "@/components/access/words";
 import { ApiError, listPeople, updateDocument } from "@/lib/api";
 import { docTypeLabel, formatDate, formatDateTime } from "@/lib/format";
 import type { DocumentDetail, Person, Sensitivity } from "@/lib/types";
@@ -158,7 +159,11 @@ export function DetailsPanel({
         </dd>
 
         <dt>{FILES_TEXT.departmentPath}</dt>
-        <dd>{path.length > 0 ? path.join(" / ") : FILES_TEXT.notFiled}</dd>
+        {/* PRD 7 (#604): in a folder this person can't see, never "Not in a department".
+            shortcut: 10b follow-up: the list row reads the summary's flag and Details the detail's,
+            so the two can disagree if the detail ever sends a path with the flag set; 10b should
+            send folder: null with shared_with_you on the detail, as the summary does. */}
+        <dd>{detail.shared_with_you ? SHARED.row : path.length > 0 ? path.join(" / ") : FILES_TEXT.notFiled}</dd>
 
         <dt>{FILES_TEXT.type}</dt>
         <dd>{docTypeLabel(detail.doc_type)}</dd>

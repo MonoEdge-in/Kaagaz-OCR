@@ -54,7 +54,7 @@ def _value(
 
 
 def test_only_unchecked_card_values_of_current_ready_live_documents_count(db: Database) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     report = _document(db, customer, "Sept report.pdf")
     _value(db, customer, report)
     reading = _document(db, customer, "reading.pdf", status="clean")
@@ -66,25 +66,27 @@ def test_only_unchecked_card_values_of_current_ready_live_documents_count(db: Da
     other_field = _document(db, customer, "sales.pdf")
     _value(db, customer, other_field, field="sales")
 
-    found = PgUncheckedValues(db).documents_with(customer, ["profit", "net_profit"])
+    found = PgUncheckedValues(db).documents_with(customer, ["profit", "net_profit"], user_id=user)
 
     assert found == [{"id": report, "display_name": "Sept report.pdf"}]
-    assert PgUncheckedValues(db).documents_with(customer, []) == []
+    assert PgUncheckedValues(db).documents_with(customer, [], user_id=user) == []
 
 
 @pytest.mark.isolation
 def test_another_customers_cards_are_never_seen(db: Database) -> None:
-    a, _ = new_customer(db, name="Sharma Traders")
-    b, _ = new_customer(db, name="Mehta Textiles")
+    a, a_user = new_customer(db, name="Sharma Traders")
+    b, b_user = new_customer(db, name="Mehta Textiles")
     report = _document(db, a, "sharma-report.pdf")
     _value(db, a, report)
 
-    assert PgUncheckedValues(db).documents_with(b, ["profit"]) == []
-    assert [doc["id"] for doc in PgUncheckedValues(db).documents_with(a, ["profit"])] == [report]
+    assert PgUncheckedValues(db).documents_with(b, ["profit"], user_id=b_user) == []
+    assert [doc["id"] for doc in PgUncheckedValues(db).documents_with(a, ["profit"], user_id=a_user)] == [
+        report
+    ]
 
 
 def test_at_most_a_few_documents_come_back(db: Database) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     for number in range(MAX_DOCUMENTS + 2):
         _value(db, customer, _document(db, customer, f"report-{number}.pdf"))
-    assert len(PgUncheckedValues(db).documents_with(customer, ["profit"])) == MAX_DOCUMENTS
+    assert len(PgUncheckedValues(db).documents_with(customer, ["profit"], user_id=user)) == MAX_DOCUMENTS

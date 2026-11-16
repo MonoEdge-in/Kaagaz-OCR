@@ -56,6 +56,7 @@ const item = (id: string, overrides: Partial<ReviewItem["value"]> = {}): ReviewI
     read_again_requested_at: null,
   },
   check_reasons: [],
+  page_turn: 0,
 });
 
 describe("checkChoice", () => {

@@ -7,7 +7,8 @@
 import Link from "next/link";
 import { useState } from "react";
 import type { ReactNode } from "react";
-import { ApiError, restoreDocument, updateDocument } from "@/lib/api";
+import { hiddenMovedText } from "@/components/access/words";
+import { ApiError, isHiddenMove, moveDocument, restoreDocument } from "@/lib/api";
 import { formatNumber } from "@/lib/format";
 import type { FolderItemsPage, FolderUploadItem, UploadLimits } from "@/lib/types";
 import { BusyLabel } from "./BusyLabel";
@@ -15,7 +16,7 @@ import { shortPathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
 import { attentionOf, folderLine, itemProblemText, readingLine } from "./folderUpload";
 import type { FolderUploadView } from "./folderUpload";
-import { uploadStateText } from "./logic";
+import { HIDDEN_COPY, uploadStateText } from "./logic";
 import styles from "./Documents.module.css";
 
 /** A file this tab could not send, and whether sending it again may help. */
@@ -244,25 +245,38 @@ function AttentionItem({ item, tree, limits }: { item: FolderUploadItem; tree: F
   );
 }
 
-/** "Already in Kaagaz, in <path>": Open, and Move it here (after asking), or Restore. */
-function DuplicateItem({ item, tree }: { item: FolderUploadItem; tree: FolderTree }) {
+/** "Already in Kaagaz, in <path>": Open, and Move it here (after asking), or Restore; for a copy of a
+ * file this person can't see (PRD 7, #599), only that it is in Kaagaz. */
+export function DuplicateItem({ item, tree }: { item: FolderUploadItem; tree: FolderTree }) {
   const document = item.document;
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  if (item.hidden) {
+    return (
+      <li className={styles.upload}>
+        <div className={styles.uploadBody}>
+          <span className={styles.fileName}>{item.name}</span>
+          <p className={styles.small}>{HIDDEN_COPY}</p>
+        </div>
+      </li>
+    );
+  }
   if (!document || !item.document_id) return null;
   const documentId = item.document_id;
   const from = document.in_trash ? "the Trash" : where(tree, document.folder_id);
   const to = where(tree, item.folder_id);
   const here = !document.in_trash && document.folder_id === item.folder_id;
 
+  /** `work` may answer the words to say instead of `said` (a move that stands where the admin
+   * can't see it, PR 10c). */
   function run(work: () => Promise<unknown>, said: string) {
     setBusy(true);
     setError(null);
     work().then(
-      () => {
-        setDone(said);
+      (result) => {
+        setDone(typeof result === "string" ? result : said);
         setAsking(false);
         setBusy(false);
       },
@@ -309,7 +323,12 @@ function DuplicateItem({ item, tree }: { item: FolderUploadItem; tree: FolderTre
                 type="button"
                 className="btn btn-primary"
                 disabled={busy}
-                onClick={() => run(() => updateDocument(documentId, { folder_id: item.folder_id }), `Moved to ${to}.`)}
+                onClick={() =>
+                  run(async () => {
+                    const reply = await moveDocument(documentId, item.folder_id);
+                    return isHiddenMove(reply) ? `Moved to ${to}. ${hiddenMovedText(1, 1)}` : undefined;
+                  }, `Moved to ${to}.`)
+                }
               >
                 <BusyLabel busy={busy} idle="Move it" working="Moving…" />
               </button>

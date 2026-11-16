@@ -18,6 +18,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, CSSProperties, FormEvent, ReactNode } from "react";
+import { OneTimeCard } from "@/components/access/OneTimeCard";
 import { activityDocument, activitySentence } from "@/components/activity/words";
 import { askHref } from "@/components/chat/logic";
 import { ALL_DOCUMENTS, NO_DEPARTMENT, libraryHref } from "@/components/documents/libraryQuery";
@@ -188,6 +189,9 @@ export function Dashboard() {
         )}
         <ReadyQuestions questions={questions} />
       </section>
+
+      {/* PRD 7 (#604): an admin session's one-time card, until access is set up or Not now. */}
+      <OneTimeCard />
 
       <HomeActions
         reviewer={reviewer}

@@ -28,14 +28,14 @@ def _added(db: Database) -> tuple[object, ...]:
         return tuple(conn.execute(_ADDED).one())
 
 
-def test_the_revision_follows_this_bases_0082() -> None:
-    assert (M0094.revision, M0094.down_revision) == ("0094", "0082")
+def test_the_revision_follows_0093() -> None:  # Changed on purpose: renumbered after PR 12's 0093
+    assert (M0094.revision, M0094.down_revision) == ("0094", "0093")
 
 
 def test_up_down_and_up_again(fresh: tuple[str, Database]) -> None:
     url, db = fresh
-    migrate(url, "0082")
-    at_0082 = _state(db)
+    migrate(url, "0093")
+    at_0093 = _state(db)
     assert _added(db) == (None, None, False, False, False)
 
     migrate(url, "0094")
@@ -44,8 +44,8 @@ def test_up_down_and_up_again(fresh: tuple[str, Database]) -> None:
     assert index == "CREATE INDEX pieces_tsv_sound ON public.pieces USING gin (tsv_sound)" and valid
     assert rest == [True, True, True]
 
-    base._downgrade(url, "0082")
-    assert _state(db) == at_0082
+    base._downgrade(url, "0093")
+    assert _state(db) == at_0093
     assert _added(db) == (None, None, False, False, False)
 
     migrate(url, "0094")

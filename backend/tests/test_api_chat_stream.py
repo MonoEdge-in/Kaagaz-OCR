@@ -209,7 +209,8 @@ def test_done_is_exactly_the_reply_post_api_chat_gives(db: Database, fake: OpenR
     plain = w.plain(signed=w.api.sign_in(w.signed.customer_id))  # its own asker: no repeat (PR 2)
     streamed = w.stream()[-1][1]["reply"]
 
-    assert streamed.keys() == plain.keys() == {"conversation_id", "question", "answer"}
+    # Changed on purpose (PRD 7, #605): Ask's fixed line for a person who may open a locked file.
+    assert streamed.keys() == plain.keys() == {"conversation_id", "question", "answer", "locked_note"}
     for side in ("question", "answer"):
         assert streamed[side].keys() == plain[side].keys()
         same = {key: value for key, value in streamed[side].items() if key not in ("id", "created_at")}
@@ -522,6 +523,10 @@ def test_a_question_id_already_saved_returns_that_answer_with_no_second_model_ca
 
     again = w.plain(question_id=mine)  # the client's fallback with the same id
 
+    # Changed on purpose (#602): the saved reply's sources are checked as a conversation's are,
+    # so each citation says what became of it; all still here.
+    cited = again["answer"]["answer"]["citations"]
+    assert [citation.pop("source_state") for citation in cited] == ["live"] * len(cited)
     assert again == streamed
     assert len(fake.bodies()) == 1 and len(w.conversations()) == 1
 
@@ -543,6 +548,8 @@ def test_a_question_id_still_in_progress_is_waited_for_never_answered_twice(
     again = w.plain(question_id=mine)
 
     first.join()
+    for citation in again["answer"]["answer"]["citations"]:  # #602: checked as a conversation's are
+        assert citation.pop("source_state") == "live"
     assert again == streamed[0][-1][1]["reply"]
     assert len(fake.bodies()) == 1  # one model call for both
 

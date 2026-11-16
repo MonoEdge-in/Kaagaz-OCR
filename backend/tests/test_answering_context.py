@@ -86,6 +86,8 @@ class Fused(FakeRetriever):
         scope: Scope,
         expansion: Expansion = NO_EXPANSION,
         asked: Lists | None = None,
+        *,
+        user_id: str | None = None,
     ) -> Translated:
         self.fused.append(list(translations))
         if asked is None:
@@ -99,7 +101,9 @@ class Fused(FakeRetriever):
         lists: Lists = ([(hit.piece_id, hit.score) for hit in own], [], [])
         return Translated(hits[:limit], {hit.piece_id: hit.meaning_score for hit in hits}, lists)
 
-    def neighbours(self, customer_id: str, hits: Sequence[Any], scope: Scope) -> list[FakeHit]:
+    def neighbours(
+        self, customer_id: str, hits: Sequence[Any], scope: Scope, *, user_id: str | None = None
+    ) -> list[FakeHit]:
         given = {hit.piece_id for hit in hits}
         return [hit for hit in self.near if hit.piece_id not in given]
 
@@ -123,12 +127,20 @@ class FakeContext:
         self.calls: list[str] = []
         self.terms: list[str] = []
 
-    def whole(self, customer_id: str, scope: Scope, budget: int) -> Sequence[FakeHit] | None:
+    def whole(
+        self, customer_id: str, scope: Scope, budget: int, *, user_id: str | None = None
+    ) -> Sequence[FakeHit] | None:
         self.calls.append("whole")
         return sorted(self.pieces, key=lambda hit: (hit.document_id, hit.seq)) if self.fits else None
 
     def topic_pieces(
-        self, customer_id: str, terms: Sequence[str], hits: Sequence[Any], scope: Scope
+        self,
+        customer_id: str,
+        terms: Sequence[str],
+        hits: Sequence[Any],
+        scope: Scope,
+        *,
+        user_id: str | None = None,
     ) -> list[FakeHit]:
         self.calls.append("topics")
         self.terms = list(terms)
@@ -149,13 +161,15 @@ class FakeContext:
         embedding: list[float] | None,
         hits: Sequence[Any],
         scope: Scope,
+        *,
+        user_id: str | None = None,
     ) -> list[FakeHit]:
         self.calls.append("sections")
         given = {hit.piece_id for hit in hits}
         return [hit for hit in self.sections if hit.piece_id not in given]
 
     def cards(
-        self, customer_id: str, document_ids: Sequence[str], scope: Scope
+        self, customer_id: str, document_ids: Sequence[str], scope: Scope, *, user_id: str | None = None
     ) -> dict[str, tuple[str, Any]]:
         self.calls.append("cards")
         return {d: self.card_map[d] for d in document_ids if d in self.card_map}

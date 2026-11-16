@@ -26,9 +26,10 @@ holds; with none, its start and its end. ``parts`` splits a question of several 
 marks, and at a danda after a question word, into at most MAX_PARTS parts, each with a subject (the
 service answers each, then all together); a line end is a space, a danda otherwise a full stop.
 
-**Visibility.** Both statements run inside ``db.customer`` (row level security) with ``customer_id
-=`` and ``LIVE_CURRENT``; the related one also with the chat's scope. PRD 7 PR 8 (#610): these two
-statements are where per-person views replace ``documents`` once it merges.
+**Visibility.** Both statements read ``visible_documents`` (PRD 7, #610: only what the asker may
+see), inside ``db.user`` for an asker (``user_or_customer``) under row level security, with
+``customer_id =`` and ``LIVE_CURRENT``; the related one also with the chat's scope. A focus the asker
+cannot see is no focus, as a document that never was.
 
 Time: O(n) in the question's characters; two statements, each over value_keys' B-tree index
 (customer_id, kind, latin), at most MAX_KEYS keys and MAX_ROWS rows; O(r log r) to rank r rows.
@@ -50,7 +51,7 @@ from kaagaz.answering.fixed_queries import ValueRef
 from kaagaz.answering.hinglish import normalise
 from kaagaz.answering.sanitize import clean_text
 from kaagaz.chunking.script import has_other_script_letters, spaced_words
-from kaagaz.db.engine import Database
+from kaagaz.db.engine import Database, user_or_customer
 from kaagaz.search.hybrid import identifiers
 from kaagaz.search.scope import Scope
 
@@ -327,18 +328,13 @@ def _keyed(profile: Profile) -> list[Fact]:
     return named or list(profile.facts)
 
 
-# LIVE_CURRENT (kaagaz/db/visibility.py), written out; a property's own fields only (a boundary's
-# number is a neighbour's); its record's village. PRD 7 PR 8 (#610): per-person views here.
+# visible_documents (PRD 7) and LIVE_CURRENT (kaagaz/db/visibility.py), written out; a property's
+# own fields only (a boundary's number is a neighbour's); its record's village. Each statement reads
+# its values through the document row it names (the SQL guard, tests/test_sql_access_guard.py).
 _VALUE_COLUMNS = (
     "k.kind, k.latin, v.id::text AS value_id, v.document_id::text AS document_id, d.display_name,"
     " d.detected_type, v.page_no, v.region, v.field, v.value_text, v.label, v.label_page_no,"
     " v.label_region, v.label_text, d.doc_type, pl.village"
-)
-_KEYED = (
-    " JOIN extracted_values v ON v.customer_id = k.customer_id AND v.id = k.value_id"
-    " LEFT JOIN LATERAL (SELECT max(p.value_text) AS village FROM extracted_values p"
-    " WHERE k.kind = 'property' AND p.customer_id = v.customer_id AND p.document_id = v.document_id"
-    " AND p.record_key = v.record_key AND p.field = 'land_village') pl ON true"
 )
 _KINDS = (
     " AND (k.kind <> 'property' OR v.field = ANY(CAST(:property_fields AS text[])))"
@@ -346,8 +342,12 @@ _KINDS = (
 )
 _ORDER = " ORDER BY CASE k.kind WHEN 'property' THEN 0 WHEN 'person' THEN 1 ELSE 2 END"
 _PROFILE = text(
-    "SELECT d.display_name AS name, d.doc_type AS focus_type, x.* FROM documents d"  # noqa: S608 - constants
-    f" LEFT JOIN LATERAL (SELECT {_VALUE_COLUMNS} FROM value_keys k{_KEYED}"
+    "SELECT d.display_name AS name, d.doc_type AS focus_type, x.* FROM visible_documents d"  # noqa: S608 - constants
+    f" LEFT JOIN LATERAL (SELECT {_VALUE_COLUMNS} FROM value_keys k"
+    " JOIN extracted_values v ON v.customer_id = k.customer_id AND v.id = k.value_id"
+    " LEFT JOIN LATERAL (SELECT max(p.value_text) AS village FROM extracted_values p"
+    " WHERE k.kind = 'property' AND p.customer_id = v.customer_id AND p.document_id = v.document_id"
+    " AND p.record_key = v.record_key AND p.field = 'land_village') pl ON true"
     " WHERE k.customer_id = d.customer_id AND k.document_id = d.id"
     f"{_KINDS}{_ORDER}, v.page_no, v.id LIMIT :most) x ON true"
     " WHERE d.customer_id = :customer_id AND d.id = CAST(:focus AS uuid)"
@@ -358,7 +358,12 @@ _MATCHES = text(
     f"SELECT * FROM (SELECT DISTINCT ON (k.document_id, k.kind, k.latin) {_VALUE_COLUMNS}"  # noqa: S608 - constants
     " FROM unnest(CAST(:kinds AS text[]), CAST(:latins AS text[])) AS m(kind, latin)"
     " JOIN value_keys k ON k.customer_id = :customer_id AND k.kind = m.kind AND k.latin = m.latin"
-    f"{_KEYED} JOIN documents d ON d.customer_id = k.customer_id AND d.id = k.document_id"
+    " JOIN visible_documents d ON d.customer_id = k.customer_id AND d.id = k.document_id"
+    " JOIN extracted_values v ON v.customer_id = k.customer_id AND v.id = k.value_id"
+    " AND v.document_id = d.id"
+    " LEFT JOIN LATERAL (SELECT max(p.value_text) AS village FROM extracted_values p"
+    " WHERE k.kind = 'property' AND p.customer_id = v.customer_id AND p.document_id = d.id"
+    " AND p.record_key = v.record_key AND p.field = 'land_village') pl ON true"
     " WHERE k.document_id <> CAST(:focus AS uuid)"
     " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
@@ -398,25 +403,30 @@ def _fact(row: Row[Any]) -> Fact:
 
 
 class PgFocus:
-    """The focus's profile and its related values, one statement each in one ``db.customer``
-    transaction with its own statement timeout. A statement that times out (57014) gives no focus,
+    """The focus's profile and its related values, one statement each in one transaction of the
+    asker's (``user_or_customer``: ``db.user`` for a person, else ``db.customer``) with its own
+    statement timeout. A statement that times out (57014) gives no focus,
     or no related value, with code ``focus_timeout`` logged: the answer goes on without it."""
 
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    def profile(self, customer_id: str, document_id: str) -> Profile | None:
-        """``document_id``'s profile; None when the asker's organisation cannot see it now."""
+    def profile(self, customer_id: str, user_id: str | None, document_id: str) -> Profile | None:
+        """``document_id``'s profile; None when the asker cannot see it now (hidden, in Trash,
+        replaced, another organisation's or never was: all alike)."""
         params = {"customer_id": customer_id, "focus": document_id, "most": MAX_KEYS}
-        rows = self._rows(customer_id, _PROFILE, {**params, "property_fields": sorted(PROPERTY_KINDS)})
+        rows = self._rows(
+            customer_id, user_id, _PROFILE, {**params, "property_fields": sorted(PROPERTY_KINDS)}
+        )
         if not rows:
             return None
         first = rows[0]._mapping
         facts = tuple(_fact(row) for row in rows if row._mapping["value_id"] is not None)
         return Profile(document_id, str(first["name"]), str(first["focus_type"] or ""), facts)
 
-    def matches(self, customer_id: str, profile: Profile, scope: Scope) -> list[Fact]:
-        """Other documents' keyed values in ``scope`` sharing a key of ``profile``."""
+    def matches(self, customer_id: str, user_id: str | None, profile: Profile, scope: Scope) -> list[Fact]:
+        """Other documents' keyed values in ``scope``, ones the asker can see, sharing a key of
+        ``profile``."""
         keys = list(dict.fromkeys((item.kind, item.latin) for item in _keyed(profile)))
         if not keys:
             return []
@@ -429,11 +439,13 @@ class PgFocus:
             "most": MAX_ROWS,
             **scope.params(),
         }
-        return [_fact(row) for row in self._rows(customer_id, _MATCHES, params)]
+        return [_fact(row) for row in self._rows(customer_id, user_id, _MATCHES, params)]
 
-    def _rows(self, customer_id: str, statement: TextClause, params: dict[str, Any]) -> list[Row[Any]]:
+    def _rows(
+        self, customer_id: str, user_id: str | None, statement: TextClause, params: dict[str, Any]
+    ) -> list[Row[Any]]:
         try:
-            with self._db.customer(customer_id) as conn:
+            with user_or_customer(self._db, customer_id, user_id) as conn:
                 conn.execute(_SET_TIMEOUT, {"ms": str(STATEMENT_TIMEOUT_MS)})
                 return list(conn.execute(statement, params))
         except OperationalError as error:

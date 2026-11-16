@@ -10,16 +10,19 @@ piece of the organisation (0011's note; #631's measurements), and ``tsv_sound`` 
 2. ``kaagaz_word_candidates(column, query, documents, cap)``: one narrow owner-rights function
    (0010's pattern), the only way past the policies here. It gives back piece ids only, never
    text: the current customer's (``kaagaz_current_customer()``, the transaction's own setting,
-   never a parameter) pieces of current, ready documents out of Trash (``LIVE_CURRENT``),
-   inside ``documents`` when given, whose ``tsv``, ``tsv_simple`` or ``tsv_sound`` matches
-   ``query``, at most ``cap`` and never more than ``CAP_MOST`` (2,000). As the owner it uses
+   never a parameter) pieces of current, ready documents out of Trash (``LIVE_CURRENT``) that
+   the current person can see (PRD 7: ``visible_documents``, as 0091's owner-rights reads ask
+   it; the worker role with no person, its whole organisation, as the view gives it), so a
+   hidden piece never takes a candidate's place; inside ``documents`` when given, whose ``tsv``,
+   ``tsv_simple`` or ``tsv_sound`` matches ``query``, at most ``cap`` and never more than
+   ``CAP_MOST`` (2,000). As the owner it uses
    the GIN indexes; the search then reads the ids' pieces under row level security, with its
    own customer filter and scope, so the function only bounds the work. Custom plans
    (``plan_cache_mode``), so each call is planned for its own query and documents. ``ROWS 100``:
    the planner's guess of a call's rows (its default is 1,000), so the search reads the ids'
    pieces by their key, never by a scan of every piece of the organisation (measured: a query
-   with no match chose that scan at the default). An empty search path; only ``kaagaz_app``
-   may run it, never PUBLIC.
+   with no match chose that scan at the default). An empty search path; ``kaagaz_app`` and
+   ``kaagaz_worker`` may run it (0083: the same rights), never PUBLIC.
 3. ``term_df`` and ``customer_stats``: how many of an organisation's live pieces hold each word
    of ``tsv_simple`` and ``tsv_sound`` (the columns whose ORed queries are judged), and how many
    live pieces it has, rebuilt by the worker with ``ts_stat`` (kaagaz/search/word_counts.py),
@@ -35,21 +38,18 @@ migration then refuses must change nothing, which an autocommit block would brea
 tests of 0004, 0006 and 0021). A downgrade is a deliberate, offline step (env.py's
 KAAGAZ_ALLOW_DOWNGRADE), so the index's short lock there is fine; no other data is touched.
 
-PROVISIONAL (Vrushit): the number. PRD 7's 0083 to 0093 are open on their branches; this takes
-0094 after this base's 0082 and is renumbered to follow whichever merges first.
-
 Revision ID: 0094
-Revises: 0082 (a trashed folder's parent)
+Revises: 0093 (locked files)
 """
 
 from alembic import op
 
 revision = "0094"
-down_revision = "0082"
+down_revision = "0093"
 branch_labels = None
 depends_on = None
 
-APP_ROLE = "kaagaz_app"
+ROLES = ("kaagaz_app", "kaagaz_worker")  # 0083: the worker role has the app's rights
 LOCK_TIMEOUT = "10s"  # as env.py's
 INDEX = "pieces_tsv_sound"
 CAP_MOST = 2000  # #617: a word search's candidates per column, at most
@@ -73,10 +73,14 @@ CANDIDATES = f"""
     RETURNS SETOF uuid
     LANGUAGE plpgsql STABLE SECURITY DEFINER ROWS 100
     SET search_path = '' SET plan_cache_mode = 'force_custom_plan' AS $$
+    DECLARE
+        v_whole boolean;  -- the worker role with no person: its whole organisation (0086's view rule)
     BEGIN
         IF p_column IS NULL OR p_column NOT IN ('tsv', 'tsv_simple', 'tsv_sound') THEN
             RAISE EXCEPTION 'unknown word column' USING ERRCODE = 'invalid_parameter_value';
         END IF;
+        SELECT coalesce(NOT a.asked AND current_setting('role') = 'kaagaz_worker', false) INTO v_whole
+        FROM public.kaagaz_access() a;
         RETURN QUERY
         SELECT w.id FROM (
             SELECT p.id, p.customer_id, p.document_id FROM public.pieces p
@@ -92,13 +96,16 @@ CANDIDATES = f"""
         WHERE w.customer_id = public.kaagaz_current_customer()
           AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND (p_documents IS NULL OR w.document_id = ANY (p_documents))
+          AND (v_whole OR EXISTS (SELECT 1 FROM public.visible_documents v
+                                  WHERE v.customer_id = w.customer_id AND v.id = w.document_id))
         LIMIT least(greatest(p_cap, 0), {CAP_MOST});
     END
     $$
     """
 FUNCTION_COMMENT = (
     "Word search (#617): ids of at most p_cap (at most 2,000) of the current customer's pieces of"
-    " current, ready documents out of Trash, within p_documents when given, whose tsv, tsv_simple or"
+    " current, ready documents out of Trash that the current person can see (PRD 7), within"
+    " p_documents when given, whose tsv, tsv_simple or"
     " tsv_sound (p_column) matches p_query. Ids only, never text. As the owner it uses the GIN"
     " indexes, which row level security cannot; the search reads the pieces under it."
 )
@@ -152,7 +159,7 @@ UPGRADE = [
         statement
         for table in ("term_df", "customer_stats")
         for statement in (
-            f"GRANT SELECT, INSERT, DELETE ON {table} TO {APP_ROLE}",
+            *[f"GRANT SELECT, INSERT, DELETE ON {table} TO {role}" for role in ROLES],
             f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY",
             f"""
     CREATE POLICY customer_only ON {table}
@@ -172,7 +179,7 @@ UPGRADE = [
     CANDIDATES,
     f"COMMENT ON FUNCTION public.{SIGNATURE} IS {_literal(FUNCTION_COMMENT)}",
     f"REVOKE ALL ON FUNCTION public.{SIGNATURE} FROM PUBLIC",
-    f"GRANT EXECUTE ON FUNCTION public.{SIGNATURE} TO {APP_ROLE}",
+    *[f"GRANT EXECUTE ON FUNCTION public.{SIGNATURE} TO {role}" for role in ROLES],
 ]
 
 DOWNGRADE = [

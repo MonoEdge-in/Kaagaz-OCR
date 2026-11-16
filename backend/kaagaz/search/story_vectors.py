@@ -105,7 +105,7 @@ def embed_story(
     story changed or went meanwhile, or the vector was refused (nothing written).
     One model call, billed to the story's author as kind story (SP1), one short
     transaction."""
-    with usage_scope(db, customer_id=customer_id, user_id=user_id, kind="story"):
+    with usage_scope(db, customer_id=customer_id, user_id=user_id, kind="story", as_person=True):
         vectors = model.embed([story])
     if len(vectors) != 1:
         raise ModelOutputError("embedding_count")

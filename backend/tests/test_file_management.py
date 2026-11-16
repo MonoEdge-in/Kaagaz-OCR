@@ -137,4 +137,6 @@ def test_f1_a_folder_says_its_kind_and_order() -> None:
         "created_at": None,
         "kind": "department",
         "sort_order": 2,
+        "department_only": False,  # Changed on purpose (#601): the walls' icons
+        "private": False,
     }
