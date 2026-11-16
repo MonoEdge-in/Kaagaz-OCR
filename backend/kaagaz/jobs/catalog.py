@@ -27,10 +27,11 @@ A model is **chat eligible** (features 25-27, C11), may draft answers, by rules 
 5 and 7 and, for 2 and 6, text in and text out only and CHAT_EFFORT among its efforts (or
 no efforts at all).
 
-Each saved model keeps ``parameters`` (#647, 0083): the union of the ``supported_parameters``
+Each saved model keeps ``parameters`` (#647, 0095): the union of the ``supported_parameters``
 of its rule 5 endpoints (ZDR, status 0) whose base slug is in OPENROUTER_PROVIDERS, the ones
-``provider.only`` may route to, sorted; None (NULL, not known, sent as before) when one has
-the wrong shape (``PARAMETER``) or there are more than MAX_PARAMETERS. The client sends an
+``provider.only`` may route to, and that list NEEDED_PARAMETERS (a call can land only there),
+sorted. A name of the wrong shape (``PARAMETER``) is dropped, with a warning; None (NULL, not
+known, sent as before) when there are more than MAX_PARAMETERS. The client sends an
 optional parameter only where it is listed (``openrouter.takes_temperature``).
 
 A ``verify-models --record`` pass is kept apart (``verified_*`` for scans,
@@ -105,7 +106,7 @@ STRUCTURED = "structured_outputs"
 NEEDED_PARAMETERS = frozenset({"response_format", STRUCTURED})
 # 0023's CHECK on model_catalog.efforts.
 EFFORT = re.compile(r"[a-z]{1,16}")
-# #647, 0083's CHECK on model_catalog.parameters.
+# #647, 0095's CHECK on model_catalog.parameters.
 PARAMETER = re.compile(r"[a-z][a-z0-9_]{0,63}")
 MAX_PARAMETERS = 64
 # #647: what the client sends every call besides the ones above, required with require_parameters
@@ -344,12 +345,25 @@ def zdr_slugs(
 
 
 def _parameters(
-    endpoints: Iterable[tuple[str, frozenset[str]]], providers: frozenset[str]
+    model_id: str, endpoints: Iterable[tuple[str, frozenset[str]]], providers: frozenset[str]
 ) -> tuple[str, ...] | None:
-    """#647: the supported parameters of the ``endpoints`` of ``providers`` together, sorted; None
-    when one has the wrong shape or there are more than MAX_PARAMETERS."""
-    names = sorted({name for slug, listed in endpoints if slug in providers for name in listed})
-    return tuple(names) if _valid_parameters(names) else None
+    """#647: the supported parameters, sorted, of the ``endpoints`` a call can land on: of
+    ``providers`` and listing NEEDED_PARAMETERS (every call sends a strict schema). A name of the
+    wrong shape is dropped (one warning with how many); None when more than MAX_PARAMETERS."""
+    names = {
+        name
+        for slug, listed in endpoints
+        if slug in providers and listed >= NEEDED_PARAMETERS
+        for name in listed
+    }
+    kept = sorted(name for name in names if PARAMETER.fullmatch(name))
+    if len(kept) < len(names):
+        logger.warning(
+            "model parameters refused: %d dropped",
+            len(names) - len(kept),
+            extra={"code": "parameters_refused", "model": model_id},
+        )
+    return tuple(kept) if _valid_parameters(kept) else None
 
 
 def _valid_parameters(names: Sequence[str]) -> bool:
@@ -411,7 +425,7 @@ def fetch(
                 model.chat_eligible and allowed,
                 model.price_request_usd,
                 model.price_image_usd,
-                _parameters(endpoints, settings.openrouter_providers),
+                _parameters(model.id, endpoints, settings.openrouter_providers),
             )
         )
     return Fetched(models, tuple(skipped))
@@ -467,7 +481,7 @@ def save(db: Database, models: Sequence[CatalogModel], *, untouched: Sequence[st
 
 def valid(model: CatalogModel) -> bool:
     """``model`` fits 0023's model_catalog CHECKs: its id, name, prices, providers and efforts
-    (0070's prices a call: not known, or at least 0, as ``_price_per_call`` makes them; 0083's
+    (0070's prices a call: not known, or at least 0, as ``_price_per_call`` makes them; 0095's
     parameters: not known, or of PARAMETER's shape)."""
     return (
         valid_model_id(model.id)
@@ -555,16 +569,20 @@ def check_env_models(db: Database, settings: Settings) -> list[tuple[str, str, s
     return problems
 
 
+def lacking(parameters: Iterable[str], *, thinks: bool) -> list[str]:
+    """#647: the parameters every call sends that ``parameters`` does not list, the one rule of the
+    env check and verify-models: NEEDED_PARAMETERS, REASONING for a model that ``thinks``, sorted,
+    then the output cap (one of OUTPUT_CAPS, named max_completion_tokens when neither is)."""
+    listed = set(parameters)
+    missing = sorted(NEEDED_PARAMETERS - listed | ({REASONING} - listed if thinks else set()))
+    return missing if listed & set(OUTPUT_CAPS) else [*missing, OUTPUT_CAPS[0]]
+
+
 def _parameter_problems(setting: str, model: str, stored: frozenset[str], *, thinks: bool) -> None:
     """#647: log each parameter the client sends ``model`` (as ``setting``) that ``stored`` lacks:
-    a required one at error (NEEDED_PARAMETERS, REASONING while it ``thinks``, one of OUTPUT_CAPS),
-    and temperature, MODEL_CHAT's optional one (Ask's rewrite and translation), at warning when it
-    would be sent but for ``stored``."""
-    needed = sorted(NEEDED_PARAMETERS | ({REASONING} if thinks else set()))
-    missing = [name for name in needed if name not in stored]
-    if not stored & set(OUTPUT_CAPS):
-        missing.append(OUTPUT_CAPS[0])
-    for name in missing:
+    a required one at error (``lacking``), and temperature, MODEL_CHAT's optional one (Ask's
+    rewrite and translation), at warning when it would be sent but for ``stored``."""
+    for name in lacking(stored, thinks=thinks):
         logger.error(
             "env model parameter missing",
             extra={"code": "parameter_missing", "model": model, "where": setting, "parameter": name},

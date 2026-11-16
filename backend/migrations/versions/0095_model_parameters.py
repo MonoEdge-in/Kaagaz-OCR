@@ -1,15 +1,17 @@
 """Each model's supported parameters (#647, 16 Nov 2026; NEEDS VRUSHIT'S APPROVAL: schema and one
-operator function). The number is provisional: it is renumbered at merge, after the PRD 7 and
-search migrations. It must not run from the test server while it shares production's database
-(#577).
+operator function). PROVISIONAL: 0095 and ``down_revision = "0082"`` hold for this base only
+(0083 is PRD 7's worker role); at merge it is rebased onto the chain's head, after PRD 7 (0083 to
+0093) and search (0094, #646). None of those changes ``kaagaz_op_models``, so its rebuild from
+0070's text still holds. It must not run from the test server while it shares production's
+database (#577).
 
 On 15 Nov 2026 every Vertex endpoint of gemini-3.5-flash-lite stopped listing ``temperature``,
 and every Ask call was 404 ``no_endpoints`` (#631 added one retry without it). The daily
 catalogue refresh already reads each endpoint's ``supported_parameters``; now it keeps them.
 
 * ``model_catalog.parameters`` (new): the union of the supported parameters of the model's
-  zero-data-retention endpoints with status 0 of a provider in OPENROUTER_PROVIDERS
-  (``kaagaz.jobs.catalog``). ``text[] NULL`` with a named CHECK on each name's shape and count, as
+  zero-data-retention endpoints with status 0 of a provider in OPENROUTER_PROVIDERS that take
+  structured outputs, the ones a call can land on (``kaagaz.jobs.catalog``). ``text[] NULL`` with a named CHECK on each name's shape and count, as
   0023's on ``providers`` and ``efforts``. NULL: not read yet, and the client sends as before.
   Every row is NULL until the next refresh; the app may write it, as the other refresh columns.
 * ``kaagaz_op_models`` (0070's) returns it last, for the operator's Models screen: 0070's text
@@ -18,8 +20,8 @@ catalogue refresh already reads each endpoint's ``supported_parameters``; now it
 The downgrade puts 0070's function back and drops the column (and its grants with it). Lost on
 downgrade: the stored parameters, which the next refresh writes again.
 
-Revision ID: 0083
-Revises: 0082
+Revision ID: 0095 (PROVISIONAL)
+Revises: 0082 (PROVISIONAL: the chain's head at merge)
 """
 
 import importlib.util
@@ -28,7 +30,7 @@ from types import ModuleType
 
 from alembic import op
 
-revision = "0083"
+revision = "0095"
 down_revision = "0082"
 branch_labels = None
 depends_on = None
@@ -36,7 +38,7 @@ depends_on = None
 
 def _load(name: str) -> ModuleType:
     path = Path(__file__).with_name(name)
-    spec = importlib.util.spec_from_file_location(f"migration_{name[:4]}_for_0083", path)
+    spec = importlib.util.spec_from_file_location(f"migration_{name[:4]}_for_0095", path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load {path}")
     module = importlib.util.module_from_spec(spec)
@@ -51,7 +53,8 @@ PARAMETER = "[a-z][a-z0-9_]{0,63}"  # kaagaz.jobs.catalog.PARAMETER
 MAX_PARAMETERS = 64  # kaagaz.jobs.catalog.MAX_PARAMETERS
 COMMENT = (
     "The parameters its approved endpoints take (supported_parameters of its zero-data-retention"
-    " endpoints with status 0 in OPENROUTER_PROVIDERS, together). The client sends an optional one"
+    " endpoints with status 0 in OPENROUTER_PROVIDERS that take structured outputs, together). The"
+    " client sends an optional one"
     " (temperature) only when listed here. NULL: not read yet, sent as before."
 )
 

@@ -258,6 +258,15 @@ describe("the Models table", () => {
     expect(html).toContain("Parameters: max_tokens, reasoning, response_format, structured_outputs");
     expect(html).toContain("Parameters: not read yet");
   });
+
+  it("says not read yet when an older API sends no parameters field (#647 review)", () => {
+    const older: Partial<OperatorModel> = { ...model() };
+    delete older.parameters;
+    const html = renderToStaticMarkup(
+      createElement(ModelsTable, { models: [older as OperatorModel], onChange: () => undefined }),
+    );
+    expect(html).toContain("Parameters: not read yet");
+  });
 });
 
 // --- AI settings (features 25-27) --------------------------------------------------------

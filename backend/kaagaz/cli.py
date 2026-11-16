@@ -252,6 +252,9 @@ BACKUP_REGION = "ap-south-1"
 BACKUP_PART_BYTES = 32 * 1024 * 1024
 # The commands that read the settings but no database.
 NO_DATABASE = ("backup-files", "restore-files", "disk-alert", "ops-alert")
+# #647 review: verify-models waits at most this long for the database it reads the stored
+# parameters from; one that does not answer is said ``unknown``, never a failure.
+VERIFY_CONNECT_SECONDS = 3
 
 
 class CliError(Exception):
@@ -1070,15 +1073,21 @@ def _refresh_models(db: Database, settings: Settings) -> str:
     )
 
 
-def _stored_parameters(db: Database, model: str) -> str:
-    """verify-models (#647): ``model``'s stored parameters (``model_catalog.parameters``) as the
-    endpoints item prints them: the names, ``none``, ``not read yet`` (NULL or not in the
-    catalogue) or ``unknown`` with the error's type when the database does not answer."""
+def _stored_parameters(db: Database) -> Callable[[str], str]:
+    """verify-models (#647): each model's stored parameters (``model_catalog.parameters``), read
+    once a run, as the endpoints item prints them: the names, ``none``, ``not read yet`` (NULL or
+    not in the catalogue) or ``unknown`` with the error's type when the database does not answer."""
     try:
-        held = db.model_parameters().get(model)
+        held = db.model_parameters()
     except SQLAlchemyError as error:
-        return f"unknown ({type(error).__name__})"
-    return "not read yet" if held is None else ",".join(sorted(held)) or "none"
+        said = f"unknown ({type(error).__name__})"
+        return lambda model: said
+
+    def printed(model: str) -> str:
+        names = held.get(model)
+        return "not read yet" if names is None else ",".join(sorted(names)) or "none"
+
+    return printed
 
 
 def _record_verified(db: Database, model: str, tokens_in: int, tokens_out: int) -> None:
@@ -1505,7 +1514,10 @@ def main(
             if args.record and len(set(args.model)) != 1:
                 raise CliError("--record checks exactly one --model")
             # and the stored parameters its endpoints item prints (#647)
-            owner = db or Database(make_engine(checked.database_url), checked.db_app_role)
+            owner = db or Database(
+                make_engine(checked.database_url, connect_timeout_seconds=VERIFY_CONNECT_SECONDS),
+                checked.db_app_role,
+            )
             if args.record:
                 if args.chat:
                     record_chat = functools.partial(_record_chat_verified, owner)
@@ -1519,7 +1531,7 @@ def main(
                 record=record,
                 chat=args.chat,
                 record_chat=record_chat,
-                stored=functools.partial(_stored_parameters, owner),
+                stored=_stored_parameters(owner),
             )
         if args.command == "queue-depth":  # the queue only, no database
             from kaagaz.adapters.queue import SqsQueue

@@ -103,8 +103,9 @@ def test_the_trashed_folder_parent_grant_0082_follows_0081_and_is_the_one_head()
     assert scripts.get_revision("0082").down_revision == "0081"
 
 
-def test_the_model_parameters_0083_follow_0082_and_are_the_one_head() -> None:
-    """#647 (16 Nov 2026). Changed on purpose: 0082 was the head; 0083's number is provisional."""
+def test_the_model_parameters_0095_follow_0082_and_are_the_one_head() -> None:
+    """#647 (16 Nov 2026). Changed on purpose: 0082 was the head. PROVISIONAL: 0095 is rebased onto
+    the chain's head at merge, after PRD 7 (0083 to 0093) and search (0094)."""
     scripts = _scripts()
-    assert scripts.get_revision("0083").down_revision == "0082"
-    assert scripts.get_heads() == ["0083"]
+    assert scripts.get_revision("0095").down_revision == "0082"
+    assert scripts.get_heads() == ["0095"]

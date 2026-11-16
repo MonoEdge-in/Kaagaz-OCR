@@ -17,8 +17,10 @@ any item FAILs. INFO means a person reads the evidence and decides. The items:
 
 1. ``endpoints``: ``GET /models/{author}/{slug}/endpoints`` for each page model
    (OCR_MODEL, MODEL_CHAT when it is a model ID, and each ``--model``): google-vertex is listed,
-   and its supported parameters include response_format, reasoning and
-   max_completion_tokens (or max_tokens, which Vertex lists; OpenRouter takes either);
+   and its supported parameters include response_format, structured_outputs, reasoning and
+   max_completion_tokens (or max_tokens, which Vertex lists; OpenRouter takes either), the
+   catalogue's rule (``catalog.lacking``, #647 review: structured_outputs added, as every call
+   sends a strict schema);
    its ZDR field is shown when the listing has one, and so is the catalogue's stored set
    (#647, ``model_catalog.parameters``: the names, ``not read yet``, or ``unknown`` when the
    database does not answer; read through ``cli``).
@@ -152,8 +154,6 @@ TINY_OUTPUT_TOKENS = 16
 EFFORTS = ("minimal", "low", "medium", "high")
 # What the page reader sends, so the endpoint must list each as supported; and one of the
 # output caps (Vertex lists max_tokens; OpenRouter takes either name).
-NEEDED_PARAMETERS = frozenset({"response_format", "reasoning"})
-MAX_TOKEN_PARAMETERS = frozenset({"max_completion_tokens", "max_tokens"})
 GENERATION_PATH = "/generation"
 # /generation may lag the reply by a moment: asked this many times, a second apart.
 GENERATION_TRIES = 3
@@ -268,15 +268,6 @@ def _parsed(probe: Probe, schema: Mapping[str, Any]) -> tuple[dict[str, Any] | N
         return None, f"{probe.status} {error.code}"
     value, problem = parse_reply(text, schema)
     return value, f"{probe.status} json" if value is not None else f"{probe.status} {problem}"
-
-
-def _lacking(parameters: Iterable[str], *, thinks: bool = True) -> list[str]:
-    """The page reader's parameters an endpoint does not list: NEEDED_PARAMETERS (reasoning
-    only for a model that ``thinks``), and one of MAX_TOKEN_PARAMETERS (named
-    max_completion_tokens when neither is there)."""
-    listed = set(parameters)
-    lacking = sorted(NEEDED_PARAMETERS - listed - (set() if thinks else {"reasoning"}))
-    return lacking if MAX_TOKEN_PARAMETERS & listed else [*lacking, "max_completion_tokens"]
 
 
 def _listed(value: object) -> list[Any]:
@@ -444,7 +435,7 @@ class Verifier:
         each = [
             (
                 endpoint,
-                _lacking(
+                catalog.lacking(
                     {name for name in _listed(endpoint.get("supported_parameters")) if isinstance(name, str)},
                     thinks=thinks,
                 ),
@@ -831,16 +822,14 @@ class ModelCheck:
         usable = [
             (slug, parameters)
             for slug, parameters in endpoints
-            if slug in allowed
-            and catalog.STRUCTURED in parameters
-            and not _lacking(parameters, thinks=self.verifier.thinks(self.model))
+            if slug in allowed and not catalog.lacking(parameters, thinks=self.verifier.thinks(self.model))
         ]
         said = f"ZDR endpoints {','.join(slug for slug, _ in endpoints) or 'none'}"
         if not usable:
             evidence = f"{said}; none of OPENROUTER_PROVIDERS with structured output and the parameters"
             return self._found("model_endpoint", FAIL, evidence)
         self.provider, parameters = usable[0]
-        # The cap _lacking accepted: max_completion_tokens when listed, else max_tokens.
+        # The cap catalog.lacking accepted: max_completion_tokens when listed, else max_tokens.
         self.cap = "max_completion_tokens" if "max_completion_tokens" in parameters else "max_tokens"
         return self._found("model_endpoint", PASS, f"{said}; reads through {self.provider}")
 
@@ -1065,7 +1054,7 @@ def _iou(a: tuple[float, float, float, float], b: tuple[float, float, float, flo
 
 def _cap(body: dict[str, Any], name: str) -> dict[str, Any]:
     """``body`` with its output cap sent as ``name`` (max_tokens when that is the one the
-    endpoint lists, so the request sends what ``_lacking`` checked)."""
+    endpoint lists, so the request sends what ``catalog.lacking`` checked)."""
     if name != "max_completion_tokens" and "max_completion_tokens" in body:
         body[name] = body.pop("max_completion_tokens")
     return body

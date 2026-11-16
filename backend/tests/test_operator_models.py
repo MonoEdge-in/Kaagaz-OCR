@@ -90,7 +90,7 @@ CATALOGUE_ROW = {
     "answer_cost_unknown_calls": 3,
     "price_request_usd": Decimal("0"),  # #488: its price a request and an image
     "price_image_usd": Decimal("0"),
-    # #647: the parameters its approved endpoints take (0083).
+    # #647: the parameters its approved endpoints take (0095).
     "parameters": ["max_tokens", "reasoning", "response_format", "structured_outputs", "temperature"],
 }
 # Changed on purpose (#463, 31 Oct 2026): the rows, bodies and env carry the scan cost settings.

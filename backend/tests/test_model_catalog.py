@@ -64,11 +64,16 @@ VERTEX_TAGS = (
 STUDIO_TAGS = ("google-ai-studio", "google-ai-studio/flex", "google-ai-studio/priority")
 
 
-def flash_lite(vertex: tuple[str, ...] = LISTED, studio: tuple[str, ...] = (*LISTED, "temperature")) -> Any:
+def flash_lite(
+    vertex: tuple[str, ...] = LISTED,
+    studio: tuple[str, ...] = (*LISTED, "temperature"),
+    tagged: dict[str, tuple[str, ...]] | None = None,
+) -> Any:
     """``listed`` with flash-lite too: its Vertex endpoints listing ``vertex``, its AI Studio ones
-    ``studio``, every one zero-data-retention with status 0."""
-    endpoints = [{"tag": tag, "status": 0, "supported_parameters": list(vertex)} for tag in VERTEX_TAGS] + [
-        {"tag": tag, "status": 0, "supported_parameters": list(studio)} for tag in STUDIO_TAGS
+    ``studio`` (``tagged``: by tag, instead), every one zero-data-retention with status 0."""
+    each = {**dict.fromkeys(VERTEX_TAGS, vertex), **dict.fromkeys(STUDIO_TAGS, studio), **(tagged or {})}
+    endpoints = [
+        {"tag": tag, "status": 0, "supported_parameters": list(names)} for tag, names in each.items()
     ]
 
     def responder(request: Recorded) -> Reply:
@@ -160,19 +165,64 @@ def test_647_a_model_whose_approved_endpoints_lack_structured_outputs_still_cann
     assert lite.parameters is not None and "structured_outputs" not in lite.parameters
 
 
+def _lite(fake: OpenRouterFake) -> CatalogModel:
+    client, settings = _client(fake)
+    return next(model for model in fetch(client, settings, today=TODAY).models if model.id == FLASH_LITE)
+
+
+def test_647_the_union_counts_only_endpoints_a_call_can_land_on(fake: OpenRouterFake) -> None:
+    """Review: every call sends a strict schema, so an endpoint without structured outputs never
+    serves one; its temperature must not reach the set. Here priority has temperature and no
+    structured outputs, the other Vertex endpoints the reverse."""
+    priority = ("max_tokens", "reasoning", "response_format", "temperature")
+    fake.responder = flash_lite(tagged={"google-vertex/global/priority": priority})
+    assert _lite(fake).parameters == LISTED
+
+
 @pytest.mark.parametrize(
     "names",
-    [["Temperature"], ["top p"], [""], ["temperature,top_p"], [f"p{n}" for n in range(61)]],
-    ids=["upper", "space", "empty", "comma", "65"],
+    [["Temperature"], ["top p"], [""], ["temperature,top_p"]],
+    ids=["upper", "space", "empty", "comma"],
 )
-def test_647_parameters_of_the_wrong_shape_or_too_many_are_kept_as_not_known(
-    fake: OpenRouterFake, names: list[str]
+def test_647_a_name_of_the_wrong_shape_is_dropped_and_the_rest_kept(
+    fake: OpenRouterFake, names: list[str], caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Untrusted names are never stored: the set is None (NULL, sent as before), the model kept."""
+    """Changed on purpose (review): an untrusted name is never stored, but no longer hides the
+    valid ones; one WARNING says how many were dropped."""
+    caplog.set_level(logging.WARNING, logger="kaagaz.worker")
     fake.responder = flash_lite(vertex=(*LISTED, *names))
-    client, settings = _client(fake)
-    lite = next(model for model in fetch(client, settings, today=TODAY).models if model.id == FLASH_LITE)
+    lite = _lite(fake)
+    assert (lite.parameters, lite.eligible) == (LISTED, True)
+    refused = [r for r in caplog.records if r.__dict__.get("code") == "parameters_refused"]
+    assert [(r.levelname, r.__dict__["model"], r.getMessage()) for r in refused] == [
+        ("WARNING", FLASH_LITE, "model parameters refused: 1 dropped")
+    ]
+
+
+def test_647_top_k_is_dropped_and_the_three_valid_names_stored(fake: OpenRouterFake) -> None:
+    fake.responder = flash_lite(vertex=("top-k", "temperature", "structured_outputs", "response_format"))
+    assert _lite(fake).parameters == ("response_format", "structured_outputs", "temperature")
+
+
+def test_647_more_than_64_names_are_kept_as_not_known(fake: OpenRouterFake) -> None:
+    fake.responder = flash_lite(vertex=(*LISTED, *(f"p{n}" for n in range(61))))
+    lite = _lite(fake)
     assert (lite.parameters, lite.eligible) == (None, True)
+
+
+def test_647_one_rule_for_the_parameters_every_call_needs() -> None:
+    """Shared by the env check and verify-models: response_format and structured_outputs, reasoning
+    for a model that thinks, and an output cap under either name."""
+    assert catalog.lacking(LISTED, thinks=True) == []
+    assert (
+        catalog.lacking(["max_completion_tokens", "response_format", "structured_outputs"], thinks=False)
+        == []
+    )
+    assert catalog.lacking(["response_format"], thinks=True) == [
+        "reasoning",
+        "structured_outputs",
+        "max_completion_tokens",
+    ]
 
 
 def test_azure_counts_once_it_is_in_openrouter_providers(fake: OpenRouterFake) -> None:

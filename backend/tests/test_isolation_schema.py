@@ -210,7 +210,7 @@ CATALOG_REFRESH = {
     "name", "price_in_usd_per_m", "price_out_usd_per_m", "providers", "efforts", "expires_on", "eligible",
     "seen_at", "chat_eligible",  # 0026, the answer filter
     "price_request_usd", "price_image_usd",  # Changed on purpose (0070, #488 review): the prices a call
-    "parameters",  # Changed on purpose (0083, #647): the supported parameters
+    "parameters",  # Changed on purpose (0095, #647): the supported parameters
 }  # fmt: skip
 CATALOG_POLICIES = {
     ("model_catalog", "read_all"): ("SELECT", "PERMISSIVE", ["public"], "true", None),
@@ -383,7 +383,7 @@ OPERATOR_RIGHTS = {
         " price_request_usd numeric, price_image_usd numeric, parameters text[])",
         # 0026: the answer columns; 0033: the real cost, counts and sums only; changed on purpose
         # (0070, #488 review): the prices a call, for the operator's check of Ultra low cost's lead;
-        # changed on purpose (0083, #647): the supported parameters
+        # changed on purpose (0095, #647): the supported parameters
         EMPTY_PATH,
     ),
     "kaagaz_op_set_model_enabled": ("text", EMPTY_PATH),
