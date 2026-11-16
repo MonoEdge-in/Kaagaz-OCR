@@ -49,6 +49,8 @@ ALLOWED: dict[str, tuple[int, str]] = {
     "routers/oidc.py:_sign_in:system": (1, "Google sign-in: finds the connection, any organisation"),
     "routers/oidc.py:_sign_in:customer": (3, "Google sign-in: the found user, before a session"),
     "routers/oidc.py:_connect:system": (1, "whether this Google account is connected in any organisation"),
+    # Changed on purpose (PRD 7, #605): a locked files' Google confirm finds the account by its key.
+    "routers/oidc.py:_locked_open:system": (1, "whether this Google account is the person's own connection"),
     "routers/operator_models.py:_plan:customer": (1, "the super admin, not a person of the organisation"),
     "routers/operator_orgs.py:create_org:system": (1, "the super admin frees a stale sign-up's e-mail"),
 }
@@ -63,6 +65,7 @@ USER_EXCEPTIONS: dict[str, tuple[int, str]] = {
     "routers/chat.py:_write_memory": (2, "after the reply, the asker: _remember passes user's ids"),
     "routers/documents.py:enqueue": (1, "the uploader: _ReadingQueue's requested_by is user.user_id"),
     "routers/oidc.py:_connect": (2, "the connect's signed-in user (current_user_allow_google_link)"),
+    "routers/oidc.py:_locked_open": (1, "the confirm's signed-in user (_flow_user), PRD 7 #605"),
     "routers/words.py:add_my_word": (1, "me is user.user_id"),
     "routers/words.py:my_words_on_page": (1, "me is user.user_id"),
 }

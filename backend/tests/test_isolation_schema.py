@@ -454,6 +454,16 @@ OWNER_RIGHTS = {
     # 0094 (#617): the word search's candidates, the current customer's piece ids only, each call
     # planned for its own query.
     "kaagaz_word_candidates": ("SETOF uuid", [*EMPTY_PATH, "plan_cache_mode=force_custom_plan"]),
+    # Changed on purpose (#605, 0096): the locked-file pop-ups' names, an Admin's only, checked inside.
+    "kaagaz_admin_place_files": ("bigint", EMPTY_PATH),
+    "kaagaz_admin_place_locked": (
+        "TABLE(id uuid, display_name text, folder_id uuid, open boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_locked_for": (
+        "TABLE(id uuid, display_name text, folder_id uuid, given_at timestamp with time zone, given_by uuid)",
+        EMPTY_PATH,
+    ),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"

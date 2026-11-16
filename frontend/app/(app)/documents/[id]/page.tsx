@@ -24,6 +24,7 @@ function DocumentRoute() {
       scannedParam={search.get("scanned")}
       wordsParam={search.get("words")}
       fromParam={search.get(FROM_PARAM)}
+      openErrorParam={search.get("open_error")}
     />
   );
 }
