@@ -4,6 +4,7 @@
 // The server checks the role and the status again (403 forbidden, 409
 // not_reprocessable).
 
+import { NOT_FOUND_DOCUMENT, NOT_FOUND_TEXT } from "@/components/access/words";
 import { canReview } from "@/components/review/review";
 import { ApiError } from "@/lib/api";
 import { errorWords } from "@/lib/errorWords";
@@ -14,14 +15,17 @@ const REPROCESSABLE: readonly DocumentStatus[] = ["ready", "failed", "needs_read
 /**
  * A reviewer or an admin, for a ready, failed or unreadable document that is not in Trash, or
  * one still being read 6 hours after it was asked for (`stuck`, issue 407: the server decides).
+ * Never a locked one (PRD 7, #605): it is never read, but for one that failed being prepared, which
+ * Retry only prepares again.
  */
 export function canReprocess(
   role: Role,
-  document: Pick<DocumentSummary, "status" | "deleted_at" | "stuck">,
+  document: Pick<DocumentSummary, "status" | "deleted_at" | "stuck" | "locked">,
 ): boolean {
   return (
     canReview(role) &&
     document.deleted_at === null &&
+    (document.locked !== true || document.status === "failed") &&
     (REPROCESSABLE.includes(document.status) || document.stuck === true)
   );
 }
@@ -92,9 +96,11 @@ export function reprocessErrorText(error: unknown): string {
   return "Check your internet connection, then try again.";
 }
 
-/** Why the document could not be shown, and whether Try again can help: not when it is not there (404). */
+/** Why the document could not be shown, and whether Try again can help: not when it is not there
+ * (404). PRD 7 (#604): one 404 text for a document deleted, never there, or hidden. */
 export function loadFailure(error: unknown): { message: string; retry: boolean } {
-  if (error instanceof ApiError) return { message: errorWords(error), retry: error.status !== 404 };
+  if (error instanceof ApiError && error.status === 404) return { message: `${NOT_FOUND_DOCUMENT} ${NOT_FOUND_TEXT}`, retry: false };
+  if (error instanceof ApiError) return { message: errorWords(error), retry: true };
   return { message: "Check your internet connection, then try again.", retry: true };
 }
 

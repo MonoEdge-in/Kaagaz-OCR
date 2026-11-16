@@ -36,7 +36,7 @@ def get_batch(batch_id: uuid.UUID, user: User, context: Context) -> dict[str, An
     their tags, the suggestions."""
     customer_id, target = user.customer_id, str(batch_id)
     settings = context.settings
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         rows = listing.batch_rows(
             conn, customer_id, target, user_id=user.user_id, limit=settings.max_files_per_batch
         )

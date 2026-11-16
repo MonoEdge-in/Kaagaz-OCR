@@ -404,9 +404,12 @@ def test_an_empty_glossary_query_matches_nothing(db: Database) -> None:
     customer, _ = new_customer(db)
     add_pieces(db, customer, add_document(db, customer), [("कर भरला", None)])
     words = {"c": customer, "q": "zzz", "k": "zzz", "sk": "", "n": 50} | EVERYTHING.params()
+    words |= {"docs": None, "cap": hybrid.CANDIDATE_CAP}  # Changed on purpose (#617): the candidates' bounds
     with db.customer(customer) as conn:
-        assert conn.execute(hybrid._WORD, words | {"g": ""}).all() == []
-        assert len(conn.execute(hybrid._WORD, words | {"g": "कर"}).all()) == 1  # the control
+        assert conn.execute(hybrid._WORD, words | {"g": "", "gc": "", "gk": ""}).all() == []
+        assert (
+            len(conn.execute(hybrid._WORD, words | {"g": "कर", "gc": "कर", "gk": ""}).all()) == 1
+        )  # the control
 
     assert run(db, customer, "zzz") == []  # no keyword listed: :g is "", and nothing else matches
 
@@ -467,11 +470,13 @@ def test_an_empty_sound_query_matches_nothing(db: Database) -> None:
 
 def _word_rows(db: Database, customer_id: str, question: str) -> list[tuple[str, float, bool]]:
     """(piece id, score, matched exactly) of the word list for ``question``, in order. Changed
-    on purpose (#619): the exact rung (_WORD) says which matched exactly."""
+    on purpose (#619): the exact rung (_WORD) says which matched exactly; (#617) with the
+    candidates' bounds."""
     words = {"c": customer_id, "q": question, "k": question, "g": "", "sk": hybrid.sound_query(question)}
     params = words | {"n": hybrid.CANDIDATES} | EVERYTHING.params()
+    bounds = {"gc": "", "gk": "", "docs": None, "cap": hybrid.CANDIDATE_CAP}
     with db.customer(customer_id) as conn:
-        exact = {str(row[0]) for row in conn.execute(hybrid._WORD, params)}
+        exact = {str(row[0]) for row in conn.execute(hybrid._WORD, params | bounds)}
         return [(str(row[0]), float(row[2]), str(row[0]) in exact) for row in hybrid._word(conn, params)]
 
 
@@ -726,3 +731,19 @@ def test_after_a_dropped_list_the_others_have_one_second(
 
     assert run(db, customer, "invoice sharma") == []
     assert [getattr(r, "code", None) for r in caplog.records] == ["word_timeout", "fuzzy_timeout"]
+
+
+@pytest.mark.parametrize(
+    ("question", "printed"),
+    [("gat 61", "Gut No. 61, Kusgaon"), ("gut 61", "Gat No. 61, Kusgaon"), ("gut 61", "गट नंबर ६१ कुसगाव")],
+)
+def test_gut_and_gat_find_each_other(db: Database, question: str, printed: str) -> None:
+    """#625: land records print the survey number as Gut and as Gat (गट): either finds the other."""
+    customer, _ = new_customer(db)
+    wanted, _ = add_pieces(
+        db, customer, add_document(db, customer), [(printed, None), ("Rent receipt", None)]
+    )
+
+    hits = run(db, customer, question)
+
+    assert [hit.piece_id for hit in hits] == [wanted] and hits[0].word_score is not None

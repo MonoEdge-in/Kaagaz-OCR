@@ -173,7 +173,9 @@ def _embed_now(context: AppContext, model: ModelClient, user: CurrentUser, row: 
     """One embed of the saved story, then frees its slot. Never raises for the model
     or the database."""
     try:
-        with usage_scope(context.db, customer_id=user.customer_id, user_id=user.user_id, kind="story"):
+        with usage_scope(
+            context.db, customer_id=user.customer_id, user_id=user.user_id, kind="story", as_person=True
+        ):
             return embed_story(context.db, model, user.customer_id, user.user_id, row.family_id, row.story)
     except (ModelUnavailable, ModelOutputError, BackendUnavailable, SQLAlchemyError) as error:
         logger.warning("story saved without a vector", extra={"code": type(error).__name__})
@@ -231,6 +233,9 @@ def put_my_story(
         raise ApiError(400, "bad_request", _TEXT[error.reason]) from None
     target = str(document_id)
     with context.db.user(user.customer_id, user.user_id) as conn:
+        # PRD 7 (#595): a file the person cannot see is not found, before its family is locked.
+        if listing.get_document(conn, user.customer_id, target) is None:
+            raise ApiError(404, "not_found")
         _live_family(conn, user, target)
         row = stories_sql.put_story(conn, user.customer_id, user.user_id, target, story)
         if row is None:  # the family went (a purge) before the lock
@@ -251,6 +256,9 @@ def delete_my_story(
     _same_tab(user_id, user)
     target = str(document_id)
     with context.db.user(user.customer_id, user.user_id) as conn:
+        # PRD 7 (#595): a file the person cannot see is not found, before its family is locked.
+        if listing.get_document(conn, user.customer_id, target) is None:
+            raise ApiError(404, "not_found")
         family_id = _live_family(conn, user, target)
         if not stories_sql.delete_story(conn, user.customer_id, user.user_id, target):
             raise ApiError(404, "not_found")
@@ -277,14 +285,16 @@ def my_story_matches(body: StoryMatchBody, user: User, context: Context) -> dict
     if not question_words(question):
         return {"story_matches": [], "searched": 0, "all": True, "reason": "no_content_words"}
     settings = context.settings
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         scope = resolve(conn, user.customer_id, body, timezone=settings.timezone)
     if scope.matches_nothing:
         return {"story_matches": [], "searched": 0, "all": True}
     on = meaning_threshold(settings.model_embed) is not None
     embedding = None
     if on:
-        with usage_scope(context.db, customer_id=user.customer_id, user_id=user.user_id, kind="story"):
+        with usage_scope(
+            context.db, customer_id=user.customer_id, user_id=user.user_id, kind="story", as_person=True
+        ):
             embedding = embed_question(context.model, question)
     if not ranking_slots.acquire(blocking=False):
         raise ApiError(503, "backend_unavailable")

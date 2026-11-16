@@ -24,14 +24,14 @@ M0095 = _load("0095_model_parameters.py")
 _SET = "UPDATE model_catalog SET parameters = CAST(:p AS text[]) WHERE id = :m"
 
 
-def test_the_revision_follows_0082() -> None:
-    assert (M0095.revision, M0095.down_revision) == ("0095", "0082")
+def test_the_revision_follows_0094() -> None:  # Changed on purpose: rebased onto the chain's head
+    assert (M0095.revision, M0095.down_revision) == ("0095", "0094")
 
 
 def test_up_down_and_up_again(fresh: tuple[str, Database]) -> None:
     url, db = fresh
-    migrate(url, "0082")
-    at_0082 = _state(db)
+    migrate(url, "0094")
+    at_0094 = _state(db)
     model = catalog_model(db)
 
     migrate(url, "0095")
@@ -39,8 +39,8 @@ def test_up_down_and_up_again(fresh: tuple[str, Database]) -> None:
     assert as_owner(db, "SELECT parameters FROM model_catalog WHERE id = :m", {"m": model}) == [(None,)]
     as_owner(db, _SET, {"p": ["max_tokens", "temperature"], "m": model})
 
-    base._downgrade(url, "0082")
-    assert _state(db) == at_0082
+    base._downgrade(url, "0094")
+    assert _state(db) == at_0094
 
     migrate(url, "0095")
     assert _state(db) == at_0095

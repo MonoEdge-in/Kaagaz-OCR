@@ -50,7 +50,7 @@ from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobNotFound
 from kaagaz.search.scope import Scope
 from kaagaz.settings import Settings
-from tests.db_support import insert_document, insert_folder, insert_tag, new_customer, tag_document
+from tests.db_support import APP_ROLE, insert_document, insert_folder, insert_tag, new_customer, tag_document
 from tests.fakes import MemoryQueue, MemoryStorage
 from tests.settings_factory import make_settings
 
@@ -184,6 +184,7 @@ class FakeAnswers:
     resumed: list[Pending] = field(default_factory=list)  # PRD 6 B1: each clarify answered
     clarifies: list[bool] = field(default_factory=list)  # PRD 6 (0052): the nlq_clarify switch each got
     cited: list[list[str]] = field(default_factory=list)  # PRD 6 B: the earlier answers' documents each got
+    last_cited: list[list[str]] = field(default_factory=list)  # #629: the last answer's live documents
 
     def answer(
         self,
@@ -199,9 +200,11 @@ class FakeAnswers:
         pending: Pending | None = None,
         clarify: bool = True,
         cited: Sequence[str] = (),
+        last_cited: Sequence[str] = (),
     ) -> _FixedAnswer:
         self.asked.append((customer_id, question))
         self.cited.append(list(cited))
+        self.last_cited.append(list(last_cited))
         self.clarifies.append(clarify)
         self.pins.append(list(pins))
         self.histories.append(list(history))
@@ -277,9 +280,10 @@ class Api:
         self.storage = storage or ApiFakeStorage()
         self.queue = queue or ApiFakeQueue()
         self.answers = FakeAnswers()
+        self.app_db = Database(db.engine, APP_ROLE)  # PRD 7 (#595): the app in the API role, as on a server
         self.app = create_app(
             self.settings,
-            db=db,
+            db=self.app_db,
             storage=self.storage,
             queue=self.queue,
             answers=self.answers if answers is None else answers,

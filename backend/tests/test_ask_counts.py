@@ -13,6 +13,7 @@ import pytest
 from kaagaz.answering.evidence import Hit, has_word, word_text
 from kaagaz.answering.exhaustive import (
     MAX_LISTED,
+    asks_documents,
     count_sentence,
     document_sentence,
     exhaustive_query,
@@ -22,7 +23,8 @@ from kaagaz.answering.exhaustive import (
     pages_with,
 )
 from kaagaz.answering.service import Answer, AnswerService
-from kaagaz.search.scope import Scope
+from kaagaz.search.hybrid import MAX_LIMIT
+from kaagaz.search.scope import EVERYTHING, Scope
 from tests.test_answering_golden import (
     NOW,
     SETTINGS,
@@ -30,8 +32,10 @@ from tests.test_answering_golden import (
     A,
     FakeFixedQueries,
     FakeHit,
+    FakeModel,
     FakeRetriever,
     FakeUnchecked,
+    evidence_blocks,
     piece,
 )
 from tests.test_word_review_text import BANNED
@@ -49,7 +53,7 @@ class FakeExhaustive:
         self.scopes: list[Scope] = []
 
     def documents_with(
-        self, customer_id: str, term: str, scope: Scope, listed: int
+        self, customer_id: str, term: str, scope: Scope, listed: int, *, user_id: str | None = None
     ) -> tuple[int, list[list[Hit]]]:
         self.calls.append((customer_id, term, listed))
         self.scopes.append(scope)
@@ -389,7 +393,14 @@ class FakeMentions:
         self.calls: list[tuple[str, list[str], list[str]]] = []
 
     def mentions(
-        self, customer_id: str, terms: Sequence[str], scope: Scope, exclude: Sequence[str], listed: int
+        self,
+        customer_id: str,
+        terms: Sequence[str],
+        scope: Scope,
+        exclude: Sequence[str],
+        listed: int,
+        *,
+        user_id: str | None = None,
     ) -> tuple[int, list[dict[str, object]]]:
         self.calls.append((customer_id, list(terms), list(exclude)))
         rows = [
@@ -450,7 +461,7 @@ def test_a_not_found_answers_closest_documents_are_not_mentioned_again() -> None
         mentions=port,
     )
     port.calls.clear()
-    service._mentioned(A, "Where is the shop on Jalna road?", closest, Scope())
+    service._mentioned(A, None, "Where is the shop on Jalna road?", closest, Scope())
     assert "c9" in port.calls[0][2]
 
 
@@ -462,3 +473,94 @@ def test_no_mentions_for_a_count_no_key_term_or_none_found() -> None:
     empty = FakeMentions(total=0)
     answer = mentioned("Where is the shop on Jalna road?", empty)
     assert empty.calls and answer.mentions is None and "mentions" not in answer.to_json()
+
+
+# --- which documents, from the search (#617 item 5) -------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("question", "asks"),
+    [
+        ("which document have krishna jindal name", True),
+        ("Which files mention Gat 61?", True),
+        ("How many documents have the name Patil?", True),
+        ("kaun se documents me Jindal ka naam hai", True),
+        ("कोणत्या कागदपत्रात गट ६१ आहे", True),
+        ("किन दस्तावेज़ों में जिंदल है", True),
+        ("What is the invoice number in this document?", False),  # one value of one document
+        ("all documents total", False),
+        ("Which invoice is the largest?", False),  # no document word
+        ("Who is the owner of Gat 61?", False),
+        # Review of #617 part 1: kaun, कौन and kis also mean "who"; the document word must follow.
+        ("is document me owner kaun hai", False),
+        ("इस दस्तावेज़ में मालिक कौन है", False),
+        ("list the items in this document", False),
+        ("Which clause of this document mentions penalty?", False),
+        ("list the owners in this document", False),
+        ("list the papers of Wagholi", False),  # "list" is not a which word any more
+        ("List files of Gat 61", False),  # not even right before a document word
+    ],
+)
+def test_which_documents_questions_are_read_in_every_script(question: str, asks: bool) -> None:
+    assert asks_documents(question) is asks
+
+
+def test_a_which_documents_question_reads_each_document_once() -> None:
+    """#617 item 5: the search keeps MAX_LIMIT hits and the draft reads each document's best
+    one, so a document with many matching pieces no longer fills the evidence alone."""
+    many = [piece("a.pdf", f"Krishna Jindal signed page {n}") for n in range(6)]
+    pieces = [*many, piece("b.pdf", "Buyer: Krishna Jindal"), piece("c.pdf", "Witness: Krishna Jindal")]
+    retriever = FakeRetriever({A: pieces})
+    model = FakeModel(lambda system, user: {"status": "not_found", "sentences": []})
+    service = AnswerService(
+        db=UNUSED_DB,
+        model=model,
+        settings=SETTINGS,
+        clock=lambda: NOW,
+        retriever=retriever,
+        fixed_queries=FakeFixedQueries({A: []}),
+        unchecked=FakeUnchecked(),
+    )
+
+    service.answer(A, "which document have krishna jindal name")
+
+    assert [call[3] for call in retriever.calls] == [MAX_LIMIT]
+    drafted = [list(blocks.values()) for _, user in model.prompts if (blocks := evidence_blocks(user))]
+    assert len(drafted[0]) == 3  # a.pdf's best piece, then b.pdf's and c.pdf's
+    for hit in (pieces[0], pieces[6], pieces[7]):
+        assert sum(hit.text in block for block in drafted[0]) == 1, hit.document_name
+
+    service.answer(A, "Where did Krishna Jindal sign?")  # any other question: as before
+    assert retriever.calls[-1][3] == SETTINGS.answer_max_evidence
+
+
+def _drafted(pieces: list[FakeHit], question: str, scope: Scope = EVERYTHING) -> tuple[int, list[str]]:
+    """The search's limit and the evidence the draft read, for ``question``."""
+    retriever = FakeRetriever({A: pieces})
+    model = FakeModel(lambda system, user: {"status": "not_found", "sentences": []})
+    service = AnswerService(
+        db=UNUSED_DB,
+        model=model,
+        settings=SETTINGS,
+        clock=lambda: NOW,
+        retriever=retriever,
+        fixed_queries=FakeFixedQueries({A: []}),
+        unchecked=FakeUnchecked(),
+    )
+    service.answer(A, question, scope=scope)
+    drafted = [list(blocks.values()) for _, user in model.prompts if (blocks := evidence_blocks(user))]
+    return retriever.calls[-1][3], drafted[0]
+
+
+def test_one_document_is_read_as_before() -> None:
+    """Review of #617 part 1: when every hit is one document's, or the scope names one, the
+    evidence is that document's best pieces, never cut to one."""
+    many = [piece("a.pdf", f"Krishna Jindal signed page {n}") for n in range(8)]
+
+    limit, read = _drafted(many, "which document have krishna jindal name")
+    assert (limit, len(read)) == (MAX_LIMIT, SETTINGS.answer_max_evidence)
+
+    scope = Scope(document_ids=(many[0].document_id,))
+    others = [piece("b.pdf", "Buyer: Krishna Jindal")]
+    limit, read = _drafted([*many, *others], "which document have krishna jindal name", scope)
+    assert (limit, len(read)) == (SETTINGS.answer_max_evidence, SETTINGS.answer_max_evidence)

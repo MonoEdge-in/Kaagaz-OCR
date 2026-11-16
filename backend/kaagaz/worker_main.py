@@ -36,7 +36,10 @@ until it is told to stop:
   the jobs go on: the purge can never stop the worker, or crash it again on
   every restart. The same turn then removes the organisations whose deletion
   is due (super admin PR 4, ``purge_deleted_customers``), a batch of families
-  at a time, and sweeps their storage once more a day after each purge.
+  at a time, and sweeps their storage once more a day after each purge. Last, the
+  organisations' word counts that are due are rebuilt (#617, kaagaz/search/word_counts.py),
+  never counted or oldest first, for at most WORD_COUNTS_SECONDS a turn; one that fails is
+  logged with its id and skipped, unless the database itself is down.
 * With the model on, pieces left without a meaning vector (the model was down
   while their document was read, or the job's indexing ran out of time) get one later: at
   most 32 pieces a minute, only on a turn the queue had nothing for, so never before an
@@ -108,7 +111,8 @@ from types import FrameType
 from typing import TYPE_CHECKING
 
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError, SQLAlchemyError
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 
 from kaagaz import worker_heartbeat
 from kaagaz.adapters.queue import SqsQueue
@@ -117,9 +121,10 @@ from kaagaz.adapters.storage import S3Storage
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.ai.openrouter import KEY_PROBLEM as READER_KEY_PROBLEM
 from kaagaz.ai.openrouter import OpenRouterClient, process_gate
-from kaagaz.db import ai_settings, reader_status, versions
+from kaagaz.db import ai_settings, person_rule, reader_status, versions
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database, make_engine
+from kaagaz.db.sqlstate import sqlstate
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.catalog import RefreshCatalog, Refreshed, check_env_models, last_refreshed, refresh
@@ -158,6 +163,8 @@ from kaagaz.jobs.worker import (
     database_unreachable,
     retry_delay,
 )
+from kaagaz.search import word_counts
+from kaagaz.search.hybrid import CANDIDATE_CAP
 from kaagaz.search.indexing import MissingPass, customer_ids, embed_missing
 from kaagaz.search.story_vectors import StoryKey, StoryPass, embed_missing_stories
 from kaagaz.settings import Settings
@@ -181,6 +188,8 @@ STORY_PASS_STORIES = 32
 # File management section 7: the one-time fingerprint sweep, a pass a minute on idle turns.
 FINGERPRINT_EVERY = timedelta(minutes=1)
 FINGERPRINT_PASS = 50
+# #617: the hourly turn rebuilds word counts for about this long, then leaves the rest for the next.
+WORD_COUNTS_SECONDS = 60.0
 
 # The only extra fields a log line may carry. Anything else passed in
 # ``extra`` is dropped, so a careless call cannot log document data.
@@ -301,6 +310,29 @@ class RecordAttempt:
             self._record(job.customer_id, job.document_id, attempt, self._max_attempts)
         elif self._record_run is not None:
             self._record_run(job.customer_id, job.run_id, attempt)
+
+
+# PRD 7 (#606, decision 22): what a worker's login may not be, past its own switch into kaagaz_worker.
+_WORKER_UNSAFE = ("superuser_login", "bypassrls_login", "owner_login", "operator_reachable")
+
+
+def check_worker_login(db_login_check: str, worker_role: str, db: Database) -> None:
+    """PRD 7 (#606, decision 22): the per-person rule is written for kaagaz_app, so a worker on a
+    server must run as kaagaz_worker, on a login that is neither the owner, a superuser, one that
+    skips row level security nor one that reaches the operator's role. Each problem is one error
+    line; with DB_LOGIN_CHECK=refuse, RuntimeError before any job (a login not read counts). One
+    read."""
+    problems = [] if worker_role == person_rule.WORKER_ROLE else [f"the worker runs as {worker_role}"]
+    try:
+        with db.system() as conn:
+            problems += [code for code in person_rule.login_risks(conn) if code in _WORKER_UNSAFE]
+    except SQLAlchemyError as error:
+        problems.append(f"the login could not be checked ({type(error).__name__})")
+    for problem in problems:
+        logger.error("unsafe worker login: %s", problem, extra={"code": "unsafe_config"})
+    if problems and db_login_check == "refuse":
+        db.engine.dispose()  # the start stops here: no pooled connection is left behind
+        raise RuntimeError("the worker's database login can't be held by the database rule (DB_LOGIN_CHECK)")
 
 
 def check_queue_redrive(max_receives: int, max_attempts: int) -> None:
@@ -698,14 +730,65 @@ def fingerprint_missing(db: Database, limit: int = FINGERPRINT_PASS) -> int:
 def _purge(db: Database, storage: CustomerStorage, trash_days: int) -> int:
     """The hourly turn: old Trash (its count is returned and logged by PurgeHourly), then
     the organisations whose deletion is due, their second sweep a day later, and their kept
-    audit rows 365 days later (0068, #482; logged here)."""
+    audit rows 365 days later (0068, #482; logged here); last, the word counts due (#617)."""
     families = purge_expired(db, storage, _utc_now, trash_days)
     logger.info("abandoned uploads removed: %d", purge_upload_sessions(db, storage, _utc_now))
     logger.info("ended sessions swept: %d", sweep_ended_sessions(db, _utc_now))
     logger.info("deleted organisations: %d families", purge_deleted_customers(db, storage, _utc_now))
     logger.info("purged organisations swept again: %d", sweep_purged_customers(db, storage, _utc_now))
     logger.info("kept audit rows of deleted organisations removed: %d", forget_kept_audit(db, _utc_now))
+    logger.info("word counts rebuilt: %d organisations", rebuild_word_counts(db, _utc_now()))
     return families
+
+
+def rebuild_word_counts(db: Database, now: datetime, clock: Callable[[], float] = time.monotonic) -> int:
+    """#617: the organisations' word counts that are due (``word_counts.due``), never counted
+    first, then the oldest, each checked and rebuilt in its own transaction as that organisation,
+    until WORD_COUNTS_SECONDS have passed (at least one is rebuilt); how many were. One that fails
+    is logged with its id and error class and skipped; a database that is down raises (the
+    hourly turn logs it). O(C) checks for C organisations, plus each rebuild's own cost."""
+    with db.system() as conn:
+        customers = customer_ids(conn)
+    waiting: list[tuple[bool, datetime, str]] = []
+    for customer in customers:
+        try:
+            with db.customer(customer) as conn:
+                is_due, built_at = word_counts.due(conn, customer, now)
+        except SQLAlchemyError as error:
+            _word_counts_failed(customer, error)
+            continue
+        if is_due:
+            waiting.append((built_at is not None, built_at or now, customer))
+    start, rebuilt = clock(), 0
+    for _, _, customer in sorted(waiting):
+        try:
+            with db.customer(customer) as conn:
+                word_counts.rebuild(conn, customer, now, CANDIDATE_CAP)
+            rebuilt += 1
+        except SQLAlchemyError as error:
+            _word_counts_failed(customer, error)
+        if clock() - start >= WORD_COUNTS_SECONDS:
+            break
+    return rebuilt
+
+
+def _word_counts_failed(customer: str, error: SQLAlchemyError) -> None:
+    """One organisation's word counts failed: raised again when the database itself is down (no
+    connection, a lost one, a pool wait), else logged with its id, class and SQLSTATE only."""
+    state = sqlstate(error) if isinstance(error, DBAPIError) else None
+    lost = isinstance(error, DBAPIError) and error.connection_invalidated
+    if (
+        lost
+        or isinstance(error, InterfaceError | PoolTimeout)
+        or (isinstance(error, OperationalError) and state is None)
+    ):
+        raise error
+    if state is not None and state.startswith("08"):  # connection exception
+        raise error
+    logger.error(
+        "word counts not rebuilt",
+        extra={"customer_id": customer, "code": type(error).__name__, "sqlstate": state},
+    )
 
 
 def _story_pass(db: Database, model: "ModelClient", after: StoryKey | None) -> StoryPass:
@@ -864,14 +947,15 @@ def _serve(settings: Settings) -> None:
 
     # The worker's PostgreSQL timeouts (#246 A1): long, so a big document's save or a sweep is
     # never cut, but a stuck statement, lock wait or open transaction still ends. DATABASE_URL is
-    # the app's login in Compose (#479); a worker never builds the operator's engine.
+    # the workers' login in Compose (#479, #587); a worker never builds the operator's engine.
     engine = make_engine(
         settings.database_url,
         statement_timeout_seconds=settings.db_worker_statement_timeout_seconds,
         lock_timeout_seconds=settings.db_worker_lock_timeout_seconds,
         idle_in_transaction_timeout_seconds=settings.db_idle_in_transaction_timeout_seconds,
     )
-    db = Database(engine, settings.db_app_role)
+    db = Database(engine, settings.db_worker_role)
+    check_worker_login(settings.db_login_check, settings.db_worker_role, db)
     storage = S3Storage(settings)
     queue = SqsQueue(settings)
     max_receives = queue.max_receives()  # once; no redrive policy stops the worker here

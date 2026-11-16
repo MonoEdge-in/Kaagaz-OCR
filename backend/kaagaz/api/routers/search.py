@@ -76,7 +76,7 @@ def search_inside_documents(
         return _nothing()
     settings = context.settings
     customer_id = user.customer_id
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         scope = resolve(
             conn, customer_id, params, timezone=settings.timezone, detected_type=params.detected_type
         )
@@ -89,7 +89,7 @@ def search_inside_documents(
     )
     words = PgWords(context.db).words(customer_id, user.user_id, document_id=document_id)
     expansion = expand(question, words) if words else NO_EXPANSION
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         found = search_documents(
             conn,
             customer_id=customer_id,

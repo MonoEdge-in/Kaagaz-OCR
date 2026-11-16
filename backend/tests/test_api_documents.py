@@ -19,9 +19,8 @@ from sqlalchemy import Connection, event, text
 
 from kaagaz.api.routers.documents import _CONTENT_TYPES, DetectedTypeParam, day_start, display_name
 from kaagaz.api.views import document_time_left, in_progress, progress_message, status_message
-from kaagaz.db import folders as folders_sql
+from kaagaz.db import listing
 from kaagaz.db.engine import Database
-from kaagaz.db.folders import FolderRow
 from kaagaz.db.pipeline_store import span_to_json
 from kaagaz.db.upload_policy import upload_policy
 from kaagaz.ingestion import resolve, sniff
@@ -444,6 +443,8 @@ def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
         "department",
         "pending_suggestion",
         "stuck",  # changed on purpose (issue 407): may be read again while still in progress
+        "shared_with_you",  # changed on purpose (PRD 7, #601): in a folder the person can't see
+        "locked",  # changed on purpose (PRD 7, #605): opened only as page pictures, never read
     }
     assert (document["folder_id"], document["tags"]) == (None, [])
     assert (document["pages_unreadable"], document["pages_uncertain"], document["values_to_review"]) == (
@@ -1565,18 +1566,19 @@ def test_a_folder_deleted_just_after_the_check_is_404_and_the_stored_file_goes(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The folder passes the check, then is deleted before the insert: the foreign
-    key refuses the row, the stored file is removed again and nothing is queued."""
+    key refuses the row, the stored file is removed again and nothing is queued.
+    Changed on purpose (#599): the check is whether the person may see the folder."""
     api = Api(db)
     signed = api.new_signed()
     folder = api.add_folder(signed.customer_id, signed.user_id, "Suppliers")
-    checked = folders_sql.folder_path
+    checked = listing.folders_seen
 
-    def check_then_delete(conn: Connection, customer_id: str, folder_id: str) -> list[FolderRow]:
-        path = checked(conn, customer_id, folder_id)
-        conn.execute(text("DELETE FROM folders WHERE id = :f"), {"f": folder_id})
-        return path
+    def check_then_delete(conn: Connection, customer_id: str, folder_ids: Sequence[str]) -> set[str]:
+        seen = checked(conn, customer_id, folder_ids)
+        conn.execute(text("DELETE FROM folders WHERE id = ANY(CAST(:f AS uuid[]))"), {"f": list(folder_ids)})
+        return seen
 
-    monkeypatch.setattr(folders_sql, "folder_path", check_then_delete)
+    monkeypatch.setattr(listing, "folders_seen", check_then_delete)
     reply = signed.client.post(
         "/api/documents",
         data={"folder_id": folder},
@@ -1763,11 +1765,13 @@ def test_move_files_every_version_and_an_explicit_null_goes_to_the_top_level(db:
     assert [_columns(db, signed.customer_id, d)[0] for d in (first, second)] == [None, None]
 
     rows = [row for row in api.audit_rows(signed.customer_id) if row[0].startswith("document.")]
+    # Changed on purpose (PR 9b, #606): a PATCH that renames and moves renames first, as the move may
+    # hide the file from an Admin making it (the rename would then reach no row under the database rule).
     assert rows == [
         ("document.move", "document", second, {"folder_id": folder}),
         ("document.rename", "document", first, {}),
-        ("document.move", "document", first, {"folder_id": None}),
         ("document.rename", "document", first, {}),
+        ("document.move", "document", first, {"folder_id": None}),
     ]
 
 

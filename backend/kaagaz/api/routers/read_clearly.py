@@ -21,6 +21,7 @@ from kaagaz.api import views
 from kaagaz.api.auth import User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
+from kaagaz.api.locked import refuse_locked
 from kaagaz.db import audit, listing, word_review
 
 router = APIRouter()
@@ -32,6 +33,7 @@ def _readable(conn: Connection, customer_id: str, document_id: uuid.UUID) -> Row
     row = listing.get_document(conn, customer_id, str(document_id))
     if row is None or row["status"] == "rejected":
         raise ApiError(404, "not_found")
+    refuse_locked(row)  # PRD 7 (#605)
     return row
 
 
@@ -40,7 +42,7 @@ def clear_copy(document_id: uuid.UUID, user: User, context: Context) -> dict[str
     """Three statements for the whole document: its pages, then its lines and its marks, each
     unpacking the stored output once, under a document-wide cap (``truncated``)."""
     customer_id, target = user.customer_id, str(document_id)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         _readable(conn, customer_id, document_id)
         pages = [page["page_no"] for page in listing.list_pages(conn, customer_id, target)]
         lines, marks = listing.clear_copy(conn, customer_id, target)

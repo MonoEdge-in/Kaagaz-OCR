@@ -11,7 +11,7 @@ its words in their Latin spelling (a word with a digit also as an identifier, 45
 up exactly in ``value_keys``. It routes when it names people, places or properties the
 company's documents hold, with an owning word (own, owned, bought...) or a share word.
 
-**The queries**, each inside ``db.customer``, ``WHERE customer_id =``, the ``LIVE_CURRENT``
+**The queries**, each inside ``db.user`` as the asker (PRD 7), ``WHERE customer_id =``, the ``LIVE_CURRENT``
 text and the chat's scope, with only ``=`` and ``= ANY`` on B-tree indexes (trigram and array
 operators are not used under row level security, 0011): ``_RESOLVE``; ``_OWNED`` (owned by,
 owned together: grouped by record, ``count(DISTINCT latin)`` against how many were named, the
@@ -55,7 +55,7 @@ from kaagaz.answering.hinglish import STOP_WORDS
 from kaagaz.answering.sanitize import clean_text
 from kaagaz.chunking.script import fold_digits, latin_spelling, spaced_words
 from kaagaz.db import ai_settings
-from kaagaz.db.engine import Database
+from kaagaz.db.engine import Database, user_or_customer
 from kaagaz.extraction.land import MAX_LABEL_TEXT, SIDES
 from kaagaz.extraction.links import normalise_identifier
 from kaagaz.search.scope import Scope
@@ -220,7 +220,7 @@ _RESOLVE = text(
     """
     SELECT DISTINCT k.kind, k.latin
     FROM value_keys k
-    JOIN documents d ON d.customer_id = k.customer_id AND d.id = k.document_id
+    JOIN visible_documents d ON d.customer_id = k.customer_id AND d.id = k.document_id
     WHERE k.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
       AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
       AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -243,7 +243,7 @@ _OWNED = text(
            count(DISTINCT k.latin) = cardinality(CAST(:people AS text[])) AS every
     FROM value_keys k
     JOIN extracted_values v ON v.customer_id = k.customer_id AND v.id = k.value_id
-    JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+    JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
     WHERE k.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
       AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
       AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -268,7 +268,7 @@ _KEYED = text(
     SELECT v.document_id::text AS document_id, v.record_key AS land, lower(d.display_name) AS name
     FROM value_keys k
     JOIN extracted_values v ON v.customer_id = k.customer_id AND v.id = k.value_id
-    JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+    JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
     WHERE k.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
       AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
       AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -295,7 +295,7 @@ _EVERY_RECORD = text(
     SELECT v.document_id::text AS document_id, split_part(v.record_key, ':party:', 1) AS land,
            count(*) OVER () AS total
     FROM extracted_values v
-    JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+    JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
     WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
       AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
       AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -321,7 +321,7 @@ _SHARES_AS_PRINTED = text(
            d.display_name, d.detected_type, v.page_no, v.region, v.field, v.value_text, v.label,
            v.label_page_no, v.label_region, v.label_text
     FROM extracted_values v
-    JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+    JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
     LEFT JOIN value_keys k ON k.customer_id = v.customer_id AND k.value_id = v.id
     WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
       AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
@@ -343,7 +343,8 @@ _SHARES_AS_PRINTED = text(
 
 
 class PgOwners:
-    """The queries, one statement a call, each inside ``db.customer``. ``owned``: (document_id,
+    """The queries, one statement a call, each inside ``db.user`` as ``user_id``, the asker
+    (``db.customer`` with None). ``owned``: (document_id,
     record, every named person owns it) where any owns; ``keyed``: (document_id, record) at the
     places, or of the properties, of ``keys``; ``shares``: (record_key, its key's latin or None,
     value) for every land value of ``documents``."""
@@ -351,42 +352,58 @@ class PgOwners:
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    def _rows(self, customer_id: str, query: Any, params: dict[str, Any], scope: Scope) -> list[Any]:
-        with self._db.customer(customer_id) as conn:
+    def _rows(
+        self, customer_id: str, query: Any, params: dict[str, Any], scope: Scope, user_id: str | None
+    ) -> list[Any]:
+        with user_or_customer(self._db, customer_id, user_id) as conn:
             return list(conn.execute(query, {"customer_id": customer_id, **params, **scope.params()}))
 
-    def resolve(self, customer_id: str, candidates: Sequence[str], scope: Scope) -> list[tuple[str, str]]:
+    def resolve(
+        self, customer_id: str, candidates: Sequence[str], scope: Scope, *, user_id: str | None
+    ) -> list[tuple[str, str]]:
         """Nothing while the ``land_facts`` switch is off (0052): the other routes answer."""
-        with self._db.customer(customer_id) as conn:
+        with user_or_customer(self._db, customer_id, user_id) as conn:
             if not ai_settings.switch_on(conn, "land_facts", customer_id):
                 return []
             params = {"customer_id": customer_id, "candidates": list(candidates), **scope.params()}
             return [(str(row.kind), str(row.latin)) for row in conn.execute(_RESOLVE, params)]
 
-    def owned(self, customer_id: str, people: Sequence[str], scope: Scope) -> list[tuple[str, str, bool]]:
-        rows = self._rows(customer_id, _OWNED, {"people": list(people), "fields": list(OWNING)}, scope)
+    def owned(
+        self, customer_id: str, people: Sequence[str], scope: Scope, *, user_id: str | None
+    ) -> list[tuple[str, str, bool]]:
+        params = {"people": list(people), "fields": list(OWNING)}
+        rows = self._rows(customer_id, _OWNED, params, scope, user_id)
         return [(row.document_id, row.land, bool(row.every)) for row in rows]
 
     def keyed(
-        self, customer_id: str, kind: str, keys: Sequence[str], scope: Scope, fields: Sequence[str] = ()
+        self,
+        customer_id: str,
+        kind: str,
+        keys: Sequence[str],
+        scope: Scope,
+        fields: Sequence[str] = (),
+        *,
+        user_id: str | None,
     ) -> list[tuple[str, str]]:
         """``fields``: the keyed fields to look in, by default the kind's own (a neighbour's
         number is a property key on a ``land_boundary_*`` field)."""
         fields = list(fields or (_PLACES if kind == "place" else _PROPERTIES))
-        rows = self._rows(customer_id, _KEYED, {"kind": kind, "keys": list(keys), "fields": fields}, scope)
+        rows = self._rows(
+            customer_id, _KEYED, {"kind": kind, "keys": list(keys), "fields": fields}, scope, user_id
+        )
         if not rows and _PLOT in fields and _SURVEY not in fields:
             # Land records read before plot numbers had their own field (#274) keep them as survey
             # numbers: "plot 56" looks there only when no record keeps 56 as a plot number.
             params = {"kind": kind, "keys": list(keys), "fields": [*fields, _SURVEY]}
-            rows = self._rows(customer_id, _KEYED, params, scope)
+            rows = self._rows(customer_id, _KEYED, params, scope, user_id)
         return [(row.document_id, row.land) for row in rows]
 
     def every(
-        self, customer_id: str, fields: Sequence[str], scope: Scope, limit: int
+        self, customer_id: str, fields: Sequence[str], scope: Scope, limit: int, *, user_id: str | None
     ) -> tuple[int, list[tuple[str, str]]]:
         """#381: how many land records in ``scope`` hold one of ``fields``, and the first ``limit``
         (document_id, record) by document name; (0, []) while the ``land_facts`` switch is off."""
-        with self._db.customer(customer_id) as conn:
+        with user_or_customer(self._db, customer_id, user_id) as conn:
             if not ai_settings.switch_on(conn, "land_facts", customer_id):
                 return 0, []
             params = {"customer_id": customer_id, "fields": list(fields), "limit": limit, **scope.params()}
@@ -394,10 +411,10 @@ class PgOwners:
         return (int(rows[0].total) if rows else 0), [(row.document_id, row.land) for row in rows]
 
     def shares(
-        self, customer_id: str, documents: Sequence[str], scope: Scope
+        self, customer_id: str, documents: Sequence[str], scope: Scope, *, user_id: str | None
     ) -> list[tuple[str, str | None, ValueRef]]:
         params = {"documents": list(documents), "fields": list(_FIELDS)}
-        rows = self._rows(customer_id, _SHARES_AS_PRINTED, params, scope)
+        rows = self._rows(customer_id, _SHARES_AS_PRINTED, params, scope, user_id)
         return [(str(row.record_key), row.latin, ValueRef(*row[2:])) for row in rows]  # its columns, in order
 
 
@@ -442,17 +459,19 @@ class Reply:
     closest: list[dict[str, str]]
 
 
-def reply(source: PgOwners, customer_id: str, ask: OwnerAsk, scope: Scope) -> Reply | None:
-    """The answer to ``ask`` from ``source``, or None when no land record matches any of it
-    (the other routes then answer). Every number in it is a count of what it lists or cites,
-    a figure as printed and cited, or a page."""
+def reply(
+    source: PgOwners, customer_id: str, user_id: str | None, ask: OwnerAsk, scope: Scope
+) -> Reply | None:
+    """The answer to ``ask``, asked by ``user_id``, from ``source``, or None when no land record
+    matches any of it (the other routes then answer). Every number in it is a count of what it
+    lists or cites, a figure as printed and cited, or a page."""
     if ask.every:
-        return _every_reply(source, customer_id, ask.every, scope)
+        return _every_reply(source, customer_id, user_id, ask.every, scope)
     if ask.measures or ask.borders or ask.drawn:
-        return _map_reply(source, customer_id, ask, scope)
-    owned = source.owned(customer_id, ask.people, scope) if ask.people else []
+        return _map_reply(source, customer_id, user_id, ask, scope)
+    owned = source.owned(customer_id, ask.people, scope, user_id=user_id) if ask.people else []
     keyed = [
-        source.keyed(customer_id, kind, keys, scope, fields)
+        source.keyed(customer_id, kind, keys, scope, fields, user_id=user_id)
         for kind, keys, fields in (("place", ask.places, ()), ("property", ask.properties, ask.within))
         if keys
     ]
@@ -464,7 +483,9 @@ def reply(source: PgOwners, customer_id: str, ask: OwnerAsk, scope: Scope) -> Re
     if not found and not some:
         return None
     listed, partly = found[:MAX_LISTED], some[:MAX_LISTED]
-    lands = _lands(source.shares(customer_id, sorted({d for d, _ in listed + partly}), scope))
+    lands = _lands(
+        source.shares(customer_id, sorted({d for d, _ in listed + partly}), scope, user_id=user_id)
+    )
     if not found:
         titles = {d: lands[(d, land)].title for d, land in partly if (d, land) in lands}
         return Reply(False, [], [], [{"id": d, "display_name": title} for d, title in titles.items()])
@@ -486,14 +507,16 @@ def reply(source: PgOwners, customer_id: str, ask: OwnerAsk, scope: Scope) -> Re
     return Reply(True, sentences, [_document(land, ask.people) for land in records], [])
 
 
-def _every_reply(source: PgOwners, customer_id: str, fields: Sequence[str], scope: Scope) -> Reply | None:
+def _every_reply(
+    source: PgOwners, customer_id: str, user_id: str | None, fields: Sequence[str], scope: Scope
+) -> Reply | None:
     """#381, an open list: every owner, or every survey, khata or plot number, the land records in
     ``scope`` print, from the stored values (never the top search hits, so none is skipped), each
     name or number as printed and cited, and each record listed with every owner it names. Past
     MAX_LISTED records the sentence says how many it lists of how many. None when no record holds
     one (the other routes then answer). Two statements, and one for the values."""
-    total, records = source.every(customer_id, fields, scope, MAX_LISTED)
-    lands = _lands(source.shares(customer_id, sorted({d for d, _ in records}), scope))
+    total, records = source.every(customer_id, fields, scope, MAX_LISTED, user_id=user_id)
+    lands = _lands(source.shares(customer_id, sorted({d for d, _ in records}), scope, user_id=user_id))
     kept = [lands[record] for record in records if record in lands]
     on = f"{len(kept)} land record{'' if len(kept) == 1 else 's'}"
     on = on if len(kept) == total else f"the first {len(kept)} of {total} land records"
@@ -634,18 +657,24 @@ def _share_lines(land: _Land, unowned: bool) -> list[tuple[str, Cited]]:
     return lines
 
 
-def _map_reply(source: PgOwners, customer_id: str, ask: OwnerAsk, scope: Scope) -> Reply | None:
+def _map_reply(
+    source: PgOwners, customer_id: str, user_id: str | None, ask: OwnerAsk, scope: Scope
+) -> Reply | None:
     """A map question about ``ask.properties``: each record's map values as printed and cited, or
     that one asked for is not printed (never worked out); with ``borders``, also the records that
     print one of them as a neighbour. None when no record holds them."""
-    own = source.keyed(customer_id, "property", ask.properties, scope, ask.within)[:MAX_LISTED]
+    own = source.keyed(customer_id, "property", ask.properties, scope, ask.within, user_id=user_id)[
+        :MAX_LISTED
+    ]
     beside: list[tuple[str, str]] = []
     if ask.borders:
-        printing = source.keyed(customer_id, "property", ask.properties, scope, tuple(_SIDES))
+        printing = source.keyed(
+            customer_id, "property", ask.properties, scope, tuple(_SIDES), user_id=user_id
+        )
         beside = [record for record in printing if record not in own][:MAX_LISTED]
     if not own and not beside:
         return None
-    lands = _lands(source.shares(customer_id, sorted({d for d, _ in own + beside}), scope))
+    lands = _lands(source.shares(customer_id, sorted({d for d, _ in own + beside}), scope, user_id=user_id))
     sentences: list[tuple[str, Cited]] = []
     documents = []
     for record, lines in [(r, _map_lines) for r in own] + [(r, _beside_lines) for r in beside]:

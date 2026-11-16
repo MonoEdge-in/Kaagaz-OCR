@@ -45,7 +45,7 @@ def test_f6_flagged_pages_are_unreadable_then_uncertain_of_live_current_document
     older = _scan(api, c, "old.jpg", is_current=False)
     read_page(api, c, older, 1, read_quality="unreadable", read_issues=["blurry"])
 
-    pages, total = PgReadingQuality(db).flagged_pages(c)
+    pages, total = PgReadingQuality(db).flagged_pages(c, user_id=None)
 
     assert pages == [
         FlaggedPage(invoice, "Invoice_12.pdf", 3, "unreadable"),
@@ -65,7 +65,7 @@ def test_f6_a_page_kept_as_is_is_still_named(db: Database) -> None:
     with db.customer(c) as conn:
         assert accept_page(conn, c, blurred, 1, user_id=signed.user_id, now=NOW)
 
-    pages, total = PgReadingQuality(db).flagged_pages(c)
+    pages, total = PgReadingQuality(db).flagged_pages(c, user_id=None)
 
     assert (pages, total) == ([FlaggedPage(blurred, "blurred.jpg", 1, "unreadable")], 1)
 
@@ -77,7 +77,7 @@ def test_f6_flagged_pages_stay_inside_the_chats_scope(db: Database) -> None:
     for document_id in (inside, outside):
         read_page(api, c, document_id, 1, read_quality="unreadable", read_issues=["glare"])
 
-    pages, total = PgReadingQuality(db).flagged_pages(c, scope=Scope(document_ids=(inside,)))
+    pages, total = PgReadingQuality(db).flagged_pages(c, scope=Scope(document_ids=(inside,)), user_id=None)
 
     assert ([page.document_id for page in pages], total) == ([inside], 1)
 
@@ -89,7 +89,7 @@ def test_f6_at_most_the_named_pages_come_back_with_the_count_of_all(db: Database
     for page_no in range(1, MAX_NAMED_PAGES + 4):
         read_page(api, c, document_id, page_no, read_quality="uncertain", read_issues=["unpinned"])
 
-    pages, total = PgReadingQuality(db).flagged_pages(c)
+    pages, total = PgReadingQuality(db).flagged_pages(c, user_id=None)
 
     assert [page.page_no for page in pages] == list(range(1, MAX_NAMED_PAGES + 1))
     assert total == MAX_NAMED_PAGES + 3
@@ -115,13 +115,13 @@ def test_f6_word_marks_are_the_first_readers_unsure_and_illegible_words(db: Data
     ]
     api.add_reader_output(c, document_id, second, role="second", reader="pdfium")
 
-    marks = PgReadingQuality(db).word_marks(c, [document_id])
+    marks = PgReadingQuality(db).word_marks(c, [document_id], user_id=None)
 
     assert sorted((mark.document_id, mark.location) for mark in marks) == [
         (document_id, BoxLocation(1, 0.4, 0.2, 0.5, 0.3)),
         (document_id, BoxLocation(1, 0.6, 0.2, 0.7, 0.3)),
     ]
-    assert PgReadingQuality(db).word_marks(c, []) == []
+    assert PgReadingQuality(db).word_marks(c, [], user_id=None) == []
 
 
 def test_a_page_read_by_the_local_reader_is_one_mark_over_the_whole_page(db: Database) -> None:
@@ -140,7 +140,7 @@ def test_a_page_read_by_the_local_reader_is_one_mark_over_the_whole_page(db: Dat
     theirs = _scan(api, other, "Theirs.jpg")
     read_page(api, other, theirs, 1, read_quality="unreadable", read_issues=["reader_refused"])
 
-    marks = PgReadingQuality(db).word_marks(c, [timed_out, backup, fine, theirs])
+    marks = PgReadingQuality(db).word_marks(c, [timed_out, backup, fine, theirs], user_id=None)
 
     assert sorted((mark.document_id, mark.location) for mark in marks) == sorted(
         [(timed_out, BoxLocation(1, 0.0, 0.0, 1.0, 1.0)), (backup, BoxLocation(2, 0.0, 0.0, 1.0, 1.0))]

@@ -56,6 +56,9 @@ class DocumentStatus(Enum):
     NEEDS_READER = "needs_reader"  # clean, but no reader for its type yet (set by the pipeline)
     READY = "ready"  # read and split into pieces (set by the pipeline)
     FAILED = "failed"  # a step failed for good; the code is kept with it (set by the pipeline)
+    LOCKED = (
+        "locked"  # PRD 7 (#605): locked, scanned and pictured; never read (set by a lock or the pipeline)
+    )
 
 
 class ScannerError(Exception):

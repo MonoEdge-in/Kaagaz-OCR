@@ -1,9 +1,7 @@
 """Each model's supported parameters (#647, 16 Nov 2026; NEEDS VRUSHIT'S APPROVAL: schema and one
-operator function). PROVISIONAL: 0095 and ``down_revision = "0082"`` hold for this base only
-(0083 is PRD 7's worker role); at merge it is rebased onto the chain's head, after PRD 7 (0083 to
-0093) and search (0094, #646). None of those changes ``kaagaz_op_models``, so its rebuild from
-0070's text still holds. It must not run from the test server while it shares production's
-database (#577).
+operator function). It follows PRD 7 (0083 to 0093) and search (0094, #646); none of those
+changes ``kaagaz_op_models``, so its rebuild from 0070's text still holds. It must not run from
+the test server while it shares production's database (#577).
 
 On 15 Nov 2026 every Vertex endpoint of gemini-3.5-flash-lite stopped listing ``temperature``,
 and every Ask call was 404 ``no_endpoints`` (#631 added one retry without it). The daily
@@ -13,15 +11,16 @@ catalogue refresh already reads each endpoint's ``supported_parameters``; now it
   zero-data-retention endpoints with status 0 of a provider in OPENROUTER_PROVIDERS that take
   structured outputs, the ones a call can land on (``kaagaz.jobs.catalog``). ``text[] NULL`` with a named CHECK on each name's shape and count, as
   0023's on ``providers`` and ``efforts``. NULL: not read yet, and the client sends as before.
-  Every row is NULL until the next refresh; the app may write it, as the other refresh columns.
+  Every row is NULL until the next refresh; the app and the worker role may write it, as the
+  other refresh columns (0083: the worker role has the app's rights).
 * ``kaagaz_op_models`` (0070's) returns it last, for the operator's Models screen: 0070's text
   with that change, dropped and created again (its columns change) with 0033's comment and grants.
 
 The downgrade puts 0070's function back and drops the column (and its grants with it). Lost on
 downgrade: the stored parameters, which the next refresh writes again.
 
-Revision ID: 0095 (PROVISIONAL)
-Revises: 0082 (PROVISIONAL: the chain's head at merge)
+Revision ID: 0095
+Revises: 0094 (bounded search)
 """
 
 import importlib.util
@@ -31,7 +30,7 @@ from types import ModuleType
 from alembic import op
 
 revision = "0095"
-down_revision = "0082"
+down_revision = "0094"
 branch_labels = None
 depends_on = None
 
@@ -48,7 +47,7 @@ def _load(name: str) -> ModuleType:
 
 _0070 = _load("0070_ultra_low_cost.py")
 _0033 = _0070._0033
-APP_ROLE = "kaagaz_app"
+ROLES = ("kaagaz_app", "kaagaz_worker")  # 0083: the worker role has the app's rights
 PARAMETER = "[a-z][a-z0-9_]{0,63}"  # kaagaz.jobs.catalog.PARAMETER
 MAX_PARAMETERS = 64  # kaagaz.jobs.catalog.MAX_PARAMETERS
 COMMENT = (
@@ -77,7 +76,7 @@ UPGRADE = [
     f" AND array_to_string(parameters, ',') ~ '^({PARAMETER}(,{PARAMETER})*)?$'"
     " AND cardinality(string_to_array(array_to_string(parameters, ','), ',')) = cardinality(parameters))",
     f"COMMENT ON COLUMN model_catalog.parameters IS {_0070._literal(COMMENT)}",
-    f"GRANT INSERT (parameters), UPDATE (parameters) ON model_catalog TO {APP_ROLE}",
+    *[f"GRANT INSERT (parameters), UPDATE (parameters) ON model_catalog TO {role}" for role in ROLES],
     *_0033._replace(MODELS_NEW, _0033.NEW_COMMENT),
 ]
 

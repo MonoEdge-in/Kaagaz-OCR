@@ -97,7 +97,9 @@ class _Looked(PgOwners):
         self.kept_as = kept_as
         self.looked: list[list[str]] = []
 
-    def _rows(self, customer_id: str, query: Any, params: dict[str, Any], scope: Scope) -> list[Any]:
+    def _rows(
+        self, customer_id: str, query: Any, params: dict[str, Any], scope: Scope, user_id: str | None
+    ) -> list[Any]:
         self.looked.append(params["fields"])
         return [SimpleNamespace(document_id="d1", land="land:1")] if self.kept_as in params["fields"] else []
 
@@ -105,15 +107,19 @@ class _Looked(PgOwners):
 def test_a_plot_number_kept_as_a_survey_number_is_still_found() -> None:
     # Read before plot numbers had their own field (#274): plot 56 is kept as a survey number.
     old = _Looked(kept_as=SURVEY)
-    assert old.keyed("c", "property", ["56"], EVERYTHING, ("land_plot_number",)) == [("d1", "land:1")]
+    assert old.keyed("c", "property", ["56"], EVERYTHING, ("land_plot_number",), user_id=None) == [
+        ("d1", "land:1")
+    ]
     assert old.looked == [["land_plot_number"], ["land_plot_number", SURVEY]]
     # Kept as a plot number: found there, and survey numbers are never looked in.
     new = _Looked(kept_as="land_plot_number")
-    assert new.keyed("c", "property", ["56"], EVERYTHING, ("land_plot_number",)) == [("d1", "land:1")]
+    assert new.keyed("c", "property", ["56"], EVERYTHING, ("land_plot_number",), user_id=None) == [
+        ("d1", "land:1")
+    ]
     assert new.looked == [["land_plot_number"]]
     # A survey number asked as one never falls back to anything.
     survey = _Looked(kept_as="land_plot_number")
-    assert survey.keyed("c", "property", ["56"], EVERYTHING, (SURVEY,)) == []
+    assert survey.keyed("c", "property", ["56"], EVERYTHING, (SURVEY,), user_id=None) == []
     assert survey.looked == [[SURVEY]]
 
 

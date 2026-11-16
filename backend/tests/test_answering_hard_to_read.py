@@ -61,12 +61,16 @@ class FakeReading:
         self.scopes: list[Scope] = []
         self.asked_marks: list[list[str]] = []
 
-    def flagged_pages(self, customer_id: str, *, scope: Scope = EVERYTHING) -> tuple[list[FlaggedPage], int]:
+    def flagged_pages(
+        self, customer_id: str, *, scope: Scope = EVERYTHING, user_id: str | None = None
+    ) -> tuple[list[FlaggedPage], int]:
         assert customer_id == A
         self.scopes.append(scope)
         return self.pages, self.total
 
-    def word_marks(self, customer_id: str, document_ids: Sequence[str]) -> list[WordMark]:
+    def word_marks(
+        self, customer_id: str, document_ids: Sequence[str], *, user_id: str | None = None
+    ) -> list[WordMark]:
         assert customer_id == A
         self.asked_marks.append(list(document_ids))
         return [mark for mark in self.marks if mark.document_id in document_ids]
@@ -324,12 +328,11 @@ def test_f6_a_saved_answer_cites_the_documents_of_its_flagged_pages() -> None:
     assert cited_document_ids(saved) == [INVOICE_12.document_id, REGISTER.document_id]
 
 
-@pytest.mark.parametrize("state", ["in_trash", None])
-def test_f6_a_saved_answer_never_names_a_document_that_is_gone(state: str | None) -> None:
+# Changed on purpose (#602, question 1): a document missing from the states replaces the whole
+# answer (tests/test_isolation_ask_views.py); one in Trash is still left out of the note.
+def test_f6_a_saved_answer_never_names_a_document_that_is_gone() -> None:
     saved = _saved(INVOICE_12, REGISTER, total=3)
-    states = {REGISTER.document_id: "live"}
-    if state is not None:
-        states[INVOICE_12.document_id] = state
+    states = {REGISTER.document_id: "live", INVOICE_12.document_id: "in_trash"}
 
     shown = answer_with_source_states(saved, states)
 
@@ -343,7 +346,7 @@ def test_f6_a_saved_answer_never_names_a_document_that_is_gone(state: str | None
 
 
 def test_f6_a_saved_answer_whose_pages_are_all_gone_has_no_note() -> None:
-    shown = answer_with_source_states(_saved(INVOICE_12, total=1), {})
+    shown = answer_with_source_states(_saved(INVOICE_12, total=1), {INVOICE_12.document_id: "in_trash"})
     assert (shown["reading_note"], shown["unreadable_pages"], shown["unreadable_page_count"]) == (None, [], 0)
 
 

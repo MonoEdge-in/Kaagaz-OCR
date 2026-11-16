@@ -77,6 +77,7 @@ from kaagaz.db import audit, listing, value_keys
 from kaagaz.db import review as review_sql
 from kaagaz.db.documents import accept_page
 from kaagaz.db.trash import lock_family
+from kaagaz.db.visibility import SEEN_DOCUMENT
 from kaagaz.extraction.flags import (
     COVERED_REASONS,
     LINE,
@@ -149,13 +150,14 @@ _FLAG_VALUES = text(
 )
 # The words of the first reader's text, word marks left out (they repeat a line's words).
 _WORDS = text(
-    r"SELECT coalesce(sum(cardinality(regexp_split_to_array(btrim(e.span ->> 'text'), '\s+'))), 0)"
+    r"SELECT coalesce(sum(cardinality(regexp_split_to_array(btrim(e.span ->> 'text'), '\s+'))), 0)"  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
     " FROM reader_outputs ro CROSS JOIN LATERAL jsonb_array_elements(ro.output) AS e(span)"
     " WHERE ro.customer_id = :c AND ro.document_id = :d AND ro.role = 'first'"
-    " AND btrim(e.span ->> 'text') <> ''"
+    + SEEN_DOCUMENT
+    + " AND btrim(e.span ->> 'text') <> ''"
     " AND NOT (e.span ->> 'kind' IS NULL AND coalesce(e.span ->> 'quality', '') IN ('unsure', 'illegible'))"
 )
-_PAGES = text("SELECT count(*) FROM pages WHERE customer_id = :c AND document_id = :d")
+_PAGES = text("SELECT count(*) FROM pages WHERE customer_id = :c AND document_id = :d" + SEEN_DOCUMENT)  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
 _CHANGES = text(
     "SELECT w.id, w.word_key, w.kind, w.page_no, w.region, w.as_read, w.action, w.before_text,"
     " w.after_text, w.user_id, w.applied, w.created_at, w.undone_at, w.undone_by,"
@@ -203,12 +205,14 @@ _PAGE_PIECES = text(
     " AND page_from <= :p AND page_to >= :p ORDER BY seq FOR UPDATE"
 )
 _VALUES_BY_ID = text(
-    "SELECT id, value_text, label, label_reason FROM extracted_values"
-    " WHERE customer_id = :c AND document_id = :d AND id = ANY(CAST(:ids AS uuid[])) ORDER BY id FOR UPDATE"
+    "SELECT id, value_text, label, label_reason FROM extracted_values"  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
+    " WHERE customer_id = :c AND document_id = :d AND id = ANY(CAST(:ids AS uuid[]))"
+    + SEEN_DOCUMENT
+    + " ORDER BY id FOR UPDATE"
 )
 _PIECES_BY_ID = text(
-    "SELECT id, text FROM pieces WHERE customer_id = :c AND document_id = :d"
-    " AND id = ANY(CAST(:ids AS uuid[])) ORDER BY id FOR UPDATE"
+    "SELECT id, text FROM pieces WHERE customer_id = :c AND document_id = :d"  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
+    " AND id = ANY(CAST(:ids AS uuid[]))" + SEEN_DOCUMENT + " ORDER BY id FOR UPDATE"
 )
 # Keep (Ensemble): the value keeps the readings that changed it (extracted_values.votes, 0026).
 _SET_VOTES = text(

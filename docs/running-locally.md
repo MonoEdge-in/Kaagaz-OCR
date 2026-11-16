@@ -61,7 +61,9 @@ plus the new `MAX_PAGES`, `MAX_IMAGE_PIXELS` and `QUEUE_LEASE_SECONDS` values. R
 PRD 3 adds four required settings, each checked at start-up by name:
 `SEARCH_EF` (100, 1 to 1000), how many candidates the meaning index walk keeps
 (`hnsw.ef_search`); `SEARCH_MAX_DOCUMENTS` (20, 1 to 100), the most documents
-one search inside documents returns; `ANSWER_NEIGHBOURS` (1, 0 to 3), the
+one search inside documents returns; `SEARCH_MAX_SCAN_TUPLES` (20000), the most
+tuples one meaning index walk visits, and `SEARCH_EXACT_BELOW` (2000), how few vectors a
+person can see before meaning search scans them exactly (PRD 7); `ANSWER_NEIGHBOURS` (1, 0 to 3), the
 pieces on each side of an evidence piece also given to the draft; and
 `CHAT_HISTORY_TURNS` (3, 0 to 10), the question and answer pairs a follow-up
 is rewritten with (0: no rewrite).
@@ -213,7 +215,7 @@ docs/runbooks/prd5-cpu-server-switch.md.
 
    Write the numbers into docs/architecture.md, Decisions (the t3.xlarge
    row). A real document's steps, upload to Ready and the indexing after it,
-   for the last 5 documents read: `dc exec -T worker python -m kaagaz.cli scan-times --last 5`.
+   for the last 5 documents read: `dc run --rm migrate python -m kaagaz.cli scan-times --last 5` (PRD 7, #606: the CLI runs as `kaagaz_worker`, so it runs in migrate, `dc run --rm migrate python -m kaagaz.cli <command>`, until JOBS_DATABASE_URL is set, then in worker; in api it is refused).
 
 **RapidOCR, the fallback.** If Gemini misbehaves, set `OCR_ENGINE=rapidocr` in
 `.env` and restart both: `dc up -d --no-deps api worker`. Change it back the same way.
@@ -431,6 +433,54 @@ production at a quiet time:
 
 **The undo:** delete the two lines from `.env` and `dc up -d --no-deps api worker`; the app
 logs in as the owner again. The logins stay and do nothing.
+
+**The workers' own login** (#587, migration 0083, Vrushit's approval). 0083 makes the role
+`kaagaz_worker`, with exactly `kaagaz_app`'s rights, and the login `kaagaz_jobs`, which may
+only switch into it, with no password: the workers keep their login and role until `.env`
+names `kaagaz_jobs`. Test server first, then production:
+
+1. Its password, as in step 1 above: `\password kaagaz_jobs` in psql as the owner (on Amazon
+   RDS, its master user), typed at the prompt.
+2. In `.env`: `JOBS_DATABASE_URL=postgresql://kaagaz_jobs:<its password>@<host:port of
+   APP_DATABASE_URL>/<POSTGRES_DB>`. `docker-compose.yml` gives it only to worker, as its
+   `DATABASE_URL`, and with it `DB_WORKER_ROLE=kaagaz_worker`; api and migrate get neither.
+   Never set `DB_WORKER_ROLE` in `.env`: the login and the role change together.
+3. `dc up -d --no-deps worker`. Check: the `pg_stat_activity` query of step 3 above shows
+   `kaagaz_jobs`; `dc logs --tail 50 worker` shows no `permission denied`; an upload reaches Ready.
+4. From then on the CLI's work commands run in worker, as the workers do:
+   `dc run --rm worker python -m kaagaz.cli <command>`. Until this step, `dc run --rm migrate python -m
+   kaagaz.cli <command>`; in api they are refused (PRD 7, #606: the CLI runs as `kaagaz_worker`,
+   which `kaagaz_api` can't switch into).
+5. The connections, PROVISIONAL: `kaagaz_jobs` may hold 65 (3 workers and one CLI run, 15 each,
+   and 5 to spare). Before `WORKER_REPLICAS` goes above 3,
+   `ALTER ROLE kaagaz_jobs CONNECTION LIMIT <15 x (replicas + 1) + 5>`. Only once EVERY server
+   that shares this database has moved its workers, `ALTER ROLE kaagaz_api CONNECTION LIMIT 35`
+   (api and one CLI run). These numbers assume one app server per database server. The test
+   server and production share one RDS database today, so do not lower it until #577 is done.
+
+**The undo:** first `ALTER ROLE kaagaz_api CONNECTION LIMIT 80` if step 5 lowered it, then delete
+the `JOBS_DATABASE_URL` line from `.env` and `dc up -d --no-deps worker`; the workers are back on
+`kaagaz_api`. Do this BEFORE any `alembic downgrade 0082`: the downgrade takes every right from
+`kaagaz_worker`, and workers still on it would fail.
+
+**The per-person database rule** (PRD 7 PR 9a, #606, migration 0091, Vrushit's approval). 0091
+ships it off: nothing changes until it is turned on, one organisation at a time. Never before all
+of: #577 (the test server has its own database), both 0091 and 0092 (PR 9b) deployed, and the
+steps above done (the API on `kaagaz_api`, the workers on `kaagaz_jobs`). Test server first:
+
+1. In `.env`: `DB_LOGIN_CHECK=refuse`, then `dc up -d --no-deps api worker`. The API and each
+   worker now refuse to start on a login the rule can't hold (the owner, a superuser, or one that
+   can switch into `kaagaz_worker` or `kaagaz_operator`); `dc logs --tail 50 api worker` says which.
+2. `dc run --rm migrate python -m kaagaz.cli person-rule status` (the owner's login: only it may
+   touch the switch). It says `off`.
+3. `... person-rule on --customer <the organisation's id>`. It refuses while any worker report of
+   the last 10 minutes came from another role than `kaagaz_worker`, or `kaagaz_api` can switch
+   into it. It logs and sends an ops alert. Then the red team (PRD 7 section 11).
+4. Every organisation: `... person-rule on --all`. Production only after phase 8, the same way.
+
+**The way back, at once:** `... person-rule off --all` (or `--customer <id>`): no deploy, no
+migration, never refused; the views still keep each person to what they may see. Turn it off
+before rolling the code back past PR 9a: older code reads hidden rows as gone.
 
 **The closed lines and the storage keys (#477), by hand at a quiet time.** The
 release that adds the `data`, `scan` and `edge` networks moves postgres and
@@ -1028,17 +1078,17 @@ docker compose cp seaweedfs:/data ../kaagaz-backup/backup-files
 docker compose up -d
 ```
 
-**Restore**, the reverse, into a fresh stack: a new laptop with the same `.env`, or this one under another project name, which gets its own empty volumes (`docker compose stop` the main stack first to free its ports). The containers are created but not started, so the files go in before SeaweedFS first runs; the copy is owned by root, so the `chown` hands it back to the image's `seaweed` user. `pg_dump` leaves out roles, so the app and operator roles are made first, as migrations 0001 and 0015 make them, and 0067's two logins and its refusal of temporary tables after (#479; set their passwords as in "Limited database logins" if the drill's `.env` names them):
+**Restore**, the reverse, into a fresh stack: a new laptop with the same `.env`, or this one under another project name, which gets its own empty volumes (`docker compose stop` the main stack first to free its ports). The containers are created but not started, so the files go in before SeaweedFS first runs; the copy is owned by root, so the `chown` hands it back to the image's `seaweed` user. `pg_dump` leaves out roles, so the app, operator and worker roles are made first, as migrations 0001, 0015 and 0083 make them, and the logins of 0067 and 0083 and 0067's refusal of temporary tables after (#479, #587; set their passwords as in "Limited database logins" if the drill's `.env` names them):
 
 ```
 docker compose -p kaagaz-drill create --build
 docker compose -p kaagaz-drill cp ../kaagaz-backup/backup-files/. seaweedfs:/data
 docker compose -p kaagaz-drill run --rm --no-deps --entrypoint chown seaweedfs -R seaweed:seaweed /data
 docker compose -p kaagaz-drill up -d postgres
-docker compose -p kaagaz-drill exec -T postgres psql -U kaagaz -d kaagaz -c "CREATE ROLE kaagaz_app NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE" -c "GRANT kaagaz_app TO kaagaz" -c "CREATE ROLE kaagaz_operator NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE" -c "GRANT kaagaz_operator TO kaagaz"
+docker compose -p kaagaz-drill exec -T postgres psql -U kaagaz -d kaagaz -c "CREATE ROLE kaagaz_app NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE" -c "GRANT kaagaz_app TO kaagaz" -c "CREATE ROLE kaagaz_operator NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE" -c "GRANT kaagaz_operator TO kaagaz" -c "CREATE ROLE kaagaz_worker NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE" -c "GRANT kaagaz_worker TO kaagaz"
 docker compose -p kaagaz-drill cp ../kaagaz-backup/kaagaz.dump postgres:/tmp/kaagaz.dump
 docker compose -p kaagaz-drill exec -T postgres pg_restore -U kaagaz -d kaagaz --exit-on-error /tmp/kaagaz.dump
-docker compose -p kaagaz-drill exec -T postgres psql -U kaagaz -d kaagaz -c "CREATE ROLE kaagaz_api LOGIN NOINHERIT CONNECTION LIMIT 80" -c "CREATE ROLE kaagaz_ops LOGIN NOINHERIT CONNECTION LIMIT 15" -c "GRANT kaagaz_app TO kaagaz_api WITH INHERIT FALSE, SET TRUE" -c "GRANT kaagaz_operator TO kaagaz_ops WITH INHERIT FALSE, SET TRUE" -c "REVOKE TEMPORARY ON DATABASE kaagaz FROM PUBLIC"
+docker compose -p kaagaz-drill exec -T postgres psql -U kaagaz -d kaagaz -c "CREATE ROLE kaagaz_api LOGIN NOINHERIT CONNECTION LIMIT 80" -c "CREATE ROLE kaagaz_ops LOGIN NOINHERIT CONNECTION LIMIT 15" -c "CREATE ROLE kaagaz_jobs LOGIN NOINHERIT CONNECTION LIMIT 65" -c "GRANT kaagaz_app TO kaagaz_api WITH INHERIT FALSE, SET TRUE" -c "GRANT kaagaz_operator TO kaagaz_ops WITH INHERIT FALSE, SET TRUE" -c "GRANT kaagaz_worker TO kaagaz_jobs WITH INHERIT FALSE, SET TRUE" -c "REVOKE TEMPORARY ON DATABASE kaagaz FROM PUBLIC"
 docker compose -p kaagaz-drill exec -T postgres rm /tmp/kaagaz.dump
 docker compose -p kaagaz-drill up -d
 ```
