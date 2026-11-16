@@ -64,6 +64,7 @@ import { Icon as KIcon } from "@/components/ui/Icon/Icon";
 import type { KIconName } from "@/components/ui/Icon/Icon";
 import { Toast } from "@/components/ui/Toast";
 import { PageViewer } from "@/components/viewer/PageViewer";
+import { PageTurnMenu, WithPageTurns } from "@/components/viewer/PageTurnMenu";
 import {
   DRAG_THRESHOLD_PX,
   SPLIT,
@@ -71,7 +72,9 @@ import {
   bringPageForSpot,
   splitAfterDrag,
   splitAfterKey,
+  pageMode,
   tabsThatFit,
+  turnOf,
   viewsAsPdf,
 } from "@/components/viewer/viewer";
 import { CLEAN_COPY } from "@/components/viewer/clearCopy";
@@ -397,6 +400,8 @@ export function DocumentView({
   const showLine = (spot: Spot) =>
     showSpot(spot, `${spot.name.charAt(0).toUpperCase()}${spot.name.slice(1)} highlighted on page ${spot.region.page}.`);
   const changePage = (pageNo: number) => choose(pageChange(selection, pageNo));
+  // #600: a save of the page turns reloads the detail, so the review panel's crop shows them too.
+  const reloadAfterTurns = () => setReloads((n) => n + 1);
   // Keep as is (F5): the page's new summary, still flagged, off the attention list.
   const keepPage = (kept: PageSummary) =>
     setLoaded((now) =>
@@ -596,31 +601,50 @@ export function DocumentView({
                   wordHits={wordHits}
                   role={me.user.role}
                   userId={me.user.id}
+                  onTurnsSaved={reloadAfterTurns}
                 />
               </ViewerBoundary>
             </div>
           ) : page ? (
-            <PageViewer
-              document={detail}
-              page={page}
-              highlights={highlightsOf(selection)}
-              highlightNote={highlightNote}
-              pageNumbers={pageNumbers}
-              onPageChange={changePage}
-              marks={words.markers}
-              activeMark={words.activeId}
-              fill={stickyViewer}
-              readingMarks={readingMarks}
-              onMark={showMark}
-              hotMark={hotMark}
-              onHotMark={setHotMark}
-              flags={pageMarks}
-              activeFlag={reviewing ? currentFlag : null}
-              onFlag={pressFlag}
-              wordBoxes={wordBoxes}
-              wordHits={wordHits}
-              role={me.user.role}
-            />
+            // #600: a photo's turn menu and its turns, saved for everyone or on this screen only.
+            <WithPageTurns key={detail.id} documentId={detail.id} pageTurns={detail.page_turns} userId={me.user.id}>
+              {(turns) => (
+                <PageViewer
+                  document={detail}
+                  page={page}
+                  highlights={highlightsOf(selection)}
+                  highlightNote={highlightNote}
+                  pageNumbers={pageNumbers}
+                  onPageChange={changePage}
+                  marks={words.markers}
+                  activeMark={words.activeId}
+                  fill={stickyViewer}
+                  readingMarks={readingMarks}
+                  onMark={showMark}
+                  hotMark={hotMark}
+                  onHotMark={setHotMark}
+                  flags={pageMarks}
+                  activeFlag={reviewing ? currentFlag : null}
+                  onFlag={pressFlag}
+                  wordBoxes={wordBoxes}
+                  wordHits={wordHits}
+                  role={me.user.role}
+                  turn={turnOf(turns.shown, page.page_no)}
+                  tools={
+                    pageMode(detail, page, false) === "image" ? (
+                      <PageTurnMenu
+                        turns={turns}
+                        pages={detail.pages}
+                        pageNo={page.page_no}
+                        documentId={detail.id}
+                        userId={me.user.id}
+                        onTurnsSaved={reloadAfterTurns}
+                      />
+                    ) : undefined
+                  }
+                />
+              )}
+            </WithPageTurns>
           ) : (
             <p className={styles.noPages}>No pages to show yet.</p>
           )}

@@ -351,6 +351,7 @@ VIEW_READERS = {
         "list_values", "reviewer_fix_count", "sheet_cells",
     },
     "db/organization_words.py": {"decide", "visible"},
+    "db/page_turns.py": {"_FOR_DOCUMENT"},  # Changed on purpose (#600): page turns saved for everyone
     "db/review.py": {"_COUNT", "_COUNT_FOR_DOCUMENT", "_ITEM", "_LOCK_VALUE", "_NEXT_CHUNK"},
     "db/tags.py": {"_FOR_DOCUMENTS"},
     "db/trashed_folders.py": {
@@ -512,6 +513,8 @@ _ROUTES: list[tuple[str, str, Any]] = [
     ("PUT", "/api/documents/{d}/tags", {"tag_ids": []}),
     ("PUT", "/api/documents/{d}/my-story", {"story": "My note", "user_id": "{u}"}),
     ("DELETE", "/api/documents/{d}/my-story?user_id={u}", None),
+    # Changed on purpose (#600): page turns saved for everyone.
+    ("PATCH", "/api/documents/{d}/page-turns", {"changes": [{"page_no": 1, "turn": 90}], "user_id": "{u}"}),
     ("DELETE", "/api/documents/{d}", None),
 ]
 _KEY = "0" * 64

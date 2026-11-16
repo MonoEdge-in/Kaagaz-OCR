@@ -78,6 +78,7 @@ GONE_FIRST = {
     ("ai_task_settings", "users"),
     ("learning_removals", "users"),  # 0051, PRD 6 F3: cascades from its document, SET NULL to its admin
     ("user_identities", "users"),  # 0062, #457: cascades with its user, SET NULL to the admin who approved it
+    ("page_rotations", "users"),  # 0088, #600: cascades from its document, NO ACTION to who saved it
 }
 
 
@@ -204,6 +205,9 @@ def _organisation(api: Api, storage: KeyStorage, label: str) -> tuple[str, str, 
             "INSERT INTO document_shares (customer_id, document_id, user_id, given_by)"
             " VALUES (:c, :d, :u, :u)",
             "INSERT INTO lock_grants (customer_id, document_id, user_id, given_by) VALUES (:c, :d, :u, :u)",
+            # 0088 (#600): a page turned for everyone.
+            "INSERT INTO page_rotations (customer_id, document_id, page_no, turn, set_by)"
+            " VALUES (:c, :d, 1, 90, :u)",
             # #478: the day's counter and a document held at the daily limit.
             "INSERT INTO reading_days (customer_id, day, pages, cost_usd, alerted_at)"
             " VALUES (:c, current_date, 10, 0.5, now())",

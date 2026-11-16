@@ -157,6 +157,8 @@ export type PDFViewerProps = {
   // right), and each change of them, so the screen can keep them.
   pageRotations?: ReadonlyMap<number, number>
   onPageRotationsChange?: (pageRotations: ReadonlyMap<number, number>) => void
+  // Changed for Kaagaz (#600): the turn menu waits while the turns are being saved.
+  turnMenuDisabled?: boolean
   pageClassName?: (pageNumber: number) => string | undefined
   renderPageOverlay?: (props: PDFViewerPageOverlayProps) => React.ReactNode
   onActivePageChange?: (pageNumber: number) => void
@@ -216,12 +218,14 @@ const PDFViewerScrollAreaResolverContext =
     resolveDefaultScrollAreaViewport
   )
 type PageRotationDeltas = Map<number, Rotation>
-// Changed for Kaagaz (#589): a choice in the page turn menu.
+// Changed for Kaagaz (#589): a choice in the page turn menu. #600: or turns handed in after it
+// opened (a save's reply, with others' turns), shown the way a choice is.
 type PageTurnChange =
   | { pages: "picked" | "all"; direction: -1 | 1 }
   | "wide"
   | "tall"
   | "reset"
+  | { set: ReadonlyMap<number, number> }
 type ThumbnailSelectionMode = "replace" | "toggle" | "range"
 function getPageIndexRange(from: number, to: number): Set<number> {
   const start = Math.min(from, to)
@@ -986,6 +990,7 @@ function PDFViewerToolbar({
   onDownload,
   onPageChange,
   onRotate,
+  turnMenuDisabled = false,
   onToggleSidebar,
   onZoomChange,
   zoomLevel,
@@ -1006,6 +1011,7 @@ function PDFViewerToolbar({
   onDownload?: () => void
   onPageChange: (pageNumber: number) => void
   onRotate: (change: PageTurnChange) => void
+  turnMenuDisabled?: boolean
   onToggleSidebar: () => void
   onUploadFile?: (file: File) => void
   onZoomChange: (zoomLevel: ZoomMode | number) => void
@@ -1098,7 +1104,7 @@ function PDFViewerToolbar({
           </ToolbarTooltip>
           {showRotateControls ? (
             <PDFViewerTurnMenu
-              controlsDisabled={controlsDisabled}
+              controlsDisabled={controlsDisabled || turnMenuDisabled}
               pickedPages={pickedPages}
               onRotate={onRotate}
             />
@@ -1802,6 +1808,7 @@ type PDFViewerInnerProps = {
   toolbarActions?: React.ReactNode
   pageRotations?: PDFViewerProps["pageRotations"]
   onPageRotationsChange?: PDFViewerProps["onPageRotationsChange"]
+  turnMenuDisabled?: PDFViewerProps["turnMenuDisabled"]
   pageClassName?: (pageNumber: number) => string | undefined
   renderPageOverlay?: (props: PDFViewerPageOverlayProps) => React.ReactNode
   onActivePageChange?: (pageNumber: number) => void
@@ -1827,6 +1834,7 @@ function PDFViewerInner({
   toolbarActions,
   pageRotations,
   onPageRotationsChange,
+  turnMenuDisabled,
   pageClassName,
   renderPageOverlay,
   onActivePageChange,
@@ -2036,7 +2044,7 @@ function PDFViewerInner({
   // of the picked pages; the person's turns are handed on to be kept.
   const rotatePages = React.useCallback(
     (change: PageTurnChange) => {
-      if (!pdfDocument || !registry || activePage < 1) return
+      if (!pdfDocument || !registry || activePage < 1) return false
       const documentState = registry.getStore().getState().core.documents[
         documentId
       ]
@@ -2047,6 +2055,13 @@ function PDFViewerInner({
         nextDeltas = new Map()
       } else if (change === "wide" || change === "tall") {
         nextDeltas = turnPagesTo(previousDeltas, currentDocument.pages, change)
+      } else if ("set" in change) {
+        nextDeltas = new Map(
+          Array.from(change.set, ([pageIndex, turn]) => [
+            pageIndex,
+            normalizeRotation(turn),
+          ])
+        )
       } else if (change.pages === "all") {
         nextDeltas = turnPages(
           previousDeltas,
@@ -2074,7 +2089,7 @@ function PDFViewerInner({
             (previousDeltas.get(pageIndex) ?? 0) !==
             (nextDeltas.get(pageIndex) ?? 0)
         )
-      if (targetPageIndexes.length === 0) return
+      if (targetPageIndexes.length === 0) return true
       // Only the drawn pages are refreshed: the others are drawn afresh when they come near.
       let drawnPageIndexes: number[] = []
       try {
@@ -2117,6 +2132,7 @@ function PDFViewerInner({
         } | null
       )?.calculateWindowState?.(documentId)
       onPageRotationsChange?.(nextDeltas)
+      return true
     },
     [
       activePage,
@@ -2132,6 +2148,18 @@ function PDFViewerInner({
       viewportCapability,
     ]
   )
+  // Changed for Kaagaz (#600): turns handed in after the file opened are shown once each, as a
+  // menu choice is, so the reader keeps their place. Out of the effect (rotatePages uses
+  // flushSync), and marked shown only once rotatePages went through.
+  const handedTurns = React.useRef(pageRotations)
+  React.useEffect(() => {
+    if (!pageRotations || pageRotations === handedTurns.current) return
+    queueMicrotask(() => {
+      if (pageRotations !== handedTurns.current && rotatePages({ set: pageRotations })) {
+        handedTurns.current = pageRotations
+      }
+    })
+  }, [pageRotations, rotatePages])
   const handleUpload = React.useCallback(
     (file: File) => {
       onUploadFile(file)
@@ -2269,6 +2297,7 @@ function PDFViewerInner({
           onDownload={handleDownload}
           onPageChange={scrollToPage}
           onRotate={rotatePages}
+          turnMenuDisabled={turnMenuDisabled}
           onToggleSidebar={() => setSidebarOpen((open) => !open)}
           onUploadFile={handleUpload}
           onZoomChange={(zoomLevel) => zoom?.requestZoom(zoomLevel)}
@@ -2416,6 +2445,7 @@ export const PDFViewer = React.forwardRef<PDFViewerHandle, PDFViewerProps>(
       toolbarActions,
       pageRotations,
       onPageRotationsChange,
+      turnMenuDisabled,
       pageClassName,
       renderPageOverlay,
       onActivePageChange,
@@ -2547,6 +2577,7 @@ export const PDFViewer = React.forwardRef<PDFViewerHandle, PDFViewerProps>(
             toolbarActions={toolbarActions}
             pageRotations={pageRotations}
             onPageRotationsChange={onPageRotationsChange}
+            turnMenuDisabled={turnMenuDisabled}
             pageClassName={pageClassName}
             renderPageOverlay={renderPageOverlay}
             onActivePageChange={onActivePageChange}
