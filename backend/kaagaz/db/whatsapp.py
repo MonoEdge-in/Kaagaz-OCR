@@ -33,7 +33,7 @@ from kaagaz.channel.inbound import Inbound
 from kaagaz.db.sqlstate import UNIQUE_VIOLATION, sqlstate
 
 CODE_MINUTES = 10
-SILENT_DAYS = 60  # W7: as 0088's sweep: a connection with no message for this long ends
+SILENT_DAYS = 60  # W7: as 0097's sweep: a connection with no message for this long ends
 
 
 class NumberTaken(Exception):
