@@ -80,6 +80,9 @@ and deleted by the app, never updated; a save deletes the pages it changes and a
 
 The version finder (0098, #648, NEEDS VRUSHIT'S APPROVAL): its runs, pairs and group members, never
 deleted by the app; only a member's decision is ever changed.
+
+Linking files as versions (0100, #648, NEEDS VRUSHIT'S APPROVAL): a link's snapshot, read and added
+by the app, never deleted; only its Undo is ever recorded on it.
 """
 
 import re
@@ -222,6 +225,9 @@ FROM_0098 = {
     "version_pairs": (True, True, False, False),
     "version_group_members": (True, True, False, False),
 }
+# Changed on purpose (#648, 0100): a link's snapshot, read and added; only its Undo recorded.
+FROM_0100 = {"version_links": (True, True, False, False)}
+UPDATES_0100 = {"version_links": {"undone_by", "undone_at"}}
 UPDATES_0098 = {
     "version_finder_runs": {"after_id", "looked_at", "finished_at", "groups"},
     "version_group_members": {"state", "decided_by", "decided_at"},
@@ -362,6 +368,8 @@ OWNER_RIGHTS = {
     "kaagaz_unlock": ("TABLE(document_id uuid, outcome text, version_id uuid, read boolean)", EMPTY_PATH),
     "kaagaz_lock_grant": ("text", EMPTY_PATH),
     "kaagaz_lock_revoke": ("integer", EMPTY_PATH),
+    # Changed on purpose (#648, 0100): a link's stories re-keyed, Admins and Management, checked inside.
+    "kaagaz_move_stories": ("SETOF uuid", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"
@@ -652,6 +660,7 @@ TRIGGER_RIGHTS = dict.fromkeys(
         "kaagaz_user_switched",  # Changed on purpose (#601, 0090)
         "kaagaz_lock_grants_follow",  # Changed on purpose (#605, 0093)
         "kaagaz_refuse_locked_content",  # Changed on purpose (#605, 0093)
+        "kaagaz_version_joined",  # Changed on purpose (#648, 0100)
     ),
     ("trigger", EMPTY_PATH),
 ) | {
@@ -716,6 +725,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0084)  # Changed on purpose (#590, 0084)
         | set(FROM_0088)  # Changed on purpose (#600, 0088)
         | set(FROM_0098)  # Changed on purpose (#648, 0098)
+        | set(FROM_0100)  # Changed on purpose (#648, 0100)
     )
 
     with db.system() as conn:
@@ -799,6 +809,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0084  # Changed on purpose (#590, 0084)
         | FROM_0088  # Changed on purpose (#600, 0088)
         | FROM_0098  # Changed on purpose (#648, 0098)
+        | FROM_0100  # Changed on purpose (#648, 0100)
     ).items():
         assert granted[table] == expected, table
 
@@ -895,6 +906,8 @@ def test_the_app_may_update_only_the_decision_of_a_possible_version(db: Database
     """0098 (#648): never a member's file, group or place, so a decision can't move a file into
     another group; never a pair's files or scores; never a run's organisation or start."""
     assert {table: _updatable(db, table) for table in UPDATES_0098} == UPDATES_0098
+    # Changed on purpose (#648, 0100): a link's versions, family and snapshot never change; its Undo is.
+    assert {table: _updatable(db, table) for table in UPDATES_0100} == UPDATES_0100
     assert _updatable(db, "version_pairs") == set()
 
 
@@ -1026,6 +1039,7 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
         | set(FROM_0084)  # Changed on purpose (#590, 0084)
         | set(FROM_0088)  # Changed on purpose (#600, 0088)
         | {"version_pairs", "version_group_members"}  # Changed on purpose (#648, 0098)
+        | {"version_links"}  # Changed on purpose (#648, 0100)
         | {"pages", "model_usage", "documents"}  # documents.owner_id (0041)
     )
     for name, _table, _parent, columns, parent_columns in between:
