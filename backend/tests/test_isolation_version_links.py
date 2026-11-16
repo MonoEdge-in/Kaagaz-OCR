@@ -918,6 +918,14 @@ def test_the_link_functions_check_their_caller_and_every_version_again(db: Datab
     assert _refused_with(db, org, "member", _UNDO_FN, link=second) == "42501"
     _sql(db, org, "management", _UNDO_FN, link=second)
     assert _state(db, org, "y")["y"]["family_id"] == "y"
+    # A newer link of the same family, its file made separate since: the family is again exactly what
+    # the older link left, but that link is not the newest, so its Undo is refused.
+    a, b, c = (Api(db).add_document(org.c, name=f"{n}.pdf", folder_id=org.folders["sales"]) for n in "abc")
+    older = _sql(db, org, "management", _LINK_FN, order=[a, b], current=b)
+    _sql(db, org, "management", _LINK_FN, order=[a, b, c], current=b)
+    separated = _post(org.people["management"], f"/documents/{c}/separate", {"name": "c apart.pdf"})
+    assert separated[0] == 200, separated
+    assert _refused_with(db, org, "management", _UNDO_FN, link=older) == "23514"
 
 
 def test_a_live_links_folder_is_kept_whoever_prunes_it(db: Database) -> None:
