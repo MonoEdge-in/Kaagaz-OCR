@@ -176,6 +176,13 @@ _FAMILY_LINK = text(
     " FROM version_links l WHERE l.customer_id = :c AND l.family_id = :f AND l.undone_at IS NULL"
     " ORDER BY l.linked_at DESC LIMIT 1"
 )
+# Review (#658): a listed file of this name in the folder a family goes back to (separate's rule).
+_NAME_TAKEN = text(
+    "SELECT EXISTS (SELECT 1 FROM documents o WHERE o.customer_id = :c AND o.deleted_at IS NULL"
+    " AND o.is_current AND o.id <> ALL(CAST(:ids AS uuid[]))"
+    " AND o.folder_id IS NOT DISTINCT FROM CAST(:f AS uuid)"
+    " AND lower(o.display_name) = lower(:name))"
+)
 _UNDONE = text(
     "UPDATE version_links SET undone_by = :by, undone_at = now() WHERE customer_id = :c AND id = :l"
 )
@@ -409,6 +416,12 @@ def prepare_undo(conn: Connection, customer_id: str, document_id: str) -> UndoPl
     folders = sorted({v["folder_id"] for v in back.values() if v["folder_id"] is not None})
     if len(conn.execute(text(LIVE_FOLDERS), {"c": c, "ids": folders}).all()) < len(folders):
         raise Refused("folder_gone")
+    for id_ in order:
+        version = back[id_]
+        if version["family_id"] in snapshot["families"] and version["is_current"]:
+            params = {"c": c, "ids": order, "f": version["folder_id"], "name": rows[id_]["display_name"]}
+            if conn.execute(_NAME_TAKEN, params).scalar_one():
+                raise Refused("name_taken")
     here = rows[document_id]  # where every version is now: the family's place
     moves: list[Moved] = []
     for each in snapshot["families"]:

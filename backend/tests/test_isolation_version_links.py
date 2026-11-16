@@ -772,3 +772,19 @@ def test_a_link_of_too_many_versions_is_refused(db: Database, monkeypatch: pytes
     assert (status, reply["error"]["code"]) == (409, "too_many_versions")
     assert _everything(db, org) == before
     assert _link(management, org, ["x", "y"], "x")[0] == 200
+
+
+def test_undo_never_puts_a_file_beside_one_of_the_same_name(db: Database) -> None:
+    """Review 11: y linked into x; a new y.pdf uploaded where y was (the top level): Undo is 409
+    name_taken, nothing changed; once it is renamed, Undo goes through."""
+    api = Api(db)
+    org = _org(api)
+    management = org.people["management"]
+    assert _link(management, org, ["y", "x"], "x")[0] == 200
+    other = api.add_document(org.c, name="Y.pdf")
+    before = _everything(db, org)
+    status, reply = _undo(management, org, "x")
+    assert (status, reply["error"]["code"]) == (409, "name_taken")
+    assert _everything(db, org) == before
+    _owner(db, "UPDATE documents SET display_name = 'y (2).pdf' WHERE id = :d", {"d": other})
+    assert _undo(management, org, "x")[0] == 200

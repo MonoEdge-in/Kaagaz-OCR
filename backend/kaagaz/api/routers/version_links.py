@@ -61,6 +61,7 @@ _MESSAGES = {
     "too_many_versions": f"Together these files have over {links_sql.MAX_VERSIONS} versions. Link fewer.",
     "not_linked": "These versions weren't linked here, so there is nothing to undo.",
     "not_newest": "The versions changed since they were linked, so this can't be undone.",
+    "name_taken": "A file of the same name is now where a version would go back to. Rename one first.",
     "folder_gone": "A folder these files were in is gone, so this can't be undone. Move them by hand.",
 }
 
