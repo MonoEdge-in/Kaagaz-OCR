@@ -65,7 +65,6 @@ export const LINK_TEXT = {
   noneAre: "None of these are versions",
   keptApart: (n: number) => (n === 1 ? "Kept apart. It won't be suggested with these again." : `Kept ${n} files apart.`),
   compare: "Compare",
-  compareFirst: "Compare",
   compareWith: "with",
   pickTwo: "Pick two different files.",
   notLinkedHeading: "Files not linked",
@@ -170,10 +169,10 @@ export function linkableIds(items: readonly Pick<DocumentSummary, "id" | "locked
   return ids.length >= MIN_LINK && ids.length <= MAX_LINK ? ids : [];
 }
 
-/** The link of the ticked files, in the order shown; the latest picked when ticked, else the
- * newest ticked. null outside 2 to 20 files. */
-export function linkBody(order: readonly string[], ticked: ReadonlySet<string>, latest: string | null): LinkVersionsBody | null {
-  const ids = order.filter((id) => ticked.has(id));
+/** The link of the files in the order shown; the latest picked when it is one of them, else the
+ * newest. null outside 2 to 20 files. */
+export function linkBody(order: readonly string[], latest: string | null): LinkVersionsBody | null {
+  const ids = [...order];
   if (ids.length < MIN_LINK || ids.length > MAX_LINK) return null;
   const current = latest !== null && ids.includes(latest) ? latest : ids.at(-1);
   return current === undefined ? null : { document_ids: ids, order: ids, current_id: current };

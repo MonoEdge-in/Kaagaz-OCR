@@ -103,25 +103,29 @@ describe("the order (V13 step 2)", () => {
   });
 });
 
-describe("the link (the lead's flexible group)", () => {
-  it("links only the ticked files, in the order shown, with the latest picked", () => {
-    expect(linkBody(["x", "y", "z"], new Set(["x", "y"]), "x")).toEqual({
-      document_ids: ["x", "y"],
-      order: ["x", "y"],
-      current_id: "x",
-    });
+describe("the link (V13)", () => {
+  it("sends the files in the order shown, with the latest picked", () => {
+    expect(linkBody(["x", "y", "z"], "x")).toEqual({ document_ids: ["x", "y", "z"], order: ["x", "y", "z"], current_id: "x" });
   });
 
-  it("takes the newest ticked file as the latest when the one picked is unticked", () => {
-    expect(linkBody(["x", "y", "z"], new Set(["x", "y"]), "z")?.current_id).toBe("y");
-    expect(linkBody(["x", "y", "z"], new Set(["x", "z"]), null)?.current_id).toBe("z");
+  it("takes the newest file as the latest when none is picked", () => {
+    expect(linkBody(["x", "y", "z"], null)?.current_id).toBe("z");
+    expect(linkBody(["x", "y", "z"], "w")?.current_id).toBe("z");
   });
 
   it("needs 2 to 20 files", () => {
-    expect(linkBody(["x", "y"], new Set(["x"]), "x")).toBeNull();
+    expect(linkBody(["x"], "x")).toBeNull();
     const many = Array.from({ length: 21 }, (_, n) => `f${n}`);
-    expect(linkBody(many, new Set(many), null)).toBeNull();
-    expect(linkBody(many.slice(0, 20), new Set(many), null)?.document_ids).toHaveLength(20);
+    expect(linkBody(many, null)).toBeNull();
+    expect(linkBody(many.slice(0, 20), null)?.document_ids).toHaveLength(20);
+  });
+
+  it("keeps no leftovers (review of #659)", () => {
+    expect(LINK_TEXT).not.toHaveProperty("compareFirst");
+    const dialog = readFileSync(join(__dirname, "..", "components/versions/LinkDialog.tsx"), "utf8");
+    expect(dialog).not.toMatch(/\bbody: LinkVersionsBody/);
+    const page = readFileSync(join(__dirname, "..", "components/versions/PossibleVersions.tsx"), "utf8");
+    expect(page).not.toContain("a.position - b.position");
   });
 });
 

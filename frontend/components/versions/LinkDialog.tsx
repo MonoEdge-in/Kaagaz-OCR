@@ -24,7 +24,7 @@ import { Icon as KIcon } from "@/components/ui/Icon/Icon";
 import { PasswordField } from "@/components/ui/PasswordField";
 import { listDocuments, listFolders, linkVersions, pageImageUrl, previewLinkVersions } from "@/lib/api";
 import { formatDate } from "@/lib/format";
-import type { DocumentSummary, LinkPreview, LinkVersionsBody } from "@/lib/types";
+import type { DocumentSummary, LinkPreview } from "@/lib/types";
 import {
   LINK_TEXT,
   MAX_LINK,
@@ -42,11 +42,10 @@ import {
 import type { LinkFile } from "./link";
 import styles from "./Link.module.css";
 
-/** What a link did: the toast's words, its Undo, and the body sent. */
+/** What a link did: the toast's words and its Undo. */
 export interface Linked {
   message: string;
   undo: () => Promise<unknown>;
-  body: LinkVersionsBody;
 }
 
 type Step = 1 | 2 | 3;
@@ -77,7 +76,7 @@ export function LinkDialog({
   const [password, setPassword] = useState<string | null>(null); // null: not asked for
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const body = linkBody(order, new Set(order), latest);
+  const body = linkBody(order, latest);
 
   function toOrder() {
     const sorted = byDate(chosen);
@@ -111,7 +110,6 @@ export function LinkDialog({
       onLinked({
         message: LINK_TEXT.linked(body.document_ids.length, preview.latest.name),
         undo: () => undoLink(current),
-        body,
       });
     } catch (caught) {
       setError(linkErrorText(caught));

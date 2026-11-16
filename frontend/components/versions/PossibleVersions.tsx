@@ -307,7 +307,7 @@ export function GroupCard({
   onNoneAre(): void;
 }) {
   const id = useId();
-  const files = [...group.files].sort((a, b) => a.position - b.position);
+  const files = group.files; // in the finder's order
   const [ticked, setTicked] = useState<ReadonlySet<string>>(() => new Set(files.map((file) => file.id)));
   const [left, setLeft] = useState(files[0]?.id ?? "");
   const [right, setRight] = useState(files.at(-1)?.id ?? "");
@@ -374,7 +374,7 @@ export function GroupCard({
       </ul>
       {files.length > 1 && (
         <div className={styles.compare}>
-          <label htmlFor={`${id}-left`}>{LINK_TEXT.compareFirst}</label>
+          <label htmlFor={`${id}-left`}>{LINK_TEXT.compare}</label>
           <span className="k-select-wrap">
             <select id={`${id}-left`} className="k-select" value={left} onChange={(event) => setLeft(event.target.value)}>
               {files.map((file) => (
