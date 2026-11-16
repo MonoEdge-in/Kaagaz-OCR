@@ -204,6 +204,11 @@ class Settings:
     # while unset. docker-compose.yml sets it only for the worker, and only once .env names the
     # workers' own login (JOBS_DATABASE_URL), which alone may switch into it.
     db_worker_role: str
+    # PRD 7 (#606, decision 22): what the API and the worker do at start-up with a login the database
+    # rule can't hold (an owner, a superuser, one that skips row level security or can switch into the
+    # worker or operator role): "warn" (the laptop and CI, which sign in as the owner) or "refuse" (a
+    # server, set in its .env once its logins are the limited ones).
+    db_login_check: str
 
     # File storage (S3 API: SeaweedFS on the laptop, Amazon S3 in AWS).
     storage_endpoint_url: str | None
@@ -367,6 +372,12 @@ class Settings:
     # Search inside documents (Q2): at most this many documents in a reply, 1 to 100.
     search_ef: int
     search_max_documents: int
+    # PRD 7 section 7 (#602): hnsw.max_scan_tuples, the most tuples one meaning walk visits (pgvector's
+    # default 20,000), and how few vectors the person can see before meaning search scans them
+    # exactly, never walking the index (PROVISIONAL 2,000: measured
+    # in PR 8, the exact scan and its count cost about what the walk does at about 2,000 vectors).
+    search_max_scan_tuples: int
+    search_exact_below: int
 
     # Answers.
     answer_max_evidence: int
@@ -686,6 +697,9 @@ class Settings:
             ops_database_url=env.optional("OPS_DATABASE_URL") or env.text("DATABASE_URL"),
             db_app_role=env.text("DB_APP_ROLE"),
             db_worker_role=env.optional("DB_WORKER_ROLE") or env.text("DB_APP_ROLE"),
+            db_login_check=(
+                env.choice("DB_LOGIN_CHECK", {"warn", "refuse"}) if env.optional("DB_LOGIN_CHECK") else "warn"
+            ),
             storage_endpoint_url=env.optional("STORAGE_ENDPOINT_URL"),
             storage_region=env.text("STORAGE_REGION"),
             storage_bucket=env.text("STORAGE_BUCKET"),
@@ -797,6 +811,8 @@ class Settings:
             reprocess_per_hour=env.positive("REPROCESS_PER_HOUR"),
             search_ef=env.between("SEARCH_EF", 1, 1000),
             search_max_documents=env.between("SEARCH_MAX_DOCUMENTS", 1, 100),
+            search_max_scan_tuples=env.between_or("SEARCH_MAX_SCAN_TUPLES", 1, 1000000, default=20000),
+            search_exact_below=env.between_or("SEARCH_EXACT_BELOW", 0, 1000000, default=2000),
             answer_max_evidence=env.integer("ANSWER_MAX_EVIDENCE"),
             answer_min_evidence_score=env.number("ANSWER_MIN_EVIDENCE_SCORE"),
             answer_neighbours=env.between("ANSWER_NEIGHBOURS", 0, 3),

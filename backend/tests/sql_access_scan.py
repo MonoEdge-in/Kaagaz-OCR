@@ -23,7 +23,7 @@ from pathlib import Path
 import kaagaz
 
 ROOT = Path(kaagaz.__file__).parent
-# PRD 7 appendix A: the 26 tables that point at a document.
+# PRD 7 appendix A: the 27 tables that point at a document (page_rotations: #600, 0088).
 CONTENT = frozenset(
     [
         "pages",
@@ -52,6 +52,7 @@ CONTENT = frozenset(
         "organization_word_suggestions",
         "user_word_spots",
         "document_stories",
+        "page_rotations",
     ]
 )
 PLACES = frozenset({"documents", "folders", "trashed_folders"})
@@ -103,7 +104,7 @@ def _listed(sql: str, start: int) -> list[str]:
     return items
 
 
-def reads(sql: str) -> set[str]:
+def reads(sql: str, tables: frozenset[str] = CONTENT | PLACES) -> set[str]:
     """The tables ``sql`` reads directly: after FROM, JOIN and USING (every item of a FROM list,
     ONLY, quotes and a bracketed join too), and the target of an UPDATE or DELETE that returns
     rows (RETURNING); not a DELETE's or an UPDATE's target otherwise. Keywords in capitals, or in
@@ -116,7 +117,7 @@ def reads(sql: str) -> set[str]:
                 found.add(named.group(1))
     if re.search(r"\bRETURNING\b", sql, flags):
         found |= {m.group(1) for m in re.finditer(_WRITE, sql, flags)}
-    return {name.lower() for name in found} & (CONTENT | PLACES)
+    return {name.lower() for name in found} & tables
 
 
 def _name(node: ast.stmt) -> str | None:
@@ -201,9 +202,9 @@ def _closure(
     return seen
 
 
-def owners() -> Iterator[tuple[Owner, bool]]:
+def owners(tables: frozenset[str] = CONTENT | PLACES) -> Iterator[tuple[Owner, bool]]:
     """Every owner whose own SQL reads documents, folders, trashed_folders or a content table
-    directly, and whether kaagaz/api reaches it."""
+    (or, PR 9a #606, any of ``tables``) directly, and whether kaagaz/api reaches it."""
     trees = _parse()
     edges = _graph(trees)
     reached = _closure(edges, {key for key in edges if key[0].startswith("api/")})
@@ -211,12 +212,68 @@ def owners() -> Iterator[tuple[Owner, bool]]:
     texts = {key: _strings(node) for key, node in nodes.items()}
     constants = {key for key, node in nodes.items() if isinstance(node, ast.Assign | ast.AnnAssign)}
     for key, own in texts.items():
-        direct = set().union(*(reads(sql) for sql in own)) if own else set()
+        direct = set().union(*(reads(sql, tables) for sql in own)) if own else set()
         if not direct:
             continue
         named = _closure(edges, {key}, constants)
         view = any("visible_documents" in sql for each in named for sql in texts.get(each, ()))
         yield Owner(key[0], key[1], frozenset(direct), view), key in reached
+
+
+def calling(prefix: str) -> set[tuple[str, str]]:
+    """PR 9a (#606): every (file, name) whose own SQL calls a function named ``prefix...(``."""
+    found = re.compile(rf"\b{re.escape(prefix)}[a-z_]*\(")
+    return {
+        (rel, name)
+        for rel, tree in _parse().items()
+        for node in tree.body
+        if (name := _name(node)) and any(found.search(sql) for sql in _strings(node))
+    }
+
+
+# PR 9a (#606): a statement that reads "not in this covered table" as gone or empty fails open once
+# the database rule hides a row of it.
+_NOT_IN = re.compile(r"NOT EXISTS \(SELECT 1 FROM (?:public\.)?([a-z_]+)", re.IGNORECASE)
+
+
+def not_exists_readers() -> dict[tuple[str, str], frozenset[str]]:
+    """Every (file, name) the API reaches whose own SQL has ``NOT EXISTS (SELECT 1 FROM <covered>``,
+    with those tables."""
+    trees = _parse()
+    nodes = {(rel, name): node for rel, tree in trees.items() for node in tree.body if (name := _name(node))}
+    found = {}
+    for owner, by_api in owners():
+        tables = {
+            m.group(1) for sql in _strings(nodes[(owner.file, owner.name)]) for m in _NOT_IN.finditer(sql)
+        }
+        if by_api and tables & (CONTENT | PLACES):
+            found[(owner.file, owner.name)] = frozenset(tables & (CONTENT | PLACES))
+    return found
+
+
+# PR 9a (#606): an organisation-wide count, sum or max, or a "LEFT JOIN <covered> ... IS NULL", that
+# names no document: once the rule hides rows it counts fewer, or reads a hidden row as missing.
+_AGGREGATE = re.compile(r"\b(?:count|sum|max)\s*\(", re.IGNORECASE)
+_BY_ID = re.compile(r"(?:document_id|\bid)\s*=\s*(?::|CAST\s*\(\s*:|ANY)", re.IGNORECASE)
+_NULL_JOIN = re.compile(
+    r"LEFT JOIN (?:public\.)?(" + "|".join(sorted(CONTENT | PLACES)) + r")\s+(\w+)\b.*?\b\2\.\w+ IS NULL",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def aggregate_readers() -> set[tuple[str, str]]:
+    """Every (file, name) the API reaches that reads a covered table directly with a count, sum or
+    max and no document id, or a LEFT JOIN of one tested for NULL."""
+    trees = _parse()
+    nodes = {(rel, name): node for rel, tree in trees.items() for node in tree.body if (name := _name(node))}
+    found = set()
+    for owner, by_api in owners():
+        joined = " ".join(_strings(nodes[(owner.file, owner.name)]))
+        if by_api and (
+            (_AGGREGATE.search(joined) and not _BY_ID.search(joined)) or _NULL_JOIN.search(joined)
+        ):
+            found.add((owner.file, owner.name))
+    return found
 
 
 # The worker's own entry points (#595 condition 1).
@@ -236,3 +293,43 @@ def worker_view_readers() -> set[tuple[str, str]]:
         for key in _closure(edges, start)
         if key in nodes and any(view in sql for sql in _strings(nodes[key]) for view in _VIEWS)
     }
+
+
+_ROUTE_METHODS = frozenset({"get", "post", "put", "patch", "delete"})
+# PRD 7 decision 20 (#601): what asks for an admin session.
+_ADMIN_SESSION = frozenset({("api/auth.py", "require_admin_session"), ("api/auth.py", "AdminSession")})
+
+
+def _is_route(decorator: ast.expr) -> bool:
+    return (
+        isinstance(decorator, ast.Call)
+        and isinstance(decorator.func, ast.Attribute)
+        and decorator.func.attr in _ROUTE_METHODS
+        and isinstance(decorator.func.value, ast.Name)
+    )
+
+
+def routes() -> dict[tuple[str, str], tuple[set[tuple[str, str]], bool]]:
+    """Each route of kaagaz/api (a function under ``@<router>.get`` and the like) to what it reaches
+    at any depth, and whether it asks for an admin session itself: its router's dependency (the
+    decorator names the router), or an ``AdminSession`` or ``require_admin_session`` named in the
+    route (not in a helper, which may have a branch for others). A name-based rule: one named on
+    one branch of the route counts too."""
+    trees = _parse()
+    edges = _graph(trees)
+    found = {}
+    for rel, tree in trees.items():
+        if not rel.startswith("api/"):
+            continue
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and any(
+                map(_is_route, node.decorator_list)
+            ):
+                key = (rel, node.name)
+                own = edges.get(key, set())
+                routers = {(rel, d.func.value.id) for d in node.decorator_list if _is_route(d)}  # type: ignore[attr-defined]
+                admin = bool(own & _ADMIN_SESSION) or any(
+                    edges.get(r, set()) & _ADMIN_SESSION for r in routers
+                )
+                found[key] = (_closure(edges, {key}), admin)
+    return found

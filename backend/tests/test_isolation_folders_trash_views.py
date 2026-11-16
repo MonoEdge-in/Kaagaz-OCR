@@ -46,6 +46,7 @@ def _fill(value: Any, **ids: str) -> Any:
 
 
 def _trash(org: Org, folder: str) -> None:
+    # Changed on purpose (PR 9b, #606): an Admin deletes a folder with files they can't see, with the rule on.
     reply = org.people["admin"].client.delete(f"/api/folders/{folder}?contents=trash", headers=CSRF)
     assert reply.status_code == 200, reply.text
 
@@ -267,7 +268,7 @@ def test_only_an_admin_deletes_forever_a_trashed_folder_holding_what_they_cant_s
     )
     assert (refused.status_code, refused.json()["error"]) == (
         403,
-        {"code": "forbidden", "message": HIDDEN_INSIDE},
+        {"code": "hidden_inside", "message": HIDDEN_INSIDE},  # Changed on purpose (#601): the screens' code
     )
     assert _owner(db, "SELECT count(*) FROM documents WHERE customer_id = :c", {"c": org.c}) == before
     gone = org.people["head"].client.delete(f"/api/documents/trash/folders/{finance}/permanent", headers=CSRF)
@@ -279,6 +280,7 @@ def test_an_admin_deletes_forever_a_trashed_folder_holding_files_they_cant_open(
     org = _walled(Api(db))
     admin = org.people["admin"]
     _trash(org, org.folders["finance"])
+    # Changed on purpose (PR 9b, #606): an Admin deletes forever files they can't see, with the rule on.
     reply = admin.client.delete(
         f"/api/documents/trash/folders/{org.folders['finance']}/permanent", headers=CSRF
     )
@@ -426,7 +428,8 @@ def test_a_stored_reply_sent_again_names_no_file_the_person_can_no_longer_see(db
     document = first.json()["document"]["id"]
     _owner(
         db,
-        "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d",
+        # Changed on purpose (#605, 0093): a locked version is never ready.
+        "UPDATE documents SET locked_at = now(), locked_by = :u, status = 'locked' WHERE id = :d",
         {"u": org.people["admin"].user_id, "d": document},
     )
     again = plain.client.post(f"{sessions}/{session}/complete", headers=CSRF)

@@ -293,3 +293,29 @@ def whatsapp_turned_on(name: str, organisation: str) -> Message:
         " person's phone, even after their access is removed.\n\nAdmins can turn it off in Admin,"
         " Settings." + _SIGN_OFF,
     )
+
+
+# --- who can see what (PRD 7, #601) -----------------------------------------------------------
+
+# The kind of access given, in words: never a file, a folder or a department by name.
+ACCESS_KINDS = {
+    "management": "Management, which sees every file but locked ones",
+    "member": "a place in a department",
+    "head": "the Head tick of a department",
+    "named": "a place on a private folder's list",
+    "file": "a file, given directly",
+    "wall": "access to files by opening them to more people",
+    "lock": "a locked file to open",  # PRD 7 (#605): never which one
+}
+
+
+def access_given(name: str, organisation: str, admin: str, person: str | None, kind: str) -> Message:
+    """To each Management person and each other admin: ``admin`` gave ``person`` (None:
+    themselves) a kind of access (``ACCESS_KINDS``)."""
+    who = "themselves" if person is None else person
+    return (
+        "Access was given in Kaagaz",
+        f"Hello {name},\n\n{admin} gave {who} {ACCESS_KINDS[kind]} in {organisation} on Kaagaz."
+        "\n\nThe Activity tab shows who has access. If you do not expect this, ask your"
+        " organisation's admins." + _SIGN_OFF,
+    )

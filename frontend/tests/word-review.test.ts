@@ -108,6 +108,7 @@ const detail = {
   display_name: "invoice_march.pdf",
   detected_type: "pdf",
   pages: [{ page_no: 3, width: 595, height: 842, unit: "pt", has_image: false, route: "ocr", read_quality: "good" }],
+  page_turns: [], // Changed on purpose (#600): the detail carries the turns saved for everyone
 } as unknown as DocumentDetail;
 
 const bar = (shown: ReviewStatus, more: Partial<Parameters<typeof SummaryBar>[0]> = {}) =>

@@ -80,8 +80,10 @@ _RUNS_LOCK = text(
 )
 # ponytail: reads the customer's runs of every document (the index's first column); a
 # (customer_id, created_at) index if one customer makes thousands of runs.
+# PRD 7 (#606): the whole organisation's runs (kaagaz_ensemble_runs_this_hour, 0091), never only
+# those of files the person can see, so the cap can't fail open.
 _RUNS_THIS_HOUR = text(
-    "SELECT count(*) FROM ensemble_runs WHERE customer_id = :c AND created_at > now() - interval '1 hour'"
+    "SELECT kaagaz_ensemble_runs_this_hour() WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 _INSERT_RUN = text(
     "INSERT INTO ensemble_runs (customer_id, document_id, scope, pages, models, requested_by, retry_of,"
@@ -110,8 +112,12 @@ _HELD_RUNS = text(
     " ORDER BY created_at, id LIMIT :n"
 )
 _UNHOLD = text(f"UPDATE ensemble_runs SET error_code = NULL WHERE customer_id = :c AND id = :r AND {_HELD}")  # noqa: S608 - fixed
+# PRD 7 (#605): a run gone (a lock deletes it) or a document locked is a stop too, so no further
+# page goes to a model.
 _STOP_ASKED = text(
-    "SELECT stop_requested_at IS NOT NULL FROM ensemble_runs WHERE customer_id = :c AND id = :r"
+    "SELECT coalesce((SELECT r.stop_requested_at IS NOT NULL OR d.locked_at IS NOT NULL FROM ensemble_runs r"
+    " JOIN documents d ON d.customer_id = r.customer_id AND d.id = r.document_id"
+    " WHERE r.customer_id = :c AND r.id = :r), true)"
 )
 _ATTEMPT = text(
     "UPDATE ensemble_runs SET attempts = greatest(attempts, :a) WHERE customer_id = :c AND id = :r"

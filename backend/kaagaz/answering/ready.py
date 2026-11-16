@@ -71,9 +71,11 @@ _HABITS = text(
     " GROUP BY lower(regexp_replace(btrim(q.text), '\\s+', ' ', 'g'))"
     " ORDER BY count(*) DESC, max(q.created_at) DESC LIMIT :n"
 )
+# PRD 7 (#602): the kinds of document the person can see, never the whole organisation's.
 _TYPES = text(
-    "SELECT doc_type FROM documents WHERE customer_id = :c AND is_current AND deleted_at IS NULL"
-    " AND doc_type IS NOT NULL GROUP BY doc_type ORDER BY count(*) DESC, doc_type"
+    "SELECT d.doc_type FROM visible_documents d WHERE d.customer_id = :c AND d.is_current"
+    " AND d.deleted_at IS NULL AND d.doc_type IS NOT NULL GROUP BY d.doc_type"
+    " ORDER BY count(*) DESC, d.doc_type"
 )
 # What a ready answer was made from: the documents (how many, how many out of Trash, A10: a change
 # Trash makes is never hidden by a newer time elsewhere) and their values (how many, newest change),
@@ -82,23 +84,19 @@ _TYPES = text(
 # pieces still without a vector and the vectors' recipes (#535: a vector filled in by the worker
 # later, or cleared by a line correction, changes what meaning search finds). A document not read
 # yet (received or clean) is left out: its progress writes move its updated_at page by page, and
-# each move made Home pay for its answers again (production QA B2).
+# each move made Home pay for its answers again (production QA B2). PRD 7 (#602, question 2): the
+# organisation's access version last, so a change of who sees what moves every ready and repeat key.
+# Hashed into a key, never shown: so it reads the tables, whole (PRD 7 #606: kaagaz_ready_stamp,
+# 0091, this statement as it was, so the database rule never runs on each piece and value).
 # shortcut: three scans of one customer's rows, fine at today's thousands; an index on
 # (customer_id, updated_at) or a change counter when a customer holds millions.
-_STAMP = text(
-    "SELECT (SELECT count(*) || '/' || count(*) FILTER (WHERE deleted_at IS NULL) || '/'"
-    " || coalesce(max(updated_at)::text, '') FROM documents WHERE customer_id = :c"
-    " AND status NOT IN ('received', 'clean')) || '|' || (SELECT"
-    " count(*) || '/' || coalesce(max(updated_at)::text, '') FROM extracted_values WHERE customer_id = :c)"
-    " || '|' || (SELECT count(*) || '/' || coalesce(max(greatest(created_at, undone_at))::text, '')"
-    " FROM word_changes WHERE customer_id = :c"
-    " AND before_text <> after_text) || '|' || (SELECT count(*) FILTER (WHERE embedding IS NULL) || '/'"
-    " || coalesce(string_agg(DISTINCT embedding_model, ','), '') FROM pieces WHERE customer_id = :c)"
-)
-# #535: the documents a tag scope holds, with their tags, so a tag put on or taken off moves the key.
+_STAMP = text("SELECT kaagaz_ready_stamp() WHERE CAST(:c AS uuid) = kaagaz_current_customer()")
+# #535: the documents a tag scope holds, with their tags, so a tag put on or taken off moves the key;
+# those the person can see (PRD 7, #602).
 _TAGGED = text(
-    "SELECT document_id::text || ':' || tag_id::text FROM document_tags"
-    " WHERE customer_id = :c AND tag_id = ANY(CAST(:t AS uuid[])) ORDER BY 1"
+    "SELECT dt.document_id::text || ':' || dt.tag_id::text FROM document_tags dt"
+    " JOIN visible_documents d ON d.customer_id = dt.customer_id AND d.id = dt.document_id"
+    " WHERE dt.customer_id = :c AND dt.tag_id = ANY(CAST(:t AS uuid[])) ORDER BY 1"
 )
 # #535: the settings that shape an answer (its evidence, window, models and parts), so a change of
 # one on the same commit makes a repeated question's key another.
@@ -109,6 +107,8 @@ ANSWER_SHAPING = (
     "model_answer_max_tokens",
     "model_context_tokens",
     "search_ef",
+    "search_max_scan_tuples",
+    "search_exact_below",
     "answer_max_evidence",
     "answer_min_evidence_score",
     "answer_neighbours",
@@ -130,7 +130,9 @@ _WORDS = text(
     "SELECT coalesce((SELECT md5(jsonb_agg(jsonb_build_array(word, meaning) ORDER BY word, meaning)::text)"
     " FROM user_words WHERE customer_id = :c AND user_id = :u), '') || '|' || coalesce((SELECT"
     " md5(jsonb_agg(jsonb_build_array(word, meaning, document_id) ORDER BY word, meaning, document_id)::text)"
-    " FROM organization_word_suggestions WHERE customer_id = :c AND status = 'approved'), '')"
+    " FROM organization_word_suggestions WHERE customer_id = :c AND status = 'approved'"
+    " AND (document_id IS NULL OR EXISTS (SELECT 1 FROM visible_documents d"
+    " WHERE d.customer_id = :c AND d.id = document_id))), '')"
 )
 REPEAT_KEY = "repeat_key"  # the stored answer's field that holds it; never shown (clarify.without_resume)
 REPEAT_COPY = "repeat_copy"  # a copy served from it: never served itself, its Not useful still counts
@@ -158,6 +160,11 @@ def questions(conn: Connection, customer_id: str, user_id: str) -> list[tuple[st
 def stamp(conn: Connection, customer_id: str) -> str:
     """The documents and values a ready answer was made from; it changes when they do."""
     return str(conn.execute(_STAMP, {"c": customer_id}).scalar_one())
+
+
+def access_of(made_from: str) -> str:
+    """The organisation's access version a ``stamp`` ends with (PRD 7, #602)."""
+    return made_from.rsplit("|", 1)[-1]
 
 
 def key(
@@ -240,33 +247,38 @@ class ShownQuestions:
     """Each person's questions as Home last showed them (Tushar, 24 Oct 2026: "update them only
     after the user uses one"): the same list on every visit until they ask one of them fresh,
     then made again from their habits. An empty list is never kept, so questions come as soon
-    as documents do. Oldest people dropped past MAX_ENTRIES; thread-safe."""
+    as documents do. PRD 7 (#602): a list is kept with the access version it was made at, and one
+    made at another is missing, so a question about files taken away is never offered again.
+    Oldest people dropped past MAX_ENTRIES; thread-safe."""
 
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self._clock = clock
         self._lock = threading.Lock()
-        self._kept: OrderedDict[tuple[str, str], tuple[float, list[tuple[str, bool]]]] = OrderedDict()
+        self._kept: OrderedDict[tuple[str, str], tuple[float, list[tuple[str, bool]], str]] = OrderedDict()
 
-    def get(self, customer_id: str, user_id: str) -> list[tuple[str, bool]] | None:
-        """The list Home last showed this person, while it is less than SHOWN_SECONDS old."""
+    def get(self, customer_id: str, user_id: str, version: str = "") -> list[tuple[str, bool]] | None:
+        """The list Home last showed this person, while it is less than SHOWN_SECONDS old and was
+        made at access ``version`` (``access_of``)."""
         with self._lock:
             found = self._kept.get((customer_id, user_id))
             if found is None:
                 return None
-            if self._clock() - found[0] > SHOWN_SECONDS:
+            if self._clock() - found[0] > SHOWN_SECONDS or found[2] != version:
                 del self._kept[(customer_id, user_id)]
                 return None
             self._kept.move_to_end((customer_id, user_id))
             return found[1]
 
-    def keep(self, customer_id: str, user_id: str, shown: list[tuple[str, bool]]) -> None:
-        """Keep a new list (its day starts now); the same list again keeps its first time."""
+    def keep(self, customer_id: str, user_id: str, shown: list[tuple[str, bool]], version: str = "") -> None:
+        """Keep a new list made at access ``version`` (its day starts now); the same list again
+        keeps its first time."""
         if not shown:
             return
         with self._lock:
             found = self._kept.get((customer_id, user_id))
-            since = found[0] if found is not None and found[1] == shown else self._clock()
-            self._kept[(customer_id, user_id)] = (since, shown)
+            same = found is not None and found[1] == shown and found[2] == version
+            since = found[0] if found is not None and same else self._clock()
+            self._kept[(customer_id, user_id)] = (since, shown, version)
             self._kept.move_to_end((customer_id, user_id))
             while len(self._kept) > MAX_ENTRIES:
                 self._kept.popitem(last=False)
