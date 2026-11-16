@@ -55,7 +55,8 @@
 	# parameters are deleted from each logged address (q: /api/search, /api/documents,
 	# the stories match, the /search and /chat pages; party: /api/documents; w: a page's
 	# words; source_name: a folder upload's name; property: a survey number read from a document;
-	# code and state: a Google sign-in's), and the Referer header, which repeats
+	# code and state: a Google sign-in's; hub.verify_token and hub.challenge: Meta's WhatsApp
+	# webhook check, #603), and the Referer header, which repeats
 	# a page's address, is not logged. The idle check reads only the path and the Cookie
 	# header's name.
 	log {
@@ -71,6 +72,8 @@
 					delete property
 					delete code
 					delete state
+					delete hub.verify_token
+					delete hub.challenge
 				}
 				request>headers>Referer delete
 			}

@@ -37,6 +37,7 @@ from tests.test_api_support import (
     CSRF,
     EMAIL_ROUTES,
     PASSWORD,
+    WHATSAPP_ROUTES,
     Api,
     Signed,
     TestClient,
@@ -595,7 +596,8 @@ def test_the_limited_session_blocks_every_data_route(db: Database, google: FakeG
         {
             (method, path.replace("{provider}", "google"))
             for method, path in route_calls(api.app)
-            if (method, path) not in EMAIL_ROUTES and (method, path) not in sign_outs
+            # Changed on purpose (#603): the WhatsApp webhook, 404 while WhatsApp is off.
+            if (method, path) not in EMAIL_ROUTES + WHATSAPP_ROUTES and (method, path) not in sign_outs
         }
     )
     gated = []

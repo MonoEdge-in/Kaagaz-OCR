@@ -69,6 +69,7 @@ from kaagaz.api.routers import (
     stories,
     tags,
     versions,
+    whatsapp,
     word_review,
     words,
 )
@@ -185,6 +186,7 @@ def create_app(
         RequestMiddleware,
         limiter=RateLimiter(settings.rate_limit_per_minute),
         folder_limiter=RateLimiter(settings.folder_upload_calls_per_minute),
+        whatsapp_limiter=RateLimiter(settings.whatsapp_webhook_calls_per_minute),
     )
     app.add_middleware(ErrorMiddleware)  # added last, so it is the outermost
     for router in (
@@ -192,6 +194,7 @@ def create_app(
         auth.router,
         email.router,
         oidc.router,
+        whatsapp.router,
         locked_open.router,  # PRD 7 (#605): before /documents/{document_id}, which would take locked-open
         documents.router,
         versions.router,

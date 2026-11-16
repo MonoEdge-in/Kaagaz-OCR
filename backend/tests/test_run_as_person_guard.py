@@ -53,6 +53,8 @@ ALLOWED: dict[str, tuple[int, str]] = {
     "routers/oidc.py:_locked_open:system": (1, "whether this Google account is the person's own connection"),
     "routers/operator_models.py:_plan:customer": (1, "the super admin, not a person of the organisation"),
     "routers/operator_orgs.py:create_org:system": (1, "the super admin frees a stale sign-up's e-mail"),
+    # Changed on purpose (#603): Meta's webhook, which no person signs in to.
+    "routers/whatsapp.py:receive:system": (1, "WhatsApp: finds a number's live connection, any organisation"),
 }
 
 # "file under kaagaz/api:innermost function" → (how many, who the person is) for .user(...) calls
@@ -68,6 +70,8 @@ USER_EXCEPTIONS: dict[str, tuple[int, str]] = {
     "routers/oidc.py:_locked_open": (1, "the confirm's signed-in user (_flow_user), PRD 7 #605"),
     "routers/words.py:add_my_word": (1, "me is user.user_id"),
     "routers/words.py:my_words_on_page": (1, "me is user.user_id"),
+    # Changed on purpose (#603): the person whose connected number sent a signed message.
+    "routers/whatsapp.py:receive": (1, "the connection kaagaz_whatsapp_lookup found for the sender"),
 }
 
 # The dependencies that give a route its signed-in user (kaagaz/api/auth.py).

@@ -158,6 +158,7 @@ _LOOPBACK_NOTE = " (http only for localhost, 127.0.0.1 or ::1)"
 _URL_MESSAGES = {
     "OPENROUTER_BASE_URL": "OPENROUTER_BASE_URL must be an https URL" + _LOOPBACK_NOTE,
     "APP_URL": "APP_URL must be an https origin such as https://kaagaz.example.com" + _LOOPBACK_NOTE,
+    "WHATSAPP_GRAPH_URL": "WHATSAPP_GRAPH_URL must be an https URL" + _LOOPBACK_NOTE,
 }
 
 
@@ -508,6 +509,22 @@ class Settings:
     folder_upload_calls_per_minute: int = 600
     folder_upload_files_at_once_per_org: int = 4
     folder_upload_files_at_once: int = 8
+    # Kaagaz on WhatsApp (#603, PRD 7 section 15). Off unless WHATSAPP_ENABLED=true: every
+    # /api/whatsapp route is 404 and the channel process (kaagaz.channel_main) will not start. On,
+    # the next six are required: Meta's Graph API address with its version (https; http only on a
+    # loopback host, the fake server in tests), the Kaagaz number's id, the access token, the app
+    # secret (it signs every webhook), the webhook's verify token, and the key that seals and hashes
+    # people's numbers (32+ characters). The webhook has its own rate bucket per address,
+    # whatsapp_webhook_calls_per_minute; the channel handles whatsapp_people_at_once people at once.
+    whatsapp_enabled: bool = False
+    whatsapp_graph_url: str | None = None
+    whatsapp_phone_number_id: str | None = None
+    whatsapp_access_token: str | None = field(default=None, repr=False)
+    whatsapp_app_secret: str | None = field(default=None, repr=False)
+    whatsapp_verify_token: str | None = field(default=None, repr=False)
+    whatsapp_number_key: str | None = field(default=None, repr=False)
+    whatsapp_webhook_calls_per_minute: int = 600
+    whatsapp_people_at_once: int = 4
 
     @property
     def mistral_ready(self) -> bool:
@@ -668,6 +685,11 @@ class Settings:
         )
         if queue_express_url == queue_url:
             raise SettingsError("QUEUE_EXPRESS_URL must name a queue other than QUEUE_URL")
+        # Off unless set to true, as EMAIL_ENABLED (#603).
+        whatsapp_on = env.optional("WHATSAPP_ENABLED") is not None and env.boolean("WHATSAPP_ENABLED")
+        number_key = env.secret("WHATSAPP_NUMBER_KEY") if whatsapp_on else None
+        if number_key == totp_encryption_key:  # one key, one purpose, as TOTP_ENCRYPTION_KEY's
+            raise SettingsError("WHATSAPP_NUMBER_KEY must differ from TOTP_ENCRYPTION_KEY")
         return cls(
             database_url=env.text("DATABASE_URL"),
             ops_database_url=env.optional("OPS_DATABASE_URL") or env.text("DATABASE_URL"),
@@ -829,6 +851,17 @@ class Settings:
             and env.boolean("MISTRAL_ZDR_APPROVED"),
             ocr_ultra_low_cost=ultra_low_cost,
             ocr_page_ceiling_paise=page_ceiling_paise,
+            whatsapp_enabled=whatsapp_on,
+            whatsapp_graph_url=_https_url(env.text("WHATSAPP_GRAPH_URL"), "WHATSAPP_GRAPH_URL")
+            if whatsapp_on
+            else None,
+            whatsapp_phone_number_id=env.digits("WHATSAPP_PHONE_NUMBER_ID") if whatsapp_on else None,
+            whatsapp_access_token=env.token("WHATSAPP_ACCESS_TOKEN") if whatsapp_on else None,
+            whatsapp_app_secret=env.token("WHATSAPP_APP_SECRET") if whatsapp_on else None,
+            whatsapp_verify_token=env.token("WHATSAPP_VERIFY_TOKEN") if whatsapp_on else None,
+            whatsapp_number_key=number_key,
+            whatsapp_webhook_calls_per_minute=env.positive_or("WHATSAPP_WEBHOOK_CALLS_PER_MINUTE", 600),
+            whatsapp_people_at_once=env.between_or("WHATSAPP_PEOPLE_AT_ONCE", 1, 10, default=4),
         )
 
 
@@ -856,6 +889,19 @@ class _Env:
         value = self.text(name)
         if len(value) < 32:
             raise SettingsError(f"{name} must be at least 32 characters")
+        return value
+
+    def token(self, name: str) -> str:
+        """A key or token sent in a header or compared: printable ASCII with no space."""
+        value = self.text(name)
+        if _API_KEY.fullmatch(value) is None:
+            raise SettingsError(f"{name} must be printable ASCII with no spaces")
+        return value
+
+    def digits(self, name: str) -> str:
+        value = self.text(name)
+        if not (value.isascii() and value.isdigit() and len(value) <= 32):
+            raise SettingsError(f"{name} must be digits only")
         return value
 
     def integer(self, name: str) -> int:

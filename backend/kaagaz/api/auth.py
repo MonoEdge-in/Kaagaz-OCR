@@ -105,6 +105,7 @@ NOTICE_SECONDS = 60
 # A session's end while an idle timeout is set (0040): the idle timeout, 1 to 24 hours, ends it.
 # Cookies issued before keep the end they were given.
 CAPPED_SECONDS = 24 * 3600
+WHATSAPP_WEBHOOK_PATH = "/api/whatsapp/webhook"  # #603, routers/whatsapp.py
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _SCRYPT_N, _SCRYPT_R, _SCRYPT_P, _SCRYPT_LEN = 2**14, 8, 1, 32
@@ -1152,8 +1153,9 @@ OperatorSession = Annotated[CurrentOperator, Depends(current_operator)]
 
 
 def csrf_guard(request: Request) -> None:
-    """Applied to every route: a state-changing request needs the CSRF header."""
-    if request.method in _SAFE_METHODS:
+    """Applied to every route: a state-changing request needs the CSRF header. But Meta's webhook
+    (#603), which no browser sends and which reads no cookie: its signature is checked instead."""
+    if request.method in _SAFE_METHODS or request.url.path == WHATSAPP_WEBHOOK_PATH:
         return
     if request.headers.get(CSRF_HEADER) != CSRF_VALUE:
         raise ApiError(403, "csrf")

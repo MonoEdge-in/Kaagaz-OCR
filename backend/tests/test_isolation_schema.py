@@ -79,6 +79,11 @@ Page turns saved for everyone (0088, PRD 7 section 14, #600, NEEDS VRUSHIT'S APP
 and deleted by the app, never updated; a save deletes the pages it changes and adds them again.
 Bounded word search (0094, #617, NEEDS VRUSHIT'S SECURITY SIGN-OFF): the word counts, read, added
 and deleted by the worker's rebuild, never updated; and ``kaagaz_word_candidates``, piece ids only.
+Kaagaz on WhatsApp (0097, #603, NEEDS VRUSHIT'S APPROVAL): the Admin's switches, connections,
+codes, messages and pickers (the last three one person's own, as my words), read and added by the
+app, which writes only the columns listed and deletes only a picker; a connection ends, its number
+gone, only through the owner-rights functions; the numbers told they are not connected or blocked
+belong to no organisation and no role reads them.
 """
 
 import re
@@ -216,6 +221,23 @@ UPDATES_0084 = {"department_members": {"is_head"}}
 FROM_0088 = {"page_rotations": (True, True, False, True)}
 # Bounded word search (0094, #617): the word counts, deleted and added again by the rebuild.
 FROM_0094 = {"term_df": (True, True, False, True), "customer_stats": (True, True, False, True)}
+# Kaagaz on WhatsApp (0097, #603): read and added; a picker deleted; only the columns of UPDATES_0097
+# updated (column grants), never a connection's person, number, sign-in version or end (only
+# kaagaz_whatsapp_end_link and the other owner-rights functions end one).
+FROM_0097 = {
+    "whatsapp_org_settings": (True, True, False, False),
+    "whatsapp_links": (True, True, False, False),
+    "whatsapp_link_codes": (True, True, False, False),
+    "whatsapp_messages": (True, True, False, False),
+    "whatsapp_pickers": (True, True, False, True),
+}
+UPDATES_0097 = {
+    "whatsapp_org_settings": {"enabled", "roles", "management", "voice", "uploads"},
+    "whatsapp_links": {"last_used_at", "recent_folder_ids", "busy_until"},
+    "whatsapp_link_codes": {"tries", "used_at"},
+    "whatsapp_messages": {"state", "tries", "body", "batch_id", "document_id", "reply_sent_at"},
+    "whatsapp_pickers": {"generation", "state", "expires_at"},
+}
 # Logout ends this browser's session (0076, #502): the app adds and reads ended sessions only;
 # the worker's sweep deletes them through kaagaz_sweep_ended_sessions.
 FROM_0076 = {"ended_sessions": (True, True, False, False)}
@@ -464,6 +486,19 @@ OWNER_RIGHTS = {
         "TABLE(id uuid, display_name text, folder_id uuid, given_at timestamp with time zone, given_by uuid)",
         EMPTY_PATH,
     ),
+    # Changed on purpose (#603, 0097): WhatsApp's number lookup and the channel's claim (ids only),
+    # the two ways a connection ends (a count, or yes or no) and the sweep (a count).
+    "kaagaz_whatsapp_lookup": ("TABLE(customer_id uuid, user_id uuid, link_id uuid)", EMPTY_PATH),
+    "kaagaz_whatsapp_claim": (
+        "TABLE(customer_id uuid, user_id uuid, link_id uuid, busy_until timestamp with time zone)",
+        EMPTY_PATH,
+    ),
+    # A number with no connection: whether it may be told so now (yes or no), and its BLOCK.
+    "kaagaz_whatsapp_tell_unknown": ("boolean", EMPTY_PATH),
+    "kaagaz_whatsapp_block": ("void", EMPTY_PATH),
+    "kaagaz_whatsapp_end_number": ("bigint", EMPTY_PATH),
+    "kaagaz_whatsapp_end_link": ("boolean", EMPTY_PATH),
+    "kaagaz_whatsapp_sweep": ("bigint", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"
@@ -768,6 +803,7 @@ TRIGGER_RIGHTS = dict.fromkeys(
 OPERATOR_TABLES = {"operators", "platform_audit", "scan_accuracy_checks"}
 PLATFORM_DEFAULTS = {"platform_models", "platform_ai_settings", "feature_switches", "platform_model_override"}
 # Changed on purpose (#606, 0091): the database rule's switch, the owner's only.
+# Changed on purpose (#603, 0097): the WhatsApp numbers with no connection (no role reads them).
 NO_CUSTOMER_ID = (
     {
         "customers",
@@ -777,6 +813,7 @@ NO_CUSTOMER_ID = (
         "model_rate_scheduler",
         "kaagaz_person_rule",
     }
+    | {"whatsapp_unknown_numbers"}
     | PLATFORM_DEFAULTS
     | OPERATOR_TABLES
 )
@@ -827,6 +864,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0084)  # Changed on purpose (#590, 0084)
         | set(FROM_0088)  # Changed on purpose (#600, 0088)
         | set(FROM_0094)  # Changed on purpose (#617, 0094)
+        | set(FROM_0097)  # Changed on purpose (#603, 0097)
     )
 
     with db.system() as conn:
@@ -910,6 +948,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0084  # Changed on purpose (#590, 0084)
         | FROM_0088  # Changed on purpose (#600, 0088)
         | FROM_0094  # Changed on purpose (#617, 0094)
+        | FROM_0097  # Changed on purpose (#603, 0097)
     ).items():
         assert granted[table] == expected, table
 
@@ -928,7 +967,9 @@ def test_the_tables_of_one_user_also_have_the_restrictive_own_user_only_policy(d
                 )
             )
         }
-    own = FROM_0008 | FROM_0009
+    own = (
+        set(FROM_0008) | set(FROM_0009) | {"whatsapp_messages", "whatsapp_link_codes", "whatsapp_pickers"}
+    )  # #603
     restrictive = ("ALL", "RESTRICTIVE", ["public"], OWN_USER, OWN_USER)
     # Changed on purpose (#606, 0091): the per-person rule, for the API role only, on documents,
     # folders, trashed folders and the 27 content tables (test_isolation_person_rule checks them).
@@ -1008,6 +1049,31 @@ def test_the_app_may_update_only_the_head_tick_of_a_department_membership(db: Da
 def test_the_app_may_update_no_column_of_a_page_turn(db: Database) -> None:
     """0088 (#600): never a turn's page, version or who saved it; a save deletes and adds."""
     assert _updatable(db, "page_rotations") == set()
+
+
+def test_the_app_may_update_only_the_listed_columns_of_whatsapps_tables(db: Database) -> None:
+    """0097 (#603): never a connection's person, number, sign-in version or end, a code's number or
+    hash, or a message's id, person, kind or times, so none can be moved or reopened."""
+    assert {table: _updatable(db, table) for table in FROM_0097} == UPDATES_0097
+
+
+def test_whatsapps_unknown_numbers_are_reached_by_no_role_only_by_their_functions(db: Database) -> None:
+    """0097 (#603): no organisation, so row level security with no policy and no right for the app
+    or the worker role; kaagaz_whatsapp_tell_unknown and kaagaz_whatsapp_block alone write it."""
+    with db.system() as conn:
+        row = conn.execute(
+            text(
+                "SELECT c.relrowsecurity, (SELECT count(*) FROM pg_policy p WHERE p.polrelid = c.oid),"
+                " array_agg(r.rolname ORDER BY r.rolname) FILTER (WHERE"
+                "  has_table_privilege(r.oid, c.oid, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES')"
+                "  OR has_any_column_privilege(r.oid, c.oid, 'SELECT,INSERT,UPDATE,REFERENCES'))"
+                " FROM pg_class c CROSS JOIN pg_roles r"
+                " WHERE c.oid = 'whatsapp_unknown_numbers'::regclass AND r.rolname IN (:a, 'kaagaz_worker')"
+                " GROUP BY c.relrowsecurity, c.oid"
+            ),
+            {"a": APP_ROLE},
+        ).one()
+    assert tuple(row) == (True, 0, None)
 
 
 def test_the_app_may_update_only_the_spellings_of_a_value_key(db: Database) -> None:
@@ -1137,6 +1203,8 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
         | set(FROM_0081)  # Changed on purpose (#542, 0081)
         | set(FROM_0084)  # Changed on purpose (#590, 0084)
         | set(FROM_0088)  # Changed on purpose (#600, 0088)
+        | set(FROM_0097)
+        - {"whatsapp_org_settings"}  # Changed on purpose (#603, 0097): it has no key but its own
         | {"pages", "model_usage", "documents"}  # documents.owner_id (0041)
     )
     for name, _table, _parent, columns, parent_columns in between:
