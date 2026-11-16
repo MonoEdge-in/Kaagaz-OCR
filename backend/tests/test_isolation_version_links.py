@@ -316,19 +316,25 @@ def test_the_confirm_step_names_the_latest_its_folder_and_who_loses_access(db: D
     assert _everything(db, org) == before
 
 
-def test_an_admin_who_would_open_a_wall_to_themselves_types_their_password(db: Database) -> None:
-    """fin is given to the Admin: linking it into Sales opens Finance's file to them by its place,
-    so their password is asked (as a folder move asks it), and with it the link is made."""
+def test_an_admin_who_would_open_a_wall_to_themselves_types_their_password(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """fin is given to the Admin: linking it into Sales opens nothing new to them (review A on #658:
+    the count knows they were given it), so no password. Every file linked is one they see, so a
+    real gain needs a wall the view and the count see differently: the count is made to say the
+    Admin gains, and their password is asked (as a folder move asks it); with it the link is made."""
     api = Api(db)
     org = _org(api)
     admin = org.people["admin"]
     _give(db, org, "document_shares", "fin", admin.user_id)
+    assert _link(admin, org, ["fin", "sales"], "sales")[0] == 200
+    assert _state(db, org, "fin")["fin"]["family_id"] == "sales"
+    monkeypatch.setattr(links_route, "_audience", lambda conn, user, moves: (set(), {user.user_id}))
     before = _everything(db, org)
-    status, reply = _link(admin, org, ["fin", "sales"], "sales")
+    status, reply = _link(admin, org, ["x", "z"], "z")
     assert (status, reply["error"]["code"]) == (403, "password_required")
     assert _everything(db, org) == before
-    assert _link(admin, org, ["fin", "sales"], "sales", password=PASSWORD)[0] == 200
-    assert _state(db, org, "fin")["fin"]["family_id"] == "sales"
+    assert _link(admin, org, ["x", "z"], "z", password=PASSWORD)[0] == 200
 
 
 # --- what follows a link, and Undo ---------------------------------------------------------------
