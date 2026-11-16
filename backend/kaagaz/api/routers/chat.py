@@ -99,6 +99,7 @@ from kaagaz.answering.clarify import (
     without_resume,
 )
 from kaagaz.answering.evidence import looks_like_instructions
+from kaagaz.answering.focus import cut, parts
 from kaagaz.answering.memory import MAX_DOCUMENTS, NO_MEMORY, VERSION, Memory, from_row, live
 from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
@@ -150,6 +151,7 @@ MAX_TITLE = 200
 SHORT_TITLE = 60  # characters of the first question a new conversation's title keeps
 NOT_FOUND_TEXT = SOFT_NOTHING  # PRD 6 decision 9: the screen's words (answering/voice.py)
 MAX_SCOPE_BYTES = 4096  # the messages.scope CHECK (migration 0006)
+MAX_TYPED = 20_000  # characters a question may have; past it, 400
 TOO_MANY_QUESTIONS = "You have asked many questions in a short time. Please wait a minute and ask again."
 FEEDBACK_PER_MINUTE = 20  # PRD 6 F1: ratings a person may send a minute (issue #244)
 TOO_MANY_RATINGS = "You have sent a lot of feedback in a short time. Please wait a minute and try again."
@@ -182,7 +184,8 @@ class ReplyBody(BaseModel):
 class AskBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    question: str = Field(default="", max_length=1000)  # left out with a reply
+    # #644: any length up to MAX_TYPED is answered, cut to focus.MAX_ASKED keeping its questions.
+    question: str = Field(default="", max_length=MAX_TYPED)  # left out with a reply
     reply: ReplyBody | None = None
     conversation_id: uuid.UUID | None = None
     scope: ScopeBody | None = None  # left out: the conversation's last scope, or everything
@@ -449,7 +452,7 @@ def _ask(
     in, else a new one named ``landing`` (on ``channel``)."""
     if not chat_limits(context.settings.chat_questions_per_minute).allow(user.user_id):
         raise ApiError(429, "rate_limited", TOO_MANY_QUESTIONS, headers={"Retry-After": "60"})
-    question = body.question.strip()
+    question = cut(body.question.strip())
     answering = body.reply
     if not question and (answering is None or not answering.choice_ids):
         raise ApiError(400, "bad_request", "Type a question first.")
@@ -457,6 +460,10 @@ def _ask(
         answering = None  # B2: a long or question-like text is a new question; the clarify is left
     if answering is not None and body.conversation_id is None:
         raise ApiError(409, "conflict", CLARIFY_GONE)
+    # #644 (cost): each part of a question of several asks beyond the first is one more question.
+    for _ in range(len(parts(question)[0]) - 1 if answering is None else 0):
+        if not chat_limits(context.settings.chat_questions_per_minute).allow(user.user_id):
+            raise ApiError(429, "rate_limited", TOO_MANY_QUESTIONS, headers={"Retry-After": "60"})
     conversation_id = None if body.conversation_id is None else str(body.conversation_id)
     chosen = body.scope
     recent: Sequence[RowMapping] = []
@@ -476,9 +483,13 @@ def _ask(
             recent, remembered = _shown_turns(conn, user.customer_id, conversation_id, 2 * pairs, state)
             forget = remembered is None
             memory = NO_MEMORY if remembered is None else remembered
-            # #629: the last answer's documents the asker can still see (current, out of Trash).
-            names = chat_sql.live_document_names(conn, user.customer_id, _cited(recent))  # #621
+            # #629: the last answer's documents the asker can still see (current, out of Trash, and
+            # theirs to see: visible_documents, PRD 7); with none, #644: the one document the last
+            # question was asked in, while the same holds.
+            asked_in = _scoped_document(recent)
+            names = chat_sql.live_document_names(conn, user.customer_id, [*_cited(recent), *asked_in])  # #621
             last_cited = [document for document in _cited(recent[:1]) if document in names]
+            last_cited = last_cited or [document for document in asked_in if document in names]
             earlier = chat_sql.openings(conn, user.customer_id, conversation_id)
             if chosen is None:
                 chosen = _saved_scope(recent)
@@ -1320,6 +1331,13 @@ def _cited(recent: Sequence[RowMapping]) -> list[str]:
         if isinstance(citation, dict) and citation.get("document_id")
     )
     return list(dict.fromkeys(cited))
+
+
+def _scoped_document(recent: Sequence[RowMapping]) -> list[str]:
+    """#644: the one document the newest question of ``recent`` was asked in, else none."""
+    saved = _saved_scope(recent)
+    documents = [] if saved is None or saved.document_ids is None else saved.document_ids
+    return [str(documents[0])] if len(documents) == 1 else []
 
 
 def _saved_scope(recent: Sequence[RowMapping]) -> ScopeBody | None:

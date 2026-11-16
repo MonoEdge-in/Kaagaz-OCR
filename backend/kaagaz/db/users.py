@@ -330,11 +330,13 @@ def attempt_succeeded(conn: Connection, customer_id: str, user_id: str, *, now: 
 
 
 def unlock(conn: Connection, customer_id: str, user_id: str) -> RowMapping | None:
-    """An admin ends a lock early: the count goes back to 0. O(log n)."""
+    """An admin ends a lock early: the count goes back to 0, and the block on opening locked files
+    with it (PRD 7, #605). O(log n)."""
     return (
         conn.execute(
             text(
-                "UPDATE users AS u SET failed_logins = 0, locked_until = NULL"  # noqa: S608 - a fixed fragment, _ADMIN_COLUMNS
+                "UPDATE users AS u SET failed_logins = 0, locked_until = NULL,"  # noqa: S608 - a fixed fragment, _ADMIN_COLUMNS
+                " locked_open_failures = 0, locked_open_until = NULL"
                 " WHERE u.customer_id = :c AND u.id = :u"
                 " RETURNING" + _ADMIN_COLUMNS
             ),

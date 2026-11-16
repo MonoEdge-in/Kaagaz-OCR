@@ -252,6 +252,19 @@ from kaagaz.answering.exhaustive import (
 )
 from kaagaz.answering.expansion import NO_EXPANSION, Expansion, PgWords, WordSource, expand
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, FixedQueries, FixedRow, PgFixedQueries, ValueRef
+from kaagaz.answering.focus import (
+    PgFocus,
+    Profile,
+    about_focus,
+    asks_other,
+    asks_related,
+    names_subject,
+    points_back,
+    related,
+    subject,
+    understood,
+)
+from kaagaz.answering.focus import parts as split_parts
 from kaagaz.answering.format import indian_number
 from kaagaz.answering.hard_to_read import (
     HARD_TO_READ_NOTE,
@@ -306,6 +319,7 @@ _REPLY_FAULTS = frozenset(
 # Features 25-27, C7 M9: an Ensemble answer's one deadline is MODEL_TIMEOUT_SECONDS and this
 # much more from when its drafts start, for every agent's call and repair.
 ENSEMBLE_SLACK_SECONDS = 10.0
+PART_WORKERS = 2  # step 22: parts answered at once, each holding at most one pooled connection
 
 
 @dataclass(frozen=True, slots=True)
@@ -497,6 +511,8 @@ class _Timing:
 
 
 _TIMING: ContextVar[_Timing | None] = ContextVar("answer_timing", default=None)
+# Step 22: the answer's one deadline, on time.monotonic(), that a part's draft must end by (None: its own).
+_PART_DEADLINE: ContextVar[float | None] = ContextVar("part_deadline", default=None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -598,6 +614,7 @@ class AnswerService:
         exhaustive: Exhaustive | None = None,
         mentions: Mentions | None = None,
         vocabulary: Vocabulary | None = None,
+        focus: PgFocus | None = None,
     ) -> None:
         self._model = model
         self._translator = translator if settings.answer_translate_question else None
@@ -634,6 +651,7 @@ class AnswerService:
         self._mentions: Mentions | None = PgExhaustive(db) if retriever is None else mentions
         self._owners = PgOwners(db) if retriever is None else None
         self._vocabulary: Vocabulary | None = PgVocabulary(db) if retriever is None else vocabulary
+        self._focus: PgFocus | None = PgFocus(db) if retriever is None else focus  # package K
 
     @_timed
     def answer(
@@ -737,6 +755,13 @@ class AnswerService:
             return self._step_answer(
                 customer_id, step, pending.question, scope, user_id, whole, (), choice, pins
             )
+        # Step 22 (package K): the focus "this" points at, and a question of several asks in parts.
+        profile = self._profile(customer_id, user_id, question, last_cited)
+        asked, total = split_parts(question)
+        if len(asked) > 1:
+            return self._parts_answer(
+                customer_id, question, asked, total, scope, user_id, whole, choice, pins, profile
+            )
         turns = self._settings.chat_history_turns
         recent = history[-turns:] if turns else ()
         remembered = prompt_text(memory)
@@ -779,10 +804,95 @@ class AnswerService:
             step = first_step(
                 vocabulary, customer_id, user_id, step.question, done.plan, narrowed, cited, last
             )
+        step, exclude = _focused(step, question, profile, scope)
         kept = early if step.question == question else None  # step 19: searched the question as asked
         return self._step_answer(
-            customer_id, step, question, scope, user_id, whole, done.aspects, choice, pins, kept
+            customer_id,
+            step,
+            question,
+            scope,
+            user_id,
+            whole,
+            done.aspects,
+            choice,
+            pins,
+            kept,
+            profile,
+            exclude,
         )
+
+    def _profile(
+        self, customer_id: str, user_id: str | None, question: str, last_cited: Sequence[str]
+    ) -> Profile | None:
+        """Step 22: the focus's profile (focus.py), the first of ``last_cited`` (the router's: still
+        live), only for a question that points back or asks for related documents; one statement."""
+        if self._focus is None or not last_cited or not (points_back(question) or asks_related(question)):
+            return None
+        return self._focus.profile(customer_id, user_id, last_cited[0])
+
+    def _parts_answer(
+        self,
+        customer_id: str,
+        question: str,
+        asked: Sequence[str],
+        total: int,
+        scope: Scope,
+        user_id: str | None,
+        whole: Sequence[Hit] | None,
+        choice: ChatChoice | None,
+        pins: Sequence[Pin],
+        profile: Profile | None,
+    ) -> Answer:
+        """Step 22: each of ``asked`` (``focus.parts``) answered as a question of its own (no rewrite,
+        no clarify; the focus put in as ``_focused`` puts it; a part that points back with no focus,
+        at the part before it), at most PART_WORKERS at once (an answer holds at most two pooled
+        connections, routers/chat.py), each in a copy of the context with its own timing and no
+        streamed sentence. A part not started by the answer's one deadline (MODEL_TIMEOUT_SECONDS +
+        ENSEMBLE_SLACK_SECONDS, as ``_ensemble``) is not answered, and a part's draft must end by it
+        (``_PART_DEADLINE``). Parts draft with the choice's lead model only, never an Ensemble (cost).
+        A part that points back at the part before it, which names its own property or person ("Who
+        owns Gat 12? What is its area?"), is searched with that part, never the focus. Each part's
+        stage times are added to the answer's (two at once, so they may add up to more than its
+        total). Then ``_together``."""
+        deadline = time.monotonic() + self._settings.model_timeout_seconds + ENSEMBLE_SLACK_SECONDS
+        lead = (
+            choice if choice is None or len(choice.agents) <= 1 else replace(choice, agents=choice.agents[:1])
+        )
+        stream.emit("stage", {"stage": "searching"})  # step 21: the parts' lookups start here
+
+        def one(index: int, part: str) -> tuple[Answer, _Timing] | None:
+            if time.monotonic() > deadline:
+                return None
+            start = time.monotonic()
+            _TIMING.set(_Timing(start, start))  # this thread's copy of the context only
+            _PART_DEADLINE.set(deadline)
+            stream.EVENTS.set(None)
+            before = asked[index - 1] if index else ""
+            if (
+                before
+                and points_back(part)
+                and not names_subject(part)
+                and (profile is None or names_subject(before))
+            ):
+                step, exclude = Step(f"{part} ({before})", ()), None
+            else:
+                step, exclude = _focused(Step(part, ()), part, profile, scope)
+            answer = self._step_answer(
+                customer_id, step, part, scope, user_id, whole, (), lead, pins, None, profile, exclude
+            )
+            return answer, _timing()
+
+        with ThreadPoolExecutor(max_workers=PART_WORKERS) as pool:  # leaving it joins every thread
+            futures = [pool.submit(copy_context().run, one, n, part) for n, part in enumerate(asked)]
+        results = [future.result() for future in futures]
+        timing = _timing()
+        for result in results:
+            if result is not None:
+                timing.degraded = timing.degraded or result[1].degraded
+                timing.vectorless = timing.vectorless or result[1].vectorless
+                for stage, ms in result[1].ms.items():
+                    timing.ms[stage] = timing.ms.get(stage, 0.0) + ms
+        return _together(question, asked, total, [None if r is None else r[0] for r in results])
 
     def _overlapped(
         self,
@@ -844,17 +954,27 @@ class AnswerService:
         choice: ChatChoice | None,
         pins: Sequence[Pin],
         early: Future[_Early] | None = None,
+        profile: Profile | None = None,
+        exclude: str | None = None,
     ) -> Answer:
         """The clarify ``step`` asks, else the answer to its question (``_respond``'s end);
-        ``early``: step 19's search of that question, when there was one."""
+        ``early``: step 19's search of that question, when there was one. Step 22: ``profile``, the
+        focus, answers a question for its related documents (``_related_answer``); ``exclude``, the
+        focus left out of the search ("any other document")."""
         asked = step.question
         rewritten = asked if asked != question and len(asked) <= MAX_QUESTION else None
         if step.clarify is not None:  # no search, no draft
             asking = Answer("clarify", None, [], [], [], "search", asked, True, rewritten)
             return replace(asking, clarify=step.clarify, resume=step.resume)
         stream.emit("stage", {"stage": "searching"})  # step 21: every route's lookup starts here
+        if profile is not None and asks_related(question) and about_focus(question):
+            listed = self._related_answer(customer_id, user_id, profile, scope, asked)
+            if listed is not None:  # none related: the search answers, the focus left out
+                found = self._checked(listed, asked)
+                return replace(found, rewritten_question=rewritten, assumptions=list(step.assumptions))
         answer = self._checked(
-            self._answer(customer_id, asked, scope, user_id, whole, aspects, choice, pins, early), asked
+            self._answer(customer_id, asked, scope, user_id, whole, aspects, choice, pins, early, exclude),
+            asked,
         )
         # KZ-006: an answer found without the model stays answered; a not found may be the outage,
         # said as one (``outage``), never as "not found", with the closest documents still listed
@@ -863,7 +983,7 @@ class AnswerService:
         answer = self._unreadable(customer_id, user_id, answer, scope)
         if not unavailable:  # an outage says so instead (KZ-006)
             answer = self._missing(customer_id, user_id, asked, answer, scope)
-        mentioned = self._mentioned(customer_id, user_id, asked, answer, scope)
+        mentioned = self._mentioned(customer_id, user_id, asked, answer, scope, exclude)
         answer = self._shaped(customer_id, user_id, asked, mentioned, scope)
         said = [*answer.assumptions, *step.assumptions]
         degraded = _timing().degraded or _timing().vectorless  # #535: never reused for a repeat
@@ -967,7 +1087,13 @@ class AnswerService:
         return replace(answer, documents=documents)
 
     def _mentioned(
-        self, customer_id: str, user_id: str | None, question: str, answer: Answer, scope: Scope
+        self,
+        customer_id: str,
+        user_id: str | None,
+        question: str,
+        answer: Answer,
+        scope: Scope,
+        exclude: str | None = None,
     ) -> Answer:
         """ "Also mentions" (Tushar, 17 Oct 2026): every other document in ``scope`` that holds
         one of the question's key terms (``key_terms``, the cited text's first) as whole words,
@@ -985,6 +1111,7 @@ class AnswerService:
             {c.document_id for c in answer.citations}
             | {d["document_id"] for d in answer.related_documents}
             | {d["id"] for d in answer.closest_documents}  # a not-found answer's list (CodeRabbit)
+            | ({exclude} if exclude else set())  # step 22: the focus, when "other" leaves it out
         )
         total, documents = self._mentions.mentions(
             customer_id, terms, scope, sorted(shown), MAX_MENTIONED, user_id=user_id
@@ -1108,10 +1235,11 @@ class AnswerService:
         choice: ChatChoice | None = None,
         pins: Sequence[Pin] = (),
         early: Future[_Early] | None = None,
+        exclude: str | None = None,
     ) -> Answer:
         """``whole``: every piece of the scope (CX5), or None to search; ``aspects``: CX6's;
         ``choice``: who drafts and ``pins``, the asker's picks (``answer``); ``early``: step
-        19's search of ``question``."""
+        19's search of ``question``; ``exclude``: step 22's focus, left out of the search."""
         normalised = normalise(question)
         # "Hinglish understood as" is shown only when there was Hinglish to understand.
         shown = normalised.english if normalised.hinglish else question.strip()
@@ -1151,6 +1279,7 @@ class AnswerService:
             choice,
             pins,
             found,
+            exclude,
         )
         if not expansion.used:
             return answer
@@ -1242,6 +1371,52 @@ class AnswerService:
             # values quoted as printed, so the final check keeps their numbers; a value with no
             # spot is not cited, so its figure must be in no sentence the check keeps.
             vouched=frozenset().union(*(voice.numbers(text) for text, _ in found.sentences)) - spotless,
+        )
+
+    def _related_answer(
+        self, customer_id: str, user_id: str | None, profile: Profile, scope: Scope, shown: str
+    ) -> Answer | None:
+        """Step 22 (focus.py): the documents in ``scope`` related to the focus, ranked, each one line
+        with why and its values as printed, cited, written in code (route ``fixed_query``, no model);
+        the first line says how many and sums up the lines below. None when none is related: the
+        search answers. One statement, and one for the word marks (F6)."""
+        if self._focus is None:
+            return None
+        listed = related(profile, self._focus.matches(customer_id, user_id, profile, scope))
+        if not listed:
+            return None
+        citations: list[Citation] = []
+        lines: list[AnswerSentence] = []
+        documents: list[dict[str, Any]] = []
+        for found in listed:
+            numbers = []
+            for ref in found.refs:
+                citations.append(_value_citation(len(citations) + 1, ref, valid_regions([ref.region])))
+                numbers.append(len(citations))
+            title = clean_text(found.name)[:_MAX_NAME].strip()
+            lines.append(AnswerSentence(f"{title}: {found.why}.", numbers))
+            documents.append(
+                {"document_id": found.document_id, "title": title, "why": found.why, "citations": numbers}
+            )
+        citations = self._marked(customer_id, user_id, citations, {c.n: c.regions for c in citations})
+        hard = any(c.hard_to_read for c in citations)
+        name = clean_text(profile.name)[:_MAX_NAME].strip()
+        many = "1 document shares" if len(listed) == 1 else f"{len(listed)} documents share"
+        head = f"{many} facts with {name}."
+        return Answer(
+            status="answered",
+            label="verified"
+            if all(c.label == "verified" for c in citations) and not hard
+            else "needs_review",
+            sentences=[AnswerSentence(head, []), *lines],  # the count sums up the lines below
+            citations=citations,
+            closest_documents=[],
+            route="fixed_query",
+            normalized_question=shown,
+            model_used=False,
+            reading_note=HARD_TO_READ_NOTE if hard else None,
+            documents=documents,
+            vouched=frozenset(voice.numbers(head)),  # decision 2: the count and the focus's name
         )
 
     def _exhaustive_answer(
@@ -1484,6 +1659,7 @@ class AnswerService:
         choice: ChatChoice | None = None,
         pins: Sequence[Pin] = (),
         early: _Early | None = None,
+        exclude: str | None = None,
     ) -> Answer:
         normalised, query_text, spoken = _searched_as(question, normalised)
         if not query_text:
@@ -1494,7 +1670,7 @@ class AnswerService:
         first: Gate | None = None  # how the question's own search passed the gate, when translated
         vector: list[float] | None = None
         if whole is not None:
-            evidence = number_evidence(whole)  # CX5: every piece, in reading order
+            evidence = number_evidence([hit for hit in whole if hit.document_id != exclude])  # CX5, step 22
         else:
             if early is not None and not aspects:  # step 19: the same embedding and search, done early
                 vector, hits = early.vector, early.hits
@@ -1512,7 +1688,7 @@ class AnswerService:
                 extra = [
                     (_search_text(text), meaning) for text, meaning in zip(aspects, meanings, strict=True)
                 ]
-                limit = self._search_limit(question, scope)
+                limit = self._search_limit(question, scope, exclude)
                 hits = self._hits(
                     customer_id, user_id, query_text, vector, extra, scope, expansion, limit, early.lists
                 )
@@ -1531,7 +1707,7 @@ class AnswerService:
                     extra,
                     scope,
                     expansion,
-                    self._search_limit(question, scope),
+                    self._search_limit(question, scope, exclude),
                 )
             if self._model is not None and (vector is None or any(m is None for _, m in extra)):
                 _timing().vectorless = True  # #535: no outage, but never reused for a repeat
@@ -1541,10 +1717,10 @@ class AnswerService:
                 customer_id, user_id, question, query_text, vector, hits, scope, expansion, extra
             )
             if translated is not None:
-                own = number_evidence(self._documents_once(question, scope, hits))
+                own = number_evidence(self._documents_once(question, scope, hits, exclude))
                 first = enough_evidence(own, normalised.keywords, min_score, numbers, expansion)
                 hits = translated.hits
-            evidence = number_evidence(self._documents_once(question, scope, hits))
+            evidence = number_evidence(self._documents_once(question, scope, hits, exclude))
         hits_only = list(evidence)  # the search's own hits, before widening adds to the list
 
         # Only usable evidence counts as close: an instruction-like piece is not. A whole
@@ -1578,6 +1754,7 @@ class AnswerService:
             _timing().pinned = moved
             terms = [question, *aspects]
             widened = self._widened(customer_id, user_id, terms, normalised.keywords, vector, evidence, scope)
+            widened = [hit for hit in widened if hit.document_id != exclude]  # step 22
             evidence += number_evidence(widened, start=len(evidence) + 1)
             # Q4: neighbours only after the gate passed on the hits, numbered after all of them,
             # while they fit the room the evidence and the question leave in MODEL_CONTEXT_TOKENS
@@ -1797,19 +1974,25 @@ class AnswerService:
             customer_id, query_text, vector, limit, scope, expansion, user_id=user_id
         )
 
-    def _search_limit(self, question: str, scope: Scope) -> int:
+    def _search_limit(self, question: str, scope: Scope, exclude: str | None = None) -> int:
         """How many hits a search of ``question`` keeps: ANSWER_MAX_EVIDENCE, or MAX_LIMIT when it
-        asks which documents (#617 item 5) of a scope that names more than one, whose hits are then
-        kept one a document (``_documents_once``), so the evidence spans more documents."""
-        if asks_documents(question) and not _one_document(scope):
+        asks which documents (#617 item 5), or any document other than the focus (step 22,
+        ``exclude``), of a scope that names more than one, whose hits are then kept one a document
+        (``_documents_once``), so the evidence spans more documents."""
+        if (asks_documents(question) or exclude is not None) and not _one_document(scope):
             return MAX_LIMIT
         return max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
 
-    def _documents_once(self, question: str, scope: Scope, hits: Sequence[Hit]) -> Sequence[Hit]:
+    def _documents_once(
+        self, question: str, scope: Scope, hits: Sequence[Hit], exclude: str | None = None
+    ) -> Sequence[Hit]:
         """#617 item 5: for a question that asks which documents, each document's best hit only
         (hits come best first); all of them when they are one document's or the scope names one.
-        At most ANSWER_MAX_EVIDENCE either way; any other question's hits as they are. O(h)."""
-        if not asks_documents(question):
+        At most ANSWER_MAX_EVIDENCE either way; any other question's hits as they are. Step 22:
+        ``exclude``'s hits never, and the rest as for a question that asks which documents. O(h)."""
+        if exclude is not None:
+            hits = [hit for hit in hits if hit.document_id != exclude]
+        elif not asks_documents(question):
             return hits
         most = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
         if _one_document(scope) or len({hit.document_id for hit in hits}) <= 1:
@@ -1934,6 +2117,7 @@ class AnswerService:
                     seen,
                     max_tokens=self._settings.model_answer_max_tokens,
                     cards=cards,
+                    deadline=_PART_DEADLINE.get(),  # step 22: a part's draft ends by the answer's deadline
                 )
                 if streaming and events is not None and isinstance(self._model, StreamingModel):
                     preview = _Preview(question, seen, whole, events)
@@ -2326,6 +2510,123 @@ def _searched_as(question: str, normalised: NormalisedQuestion) -> tuple[Normali
         query_text = question.strip()
     spoken = question if has_other_script_letters(question) else normalised.english
     return normalised, query_text, spoken
+
+
+def _focused(step: Step, asked: str, profile: Profile | None, scope: Scope) -> tuple[Step, str | None]:
+    """Step 22 (focus.py): for a question ``asked`` that points back at the focus or asks for its
+    related documents, and names no property or person of its own, the step with the focus's subject
+    put in when its question (the rewrite's) still points back, and the line saying what was
+    understood and where it looks (neither when the focus has no subject it may say); and the focus
+    to leave out ("other document", or related documents), else None, never when the scope is the
+    focus alone. The scope is never changed."""
+    if profile is None or step.clarify is not None or names_subject(asked):  # it names its own subject
+        return step, None
+    if not (points_back(asked) or asks_related(asked)):
+        return step, None
+    only = scope.document_ids == (profile.document_id,)  # asked in the focus alone: never left out
+    other = asks_other(asked) and not only
+    question, said = step.question, subject(profile)
+    if said and points_back(question):
+        end = "?" if question.rstrip().endswith("?") else ""
+        question = f"{question.rstrip(' ?.')} ({said}){end}"
+    narrowed = replace(scope, timezone=EVERYTHING.timezone) != EVERYTHING
+    line = understood(profile, narrowed=narrowed, other=other)
+    exclude = profile.document_id if other or (asks_related(asked) and not only) else None
+    said_lines = (*step.assumptions, line) if line else step.assumptions
+    return replace(step, question=question, assumptions=said_lines), exclude
+
+
+MAX_PART_CHARS = 120  # of a part, as its line quotes it
+
+
+def _together(question: str, asked: Sequence[str], total: int, results: Sequence[Answer | None]) -> Answer:
+    """Step 22: the parts' answers as one, part by part: a line quoting each part, then its own
+    sentences, citations (numbered on), documents and checks; a part that found nothing, or was not
+    started in time, or met an outage, says so in its line. Verified only when every part answered
+    is. No part found: not found, with every part's closest documents and missing words. More than
+    MAX_PARTS asked: says how many were answered. O(s + c) in the parts' sentences and citations."""
+    found = [a for a in results if a is not None and a.status in ("answered", "unchecked")]
+    sentences: list[AnswerSentence] = []
+    citations: list[Citation] = []
+    documents: dict[str, dict[str, Any]] = {}
+    backing: dict[int, str] = {}
+    said: list[str] = []
+    for part, answer in zip(asked, results, strict=True):
+        quoted = clean_text(part)
+        if len(quoted) > MAX_PART_CHARS:
+            quoted = quoted[:MAX_PART_CHARS].rsplit(" ", 1)[0] + " …"
+        head = f'For "{quoted}":'
+        if answer is None:
+            sentences.append(
+                AnswerSentence(f"{head} I couldn't check this in time; ask it again on its own.", [])
+            )
+            continue
+        said += [line for line in answer.assumptions if line not in said]
+        if answer.unavailable or answer.outage_reason == "timeout":  # KZ-006: an outage is no "not found"
+            sentences.append(
+                AnswerSentence(f"{head} I couldn't check this just now. Ask it again in a minute.", [])
+            )
+            continue
+        if answer.status not in ("answered", "unchecked"):
+            sentences.append(AnswerSentence(f"{head} I couldn't find this in your documents.", []))
+            continue
+        moved = len(citations)
+        citations += [replace(c, n=c.n + moved) for c in answer.citations]
+        sentences.append(AnswerSentence(head, []))
+        sentences += [AnswerSentence(s.text, [n + moved for n in s.citations]) for s in answer.sentences]
+        backing |= {n + moved: text for n, text in answer.backing.items()}
+        for document in answer.documents:
+            kept = documents.setdefault(document["document_id"], {**document, "citations": []})
+            kept["citations"] = [*kept["citations"], *(n + moved for n in document["citations"])]
+    if total > len(asked):
+        said.append(
+            f"I answered the first {len(asked)} of your {total} questions; ask the others on their own."
+        )
+    if not found:
+        gone = [a for a in results if a is not None]
+        closest = list({str(d["id"]): d for a in gone for d in a.closest_documents}.values())
+        missing = tuple(dict.fromkeys(w for a in gone for w in a.missing_words))
+        down = bool(gone) and all(a.unavailable for a in gone)
+        reason = next((a.outage_reason for a in gone if a.outage_reason), None)
+        answer = _not_found(
+            "search",
+            question.strip(),
+            closest,
+            model_used=any(a.model_used for a in gone),
+            reason="notfound_parts",
+        )
+        return replace(
+            answer,
+            documents=list(documents.values())
+            or [d for a in gone for d in a.documents][: voice.MAX_DOCUMENTS],
+            assumptions=said,
+            missing_words=missing,
+            unavailable=down,
+            outage_reason=reason if down else None,
+            degraded=any(a.degraded for a in gone),
+        )
+    cited = {c.document_id for c in citations}
+    also = {d["document_id"]: d for a in found for d in a.related_documents if d["document_id"] not in cited}
+    notes = [a.reading_note for a in found if a.reading_note]
+    return Answer(
+        status="answered" if any(a.status == "answered" for a in found) else "unchecked",
+        label="verified" if all(a.label == "verified" for a in found) else "needs_review",
+        sentences=sentences,
+        citations=citations,
+        closest_documents=[],
+        route="search" if any(a.route == "search" for a in found) else "fixed_query",
+        normalized_question=question.strip(),
+        model_used=any(a.model_used for a in found),
+        understood_words=tuple(dict.fromkeys(w for a in found for w in a.understood_words)),
+        reading_note=" ".join(dict.fromkeys(notes)) or None,
+        team=next((a.team for a in found if a.team is not None), None),
+        related_documents=list(also.values()),
+        documents=list(documents.values()),
+        assumptions=said,
+        backing=backing,
+        vouched=frozenset().union(*(a.vouched for a in found)),
+        degraded=any(a.degraded for a in results if a is not None),
+    )
 
 
 def _one_document(scope: Scope) -> bool:

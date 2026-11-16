@@ -32,7 +32,8 @@ export const UNCHECKED_TEXT = "This figure is in these documents. Open them to s
 // (backend/kaagaz/api/views.py NO_ACCESS_LINE, a test reads both).
 export const NO_ACCESS_TEXT =
   "You no longer have access to a document behind this answer. Ask again to get an answer from the files you can see.";
-export const MAX_QUESTION_LENGTH = 1000;
+// #644: the API takes up to 20,000 characters and keeps the questions of a long one.
+export const MAX_QUESTION_LENGTH = 20000;
 
 // The chat's one status line for screen readers; the log itself stays quiet.
 export const ASKING_STATUS = "Looking through your documents…";

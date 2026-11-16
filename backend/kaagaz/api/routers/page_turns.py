@@ -13,21 +13,24 @@
   file as the person sees it (404), the family lock (409 ``in_trash``; saves of one family queue
   on it), its page count (409 ``not_ready`` while unknown, or for a file that could not be read;
   400 for a page past the end), the write, one audit row (ids and counts only).
+* **A locked file** (PRD 7 question 12, #605 PR 13): only a person who may open it sees it, and
+  they turn its pages only while their 10-minute check is live (403 ``locked_open_required``),
+  checked after the 404, so a hidden file still answers as a random id. The lock keeps the rows.
 """
 
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection, RowMapping
 
-from kaagaz.api.auth import CurrentUser, User
+from kaagaz.api.auth import CurrentUser, User, require_locked_open
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
-from kaagaz.api.locked import refuse_locked
 from kaagaz.api.routers.documents import same_user
 from kaagaz.api.routers.stories import SESSION_CHANGED
+from kaagaz.api.twostep import unix
 from kaagaz.db import audit, listing, page_turns, trash
 
 router = APIRouter()
@@ -52,13 +55,17 @@ class PageTurnsBody(BaseModel):
     user_id: str | None = None
 
 
-def _live_version(conn: Connection, user: CurrentUser, document_id: uuid.UUID) -> RowMapping:
+def _live_version(
+    conn: Connection, user: CurrentUser, document_id: uuid.UUID, request: Request, context: AppContext
+) -> RowMapping:
     """The version, its family locked until the transaction ends. The visibility check comes
-    first, so a hidden file is never locked and answers as a random id."""
+    first, so a hidden file is never locked and answers as a random id; a locked one then needs
+    the person's live check."""
     row = listing.get_document(conn, user.customer_id, str(document_id))
     if row is None:
         raise ApiError(404, "not_found")
-    refuse_locked(row)  # PRD 7 (#605): PR 13 lets people who may open it turn its pages, with the check
+    if row["locked"]:
+        require_locked_open(request, user, context.settings, unix(context.clock()))
     try:
         family_id = trash.lock_live_family(conn, user.customer_id, str(document_id))
     except trash.InTrash:
@@ -70,7 +77,7 @@ def _live_version(conn: Connection, user: CurrentUser, document_id: uuid.UUID) -
 
 @router.patch("/documents/{document_id}/page-turns")
 def save_page_turns(
-    document_id: uuid.UUID, body: PageTurnsBody, user: User, context: Context
+    document_id: uuid.UUID, body: PageTurnsBody, request: Request, user: User, context: Context
 ) -> dict[str, Any]:
     same_user(body.user_id, user, SESSION_CHANGED)
     changes = {change.page_no: change.turn for change in body.changes}
@@ -82,7 +89,7 @@ def save_page_turns(
         raise ApiError(400, "bad_request")
     target = str(document_id)
     with context.db.user(user.customer_id, user.user_id) as conn:
-        row = _live_version(conn, user, document_id)
+        row = _live_version(conn, user, document_id, request, context)
         if row["page_count"] is None:
             failed = row["status"] in ("failed", "rejected")
             raise ApiError(409, "not_ready", UNREADABLE if failed else NOT_READY)

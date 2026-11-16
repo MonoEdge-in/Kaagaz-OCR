@@ -51,7 +51,10 @@ describe("the summary at the top of the panel", () => {
   it("sits under the name and above Ask, the one primary, and shows once on the page", () => {
     const view = read(VIEW);
     const head = view.slice(view.indexOf("<header className={styles.header}>"), view.indexOf("</header>"));
-    expect(head.indexOf("<SummaryCard")).toBeGreaterThan(head.indexOf("<h1 className={styles.title}>"));
+    // Changed on purpose (PRD 7, PR 13): the heading takes focus after a lock or unlock.
+    const title = head.indexOf("<h1 ref={headingRef} tabIndex={-1} className={styles.title}>");
+    expect(title).toBeGreaterThanOrEqual(0);
+    expect(head.indexOf("<SummaryCard")).toBeGreaterThan(title);
     expect(head.indexOf("<SummaryCard")).toBeLessThan(head.indexOf("btn btn-primary ${styles.ask}"));
     // Not under Details any more.
     expect(read("app/(app)/documents/[id]/DocumentPanels.tsx")).not.toContain("card.summary");
