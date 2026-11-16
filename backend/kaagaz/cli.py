@@ -60,14 +60,15 @@
 * ``verify-models [--model ID ...] [--embed-model ID] [--record]``:
   check PRD 5's verify items (section 14) against the live models through OpenRouter
   and the installed RapidOCR, and print ``VERIFY <id> PASS|FAIL|INFO <evidence>`` for
-  each (``kaagaz.verify_models``). It touches no file storage or queue, and no
-  database without ``--record``; it sends only pictures it draws itself, prints the
-  key only as set or missing, and exits 1 when an item FAILs. ``--model`` adds an
-  OpenRouter model ID to check, with the items a model must pass before the operator
-  can enable it (model choice, council 11 Oct 2026). ``--record``, with exactly one
-  ``--model``: when that model passes them all, its pass for the reader's prompt
-  version and its tokens per page are written to ``model_catalog`` as the owner
-  (``_owner``); the model must be in the catalogue (``refresh-models`` first).
+  each (``kaagaz.verify_models``). It touches no file storage or queue, and the
+  database only to read the stored parameters (#647) and for ``--record``; it sends
+  only pictures it draws itself, prints the key only as set or missing, and exits 1
+  when an item FAILs. ``--model`` adds an OpenRouter model ID to check, with the items
+  a model must pass before the operator can enable it (model choice, council 11 Oct
+  2026). ``--record``, with exactly one ``--model``: when that model passes them all,
+  its pass for the reader's prompt version and its tokens per page are written to
+  ``model_catalog`` as the owner (``_owner``); the model must be in the catalogue
+  (``refresh-models`` first).
   ``--chat`` (features 25-27) checks each ``--model`` for drafting answers instead, and
   ``--chat --record`` writes its pass for the answer prompt's hash the same way.
 * ``refresh-models``: read OpenRouter's model lists now and refresh ``model_catalog``
@@ -181,7 +182,7 @@ from typing import IO, Any, Protocol, TextIO
 
 import boto3
 from sqlalchemy import Connection, RowMapping, text
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 
 from kaagaz import ops_alert, verify_models
 from kaagaz.adapters.email import Mailer
@@ -268,6 +269,9 @@ BACKUP_PART_BYTES = 32 * 1024 * 1024
 # The commands that read the settings but no database.
 _log = logging.getLogger(__name__)
 NO_DATABASE = ("backup-files", "restore-files", "disk-alert", "ops-alert")
+# #647 review: verify-models waits at most this long for the database it reads the stored
+# parameters from; one that does not answer is said ``unknown``, never a failure.
+VERIFY_CONNECT_SECONDS = 3
 
 
 class CliError(Exception):
@@ -1153,6 +1157,23 @@ def _refresh_models(db: Database, settings: Settings) -> str:
     )
 
 
+def _stored_parameters(db: Database) -> Callable[[str], str]:
+    """verify-models (#647): each model's stored parameters (``model_catalog.parameters``), read
+    once a run, as the endpoints item prints them: the names, ``none``, ``not read yet`` (NULL or
+    not in the catalogue) or ``unknown`` with the error's type when the database does not answer."""
+    try:
+        held = db.model_parameters()
+    except SQLAlchemyError as error:
+        said = f"unknown ({type(error).__name__})"
+        return lambda model: said
+
+    def printed(model: str) -> str:
+        names = held.get(model)
+        return "not read yet" if names is None else ",".join(sorted(names)) or "none"
+
+    return printed
+
+
 def _record_verified(db: Database, model: str, tokens_in: int, tokens_out: int) -> None:
     """verify-models --record: the model's pass for the reader's prompt version, as the
     owner (no app or operator role may write it), with one ``platform_audit`` row
@@ -1636,10 +1657,14 @@ def main(
         if args.command == "verify-models":  # no database either, but --record's one row
             checked = settings or Settings.from_env(env)
             record = record_chat = None
+            if args.record and len(set(args.model)) != 1:
+                raise CliError("--record checks exactly one --model")
+            # and the stored parameters its endpoints item prints (#647), as the worker role (PRD 7, #606)
+            owner = db or Database(
+                make_engine(checked.database_url, connect_timeout_seconds=VERIFY_CONNECT_SECONDS),
+                checked.db_worker_role,
+            )
             if args.record:
-                if len(set(args.model)) != 1:
-                    raise CliError("--record checks exactly one --model")
-                owner = db or Database(make_engine(checked.database_url), checked.db_worker_role)
                 if args.chat:
                     record_chat = functools.partial(_record_chat_verified, owner)
                 else:
@@ -1652,6 +1677,7 @@ def main(
                 record=record,
                 chat=args.chat,
                 record_chat=record_chat,
+                stored=_stored_parameters(owner),
             )
         if args.command == "queue-depth":  # the queue only, no database
             from kaagaz.adapters.queue import SqsQueue

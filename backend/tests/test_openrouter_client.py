@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from kaagaz.ai import openrouter, replies
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable, build_model_client
@@ -1534,3 +1535,119 @@ def test_a_404_without_temperature_too_is_not_sent_a_third_time(fake: OpenRouter
     with pytest.raises(ModelUnavailable):
         client.chat_json(system="Rewrite.", user="q", schema=schema, max_tokens=100)
     assert len(fake.bodies()) == 3
+
+
+# #647: the catalogue's stored parameters decide the optional ones. Vertex's gemini-3.5-flash-lite
+# lists no temperature (16 Nov 2026), so the refresh stores a set without it.
+FLASH_LITE = "google/gemini-3.5-flash-lite"
+VERTEX_ONLY = frozenset({"max_tokens", "reasoning", "response_format", "structured_outputs"})
+SONNET = "anthropic/claude-sonnet-5.5"
+REWRITE_SCHEMA = {"type": "object", "properties": {"question": {"type": "string"}}, "required": ["question"]}
+
+
+class _Catalogue:
+    """A database holding ``held`` as the stored parameters (``Database.model_parameters``), each
+    read counted; its rate slot is always free. ``broken``: the read fails."""
+
+    def __init__(self, held: dict[str, frozenset[str]]) -> None:
+        self.held, self.reads, self.broken = held, 0, False
+
+    def model_parameters(self) -> dict[str, frozenset[str]]:
+        self.reads += 1
+        if self.broken:
+            raise OperationalError("SELECT", {}, Exception("no answer"))
+        return dict(self.held)
+
+    def model_rate_slot(self, *args: object) -> float:
+        return 0.0
+
+
+def _stored_client(url: str, catalogue: _Catalogue, clock: Clock, model: str) -> OpenRouterClient:
+    settings = _settings(url, model_chat=model)
+    gate = ModelGate(settings, clock=clock, sleep=clock.sleep, database=cast(Database, catalogue))
+    return OpenRouterClient(settings, gate=gate)
+
+
+def _rewrite(client: OpenRouterClient, fake: OpenRouterFake, **options: Any) -> dict[str, Any]:
+    """One chat_json at temperature 0, as Ask's rewrite; the body sent."""
+    fake.script("completions", json_reply({"question": "q"}))
+    client.chat_json(system="Rewrite.", user="q", schema=REWRITE_SCHEMA, max_tokens=8000, **options)
+    return cast(dict[str, Any], fake.bodies()[-1])
+
+
+def test_647_temperature_is_left_out_for_a_model_whose_stored_set_lacks_it(fake: OpenRouterFake) -> None:
+    catalogue = _Catalogue({FLASH_LITE: VERTEX_ONLY})
+    client = _stored_client(fake.url, catalogue, Clock(), FLASH_LITE)
+    body = _rewrite(client, fake, temperature=0.0)
+    assert "temperature" not in body and len(fake.bodies()) == 1  # no 404 round first
+    # The required ones are never left out: the schema, the thinking and the output cap.
+    assert {"response_format", "reasoning", "max_completion_tokens"} <= set(body)
+
+
+def test_647_temperature_is_sent_to_a_model_whose_vertex_endpoint_lists_it(fake: OpenRouterFake) -> None:
+    catalogue = _Catalogue({PRO: VERTEX_ONLY | {"temperature"}})
+    body = _rewrite(_stored_client(fake.url, catalogue, Clock(), PRO), fake, temperature=0.0)
+    assert body["temperature"] == 0.0
+
+
+def test_647_with_no_stored_set_temperature_goes_as_before(fake: OpenRouterFake) -> None:
+    """NULL (or a model not in the catalogue) is today's rule: Google's models only."""
+    catalogue = _Catalogue({})
+    assert (
+        _rewrite(_stored_client(fake.url, catalogue, Clock(), PRO), fake, temperature=0.0)["temperature"]
+        == 0.0
+    )
+    assert "temperature" not in _rewrite(
+        _stored_client(fake.url, catalogue, Clock(), SONNET), fake, temperature=0.0
+    )
+    assert catalogue.reads == 2  # one a gate
+
+
+def test_647_a_stored_set_never_sends_temperature_to_a_vendor_that_refuses_it_while_thinking(
+    fake: OpenRouterFake,
+) -> None:
+    catalogue = _Catalogue({SONNET: VERTEX_ONLY | {"temperature"}})
+    assert "temperature" not in _rewrite(
+        _stored_client(fake.url, catalogue, Clock(), SONNET), fake, temperature=0.0
+    )
+
+
+def test_647_the_stored_sets_are_read_once_in_10_minutes_and_again_after(fake: OpenRouterFake) -> None:
+    clock = Clock()
+    catalogue = _Catalogue({PRO: VERTEX_ONLY | {"temperature"}})
+    client = _stored_client(fake.url, catalogue, clock, PRO)
+    assert "temperature" not in _rewrite(client, fake)  # none asked: nothing read
+    assert catalogue.reads == 0
+    assert _rewrite(client, fake, temperature=0.0)["temperature"] == 0.0
+    catalogue.held = {PRO: VERTEX_ONLY}  # the next refresh: Vertex dropped it
+    clock.now += openrouter.PARAMETERS_SECONDS - 1
+    assert _rewrite(client, fake, temperature=0.0)["temperature"] == 0.0  # still the kept set
+    assert catalogue.reads == 1
+    clock.now += 1
+    assert "temperature" not in _rewrite(client, fake, temperature=0.0)
+    assert catalogue.reads == 2
+
+
+def test_647_a_read_that_fails_keeps_the_last_set_and_is_logged(
+    fake: OpenRouterFake, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger="kaagaz.ai.openrouter")
+    clock = Clock()
+    catalogue = _Catalogue({FLASH_LITE: VERTEX_ONLY})
+    client = _stored_client(fake.url, catalogue, clock, FLASH_LITE)
+    assert "temperature" not in _rewrite(client, fake, temperature=0.0)
+    catalogue.broken = True
+    clock.now += openrouter.PARAMETERS_SECONDS
+    assert "temperature" not in _rewrite(client, fake, temperature=0.0)
+    assert [line["code"] for line in _lines(caplog, "model parameters not read")] == ["OperationalError"]
+    assert _rewrite(client, fake, temperature=0.0) and catalogue.reads == 2  # tried again only later
+
+
+def test_647_the_631_retry_still_backs_a_stored_set_that_went_stale(fake: OpenRouterFake) -> None:
+    """Vertex dropped temperature after the day's refresh: one 404, then sent without it, remembered."""
+    catalogue = _Catalogue({PRO: VERTEX_ONLY | {"temperature"}})
+    client = _stored_client(fake.url, catalogue, Clock(), PRO)
+    fake.script("completions", error_reply(404, message=NO_TEMPERATURE), json_reply({"question": "q"}))
+    client.chat_json(system="Rewrite.", user="q", schema=REWRITE_SCHEMA, max_tokens=8000, temperature=0.0)
+    assert ["temperature" in body for body in fake.bodies()] == [True, False]
+    assert "temperature" not in _rewrite(client, fake, temperature=0.0)
