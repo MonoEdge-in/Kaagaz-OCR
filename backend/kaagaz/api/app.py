@@ -54,6 +54,7 @@ from kaagaz.api.routers import (
     folder_uploads,
     folders,
     health,
+    locked_open,
     locks,
     oidc,
     operator,
@@ -194,6 +195,7 @@ def create_app(
         email.router,
         oidc.router,
         whatsapp.router,
+        locked_open.router,  # PRD 7 (#605): before /documents/{document_id}, which would take locked-open
         documents.router,
         versions.router,
         read_clearly.router,

@@ -476,6 +476,16 @@ OWNER_RIGHTS = {
     # 0094 (#617): the word search's candidates, the current customer's piece ids only, each call
     # planned for its own query.
     "kaagaz_word_candidates": ("SETOF uuid", [*EMPTY_PATH, "plan_cache_mode=force_custom_plan"]),
+    # Changed on purpose (#605, 0096): the locked-file pop-ups' names, an Admin's only, checked inside.
+    "kaagaz_admin_place_files": ("bigint", EMPTY_PATH),
+    "kaagaz_admin_place_locked": (
+        "TABLE(id uuid, display_name text, folder_id uuid, open boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_locked_for": (
+        "TABLE(id uuid, display_name text, folder_id uuid, given_at timestamp with time zone, given_by uuid)",
+        EMPTY_PATH,
+    ),
     # Changed on purpose (#603, 0097): WhatsApp's number lookup and the channel's claim (ids only),
     # the two ways a connection ends (a count, or yes or no) and the sweep (a count).
     "kaagaz_whatsapp_lookup": ("TABLE(customer_id uuid, user_id uuid, link_id uuid)", EMPTY_PATH),

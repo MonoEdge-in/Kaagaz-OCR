@@ -8,6 +8,9 @@
 // menu button when a dialog shuts. The server checks every rule again.
 // PRD 7 (#604): Give access (an admin session) and Who can see this (an admin session, or the Head
 // of the file's department), before Move to Trash.
+// PRD 7 (PR 13): an Admin's Lock, after the menu's own items (LockDialog.tsx); a locked file
+// has its own screen, with Unlock (LockedDocument.tsx). Locked, this menu goes with the screen:
+// once the file is loaded again, focus goes to the locked screen's heading (onLocked).
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { RefObject } from "react";
@@ -17,11 +20,13 @@ import { GiveAccessDialog } from "@/components/access/GiveAccessDialog";
 import { BusyLabel } from "@/components/documents/BusyLabel";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { EditDialog, RowMenu } from "@/components/documents/DocumentActions";
+import { LockDialog } from "@/components/documents/LockDialog";
 import { buildTree } from "@/components/documents/folderTree";
 import type { EditAction, RowAction } from "@/components/documents/library";
 import libraryStyles from "@/components/documents/Library.module.css";
 import { deletedMessage } from "@/components/documents/logic";
 import { placedMessage, restoredMessage, trashQuestion } from "@/components/documents/trash";
+import { LOCK_TEXT } from "@/components/viewer/locked";
 import { ApiError, deleteDocument, listFolders, listTags, restoreDocument } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import type { DocumentDetail, Folder, Tag } from "@/lib/types";
@@ -36,6 +41,7 @@ export function DocumentMenu({
   readAgain,
   onReadAgain,
   onChanged,
+  onLocked,
   more,
 }: {
   buttonRef: RefObject<HTMLButtonElement | null>; // the menu's button: focus comes back to it
@@ -46,6 +52,8 @@ export function DocumentMenu({
   onReadAgain(): void;
   /** Renamed, moved, tagged, trashed or restored: say it and load the document again. */
   onChanged(message: string): void;
+  /** Locked (PR 13): say it, load it again, and focus its locked screen's heading; else onChanged. */
+  onLocked?(message: string): void;
 }) {
   const { me } = useSession();
   const [editing, setEditing] = useState<EditAction | null>(null);
@@ -55,6 +63,11 @@ export function DocumentMenu({
   const [error, setError] = useState<string | null>(null);
   const [folders, setFolders] = useState<Folder[] | null>(null);
   const [tags, setTags] = useState<Tag[] | null>(null);
+  const [locking, setLocking] = useState(false);
+  const canLock = me.user.role === "admin" && me.session.scope === "admin" && detail.deleted_at === null;
+  const items = canLock
+    ? [...(more ?? []), { label: LOCK_TEXT.menu, hint: LOCK_TEXT.menuHint, onSelect: () => setLocking(true) }]
+    : more;
   const holdToggle = useCallback(
     (element: HTMLButtonElement | null) => {
       buttonRef.current = element;
@@ -124,7 +137,7 @@ export function DocumentMenu({
         canForever={false}
         place="document"
         readAgain={readAgain}
-        more={more}
+        more={items}
         onPick={pick}
         toggleRef={holdToggle}
         access={abilities}
@@ -169,6 +182,17 @@ export function DocumentMenu({
             onChanged(message);
           }}
           onTagCreated={() => listTags().then((result) => setTags(result.items), () => undefined)}
+        />
+      )}
+      {locking && (
+        <LockDialog
+          documents={[detail]}
+          onClose={() => setLocking(false)}
+          onClosed={() => buttonRef.current?.focus()}
+          onLocked={(message) => {
+            setLocking(false);
+            (onLocked ?? onChanged)(message);
+          }}
         />
       )}
       {trashing && (

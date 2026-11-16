@@ -143,6 +143,8 @@ import type {
 import { usePoll } from "@/lib/usePoll";
 import { AttentionPanel, RelatedPanel, attentionCount } from "./DocumentPanels";
 import { DocumentMenu } from "./DocumentMenu";
+import { useHeadingAfterReload } from "@/components/viewer/useHeadingAfterReload";
+import { LockedDocument } from "./LockedDocument";
 import { PageProblems } from "./PageProblems";
 import { ReadAgain } from "./ReadAgain";
 import { ReviewPanel } from "./ReviewPanel";
@@ -158,14 +160,13 @@ export interface DocumentViewProps {
   scannedParam: string | null;
   wordsParam: string | null;
   fromParam: string | null;
+  openErrorParam?: string | null; // PRD 7 (PR 13): a Google confirm that did not open locked files
 }
 
 // Said after "Highlighted: <field>" when the spot came in a link (a source card, a search
 // hit or a review item), not from a pick on this screen.
 const FROM_LINK = ", from the link you opened";
 // The status under the title: its words (lib/format.ts statusChip) with an icon.
-// PRD 7 (#605): the routes' own words for a locked file (backend/kaagaz/api/locked.py).
-const LOCKED_TEXT = "This file is locked. It can only be viewed.";
 const STATUS_ICONS: Record<StatusTone, KIconName> = { ready: "check-circle", working: "clock", neutral: "info", danger: "alert" };
 const DETAILS_ID = "document-details"; // More details: the kind, pages, counts, tags and versions
 
@@ -189,6 +190,7 @@ export function DocumentView({
   scannedParam,
   wordsParam,
   fromParam,
+  openErrorParam = null,
 }: DocumentViewProps) {
   const { me } = useSession();
   const [attempt, setAttempt] = useState(0);
@@ -239,7 +241,8 @@ export function DocumentView({
   const reviewButton = useRef<HTMLButtonElement | null>(null);
   const reviewHeading = useRef<HTMLHeadingElement | null>(null);
   // KZ-007: a rejected file has no words to review, so nothing is asked for it.
-  const loadedStatus = loaded && "detail" in loaded ? loaded.detail.status : null;
+  // PRD 7 (PR 13): a locked file asks for no words, readings or review (LockedDocument.tsx).
+  const loadedStatus = loaded && "detail" in loaded && !loaded.detail.locked ? loaded.detail.status : null;
   // #443: after a word change the whole document is asked for again only when it may have kept its
   // page as is (useWordReview's reload), so the fix box below stays mounted otherwise.
   const review = useWordReview(documentId, reloads, loadedStatus !== null && loadedStatus !== "rejected", () =>
@@ -327,7 +330,7 @@ export function DocumentView({
   // A retry shows the loading state again until its own answer arrives.
   const current = loaded && loaded.attempt === attempt ? loaded : null;
   const shown = current && "detail" in current ? current.detail : null;
-  const selection = !shown
+  const selection = !shown || shown.locked
     ? null
     : chosen && chosen.linkKey === linkKey
       ? chosen.selection
@@ -343,6 +346,8 @@ export function DocumentView({
   const marksAround = useMemo(() => [...marksByPage.values()].flat(), [marksByPage]);
   const yourWords = linkWords(wordsParam);
   const wordsFound = useDocumentWords(documentId, yourWords, reloads);
+  // PRD 7 (PR 13): after a lock or unlock, the heading of the screen loaded again takes the focus.
+  const { headingRef, focusAfterReload } = useHeadingAfterReload(shown);
 
   // While it loads, only the skeleton (SoW 19 Oct: "Back to documents" flashed for half a second).
   if (!current) {
@@ -385,17 +390,23 @@ export function DocumentView({
   }
 
   const detail = current.detail;
-  // PRD 7 (#605): a locked file shows its name only, with no page, panel or action; PR 13 opens it
-  // as page pictures after the person's password.
   if (detail.locked) {
+    const unlocked = (message: string) => {
+      focusAfterReload();
+      setToast(message);
+      setToastUndo(null);
+      setReloads((n) => n + 1);
+    };
     return (
-      <div className="page page-wide">
-        <BackLink to={backFrom(fromParam) ?? { href: "/documents", name: "documents" }} />
-        <h1 className={styles.title}>
-          <KIcon name="lock" size="sm" /> <ScriptText text={detail.display_name} />
-        </h1>
-        <p role="note">{LOCKED_TEXT}</p>
-      </div>
+      <LockedDocument
+        detail={detail}
+        back={backFrom(fromParam) ?? { href: "/documents", name: "documents" }}
+        openError={openErrorParam}
+        onChanged={unlocked}
+        headingRef={headingRef}
+      >
+        <Toast message={toast} onClose={() => setToast(null)} />
+      </LockedDocument>
     );
   }
   const page = selection ? detail.pages.find((p) => p.page_no === selection.pageNo) : undefined;
@@ -675,7 +686,7 @@ export function DocumentView({
                 Back to <ScriptText text={back.name} />
               </span>
             </Link>
-            <h1 className={styles.title}>
+            <h1 ref={headingRef} tabIndex={-1} className={styles.title}>
               <ScriptText text={detail.display_name} />
             </h1>
             <p className={styles.state}>
@@ -848,6 +859,10 @@ export function DocumentView({
                 readAgain={canReprocess(me.user.role, detail)}
                 onReadAgain={() => setReadAgainKey((n) => n + 1)}
                 onChanged={reloadWith}
+                onLocked={(message) => {
+                  focusAfterReload();
+                  reloadWith(message);
+                }}
                 more={documentMoreItems(review.status, {
                   onEnsemble: (scope) => void ensemble.ask(scope),
                   onExport: () => setExporting(true),

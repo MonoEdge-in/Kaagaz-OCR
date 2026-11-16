@@ -55,7 +55,12 @@ by tests/test_golden_romanised.py, and ROMANISED_SHA256 holds the same hash.
 optional expectations (``nlq_problems`` checks them): ``documents`` {expected, not},
 ``clarify`` {choices, pick} or null (no question may be asked), ``figure`` {document, field,
 as_printed, page, label}, ``no_total`` {allowed: null or the permitted total's text} and
-``soft_not_found`` {closest}, and an item ``scope`` {document} ("Ask about this document").
+``soft_not_found`` {closest}, and an item ``scope`` {document} ("Ask about this document") or
+{all: true} (All documents, a scope switch). Package K (#644) adds ``focus`` {document, facts}: the
+reply's understood line and rewrite name each fact of the document "this" is; ``related``
+{expected: {document: reason}}: each listed in the first MAX_RELATED documents with its reason in
+its why (recall at 10); and ``outside`` {documents}: none of them cited or listed (the ``scope``
+metric, 0 violations). The ``follow_up`` metric is the ``documents`` mark of follow-up items.
 ``nlq_score`` marks them on a stored reply as pure functions, and a field a reply does not
 have yet (packages A to C add them) counts as absent, never an error: a reply that asks back
 (``clarify``) is the outcome **clarified**, counted like abstained and never wrong.
@@ -116,8 +121,8 @@ _MONEY = re.compile(r"(?:\u20B9|\brs\.?|\binr)\s*\d[\d,]*(?:\.\d+)?|\d{1,3}(?:,\
 MAX_NEWLY_ABSTAINED = 2
 MAX_VERIFIED_COVERAGE_DROP = 2
 # questions_nlq.json (PRD 6 G): frozen like the others; any edit means a new baseline.
-NLQ_SHA256 = "c47be4cb0c32ac374f5b73abac2b62845d239451990ec6c912fb54ae162055f4"
-NLQ_KEYS = ("documents", "clarify", "figure", "no_total", "soft_not_found")
+NLQ_SHA256 = "5c6a9a7df4c0d27661499fc6dbe4d196c7c3e6769e18644dd6c13a196c573d48"  # #644: package K
+NLQ_KEYS = ("documents", "clarify", "figure", "no_total", "soft_not_found", "focus", "related", "outside")
 NLQ_TAGS = frozenset(
     {"example", "co_owner", "place", "between", "date", "misspelling", "missing_subject", "same_name"}
     | {"share", "profit", "hinglish", "trap", "opening", "scope"}
@@ -126,7 +131,8 @@ NLQ_SLICE_MINIMUM = 15  # items in every tag, split, follow_up and not_found sli
 NLQ_QUESTIONS = 150  # at least, so a 0.95 bar's Wilson interval is narrow enough to read
 # Items per expectation, at least: "clarify" expects a question, "no_clarify" forbids one.
 NLQ_MINIMUMS = {"documents": 80, "clarify": 30, "no_clarify": 40, "figure": 60, "no_total": 150}
-NLQ_MINIMUMS |= {"soft_not_found": 25, "scope": 15}
+NLQ_MINIMUMS |= {"soft_not_found": 25, "scope": 15, "focus": 15, "related": 10, "outside": 10}
+MAX_RELATED = 10  # PRD 6 package K: related documents are found within the first 10 listed
 MAX_CLARIFY_TURNS = 2  # PRD 6: at most 2 clarifying turns for one question
 MAX_NEWLY_FAILED = 2  # compare: questions an expectation may newly fail (no_total: none)
 LABELS = (None, "verified", "needs_review")
@@ -631,7 +637,16 @@ def nlq_problems(raw: Any, documents: Collection[str]) -> list[str]:
             nlq = question.nlq
             counts["clarify"] += nlq.get("clarify") is not None
             counts["no_clarify"] += "clarify" in nlq and nlq["clarify"] is None
-            for name in ("documents", "figure", "no_total", "soft_not_found", "scope"):
+            for name in (
+                "documents",
+                "figure",
+                "no_total",
+                "soft_not_found",
+                "scope",
+                "focus",
+                "related",
+                "outside",
+            ):
                 counts[name] += name in nlq
     if len(raw) < NLQ_QUESTIONS:
         found.append(f"{len(raw)} questions, at least {NLQ_QUESTIONS}")
@@ -690,8 +705,24 @@ def _nlq_expect_problems(item: dict[str, Any], documents: Collection[str]) -> li
         wrong.append("expect.soft_not_found needs closest, names from the manifest")
     elif "soft_not_found" in expect and expect["kind"] != "not_found":
         wrong.append("a soft not-found is a not-found question")
-    if scope is not None and (not isinstance(scope, dict) or scope.get("document") not in documents):
-        wrong.append("scope needs a document from the manifest")
+    if (
+        scope is not None
+        and scope != {"all": True}
+        and (not isinstance(scope, dict) or scope.get("document") not in documents)
+    ):
+        wrong.append("scope needs a document from the manifest, or all: true")
+    focus, related, outside = expect.get("focus", {}), expect.get("related", {}), expect.get("outside", {})
+    if "focus" in expect and not (
+        isinstance(focus, dict) and focus.get("document") in documents and texts(focus.get("facts"))
+    ):
+        wrong.append("expect.focus needs a manifest document and facts (texts)")
+    expected = related.get("expected") if isinstance(related, dict) else None
+    if "related" in expect and not (
+        isinstance(expected, dict) and names(list(expected), 1) and texts(list(expected.values()))
+    ):
+        wrong.append("expect.related needs expected: {manifest document: its reason}")
+    if "outside" in expect and not (isinstance(outside, dict) and names(outside.get("documents"), 1)):
+        wrong.append("expect.outside needs documents, names from the manifest")
     return wrong
 
 
@@ -738,6 +769,10 @@ class NlqScore:
     violations: tuple[str, ...] | None = None  # no_total's
     soft: bool | None = None
     clarify_turns: int = 0  # replies that asked back, counted by the runner
+    focus: bool | None = None  # package K: the understood line names the focus's facts
+    related: tuple[int, int] | None = None  # found with their reason in the first 10, expected
+    outside: int | None = None  # documents cited or listed that must not be (the scope metric)
+    follow_up: bool | None = None  # a follow-up's documents mark
 
     def passed(self) -> dict[str, bool]:
         """Each expectation the question has: passed or not (the paired gate reads these)."""
@@ -752,6 +787,14 @@ class NlqScore:
             marks["no_total"] = not self.violations
         if self.soft is not None:
             marks["soft_not_found"] = self.soft
+        if self.focus is not None:
+            marks["focus"] = self.focus
+        if self.related is not None:
+            marks["related"] = self.related[0] == self.related[1]
+        if self.outside is not None:
+            marks["scope"] = not self.outside
+        if self.follow_up is not None:
+            marks["follow_up"] = self.follow_up
         return marks
 
 
@@ -793,7 +836,8 @@ def listed_documents(answer: Mapping[str, Any], names: Mapping[str, str]) -> lis
     """The documents a reply lists, as file names (``names``: document id -> name; "?" for
     another): PRD 6's ``documents``, else today's cited and closest documents."""
     if isinstance(answer.get("documents"), list):
-        ids = [doc.get("id") for doc in _dicts(answer["documents"])]
+        # #644: a reply's documents carry document_id (service.Answer); "id" kept for older replies.
+        ids = [doc.get("document_id") or doc.get("id") for doc in _dicts(answer["documents"])]
     else:
         ids = [c.get("document_id") for c in _dicts(answer.get("citations"))]
         ids += [doc.get("id") for doc in _dicts(answer.get("closest_documents"))]
@@ -929,6 +973,31 @@ def soft_right(
     return set(soft["closest"]) <= {names.get(str(doc.get("id"))) for doc in shown}
 
 
+def _shown_ids(answer: Mapping[str, Any]) -> list[str]:
+    """The documents a reply cites or lists (PRD 6's ``documents`` by ``document_id``), in order."""
+    ids = [doc.get("document_id") or doc.get("id") for doc in _dicts(answer.get("documents"))]
+    ids += [c.get("document_id") for c in _dicts(answer.get("citations"))]
+    return [str(i) for i in dict.fromkeys(ids) if i]
+
+
+def focus_right(focus: Mapping[str, Any], answer: Mapping[str, Any]) -> bool:
+    """Package K: every fact of the focus in the reply's understood line or its rewrite."""
+    lines = answer.get("assumptions")
+    said = [*(lines if isinstance(lines, list) else []), answer.get("rewritten_question") or ""]
+    told = " ".join(text for text in said if isinstance(text, str))
+    return all(phrase_in(fact, told) for fact in focus["facts"])
+
+
+def related_found(related: Mapping[str, Any], answer: Mapping[str, Any], names: Mapping[str, str]) -> int:
+    """Package K: the expected related documents among the first MAX_RELATED listed, each with its
+    reason in its why."""
+    why = {
+        names.get(str(doc.get("document_id") or doc.get("id")), "?"): str(doc.get("why", ""))
+        for doc in _dicts(answer.get("documents"))[:MAX_RELATED]
+    }
+    return sum(name in why and phrase_in(reason, why[name]) for name, reason in related["expected"].items())
+
+
 def nlq_score(
     question: Question,
     first: Mapping[str, Any],
@@ -960,6 +1029,17 @@ def nlq_score(
         violations=None if "no_total" not in nlq else tuple(no_total_violations(question, final, names)),
         soft=None if "soft_not_found" not in nlq else soft_right(nlq["soft_not_found"], final, names, asker),
         clarify_turns=clarify_turns,
+        focus=None if "focus" not in nlq else focus_right(nlq["focus"], final),
+        related=None
+        if "related" not in nlq
+        else (related_found(nlq["related"], final, names), len(nlq["related"]["expected"])),
+        outside=None
+        if "outside" not in nlq
+        else sum(names.get(i) in nlq["outside"]["documents"] for i in _shown_ids(final)),
+        follow_up=None
+        if question.follow_up_of is None or found is None
+        else found[0] == found[1]
+        and not sum(name in listed_documents(final, names) for name in nlq["documents"].get("not", [])),
     )
 
 
@@ -980,6 +1060,12 @@ def worst_nlq(runs: Sequence[NlqScore]) -> NlqScore:
         else tuple(dict.fromkeys(v for run in runs for v in run.violations or ())),
         soft=None if runs[0].soft is None else all(run.soft for run in runs),
         clarify_turns=max(run.clarify_turns for run in runs),
+        focus=None if runs[0].focus is None else all(run.focus for run in runs),
+        related=None
+        if runs[0].related is None
+        else min((run.related for run in runs if run.related is not None), key=lambda r: r[0]),
+        outside=None if runs[0].outside is None else max(run.outside or 0 for run in runs),
+        follow_up=None if runs[0].follow_up is None else all(run.follow_up for run in runs),
     )
 
 
@@ -989,6 +1075,7 @@ def nlq_metrics(scored: Sequence[NlqScore]) -> dict[str, tuple[int, int]]:
     expected, and asked when not (the bar wants it low); figure, no_total (items with no
     violation), soft_not_found and clarify_turns per item."""
     docs = [s.documents for s in scored if s.documents is not None]
+    related = [s.related for s in scored if s.related is not None]
 
     def rate(name: str) -> tuple[int, int]:
         marks = [s.passed()[name] for s in scored if name in s.passed()]
@@ -1006,6 +1093,11 @@ def nlq_metrics(scored: Sequence[NlqScore]) -> dict[str, tuple[int, int]]:
         "no_total": rate("no_total"),
         "soft_not_found": rate("soft_not_found"),
         "clarify_turns": rate("clarify_turns"),
+        "follow_up": rate("follow_up"),
+        "focus": rate("focus"),
+        "related_recall": (sum(r[0] for r in related), sum(r[1] for r in related)),
+        "related": rate("related"),
+        "scope": rate("scope"),
     }
 
 
