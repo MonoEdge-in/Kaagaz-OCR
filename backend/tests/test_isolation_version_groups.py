@@ -247,17 +247,24 @@ def test_not_versions_is_kept_until_undone_and_audited(db: Database) -> None:
     ]
 
 
-def test_a_group_with_under_two_files_left_is_gone_until_undone(db: Database) -> None:
-    """Keeping p apart leaves q alone: the duo group is off the list (and null in the reply); Undo
-    brings it back."""
+def test_a_group_with_under_two_files_left_leaves_the_list_but_keeps_its_undo(db: Database) -> None:
+    """Keeping p apart leaves q alone: the duo group is off the list, but after a reload its page
+    still shows p kept apart (review, #648), so Undo works; Undo brings the pair back."""
     org, ids = _org(Api(db))
-    management = org.people["management"]
-    status, reply = _post(management, f"/version-groups/{ids['duo']}/keep-apart", [org.files["p"]])
-    assert (status, reply) == (200, {"group": None})
+    management, p = org.people["management"], org.files["p"]
+    status, reply = _post(management, f"/version-groups/{ids['duo']}/keep-apart", [p])
+    assert status == 200, reply
+    assert (reply["group"]["files"], reply["group"]["kept_apart"]) == ([], [{"id": p, "name": "p.pdf"}])
+    assert reply["group"]["suggested_latest_id"] is None
     assert ids["duo"] not in _listed(org, management)
-    assert _get(management, f"/version-groups/{ids['duo']}")[0] == 404
-    status, reply = _post(management, f"/version-groups/{ids['duo']}/keep-apart/undo", [org.files["p"]])
+    assert _get(management, f"/version-groups/{ids['duo']}") == (200, reply["group"])
+    status, reply = _post(management, f"/version-groups/{ids['duo']}/keep-apart/undo", [p])
     assert status == 200 and _shown(org, reply["group"]) == ["p", "q"]
+    _post(management, f"/version-groups/{ids['duo']}/keep-apart", [p, org.files["q"]])  # both apart
+    assert _get(management, f"/version-groups/{ids['duo']}")[1]["kept_apart"] == [
+        {"id": p, "name": "p.pdf"},
+        {"id": org.files["q"], "name": "q.pdf"},
+    ]
 
 
 def test_decide_later_keeps_the_files_and_puts_the_group_last(db: Database) -> None:

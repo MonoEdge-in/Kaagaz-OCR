@@ -10,7 +10,8 @@ anything is looked up. Each sees only groups whose every file they can see
 * ``GET /version-groups/{id}``: one ``VersionGroup``: ``{id, files: [{id, name, folder_id,
   doc_type, document_date, uploaded_at, page_count, position, state, reasons: [{with,
   text_overlap, text_overlap_estimated, name_similarity, shared_identifier, words}]}],
-  suggested_latest_id, kept_apart: [{id, name}]}``.
+  suggested_latest_id, kept_apart: [{id, name}]}``; also a group whose only files left are kept
+  apart (``files`` empty, ``suggested_latest_id`` null), so Undo works after a reload.
 * ``POST /version-groups/{id}/keep-apart {document_ids}``: "Not versions" for these files
   (``version.kept_apart``); ``POST .../keep-apart/undo {document_ids}`` puts them back
   (``version.kept_apart_undone``); ``POST .../later {document_ids}``: "Decide later"

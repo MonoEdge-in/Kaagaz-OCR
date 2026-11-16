@@ -83,8 +83,10 @@ def _reason(pair: RowMapping, other: str) -> dict[str, Any]:
 def _group(
     group_id: str, members: Sequence[RowMapping], pairs: Sequence[RowMapping]
 ) -> dict[str, Any] | None:
-    """One group as shown (module notes), or None when a file of it is hidden from this person or
-    under 2 of its files are shown."""
+    """One group as shown (module notes), or None when a file of it is hidden from this person, or
+    when under 2 of its files are shown and none is kept apart. With under 2 shown, ``files`` is
+    empty: the page of a group whose only files left are kept apart, for their Undo after a reload
+    (review, #648); the list leaves it out."""
     if not all(m["seen"] for m in members):
         return None
     members = [m for m in members if m["live"]]
@@ -95,7 +97,8 @@ def _group(
         reasons.setdefault(pair["first_id"], []).append(_reason(pair, pair["second_id"]))
         reasons.setdefault(pair["second_id"], []).append(_reason(pair, pair["first_id"]))
     files = [m for m in members if m["document_id"] in reasons]
-    if len(files) < 2:
+    kept_apart = [m for m in members if m["state"] == "kept_apart"]
+    if not kept_apart and len(files) < 2:
         return None
     return {
         "id": group_id,
@@ -114,17 +117,16 @@ def _group(
             }
             for position, m in enumerate(files, 1)
         ],
-        "suggested_latest_id": files[-1]["document_id"],
-        "kept_apart": [
-            {"id": m["document_id"], "name": m["display_name"]} for m in members if m["state"] == "kept_apart"
-        ],
+        "suggested_latest_id": files[-1]["document_id"] if files else None,
+        "kept_apart": [{"id": m["document_id"], "name": m["display_name"]} for m in kept_apart],
     }
 
 
 def groups(conn: Connection, customer_id: str, group_id: str | None = None) -> list[dict[str, Any]]:
-    """The groups shown to this person (module notes), those with a file not yet left for later
-    first, at most MAX_GROUPS + 1 (the caller says ``more``); with ``group_id``, that one alone (none
-    when it isn't shown). Two statements, O(m + p) for the organisation's m members and p pairs."""
+    """The groups shown to this person with 2 files or more (module notes), those with a file not
+    yet left for later first, at most MAX_GROUPS + 1 (the caller says ``more``); with ``group_id``,
+    that one alone, also when only its files kept apart are left (none when it isn't shown). Two
+    statements, O(m + p) for the organisation's m members and p pairs."""
     params = {"c": customer_id, "g": group_id}
     members: dict[str, list[RowMapping]] = {}
     for row in conn.execute(_MEMBERS, params).mappings():
@@ -133,6 +135,8 @@ def groups(conn: Connection, customer_id: str, group_id: str | None = None) -> l
     for row in conn.execute(_PAIRS, params).mappings():
         pairs.setdefault(row["group_id"], []).append(row)
     found = [shown for gid, rows in members.items() if (shown := _group(gid, rows, pairs.get(gid, [])))]
+    if group_id is None:
+        found = [group for group in found if group["files"]]
     found.sort(key=lambda g: (all(f["state"] == "later" for f in g["files"]), g["id"]))
     return found[: MAX_GROUPS + 1]
 
