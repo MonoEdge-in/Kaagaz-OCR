@@ -338,6 +338,8 @@ OWNER_RIGHTS = {
     ),
     "kaagaz_give_file": ("TABLE(user_id uuid, versions integer, added integer)", EMPTY_PATH),
     "kaagaz_take_file": ("integer", EMPTY_PATH),
+    # Changed on purpose (#601, 0090b): auto-filing gives the uploader the file; no person only.
+    "kaagaz_give_uploader": ("integer", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"

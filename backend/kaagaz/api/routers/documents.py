@@ -183,6 +183,7 @@ from kaagaz.api.views import (
     shown_folder,
     timeline,
 )
+from kaagaz.db import access as access_sql
 from kaagaz.db import audit, autofile, listing, page_turns, reading_days, storage_limits, trash
 from kaagaz.db import chat as chat_sql
 from kaagaz.db import folder_upload_items as items_sql
@@ -1747,6 +1748,7 @@ def update_document(
                 folders_sql._lock_tree(conn, customer_id)
             if trash.lock_live_family(conn, customer_id, target) is None:
                 raise ApiError(404, "not_found")
+            moved = _move_rule(conn, user, target, folder_id) if "folder_id" in given else None
             _details(conn, user, body, _document_or_404(conn, user, document_id))
             if "folder_id" in given:
                 listing.move_family(conn, customer_id, target, folder_id=folder_id)
@@ -1757,7 +1759,7 @@ def update_document(
                     action="document.move",
                     target_type="document",
                     target_id=target,
-                    details={"folder_id": folder_id},
+                    details={"folder_id": folder_id, **(moved or {})},
                 )
             if name is not None:
                 listing.rename_document(conn, customer_id, target, name=name)
@@ -1769,15 +1771,52 @@ def update_document(
                     target_type="document",
                     target_id=target,
                 )
-            row = _document_or_404(conn, user, document_id)
+            found = listing.get_document(conn, customer_id, target)
+            if found is None:  # PRD 7 (#601): an Admin moved it where they can't see it
+                return {"id": target, "hidden": True}
+            row = found
             tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
     except folders_sql.FolderNotFound:  # not this customer's folder; nothing was changed
         raise ApiError(404, "not_found") from None
+    except folders_sql.MoveChangesAccess:
+        raise ApiError(403, "move_changes_access", MOVE_REFUSED) from None
     except trash.InTrash:  # Trash means deleted: nothing was changed
         raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.") from None
     return document_summary(
         row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
     )
+
+
+# PRD 7 section 5 (#601): a move that changes who can see it, by someone who may not make one.
+MOVE_REFUSED = "You can't move this here, because it would change who can see it. Ask an admin."
+
+
+def _move_rule(
+    conn: Connection, user: CurrentUser, document_id: str, folder_id: str | None
+) -> dict[str, audit.DetailValue] | None:
+    """PRD 7 decision 18 (#601), under the tree lock and the family's, before anything is written:
+    a move that changes who can see the file is an Admin's, Management's or (inside their
+    department) a Head's, else MoveChangesAccess; one that changes nothing is anyone's, and so is a
+    file held for the person (theirs to file, PRD 7 section 4). Returns the audit's ``losing`` and
+    ``gaining`` counts of a move that changes access (as its preview counts them), else None; a
+    held file left in no folder moves nowhere."""
+    found = access_sql.document_hold(conn, user.customer_id, document_id)
+    if found is None:  # can't happen: the family is locked and was found above
+        raise ApiError(404, "not_found")
+    place, held = found
+    if held is not None and folder_id is None:
+        return None
+    move = folders_sql.Move(
+        before=place, after=folders_sql.place_of(conn, user.customer_id, folder_id), private=[]
+    )
+    changed = held is not None or folders_sql.changes_access(conn, user.customer_id, move.before, move.after)
+    if not changed:
+        return None
+    rights = access_sql.rights(conn, user.role == "admin")
+    if held != user.user_id and not rights.allow(move.before[0], move.after[0]):
+        raise folders_sql.MoveChangesAccess()
+    losing, gaining = access_sql.moved(conn, user.customer_id, move, held)
+    return {"losing": len(losing), "gaining": len(gaining)}
 
 
 @router.post("/documents/{document_id}/autofile/undo")
@@ -1792,7 +1831,11 @@ def undo_autofile(document_id: uuid.UUID, user: User, context: Context) -> dict[
             family_id = trash.lock_live_family(conn, customer_id, target)
             if family_id is None:
                 raise ApiError(404, "not_found")
-            folder_id = autofile.undo(conn, customer_id, family_id)
+            rights = access_sql.rights(conn, user.role == "admin")  # under the tree lock (#601)
+            management = access_sql.me(conn)[0]
+            folder_id = autofile.undo(
+                conn, customer_id, family_id, by=user.user_id, management=management, rights=rights
+            )
             if folder_id is None:
                 raise ApiError(409, "already_moved", "This document was moved since. Nothing was changed.")
             audit.record(
@@ -1808,6 +1851,12 @@ def undo_autofile(document_id: uuid.UUID, user: User, context: Context) -> dict[
             tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
     except trash.InTrash:
         raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.") from None
+    except folders_sql.MoveChangesAccess:  # PRD 7 decision 18 (#601): Undo is a move
+        raise ApiError(403, "move_changes_access", MOVE_REFUSED) from None
+    except autofile.HeldForAnother:  # PRD 7 (#601)
+        raise ApiError(
+            403, "forbidden", "Only the person this file was kept for, or Management, can undo this."
+        ) from None
     return document_summary(
         row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
     )

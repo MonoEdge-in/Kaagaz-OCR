@@ -10,14 +10,17 @@ as it was; a folder or file the caller can't see answers exactly as an id that n
 import threading
 import uuid
 from collections.abc import Callable
+from functools import partial
 from typing import Any
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.pool import QueuePool
 
 from kaagaz.adapters.email import MemoryMailer
 from kaagaz.api.routers import access as access_router
+from kaagaz.api.routers.auth import prove_password
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import trash
 from kaagaz.db.documents import add_version
@@ -27,8 +30,8 @@ from tests.db_support import insert_folder
 from tests.settings_factory import make_settings
 from tests.test_api_support import CSRF, PASSWORD, Api, Signed
 from tests.test_isolation_access_views import Org, _app, _expected, _seen, _walled
-from tests.test_operator_admins_db import ORGS, _signed_in
 from tests.test_operator_auth_db import _owner
+from tests.test_operator_orgs_db import ORGS, _signed_in
 
 pytestmark = pytest.mark.db
 
@@ -171,8 +174,22 @@ def test_who_may_ask_who_sees_what(db: Database) -> None:
         assert _refused(db, org.c, p[who], _AUDIENCE, k="document", i=files[file]) == "42501", who
     assert _as(db, org.c, p["admin"], _AUDIENCE, k="document", i=other.files["top"]) == []
     ids = {"folder": org.folders["finance"], "file": files["given"], "person": p["plain"]}
+    # Changed on purpose (#601, 0090b): Management, and a person about a place they can see (the
+    # move previews: a Head inside their department, a holder filing their own file), may ask about
+    # a place; nobody about a place they can't see.
+    place = "SELECT * FROM kaagaz_place_audience(:d, :p, true)"
+    finance, salaries = ids["folder"], org.folders["salaries"]
+    for who, department, private in (
+        ("management", finance, salaries),
+        ("head", finance, None),
+        ("head", finance, salaries),
+        ("member", finance, None),
+        ("member", None, None),  # Loose: open, at the top level
+    ):
+        assert _refused(db, org.c, p[who], place, d=department, p=private) is None, (who, private)
+    for who, department, private in (("member", finance, salaries), ("plain", finance, None)):
+        assert _refused(db, org.c, p[who], place, d=department, p=private) == "42501", who
     for statement in (
-        "SELECT * FROM kaagaz_place_audience(NULL, NULL, false)",
         "SELECT * FROM kaagaz_kept_from_me(:folder)",
         "SELECT * FROM kaagaz_admin_document(:file)",
         "SELECT * FROM kaagaz_give_file(:file, ARRAY[CAST(:person AS uuid)])",
@@ -646,7 +663,8 @@ def test_bulk_giving_gives_every_pair_or_nothing(db: Database) -> None:
 def test_me_says_management_and_heads_and_the_folders_say_their_walls(db: Database) -> None:
     org = _walled(Api(db))
     me = org.people["head"].client.get("/api/auth/me").json()
-    assert me["access"] == {"management": False, "heads": [org.folders["finance"]]}
+    # Changed on purpose (#601, PR 10c): in_department.
+    assert me["access"] == {"management": False, "heads": [org.folders["finance"]], "in_department": True}
     assert org.people["management"].client.get("/api/auth/me").json()["access"]["management"] is True
     folders = {f["id"]: f for f in org.people["admin"].client.get("/api/folders").json()["items"]}
     assert (
@@ -711,7 +729,7 @@ def test_two_admins_add_the_same_member_at_once(db: Database) -> None:
     url = f"/api/admin/users/{org.people['plain'].user_id}/departments/{org.folders['sales']}"
     with db.customer(org.c) as conn:
         folders_sql._lock_tree(conn, org.c)
-        threads = [_in_thread(lambda a=a: _call(a, "PUT", url, {})) for a in admins]
+        threads = [_in_thread(partial(_call, a, "PUT", url, {})) for a in admins]
         threads[0][0].join(timeout=1)
         assert all(thread.is_alive() for thread, _ in threads)
     for thread, _ in threads:
@@ -776,7 +794,7 @@ def test_two_operator_switches_in_one_organisation_queue_on_the_tree_lock(db: Da
     with db.engine.begin() as conn:
         conn.execute(text("SELECT 1 FROM customers WHERE id = :c FOR SHARE"), {"c": org.c})
         switching = [
-            _in_thread(lambda a=a: operator.post(f"{ORGS}/{org.c}/admins/{a.user_id}/disable", headers=CSRF))
+            _in_thread(partial(operator.post, f"{ORGS}/{org.c}/admins/{a.user_id}/disable", headers=CSRF))
             for a in admins
         ]
         switching[0][0].join(timeout=1.5)
@@ -798,10 +816,12 @@ def test_the_password_is_proved_with_no_connection_held(
     org = _walled(api)
     admin, me = org.people["admin"], org.people["admin"].user_id
     held: list[int] = []
-    proved = access_router.prove_password
+    proved = prove_password  # the one access.py calls, imported from auth.py
 
     def watched(context: Any, user: Any, password: str) -> None:
-        held.append(db.engine.pool.checkedout())
+        pool = db.engine.pool
+        assert isinstance(pool, QueuePool)
+        held.append(pool.checkedout())
         proved(context, user, password)
 
     monkeypatch.setattr(access_router, "prove_password", watched)
@@ -931,7 +951,7 @@ def test_every_kind_of_access_an_admin_gets_is_told_to_management_and_the_other_
             {"c": org.c},
         )
     } - {admin.email}
-    steps = (
+    steps: tuple[tuple[str, str, dict[str, Any]], ...] = (
         (  # first: once the Admin is Management, opening a wall gains them nothing
             "themselves access to files",
             f"/api/admin/departments/{org.folders['finance']}/department-only",
