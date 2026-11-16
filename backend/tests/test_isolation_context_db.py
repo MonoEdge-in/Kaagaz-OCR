@@ -51,19 +51,25 @@ def test_another_customer_gets_none_of_the_context(db: Database) -> None:
     a, b, document = _a_with_an_offer(db)
     port = PgRetriever(db, recipe=RECIPE, ef_search=40, neighbours=1, topic_pieces=12, min_score=0.6)
     theirs = Scope(document_ids=(document,))
-    mine = port.whole(a, EVERYTHING, 100_000)
+    mine = port.whole(a, EVERYTHING, 100_000, user_id=None)
     assert mine is not None and [hit.text for hit in mine] == OFFER  # the control
     a_hit = mine[1]
 
     for customer, scope in ((b, EVERYTHING), (b, theirs)):
-        assert port.whole(customer, scope, 100_000) is None
-        assert port.topic_pieces(customer, ["leave", "holidays"], [a_hit], scope) == []
-        assert port.section_pieces(customer, ["leave"], axis(0), [a_hit], scope) == []
-        assert port.cards(customer, [document], scope) == {}
+        assert port.whole(customer, scope, 100_000, user_id=None) is None
+        assert port.topic_pieces(customer, ["leave", "holidays"], [a_hit], scope, user_id=None) == []
+        assert port.section_pieces(customer, ["leave"], axis(0), [a_hit], scope, user_id=None) == []
+        assert port.cards(customer, [document], scope, user_id=None) == {}
 
-    assert {hit.seq for hit in port.topic_pieces(a, ["leave"], [], theirs)} == {1, 3, 4}
-    assert [hit.seq for hit in port.section_pieces(a, ["leave"], axis(0), [], theirs)] == [0, 1, 2, 3, 4]
-    assert port.cards(a, [document], theirs) == {document: ("offer.pdf", {"title": "Offer"})}
+    assert {hit.seq for hit in port.topic_pieces(a, ["leave"], [], theirs, user_id=None)} == {1, 3, 4}
+    assert [hit.seq for hit in port.section_pieces(a, ["leave"], axis(0), [], theirs, user_id=None)] == [
+        0,
+        1,
+        2,
+        3,
+        4,
+    ]
+    assert port.cards(a, [document], theirs, user_id=None) == {document: ("offer.pdf", {"title": "Offer"})}
 
 
 def test_cx4_another_customer_sees_no_section_or_topic(db: Database) -> None:

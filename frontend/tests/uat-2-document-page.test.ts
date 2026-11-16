@@ -102,7 +102,8 @@ describe("#417 a [?] in the Text view: type the word in its place, right there",
   // Changed on purpose (#431): the box asks for the word Fix text works on (ask, the line as shown
   // for the line's own flag), and while it is open the row's Fix text steps aside (fix-text-431.test.ts).
   it("opens the box under the line from a press on the line or Fix text, labelled by its hint", () => {
-    expect(panel).toMatch(/onShow\(\{ name: `line \$\{index \+ 1\}`, region: line\.region, label: null \}\);\s*if \(toFix && ask\) openFix\(toFix, ask\.draft\);/);
+    // Changed on purpose (#614): the box is the row's own (its index), so one box opens at a time.
+    expect(panel).toMatch(/onShow\(\{ name: `line \$\{index \+ 1\}`, region: line\.region, label: null \}\);\s*if \(toFix && ask\) openFix\(toFix, ask\.draft, index\);/);
     expect(panel).toContain("aria-expanded={false}");
     expect(panel).toMatch(/<label className=\{styles\.fixLabel\} htmlFor=\{`\$\{boxId\}-text`\}>\s*\{ask\.hint\}/);
     expect(panel).toMatch(/<input\s+ref=\{fixInput\}\s+id=\{`\$\{boxId\}-text`\}/);

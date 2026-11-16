@@ -205,8 +205,11 @@ def rig(
     max_check_crops: int = 200,
     settings: Settings = SETTINGS,
     moving_clock: bool = False,
+    office: Callable[[str, bytes], bytes] | None = None,
+    renditions: MemoryStorage | None = None,
 ) -> Rig:
-    """``moving_clock``: the clock moves with the timer, from T0, else it stands at T0."""
+    """``moving_clock``: the clock moves with the timer, from T0, else it stands at T0. ``office``
+    and ``renditions`` (PRD 7, #605): a Word file's converter and where its PDF is stored."""
     timer = Timer()
     start = timer()
     statuses, storage = MemoryStatuses(), MemoryStorage()
@@ -248,6 +251,8 @@ def rig(
             max_check_crops=max_check_crops,
             run_config=CONFIG,
             embed_model="embed-tag" if embed is not None else None,
+            office=office,
+            renditions=renditions,
         )
 
     upload = UploadService(PIPELINE_POLICY, repo, storage, MemoryQueue(), new_id=SeqIds())

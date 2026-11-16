@@ -86,7 +86,7 @@ def list_review(
     document_id: uuid.UUID | None = None,
     reason: Annotated[list[QueueReason] | None, Query(max_length=len(get_args(QueueReason)))] = None,
 ) -> dict[str, Any]:
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         rows, total = review_sql.list_queue(
             conn,
             user.customer_id,
@@ -184,7 +184,7 @@ def verify_all(body: VerifyAllBody, user: Reviewer, context: Context) -> dict[st
     after: tuple[datetime, str] | None = None
     until: datetime | None = None
     while True:
-        with context.db.customer(customer_id) as conn:
+        with context.db.user(customer_id, user.user_id) as conn:
             if until is None:
                 until = review_sql.database_now(conn)
             chunk = review_sql.next_chunk(
@@ -207,7 +207,7 @@ def verify_all(body: VerifyAllBody, user: Reviewer, context: Context) -> dict[st
         if not chunk:
             break
         after = (chunk[-1]["created_at"], str(chunk[-1]["id"]))
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         left = review_sql.count_queue(conn, customer_id, document_id=document_id, reasons=body.reason)
     return {
         "verified": verified,
@@ -222,7 +222,7 @@ def verify_all(body: VerifyAllBody, user: Reviewer, context: Context) -> dict[st
 def resolve(value_id: uuid.UUID, body: ResolveBody, user: Reviewer, context: Context) -> dict[str, Any]:
     typed = _typed_text(body.choice, body.value)
     customer_id, value = user.customer_id, str(value_id)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         _resolve_locked(conn, user, value, choice=body.choice, typed=typed, remember=body.remember)
         item = review_sql.get_item(conn, customer_id, value)
         if item is None:  # no page row: not reviewable, and raising here rolls back

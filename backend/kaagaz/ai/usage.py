@@ -15,7 +15,8 @@ and ``chat``. It is a ContextVar too, so it reaches threads started with
 ``copy_context().run`` inside it.
 
 When the scope ends, with or without an error (the calls were billed either way), its
-tallies are saved in one INSERT in ``db.customer()``: one row per (model, kind, cached,
+tallies are saved in one INSERT in ``db.customer()``, or ``db.user()`` for an API request's work
+(``as_person``, PRD 7, #585): one row per (model, kind, cached,
 thinking, resolution). #463 (Tushar, 31 Oct 2026): a page read (PAGE_READ_KINDS) records the
 thinking level and picture detail it was sent at, so the operator's estimate measures a page
 at given settings; every other kind records neither. #463 review: a page read is counted once
@@ -44,7 +45,7 @@ from datetime import UTC, datetime
 from sqlalchemy.exc import SQLAlchemyError
 
 from kaagaz.db import reading_days
-from kaagaz.db.engine import Database, unavailable
+from kaagaz.db.engine import Database, unavailable, user_or_customer
 from kaagaz.db.usage import UsageRow, insert_usage
 from kaagaz.ingestion.errors import BackendUnavailable
 
@@ -104,6 +105,7 @@ class UsageScope:
     document_id: str | None = None
     conversation_id: str | None = None
     db: Database | None = field(default=None, repr=False)  # #478: the live counter's (None: none)
+    as_person: bool = False  # #585: an API request's work, saved as ``user_id`` (Database.user)
     _live_usd: float = field(default=0.0, repr=False)  # #478: dollars since the last page read
     _tallies: dict[_Key, _Tally] = field(default_factory=dict, repr=False)
     _providers: dict[_Key, str | None] = field(default_factory=dict, repr=False)
@@ -165,8 +167,9 @@ class UsageScope:
             return
         with self._lock:
             usd, self._live_usd = self._live_usd, 0.0
+        person = self.user_id if self.as_person else None
         try:
-            with unavailable(), self.db.customer(self.customer_id) as conn:
+            with unavailable(), user_or_customer(self.db, self.customer_id, person) as conn:
                 day = reading_days.india_day(datetime.now(UTC))
                 reading_days.count(conn, self.customer_id, day, pages=pages, cost_usd=usd)
         except (SQLAlchemyError, BackendUnavailable):
@@ -227,12 +230,14 @@ def usage_scope(
     kind: str,
     document_id: str | None = None,
     conversation_id: str | None = None,
+    as_person: bool = False,
 ) -> Iterator[UsageScope]:
     """Bill the model calls made inside to this work; saved when it ends. ``kind`` is one
-    of KINDS (ValueError otherwise)."""
+    of KINDS (ValueError otherwise). ``as_person``: the signed-in ``user_id``'s API request, whose
+    ledger writes run as that person (#585); False: a worker's, on the organisation."""
     if kind not in KINDS:
         raise ValueError("unknown usage kind")
-    scope = UsageScope(customer_id, user_id, kind, document_id, conversation_id, db=db)
+    scope = UsageScope(customer_id, user_id, kind, document_id, conversation_id, db=db, as_person=as_person)
     token, billed = _CURRENT.set(scope), _BILLED_AS.set(None)  # an outer billed_as is not this work's
     try:
         yield scope
@@ -242,7 +247,7 @@ def usage_scope(
         rows = scope.rows()
         if rows:
             try:
-                with unavailable(), db.customer(customer_id) as conn:
+                with unavailable(), user_or_customer(db, customer_id, user_id if as_person else None) as conn:
                     insert_usage(conn, rows)
             except (SQLAlchemyError, BackendUnavailable):
                 _log.warning("usage not saved", extra={"code": "usage_not_saved"})

@@ -99,11 +99,13 @@ EVERYTHING = Scope()  # no scope: every ready, current document of the customer
 def resolve(
     conn: Connection, customer_id: str, body: ScopeBody, *, timezone: str, detected_type: str | None = None
 ) -> Scope:
-    """``body`` for this customer, now. ``conn`` comes from ``Database.customer(customer_id)``."""
+    """``body`` for this customer, now. ``conn`` comes from ``Database.user`` (the asker)."""
     folder_ids: tuple[str, ...] | None = None
     if body.folder_id is not None:
-        # The folder first, then its subfolders; empty when this customer has no such folder.
-        subtree = folders_sql.descendant_ids(conn, customer_id, str(body.folder_id))
+        # The folder first, then its subfolders; empty when this customer has no such folder, or
+        # (PRD 7, #599) the asker can't see it: as for a folder that never was.
+        seen = listing.folders_seen(conn, customer_id, [str(body.folder_id)])
+        subtree = folders_sql.descendant_ids(conn, customer_id, str(body.folder_id)) if seen else []
         folder_ids = tuple(subtree if body.include_subfolders else subtree[:1])
     tag_ids = _distinct(body.tag_ids)
     if tag_ids and tags_sql.count_existing(conn, customer_id, tag_ids) != len(tag_ids):
@@ -146,7 +148,9 @@ def narrow(conn: Connection, customer_id: str, scope: Scope, asked: FileFilters)
         return scope
     department = None
     if isinstance(asked.department_id, uuid.UUID):
-        department = folders_sql.descendant_ids(conn, customer_id, str(asked.department_id))
+        asked_id = str(asked.department_id)  # PRD 7 (#599): a hidden one matches nothing, as an unknown one
+        seen = listing.folders_seen(conn, customer_id, [asked_id])
+        department = folders_sql.descendant_ids(conn, customer_id, asked_id) if seen else []
     kept = set(
         listing.matching_ids(
             conn,

@@ -1,0 +1,254 @@
+/* The access screens (PRD 7 PR 11a): the people picker, the Access page's lists, the Departments
+   tab's access lines and the one-time card. Tokens only, so both themes follow. */
+
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.picker legend {
+  margin-block-end: var(--space-2);
+  font-weight: 600;
+}
+
+/* No scroll box of its own: "Find a person" narrows it, and a dialog's body scrolls. */
+.pickerList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--k-r-4);
+}
+
+/* On the page (a department's people), the list keeps a height and scrolls in itself. */
+.pickerScroll {
+  position: relative; /* hidden screen-reader text inside can't stretch the page */
+  max-height: 16rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.pickerRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-h);
+  padding-inline: var(--space-3);
+  overflow-wrap: anywhere;
+}
+
+/* The Access page: Back to Users, as a document's back link. */
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--h-lg);
+  font-size: var(--fs-base);
+  font-weight: 600;
+  align-self: flex-start;
+}
+
+.line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+}
+
+/* One row of an access list: the name and its line, then the controls at the end. */
+.list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--k-r-4);
+  background: var(--bg-surface);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-3) var(--space-4);
+}
+
+.row + .row {
+  border-block-start: 1px solid var(--border);
+}
+
+.rowText {
+  display: flex;
+  flex: 1 1 14rem;
+  flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.rowLine {
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+.rowControls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-h); /* a finger's room */
+}
+
+/* "Show all 14" in the Department only dialog. */
+.disclosure summary {
+  display: flex;
+  align-items: center;
+  min-height: var(--control-h);
+  cursor: pointer;
+}
+
+/* A department's access, under its name on the Departments tab. */
+.facts {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+.members {
+  flex-basis: 100%;
+}
+
+.warning {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--k-r-4);
+  background: var(--bg-subdued);
+}
+
+.names {
+  margin: 0;
+  padding-inline-start: var(--space-5);
+}
+
+/* The one-time card on Home. */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.card h2,
+.card h3 {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+
+.card p,
+.card ol {
+  margin: 0;
+}
+
+/* PR 11b: the people icon after a folder's name (tree, tiles, Move picker): it never shrinks, so
+   the name is the part cut with "…" (issue 572). */
+.placeIcon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  color: var(--text-secondary);
+}
+
+/* The people icon with its words, under the place heading. */
+.placeBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--badge-h);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  background: var(--bg-subdued);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.placeLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+/* The Audience panel: its groups, each a heading over its names. */
+.audience:focus {
+  outline: none; /* focused only to bring a screen reader back to the list after a form */
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.group h3 {
+  margin: 0;
+  font-size: var(--fs-base);
+}
+
+/* The kept-from-me strip, under the place heading. */
+.kept {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+/* The names list: a long name wraps anywhere; on a phone, Kind and Date go under the name. */
+.keptName {
+  overflow-wrap: anywhere;
+}
+
+.keptFacts {
+  display: none;
+}
+
+@media (max-width: 639.98px) {
+  .keptWide {
+    display: none;
+  }
+
+  .keptFacts {
+    display: block;
+    color: var(--text-secondary);
+    font-size: var(--fs-sm);
+  }
+}

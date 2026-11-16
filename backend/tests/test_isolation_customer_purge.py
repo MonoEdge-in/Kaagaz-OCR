@@ -63,6 +63,12 @@ NOT_CASCADING = {
     ("model_usage", "conversations"),
     # 0043: organisation-wide word suggestions have no document; the finish deletes them (0047).
     ("organization_word_suggestions", "users"),
+    # Changed on purpose (0084, #590): a user is never deleted, so the access rows point at theirs with
+    # NO ACTION; the finish deletes them by name.
+    *[
+        (table, "users")
+        for table in ("department_members", "private_folder_members", "document_shares", "lock_grants")
+    ],
 }
 NO_ACTION_TO_USERS = {table for table, _ in NOT_CASCADING}
 # Keys whose rows are gone before the finish runs: they cascade from documents, and the
@@ -72,6 +78,9 @@ GONE_FIRST = {
     ("ai_task_settings", "users"),
     ("learning_removals", "users"),  # 0051, PRD 6 F3: cascades from its document, SET NULL to its admin
     ("user_identities", "users"),  # 0062, #457: cascades with its user, SET NULL to the admin who approved it
+    ("page_rotations", "users"),  # 0088, #600: cascades from its document, NO ACTION to who saved it
+    # 0089, #594: cascades from its document, NO ACTION to whom it was held for
+    ("version_suggestions", "users"),
 }
 
 
@@ -187,8 +196,20 @@ def _organisation(api: Api, storage: KeyStorage, label: str) -> tuple[str, str, 
             "INSERT INTO upload_sessions (id, customer_id, user_id, storage_key, storage_upload_id,"
             " file_size, part_count, metadata, expires_at) VALUES (:s, :c, :u, :k, :upload_id, 10, 1, '{}',"
             " now() + interval '7 days')",
-            "INSERT INTO audit_log (customer_id, actor_user_id, action, target_type, target_id)"
-            " VALUES (:c, :u, 'document.view', 'document', :d)",
+            # Changed on purpose (0084, #590): the person an entry is about is kept too.
+            "INSERT INTO audit_log (customer_id, actor_user_id, action, target_type, target_id,"
+            " subject_user_id) VALUES (:c, :u, 'document.view', 'document', :d, :u)",
+            # 0084 (#590): a row in each access table.
+            "INSERT INTO department_members (customer_id, department_id, user_id, added_by)"
+            " VALUES (:c, :f, :u, :u)",
+            "INSERT INTO private_folder_members (customer_id, folder_id, user_id, added_by)"
+            " VALUES (:c, :f, :u, :u)",
+            "INSERT INTO document_shares (customer_id, document_id, user_id, given_by)"
+            " VALUES (:c, :d, :u, :u)",
+            "INSERT INTO lock_grants (customer_id, document_id, user_id, given_by) VALUES (:c, :d, :u, :u)",
+            # 0088 (#600): a page turned for everyone.
+            "INSERT INTO page_rotations (customer_id, document_id, page_no, turn, set_by)"
+            " VALUES (:c, :d, 1, 90, :u)",
             # #478: the day's counter and a document held at the daily limit.
             "INSERT INTO reading_days (customer_id, day, pages, cost_usd, alerted_at)"
             " VALUES (:c, current_date, 10, 0.5, now())",
@@ -204,6 +225,7 @@ def _organisation(api: Api, storage: KeyStorage, label: str) -> tuple[str, str, 
                     "k": upload,
                     "upload_id": f"upload-{customer}",
                     "held": held,
+                    "f": folder,
                 },
             )
     _owner(
@@ -425,7 +447,7 @@ def test_a_storage_failure_rolls_that_step_back_and_the_next_run_goes_on(db: Dat
 # Every column audit_log and audit_log_kept share, oldest first.
 _AUDIT = (
     "SELECT id, customer_id, actor_user_id, action, target_type, target_id, details, created_at, folder_id,"
-    " family_id FROM {table} WHERE customer_id = :c ORDER BY id"
+    " family_id, subject_user_id FROM {table} WHERE customer_id = :c ORDER BY id"
 )
 _KEPT = "SELECT count(*) FROM audit_log_kept WHERE customer_id = :c"
 _A_YEAR_AGO = (

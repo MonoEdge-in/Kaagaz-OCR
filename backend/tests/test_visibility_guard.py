@@ -40,6 +40,13 @@ MODULES: tuple[ModuleType, ...] = (
     word_counts,
 )
 
+
+def _load_0091() -> ModuleType:
+    from tests.test_migration_0037 import _load
+
+    return _load("0091_database_rule.py")
+
+
 # (module, constant name) -> the fragment it must carry.
 FILTERED: dict[tuple[ModuleType, str], str] = {
     # Search and chat: the current version of a read document, not in Trash.
@@ -48,6 +55,7 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (hybrid, "_FUZZY"): LIVE_CURRENT,
     (hybrid, "_MEANING"): LIVE_CURRENT,
     (hybrid, "_MEANING_EXACT"): LIVE_CURRENT,
+    (hybrid, "_VISIBLE_VECTORS"): LIVE_CURRENT,  # PRD 7 section 7: the small-set count before them
     (hybrid, "_DETAILS"): LIVE_CURRENT,
     (hybrid, "_NEIGHBOURS"): LIVE_CURRENT,  # Q4: the pieces next to an answer's hits
     # PRD 5: whole documents (CX5), topic and section pieces (CX6) and cards (M2).
@@ -73,6 +81,7 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     # Clarifying questions (PRD 6 B1): names and places only of the documents chat may cite.
     (clarify, "_CANDIDATES"): LIVE_CURRENT,
     (clarify, "_NEAR"): LIVE_CURRENT,  # B2: the places of a district
+    (clarify, "_ANY_KEYS"): LIVE_CURRENT,  # PRD 7 (#602): whether any key is one the person sees
     # The numbers in answers: the same, in every CTE.
     (fixed_queries, "_AVAILABLE_FIELDS"): LIVE_CURRENT,
     (fixed_queries, "_TOP_GROUP"): LIVE_CURRENT,
@@ -103,13 +112,8 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (review, "_NEXT_CHUNK"): LIVE_CURRENT,
     (review, "_NEXT_CHUNK_ALL"): LIVE_CURRENT,
     (review, "_NEXT_CHUNK_FOR_DOCUMENT"): LIVE_CURRENT,
-    # The admin numbers: each family once, by its current version; open review
-    # items as the queue shows them.
-    (admin, "_DOCUMENTS_BY_STATUS"): LISTED,
-    (admin, "_COUNTS"): LIVE_CURRENT,
-    # The failed jobs list (PRD 3 Z1): each family once, by its current version.
-    (admin, "_FAILED"): LISTED,
-    (admin, "_FAILED_COUNT"): LISTED,
+    # Changed on purpose (#606): the admin numbers and the failed jobs list are 0091's owner-rights
+    # functions now (test_the_admin_functions_keep_their_fragments).
     # The document list: each family's current version, out of Trash by default,
     # or only Trash (trashed=true).
     (listing, "_LIST"): LISTED,
@@ -131,10 +135,6 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
 
 # Statements that count every version on purpose, and why.
 ALL_VERSIONS: dict[tuple[ModuleType, str], str] = {
-    (admin, "_KEPT"): "the admin numbers show how many older versions and Trash families are kept",
-    # Changed on purpose (#239, 27 Oct 2026): #386's numbers per member.
-    (admin, "_MEMBERS"): "a member's uploads in a window: each file they uploaded, a version or later"
-    " put in Trash included",
     # Changed on purpose (PRD 1, 0041).
     (listing, "_DASHBOARD_TILES"): "the dashboard counts current families, and new versions as versions",
 }
@@ -154,13 +154,11 @@ BY_ID: dict[tuple[ModuleType, str], str] = {
     ): "locks the link targets and old partners by id in one order; filters nothing",
     # Changed on purpose (features 25-27, 15 Oct 2026): 0023's models._USABLE joined documents;
     # resolve_scan now reads the document's choice by id alone (_DOCUMENT, no join to list).
-    (
-        usage,
-        "_REPORT",
-    ): "the spend names its documents by id: one in Trash or an older version was still billed",
+    # Changed on purpose (#606): usage._REPORT is 0091's kaagaz_admin_usage now.
 }
 
-_JOINS_DOCUMENTS = re.compile(r"\bdocuments d\b")
+# Changed on purpose (#595): or the access view of documents, which these statements read now.
+_JOINS_DOCUMENTS = re.compile(r"\b(?:visible_)?documents d\b")
 _EXISTS = re.compile(r"\bEXISTS\s*\(")
 _CUSTOMER_FILTER = "customer_id = :"
 # #617: ts_stat runs a query text, which takes no bound parameter: its customer filter is
@@ -187,6 +185,15 @@ def _sql(module: ModuleType, name: str) -> str:
 
 
 class VisibilityGuardTest(unittest.TestCase):
+    def test_the_admin_functions_keep_their_fragments(self) -> None:
+        """Changed on purpose (#606): the admin numbers moved into 0091 with their filters: the
+        documents by status and the failed list each family once by its current version (LISTED),
+        the open review items as the queue shows them (LIVE_CURRENT)."""
+        admin_sql = _load_0091().ADMIN
+        self.assertIn(LISTED.strip(), admin_sql["kaagaz_admin_stats()"])
+        self.assertIn(LIVE_CURRENT.strip(), admin_sql["kaagaz_admin_stats()"])
+        self.assertEqual(admin_sql["kaagaz_admin_failed(integer, integer)"].count(LISTED.strip()), 2)
+
     def test_each_filtered_statement_has_its_fragment_once_per_documents_join(self) -> None:
         for (module, name), fragment in FILTERED.items():
             with self.subTest(statement=f"{module.__name__}.{name}"):

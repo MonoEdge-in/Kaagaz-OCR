@@ -64,14 +64,16 @@ class FakeVocabulary:
             return self
         return FakeVocabulary(*(e for e in self.entries if set(e.documents) & set(documents)))
 
-    def candidates(self, customer_id: str, entities: Sequence[Entity]) -> list[list[Entry]]:
+    def candidates(
+        self, customer_id: str, entities: Sequence[Entity], *, user_id: str | None = None
+    ) -> list[list[Entry]]:
         self.calls += 1
         return [[e for e in self.entries if e.kind == entity.kind] for entity in entities]
 
-    def any_keys(self, customer_id: str) -> bool:
+    def any_keys(self, customer_id: str, *, user_id: str | None = None) -> bool:
         return bool(self.entries or self.nearby)
 
-    def near(self, customer_id: str, districts: Sequence[str]) -> list[Entry]:
+    def near(self, customer_id: str, districts: Sequence[str], *, user_id: str | None = None) -> list[Entry]:
         self.districts = sorted(districts)
         return self.nearby
 
@@ -520,7 +522,7 @@ def test_a_typed_property_never_says_none_was_named() -> None:
     """Second review: the typed reply "85" is a name, so it is resolved or asked, never "No one
     property was named"."""
     pending = Pending("What is the area?", "property", None, (), (), 1, (), typed="85")
-    step = after_reply(FakeVocabulary(*SCREENSHOT), A, pending)
+    step = after_reply(FakeVocabulary(*SCREENSHOT), A, None, pending)
     assert NO_PROPERTY not in step.assumptions
 
 

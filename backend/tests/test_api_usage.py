@@ -109,6 +109,10 @@ class _Ledger:
     def customer(self, customer_id: str) -> Iterator[None]:
         yield None
 
+    @contextmanager
+    def user(self, customer_id: str, user_id: str) -> Iterator[None]:  # a route's own transaction
+        yield None
+
 
 def _user() -> CurrentUser:
     return CurrentUser(

@@ -32,7 +32,7 @@ from pydantic import BaseModel, ConfigDict
 from kaagaz.api.auth import AdminSession, require_admin_session
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
-from kaagaz.api.views import answer_with_source_states, cited_document_ids, iso
+from kaagaz.api.views import answer_with_source_states, cited_document_ids, iso, no_access
 from kaagaz.db import answer_quality as quality_sql
 from kaagaz.db import audit
 from kaagaz.db import chat as chat_sql
@@ -73,7 +73,7 @@ def list_answer_quality(
     """Three statements: the page, the documents its answers cite, the weekly counts."""
     zone = context.settings.timezone
     since = first_monday(context.clock(), zone, weeks)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         rows, total = quality_sql.not_useful(
             conn, user.customer_id, since=since, handled=status == "handled", limit=limit, offset=offset
         )
@@ -96,10 +96,18 @@ def list_answer_quality(
                 "id": str(row["id"]),
                 "message_id": str(row["message_id"]),
                 "asked_by": row["asked_by"],
-                "question": row["question"],
+                # PRD 7 (#602, question 4): an answer naming a file this Admin can't see shows
+                # "Source not visible to you", with no question or reason.
+                **(
+                    {"question": None, "reason_codes": [], "reason": None}
+                    if no_access(row["answer"], states)
+                    else {
+                        "question": row["question"],
+                        "reason_codes": list(row["reason_codes"]),
+                        "reason": row["reason"],
+                    }
+                ),
                 "answer": answer_with_source_states(row["answer"], states),
-                "reason_codes": list(row["reason_codes"]),
-                "reason": row["reason"],
                 "given_at": iso(row["created_at"]),
                 "handled_at": None if row["handled_at"] is None else iso(row["handled_at"]),
             }
@@ -113,7 +121,7 @@ def list_answer_quality(
 def set_handled(
     feedback_id: uuid.UUID, body: HandledBody, user: AdminSession, context: Context
 ) -> dict[str, Any]:
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         row = quality_sql.set_handled(
             conn, user.customer_id, str(feedback_id), user.user_id, handled=body.handled, seen=body.seen
         )
@@ -139,7 +147,7 @@ def set_handled(
 @router.get("/admin/learned")
 def list_learned(user: AdminSession, context: Context) -> dict[str, Any]:
     """What Kaagaz learned (PRD 6 F3): the documents Useful marks lift now. One statement."""
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         rows = quality_sql.learned(conn, user.customer_id)
     return {
         "items": [
@@ -158,7 +166,7 @@ def list_learned(user: AdminSession, context: Context) -> dict[str, Any]:
 def remove_learned(document_id: uuid.UUID, user: AdminSession, context: Context) -> Response:
     """Remove: the document's marks given before now stop lifting it; audited
     ``learning.remove`` with the document's id only."""
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         if not quality_sql.remove_learning(conn, user.customer_id, str(document_id), user.user_id):
             raise ApiError(404, "not_found")
         audit.record(

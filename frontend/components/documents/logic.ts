@@ -3,7 +3,7 @@
 
 import { ApiError, isStorageFull } from "@/lib/api";
 import { formatDate } from "@/lib/format";
-import type { DocumentStatus, DocumentSummary, UploadLimits } from "@/lib/types";
+import type { DocumentStatus, DocumentSummary, UploadLimits, UploadResult } from "@/lib/types";
 
 /** File name endings the backend can take. The server checks the bytes again. */
 export const ACCEPTED_EXTENSIONS = [
@@ -293,6 +293,11 @@ export function formatProgressPercent(done: number, total: number): string {
   return `${Math.round((done / total) * 100)}%`;
 }
 
+/** PRD 7 section 5 (#599): a copy of a file the uploader can't see. No name, no place, no link. */
+export const HIDDEN_COPY = "This file is already in Kaagaz, in a place you can't see. Ask your admin if you need it.";
+/** PRD 7 section 5 (#605, p2:91): a locked copy the uploader may open: this line and its link only. */
+export const LOCKED_COPY = "A copy already exists and is locked.";
+
 // PRD 5 U10: sending (bytes sent), saving (from the last byte to the server's reply),
 // reading (the stored document, followed through GET /api/batches/{id} until it is
 // no longer being read), then done, with the document when it was followed.
@@ -306,10 +311,20 @@ export type UploadState =
   | { kind: "done"; documentId: string; document?: DocumentSummary }
   // inTrash: the earlier copy is in Trash, so the row offers Restore.
   | { kind: "duplicate"; documentId: string; existingName: string; inTrash: boolean; restoreError?: string }
+  // PRD 7 (#599): already in Kaagaz, in a place this person can't see: no name, no link.
+  | { kind: "elsewhere" }
+  // PRD 7 (#605): already in Kaagaz, locked, and this person may open it: its link only.
+  | { kind: "locked"; documentId: string }
   | { kind: "restoring"; documentId: string; existingName: string }
   | { kind: "restored"; documentId: string; existingName: string }
   // retry: it was not sent (the connection or the server), and this tab still has the file.
   | { kind: "error"; message: string; retry?: boolean };
+
+/** An upload the server answered with no document (PRD 7): a copy the person can't see (#599),
+ * or a locked copy they may open (#605), named by its link only. */
+export function copyState(result: Extract<UploadResult, { document: null }>): UploadState {
+  return result.hidden ? { kind: "elsewhere" } : { kind: "locked", documentId: result.locked.id };
+}
 
 /**
  * One line of words for an upload's state, read out by screen readers. The
@@ -338,6 +353,10 @@ export function uploadStateText(state: UploadState): string {
     }
     case "duplicate":
       return state.inTrash ? "Already uploaded, in Trash" : "Already uploaded";
+    case "elsewhere":
+      return "Already in Kaagaz";
+    case "locked":
+      return "Already in Kaagaz, locked";
     case "restoring":
       return "Restoring";
     case "restored":

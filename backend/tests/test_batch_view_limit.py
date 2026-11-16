@@ -53,12 +53,12 @@ def test_the_batch_route_asks_for_at_most_max_files_per_batch(monkeypatch: pytes
         return []
 
     @contextlib.contextmanager
-    def customer(customer_id: str) -> Iterator[object]:
+    def as_person(customer_id: str, user_id: str) -> Iterator[object]:
         yield object()
 
     monkeypatch.setattr(listing, "batch_rows", batch_rows)
     context = SimpleNamespace(
-        settings=make_settings(max_files_per_batch=40), db=SimpleNamespace(customer=customer)
+        settings=make_settings(max_files_per_batch=40), db=SimpleNamespace(user=as_person)
     )
     user = SimpleNamespace(customer_id=CUSTOMER, user_id=USER)
     with pytest.raises(ApiError):  # no rows: the same 404 as any batch not this user's

@@ -58,7 +58,9 @@ def test_a_member_creates_folders_and_lists_them_flat_by_name(db: Database) -> N
     assert suppliers.status_code == 201
     folder = suppliers.json()
     # Changed on purpose (PRD 1, 0041): a folder says its kind and order.
-    assert set(folder) == {"id", "name", "parent_id", "created_at", "kind", "sort_order"}
+    # Changed on purpose (PRD 7, #601): Department only and Private, for the icons.
+    shown = {"id", "name", "parent_id", "created_at", "kind", "sort_order", "department_only", "private"}
+    assert set(folder) == shown
     assert (folder["name"], folder["parent_id"]) == ("Suppliers", None)
     year = _create(member, "2026", parent_id=folder["id"]).json()
     assert year["parent_id"] == folder["id"]

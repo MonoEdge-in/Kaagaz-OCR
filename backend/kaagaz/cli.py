@@ -119,6 +119,12 @@
   department, type, property, party and year folders with nothing in them, ``folders.prune_empty``'s
   rules), listed by each customer's count; ``--apply`` deletes them and then their parents left
   empty, each audited. Folders people made are never listed. Ids and counts only.
+* ``check-access`` (PRD 7, #590): works out every live folder's and live document's department
+  and private folder again from the folder tree, each customer in its own ``db.customer()``, and
+  prints one line for each stored value that differs, then one for each member row whose folder
+  is in neither ``folders`` nor ``trashed_folders``, then how many; exit 1 when any. A folder or
+  document in Trash is left out: it keeps the values it had when it went there (PRD 7 section 5),
+  which its tree need not give any more. Ids only.
 * ``backup-files`` and ``restore-files`` (#476, 3 Nov 2026): every stored file, every
   customer's, as one tar on stdout, read through the S3 API (``S3Storage.write_tar``), for the
   nightly backup (infra/ec2/pgdump.sh); and that tar from stdin back into an EMPTY bucket, made
@@ -133,6 +139,14 @@
   the operations alerts' one rule (kaagaz.ops_alert); an email not sent fails the command.
 * ``ops-alert --subject S --text T``: the same with this subject and text (A22,
   infra/ec2/ops-alert.sh: a failed deploy or dump, an unhealthy container).
+* ``person-rule on|off|status [--customer ID | --all]`` (PRD 7, #606): the per-person database
+  rule's switch (``kaagaz.db.person_rule``), on the owner's own login (the migrate container).
+  ``on`` refuses until the workers run as kaagaz_worker; ``off`` (the way back) never refuses.
+  Both are logged and sent as an ops alert (a failed alert is said, never a failed command).
+  ``status`` lists where it is on. Ids only.
+* Every command that reads the database runs as the worker role (PRD 7, #606): DB_WORKER_ROLE,
+  else kaagaz_worker when the login may switch into it (the owner's, migrate's), else it refuses:
+  as kaagaz_app with no person it would see nothing once the rule is on.
 * ``queue-depth``: one line a lane (``main`` and ``express``) with its waiting, in-flight and
   delayed job counts, read from the queue (``SqsQueue.backlog``). It touches no database, file
   storage or model. The server's idle-stop reads it to stay awake while a job is in flight or a
@@ -151,6 +165,7 @@ import functools
 import getpass
 import hashlib
 import json
+import logging
 import math
 import os
 import sys
@@ -166,6 +181,7 @@ from typing import IO, Any, Protocol, TextIO
 
 import boto3
 from sqlalchemy import Connection, RowMapping, text
+from sqlalchemy.exc import DBAPIError
 
 from kaagaz import ops_alert, verify_models
 from kaagaz.adapters.email import Mailer
@@ -176,7 +192,7 @@ from kaagaz.answering.draft import ANSWER_PROMPT_HASH
 from kaagaz.api import totp
 from kaagaz.api.auth import ROLES, hash_password
 from kaagaz.api.twostep import box
-from kaagaz.db import audit, customer_purge
+from kaagaz.db import audit, customer_purge, person_rule
 from kaagaz.db import customers as customers_sql
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import operator_models as operator_models_sql
@@ -184,6 +200,7 @@ from kaagaz.db import operators as operators_sql
 from kaagaz.db import users as users_sql
 from kaagaz.db.document_stories import recipe_tag as story_tag
 from kaagaz.db.engine import Database, make_engine
+from kaagaz.db.sqlstate import INSUFFICIENT_PRIVILEGE, sqlstate
 from kaagaz.extraction.checks import GSTIN_FIELDS, gstin_valid
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -249,6 +266,7 @@ LIMIT_NAMES = ("hard_lines_max", "hard_share", "crop_pad")
 BACKUP_REGION = "ap-south-1"
 BACKUP_PART_BYTES = 32 * 1024 * 1024
 # The commands that read the settings but no database.
+_log = logging.getLogger(__name__)
 NO_DATABASE = ("backup-files", "restore-files", "disk-alert", "ops-alert")
 
 
@@ -357,6 +375,14 @@ def _parser() -> argparse.ArgumentParser:
     prune = commands.add_parser("prune-folders", help="the empty folders Kaagaz made; --apply deletes them")
     prune.add_argument("--customer-id", help="one customer only (default: every customer)")
     prune.add_argument("--apply", action="store_true", help="delete them (default: only count them)")
+
+    commands.add_parser("check-access", help="each stored department and private folder against the tree")
+
+    rule = commands.add_parser("person-rule", help="the per-person database rule's switch (owner only)")
+    rule.add_argument("action", choices=("on", "off", "status"))
+    where = rule.add_mutually_exclusive_group()
+    where.add_argument("--customer", help="one organisation's id")
+    where.add_argument("--all", action="store_true", help="every organisation")
 
     saving = commands.add_parser("cost-saving", help="what Cost saving read and saved in the last runs")
     saving.add_argument("--customer-id", "--customer", help="one customer only (default: every customer)")
@@ -836,6 +862,65 @@ def _prune_folders(db: Database, customer_id: str | None, apply: bool, out: Text
         total += count
     verb = "deleted" if apply else "empty, not deleted (add --apply)"
     out.write(f"{total} folder{'' if total == 1 else 's'} {verb}\n")
+
+
+# check-access: each live folder's department (its top-level folder when that is a department) and
+# private folder (the nearest private one, itself included), walked down from the top level; then
+# each live folder and live document whose stored values differ: (kind, id, stored, worked out).
+_ACCESS_DIFFERENCES = text(
+    "WITH RECURSIVE tree (id, department_id, private_folder_id, depth) AS ("
+    " SELECT f.id, CASE WHEN f.kind = 'department' THEN f.id END, CASE WHEN f.private THEN f.id END, 1"
+    " FROM folders f WHERE f.customer_id = :c AND f.parent_id IS NULL"
+    " UNION ALL"
+    " SELECT f.id, t.department_id, CASE WHEN f.private THEN f.id ELSE t.private_folder_id END, t.depth + 1"
+    " FROM tree t JOIN folders f ON f.parent_id = t.id WHERE f.customer_id = :c AND t.depth < 101)"
+    " SELECT 'folder', f.id, f.department_id, f.private_folder_id, t.department_id, t.private_folder_id"
+    " FROM folders f LEFT JOIN tree t ON t.id = f.id WHERE f.customer_id = :c"
+    " AND (f.department_id, f.private_folder_id) IS DISTINCT FROM (t.department_id, t.private_folder_id)"
+    " UNION ALL"
+    " SELECT 'document', d.id, d.department_id, d.private_folder_id, t.department_id, t.private_folder_id"
+    " FROM documents d LEFT JOIN tree t ON t.id = d.folder_id"
+    " WHERE d.customer_id = :c AND d.deleted_at IS NULL"
+    " AND (d.department_id, d.private_folder_id) IS DISTINCT FROM (t.department_id, t.private_folder_id)"
+    " ORDER BY 1, 2"
+)
+# Member rows whose folder is in neither table (it has no key to folders, 0084).
+_ACCESS_ORPHANS = text(
+    "SELECT 'department_members', m.department_id, m.user_id FROM department_members m"
+    " WHERE m.customer_id = :c"
+    " AND NOT EXISTS (SELECT 1 FROM folders f WHERE f.customer_id = :c AND f.id = m.department_id)"
+    " AND NOT EXISTS (SELECT 1 FROM trashed_folders t WHERE t.customer_id = :c AND t.id = m.department_id)"
+    " UNION ALL"
+    " SELECT 'private_folder_members', m.folder_id, m.user_id FROM private_folder_members m"
+    " WHERE m.customer_id = :c"
+    " AND NOT EXISTS (SELECT 1 FROM folders f WHERE f.customer_id = :c AND f.id = m.folder_id)"
+    " AND NOT EXISTS (SELECT 1 FROM trashed_folders t WHERE t.customer_id = :c AND t.id = m.folder_id)"
+    " ORDER BY 1, 2, 3"
+)
+
+
+def _check_access(db: Database, out: TextIO) -> int:
+    """check-access: every customer's differences (``_ACCESS_DIFFERENCES``, ``_ACCESS_ORPHANS``),
+    one line each, then how many; returns how many. O(F + D) a customer for F folders and D
+    documents."""
+    with db.system() as conn:
+        customers = indexing.customer_ids(conn)
+    found = 0
+    for customer in customers:
+        with db.customer(customer) as conn:
+            differences = conn.execute(_ACCESS_DIFFERENCES, {"c": customer}).all()
+            orphans = conn.execute(_ACCESS_ORPHANS, {"c": customer}).all()
+        for kind, row_id, department, private, tree_department, tree_private in differences:
+            out.write(
+                f"customer {customer}: {kind} {row_id} stores department {department or 'none'}"
+                f" private folder {private or 'none'}; the tree gives department {tree_department or 'none'}"
+                f" private folder {tree_private or 'none'}\n"
+            )
+        for table, folder, user in orphans:
+            out.write(f"customer {customer}: {table} of user {user}: folder {folder} is in neither table\n")
+        found += len(differences) + len(orphans)
+    out.write(f"{found} difference{'' if found == 1 else 's'}\n")
+    return found
 
 
 def _scan_times(db: Database, customer_id: str | None, last: int, out: TextIO) -> None:
@@ -1430,6 +1515,68 @@ def _disk_alert(settings: Settings, mailer: Mailer | None, used: int) -> None:
     )
 
 
+def _cli_role(engine: Any, settings: Settings) -> str:
+    """PRD 7 (#606): the worker role (module notes), or CliError."""
+    if settings.db_worker_role != settings.db_app_role:
+        return settings.db_worker_role
+    with engine.connect() as conn:
+        reaches = conn.execute(
+            text("SELECT pg_has_role(session_user, :w, 'MEMBER')"), {"w": person_rule.WORKER_ROLE}
+        ).scalar()
+    engine.dispose()  # a command that never reads the database leaves no open connection behind
+    if not reaches:
+        raise CliError(
+            f"the CLI runs as {person_rule.WORKER_ROLE}, which this login can't switch into: run it in the"
+            " migrate container (as kaagaz_app with no person it would see nothing under the database rule)"
+        )
+    return person_rule.WORKER_ROLE
+
+
+def _person_rule(db: Database, args: argparse.Namespace, settings: Settings, mailer: Mailer | None) -> str:
+    """person-rule (module notes), on the login itself (the owner's: nothing else may touch the
+    switch). Its line, and for on and off one log line and an ops alert, best effort."""
+    if args.action != "status" and not (args.all or args.customer):
+        raise CliError("say --customer ID or --all")
+    customer = None if args.all else args.customer
+    if customer is not None:
+        try:
+            uuid.UUID(customer)
+        except ValueError:
+            raise CliError("no such organisation") from None
+    try:
+        with db.engine.begin() as conn:
+            if args.action == "status":
+                rows = person_rule.status(conn)
+                said = [f"on for {c or 'every organisation'} since {at} by {by}" for c, at, by in rows]
+                return "\n".join(said) or "off"
+            if customer is not None and not person_rule.is_customer(conn, customer):
+                raise CliError("no such organisation")
+            if args.action == "on":
+                person_rule.turn_on(conn, customer, getpass.getuser())
+            else:
+                gone = person_rule.turn_off(conn, customer)
+                # Off for one organisation is no way back while the rule is on for every one.
+                if customer is not None and person_rule.on_everywhere(conn):
+                    raise CliError("still on for every organisation: use off --all")
+                if customer is not None and not gone:
+                    raise CliError("it was not on for that organisation")
+    except person_rule.Refused as refused:
+        raise CliError(f"person-rule on refused: {refused}") from None
+    except DBAPIError as error:
+        if sqlstate(error) == INSUFFICIENT_PRIVILEGE:
+            raise CliError("person-rule needs the owner's login: run it in the migrate container") from None
+        raise
+    line = f"person rule {args.action} for {customer or 'every organisation'}"
+    _log.warning(line, extra={"code": "person_rule"})
+    missing = ops_alert.missing(settings)
+    if missing is not None:
+        return f"{line} (no ops alert: {missing})"
+    sent = ops_alert.send_ops_alert(
+        settings, f"Kaagaz: {line}", line + "\n", purpose="person_rule", mailer=mailer
+    )
+    return line if sent else f"{line} (the ops alert was not sent: the log says why)"
+
+
 def _alert(settings: Settings, mailer: Mailer | None, subject: str, text: str, *, purpose: str) -> None:
     problem = ops_alert.missing(settings)
     if problem is not None:
@@ -1492,7 +1639,7 @@ def main(
             if args.record:
                 if len(set(args.model)) != 1:
                     raise CliError("--record checks exactly one --model")
-                owner = db or Database(make_engine(checked.database_url), checked.db_app_role)
+                owner = db or Database(make_engine(checked.database_url), checked.db_worker_role)
                 if args.chat:
                     record_chat = functools.partial(_record_chat_verified, owner)
                 else:
@@ -1540,8 +1687,11 @@ def main(
             return 0
         if db is None:
             settings = settings or Settings.from_env(env)
-            db = Database(make_engine(settings.database_url), settings.db_app_role)
-        if args.command == "refresh-models":
+            engine = make_engine(settings.database_url)
+            db = Database(engine, _cli_role(engine, settings))
+        if args.command == "person-rule":
+            stdout.write(_person_rule(db, args, settings or Settings.from_env(env), mailer) + "\n")
+        elif args.command == "refresh-models":
             stdout.write(_refresh_models(db, settings or Settings.from_env(env)) + "\n")
         elif args.command == "create-customer":
             password = _password(env, ADMIN_ENV_VAR, ask)
@@ -1565,6 +1715,9 @@ def main(
             _measure_compact(db, args.days, stdout)
         elif args.command == "prune-folders":
             _prune_folders(db, args.customer_id, args.apply, stdout)
+        elif args.command == "check-access":
+            if _check_access(db, stdout):
+                return 1
         elif args.command == "cost-saving":
             stdout.write(cost_saving_report(_ready_runs(db, args.customer_id, args.last)) + "\n")
         elif args.command in CUSTOMER_STATUS:

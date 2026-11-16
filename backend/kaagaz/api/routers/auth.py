@@ -117,6 +117,7 @@ Why the sign-in looks the way it does (council record 29 Sep, WP1.3):
 import dataclasses
 import json
 import logging
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
@@ -162,6 +163,7 @@ from kaagaz.api.twostep import digits as _digits
 from kaagaz.api.twostep import refused as _refused
 from kaagaz.api.twostep import unix as _unix
 from kaagaz.api.views import iso, me_json
+from kaagaz.db import access as access_sql
 from kaagaz.db import audit, identities
 from kaagaz.db import email_links as links_sql
 from kaagaz.db import users as users_sql
@@ -386,9 +388,7 @@ def turn_on_two_step(body: CurrentPasswordBody, user: User, context: Context) ->
     if user.totp_enabled:
         raise ApiError(409, "conflict", "Two-step sign-in is already on.")
     now = context.clock()
-    _check_current_password(context, user, body.password, now)
-    with context.db.customer(user.customer_id) as conn:
-        users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
+    _succeeded(context, _check_current_password(context, user, body.password, now), signed_in=True)
     return _enrol_offer(context, user)
 
 
@@ -405,7 +405,7 @@ def turn_off_two_step(
         raise ApiError(409, "two_step_required", TWO_STEP_REQUIRED)
     now = context.clock()
     _prove(context, user, body.password, body.code)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         version = users_sql.turn_off_totp(conn, user.customer_id, user.user_id, now=now)
         if version is not None:
             _record(conn, user.customer_id, "auth.totp_off", actor=user.user_id, target=user.user_id)
@@ -435,7 +435,7 @@ def change_password(
     now = context.clock()
     _prove(context, user, body.current_password, body.code)
     password_hash = hash_password(body.new_password)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         row = users_sql.set_password(
             conn, user.customer_id, user.user_id, password_hash=password_hash, must_change=False
         )
@@ -460,9 +460,7 @@ def confirm_password(body: CurrentPasswordBody, user: User, request: Request, co
     claims = session_claims(request, context.settings, _unix(now))
     if claims is None:  # never: ``user`` was read from these claims
         raise ApiError(401, "not_signed_in")
-    _check_current_password(context, user, body.password, now)
-    with context.db.customer(user.customer_id) as conn:
-        users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
+    _succeeded(context, _check_current_password(context, user, body.password, now), signed_in=True)
     response = Response(status_code=204)
     set_confirm_cookie(response, user, context.settings, now=_unix(now), session_id=claims.session_id)
     return response
@@ -471,7 +469,7 @@ def confirm_password(body: CurrentPasswordBody, user: User, request: Request, co
 @router.post("/auth/logout", status_code=204)
 def logout(request: Request, user: UserAllowPasswordChange, context: Context) -> Response:
     claims = session_claims(request, context.settings, _unix(context.clock()))
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         if claims is not None:  # always: ``user`` was read from these claims
             ends = datetime.fromtimestamp(claims.expires_at, UTC)
             users_sql.end_session(conn, user.customer_id, user.user_id, claims.session_id, expires_at=ends)
@@ -483,7 +481,7 @@ def logout(request: Request, user: UserAllowPasswordChange, context: Context) ->
 
 @router.post("/auth/logout-everywhere", status_code=204)
 def logout_everywhere(user: UserAllowGoogleLink, context: Context) -> Response:  # also the limited session
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         users_sql.bump_session_version(conn, user.customer_id, user.user_id)
         _record(conn, user.customer_id, "auth.logout_everywhere", actor=user.user_id, target=user.user_id)
     response = Response(status_code=204)
@@ -493,11 +491,13 @@ def logout_everywhere(user: UserAllowGoogleLink, context: Context) -> Response: 
 
 @router.get("/auth/me")
 def me(user: UserAllowPasswordChange, context: Context) -> dict[str, Any]:
+    recent, access = _recent_connections(context, user)
     return me_json(
         user,
         email_on=email_on(context),
         providers=oidc.enabled_providers(context.settings),
-        recent_connections=_recent_connections(context, user),
+        recent_connections=recent,
+        access=access,
     )
 
 
@@ -516,28 +516,41 @@ def session(request: Request) -> dict[str, Any]:
             }
         raise
     context = get_context(request)
-    recent = _recent_connections(context, user)
+    recent, access = _recent_connections(context, user)
     providers = oidc.enabled_providers(context.settings)
-    me = me_json(user, email_on=email_on(context), providers=providers, recent_connections=recent)
+    me = me_json(
+        user, email_on=email_on(context), providers=providers, recent_connections=recent, access=access
+    )
     return {"signed_in": True, "me": me}
+
+
+def _access(context: AppContext, user: CurrentUser) -> tuple[bool, list[str], bool, bool]:
+    """PRD 7 (#601): the person's Management, the departments they head, whether they are in a
+    live department and whether walls are set (``access_sql.me``)."""
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        return access_sql.me(conn)
 
 
 # --- the steps they share ----------------------------------------------------------------
 
 
-def _recent_connections(context: AppContext, user: CurrentUser) -> list[dict[str, str]]:
+def _recent_connections(
+    context: AppContext, user: CurrentUser
+) -> tuple[list[dict[str, str]], tuple[bool, list[str], bool, bool]]:
     """The user's approved connections made in the last RECENT_DAYS, for the app's "Google
-    connected on 30 Oct." banner (#457 phase 1); none, and nothing read, while no provider is on."""
-    if not oidc.enabled_providers(context.settings):
-        return []
+    connected on 30 Oct." banner (#457 phase 1; none, and nothing read, while no provider is on),
+    and their access (PRD 7, #601), in one transaction."""
+    providers = oidc.enabled_providers(context.settings)
     since = context.clock() - timedelta(days=RECENT_DAYS)
-    with context.db.customer(user.customer_id) as conn:
-        rows = identities.for_user(conn, user.customer_id, user.user_id)
-    return [
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        rows = identities.for_user(conn, user.customer_id, user.user_id) if providers else []
+        access = access_sql.me(conn)
+    recent = [
         {"provider": str(row["provider"]), "linked_at": iso(row["linked_at"])}
         for row in rows
         if row["status"] == "approved" and row["linked_at"] >= since
     ]
+    return recent, access
 
 
 def _check_password(context: AppContext, email: str, password: str, address: str) -> AttemptRow:
@@ -591,8 +604,23 @@ def _google_only(context: AppContext, attempt: AttemptRow) -> bool:
     )
 
 
+def _account(
+    context: AppContext, customer_id: str, user_id: str, *, signed_in: bool
+) -> AbstractContextManager[Connection]:
+    """The attempt helpers' transaction (#583): as the person when the signed-in user proves
+    themselves again (``_check_current_password``, ``_prove``); on the sign-in path, where the
+    account is not proven yet, the organisation only."""
+    return context.db.user(customer_id, user_id) if signed_in else context.db.customer(customer_id)
+
+
 def _begin(
-    context: AppContext, customer_id: str, user_id: str, now: datetime, *, address: str | None = None
+    context: AppContext,
+    customer_id: str,
+    user_id: str,
+    now: datetime,
+    *,
+    address: str | None = None,
+    signed_in: bool = False,
 ) -> AttemptRow | None:
     """Count one attempt, committed before any check. None: locked. A sign-in gives the visitor's
     ``address``: locked per account and address, then per account at ACCOUNT_MAX_FAILURES (A2).
@@ -603,14 +631,14 @@ def _begin(
         taken = _take(key, now, settings)
         if taken is None:
             seen = address_locks.seen(key)  # before the read (AddressLocks.seen)
-            with context.db.customer(customer_id) as conn:
+            with _account(context, customer_id, user_id, signed_in=signed_in) as conn:
                 account = users_sql.peek_attempt(conn, customer_id, user_id, now=now)
             if account is None or account.failed_logins >= seen:
                 return None
             address_locks.clear(key)  # the account's count started again since: a right password, an unlock
             taken = _take(key, now, settings)
         count = taken or 1
-    with context.db.customer(customer_id) as conn:
+    with _account(context, customer_id, user_id, signed_in=signed_in) as conn:
         attempt = users_sql.begin_attempt(
             conn,
             customer_id,
@@ -637,7 +665,7 @@ def _check_current_password(
 ) -> AttemptRow:
     """The signed-in user's own password, counted like a sign-in (so wrong ones
     lead to the lockout), else a 400 that says what is wrong. The counted attempt."""
-    attempt = _begin(context, user.customer_id, user.user_id, now)
+    attempt = _begin(context, user.customer_id, user.user_id, now, signed_in=True)
     if attempt is None:
         # The lock stays on for a signed-in session too: letting a session check
         # passwords during a lock would give a stolen session unlimited guesses.
@@ -650,9 +678,28 @@ def _check_current_password(
             " or ask an admin to unlock it.",
         )
     if not verify_password(password, attempt.password_hash):
-        _failed(context, attempt, "wrong_password")
+        _failed(context, attempt, "wrong_password", signed_in=True)
         raise ApiError(400, "bad_request", "Your current password is not right.")
     return attempt
+
+
+def prove_password(context: AppContext, user: CurrentUser, password: str) -> None:
+    """An Admin giving themselves access (PRD 7, #601): their own password, counted like a sign-in
+    (``_check_current_password``), with its own codes: 400 ``password_locked`` while the sign-in
+    lock is on, 400 ``wrong_password``; then the count starts again."""
+    attempt = _begin(context, user.customer_id, user.user_id, context.clock(), signed_in=True)
+    if attempt is None:
+        minutes = context.settings.login_lock_minutes
+        raise ApiError(
+            400,
+            "password_locked",
+            f"Too many wrong passwords were tried on this account. Try again in {minutes} minutes,"
+            " or ask another admin to unlock it.",
+        )
+    if not verify_password(password, attempt.password_hash):
+        _failed(context, attempt, "wrong_password", signed_in=True)
+        raise ApiError(400, "wrong_password", "Your password is not right.")
+    _succeeded(context, attempt, signed_in=True)
 
 
 def _prove(context: AppContext, user: CurrentUser, password: str, code: str | None) -> None:
@@ -662,11 +709,11 @@ def _prove(context: AppContext, user: CurrentUser, password: str, code: str | No
     password and connecting an account share it."""
     attempt = _check_current_password(context, user, password, context.clock())
     if attempt.totp_enabled_at is not None:
-        problem = _code_problem(context, attempt, code)
+        problem = _code_problem(context, attempt, code, signed_in=True)
         if problem is not None:
-            _failed(context, attempt, problem)
+            _failed(context, attempt, problem, signed_in=True)
             raise ApiError(400, "bad_request", CODE_REQUIRED if problem == "code_required" else WRONG_CODE)
-    _succeeded(context, attempt)
+    _succeeded(context, attempt, signed_in=True)
 
 
 def _per_user_limit(limiter: RateLimiter, user: CurrentUser, message: str) -> None:
@@ -724,7 +771,9 @@ def _finish_second_step(
     )
 
 
-def _code_problem(context: AppContext, attempt: AttemptRow, code: str | None) -> str | None:
+def _code_problem(
+    context: AppContext, attempt: AttemptRow, code: str | None, *, signed_in: bool = False
+) -> str | None:
     """None when ``code`` is this user's next unused two-step code, which is then used up;
     else why not (``code_required``, ``wrong_code``, ``code_reused``), for the caller to
     count, audit and answer. Sign-in and Change password share it.
@@ -740,13 +789,13 @@ def _code_problem(context: AppContext, attempt: AttemptRow, code: str | None) ->
         )
     except SecretBoxError:
         log.error(json.dumps({"event": "totp_unreadable"}, separators=(",", ":")))
-        with context.db.customer(attempt.customer_id) as conn:  # not counted toward the lock
-            users_sql.unlock(conn, attempt.customer_id, attempt.user_id)
+        with _account(context, attempt.customer_id, attempt.user_id, signed_in=signed_in) as conn:
+            users_sql.unlock(conn, attempt.customer_id, attempt.user_id)  # not counted toward the lock
         raise ApiError(403, "two_step_unreadable", UNREADABLE) from None
     step = totp.matching_step(secret, _digits(code), _unix(context.clock()), attempt.totp_last_step)
     if step is None:
         return "wrong_code"
-    with context.db.customer(attempt.customer_id) as conn:
+    with _account(context, attempt.customer_id, attempt.user_id, signed_in=signed_in) as conn:
         accepted = users_sql.accept_totp_step(conn, attempt.customer_id, attempt.user_id, step)
     return None if accepted else "code_reused"  # another request used this code a moment ago
 
@@ -762,7 +811,9 @@ def _keep_this_browser(
         raise ApiError(401, "not_signed_in")
     renewed = dataclasses.replace(claims, session_version=user.session_version)
     providers = oidc.enabled_providers(context.settings)
-    response = JSONResponse(me_json(user, email_on=email_on(context), providers=providers))
+    response = JSONResponse(
+        me_json(user, email_on=email_on(context), providers=providers, access=_access(context, user))
+    )
     set_session_cookie(response, renewed, context.settings, now=_unix(now))
     return response
 
@@ -779,7 +830,9 @@ def _start_session(
     """The ``Me`` reply and a new session cookie of this scope; clears the count."""
     user, claims = _open_session(context, customer_id, user_id, scope=scope, action=action, details=details)
     providers = oidc.enabled_providers(context.settings)
-    response = JSONResponse(me_json(user, email_on=email_on(context), providers=providers))
+    response = JSONResponse(
+        me_json(user, email_on=email_on(context), providers=providers, access=_access(context, user))
+    )
     set_session_cookie(response, claims, context.settings, now=_unix(context.clock()))
     return response
 
@@ -800,7 +853,7 @@ def _open_session(
     user = load_user(context.db, customer_id, user_id, scope=scope)
     if user is None:  # disabled in the meantime
         raise _refused(context)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
         _record(conn, user.customer_id, action, actor=user.user_id, target=user.user_id, details=details)
     claims = new_session(
@@ -837,17 +890,17 @@ def _enrol_offer(context: AppContext, user: CurrentUser) -> dict[str, str]:
     }
 
 
-def _succeeded(context: AppContext, attempt: AttemptRow) -> None:
+def _succeeded(context: AppContext, attempt: AttemptRow, *, signed_in: bool = False) -> None:
     """The password was right but no session starts yet (a password change
     first): the count starts again all the same."""
-    with context.db.customer(attempt.customer_id) as conn:
+    with _account(context, attempt.customer_id, attempt.user_id, signed_in=signed_in) as conn:
         users_sql.attempt_succeeded(conn, attempt.customer_id, attempt.user_id, now=context.clock())
 
 
-def _failed(context: AppContext, attempt: AttemptRow, reason: str) -> None:
+def _failed(context: AppContext, attempt: AttemptRow, reason: str, *, signed_in: bool = False) -> None:
     """Audit a counted failure, and the lock when this attempt reached the limit."""
     locked = attempt.failed_logins >= context.settings.login_max_failures
-    _audit_failure(context, attempt.customer_id, attempt.user_id, reason, locked=locked)
+    _audit_failure(context, attempt.customer_id, attempt.user_id, reason, locked=locked, signed_in=signed_in)
 
 
 def _audit_failure(
@@ -858,9 +911,10 @@ def _audit_failure(
     *,
     locked: bool = False,
     details: dict[str, audit.DetailValue] | None = None,
+    signed_in: bool = False,
 ) -> None:
     """``auth.login_failed`` {reason, and ``details``: a Google sign-in's ``via`` and ``domain``}."""
-    with context.db.customer(customer_id) as conn:
+    with _account(context, customer_id, user_id, signed_in=signed_in) as conn:
         written: dict[str, audit.DetailValue] = {"reason": reason, **(details or {})}
         _record(conn, customer_id, "auth.login_failed", actor=None, target=user_id, details=written)
         if locked:
