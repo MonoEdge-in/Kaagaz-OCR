@@ -113,7 +113,7 @@ import { QUESTIONS_TEXT, QuestionsPanel } from "@/components/files/QuestionsPane
 import { FILES_TEXT } from "@/components/files/words";
 import { VersionBanner } from "@/components/versions/VersionBanner";
 import { VersionsPanel } from "@/components/versions/VersionsPanel";
-import { mayLinkVersions } from "@/components/versions/link";
+import { linkErrorText, mayLinkVersions } from "@/components/versions/link";
 import { takeFlash } from "@/components/versions/flash";
 import { VERSION_TEXT } from "@/components/versions/words";
 import {
@@ -582,7 +582,7 @@ export function DocumentView({
             ? () =>
                 void toastUndo().then(
                   () => reloadWith(VERSION_TEXT.reverted),
-                  () => setToast("It could not be undone. Check your connection, then try again."),
+                  (caught: unknown) => setToast(linkErrorText(caught)),
                 )
             : undefined
         }

@@ -3,6 +3,8 @@
 // (V18) and the banner after a reload (V22). Only Admins and Management see any of it. The
 // server's side: backend tests/test_isolation_version_links.py and test_isolation_version_groups.py.
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -22,6 +24,7 @@ import {
   moved,
   movedTo,
   reasonLine,
+  undoLink,
 } from "@/components/versions/link";
 import { GroupCard, KeptApartList } from "@/components/versions/PossibleVersions";
 import { VersionsPanel } from "@/components/versions/VersionsPanel";
@@ -191,6 +194,35 @@ describe("a refused link, in plain words", () => {
     const changed = new ApiError(409, "changed", "These files changed just now. Try again.");
     expect(linkErrorText(changed)).toBe("These files changed just now. Try again.");
     expect(linkErrorText(new TypeError("fetch failed"))).toBe(LINK_TEXT.connection);
+    // V-A's review fixes (#658) add these refusals: their words are the server's own.
+    for (const code of ["not_ready", "name_taken", "too_many_versions"]) {
+      expect(linkErrorText(new ApiError(409, code, `Words for ${code}.`))).toBe(`Words for ${code}.`);
+    }
+  });
+});
+
+describe("a refused Undo, in plain words (review of #659)", () => {
+  const refuse = (code: string, message: string) =>
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ error: { code, message } }), { status: code === "password_required" ? 403 : 409 }));
+
+  it("sends the person to the Versions tab when Undo needs their password", async () => {
+    refuse("password_required", "Type your password to give yourself access.");
+    const caught = await undoLink("y").catch((error: unknown) => error);
+    expect(linkErrorText(caught)).toBe("To undo this, open the file and use Undo linking in its Versions tab.");
+  });
+
+  it("says the server's words for any other refusal", async () => {
+    refuse("not_newest", "The versions changed since they were linked, so this can't be undone.");
+    const caught = await undoLink("y").catch((error: unknown) => error);
+    expect(linkErrorText(caught)).toBe("The versions changed since they were linked, so this can't be undone.");
+  });
+
+  it("is said on the document screen in those words, never a fixed connection sentence", () => {
+    const view = readFileSync(join(__dirname, "..", "app/(app)/documents/[id]/DocumentView.tsx"), "utf8");
+    expect(view).toContain("setToast(linkErrorText(caught))");
+    expect(view).not.toContain("It could not be undone. Check your connection");
+    const dialog = readFileSync(join(__dirname, "..", "components/versions/LinkDialog.tsx"), "utf8");
+    expect(dialog).toContain("undo: () => undoLink(current)");
   });
 });
 

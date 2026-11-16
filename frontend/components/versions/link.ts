@@ -3,7 +3,7 @@
 // functions behind them (tests/versions-link-648.test.ts). Only Admins (in an admin session: the
 // confirm step names people) and Management see them; the server checks every rule again.
 
-import { ApiError } from "@/lib/api";
+import { ApiError, undoLinkVersions } from "@/lib/api";
 import type { DocumentSummary, LinkPreview, LinkVersionsBody, Me, VersionGroupFile, VersionGroupReason } from "@/lib/types";
 import { identifierWords, joinAnd, sharePercent } from "./words";
 
@@ -35,6 +35,7 @@ export const LINK_TEXT = {
   password: "Your password",
   linked: (n: number, name: string) => `Linked ${n} files as versions. Ask answers from "${name}".`,
   undone: "Undone. The files are back as they were.",
+  undoInTab: "To undo this, open the file and use Undo linking in its Versions tab.",
   connection: "Check your connection, then try again.",
   // The library and the Versions tab (the row menu's words are in documents/library.ts).
   addVersion: "Add an older or newer version",
@@ -212,3 +213,14 @@ export function linkErrorText(caught: unknown): string {
 
 /** A refusal that asks for the person's password (an Admin opening a file to themselves). */
 export const needsPassword = (caught: unknown) => caught instanceof ApiError && caught.code === "password_required";
+
+/** The toast's Undo of a link (V16): the Versions tab asks for a password, so a refusal that wants
+ * one sends the person there (review of #659); any other says the server's words. */
+export async function undoLink(id: string): Promise<unknown> {
+  try {
+    return await undoLinkVersions(id);
+  } catch (caught) {
+    if (needsPassword(caught)) throw new ApiError(403, "password_required", LINK_TEXT.undoInTab);
+    throw caught;
+  }
+}

@@ -21,7 +21,7 @@ import { buildTree, pathLabel } from "@/components/documents/folderTree";
 import type { FolderTree } from "@/components/documents/folderTree";
 import { Icon as KIcon } from "@/components/ui/Icon/Icon";
 import { PasswordField } from "@/components/ui/PasswordField";
-import { listDocuments, listFolders, linkVersions, pageImageUrl, previewLinkVersions, undoLinkVersions } from "@/lib/api";
+import { listDocuments, listFolders, linkVersions, pageImageUrl, previewLinkVersions } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import type { DocumentSummary, LinkPreview, LinkVersionsBody } from "@/lib/types";
 import {
@@ -36,6 +36,7 @@ import {
   moved,
   movedTo,
   needsPassword,
+  undoLink,
 } from "./link";
 import type { LinkFile } from "./link";
 import styles from "./Link.module.css";
@@ -108,7 +109,7 @@ export function LinkDialog({
       const current = body.current_id;
       onLinked({
         message: LINK_TEXT.linked(body.document_ids.length, preview.latest.name),
-        undo: () => undoLinkVersions(current),
+        undo: () => undoLink(current),
         body,
       });
     } catch (caught) {
