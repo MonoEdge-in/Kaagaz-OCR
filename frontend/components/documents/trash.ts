@@ -102,6 +102,7 @@ export function folderRestoredMessage(restored: Pick<FolderRestored, "folder" | 
   if (restored.relocated) said.push("Restored to Top level, because its folder no longer exists.");
   if (restored.renamed) said.push(`Restored as “${restored.folder.name}”, because a folder with that name already exists.`);
   if (said.length > 0) return said.join(" ");
+  if (restored.location === null) return "Folder restored.";
   return `Folder restored to ${restored.location.length === 0 ? "Top level" : restored.location.join(" › ")}.`;
 }
 
@@ -109,6 +110,7 @@ export function folderRestoredMessage(restored: Pick<FolderRestored, "folder" | 
 export function folderBackMessage(back: FolderBack): string {
   if (back.relocated) return "Its folder is back at Top level, because the folder it was in no longer exists.";
   if (back.renamed) return `Its folder is back as “${back.folder.name}”, because a folder with that name already exists.`;
+  if (back.location === null) return `Its folder “${back.folder.name}” is back.`;
   return `Its folder “${back.folder.name}” is back in ${back.location.length === 0 ? "Top level" : back.location.join(" › ")}.`;
 }
 

@@ -99,6 +99,7 @@ import type { FolderTree } from "./folderTree";
 import { ALL_DOCUMENTS, libraryHref } from "./libraryQuery";
 import {
   FALLBACK_UPLOAD_LIMITS,
+  HIDDEN_COPY,
   canSendAgain,
   estimateIngestSeconds,
   flaggedText,
@@ -286,7 +287,9 @@ export function useUploads(onUploaded: () => void) {
       times.repliedAt = performance.now();
       times.sentAt ??= times.repliedAt;
       kept.current.delete(key);
-      const state: UploadState = result.duplicate
+      const state: UploadState = result.hidden
+        ? { kind: "elsewhere" }
+        : result.duplicate
         ? {
             kind: "duplicate",
             documentId: result.document.id,
@@ -987,6 +990,7 @@ function UploadRow({
             <Link href={`/documents/${state.documentId}`}>Open it</Link>
           </p>
         )}
+        {state.kind === "elsewhere" && <p className={styles.small}>{HIDDEN_COPY}</p>}
         {state.kind === "duplicate" && entry.reading !== undefined && (
           <p className={`muted ${styles.small}`}>{DUPLICATE_READER_NOTE}</p>
         )}

@@ -33,6 +33,7 @@ from typing import Any
 from sqlalchemy import Connection, text
 
 from kaagaz.chunking.script import latin_spelling
+from kaagaz.db.visibility import SEEN_DOCUMENT
 from kaagaz.search.hybrid import vector_literal
 
 STORY_MAX = 1000
@@ -144,9 +145,10 @@ _GET = (
 # One statement: the family from the document row, then insert or replace. The
 # vector stays only when the text is the same.
 _PUT = (
-    "INSERT INTO document_stories AS s (customer_id, user_id, family_id, story, story_latin)"
+    "INSERT INTO document_stories AS s (customer_id, user_id, family_id, story, story_latin)"  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
     " SELECT :c, :me, d.family_id, :story, :latin FROM documents d WHERE d.customer_id = :c AND d.id = :d"
-    " FOR KEY SHARE OF d"
+    + SEEN_DOCUMENT
+    + " FOR KEY SHARE OF d"
     " ON CONFLICT (customer_id, user_id, family_id) DO UPDATE SET"
     " story = EXCLUDED.story, story_latin = EXCLUDED.story_latin,"
     " embedding = CASE WHEN s.story = EXCLUDED.story THEN s.embedding END,"

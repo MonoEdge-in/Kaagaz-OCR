@@ -25,6 +25,7 @@ from typing import Any, Literal
 from sqlalchemy import Connection, text
 
 from kaagaz.answering.words_text import WordText
+from kaagaz.db.visibility import SEEN_DOCUMENT
 
 MAX_WORDS = 500
 MAX_MEANINGS = 3
@@ -120,11 +121,12 @@ _ADD_SPOT = (
 )
 
 _SPOTS = (
-    "SELECT s.id, s.word_id, w.word, w.meaning, s.page_no, s.region FROM user_word_spots s"
+    "SELECT s.id, s.word_id, w.word, w.meaning, s.page_no, s.region FROM user_word_spots s"  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
     " JOIN user_words w ON w.customer_id = s.customer_id AND w.user_id = s.user_id AND w.id = s.word_id"
     " WHERE s.customer_id = :c AND s.user_id = :me AND w.customer_id = :c AND w.user_id = :me"
     " AND s.document_id = :d AND s.page_no = :p"
-    " ORDER BY s.created_at, w.word_fold, w.meaning_fold, s.id"
+    + SEEN_DOCUMENT
+    + " ORDER BY s.created_at, w.word_fold, w.meaning_fold, s.id"
 )
 
 

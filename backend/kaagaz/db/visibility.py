@@ -26,6 +26,11 @@ or deleted forever.
 ``LIVE_SUGGESTION`` (File management V5, section 10; alias ``s``): a version suggestion still
 to answer, with its new document and its candidate family both out of Trash, so one whose
 side was trashed or deleted disappears. Its statement binds the customer as ``:c``.
+
+``SEEN_DOCUMENT`` (PRD 7, #599): the document ``:d`` is one the current person may see, for a
+statement that reads a content table by document id (pages, values, readings and the rest). It
+names no outer row, so the database works it out once, before the content table is read: a
+hidden document's rows are never read, and never locked by a FOR UPDATE.
 """
 
 LIVE = " AND d.deleted_at IS NULL"
@@ -40,3 +45,4 @@ LIVE_SUGGESTION = (
     " AND EXISTS (SELECT 1 FROM visible_documents sc WHERE sc.customer_id = :c"
     " AND sc.family_id = s.candidate_family_id AND sc.deleted_at IS NULL)"
 )
+SEEN_DOCUMENT = " AND EXISTS (SELECT 1 FROM visible_documents sd WHERE sd.customer_id = :c AND sd.id = :d)"

@@ -42,7 +42,7 @@ from kaagaz.chunking.context import document_part
 from kaagaz.db.documents import STUCK, folder_missing
 from kaagaz.db.folders import FolderNotFound, prune_empty
 from kaagaz.db.review import WAITING_VALUE
-from kaagaz.db.visibility import LIVE_SUGGESTION
+from kaagaz.db.visibility import LIVE_SUGGESTION, SEEN_DOCUMENT
 from kaagaz.versions import name_key
 
 # File management (Q3, Q4, F5, O1 to O3): the owner and label, the version count, the
@@ -159,9 +159,9 @@ _LIST = (
     " WHERE d.customer_id = :c AND d.deleted_at IS NULL AND d.is_current"
 )
 
-# The same, in Trash (trashed=true).
+# The same, in Trash (trashed=true). PRD 7 (#599): what the person may see, as the list.
 _TRASH_LIST = (
-    " FROM documents d"
+    " FROM visible_documents d"
     " LEFT JOIN users u ON u.customer_id = d.customer_id AND u.id = d.uploaded_by"
     " WHERE d.customer_id = :c AND d.deleted_at IS NOT NULL AND d.is_current"
 )
@@ -183,8 +183,13 @@ _FILTERS = (
 )
 
 _TOP_LEVEL = " AND d.folder_id IS NULL"
-# #542: Trash's loose files, not those inside a folder in Trash; or one such folder's files.
-_LOOSE_IN_TRASH = " AND d.trashed_folder_id IS NULL"
+# #542: Trash's loose files, not those inside a folder in Trash; or one such folder's files. PRD 7
+# (#599): a file inside a folder in Trash the person can't see is loose for them (a file given to
+# them alone), so it is never out of reach.
+_LOOSE_IN_TRASH = (
+    " AND (d.trashed_folder_id IS NULL OR NOT EXISTS (SELECT 1 FROM visible_trashed_folders tf"
+    " WHERE tf.customer_id = :c AND tf.id = d.trashed_folder_id))"
+)
 _IN_TRASHED_FOLDER = " AND d.trashed_folder_id = CAST(:trashed_folder AS uuid)"
 _IN_FOLDERS = " AND d.folder_id = ANY(CAST(:folders AS uuid[]))"
 # Every tag must match: the documents holding all :tag_count distinct tags asked for.
@@ -463,6 +468,18 @@ def folders_seen(conn: Connection, customer_id: str, folder_ids: Sequence[str]) 
     return {str(row[0]) for row in conn.execute(_FOLDERS_SEEN, {"c": customer_id, "ids": list(folder_ids)})}
 
 
+_DOCUMENTS_SEEN = text(
+    "SELECT id FROM visible_documents WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
+)
+
+
+def documents_seen(conn: Connection, customer_id: str, document_ids: Sequence[str]) -> set[str]:
+    """Which of ``document_ids`` the person may see (PRD 7, #599): a duplicate upload or a stored
+    reply never names one they can't. One statement on the documents' key."""
+    found = conn.execute(_DOCUMENTS_SEEN, {"c": customer_id, "ids": list(document_ids)})
+    return {str(row[0]) for row in found}
+
+
 def get_document(conn: Connection, customer_id: str, document_id: str) -> RowMapping | None:
     return conn.execute(text(_SELECT), {"c": customer_id, "d": document_id}).mappings().first()
 
@@ -543,7 +560,9 @@ _PAGE = (
 def list_pages(conn: Connection, customer_id: str, document_id: str) -> Sequence[RowMapping]:
     return (
         conn.execute(
-            text(_PAGE + " WHERE customer_id = :c AND document_id = :d ORDER BY page_no"),
+            text(
+                _PAGE + " WHERE customer_id = :c AND document_id = :d" + SEEN_DOCUMENT + " ORDER BY page_no"
+            ),
             {"c": customer_id, "d": document_id},
         )
         .mappings()
@@ -554,7 +573,7 @@ def list_pages(conn: Connection, customer_id: str, document_id: str) -> Sequence
 def get_page(conn: Connection, customer_id: str, document_id: str, page_no: int) -> RowMapping | None:
     return (
         conn.execute(
-            text(_PAGE + " WHERE customer_id = :c AND document_id = :d AND page_no = :n"),
+            text(_PAGE + " WHERE customer_id = :c AND document_id = :d AND page_no = :n" + SEEN_DOCUMENT),
             {"c": customer_id, "d": document_id, "n": page_no},
         )
         .mappings()
@@ -570,8 +589,8 @@ def reviewer_fix_count(conn: Connection, customer_id: str, document_id: str) -> 
     return int(
         conn.execute(
             text(
-                "SELECT count(*) FROM corrections"
-                " WHERE customer_id = :c AND document_id = :d AND value_id IS NOT NULL"
+                "SELECT count(*) FROM corrections"  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
+                " WHERE customer_id = :c AND document_id = :d AND value_id IS NOT NULL" + SEEN_DOCUMENT
             ),
             {"c": customer_id, "d": document_id},
         ).scalar_one()
@@ -592,13 +611,13 @@ def document_facts(conn: Connection, customer_id: str, document_id: str) -> RowM
 
 
 _INVOICE = text(
-    "SELECT id, invoice_number, invoice_date, seller_name, seller_gstin, buyer_name, buyer_gstin,"
+    "SELECT id, invoice_number, invoice_date, seller_name, seller_gstin, buyer_name, buyer_gstin,"  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
     " subtotal, tax_total, total, currency, label, check_status, check_reasons"
-    " FROM invoices WHERE customer_id = :c AND document_id = :d"
+    " FROM invoices WHERE customer_id = :c AND document_id = :d" + SEEN_DOCUMENT
 )
 _INVOICE_LINES = text(
-    "SELECT line_no, description, hsn, quantity, unit, rate, amount, label FROM invoice_lines"
-    " WHERE customer_id = :c AND invoice_id = :i ORDER BY line_no"
+    "SELECT line_no, description, hsn, quantity, unit, rate, amount, label FROM invoice_lines"  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
+    " WHERE customer_id = :c AND invoice_id = :i" + SEEN_DOCUMENT + " ORDER BY line_no"
 )
 
 
@@ -620,11 +639,12 @@ def invoice_for(
 # both ways, so DISTINCT shows each partner and identifier once), and only a
 # current, ready one out of Trash.
 _LINKS = text(
-    "SELECT DISTINCT d.id, d.display_name, d.doc_type, l.identifier_kind, l.identifier_value"
+    "SELECT DISTINCT d.id, d.display_name, d.doc_type, l.identifier_kind, l.identifier_value"  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
     " FROM document_links l JOIN visible_documents d ON d.customer_id = l.customer_id"
     " AND d.id = CASE WHEN l.document_id = :d THEN l.linked_document_id ELSE l.document_id END"
     " WHERE l.customer_id = :c AND (l.document_id = :d OR l.linked_document_id = :d)"
-    " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    + SEEN_DOCUMENT
+    + " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " ORDER BY d.display_name, d.id, l.identifier_kind, l.identifier_value LIMIT :limit"
 )
 # ponytail: a cap, not paging; an identifier shared by more documents than this shows the first ones.
@@ -643,10 +663,11 @@ def list_values(conn: Connection, customer_id: str, document_id: str) -> Sequenc
     return (
         conn.execute(
             text(
-                "SELECT id, document_id, record_key, field, value_text, value_raw, second_reading,"
+                "SELECT id, document_id, record_key, field, value_text, value_raw, second_reading,"  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
                 " page_no, region, label, label_reason, confidence, label_page_no, label_region, votes"
                 " FROM extracted_values WHERE customer_id = :c AND document_id = :d"
-                " ORDER BY page_no, record_key, field, id"
+                + SEEN_DOCUMENT
+                + " ORDER BY page_no, record_key, field, id"
             ),
             {"c": customer_id, "d": document_id},
         )
@@ -669,7 +690,7 @@ def sheet_cells(
     return (
         conn.execute(
             text(
-                "SELECT (loc ->> 'row')::int AS row_no, (loc ->> 'column')::int AS column_no,"
+                "SELECT (loc ->> 'row')::int AS row_no, (loc ->> 'column')::int AS column_no,"  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
                 " span ->> 'text' AS text"
                 " FROM reader_outputs ro"
                 " CROSS JOIN LATERAL jsonb_array_elements(ro.output) AS span"
@@ -677,7 +698,8 @@ def sheet_cells(
                 " WHERE ro.customer_id = :c AND ro.document_id = :d AND ro.role = 'first'"
                 " AND loc ->> 'kind' = 'cell' AND (loc ->> 'page')::int = :sheet"
                 " AND (loc ->> 'row')::int BETWEEN :row_from AND :row_to"
-                " ORDER BY row_no, column_no"
+                + SEEN_DOCUMENT
+                + " ORDER BY row_no, column_no"
             ),
             {"c": customer_id, "d": document_id, "sheet": sheet, "row_from": row_from, "row_to": row_to},
         )
@@ -699,7 +721,7 @@ _SET_READINGS_TIMEOUT = text("SELECT set_config('statement_timeout', :ms, true)"
 # pass the budget, so at most one line over it leaves the database; Python drops that
 # one and says ``truncated`` (views.page_readings).
 _PAGE_READINGS = text(
-    "SELECT ro.role, ro.reader, ro.reader_version, l.ord, l.text, l.cut, l.confidence, l.origin,"
+    "SELECT ro.role, ro.reader, ro.reader_version, l.ord, l.text, l.cut, l.confidence, l.origin,"  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
     " l.kind, l.region, l.table_id, l.table_row, l.table_col, l.table_header"
     " FROM reader_outputs ro"
     " LEFT JOIN LATERAL (SELECT * FROM (SELECT e.ord, left(e.span ->> 'raw', :max_chars) AS text,"
@@ -715,8 +737,7 @@ _PAGE_READINGS = text(
     " AND coalesce(e.span ->> 'quality', '') IN ('unsure', 'illegible'))"
     " ORDER BY e.ord LIMIT :max_lines + 1) AS s"
     " WHERE s.upto - length(s.text) <= :max_text) AS l ON true"
-    " WHERE ro.customer_id = :c AND ro.document_id = :d"
-    " ORDER BY ro.role, l.ord"
+    " WHERE ro.customer_id = :c AND ro.document_id = :d" + SEEN_DOCUMENT + " ORDER BY ro.role, l.ord"
 )
 
 
@@ -747,12 +768,13 @@ def page_readings(conn: Connection, customer_id: str, document_id: str, page_no:
 # order, at most MAX_READING_LINES, each text cut to MAX_READING_CHARS. For the viewer
 # only, like page_readings.
 _PAGE_MARKS = text(
-    "SELECT CASE WHEN e.span ->> 'kind' IS NULL THEN e.span ->> 'quality' ELSE 'unpinned' END AS quality,"
+    "SELECT CASE WHEN e.span ->> 'kind' IS NULL THEN e.span ->> 'quality' ELSE 'unpinned' END AS quality,"  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
     " e.span -> 'region' AS region, left(e.span ->> 'text', :max_chars) AS text"
     " FROM reader_outputs ro"
     " CROSS JOIN LATERAL jsonb_array_elements(ro.output) WITH ORDINALITY AS e(span, ord)"
     " WHERE ro.customer_id = :c AND ro.document_id = :d"
-    " AND (e.span -> 'region' ->> 'page')::int = :page_no AND e.span ->> 'origin' = 'ocr'"
+    + SEEN_DOCUMENT
+    + " AND (e.span -> 'region' ->> 'page')::int = :page_no AND e.span ->> 'origin' = 'ocr'"
     " AND ((e.span ->> 'kind' IS NULL AND e.span ->> 'quality' IN ('unsure', 'illegible'))"
     " OR (e.span ->> 'kind' IS NOT NULL AND e.span ->> 'box_source' = 'model'))"
     " ORDER BY ro.role, e.ord LIMIT :max_marks"
@@ -824,12 +846,12 @@ _CLEAR_COPY = text(
 )
 # Its marks, as _PAGE_MARKS for every page in one unpacking, at most CLEAR_COPY_LINES.
 _CLEAR_COPY_MARKS = text(
-    "SELECT (e.span -> 'region' ->> 'page')::int AS page_no,"
+    "SELECT (e.span -> 'region' ->> 'page')::int AS page_no,"  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
     " CASE WHEN e.span ->> 'kind' IS NULL THEN e.span ->> 'quality' ELSE 'unpinned' END AS quality,"
     " e.span -> 'region' AS region, left(e.span ->> 'text', :max_chars) AS text"
     " FROM reader_outputs ro"
     " CROSS JOIN LATERAL jsonb_array_elements(ro.output) WITH ORDINALITY AS e(span, ord)"
-    " WHERE ro.customer_id = :c AND ro.document_id = :d AND e.span ->> 'origin' = 'ocr'"
+    " WHERE ro.customer_id = :c AND ro.document_id = :d" + SEEN_DOCUMENT + " AND e.span ->> 'origin' = 'ocr'"
     " AND ((e.span ->> 'kind' IS NULL AND e.span ->> 'quality' IN ('unsure', 'illegible'))"
     " OR (e.span ->> 'kind' IS NOT NULL AND e.span ->> 'box_source' = 'model'))"
     " ORDER BY ro.role, e.ord LIMIT :max_lines"

@@ -176,5 +176,9 @@ def test_the_detail_queries_filter_by_customer_even_without_row_security(db: Dat
     with db.engine.begin() as conn:  # no SET ROLE: the tables' owner, which RLS does not stop
         assert listing.invoice_for(conn, b, a_doc) is None
         assert listing.document_facts(conn, b, a_doc) is None
+    # Changed on purpose (#599): the invoice is read through a document the person can see
+    # (visibility.SEEN_DOCUMENT), which the owner with no person sees none of; the same query in A's
+    # worker transaction (its whole organisation) does find A's own.
+    with db.customer(a) as conn:
         found = listing.invoice_for(conn, a, a_doc)
-        assert found is not None and len(found[1]) == 4  # the same query does find A's own
+        assert found is not None and len(found[1]) == 4

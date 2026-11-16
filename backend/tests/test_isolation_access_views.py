@@ -33,7 +33,8 @@ _DEPARTMENTS = (
     "INSERT INTO department_members (customer_id, department_id, user_id, is_head, added_by)"
     " VALUES (:c, :d, :u, :head, :by)"
 )
-_ACCESS = "SELECT departments, heads, named, closed FROM kaagaz_access()"
+# Changed on purpose (#599, 0087): the open departments, where 0086 listed the closed ones.
+_ACCESS = "SELECT departments, heads, named, open FROM kaagaz_access()"
 _SUGGEST = (
     "INSERT INTO version_suggestions (customer_id, document_id, candidate_family_id, text_overlap,"
     " name_similarity, outcome, status) VALUES (:c, :d, :f, 0.86, 0.31, 'suggested', 'pending') RETURNING id"
@@ -148,12 +149,25 @@ def _expected(db: Database, org: Org, user: str, *, folders: bool = False) -> se
         str(r[0])
         for r in _owner(db, "SELECT folder_id FROM private_folder_members WHERE user_id = :u", {"u": user})
     }
-    closed = {
+    # Changed on purpose (#599, 0087): once the organisation has a Department only department (live
+    # or in Trash), open is a department still there and not Department only, so one deleted since
+    # is closed (fail closed); with none, every department is open, as on day one.
+    walled = bool(
+        _owner(
+            db,
+            "SELECT 1 FROM folders WHERE customer_id = :c AND parent_id IS NULL AND department_only"
+            " UNION ALL SELECT 1 FROM trashed_folders WHERE customer_id = :c AND parent_id IS NULL"
+            " AND department_only",
+            {"c": c},
+        )
+    )
+    opened = {
         str(r[0])
         for r in _owner(
             db,
-            "SELECT id FROM folders WHERE customer_id = :c AND department_only"
-            " UNION ALL SELECT id FROM trashed_folders WHERE customer_id = :c AND department_only",
+            "SELECT id FROM folders WHERE customer_id = :c AND parent_id IS NULL AND kind = 'department'"
+            " AND NOT department_only UNION ALL SELECT id FROM trashed_folders WHERE customer_id = :c"
+            " AND parent_id IS NULL AND kind = 'department' AND NOT department_only",
             {"c": c},
         )
     }
@@ -163,7 +177,7 @@ def _expected(db: Database, org: Org, user: str, *, folders: bool = False) -> se
         r5 = (
             private is None
             and held is None
-            and (department is None or department not in closed or department in member)
+            and (department is None or not walled or department in opened or department in member)
         )
         r4 = private is not None and (private in named or department in heads)
         return r5 or r4
@@ -258,8 +272,8 @@ def test_who_asks(db: Database) -> None:
 
 
 def test_the_access_arrays_are_never_null(db: Database) -> None:
-    """Condition 2 on #595: an empty array, never NULL, so ``<> ALL (a.closed)`` can't become
-    NULL and hide every open file."""
+    """Condition 2 on #595: an empty array, never NULL, so ``= ANY (a.open)`` (0087; 0086's
+    ``<> ALL (a.closed)``) can't become NULL."""
     api = Api(db)
     org = _walled(api)
     bare, bare_user = api.customer()
@@ -322,17 +336,37 @@ def test_day_one_never_runs_the_given_or_lock_lookups(db: Database) -> None:
 # still run as kaagaz_app with no person on a server, and would see nothing). A new one belongs here
 # only once its callers are checked.
 VIEW_READERS = {
-    "db/audit.py": {"_OF_FAMILY", "_SEEN", "_FOLDER_PATHS"},
+    "db/audit.py": {"_FOLDER_PATHS", "_OF_FAMILY", "_SEEN"},
     "db/chat.py": {"_DOCUMENT_QUESTIONS", "add_pin"},
-    "db/document_stories.py": {"_DELETE"},
+    "db/document_stories.py": {"_DELETE", "_PUT"},
+    "db/ensemble.py": {"_COUNTS", "_LATEST", "_LATEST_READINGS", "_PENDING", "_READING"},
+    "db/folder_upload_items.py": {"_PREVIOUS"},
+    "db/folders.py": {"_LIST", "_SUMMARY_SEEN"},
     "db/listing.py": {
-        "_LAST_UPLOAD", "_LAST_UPLOADER", "_FILE_COLUMNS", "_COLUMNS", "_SELECT", "_LIST", "_VERSIONS",
-        "_OUTSIDE_DEPARTMENTS", "_BATCH", "document_facts", "_LINKS", "_WORD_LINES", "_DASHBOARD_TILES",
-        "_DASHBOARD_TYPES", "_DASHBOARD_DEPARTMENTS", "_DASHBOARD_RECENT", "_FOLDERS_SEEN",
+        "_BATCH", "_CLEAR_COPY_MARKS", "_COLUMNS", "_DASHBOARD_DEPARTMENTS", "_DASHBOARD_RECENT",
+        "_DASHBOARD_TILES", "_DASHBOARD_TYPES", "_DOCUMENTS_SEEN", "_FILE_COLUMNS", "_FOLDERS_SEEN",
+        "_HAS_NEWER", "_INVOICE", "_INVOICE_LINES", "_LAST_UPLOAD", "_LAST_UPLOADER", "_LINKS", "_LIST",
+        "_LOOSE_IN_TRASH", "_OUTSIDE_DEPARTMENTS", "_PAGE_MARKS", "_PAGE_READINGS", "_SELECT",
+        "_TRASH_LIST", "_VERSIONS", "_WORD_LINES", "document_facts", "get_page", "list_pages",
+        "list_values", "reviewer_fix_count", "sheet_cells",
     },
-    "db/versions.py": {"_LIVE", "_CANDIDATE", "_VIEW", "_ALLOWED"},
-    "db/visibility.py": {"LIVE_SUGGESTION"},
+    "db/organization_words.py": {"decide", "visible"},
+    "db/review.py": {"_COUNT", "_COUNT_FOR_DOCUMENT", "_ITEM", "_LOCK_VALUE", "_NEXT_CHUNK"},
+    "db/tags.py": {"_FOR_DOCUMENTS"},
+    "db/trashed_folders.py": {
+        "_CHILD_ITEMS", "_EXISTS", "_HELD", "_ONE_ITEM", "_PATHS", "_SEEN", "_SEEN_RESTORE", "_TOP_ITEMS",
+    },
+    "db/user_words.py": {"_SPOTS"},
+    "db/versions.py": {"_ALLOWED", "_CANDIDATE", "_FOR_DOCUMENT", "_IN_BATCH", "_LIVE", "_VIEW"},
+    "db/visibility.py": {"LIVE_SUGGESTION", "SEEN_DOCUMENT"},
+    "db/word_review.py": {"_PAGES", "_PIECES_BY_ID", "_VALUES_BY_ID", "_WORDS"},
 }  # fmt: skip
+
+
+# Changed on purpose (#599): the trashed folders' view (0087), and visibility.py's fragments that
+# read a view, named in a statement rather than written in it.
+_VIEWS = ("visible_documents", "visible_folders", "visible_trashed_folders")
+_FRAGMENTS = {"LIVE_SUGGESTION", "SEEN_DOCUMENT"}
 
 
 def test_only_the_reviewed_statements_read_a_view() -> None:
@@ -346,7 +380,8 @@ def test_only_the_reviewed_statements_read_a_view() -> None:
             texts = [
                 n.value for n in ast.walk(node) if isinstance(n, ast.Constant) and isinstance(n.value, str)
             ]
-            if names and any("visible_documents" in t or "visible_folders" in t for t in texts):
+            named = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+            if names and (any(view in t for t in texts for view in _VIEWS) or named & _FRAGMENTS):
                 found.setdefault(path.relative_to(root).as_posix(), set()).update(names)
     assert found == VIEW_READERS
 
@@ -755,7 +790,7 @@ def test_no_module_outside_the_api_calls_a_function_that_reads_a_view() -> None:
     root = Path(kaagaz.__file__).parent
     readers: dict[str, set[str]] = {}
     for file, names in VIEW_READERS.items():
-        tree, tainted = ast.parse((root / file).read_text(encoding="utf-8")), set(names) | {"LIVE_SUGGESTION"}
+        tree, tainted = ast.parse((root / file).read_text(encoding="utf-8")), set(names) | _FRAGMENTS
         for _ in range(len(tree.body)):  # until nothing new is tainted
             for node in tree.body:
                 name = getattr(node, "name", None) or next(

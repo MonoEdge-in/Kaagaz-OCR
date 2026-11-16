@@ -42,7 +42,7 @@ _ITEM = (
     " p.accepted_by, p.accepted_at, p.read_again_requested_at,"
     " coalesce(i.check_reasons, '{}') AS check_reasons"
     " FROM extracted_values v"
-    " JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
+    " JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
     " JOIN pages p ON p.customer_id = v.customer_id AND p.document_id = v.document_id"
     " AND p.page_no = v.page_no"
     " LEFT JOIN invoices i ON i.customer_id = v.customer_id AND i.document_id = v.document_id"
@@ -97,7 +97,7 @@ _QUEUE_FOR_DOCUMENT = _ITEM + (
 
 _COUNT = (
     "SELECT count(*) FROM extracted_values v"  # noqa: S608 - a fixed fragment, WAITING_VALUE
-    " JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
+    " JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
     " JOIN pages p ON p.customer_id = v.customer_id AND p.document_id = v.document_id"
     " AND p.page_no = v.page_no"
     " WHERE v.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
@@ -107,7 +107,7 @@ _COUNT = (
 
 _COUNT_FOR_DOCUMENT = (
     "SELECT count(*) FROM extracted_values v"  # noqa: S608 - a fixed fragment, WAITING_VALUE
-    " JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
+    " JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
     " JOIN pages p ON p.customer_id = v.customer_id AND p.document_id = v.document_id"
     " AND p.page_no = v.page_no"
     " WHERE v.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
@@ -121,7 +121,7 @@ _COUNT_FOR_DOCUMENT = (
 # resolving is waited for, then read again, and left out once it is no longer needs review.
 _NEXT_CHUNK = (
     "SELECT v.id, v.created_at, v.value_text FROM extracted_values v"  # noqa: S608 - a fixed fragment, WAITING_VALUE
-    " JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
+    " JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
     " JOIN pages p ON p.customer_id = v.customer_id AND p.document_id = v.document_id"
     " AND p.page_no = v.page_no"
     " WHERE v.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
@@ -138,7 +138,7 @@ _NEXT_CHUNK_FOR_DOCUMENT = _NEXT_CHUNK + " AND v.document_id = CAST(:doc AS uuid
 _LOCK_VALUE = (
     "SELECT v.id, v.document_id, v.field, v.value_text, v.value_raw, v.second_reading, v.label"
     " FROM extracted_values v"
-    " JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
+    " JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
     " WHERE v.customer_id = :c AND v.id = :v AND d.deleted_at IS NULL AND d.status = 'ready'"
     " FOR UPDATE OF v"
 )
