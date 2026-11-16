@@ -113,6 +113,7 @@ import { QUESTIONS_TEXT, QuestionsPanel } from "@/components/files/QuestionsPane
 import { FILES_TEXT } from "@/components/files/words";
 import { VersionBanner } from "@/components/versions/VersionBanner";
 import { VersionsPanel } from "@/components/versions/VersionsPanel";
+import { mayLinkVersions } from "@/components/versions/link";
 import { takeFlash } from "@/components/versions/flash";
 import { VERSION_TEXT } from "@/components/versions/words";
 import {
@@ -972,7 +973,7 @@ export function DocumentView({
               ) : shownTab === "questions" ? (
                 <QuestionsPanel documentId={detail.id} />
               ) : shownTab === "versions" ? (
-                <VersionsPanel detail={detail} onChanged={reloadWith} />
+                <VersionsPanel detail={detail} onChanged={reloadWith} canLink={mayLinkVersions(me)} />
               ) : shownTab === "activity" ? (
                 <Timeline load={loadActivity} label={ACTIVITY_TEXT.heading} />
               ) : (

@@ -14,6 +14,7 @@
 // says its level (aria-level); the indent stops after 6 levels and the level is then in words
 // (#572: a name keeps its room in the 13rem column, on one line, cut with "…").
 // Past CHILD_CAP folders in all, "Find a folder" searches them by name.
+// #648 (V17): after Trash, "Possible versions (N)", for Admins and Management only.
 
 import Link from "next/link";
 import { useId, useState } from "react";
@@ -25,6 +26,7 @@ import { FILES_TEXT } from "@/components/files/words";
 import { Icon } from "@/components/ui/Icon";
 import { formatNumber } from "@/lib/format";
 import { Icon as TreeIcon } from "@/components/ui/Icon/Icon";
+import { LINK_TEXT, POSSIBLE_PATH } from "@/components/versions/link";
 import { CHILD_CAP, TOP_LIST, collapseCrumbs, folderPath, searchFolders, shortPathLabel, visibleNodes } from "./folderTree";
 import type { FolderNode, FolderTree, VisibleRow } from "./folderTree";
 import { NO_DEPARTMENT, libraryHref } from "./libraryQuery";
@@ -41,6 +43,8 @@ export interface FolderNavProps {
   onNavigate(placeName: string): void;
   /** A document dropped on a folder (null: the top level). */
   onDropDocument?(documentId: string, folderId: string | null, placeName: string): void;
+  /** #648 (V17): the groups of possible versions, for Admins and Management; else left out. */
+  possibleVersions?: { count: number; more: boolean } | null;
 }
 
 /** What a document's row carries while it is dragged (DocumentsTable.tsx). */
@@ -71,7 +75,16 @@ function useDropTarget(folderId: string | null, placeName: string, onDrop: Folde
   };
 }
 
-export function FolderNav({ tree, library, loading, error, onRetry, onNavigate, onDropDocument }: FolderNavProps) {
+export function FolderNav({
+  tree,
+  library,
+  loading,
+  error,
+  onRetry,
+  onNavigate,
+  onDropDocument,
+  possibleVersions,
+}: FolderNavProps) {
   const top = useDropTarget(null, "the top level", onDropDocument);
   // File management F5: the departments first, in the admin's order, then Other: the
   // folders in no department, and Trash.
@@ -198,6 +211,14 @@ export function FolderNav({ tree, library, loading, error, onRetry, onNavigate, 
             Trash
           </Link>
         </li>
+        {possibleVersions && (
+          <li>
+            <Link href={POSSIBLE_PATH} className={styles.treeLink}>
+              <TreeIcon name="versions" size="sm" className={styles.treeIcon} />
+              {LINK_TEXT.possibleCount(possibleVersions.count, possibleVersions.more)}
+            </Link>
+          </li>
+        )}
       </ul>
       {loading && (
         <p className={`muted delayed ${styles.note} ${styles.treeNote}`} role="status">

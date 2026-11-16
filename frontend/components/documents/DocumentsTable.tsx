@@ -36,6 +36,8 @@
 // #542: in Trash, its folders are rows above the documents (TrashFolderRow), ticked with them for
 // the selection's Restore and Delete forever (each one call, a folder's to its own route).
 // PRD 7 (PR 13): an Admin locks the ticked files together (LockDialog.tsx), all or nothing.
+// #648 (V13): for Admins and Management (`onLinkVersions`), a row's menu offers Link to another
+// version…, and 2 to 20 ticked files not locked "Link as versions" (the link dialog, LinkDialog.tsx).
 
 import Link from "next/link";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -66,6 +68,7 @@ import {
   restoreDocument,
   restoreTrashedFolder,
 } from "@/lib/api";
+import { LINK_TEXT, linkableIds } from "@/components/versions/link";
 import { useSession } from "@/lib/session";
 import { docTypeLabel, fileTypeLabel, formatBytes, formatDate, formatDateTime, formatRelative } from "@/lib/format";
 import type { DocumentSummary, FilePlaced, FolderBack, FolderRestored, Me, Tag, TrashedFolder } from "@/lib/types";
@@ -143,6 +146,9 @@ export interface RowEvents {
   onUploadVersion(document: DocumentSummary): void;
   /** PRD 7 (#604): files given to people: the toast's words. */
   onShared?(message: string): void;
+  /** #648 (V13): the link dialog, from a row ("pick") or the selection ("order"); left out for
+   * anyone who may not link. */
+  onLinkVersions?(documents: DocumentSummary[], start: "pick" | "order"): void;
 }
 
 interface Props extends RowEvents {
@@ -305,6 +311,8 @@ export function DocumentsTable({
     !inTrash && me.user.role === "admin" && me.session.scope === "admin"
       ? items.filter((item) => !item.locked && visibleSelectedIds.has(item.id))
       : [];
+  const canLink = !inTrash && events.onLinkVersions !== undefined;
+  const linkIds = canLink ? linkableIds(items, visibleSelectedIds) : [];
   const readableIds = items
     .filter((item) => readable(item) && visibleSelectedIds.has(item.id))
     .map((item) => item.id);
@@ -334,6 +342,7 @@ export function DocumentsTable({
       onFolderCreated: () => latestEvents.current.onFolderCreated(),
       onUploadVersion: (document) => latestEvents.current.onUploadVersion(document),
       onShared: (message) => latestEvents.current.onShared?.(message),
+      onLinkVersions: (documents, start) => latestEvents.current.onLinkVersions?.(documents, start),
     }),
     [],
   );
@@ -530,6 +539,7 @@ export function DocumentsTable({
               whenSpoken={whenSpoken(document, inTrash, now)}
               inTrash={inTrash}
               deletable={tickable(document)}
+              linkVersions={canLink && document.locked !== true}
               readable={readable(document)}
               canForever={canForever}
               askPassword={askPassword}
@@ -625,6 +635,15 @@ export function DocumentsTable({
                   {lockable.length > 0 && (
                     <button type="button" className="btn" onClick={() => setLocking(true)}>
                       {`Lock ${lockable.length} ${lockable.length === 1 ? "file" : "files"}`}
+                    </button>
+                  )}
+                  {linkIds.length > 0 && (
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => events.onLinkVersions?.(items.filter((item) => linkIds.includes(item.id)), "order")}
+                    >
+                      {LINK_TEXT.bulk(linkIds.length)}
                     </button>
                   )}
                   {restorableIds.length > 0 && (
@@ -835,6 +854,7 @@ const DocumentRow = memo(function DocumentRow({
   inTrash,
   deletable,
   readable,
+  linkVersions,
   canForever,
   askPassword,
   selected,
@@ -852,6 +872,7 @@ const DocumentRow = memo(function DocumentRow({
   inTrash: boolean;
   deletable: boolean; // it gets a checkbox (selectable)
   readable: boolean; // it may be read again (canReprocess): its status cell may offer Retry
+  linkVersions: boolean; // #648: its menu offers Link to another version…
   canForever: boolean;
   askPassword: boolean;
   selected: boolean;
@@ -899,6 +920,10 @@ const DocumentRow = memo(function DocumentRow({
     }
     if (action === "version") {
       events.onUploadVersion(document);
+      return;
+    }
+    if (action === "link") {
+      events.onLinkVersions?.([document], "pick");
       return;
     }
     if (action === "restore") {
@@ -1251,6 +1276,7 @@ const DocumentRow = memo(function DocumentRow({
             canForever={canForever}
             onPick={pick}
             toggleRef={holdActions}
+            linkVersions={linkVersions}
             access={abilities}
           />
         )}

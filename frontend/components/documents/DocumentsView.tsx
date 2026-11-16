@@ -23,6 +23,8 @@
 // Trash (#542): a folder deleted with everything inside is one row of it; opened, it shows its
 // folders and files read only, under "Trash › Accounts › 2025"; Restore and Delete forever say so
 // in the toast, and the folder tree is asked for again. Search, filters and pages are for files.
+// #648 (V13, V17): Admins and Management link files as versions from a row's menu or the selection
+// (LinkDialog: said in the toast, with Undo), and the tree offers "Possible versions (N)".
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -49,7 +51,10 @@ import { IconButton } from "@/components/ui/IconButton";
 import { RadioPill, Segmented } from "@/components/ui/Segmented/Segmented";
 import { useSharedUploads } from "@/components/shell/Uploads";
 import { Toast } from "@/components/ui/Toast";
+import { LinkDialog } from "@/components/versions/LinkDialog";
 import { VersionNoteDialog } from "@/components/versions/VersionNoteDialog";
+import { LINK_TEXT, byDate, fromSummary, mayLinkVersions } from "@/components/versions/link";
+import type { LinkFile } from "@/components/versions/link";
 import {
   ApiError,
   getTrashedFolder,
@@ -60,6 +65,7 @@ import {
   listTrashedFolders,
   isHiddenMove,
   moveDocument,
+  listVersionGroups,
   searchDocuments,
   updateDocument,
 } from "@/lib/api";
@@ -202,6 +208,26 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const [versionFile, setVersionFile] = useState<{ file: File; of: DocumentSummary } | null>(null);
   // PRD 7 (#604): the folder whose Audience panel is open.
   const [audienceOf, setAudienceOf] = useState<AudienceTarget | null>(null);
+
+  // #648: who may link versions, the link dialog open, and the groups of possible versions.
+  const canLink = mayLinkVersions(me);
+  const [linking, setLinking] = useState<{ files: LinkFile[]; start: "pick" | "order" } | null>(null);
+  const [possible, setPossible] = useState<{ count: number; more: boolean } | null>(null);
+  const [linkedCount, setLinkedCount] = useState(0);
+
+  useEffect(() => {
+    if (!canLink) return;
+    let cancelled = false;
+    listVersionGroups().then(
+      (reply) => {
+        if (!cancelled) setPossible({ count: reply.items.length, more: reply.more });
+      },
+      () => undefined, // the tree leaves the view out until it loads
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [canLink, linkedCount]);
 
   useEffect(() => {
     let cancelled = false;
@@ -426,6 +452,11 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
     setVersionFile(null);
     setTrayOpen(true);
     void uploads.addVersion(versionFile.file, versionFile.of, note);
+  }
+
+  function openLink(documents: DocumentSummary[], start: "pick" | "order") {
+    const files = documents.map(fromSummary);
+    setLinking({ files: start === "order" ? byDate(files) : files, start });
   }
 
   function show(next: LibraryState) {
@@ -673,6 +704,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
             onRetry={() => setFoldersVersion((n) => n + 1)}
             onNavigate={navigated}
             onDropDocument={canUpload ? dropDocument : undefined}
+            possibleVersions={canLink ? possible : null}
           />
         </nav>
 
@@ -1071,6 +1103,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                       onTagCreated={() => setTagsVersion((n) => n + 1)}
                       onUploadVersion={chooseVersion}
                       onShared={(message) => setToast({ message })}
+                      onLinkVersions={canLink ? openLink : undefined}
                       trashFolders={folderRows}
                       onOpenFolder={(folder) => openTrashFolder(folder.id)}
                       onFolderDone={opened ? undefined : afterTrashFolder}
@@ -1128,6 +1161,20 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
           onChanged={(message) => {
             setToast({ message });
             foldersEdited(); // its people icon and the named list follow
+            setReload((n) => n + 1);
+          }}
+        />
+      )}
+      {linking && (
+        <LinkDialog
+          files={linking.files}
+          start={linking.start}
+          fixed={linking.start === "pick" ? linking.files[0]?.id : undefined}
+          onClose={() => setLinking(null)}
+          onLinked={(done) => {
+            setLinking(null);
+            setLinkedCount((n) => n + 1);
+            setToast({ message: done.message, undo: async () => void (await done.undo()), undone: LINK_TEXT.undone });
             setReload((n) => n + 1);
           }}
         />

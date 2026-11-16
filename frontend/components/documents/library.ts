@@ -29,7 +29,16 @@ export function downloadHref(document: Pick<DocumentSummary, "id" | "status" | "
 }
 
 export type EditAction = "rename" | "move" | "tags";
-export type RowAction = EditAction | "version" | "trash" | "restore" | "forever" | "read" | "give" | "audience";
+export type RowAction =
+  | EditAction
+  | "version"
+  | "link"
+  | "trash"
+  | "restore"
+  | "forever"
+  | "read"
+  | "give"
+  | "audience";
 
 /** What each action does, in one plain line under it in the menu (plain words, 25 Oct 2026). */
 export const ACTION_HELP: Record<RowAction | "download", string> = {
@@ -37,6 +46,7 @@ export const ACTION_HELP: Record<RowAction | "download", string> = {
   move: "Put it in another folder.",
   tags: "Add or remove short words that help you find it.",
   version: "Upload a newer copy. This one is kept as an earlier version.",
+  link: "Join it with a file already uploaded, as an older or newer version.",
   read: "Read every page again, for example after a poor first reading.",
   download: "Save the file exactly as it was uploaded.",
   restore: "Take it out of Trash, back with your documents.",
@@ -66,6 +76,8 @@ export type MenuEntry =
  * Upload new version (the reading problems' Upload a better scan).
  * PRD 7 (#604): Give access and Who can see this (`access`) come before Move to Trash; a file in
  * Trash has neither (the server says 409 in_trash).
+ * #648 (V13): Link to another version… after Upload new version, in the list, for whoever may link
+ * (`linkVersions`: Admins and Management).
  */
 export function menuEntries(
   item: Pick<DocumentSummary, "id" | "status" | "deleted_at" | "can_delete" | "locked">,
@@ -73,6 +85,7 @@ export function menuEntries(
   place: "list" | "document" = "list",
   readAgain = false,
   access: MenuAccess = NO_ACCESS,
+  linkVersions = false,
 ): MenuEntry[] {
   const act = (action: RowAction, words: string, danger = false): MenuEntry => ({
     kind: "action",
@@ -93,6 +106,7 @@ export function menuEntries(
         act("move", "Move to folder"),
         act("tags", "Tags"),
         act("version", "Upload new version"),
+        ...(linkVersions && place === "list" ? [act("link", "Link to another version…")] : []),
       ];
   if (place === "document") {
     const kept = entries.filter((entry) => entry.kind === "action" && entry.action !== "version");
