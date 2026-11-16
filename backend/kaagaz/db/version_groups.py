@@ -3,13 +3,13 @@ them, and their decisions: "Not versions" (kept apart, undone back), and "Decide
 here links a file (V-A does).
 
 What a person is shown, read through ``visible_documents`` only (PRD 7), on a ``Database.user``
-connection: of each group, the files they can see that are live (current, ready, so never locked,
-and out of Trash) and not decided (open or left for later), and of those only the files with a
-pair to another such file, with those pairs as the reasons. So no file they can't see, and no
-reason naming one, is ever shown: a file joined to the others only through a hidden one is left
-out too. A group with under 2 such files is not shown. Its files keep the finder's order (the
-last is the suggested latest); its files kept apart that they can see are listed with it, for
-Undo.
+connection, all or nothing (review, 16 Nov 2026): a group with any file they can't see doesn't
+exist for them (left out of the list, and a random id's 404), so neither a hidden file nor the gap
+it leaves in a chain ever shows. Of a group they can see whole: the live files (current, ready, so
+never locked, and out of Trash; one in Trash or locked isn't secret, only left out) not decided
+(open or left for later) with a pair to another such file, those pairs as the reasons. A group with
+under 2 such files is not shown. Its files keep the finder's order (the last is the suggested
+latest); its live files kept apart are listed with it, for Undo.
 """
 
 from collections.abc import Sequence
@@ -28,14 +28,15 @@ ACTIONS = {"kept_apart": "version.kept_apart", "open": "version.kept_apart_undon
 # (again), Undo a file kept apart.
 _FROM = {"kept_apart": UNDECIDED, "later": UNDECIDED, "open": ("kept_apart",)}
 
-# The members this person can see that are live, every group or one (:g).
+# Every member of every group or one (:g): whether this person can see it, whether it is live, and
+# what they may be shown of it (nothing of one they can't see).
 _MEMBERS = text(
-    "SELECT g.group_id::text, g.document_id::text, g.position, g.state, d.display_name, d.folder_id,"
-    " d.doc_type, d.document_date, d.created_at, d.page_count"
+    "SELECT g.group_id::text, g.document_id::text, g.position, g.state, d.id IS NOT NULL AS seen,"
+    " coalesce(d.deleted_at IS NULL AND d.is_current AND d.status = 'ready', false) AS live,"
+    " d.display_name, d.folder_id, d.doc_type, d.document_date, d.created_at, d.page_count"
     " FROM version_group_members g"
-    " JOIN visible_documents d ON d.customer_id = g.customer_id AND d.id = g.document_id"
+    " LEFT JOIN visible_documents d ON d.customer_id = g.customer_id AND d.id = g.document_id"
     " WHERE g.customer_id = :c AND (CAST(:g AS uuid) IS NULL OR g.group_id = CAST(:g AS uuid))"
-    " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " ORDER BY g.group_id, g.position"
 )
 # The pairs between two members of one group that this person can see both of.
@@ -82,7 +83,11 @@ def _reason(pair: RowMapping, other: str) -> dict[str, Any]:
 def _group(
     group_id: str, members: Sequence[RowMapping], pairs: Sequence[RowMapping]
 ) -> dict[str, Any] | None:
-    """One group as shown (module notes), or None when under 2 of its files are."""
+    """One group as shown (module notes), or None when a file of it is hidden from this person or
+    under 2 of its files are shown."""
+    if not all(m["seen"] for m in members):
+        return None
+    members = [m for m in members if m["live"]]
     undecided = {m["document_id"] for m in members if m["state"] in UNDECIDED}
     shown = [p for p in pairs if p["first_id"] in undecided and p["second_id"] in undecided]
     reasons: dict[str, list[dict[str, Any]]] = {}
@@ -138,10 +143,16 @@ def decide(
     """Not versions (``kept_apart``), Decide later (``later``) or Undo of Not versions (``open``) for
     files of one group, all or none, with one ``version.kept_apart``, ``version.later`` or
     ``version.kept_apart_undone`` row each. Not versions and Decide later take only files the group
-    shows this person; Undo, files kept apart they can see that are live. Raises Refused for any
-    other (nothing is written: the caller's transaction rolls back). O(m + p) for the group."""
+    shows this person; Undo, its live files kept apart, of a group they can see whole. Raises
+    Refused for any other (nothing is written: the caller's transaction rolls back). O(m + p) for
+    the group."""
     wanted = sorted(set(document_ids))
-    if to != "open":
+    if to == "open":
+        members = conn.execute(_MEMBERS, {"c": customer_id, "g": group_id}).mappings().all()
+        kept = {m["document_id"] for m in members if m["live"] and m["state"] == "kept_apart"}
+        if not members or not all(m["seen"] for m in members) or not set(wanted) <= kept:
+            raise Refused
+    else:
         shown = groups(conn, customer_id, group_id)
         if not shown or not set(wanted) <= {f["id"] for f in shown[0]["files"]}:
             raise Refused

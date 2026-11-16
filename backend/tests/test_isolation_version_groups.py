@@ -1,20 +1,22 @@
 """Possible versions (V17, #648, V-B): who sees the version finder's groups, and the decisions.
 
-The organisation is test_isolation_access_views' ``_walled`` one, with four groups written as the
+The organisation is test_isolation_access_views' ``_walled`` one, with five groups written as the
 finder leaves them (members and pairs, as the owner):
 
-* ``main``: sales (open), top (no folder), fin (Finance, Department only), sal (Salaries, private)
-  and trashed (in Trash); sales~top, sales~fin, fin~sal, top~sal, sales~trashed.
-* ``pair``: loose (open) and given (Finance, given to the plain reviewer).
-* ``bridge``: a and c (Sales) joined only through b (Finance): a~b, b~c.
-* ``locked``: held (held for the Finance member), the locked file (open to the Admin here) and x
-  (Sales): held~locked, locked~x, held~x.
+* ``open``: sales (open), top (no folder), loose (open) and gone (Sales, in Trash); sales~top,
+  top~loose, sales~gone.
+* ``walled``: fin (Finance, Department only), sal (Salaries, private), given (Finance, given to the
+  plain reviewer) and trashed (Salaries, in Trash); fin~sal, sal~given, fin~trashed.
+* ``chain``: a~c, c~b, b~e, e~f, where a, c, e and f are in Sales and b in Finance.
+* ``locked``: the locked file (open to the Admin here), x and y (Sales); locked~x, x~y, locked~y.
+* ``duo``: p~q (Sales).
 
-Only Admins and Management see them (Tushar, 16 Nov 2026); each sees only the files they can see
-(PRD 7's views), and only those with a reason against another such file, so nothing they can't see
-is ever named: Management everything but Trash and the lock nobody gave them; the Admin, who can't
-see Finance, Salaries or the held file, only main's sales and top. A hidden group or file answers
-exactly as an id that never was."""
+Only Admins and Management see them (Tushar, 16 Nov 2026), and a group is all or nothing (review,
+16 Nov 2026): one file of it the viewer can't see, and the group doesn't exist for them, so a hidden
+file never shows, nor the gap it leaves. Files they can see in Trash or locked are left out, as
+they aren't secret. Management sees everything but the lock nobody gave them; the Admin, who can't
+see Finance or Salaries, sees open, locked (its locked file left out) and duo. A hidden group or
+file answers exactly as an id that never was."""
 
 import json
 import uuid
@@ -41,25 +43,32 @@ _STATES = (
     "SELECT document_id::text, state, decided_by::text FROM version_group_members WHERE customer_id = :c"
 )
 GROUPS = {
-    "main": (["sales", "top", "fin", "sal", "trashed"], [
-        ("sales", "top", 0.9), ("sales", "fin", 0.85), ("fin", "sal", 0.95), ("top", "sal", 0.82),
-        ("sales", "trashed", 0.99),
-    ]),
-    "pair": (["loose", "given"], [("loose", "given", 0.9)]),
-    "bridge": (["a", "b", "c"], [("a", "b", 0.9), ("b", "c", 0.9)]),
-    "locked": (["held", "locked", "x"], [("held", "locked", 0.9), ("locked", "x", 0.9), ("held", "x", 0.88)]),
+    "open": (["sales", "top", "loose", "gone"],
+             [("sales", "top", 0.9), ("top", "loose", 0.85), ("sales", "gone", 0.99)]),
+    "walled": (["fin", "sal", "given", "trashed"],
+               [("fin", "sal", 0.95), ("sal", "given", 0.9), ("fin", "trashed", 0.99)]),
+    "chain": (["a", "c", "b", "e", "f"], [("a", "c", 0.9), ("c", "b", 0.9), ("b", "e", 0.9), ("e", "f", 0.9)]),
+    "locked": (["locked", "x", "y"], [("locked", "x", 0.9), ("x", "y", 0.9), ("locked", "y", 0.9)]),
+    "duo": (["p", "q"], [("p", "q", 0.9)]),
 }  # fmt: skip
-ROLES = ("admin", "management", "head", "member", "plain", "named")
+EXTRA = {"gone": "sales", "a": "sales", "b": "finance", "c": "sales", "e": "sales", "f": "sales"} | {
+    name: "sales" for name in ("x", "y", "p", "q")
+}
 
 
 def _org(api: Api) -> tuple[Org, dict[str, str]]:
-    """The walled organisation with its four groups; (org, group ids by name)."""
+    """The walled organisation with its five groups; (org, group ids by name)."""
     org = _walled(api)
     first = org.people["admin"].user_id
-    for name, folder in (("a", "sales"), ("b", "finance"), ("c", "sales"), ("x", "sales")):
+    for name, folder in EXTRA.items():
         org.files[name] = api.add_document(
             org.c, name=f"{name}.pdf", folder_id=org.folders[folder], uploaded_by=first
         )
+    _owner(
+        api.db,
+        "UPDATE documents SET deleted_at = now(), deleted_by = :u WHERE id = :d",
+        {"u": first, "d": org.files["gone"]},
+    )
     _owner(  # the Admin may open the locked file: only Ready's rule keeps it out
         api.db,
         "INSERT INTO lock_grants (customer_id, document_id, user_id, given_by) VALUES (:c, :d, :u, :u)",
@@ -103,36 +112,54 @@ def _states(db: Database, org: Org) -> dict[str, tuple[str, str | None]]:
 
 
 def test_each_role_sees_only_what_it_may(db: Database) -> None:
-    """The matrix: Management every live file but the lock nobody gave them; the Admin main's sales
-    and top only (the bridge, pair and locked groups have under 2 files with a reason they can
-    see); Heads, members, reviewers and named people 403, in plain words."""
+    """The matrix: Management every group but the one with the lock nobody gave them, each without
+    its files in Trash; the Admin only the groups whose every file they can see, without the locked
+    file they may open; Heads, members, reviewers and named people 403, in plain words."""
     org, ids = _org(Api(db))
     assert _listed(org, org.people["management"]) == {
-        ids["main"]: ["sales", "top", "fin", "sal"],
-        ids["pair"]: ["loose", "given"],
-        ids["bridge"]: ["a", "b", "c"],
-        ids["locked"]: ["held", "x"],
+        ids["open"]: ["sales", "top", "loose"],
+        ids["walled"]: ["fin", "sal", "given"],
+        ids["chain"]: ["a", "c", "b", "e", "f"],
+        ids["duo"]: ["p", "q"],
     }
-    assert _listed(org, org.people["admin"]) == {ids["main"]: ["sales", "top"]}
+    assert _listed(org, org.people["admin"]) == {
+        ids["open"]: ["sales", "top", "loose"],
+        ids["locked"]: ["x", "y"],
+        ids["duo"]: ["p", "q"],
+    }
     for role in ("head", "member", "plain", "named"):
         status, reply = _get(org.people[role], "/version-groups")
         assert (status, reply["error"]["code"]) == (403, "forbidden"), role
         assert reply["error"]["message"] == "Only Admins and Management can see possible versions.", role
 
 
-def test_a_group_never_names_a_file_the_viewer_cant_see(db: Database) -> None:
-    """The Admin's main group: sales and top in the finder's order, renumbered, top the suggested
-    latest, each with its one reason against the other in plain words; no id, name or reason of
-    fin, sal or the file in Trash anywhere in the reply."""
+def test_a_hidden_file_bridging_a_chain_hides_the_whole_group(db: Database) -> None:
+    """a~c, c~b, b~e, e~f with b hidden from the Admin: the group doesn't exist for them (no a, c, e
+    or f anywhere in their list, and its id is a random id's 404), rather than two halves with a
+    gap; Management, who can see b, sees all five."""
     org, ids = _org(Api(db))
-    status, group = _get(org.people["admin"], f"/version-groups/{ids['main']}")
+    admin = org.people["admin"]
+    listed = json.dumps(_get(admin, "/version-groups")[1])
+    for name in ("a", "b", "c", "e", "f"):
+        assert org.files[name] not in listed, name
+    assert _get(admin, f"/version-groups/{ids['chain']}") == _get(admin, f"/version-groups/{uuid.uuid4()}")
+    shown = _get(org.people["management"], f"/version-groups/{ids['chain']}")[1]
+    assert _shown(org, shown) == ["a", "c", "b", "e", "f"]
+
+
+def test_a_group_never_names_a_file_in_trash_and_says_why_in_plain_words(db: Database) -> None:
+    """The Admin's open group: sales, top and loose in the finder's order, renumbered, loose the
+    suggested latest, each with its reasons in plain words; the file in Trash nowhere in the reply."""
+    org, ids = _org(Api(db))
+    status, group = _get(org.people["admin"], f"/version-groups/{ids['open']}")
     assert status == 200, group
-    sales, top = org.files["sales"], org.files["top"]
+    sales, top, loose = org.files["sales"], org.files["top"], org.files["loose"]
     assert [(f["id"], f["position"], f["state"]) for f in group["files"]] == [
         (sales, 1, "open"),
         (top, 2, "open"),
+        (loose, 3, "open"),
     ]
-    assert group["suggested_latest_id"] == top and group["kept_apart"] == []
+    assert group["suggested_latest_id"] == loose and group["kept_apart"] == []
     assert group["files"][0]["reasons"] == [
         {
             "with": top,
@@ -144,17 +171,16 @@ def test_a_group_never_names_a_file_the_viewer_cant_see(db: Database) -> None:
         }
     ]
     said = json.dumps(group)
-    for hidden in ("fin", "sal", "trashed"):
-        assert org.files[hidden] not in said and f"{hidden}.pdf" not in said, hidden
-    management = _get(org.people["management"], f"/version-groups/{ids['main']}")[1]
-    sal = next(f for f in management["files"] if f["id"] == org.files["sal"])
-    assert sorted(r["with"] for r in sal["reasons"]) == sorted([org.files["fin"], org.files["top"]])
+    assert org.files["gone"] not in said and "gone.pdf" not in said
+    walled = _get(org.people["management"], f"/version-groups/{ids['walled']}")[1]
+    sal = next(f for f in walled["files"] if f["name"] == "sal.pdf")
+    assert sorted(r["with"] for r in sal["reasons"]) == sorted([org.files["fin"], org.files["given"]])
 
 
 def test_a_hidden_group_or_file_answers_as_one_that_never_was(db: Database) -> None:
-    """For the Admin: a group with one file they can see, a hidden file of a group they see, a
-    group of another organisation, all exactly the reply of a random id; nothing written. For a
-    Head, the same 403 for any id."""
+    """For the Admin: a group with a file they can't see, a file not in the group or hidden, a
+    locked one, another organisation's group, all exactly the reply of a random id; nothing written.
+    For a Head, the same 403 for any id."""
     api = Api(db)
     org, ids = _org(api)
     other, other_ids = _org(api)
@@ -162,52 +188,53 @@ def test_a_hidden_group_or_file_answers_as_one_that_never_was(db: Database) -> N
     random_group, random_file = str(uuid.uuid4()), str(uuid.uuid4())
     missing = _get(admin, f"/version-groups/{random_group}")
     assert missing[0] == 404
-    for group in (ids["pair"], ids["bridge"], ids["locked"], other_ids["main"]):
+    for group in (ids["walled"], ids["chain"], other_ids["open"]):
         assert _get(admin, f"/version-groups/{group}") == missing
     for action in ("keep-apart", "keep-apart/undo", "later"):
         refused = _post(admin, f"/version-groups/{random_group}/{action}", [random_file])
         assert refused[0] == 404, action
         for group, file in (
-            (ids["main"], org.files["fin"]),  # hidden from the Admin
-            (ids["main"], random_file),
-            (ids["main"], other.files["sales"]),
-            (ids["pair"], org.files["loose"]),  # visible, in a group not shown to them
+            (ids["open"], org.files["fin"]),  # hidden from the Admin
+            (ids["open"], random_file),
+            (ids["open"], other.files["sales"]),
+            (ids["chain"], org.files["a"]),  # visible, in a group with a file hidden from them
+            (ids["walled"], org.files["trashed"]),
             (ids["locked"], org.files["locked"]),  # may open it, but locked
-            (other_ids["main"], other.files["sales"]),
+            (ids["duo"], org.files["gone"]),  # in Trash, and not in the group
+            (other_ids["open"], other.files["sales"]),
         ):
             assert _post(admin, f"/version-groups/{group}/{action}", [file]) == refused, (action, file)
-        both = _post(admin, f"/version-groups/{ids['main']}/{action}", [org.files["sales"], org.files["fin"]])
+        both = _post(admin, f"/version-groups/{ids['open']}/{action}", [org.files["sales"], org.files["fin"]])
         assert both == refused, action  # all or none
+    assert _post(admin, f"/version-groups/{ids['duo']}/keep-apart/undo", [org.files["p"]]) == refused
     assert _states(db, org) == before
     head = org.people["head"]
     forbidden = _get(head, f"/version-groups/{random_group}")
-    assert forbidden[0] == 403 and _get(head, f"/version-groups/{ids['main']}") == forbidden
-    assert _post(head, f"/version-groups/{ids['main']}/keep-apart", [org.files["sales"]])[0] == 403
+    assert forbidden[0] == 403 and _get(head, f"/version-groups/{ids['open']}") == forbidden
+    assert _post(head, f"/version-groups/{ids['open']}/keep-apart", [org.files["sales"]])[0] == 403
     assert _states(db, org) == before
 
 
 def test_not_versions_is_kept_until_undone_and_audited(db: Database) -> None:
-    """Management keeps fin apart: main shows sales, top and sal (sal still has top), with fin
-    under kept apart, which the Admin (who can't see fin) is never told; Undo puts it back. Each is
-    one audit row about the file, by Management, naming the group."""
+    """Management keeps fin apart: walled shows sal and given (sal~given), with fin under kept
+    apart; the Admin still can't see the group; Undo puts it back. Each is one audit row about the
+    file, by Management, naming the group."""
     api = Api(db)
     org, ids = _org(api)
     management, fin = org.people["management"], org.files["fin"]
-    status, reply = _post(management, f"/version-groups/{ids['main']}/keep-apart", [fin])
+    status, reply = _post(management, f"/version-groups/{ids['walled']}/keep-apart", [fin])
     assert status == 200, reply
-    assert _shown(org, reply["group"]) == ["sales", "top", "sal"]
+    assert _shown(org, reply["group"]) == ["sal", "given"]
     assert reply["group"]["kept_apart"] == [{"id": fin, "name": "fin.pdf"}]
     assert _states(db, org)["fin"] == ("kept_apart", management.user_id)
-    assert _get(org.people["admin"], f"/version-groups/{ids['main']}")[1]["kept_apart"] == []
+    assert _get(org.people["admin"], f"/version-groups/{ids['walled']}")[0] == 404
     for group in _listed(org, management).values():
         assert "fin" not in group  # never suggested again while kept apart
-    again = _post(management, f"/version-groups/{ids['main']}/keep-apart", [fin])
+    again = _post(management, f"/version-groups/{ids['walled']}/keep-apart", [fin])
     assert again[0] == 404  # kept apart already: no longer a file the group shows
-    status, reply = _post(management, f"/version-groups/{ids['main']}/keep-apart/undo", [fin])
+    status, reply = _post(management, f"/version-groups/{ids['walled']}/keep-apart/undo", [fin])
     assert status == 200, reply
-    assert (
-        _shown(org, reply["group"]) == ["sales", "top", "fin", "sal"] and reply["group"]["kept_apart"] == []
-    )
+    assert _shown(org, reply["group"]) == ["fin", "sal", "given"] and reply["group"]["kept_apart"] == []
     rows = _owner(
         db,
         "SELECT action, actor_user_id::text, target_id, details->>'group_id' FROM audit_log"
@@ -215,22 +242,22 @@ def test_not_versions_is_kept_until_undone_and_audited(db: Database) -> None:
         {"c": org.c},
     )
     assert [tuple(row) for row in rows] == [
-        ("version.kept_apart", management.user_id, fin, ids["main"]),
-        ("version.kept_apart_undone", management.user_id, fin, ids["main"]),
+        ("version.kept_apart", management.user_id, fin, ids["walled"]),
+        ("version.kept_apart_undone", management.user_id, fin, ids["walled"]),
     ]
 
 
 def test_a_group_with_under_two_files_left_is_gone_until_undone(db: Database) -> None:
-    """Keeping loose apart leaves given alone: the pair group is gone (null, and off the list);
-    Undo brings it back."""
+    """Keeping p apart leaves q alone: the duo group is off the list (and null in the reply); Undo
+    brings it back."""
     org, ids = _org(Api(db))
     management = org.people["management"]
-    status, reply = _post(management, f"/version-groups/{ids['pair']}/keep-apart", [org.files["loose"]])
+    status, reply = _post(management, f"/version-groups/{ids['duo']}/keep-apart", [org.files["p"]])
     assert (status, reply) == (200, {"group": None})
-    assert ids["pair"] not in _listed(org, management)
-    assert _get(management, f"/version-groups/{ids['pair']}")[0] == 404
-    status, reply = _post(management, f"/version-groups/{ids['pair']}/keep-apart/undo", [org.files["loose"]])
-    assert status == 200 and _shown(org, reply["group"]) == ["loose", "given"]
+    assert ids["duo"] not in _listed(org, management)
+    assert _get(management, f"/version-groups/{ids['duo']}")[0] == 404
+    status, reply = _post(management, f"/version-groups/{ids['duo']}/keep-apart/undo", [org.files["p"]])
+    assert status == 200 and _shown(org, reply["group"]) == ["p", "q"]
 
 
 def test_decide_later_keeps_the_files_and_puts_the_group_last(db: Database) -> None:

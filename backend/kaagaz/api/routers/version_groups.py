@@ -2,9 +2,9 @@
 Read and decide only; linking is V-A's (``POST /documents/link-versions``).
 
 Only Admins and Management (Tushar, 16 Nov 2026); anyone else gets 403 ``forbidden`` before
-anything is looked up. Each sees only files they can see (``kaagaz/db/version_groups.py``): a
-group, or a file of one, they aren't shown is 404 ``not_found``, the same reply as an id that
-never was. Each decision is one transaction, all or none, with an audit row per file.
+anything is looked up. Each sees only groups whose every file they can see
+(``kaagaz/db/version_groups.py``): a group, or a file of one, they aren't shown is 404
+``not_found``, the same reply as an id that never was. Each decision is one transaction, all or none, with an audit row per file.
 
 * ``GET /version-groups``: ``{items: [VersionGroup], more}``, at most MAX_GROUPS.
 * ``GET /version-groups/{id}``: one ``VersionGroup``: ``{id, files: [{id, name, folder_id,
