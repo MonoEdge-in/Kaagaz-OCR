@@ -142,8 +142,11 @@ _TYPE_LABEL = text(
     " AND family_id = (SELECT family_id FROM documents WHERE customer_id = :c AND id = :d AND is_current)"
 )
 # Ready first (16 Oct 2026): a run's second save comes after Ready, when a read again may
-# have set the document back to received (its job not started yet): that save is refused.
-_READ_AGAIN_SET = text("SELECT status = 'received' FROM documents WHERE customer_id = :c AND id = :d")
+# have set the document back to received (its job not started yet): that save is refused. So is
+# a save of a locked version (PRD 7, #605), whose lock also ended the run: defence in depth.
+_READ_AGAIN_SET = text(
+    "SELECT status = 'received' OR locked_at IS NOT NULL FROM documents WHERE customer_id = :c AND id = :d"
+)
 # PRD 5 F5: the pages' "Keep as is" to carry forward, from the rows the save replaces; a
 # page asked to be read again is left out, so it loses its acceptance.
 _ACCEPTED = text(

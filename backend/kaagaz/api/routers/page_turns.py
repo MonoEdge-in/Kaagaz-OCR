@@ -25,6 +25,7 @@ from sqlalchemy import Connection, RowMapping
 from kaagaz.api.auth import CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
+from kaagaz.api.locked import refuse_locked
 from kaagaz.api.routers.documents import same_user
 from kaagaz.api.routers.stories import SESSION_CHANGED
 from kaagaz.db import audit, listing, page_turns, trash
@@ -57,6 +58,7 @@ def _live_version(conn: Connection, user: CurrentUser, document_id: uuid.UUID) -
     row = listing.get_document(conn, user.customer_id, str(document_id))
     if row is None:
         raise ApiError(404, "not_found")
+    refuse_locked(row)  # PRD 7 (#605): PR 13 lets people who may open it turn its pages, with the check
     try:
         family_id = trash.lock_live_family(conn, user.customer_id, str(document_id))
     except trash.InTrash:

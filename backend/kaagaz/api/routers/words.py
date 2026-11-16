@@ -49,6 +49,7 @@ from kaagaz.answering.words_text import (
 from kaagaz.api.auth import CurrentUser, Reviewer, User, require_feature
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
+from kaagaz.api.locked import refuse_locked
 from kaagaz.api.routers.documents import same_user
 from kaagaz.db import audit, listing
 from kaagaz.db import organization_words as organization_words_sql
@@ -188,13 +189,17 @@ def _check_documents(
 ) -> None:
     """Every document named is this customer's (404), and the spot's page is in it
     (400). O(k log D) for k documents."""
-    for document_id in document_ids:
-        if listing.get_document(conn, customer_id, document_id) is None:
-            raise ApiError(404, "not_found")
+    rows = [listing.get_document(conn, customer_id, document_id) for document_id in document_ids]
+    if any(row is None for row in rows):
+        raise ApiError(404, "not_found")
+    for found in rows:
+        if found is not None:
+            refuse_locked(found)  # PRD 7 (#605): after every 404, so a hidden id never answers otherwise
     if spot is not None:
         row = listing.get_document(conn, customer_id, str(spot.document_id))
         if row is None:
             raise ApiError(404, "not_found")
+        refuse_locked(row)
         if row["page_count"] is None or spot.page_no > row["page_count"]:
             raise ApiError(400, "bad_request", "That page is not in this document.")
 
@@ -405,7 +410,9 @@ def my_words_on_page(
     oldest first. Two indexed queries: O(log D + log S + k) for the page's k spots."""
     customer_id, me, target = user.customer_id, user.user_id, str(document_id)
     with context.db.user(customer_id, me) as conn:
-        if listing.get_document(conn, customer_id, target) is None:
+        row = listing.get_document(conn, customer_id, target)
+        if row is None:
             raise ApiError(404, "not_found")
+        refuse_locked(row)  # PRD 7 (#605)
         spots = words_sql.spots_on_page(conn, customer_id, me, target, page)
     return {"items": [asdict(spot) for spot in spots]}

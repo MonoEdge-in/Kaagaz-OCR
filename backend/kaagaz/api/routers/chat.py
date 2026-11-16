@@ -113,6 +113,7 @@ from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.names import clean_name
 from kaagaz.api.routers.health import running_commit
 from kaagaz.api.views import (
+    LOCKED_NOTE,
     NO_ACCESS,
     cited_document_ids,
     conversation_summary,
@@ -385,16 +386,25 @@ def ask(body: AskBody, user: CurrentUser, context: AppContext, background: Backg
         running.wait(context.settings.answer_stream_max_seconds + 30)
         found = _saved_reply(context, user, question_id)
         if found is not None:
-            return found
+            return _with_note(context, user, found)
     if mine is None:
         raise ApiError(409, "conflict", ANSWERING_ALREADY)
     try:
         found = None if body.question_id is None else _saved_reply(context, user, question_id)
-        return found or _ask(body, user, context, background, landing, question_id)
+        reply = found or _ask(body, user, context, background, landing, question_id)
     finally:
         with _IN_PROGRESS_LOCK:
             _IN_PROGRESS.pop(question_id, None)
         mine.set()
+    return _with_note(context, user, reply)
+
+
+def _with_note(context: AppContext, user: CurrentUser, reply: dict[str, Any]) -> dict[str, Any]:
+    """PRD 7 (#605, p2:79): the reply with Ask's fixed line, ``locked_note``, for a person who may
+    open a locked file (None for anyone else). Added each time it is shown, never saved."""
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        opens = chat_sql.opens_locked(conn, user.customer_id, user.user_id)
+    return {**reply, "locked_note": LOCKED_NOTE if opens else None}
 
 
 def _saved_reply(context: AppContext, user: CurrentUser, question_id: str) -> dict[str, Any] | None:
@@ -1121,24 +1131,34 @@ def _rebuild_due(conversation_id: str) -> bool:
         return True
 
 
+def _locked(answer: Mapping[str, Any] | None, states: Mapping[str, str]) -> bool:
+    """PRD 7 (#605): whether ``answer`` names a document now locked (``document_states``)."""
+    return any(states.get(document) == "locked" for document in cited_document_ids(answer))
+
+
 def _shown_turns(
     conn: Connection, customer_id: str, conversation_id: str, limit: int, state: RowMapping
 ) -> tuple[list[RowMapping], Memory | None]:
     """PRD 7 (#602): the conversation's newest ``limit`` messages (``recent_messages``) without
-    the answers the asker may no longer see whole (``views.no_access``), so no history, cited id
+    the answers the asker may no longer see whole (``views.no_access``) and those naming a document
+    now locked (#605), so no history, cited id
     or open clarify comes from one; and the stored summary and memory with the live documents'
-    names, or None when it tracks a document they can no longer see (or deleted forever), or was
+    names, or None when it tracks a document they can no longer see (or deleted forever) or one now
+    locked (PRD 7, #605: its summary may hold that file's words), or was
     written before every document it read was tracked (no ``VERSION``): it is not used, and is
     made again (question 7). Two statements, three when the memory names a document."""
     recent = chat_sql.recent_messages(conn, customer_id, conversation_id, limit)
     stored = from_row(state["summary"], state["memory"])
     named = [*stored.documents, *(d for row in recent for d in cited_document_ids(row["answer"]))]
     states = chat_sql.document_states(conn, customer_id, named)
-    shown = [row for row in recent if not no_access(row["answer"], states)]
+    # PRD 7 (#605): an answer naming a document now locked goes too, though the person may open it.
+    shown = [
+        row for row in recent if not no_access(row["answer"], states) and not _locked(row["answer"], states)
+    ]
     written = state["memory"].get("v") if isinstance(state["memory"], Mapping) else None
     if stored != NO_MEMORY and written != VERSION:
         return shown, None
-    if any(document not in states for document in stored.documents):
+    if any(document not in states or states[document] == "locked" for document in stored.documents):
         return shown, None
     return shown, live(stored, chat_sql.live_document_names(conn, customer_id, stored.documents))
 
@@ -1314,6 +1334,7 @@ def get_conversation(conversation_id: uuid.UUID, user: User, context: Context) -
         states = chat_sql.document_states(
             conn, user.customer_id, cited + [d for r in rows for d in _scope_ids(r)]
         )
+        opens = chat_sql.opens_locked(conn, user.customer_id, user.user_id)
     messages = []
     scope: list[str] = []  # the question's, for its answer
     replaced = False  # an answer before this one was replaced whole
@@ -1341,7 +1362,12 @@ def get_conversation(conversation_id: uuid.UUID, user: User, context: Context) -
         elif shown["answer"] and replaced:
             shown["answer"] = _without_reading(shown["answer"])
         messages.append(shown)
-    return {"id": str(found["id"]), "title": found["title"], "messages": messages}
+    return {
+        "id": str(found["id"]),
+        "title": found["title"],
+        "messages": messages,
+        "locked_note": LOCKED_NOTE if opens else None,  # PRD 7 (#605, p2:79)
+    }
 
 
 # PRD 7 (#602, review): what a reply to a clarify replaced whole says instead of its pick.

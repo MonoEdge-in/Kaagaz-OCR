@@ -70,9 +70,10 @@ def test_on_is_refused_until_every_recent_worker_runs_as_kaagaz_worker_and_9b_is
         conn.execute(text("DELETE FROM reader_status WHERE worker = 'w-2'"))
     # Changed on purpose (PR 9b, #606): 0092 is in (the head), so on passes the migration check; one
     # still to come is asked for to see the refusal.
-    monkeypatch.setattr(person_rule, "NEEDS_REVISION", "0093")
+    # Changed on purpose (PR 12, #605): 0093 is the head now; a revision still to come is asked for.
+    monkeypatch.setattr(person_rule, "NEEDS_REVISION", "0094")
     assert _run(db, "on", "--customer", customer)[0] == 2  # the head is below what it needs
-    assert "PR 9b (migration 0093) is not in yet" in capsys.readouterr().err
+    assert "PR 9b (migration 0094) is not in yet" in capsys.readouterr().err
     assert _rows(db, customer) == 0
     monkeypatch.undo()
     assert person_rule.NEEDS_REVISION == "0092"

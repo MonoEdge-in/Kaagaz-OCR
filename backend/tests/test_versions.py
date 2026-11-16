@@ -523,6 +523,7 @@ def test_v6_accept_losing_a_race_to_reject_is_already_decided_and_writes_nothing
         versions_sql._SUGGESTION: suggestion,
         versions_sql._LINK_STATE: state,
         versions_sql._ACCEPT: None,
+        versions_sql._LOCKED_FAMILY: False,  # Changed on purpose (PRD 7, #605): neither family locked
     }
     ran: list[Any] = []
 
@@ -537,6 +538,9 @@ def test_v6_accept_losing_a_race_to_reject_is_already_decided_and_writes_nothing
             return self.row
 
         one = first
+
+        def scalar_one(self) -> Any:
+            return self.row
 
     class _Conn:
         def execute(self, statement: Any, _params: Any) -> _Result:

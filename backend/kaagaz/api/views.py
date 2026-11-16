@@ -36,8 +36,16 @@ _STATUS_MESSAGES = {
     "clean": "Reading the document…",
     "ready": "Ready. You can ask about it.",
     "needs_reader": "Stored safely. This kind of file can't be read yet.",
+    "locked": "Locked. It can only be viewed.",  # PRD 7 (#605)
 }
 _IN_PROGRESS = ("received", "clean")
+# PRD 7 (#605): a locked version whose page pictures were not made (storage down, a stuck job, its
+# tries used up): Retry only prepares it again, never reads it. ``cannot_draw`` (kaagaz.pipeline
+# CANNOT_DRAW): a page of it can't be drawn at all.
+LOCKED_NOT_PREPARED = "Locked. Its page pictures couldn't be made yet. Retry to try again."
+LOCKED_CANNOT_DRAW = (
+    "Locked. Its pages can't be shown as pictures, so it can't be viewed. Unlock it to read it."
+)
 # All formats (#522): a file that can never be read as it is, in words that say what to do.
 FILE_FAILURES = {
     "corrupt_file": "This file is damaged, so it can't be opened. Save it again and upload that copy.",
@@ -128,6 +136,7 @@ def status_message(
     batch_ahead: int = 0,
     pages_unreadable: int = 0,
     waiting_code: str | None = None,
+    locked: bool = False,
 ) -> str:
     """``max_pages`` is the MAX_PAGES setting, named when a file had too many pages
     (a PDF's pages, or a TIFF's frames: ``detected_type`` says which to call it),
@@ -142,7 +151,10 @@ def status_message(
     how many are ahead. A ready document with ``pages_unreadable`` pages still flagged
     says so (council 16 Oct 2026: such a document is ready, not failed, since e01b937d).
     ``waiting_code`` is the last run's code while it waits: a key problem is READER_STOPPED
-    (issue 407), a reading pause (#478) PAUSED_FOR_TODAY or PAUSED_BUDGET."""
+    (issue 407), a reading pause (#478) PAUSED_FOR_TODAY or PAUSED_BUDGET. ``locked`` (PRD 7,
+    #605): a locked version that failed is never "read it again": its own words."""
+    if status == "failed" and locked:
+        return LOCKED_CANNOT_DRAW if failure_code == "cannot_draw" else LOCKED_NOT_PREPARED
     if status == "rejected":
         return CUSTOMER_MESSAGES.get(failure_code or "", "This file was not processed.")
     if status == "failed" and failure_code == "too_many_pages":
@@ -328,9 +340,11 @@ def document_summary(
             batch_ahead=int(row["batch_ahead"]),
             pages_unreadable=int(row["pages_unreadable"]),
             waiting_code=row["waiting_code"],
+            locked=bool(row["locked"]),
         ),
         "progress": in_progress(row["status"], row["progress"]),
         "stuck": bool(row["stuck"]),  # issue 407: may be read again (db/documents.py STUCK)
+        "locked": bool(row["locked"]),  # PRD 7 (#605): opened only as page pictures, never read
         "time_left": document_time_left(row, now=now),
         "understanding": understanding(row, now=now),  # ready, its card and map still coming
         "doc_type": row["doc_type"],  # PRD 2 D3: from the document card; null without one
@@ -453,7 +467,8 @@ def batch_view(
     * waiting: in progress with no step yet (queued) or waiting for the reader (Q6);
     * reading: in progress with a step (scanning, preparing, reading, understanding);
     * attention: ready, with a page or a value that needs attention (U2's rule);
-    * ready: ready with none.
+    * ready: ready with none;
+    * locked: locked and pictured (PRD 7, #605): finished, never read.
 
     The bar is pages read over total pages: a file whose page count is not known yet
     counts as 1 page; a finished file (ready or failed) is read whole; one past reading
@@ -462,7 +477,15 @@ def batch_view(
     over ``max_active`` (MAX_ACTIVE_PER_CUSTOMER, Q5); null while no file has an estimate.
     ponytail: one rate for the whole drop; per-file estimates if drops mix scans and text.
     Only this user's files, so no other customer's load reaches it. O(files)."""
-    counts = {"total": len(rows), "ready": 0, "reading": 0, "waiting": 0, "attention": 0, "failed": 0}
+    counts = {
+        "total": len(rows),
+        "ready": 0,
+        "reading": 0,
+        "waiting": 0,
+        "attention": 0,
+        "failed": 0,
+        "locked": 0,
+    }
     pages_read = pages_total = pages_waiting = 0
     estimates = []
     for row in rows:
@@ -476,6 +499,8 @@ def batch_view(
                 int(row["pages_unreadable"]) + int(row["pages_uncertain"]) + int(row["values_to_review"])
             )
             counts["attention" if flagged else "ready"] += 1
+        elif status == "locked":
+            counts["locked"] += 1  # finished: read whole
         elif progress is None or progress.get("step") == _WAITING_STEP:
             counts["waiting"] += 1
             done = 0
@@ -977,6 +1002,12 @@ NO_ACCESS_LINE = (
     "You no longer have access to a document behind this answer. Ask again to get an answer from the"
     " files you can see."
 )
+# PRD 7 (#605, p2:80): a saved answer that used a document now locked, shown to a person who may
+# open it, is this one line, never its words (one who may not gets NO_ACCESS_LINE, as for any
+# hidden source: the view leaves the document out of ``document_states``).
+LOCKED_LINE = "This answer used a document that is now locked. Open it directly to read it."
+# p2:79: the fixed line for a person who may open a locked file, added when shown, never saved.
+LOCKED_NOTE = "Ask doesn't read locked files. To check one, open it directly."
 
 
 def cited_document_ids(answer: Mapping[str, Any] | None) -> list[str]:
@@ -1035,6 +1066,22 @@ def no_access_answer() -> dict[str, Any]:
     }
 
 
+def locked_answer() -> dict[str, Any]:
+    """PRD 7 (#605): a saved answer that used a document now locked, replaced whole: status
+    ``no_access``, reason ``locked``, LOCKED_LINE, and nothing else of it."""
+    return {
+        "status": NO_ACCESS,
+        "reason": "locked",
+        "label": None,
+        "sentences": [{"text": LOCKED_LINE, "citations": []}],
+        "citations": [],
+        "closest_documents": [],
+        "route": "search",
+        "normalized_question": "",
+        "model_used": False,
+    }
+
+
 def shown_message(
     row: RowMapping,
     states: Mapping[str, str],
@@ -1049,7 +1096,8 @@ def shown_message(
     if shown["answer"]:
         shown["answer"] = answer_with_source_states(shown["answer"], states, scope)
         if shown["answer"]["status"] == NO_ACCESS:
-            shown["text"], shown["pin"] = NO_ACCESS_LINE, None
+            locked = shown["answer"].get("reason") == "locked"  # PRD 7 (#605)
+            shown["text"], shown["pin"] = LOCKED_LINE if locked else NO_ACCESS_LINE, None
     return shown
 
 
@@ -1063,6 +1111,8 @@ def answer_with_source_states(
       it, or it was deleted forever; ``no_access``, with its question's ``scope``) is replaced
       whole (``no_access_answer``). Changed on purpose: a document deleted forever was a
       sentence's GONE_SENTENCE before. So every document it names is in ``states``.
+    * PRD 7 (#605): one naming a document the person may see but that is now ``locked`` is
+      replaced whole too (``locked_answer``: LOCKED_LINE).
     * Each citation gets ``source_state``. One from a document in Trash loses its snippet and
       its highlight regions: Trash means deleted, so its words and its place on the page must
       not show any more.
@@ -1077,6 +1127,8 @@ def answer_with_source_states(
     """
     if no_access(answer, states, scope):
         return no_access_answer()
+    if any(states.get(document) == "locked" for document in cited_document_ids(answer)):
+        return locked_answer()
 
     def kept(document: Any) -> bool:
         return states.get(str(document)) not in (None, "in_trash")

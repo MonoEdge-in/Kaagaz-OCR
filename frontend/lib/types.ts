@@ -9,7 +9,8 @@ export type DocumentStatus =
   | "rejected"
   | "needs_reader"
   | "ready"
-  | "failed";
+  | "failed"
+  | "locked"; // PRD 7 (#605): locked, pictured and never read
 
 /**
  * The file's type: at upload, the one sniffed from its first bytes (pdf, png, jpeg, tiff, heic,
@@ -168,6 +169,8 @@ export interface DocumentSummary {
   understanding?: boolean; // Ready first (16 Oct 2026): ready and usable, its card and map still coming
   // Issue 407: still being read 6 hours after it was uploaded or last read again, so it may be read again (Retry).
   stuck?: boolean;
+  // PRD 7 (#605): locked: found by its name only, never read, opened only as page pictures (PR 13).
+  locked?: boolean;
   doc_type: DocType | null; // from the AI model's document card; null without one (PRD 2, D6)
   languages: string[]; // "en", "hi", "mr", "other"; [] when not known
   // PRD 5 F4: pages unreadable or uncertain still on the attention list (a page kept as is
@@ -344,7 +347,8 @@ export interface FirstUnreadablePage {
 export interface BatchView {
   id: string;
   documents: DocumentSummary[]; // in upload order; the tray sorts them worst first
-  counts: { total: number; ready: number; reading: number; waiting: number; attention: number; failed: number };
+  // locked (PRD 7, #605): locked and pictured, finished and never read.
+  counts: { total: number; ready: number; reading: number; waiting: number; attention: number; failed: number; locked?: number };
   pages_read: number; // of pages_total (U1); the bar weighs each document's own fraction (batchTray.ts)
   pages_total: number;
   time_left: TimeLeft | null; // until the whole drop is ready; null when nothing is left to read
@@ -861,7 +865,9 @@ export type UploadResult =
       hidden?: false;
     }
   // PRD 7 (#599): the file is already in Kaagaz, in a place this person can't see. Nothing more.
-  | { document: null; duplicate: true; in_trash: false; hidden: true };
+  | { document: null; duplicate: true; in_trash: false; hidden: true }
+  // PRD 7 (#605, p2:91): a copy is in Kaagaz, locked, and this person may open it: its link only.
+  | { document: null; duplicate: true; in_trash: boolean; hidden?: false; locked: { id: string } };
 
 export interface SheetCells {
   page_no: number;
@@ -1021,8 +1027,10 @@ export interface Answer {
   // "unchecked": the figure asked for is only in unchecked card values, so no
   // number is given; closest_documents says where.
   // "no_access" (PRD 7, #602): a saved answer that names a file the person can no longer see,
-  // replaced whole by the server: one sentence (NO_ACCESS_TEXT), every list empty.
+  // replaced whole by the server: one sentence (NO_ACCESS_TEXT), every list empty. reason
+  // "locked" (#605): the file is now locked and the person may open it (its own sentence).
   status: "answered" | "not_found" | "unchecked" | "clarify" | "no_access";
+  reason?: "locked";
   // PRD 6 A, answer contract v2 (24 Oct 2026); all four missing on answers saved before it,
   // which render as they did. The opening and assumptions are code-written lines.
   version?: 2;
@@ -1219,6 +1227,7 @@ export interface ChatResponse {
   conversation_id: string;
   question: Message;
   answer: Message;
+  locked_note?: string | null; // PRD 7 (#605): Ask's fixed line for a person who may open a locked file
 }
 
 export interface ConversationSummary {
@@ -1231,6 +1240,7 @@ export interface Conversation {
   id: string;
   title: string;
   messages: Message[];
+  locked_note?: string | null; // PRD 7 (#605): as ChatResponse's
 }
 
 export interface ReviewItem {

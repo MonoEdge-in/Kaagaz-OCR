@@ -102,6 +102,7 @@ _COLUMNS = (
     "SELECT d.id, d.display_name, d.detected_type, d.size_bytes, d.status, d.failure_code,"  # noqa: S608 - fixed fragments, review.WAITING_VALUE and documents.STUCK
     " d.page_count, d.created_at, d.uploaded_by, d.deleted_at, d.family_id, d.version_no,"
     " d.attempts, d.max_attempts, d.progress, d.doc_type, d.languages, d.summary, d.read_model,"
+    " d.locked_at IS NOT NULL AS locked,"  # PRD 7 (#605): the routes refuse a locked file on it
     # PRD 7 (#601): the folder only when the person can see it; in_a_folder says a file is in one
     # (in one they can't see: "Shared with you", never its id).
     " (SELECT sf.id FROM visible_folders sf WHERE sf.customer_id = d.customer_id AND sf.id = d.folder_id)"

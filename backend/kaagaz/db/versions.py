@@ -56,11 +56,24 @@ MAX_FETCHED = 200
 
 class Refused(Exception):
     """The change can't be made: ``code`` is not_found (404), forbidden (403, #594), or
-    already_decided, not_ready, not_linked or not_newest (409)."""
+    already_decided, not_ready, not_linked, not_newest or locked (409, PRD 7 #605)."""
 
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+# PRD 7 (#605, question 11): a locked family is never joined, undone, separated or made current.
+_LOCKED_FAMILY = text(
+    "SELECT EXISTS (SELECT 1 FROM documents WHERE customer_id = :c AND family_id = :f"
+    " AND locked_at IS NOT NULL)"
+)
+
+
+def _refuse_locked(conn: Connection, customer_id: str, family: str) -> None:
+    """Refused("locked") when a version of ``family`` is locked. The caller holds its family lock."""
+    if conn.execute(_LOCKED_FAMILY, {"c": customer_id, "f": family}).scalar_one():
+        raise Refused("locked")
 
 
 # --- V1: the text and the fingerprint ---------------------------------------------------
@@ -290,15 +303,20 @@ def link(
         raise Refused("not_found")
     new, family = str(first["document_id"]), str(first["candidate_family_id"])
     _lock_tree(conn, customer_id)  # first: the join moves the document (0085)
+    families = []
     for document in sorted((new, family)):
-        if lock_family(conn, customer_id, document) is None:
+        locked = lock_family(conn, customer_id, document)
+        if locked is None:
             raise Refused("not_found")  # deleted for good
+        families.append(locked)
     suggestion = conn.execute(_SUGGESTION, params).mappings().one()  # again, under the locks
     state = conn.execute(_LINK_STATE, {**params, "n": new, "f": family}).mappings().one()
     if state["in_trash"] or state["current_id"] is None or not state["alone"]:
         raise Refused("not_found")  # the suggestion disappeared (section 10)
     if suggestion["status"] != "pending":
         raise Refused("already_decided")
+    for locked in families:
+        _refuse_locked(conn, customer_id, locked)
     if state["status"] != "ready":
         raise Refused("not_ready")
     if rights is not None:
@@ -472,6 +490,7 @@ def undo(
     family = lock_live_family(conn, customer_id, document_id)
     if family is None:
         raise Refused("not_found")
+    _refuse_locked(conn, customer_id, family)
     params = {"c": customer_id, "d": document_id, "f": family}
     state = conn.execute(_UNDO_STATE, {**params, "by": by}).mappings().one()
     if state["suggestion_id"] is None:
@@ -562,6 +581,7 @@ def separate(conn: Connection, customer_id: str, document_id: str, *, name: str,
     family = lock_live_family(conn, customer_id, document_id)
     if family is None:
         raise Refused("not_found")
+    _refuse_locked(conn, customer_id, family)
     params = {"c": customer_id, "d": document_id, "f": family, "name": name}
     state = conn.execute(_SEPARATE_STATE, params).mappings().one()
     if state["versions"] < 2:
@@ -624,6 +644,7 @@ def make_current(conn: Connection, customer_id: str, document_id: str, *, by: st
     family = lock_live_family(conn, customer_id, document_id)
     if family is None:
         raise Refused("not_found")
+    _refuse_locked(conn, customer_id, family)
     params = {"c": customer_id, "d": document_id, "f": family}
     state = conn.execute(_STATE, params).mappings().one()
     if state["status"] != "ready":

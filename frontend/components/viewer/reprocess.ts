@@ -15,14 +15,17 @@ const REPROCESSABLE: readonly DocumentStatus[] = ["ready", "failed", "needs_read
 /**
  * A reviewer or an admin, for a ready, failed or unreadable document that is not in Trash, or
  * one still being read 6 hours after it was asked for (`stuck`, issue 407: the server decides).
+ * Never a locked one (PRD 7, #605): it is never read, but for one that failed being prepared, which
+ * Retry only prepares again.
  */
 export function canReprocess(
   role: Role,
-  document: Pick<DocumentSummary, "status" | "deleted_at" | "stuck">,
+  document: Pick<DocumentSummary, "status" | "deleted_at" | "stuck" | "locked">,
 ): boolean {
   return (
     canReview(role) &&
     document.deleted_at === null &&
+    (document.locked !== true || document.status === "failed") &&
     (REPROCESSABLE.includes(document.status) || document.stuck === true)
   );
 }

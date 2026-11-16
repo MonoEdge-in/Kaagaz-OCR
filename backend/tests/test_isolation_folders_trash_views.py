@@ -428,7 +428,8 @@ def test_a_stored_reply_sent_again_names_no_file_the_person_can_no_longer_see(db
     document = first.json()["document"]["id"]
     _owner(
         db,
-        "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d",
+        # Changed on purpose (#605, 0093): a locked version is never ready.
+        "UPDATE documents SET locked_at = now(), locked_by = :u, status = 'locked' WHERE id = :d",
         {"u": org.people["admin"].user_id, "d": document},
     )
     again = plain.client.post(f"{sessions}/{session}/complete", headers=CSRF)

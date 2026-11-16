@@ -114,7 +114,8 @@ def _walled(api: Api) -> Org:
     _owner(db, "UPDATE documents SET held_for = :u WHERE id = :d", {"u": ids["member"], "d": files["held"]})
     _owner(
         db,
-        "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d",
+        # Changed on purpose (#605, 0093): a locked version is never ready.
+        "UPDATE documents SET locked_at = now(), locked_by = :u, status = 'locked' WHERE id = :d",
         {"u": first, "d": files["locked"]},
     )
     _owner(
@@ -358,10 +359,12 @@ VIEW_READERS = {
     "answering/owners.py": {"_EVERY_RECORD", "_KEYED", "_OWNED", "_RESOLVE", "_SHARES_AS_PRINTED"},
     "answering/unchecked.py": {"_CARD_DOCUMENTS"},
     "db/audit.py": {"_FOLDER_PATHS", "_OF_FAMILY", "_SEEN"},
+    # Changed on purpose (#605): who may open a locked file (Ask's fixed line), and a route's lock check.
     "db/chat.py": {
         "MARKS", "_DOCUMENT_QUESTIONS", "add_pin", "document_states", "live_document_names",
-        "messages_with_feedback", "pins_for",
+        "messages_with_feedback", "pins_for", "opens_locked",
     },
+    "api/locked.py": {"_LOCKED"},
     "db/document_stories.py": {"_DELETE", "_PUT"},
     "db/ensemble.py": {"_COUNTS", "_LATEST", "_LATEST_READINGS", "_PENDING", "_READING"},
     "db/folder_upload_items.py": {"_PREVIOUS"},
@@ -660,7 +663,8 @@ def test_versions_links_and_family_columns_show_no_hidden_version(db: Database) 
     )
     _owner(
         db,
-        "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d",
+        # Changed on purpose (#605, 0093): a locked version is never ready.
+        "UPDATE documents SET locked_at = now(), locked_by = :u, status = 'locked' WHERE id = :d",
         {"u": org.people["admin"].user_id, "d": second},
     )
     _owner(
@@ -699,7 +703,8 @@ def test_new_versions_this_month_count_only_versions_the_person_sees(db: Databas
     )
     _owner(
         db,
-        "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d",
+        # Changed on purpose (#605, 0093): a locked version is never ready.
+        "UPDATE documents SET locked_at = now(), locked_by = :u, status = 'locked' WHERE id = :d",
         {"u": admin, "d": hidden[0][0]},
     )
     for name in ("plain", "member", "management", "admin"):
@@ -766,9 +771,10 @@ def test_the_feed_names_no_hidden_folder_and_shows_a_given_files_history(db: Dat
 
 
 def test_join_again_needs_the_family_it_rejoins_to_be_visible(db: Database) -> None:
-    """D was made a separate file from F; F is now held for the member and locked. The plain
-    reviewer, who sees D but not F, can't join them again: 404, and nothing changes. The member,
-    given F's lock, can."""
+    """D was made a separate file from F; F is now held for the member. The plain reviewer, who
+    sees D but not F, can't join them again: 404, and nothing changes. The member, whom F is held
+    for, can. Changed on purpose (#605, question 11): F was locked here too, but a locked family is
+    never joined ("Unlock it first."); its hold alone hides it from the reviewer."""
     api = Api(db)
     org = _walled(api)
     admin = org.people["admin"]
@@ -786,13 +792,8 @@ def test_join_again_needs_the_family_it_rejoins_to_be_visible(db: Database) -> N
     member = org.people["member"].user_id
     _owner(
         db,
-        "UPDATE documents SET held_for = :m, locked_at = now(), locked_by = :a WHERE family_id = :f",
-        {"m": member, "a": admin.user_id, "f": family},
-    )
-    _owner(
-        db,
-        "INSERT INTO lock_grants (customer_id, document_id, user_id, given_by) VALUES (:c, :d, :m, :a)",
-        {"c": org.c, "d": family, "m": member, "a": admin.user_id},
+        "UPDATE documents SET held_for = :m WHERE family_id = :f",
+        {"m": member, "f": family},
     )
     state = "SELECT row_to_json(d)::text FROM documents d WHERE family_id = :f OR id = :l ORDER BY id"
     tags = "SELECT tag_id FROM document_tags WHERE document_id = :l"

@@ -129,6 +129,17 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ),
     ("db/documents.py", "_COPY_TAGS"): (WRITE_AFTER_CHECK, "a new version takes its family's tags"),
     ("db/documents.py", "PgDocuments"): (SHARED_WITH_WORKER, f"the upload and pipeline store; {_UPLOAD}"),
+    # PRD 7 (#605): the worker's locked path and its check before each model step (never the API's).
+    ("db/documents.py", "_LOCKED_CLEAN"): (
+        SHARED_WITH_WORKER,
+        "the pipeline's store: a locked version prepared",
+    ),
+    ("db/documents.py", "_STILL_OPEN"): (SHARED_WITH_WORKER, "the pipeline's store: before each model step"),
+    # PRD 7 (#605): whether a family is locked, under its family lock, after the route's view check.
+    ("db/versions.py", "_LOCKED_FAMILY"): (
+        EXISTENCE_ONLY,
+        "join, undo, separate, make current: the view first (_visible / _LIVE), then refused if locked",
+    ),
     ("db/ensemble.py", "_STOP"): (WRITE_AFTER_CHECK, "POST .../ensemble/{run}/stop: get_document first"),
     ("db/ensemble.py", "_RUN"): (SHARED_WITH_WORKER, _ENSEMBLE),
     ("db/ensemble.py", "_ACTIVE_RUN"): (SHARED_WITH_WORKER, _ENSEMBLE),
@@ -425,6 +436,9 @@ ACCESS_READERS = {
     ("db/folders.py", "_IN_USE"),
     # PR 10b (#601): the Departments tab and a department's members; 10c: an upload with no folder.
     ("db/access.py", "_DEPARTMENT_LIST"), ("db/access.py", "_MEMBERS_OF"), ("db/documents.py", "_NO_FOLDER"),
+    # PR 12 (#605): an Admin's list of who may open a locked file, and Ask's fixed line (the person's
+    # own grants, on files the view shows them).
+    ("db/locks.py", "_GRANTS"), ("db/chat.py", "opens_locked"),
 }  # fmt: skip
 PR9: dict[tuple[str, str], str] = {
     ("db/answer_quality.py", "remove_learning"): "FEWER_OK:Q14, the narrowed Admin lists",
@@ -505,6 +519,8 @@ PR9: dict[tuple[str, str], str] = {
         "PgDocuments",
     ): "FIXED:F4 and _copy_already_in; no RETURNING or ON CONFLICT on a new version",
     ("db/documents.py", "_ENSEMBLE_RUNNING"): "SAME",
+    ("db/documents.py", "_LOCKED_CLEAN"): "SAME:the worker's, with no person (PR 12)",
+    ("db/documents.py", "_STILL_OPEN"): "SAME:the worker's, with no person (PR 12)",
     ("db/documents.py", "_PAGES_TO_READ_AGAIN"): "SAME",
     ("db/documents.py", "_READY_STATE"): "SAME",
     ("db/documents.py", "_READ_BEFORE"): "SAME",
@@ -512,6 +528,9 @@ PR9: dict[tuple[str, str], str] = {
     ("db/ensemble.py", "_ACTIVE_RUN"): "SAME",
     ("db/ensemble.py", "_LINES"): "SAME",
     ("db/ensemble.py", "_RUN"): "SAME",
+    ("db/versions.py", "_LOCKED_FAMILY"): (
+        "FEWER_OK:a family is locked and granted on every version at once; one hidden is a 404 first"
+    ),
     ("db/ensemble.py", "_SCANNED"): "SAME",
     (
         "db/folder_uploads.py",

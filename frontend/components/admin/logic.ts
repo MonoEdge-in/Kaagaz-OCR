@@ -486,6 +486,7 @@ const STATUS_ORDER: readonly DocumentStatus[] = [
   "needs_reader",
   "rejected",
   "failed",
+  "locked", // PRD 7 (#605)
 ];
 
 /**
@@ -541,6 +542,7 @@ export function breakdowns(stats: Stats): Breakdown[] {
         ["Being read", by.clean ?? 0],
         ["Stored, not readable yet", by.needs_reader ?? 0],
         ["Rejected", by.rejected ?? 0],
+        ["Locked", by.locked ?? 0], // PRD 7 (#605): never read
       ]),
     },
     {

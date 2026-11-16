@@ -50,6 +50,7 @@ import { LabelChip } from "@/components/files/LabelChip";
 import { labelName } from "@/components/files/labels";
 import { FILES_TEXT, NEWER_SPOKEN, versionCell } from "@/components/files/words";
 import { Icon } from "@/components/ui/Icon";
+import { Icon as KIcon } from "@/components/ui/Icon/Icon";
 import { PasswordField } from "@/components/ui/PasswordField";
 import { beingRead, canReprocess, reprocessErrorText } from "@/components/viewer/reprocess";
 import { newerVersionText } from "@/components/viewer/versions";
@@ -118,6 +119,9 @@ import {
 } from "./trash";
 import styles from "./Documents.module.css";
 import library from "./Library.module.css";
+
+// PRD 7 (#605): what the lock icon says.
+const LOCKED_TITLE = "Locked: kept out of Ask and search, opened only as page pictures.";
 
 /** What a row reports back to the screen. */
 export interface RowEvents {
@@ -1094,6 +1098,13 @@ const DocumentRow = memo(function DocumentRow({
           <span>
             <WrapName name={document.display_name} />
           </span>
+          {/* PRD 7 (#605): the lock icon, used for locked files only. */}
+          {document.locked ? (
+            <span title={LOCKED_TITLE}>
+              <KIcon name="lock" size="sm" />
+              <span className="visually-hidden">{LOCKED_TITLE}</span>
+            </span>
+          ) : null}
         </Link>
         {/* F5: the label, owner, type, version and date, each here until its own column has room.
             Issue 452: one line under the name, in this order, whatever width the table has; cut

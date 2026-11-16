@@ -281,6 +281,7 @@ ACCESS_KINDS = {
     "named": "a place on a private folder's list",
     "file": "a file, given directly",
     "wall": "access to files by opening them to more people",
+    "lock": "a locked file to open",  # PRD 7 (#605): never which one
 }
 
 
