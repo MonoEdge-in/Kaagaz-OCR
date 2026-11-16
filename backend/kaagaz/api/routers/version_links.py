@@ -54,8 +54,7 @@ MAX_KEPT_APART = 200
 _MESSAGES = {
     "in_trash": "This document is in the Trash. Restore it first.",
     "locked": UNLOCK_FIRST,
-    "not_ready": "The file Ask will answer from is still being read. Choose another, or try again once it"
-    " is ready.",
+    "not_ready": "A file here is still being read. Try again once it is ready.",
     "already_versions": "Some of these files are already versions of one file.",
     "changed": "These files changed just now. Try again.",
     "not_linked": "These versions weren't linked here, so there is nothing to undo.",

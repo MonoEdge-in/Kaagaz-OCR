@@ -278,7 +278,7 @@ def test_the_order_the_latest_and_files_already_versions(db: Database) -> None:
     _owner(db, "UPDATE documents SET status = 'failed' WHERE id = :d", {"d": y})
     status, reply = _link(management, org, ["x", "y"], "y")
     assert (status, reply["error"]["code"]) == (409, "not_ready")
-    assert _link(management, org, ["y", "x"], "x")[0] == 200  # a version still read may be an older one
+    assert _link(management, org, ["y", "x"], "x")[0] == 200  # a version whose reading failed may be older
 
 
 def test_the_confirm_step_names_the_latest_its_folder_and_who_loses_access(db: Database) -> None:
@@ -652,3 +652,18 @@ def test_undo_works_after_a_tag_it_would_put_back_was_deleted(db: Database) -> N
     status, reply = _undo(management, org, "x")
     assert status == 200, reply
     assert _state(db, org, "g1")["g1"]["tags"] == []
+
+
+@pytest.mark.parametrize("status", ["received", "clean"])
+def test_a_file_still_being_read_is_never_linked(db: Database, status: str) -> None:
+    """Review 2: a joining file, or another version of a joining family, still being read would be
+    made current by its run, or its run would find its family changed: 409 not_ready, nothing written."""
+    org = _org(Api(db))
+    management = org.people["management"]
+    for name, others in (("y", ["x", "y"]), ("g1", ["x", "g2"])):
+        _owner(db, "UPDATE documents SET status = :s WHERE id = :d", {"s": status, "d": org.files[name]})
+        before = _everything(db, org)
+        status_code, reply = _link(management, org, others, "x")
+        assert (status_code, reply["error"]["code"]) == (409, "not_ready"), name
+        assert _everything(db, org) == before
+        _owner(db, "UPDATE documents SET status = 'ready' WHERE id = :d", {"d": org.files[name]})

@@ -40,6 +40,8 @@ from kaagaz.db.folders import Move, _lock_tree, place_of
 from kaagaz.db.sqlstate import sqlstate
 from kaagaz.db.trash import LIVE_FOLDERS, lock_live_family
 
+# A version still being read: received (waiting) or clean (scanned, its reading under way).
+BEING_READ = ("received", "clean")
 # A version's number while a link or its Undo renumbers (unique within a family, 0002).
 _SHIFT = 1_000_000
 
@@ -229,7 +231,9 @@ def prepare(
     if any(row["locked"] for row in rows.values()):
         raise Refused("locked")
     latest = rows[current_id]
-    if latest["status"] != "ready":
+    # Review (#658): nor any version still being read, which its run would make current, or close as
+    # gone when it found its family changed under it.
+    if latest["status"] != "ready" or any(row["status"] in BEING_READ for row in rows.values()):
         raise Refused("not_ready")
     by_family: dict[str, list[str]] = {}
     for row in rows.values():  # in version order (the statement's)
