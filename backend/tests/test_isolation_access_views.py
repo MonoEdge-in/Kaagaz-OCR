@@ -23,7 +23,7 @@ from kaagaz.db import audit, listing
 from kaagaz.db.engine import Database
 from kaagaz.search import hybrid
 from kaagaz.search.scope import EVERYTHING
-from tests.db_support import APP_ROLE, insert_folder
+from tests.db_support import APP_ROLE, insert_folder, until_0092
 from tests.test_api_delete_forever_grant import _confirm, _grant
 from tests.test_api_support import CSRF, PDF_BYTES, Api, Signed
 from tests.test_isolation_logins import WORKER
@@ -341,6 +341,11 @@ def test_day_one_never_runs_the_given_or_lock_lookups(db: Database) -> None:
 # still run as kaagaz_app with no person on a server, and would see nothing). A new one belongs here
 # only once its callers are checked.
 VIEW_READERS = {
+    # Changed on purpose (#601): the access API's writes, and 10b's Departments tab and one-time card.
+    # Changed on purpose (#601, PR 10c): in_department (_ME); a folder holding what the person can't see.
+    "db/access.py": {
+        "_DEPARTMENTS", "_DEPARTMENT_LIST", "_HOLDS_PRIVATE", "_KEEPS", "_ME", "_NAMED_ON", "_PLACE",
+    },
     # PR 8 (#602): Ask, reached from the API only (the SQL guard's worker test).
     "answering/clarify.py": {"_ANY_KEYS", "_CANDIDATES", "_NEAR", "_PICKED_PAGE"},
     "answering/exhaustive.py": {"_IN_SCOPE", "_PIECES"},
@@ -352,11 +357,6 @@ VIEW_READERS = {
     "answering/ready.py": {"_TAGGED", "_TYPES", "_WORDS"},
     "answering/owners.py": {"_EVERY_RECORD", "_KEYED", "_OWNED", "_RESOLVE", "_SHARES_AS_PRINTED"},
     "answering/unchecked.py": {"_CARD_DOCUMENTS"},
-    # Changed on purpose (#601): the access API's writes, and 10b's Departments tab and one-time card.
-    # Changed on purpose (#601, PR 10c): in_department (_ME); a folder holding what the person can't see.
-    "db/access.py": {
-        "_DEPARTMENTS", "_DEPARTMENT_LIST", "_HOLDS_PRIVATE", "_KEEPS", "_ME", "_NAMED_ON", "_PLACE",
-    },
     "db/audit.py": {"_FOLDER_PATHS", "_OF_FAMILY", "_SEEN"},
     "db/chat.py": {
         "MARKS", "_DOCUMENT_QUESTIONS", "add_pin", "document_states", "live_document_names",
@@ -365,7 +365,8 @@ VIEW_READERS = {
     "db/document_stories.py": {"_DELETE", "_PUT"},
     "db/ensemble.py": {"_COUNTS", "_LATEST", "_LATEST_READINGS", "_PENDING", "_READING"},
     "db/folder_upload_items.py": {"_PREVIOUS"},
-    "db/folders.py": {"_HIDDEN_INSIDE", "_LIST", "_SUMMARY_SEEN"},
+    # Changed on purpose (PR 9a, #606): _HIDDEN_INSIDE reads kaagaz_hidden_inside (0091) now.
+    "db/folders.py": {"_LIST", "_SUMMARY_SEEN"},
     "db/listing.py": {
         "_BATCH", "_CLEAR_COPY_MARKS", "_COLUMNS", "_DASHBOARD_DEPARTMENTS", "_DASHBOARD_RECENT",
         "_DASHBOARD_TILES", "_DASHBOARD_TYPES", "_DOCUMENTS_SEEN", "_FILE_COLUMNS", "_FOLDERS_SEEN",
@@ -710,9 +711,12 @@ def test_a_closed_department_in_trash_stays_closed(db: Database) -> None:
     """Finance (Department only) goes to Trash with its files: the plain reviewer still can't see
     its files, its member still can, and every person still sees exactly the written rule."""
     org = _walled(Api(db))
-    reply = org.people["admin"].client.delete(
-        f"/api/folders/{org.folders['finance']}?contents=trash", headers=CSRF
-    )
+    # Changed on purpose (PR 9a, #606): an Admin who can't see Finance's files deletes it with them: PR 9b's
+    # functions (0092); until then with the rule off.
+    with until_0092():
+        reply = org.people["admin"].client.delete(
+            f"/api/folders/{org.folders['finance']}?contents=trash", headers=CSRF
+        )
     assert reply.status_code == 200, reply.text
     app = _app(db)
     assert org.files["fin"] not in _seen(app, org.c, org.people["plain"].user_id)

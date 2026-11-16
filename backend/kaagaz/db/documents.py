@@ -79,19 +79,20 @@ new version (``add_version``) replaces nothing.
 import dataclasses
 import json
 import logging
+import uuid
 from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import Connection, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, ProgrammingError
 
 from kaagaz.db import audit, autofile, customers, folders, storage_limits, versions
 from kaagaz.db.engine import Database, unavailable, user_or_customer
 from kaagaz.db.runs import close_running, finish_run, is_run_open
-from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, retry_on_deadlock, sqlstate
+from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, INSUFFICIENT_PRIVILEGE, retry_on_deadlock, sqlstate
 from kaagaz.db.trash import lock_family
-from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, StorageRoom, UnknownFolder
+from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, PlaceHidden, StorageRoom, UnknownFolder
 from kaagaz.jobs.worker import Superseded
 from kaagaz.reading.ocr import Region
 from kaagaz.scanning.gate import DocumentStatus
@@ -108,6 +109,13 @@ _SELECT = (
     "SELECT customer_id, id, sha256, size_bytes, detected_type, display_name, uploaded_by,"
     " folder_id, family_id, version_no, ocr_choice, deleted_at IS NOT NULL"
     " FROM documents WHERE customer_id = :c"
+)
+
+# PRD 7 (#606): each fingerprint's copy as the person may know it (0091): none, visible, locked_open
+# (with its id) or hidden (no id); a refused copy alone is not in.
+_DUPLICATE = text(
+    "SELECT sha256, answer, document_id FROM kaagaz_duplicate(CAST(:hashes AS text[]))"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 
 # #554 (module notes): document ``d`` was refused by its scan and is its family's only version.
@@ -735,8 +743,26 @@ _INSERT_VERSION = (
     " (SELECT o.owner_id FROM documents o WHERE o.customer_id = :c AND o.id = :of),"
     " (SELECT o.sensitivity FROM documents o WHERE o.customer_id = :c AND o.id = :of),"
     " (SELECT o.sensitivity_set_by_person FROM documents o WHERE o.customer_id = :c AND o.id = :of))"
-    " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
 )
+# PRD 7 (#606): no ON CONFLICT and no RETURNING: either has the database rule check the new row as
+# one the person sees, and a new version given to them through a share is seen only once its
+# statement ends (0085's trigger copies the share). The unique key on the fingerprint decides.
+_SAME_BYTES = "documents_customer_id_sha256_key"
+
+
+def _copy_already_in(conn: Connection, record: DocumentRecord) -> DocumentRecord:
+    """The copy of ``record``'s bytes that made its insert do nothing (or fail on the fingerprint's
+    key), as the connection may see it.
+    PRD 7 (#606): under the database rule a copy the person can't see reads as no row, and then the
+    upload's own record comes back, whose id names no row, so every reply says it is hidden (no
+    name, no place, no link). That is also why the inserts read no RETURNING: it is checked against
+    the person's rule, and a new version given through a share is seen only once its statement ends
+    (0085's trigger). One statement."""
+    row = conn.execute(
+        text(_SELECT + " AND sha256 = :h"), {"c": record.customer_id, "h": record.sha256}
+    ).first()
+    return record if row is None else _record(row)
+
 
 # Every version holds the family's tag set (tags.set_document_tags), so the
 # document the version is for has the whole set.
@@ -787,9 +813,13 @@ def add_version(
         version=stored.version_no,
         ocr=stored.ocr_choice,
     )
-    if conn.execute(text(_INSERT_VERSION), params).first() is None:  # this customer has these bytes
-        row = conn.execute(text(_SELECT + " AND sha256 = :h"), params).one()
-        return _record(row), False
+    try:
+        with conn.begin_nested():
+            conn.execute(text(_INSERT_VERSION), params)
+    except IntegrityError as error:
+        if getattr(getattr(error.orig, "diag", None), "constraint_name", None) != _SAME_BYTES:
+            raise
+        return _copy_already_in(conn, record), False  # this customer has these bytes
     conn.execute(text(_COPY_TAGS), params)
     return stored, True
 
@@ -823,17 +853,29 @@ class PgDocuments:
             return customers.is_active(conn, customer_id)
 
     def find_by_fingerprint(self, customer_id: str, sha256: str) -> DocumentRecord | None:
+        """PRD 7 (#606): for a person, ``kaagaz_duplicate`` (0091) says whether a copy is in and
+        whether they may see it: a hidden copy comes back as a record whose id names no row (the
+        reply says only that it is hidden), so a duplicate never touches storage."""
         query = _SELECT + " AND sha256 = :h"
         if self._storage is not None:  # #554: a refused copy alone is not "already in"
             query += " AND NOT EXISTS (" + _REFUSED_COPY + ")"
+        params = {"c": customer_id, "h": sha256}
         with unavailable(), user_or_customer(self._db, customer_id, self._user_id) as conn:
-            row = conn.execute(text(query), {"c": customer_id, "h": sha256}).first()
+            if self._user_id is not None:
+                found = conn.execute(_DUPLICATE, {**params, "hashes": [sha256]}).one()
+                if found.answer == "none":
+                    return None
+                if found.answer == "hidden":
+                    return DocumentRecord(customer_id, str(uuid.uuid4()), sha256, 0, "")
+                query, params = _SELECT + " AND id = :d", {"c": customer_id, "d": str(found.document_id)}
+            row = conn.execute(text(query), params).first()
         return None if row is None else _record(row)
 
     def add_if_absent(self, record: DocumentRecord) -> tuple[DocumentRecord, bool]:
         """Atomic per (customer, fingerprint): the unique index decides the race.
-        Raises UnknownFolder when the record's folder is not this customer's. With the
-        storage, a refused copy alone is replaced (#554, module notes). PRD 7 (#601): a record
+        Raises UnknownFolder when the record's folder is not this customer's, PlaceHidden when the
+        database rule refuses it there (PRD 7, #606: an Admin, a folder whose files they can't see).
+        With the storage, a refused copy alone is replaced (#554, module notes). PRD 7 (#601): a record
         with no folder is placed by ``_NO_FOLDER``; the record returned has the folder it went in."""
         with unavailable(), user_or_customer(self._db, record.customer_id, self._user_id) as conn:
             refused = None if self._storage is None else _drop_refused_copy(conn, record)
@@ -877,23 +919,23 @@ class PgDocuments:
                         " AND (CAST(:folder AS uuid) IS NULL OR EXISTS (SELECT 1 FROM folders"
                         " WHERE customer_id = :c AND id = CAST(:folder AS uuid) AND kind = 'department'))"
                         " AND " + autofile.APPLIES + ") END)"
-                        " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
+                        " ON CONFLICT (customer_id, sha256) DO NOTHING"
                     ),
                     params,
-                ).first()
+                ).rowcount
             except IntegrityError as error:
                 if folder_missing(error):
                     raise UnknownFolder(record.document_id) from None
                 raise
-            if inserted is not None:
+            except ProgrammingError as error:  # PRD 7 (#606, Q6): the rule's check of the new row
+                if sqlstate(error) == INSUFFICIENT_PRIVILEGE:
+                    raise PlaceHidden(record.document_id) from None
+                raise
+            if inserted:
                 if self._storage is not None and refused is not None:
                     _after_refused_copy(conn, self._storage, record, *refused)
                 return record, True
-            row = conn.execute(
-                text(_SELECT + " AND sha256 = :h"),
-                {"c": record.customer_id, "h": record.sha256},
-            ).one()
-        return _record(row), False
+            return _copy_already_in(conn, record), False
 
     def add_version_if_absent(
         self, record: DocumentRecord, *, of_document_id: str

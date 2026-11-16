@@ -1088,17 +1088,13 @@ def ai_budget(conn: Connection, customer_id: str) -> float | None:
 # grouped by id, so two users with one name stay apart; a NULL user (work no user asked
 # for, or a removed user) has no name. The index model_usage_period. #463 review: an
 # operator's accuracy checks are the operator's, never in the admin's file.
+# PRD 7 (#606): an Admin's numbers, whole (decision 20): read by the owner-rights
+# kaagaz_admin_usage_rows (0091), which checks the caller and holds this statement; ``:c`` keeps
+# another customer's id at none.
 _USAGE_ROWS = (
-    "SELECT (u.created_at AT TIME ZONE :tz)::date AS day, max(us.display_name) AS user_name,"
-    " u.model, u.kind, sum(u.calls) AS calls, sum(u.input_tokens + u.output_tokens) AS tokens,"
-    " sum(u.cost_usd) AS cost_usd, bool_or(u.cost_estimated) AS cost_estimated,"
-    " bool_or(u.cost_usd IS NULL) AS cost_part_unknown"
-    " FROM model_usage u"
-    " LEFT JOIN users us ON us.customer_id = u.customer_id AND us.id = u.user_id"
-    " WHERE u.customer_id = :c AND u.kind <> 'accuracy_check'"
-    " AND u.created_at >= :start AND u.created_at < :end"
+    "SELECT * FROM kaagaz_admin_usage_rows(:start, :end, :tz, CAST(:u AS uuid))"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
-_USAGE_ROWS_ORDER = " GROUP BY 1, u.user_id, u.model, u.kind ORDER BY 1, 2 NULLS FIRST, u.model, u.kind"
 
 
 def usage_rows(
@@ -1112,6 +1108,5 @@ def usage_rows(
 ) -> Sequence[RowMapping]:
     """The ledger from ``start`` to ``end`` (not included), for one user when given, one row
     per day, user, model and kind. O(rows in the period)."""
-    statement = _USAGE_ROWS + ("" if user_id is None else " AND u.user_id = :u") + _USAGE_ROWS_ORDER
     params = {"c": customer_id, "start": start, "end": end, "tz": timezone, "u": user_id}
-    return conn.execute(text(statement), params).mappings().all()
+    return conn.execute(text(_USAGE_ROWS), params).mappings().all()

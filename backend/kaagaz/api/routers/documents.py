@@ -215,7 +215,15 @@ from kaagaz.ingestion.errors import BackendUnavailable, RejectCode, UploadReject
 from kaagaz.ingestion.messages import over_every_limit_message, storage_full_message, too_large_message
 from kaagaz.ingestion.pagecount import goes_express
 from kaagaz.ingestion.policy import UploadPolicy
-from kaagaz.ingestion.ports import BlobNotFound, Job, JobQueue, StorageRoom, UnknownFamily, UnknownFolder
+from kaagaz.ingestion.ports import (
+    BlobNotFound,
+    Job,
+    JobQueue,
+    PlaceHidden,
+    StorageRoom,
+    UnknownFamily,
+    UnknownFolder,
+)
 from kaagaz.ingestion.service import UploadResult, UploadService
 from kaagaz.jobs.reading_pause import BUDGET, DAILY_LIMIT, pause_reason
 from kaagaz.reading.ocr import GEMINI
@@ -742,6 +750,8 @@ def _store(
         if item is not None:
             raise ApiError(409, "folder_gone", _FOLDER_GONE) from None
         raise ApiError(404, "not_found") from None
+    except PlaceHidden:  # PRD 7 (#606, Q6): the database rule's check; the stored file is removed
+        raise ApiError(409, "upload_place_hidden") from None
     return result, reading
 
 
@@ -1343,8 +1353,12 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         folder = row["folder_id"]
         path = [] if folder is None else folders_sql.folder_path(conn, customer_id, str(folder))
         # PRD 7 (#595): a path with a folder the person can't see is not shown at all (a file given
-        # to them alone, or a private folder inside a department they are not in).
-        if path and len(listing.folders_seen(conn, customer_id, [each.id for each in path])) < len(path):
+        # to them alone, or a private folder inside a department they are not in). #606: under the
+        # database rule the walk stops below such a folder, so a path not starting at the top is one.
+        if path and (
+            path[0].parent_id is not None
+            or len(listing.folders_seen(conn, customer_id, [each.id for each in path])) < len(path)
+        ):
             path = []
         versions = listing.family_versions(conn, customer_id, str(row["family_id"]))
         fixes = listing.reviewer_fix_count(conn, customer_id, target)

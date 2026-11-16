@@ -44,7 +44,7 @@ from kaagaz.search import hybrid
 from kaagaz.search.hybrid import FusedPiece
 from kaagaz.search.scope import EVERYTHING
 from kaagaz.search.story_search import read_stories
-from tests.db_support import insert_key, insert_tag, tag_document
+from tests.db_support import insert_key, insert_tag, rule_on_everywhere, tag_document
 from tests.settings_factory import make_settings
 from tests.test_answering_golden import NOW, evidence_blocks
 from tests.test_api_chat import _cited_answer
@@ -758,7 +758,11 @@ def test_the_chat_statements_name_no_hidden_document(db: Database, ask: AskOrg) 
         picked = [str(row["pin_document_id"]) for row in rows if row["role"] == "assistant"]
         assert picked == [ask.id("fin") if sees_fin else ask.id("sales")], person
         # Most relevant reads each answer's newest pick only: fin's, so none for the plain reviewer.
-        assert pins == ({ask.id("fin")} if sees_fin else set()), person
+        # Changed on purpose (PR 9a, #606): under the database rule fin's pick is not in source_pins
+        # for the plain reviewer, so their own older pick of sales is the newest they have (nothing
+        # hidden); with the rule off, none.
+        expected = {ask.id("fin")} if sees_fin else ({ask.id("sales")} if rule_on_everywhere() else set())
+        assert pins == expected, person
         assert learned == set(states), person
 
 

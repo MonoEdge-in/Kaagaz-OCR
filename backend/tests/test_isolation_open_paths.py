@@ -27,7 +27,14 @@ from kaagaz.db import folders as folders_sql
 from kaagaz.db import trash
 from kaagaz.db import trashed_folders as trashed_sql
 from kaagaz.db.engine import Database
-from tests.db_support import insert_document, insert_folder, name_session, new_customer, wait_until_blocked
+from tests.db_support import (
+    insert_document,
+    insert_folder,
+    name_session,
+    new_customer,
+    until_0092,
+    wait_until_blocked,
+)
 from tests.test_api_support import CSRF, Api, Signed
 from tests.test_isolation_access_views import _DEPARTMENTS, _SUGGEST, Org, _app, _seen, _walled
 from tests.test_isolation_pr7_review import _private
@@ -55,7 +62,10 @@ def _bin(signed: Signed, document: str) -> None:
 
 def _gone(org: Org, folder: str) -> None:
     """An empty folder deleted (a file in Trash in it loses its folder link)."""
-    reply = org.people["admin"].client.delete(f"/api/folders/{folder}", headers=CSRF)
+    with (
+        until_0092()
+    ):  # Changed on purpose (PR 9a, #606): an Admin's write over files in Trash they can't see is PR 9b's
+        reply = org.people["admin"].client.delete(f"/api/folders/{folder}", headers=CSRF)
     assert reply.status_code == 204, reply.text
 
 
@@ -344,7 +354,8 @@ def _state(db: Database, org: Org) -> tuple[Any, ...]:
 
 def _keep(org: Org, folder: str, to: str | None = None) -> httpx.Response:
     where = "" if to is None else f"&to={to}"
-    return org.people["admin"].client.delete(f"/api/folders/{folder}?contents=keep{where}", headers=CSRF)
+    with until_0092():  # Changed on purpose (PR 9a, #606): an Admin moving files they can't see is PR 9b's
+        return org.people["admin"].client.delete(f"/api/folders/{folder}?contents=keep{where}", headers=CSRF)
 
 
 def _refused(reply: httpx.Response) -> None:
@@ -378,7 +389,10 @@ def test_a_restricted_folder_holding_only_a_folder_in_trash_is_refused_too(db: D
     budgets = api.add_folder(org.c, admin.user_id, "Budgets", org.folders["finance"])
     inner = api.add_folder(org.c, admin.user_id, "Inner", budgets)
     api.add_document(org.c, name="inner.pdf", folder_id=inner, uploaded_by=admin.user_id)
-    assert admin.client.delete(f"/api/folders/{inner}?contents=trash", headers=CSRF).status_code == 200
+    with (
+        until_0092()
+    ):  # Changed on purpose (PR 9a, #606): an Admin deleting a folder with files they can't see is PR 9b's
+        assert admin.client.delete(f"/api/folders/{inner}?contents=trash", headers=CSRF).status_code == 200
     before = _state(db, org)
     _refused(_keep(org, budgets))
     assert _state(db, org) == before
@@ -406,12 +420,18 @@ def test_keeping_contents_where_the_same_people_see_them_still_works(db: Databas
 
 
 def _trash_folder(org: Org, folder: str) -> None:
-    reply = org.people["admin"].client.delete(f"/api/folders/{folder}?contents=trash", headers=CSRF)
+    with (
+        until_0092()
+    ):  # Changed on purpose (PR 9a, #606): an Admin deleting a folder with files they can't see is PR 9b's
+        reply = org.people["admin"].client.delete(f"/api/folders/{folder}?contents=trash", headers=CSRF)
     assert reply.status_code == 200, reply.text
 
 
 def _restore_folder(org: Org, folder: str) -> dict[str, Any]:
-    reply = org.people["admin"].client.post(f"/api/documents/trash/folders/{folder}/restore", headers=CSRF)
+    with until_0092():  # Changed on purpose (PR 9a, #606): an Admin restoring files they can't see is PR 9b's
+        reply = org.people["admin"].client.post(
+            f"/api/documents/trash/folders/{folder}/restore", headers=CSRF
+        )
     assert reply.status_code == 200, reply.text
     body: dict[str, Any] = reply.json()
     return body

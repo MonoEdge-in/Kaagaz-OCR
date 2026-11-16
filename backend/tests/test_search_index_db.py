@@ -282,7 +282,9 @@ def test_the_walk_through_the_view_keeps_the_index_and_works_out_access_once(clu
     access = [n for n in nodes if n.get("Function Name") == "kaagaz_access"]
     # One row; as the inner side of the walk's nested loop it is rescanned from its stored row (a
     # Function Scan with no parameter keeps its result), never run again per tuple.
-    assert access and all(n["Actual Rows"] == 1 for n in access)
+    # Changed on purpose (PR 9a, #606): the rule's per-row check holds kaagaz_access too, and on
+    # day one it never runs.
+    assert access and all(n["Actual Rows"] == 1 for n in access if n["Actual Loops"])
     given = [
         n for n in nodes if n.get("Function Name") in ("kaagaz_shared_with_me", "kaagaz_lock_open_to_me")
     ]

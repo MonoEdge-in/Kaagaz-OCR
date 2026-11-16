@@ -263,15 +263,9 @@ _PATH = (
     " ORDER BY depth DESC"
 )
 
-_DEPTH = (
-    "WITH RECURSIVE up (id, parent_id, depth) AS ("
-    " SELECT f.id, f.parent_id, 1 FROM folders f WHERE f.customer_id = :c AND f.id = :f"
-    " UNION ALL"
-    " SELECT f.id, f.parent_id, up.depth + 1 FROM up"
-    " JOIN folders f ON f.id = up.parent_id"
-    " WHERE f.customer_id = :c AND up.depth < 101)"
-    " SELECT max(depth) FROM up"
-)
+# PRD 7 (#606): the walk up the whole tree (kaagaz_folder_depth, 0091): under the database rule a
+# folder the person can't see would end it early, and the 100-level limit would let more through.
+_DEPTH = "SELECT depth FROM kaagaz_folder_depth(:f, NULL) WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 
 # The folder and everything inside it; depth 1 is the folder itself.
 _DESCENDANTS = (
@@ -286,23 +280,12 @@ _DESCENDANTS = (
 
 # One statement for a move under :p: the target's depth (its ancestors), whether
 # the moved folder :f is one of them (a cycle), and the height of :f's subtree.
-# A NULL depth or height means that folder does not exist for this customer.
+# A NULL depth or height means that folder does not exist for this customer. PRD 7 (#606): on the
+# whole tree (kaagaz_folder_depth, 0091): a folder the person can't see would end a walk early, and
+# a cycle through it, or a level past 100, would go unseen.
 _MOVE_CHECK = (
-    "WITH RECURSIVE up (id, parent_id, depth) AS ("
-    " SELECT f.id, f.parent_id, 1 FROM folders f WHERE f.customer_id = :c AND f.id = :p"
-    " UNION ALL"
-    " SELECT f.id, f.parent_id, up.depth + 1 FROM up"
-    " JOIN folders f ON f.id = up.parent_id"
-    " WHERE f.customer_id = :c AND up.depth < 101),"
-    " down (id, depth) AS ("
-    " SELECT f.id, 1 FROM folders f WHERE f.customer_id = :c AND f.id = :f"
-    " UNION ALL"
-    " SELECT f.id, down.depth + 1 FROM down"
-    " JOIN folders f ON f.parent_id = down.id"
-    " WHERE f.customer_id = :c AND down.depth < 101)"
-    " SELECT (SELECT max(depth) FROM up),"
-    " EXISTS (SELECT 1 FROM up WHERE up.id = :f),"
-    " (SELECT max(depth) FROM down)"
+    "SELECT depth, cycle, height FROM kaagaz_folder_depth(:p, :f)"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 
 # Trashed documents keep their folder until they are restored or purged; a
@@ -345,6 +328,11 @@ _SUMMARY = (
 _SUMMARY_SEEN = _SUMMARY.replace(" folders f", " visible_folders f").replace(
     " documents d", " visible_documents d"
 )
+# PRD 7 (#606): an Admin's dialog reads the whole organisation's totals (decision 20), through the
+# owner-rights kaagaz_admin_folder_summary (0091, _SUMMARY's statement), which checks the caller.
+_SUMMARY_ADMIN = (
+    "SELECT * FROM kaagaz_admin_folder_summary(:f) WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
+)
 # A folder upload (a zip the worker unpacks too) whose plan holds one of :ids, that still has a
 # file waiting, and that planned, registered or sent something since :since: the uploads with
 # one waiting first, on folder_upload_items_state, then their plan on folder_upload_folders_folder.
@@ -365,26 +353,27 @@ _SAME_PLACE = (
     "SELECT (CAST(:d1 AS uuid), CAST(:p1 AS uuid))"
     " IS NOT DISTINCT FROM (CAST(:d2 AS uuid), CAST(:p2 AS uuid))"
     " OR (CAST(:p1 AS uuid) IS NULL AND CAST(:p2 AS uuid) IS NULL AND NOT :inner"
-    " AND NOT EXISTS (SELECT 1 FROM folders d WHERE d.customer_id = :c"
-    " AND d.id IN (CAST(:d1 AS uuid), CAST(:d2 AS uuid)) AND d.department_only))"
+    " AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY[CAST(:d1 AS uuid), CAST(:d2 AS uuid)]) AS d (id),"
+    " kaagaz_folder_place(d.id) p WHERE p.department_only))"
+    " FROM (SELECT 1) one WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
-_PLACE_OF = "SELECT department_id, private_folder_id, private FROM folders WHERE customer_id = :c AND id = :f"
+# PRD 7 (#606): both read whole (kaagaz_folder_place, 0091): under the database rule a Department only
+# department, or a target folder, the person can't see reads as no row, so as open or the top level.
+_PLACE_OF = (
+    "SELECT department_id, private_folder_id, private FROM kaagaz_folder_place(:f)"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
+)
 _PRIVATE_AMONG = (
     "SELECT id FROM folders WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[])) AND private ORDER BY id"
 )
 # PRD 7 section 5 (#601): the subtree of :f holds a folder, or a file (in Trash too), the person
 # can't see.
+# PRD 7 (#606): the whole subtree, walked on the whole tables (kaagaz_hidden_inside, 0091): under
+# the database rule the table walk would find nothing hidden, and the delete would go ahead.
 _HIDDEN_INSIDE = (
-    "WITH RECURSIVE down (id, depth) AS ("
-    " SELECT f.id, 1 FROM folders f WHERE f.customer_id = :c AND f.id = :f"
-    " UNION ALL"
-    " SELECT f.id, down.depth + 1 FROM down"
-    " JOIN folders f ON f.parent_id = down.id"
-    " WHERE f.customer_id = :c AND down.depth < 101)"
-    " SELECT EXISTS (SELECT 1 FROM down WHERE NOT EXISTS (SELECT 1 FROM visible_folders v"
-    " WHERE v.customer_id = :c AND v.id = down.id))"
-    " OR EXISTS (SELECT 1 FROM documents d WHERE d.customer_id = :c AND d.folder_id IN (SELECT id FROM down)"
-    " AND NOT EXISTS (SELECT 1 FROM visible_documents v WHERE v.customer_id = :c AND v.id = d.id))"
+    "SELECT x.hidden_files > 0 OR x.hidden_folders > 0"
+    " FROM kaagaz_hidden_inside(ARRAY[CAST(:f AS uuid)], NULL) x"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 # The deleted folder steps out of its siblings' names first, so a folder inside it may take its
 # name where they meet. Its id is its name only inside this transaction (36 characters).
@@ -633,13 +622,17 @@ def delete_folder(conn: Connection, customer_id: str, folder_id: str, *, seen_on
 
 
 def folder_summary(
-    conn: Connection, customer_id: str, folder_id: str, *, seen_only: bool = False
+    conn: Connection, customer_id: str, folder_id: str, *, seen_only: bool = False, admin: bool = False
 ) -> FolderSummary:
     """What the folder holds at every depth (FolderSummary); with ``seen_only`` only what the
-    person may see (PRD 7). Raises FolderNotFound (with ``seen_only`` a hidden folder too).
-    One statement, O(s log F + n log D) for the s folders and n documents of its subtree."""
-    statement = _SUMMARY_SEEN if seen_only else _SUMMARY
-    count, files, size = conn.execute(text(statement), {"c": customer_id, "f": folder_id}).one()
+    person may see (PRD 7); with ``admin`` (an Admin's dialog) the whole organisation's, the
+    files they can't see too (#606). Raises FolderNotFound (with ``seen_only`` a hidden folder
+    too). One statement, O(s log F + n log D) for the s folders and n documents of its subtree."""
+    statement = _SUMMARY_SEEN if seen_only else _SUMMARY_ADMIN if admin else _SUMMARY
+    found = conn.execute(text(statement), {"c": customer_id, "f": folder_id}).first()
+    if found is None:  # another customer's id: no row (the Admin's)
+        raise FolderNotFound()
+    count, files, size = found
     if not count:
         raise FolderNotFound()
     return FolderSummary(files=int(files), folders=int(count) - 1, bytes=int(size))

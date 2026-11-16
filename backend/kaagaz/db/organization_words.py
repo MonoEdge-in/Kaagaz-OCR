@@ -82,8 +82,8 @@ def submit(
         return None
     active = conn.execute(
         text(
-            "SELECT count(*) FROM organization_word_suggestions WHERE customer_id = :c"
-            " AND status IN ('pending', 'approved')"
+            # PRD 7 (#606): the whole organisation's (0091), so the cap can't fail open.
+            "SELECT kaagaz_word_suggestions_count() WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
         ),
         {"c": customer_id},
     ).scalar_one()

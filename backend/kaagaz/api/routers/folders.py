@@ -246,8 +246,9 @@ def get_folder_summary(folder_id: uuid.UUID, user: User, context: Context) -> di
         # already refuses an admin without one); it is kept for the SQL guard's scanner.
         require_admin_session(user)
     with _refused(), context.db.user(user.customer_id, user.user_id) as conn:
+        admin = user.role == "admin"
         held = folders_sql.folder_summary(
-            conn, user.customer_id, str(folder_id), seen_only=user.role != "admin"
+            conn, user.customer_id, str(folder_id), seen_only=not admin, admin=admin
         )
     return {"files": held.files, "folders": held.folders, "bytes": held.bytes}
 

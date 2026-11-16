@@ -71,9 +71,22 @@ _KEPT_PLACE = (
 # it waits for this restore instead of deleting one under it. One constant, for PR 9's owner-rights
 # functions to reuse.
 LIVE_FOLDERS = "SELECT id FROM folders WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[])) FOR SHARE"
+# PRD 7 (#606): live is asked of the whole table (kaagaz_existing, 0091): under the database rule a
+# folder the person can't see is missing from folders, and would read as gone.
+_EXISTING = "SELECT id FROM kaagaz_existing('folder', CAST(:ids AS uuid[])) AS e (id)"
 # #594 (decision 3): the organisation has kept something to some people (0089); read under the tree
 # lock, which is this row's lock, so it can't change before the restore commits.
 WALLED = "SELECT walls_set FROM customers WHERE id = :c"
+
+
+def live_folders(conn: Connection, customer_id: str, folder_ids: Sequence[str]) -> set[str]:
+    """Which of these folders are live (``LIVE_FOLDERS``, which locks those the person can see).
+    shortcut: one they can't see is not locked, so the CLI's prune-folders could delete it meanwhile,
+    and then the write that puts something in it is refused by its key. Two statements."""
+    params = {"c": customer_id, "ids": list(folder_ids)}
+    conn.execute(text(LIVE_FOLDERS), params).all()
+    return {str(f) for f in conn.execute(text(_EXISTING), params).scalars()}
+
 
 _CUSTOMERS_WITH_TRASH = "SELECT t.id FROM kaagaz_customer_ids_with_trash(:before) AS t (id) ORDER BY t.id"
 
@@ -180,7 +193,7 @@ def place_out_of_folder(
     kept = [f for f in (private_folder_id, department_id) if f is not None]
     if not kept:
         return Placed()
-    live = {str(f) for f in conn.execute(text(LIVE_FOLDERS), {"c": customer_id, "ids": kept}).scalars()}
+    live = live_folders(conn, customer_id, kept)
     walled = bool(conn.execute(text(WALLED), {"c": customer_id}).scalar())
     if private_folder_id in live:
         return Placed(into=private_folder_id)
