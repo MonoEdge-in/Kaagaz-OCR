@@ -505,6 +505,29 @@ def test_the_fingerprint_sweep_runs_on_idle_turns_until_a_pass_finds_none() -> N
     assert not wrapper.run_once() and len(calls) == 3
 
 
+def test_v17_a_pass_with_nothing_due_ends_the_sweep_only_once_nothing_is_pending() -> None:
+    """Review (#648): a pass that finds nothing due while an organisation's run is still to do (its
+    switch off, or a new file waiting for its fingerprint) waits a minute and tries again; the
+    sweep ends for good only once every organisation's run has finished."""
+    now = [datetime(2026, 10, 20, tzinfo=UTC)]
+    pending = [True]
+    calls: list[int] = []
+
+    def sweep() -> int:
+        calls.append(1)
+        return 0
+
+    wrapper = FingerprintOld(_Idle(), sweep, lambda: now[0], pending=lambda: pending[0])
+    assert wrapper.run_once()  # nothing due, a run still to do
+    now[0] += timedelta(minutes=1)
+    assert wrapper.run_once()  # so it looks again
+    pending[0] = False
+    now[0] += timedelta(minutes=1)
+    assert wrapper.run_once()  # nothing due, nothing pending: done for good
+    now[0] += timedelta(hours=1)
+    assert not wrapper.run_once() and len(calls) == 3
+
+
 def test_v17_the_finder_runs_after_the_fingerprints_in_the_same_passes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

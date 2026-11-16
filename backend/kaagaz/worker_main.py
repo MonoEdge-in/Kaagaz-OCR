@@ -637,10 +637,12 @@ class FingerprintOld:
     EmbedMissing pattern). After a turn the queue had nothing for, at most every
     FINGERPRINT_EVERY, runs ``sweep`` (``old_documents``: how many it found, the fingerprints
     and then the version finder's) under ``lock("fingerprints")``; a full pass runs again on the
-    next idle turn, and the first pass that finds none ends the sweep for this process (new
-    documents get theirs when they are read). It never makes a suggestion or a link (the version
-    finder only stores groups for a person to decide). A database error is logged by its type and
-    swallowed, as in EmbedMissing. O(1) per turn, plus one pass at most every minute."""
+    next idle turn, and the first pass that finds none, while ``pending()`` says nothing is still
+    to do (review, #648: an organisation's finder run not finished, its switch off or a new file
+    waiting for its fingerprint), ends the sweep for this process (new documents get theirs when
+    they are read). It never makes a suggestion or a link (the version finder only stores groups
+    for a person to decide). A database error is logged by its type and swallowed, as in
+    EmbedMissing. O(1) per turn, plus one pass at most every minute."""
 
     def __init__(
         self,
@@ -649,11 +651,13 @@ class FingerprintOld:
         clock: Callable[[], datetime],
         *,
         lock: SweepLock = no_lock,
+        pending: Callable[[], bool] = lambda: False,
     ) -> None:
         self._worker = worker
         self._sweep = sweep
         self._clock = clock
         self._lock = lock
+        self._pending = pending
         self._next: datetime | None = None
         self._done = False
 
@@ -667,12 +671,13 @@ class FingerprintOld:
         try:
             with self._lock("fingerprints") as mine:
                 found = self._sweep() if mine else None
+                pending = found == 0 and self._pending()
         except (SQLAlchemyError, BackendUnavailable) as error:
             logger.error("fingerprint sweep failed", extra={"code": type(error).__name__})
             return True
         if found is None:
             return False
-        self._done = found == 0
+        self._done = found == 0 and not pending
         if found >= FINGERPRINT_PASS:
             self._next = now  # more are waiting
         logger.info("fingerprints: %d documents", found)
@@ -725,6 +730,15 @@ class FindVersions:
                 self._last = customer
                 return self.of(customer)
         return 0
+
+    def pending(self) -> bool:
+        """Whether an organisation's run has not finished yet (its switch off, a file waiting for
+        its fingerprint, or under way), so the sweep must go on. O(customers) statements."""
+        for customer in self._every():
+            with self._db.customer(customer) as conn:
+                if not version_finder.finished(conn, customer):
+                    return True
+        return False
 
     def of(self, customer_id: str) -> int:
         """One pass of this organisation (class notes); 0 once its run has finished."""
@@ -1022,7 +1036,9 @@ def _serve(settings: Settings) -> None:
     pieces = EmbedMissing(PurgeHourly(jobs, purge, _utc_now, lock=lock), embed, _utc_now, lock=lock)
     stories_done = StoryVectors(pieces, stories, _utc_now, lock=lock)
     finder = FindVersions(db)
-    vectors = FingerprintOld(stories_done, functools.partial(old_documents, db, finder), _utc_now, lock=lock)
+    vectors = FingerprintOld(
+        stories_done, functools.partial(old_documents, db, finder), _utc_now, lock=lock, pending=finder.pending
+    )
     # Q7: only Gemini's pages are ever read locally (its outage fallback).
     upgrade = functools.partial(upgrade_oldest, db, queue) if settings.ocr_engine == "gemini" else None
     upgrades = UpgradeLocalReads(

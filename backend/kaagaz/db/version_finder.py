@@ -100,11 +100,15 @@ _MEMBER = text(
 _FINISH = text("UPDATE version_finder_runs SET finished_at = now(), groups = :n WHERE customer_id = :c")
 
 
+def finished(conn: Connection, customer_id: str) -> bool:
+    """Whether the organisation's run has finished (never started: no). One statement."""
+    return bool(conn.execute(_RUN, {"c": customer_id}).scalar())
+
+
 def due(conn: Connection, customer_id: str) -> bool:
     """Whether the organisation's run is still to do: not finished, its ``version_spotting`` switch
     on, and none of its ready files waiting for a fingerprint. Three statements."""
-    finished = conn.execute(_RUN, {"c": customer_id}).scalar()
-    if finished or not ai_settings.switch_on(conn, versions_sql.FEATURE, customer_id):
+    if finished(conn, customer_id) or not ai_settings.switch_on(conn, versions_sql.FEATURE, customer_id):
         return False
     return not conn.execute(_UNPRINTED, {"c": customer_id}).scalar_one()
 

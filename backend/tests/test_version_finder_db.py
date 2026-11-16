@@ -279,6 +279,21 @@ def test_a_document_with_text_like_none_is_in_no_group(db: Database) -> None:
     assert _pairs(db, c) == []
 
 
+def test_a_switch_turned_on_later_still_gets_its_run(db: Database) -> None:
+    """Review (#648): with version_spotting off the pass finds nothing due, but the organisation's
+    run is still pending, so the sweep goes on; switched on, the finder runs; once it has finished,
+    nothing is pending."""
+    api = Api(db)
+    signed = api.new_signed()
+    c = signed.customer_id
+    _library(api, signed)
+    finder = FindVersions(db, customers=lambda: [c])
+    with switched_off(db, "version_spotting"):
+        assert finder() == 0 and finder.pending()
+    assert finder() == 4 and _run(db, c)[2]
+    assert not finder.pending()
+
+
 def test_one_failing_file_never_stalls_the_finder(
     db: Database, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
