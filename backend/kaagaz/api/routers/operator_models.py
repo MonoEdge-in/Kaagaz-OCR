@@ -1646,6 +1646,8 @@ def _model(row: RowMapping, settings: Settings) -> dict[str, Any]:
         # #488: can it lead Ultra low cost, and the one reason it can't (null: it can).
         "ulc_ready": models.ulc_why(row) is None,
         "ulc_why": models.ulc_why(row),
+        # #647: the parameters its approved endpoints take (null: not read yet).
+        "parameters": None if row["parameters"] is None else list(row["parameters"]),
     }
 
 
