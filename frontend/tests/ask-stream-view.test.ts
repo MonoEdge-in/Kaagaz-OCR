@@ -408,13 +408,15 @@ describe("the chat screen and the final card", () => {
 
   it("asks through the stream, kept in askStore, and draws the streamed card in the old spinner's place", () => {
     expect(screen).toContain("startAsk(question, activeId, (signal, onEvent) =>");
-    expect(screen).toMatch(/askStream\(\s*question,[\s\S]{0,200}signal,\s*onEvent,\s*\)/);
+    // Changed on purpose (Ask hotfix, 15 Nov 2026): both tries send one question id.
+    expect(screen).toMatch(/askStream\(\s*question,[\s\S]{0,200}signal,\s*onEvent,\s*questionId,\s*\)/);
     expect(screen).toContain("<StreamingAnswer");
     expect(screen).not.toMatch(/skeletonLine|PendingAnswer/);
   });
 
   it("holds the final answer until the reveal settles, and Stop skips the wait", () => {
-    expect(screen).toMatch(/const reply = await entry\.done;[\s\S]{0,200}await settled\(reply, entry\.controller\.signal\);/);
+    // Changed on purpose (Ask hotfix, 15 Nov 2026): the reply is the first try's or its one retry's.
+    expect(screen).toMatch(/reply = await entry\.done;\s*\}[\s\S]{0,200}await settled\(reply, entry\.controller\.signal\);/);
     expect(screen).toContain("onStop={busy ? () => asking_.current && stopAsk(asking_.current) : undefined}");
   });
 
