@@ -7,12 +7,15 @@ The API that shows the groups: test_isolation_version_groups.py. The groups' rul
 database: test_versions.py."""
 
 import logging
+import threading
 import uuid
 from datetime import date
 from typing import Any
 
+import psycopg
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from kaagaz.db import version_finder
 from kaagaz.db import versions as versions_sql
@@ -262,6 +265,33 @@ def test_a_file_trashed_while_it_is_scored_is_never_paired(
     assert {m[0] for m in _members(db, c)} == {files["x"], files["z"]}
 
 
+def test_a_busy_candidate_fails_the_pass_at_once_and_writes_nothing(db: Database) -> None:
+    """Review (#648): the scored files are taken FOR SHARE NOWAIT, so the finder never waits on, or
+    deadlocks with, a lock, a Trash or a move that holds one (they lock in family order, the finder
+    by id). Y row-locked by another transaction: X's look fails at once (55P03), counted as X's
+    failure, with nothing written; once Y is free the next pass pairs it."""
+    api = Api(db)
+    signed = api.new_signed()
+    c = signed.customer_id
+    low, middle, high = _ordered(3)
+    files = _library(api, signed, x={"id": low}, y={"id": middle}, z={"id": high})
+    finder = FindVersions(db, customers=lambda: [c])
+    found: list[int] = []
+    with db.engine.connect() as other:
+        held = other.begin()
+        other.execute(text("SELECT 1 FROM documents WHERE id = :d FOR UPDATE"), {"d": files["y"]})
+        looking = threading.Thread(target=lambda: found.append(finder()))
+        looking.start()
+        looking.join(timeout=10)
+        done_in_time = not looking.is_alive()
+        held.rollback()
+    looking.join()
+    assert done_in_time and found == [1]  # failed at once: no lock wait, the pass ended there
+    assert _pairs(db, c) == [] and _run(db, c)[:2] == (0, None)
+    assert finder() == 4  # Y free: X looked at again, then the rest, then grouped
+    assert set(_pairs(db, c)) == {(files["x"], files["y"]), (files["x"], files["z"])}
+
+
 def test_a_pair_spotting_suggested_or_a_person_answered_is_left_out(db: Database) -> None:
     """Y was kept separate from X's family once (a rejected suggestion): only X~Z is a group."""
     api = Api(db)
@@ -322,6 +352,32 @@ def test_a_switch_turned_on_later_still_gets_its_run(db: Database) -> None:
         assert finder() == 0 and finder.pending()
     assert finder() == 4 and _run(db, c)[2]
     assert not finder.pending()
+
+
+def test_a_file_whose_look_keeps_timing_out_is_passed_over(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review (#648): a statement cancelled by the finder's own time limit (SQLSTATE 57014) is that
+    file's failure, not an outage: it is counted, and the file is passed over on the third try, so
+    the organisation's run still finishes."""
+    api = Api(db)
+    signed = api.new_signed()
+    c = signed.customer_id
+    stranger = f"00000000-0000-4000-8000-{uuid.uuid4().hex[:12]}"
+    files = _library(api, signed, w={"id": stranger})
+    real = version_finder.look_at
+
+    def timing_out(conn: Any, customer: str, document: str) -> int:
+        if document == stranger:
+            cancelled = psycopg.errors.QueryCanceled("canceling statement due to statement timeout")
+            raise OperationalError("SELECT ...", {}, cancelled)
+        return real(conn, customer, document)
+
+    monkeypatch.setattr(version_finder, "look_at", timing_out)
+    finder = FindVersions(db, customers=lambda: [c])
+    assert finder() == 1 and finder() == 1  # counted, not raised: the pass ends there
+    assert finder() == 4 and _run(db, c)[2]  # the third: passed over, the rest looked at, grouped
+    assert {m[0] for m in _members(db, c)} == {files["x"], files["y"], files["z"]}
 
 
 def test_one_failing_file_never_stalls_the_finder(

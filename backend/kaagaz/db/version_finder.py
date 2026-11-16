@@ -16,10 +16,13 @@ organisation already has, in the worker, with no person (it reads tables, never 
   already suggested or a person already answered. The file looked at is taken FOR SHARE first, as
   the pipeline's ``still_open`` does, so a lock under way is waited for and then seen. Its
   candidates are scored with no row lock (review, 16 Nov 2026: a lock or a move never waits on up
-  to 200 of them); then only the scored files (at most MAX_CANDIDATES) are taken FOR SHARE, in id
-  order, and checked again (``_LIVE``) before any pair is written, so no pair is written for a file
-  locked or trashed meanwhile, nor after a lock cleared its pairs. As in spotting, a candidate's
-  text can be read in the moment before a lock commits; nothing from it is kept.
+  to 200 of them); then only the scored files (at most MAX_CANDIDATES) are taken FOR SHARE NOWAIT,
+  in id order, and checked again (``_LIVE``) before any pair is written, so no pair is written for a
+  file locked or trashed meanwhile, nor after a lock cleared its pairs. NOWAIT (review): every other
+  writer of several rows locks in family order, the finder by id, so it never waits on one; a busy
+  file fails the pass at once (55P03), counted as the file's failure, and is tried again on a later
+  pass (``finish`` too: then the groups wait for a later pass). As in spotting, a candidate's text
+  can be read in the moment before a lock commits; nothing from it is kept.
 * **The groups** (``finish``): pairs whose two files are still live join into groups
   (``versions.groups``: strongest first, at most MAX_GROUP files), each file's place by its own
   date, else its upload date; the last is the suggested latest. Nothing is ever linked.
@@ -96,11 +99,14 @@ _PAIRS = text(
     "SELECT first_id::text, second_id::text, text_overlap, name_similarity, shared_identifier IS NOT NULL"
     " FROM version_pairs WHERE customer_id = :c"
 )
-# The paired files still live, taken FOR SHARE (a lock under way is waited for), with each one's date.
+# The paired files still live, with each one's date, taken FOR SHARE NOWAIT (review, #648): the
+# finder takes them by id while every other writer of several rows goes in family order, so it never
+# waits on one (a lock, a Trash, a move under way): a busy file fails the pass at once (55P03), and
+# the worker counts it as the file's failure and tries again on a later pass.
 _LIVE = text(
     "SELECT id::text, coalesce(CAST(document_date AS timestamptz), created_at), created_at FROM documents"
     " WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[])) AND deleted_at IS NULL AND is_current"
-    " AND status = 'ready' ORDER BY id FOR SHARE"
+    " AND status = 'ready' ORDER BY id FOR SHARE NOWAIT"
 )
 _MEMBER = text(
     "INSERT INTO version_group_members (customer_id, document_id, group_id, position) VALUES (:c, :d, :g, :p)"

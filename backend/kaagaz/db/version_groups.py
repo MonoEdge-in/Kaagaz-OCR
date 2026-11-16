@@ -7,8 +7,9 @@ connection, all or nothing (review, 16 Nov 2026): a group with any file they can
 exist for them (left out of the list, and a random id's 404), so neither a hidden file nor the gap
 it leaves in a chain ever shows. Of a group they can see whole: the live files (current, ready, so
 never locked, and out of Trash; one in Trash or locked isn't secret, only left out) not decided
-(open or left for later) with a pair to another such file, those pairs as the reasons. A group with
-under 2 such files is not shown. Its files keep the finder's order (the last is the suggested
+(open or left for later) with a pair to another such file, those pairs as the reasons, and of those
+only the part joined to the last of them (a purged or locked member's rows can split it). A group
+with under 2 such files is not shown. Its files keep the finder's order (the last is the suggested
 latest); its live files kept apart are listed with it, for Undo.
 """
 
@@ -80,6 +81,25 @@ def _reason(pair: RowMapping, other: str) -> dict[str, Any]:
     }
 
 
+def _part_of_latest(files: list[RowMapping], pairs: Sequence[RowMapping]) -> list[RowMapping]:
+    """Of ``files`` (in the finder's order), those joined by ``pairs`` to the last one, the suggested
+    latest (review, #648). A member whose rows went (purged, or locked) can leave the shown files in
+    parts; shown together, they would tell that a file once sat between them. O(f + p)."""
+    if not files:
+        return files
+    linked: dict[str, set[str]] = {}
+    for pair in pairs:
+        linked.setdefault(pair["first_id"], set()).add(pair["second_id"])
+        linked.setdefault(pair["second_id"], set()).add(pair["first_id"])
+    part, todo = {files[-1]["document_id"]}, [files[-1]["document_id"]]
+    while todo:
+        for other in linked.get(todo.pop(), ()):
+            if other not in part:
+                part.add(other)
+                todo.append(other)
+    return [m for m in files if m["document_id"] in part]
+
+
 def _group(
     group_id: str, members: Sequence[RowMapping], pairs: Sequence[RowMapping]
 ) -> dict[str, Any] | None:
@@ -96,7 +116,7 @@ def _group(
     for pair in shown:
         reasons.setdefault(pair["first_id"], []).append(_reason(pair, pair["second_id"]))
         reasons.setdefault(pair["second_id"], []).append(_reason(pair, pair["first_id"]))
-    files = [m for m in members if m["document_id"] in reasons]
+    files = _part_of_latest([m for m in members if m["document_id"] in reasons], shown)
     kept_apart = [m for m in members if m["state"] == "kept_apart"]
     if not kept_apart and len(files) < 2:
         return None

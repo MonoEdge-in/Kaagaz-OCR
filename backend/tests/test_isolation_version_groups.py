@@ -147,6 +147,21 @@ def test_a_hidden_file_bridging_a_chain_hides_the_whole_group(db: Database) -> N
     assert _shown(org, shown) == ["a", "c", "b", "e", "f"]
 
 
+def test_a_gap_left_by_a_deleted_member_never_joins_the_halves(db: Database) -> None:
+    """Review (#648): b of the chain is purged or locked, so its member and pair rows are gone.
+    Shown as one group, a, c, e and f would still say a file once sat between c and e: every viewer
+    sees only the part holding the suggested latest (f), that is e and f."""
+    org, ids = _org(Api(db))
+    b = org.files["b"]
+    _owner(db, "DELETE FROM version_pairs WHERE first_id = :b OR second_id = :b", {"b": b})
+    _owner(db, "DELETE FROM version_group_members WHERE document_id = :b", {"b": b})
+    for name in ("management", "admin"):
+        status, group = _get(org.people[name], f"/version-groups/{ids['chain']}")
+        assert status == 200 and _shown(org, group) == ["e", "f"], name
+        assert group["suggested_latest_id"] == org.files["f"], name
+        assert _listed(org, org.people[name])[ids["chain"]] == ["e", "f"], name
+
+
 def test_a_group_never_names_a_file_in_trash_and_says_why_in_plain_words(db: Database) -> None:
     """The Admin's open group: sales, top and loose in the finder's order, renumbered, loose the
     suggested latest, each with its reasons in plain words; the file in Trash nowhere in the reply."""

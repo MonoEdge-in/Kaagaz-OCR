@@ -114,7 +114,7 @@ from types import FrameType
 from typing import TYPE_CHECKING
 
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 
 from kaagaz import worker_heartbeat
 from kaagaz.adapters.queue import SqsQueue
@@ -126,6 +126,7 @@ from kaagaz.ai.openrouter import OpenRouterClient, process_gate
 from kaagaz.db import ai_settings, reader_status, version_finder, versions
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database, make_engine
+from kaagaz.db.sqlstate import sqlstate
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.catalog import RefreshCatalog, Refreshed, check_env_models, last_refreshed, refresh
@@ -692,13 +693,27 @@ class FingerprintOld:
         return True
 
 
+# Review (#648): the file's own failures though they come as an OperationalError: its statement
+# cancelled by the finder's time limit (57014), and a scored file busy under another lock (55P03,
+# the finder's FOR SHARE NOWAIT). Counted against the file, never taken as an outage.
+FINDER_FILE_STATES = frozenset({"57014", "55P03"})
+
+
+def _outage(error: Exception) -> bool:
+    """Whether the finder's ``error`` is the database being out of reach (raised on), not the file's."""
+    if isinstance(error, DBAPIError) and sqlstate(error) in FINDER_FILE_STATES:
+        return False
+    return isinstance(error, BackendUnavailable) or database_unreachable(error)
+
+
 class FindVersions:
     """The version finder's passes (V17, #648, ``kaagaz/db/version_finder.py``) in one worker
     process. Each pass takes the next organisation it is due for, in turn after the one it did last
     (``customers``: every organisation, in id order), and looks at up to ``limit`` of its files,
     each in its own transaction (a restart resumes after the last one); once none is left, it makes
     the groups. A file whose look fails, but for the database being out of reach, never stalls the
-    finder (review, 16 Nov 2026): it is logged by the organisation, the file and the error's type,
+    finder (review, 16 Nov 2026; its statement timing out or a scored file busy, FINDER_FILE_STATES,
+    is the file's failure too): it is logged by the organisation, the file and the error's type,
     never a message, and that organisation's pass ends, to try it again; after FINDER_FILE_TRIES
     failures in this process the run's cursor moves past it, with a warning. Database outages
     propagate (FingerprintOld logs them)."""
@@ -753,7 +768,7 @@ class FindVersions:
                 with self._db.customer(customer_id) as conn:
                     version_finder.look_at(conn, customer_id, document)
             except Exception as error:  # one file never stalls the finder (class notes)
-                if isinstance(error, BackendUnavailable) or database_unreachable(error):
+                if _outage(error):
                     raise
                 if not self._passed_over(customer_id, document, error):
                     return looked + 1
