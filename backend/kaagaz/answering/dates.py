@@ -26,7 +26,7 @@ Time is O(n) in the number of words.
 
 from datetime import date, timedelta
 
-from kaagaz.answering.hinglish import _YEAR, DATE_WORDS, NormalisedQuestion
+from kaagaz.answering.hinglish import _YEAR, NormalisedQuestion, date_words
 
 DateRange = tuple[date, date]
 
@@ -56,7 +56,7 @@ def date_range(normalised: NormalisedQuestion, today: date) -> DateRange | None:
 
 def mentions_date(normalised: NormalisedQuestion) -> bool:
     """True if any word of the question is about dates (even one we cannot read)."""
-    return any(word in DATE_WORDS or _YEAR.fullmatch(word) for word in normalised.words)
+    return bool(date_words(normalised))  # #623: "this" only before a period
 
 
 def describe_range(start: date, end: date) -> str:

@@ -135,17 +135,17 @@ describe("a page drawn turned", () => {
 });
 
 describe("the activity", () => {
-  const entry = (action: string, pages?: number) => ({ action, actor_name: "Priya", details: pages === undefined ? {} : { pages } });
+  const entry = (details: Record<string, number>) => ({ action: "document.page_turns", actor_name: "Priya", details });
 
-  it("says who turned how many pages for everyone, and who put them back", () => {
-    expect(activitySentence(entry("document.page_turns", 1))).toBe("Priya turned 1 page for everyone");
-    expect(activitySentence(entry("document.page_turns", 3))).toBe("Priya turned 3 pages for everyone");
-    expect(activitySentence(entry("document.page_turns"))).toBe("Priya turned the pages for everyone");
-    expect(activitySentence(entry("document.page_turns_reset", 2))).toBe("Priya put the pages back as scanned");
+  it("says who changed the turn of how many pages for everyone, and who put them back", () => {
+    expect(activitySentence(entry({ pages: 1, turned: 3 }))).toBe("Priya changed the turn of 1 page for everyone");
+    expect(activitySentence(entry({ pages: 3, turned: 3 }))).toBe("Priya changed the turn of 3 pages for everyone");
+    expect(activitySentence(entry({}))).toBe("Priya changed the turn of the pages for everyone");
+    expect(activitySentence(entry({ pages: 2, turned: 0 }))).toBe("Priya put the pages back as scanned");
   });
 
-  it("names both in the admin's log", () => {
-    expect(describeAction("document.page_turns")).toBe("Turned the pages of a document");
-    expect(describeAction("document.page_turns_reset")).toBe("Put a document's pages back as scanned");
+  it("matches in the admin's log", () => {
+    expect(describeAction("document.page_turns", { pages: 2, turned: 1 })).toBe("Changed the turn of a document's pages");
+    expect(describeAction("document.page_turns", { pages: 2, turned: 0 })).toBe("Put a document's pages back as scanned");
   });
 });

@@ -48,6 +48,7 @@ import {
   listedDocuments,
   matchTerms,
   mentionsOf,
+  NO_ACCESS_TEXT,
   notFoundText,
   questionReading,
   scriptParts,
@@ -242,6 +243,15 @@ export const AnswerView = memo(function AnswerView({
       <div {...card} className={`${motion} ${styles.answerCard}`}>
         <span className="visually-hidden">Answer: </span>
         <p className={styles.plain}>{message.text}</p>
+      </div>
+    );
+  }
+  // PRD 7 (#602): replaced whole by the server; its one line, no sources, rating or pick.
+  if (answer.status === "no_access") {
+    return (
+      <div {...card} className={`${motion} ${styles.answerCard}`}>
+        <span className="visually-hidden">Answer: </span>
+        <p className={styles.plain}>{NO_ACCESS_TEXT}</p>
       </div>
     );
   }

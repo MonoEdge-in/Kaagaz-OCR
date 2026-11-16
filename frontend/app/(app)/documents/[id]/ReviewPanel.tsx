@@ -235,7 +235,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
                     highlights={[flag.region]}
                     crop={flag.region}
                     cropMaxHeight={CROP_HEIGHTS[zoomed ? 1 : 0]}
-                    turn={turnOf(fromServer(detail.page_turns), page.page_no)}
+                    turn={turnOf(fromServer(detail.page_turns ?? []), page.page_no)}
                   />
                   <button type="button" className="btn btn-quiet" aria-pressed={zoomed} onClick={() => setZoomed(!zoomed)}>
                     {zoomed ? "Zoom out" : "Zoom in"}
