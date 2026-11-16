@@ -788,3 +788,21 @@ def test_undo_never_puts_a_file_beside_one_of_the_same_name(db: Database) -> Non
     assert _everything(db, org) == before
     _owner(db, "UPDATE documents SET display_name = 'y (2).pdf' WHERE id = :d", {"d": other})
     assert _undo(management, org, "x")[0] == 200
+
+
+def test_undo_of_accept_takes_back_the_gifts_the_join_copied(db: Database) -> None:
+    """Review 5 (lead decision): x is given to the plain reviewer, z to the named person. Accepted,
+    z is given to the plain reviewer too (0100); Undo takes that back and keeps z's own."""
+    org = _org(Api(db))
+    management, people = org.people["management"], org.people
+    _give(db, org, "document_shares", "x", people["plain"].user_id)
+    _give(db, org, "document_shares", "z", people["named"].user_id)
+    given = "SELECT user_id::text FROM document_shares WHERE document_id = :d ORDER BY user_id"
+    suggestion = _owner(db, _SUGGEST, {"c": org.c, "d": org.files["z"], "f": org.files["x"]})[0][0]
+    assert _post(management, f"/version-suggestions/{suggestion}/accept")[0] == 200
+    plain, named = people["plain"].user_id, people["named"].user_id
+    assert {r[0] for r in _owner(db, given, {"d": org.files["z"]})} == {plain, named}
+    status, reply = _post(management, f"/documents/{org.files['z']}/version-undo")
+    assert status == 200, reply
+    assert [r[0] for r in _owner(db, given, {"d": org.files["z"]})] == [named]
+    assert [r[0] for r in _owner(db, given, {"d": org.files["x"]})] == [plain]
