@@ -115,6 +115,21 @@ export const fromGroupFile = (file: VersionGroupFile): LinkFile => ({
   pages: file.page_count,
 });
 
+/** A group's "Link as versions" (the lead's flexible group): its ticked files in its order, the
+ * suggested latest only while it is ticked (else null: the dialog starts on the newest ticked,
+ * review of #659), and the files left unticked, to ask about after the link. */
+export function groupLink(
+  files: readonly VersionGroupFile[],
+  ticked: ReadonlySet<string>,
+  suggested: string | null,
+): { files: LinkFile[]; latest: string | null; unticked: { id: string; name: string }[] } {
+  return {
+    files: files.filter((file) => ticked.has(file.id)).map(fromGroupFile),
+    latest: suggested !== null && ticked.has(suggested) ? suggested : null,
+    unticked: files.filter((file) => !ticked.has(file.id)).map((file) => ({ id: file.id, name: file.name })),
+  };
+}
+
 /** Oldest first (V13), by the document's own date, else the upload date; ties keep their place. */
 export function byDate<T extends Pick<LinkFile, "date">>(files: readonly T[]): T[] {
   const when = (file: T) => Date.parse(file.date) || 0;

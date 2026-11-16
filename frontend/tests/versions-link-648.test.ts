@@ -17,6 +17,7 @@ import {
   LINK_TEXT,
   byDate,
   confirmLines,
+  groupLink,
   linkBody,
   linkErrorText,
   linkableIds,
@@ -38,6 +39,7 @@ import type {
   LinkPreview,
   Me,
   VersionGroup,
+  VersionGroupFile,
   VersionGroupReason,
   VersionSuggestion,
 } from "@/lib/types";
@@ -362,6 +364,21 @@ describe("a group of possible versions (V17, the lead's flexible group)", () => 
     const files = group().files.map((file, at) => (at === 0 ? { ...file, reasons: [reasonWith("hidden")] } : file));
     const html = card(group({ files }));
     expect(html).toContain("94% same text as another file");
+  });
+});
+
+describe("a group's link (review of #659)", () => {
+  it("starts on the suggested latest only while it is ticked, else on the dialog's newest", () => {
+    const [x, y] = group().files as [VersionGroupFile, VersionGroupFile];
+    const both = groupLink(group().files, new Set(["x", "y"]), "y");
+    expect(both.latest).toBe("y");
+    expect(both.files.map((file) => file.id)).toEqual(["x", "y"]);
+    expect(both.unticked).toEqual([]);
+    const third = { ...x, id: "z", name: "Lease 2026.pdf", position: 3 };
+    const unticked = groupLink([x, y, third], new Set(["x", "z"]), "y");
+    expect(unticked.latest).toBeNull();
+    expect(unticked.files.map((file) => file.id)).toEqual(["x", "z"]);
+    expect(unticked.unticked).toEqual([{ id: "y", name: "Lease 2025.pdf" }]);
   });
 });
 

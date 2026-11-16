@@ -23,7 +23,7 @@ import { useSession } from "@/lib/session";
 import type { KeptApart, VersionGroup } from "@/lib/types";
 import { LinkDialog } from "./LinkDialog";
 import type { Linked } from "./LinkDialog";
-import { LINK_TEXT, MAX_LINK, MIN_LINK, byDate, fromGroupFile, fromSummary, linkErrorText, mayLinkVersions, reasonLine } from "./link";
+import { LINK_TEXT, MAX_LINK, MIN_LINK, byDate, fromSummary, groupLink, linkErrorText, mayLinkVersions, reasonLine } from "./link";
 import type { LinkFile } from "./link";
 import { compareHref } from "./VersionChoice";
 import styles from "./Link.module.css";
@@ -383,13 +383,10 @@ export function GroupCard({
           type="button"
           className="btn btn-primary"
           disabled={busy || !linkable}
-          onClick={() =>
-            onLink(
-              chosen.map(fromGroupFile),
-              group.suggested_latest_id,
-              files.filter((file) => !ticked.has(file.id)).map((file) => ({ id: file.id, name: file.name })),
-            )
-          }
+          onClick={() => {
+            const link = groupLink(files, ticked, group.suggested_latest_id);
+            onLink(link.files, link.latest, link.unticked);
+          }}
         >
           {LINK_TEXT.bulk(chosen.length)}
         </button>
