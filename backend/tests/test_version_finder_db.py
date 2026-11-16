@@ -273,8 +273,10 @@ def test_a_busy_candidate_fails_the_pass_at_once_and_writes_nothing(db: Database
     api = Api(db)
     signed = api.new_signed()
     c = signed.customer_id
-    low, middle, high = _ordered(3)
-    files = _library(api, signed, x={"id": low}, y={"id": middle}, z={"id": high})
+    # Changed on purpose (#648, after PR 9): the stranger w gets the highest id too. With a random one
+    # below x's (1 in 4), w was looked at first, so the pass ended at its second file (found [2]).
+    low, middle, high, highest = _ordered(4)
+    files = _library(api, signed, x={"id": low}, y={"id": middle}, z={"id": high}, w={"id": highest})
     finder = FindVersions(db, customers=lambda: [c])
     found: list[int] = []
     with db.engine.connect() as other:
