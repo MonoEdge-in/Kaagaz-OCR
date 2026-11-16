@@ -24,6 +24,7 @@ import type {
 vi.mock("@/lib/session", () => ({ useSession: () => ({ refresh: () => undefined }) }));
 
 const { ACTIVITY_WORDS, activityDocument, activitySentence, activityWords } = await import("@/components/activity/words");
+const { describeAction } = await import("@/components/admin/logic");
 const { NO_AUDIT_FILTERS, auditChipTexts, auditFilterCount, auditParams } = await import("@/components/activity/auditFilters");
 const { TimelineRow } = await import("@/components/activity/Timeline");
 const { ActivityFilters, ActivityTable } = await import("@/components/admin/ActivityPanel");
@@ -223,6 +224,15 @@ describe("the activity words (A4)", () => {
   it("falls back to the admin log's words for anything else, in lower case", () => {
     expect(activityWords(entry("auth.login"))).toBe("signed in");
     expect(activityWords(entry("something.new"))).toBe("something.new");
+  });
+
+  it("says the possible-versions decisions in plain words, in the admin log too (#648)", () => {
+    expect(activitySentence(entry("version.kept_apart"))).toBe("Priya marked it as not versions");
+    expect(activitySentence(entry("version.kept_apart_undone"))).toBe("Priya undid not versions");
+    expect(activitySentence(entry("version.later"))).toBe("Priya left it for later");
+    expect(describeAction("version.kept_apart")).toBe("Marked as not versions");
+    expect(describeAction("version.kept_apart_undone")).toBe("Undid not versions");
+    expect(describeAction("version.later")).toBe("Left for later");
   });
 
   it("lives in one table in components/activity/words.ts", () => {

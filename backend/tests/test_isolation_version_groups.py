@@ -267,6 +267,26 @@ def test_a_group_with_under_two_files_left_leaves_the_list_but_keeps_its_undo(db
     ]
 
 
+def test_the_decisions_show_in_the_admin_log_only(db: Database) -> None:
+    """Review (#648): Not versions, its Undo and Decide later are Admins' and Management's
+    decisions: never in a file's timeline or the dashboard's feed, which members see; all three in
+    the admin's log."""
+    org, ids = _org(Api(db))
+    management, p, q = org.people["management"], org.files["p"], org.files["q"]
+    _post(management, f"/version-groups/{ids['duo']}/later", [q])
+    _post(management, f"/version-groups/{ids['duo']}/keep-apart", [p])
+    _post(management, f"/version-groups/{ids['duo']}/keep-apart/undo", [p])
+    decisions = {"version.kept_apart", "version.kept_apart_undone", "version.later"}
+    for signed in (management, org.people["member"]):
+        for path in (f"/documents/{p}/activity", f"/documents/{q}/activity"):
+            status, reply = _get(signed, path)
+            assert status == 200 and not decisions & {i["action"] for i in reply["items"]}, path
+        feed = _get(signed, "/dashboard")[1]["activity"]
+        assert not decisions & {i["action"] for i in feed}
+    status, log = _get(org.people["admin"], "/admin/audit?limit=100")
+    assert status == 200 and decisions <= {i["action"] for i in log["items"]}
+
+
 def test_decide_later_keeps_the_files_and_puts_the_group_last(db: Database) -> None:
     org, _ = _org(Api(db))
     management = org.people["management"]
