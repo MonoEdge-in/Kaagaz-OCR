@@ -726,3 +726,19 @@ def test_after_a_dropped_list_the_others_have_one_second(
 
     assert run(db, customer, "invoice sharma") == []
     assert [getattr(r, "code", None) for r in caplog.records] == ["word_timeout", "fuzzy_timeout"]
+
+
+@pytest.mark.parametrize(
+    ("question", "printed"),
+    [("gat 61", "Gut No. 61, Kusgaon"), ("gut 61", "Gat No. 61, Kusgaon"), ("gut 61", "गट नंबर ६१ कुसगाव")],
+)
+def test_gut_and_gat_find_each_other(db: Database, question: str, printed: str) -> None:
+    """#625: land records print the survey number as Gut and as Gat (गट): either finds the other."""
+    customer, _ = new_customer(db)
+    wanted, _ = add_pieces(
+        db, customer, add_document(db, customer), [(printed, None), ("Rent receipt", None)]
+    )
+
+    hits = run(db, customer, question)
+
+    assert [hit.piece_id for hit in hits] == [wanted] and hits[0].word_score is not None

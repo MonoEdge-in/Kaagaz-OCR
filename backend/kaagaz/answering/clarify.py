@@ -23,7 +23,7 @@ import logging
 import re
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
 
 from sqlalchemy import Connection, RowMapping, text
@@ -31,7 +31,8 @@ from sqlalchemy import Connection, RowMapping, text
 from kaagaz.answering.evidence import looks_like_instructions
 from kaagaz.answering.rewrite import MAX_ENTITY_CHARS, Plan
 from kaagaz.answering.sanitize import clean_text
-from kaagaz.chunking.script import latin_spelling, sound_key
+from kaagaz.answering.voice import _TYPES
+from kaagaz.chunking.script import fold_digits, latin_spelling, sound_key
 from kaagaz.db.engine import Database, user_or_customer
 from kaagaz.db.visibility import SEEN_DOCUMENT
 from kaagaz.extraction.links import normalise_identifier
@@ -46,9 +47,35 @@ OTHER = {"id": "other", "label": "Something else", "kind": "other"}
 MISSING: dict[Kind, str] = {"property": "Which property do you mean?", "person": "Which person do you mean?"}
 MISSING["place"] = "Which places should I look in?"
 ALL = {"id": "all", "label": "All of these", "kind": "all"}
+# #629 (Tushar, 15 Nov 2026): a property choice is built here, never by the model: its kind and
+# number as printed (with Latin digits), its village and taluka, else its document's name, and its
+# document's type. Only these fields name a property; a boundary's number is a neighbour's.
+PROPERTY_KINDS = {"land_survey_number": "Survey", "land_khata_number": "Khata", "land_plot_number": "Plot"}
+MAX_PROPERTY_CHOICES = 5
+NO_PROPERTY = "No one property was named, so I looked in all your documents."
+_PRINTED_KINDS = (  # the word a value prints its kind with, the first that matches
+    ("CTS", re.compile(r"\bc\.?\s*t\.?\s*s\b|सि\.?\s*स", re.IGNORECASE)),
+    ("Gat", re.compile(r"\bg[au]t\b|गट", re.IGNORECASE)),
+    ("Khata", re.compile(r"\bkhata\b|खाते|खाता", re.IGNORECASE)),
+    ("Plot", re.compile(r"\bplot\b|प्लॉट|भूखंड", re.IGNORECASE)),
+    ("Survey", re.compile(r"\bsurvey\b|\bs\.?\s*no\b|स\.?\s*नं|सर्व्हे|सर्वे", re.IGNORECASE)),
+)
+_NUMBER = re.compile(r"[0-9\u0966-\u096f].*")  # from the first digit (Latin or Devanagari) on
+_JOINED = re.compile(r"[,;&]|\band\b|आणि|(?<!\S)व(?!\S)", re.IGNORECASE)
+# A date: day, month and year (the day at most 31, the month at most 12, so survey 45/2/12 is
+# none), or ISO's year-month-day; money: a currency mark, "/-" or paise.
+_DATE = re.compile(
+    r"(?<![0-9])([0-9]{1,2})[./-]([0-9]{1,2})[./-][0-9]{2,4}(?![0-9])|[0-9]{4}-[0-9]{2}-[0-9]{2}"
+)
+_MONEY = re.compile(r"₹|रु|rs\.?\s*[0-9]|/-|\.[0-9]{2}$", re.IGNORECASE)
 _BETWEEN = re.compile(r"\bbetween\s+(.+?)\s+and\s+(.+?)(?=[?.!,]|$)", re.IGNORECASE)
 _WORD = re.compile(r"[a-z0-9]+")
 _LETTER = r"[\w\u0900-\u097F]"  # a letter, digit or Devanagari sign: a word goes on
+_REFERS = re.compile(  # "this" and its kin, in English, Marathi, Hindi and Hindi typed in English
+    f"(?<!{_LETTER})(?:this|that|it|these|those|या|याचा|याची|याचे|यात|ह्या|हा|ही|हे|यह|इस|इसका|इसकी|इसके"
+    f"|iska|iski|iske|yeh)(?!{_LETTER})",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +93,13 @@ class Entry:
     label: str
     documents: tuple[str, ...]
     aliased: bool = False  # a confirmed spelling of the typed name
+    # A property's (#629): its field, the village and taluka of its record, and its newest
+    # document's type and name, as stored (document text: cleaned before it is shown).
+    field: str = ""
+    village: str = ""
+    taluka: str = ""
+    doc_type: str = ""
+    doc_name: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,7 +115,10 @@ class Pending:
     picked: tuple[str, ...]
     confirm: bool = False  # a "Did you mean" pick: its spelling is suggested to the company (B2)
     typed: str | None = None  # the words typed instead of a pick (B2)
-    documents: tuple[str, ...] = ()  # PRD 7 (#602): the documents of the one pick, when it was one
+    # The picks' documents: the one pick's, of any kind (PRD 7, #602: its "Did you mean"
+    # suggestion's page); every property pick's (#629: the only ones searched).
+    documents: tuple[str, ...] = ()
+    labels: tuple[str, ...] = ()  # #629: the picks as shown, for the saved question
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,14 +157,24 @@ _CANDIDATES = text(
     " CAST(:sounds AS text[]), CAST(:folds AS text[])) AS t(n, kind, latin, sound, fold)),"
     " vocabulary AS MATERIALIZED (SELECT k.kind, k.latin, min(k.sound) AS sound, max(d.created_at) AS newest,"
     " (array_agg(v.value_text ORDER BY d.created_at DESC, v.id))[1] AS label,"
-    " array_agg(DISTINCT k.document_id::text) AS documents FROM value_keys k"
+    " array_agg(DISTINCT k.document_id::text) AS documents,"
+    " (array_agg(v.field ORDER BY d.created_at DESC, v.id))[1] AS field, pl.village,"
+    " (array_agg(pl.taluka ORDER BY d.created_at DESC, v.id))[1] AS taluka,"
+    " (array_agg(d.doc_type ORDER BY d.created_at DESC, v.id))[1] AS doc_type,"
+    " (array_agg(d.display_name ORDER BY d.created_at DESC, v.id))[1] AS doc_name FROM value_keys k"
     " JOIN visible_documents d ON d.customer_id = k.customer_id AND d.id = k.document_id"
     " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " JOIN extracted_values v ON v.customer_id = k.customer_id AND v.id = k.value_id"
+    " LEFT JOIN LATERAL (SELECT max(p.value_text) FILTER (WHERE p.field = 'land_village') AS village,"
+    " max(p.value_text) FILTER (WHERE p.field = 'land_taluka') AS taluka FROM extracted_values p"
+    " WHERE k.kind = 'property' AND p.customer_id = k.customer_id AND p.document_id = k.document_id"
+    " AND p.record_key = v.record_key AND p.field IN ('land_village', 'land_taluka')) AS pl ON true"
     " WHERE k.customer_id = :c AND k.kind = ANY(CAST(:kinds AS text[]))"
+    " AND (k.kind <> 'property' OR v.field = ANY(CAST(:property_fields AS text[])))"
     " AND (CAST(:scoped AS uuid[]) IS NULL OR k.document_id = ANY(CAST(:scoped AS uuid[])))"
-    " GROUP BY k.kind, k.latin)"
-    " SELECT t.n, w.kind, w.latin, w.label, w.documents, w.aliased FROM typed t CROSS JOIN LATERAL ("
+    " GROUP BY k.kind, k.latin, pl.village)"
+    " SELECT t.n, w.kind, w.latin, w.label, w.documents, w.aliased, w.field, w.village, w.taluka,"
+    " w.doc_type, w.doc_name FROM typed t CROSS JOIN LATERAL ("
     " SELECT x.*, EXISTS (SELECT 1 FROM organization_word_suggestions o WHERE o.customer_id = :c"
     " AND o.status = 'approved' AND o.word_fold = t.fold AND (o.document_id IS NULL OR EXISTS"
     " (SELECT 1 FROM visible_documents a WHERE a.customer_id = :c AND a.id = o.document_id))"
@@ -201,7 +248,7 @@ class PgVocabulary:
         sounds = [" ".join(map(sound_key, _WORD.findall(latin))) for latin in latins]
         kinds, most = [entity.kind for entity in entities], MAX_CANDIDATES
         params = {"c": customer_id, "n": list(range(len(entities))), "kinds": kinds, "most": most}
-        params["scoped"] = self._documents
+        params |= {"scoped": self._documents, "property_fields": sorted(PROPERTY_KINDS)}
         folds = [" ".join(clean_text(entity.as_typed).casefold().split()) for entity in entities]
         params |= {"latins": latins, "sounds": sounds, "folds": folds}
         if entities:
@@ -222,7 +269,61 @@ class PgVocabulary:
 
 
 def _entry(row: RowMapping) -> Entry:
-    return Entry(row["kind"], row["latin"], row["label"], tuple(sorted(row["documents"])), row["aliased"])
+    return Entry(
+        row["kind"],
+        row["latin"],
+        row["label"],
+        tuple(sorted(row["documents"])),
+        row["aliased"],
+        field=row.get("field") or "",
+        village=row.get("village") or "",
+        taluka=row.get("taluka") or "",
+        doc_type=row.get("doc_type") or "",
+        doc_name=row.get("doc_name") or "",
+    )
+
+
+def property_choice(entry: Entry) -> tuple[str, tuple[str, str, str], bool] | None:
+    """#629: a property entry's choice label ("Gat ६१ (61), Kusgaon, Maval · Land record"), the
+    key that makes two choices one (its field, its number in Latin digits, its place spelled in
+    Latin letters: गट नं. ६१ and ६१ of one village are one property) and whether its value printed
+    its kind (that label is the one kept); None when it is not a choice: no number, a date, money,
+    several numbers joined, no village and no document name, or anything that reads like
+    instructions. O(n) for its text."""
+    printed = clean_text(entry.label)
+    found = _NUMBER.search(printed)
+    named = next((word for word, said in _PRINTED_KINDS if said.search(printed)), None)
+    kind = named or PROPERTY_KINDS.get(entry.field)
+    if found is None or kind is None or looks_like_instructions(printed):
+        return None
+    number = found[0].strip(" .:-")
+    latin = fold_digits(number)
+    if _JOINED.search(number) or _dated(latin) or _MONEY.search(fold_digits(printed)) or len(number) > 20:
+        return None
+    where = [clean_text(part) for part in (entry.village, entry.taluka) if clean_text(part)]
+    place = ", ".join(where) or clean_text(entry.doc_name)
+    if not place or looks_like_instructions(place):
+        return None
+    head = f"{kind} {number}" + (f" ({latin})" if latin != number else "")
+    label = f"{head}, {place}"
+    kind_of = _TYPES.get(entry.doc_type, "")
+    if kind_of and where and len(label) + len(kind_of) + 3 <= MAX_CHOICE_CHARS:
+        label += f" · {kind_of}"
+    key = (entry.field, latin, " ".join(latin_spelling(place).casefold().split()))
+    return label[:MAX_CHOICE_CHARS], key, named is not None
+
+
+def _dated(text: str) -> bool:
+    """A date in ``text`` (Latin digits): a day of at most 31 and a month of at most 12, or ISO."""
+    for found in _DATE.finditer(text):
+        if found[1] is None or (int(found[1]) <= 31 and int(found[2]) <= 12):
+            return True
+    return False
+
+
+def refers_back(question: str) -> bool:
+    """The question points back at something already said ("this", "it", याचे, iska: #629)."""
+    return bool(_REFERS.search(question))
 
 
 def latin_key(typed: str, kind: str = "person") -> str:
@@ -304,11 +405,14 @@ def first_step(
     plan: Plan,
     narrowed: bool,
     cited: Sequence[str] = (),
+    last: Sequence[str] = (),
 ) -> Step:
     """Turn 1 for ``plan``, asked by ``user_id``; ``narrowed``: the scope narrows the question on
     its own. A missing subject offers the entries of the documents ``cited`` by the chat's earlier
     answers first (newest turn first; asked only with no scope, so all in it), then the company's
-    newest."""
+    newest, those the question's words name first. ``last``: the documents the last answer cited,
+    when the question points back at it ("this", ``refers_back``): one of them is what it means
+    (#629), so its property is never asked."""
     entities = [Entity("person", p.as_typed) for p in plan.people] + [Entity("place", p) for p in plan.places]
     between = _BETWEEN.search(question)
     ends = {end.casefold() for end in between.groups()} if between else set()
@@ -321,6 +425,8 @@ def first_step(
         if found := [entry for entry in found if usable(entry)][:MAX_CHOICES]:
             return _asking(question, (), asked, found, Entity("place", phrase), rest, 1)
     missing = [] if entities or plan.period or narrowed else [k for k in MISSING if k in plan.missing]
+    if len(set(last)) == 1:
+        missing = [kind for kind in missing if kind != "property"]
     if not missing:
         return next_step(vocabulary, customer_id, user_id, question, entities, (), 1)
     asked_for = [Entity(kind, "") for kind in missing]
@@ -331,21 +437,31 @@ def first_step(
         else [[] for _ in missing]
     )
     for kind, chat, entries in zip(missing, chats, newest, strict=True):
-        if found := _chat_first(cited, chat, entries):
+        if found := _chat_first(cited, chat, entries, question):
             return _asking(question, (), MISSING[kind], found, Entity(kind, ""), (), 1)
     return Step(question, ())
 
 
-def _chat_first(cited: Sequence[str], chat: Sequence[Entry], newest: Sequence[Entry]) -> list[Entry]:
+def _chat_first(
+    cited: Sequence[str], chat: Sequence[Entry], newest: Sequence[Entry], question: str = ""
+) -> list[Entry]:
     """``chat``'s usable entries by the turn citing them (``cited``, newest first), then ``newest``'s,
-    once each, at most MAX_CHOICES."""
+    those with a word of ``question`` first (#629), once each, at most MAX_CANDIDATES (``_asking``
+    keeps the choices)."""
     turn = {document: n for n, document in enumerate(cited)}
     ranked = sorted(chat, key=lambda entry: min(turn.get(d, len(turn)) for d in entry.documents))
-    kept: dict[str, Entry] = {}
-    for entry in [*ranked, *newest]:
-        if usable(entry):
-            kept.setdefault(entry.latin, entry)
-    return list(kept.values())[:MAX_CHOICES]
+    asked = set(_WORD.findall(latin_key(question)))
+    named = sorted(newest, key=lambda e: not asked & set(_WORD.findall(latin_key(f"{e.latin} {e.village}"))))
+    kept: dict[tuple[str, str], Entry] = {}
+    for entry in [*ranked, *named]:
+        key = (entry.latin, entry.village)
+        if not usable(entry):
+            continue
+        if key in kept:  # one property in several documents: one choice holding them all
+            kept[key] = replace(kept[key], documents=tuple(sorted({*kept[key].documents, *entry.documents})))
+        else:
+            kept[key] = entry
+    return list(kept.values())[:MAX_CANDIDATES]
 
 
 def after_reply(
@@ -410,7 +526,39 @@ def _asking(
     """The clarify to store and show (decision 13; places several at once, B2), and its resume
     state; ``confirm``: a "Did you mean" whose pick confirms a spelling."""
     choices: list[dict[str, Any]] = []
-    for entry in entries:
+    if about.kind == "property":  # #629
+        merged: dict[tuple[str, str, str], dict[str, Any]] = {}
+        named: set[tuple[str, str, str]] = set()  # choices whose label printed its kind
+        for entry in entries:
+            if (built := property_choice(entry)) is None:
+                continue
+            label, key, printed_kind = built
+            if key in merged:
+                merged[key]["document_ids"] = sorted({*merged[key]["document_ids"], *entry.documents})
+                if printed_kind and key not in named:  # "Gat ६१" rather than a bare "Survey ६१"
+                    merged[key] |= {"label": label, "value": clean_text(entry.label)}
+                    named.add(key)
+            elif len(merged) < MAX_PROPERTY_CHOICES:
+                named |= {key} if printed_kind else set()
+                pick = {"id": f"c{len(merged) + 1}", "label": label, "kind": "pick"}
+                merged[key] = {
+                    **pick,
+                    "value": clean_text(entry.label),
+                    "document_ids": list(entry.documents),
+                }
+        if len(merged) < 2 and not confirm:  # one, or none, is no question ("Did you mean" still is)
+            _log.info("clarify not asked", extra={"code": "clarify_property_few"})
+            if not about.as_typed:  # a missing property: an open list, saying so
+                return Step(question, (*said, NO_PROPERTY))
+            if merged:  # a typed property with one good choice: that one (#629 review)
+                only, typed = next(iter(merged.values())), clean_text(about.as_typed)
+                return Step(
+                    put(question, about.as_typed, only["value"]),
+                    (*said, f"I took {typed} as {only['label']}."),
+                )
+            return Step(question, said)  # searched as typed
+        choices = list(merged.values())
+    for entry in entries if about.kind != "property" else ():
         if len(choices) == MAX_CHOICES:
             break
         if (label := clean_text(entry.label)) not in (choice["label"] for choice in choices):
@@ -436,8 +584,8 @@ def reply_to(
     ``typed`` words (its resume state as ``_asking`` stored it); None when it is no clarify, or
     an id is not one of its picks (or several are, for a single choice)."""
     clarify, resume = answer.get("clarify") or {}, answer.get("resume") or {}
-    picks = {c["id"]: c["label"] for c in clarify.get("choices", []) if c.get("kind") == "pick"}
-    held = {c["id"]: tuple(map(str, c.get("document_ids", []))) for c in clarify.get("choices", [])}
+    listed = [c for c in clarify.get("choices", []) if c.get("kind") == "pick"]
+    picks = {c["id"]: c.get("value", c["label"]) for c in listed}  # #629: the value as printed
     every = "all" in choice_ids and clarify.get("multi")
     chosen = list(picks) if every else list(dict.fromkeys(choice_ids))
     if answer.get("status") != "clarify" or not (typed or chosen) or not set(chosen) <= set(picks):
@@ -446,9 +594,14 @@ def reply_to(
         return None
     rest = tuple(Entity(kind, name) for kind, name in resume["remaining"])
     fields = {**resume, "remaining": rest, "assumptions": tuple(resume["assumptions"]), "typed": typed}
-    documents = held.get(chosen[0], ()) if len(chosen) == 1 and not typed else ()
+    held = {c["id"]: c.get("document_ids", []) for c in listed}
+    # PRD 7 (#602): the one pick's documents, of any kind; #629: every property pick's.
+    kept = len(chosen) == 1 or resume["kind"] == "property"
+    picked_documents = (d for i in chosen for d in held[i]) if kept and not typed else ()
+    documents = tuple(sorted({str(d) for d in picked_documents}))
     picked = () if typed else tuple(picks[i] for i in chosen)
-    return Pending(**fields, turn=clarify["turn"], picked=picked, documents=documents)
+    labels = () if typed else tuple(c["label"] for i in chosen for c in listed if c["id"] == i)
+    return Pending(**fields, turn=clarify["turn"], picked=picked, documents=documents, labels=labels)
 
 
 MAX_REPLY_WORDS = 4  # "Yes, Pune", "Survey 45/2"; "Total GST paid last month" is a new question

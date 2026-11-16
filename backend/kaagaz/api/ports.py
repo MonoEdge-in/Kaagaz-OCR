@@ -79,6 +79,7 @@ class Answers(Protocol):
         pending: Pending | None = None,
         clarify: bool = True,
         cited: Sequence[str] = (),
+        last_cited: Sequence[str] = (),
     ) -> AnswerLike:
         """``question`` is the stripped question text; ``scope`` is resolved for this customer;
         ``history`` is the conversation's earlier turns, oldest first; ``user_id`` is the
@@ -89,7 +90,8 @@ class Answers(Protocol):
         this answers, read from the stored message (PRD 6 B1, ``clarify.reply_to``); ``clarify``
         False (the ``nlq_clarify`` switch is off, 0052): no plan and no clarifying question;
         ``cited`` the documents this conversation's earlier answers cite, newest turn first, read
-        from its stored messages (PRD 6 B: a missing subject offers their names first)."""
+        from its stored messages (PRD 6 B: a missing subject offers their names first);
+        ``last_cited`` the last answer's documents the asker can still see (#629)."""
         ...
 
     def remember(self, turns: Sequence[Turn], memory: Memory, cited: Sequence[str]) -> Memory | None:

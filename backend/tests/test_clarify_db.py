@@ -1,6 +1,7 @@
 """PRD 6 B review fixes against a real database: the vocabulary narrowed to the chat's scope, a
 property keyed as #245 keys it, and the statement served by value_keys' B-tree index."""
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -11,6 +12,7 @@ from kaagaz.answering.clarify import Entity, Pending, PgVocabulary, after_reply
 from kaagaz.answering.service import AnswerService
 from kaagaz.db.engine import Database
 from kaagaz.search import hybrid
+from tests import db_support
 from tests.db_support import insert_document, insert_key, new_customer
 from tests.settings_factory import make_settings
 from tests.test_answering_golden import NOW
@@ -60,6 +62,7 @@ def test_the_vocabulary_is_aggregated_once_and_read_through_indexes_under_rls(db
         "sounds": ["nkl"],
     }
     params |= {"folds": ["nikhil"], "most": 10, "scoped": None}
+    params["property_fields"] = sorted(clarify.PROPERTY_KINDS)  # Changed on purpose (#629)
     with db.customer(customer) as conn:
         conn.execute(text("SET LOCAL enable_seqscan = off"))
         plan = "\n".join(conn.execute(text("EXPLAIN " + clarify._CANDIDATES.text), params).scalars())
@@ -110,3 +113,45 @@ def test_a_property_pick_is_answered_when_the_word_list_times_out(
     answer = answers.answer(customer, question, pending=pending)  # until #619: OperationalError, 503
 
     assert answer.status == "answered" and [c.document_id for c in answer.citations] == [document]
+
+
+def test_property_choices_read_their_records_village_and_never_a_boundary_or_trash(db: Database) -> None:
+    """#629: a property entry carries its record's village and its document; a boundary's number
+    (a neighbour's) and a document in Trash are never offered."""
+    customer, user = new_customer(db)
+    with db.customer(customer) as conn:
+        kept = insert_document(conn, customer)
+        binned = insert_document(
+            conn, customer, deleted_at=datetime(2026, 11, 1, tzinfo=UTC), deleted_by=user
+        )
+        insert_key(conn, customer, kept, "property", "६१")
+        insert_key(conn, customer, kept, "place", "Kusgaon")
+        insert_key(conn, customer, binned, "property", "79")
+        box = '{"kind": "box", "page": 1, "box": [0.1, 0.2, 0.3, 0.25]}'
+        boundary = {"k": "property", "f": "land_boundary_north", "v": "80", "level": None, "latin": "80"}
+        conn.execute(db_support._KEY, {"c": customer, "d": kept, "box": box, "sound": "", **boundary})
+
+    (found,) = PgVocabulary(db).candidates(customer, [Entity("property", "")], user_id=user)
+
+    assert [(e.label, e.village, e.field, e.documents) for e in found] == [
+        ("६१", "Kusgaon", "land_survey_number", (kept,))
+    ]
+
+
+def test_a_property_pick_answers_from_its_own_documents_only(db: Database) -> None:
+    """#629: a pick searches only its choice's documents (the scope), never every document."""
+    customer, _ = new_customer(db)
+    mine = add_document(db, customer, name="7-12 Kusgaon.pdf")
+    other = add_document(db, customer, name="7-12 Wagholi.pdf")
+    add_pieces(db, customer, mine, [("गट ६१ measurement 20 m by 30 m", axis(0))])
+    add_pieces(db, customer, other, [("गट ७९ measurement 40 m by 10 m", axis(0))])
+    with db.customer(customer) as conn:
+        insert_key(conn, customer, mine, "property", "६१")
+    settings = make_settings(model_embed="test-embed", answer_whole_doc_tokens=0)
+    answers = AnswerService(db=db, model=Model(), settings=settings, clock=lambda: NOW)
+    question = "What is the measurement of the property?"
+    pending = Pending(question, "property", None, (), (), 1, ("६१",), documents=(mine,))
+
+    answer = answers.answer(customer, question, pending=pending)
+
+    assert answer.status == "answered" and {c.document_id for c in answer.citations} == {mine}
