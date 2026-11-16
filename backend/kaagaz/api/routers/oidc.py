@@ -61,6 +61,11 @@ provider's own routes: while that one is off), before anything else is read.
   without it (it never signed in; someone else's: 404),
   audited ``auth.identity_unlinked``; every other browser is signed out, this one stays, the
   password keeps working, and a security notice is emailed. At most CONNECTS_PER_HOUR a user.
+* A WhatsApp proof (#603, ``routers/whatsapp_account.py`` starts it for a person who signs in with
+  Google only): its callback, while that very session is signed in here (else ``signed_out``),
+  needs the Google account to be the person's own approved connection (else ``not_yours``) and a
+  fresh Google sign-in (``auth_time`` within FRESH_SECONDS, else ``not_fresh``), then sets the
+  WhatsApp proof cookie and goes back to /settings/whatsapp?proved=google, or ?error=<code>.
 * ``POST /auth/oidc/{provider}/confirm`` {next} (PRD 7 decision 5, #605): a person whose role signs
   in with Google only opens locked files with a fresh Google sign-in (anyone else: 409
   ``use_password``; at most CONFIRMS_PER_HOUR a person). A ``locked_open`` flow cookie with the
@@ -128,6 +133,7 @@ from kaagaz.api.auth import (
     set_notice_cookie,
     set_pending_cookie,
     set_session_cookie,
+    set_whatsapp_proof_cookie,
 )
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
@@ -184,6 +190,7 @@ USE_PASSWORD = "Enter your Kaagaz password to open locked files."  # noqa: S105 
 PROOF_NEEDED = "Type your Kaagaz password to continue."
 LOGIN = "/login"
 WAYS = "/settings/sign-in"  # Account, Ways to sign in
+WHATSAPP_PAGE = "/settings/whatsapp"  # Account, WhatsApp (#603)
 FRESH_SECONDS = 300  # a fresh Google sign-in (asked with max_age=0): at most this old (#605, PRD 7 p2:56)
 # A plain path on this site: no scheme, host, "//", "\", "%" or fragment can get through.
 _NEXT = re.compile(r"/[A-Za-z0-9_-][A-Za-z0-9/_-]{0,199}(\?[A-Za-z0-9=&_-]{1,200})?")
@@ -332,6 +339,8 @@ def callback(
         identity = _identity(request, context, provider, flow, now)
         if flow.mode == "connect":
             response = _connect(request, context, background, provider, flow, identity)
+        elif flow.mode == "whatsapp":
+            response = _whatsapp_proof(request, context, provider, flow, identity)
         elif flow.mode == "locked_open":
             response = _locked_open(request, context, provider, flow, identity)
         else:
@@ -354,12 +363,15 @@ def callback(
 
 
 def _back(flow: FlowClaims | None, code: str) -> RedirectResponse:
-    """Back to the page the flow started from, with why: Ways to sign in for a connect, the locked
-    file's own page for a locked files' confirm (#605)."""
+    """Back to the page the flow started from, with why: Ways to sign in for a connect, WhatsApp for
+    its proof (#603), the locked file's own page for a locked files' confirm (#605)."""
     if flow is not None and flow.mode == "locked_open":
         joined = "&" if "?" in flow.next_path else "?"
         return RedirectResponse(f"{flow.next_path}{joined}open_error={code}", status_code=303)
-    back = f"{WAYS}?error=" if flow is not None and flow.mode == "connect" else f"{LOGIN}?oidc_error="
+    mode = None if flow is None else flow.mode
+    back = {"connect": f"{WAYS}?error=", "whatsapp": f"{WHATSAPP_PAGE}?error="}.get(
+        mode or "", f"{LOGIN}?oidc_error="
+    )
     return RedirectResponse(back + code, status_code=303)
 
 
@@ -690,6 +702,24 @@ def _flow_user(request: Request, flow: FlowClaims) -> CurrentUser:
     if signed != (flow.user_id, flow.customer_id, flow.session_version):
         raise _Refused("signed_out")
     return user
+
+
+def _whatsapp_proof(
+    request: Request, context: AppContext, provider: Provider, flow: FlowClaims, identity: Identity
+) -> RedirectResponse:
+    """#603: Google proved again that it is the person who started this, for WhatsApp's Connect."""
+    user = _flow_user(request, flow)
+    with context.db.system() as conn:
+        found = identities.lookup(conn, provider.name, identity.issuer, identity.subject)
+    theirs = found is not None and (found.customer_id, found.user_id) == (user.customer_id, user.user_id)
+    if not theirs or found is None or found.status != "approved":
+        raise _Refused("not_yours")
+    now = unix(context.clock())
+    if identity.auth_time is None or not now - FRESH_SECONDS <= identity.auth_time <= now + FRESH_SECONDS:
+        raise _Refused("not_fresh")
+    response = RedirectResponse(f"{WHATSAPP_PAGE}?proved={provider.name}", status_code=303)
+    set_whatsapp_proof_cookie(response, user, context.settings, now=unix(context.clock()))
+    return response
 
 
 def _locked_open(

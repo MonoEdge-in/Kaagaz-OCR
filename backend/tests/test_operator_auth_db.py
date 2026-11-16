@@ -22,6 +22,7 @@ from tests.test_api_support import (
     EMAIL_ROUTES,
     OIDC_ROUTES,
     PASSWORD,
+    WHATSAPP_ROUTES,
     Api,
     TestClient,
     password_hash_of,
@@ -51,7 +52,8 @@ OPEN_TO_ALL = {
 }
 # Changed on purpose (#457): 404 while email is off, whoever asks (tests/test_api_email.py).
 # Changed on purpose (#457 phase 1): the provider sign-in's too, while no provider is on.
-EMAIL_OFF = set(EMAIL_ROUTES) | set(OIDC_ROUTES)
+# Changed on purpose (#603): the WhatsApp webhook too, while WhatsApp is off.
+EMAIL_OFF = set(EMAIL_ROUTES) | set(OIDC_ROUTES) | set(WHATSAPP_ROUTES)
 WRONG = "not the password!!"
 _INSERT = "INSERT INTO operators (email, display_name, password_hash) VALUES (:e, 'Ops', :h) RETURNING id"
 # As the CLI issues a secret (pending) and as the first valid code leaves it (confirmed).

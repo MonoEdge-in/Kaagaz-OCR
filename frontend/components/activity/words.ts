@@ -9,12 +9,17 @@ import { formatNumber } from "@/lib/format";
 import type { ActivityEntry } from "@/lib/types";
 
 type Entry = Pick<ActivityEntry, "action" | "actor_name" | "details"> &
-  Partial<Pick<ActivityEntry, "document" | "folder" | "actor_id">>;
+  Partial<Pick<ActivityEntry, "document" | "folder" | "actor_id" | "subject_id" | "subject_name">>;
 
 const text = (value: unknown) => (typeof value === "string" && value.trim() !== "" ? value : null);
 const version = (entry: Entry, otherwise: number) => entry.document?.version_no ?? otherwise;
 /** Where it went: the details' resolved path, else the row's folder as it is now. */
 const place = (entry: Entry) => text(entry.details.folder_path) ?? entry.folder?.path ?? null;
+/** PRD 7 (#601): whom an access change is about; "themselves" when they made it. */
+const mine = (entry: Entry) => entry.subject_id != null && entry.subject_id === entry.actor_id;
+const whom = (entry: Entry) => (mine(entry) ? "themselves" : (entry.subject_name ?? "someone"));
+/** The file, as the server names it ("a file you can't see" for Management), else the folder. */
+const where = (entry: Entry) => activityDocument(entry) ?? entry.folder?.path ?? "a folder";
 
 /** What was done, keyed by the audit action. Each one reads after a person's name. */
 export const ACTIVITY_WORDS: Record<string, (entry: Entry) => string> = {
@@ -44,19 +49,47 @@ export const ACTIVITY_WORDS: Record<string, (entry: Entry) => string> = {
   "document.autofile": (entry) => `filed it in ${place(entry) ?? "a folder"}`,
   "document.autofile_undo": () => "undid the automatic filing",
   "document.reprocess": () => "asked to read it again",
-  // #600: pages turned for everyone; pages is how many the save changed.
-  "document.page_turns": ({ details: { pages } }) =>
-    typeof pages === "number"
-      ? `turned ${formatNumber(pages)} ${pages === 1 ? "page" : "pages"} for everyone`
-      : "turned the pages for everyone",
-  "document.page_turns_reset": () => "put the pages back as scanned",
+  // #600: pages is how many pages the save changed, turned how many are left turned after it.
+  "document.page_turns": ({ details: { pages, turned } }) => {
+    if (turned === 0) return "put the pages back as scanned";
+    if (typeof pages !== "number") return "changed the turn of the pages for everyone";
+    return `changed the turn of ${formatNumber(pages)} ${pages === 1 ? "page" : "pages"} for everyone`;
+  },
   // PRD 7 section 6 (PR 13): a file's own lock; opening locked files shows in the admin log only.
   "lock.lock": () => "locked it",
   "lock.unlock": () => "unlocked it",
   "audit.export": () => "exported the activity",
   "folder.upload": (entry) =>
     typeof entry.details.files === "number" ? `uploaded a folder of ${formatNumber(entry.details.files)} files` : "uploaded a folder",
+  // PRD 7 (#601): who can see what ("Ravi added Priya to Finance").
+  "access.management_on": (entry) => `made ${whom(entry)} Management`,
+  "access.management_off": (entry) => `took Management away from ${whom(entry)}`,
+  "access.member_add": (entry) => `added ${whom(entry)} to ${where(entry)}${entry.details.head === true ? " as head" : ""}`,
+  "access.member_remove": (entry) => `removed ${whom(entry)} from ${where(entry)}`,
+  "access.head_on": (entry) => `made ${whom(entry)} head of ${where(entry)}`,
+  "access.head_off": (entry) => `removed ${whom(entry)} as head of ${where(entry)}`,
+  "access.department_only_on": (entry) => `kept ${where(entry)} to its people`,
+  "access.department_only_off": (entry) => `opened ${where(entry)} to everyone`,
+  "access.private_on": (entry) => `made ${where(entry)} private`,
+  "access.private_off": (entry) => `made ${where(entry)} open again`,
+  "access.named_add": (entry) => `named ${whom(entry)} on ${where(entry)}`,
+  "access.named_remove": (entry) => `took ${whom(entry)} off ${where(entry)}`,
+  "access.file_give": (entry) => `gave ${whom(entry)} access to ${where(entry)}`,
+  "access.file_take": (entry) =>
+    `removed ${mine(entry) ? "their own" : `${entry.subject_name ?? "someone"}'s`} access to ${where(entry)}`,
+  // Written by 0090's users_switched trigger when an account is turned off or on.
+  "access.switched_off": (entry) =>
+    `turned off ${entry.subject_name ?? "someone"}'s account; their access was removed`,
+  "access.switched_on": (entry) =>
+    `turned on ${entry.subject_name ?? "someone"}'s account; their old access was cleared`,
 };
+
+/** PRD 7 (#601): someone gave themselves access (the chip's words). The audit says `self` for an
+ * Admin's password-proved grant and for a Head naming themselves (10a), so the words name no role. */
+export const SELF_GIVEN = "Gave themselves access";
+/** The Admin tab's block of those entries, first. */
+export const SELF_GIVEN_HEADING = "People who gave themselves access";
+export const selfGiven = (entry: Pick<ActivityEntry, "details">) => entry.details.self === true;
 
 /** The action in words; one this table does not know falls back to the admin log's words. */
 export function activityWords(entry: Entry): string {
@@ -124,6 +157,7 @@ export const ACTIVITY_TEXT = {
   export: "Export to Excel",
   clearAll: "Clear all",
   person: "Person",
+  about: "About a person", // PRD 7 (#601): whom an access change is about
   folder: "Folder",
   file: "File",
   action: "Action",
@@ -134,4 +168,12 @@ export const ACTIVITY_TEXT = {
   fileSearch: "Find a file by name",
   noFiles: "No file has that name.",
   columns: { when: "When", who: "Who", action: "Action", document: "Document", folder: "Folder", details: "Details" },
+};
+
+/** PRD 7 (#601): Management's Access activity page (/access-activity). The 403 is the server's words. */
+export const ACCESS_ACTIVITY_TEXT = {
+  heading: "Access activity",
+  hint: "Changes to who can see which files, newest first.",
+  label: "Access changes, newest first",
+  empty: "Nobody has changed who can see what yet.",
 };

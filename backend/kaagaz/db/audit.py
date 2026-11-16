@@ -41,7 +41,9 @@ VIEW_EVERY_MINUTES = 30
 # Only these kinds of values may go into details: ids, statuses and counts.
 DetailValue = str | int | bool | None
 
-# A3: the document's folder and family, or the folder itself, in the same statement.
+# A3: the document's folder and family, or the folder itself, in the same statement. PRD 7 (#606):
+# read whole (kaagaz_document_place, 0091): an Admin acting on a file they can't see (giving it,
+# say) writes its folder and family too, so the Admin's log finds the row by its family.
 _INSERT = text(
     "INSERT INTO audit_log (customer_id, actor_user_id, action, target_type, target_id, details,"
     " folder_id, family_id, subject_user_id)"
@@ -49,7 +51,8 @@ _INSERT = text(
     " CAST(:tid AS text), CAST(:details AS jsonb), coalesce(d.folder_id, CAST(:folder AS uuid)), d.family_id,"
     " CAST(:subject AS uuid)"
     " FROM (SELECT 1) AS one"
-    " LEFT JOIN documents d ON d.customer_id = CAST(:c AS uuid) AND d.id = CAST(:document AS uuid)"
+    " LEFT JOIN kaagaz_document_place(CAST(:document AS uuid)) d"
+    " ON CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 # PRD 7 (#601): one row about the document :document per person in :subjects, with its own details.
 _INSERT_ABOUT = text(
@@ -58,7 +61,8 @@ _INSERT_ABOUT = text(
     " SELECT CAST(:c AS uuid), CAST(:actor AS uuid), CAST(:action AS text), 'document',"
     " CAST(:document AS text), s.details, d.folder_id, d.family_id, s.subject"
     " FROM unnest(CAST(:subjects AS uuid[]), CAST(:details AS jsonb[])) AS s (subject, details)"
-    " LEFT JOIN documents d ON d.customer_id = CAST(:c AS uuid) AND d.id = CAST(:document AS uuid)"
+    " LEFT JOIN kaagaz_document_place(CAST(:document AS uuid)) d"
+    " ON CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 # #482: views of one document by one person wait for each other here, so two at once write one row.
 _VIEW_LOCK = text("SELECT pg_advisory_xact_lock(hashtextextended(:c || ':' || :u || ':' || :d, 0))")
@@ -88,7 +92,8 @@ def record(
     subject_user_id: str | None = None,
 ) -> None:
     """Write one audit row. O(log n): one indexed insert, with one key lookup for a document.
-    ``subject_user_id``: the person the entry is about (PRD 7: given access, for example)."""
+    ``subject_user_id``: the person the entry is about (PRD 7: given access, for example; WhatsApp's
+    connect, #603)."""
     if not _ACTION.match(action):
         raise ValueError("audit action must match ^[a-z_.]+$")
     target = None if target_id is None else _uuid(target_id)
@@ -187,8 +192,8 @@ SHOWN_DETAILS: dict[str, tuple[str, ...]] = {
     "document.owner_change": ("from", "to"),
     "document.reprocess": ("page_no",),
     "document.page_accept": ("page_no",),
-    "document.page_turns": ("pages",),  # PRD 7 section 14 (#600): pages saved, turned or not
-    "document.page_turns_reset": ("pages",),
+    # PRD 7 section 14 (#600): pages the save changed, and pages left turned after it.
+    "document.page_turns": ("pages", "turned"),
     "folder.create": ("parent_id",),
     "folder.move": ("parent_id",),
     "folder.kind": ("kind",),
@@ -230,11 +235,29 @@ _ENTRIES = (
     "SELECT a.id, a.action, a.actor_user_id, a.target_type, a.target_id, a.details, a.created_at,"
     " a.folder_id, a.family_id, a.subject_user_id, t.display_name AS document_name,"
     " t.version_no AS document_version_no,"
-    " t.id IS NOT NULL AS document_exists"
+    " (t.id IS NOT NULL OR EXISTS (SELECT 1 FROM kaagaz_existing('document', ARRAY[CASE"
+    " WHEN a.target_type = 'document' AND a.target_id ~ '^[0-9a-f-]{36}$' THEN CAST(a.target_id AS uuid)"
+    " END]))) AS document_exists"
     " FROM audit_log a"
     " LEFT JOIN documents t ON t.customer_id = a.customer_id AND t.id = CASE WHEN a.target_type = 'document'"
     " AND a.target_id ~ '^[0-9a-f-]{36}$' THEN CAST(a.target_id AS uuid) END"
     " WHERE a.customer_id = :c"
+)
+# PRD 7 (#606): the Admin's log (shown_only false) names every file, the ones the Admin can't see too
+# (decision 20): a page's rows whose join found no name take it from the owner-rights
+# kaagaz_admin_document_names (0091, one call a page), which checks the caller. For an Admin only:
+# Management's access activity (#601) reads the same entries and names no file it can't see.
+_IS_ADMIN = text("SELECT coalesce((kaagaz_access()).admin, false)")
+_ADMIN_NAMES = (
+    "WITH e AS ({page}) SELECT e.id, e.action, e.actor_user_id, e.target_type, e.target_id, e.details,"
+    " e.created_at, e.folder_id, e.family_id, e.subject_user_id,"
+    " coalesce(e.document_name, n.display_name) AS document_name,"
+    " coalesce(e.document_version_no, n.version_no) AS document_version_no,"
+    " e.document_exists"
+    " FROM e LEFT JOIN kaagaz_admin_document_names(ARRAY(SELECT CAST(x.target_id AS uuid) FROM e x"
+    " WHERE x.target_type = 'document' AND x.document_name IS NULL AND x.target_id ~ '^[0-9a-f-]{{36}}$')) n"
+    " ON e.target_type = 'document' AND e.document_name IS NULL AND n.id::text = e.target_id"
+    " ORDER BY e.created_at DESC, e.id DESC"
 )
 _COUNT = "SELECT count(*) FROM audit_log a WHERE a.customer_id = :c"
 # #484: "Add new files only"'s check of a page of files is the admin's alone. Changed on purpose
@@ -258,15 +281,16 @@ _OF_FAMILY = (
 # about a document the person cannot see, and each other entry in a folder they cannot see (an
 # entry about a file follows the file alone, so a file given to them shows its history); one about
 # a document or folder that is gone shows as before. The admin's log (shown_only false) keeps all.
+# PRD 7 (#606): "gone" is asked of kaagaz_existing (0091), which reads the whole table: under the
+# database rule a hidden file is missing from documents too, and would read as gone.
 _TARGET = "CASE WHEN a.target_id ~ '^[0-9a-f-]{36}$' THEN CAST(a.target_id AS uuid) END"
 _SEEN = (
-    " AND (a.target_type <> 'document' OR NOT EXISTS (SELECT 1 FROM documents x"  # noqa: S608 - fixed fragments only
-    f" WHERE x.customer_id = a.customer_id AND x.id = {_TARGET})"
-    " OR EXISTS (SELECT 1 FROM visible_documents v"
-    f" WHERE v.customer_id = a.customer_id AND v.id = {_TARGET}))"
-    " AND (a.target_type = 'document' OR a.folder_id IS NULL OR NOT EXISTS (SELECT 1 FROM folders x"
-    " WHERE x.customer_id = a.customer_id AND x.id = a.folder_id)"
-    " OR EXISTS (SELECT 1 FROM visible_folders v WHERE v.customer_id = a.customer_id AND v.id = a.folder_id))"
+    " AND (a.target_type <> 'document' OR EXISTS (SELECT 1 FROM visible_documents v"  # noqa: S608 - fixed fragments only
+    f" WHERE v.customer_id = a.customer_id AND v.id = {_TARGET})"
+    f" OR NOT EXISTS (SELECT 1 FROM kaagaz_existing('document', ARRAY[{_TARGET}])))"
+    " AND (a.target_type = 'document' OR a.folder_id IS NULL"
+    " OR EXISTS (SELECT 1 FROM visible_folders v WHERE v.customer_id = a.customer_id AND v.id = a.folder_id)"
+    " OR NOT EXISTS (SELECT 1 FROM kaagaz_existing('folder', ARRAY[a.folder_id])))"
 )
 _IN_FOLDERS = " AND a.folder_id = ANY(CAST(:folders AS uuid[]))"
 _BY = " AND a.actor_user_id = CAST(:actor AS uuid)"
@@ -337,7 +361,10 @@ def entries(
     if cursor is not None:
         where += _BEFORE
         params["before_at"], params["before_id"] = cursor
-    return conn.execute(text(_ENTRIES + where + _ORDER), params).mappings().all()
+    statement = _ENTRIES + where + _ORDER
+    if not filters.shown_only and conn.execute(_IS_ADMIN).scalar():  # the Admin's log: every file named
+        statement = _ADMIN_NAMES.format(page=statement)
+    return conn.execute(text(statement), params).mappings().all()
 
 
 def count(conn: Connection, customer_id: str, filters: Filters) -> int:

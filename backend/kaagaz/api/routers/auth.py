@@ -136,6 +136,7 @@ from kaagaz.api.auth import (
     UserAllowPasswordChange,
     clear_locked_open_cookie,
     clear_session_cookie,
+    clear_whatsapp_proof_cookie,
     current_user_allow_password_change,
     deletes_forever_by_password,
     feature_on,
@@ -477,6 +478,7 @@ def logout(request: Request, user: UserAllowPasswordChange, context: Context) ->
         _record(conn, user.customer_id, "auth.logout", actor=user.user_id, target=user.user_id)
     response = Response(status_code=204)
     clear_session_cookie(response, context.settings)
+    clear_whatsapp_proof_cookie(response, context.settings)  # #603
     clear_locked_open_cookie(response, context.settings)  # PRD 7 decision 6: it ends at sign-out
     return response
 
@@ -488,6 +490,7 @@ def logout_everywhere(user: UserAllowGoogleLink, context: Context) -> Response: 
         _record(conn, user.customer_id, "auth.logout_everywhere", actor=user.user_id, target=user.user_id)
     response = Response(status_code=204)
     clear_session_cookie(response, context.settings)
+    clear_whatsapp_proof_cookie(response, context.settings)  # #603
     clear_locked_open_cookie(response, context.settings)
     return response
 
@@ -501,6 +504,7 @@ def me(user: UserAllowPasswordChange, context: Context) -> dict[str, Any]:
         providers=oidc.enabled_providers(context.settings),
         recent_connections=recent,
         access=access,
+        whatsapp=context.settings.whatsapp_enabled,
     )
 
 
@@ -522,14 +526,19 @@ def session(request: Request) -> dict[str, Any]:
     recent, access = _recent_connections(context, user)
     providers = oidc.enabled_providers(context.settings)
     me = me_json(
-        user, email_on=email_on(context), providers=providers, recent_connections=recent, access=access
+        user,
+        email_on=email_on(context),
+        providers=providers,
+        recent_connections=recent,
+        access=access,
+        whatsapp=context.settings.whatsapp_enabled,
     )
     return {"signed_in": True, "me": me}
 
 
-def _access(context: AppContext, user: CurrentUser) -> tuple[bool, list[str], bool]:
-    """PRD 7 (#601): the person's Management, the departments they head and whether they are in a
-    live department (``access_sql.me``)."""
+def _access(context: AppContext, user: CurrentUser) -> tuple[bool, list[str], bool, bool]:
+    """PRD 7 (#601): the person's Management, the departments they head, whether they are in a
+    live department and whether walls are set (``access_sql.me``)."""
     with context.db.user(user.customer_id, user.user_id) as conn:
         return access_sql.me(conn)
 
@@ -539,7 +548,7 @@ def _access(context: AppContext, user: CurrentUser) -> tuple[bool, list[str], bo
 
 def _recent_connections(
     context: AppContext, user: CurrentUser
-) -> tuple[list[dict[str, str]], tuple[bool, list[str], bool]]:
+) -> tuple[list[dict[str, str]], tuple[bool, list[str], bool, bool]]:
     """The user's approved connections made in the last RECENT_DAYS, for the app's "Google
     connected on 30 Oct." banner (#457 phase 1; none, and nothing read, while no provider is on),
     and their access (PRD 7, #601), in one transaction."""
@@ -668,6 +677,15 @@ def _check_current_password(
 ) -> AttemptRow:
     """The signed-in user's own password, counted like a sign-in (so wrong ones
     lead to the lockout), else a 400 that says what is wrong. The counted attempt."""
+    attempt = _begin_signed_in(context, user, now)
+    if not verify_password(password, attempt.password_hash):
+        _failed(context, attempt, "wrong_password", signed_in=True)
+        raise ApiError(400, "bad_request", "Your current password is not right.")
+    return attempt
+
+
+def _begin_signed_in(context: AppContext, user: CurrentUser, now: datetime) -> AttemptRow:
+    """The signed-in user's counted attempt, else the lock's 400."""
     attempt = _begin(context, user.customer_id, user.user_id, now, signed_in=True)
     if attempt is None:
         # The lock stays on for a signed-in session too: letting a session check
@@ -680,9 +698,6 @@ def _check_current_password(
             f"Too many wrong passwords were tried on this account. Try again in {minutes} minutes,"
             " or ask an admin to unlock it.",
         )
-    if not verify_password(password, attempt.password_hash):
-        _failed(context, attempt, "wrong_password", signed_in=True)
-        raise ApiError(400, "bad_request", "Your current password is not right.")
     return attempt
 
 
@@ -716,6 +731,17 @@ def _prove(context: AppContext, user: CurrentUser, password: str, code: str | No
     else a 400 that says what is wrong; then the count starts again. Turning codes off, Change
     password and connecting an account share it."""
     attempt = _check_current_password(context, user, password, context.clock())
+    _second_proof(context, attempt, code)
+
+
+def _prove_code(context: AppContext, user: CurrentUser, code: str | None) -> None:
+    """``_prove`` when Google proved the first step (#603, WhatsApp's Connect): the code only, for
+    anyone with two-step sign-in on, counted like a sign-in. Nothing for anyone else."""
+    if user.totp_enabled:
+        _second_proof(context, _begin_signed_in(context, user, context.clock()), code)
+
+
+def _second_proof(context: AppContext, attempt: AttemptRow, code: str | None) -> None:
     if attempt.totp_enabled_at is not None:
         problem = _code_problem(context, attempt, code, signed_in=True)
         if problem is not None:
@@ -820,7 +846,13 @@ def _keep_this_browser(
     renewed = dataclasses.replace(claims, session_version=user.session_version)
     providers = oidc.enabled_providers(context.settings)
     response = JSONResponse(
-        me_json(user, email_on=email_on(context), providers=providers, access=_access(context, user))
+        me_json(
+            user,
+            email_on=email_on(context),
+            providers=providers,
+            access=_access(context, user),
+            whatsapp=context.settings.whatsapp_enabled,
+        )
     )
     set_session_cookie(response, renewed, context.settings, now=_unix(now))
     return response
@@ -839,7 +871,13 @@ def _start_session(
     user, claims = _open_session(context, customer_id, user_id, scope=scope, action=action, details=details)
     providers = oidc.enabled_providers(context.settings)
     response = JSONResponse(
-        me_json(user, email_on=email_on(context), providers=providers, access=_access(context, user))
+        me_json(
+            user,
+            email_on=email_on(context),
+            providers=providers,
+            access=_access(context, user),
+            whatsapp=context.settings.whatsapp_enabled,
+        )
     )
     set_session_cookie(response, claims, context.settings, now=_unix(context.clock()))
     return response

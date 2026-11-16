@@ -157,6 +157,8 @@ export type PDFViewerProps = {
   // right), and each change of them, so the screen can keep them.
   pageRotations?: ReadonlyMap<number, number>
   onPageRotationsChange?: (pageRotations: ReadonlyMap<number, number>) => void
+  // Changed for Kaagaz (#600): the turn menu waits while the turns are being saved.
+  turnMenuDisabled?: boolean
   pageClassName?: (pageNumber: number) => string | undefined
   renderPageOverlay?: (props: PDFViewerPageOverlayProps) => React.ReactNode
   onActivePageChange?: (pageNumber: number) => void
@@ -988,6 +990,7 @@ function PDFViewerToolbar({
   onDownload,
   onPageChange,
   onRotate,
+  turnMenuDisabled = false,
   onToggleSidebar,
   onZoomChange,
   zoomLevel,
@@ -1008,6 +1011,7 @@ function PDFViewerToolbar({
   onDownload?: () => void
   onPageChange: (pageNumber: number) => void
   onRotate: (change: PageTurnChange) => void
+  turnMenuDisabled?: boolean
   onToggleSidebar: () => void
   onUploadFile?: (file: File) => void
   onZoomChange: (zoomLevel: ZoomMode | number) => void
@@ -1100,7 +1104,7 @@ function PDFViewerToolbar({
           </ToolbarTooltip>
           {showRotateControls ? (
             <PDFViewerTurnMenu
-              controlsDisabled={controlsDisabled}
+              controlsDisabled={controlsDisabled || turnMenuDisabled}
               pickedPages={pickedPages}
               onRotate={onRotate}
             />
@@ -1804,6 +1808,7 @@ type PDFViewerInnerProps = {
   toolbarActions?: React.ReactNode
   pageRotations?: PDFViewerProps["pageRotations"]
   onPageRotationsChange?: PDFViewerProps["onPageRotationsChange"]
+  turnMenuDisabled?: PDFViewerProps["turnMenuDisabled"]
   pageClassName?: (pageNumber: number) => string | undefined
   renderPageOverlay?: (props: PDFViewerPageOverlayProps) => React.ReactNode
   onActivePageChange?: (pageNumber: number) => void
@@ -1829,6 +1834,7 @@ function PDFViewerInner({
   toolbarActions,
   pageRotations,
   onPageRotationsChange,
+  turnMenuDisabled,
   pageClassName,
   renderPageOverlay,
   onActivePageChange,
@@ -2038,7 +2044,7 @@ function PDFViewerInner({
   // of the picked pages; the person's turns are handed on to be kept.
   const rotatePages = React.useCallback(
     (change: PageTurnChange) => {
-      if (!pdfDocument || !registry || activePage < 1) return
+      if (!pdfDocument || !registry || activePage < 1) return false
       const documentState = registry.getStore().getState().core.documents[
         documentId
       ]
@@ -2083,7 +2089,7 @@ function PDFViewerInner({
             (previousDeltas.get(pageIndex) ?? 0) !==
             (nextDeltas.get(pageIndex) ?? 0)
         )
-      if (targetPageIndexes.length === 0) return
+      if (targetPageIndexes.length === 0) return true
       // Only the drawn pages are refreshed: the others are drawn afresh when they come near.
       let drawnPageIndexes: number[] = []
       try {
@@ -2126,6 +2132,7 @@ function PDFViewerInner({
         } | null
       )?.calculateWindowState?.(documentId)
       onPageRotationsChange?.(nextDeltas)
+      return true
     },
     [
       activePage,
@@ -2142,13 +2149,17 @@ function PDFViewerInner({
     ]
   )
   // Changed for Kaagaz (#600): turns handed in after the file opened are shown once each, as a
-  // menu choice is, so the reader keeps their place.
+  // menu choice is, so the reader keeps their place. Out of the effect (rotatePages uses
+  // flushSync), and marked shown only once rotatePages went through.
   const handedTurns = React.useRef(pageRotations)
   React.useEffect(() => {
-    if (!pdfDocument || !pageRotations || pageRotations === handedTurns.current) return
-    handedTurns.current = pageRotations
-    rotatePages({ set: pageRotations })
-  }, [pageRotations, pdfDocument, rotatePages])
+    if (!pageRotations || pageRotations === handedTurns.current) return
+    queueMicrotask(() => {
+      if (pageRotations !== handedTurns.current && rotatePages({ set: pageRotations })) {
+        handedTurns.current = pageRotations
+      }
+    })
+  }, [pageRotations, rotatePages])
   const handleUpload = React.useCallback(
     (file: File) => {
       onUploadFile(file)
@@ -2286,6 +2297,7 @@ function PDFViewerInner({
           onDownload={handleDownload}
           onPageChange={scrollToPage}
           onRotate={rotatePages}
+          turnMenuDisabled={turnMenuDisabled}
           onToggleSidebar={() => setSidebarOpen((open) => !open)}
           onUploadFile={handleUpload}
           onZoomChange={(zoomLevel) => zoom?.requestZoom(zoomLevel)}
@@ -2433,6 +2445,7 @@ export const PDFViewer = React.forwardRef<PDFViewerHandle, PDFViewerProps>(
       toolbarActions,
       pageRotations,
       onPageRotationsChange,
+      turnMenuDisabled,
       pageClassName,
       renderPageOverlay,
       onActivePageChange,
@@ -2564,6 +2577,7 @@ export const PDFViewer = React.forwardRef<PDFViewerHandle, PDFViewerProps>(
             toolbarActions={toolbarActions}
             pageRotations={pageRotations}
             onPageRotationsChange={onPageRotationsChange}
+            turnMenuDisabled={turnMenuDisabled}
             pageClassName={pageClassName}
             renderPageOverlay={renderPageOverlay}
             onActivePageChange={onActivePageChange}

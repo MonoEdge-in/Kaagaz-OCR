@@ -5,6 +5,7 @@ CLI and the migrations set none. A statement or lock wait cut short reaches the 
 BackendUnavailable, as a lost database does, never as a crash.
 """
 
+import logging
 from typing import Any
 from unittest import mock
 
@@ -48,6 +49,15 @@ def test_each_timeout_is_set_in_milliseconds_and_a_zero_one_is_left_out() -> Non
     assert _connect_args(
         statement_timeout_seconds=120, lock_timeout_seconds=0, idle_in_transaction_timeout_seconds=900
     ) == {"options": "-c statement_timeout=120000 -c idle_in_transaction_session_timeout=900000"}
+
+
+def test_647_a_connect_timeout_is_handed_to_the_driver_only_when_asked() -> None:
+    """#647 review: verify-models waits at most a few seconds for the database to answer."""
+    assert _connect_args(connect_timeout_seconds=3) == {"connect_timeout": 3}
+    assert _connect_args(connect_timeout_seconds=3, lock_timeout_seconds=5) == {
+        "options": "-c lock_timeout=5000",
+        "connect_timeout": 3,
+    }
 
 
 def test_the_settings_default_when_unset_so_an_older_env_still_starts() -> None:
@@ -134,3 +144,22 @@ def test_a_statement_cut_short_is_backend_unavailable() -> None:
             conn.execute(text("SELECT pg_sleep(3)"))
     finally:
         engine.dispose()
+
+
+@pytest.mark.db
+def test_the_error_behind_backend_unavailable_is_logged_by_class_and_sqlstate_only(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """#620: production's 503s logged only BackendUnavailable; now the class and SQLSTATE of the
+    database error behind it, never the statement or its values."""
+    engine = make_engine(database_url(), statement_timeout_seconds=1)
+    caplog.set_level(logging.WARNING, logger="kaagaz.db.sqlstate")
+    try:
+        with pytest.raises(BackendUnavailable), unavailable(), engine.connect() as conn:
+            conn.execute(text("SELECT pg_sleep(3), :secret"), {"secret": "ABCDE1234F"})
+    finally:
+        engine.dispose()
+    (record,) = [r for r in caplog.records if r.name == "kaagaz.db.sqlstate"]
+    fields = {key: getattr(record, key) for key in ("error_class", "driver_error", "sqlstate")}
+    assert fields == {"error_class": "OperationalError", "driver_error": "QueryCanceled", "sqlstate": "57014"}
+    assert "pg_sleep" not in caplog.text and "ABCDE1234F" not in caplog.text

@@ -340,6 +340,7 @@ Feature = Literal[
     "land_facts",  # PRD 6 (0052)
     "nlq_clarify",
     "nlq_learning",
+    "whatsapp",  # #603 (0097)
 ]
 # Sign-up makes a new organisation: one has no switch of its own for it (0039).
 OrgFeature = Literal[
@@ -354,6 +355,7 @@ OrgFeature = Literal[
     "land_facts",
     "nlq_clarify",
     "nlq_learning",
+    "whatsapp",
 ]
 
 
@@ -1644,6 +1646,8 @@ def _model(row: RowMapping, settings: Settings) -> dict[str, Any]:
         # #488: can it lead Ultra low cost, and the one reason it can't (null: it can).
         "ulc_ready": models.ulc_why(row) is None,
         "ulc_why": models.ulc_why(row),
+        # #647: the parameters its approved endpoints take (null: not read yet).
+        "parameters": None if row["parameters"] is None else list(row["parameters"]),
     }
 
 

@@ -7,6 +7,8 @@
 // Action, Document and Folder, in the activity words (components/activity/words.ts); filter
 // chips for person, folder (with its subfolders), file, action and date range, with Clear
 // all; "Show more" by the reply's cursor; and Export to Excel, the filtered rows as a file.
+// PRD 7 (#601): first the entries in which someone gave themselves access (the first page's
+// self_given), each row of that kind with its chip; and the About a person chip (subject_id).
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
@@ -17,7 +19,16 @@ import {
   auditParams,
 } from "@/components/activity/auditFilters";
 import type { AuditFilters } from "@/components/activity/auditFilters";
-import { ACTION_CHOICES, ACTIVITY_TEXT, activityTarget, activityWho, activityWords } from "@/components/activity/words";
+import {
+  ACTION_CHOICES,
+  ACTIVITY_TEXT,
+  SELF_GIVEN,
+  SELF_GIVEN_HEADING,
+  activityTarget,
+  activityWho,
+  activityWords,
+  selfGiven,
+} from "@/components/activity/words";
 import { buildTree, inTreeOrder, pathLabel } from "@/components/documents/folderTree";
 import library from "@/components/documents/Library.module.css";
 import table from "@/components/documents/Table.module.css";
@@ -33,11 +44,12 @@ import styles from "./Admin.module.css";
 
 const SKELETON_ROWS = [0, 1, 2, 3, 4];
 
-type Panel = "person" | "folder" | "file" | "action" | "date";
+type Panel = "person" | "about" | "folder" | "file" | "action" | "date";
 
 interface Loaded {
   key: string; // the filters it belongs to
   items: ActivityEntry[];
+  selfGiven: ActivityEntry[]; // the first page's, kept while more pages come
   next: string | null;
   total: number | null; // the older reply's total, paged by offset
 }
@@ -74,7 +86,13 @@ export function ActivityPanel() {
     listAudit({ ...params, limit: AUDIT_PAGE_SIZE }).then(
       (result) => {
         if (!cancelled) {
-          setPage({ key, items: result.items, next: result.next_cursor ?? null, total: result.total ?? null });
+          setPage({
+            key,
+            items: result.items,
+            selfGiven: result.self_given ?? [],
+            next: result.next_cursor ?? null,
+            total: result.total ?? null,
+          });
           setError(null);
         }
       },
@@ -153,6 +171,12 @@ export function ActivityPanel() {
       {shown && shown.items.length === 0 && (
         <ActivityEmpty filtered={auditFilterCount(filters) > 0} onClear={() => change(NO_AUDIT_FILTERS)} />
       )}
+      {shown && shown.selfGiven.length > 0 && (
+        <>
+          <SelfGivenBlock items={shown.selfGiven} />
+          <h3 className={styles.tilesHeading}>All activity</h3>
+        </>
+      )}
       {shown && shown.items.length > 0 && <ActivityTable items={shown.items} />}
       {shown && shown.items.length > 0 && (
         <nav className={styles.pager} aria-label="Activity pages">
@@ -187,13 +211,30 @@ export function ActivityEmpty({ filtered, onClear }: { filtered: boolean; onClea
   );
 }
 
+/** PRD 7 (#601): the entries in which someone gave themselves access, first, under their own
+ * heading; they show in the whole list below as well. Exported for the render test. */
+export function SelfGivenBlock({ items }: { items: readonly ActivityEntry[] }) {
+  return (
+    <div className="stack">
+      <h3 className={styles.tilesHeading}>{SELF_GIVEN_HEADING}</h3>
+      <ActivityTable items={items} caption={`${SELF_GIVEN_HEADING}, newest first`} />
+    </div>
+  );
+}
+
 /** The rows as a table (cards below 768 px). Exported for the render test. */
-export function ActivityTable({ items }: { items: readonly ActivityEntry[] }) {
+export function ActivityTable({
+  items,
+  caption = "Activity, newest first",
+}: {
+  items: readonly ActivityEntry[];
+  caption?: string;
+}) {
   const { columns } = ACTIVITY_TEXT;
   return (
     <div className={`${table.reflowWrap} ${styles.tableScroll}`}>
       <table className={`table ${table.reflow}`} role="table">
-        <caption className="visually-hidden">Activity, newest first</caption>
+        <caption className="visually-hidden">{caption}</caption>
         <thead role="rowgroup">
           <tr role="row">
             <th scope="col" role="columnheader">
@@ -227,6 +268,14 @@ export function ActivityTable({ items }: { items: readonly ActivityEntry[] }) {
               </td>
               <td role="cell" data-label={columns.action} className={styles.strong}>
                 <WrapName name={activityWords(entry)} />
+                {selfGiven(entry) && (
+                  <>
+                    {" "}
+                    <span className="status-chip" data-tone="neutral">
+                      {SELF_GIVEN}
+                    </span>
+                  </>
+                )}
               </td>
               <td role="cell" data-label={columns.document} className={styles.wrap}>
                 {activityTarget(entry)}
@@ -264,6 +313,7 @@ export function ActivityFilters({
   const tree = useMemo(() => buildTree(folders ?? []), [folders]);
   const names = {
     person: filters.actorId === null ? null : (people?.find((p) => p.id === filters.actorId)?.name ?? "…"),
+    about: filters.subjectId === null ? null : (people?.find((p) => p.id === filters.subjectId)?.name ?? "…"),
     folder: filters.folderId === null ? null : pathLabel(tree, filters.folderId) || "…",
   };
   const words = auditChipTexts(filters, names);
@@ -312,6 +362,7 @@ export function ActivityFilters({
     <div className={library.filters} onKeyDown={closeOnEscape}>
       <div ref={rowRef} className={library.filterRow} role="group" aria-label="Activity filters">
         {chip("person", words.person, filters.actorId !== null, { actorId: null })}
+        {chip("about", words.about, filters.subjectId !== null, { subjectId: null })}
         {chip("folder", words.folder, filters.folderId !== null, { folderId: null })}
         {chip("file", words.file, filters.document !== null, { document: null })}
         {chip("action", words.action, filters.actions.length > 0, { actions: [] })}
@@ -339,6 +390,18 @@ export function ActivityFilters({
             options={(people ?? []).map((person) => ({ id: person.id, label: person.name }))}
             value={filters.actorId}
             onPick={(actorId) => onChange({ ...filters, actorId })}
+          />
+        </div>
+      )}
+      {open === "about" && (
+        <div id={panelId} className={`motion-fade ${library.filterPanel}`}>
+          <Choices
+            legend={ACTIVITY_TEXT.about}
+            name={`${id}-about`}
+            any={ACTIVITY_TEXT.anyone}
+            options={(people ?? []).map((person) => ({ id: person.id, label: person.name }))}
+            value={filters.subjectId}
+            onPick={(subjectId) => onChange({ ...filters, subjectId })}
           />
         </div>
       )}

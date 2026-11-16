@@ -77,8 +77,7 @@ _STATE = text(
     "SELECT c.name, COALESCE(s.daily_page_limit, p.daily_page_limit) AS page_limit,"
     " COALESCE(t.pages, 0) AS pages_today, t.alerted_at IS NOT NULL AS alerted, c.ai_budget_usd AS budget,"
     " CASE WHEN c.ai_budget_usd IS NOT NULL THEN GREATEST("
-    "(SELECT COALESCE(sum(u.cost_usd), 0) FROM model_usage u WHERE u.customer_id = c.id"
-    " AND u.kind <> 'accuracy_check' AND u.created_at >= :month_at AND u.created_at < :next_month_at),"
+    "(SELECT s.spent FROM kaagaz_spent(:month_at, :next_month_at) s),"  # PRD 7 (#606): whole, 0091
     " (SELECT COALESCE(sum(r.cost_usd), 0) FROM reading_days r WHERE r.customer_id = c.id"
     " AND r.day >= :month AND r.day < :next_month)) END AS spent,"
     " d.reading_held AS held, d.reading_admitted AS admitted"

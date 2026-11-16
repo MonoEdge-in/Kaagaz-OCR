@@ -4,10 +4,10 @@
 names, reads ``visible_documents`` (joined, ``visibility.SEEN_DOCUMENT``, or the outer row a
 correlated fragment runs in). Anything else is on ALLOWED with one of the seven reasons and a note
 naming why it may (for a statement shared with the worker, the route that checks the document
-through the view first), or on PENDING_PR8: Ask and search, which PR 8 moves onto the view and
-empties. The scanner is ``tests/sql_access_scan.py``; SQL inside migrations (the owner-rights
-functions and the triggers) is reviewed with each migration and pinned by
-test_isolation_schema.py, not here.
+through the view first). Ask and search read only through the view (PR 8, #602): of theirs only
+Home's stamp, a hashed key, is listed. The scanner is ``tests/sql_access_scan.py``; SQL inside
+migrations (the owner-rights functions and the triggers) is reviewed with each migration and
+pinned by test_isolation_schema.py, not here.
 
 A text rule: a statement that joins the view for one table and reads another content table on its
 own still passes. Review, and PR 9's row level security, are the backstop."""
@@ -45,43 +45,20 @@ _WORDS = "word review and Ensemble routes: get_document (the view) first, in the
 _ENSEMBLE = "ensemble routes: get_document (the view) first"
 
 ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
-    # Changed on purpose (#601): the Access page's files given to a person, by their true names; the
-    # rows about a file given to several people; a department's kind change, refused while in use.
-    ("db/access.py", "_GIVEN_TO"): (ADMIN_NUMBERS, "GET /admin/users/{id}/access"),
-    # Changed on purpose (#605, PR 13): the locked files a place gives, and a person may open, by name.
-    ("db/lock_places.py", "_FILES"): (ADMIN_NUMBERS, "the give pop-up: its count of files"),
-    ("db/lock_places.py", "_LOCKED"): (ADMIN_NUMBERS, "the give pop-up: GET …/locked-files"),
-    ("db/lock_places.py", "_LOCKED_FOR"): (ADMIN_NUMBERS, "GET /admin/users/{id}/access"),
-    # PR 10b (#601): the place of a file already found; the files a wall decides for, in its preview.
-    ("db/access.py", "_DOCUMENT_PLACE"): (
-        EXISTENCE_ONLY,
-        "GET /documents/{id}/audience: the view (a Head) or kaagaz_admin_document (an Admin) first",
-    ),
-    ("db/access.py", "_DEPARTMENT_FILES"): (
-        ADMIN_NUMBERS,
-        "GET /admin/departments/{id}/department-only/preview",
-    ),
-    ("db/access.py", "_FOLDER_FILES"): (ADMIN_NUMBERS, "GET /folders/{id}/private/preview: an Admin's"),
-    ("db/audit.py", "_INSERT_ABOUT"): (WRITE_AFTER_CHECK, "a file given: its folder and family, by id"),
+    # Changed on purpose (#601): a department's kind change, refused while in use. (PR 9a, #606: the
+    # Access page's files given, a file's place, the audit rows' folder and family and the walls'
+    # preview counts read 0091's functions now: OWNER_FN below.)
     ("db/folders.py", "_IN_USE"): (
         WRITE_AFTER_CHECK,
         "PATCH /folders/{id}: _seen first, under the tree lock",
     ),
-    ("db/admin.py", "_DOCUMENTS_BY_STATUS"): (ADMIN_NUMBERS, "GET /admin/stats"),
-    ("db/admin.py", "_COUNTS"): (ADMIN_NUMBERS, "GET /admin/stats"),
-    ("db/admin.py", "_KEPT"): (ADMIN_NUMBERS, "GET /admin/stats"),
-    ("db/admin.py", "_MEMBERS"): (ADMIN_NUMBERS, "GET /admin/member-numbers"),
-    ("db/admin.py", "_FAILED"): (ADMIN_NUMBERS, "GET /admin/failed: names, never content"),
-    ("db/admin.py", "_FAILED_COUNT"): (ADMIN_NUMBERS, "GET /admin/failed"),
     ("db/answer_quality.py", "remove_learning"): (ADMIN_NUMBERS, "DELETE /admin/learned/{id}"),
-    ("db/audit.py", "_INSERT"): (WRITE_AFTER_CHECK, "the audit row's folder and family, by id"),
     # Changed on purpose (#601): GET /access/activity (route 22) reads it with no _SEEN, and
     # views.timeline's unseen_masked blanks a file Management can't see (test_isolation_access_reads).
     ("db/audit.py", "_ENTRIES"): (
         EXISTENCE_ONLY,
         "a feed entry's document name; _SEEN drops a hidden one, or timeline's unseen_masked blanks it",
     ),
-    ("db/audit.py", "_SEEN"): (EXISTENCE_ONLY, "whether the entry's document or folder still exists"),
     ("db/autofile.py", "_PRE_CHECK"): (SHARED_WITH_WORKER, f"auto-filing; {_UPLOAD}"),
     ("db/autofile.py", "_STATE"): (SHARED_WITH_WORKER, f"auto-filing; {_UPLOAD}"),
     ("db/autofile.py", "_BY_KEY"): (SHARED_WITH_WORKER, "auto-filing finds its folder"),
@@ -93,7 +70,6 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
         WRITE_AFTER_CHECK,
         "POST /documents/{id}/autofile/undo: _document_or_404 first",
     ),
-    ("db/autofile.py", "_DEPARTMENT_ABOVE"): (TREE_WALK, "POST /documents/{id}/autofile/undo"),
     ("db/autofile.py", "_INVOICE"): (SHARED_WITH_WORKER, "auto-filing reads the file's own invoice"),
     ("db/autofile.py", "_MOST_SEEN"): (SHARED_WITH_WORKER, "auto-filing reads the file's own invoice"),
     ("db/autofile.py", "_CHILD_NAMED"): (SHARED_WITH_WORKER, "auto-filing finds its folder"),
@@ -164,25 +140,14 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
         EXISTENCE_ONLY,
         "join, undo, separate, make current: the view first (_visible / _LIVE), then refused if locked",
     ),
-    # PRD 7 (#605): which documents an old answer cites are locked now, so they feed no prompt; ids only,
-    # of answers the person's own conversation holds (PR 8 reads document_states through the view).
-    ("db/chat.py", "locked_documents"): (EXISTENCE_ONLY, "the asker's own saved answers' document ids"),
     ("db/ensemble.py", "_STOP"): (WRITE_AFTER_CHECK, "POST .../ensemble/{run}/stop: get_document first"),
     ("db/ensemble.py", "_RUN"): (SHARED_WITH_WORKER, _ENSEMBLE),
     ("db/ensemble.py", "_ACTIVE_RUN"): (SHARED_WITH_WORKER, _ENSEMBLE),
-    ("db/ensemble.py", "_RUNS_THIS_HOUR"): (
-        SHARED_WITH_WORKER,
-        "the organisation's hourly count; no row shown",
-    ),
     ("db/ensemble.py", "_SCANNED"): (SHARED_WITH_WORKER, _ENSEMBLE),
     ("db/ensemble.py", "_LINES"): (SHARED_WITH_WORKER, _ENSEMBLE),
     ("db/folder_upload_items.py", "_COLUMNS"): (
         DUPLICATE_LOOKUP,
         "the uploader's items; views.seen_items blanks a hidden copy",
-    ),
-    ("db/folder_upload_items.py", "_ALREADY_IN"): (
-        DUPLICATE_LOOKUP,
-        "Add new files only; views.seen_items blanks a hidden copy",
     ),
     ("db/folder_upload_items.py", "_FINISH"): (WRITE_AFTER_CHECK, "the item's own stored copy"),
     ("db/folder_upload_items.py", "_PROGRESS"): (EXISTENCE_ONLY, "counts of the uploader's own stored files"),
@@ -212,18 +177,9 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
         " the viewer shows a path only when folders_seen holds all of it; a restore names a place only"
         " when visible_folders holds all of it (trashed_folders.as_seen)",
     ),
-    ("db/folders.py", "_DEPTH"): (TREE_WALK, "create and move: _seen first"),
     ("db/folders.py", "_DESCENDANTS"): (TREE_WALK, "a folder's subtree, after folders_seen on the folder"),
-    ("db/folders.py", "_MOVE_CHECK"): (TREE_WALK, "PATCH and DELETE /folders: _seen first"),
-    ("db/folders.py", "_DETACH_TRASHED"): (WRITE_AFTER_CHECK, "DELETE /folders/{id}: _seen first"),
     ("db/folders.py", "_PARENT"): (TREE_WALK, "PATCH and DELETE /folders: _seen first"),
     ("db/folders.py", "_SUMMARY"): (ADMIN_NUMBERS, "an Admin's delete dialog: true totals (PRD 7 section 5)"),
-    # #594: the refusal before a keep-delete's writes; it compares the stored values of the folder and
-    # of where its contents go, which a view would hide from an Admin (names, not contents).
-    ("db/folders.py", "_MOVE_DOCUMENTS"): (
-        WRITE_AFTER_CHECK,
-        "DELETE /folders/{id}?contents=keep, an Admin's",
-    ),
     ("db/folders.py", "_MOVE_FREE"): (WRITE_AFTER_CHECK, "DELETE /folders/{id}?contents=keep, an Admin's"),
     ("db/folders.py", "_LEFT"): (WRITE_AFTER_CHECK, "DELETE /folders/{id}?contents=keep, an Admin's"),
     ("db/folders.py", "_TRASH_TREE"): (WRITE_AFTER_CHECK, "DELETE /folders/{id}?contents=trash, an Admin's"),
@@ -273,7 +229,6 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
         WRITE_AFTER_CHECK,
         "PATCH /documents/{id}, tags, versions: the view first",
     ),
-    ("db/listing.py", "_USAGE_ROWS"): (ADMIN_NUMBERS, "GET /admin/usage.csv: numbers per user and model"),
     ("db/models.py", "_AREA"): (SHARED_WITH_WORKER, "the organisation's model use; no document named"),
     ("db/models.py", "_DOCUMENT"): (
         SHARED_WITH_WORKER,
@@ -288,23 +243,12 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
         SHARED_WITH_WORKER,
         "after lock_value (the view) or the word routes' check",
     ),
-    ("db/runs.py", "_PAGES_BY_ROUTE"): (ADMIN_NUMBERS, "GET /admin/stats"),
-    ("db/runs.py", "_READER_PAGES"): (ADMIN_NUMBERS, "GET /admin/stats"),
     ("db/runs.py", "_OPEN"): (SHARED_WITH_WORKER, "the pipeline's run"),
-    ("db/storage_limits.py", "_ROOM"): (SHARED_WITH_WORKER, "the organisation's bytes; no row shown"),
     ("db/tags.py", "_REMOVE_OTHERS"): (WRITE_AFTER_CHECK, "PUT /documents/{id}/tags: _document_or_404 first"),
     ("db/tags.py", "_ADD"): (WRITE_AFTER_CHECK, "PUT /documents/{id}/tags: _document_or_404 first"),
     # PRD 7 PR 10c (#601): the move rules, the move previews, a folder holding what is hidden, and
     # the place of an upload with no folder.
-    ("db/folders.py", "_SAME_PLACE"): (EXISTENCE_ONLY, "a move's rule: _seen or the view first, ids only"),
-    ("db/folders.py", "_PLACE_OF"): (EXISTENCE_ONLY, "a move's places: _seen or the view first, ids only"),
     ("db/folders.py", "_PRIVATE_AMONG"): (TREE_WALK, "the private folders a move carries, ids only"),
-    ("db/folders.py", "_HIDDEN_INSIDE"): (EXISTENCE_ONLY, "DELETE /folders/{id}: whether anything is hidden"),
-    ("db/access.py", "_DOCUMENT_HOLD"): (
-        EXISTENCE_ONLY,
-        "a file found through the view: its place, ids only",
-    ),
-    ("db/access.py", "_CLOSED"): (EXISTENCE_ONLY, "a move preview: whether a department is Department only"),
     ("db/documents.py", "_NO_FOLDER"): (
         SHARED_WITH_WORKER,
         "an upload with no folder: its uploader's departments",
@@ -314,10 +258,6 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
         "POST /documents/{id}/autofile/undo: _document_or_404 first",
     ),
     ("db/trash.py", "_LOCK_FAMILY"): (WRITE_AFTER_CHECK, "the family lock, after the view check (#595)"),
-    ("db/trash.py", "_TRASH_IN_FOLDERS"): (
-        WRITE_AFTER_CHECK,
-        "DELETE /folders/{id}?contents=trash, an Admin's",
-    ),
     ("db/trash.py", "_FAMILY_IN_TRASH"): (WRITE_AFTER_CHECK, "the family lock, after the view check (#595)"),
     # #594: where a restore writes the family when its folder is gone, read under the tree lock and
     # the family lock, after the route found the file through the view. The family's frozen values,
@@ -331,7 +271,8 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
         WRITE_AFTER_CHECK,
         "the row lock of a restore's write: the file (or the trashed folder, one()) through the view first",
     ),
-    ("db/trashed_folders.py", "_SUBTREE"): (TREE_WALK, "restore and delete forever: one() (the view) first"),
+    # Changed on purpose (PR 9b, #606): a restore walks the whole delete in 0092's kaagaz_restore_folder.
+    ("db/trashed_folders.py", "_SUBTREE"): (TREE_WALK, "delete forever: one() (the view) first"),
     ("db/trashed_folders.py", "_CHAIN"): (
         TREE_WALK,
         "contents() keeps only what visible_trashed_folders holds",
@@ -339,27 +280,17 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ("db/trashed_folders.py", "_CHILD_ITEMS"): (TREE_WALK, "the parent's own delete; items from the view"),
     ("db/trashed_folders.py", "_HELD"): (
         TREE_WALK,
-        "who uploaded every file, for the restore rule; counts from views",
+        "counts from views; who uploaded every file from 0092's kaagaz_trash_uploaders",
     ),
     ("db/trashed_folders.py", "_PATHS"): (
         TREE_WALK,
         "a path is shown only when visible_folders holds all of it",
     ),
-    ("db/trashed_folders.py", "_ANY_LIVE"): (EXISTENCE_ONLY, "restore: one() first"),
-    ("db/trashed_folders.py", "_TOP"): (WRITE_AFTER_CHECK, "restore and delete forever: one() first"),
-    ("db/trashed_folders.py", "_MAKE_LIVE"): (WRITE_AFTER_CHECK, "restore: one() or the file first"),
-    ("db/trashed_folders.py", "_RESTORE_IN"): (WRITE_AFTER_CHECK, "restore: one() first"),
-    ("db/trashed_folders.py", "_INTO_LIVE"): (WRITE_AFTER_CHECK, "restore: one() or the file first"),
+    ("db/trashed_folders.py", "_TOP"): (WRITE_AFTER_CHECK, "delete forever: one() first"),
     ("db/trashed_folders.py", "_FILED_IN"): (
         WRITE_AFTER_CHECK,
         "POST /documents/{id}/restore: _document_or_404 first",
     ),
-    ("db/trashed_folders.py", "_FAMILIES_IN"): (
-        WRITE_AFTER_CHECK,
-        "delete forever: one() and the hidden-inside rule first",
-    ),
-    ("db/trashed_folders.py", "_ANY_FILED"): (EXISTENCE_ONLY, "delete forever's last step"),
-    ("db/usage.py", "_REPORT"): (ADMIN_NUMBERS, "GET /admin/usage: names and spend"),
     ("db/value_keys.py", "_BY_ID"): (SHARED_WITH_WORKER, f"a value's keys; {_WORDS}"),
     ("db/value_keys.py", "_UPSERT"): (SHARED_WITH_WORKER, f"a value's keys; {_WORDS}"),
     ("db/versions.py", "_KEPT_APART_AGAIN"): (WRITE_AFTER_CHECK, "separate: the view first"),
@@ -410,54 +341,271 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ),
 }
 
-# Ask and search (PRD 7 phase 4): PR 8 moves each onto the view and removes it from here.
-PENDING_PR8: dict[tuple[str, str], str] = {
-    ("answering/clarify.py", "_CANDIDATES"): "Did you mean",
-    ("answering/clarify.py", "_NEAR"): "Did you mean: a district's places",
-    ("answering/clarify.py", "_ANY_KEYS"): "Did you mean: any land record",
-    ("answering/exhaustive.py", "_IN_SCOPE"): "every document holding a word",
-    ("answering/exhaustive.py", "_MENTIONS"): "Also mentions",
-    ("answering/exhaustive.py", "_PIECES"): "every document holding a word",
-    ("answering/fixed_queries.py", "_AVAILABLE_FIELDS"): "totals",
-    ("answering/fixed_queries.py", "_TOP_GROUP"): "totals",
-    ("answering/fixed_queries.py", "_FIGURES"): "totals",
-    ("answering/fixed_queries.py", "_EXTREME_VALUE"): "totals",
-    ("answering/fixed_queries.py", "_COUNT_DOCUMENTS"): "counts",
-    ("answering/fixed_queries.py", "_COUNT_INVOICES"): "counts",
-    ("answering/fixed_queries.py", "_VALUE_REFS"): "totals",
-    ("answering/hard_to_read.py", "_FLAGGED_PAGES"): "pages hard to read",
-    ("answering/hard_to_read.py", "_WORD_MARKS"): "pages hard to read",
-    ("answering/owners.py", "_RESOLVE"): "owners and land",
-    ("answering/owners.py", "_OWNED"): "owners and land",
-    ("answering/owners.py", "_KEYED"): "owners and land",
-    ("answering/owners.py", "_EVERY_RECORD"): "owners and land",
-    ("answering/owners.py", "_SHARES_AS_PRINTED"): "owners and land",
-    ("answering/ready.py", "_TYPES"): "Home's ready answers",
-    ("answering/ready.py", "_STAMP"): "Home's ready answers",
-    ("answering/ready.py", "_TAGGED"): "Home's ready answers",
-    ("answering/ready.py", "_WORDS"): "Home's ready answers",
-    ("answering/unchecked.py", "_CARD_DOCUMENTS"): "unchecked figures",
-    ("search/hybrid.py", "_WORD"): "keyword search",
-    ("search/hybrid.py", "_FUZZY"): "typo search",
-    ("search/hybrid.py", "_MEANING"): "meaning search",
-    ("search/hybrid.py", "_MEANING_EXACT"): "meaning search",
-    ("search/hybrid.py", "_DETAILS"): "search details",
-    ("search/hybrid.py", "_NEIGHBOURS"): "wider evidence",
-    ("search/hybrid.py", "_WHOLE_SIZE"): "whole documents",
-    ("search/hybrid.py", "_WHOLE"): "whole documents",
-    ("search/hybrid.py", "_TOPIC_PIECES"): "topics",
-    ("search/hybrid.py", "_SECTION_PIECES"): "sections",
-    ("search/hybrid.py", "_CARDS"): "cards",
-    ("search/story_search.py", "_STORIES"): "Search my stories",
-    ("db/chat.py", "messages_with_feedback"): "old conversations and their source picks",
-    ("db/chat.py", "document_states"): "old answers' sources",
-    ("db/chat.py", "live_document_names"): "chat memory",
-    ("db/chat.py", "pins_for"): "Most relevant picks fed to Ask",
-    ("db/chat.py", "MARKS"): "other people's Useful marks",
-    ("db/organization_words.py", "approved"): "word suggestions Ask uses",
+
+# PRD 7 PR 9a (#606): what each listed statement reads once the per-person database rule is on.
+# SAME: the same rows (a by-id read or write after the route's check through the view, class I).
+# FEWER_OK: fewer rows, and that is right (why, after the colon). FIXED: it would read fewer, and
+# PR 9a changed it. Every entry of ALLOWED has one; the reasons that read by id after the view are
+# SAME unless named. OWNER_FN: the statements 0091's owner-rights functions replaced; the scanner
+# must no longer find them.
+OWNER_FN: dict[tuple[str, str], str] = {
+    # PR 10b and 10c (#601) under the rule, after the merge.
+    ("db/access.py", "_DEPARTMENT_FILES"): "kaagaz_admin_files",
+    ("db/audit.py", "_INSERT"): "kaagaz_document_place",
+    ("db/audit.py", "_INSERT_ABOUT"): "kaagaz_document_place",
+    ("db/access.py", "_DOCUMENT_HOLD"): "kaagaz_document_place",
+    ("db/access.py", "_DOCUMENT_PLACE"): "kaagaz_document_place",
+    ("db/access.py", "_FOLDER_FILES"): "kaagaz_admin_files",
+    # The merge review: a file given to a person, out of a Department only department they can't
+    # see, or into a folder they can't see, is a move that changes access (read whole).
+    ("db/access.py", "_CLOSED"): "kaagaz_folder_place",
+    ("db/folders.py", "_PLACE_OF"): "kaagaz_folder_place",
+    ("db/folders.py", "_SAME_PLACE"): "kaagaz_folder_place",
+    ("db/folders.py", "_HIDDEN_INSIDE"): "F6 kaagaz_hidden_inside",
+    ("answering/ready.py", "_STAMP"): "F11 kaagaz_ready_stamp",
+    ("db/access.py", "_GIVEN_TO"): "F12 kaagaz_admin_given_to",
+    ("db/admin.py", "_COUNTS"): "F12 kaagaz_admin_stats",
+    ("db/admin.py", "_DOCUMENTS_BY_STATUS"): "F12 kaagaz_admin_stats",
+    ("db/admin.py", "_FAILED"): "F12 kaagaz_admin_failed",
+    ("db/admin.py", "_FAILED_COUNT"): "F12 kaagaz_admin_failed",
+    ("db/admin.py", "_KEPT"): "F12 kaagaz_admin_stats",
+    ("db/admin.py", "_MEMBERS"): "F12 kaagaz_admin_member_numbers",
+    ("db/audit.py", "_SEEN"): "F5 kaagaz_existing",
+    ("db/ensemble.py", "_RUNS_THIS_HOUR"): "F9 kaagaz_ensemble_runs_this_hour",
+    ("db/folder_upload_items.py", "_ALREADY_IN"): "F4 kaagaz_duplicate",
+    ("db/folders.py", "_DEPTH"): "kaagaz_folder_depth",
+    ("db/folders.py", "_MOVE_CHECK"): "kaagaz_folder_depth",
+    ("db/listing.py", "_USAGE_ROWS"): "F12 kaagaz_admin_usage_rows",
+    ("db/runs.py", "_PAGES_BY_ROUTE"): "F12 kaagaz_admin_reader_pages",
+    ("db/runs.py", "_READER_PAGES"): "F12 kaagaz_admin_reader_pages",
+    ("db/storage_limits.py", "_ROOM"): "F7 kaagaz_storage_used",
+    ("db/trashed_folders.py", "_ANY_FILED"): "F6 kaagaz_hidden_inside",
+    ("db/trashed_folders.py", "_ANY_LIVE"): "F5 kaagaz_existing",
+    ("db/usage.py", "_REPORT"): "F12 kaagaz_admin_usage",
+    # Changed on purpose (PR 9b, #606): the writes over rows the person can't see, 0092's.
+    ("db/folders.py", "_DETACH_TRASHED"): "kaagaz_detach_trashed",
+    ("db/folders.py", "_MOVE_DOCUMENTS"): "kaagaz_admin_move_folder_documents",
+    ("db/trash.py", "_TRASH_IN_FOLDERS"): "kaagaz_admin_trash_in_folders",
+    ("db/trashed_folders.py", "_FAMILIES_IN"): "kaagaz_trash_families",
+    ("db/trashed_folders.py", "_INTO_LIVE"): "kaagaz_restore_folder and kaagaz_restore_with_folders",
+    ("db/trashed_folders.py", "_MAKE_LIVE"): "kaagaz_restore_folder and kaagaz_restore_with_folders",
+    ("db/trashed_folders.py", "_RESTORE_IN"): "kaagaz_restore_folder",
 }
-# PR 8's files: Ask, search, and the chat and word statements that feed Ask.
-_PR8_FILES = ("answering/", "search/", "db/chat.py", "db/organization_words.py")
+_SAME_BY_REASON = frozenset({WRITE_AFTER_CHECK})
+# PR 9a (#606): the statements calling a kaagaz_admin_* function that a route for everyone reaches,
+# each behind that route's own Admin check (the function refuses anyone else with 42501 too).
+_ADMIN_FN_BEHIND_A_CHECK = {
+    ("db/access.py", "_ADMIN_DOCUMENT"): "the Access routes call admin_document only for an Admin (PR 10a)",
+    ("db/audit.py", "_ADMIN_NAMES"): "the activity feeds: only when _IS_ADMIN says the caller is one",
+    # Changed on purpose (PR 9b, #606): the writes an Admin makes on a file they may not see (0092).
+    (
+        "db/access.py",
+        "_ADMIN_TRASH",
+    ): "the names list's Send to Trash: _admin_document first (an Admin session)",
+    ("db/listing.py", "_ADMIN_MOVE"): (
+        "the names list's Move (_admin_document first, an Admin session) and PATCH /documents/{id},"
+        " only when the caller is an Admin (who could move it before; the rule refused the new row)"
+    ),
+}
+# PR 9a (#606): each statement the API reaches that asks "NOT EXISTS (... FROM <covered>", and why the
+# rule hiding a row there is right (a new one fails the test until it is reviewed here).
+_ALL_OR_NONE = "FEWER_OK:a family's versions are seen all or none (shares go to every live version)"
+NOT_EXISTS_CHECKED: dict[tuple[str, str], str] = {
+    ("answering/fixed_queries.py", "_COUNT_DOCUMENTS"): "SAME:the visible document's own invoice",
+    ("answering/fixed_queries.py", "_EXTREME_VALUE"): "SAME:the visible document's own invoice",
+    ("answering/fixed_queries.py", "_TOP_GROUP"): "SAME:the visible document's own invoice",
+    ("answering/hard_to_read.py", "_WORD_MARKS"): "SAME:the visible document's own word changes",
+    ("db/chat.py", "MARKS"): "SAME:the visible document's own learning removals",
+    ("db/documents.py", "REFUSED_ALONE"): _ALL_OR_NONE,
+    ("db/folder_uploads.py", "_INSERT_LEVEL"): "FEWER_OK:Q12, a hidden sibling's name meets its unique index",
+    ("db/folders.py", "_FREE"): "FEWER_OK:Q12, a hidden sibling's name meets its unique index",
+    ("db/folders.py", "_MOVE_FREE"): "FEWER_OK:Q12, a hidden sibling's name meets its unique index",
+    ("db/folders.py", "_PRUNE"): "FEWER_OK:a hidden child's key refuses the delete (prune_empty keeps it)",
+    ("db/versions.py", "_CANDIDATES"): _ALL_OR_NONE,
+    ("db/versions.py", "_HIGHEST_READY_CURRENT"): _ALL_OR_NONE,
+    ("db/versions.py", "_LINK_STATE"): _ALL_OR_NONE,
+    ("db/versions.py", "_NEWEST_CURRENT"): _ALL_OR_NONE,
+}
+# Q2 (#606): the access tables carry no person rule (they say who sees what, not what is in a file);
+# these API statements read them, the Access screens' (PR 10a), and a new one fails until reviewed.
+ACCESS_TABLES = frozenset({"document_shares", "lock_grants", "department_members", "private_folder_members"})
+ACCESS_READERS = {
+    ("db/access.py", "_DEPARTMENTS"), ("db/access.py", "_NAMED_ON"), ("db/access.py", "_PEOPLE_ON"),
+    ("db/access.py", "_HEADS_OF"), ("db/access.py", "_MEMBERS"), ("db/access.py", "_IS_MEMBER"),
+    ("db/access.py", "_LEAVE"), ("db/access.py", "_UNNAME"), ("db/access.py", "_SHARES"),
+    ("db/folders.py", "_IN_USE"),
+    # PR 10b (#601): the Departments tab and a department's members; 10c: an upload with no folder.
+    ("db/access.py", "_DEPARTMENT_LIST"), ("db/access.py", "_MEMBERS_OF"), ("db/documents.py", "_NO_FOLDER"),
+    # PR 12 (#605): an Admin's list of who may open a locked file, and Ask's fixed line (the person's
+    # own grants, on files the view shows them).
+    ("db/locks.py", "_GRANTS"), ("db/chat.py", "opens_locked"),
+}  # fmt: skip
+PR9: dict[tuple[str, str], str] = {
+    ("db/answer_quality.py", "remove_learning"): "FEWER_OK:Q14, the narrowed Admin lists",
+    ("db/audit.py", "_ENTRIES"): "FIXED:F13 names the Admin's log; the feeds drop a hidden one (_SEEN, F5)",
+    (
+        "db/documents.py",
+        "REFUSED_ALONE",
+    ): "FEWER_OK:a hidden refused copy is a hidden duplicate, not replaced",
+    (
+        "db/documents.py",
+        "_REFUSED_COPY",
+    ): "FEWER_OK:a hidden refused copy is a hidden duplicate, not replaced",
+    ("db/documents.py", "_SELECT"): "FIXED:F4 and _copy_already_in: a hidden copy names no row",
+    ("db/folder_upload_items.py", "_COLUMNS"): "FEWER_OK:views.seen_items blanks a hidden copy either way",
+    ("db/folder_upload_items.py", "_PROGRESS"): "SAME",
+    ("db/folders.py", "_DESCENDANTS"): "FEWER_OK:class H, the subtree the person sees (an Admin sees all)",
+    ("db/folders.py", "_FREE"): "FEWER_OK:Q12, a hidden sibling's name is a 409 from its unique index",
+    ("db/folders.py", "_PARENT"): "SAME",
+    ("db/folders.py", "_PATH"): "FIXED:a path not starting at the top is not shown",
+    (
+        "db/folders.py",
+        "_SUMMARY",
+    ): "FEWER_OK:a member's dialog; an Admin's is F12 kaagaz_admin_folder_summary",
+    ("db/listing.py", "_BATCH_SIZE"): "FEWER_OK:the uploader's own batch, never hidden from them",
+    ("db/listing.py", "_DASHBOARD_DEPARTMENTS"): "SAME",
+    ("db/listing.py", "_OUTSIDE_DEPARTMENTS"): "FEWER_OK:class H, departments from visible_folders",
+    ("db/organization_words.py", "submit"): "FIXED:F10 for the cap; the duplicate check is the viewer's own",
+    ("db/trash.py", "LIVE_FOLDERS"): "FIXED:trash.live_folders asks kaagaz_existing (F5)",
+    (
+        "db/trashed_folders.py",
+        "_CHAIN",
+    ): "FEWER_OK:contents() shows the visible tail; a restore walks the whole delete (0092)",
+    ("db/trashed_folders.py", "_CHILD_ITEMS"): "SAME",
+    ("db/trashed_folders.py", "_HELD"): "FIXED:F6 for what is hidden inside; 0092 for who uploaded",
+    ("db/trashed_folders.py", "_PATHS"): "FIXED:a path must reach the top",
+    ("db/trashed_folders.py", "_SUBTREE"): "FEWER_OK:an Admin sees every folder; a member's is refused (F6)",
+    # PR 10b and 10c (#601), after the merge.
+    ("db/documents.py", "_NO_FOLDER"): "SAME:the uploader's own departments, which they see",
+    (
+        "db/folders.py",
+        "_PRIVATE_AMONG",
+    ): "FEWER_OK:class H, the private folders of the subtree the person sees; an Admin sees every folder",
+    # Shared with the worker (no rule) or a fragment: each said, never assumed (PR 9a review).
+    (
+        "db/autofile.py",
+        "_BY_KEY",
+    ): "FEWER_OK:auto-filing runs as the worker; a folder hidden from a person is not reused (Q12)",
+    (
+        "db/autofile.py",
+        "_BY_NAME",
+    ): "FEWER_OK:auto-filing runs as the worker; a folder hidden from a person is not reused (Q12)",
+    (
+        "db/autofile.py",
+        "_CHILD",
+    ): "FEWER_OK:auto-filing runs as the worker; a folder hidden from a person is not reused (Q12)",
+    (
+        "db/autofile.py",
+        "_CHILD_NAMED",
+    ): "FEWER_OK:auto-filing runs as the worker; a folder hidden from a person is not reused (Q12)",
+    (
+        "db/autofile.py",
+        "_DEPARTMENTS",
+    ): "FEWER_OK:auto-filing runs as the worker; a person's run sees their departments",
+    ("db/autofile.py", "_INVOICE"): "SAME",
+    (
+        "db/autofile.py",
+        "_MOST_SEEN",
+    ): "FEWER_OK:auto-filing runs as the worker; a person's run learns from what they see",
+    ("db/autofile.py", "_PRE_CHECK"): "SAME",
+    (
+        "db/autofile.py",
+        "_SAME_NUMBER",
+    ): "FEWER_OK:auto-filing runs as the worker; a folder hidden from a person is not reused (Q12)",
+    ("db/autofile.py", "_STATE"): "SAME",
+    ("db/document_stories.py", "_GET"): "SAME",
+    (
+        "db/documents.py",
+        "PgDocuments",
+    ): "FIXED:F4 and _copy_already_in; no RETURNING or ON CONFLICT on a new version",
+    ("db/documents.py", "_ENSEMBLE_RUNNING"): "SAME",
+    ("db/documents.py", "_LOCKED_CLEAN"): "SAME:the worker's, with no person (PR 12)",
+    ("db/documents.py", "_STILL_OPEN"): "SAME:the worker's, with no person (PR 12)",
+    ("db/documents.py", "_PAGES_TO_READ_AGAIN"): "SAME",
+    ("db/documents.py", "_READY_STATE"): "SAME",
+    ("db/documents.py", "_READ_BEFORE"): "SAME",
+    ("db/documents.py", "_REGIONS_TO_READ_AGAIN"): "SAME",
+    ("db/ensemble.py", "_ACTIVE_RUN"): "SAME",
+    ("db/ensemble.py", "_LINES"): "SAME",
+    ("db/ensemble.py", "_RUN"): "SAME",
+    ("db/versions.py", "_LOCKED_FAMILY"): (
+        "FEWER_OK:a family is locked and granted on every version at once; one hidden is a 404 first"
+    ),
+    ("db/ensemble.py", "_SCANNED"): "SAME",
+    (
+        "db/folder_uploads.py",
+        "_DEPTHS",
+    ): "FEWER_OK:class H, depths of the folders the person sees; the limit is kaagaz_folder_depth's",
+    (
+        "db/folder_uploads.py",
+        "_FIND_LEVEL",
+    ): "FEWER_OK:Q12, a hidden folder of that name is not reused; its unique index refuses the name",
+    (
+        "db/folder_uploads.py",
+        "_INSERT_LEVEL",
+    ): "FEWER_OK:Q12, a hidden folder of that name is not reused; its unique index refuses the name",
+    (
+        "db/folder_uploads.py",
+        "_REUSE",
+    ): "FEWER_OK:Q12, a hidden folder of that name is not reused; its unique index refuses the name",
+    (
+        "db/folder_uploads.py",
+        "_SAME_NAME",
+    ): "FEWER_OK:Q12, a hidden folder of that name is not reused; its unique index refuses the name",
+    ("db/listing.py", "_CLEAR_COPY"): "SAME",
+    ("db/listing.py", "_FIRST_UNREADABLE"): "SAME",
+    ("db/listing.py", "_NEEDS_ATTENTION"): "SAME",
+    ("db/listing.py", "_PAGE"): "SAME",
+    ("db/listing.py", "_VALUES_FOUND"): "SAME",
+    ("db/listing.py", "_WITH_TAGS"): "SAME",
+    ("db/models.py", "_AREA"): "FEWER_OK:Q14, an estimate of model use from what the person sees",
+    ("db/models.py", "_DOCUMENT"): "SAME",
+    ("db/reading_days.py", "_STATE"): "FIXED:F8 for the month's spend; the asked document by id",
+    ("db/review.py", "add_correction"): "SAME",
+    ("db/runs.py", "_OPEN"): "SAME",
+    ("db/value_keys.py", "_BY_ID"): "SAME",
+    ("db/value_keys.py", "_UPSERT"): "SAME",
+    (
+        "db/versions.py",
+        "_CANDIDATES",
+    ): "FEWER_OK:p1, version spotting compares only with files the uploader sees",
+    ("db/versions.py", "_ME"): "SAME",
+    ("db/versions.py", "_MY_MINHASH"): "SAME",
+    ("db/versions.py", "_TEXT"): "SAME",
+    ("db/word_review.py", "_CHANGES"): "SAME",
+    ("db/word_review.py", "_DOCUMENT_STATE"): "SAME",
+    ("db/word_review.py", "_FLAG_SPANS"): "SAME",
+    ("db/word_review.py", "_FLAG_VALUES"): "SAME",
+    ("db/word_review.py", "_INSERT_CHANGE"): "SAME",
+    ("db/word_review.py", "_PAGE_PIECES"): "SAME",
+    ("db/word_review.py", "_PAGE_TO_KEEP"): "SAME",
+    ("db/word_review.py", "_PAGE_VALUES"): "SAME",
+    ("db/zip_unpacks.py", "_COUNTS"): "SAME",
+}
+# PR 9a (#606, plan 3.2): an organisation-wide count, sum or max with no document id, or a LEFT JOIN
+# of a covered table tested for NULL, reads fewer once the rule is on; each reviewed here.
+AGGREGATES_CHECKED: dict[tuple[str, str], str] = {
+    (
+        "db/autofile.py",
+        "_MOST_SEEN",
+    ): "FEWER_OK:auto-filing runs as the worker; a person's run learns from what they see",
+    ("db/folder_upload_items.py", "_PROGRESS"): "SAME:the uploader's own stored files",
+    ("db/listing.py", "_BATCH_SIZE"): "SAME:the uploader's own batch",
+    ("db/listing.py", "_COLUMNS"): "SAME:per row of visible_documents",
+    ("db/listing.py", "_DASHBOARD_DEPARTMENTS"): "FEWER_OK:the person's dashboard counts what they see",
+    ("db/listing.py", "_DASHBOARD_TILES"): "FEWER_OK:the person's dashboard counts what they see",
+    ("db/listing.py", "_FILE_COLUMNS"): "SAME:per row of visible_documents",
+    ("db/listing.py", "_PAGE"): "SAME:per row of visible_documents",
+    ("db/listing.py", "_VALUES_FOUND"): "SAME:per row of visible_documents",
+    ("db/listing.py", "_WITH_TAGS"): "SAME:per row of visible_documents",
+    ("db/models.py", "_AREA"): "FEWER_OK:Q14, an estimate of model use",
+    ("db/review.py", "_COUNT"): "FEWER_OK:the review queue the person may work",
+    (
+        "db/trashed_folders.py",
+        "_HELD",
+    ): "FIXED:F6 for what is hidden inside; counts shown are of what they see",
+    ("db/versions.py", "_VIEW"): "SAME:one family the person sees",
+}
 
 
 def _found() -> dict[tuple[str, str], scan.Owner]:
@@ -472,25 +620,60 @@ def _found() -> dict[tuple[str, str], scan.Owner]:
 class SqlAccessGuardTest(unittest.TestCase):
     def test_every_direct_read_the_api_reaches_is_listed(self) -> None:
         found = _found()
-        self.assertEqual(
-            set(found) - set(ALLOWED) - set(PENDING_PR8), set(), "read through the view, or list it"
-        )
-        self.assertEqual(set(ALLOWED) & set(PENDING_PR8), set())
+        self.assertEqual(set(found) - set(ALLOWED), set(), "read through the view, or list it")
 
     def test_no_listed_statement_is_stale(self) -> None:
         """Each entry still reads a table directly and is still reached from the API: one moved onto the
         view, renamed or no longer reached leaves the list."""
-        self.assertEqual((set(ALLOWED) | set(PENDING_PR8)) - set(_found()), set())
+        self.assertEqual(set(ALLOWED) - set(_found()), set())
+
+    def test_each_entry_has_a_verdict_for_the_database_rule(self) -> None:
+        """PR 9a (#606): SAME, FEWER_OK or FIXED with why, for every listed statement; an OWNER_FN one
+        is gone from the list and from what the scanner finds."""
+        for key, (reason, _note) in ALLOWED.items():
+            verdict = PR9.get(key, "SAME" if reason in _SAME_BY_REASON else "")
+            with self.subTest(statement=key):
+                self.assertRegex(verdict, r"^(SAME(:.+)?|FEWER_OK:.+|FIXED:.+)$")
+        self.assertEqual(set(PR9) - set(ALLOWED), set(), "a verdict for no listed statement")
+        self.assertEqual(set(OWNER_FN) & (set(ALLOWED) | set(_found())), set())
+
+    def test_each_organisation_wide_aggregate_on_a_covered_table_is_reviewed(self) -> None:
+        """PR 9a (#606, plan 3.2, classes B and C): a new one fails until it is reviewed here."""
+        self.assertEqual(scan.aggregate_readers(), set(AGGREGATES_CHECKED))
+        for verdict in AGGREGATES_CHECKED.values():
+            self.assertRegex(verdict, r"^(SAME|FEWER_OK|FIXED):.+$")
+
+    def test_each_not_exists_on_a_covered_table_is_reviewed(self) -> None:
+        """PR 9a (#606, classes B and C): "not in the table" reads as gone once the rule hides a row."""
+        self.assertEqual(set(scan.not_exists_readers()), set(NOT_EXISTS_CHECKED))
+
+    def test_the_api_reads_no_learned_correction_and_only_the_pinned_access_rows(self) -> None:
+        """Q1 (#606): learned_corrections carries no person rule, so no statement the API reaches reads
+        it (a screen that needs it goes through an owner-rights function). Q2: the access tables are
+        read only by the statements pinned in ACCESS_READERS."""
+        found = {
+            (o.file, o.name): o.reads
+            for o, by_api in scan.owners(ACCESS_TABLES | {"learned_corrections"})
+            if by_api
+        }
+        self.assertEqual({key for key, tables in found.items() if "learned_corrections" in tables}, set())
+        self.assertEqual(set(found), ACCESS_READERS)
 
     def test_each_entry_has_one_of_the_seven_reasons_and_a_note(self) -> None:
         for key, (reason, note) in ALLOWED.items():
             with self.subTest(statement=key):
                 self.assertIn(reason, REASONS)
                 self.assertTrue(note.strip())
-        for key, note in PENDING_PR8.items():
-            with self.subTest(statement=key):
-                self.assertTrue(note.strip())
-                self.assertTrue(key[0].startswith(_PR8_FILES), "only Ask and search wait for PR 8")
+
+    def test_ask_and_search_read_only_through_the_view(self) -> None:
+        """PR 8 (#602): no Ask or search statement is passed by a reason (Changed on purpose, #606:
+        Home's stamp is 0091's kaagaz_ready_stamp now); a search statement written on the table is
+        found; and none of hybrid's is."""
+        listed = {key for key in ALLOWED if key[0].startswith(("answering/", "search/"))}
+        self.assertEqual(listed, set())
+        ask = "SELECT p.id FROM pieces p JOIN documents d ON d.id = p.document_id WHERE p.customer_id = :c"
+        self.assertEqual(scan.reads(ask), {"pieces", "documents"})
+        self.assertEqual({key for key in _found() if key[0] == "search/hybrid.py"}, set())
 
     def test_admin_numbers_are_reached_only_from_admin_session_routes(self) -> None:
         """Decision 20 (#601): each ADMIN_NUMBERS statement is reached from a route, and only from
@@ -498,9 +681,13 @@ class SqlAccessGuardTest(unittest.TestCase):
         AdminSession or require_admin_session named in the route, never only in a helper)."""
         routes = scan.routes()
         self.assertFalse(routes[("api/routers/documents.py", "list_documents")][1])  # a plain route
-        for key, (reason, _) in ALLOWED.items():
-            if reason != ADMIN_NUMBERS:
-                continue
+        # PR 9a (#606): and each statement that calls a kaagaz_admin_* function (where 0091 moved the
+        # OWNER_FN ones), but the pinned few a plain route reaches behind its own Admin check.
+        calling = scan.calling("kaagaz_admin_")
+        self.assertEqual(set(_ADMIN_FN_BEHIND_A_CHECK) - calling, set())
+        admin_only = [key for key, (reason, _) in ALLOWED.items() if reason == ADMIN_NUMBERS]
+        admin_only += sorted(calling - set(_ADMIN_FN_BEHIND_A_CHECK))
+        for key in admin_only:
             reaching = {route: admin for route, (reached, admin) in routes.items() if key in reached}
             with self.subTest(statement=key):
                 self.assertTrue(reaching)

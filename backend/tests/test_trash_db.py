@@ -23,6 +23,7 @@ from kaagaz.db.trash import (
     trash_document,
 )
 from tests.db_support import insert_document, name_session, new_customer, wait_until_blocked
+from tests.test_migration_0037 import _load
 
 pytestmark = pytest.mark.db
 
@@ -112,7 +113,11 @@ def test_trash_statements_use_the_fragments() -> None:
     assert visibility.TRASHED in trash._RESTORE
     assert visibility.TRASHED in trash._PURGE_PICK
     assert visibility.TRASHED in trash._PURGE_LOCK
-    assert visibility.TRASHED in folders._DETACH_TRASHED
+    # Changed on purpose (PR 9b, #606): folders._DETACH_TRASHED's statement is 0092's kaagaz_detach_trashed.
+    assert "kaagaz_detach_trashed" in folders._DETACH_TRASHED
+    assert (
+        visibility.TRASHED in _load("0092_database_rule_writes.py").FUNCTIONS["kaagaz_detach_trashed(uuid[])"]
+    )
 
 
 # --- trash and restore ----------------------------------------------------------------

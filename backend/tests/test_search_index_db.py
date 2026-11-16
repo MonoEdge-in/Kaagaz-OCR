@@ -7,10 +7,12 @@ counter (the same every run). The truth is an exact scan of the same column.
 """
 
 import hashlib
+import json
 import math
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 from sqlalchemy import Connection, create_engine, text
@@ -46,6 +48,7 @@ class Clusters:
     big: str
     small: str
     questions: list[tuple[str, list[float]]]  # (customer, vector)
+    big_user: str = ""  # the big customer's Admin, to ask as a person (#602)
 
 
 def _numbers(seed: str, count: int) -> list[float]:
@@ -82,7 +85,7 @@ def clusters() -> Iterator[Clusters]:
             noise = _numbers(f"{SEED}:noise:{drawn}", DIM)
             return _unit([value + NOISE * extra for value, extra in zip(centre, noise, strict=True)])
 
-        big, _ = new_customer(database)
+        big, big_user = new_customer(database)
         small, _ = new_customer(database)
         for customer, count in ((big, BIG), (small, SMALL)):
             document = add_document(database, customer)
@@ -91,13 +94,15 @@ def clusters() -> Iterator[Clusters]:
         with database.engine.begin() as conn:
             conn.execute(text("ANALYZE pieces, documents"))
         questions = [(big if n < 20 else small, draw()) for n in range(QUESTIONS)]
-        yield Clusters(database, big, small, questions)
+        yield Clusters(database, big, small, questions, big_user)
     finally:
         database.engine.dispose()
         m0002._recreate(database_url(), name, create=False)
 
 
 def _search(conn: Connection, customer: str, vector: list[float], limit: int, query: str = "") -> list[str]:
+    """Changed on purpose (#602): ``exact_below=0``, so these tests keep walking the index, which a
+    scope this small would otherwise never do (PRD 7 section 7)."""
     hits = search(
         conn,
         customer_id=customer,
@@ -106,6 +111,7 @@ def _search(conn: Connection, customer: str, vector: list[float], limit: int, qu
         limit=limit,
         recipe=RECIPE,
         ef_search=EF_SEARCH,
+        exact_below=0,
     )
     return [hit.piece_id for hit in hits]
 
@@ -162,10 +168,11 @@ def test_a_short_index_walk_falls_back_to_the_exact_scan(clusters: Clusters) -> 
     assert customer == clusters.small
     exact = _exact(clusters.db, customer, vector, CANDIDATES)
     with clusters.db.customer(customer) as conn:
-        conn.execute(text("SELECT set_config('hnsw.max_scan_tuples', '130', true)"))
         conn.execute(text("SELECT set_config('enable_sort', 'off', true)"))
         found = _search(conn, customer, vector, CANDIDATES)
-        # The index walk alone, with the settings search() just set:
+        # The index walk alone, with the settings search() just set; changed on purpose (#602):
+        # search() sets max_scan_tuples itself now, so the walk is cut to 130 tuples after it.
+        conn.execute(text("SELECT set_config('hnsw.max_scan_tuples', '130', true)"))
         assert "pieces_embedding" in _plan(conn, hybrid._MEANING.text, customer, vector)
         params = {"c": customer, "vec": vector_literal(vector), "recipe": RECIPE, "n": CANDIDATES}
         short = conn.execute(hybrid._MEANING, params | EVERYTHING.params()).all()
@@ -179,7 +186,7 @@ def test_the_search_settings_end_with_their_transaction(db: Database) -> None:
     """One pooled connection, two transactions: the second sees the defaults again."""
     engine = create_engine(normalise_url(database_url()), pool_size=1, max_overflow=0)
     pooled = Database(engine, APP_ROLE)
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     add_pieces(db, customer, add_document(db, customer), [("Invoice total", axis(0))])
     settings = text(
         "SELECT pg_backend_pid(), current_setting('hnsw.ef_search'), current_setting('hnsw.iterative_scan'),"
@@ -187,10 +194,11 @@ def test_the_search_settings_end_with_their_transaction(db: Database) -> None:
         " current_setting('plan_cache_mode')"
     )
     try:
-        with pooled.customer(customer) as conn:
+        # Changed on purpose (#602): as a person; the API role with none sees nothing (PRD 7).
+        with pooled.user(customer, user) as conn:
             assert len(_search(conn, customer, axis(0), 10, "invoice")) == 1
             during = conn.execute(settings).one()
-        with pooled.customer(customer) as conn:
+        with pooled.user(customer, user) as conn:
             after = conn.execute(settings).one()
     finally:
         engine.dispose()
@@ -203,18 +211,20 @@ def test_the_search_settings_end_with_their_transaction(db: Database) -> None:
 def test_a_meaning_list_past_the_timeout_is_dropped_and_words_still_answer(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The meaning statement is swapped for one that sleeps past a short timeout."""
+    """The meaning statements are swapped for one that sleeps past a short timeout (changed on
+    purpose, #602: the exact scan too, which a small scope runs alone)."""
     customer, _ = new_customer(db)
     (piece,) = add_pieces(db, customer, add_document(db, customer), [("Invoice INV-3003", axis(0))])
     monkeypatch.setattr(hybrid, "STATEMENT_TIMEOUT_MS", 200)
-    monkeypatch.setattr(
-        hybrid,
-        "_MEANING",
-        text(
-            "SELECT p.id, 0.0 FROM pieces p CROSS JOIN pg_sleep(5)"
-            " WHERE p.customer_id = :c AND :recipe <> '' AND :n > 0 AND length(:vec) > 0"
-        ),
-    )
+    for statement in ("_MEANING", "_MEANING_EXACT"):
+        monkeypatch.setattr(
+            hybrid,
+            statement,
+            text(
+                "SELECT p.id, 0.0 FROM pieces p CROSS JOIN pg_sleep(5)"
+                " WHERE p.customer_id = :c AND :recipe <> '' AND :n > 0 AND length(:vec) > 0"
+            ),
+        )
 
     hits = run(db, customer, "INV-3003", axis(0))
 
@@ -223,26 +233,60 @@ def test_a_meaning_list_past_the_timeout_is_dropped_and_words_still_answer(
 
 
 @pytest.mark.parametrize("statement", ["_WORD", "_FUZZY"])
-def test_a_word_or_typo_list_past_the_timeout_fails_the_search_as_503(
+def test_a_word_or_typo_list_past_the_timeout_is_dropped_and_the_other_still_answers(
     db: Database, monkeypatch: pytest.MonkeyPatch, statement: str
 ) -> None:
-    """Only the meaning list falls back: a cancelled word or typo list raises, and the
-    API's OperationalError handler answers 503 backend_unavailable."""
+    """Changed on purpose (#619, production 15 Nov 2026): a cancelled word or typo list is dropped
+    like the meaning list, never a 503 for the whole question; the other list still answers. The
+    API's handler still answers 503 to an OperationalError that reaches it."""
     customer, _ = new_customer(db)
-    add_pieces(db, customer, add_document(db, customer), [("Invoice INV-3003", None)])
+    (piece,) = add_pieces(db, customer, add_document(db, customer), [("Invoice INV-3003", None)])
     monkeypatch.setattr(hybrid, "STATEMENT_TIMEOUT_MS", 200)
     monkeypatch.setattr(
         hybrid,
         statement,
         text(
+            # Changed on purpose (#617): the typo list binds no :k, only what _FUZZY reads.
             "SELECT p.id, 0.0 FROM pieces p CROSS JOIN pg_sleep(5)"
-            " WHERE p.customer_id = :c AND :q <> '' AND :k <> 'x' AND :n > 0"
+            " WHERE p.customer_id = :c AND :q <> '' AND :n > 0"
         ),
     )
 
-    with pytest.raises(OperationalError) as cancelled:
-        run(db, customer, "INV-3003")
+    assert [hit.piece_id for hit in run(db, customer, "INV-3003")] == [piece]
 
+    with pytest.raises(OperationalError) as cancelled, db.customer(customer) as conn:
+        conn.execute(text("SELECT set_config('statement_timeout', '200', true)"))
+        conn.execute(getattr(hybrid, statement), {"c": customer, "q": "x", "n": 1})
     assert getattr(cancelled.value.orig, "sqlstate", None) == "57014"
     response = _client_raising(cancelled.value).get("/api/boom")
     assert (response.status_code, response.json()["error"]["code"]) == (503, "backend_unavailable")
+
+
+def _nodes(node: dict[str, Any]) -> list[dict[str, Any]]:
+    return [node] + [each for child in node.get("Plans", []) for each in _nodes(child)]
+
+
+def test_the_walk_through_the_view_keeps_the_index_and_works_out_access_once(clusters: Clusters) -> None:
+    """PRD 7 PR 8 (#602): _MEANING as a person in the API role still walks pieces_embedding in
+    distance order, once, and the person's access (kaagaz_access) is one row; nothing walled, so the
+    given and lock sets are never read."""
+    customer, vector = clusters.questions[0]
+    params = {"c": customer, "vec": vector_literal(vector), "recipe": RECIPE, "n": CANDIDATES}
+    with Database(clusters.db.engine, APP_ROLE).user(customer, clusters.big_user) as conn:
+        conn.execute(hybrid._SET_INDEX_SCAN, {"ef": str(EF_SEARCH), "tuples": str(hybrid.MAX_SCAN_TUPLES)})
+        found = conn.execute(
+            text("EXPLAIN (ANALYZE, FORMAT JSON) " + hybrid._MEANING.text), params | EVERYTHING.params()
+        ).scalar_one()
+    nodes = _nodes((json.loads(found) if isinstance(found, str) else found)[0]["Plan"])
+    walks = [n for n in nodes if n.get("Index Name") == "pieces_embedding"]
+    assert walks and all("Order By" in n and n["Actual Loops"] == 1 for n in walks)
+    access = [n for n in nodes if n.get("Function Name") == "kaagaz_access"]
+    # One row; as the inner side of the walk's nested loop it is rescanned from its stored row (a
+    # Function Scan with no parameter keeps its result), never run again per tuple.
+    # Changed on purpose (PR 9a, #606): the rule's per-row check holds kaagaz_access too, and on
+    # day one it never runs.
+    assert access and all(n["Actual Rows"] == 1 for n in access if n["Actual Loops"])
+    given = [
+        n for n in nodes if n.get("Function Name") in ("kaagaz_shared_with_me", "kaagaz_lock_open_to_me")
+    ]
+    assert all(n["Actual Loops"] == 0 for n in given)

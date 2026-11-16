@@ -21,11 +21,14 @@ from sqlalchemy import text
 import kaagaz
 from kaagaz.db import audit, listing
 from kaagaz.db.engine import Database
+from kaagaz.search import hybrid
+from kaagaz.search.scope import EVERYTHING
 from tests.db_support import APP_ROLE, insert_folder
 from tests.test_api_delete_forever_grant import _confirm, _grant
 from tests.test_api_support import CSRF, PDF_BYTES, Api, Signed
 from tests.test_isolation_logins import WORKER
 from tests.test_operator_auth_db import _owner
+from tests.test_search_db import RECIPE, add_pieces, axis
 
 pytestmark = pytest.mark.db
 
@@ -312,9 +315,16 @@ def test_day_one_never_runs_the_given_or_lock_lookups(db: Database) -> None:
     page = text(
         listing._COLUMNS + listing._LIST + listing._FILTERS + " ORDER BY d.created_at DESC LIMIT 50"
     ).text
+    # PR 8 (#602): the meaning walk and the word list too.
+    add_pieces(db, c, document, [("Invoice ledger", axis(0))])
+    words = {"q": "ledger", "k": "ledger", "g": "", "sk": "", "n": 50}
+    words |= {"gc": "", "gk": "", "docs": None, "cap": hybrid.CANDIDATE_CAP}  # #617's candidates (0094)
+    vector = {"vec": hybrid.vector_literal(axis(0)), "recipe": RECIPE, "n": 50}
     for statement, params in (
         (listing._SELECT, {"c": c, "d": document}),
         (page, {"c": c, "status": None, "pattern": None}),
+        (hybrid._MEANING.text, {"c": c, **vector, **EVERYTHING.params()}),
+        (hybrid._WORD.text, {"c": c, **words, **EVERYTHING.params()}),
     ):
         nodes = _nodes(_plan(db, c, first, statement, params))
         given = [
@@ -329,23 +339,40 @@ def test_day_one_never_runs_the_given_or_lock_lookups(db: Database) -> None:
 
 
 # The SQL that names a view, by file and constant (or function, for SQL written inside one). Each is
-# reached from kaagaz/api only (#595, condition 1: no worker statement reads a view; the workers may
-# still run as kaagaz_app with no person on a server, and would see nothing). A new one belongs here
-# only once its callers are checked.
+# reached from kaagaz/api, or (#603) from the WhatsApp channel as the person (#595, condition 1: no
+# worker statement reads a view; the workers may still run as kaagaz_app with no person on a server,
+# and would see nothing). A new one belongs here only once its callers are checked.
 VIEW_READERS = {
     # Changed on purpose (#601): the access API's writes, and 10b's Departments tab and one-time card.
     # Changed on purpose (#601, PR 10c): in_department (_ME); a folder holding what the person can't see.
     "db/access.py": {
         "_DEPARTMENTS", "_DEPARTMENT_LIST", "_HOLDS_PRIVATE", "_KEEPS", "_ME", "_NAMED_ON", "_PLACE",
     },
+    # PR 8 (#602): Ask, reached from the API only (the SQL guard's worker test).
+    "answering/clarify.py": {"_ANY_KEYS", "_CANDIDATES", "_NEAR", "_PICKED_PAGE"},
+    "answering/exhaustive.py": {"_IN_SCOPE", "_PIECES"},
+    # Changed on purpose (#644): package K's focus profile and related documents, through the view.
+    "answering/focus.py": {"_MATCHES", "_PROFILE"},
+    "answering/fixed_queries.py": {
+        "_AVAILABLE_FIELDS", "_COUNT_DOCUMENTS", "_COUNT_INVOICES", "_EXTREME_VALUE", "_FIGURES",
+        "_TOP_GROUP", "_VALUE_REFS",
+    },
+    "answering/hard_to_read.py": {"_FLAGGED_PAGES", "_WORD_MARKS"},
+    "answering/ready.py": {"_TAGGED", "_TYPES", "_WORDS"},
+    "answering/owners.py": {"_EVERY_RECORD", "_KEYED", "_OWNED", "_RESOLVE", "_SHARES_AS_PRINTED"},
+    "answering/unchecked.py": {"_CARD_DOCUMENTS"},
     "db/audit.py": {"_FOLDER_PATHS", "_OF_FAMILY", "_SEEN"},
     # Changed on purpose (#605): who may open a locked file (Ask's fixed line), and a route's lock check.
-    "db/chat.py": {"_DOCUMENT_QUESTIONS", "add_pin", "opens_locked"},
+    "db/chat.py": {
+        "MARKS", "_DOCUMENT_QUESTIONS", "add_pin", "document_states", "live_document_names",
+        "messages_with_feedback", "pins_for", "opens_locked",
+    },
     "api/locked.py": {"_LOCKED"},
     "db/document_stories.py": {"_DELETE", "_PUT"},
     "db/ensemble.py": {"_COUNTS", "_LATEST", "_LATEST_READINGS", "_PENDING", "_READING"},
     "db/folder_upload_items.py": {"_PREVIOUS"},
-    "db/folders.py": {"_HIDDEN_INSIDE", "_LIST", "_SUMMARY_SEEN"},
+    # Changed on purpose (PR 9a, #606): _HIDDEN_INSIDE reads kaagaz_hidden_inside (0091) now.
+    "db/folders.py": {"_LIST", "_SUMMARY_SEEN"},
     "db/listing.py": {
         "_BATCH", "_CLEAR_COPY_MARKS", "_COLUMNS", "_DASHBOARD_DEPARTMENTS", "_DASHBOARD_RECENT",
         "_DASHBOARD_TILES", "_DASHBOARD_TYPES", "_DOCUMENTS_SEEN", "_FILE_COLUMNS", "_FOLDERS_SEEN",
@@ -355,7 +382,7 @@ VIEW_READERS = {
         "list_values", "reviewer_fix_count", "sheet_cells",
     },
     "db/locked_open.py": {"_DOCUMENT", "_PICTURE"},  # Changed on purpose (#605): a locked file's pictures
-    "db/organization_words.py": {"decide", "visible"},
+    "db/organization_words.py": {"approved", "decide", "visible"},
     "db/page_turns.py": {"_FOR_DOCUMENT"},  # Changed on purpose (#600): page turns saved for everyone
     "db/review.py": {"_COUNT", "_COUNT_FOR_DOCUMENT", "_ITEM", "_LOCK_VALUE", "_NEXT_CHUNK"},
     "db/tags.py": {"_FOR_DOCUMENTS"},
@@ -366,7 +393,18 @@ VIEW_READERS = {
     "db/version_groups.py": {"_DECIDE", "_MEMBERS", "_PAIRS"},  # Changed on purpose (#648): possible versions
     "db/versions.py": {"_ALLOWED", "_CANDIDATE", "_FOR_DOCUMENT", "_IN_BATCH", "_LIVE", "_VIEW"},
     "db/visibility.py": {"LIVE_SUGGESTION", "SEEN_DOCUMENT"},
+    # Changed on purpose (#603 W4): the WhatsApp channel, as the person, in the app's role; never a worker.
+    "db/whatsapp_chat.py": {"_ON_WHATSAPP"},
+    # Changed on purpose (#603 W5): the folder browser, as the person, in the app's role; never a worker.
+    "db/whatsapp_upload.py": {"_ABOUT", "_BATCH_NOTICES", "_LEVEL", "_LOCKED", "_NAMED"},
     "db/word_review.py": {"_PAGES", "_PIECES_BY_ID", "_VALUES_BY_ID", "_WORDS"},
+    # PR 8 (#602): Ask and search, reached from the API only (the SQL guard's worker test).
+    "search/hybrid.py": {
+        "_CARDS", "_DETAILS", "_FUZZY", "_IDENTIFIED", "_MEANING", "_MEANING_EXACT", "_NEIGHBOURS",
+        "_SCOPE_DOCUMENTS", "_SECTION_PIECES", "_SOUND", "_TOPIC_PIECES", "_VISIBLE_VECTORS", "_WHOLE",
+        "_WHOLE_SIZE", "_WORD",
+    },
+    "search/story_search.py": {"_STORIES"},
 }  # fmt: skip
 
 
@@ -521,7 +559,6 @@ _ROUTES: list[tuple[str, str, Any]] = [
     ("DELETE", "/api/documents/{d}/my-story?user_id={u}", None),
     # Changed on purpose (#600): page turns saved for everyone.
     ("PATCH", "/api/documents/{d}/page-turns", {"changes": [{"page_no": 1, "turn": 90}], "user_id": "{u}"}),
-    ("DELETE", "/api/documents/{d}/page-turns?user_id={u}", None),
     ("DELETE", "/api/documents/{d}", None),
 ]
 _KEY = "0" * 64
@@ -689,6 +726,8 @@ def test_a_closed_department_in_trash_stays_closed(db: Database) -> None:
     """Finance (Department only) goes to Trash with its files: the plain reviewer still can't see
     its files, its member still can, and every person still sees exactly the written rule."""
     org = _walled(Api(db))
+    # Changed on purpose (PR 9b, #606): an Admin who can't see Finance's files deletes it with them, with the
+    # rule on (0092's owner-rights functions).
     reply = org.people["admin"].client.delete(
         f"/api/folders/{org.folders['finance']}?contents=trash", headers=CSRF
     )
@@ -794,7 +833,11 @@ def test_deleting_a_hidden_file_forever_is_not_found_and_deletes_nothing(db: Dat
 
 def test_no_module_outside_the_api_calls_a_function_that_reads_a_view() -> None:
     """Condition 1 on #595, kept by a scan: the functions of VIEW_READERS' modules that use one of
-    its statements (or call one that does) are called only from kaagaz/api and search/scope.py."""
+    its statements (or call one that does) are called only from kaagaz/api, search/scope.py and
+    answering/expansion.py (PgWords, Ask's and search's word source, #602: reached from the API only,
+    as the SQL guard's worker test proves). Changed on purpose (#603 W4): and channel/chat.py, the
+    WhatsApp channel, as the person, in the app's role; never a worker (tests/test_whatsapp_guard.py);
+    and (W5) channel/upload.py, its uploads and folder browser, the same way."""
     root = Path(kaagaz.__file__).parent
     readers: dict[str, set[str]] = {}
     for file, names in VIEW_READERS.items():
@@ -812,7 +855,12 @@ def test_no_module_outside_the_api_calls_a_function_that_reads_a_view() -> None:
     calls = []
     for path in sorted(root.rglob("*.py")):
         where = path.relative_to(root).as_posix()
-        if where.startswith("api/") or where == "search/scope.py":
+        if where.startswith("api/") or where in (
+            "search/scope.py",
+            "answering/expansion.py",
+            "channel/chat.py",
+            "channel/upload.py",
+        ):
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         aliases = {

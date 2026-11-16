@@ -69,6 +69,11 @@ NOT_CASCADING = {
         (table, "users")
         for table in ("department_members", "private_folder_members", "document_shares", "lock_grants")
     ],
+    # Changed on purpose (0097, #603): WhatsApp's rows point at their person with NO ACTION too.
+    *[
+        (table, "users")
+        for table in ("whatsapp_links", "whatsapp_link_codes", "whatsapp_messages", "whatsapp_pickers")
+    ],
 }
 NO_ACTION_TO_USERS = {table for table, _ in NOT_CASCADING}
 # Keys whose rows are gone before the finish runs: they cascade from documents, and the
@@ -81,7 +86,7 @@ GONE_FIRST = {
     ("page_rotations", "users"),  # 0088, #600: cascades from its document, NO ACTION to who saved it
     # 0089, #594: cascades from its document, NO ACTION to whom it was held for
     ("version_suggestions", "users"),
-    # Changed on purpose (0098, #648): cascades from its document, NO ACTION to who decided
+    # Changed on purpose (0099, #648): cascades from its document, NO ACTION to who decided
     ("version_group_members", "users"),
 }
 
@@ -216,6 +221,17 @@ def _organisation(api: Api, storage: KeyStorage, label: str) -> tuple[str, str, 
             "INSERT INTO reading_days (customer_id, day, pages, cost_usd, alerted_at)"
             " VALUES (:c, current_date, 10, 0.5, now())",
             "UPDATE documents SET reading_held = 'daily_limit' WHERE customer_id = :c AND id = :held",
+            # 0097 (#603): a row in each WhatsApp table, the message one that saved the first document.
+            "INSERT INTO whatsapp_org_settings (customer_id, enabled) VALUES (:c, true)",
+            "INSERT INTO whatsapp_links (customer_id, user_id, phone_hash, phone_sealed, phone_last4,"
+            " session_version) VALUES (:c, :u, sha256(CAST(:s AS bytea)), 'v1:x', '1234', 1)",
+            "INSERT INTO whatsapp_link_codes (customer_id, user_id, phone_hash, phone_sealed, code_hash,"
+            " expires_at) VALUES (:c, :u, sha256(CAST(:s AS bytea)), 'v1:x', sha256('code'),"
+            " now() + interval '1 hour')",
+            "INSERT INTO whatsapp_messages (customer_id, link_id, user_id, wamid, kind, sent_at, document_id)"
+            " SELECT :c, id, :u, 'wamid.purge', 'document', now(), :d FROM whatsapp_links"
+            " WHERE customer_id = :c",
+            "INSERT INTO whatsapp_pickers (customer_id, user_id, expires_at) VALUES (:c, :u, now())",
         ):
             conn.execute(
                 text(statement),

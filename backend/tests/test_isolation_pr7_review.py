@@ -32,6 +32,8 @@ _DATA = b"%PDF-1.7\n" + b"7" * 300
 
 
 def _trash(org: Org, folder: str) -> None:
+    # Changed on purpose (PR 9b, #606): an Admin deletes a folder with files they can't see, with the rule on
+    # (0092's owner-rights functions).
     reply = org.people["admin"].client.delete(f"/api/folders/{folder}?contents=trash", headers=CSRF)
     assert reply.status_code == 200, reply.text
 
@@ -75,6 +77,8 @@ def test_restoring_a_folder_under_a_hidden_one_names_neither_nor_counts_the_hidd
     _trash(org, payroll)
     items = named.client.get("/api/documents/trash/folders").json()["items"]
     assert [(i["id"], i["can_restore"]) for i in items] == [(inner, True)], items
+    # Changed on purpose (PR 9b, #606): with the rule on, the restore still brings back Payroll, hidden from
+    # them (0092 reads the whole delete).
     back = named.client.post(f"/api/documents/trash/folders/{inner}/restore", headers=CSRF)
     assert back.status_code == 200, back.text
     body = back.json()
@@ -100,12 +104,14 @@ def test_a_restore_that_brings_back_a_hidden_department_says_only_ask_an_admin(d
         org.c, name="plan.pdf", folder_id=org.folders["finance"], uploaded_by=head.user_id
     )
     _trash(org, org.folders["finance"])
+    # Changed on purpose (PR 9a, #606): with the rule on, Finance's trashed row is hidden from them, and the
+    # Admin-only refusal still holds (kaagaz_trash_top reads the whole delete).
     items = named.client.get("/api/documents/trash/folders").json()["items"]
-    assert [(i["id"], i["can_restore"]) for i in items] == [(salaries, False)], items
     back = named.client.post(f"/api/documents/trash/folders/{salaries}/restore", headers=CSRF)
-    assert (back.status_code, back.json()["error"]) == (403, {"code": "forbidden", "message": ASK_AN_ADMIN})
     sal = org.files["sal"]
     one = named.client.post(f"/api/documents/{sal}/restore", headers=CSRF)
+    assert [(i["id"], i["can_restore"]) for i in items] == [(salaries, False)], items
+    assert (back.status_code, back.json()["error"]) == (403, {"code": "forbidden", "message": ASK_AN_ADMIN})
     assert (one.status_code, one.json()["error"]["message"]) == (403, ASK_AN_ADMIN)
     for reply in (back, one):
         assert "Finance" not in reply.text and "department" not in reply.text

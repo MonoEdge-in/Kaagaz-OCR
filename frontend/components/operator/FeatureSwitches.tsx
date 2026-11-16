@@ -49,6 +49,7 @@ export const FEATURE_NAMES: Record<string, string> = {
   land_facts: "Land records", // PRD 6
   nlq_clarify: "Clarifying questions",
   nlq_learning: "Learning from Useful",
+  whatsapp: "WhatsApp", // #603
 };
 
 /** What each feature does for people, in one plain sentence (plain words, 25 Oct 2026). */
@@ -65,6 +66,7 @@ export const FEATURE_HELP: Record<string, string> = {
   land_facts: "Lets Ask answer questions about land records, such as who owns a survey number.",
   nlq_clarify: "When a question is unclear, Ask first asks which person or place was meant, with choices.",
   nlq_learning: "Documents in answers marked Useful come up first for similar questions later.",
+  whatsapp: "Lets people connect their WhatsApp number once the organisation's admin turns it on.",
 };
 
 export const featureName = (feature: string) => FEATURE_NAMES[feature] ?? feature;

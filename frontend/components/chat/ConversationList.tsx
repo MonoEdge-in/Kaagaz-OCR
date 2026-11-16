@@ -5,6 +5,7 @@
 // sits in the side pane on wide screens and in the drawer below 1024 px.
 // UI audit A1 (16 Oct 2026): a search over the titles, and each conversation's
 // menu: Rename (in place; Enter saves, Esc cancels) and Delete (asked first).
+// #603: one asked on WhatsApp says "From WhatsApp".
 
 import { useCallback, useId, useRef, useState } from "react";
 import type { FormEvent } from "react";
@@ -14,7 +15,7 @@ import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import type { ConversationSummary } from "@/lib/types";
 import { useMinuteNow } from "./hooks";
-import { conversationTime, filterConversations, groupConversations } from "./logic";
+import { conversationOrigin, conversationTime, filterConversations, groupConversations } from "./logic";
 import styles from "./Chat.module.css";
 
 const TITLE_MAX = 200;
@@ -187,6 +188,9 @@ export function ConversationList({
                       <span className={styles.itemTitle} title={item.title}>
                         {item.title}
                       </span>
+                      {conversationOrigin(item) && (
+                        <span className={styles.itemOrigin}>{conversationOrigin(item)}</span>
+                      )}
                       <time className={styles.itemTime} dateTime={item.created_at}>
                         {conversationTime(item.created_at, group.key)}
                       </time>

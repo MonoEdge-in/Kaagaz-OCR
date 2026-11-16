@@ -43,7 +43,7 @@ _FLAGGED_PAGES = text(
     """
     SELECT d.id::text AS document_id, d.display_name, p.page_no, p.read_quality, count(*) OVER () AS total
     FROM pages p
-    JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id
+    JOIN visible_documents d ON d.customer_id = p.customer_id AND d.id = p.document_id
     WHERE p.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
       AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
       AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -69,11 +69,14 @@ _FLAGGED_PAGES = text(
 # citation of it is always hard to read. O(s + p) in the cited documents' spans and pages.
 # Word review (0030): a mark a person confirmed or edited, still in force, is no longer hard
 # to read (matched on its page, spot and text as read, the parts of its word key).
+# PRD 7 (#602): only of the cited documents the person can see, in both arms.
 _WORD_MARKS = text(
     """
     SELECT r.document_id::text AS document_id, mark -> 'region' AS region
     FROM reader_outputs r CROSS JOIN LATERAL jsonb_array_elements(r.output) AS mark
     WHERE r.customer_id = :customer_id AND r.document_id = ANY(CAST(:documents AS uuid[]))
+      AND r.document_id IN (SELECT s.id FROM visible_documents s WHERE s.customer_id = :customer_id
+        AND s.id = ANY(CAST(:documents AS uuid[])))
       AND r.role = 'first' AND mark ->> 'origin' = 'ocr' AND mark ->> 'kind' IS NULL
       AND mark ->> 'quality' IN ('unsure', 'illegible')
       AND NOT EXISTS (SELECT 1 FROM word_changes w WHERE w.customer_id = r.customer_id
@@ -85,6 +88,8 @@ _WORD_MARKS = text(
            jsonb_build_object('kind', 'box', 'page', p.page_no, 'box', jsonb_build_array(0, 0, 1, 1))
     FROM pages p
     WHERE p.customer_id = :customer_id AND p.document_id = ANY(CAST(:documents AS uuid[]))
+      AND p.document_id IN (SELECT s.id FROM visible_documents s WHERE s.customer_id = :customer_id
+        AND s.id = ANY(CAST(:documents AS uuid[])))
       AND (p.read_quality = 'unreadable'
         OR p.read_issues && CAST(ARRAY['read_locally', 'reader_refused'] AS text[]))
     """

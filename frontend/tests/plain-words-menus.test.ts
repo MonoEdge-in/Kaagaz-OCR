@@ -11,6 +11,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { RowMenu } from "@/components/admin/RowMenu";
 import { USER_MENU_HELP } from "@/components/admin/UsersPanel";
+import { MYSELF_HELP } from "@/components/access/words";
 import { ACTION_HELP } from "@/components/documents/library";
 import { orgConfirm } from "@/components/operator/confirms";
 import { MENU_HELP } from "@/components/operator/OrganisationsView";
@@ -61,6 +62,13 @@ describe("the super admin's organisation menu", () => {
   });
 });
 
+describe("an Admin's names list menu (PRD 7, #604)", () => {
+  it("says what Give myself access does in one plain line", () => {
+    plainLine(MYSELF_HELP);
+    expect(MYSELF_HELP).toBe("Asks for your password, tells Management, then lets you open this file.");
+  });
+});
+
 describe("the admin's user menu", () => {
   const panel = read("components/admin/UsersPanel.tsx");
   const items = panel.slice(panel.indexOf("const items: RowMenuItem[]"), panel.indexOf("return (", panel.indexOf("const items: RowMenuItem[]")));
@@ -68,7 +76,9 @@ describe("the admin's user menu", () => {
   it("gives every item a plain line saying what it does", () => {
     for (const text of Object.values(USER_MENU_HELP)) plainLine(text);
     const labels = items.match(/\blabel: "/g)?.length ?? 0;
-    expect(labels).toBe(8); // Changed on purpose (#457 phase 1): Remove connected accounts
+    // Changed on purpose (#457 phase 1): Remove connected accounts; (#603): Disconnect WhatsApp;
+    // (PRD 7, #604): Access, Make Management, Stop Management.
+    expect(labels).toBe(12);
     expect(items.match(/\bdescription: USER_MENU_HELP\.\w+/g)).toHaveLength(labels);
     // Reset password makes a one-time password the admin gives them (POST .../reset-password).
     expect(USER_MENU_HELP.password).toMatch(/one-time password for you to give them/);

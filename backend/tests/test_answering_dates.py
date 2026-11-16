@@ -89,3 +89,21 @@ def test_describe_range() -> None:
     assert describe_range(date(2025, 12, 1), date(2026, 1, 1)) == "in December 2025"
     assert describe_range(date(2026, 1, 1), date(2027, 1, 1)) == "in 2026"
     assert describe_range(date(2026, 8, 29), date(2026, 9, 28)) == "from 29 Aug 2026 to 27 Sep 2026"
+
+
+# #623 (production, 15 Nov 2026): "Can you find me the measurement of this ...?" showed its documents
+# "Dated February": "this" alone is no date, only before a period.
+@pytest.mark.parametrize(
+    ("question", "dated"),
+    [
+        ("Can you find me the measurement of this if it is seen in any other document?", False),
+        ("Who signed this?", False),
+        ("What was the profit this month?", True),
+        ("Sales this year", True),
+        ("Expenses this week", True),
+        ("Revenue this quarter", True),
+    ],
+)
+def test_this_is_a_date_word_only_before_a_period(question: str, dated: bool) -> None:
+    assert mentions_date(normalise(question)) is dated
+    assert ("this" in normalise(question).keywords) is False  # never a topic either

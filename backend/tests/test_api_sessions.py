@@ -26,6 +26,7 @@ from tests.test_api_support import (
     NOW,
     OIDC_ROUTES,
     PASSWORD,
+    WHATSAPP_ROUTES,
     Api,
     TestClient,
     call,
@@ -261,7 +262,8 @@ def test_must_change_blocks_every_route_except_password_logout_and_me(db: Databa
     }
     # Changed on purpose (#457): the email routes are 404 while email is off (tests/test_api_email.py),
     # and the provider sign-in's while no provider is on (tests/test_api_oidc_signin.py).
-    switched_off = EMAIL_ROUTES + OIDC_ROUTES
+    # Changed on purpose (#603): Meta's WhatsApp webhook, 404 while WhatsApp is off.
+    switched_off = EMAIL_ROUTES + OIDC_ROUTES + WHATSAPP_ROUTES
     calls = [call for call in route_calls(api.app) if call not in switched_off]
     assert open_to_all | allowed <= set(calls) and set(switched_off) <= set(route_calls(api.app))
 

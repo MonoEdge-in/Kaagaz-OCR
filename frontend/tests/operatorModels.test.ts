@@ -83,6 +83,7 @@ const model = (overrides: Partial<OperatorModel> = {}): OperatorModel => ({
   vendor_allowed: true,
   ulc_ready: false,
   ulc_why: "It can't read with minimal thinking.",
+  parameters: ["max_tokens", "reasoning", "response_format", "structured_outputs"], // Changed on purpose (#647)
   ...overrides,
 });
 
@@ -245,6 +246,26 @@ describe("the Models table", () => {
     expect(html).not.toContain('aria-label="Enable Unverified"');
     expect(html).toContain("Does not pass the catalogue&#x27;s rules now.");
     expect(html.match(/its maker is not on the allowed list/g)).toHaveLength(1); // S1: only a/b
+  });
+
+  it("shows each model's supported parameters, or that they are not read yet (#647)", () => {
+    const html = renderToStaticMarkup(
+      createElement(ModelsTable, {
+        models: [model(), model({ id: "a/b", name: "New", parameters: null })],
+        onChange: () => undefined,
+      }),
+    );
+    expect(html).toContain("Parameters: max_tokens, reasoning, response_format, structured_outputs");
+    expect(html).toContain("Parameters: not read yet");
+  });
+
+  it("says not read yet when an older API sends no parameters field (#647 review)", () => {
+    const older: Partial<OperatorModel> = { ...model() };
+    delete older.parameters;
+    const html = renderToStaticMarkup(
+      createElement(ModelsTable, { models: [older as OperatorModel], onChange: () => undefined }),
+    );
+    expect(html).toContain("Parameters: not read yet");
   });
 });
 

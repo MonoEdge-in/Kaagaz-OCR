@@ -166,6 +166,17 @@ export function AccountMenu({ me, onChanged }: { me: Me; onChanged(): void }) {
             <span>Ways to sign in</span>
           </Link>
         )}
+        {/* #603: Account, WhatsApp, while the server has WhatsApp on. */}
+        {me.whatsapp === true && (
+          <Link
+            href="/settings/whatsapp"
+            className={`btn btn-quiet btn-block ${styles.signOut}`}
+            onClick={() => document.getElementById(MENU_ID)?.hidePopover()}
+          >
+            <KIcon name="link" />
+            <span>WhatsApp</span>
+          </Link>
+        )}
         <button
           type="button"
           className={`btn btn-quiet btn-block ${styles.signOut}`}

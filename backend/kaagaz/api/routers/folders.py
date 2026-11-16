@@ -246,8 +246,9 @@ def get_folder_summary(folder_id: uuid.UUID, user: User, context: Context) -> di
         # already refuses an admin without one); it is kept for the SQL guard's scanner.
         require_admin_session(user)
     with _refused(), context.db.user(user.customer_id, user.user_id) as conn:
+        admin = user.role == "admin"
         held = folders_sql.folder_summary(
-            conn, user.customer_id, str(folder_id), seen_only=user.role != "admin"
+            conn, user.customer_id, str(folder_id), seen_only=not admin, admin=admin
         )
     return {"files": held.files, "folders": held.folders, "bytes": held.bytes}
 
@@ -390,9 +391,7 @@ def restore_trashed_folder(folder_id: uuid.UUID, user: User, context: Context) -
         if not uploaded_every_version(found.uploaders, user):
             raise ApiError(403, "forbidden")
         try:
-            restored = trashed_sql.restore_folder(
-                conn, user.customer_id, target, admin=user.role == "admin", by=user.user_id
-            )
+            restored = trashed_sql.restore_folder(conn, user.customer_id, target, admin=user.role == "admin")
         except trashed_sql.DepartmentAdminOnly as refused:
             raise ApiError(403, "forbidden", department_only_admin(conn, user, refused)) from None
         except folders_sql.FolderNameTaken:

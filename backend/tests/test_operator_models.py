@@ -90,6 +90,8 @@ CATALOGUE_ROW = {
     "answer_cost_unknown_calls": 3,
     "price_request_usd": Decimal("0"),  # #488: its price a request and an image
     "price_image_usd": Decimal("0"),
+    # #647: the parameters its approved endpoints take (0095).
+    "parameters": ["max_tokens", "reasoning", "response_format", "structured_outputs", "temperature"],
 }
 # Changed on purpose (#463, 31 Oct 2026): the rows, bodies and env carry the scan cost settings.
 # kaagaz_op_org_ai's row: the organisation's own scan models, the rest from the defaults.
@@ -376,6 +378,8 @@ def test_the_catalogue_says_verified_for_the_current_prompts_only(
         # #488: can it lead Ultra low cost, and why not.
         "ulc_ready": False,
         "ulc_why": "It can't read with minimal thinking.",
+        # Changed on purpose (#647): the parameters its approved endpoints take.
+        "parameters": ["max_tokens", "reasoning", "response_format", "structured_outputs", "temperature"],
     }
     stale = {
         **CATALOGUE_ROW,
@@ -383,10 +387,12 @@ def test_the_catalogue_says_verified_for_the_current_prompts_only(
         "verified_prompt_version": "g0",
         "expires_on": date(2027, 1, 31),
         "chat_verified_prompt": "0" * 64,
+        "parameters": None,
     }
     monkeypatch.setattr(models_sql, "list_models", lambda conn, oid: [stale])
     [model] = offline.client.get("/api/operator/models", headers=offline.headers).json()["items"]
     assert (model["verified"], model["chat_verified"], model["expires_on"]) == (False, False, "2027-01-31")
+    assert model["parameters"] is None  # #647: not read yet
     assert model["vendor_allowed"] is False  # example is not in OPENROUTER_MODEL_VENDORS
 
 

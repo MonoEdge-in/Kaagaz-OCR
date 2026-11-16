@@ -29,10 +29,11 @@
 #     reservations: with 3 workers they add up to 18.5 GiB (api 3, workers 3 x 3,
 #     clamav 4, frontend 1, seaweedfs 1, elasticmq 0.5), plus postgres (1 GB of
 #     shared_buffers) and caddy. That is above 15 GiB on purpose, since they never
-#     all peak at once; each extra worker adds 3. A container over its limit is
+#     all peak at once; each extra worker adds 3, and the whatsapp channel (#603, only
+#     with --profile whatsapp) 1. A container over its limit is
 #     killed and restarted (restart: unless-stopped); a worker's job then goes back
 #     to the queue.
-#   - api, the workers, frontend and migrate drop every Linux capability and can't
+#   - api, the workers, frontend, migrate and whatsapp drop every Linux capability and can't
 #     gain one through a setuid file (A19): they run as a user on ports above 1024
 #     and need none (LibreOffice, RapidOCR and pi-heif included). clamav, postgres
 #     and caddy start as root and are left as they are.
@@ -184,6 +185,17 @@ services:
     logging: *logging
     mem_limit: 1g
     memswap_limit: 1g
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+  # Kaagaz on WhatsApp (#603): never started unless the deploy names --profile whatsapp, and it
+  # stops at once unless .env sets WHATSAPP_ENABLED=true. Not while the test server shares
+  # production's database (#577). PROVISIONAL limit (Vrushit's budget).
+  whatsapp:
+    logging: *logging # restart: unless-stopped is already in docker-compose.yml
+    mem_limit: 1g
+    memswap_limit: 1g
+    cpus: "1.0" # so it never starves api and postgres (as the workers', A20)
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
 
