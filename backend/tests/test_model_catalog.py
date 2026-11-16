@@ -50,6 +50,41 @@ def listed(request: Recorded) -> Reply:
     return error_reply(404)
 
 
+# #647: gemini-3.5-flash-lite's endpoints as OpenRouter listed them on 16 Nov 2026: temperature on
+# Google AI Studio's only, on none of Vertex's. The other names are the fixture's (not read live).
+FLASH_LITE = "google/gemini-3.5-flash-lite"
+LISTED = ("max_tokens", "reasoning", "response_format", "structured_outputs")
+VERTEX_TAGS = (
+    "google-vertex/global",
+    "google-vertex/eu",
+    "google-vertex/us",
+    "google-vertex/global/flex",
+    "google-vertex/global/priority",
+)
+STUDIO_TAGS = ("google-ai-studio", "google-ai-studio/flex", "google-ai-studio/priority")
+
+
+def flash_lite(vertex: tuple[str, ...] = LISTED, studio: tuple[str, ...] = (*LISTED, "temperature")) -> Any:
+    """``listed`` with flash-lite too: its Vertex endpoints listing ``vertex``, its AI Studio ones
+    ``studio``, every one zero-data-retention with status 0."""
+    endpoints = [{"tag": tag, "status": 0, "supported_parameters": list(vertex)} for tag in VERTEX_TAGS] + [
+        {"tag": tag, "status": 0, "supported_parameters": list(studio)} for tag in STUDIO_TAGS
+    ]
+
+    def responder(request: Recorded) -> Reply:
+        if request.action == "models":
+            item = {**GOOD, "id": FLASH_LITE, "name": "Google: Gemini 3.5 Flash Lite"}
+            return Reply(200, {"data": [*FIXTURE["models"]["data"], item]})
+        if request.action == "zdr":
+            mine = [{"model_id": FLASH_LITE, "tag": endpoint["tag"]} for endpoint in endpoints]
+            return Reply(200, {"data": [*FIXTURE["zdr"]["data"], *mine]})
+        if request.action == "endpoints" and request.path.endswith(f"/{FLASH_LITE}/endpoints"):
+            return Reply(200, {"data": {"id": FLASH_LITE, "endpoints": endpoints}})
+        return listed(request)
+
+    return responder
+
+
 @pytest.fixture
 def fake(monkeypatch: pytest.MonkeyPatch) -> Iterator[OpenRouterFake]:
     monkeypatch.setattr(catalog, "ENDPOINTS_PAUSE_SECONDS", 0.0)  # the pause itself: its own test
@@ -92,6 +127,52 @@ def test_each_filter_rule_drops_a_model_and_only_an_approved_zdr_provider_counts
     fake.assert_key_in_header_only(KEY)
     asked = sorted(r.path for r in fake.requests if r.action == "endpoints")
     assert asked == sorted(f"{API_PATH}/models/{model}/endpoints" for model in models)
+
+
+def test_647_the_refresh_keeps_the_parameters_of_the_approved_endpoints_together(
+    fake: OpenRouterFake,
+) -> None:
+    """The union over the endpoints of OPENROUTER_PROVIDERS (what ``provider.only`` routes to):
+    Vertex's five lack temperature, so the set does, though AI Studio lists it."""
+    fake.responder = flash_lite()
+    client, settings = _client(fake)
+    models = {model.id: model for model in fetch(client, settings, today=TODAY).models}
+    assert models[FLASH_LITE].parameters == LISTED
+    assert (models[FLASH_LITE].eligible, models[FLASH_LITE].chat_eligible) == (True, True)
+    assert models[PRO].parameters == LISTED  # the fixture's google-vertex/global
+    # Read, with no approved endpoint: an empty set, not an unknown one.
+    assert models["example/not-zdr-1"].parameters == models[LUNA].parameters == ()
+
+    studio = frozenset({"google-vertex", "google-ai-studio"})
+    client, settings = _client(fake, openrouter_providers=studio)
+    models = {model.id: model for model in fetch(client, settings, today=TODAY).models}
+    assert models[FLASH_LITE].parameters == tuple(sorted((*LISTED, "temperature")))
+
+
+def test_647_a_model_whose_approved_endpoints_lack_structured_outputs_still_cannot_answer(
+    fake: OpenRouterFake,
+) -> None:
+    """Only AI Studio has the strict reply format: not usable through Vertex, so not chat eligible."""
+    fake.responder = flash_lite(vertex=("max_tokens", "reasoning", "response_format", "temperature"))
+    client, settings = _client(fake)
+    lite = next(model for model in fetch(client, settings, today=TODAY).models if model.id == FLASH_LITE)
+    assert (lite.eligible, lite.chat_eligible, lite.providers) == (False, False, ("google-ai-studio",))
+    assert lite.parameters is not None and "structured_outputs" not in lite.parameters
+
+
+@pytest.mark.parametrize(
+    "names",
+    [["Temperature"], ["top p"], [""], ["temperature,top_p"], [f"p{n}" for n in range(61)]],
+    ids=["upper", "space", "empty", "comma", "65"],
+)
+def test_647_parameters_of_the_wrong_shape_or_too_many_are_kept_as_not_known(
+    fake: OpenRouterFake, names: list[str]
+) -> None:
+    """Untrusted names are never stored: the set is None (NULL, sent as before), the model kept."""
+    fake.responder = flash_lite(vertex=(*LISTED, *names))
+    client, settings = _client(fake)
+    lite = next(model for model in fetch(client, settings, today=TODAY).models if model.id == FLASH_LITE)
+    assert (lite.parameters, lite.eligible) == (None, True)
 
 
 def test_azure_counts_once_it_is_in_openrouter_providers(fake: OpenRouterFake) -> None:
@@ -408,6 +489,7 @@ def test_one_bad_entry_is_left_out_before_the_save_never_aborting_it() -> None:
         CatalogModel("google/ok", "", 1.0, 1.0, (), (), None, False),
         CatalogModel("google/ok", "Dear", 1e7, 1.0, (), (), None, False),
         CatalogModel("google/ok", "Bad slug", 1.0, 1.0, ("Azure",), (), None, False),
+        CatalogModel("google/ok", "Bad parameter", 1.0, 1.0, (), (), None, False, parameters=("Top P",)),
     ]
     saved = _Saved()
     catalog.save(cast(Database, saved), [good, *bad])

@@ -101,4 +101,10 @@ def test_the_trashed_folder_parent_grant_0082_follows_0081_and_is_the_one_head()
     """A13 (stability pass, 7 Nov 2026)."""
     scripts = _scripts()
     assert scripts.get_revision("0082").down_revision == "0081"
-    assert scripts.get_heads() == ["0082"]
+
+
+def test_the_model_parameters_0083_follow_0082_and_are_the_one_head() -> None:
+    """#647 (16 Nov 2026). Changed on purpose: 0082 was the head; 0083's number is provisional."""
+    scripts = _scripts()
+    assert scripts.get_revision("0083").down_revision == "0082"
+    assert scripts.get_heads() == ["0083"]

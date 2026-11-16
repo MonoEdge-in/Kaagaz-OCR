@@ -27,6 +27,12 @@ A model is **chat eligible** (features 25-27, C11), may draft answers, by rules 
 5 and 7 and, for 2 and 6, text in and text out only and CHAT_EFFORT among its efforts (or
 no efforts at all).
 
+Each saved model keeps ``parameters`` (#647, 0083): the union of the ``supported_parameters``
+of its rule 5 endpoints (ZDR, status 0) whose base slug is in OPENROUTER_PROVIDERS, the ones
+``provider.only`` may route to, sorted; None (NULL, not known, sent as before) when one has
+the wrong shape (``PARAMETER``) or there are more than MAX_PARAMETERS. The client sends an
+optional parameter only where it is listed (``openrouter.takes_temperature``).
+
 A ``verify-models --record`` pass is kept apart (``verified_*`` for scans,
 ``chat_verified_*`` for answers, written by the owner): the operator can enable only an
 eligible, verified model (0023, 0026).
@@ -66,7 +72,7 @@ from typing import Any, Protocol
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from kaagaz.ai.openrouter import Probe
+from kaagaz.ai.openrouter import Probe, takes_temperature
 from kaagaz.db import models
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -99,6 +105,13 @@ STRUCTURED = "structured_outputs"
 NEEDED_PARAMETERS = frozenset({"response_format", STRUCTURED})
 # 0023's CHECK on model_catalog.efforts.
 EFFORT = re.compile(r"[a-z]{1,16}")
+# #647, 0083's CHECK on model_catalog.parameters.
+PARAMETER = re.compile(r"[a-z][a-z0-9_]{0,63}")
+MAX_PARAMETERS = 64
+# #647: what the client sends every call besides the ones above, required with require_parameters
+# (reasoning only to a model with thinking levels), and the output cap under either name.
+REASONING = "reasoning"
+OUTPUT_CAPS = ("max_completion_tokens", "max_tokens")
 # The level every chat_json call may think at (openrouter.CHAT_THINKING_LEVEL): an answer
 # model must take it (features 25-27, C11).
 CHAT_EFFORT = "low"
@@ -134,6 +147,7 @@ class CatalogModel:
     # #488 review (R3): pricing.request and pricing.image, dollars a call; None: not known.
     price_request_usd: float | None = None
     price_image_usd: float | None = None
+    parameters: tuple[str, ...] | None = None  # #647: None, not known
 
 
 @dataclass(frozen=True, slots=True)
@@ -329,6 +343,19 @@ def zdr_slugs(
     return found
 
 
+def _parameters(
+    endpoints: Iterable[tuple[str, frozenset[str]]], providers: frozenset[str]
+) -> tuple[str, ...] | None:
+    """#647: the supported parameters of the ``endpoints`` of ``providers`` together, sorted; None
+    when one has the wrong shape or there are more than MAX_PARAMETERS."""
+    names = sorted({name for slug, listed in endpoints if slug in providers for name in listed})
+    return tuple(names) if _valid_parameters(names) else None
+
+
+def _valid_parameters(names: Sequence[str]) -> bool:
+    return len(names) <= MAX_PARAMETERS and all(PARAMETER.fullmatch(name) for name in names)
+
+
 def _get(client: Prober, path: str) -> dict[str, Any]:
     probe = client.probe(path, None, timeout=GET_TIMEOUT_SECONDS)
     if probe.status != 200 or probe.reply is None:
@@ -384,6 +411,7 @@ def fetch(
                 model.chat_eligible and allowed,
                 model.price_request_usd,
                 model.price_image_usd,
+                _parameters(endpoints, settings.openrouter_providers),
             )
         )
     return Fetched(models, tuple(skipped))
@@ -391,14 +419,15 @@ def fetch(
 
 _UPSERT = text(
     "INSERT INTO model_catalog (id, name, price_in_usd_per_m, price_out_usd_per_m, providers, efforts,"
-    " expires_on, eligible, chat_eligible, price_request_usd, price_image_usd, seen_at)"
+    " expires_on, eligible, chat_eligible, price_request_usd, price_image_usd, parameters, seen_at)"
     " VALUES (:id, :name, :price_in, :price_out, CAST(:providers AS text[]), CAST(:efforts AS text[]),"
-    " :expires_on, :eligible, :chat_eligible, :price_request, :price_image, now())"
+    " :expires_on, :eligible, :chat_eligible, :price_request, :price_image, CAST(:parameters AS text[]),"
+    " now())"
     " ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, price_in_usd_per_m = EXCLUDED.price_in_usd_per_m,"
     " price_out_usd_per_m = EXCLUDED.price_out_usd_per_m, price_request_usd = EXCLUDED.price_request_usd,"
     " price_image_usd = EXCLUDED.price_image_usd, providers = EXCLUDED.providers,"
     " efforts = EXCLUDED.efforts, expires_on = EXCLUDED.expires_on, eligible = EXCLUDED.eligible,"
-    " chat_eligible = EXCLUDED.chat_eligible, seen_at = EXCLUDED.seen_at"
+    " chat_eligible = EXCLUDED.chat_eligible, parameters = EXCLUDED.parameters, seen_at = EXCLUDED.seen_at"
 )
 _NOT_LISTED = text(
     "UPDATE model_catalog SET eligible = false, chat_eligible = false"
@@ -426,6 +455,7 @@ def save(db: Database, models: Sequence[CatalogModel], *, untouched: Sequence[st
             "chat_eligible": model.chat_eligible,
             "price_request": model.price_request_usd,
             "price_image": model.price_image_usd,
+            "parameters": None if model.parameters is None else list(model.parameters),
         }
         for model in models
     ]
@@ -437,7 +467,8 @@ def save(db: Database, models: Sequence[CatalogModel], *, untouched: Sequence[st
 
 def valid(model: CatalogModel) -> bool:
     """``model`` fits 0023's model_catalog CHECKs: its id, name, prices, providers and efforts
-    (0070's prices a call: not known, or at least 0, as ``_price_per_call`` makes them)."""
+    (0070's prices a call: not known, or at least 0, as ``_price_per_call`` makes them; 0083's
+    parameters: not known, or of PARAMETER's shape)."""
     return (
         valid_model_id(model.id)
         and 1 <= len(model.name) <= MAX_NAME
@@ -450,6 +481,7 @@ def valid(model: CatalogModel) -> bool:
             price is None or (math.isfinite(price) and price >= 0)
             for price in (model.price_request_usd, model.price_image_usd)
         )
+        and (model.parameters is None or _valid_parameters(model.parameters))
     )
 
 
@@ -473,7 +505,7 @@ def refresh(
 _CATALOGUE_HELD = text("SELECT EXISTS (SELECT 1 FROM model_catalog)")
 _ENV_MODELS = text(
     "SELECT id, eligible, chat_eligible, price_in_usd_per_m, price_out_usd_per_m, price_request_usd,"
-    " price_image_usd, efforts FROM model_catalog WHERE id = ANY(:ids)"
+    " price_image_usd, efforts, parameters FROM model_catalog WHERE id = ANY(:ids)"
 )
 
 
@@ -487,7 +519,11 @@ def check_env_models(db: Database, settings: Settings) -> list[tuple[str, str, s
     first refresh (no catalogue row at all) nothing is checked, logged once at info, never an
     ERROR from every replica at start; while OCR_ULTRA_LOW_COST is on, OCR_MODEL (its lead unless a
     priced Gemini default is chosen) that can't lead it (``models.ulc_why``) is ``ulc_not_ready``,
-    logged the same way (start-up goes on). Two statements."""
+    logged the same way (start-up goes on). #647: an env model whose stored parameters are known
+    is checked against what the client sends it (``_parameter_problems``): each required one it
+    lacks is logged at error, ``parameter_missing`` (every call to it fails), and the optional one
+    it lacks at warning, ``parameter_dropped`` (it is sent without it), each with the model, the
+    setting and the parameter; neither is returned. Two statements."""
     wanted = [("OCR_MODEL", settings.ocr_model, "eligible")]
     if settings.model_enabled:
         wanted.append(("MODEL_CHAT", settings.model_chat, "chat_eligible"))
@@ -512,7 +548,32 @@ def check_env_models(db: Database, settings: Settings) -> list[tuple[str, str, s
         problems.append(("OCR_ULTRA_LOW_COST", settings.ocr_model, "ulc_not_ready"))
     for setting, model, code in problems:
         logger.error("env model not usable", extra={"code": code, "model": model, "where": setting})
+    for setting, model, _ in wanted:
+        row = rows.get(model)
+        if row is not None and row["parameters"] is not None:
+            _parameter_problems(setting, model, frozenset(row["parameters"]), thinks=bool(row["efforts"]))
     return problems
+
+
+def _parameter_problems(setting: str, model: str, stored: frozenset[str], *, thinks: bool) -> None:
+    """#647: log each parameter the client sends ``model`` (as ``setting``) that ``stored`` lacks:
+    a required one at error (NEEDED_PARAMETERS, REASONING while it ``thinks``, one of OUTPUT_CAPS),
+    and temperature, MODEL_CHAT's optional one (Ask's rewrite and translation), at warning when it
+    would be sent but for ``stored``."""
+    needed = sorted(NEEDED_PARAMETERS | ({REASONING} if thinks else set()))
+    missing = [name for name in needed if name not in stored]
+    if not stored & set(OUTPUT_CAPS):
+        missing.append(OUTPUT_CAPS[0])
+    for name in missing:
+        logger.error(
+            "env model parameter missing",
+            extra={"code": "parameter_missing", "model": model, "where": setting, "parameter": name},
+        )
+    if setting == "MODEL_CHAT" and takes_temperature(model, None) and not takes_temperature(model, stored):
+        logger.warning(
+            "env model parameter dropped",
+            extra={"code": "parameter_dropped", "model": model, "where": setting, "parameter": "temperature"},
+        )
 
 
 def last_refreshed(db: Database) -> datetime | None:

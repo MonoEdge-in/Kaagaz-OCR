@@ -15,10 +15,12 @@ from collections.abc import Iterator
 from typing import Any, cast
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from kaagaz import cli, verify_models
 from kaagaz.ai import openrouter
 from kaagaz.answering import draft
+from kaagaz.db.engine import Database
 from kaagaz.reading.gemini_ocr import PAGE_SCHEMA
 from kaagaz.reading.ocr import READER_PROMPT_VERSION
 from kaagaz.settings import Settings
@@ -191,11 +193,28 @@ def _settings(fake: OpenRouterFake, **overrides: Any) -> Settings:
     return make_settings(**{**values, **overrides})
 
 
+# #647: what the catalogue stores for PRO (the fake's own endpoint listing); FLASH not read yet.
+STORED = frozenset({"max_tokens", "reasoning", "response_format", "structured_outputs"})
+
+
+class _Catalogue:
+    """The database cli reads the stored parameters from (#647); ``broken``: it does not answer."""
+
+    def __init__(self, broken: bool = False) -> None:
+        self.broken = broken
+
+    def model_parameters(self) -> dict[str, frozenset[str]]:
+        if self.broken:
+            raise OperationalError("SELECT", {}, Exception("no answer"))
+        return {PRO: STORED}
+
+
 def _run(
-    settings: Settings, *args: str, command: str = "verify-models"
+    settings: Settings, *args: str, command: str = "verify-models", catalogue: Any = None
 ) -> tuple[int, str, dict[str, tuple[str, str]]]:
     out = io.StringIO()
-    code = cli.main([command, *args], settings=settings, out=out, db=None)
+    db = cast(Database, catalogue or _Catalogue())
+    code = cli.main([command, *args], settings=settings, out=out, db=db)
     text = out.getvalue()
     lines = {}
     for line in text.splitlines():
@@ -214,9 +233,11 @@ def test_every_item_passes_against_an_api_that_answers_as_documented(fake: OpenR
     assert code == 0
     assert text.startswith("KEY OPENROUTER_API_KEY set\n")
     assert "SUMMARY 25 PASS, 0 FAIL, 2 INFO" in text
+    # Changed on purpose (#647): each model's stored parameters too.
     assert lines["endpoints"][1] == (
         f"{PRO}: google-vertex listed; parameters all supported; zdr=True;"
-        f" {FLASH}: google-vertex listed; parameters all supported; zdr=True"
+        " stored max_tokens,reasoning,response_format,structured_outputs;"
+        f" {FLASH}: google-vertex listed; parameters all supported; zdr=True; stored not read yet"
     )
     assert lines["model_calls"][1] == f"{PRO}=200 {FLASH}=200; with the provider block"
     assert lines["strict_schema"][1] == "strict=true:200 json strict=false:200 json; requests use strict=true"
@@ -392,7 +413,14 @@ def test_an_endpoint_listing_without_what_we_need_fails(
     fake.script("endpoints", listing)
     code, _, lines = _run(_settings(fake))
     assert code == 1
-    assert lines["endpoints"] == ("FAIL", f"{PRO}: {said}")
+    # Changed on purpose (#647): the stored parameters follow.
+    assert lines["endpoints"] == ("FAIL", f"{PRO}: {said}; stored {','.join(sorted(STORED))}")
+
+
+def test_647_the_endpoints_item_says_unknown_when_the_database_does_not_answer(fake: OpenRouterFake) -> None:
+    code, _, lines = _run(_settings(fake), catalogue=_Catalogue(broken=True))
+    assert lines["endpoints"][1].endswith("; stored unknown (OperationalError)")
+    assert lines["endpoints"][0] == "PASS" and code == 0  # never a failure of its own
 
 
 def test_a_model_id_that_is_not_openrouters_fails_without_a_request(fake: OpenRouterFake) -> None:

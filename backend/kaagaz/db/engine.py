@@ -185,6 +185,13 @@ class Database:
         with self.system() as conn:
             return float(conn.execute(statement, params).scalar_one())
 
+    def model_parameters(self) -> dict[str, frozenset[str]]:
+        """#647: each catalogue model's supported parameters (``model_catalog.parameters``, 0083),
+        the models with none stored (NULL: not read yet) left out. One statement."""
+        with self.system() as conn:
+            rows = conn.execute(text("SELECT id, parameters FROM model_catalog WHERE parameters IS NOT NULL"))
+            return {str(row[0]): frozenset(row[1]) for row in rows}
+
     def ping(self) -> None:
         """Raise BackendUnavailable unless the database answers. No free pooled connection
         counts as no answer."""
