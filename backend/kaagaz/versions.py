@@ -9,6 +9,7 @@
 * ``name_key`` (V2): the rule of migration 0041's ``NAME_KEY``, step for step, so a new
   upload's key is the same as the backfill's (tests/test_versions_db.py compares them).
 * ``outcome`` (V4): the scoring table, ``reasons`` the banner's plain words (V6, NB-17).
+* ``groups`` (V17, #648): the version finder's groups of possible versions from its pairs.
 * ``compare`` (V11): a word-level difflib comparison, page by page, as runs of same, added
   and removed, with a summary.
 
@@ -19,7 +20,7 @@ import hashlib
 import math
 import re
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -42,6 +43,8 @@ TEXT_SIGNAL, NAME_SIGNAL, TEXT_ALONE = 0.8, 0.6, 0.8
 # bills: one name key and account number, other text).
 TEXT_FLOOR = 0.5
 SUGGESTED = "suggested"
+# V17 (#648): the most files in one group of possible versions (the issue's 20).
+MAX_GROUP = 20
 
 # V11: a page longer than this is compared on its first words only, and the pages together on
 # at most MAX_COMPARE_TOTAL words (later pages then truncated), so one request stays bounded.
@@ -165,6 +168,35 @@ def reasons(
     if shared_identifier:
         parts.append(f"same {shared_identifier.replace('_', ' ')}")
     return " and ".join(parts)
+
+
+def groups(pairs: Iterable[tuple[str, str, tuple[Any, ...]]], *, cap: int = MAX_GROUP) -> list[list[str]]:
+    """V17 (#648): the version finder's groups from its pairs ``(first, second, strength)``. Pairs
+    join their files strongest first (then by ids, so the same pairs always give the same groups),
+    and a join that would make a group of more than ``cap`` files is skipped, so a long chain of
+    near matches is cut at its weakest links. Each group has 2 files or more, its ids sorted; the
+    groups by their first id. O(p log p) for p pairs."""
+    parent: dict[str, str] = {}
+    size: dict[str, int] = {}
+
+    def root(file: str) -> str:
+        while parent[file] != file:
+            parent[file] = parent[parent[file]]
+            file = parent[file]
+        return file
+
+    for first, second, _ in sorted(pairs, key=lambda pair: (pair[2], pair[0], pair[1]), reverse=True):
+        for file in (first, second):
+            if file not in parent:
+                parent[file], size[file] = file, 1
+        a, b = root(first), root(second)
+        if a != b and size[a] + size[b] <= cap:
+            parent[b] = a
+            size[a] += size[b]
+    found: dict[str, list[str]] = {}
+    for file in parent:
+        found.setdefault(root(file), []).append(file)
+    return sorted(sorted(group) for group in found.values() if len(group) > 1)
 
 
 def share_percent(text_overlap: float, *, estimated: bool) -> int:

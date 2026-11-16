@@ -4,8 +4,10 @@ two invoices of one template (#521), the banner's words (V6, NB-17), compare (V1
 list's row (V12) and the one-time fingerprint sweep's worker wrapper. The SQL: test_versions_db.py.
 """
 
+import contextlib
 import random
 import struct
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -16,7 +18,7 @@ from kaagaz.api.views import document_version
 from kaagaz.db import versions as versions_sql
 from kaagaz.db.versions import view
 from kaagaz.search.story_match import trigrams
-from kaagaz.worker_main import FINGERPRINT_PASS, FingerprintOld
+from kaagaz.worker_main import FINDER_PASS, FINGERPRINT_PASS, FingerprintOld
 
 _ENGLISH = (  # noqa: SIM905 - a word list reads best as words
     "the tenant shall pay rent of rupees every month to landlord on or before fifth day agreement"
@@ -502,6 +504,89 @@ def test_the_fingerprint_sweep_runs_on_idle_turns_until_a_pass_finds_none() -> N
     assert wrapper.run_once()  # none found: done for good
     now[0] += timedelta(hours=1)
     assert not wrapper.run_once() and len(calls) == 3
+
+
+def test_v17_a_pass_with_nothing_due_ends_the_sweep_only_once_nothing_is_pending() -> None:
+    """Review (#648): a pass that finds nothing due while an organisation's run is still to do (its
+    switch off, or a new file waiting for its fingerprint) waits a minute and tries again; the
+    sweep ends for good only once every organisation's run has finished."""
+    now = [datetime(2026, 10, 20, tzinfo=UTC)]
+    pending = [True]
+    calls: list[int] = []
+
+    def sweep() -> int:
+        calls.append(1)
+        return 0
+
+    wrapper = FingerprintOld(_Idle(), sweep, lambda: now[0], pending=lambda: pending[0])
+    assert wrapper.run_once()  # nothing due, a run still to do
+    now[0] += timedelta(minutes=1)
+    assert wrapper.run_once()  # so it looks again
+    pending[0] = False
+    now[0] += timedelta(minutes=1)
+    assert wrapper.run_once()  # nothing due, nothing pending: done for good
+    now[0] += timedelta(hours=1)
+    assert not wrapper.run_once() and len(calls) == 3
+
+
+class _Busy:
+    def run_once(self) -> bool:
+        return True
+
+
+def test_v17_a_full_finder_pass_runs_again_on_the_next_idle_turn_and_jobs_go_first() -> None:
+    """Review (#648): the finder's own sweep (its lock, its pass of FINDER_PASS files): a full pass
+    asks for the next idle turn, as a full fingerprint pass does; a shorter one waits a minute; a
+    turn with a job never runs it."""
+    now = [datetime(2026, 10, 20, tzinfo=UTC)]
+    found = [FINDER_PASS, 3]
+    locks: list[str] = []
+
+    @contextlib.contextmanager
+    def lock(name: str) -> Iterator[bool]:
+        locks.append(name)
+        yield True
+
+    finder = FingerprintOld(
+        _Idle(), lambda: found.pop(0), lambda: now[0], lock=lock, name="version_finder", full=FINDER_PASS
+    )
+    assert finder.run_once() and finder.run_once()  # a full pass: the next idle turn goes on
+    assert not finder.run_once() and found == []  # 3: the next waits a minute
+    assert locks == ["version_finder", "version_finder"]
+    assert FingerprintOld(_Busy(), lambda: found.pop(), lambda: now[0]).run_once()  # a job: no pass
+
+
+# --- V17 (#648): the version finder's groups -------------------------------------------------
+
+
+def _strong(text_overlap: float) -> tuple[float, float, bool]:
+    return (text_overlap, 0.0, False)
+
+
+def test_v17_connected_pairs_make_one_group_and_a_lone_file_none() -> None:
+    """X~Y and X~Z make one group of three, though Y and Z are not alike; a pair's files are in
+    the group once; a file with no pair is in none."""
+    pairs = [("x", "y", _strong(0.9)), ("x", "z", _strong(0.83)), ("a", "b", _strong(0.81))]
+    assert versions.groups(pairs) == [["a", "b"], ["x", "y", "z"]]
+    assert versions.groups([]) == []
+
+
+def test_v17_a_chain_longer_than_the_cap_is_cut_at_its_weakest_links() -> None:
+    """25 files in a chain, each pair weaker than the one before: the 20 strongest-joined make one
+    group, the 5 at the weak end another; never a group over MAX_GROUP."""
+    files = [f"f{n:02}" for n in range(25)]
+    chain = [(files[n], files[n + 1], _strong(0.99 - n / 100)) for n in range(24)]
+    found = versions.groups(chain)
+    assert [len(group) for group in found] == [20, 5]
+    assert found[0] == files[:20] and found[1] == files[20:]
+    assert all(len(group) <= versions.MAX_GROUP for group in versions.groups(chain, cap=3))
+
+
+def test_v17_the_strongest_pair_joins_first_and_the_same_pairs_give_the_same_groups() -> None:
+    """With room for 2 files, b joins a (0.95), not c (0.85); in any order of the pairs."""
+    pairs = [("b", "c", _strong(0.85)), ("a", "b", _strong(0.95)), ("c", "d", _strong(0.9))]
+    assert versions.groups(pairs, cap=2) == [["a", "b"], ["c", "d"]]
+    assert versions.groups(list(reversed(pairs)), cap=2) == [["a", "b"], ["c", "d"]]
 
 
 def test_v6_accept_losing_a_race_to_reject_is_already_decided_and_writes_nothing(

@@ -59,6 +59,9 @@ TO_DOCUMENTS = {
     "lock_grants",
     # Changed on purpose (#600, 0088): a page turn goes with its version.
     "page_rotations",
+    # Changed on purpose (#648, 0099): the version finder's pairs and group members go with either file.
+    "version_pairs",
+    "version_group_members",
 }
 # Changed on purpose (#239, 27 Oct 2026): 0023's spend ledger keeps its rows when a document
 # goes: SET NULL (document_id), never a cascade.

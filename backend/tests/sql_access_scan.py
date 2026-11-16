@@ -53,6 +53,9 @@ CONTENT = frozenset(
         "user_word_spots",
         "document_stories",
         "page_rotations",
+        # Changed on purpose (#648, 0098): the version finder's pairs and groups point at documents.
+        "version_pairs",
+        "version_group_members",
     ]
 )
 PLACES = frozenset({"documents", "folders", "trashed_folders"})

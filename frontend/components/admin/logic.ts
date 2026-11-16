@@ -801,6 +801,10 @@ const ACTION_WORDS: Record<string, string> = {
   "version.undone": "Undid a version link",
   "version.make_current": "Made a version current",
   "document.version_separated": "Made a version a separate file",
+  // #648: Admins' and Management's decisions on possible versions; the admin log only.
+  "version.kept_apart": "Marked as not versions",
+  "version.kept_apart_undone": "Undid not versions",
+  "version.later": "Left for later",
   "audit.export": "Exported the activity",
   // #482 and #481 (3 Nov 2026): reads logged since, and the super admin's two-step rule.
   "search.run": "Searched inside documents",

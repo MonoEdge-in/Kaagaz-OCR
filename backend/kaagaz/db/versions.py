@@ -36,7 +36,7 @@ Why here: the family rules next to their SQL. Every function takes a connection 
   shown or answered (``visibility.LIVE_SUGGESTION``).
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import Connection, RowMapping, text
@@ -153,6 +153,31 @@ _SUGGEST = text(
 )
 
 
+def scored(
+    conn: Connection, customer_id: str, document_id: str, minhash: Any, fetched: Iterable[RowMapping]
+) -> list[tuple[RowMapping, float | None, bool | None, float | None]]:
+    """V3 and V4 for a document's fetched candidates (each with ``id``, ``text_minhash``,
+    ``name_similarity`` and ``shared_identifier``): ranked by the estimate (stable: in the order
+    fetched after that), the best MAX_CANDIDATES counted exactly where both texts are within V11's
+    limits (#521), and those ``versions.outcome`` suggests, each with its overlap, whether that was
+    counted exactly, and its name similarity. Spotting keeps the best; the version finder (V17)
+    keeps them all. O(w) for the w words read."""
+    estimated = [(versions.overlap(minhash, row["text_minhash"]), row) for row in fetched]
+    estimated.sort(key=lambda pair: pair[0] or 0.0, reverse=True)
+    mine: dict[int, str] | None = None
+    found = []
+    for overlap, row in estimated[:MAX_CANDIDATES]:
+        exact = None
+        if overlap is not None:  # both have a fingerprint: count it exactly when within the limits
+            mine = page_texts(conn, customer_id, document_id) if mine is None else mine
+            counted = versions.exact_overlap(mine, page_texts(conn, customer_id, str(row["id"])))
+            overlap, exact = (overlap, False) if counted is None else (counted, True)
+        name = None if row["name_similarity"] is None else float(row["name_similarity"])
+        if versions.outcome(overlap, name, row["shared_identifier"] is not None) is not None:
+            found.append((row, overlap, exact, name))
+    return found
+
+
 def spot(conn: Connection, customer_id: str, document_id: str) -> str | None:
     """V1 to V5 for a document just made ready: its fingerprint and name key when Ready left
     none (``mark_ready`` writes them, #521); then, on its first ready only (module notes), the
@@ -177,19 +202,8 @@ def spot(conn: Connection, customer_id: str, document_id: str) -> str | None:
         return "off"
     minhash, family_id = conn.execute(_MY_MINHASH, params).one()
     fetched = conn.execute(_CANDIDATES, {**params, "name": versions.NAME_SIGNAL, "n": MAX_FETCHED}).mappings()
-    estimated = [(versions.overlap(minhash, row["text_minhash"]), row) for row in fetched]
-    estimated.sort(key=lambda pair: pair[0] or 0.0, reverse=True)  # stable: then name, then newest
-    mine: dict[int, str] | None = None
     best: tuple[tuple[Any, ...], RowMapping, float | None, bool | None] | None = None
-    for overlap, row in estimated[:MAX_CANDIDATES]:
-        exact = None
-        if overlap is not None:  # both have a fingerprint: count it exactly when within the limits
-            mine = page_texts(conn, customer_id, document_id) if mine is None else mine
-            counted = versions.exact_overlap(mine, page_texts(conn, customer_id, str(row["id"])))
-            overlap, exact = (overlap, False) if counted is None else (counted, True)
-        name = None if row["name_similarity"] is None else float(row["name_similarity"])
-        if versions.outcome(overlap, name, row["shared_identifier"] is not None) is None:
-            continue
+    for row, overlap, exact, name in scored(conn, customer_id, document_id, minhash, fetched):
         key = (overlap or 0.0, name or 0.0, row["shared_identifier"] is not None, row["created_at"])
         if best is None or key > best[0]:
             best = (key, row, overlap, exact)

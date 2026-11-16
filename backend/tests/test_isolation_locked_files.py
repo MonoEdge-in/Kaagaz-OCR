@@ -40,6 +40,7 @@ from tests.test_operator_auth_db import _owner
 
 pytestmark = pytest.mark.db
 M0093 = _load("0093_locked_files.py")
+M0099 = _load("0099_version_finder.py")
 
 # Appendix B (and the corrections made on the file): every table with a key into documents is
 # cleared by a lock, or kept by it. A table added later fails the completeness test until it is
@@ -65,6 +66,8 @@ CLEARED = {
     "organization_word_suggestions",
     "user_word_spots",
     "learned_corrections",
+    "version_pairs",  # Changed on purpose (#648, 0099): the version finder's, worked out from the text
+    "version_group_members",
 }
 KEPT = {
     "pages",  # its sizes and pictures; every reading result reset (PAGE_RESET)
@@ -151,6 +154,11 @@ def _more(api: Api, org: Org, document: str, other: str) -> None:
         "INSERT INTO learning_removals (customer_id, document_id) VALUES (:c, :d)",
         "INSERT INTO processing_runs (customer_id, document_id, started_at, finished_at, status)"
         " VALUES (:c, :d, now(), now(), 'ready')",
+        # Changed on purpose (#648, 0099): the version finder's pair and group membership.
+        "INSERT INTO version_pairs (customer_id, first_id, second_id, text_overlap)"
+        " SELECT :c, least(a, b), greatest(a, b), 0.9 FROM (SELECT CAST(:d AS uuid) a, CAST(:o AS uuid) b) x",
+        "INSERT INTO version_group_members (customer_id, document_id, group_id, position)"
+        " VALUES (:c, :d, gen_random_uuid(), 1)",
     ):
         _owner(db, statement, p)
 
@@ -212,11 +220,14 @@ def test_a_lock_clears_appendix_b_on_every_version_and_keeps_the_rest(
 ) -> None:
     api, org, v1, v2 = locked
     db, versions = api.db, [v1, v2]
-    for table in sorted(CLEARED - {"learned_corrections", "document_links", "version_suggestions"}):
+    by_other_column = {"learned_corrections", "document_links", "version_suggestions", "version_pairs"}
+    for table in sorted(CLEARED - by_other_column):
         assert _count(db, table, versions) == 0, table
     assert _count(db, "learned_corrections", versions, "source_document_id") == 0
     assert _count(db, "document_links", versions, "linked_document_id") == 0
     assert _count(db, "version_suggestions", versions, "candidate_family_id") == 0
+    for side in ("first_id", "second_id"):  # Changed on purpose (#648, 0099)
+        assert _count(db, "version_pairs", versions, side) == 0, side
     cleared = _owner(
         db,
         "SELECT count(*) FROM documents WHERE id = ANY(CAST(:d AS uuid[])) AND doc_type IS NULL"
@@ -247,7 +258,9 @@ def test_every_key_into_documents_is_cleared_or_kept(db: Database) -> None:
     assert {str(row[0]) for row in rows} | {"invoice_lines"} == CLEARED | KEPT
     assert not CLEARED & KEPT
     for table in CLEARED:
-        assert f"DELETE FROM public.{table} x" in M0093.CLEAR_DERIVED, table  # noqa: S608 - a text search
+        assert f"DELETE FROM public.{table} x" in M0099.CLEAR_DERIVED, table  # noqa: S608 - a text search
+    # Changed on purpose (#648): 0099 replaced 0093's function, adding the version finder's tables.
+    assert M0099.OLD_CLEAR_DERIVED.replace("CREATE OR REPLACE", "CREATE") == M0093.CLEAR_DERIVED
 
 
 def test_every_document_column_is_cleared_or_kept(db: Database) -> None:
