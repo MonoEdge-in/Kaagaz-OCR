@@ -189,7 +189,7 @@
   transition: opacity var(--t-fast) var(--ease);
 }
 
-/* #603: "From WhatsApp", beside the title of a conversation asked there. */
+/* Issue 603: "From WhatsApp", beside the title of a conversation asked there. */
 .itemOrigin {
   flex: none;
   white-space: nowrap;
