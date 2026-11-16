@@ -136,6 +136,9 @@ import type {
   TestModel,
   TwoStepSetup,
   WaysToSignIn,
+  WhatsAppAdmin,
+  WhatsAppCode,
+  WhatsAppMe,
   UploadLimits,
   UploadReading,
   UploadResult,
@@ -345,6 +348,22 @@ export const removeIdentity = (id: string, password?: string) =>
     `/auth/identities/${encodeURIComponent(id)}/remove`,
     password === undefined ? {} : { password },
   );
+
+// Kaagaz on WhatsApp (#603): Account, WhatsApp. The proof (password and code, or Google) is kept
+// 10 minutes in a cookie only /api/whatsapp reads.
+export const whatsappMe = () => request<WhatsAppMe>("GET", "/whatsapp/me");
+export const proveForWhatsApp = (password: string, code?: string) =>
+  request<{ proved: true }>("POST", "/whatsapp/prove", { password, ...(code === undefined ? {} : { code }) });
+/** For one who signs in with Google only: the code first (two-step on), then Google's address to open. */
+export const proveWithGoogle = (code?: string) =>
+  request<{ url: string }>("POST", "/whatsapp/prove/google", code === undefined ? {} : { code });
+export const askWhatsAppCode = (number: string, way: "sent" | "phone") =>
+  request<WhatsAppCode>("POST", "/whatsapp/codes", { number, agreed: true, way });
+export const verifyWhatsAppCode = (code: string) => request<WhatsAppMe>("POST", "/whatsapp/codes/verify", { code });
+export const phoneCodeState = () =>
+  request<{ state: "waiting" | "confirmed" | "expired" }>("GET", "/whatsapp/codes/phone");
+export const confirmPhoneCode = () => request<WhatsAppMe>("POST", "/whatsapp/codes/phone/confirm");
+export const disconnectWhatsApp = () => request<WhatsAppMe>("POST", "/whatsapp/disconnect");
 
 /** The first code from the set-up (sign-in or sign-up) turns two-step on and signs in. */
 export const adminEnrol = (enrolToken: string, code: string) =>
@@ -1391,6 +1410,18 @@ export const declineConnection = (id: string) =>
 /** Every connected account of this person goes, and they are signed out; the password stays. */
 export const removeConnections = (id: string) =>
   request<AdminUser>("POST", `/admin/users/${encodeURIComponent(id)}/remove-connections`);
+// Kaagaz on WhatsApp (#603): the Admin's switches and who is connected. Turning it on needs the password.
+export const adminWhatsApp = () => request<WhatsAppAdmin>("GET", "/admin/whatsapp");
+export const saveAdminWhatsApp = (
+  settings: Pick<WhatsAppAdmin, "enabled" | "roles" | "management" | "voice" | "uploads">,
+  password?: string, // with the data rules tick: turning it on
+) =>
+  request<WhatsAppAdmin>("PUT", "/admin/whatsapp", {
+    ...settings,
+    ...(password === undefined ? {} : { password, rules_confirmed: true }),
+  });
+export const adminDisconnectWhatsApp = (userId: string) =>
+  request<WhatsAppAdmin>("POST", `/admin/whatsapp/${encodeURIComponent(userId)}/disconnect`);
 
 // --- access (PRD 7, #601) --------------------------------------------------------------------
 // Every write that can give the admin themselves access takes their `password` (403

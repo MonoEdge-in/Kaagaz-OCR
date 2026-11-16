@@ -591,6 +591,7 @@ def test_the_limited_session_blocks_every_data_route(db: Database, google: FakeG
     }
     # Every route of the app (the two sign-outs last), and those whose dependencies hold current_user.
     on_current_user = _routes_on_current_user(api.app) - set(EMAIL_ROUTES)  # 404 while email is off
+    on_current_user -= set(WHATSAPP_ROUTES)  # Changed on purpose (#603 W3): Account's, 404 while it is off
     sign_outs = {("POST", "/api/auth/logout"), ("POST", "/api/auth/logout-everywhere")}
     calls = sorted(
         {

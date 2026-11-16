@@ -54,7 +54,16 @@ ALLOWED: dict[str, tuple[int, str]] = {
     "routers/operator_models.py:_plan:customer": (1, "the super admin, not a person of the organisation"),
     "routers/operator_orgs.py:create_org:system": (1, "the super admin frees a stale sign-up's e-mail"),
     # Changed on purpose (#603): Meta's webhook, which no person signs in to.
-    "routers/whatsapp.py:receive:system": (1, "WhatsApp: finds a number's live connection, any organisation"),
+    # Changed on purpose (W3): the owner-change notice, "Link <code>", BLOCK and "not connected", each a
+    # number with no organisation yet; the Google proof, as Google connect's; the Admin's save's sweep
+    # and "WhatsApp was turned on" to Management and the admins, after the reply.
+    "routers/whatsapp.py:receive:system": (2, "WhatsApp: a number's connection, owner change, Link, BLOCK"),
+    "routers/oidc.py:_whatsapp_proof:system": (1, "WhatsApp's Google proof: finds the connection, anywhere"),
+    "routers/whatsapp_account.py:save_whatsapp:system": (1, "the WhatsApp sweep's owner-rights function"),
+    "routers/whatsapp_account.py:_tell_leaders:customer": (
+        1,
+        "after the reply, Management's and admins' addresses",
+    ),
 }
 
 # "file under kaagaz/api:innermost function" → (how many, who the person is) for .user(...) calls

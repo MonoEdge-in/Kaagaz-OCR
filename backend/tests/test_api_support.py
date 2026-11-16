@@ -588,8 +588,20 @@ OIDC_ROUTES = (
 
 
 # Kaagaz on WhatsApp (#603): Meta's webhook, 404 while WhatsApp is off, whoever asks
-# (tests/test_api_whatsapp_webhook.py).
-WHATSAPP_ROUTES = (("GET", "/api/whatsapp/webhook"), ("POST", "/api/whatsapp/webhook"))
+# (tests/test_api_whatsapp_webhook.py). Changed on purpose (W3): Account, WhatsApp's too (the
+# Admin's, /api/admin/whatsapp, ask for the admin session first, as every admin route).
+WHATSAPP_ROUTES = (
+    ("GET", "/api/whatsapp/webhook"),
+    ("POST", "/api/whatsapp/webhook"),
+    ("GET", "/api/whatsapp/me"),
+    ("POST", "/api/whatsapp/prove"),
+    ("POST", "/api/whatsapp/prove/google"),
+    ("POST", "/api/whatsapp/codes"),
+    ("POST", "/api/whatsapp/codes/verify"),
+    ("GET", "/api/whatsapp/codes/phone"),
+    ("POST", "/api/whatsapp/codes/phone/confirm"),
+    ("POST", "/api/whatsapp/disconnect"),
+)
 
 
 def route_calls(app: FastAPI, prefix: str = "/api") -> list[tuple[str, str]]:

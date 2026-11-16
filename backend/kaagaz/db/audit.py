@@ -92,7 +92,8 @@ def record(
     subject_user_id: str | None = None,
 ) -> None:
     """Write one audit row. O(log n): one indexed insert, with one key lookup for a document.
-    ``subject_user_id``: the person the entry is about (PRD 7: given access, for example)."""
+    ``subject_user_id``: the person the entry is about (PRD 7: given access, for example; WhatsApp's
+    connect, #603)."""
     if not _ACTION.match(action):
         raise ValueError("audit action must match ^[a-z_.]+$")
     target = None if target_id is None else _uuid(target_id)

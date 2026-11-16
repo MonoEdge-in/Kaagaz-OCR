@@ -5,11 +5,15 @@
   connection. WhatsApp gives a number as its digits (``wa_id``); Kaagaz's screen adds the ``+``.
 * ``seal`` and ``open_number``: ``SecretBox`` (AES-GCM) with the same key, bound to the person
   (customer and user ids), so a sealed number copied onto another person's row does not open.
+* ``new_code`` and ``code_hash`` (W3): a 6-digit connect code, and its keyed hash bound to the number
+  it is for, so a code made for one number never matches another's, and a stolen table gives no code
+  (a 6-digit code's plain SHA-256 would be read back in a moment).
 """
 
 import hashlib
 import hmac
 import re
+import secrets
 
 from kaagaz.api.secret_box import SecretBox
 
@@ -40,3 +44,16 @@ def seal(key: str, number: str, customer_id: str, user_id: str) -> str:
 def open_number(key: str, sealed: str, customer_id: str, user_id: str) -> str:
     """The number sealed for this person; ``SecretBoxError`` for any other."""
     return SecretBox(key).open(sealed, aad=_bound(customer_id, user_id)).decode("ascii")
+
+
+def new_code() -> str:
+    return f"{secrets.randbelow(10**6):06d}"
+
+
+def code_hash(key: str, number: str, code: str) -> bytes:
+    """The 32-byte keyed hash of a connect ``code`` for ``number`` (E.164)."""
+    return hmac.new(
+        key.encode("utf-8"),
+        b"kaagaz whatsapp code v1|" + number.encode("ascii") + b"|" + code.encode("ascii"),
+        hashlib.sha256,
+    ).digest()

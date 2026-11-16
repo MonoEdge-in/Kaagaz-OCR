@@ -7,7 +7,9 @@
 * ``messages``: the messages to our own number (``metadata.phone_number_id``) in the
   ``messages`` changes; anything else (delivery receipts, another number, a shape not known) is
   left out. Each keeps its id, sender, Meta's time, kind, its text or the id of the button or row
-  tapped, a media id, and whether WhatsApp marked it forwarded. Never logged.
+  tapped, a media id, and whether WhatsApp marked it forwarded. Never logged. ``owner_changed``
+  (W3): WhatsApp's ``system`` message saying the number's owner changed (OWNER_CHANGED: a new
+  number, or a new phone or identity on it), sent from the number it is about.
 
 A signed body is Meta's, but nothing in it may make the webhook fail (Meta would send it again for
 days): a message whose id is not printable ASCII up to 128 characters, or whose time is not up to
@@ -27,6 +29,9 @@ MEDIA = frozenset({"image", "document", "audio", "video"})
 MAX_BODY_CHARS = 4096  # whatsapp_messages.body's limit; WhatsApp's own for a text
 MAX_ID_CHARS = 128  # whatsapp_messages.wamid's and media_id's
 MAX_STAMP_DIGITS = 11  # seconds since 1970 well past any real message, and inside datetime's range
+# WhatsApp's system messages that say the number is someone else's now (Meta's "changed number" and
+# "identity change" notices).
+OWNER_CHANGED = frozenset({"customer_changed_number", "user_changed_number", "customer_identity_changed"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +43,7 @@ class Inbound:
     media_id: str | None
     forwarded: bool
     sent_at: datetime
+    owner_changed: bool = False
 
 
 def signed(secret: str, body: bytes, header: str | None) -> bool:
@@ -89,6 +95,7 @@ def _inbound(message: object) -> Inbound | None:
         media_id=media_id if _an_id(media_id) else None,
         forwarded=_get(context, "forwarded") is True or _get(context, "frequently_forwarded") is True,
         sent_at=datetime.fromtimestamp(int(stamp), UTC),
+        owner_changed=kind == "other" and _owner_changed(_get(_get(message, "system"), "type")),
     )
 
 
@@ -103,6 +110,10 @@ def _body(kind: str, part: object) -> str | None:
     else:
         return None
     return _kept(value)[:MAX_BODY_CHARS] if isinstance(value, str) else None
+
+
+def _owner_changed(value: object) -> bool:
+    return isinstance(value, str) and value in OWNER_CHANGED
 
 
 def _an_id(value: object) -> TypeGuard[str]:

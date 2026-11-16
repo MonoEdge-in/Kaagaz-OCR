@@ -7,10 +7,12 @@ once and ends; a message past WhatsApp's 24 hours expires unanswered; a reply th
 rests, doubling, keeps the order, and a refusal for good fails it at once; an error while answering
 keeps the lease and counts a try; a crash between a reply and its "done" sends that reply once
 more, no more; nothing logged names a body or a number. And the process loop
-(``channel_main.run``)."""
+(``channel_main.run``). W3: the super admin's switches and Management's tick are checked too; STOP,
+Yes to "Disconnect?" and [Not me] on the connection's own welcome end it and say so once."""
 
 import logging
 import threading
+import uuid
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -20,7 +22,15 @@ from sqlalchemy import Connection, text
 
 from kaagaz import channel_main
 from kaagaz.adapters.whatsapp import MetaWhatsApp
-from kaagaz.channel.loop import MAX_TRIES, NOT_CONNECTED, PLACEHOLDER, Channel
+from kaagaz.channel.loop import (
+    ASK_DISCONNECT,
+    DISCONNECTED,
+    MAX_TRIES,
+    NOT_CONNECTED,
+    PLACEHOLDER,
+    STILL_CONNECTED,
+    Channel,
+)
 from kaagaz.db import whatsapp as wa
 from kaagaz.db.engine import Database
 from kaagaz.db.whatsapp import Claim, Linked
@@ -63,6 +73,10 @@ class _Sender:
     def send_text(self, to: str, body: str) -> None:
         self.before()
         self.real.send_text(to, body)
+
+    def send_buttons(self, to: str, body: str, buttons: Any) -> None:
+        self.before()
+        self.real.send_buttons(to, body, buttons)
 
 
 class _World:
@@ -215,6 +229,10 @@ def _refuse(world: _World, how: str, customer: str, person: str) -> None:
         "role_not_ticked": settings.format("roles = ARRAY['reviewer']"),
         "organisation_disabled": "UPDATE customers SET status = 'disabled', disabled_at = now()"
         " WHERE id = :c",
+        # W3: the super admin's switch for the organisation, and Management without its extra tick.
+        "super_admin_switch_off": "INSERT INTO org_feature_switches (customer_id, feature, enabled)"
+        " VALUES (:c, 'whatsapp', false)",
+        "management_not_ticked": "UPDATE users SET management = true WHERE id = :u",
     }[how]
     _owner(world.db, owner, {"u": person, "c": customer})
 
@@ -227,6 +245,8 @@ def _refuse(world: _World, how: str, customer: str, person: str) -> None:
         ("signed_out_everywhere", "session"),
         ("whatsapp_off", "not_allowed"),
         ("role_not_ticked", "not_allowed"),
+        ("super_admin_switch_off", "not_allowed"),  # Changed on purpose (W3)
+        ("management_not_ticked", "not_allowed"),  # Changed on purpose (W3)
     ],
 )
 def test_every_message_checks_again_and_a_refused_connection_is_told_once_and_ends(
@@ -253,6 +273,70 @@ def test_every_message_checks_again_and_a_refused_connection_is_told_once_and_en
     assert audit == [(person, reason, number[-4:])]
     world.send(number, message(number, world.api.clock(), "three", wamid=f"wamid.{how}.3"))
     assert len(world.messages(link)) == 2  # no longer connected: the webhook stores nothing
+
+
+def _ended(world: _World, link: str) -> list[tuple[Any, ...]]:
+    return _owner(
+        world.db,
+        "SELECT end_reason, actor_user_id::text FROM whatsapp_links l LEFT JOIN audit_log a"
+        " ON a.customer_id = l.customer_id AND a.action = 'whatsapp.disconnected'"
+        " AND a.details->>'link_id' = l.id::text WHERE l.id = :l",
+        {"l": link},
+    )
+
+
+def _tap(number: str, sent_at: datetime, kind: str, value: str) -> dict[str, Any]:
+    """A tapped template button (kind "button", its payload) or reply button ("interactive", its id)."""
+    tapped = {**message(number, sent_at), "type": kind}
+    del tapped["text"]
+    if kind == "button":
+        tapped["button"] = {"payload": value, "text": "Not me"}
+    else:
+        tapped["interactive"] = {"type": "button_reply", "button_reply": {"id": value, "title": "x"}}
+    return tapped
+
+
+@pytest.mark.parametrize("word", ["STOP", " stop "])
+def test_stop_ends_the_connection_and_says_so_once(db: Database, fake: WhatsAppFake, word: str) -> None:
+    world = _World(db, fake)
+    _, person, number, link = world.person()
+    now = world.api.clock()
+    world.send(number, message(number, now - timedelta(seconds=1), word), message(number, now, "after"))
+    world.run()
+    assert _ended(world, link) == [("person", person)]  # audited, the person its actor
+    assert world.texts_to(number) == [DISCONNECTED]  # nothing for "after": no longer connected
+    assert world.link(link)[:2] == ("person", True)
+
+
+def test_not_me_on_this_connections_own_welcome_ends_it_and_an_old_welcomes_does_not(
+    db: Database, fake: WhatsAppFake
+) -> None:
+    world = _World(db, fake)
+    _, person, number, link = world.person()
+    now = world.api.clock()
+    world.send(number, _tap(number, now, "button", f"not_me:{uuid.uuid4()}"))  # an older connection's
+    world.run()
+    assert world.link(link)[0] is None and world.texts_to(number) == [PLACEHOLDER]
+    world.send(number, _tap(number, now, "button", f"not_me:{link}"))
+    world.run()
+    assert _ended(world, link) == [("not_me", person)]
+    assert world.texts_to(number) == [PLACEHOLDER, DISCONNECTED]
+
+
+def test_disconnect_asks_first_and_ends_only_on_yes(db: Database, fake: WhatsAppFake) -> None:
+    world = _World(db, fake)
+    _, person, number, link = world.person()
+    now = world.api.clock()
+    world.send(number, message(number, now, "Disconnect"))
+    world.run()
+    assert [what for _, what in fake.sent()] == [(ASK_DISCONNECT, ["disconnect_yes", "keep"])]
+    world.send(number, _tap(number, now, "interactive", "keep"))
+    world.run()
+    assert world.link(link)[0] is None and world.texts_to(number) == [STILL_CONNECTED]
+    world.send(number, _tap(number, now, "interactive", "disconnect_yes"))
+    world.run()
+    assert _ended(world, link) == [("person", person)]
+    assert world.texts_to(number) == [STILL_CONNECTED, DISCONNECTED]
 
 
 def test_a_message_past_whatsapps_24_hours_expires_unanswered(db: Database, fake: WhatsAppFake) -> None:

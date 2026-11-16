@@ -43,6 +43,7 @@ import { SettingsPanel } from "./SettingsPanel";
 import { Tabs } from "./Tabs";
 import { UsagePanel } from "./UsagePanel";
 import { UsersPanel } from "./UsersPanel";
+import { WhatsAppPanel } from "./WhatsAppPanel";
 import styles from "./Admin.module.css";
 
 /** `tab`: the ?tab= the page was opened with (/admin?tab=departments, PRD 7 lead decision 12). */
@@ -128,11 +129,17 @@ function AdminTabs({ twoStep, tab }: { twoStep: ReactNode; tab?: string }) {
       </header>
       <Tabs<TabId> prefix="admin" label="Admin sections" tabs={TABS} active={active} onChange={openTab}>
         {active === "users" && (
-          <UsersPanel currentUserId={me.user.id} adminTwoStep={me.user.totp_enabled} providers={me.providers} />
+          <UsersPanel
+            currentUserId={me.user.id}
+            adminTwoStep={me.user.totp_enabled}
+            providers={me.providers}
+            whatsapp={me.whatsapp === true}
+          />
         )}
         {active === "settings" && (
           <div className={styles.panelStack}>
             <SettingsPanel providers={me.providers} onUnsaved={setUnsaved} />
+            {me.whatsapp === true && <WhatsAppPanel organisation={me.customer.name} />}
             {twoStep}
           </div>
         )}

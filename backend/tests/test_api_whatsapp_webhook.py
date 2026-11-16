@@ -59,6 +59,8 @@ def test_every_route_is_404_while_whatsapp_is_off(db: Database, method: str, pat
     api = Api(db)
     client = api.client()
     assert call(client, method, path).status_code == 404
+    if path != WEBHOOK:  # Changed on purpose (W3): Account's routes take the CSRF header first, as all
+        return
     body = json.dumps(delivery()).encode()
     reply = client.request(method, path, content=body, headers={"X-Hub-Signature-256": signature(body)})
     assert reply.status_code == 404

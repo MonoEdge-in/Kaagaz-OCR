@@ -340,6 +340,7 @@ Feature = Literal[
     "land_facts",  # PRD 6 (0052)
     "nlq_clarify",
     "nlq_learning",
+    "whatsapp",  # #603 (0097)
 ]
 # Sign-up makes a new organisation: one has no switch of its own for it (0039).
 OrgFeature = Literal[
@@ -354,6 +355,7 @@ OrgFeature = Literal[
     "land_facts",
     "nlq_clarify",
     "nlq_learning",
+    "whatsapp",
 ]
 
 

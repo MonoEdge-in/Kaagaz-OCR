@@ -1203,6 +1203,7 @@ def me_json(
     providers: Sequence[str],
     recent_connections: Sequence[dict[str, str]] = (),
     access: tuple[bool, Sequence[str], bool, bool],
+    whatsapp: bool = False,
 ) -> dict[str, Any]:
     """``Me``: who is signed in, their customer, and the session's scope ("app" for a
     member or reviewer, "admin" for an admin; the screen shows Admin only for "admin").
@@ -1217,7 +1218,8 @@ def me_json(
     once instead. ``access`` (PRD 7, #601): the person's Management and the departments they head,
     so the screens show a Head's menus, and whether they are in a live department (``in_department``,
     PR 10c: "Ask your admin for access" when not), and whether the organisation has ever kept
-    something to some people (``walled``, PR 11c: that message only once it has)."""
+    something to some people (``walled``, PR 11c: that message only once it has). ``whatsapp``
+    (#603): only while WHATSAPP_ENABLED is on, so Account shows WhatsApp."""
     return {
         "access": {
             "management": access[0],
@@ -1244,6 +1246,7 @@ def me_json(
         "session": {"scope": user.scope},
         "recent_connections": list(recent_connections),
         "providers": list(providers),
+        **({"whatsapp": True} if whatsapp else {}),
     }
 
 

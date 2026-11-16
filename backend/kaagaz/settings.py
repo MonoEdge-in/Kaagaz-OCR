@@ -511,10 +511,11 @@ class Settings:
     folder_upload_files_at_once: int = 8
     # Kaagaz on WhatsApp (#603, PRD 7 section 15). Off unless WHATSAPP_ENABLED=true: every
     # /api/whatsapp route is 404 and the channel process (kaagaz.channel_main) will not start. On,
-    # the next six are required: Meta's Graph API address with its version (https; http only on a
+    # the next seven are required: Meta's Graph API address with its version (https; http only on a
     # loopback host, the fake server in tests), the Kaagaz number's id, the access token, the app
     # secret (it signs every webhook), the webhook's verify token, and the key that seals and hashes
-    # people's numbers (32+ characters). The webhook has its own rate bucket per address,
+    # people's numbers (32+ characters); and (W3) the Kaagaz number itself, digits only, for the
+    # Connect screen's "Open WhatsApp" link. The webhook has its own rate bucket per address,
     # whatsapp_webhook_calls_per_minute; the channel handles whatsapp_people_at_once people at once.
     whatsapp_enabled: bool = False
     whatsapp_graph_url: str | None = None
@@ -523,6 +524,7 @@ class Settings:
     whatsapp_app_secret: str | None = field(default=None, repr=False)
     whatsapp_verify_token: str | None = field(default=None, repr=False)
     whatsapp_number_key: str | None = field(default=None, repr=False)
+    whatsapp_business_number: str | None = None
     whatsapp_webhook_calls_per_minute: int = 600
     whatsapp_people_at_once: int = 4
 
@@ -860,6 +862,7 @@ class Settings:
             whatsapp_app_secret=env.token("WHATSAPP_APP_SECRET") if whatsapp_on else None,
             whatsapp_verify_token=env.token("WHATSAPP_VERIFY_TOKEN") if whatsapp_on else None,
             whatsapp_number_key=number_key,
+            whatsapp_business_number=env.digits("WHATSAPP_BUSINESS_NUMBER") if whatsapp_on else None,
             whatsapp_webhook_calls_per_minute=env.positive_or("WHATSAPP_WEBHOOK_CALLS_PER_MINUTE", 600),
             whatsapp_people_at_once=env.between_or("WHATSAPP_PEOPLE_AT_ONCE", 1, 10, default=4),
         )

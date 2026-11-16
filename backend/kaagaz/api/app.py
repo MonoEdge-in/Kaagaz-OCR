@@ -70,6 +70,7 @@ from kaagaz.api.routers import (
     tags,
     versions,
     whatsapp,
+    whatsapp_account,
     word_review,
     words,
 )
@@ -195,6 +196,8 @@ def create_app(
         email.router,
         oidc.router,
         whatsapp.router,
+        whatsapp_account.router,
+        whatsapp_account.admin_router,
         locked_open.router,  # PRD 7 (#605): before /documents/{document_id}, which would take locked-open
         documents.router,
         versions.router,

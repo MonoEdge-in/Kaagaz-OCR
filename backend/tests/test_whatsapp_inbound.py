@@ -1,6 +1,7 @@
 """What Meta's webhook delivers (#603): the signature over the raw bytes, the messages to our own
 number only, numbers found by their keyed hash and sealed to their person; the settings that turn
-WhatsApp on; and the reply sent to the fake WhatsApp."""
+WhatsApp on; and the reply sent to the fake WhatsApp. W3: WhatsApp's owner-change notices, connect
+codes hashed with their number, and the templates and buttons as Meta takes them."""
 
 import http.client
 import json
@@ -11,10 +12,10 @@ from typing import Any
 import pytest
 
 from kaagaz.adapters import whatsapp as whatsapp_adapter
-from kaagaz.adapters.whatsapp import MetaWhatsApp, WhatsAppError
+from kaagaz.adapters.whatsapp import MetaWhatsApp, WhatsAppError, masked_email
 from kaagaz.api.secret_box import SecretBoxError
 from kaagaz.channel import inbound
-from kaagaz.channel.numbers import e164, number_hash, open_number, seal
+from kaagaz.channel.numbers import code_hash, e164, new_code, number_hash, open_number, seal
 from kaagaz.settings import Settings, SettingsError
 from tests.test_settings import shipped
 from tests.whatsapp_fake import (
@@ -103,6 +104,7 @@ ON = {
     "WHATSAPP_APP_SECRET": APP_SECRET,
     "WHATSAPP_VERIFY_TOKEN": "verify-me",
     "WHATSAPP_NUMBER_KEY": NUMBER_KEY,
+    "WHATSAPP_BUSINESS_NUMBER": "15550001111",  # Changed on purpose (W3): the Connect screen's link
 }
 
 
@@ -124,6 +126,7 @@ def test_whatsapp_is_off_unless_set_and_on_needs_every_setting() -> None:
     for name, bad in (
         ("WHATSAPP_GRAPH_URL", "http://graph.example.test/v0.0"),
         ("WHATSAPP_PHONE_NUMBER_ID", "12ab"),
+        ("WHATSAPP_BUSINESS_NUMBER", "+91 98765"),
         ("WHATSAPP_APP_SECRET", "has space"),
         ("WHATSAPP_NUMBER_KEY", "short"),
         ("WHATSAPP_PEOPLE_AT_ONCE", "11"),
@@ -175,3 +178,88 @@ def test_a_broken_reply_is_unavailable_and_a_trailing_slash_is_kept_out(
         "unavailable",
         [f"https://graph.example.test/v0.0/{NUMBER_ID}/messages"],
     )
+
+
+def test_whatsapps_owner_change_notices_are_read_and_nothing_else_is() -> None:
+    """W3: Meta's "changed number" and "identity change" system messages, from the number they are
+    about; any other system message, or one shaped oddly, is not one."""
+
+    def system(kind: object) -> dict[str, Any]:
+        sent = {**message(NUMBER, SENT), "type": "system", "system": {"body": "changed", "type": kind}}
+        del sent["text"]
+        return sent
+
+    kinds = [
+        "customer_changed_number",
+        "user_changed_number",
+        "customer_identity_changed",
+        "other",
+        ["x"],
+        None,
+    ]
+    found = inbound.messages(delivery(*(system(kind) for kind in kinds), message(NUMBER, SENT)), NUMBER_ID)
+    assert [(m.kind, m.owner_changed, m.number) for m in found] == [
+        *[("other", True, NUMBER)] * 3,
+        *[("other", False, NUMBER)] * 3,
+        ("text", False, NUMBER),
+    ]
+
+
+def test_a_connect_code_is_six_digits_and_its_hash_is_bound_to_its_number() -> None:
+    codes = {new_code() for _ in range(50)}
+    assert all(len(code) == 6 and code.isdigit() for code in codes) and len(codes) > 40
+    hashed = code_hash(NUMBER_KEY, NUMBER, "123456")
+    assert len(hashed) == 32 and hashed == code_hash(NUMBER_KEY, NUMBER, "123456")
+    assert hashed not in {
+        code_hash(NUMBER_KEY, "+15550001123", "123456"),  # another number
+        code_hash(NUMBER_KEY, NUMBER, "123457"),
+        code_hash("x" * 40, NUMBER, "123456"),
+        number_hash(NUMBER_KEY, NUMBER),
+    }
+
+
+def test_the_templates_and_buttons_are_sent_as_meta_takes_them() -> None:
+    """W3: the code template's code in its body and its copy-code button; the welcome naming the
+    person and organisation on one line each, its buttons' payloads (Not me names the connection);
+    "you were disconnected" with nothing in it; reply buttons."""
+    with running_fake() as fake:
+        sender = MetaWhatsApp(fake.url, NUMBER_ID, TOKEN)
+        sender.send_code(NUMBER, "123456")
+        email = masked_email("priya.k@gmail.com")
+        assert email == "p" + "\N{BULLET}" * 3 + "@gmail.com"
+        sender.send_welcome(NUMBER, "Priya\nSharma", email, "Shree Ganesh   CA Associates", "link-1")
+        sender.send_disconnected(NUMBER)
+        sender.send_buttons(NUMBER, "Disconnect?", [("disconnect_yes", "Disconnect"), ("keep", "Keep it")])
+        bodies = [body for _, _, body in fake.requests]
+    assert all(body["to"] == NUMBER[1:] and body["messaging_product"] == "whatsapp" for body in bodies)
+    code, welcome, gone, buttons = bodies
+    assert code["template"] == {
+        "name": "kaagaz_connect_code",
+        "language": {"code": "en"},
+        "components": [
+            {"type": "body", "parameters": [{"type": "text", "text": "123456"}]},
+            {
+                "type": "button",
+                "sub_type": "url",
+                "index": "0",
+                "parameters": [{"type": "text", "text": "123456"}],
+            },
+        ],
+    }
+    assert welcome["template"]["name"] == "kaagaz_welcome"
+    assert welcome["template"]["components"] == [
+        {"type": "body", "parameters": [{"type": "text", "text": "Priya Sharma"},
+                                        {"type": "text", "text": email},
+                                        {"type": "text", "text": "Shree Ganesh CA Associates"}]},
+        {"type": "button", "sub_type": "quick_reply", "index": "0",
+         "parameters": [{"type": "payload", "payload": "start"}]},
+        {"type": "button", "sub_type": "quick_reply", "index": "1",
+         "parameters": [{"type": "payload", "payload": "not_me:link-1"}]},
+    ]  # fmt: skip
+    assert gone["template"] == {"name": "kaagaz_disconnected", "language": {"code": "en"}, "components": []}
+    assert buttons["interactive"] == {
+        "type": "button",
+        "body": {"text": "Disconnect?"},
+        "action": {"buttons": [{"type": "reply", "reply": {"id": "disconnect_yes", "title": "Disconnect"}},
+                               {"type": "reply", "reply": {"id": "keep", "title": "Keep it"}}]},
+    }  # fmt: skip
