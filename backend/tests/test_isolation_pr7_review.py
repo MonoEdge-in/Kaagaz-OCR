@@ -300,10 +300,11 @@ def test_a_member_cannot_delete_forever_a_trashed_folder_holding_only_a_hidden_f
 
 def test_trash_of_a_department_only_department_deleted_since_stays_closed(db: Database) -> None:
     """Budgets (in Finance, Department only) goes to Trash with its file; then Finance itself is
-    deleted (its contents kept). The organisation still keeps something to some people (Legal is
-    Department only too), so the plain reviewer sees neither then; Management still does, and the
-    worker with no person sees its whole organisation. (Known gap, #594: had Finance been its last
-    Department only department, its stranded Trash would fall back to open.)"""
+    deleted, emptied first (#594: a keep-delete of Finance is refused now). The organisation still
+    keeps something to some people (Legal is Department only too), so the plain reviewer sees neither
+    then; Management still does, and the worker with no person sees its whole organisation. (#594
+    closed the known gap: had Finance been its last Department only department, its stranded Trash
+    stays closed too, test_isolation_open_paths.)"""
     api = Api(db)
     org = _walled(api)
     admin, plain = org.people["admin"], org.people["plain"]
@@ -314,8 +315,11 @@ def test_trash_of_a_department_only_department_deleted_since_stays_closed(db: Da
     budget = api.add_document(org.c, name="budget.pdf", folder_id=budgets, uploaded_by=admin.user_id)
     _trash(org, budgets)
     assert "Budgets" not in plain.client.get("/api/documents/trash/folders").text
-    gone = admin.client.delete(f"/api/folders/{org.folders['finance']}?contents=keep", headers=CSRF)
-    assert gone.status_code == 200, gone.text
+    finance, sales = org.folders["finance"], org.folders["sales"]
+    _owner(db, "UPDATE folders SET parent_id = :s WHERE parent_id = :f", {"s": sales, "f": finance})
+    _owner(db, "UPDATE documents SET folder_id = :s WHERE folder_id = :f", {"s": sales, "f": finance})
+    gone = admin.client.delete(f"/api/folders/{finance}", headers=CSRF)
+    assert gone.status_code == 204, gone.text
     assert "Budgets" not in plain.client.get("/api/documents/trash/folders").text
     files = plain.client.get(f"/api/documents?trashed=true&trashed_folder_id={budgets}")
     assert files.status_code == 404 and budget not in files.text

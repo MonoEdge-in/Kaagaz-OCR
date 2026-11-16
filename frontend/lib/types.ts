@@ -470,12 +470,20 @@ export interface TrashedFolderContents {
 /** #542: the folder that came back with a file restored from a folder in Trash (restoreDocument's reply). */
 export type FolderBack = Omit<FolderRestored, "files" | "folders">;
 
+/** #594: where a restored file went because its folder no longer exists (restoreDocument's reply):
+ * held for the person until it is filed, or into `folder` (null: one they can't see). */
+export interface FilePlaced {
+  held: boolean;
+  folder: Folder | null;
+}
+
 /** #542: a restored folder, where it went ([] the top level), and why it is not as it was. */
 export interface FolderRestored {
   folder: Folder;
   location: string[] | null; // PRD 7: null when a folder on its path is one you can't see
   renamed: boolean; // a folder there had its name: it is "Name (2)" now
-  relocated: boolean; // its folder no longer exists: it is at the top level
+  relocated: boolean; // its folder no longer exists: it is at `location` instead
+  sealed: boolean; // #594: a department or private folder it was in no longer exists: it came back private
   files: number;
   folders: number;
 }

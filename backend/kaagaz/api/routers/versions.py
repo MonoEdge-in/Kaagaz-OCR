@@ -58,6 +58,10 @@ class AcceptBody(BaseModel):
 def _refused(refused: versions_sql.Refused) -> ApiError:
     if refused.code == "not_found":
         return ApiError(404, "not_found")
+    if refused.code == "forbidden":  # #594 (Q4)
+        return ApiError(
+            403, "forbidden", "Only the person this file was kept for, or Management, can undo this."
+        )
     return ApiError(409, refused.code, _MESSAGES[refused.code])
 
 

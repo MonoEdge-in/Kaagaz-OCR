@@ -1983,7 +1983,9 @@ def restore_document(document_id: uuid.UUID, user: User, context: Context) -> di
     with context.db.user(customer_id, user.user_id) as conn:
         _may_trash(user, _document_or_404(conn, user, document_id))
         try:
-            found, chain = trashed_sql.restore_document(conn, customer_id, target, admin=user.role == "admin")
+            placed, chain = trashed_sql.restore_document(
+                conn, customer_id, target, admin=user.role == "admin", by=user.user_id
+            )
         except trashed_sql.DepartmentAdminOnly as refused:  # its folders could not come back: nothing changed
             seen = trashed_sql.seen(conn, customer_id, [refused.folder_id])  # PRD 7 (#599)
             words = "Its folder is a department, which only an admin can restore." if seen else ASK_AN_ADMIN
@@ -1994,7 +1996,7 @@ def restore_document(document_id: uuid.UUID, user: User, context: Context) -> di
             ) from None
         except folders_sql.FolderError as error:
             raise ApiError(404 if error.code == "not_found" else 409, error.code) from None
-        if not found:
+        if placed is None:
             raise ApiError(404, "not_found")
         if chain is not None:
             audit.record(
@@ -2013,6 +2015,7 @@ def restore_document(document_id: uuid.UUID, user: User, context: Context) -> di
             action="document.restore",
             target_type="document",
             target_id=target,
+            details=_placed_details(placed),
         )
         row = _document_or_404(conn, user, document_id)
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
@@ -2020,6 +2023,11 @@ def restore_document(document_id: uuid.UUID, user: User, context: Context) -> di
         # place only when they may see every folder on it (a file given to them alone).
         shown = None if chain is None else trashed_sql.as_seen(conn, customer_id, chain)
         folder_shown = None if shown is None else shown_folder(conn, customer_id, shown.folder)
+        # #594: its folder was gone: the folder it went into, named only when the person may see it.
+        into = placed.into
+        visible = into is not None and bool(listing.folders_seen(conn, customer_id, [into]))
+        path = folders_sql.folder_path(conn, customer_id, into) if visible and into is not None else []
+        placed_folder = shown_folder(conn, customer_id, path[-1]) if path else None
     summary = document_summary(
         row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
     )
@@ -2032,9 +2040,22 @@ def restore_document(document_id: uuid.UUID, user: User, context: Context) -> di
             "location": None if shown.location is None else list(shown.location),
             "renamed": shown.renamed,
             "relocated": shown.relocated,
+            "sealed": shown.sealed,  # #594
         }
     )
+    # #594: where it went when its folder was gone (null: back where it was): the folder it went
+    # into (null when the person can't see it), or held for them until it is filed.
+    summary["placed"] = (
+        None if placed.into is None and not placed.held else {"held": placed.held, "folder": placed_folder}
+    )
     return summary
+
+
+def _placed_details(placed: trash.Placed) -> dict[str, audit.DetailValue] | None:
+    """``document.restore``'s details (#594): ids only; ``to`` the folder it went into, or ``held``."""
+    if placed.held:
+        return {"held": True}
+    return None if placed.into is None else {"to": placed.into}
 
 
 @router.delete("/documents/{document_id}/permanent", status_code=204)

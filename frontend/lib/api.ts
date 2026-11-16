@@ -55,6 +55,7 @@ import type {
   FolderItemsPage,
   FolderLimits,
   FolderBack,
+  FilePlaced,
   FolderRestored,
   FolderSummary,
   TrashedFolder,
@@ -389,7 +390,10 @@ export const deleteDocument = (id: string) => request<void>("DELETE", `/document
 /** Brings a document in Trash back, with every version of it; #542: and the folder that came
  * back with it, when it went to Trash with its folder (null otherwise). */
 export const restoreDocument = (id: string) =>
-  request<DocumentSummary & { restored_folder?: FolderBack | null }>("POST", `/documents/${id}/restore`);
+  request<DocumentSummary & { restored_folder?: FolderBack | null; placed?: FilePlaced | null }>(
+    "POST",
+    `/documents/${id}/restore`,
+  );
 /**
  * Read the document again from the start (PRD 2, X1): a reviewer or an admin,
  * for a ready, failed or unreadable document out of Trash (403 forbidden or

@@ -339,7 +339,8 @@ def test_a_new_version_takes_its_familys_access_and_join_undo_and_separate_chang
     assert _values(db, c)[loose] == (finance, None)
     assert (_given(db, c), _differences(db, c)) == (rows, [])
     with db.customer(c) as conn:
-        conn.execute(versions._ALONE_AGAIN, {"c": c, "d": loose, "folder": ops})
+        # Changed on purpose (#594): Undo also writes whom it is held for (here nobody).
+        conn.execute(versions._ALONE_AGAIN, {"c": c, "d": loose, "folder": ops, "held": None})
     assert _values(db, c)[loose] == (ops, None)
     assert (_given(db, c), _differences(db, c)) == (rows, [])
     with db.customer(c) as conn:

@@ -61,7 +61,7 @@ import {
 } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { docTypeLabel, fileTypeLabel, formatBytes, formatDate, formatDateTime, formatRelative } from "@/lib/format";
-import type { DocumentSummary, FolderBack, FolderRestored, Me, Tag, TrashedFolder } from "@/lib/types";
+import type { DocumentSummary, FilePlaced, FolderBack, FolderRestored, Me, Tag, TrashedFolder } from "@/lib/types";
 import { ActionDialog } from "./ActionDialog";
 import { EditDialog, MoveDialog, RowMenu } from "./DocumentActions";
 import { DOCUMENT_DRAG } from "./FolderNav";
@@ -104,6 +104,7 @@ import {
   foreverQuestion,
   lostTheRight,
   passwordAgain,
+  placedMessage,
   restoredMessage,
   runForever,
   selectable,
@@ -349,13 +350,14 @@ export function DocumentsTable({
       if (action !== "restore") return reply;
       if (isFolderKey(key)) {
         const restored = reply as FolderRestored;
-        if (restored.relocated || restored.renamed) notes.push(folderRestoredMessage(restored));
+        if (restored.relocated || restored.renamed || restored.sealed) notes.push(folderRestoredMessage(restored));
       } else {
-        const back = (reply as { restored_folder?: FolderBack | null }).restored_folder;
+        const { restored_folder: back, placed } = reply as { restored_folder?: FolderBack | null; placed?: FilePlaced | null };
         if (back) {
           foldersBack = true;
-          if (back.relocated || back.renamed) notes.push(folderBackMessage(back));
+          if (back.relocated || back.renamed || back.sealed) notes.push(folderBackMessage(back));
         }
+        if (placed) notes.push(placedMessage(placed)); // #594
       }
       return reply;
     };
@@ -816,11 +818,17 @@ const DocumentRow = memo(function DocumentRow({
     if (action === "restore") {
       setWorking(BUSY_WORDS.restore);
       let back: FolderBack | null = null; // #542: its folder came back with it
+      let placed: FilePlaced | null = null; // #594: its folder was gone: where it went instead
       void act(
         async (id) => {
-          back = (await restoreDocument(id)).restored_folder ?? null;
+          const reply = await restoreDocument(id);
+          back = reply.restored_folder ?? null;
+          placed = reply.placed ?? null;
         },
-        () => (back ? `${restoredMessage(document.display_name)} ${folderBackMessage(back)}` : restoredMessage(document.display_name)),
+        () =>
+          [restoredMessage(document.display_name), back && folderBackMessage(back), placed && placedMessage(placed)]
+            .filter(Boolean)
+            .join(" "),
         "Could not restore this document.",
         () => (back ? undefined : undoRemoval("restore", [document.id])),
       );
