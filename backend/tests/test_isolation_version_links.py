@@ -13,6 +13,7 @@ chosen order, into the latest's place with its owner, label and tags; the family
 stories follow (0100); Undo puts everything back while nothing newer joined. Two sessions at once
 wait for each other on the tree lock and never deadlock."""
 
+import io
 import json
 import threading
 import uuid
@@ -23,8 +24,9 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
+from kaagaz.cli import main
+from kaagaz.db import audit, trash
 from kaagaz.db import locks as locks_sql
-from kaagaz.db import trash
 from kaagaz.db import version_links as links_sql
 from kaagaz.db.engine import Database
 from tests.db_support import name_session, violation, wait_until_blocked
@@ -806,3 +808,23 @@ def test_undo_of_accept_takes_back_the_gifts_the_join_copied(db: Database) -> No
     assert status == 200, reply
     assert [r[0] for r in _owner(db, given, {"d": org.files["z"]})] == [named]
     assert [r[0] for r in _owner(db, given, {"d": org.files["x"]})] == [plain]
+
+
+def test_a_folder_kaagaz_made_that_a_link_empties_is_kept_for_its_undo(db: Database) -> None:
+    """Review B: y is the only file of a folder Kaagaz made. Linked into x, the folder is empty, but
+    ``prune-folders --apply`` keeps it while the link is not undone, and Undo puts y back in it."""
+    api = Api(db)
+    org = _org(api)
+    management, first = org.people["management"], org.people["admin"].user_id
+    made = api.add_folder(org.c, first, "Made by Kaagaz")
+    with db.customer(org.c) as conn:
+        audit.record(conn, org.c, actor_user_id=None, action="folder.create", target_type="folder",
+                     target_id=made, details={"auto": True})  # fmt: skip
+    _owner(db, "UPDATE documents SET folder_id = :f WHERE id = :d", {"f": made, "d": org.files["y"]})
+    assert _link(management, org, ["y", "x"], "x")[0] == 200
+    out = io.StringIO()
+    assert main(["prune-folders", "--customer-id", org.c, "--apply"], db=db, environ={}, out=out) == 0
+    assert _owner(db, "SELECT count(*) FROM folders WHERE id = :f", {"f": made})[0][0] == 1, out.getvalue()
+    status, reply = _undo(management, org, "x")
+    assert status == 200, reply
+    assert _state(db, org, "y")["y"]["folder_id"] == made

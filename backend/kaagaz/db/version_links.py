@@ -37,7 +37,7 @@ from sqlalchemy import Connection, RowMapping, text
 from sqlalchemy.exc import OperationalError
 
 from kaagaz.db import audit
-from kaagaz.db.folders import Place, _lock_tree, place_of
+from kaagaz.db.folders import Place, _lock_tree, place_of, prune_empty
 from kaagaz.db.sqlstate import sqlstate
 from kaagaz.db.trash import LIVE_FOLDERS, lock_live_family
 
@@ -139,12 +139,14 @@ _MEMBERS_BACK = text(
     " WHERE g.customer_id = :c AND g.document_id = m.id AND g.state = 'linked'"
 )
 _LINK = text(
-    "INSERT INTO version_links (customer_id, family_id, document_ids, snapshot, linked_by)"
-    " VALUES (:c, :f, CAST(:ids AS uuid[]), CAST(:snapshot AS jsonb), :by) RETURNING id::text"
+    "INSERT INTO version_links (customer_id, family_id, document_ids, folder_ids, snapshot, linked_by)"
+    " VALUES (:c, :f, CAST(:ids AS uuid[]), CAST(:folders AS uuid[]), CAST(:snapshot AS jsonb), :by)"
+    " RETURNING id::text"
 )
 # Undo: the family's newest link not undone, naming the version.
 _NEWEST_LINK = text(
-    "SELECT id::text, document_ids::text[], snapshot FROM version_links WHERE customer_id = :c"
+    "SELECT id::text, document_ids::text[], snapshot, folder_ids::text[] FROM version_links"
+    " WHERE customer_id = :c"
     " AND family_id = :f AND undone_at IS NULL ORDER BY linked_at DESC LIMIT 1"
 )
 # Each restored version's own place, owner and label, in one statement for one family.
@@ -357,11 +359,16 @@ def apply(conn: Connection, customer_id: str, plan: Plan, *, by: str) -> str:
     conn.execute(_COPY_TAGS, {"c": c, "ids": joined, "from": plan.current})
     _lock_members(conn, c, every)
     conn.execute(_LINKED, {"c": c, "ids": every, "by": by})
-    link = str(
-        conn.execute(
-            _LINK, {"c": c, "f": plan.family, "ids": every, "snapshot": json.dumps(snapshot), "by": by}
-        ).scalar_one()
-    )
+    left = sorted({folder for id_ in joined if (folder := plan.rows[id_]["folder_id"]) is not None})
+    params = {
+        "c": c,
+        "f": plan.family,
+        "ids": every,
+        "folders": left,
+        "snapshot": json.dumps(snapshot),
+        "by": by,
+    }
+    link = str(conn.execute(_LINK, params).scalar_one())
     for number, version in enumerate(every, 1):
         audit.record(
             conn,
@@ -390,6 +397,7 @@ class UndoPlan:
     order: list[str]
     snapshot: dict[str, Any]
     moves: list[Moved]
+    folders: list[str]  # the folders the link left
 
 
 def prepare_undo(conn: Connection, customer_id: str, document_id: str) -> UndoPlan:
@@ -409,7 +417,7 @@ def prepare_undo(conn: Connection, customer_id: str, document_id: str) -> UndoPl
     found = conn.execute(_NEWEST_LINK, {"c": c, "f": family}).first()
     if found is None or document_id not in found[1]:
         raise Refused("not_linked")
-    link, order, snapshot = found[0], list(found[1]), found[2]
+    link, order, snapshot, left = found[0], list(found[1]), found[2], list(found[3])
     if set(rows) != set(order):
         raise Refused("not_newest")  # a version uploaded, linked or made separate since
     back = snapshot["versions"]
@@ -430,7 +438,7 @@ def prepare_undo(conn: Connection, customer_id: str, document_id: str) -> UndoPl
         now, then = _given([rows[id_] for id_ in versions]), _given([back[id_] for id_ in versions])
         after = place_of(conn, c, first["folder_id"])
         moves.append(Moved(_place(here), here["held_for"], now, after, first["held_for"], then))
-    return UndoPlan(link, family, order, snapshot, list(dict.fromkeys(moves)))
+    return UndoPlan(link, family, order, snapshot, list(dict.fromkeys(moves)), left)
 
 
 def apply_undo(conn: Connection, customer_id: str, plan: UndoPlan, *, by: str) -> None:
@@ -476,6 +484,7 @@ def apply_undo(conn: Connection, customer_id: str, plan: UndoPlan, *, by: str) -
     _lock_members(conn, c, plan.order)
     conn.execute(_MEMBERS_BACK, {"c": c, "members": json.dumps(members)})
     conn.execute(_UNDONE, {"c": c, "l": plan.link, "by": by})
+    prune_empty(conn, c, plan.folders)  # no longer kept for this link (``folders._PRUNE``)
     for version in plan.order:
         audit.record(
             conn,
