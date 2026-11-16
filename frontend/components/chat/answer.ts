@@ -28,7 +28,8 @@ export const NOT_FOUND_TEXT = "Nothing in your documents matches this yet.";
 // An "unchecked" answer (a figure only in values not confirmed yet): no number, no
 // Review wording (Tushar, 16 Oct 2026); the documents follow it.
 export const UNCHECKED_TEXT = "This figure is in these documents. Open them to see it.";
-export const MAX_QUESTION_LENGTH = 1000;
+// #644: the API takes up to 20,000 characters and keeps the questions of a long one.
+export const MAX_QUESTION_LENGTH = 20000;
 
 // The chat's one status line for screen readers; the log itself stays quiet.
 export const ASKING_STATUS = "Looking through your documents…";

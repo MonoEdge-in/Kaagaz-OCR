@@ -98,7 +98,7 @@ from kaagaz.answering.clarify import (
     without_resume,
 )
 from kaagaz.answering.evidence import looks_like_instructions
-from kaagaz.answering.focus import cut
+from kaagaz.answering.focus import cut, parts
 from kaagaz.answering.memory import NO_MEMORY, Memory, from_row, live
 from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
@@ -429,6 +429,10 @@ def _ask(
         answering = None  # B2: a long or question-like text is a new question; the clarify is left
     if answering is not None and body.conversation_id is None:
         raise ApiError(409, "conflict", CLARIFY_GONE)
+    # #644 (cost): each part of a question of several asks beyond the first is one more question.
+    for _ in range(len(parts(question)[0]) - 1 if answering is None else 0):
+        if not chat_limits(context.settings.chat_questions_per_minute).allow(user.user_id):
+            raise ApiError(429, "rate_limited", TOO_MANY_QUESTIONS, headers={"Retry-After": "60"})
     conversation_id = None if body.conversation_id is None else str(body.conversation_id)
     chosen = body.scope
     recent: Sequence[RowMapping] = []

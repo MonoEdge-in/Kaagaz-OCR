@@ -258,6 +258,7 @@ from kaagaz.answering.focus import (
     about_focus,
     asks_other,
     asks_related,
+    names_subject,
     points_back,
     related,
     subject,
@@ -510,6 +511,8 @@ class _Timing:
 
 
 _TIMING: ContextVar[_Timing | None] = ContextVar("answer_timing", default=None)
+# Step 22: the answer's one deadline, on time.monotonic(), that a part's draft must end by (None: its own).
+_PART_DEADLINE: ContextVar[float | None] = ContextVar("part_deadline", default=None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -836,21 +839,37 @@ class AnswerService:
         at the part before it), at most PART_WORKERS at once (an answer holds at most two pooled
         connections, routers/chat.py), each in a copy of the context with its own timing and no
         streamed sentence. A part not started by the answer's one deadline (MODEL_TIMEOUT_SECONDS +
-        ENSEMBLE_SLACK_SECONDS, as ``_ensemble``) is not answered. Then ``_together``."""
+        ENSEMBLE_SLACK_SECONDS, as ``_ensemble``) is not answered, and a part's draft must end by it
+        (``_PART_DEADLINE``). Parts draft with the choice's lead model only, never an Ensemble (cost).
+        A part that points back at the part before it, which names its own property or person ("Who
+        owns Gat 12? What is its area?"), is searched with that part, never the focus. Each part's
+        stage times are added to the answer's (two at once, so they may add up to more than its
+        total). Then ``_together``."""
         deadline = time.monotonic() + self._settings.model_timeout_seconds + ENSEMBLE_SLACK_SECONDS
+        lead = (
+            choice if choice is None or len(choice.agents) <= 1 else replace(choice, agents=choice.agents[:1])
+        )
+        stream.emit("stage", {"stage": "searching"})  # step 21: the parts' lookups start here
 
         def one(index: int, part: str) -> tuple[Answer, _Timing] | None:
             if time.monotonic() > deadline:
                 return None
             start = time.monotonic()
             _TIMING.set(_Timing(start, start))  # this thread's copy of the context only
+            _PART_DEADLINE.set(deadline)
             stream.EVENTS.set(None)
-            alone = profile is not None or not index or not points_back(part)
-            step, exclude = _focused(
-                Step(part if alone else f"{part} ({asked[index - 1]})", ()), part, profile, scope
-            )
+            before = asked[index - 1] if index else ""
+            if (
+                before
+                and points_back(part)
+                and not names_subject(part)
+                and (profile is None or names_subject(before))
+            ):
+                step, exclude = Step(f"{part} ({before})", ()), None
+            else:
+                step, exclude = _focused(Step(part, ()), part, profile, scope)
             answer = self._step_answer(
-                customer_id, step, part, scope, user_id, whole, (), choice, pins, None, profile, exclude
+                customer_id, step, part, scope, user_id, whole, (), lead, pins, None, profile, exclude
             )
             return answer, _timing()
 
@@ -862,6 +881,8 @@ class AnswerService:
             if result is not None:
                 timing.degraded = timing.degraded or result[1].degraded
                 timing.vectorless = timing.vectorless or result[1].vectorless
+                for stage, ms in result[1].ms.items():
+                    timing.ms[stage] = timing.ms.get(stage, 0.0) + ms
         return _together(question, asked, total, [None if r is None else r[0] for r in results])
 
     def _overlapped(
@@ -2020,6 +2041,7 @@ class AnswerService:
                     seen,
                     max_tokens=self._settings.model_answer_max_tokens,
                     cards=cards,
+                    deadline=_PART_DEADLINE.get(),  # step 22: a part's draft ends by the answer's deadline
                 )
                 if streaming and events is not None and isinstance(self._model, StreamingModel):
                     preview = _Preview(question, seen, whole, events)
@@ -2416,19 +2438,26 @@ def _searched_as(question: str, normalised: NormalisedQuestion) -> tuple[Normali
 
 def _focused(step: Step, asked: str, profile: Profile | None, scope: Scope) -> tuple[Step, str | None]:
     """Step 22 (focus.py): for a question ``asked`` that points back at the focus or asks for its
-    related documents, the step with the focus's subject put in when its question (the rewrite's)
-    still points back, and the line saying what was understood and where it looks; and the focus to
-    leave out ("other", "else", or related documents), else None. The scope is never changed."""
-    if profile is None or step.clarify is not None or not (points_back(asked) or asks_related(asked)):
+    related documents, and names no property or person of its own, the step with the focus's subject
+    put in when its question (the rewrite's) still points back, and the line saying what was
+    understood and where it looks (neither when the focus has no subject it may say); and the focus
+    to leave out ("other document", or related documents), else None, never when the scope is the
+    focus alone. The scope is never changed."""
+    if profile is None or step.clarify is not None or names_subject(asked):  # it names its own subject
         return step, None
-    question = step.question
-    if points_back(question):
+    if not (points_back(asked) or asks_related(asked)):
+        return step, None
+    only = scope.document_ids == (profile.document_id,)  # asked in the focus alone: never left out
+    other = asks_other(asked) and not only
+    question, said = step.question, subject(profile)
+    if said and points_back(question):
         end = "?" if question.rstrip().endswith("?") else ""
-        question = f"{question.rstrip(' ?.')} ({subject(profile)}){end}"
+        question = f"{question.rstrip(' ?.')} ({said}){end}"
     narrowed = replace(scope, timezone=EVERYTHING.timezone) != EVERYTHING
-    line = understood(profile, narrowed=narrowed, other=asks_other(asked))
-    exclude = profile.document_id if asks_other(asked) or asks_related(asked) else None
-    return replace(step, question=question, assumptions=(*step.assumptions, line)), exclude
+    line = understood(profile, narrowed=narrowed, other=other)
+    exclude = profile.document_id if other or (asks_related(asked) and not only) else None
+    said_lines = (*step.assumptions, line) if line else step.assumptions
+    return replace(step, question=question, assumptions=said_lines), exclude
 
 
 MAX_PART_CHARS = 120  # of a part, as its line quotes it
@@ -2437,9 +2466,9 @@ MAX_PART_CHARS = 120  # of a part, as its line quotes it
 def _together(question: str, asked: Sequence[str], total: int, results: Sequence[Answer | None]) -> Answer:
     """Step 22: the parts' answers as one, part by part: a line quoting each part, then its own
     sentences, citations (numbered on), documents and checks; a part that found nothing, or was not
-    started in time, says so in its line. Verified only when every part answered is. No part found:
-    not found, with every part's closest documents and missing words. More than MAX_PARTS asked:
-    says how many were answered. O(s + c) in the parts' sentences and citations."""
+    started in time, or met an outage, says so in its line. Verified only when every part answered
+    is. No part found: not found, with every part's closest documents and missing words. More than
+    MAX_PARTS asked: says how many were answered. O(s + c) in the parts' sentences and citations."""
     found = [a for a in results if a is not None and a.status in ("answered", "unchecked")]
     sentences: list[AnswerSentence] = []
     citations: list[Citation] = []
@@ -2457,6 +2486,11 @@ def _together(question: str, asked: Sequence[str], total: int, results: Sequence
             )
             continue
         said += [line for line in answer.assumptions if line not in said]
+        if answer.unavailable or answer.outage_reason == "timeout":  # KZ-006: an outage is no "not found"
+            sentences.append(
+                AnswerSentence(f"{head} I couldn't check this just now. Ask it again in a minute.", [])
+            )
+            continue
         if answer.status not in ("answered", "unchecked"):
             sentences.append(AnswerSentence(f"{head} I couldn't find this in your documents.", []))
             continue
