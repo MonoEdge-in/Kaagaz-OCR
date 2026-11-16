@@ -77,6 +77,7 @@ KEPT = {
     "page_rotations",
     "document_shares",
     "lock_grants",
+    "whatsapp_messages",  # Changed on purpose (#603, 0097): the person's own message that saved it
 }
 CLEARED_COLUMNS = {
     "doc_type",
