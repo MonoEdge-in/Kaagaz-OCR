@@ -23,6 +23,11 @@ at merge (lead's order, 16 Nov 2026: 0094 search, 0095 #652, 0096 #651, 0097 and
 * Row level security with ``customer_only``. The app and the worker role alike (0083's equality
   test): runs read, added and only their progress columns updated; pairs read and added; members
   read, added and only their decision columns updated. None is ever deleted by the app.
+  **NEEDS VRUSHIT'S APPROVAL** (after PRD 7 PR 9, #606): neither carries 0091's ``person_only``
+  policy (``test_isolation_person_rule.EXEMPT``). The worker writes both with no person, which no
+  person rule holds; the API reads pairs only joined to ``visible_documents`` for both files, and
+  must see a group's member it can't see to hide the whole group (all or nothing), which a person
+  rule on members would hide instead, showing the rest.
 * ``kaagaz_clear_derived`` (0093) also deletes a version's pairs and memberships when it is
   locked: they are worked out from its content (PRD 7 appendix B).
 

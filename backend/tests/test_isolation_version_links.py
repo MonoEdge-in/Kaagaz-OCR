@@ -852,3 +852,92 @@ def test_an_undo_that_opens_a_file_to_the_admin_asks_their_password(
     assert (status, reply["error"]["code"]) == (403, "password_required")
     assert _everything(db, org) == before
     assert _undo(admin, org, "x", password=PASSWORD)[0] == 200
+
+
+# --- the per-person rule (PRD 7 PR 9, #606) ------------------------------------------------------
+
+
+def _sql(db: Database, org: Org, who: str | None, statement: str, **params: Any) -> Any:
+    """``statement``'s first column as the app role, as ``who`` (None: no person, as the worker)."""
+    database = _app(db)
+    with database.customer(org.c) if who is None else database.user(org.c, org.people[who].user_id) as conn:
+        return conn.execute(text(statement), params).scalar()
+
+
+def _refused_with(db: Database, org: Org, who: str | None, statement: str, **params: Any) -> str | None:
+    with pytest.raises(DBAPIError) as refused:
+        _sql(db, org, who, statement, **params)
+    return violation(refused.value)[0]
+
+
+_FAMILIES_OF = "SELECT array_agg(seen ORDER BY id) FROM kaagaz_link_families(CAST(:ids AS uuid[]), false)"
+_LINK_FN = "SELECT kaagaz_link_versions(CAST(:order AS uuid[]), :current)"
+_UNDO_FN = "SELECT kaagaz_link_undo(:link)"
+
+
+def test_the_link_functions_check_their_caller_and_every_version_again(db: Database) -> None:
+    """0100's owner-rights functions, called past the route: anyone but an Admin or Management (or no
+    person) is refused; a link of versions that aren't their families' whole, of a version the caller
+    can't see, locked or not ready, or of one family only, and an Undo of a link not the newest, of
+    a family changed since, or by someone who can't see a version, are refused; nothing is written."""
+    org = _org(Api(db))
+    f = org.files
+    for who in ("member", "head", None):
+        assert _refused_with(db, org, who, _FAMILIES_OF, ids=[f["x"]]) == "42501", who
+        assert _refused_with(db, org, who, _LINK_FN, order=[f["x"], f["z"]], current=f["x"]) == "42501", who
+    before = _everything(db, org)
+    _owner(
+        db, "UPDATE documents SET folder_id = :f WHERE id = :d", {"f": org.folders["finance"], "d": f["g1"]}
+    )
+    seen = [name != "g1" for name in sorted(("g1", "g2"), key=f.__getitem__)]
+    assert _sql(db, org, "admin", _FAMILIES_OF, ids=[f["g2"]]) == seen  # g1 is there, hidden from the Admin
+    _owner(db, "UPDATE documents SET folder_id = :f WHERE id = :d", {"f": org.folders["old"], "d": f["g1"]})
+    _owner(db, "UPDATE documents SET status = 'failed' WHERE id = :d", {"d": f["y"]})
+    refusals = (
+        ("management", [f["g2"], f["x"]], f["x"]),  # g1 left out
+        ("admin", [f["x"], f["fin"]], f["x"]),  # fin is hidden from the Admin
+        ("management", [f["x"], f["bin"]], f["x"]),  # in Trash
+        ("management", [f["x"], f["y"]], f["y"]),  # the latest isn't ready
+        ("management", [f["g1"], f["g2"]], f["g2"]),  # one family
+        ("management", [f["x"], f["x"]], f["x"]),  # twice
+    )
+    for who, order, current in refusals:
+        assert _refused_with(db, org, who, _LINK_FN, order=order, current=current) == "23514", (who, order)
+    _owner(db, "UPDATE documents SET status = 'ready' WHERE id = :d", {"d": f["y"]})
+    assert _everything(db, org) == before
+    first = _sql(db, org, "management", _LINK_FN, order=[f["x"], f["z"]], current=f["z"])
+    second = _sql(db, org, "management", _LINK_FN, order=[f["x"], f["z"], f["y"]], current=f["y"])
+    assert _refused_with(db, org, "management", _UNDO_FN, link=first) == "23514"  # not the newest
+    newer = Api(db).add_document(org.c, name="v.pdf", family_id=f["y"], version_no=4, is_current=False)
+    assert _refused_with(db, org, "management", _UNDO_FN, link=second) == "23514"  # the family changed
+    _owner(db, "DELETE FROM documents WHERE id = :d", {"d": newer})
+    _owner(
+        db, "UPDATE documents SET folder_id = :f WHERE id = :d", {"f": org.folders["finance"], "d": f["z"]}
+    )
+    assert _refused_with(db, org, "admin", _UNDO_FN, link=second) == "23514"  # z is hidden from the Admin
+    assert _refused_with(db, org, "member", _UNDO_FN, link=second) == "42501"
+    _sql(db, org, "management", _UNDO_FN, link=second)
+    assert _state(db, org, "y")["y"]["family_id"] == "y"
+
+
+def test_a_live_links_folder_is_kept_whoever_prunes_it(db: Database) -> None:
+    """Why version_links has no person rule (#648, NEEDS VRUSHIT'S APPROVAL): y and k2 are in a folder
+    Kaagaz made; y is linked into fin (Finance). The plain reviewer, who can't see fin or the link,
+    moves k2 out, which prunes the folder if it is empty and no live link keeps it: it is kept, and
+    Undo puts y back in it."""
+    api = Api(db)
+    org = _org(api)
+    management, first = org.people["management"], org.people["admin"].user_id
+    made = api.add_folder(org.c, first, "Made by Kaagaz")
+    with db.customer(org.c) as conn:
+        audit.record(conn, org.c, actor_user_id=None, action="folder.create", target_type="folder",
+                     target_id=made, details={"auto": True})  # fmt: skip
+    _owner(db, "UPDATE documents SET folder_id = :f WHERE id = :d", {"f": made, "d": org.files["y"]})
+    k2 = api.add_document(org.c, name="k2.pdf", folder_id=made, uploaded_by=first)
+    assert _link(management, org, ["y", "fin"], "fin")[0] == 200
+    moved = org.people["plain"].client.patch(f"/api/documents/{k2}", json={"folder_id": None}, headers=CSRF)
+    assert moved.status_code == 200, moved.text
+    assert _owner(db, "SELECT count(*) FROM folders WHERE id = :f", {"f": made})[0][0] == 1
+    status, reply = _undo(management, org, "y")
+    assert status == 200, reply
+    assert _state(db, org, "y")["y"]["folder_id"] == made
