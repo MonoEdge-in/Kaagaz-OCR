@@ -391,9 +391,7 @@ def restore_trashed_folder(folder_id: uuid.UUID, user: User, context: Context) -
         if not uploaded_every_version(found.uploaders, user):
             raise ApiError(403, "forbidden")
         try:
-            restored = trashed_sql.restore_folder(
-                conn, user.customer_id, target, admin=user.role == "admin", by=user.user_id
-            )
+            restored = trashed_sql.restore_folder(conn, user.customer_id, target, admin=user.role == "admin")
         except trashed_sql.DepartmentAdminOnly as refused:
             raise ApiError(403, "forbidden", department_only_admin(conn, user, refused)) from None
         except folders_sql.FolderNameTaken:

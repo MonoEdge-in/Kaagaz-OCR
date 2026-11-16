@@ -16,7 +16,7 @@ from kaagaz.api.routers.documents import ASK_AN_ADMIN
 from kaagaz.api.routers.folders import HIDDEN_INSIDE
 from kaagaz.db.engine import Database
 from kaagaz.search.scope import EVERYTHING, FileFilters, narrow
-from tests.db_support import insert_folder, until_0092
+from tests.db_support import insert_folder
 from tests.test_api_delete_forever_grant import _confirm, _grant
 from tests.test_api_folder_upload_files import ResumableStorage, _fingerprint
 from tests.test_api_folder_uploads import TREE, item, plan, register
@@ -32,10 +32,9 @@ _DATA = b"%PDF-1.7\n" + b"7" * 300
 
 
 def _trash(org: Org, folder: str) -> None:
-    # Changed on purpose (PR 9a, #606): an Admin deleting a folder with files they can't see works under the
-    # rule only with PR 9b's functions (0092); until then this set-up step runs with it off.
-    with until_0092():
-        reply = org.people["admin"].client.delete(f"/api/folders/{folder}?contents=trash", headers=CSRF)
+    # Changed on purpose (PR 9b, #606): an Admin deletes a folder with files they can't see, with the rule on
+    # (0092's owner-rights functions).
+    reply = org.people["admin"].client.delete(f"/api/folders/{folder}?contents=trash", headers=CSRF)
     assert reply.status_code == 200, reply.text
 
 
@@ -77,9 +76,9 @@ def test_restoring_a_folder_under_a_hidden_one_names_neither_nor_counts_the_hidd
     _trash(org, payroll)
     items = named.client.get("/api/documents/trash/folders").json()["items"]
     assert [(i["id"], i["can_restore"]) for i in items] == [(inner, True)], items
-    # Changed on purpose (PR 9a, #606): a restore that brings back a folder hidden from them is PR 9b's.
-    with until_0092():
-        back = named.client.post(f"/api/documents/trash/folders/{inner}/restore", headers=CSRF)
+    # Changed on purpose (PR 9b, #606): with the rule on, the restore still brings back Payroll, hidden from
+    # them (0092 reads the whole delete).
+    back = named.client.post(f"/api/documents/trash/folders/{inner}/restore", headers=CSRF)
     assert back.status_code == 200, back.text
     body = back.json()
     assert (body["folder"]["id"], body["folder"]["parent_id"], body["location"]) == (inner, None, None)

@@ -28,7 +28,6 @@ from kaagaz.db import trashed_folders as trashed_folders_sql
 from kaagaz.db.engine import Database
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.jobs.purge import _purge_trash_of
-from tests.db_support import until_0092
 from tests.test_api_admin_sign_in import _turned_off
 from tests.test_api_delete_forever_grant import _confirm, _grant
 from tests.test_api_support import CSRF, Api, Signed
@@ -37,11 +36,8 @@ pytestmark = pytest.mark.db
 
 
 def _trash(signed: Signed, folder_id: str) -> httpx.Response:
-    # Changed on purpose (PR 9a, #606): an Admin deleting a folder with files they can't see
-    # works under the rule only
-    # with PR 9b's functions (0092); until then this step runs with the rule off.
-    with until_0092():
-        reply: httpx.Response = signed.client.delete(f"/api/folders/{folder_id}?contents=trash", headers=CSRF)
+    # Changed on purpose (PR 9b, #606): an Admin deletes a folder with files they can't see, with the rule on.
+    reply: httpx.Response = signed.client.delete(f"/api/folders/{folder_id}?contents=trash", headers=CSRF)
     assert reply.status_code == 200, reply.text
     return reply
 

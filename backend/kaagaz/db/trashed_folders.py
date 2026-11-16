@@ -39,9 +39,12 @@ Who can see what (PRD 7, #599): Trash shows each person only the folders they ma
 inside one they can't is an item of its own for them. Restore and delete forever act on the whole
 delete as before, after the route found the folder visible; who uploaded each version is read
 over every file (the restore rule), and ``hidden_inside`` says whether anything in it is hidden.
+#606: under the database rule those whole-delete reads and writes are 0092's owner-rights
+functions (``kaagaz_restore_folder``, ``kaagaz_restore_with_folders``, ``kaagaz_trash_uploaders``,
+``kaagaz_trash_families``, ``kaagaz_purge_family``), which check the caller and take the same locks.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
@@ -49,11 +52,7 @@ from typing import Any
 from sqlalchemy import Connection, text
 
 from kaagaz.db import trash
-from kaagaz.db.documents import NotInTrash, delete_family_forever
 from kaagaz.db.folders import (
-    _DEPTH,
-    _FREE,
-    MAX_DEPTH,
     FolderError,
     FolderNameTaken,
     FolderNotFound,
@@ -61,9 +60,8 @@ from kaagaz.db.folders import (
     FolderTooDeep,
     _folder,
     _lock_tree,
-    _numbered,
-    _write_named,
     folder_path,
+    prune_empty,
 )
 from kaagaz.ingestion.ports import BlobStorage
 
@@ -184,14 +182,15 @@ _HELD = (
     " WHERE t.customer_id = :c AND down.depth < 101),"
     " held AS (SELECT down.item, count(v.id) - 1 AS folders FROM down"
     " LEFT JOIN visible_trashed_folders v ON v.customer_id = :c AND v.id = down.id GROUP BY down.item),"
-    " filed AS (SELECT down.item, count(DISTINCT d.family_id) FILTER (WHERE s.id IS NOT NULL) AS files,"
-    " array_agg(DISTINCT d.uploaded_by) AS uploaders"
+    " filed AS (SELECT down.item, count(DISTINCT d.family_id) FILTER (WHERE s.id IS NOT NULL) AS files"
     " FROM down JOIN documents d"
     " ON d.customer_id = :c AND d.trashed_folder_id = down.id AND d.trash_id = down.trash_id"
     " LEFT JOIN visible_documents s ON s.customer_id = :c AND s.id = d.id"
     " GROUP BY down.item)"
     " SELECT i.id, i.parent_id, i.name, i.kind, i.deleted_at, u.display_name, h.folders,"
-    " coalesce(f.files, 0), f.uploaders,"
+    # PRD 7 (#606): who uploaded every file, the restore rule, from the whole tables
+    # (kaagaz_trash_uploaders, 0092): under the database rule a hidden file's uploader would be missed.
+    " coalesce(f.files, 0), kaagaz_trash_uploaders(i.id),"
     " EXISTS (SELECT 1 FROM folders l WHERE l.customer_id = :c AND l.id = i.parent_id),"
     # PRD 7 (#606): what is hidden inside, from the whole tables (kaagaz_hidden_inside, 0091): the
     # walk above, under the database rule, would find no hidden folder or file to count.
@@ -231,62 +230,37 @@ _SEEN_RESTORE = text(
     " WHERE customer_id = :c AND family_id = ANY(CAST(:families AS uuid[])))"
 )
 
-# PRD 7 (#606): from the whole table (kaagaz_existing, 0091): a live folder the person can't see is live.
-_ANY_LIVE = (
-    "SELECT EXISTS (SELECT 1 FROM kaagaz_existing('folder', CAST(:ids AS uuid[])))"
-    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
-)
 _TOP = (
-    "SELECT parent_id, name, trash_id, kind, department_id, private_folder_id, private FROM trashed_folders"
+    "SELECT parent_id, name, trash_id, kind, department_id, private_folder_id FROM trashed_folders"
     " WHERE customer_id = :c AND id = :f"
 )
-# The rows back into folders, the topmost under its new parent and name, and private when :seal
-# (#594); an auto-filing key a live folder holds now is dropped (folders_autofile_key keeps one a key).
-_MAKE_LIVE = (
-    "INSERT INTO folders (id, customer_id, parent_id, name, created_by, created_at, kind, sort_order,"
-    " autofile_key, department_only, private, department_id, private_folder_id)"
-    " SELECT t.id, t.customer_id, CASE WHEN t.id = :top THEN CAST(:p AS uuid) ELSE t.parent_id END,"
-    " CASE WHEN t.id = :top THEN CAST(:name AS text) ELSE t.name END, t.created_by, t.created_at, t.kind,"
-    " t.sort_order, CASE WHEN EXISTS (SELECT 1 FROM folders k WHERE k.customer_id = :c"
-    " AND k.autofile_key = t.autofile_key) THEN NULL ELSE t.autofile_key END, t.department_only,"
-    " t.private OR (t.id = :top AND :seal), t.department_id, t.private_folder_id"
-    " FROM trashed_folders t WHERE t.customer_id = :c AND t.id = ANY(CAST(:ids AS uuid[]))"
-    " RETURNING id, parent_id, name, created_at, kind, sort_order, department_only, private"
-)
-# #594 (A): the restorer named on the folder their restore sealed, unless Management (who sees it).
-_NAME_RESTORER = (
-    "INSERT INTO private_folder_members (customer_id, folder_id, user_id, added_by)"
-    " SELECT :c, :top, u.id, u.id FROM users u WHERE u.customer_id = :c AND u.id = :by AND NOT u.management"
-)
 _DROP = "DELETE FROM trashed_folders WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
-# Every family filed in these trashed folders back into its folder, out of Trash, in one
-# statement; the rows locked in family order (each family's first version, then by id).
-_RESTORE_IN = (
-    "UPDATE documents d SET deleted_at = NULL, deleted_by = NULL, folder_id = d.trashed_folder_id,"
-    " trashed_folder_id = NULL, trash_id = NULL FROM ("
-    " SELECT id FROM documents WHERE customer_id = :c AND trashed_folder_id = ANY(CAST(:ids AS uuid[]))"
-    " ORDER BY family_id, (id <> family_id), id FOR NO KEY UPDATE) AS l"
-    " WHERE d.customer_id = :c AND d.id = l.id RETURNING d.family_id"
-)
-# One family (locked already) out of Trash, into :into (its folder made live), or held for :by
-# (#594; one already held keeps its holder).
-_RESTORE_FAMILY = (
-    "UPDATE documents SET deleted_at = NULL, deleted_by = NULL, folder_id = CAST(:into AS uuid),"
-    " held_for = CASE WHEN :hold AND held_for IS NULL THEN CAST(:by AS uuid) ELSE held_for END,"
-    " trashed_folder_id = NULL, trash_id = NULL WHERE customer_id = :c AND family_id = :f"
-)
-# The rest of a chain's files: still in Trash, now in their live folder (as a file trashed alone).
-_INTO_LIVE = (
-    "UPDATE documents d SET folder_id = d.trashed_folder_id, trashed_folder_id = NULL, trash_id = NULL FROM ("
-    " SELECT id FROM documents WHERE customer_id = :c AND trashed_folder_id = ANY(CAST(:ids AS uuid[]))"
-    " ORDER BY family_id, (id <> family_id), id FOR NO KEY UPDATE) AS l"
-    " WHERE d.customer_id = :c AND d.id = l.id"
+# PRD 7 (#606): a restore, whole, by the owner-rights functions of 0092 (this module's rules, #542
+# and #594): under the database rule its walks would stop at a folder the person can't see, and its
+# writes skip the files they can't see. One row for the topmost folder made live and one for the
+# folder asked for; one row saying why (``refused``) when nothing was done; none for one the person
+# can't see, as for one that isn't there.
+_RESTORE_FOLDER = "SELECT * FROM kaagaz_restore_folder(:f) WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
+_RESTORE_WITH_FOLDERS = (
+    "SELECT * FROM kaagaz_restore_with_folders(:d) WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 _FILED_IN = "SELECT trashed_folder_id FROM documents WHERE customer_id = :c AND id = :f"
+# PRD 7 (#606): every family inside, seen or not (kaagaz_trash_families, 0092): an Admin's delete
+# forever deletes the files they can't see too; anyone else's holds nothing hidden (F6).
 _FAMILIES_IN = (
-    "SELECT DISTINCT family_id FROM documents WHERE customer_id = :c"
-    " AND trashed_folder_id = ANY(CAST(:ids AS uuid[])) ORDER BY family_id"
+    "SELECT f.id FROM kaagaz_trash_families(:f) AS f (id) WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
+# PRD 7 (#606): one family deleted for good, seen or not (kaagaz_purge_family, 0092): every version
+# when every one is in Trash, else none; each one's id and folder.
+_PURGE_FAMILY = (
+    "SELECT document_id, folder_id FROM kaagaz_purge_family(:f)"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
+)
+_REFUSED: dict[str, Callable[[], FolderError]] = {
+    "folder_live": FolderLive,
+    "folder_too_deep": FolderTooDeep,
+    "folder_names_taken": FolderNameTaken,
+}
 _EXISTS = "SELECT EXISTS (SELECT 1 FROM visible_trashed_folders WHERE customer_id = :c AND id = :f)"
 # PRD 7 (#606): any file inside, seen or not, the whole subtree walked from the whole tables
 # (kaagaz_hidden_inside, 0091): a hidden file left in it must stop the delete.
@@ -367,32 +341,20 @@ def exists(conn: Connection, customer_id: str, folder_id: str) -> bool:
     return bool(conn.execute(text(_EXISTS), {"c": customer_id, "f": folder_id}).scalar())
 
 
-def restore_folder(conn: Connection, customer_id: str, folder_id: str, *, admin: bool, by: str) -> Restored:
+def restore_folder(conn: Connection, customer_id: str, folder_id: str, *, admin: bool) -> Restored:
     """Make the trashed folder live again, with every folder and file of its delete inside it,
     and the folders of its delete above it (with only it in them). Raises FolderNotFound,
     FolderLive (an id is live already), DepartmentAdminOnly (a department, and not ``admin``),
     FolderTooDeep (its live folder moved too deep meanwhile) or FolderNameTaken (no free number
-    up to 100). A fixed number of statements however large: O(s log F + n log D) for the s
-    folders and n documents."""
+    up to 100). PRD 7 (#606): the whole delete, seen or not (``kaagaz_restore_folder``, 0092).
+    Three statements however large: O(s log F + n log D) for the s folders and n documents."""
     _lock_tree(conn, customer_id)
-    chain = [str(i) for i, _ in conn.execute(text(_CHAIN), {"c": customer_id, "f": folder_id})]
-    if not chain:
-        raise FolderNotFound()
     _admin_for_the_top(conn, customer_id, folder_id, admin=admin)
-    subtree = conn.execute(text(_SUBTREE), {"c": customer_id, "f": folder_id}).all()
-    inside = [str(row[0]) for row in subtree]
-    above = chain[:-1]
-    height = len(above) + max(int(row[1]) for row in subtree)
-    restored = _make_live(conn, customer_id, above + inside, height, admin=admin, by=by, asked=folder_id)
-    families = {str(f) for f in conn.execute(text(_RESTORE_IN), {"c": customer_id, "ids": inside}).scalars()}
-    _finish(conn, customer_id, above, above + inside)
-    return replace(
-        restored,
-        folders=len(inside) - 1,
-        files=len(families),
-        below=tuple(inside[1:]),
-        families=tuple(families),
-    )
+    rows = conn.execute(text(_RESTORE_FOLDER), {"c": customer_id, "f": folder_id}).all()
+    restored = _restored(conn, customer_id, rows)
+    if restored is None:
+        raise FolderNotFound()
+    return restored
 
 
 def restore_document(
@@ -403,31 +365,16 @@ def restore_document(
     chain of folders above it (``restore_folder``'s rules), their other files staying in Trash.
     (None, None) when there is no such document; else where it went (``trash.Placed``) and the
     Restored when folders came back. Every restore takes the tree lock before the family's, as
-    every tree change: one can change who sees the file (0085). O(v log D + d) for v versions,
-    depth d."""
+    every tree change: one can change who sees the file (0085). PRD 7 (#606): the chain whole, seen
+    or not (``kaagaz_restore_with_folders``, 0092). O(v log D + d) for v versions, depth d."""
     _lock_tree(conn, customer_id)
-    if conn.execute(text(_FILED_IN), {"c": customer_id, "f": document_id}).scalar() is None:
+    folder = conn.execute(text(_FILED_IN), {"c": customer_id, "f": document_id}).scalar()
+    if folder is None:
         return trash.restore_document(conn, customer_id, document_id, by=by), None
-    family_id = trash.lock_family(conn, customer_id, document_id)
-    if family_id is None:
-        return None, None
-    folder = conn.execute(text(_FILED_IN), {"c": customer_id, "f": family_id}).scalar()
-    if folder is None:  # restored meanwhile, under the lock we waited for
-        return trash.restore_document(conn, customer_id, document_id, by=by), None
-    chain = [str(i) for i, _ in conn.execute(text(_CHAIN), {"c": customer_id, "f": folder})]
-    if chain:
-        _admin_for_the_top(conn, customer_id, str(folder), admin=admin)
-    restored = _make_live(conn, customer_id, chain, len(chain), admin=admin, by=by) if chain else None
-    # Its folder missing can't happen; then where trash.place_family says (#594), never the top level.
-    placed = trash.Placed(into=str(folder)) if chain else trash.place_family(conn, customer_id, family_id)
-    params = {"c": customer_id, "f": family_id, "into": placed.into, "hold": placed.held, "by": by}
-    conn.execute(text(_RESTORE_FAMILY), params)
-    _finish(conn, customer_id, chain, chain)
-    if restored is None:
-        return placed, None
-    return trash.Placed(), replace(
-        restored, folders=len(chain) - 1, files=1, below=tuple(chain[1:]), families=(family_id,)
-    )
+    _admin_for_the_top(conn, customer_id, str(folder), admin=admin)
+    rows = conn.execute(text(_RESTORE_WITH_FOLDERS), {"c": customer_id, "d": document_id}).all()
+    restored = _restored(conn, customer_id, rows)
+    return (None, None) if restored is None else (trash.Placed(), restored)
 
 
 def as_seen(conn: Connection, customer_id: str, restored: Restored) -> Restored | None:
@@ -457,20 +404,24 @@ def as_seen(conn: Connection, customer_id: str, restored: Restored) -> Restored 
 def families_in(conn: Connection, customer_id: str, folder_id: str) -> tuple[str, list[str]] | None:
     """The trash_id of the trashed folder and the families of its delete in it at every depth, for
     delete forever to delete one per transaction (``delete_family``); None if there is no such
-    folder. Three statements, O(s log T + n log D)."""
+    folder. Two statements, O(s log T + n log D)."""
     top = conn.execute(text(_TOP), {"c": customer_id, "f": folder_id}).first()
     if top is None:
         return None
-    inside = [str(row[0]) for row in conn.execute(text(_SUBTREE), {"c": customer_id, "f": folder_id})]
-    families = conn.execute(text(_FAMILIES_IN), {"c": customer_id, "ids": inside}).scalars()
+    families = conn.execute(text(_FAMILIES_IN), {"c": customer_id, "f": folder_id}).scalars()
     return str(top[2]), [str(f) for f in families]
 
 
 def drop_folder(conn: Connection, customer_id: str, folder_id: str, *, files: int) -> Deleted:
     """Delete forever's last step, once its families are gone: the trashed folder and every one
-    of its delete inside it, under the tree lock. Raises FolderNotFound (gone meanwhile) or
-    FolderNotEmptied (a document still names one of them: none is deleted). Four statements."""
+    of its delete inside it, under the tree lock. Raises FolderNotFound (gone meanwhile, or no
+    longer one the person may see) or FolderNotEmptied (a document still names one of them: none
+    is deleted). Five statements."""
     _lock_tree(conn, customer_id)
+    # PRD 7 (#606): read again under the lock: "any file left" (kaagaz_hidden_inside) counts only a
+    # folder the person sees, so one they can't see must stop here, not read as empty.
+    if not exists(conn, customer_id, folder_id):
+        raise FolderNotFound()
     top = conn.execute(text(_TOP), {"c": customer_id, "f": folder_id}).first()
     if top is None:
         raise FolderNotFound()
@@ -482,12 +433,16 @@ def drop_folder(conn: Connection, customer_id: str, folder_id: str, *, files: in
 
 
 def delete_family(conn: Connection, storage: BlobStorage, customer_id: str, family_id: str) -> bool:
-    """One family of a folder being deleted forever, in the caller's own transaction; False if it
-    is no longer in Trash or gone (restored or deleted meanwhile), and nothing is deleted."""
-    try:
-        return delete_family_forever(conn, storage, customer_id, family_id) is not None
-    except NotInTrash:
-        return False
+    """One family of a folder being deleted forever, in the caller's own transaction: every
+    version's row (``kaagaz_purge_family``, seen or not, PRD 7), the folder Kaagaz made that it
+    leaves empty, then its stored files, so a storage failure rolls the rows back (``delete_forever``'s
+    order). False if it is no longer in Trash or gone (restored or deleted meanwhile), and nothing
+    is deleted. One statement, then one a folder and O(k) storage calls a version."""
+    gone = conn.execute(text(_PURGE_FAMILY), {"c": customer_id, "f": family_id}).all()
+    prune_empty(conn, customer_id, [None if row.folder_id is None else str(row.folder_id) for row in gone])
+    for row in gone:
+        storage.delete(customer_id, str(row.document_id))
+    return bool(gone)
 
 
 def purge_folders(conn: Connection, customer_id: str, *, before: datetime) -> int:
@@ -524,44 +479,18 @@ def _items(conn: Connection, customer_id: str, head: str, params: dict[str, Any]
     ]
 
 
-def _make_live(
-    conn: Connection,
-    customer_id: str,
-    ids: Sequence[str],
-    height: int,
-    *,
-    admin: bool,
-    by: str,
-    asked: str | None = None,
-) -> Restored:
-    """Put the trashed folders ``ids`` (the topmost first, every other one under one of them) back
-    into folders, by user ``by``; the topmost into its folder when live, else where
-    ``_out_of_folder`` says, under the first free name. A department (top level only, so only ever
-    the topmost) only for an ``admin``. When that seals it (#594, A), ``by`` is named on it unless
-    an admin or Management: they passed the visibility check, so they gain nothing new, and the
-    restore is never hidden from the person who made it. The caller holds the tree lock and moves
-    the documents. A fixed number of statements."""
-    params: dict[str, Any] = {"c": customer_id, "ids": list(ids)}
-    if conn.execute(text(_ANY_LIVE), params).scalar():
-        raise FolderLive()
-    top = ids[0]
-    parent, name, trash_id, kind, department, private, own = conn.execute(
-        text(_TOP), {**params, "f": top}
-    ).one()
-    if kind == "department" and not admin:
-        raise DepartmentAdminOnly(top)
-    # PRD 7 (#606): live and deep as the whole tree says (a folder the person can't see is live).
-    live = parent is not None and str(parent) in trash.live_folders(conn, customer_id, [str(parent)])
-    relocated = seal = False
-    if not live:  # #594: never the top level when it was in a department or a private folder
-        relocated = parent is not None
-        parent, seal = _out_of_folder(conn, customer_id, top, department, private)
-    path = [] if parent is None else folder_path(conn, customer_id, str(parent))
-    depth = (
-        0 if parent is None else int(conn.execute(text(_DEPTH), {"c": customer_id, "f": parent}).scalar_one())
-    )
-    if depth + height > MAX_DEPTH:
-        raise FolderTooDeep()
+def _restored(conn: Connection, customer_id: str, rows: Sequence[Any]) -> Restored | None:
+    """A restore function's rows as a Restored (None: no such folder or file for the person); its
+    place, root first, from ``folder_path`` (a folder the person can't see ends that walk: then no
+    place is named, ``as_seen``). Raises the FolderError a refusal names. O(d) for its depth d."""
+    if not rows:
+        return None
+    if rows[0].refused is not None:
+        raise _REFUSED[rows[0].refused]()
+    top = next(row for row in rows if row.is_top)
+    asked = next((row for row in rows if row.is_asked), None)
+    parent = None if top.parent_id is None else str(top.parent_id)
+    path = [] if parent is None else folder_path(conn, customer_id, parent)
     location = tuple(row.name for row in path)
     location_ids = tuple(row.id for row in path)
     if parent is not None and (not path or path[0].parent_id is not None):
@@ -569,50 +498,33 @@ def _make_live(
         # (as_seen) names no place, as it names none with any folder on it hidden.
         location = ()
         location_ids = (str(path[0].parent_id if path else parent), *location_ids)
-    sibling = "parent_id IS NULL" if parent is None else "parent_id = CAST(:p AS uuid)"
-    names = [str(name), *(_numbered(str(name), n) for n in range(2, 101))]
-    free = conn.execute(text(_FREE.format(where=sibling)), {**params, "p": parent, "names": names}).scalar()
-    if free is None:
-        raise FolderNameTaken()
-    values = {**params, "top": top, "p": parent, "name": free, "seal": seal}
-    made = _write_named(conn, _MAKE_LIVE, values).all()
-    sealed = seal and not own  # only when the seal made it private
-    if sealed and not admin:
-        conn.execute(text(_NAME_RESTORER), {**params, "top": top, "by": by})
-    row = next(_folder(each) for each in made if str(each[0]) == top)
-    mine = next((_folder(each) for each in made if str(each[0]) == asked), None)
     return Restored(
-        row,
+        _made(top),
         location,
-        free != name,
-        relocated,
-        str(trash_id),
+        bool(top.renamed),
+        bool(top.relocated),
+        str(top.trash_id),
+        folders=len(top.below),
+        files=len(top.families),
         location_ids=location_ids,
-        asked=mine,
-        sealed=sealed,
+        below=tuple(str(f) for f in top.below),
+        families=tuple(str(f) for f in top.families),
+        asked=None if asked is None else _made(asked),
+        sealed=bool(top.sealed),
     )
 
 
-def _out_of_folder(
-    conn: Connection, customer_id: str, top: str, department: Any, private: Any
-) -> tuple[str | None, bool]:
-    """#594: where a restored folder whose folder is gone goes (Q6), from the department and
-    private folder it inherited (its own are not inherited): under that private folder while it
-    is live, else under that department while it is live, else the top level; and, once the
-    organisation is walled (``trash.WALLED``, decision 3), it comes back private when one it
-    inherited is gone (or in Trash). Day one, unwalled, never private. Two statements."""
-    inherited = [None if f is None or str(f) == top else str(f) for f in (private, department)]
-    kept = [f for f in inherited if f is not None]
-    if not kept:
-        return None, False
-    live = trash.live_folders(conn, customer_id, kept)
-    walled = bool(conn.execute(text(trash.WALLED), {"c": customer_id}).scalar())
-    return next((f for f in kept if f in live), None), walled and any(f not in live for f in kept)
-
-
-def _finish(conn: Connection, customer_id: str, chain_only: Sequence[str], made_live: Sequence[str]) -> None:
-    """After the restored files: the other files of folders that came back only as a chain stay
-    in Trash in their live folder, and the folders made live leave trashed_folders."""
-    if chain_only:
-        conn.execute(text(_INTO_LIVE), {"c": customer_id, "ids": list(chain_only)})
-    conn.execute(text(_DROP), {"c": customer_id, "ids": list(made_live)})
+def _made(row: Any) -> FolderRow:
+    """A folder a restore made live; a blank name for one the person can't see (never shown)."""
+    return _folder(
+        (
+            row.id,
+            row.parent_id,
+            row.name or "",
+            row.created_at,
+            row.kind,
+            row.sort_order,
+            row.department_only,
+            row.private,
+        )
+    )

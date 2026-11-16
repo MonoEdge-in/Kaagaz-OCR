@@ -296,12 +296,10 @@ _MOVE_CHECK = (
 # and a restore of one of its families queue instead of deadlocking. Like every
 # write of folder_id, it clears the auto-filing state (feature 28, R3), so a family
 # Kaagaz filed there is no longer "filed" and its Undo is refused.
+# PRD 7 (#606): every one, seen or not, by the owner-rights kaagaz_detach_trashed (0092): under the
+# database rule a file in Trash the person can't see would stay, and its key refuse the delete.
 _DETACH_TRASHED = (
-    "UPDATE documents d SET folder_id = NULL, autofile = NULL FROM ("
-    " SELECT id FROM documents WHERE customer_id = :c AND folder_id = ANY(CAST(:ids AS uuid[]))"
-    " AND deleted_at IS NOT NULL"
-    " ORDER BY family_id, (id <> family_id), id FOR NO KEY UPDATE) AS l"
-    " WHERE d.customer_id = :c AND d.id = l.id AND d.deleted_at IS NOT NULL"
+    "SELECT kaagaz_detach_trashed(CAST(:ids AS uuid[])) WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 
 _DELETE = "DELETE FROM folders WHERE customer_id = :c AND id = :f RETURNING id, parent_id"
@@ -379,12 +377,12 @@ _HIDDEN_INSIDE = (
 # name where they meet. Its id is its name only inside this transaction (36 characters).
 _NAME_AWAY = "UPDATE folders SET name = id::text WHERE customer_id = :c AND id = :f"
 # Every document directly in :f, Trash included, into :p; locked in family order as
-# _DETACH_TRASHED, and the auto-filing state cleared as every write of folder_id does.
+# _DETACH_TRASHED, and the auto-filing state cleared as every write of folder_id does. PRD 7 (#606):
+# every one, seen or not, by the owner-rights kaagaz_admin_move_folder_documents (0092), which reads
+# #594's gate (_SAME_PLACE, for these files) again under its locks unless :confirmed (PR 10c).
 _MOVE_DOCUMENTS = (
-    "UPDATE documents d SET folder_id = CAST(:p AS uuid), autofile = NULL FROM ("
-    " SELECT id FROM documents WHERE customer_id = :c AND folder_id = :f"
-    " ORDER BY family_id, (id <> family_id), id FOR NO KEY UPDATE) AS l"
-    " WHERE d.customer_id = :c AND d.id = l.id"
+    "SELECT kaagaz_admin_move_folder_documents(:f, CAST(:p AS uuid), :confirmed)"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 # A13: the trashed folders that were directly in :f now restore into :p (0082's column grant).
 _REPARENT_TRASHED = (
@@ -676,8 +674,8 @@ def delete_folder_with_contents(
     a fixed number of statements plus two a clashing name.
     """
     _lock_tree(conn, customer_id)
-    held = folder_summary(conn, customer_id, folder_id)
-    params: dict[str, Any] = {"c": customer_id, "f": folder_id, "p": to}
+    held = folder_summary(conn, customer_id, folder_id, admin=True)  # PRD 7 (#606): an Admin's, whole
+    params: dict[str, Any] = {"c": customer_id, "f": folder_id, "p": to, "confirmed": confirm}
     if contents == "keep" and to is not None:
         target_depth, cycle, height = conn.execute(text(_MOVE_CHECK), params).one()
         if target_depth is None:
@@ -703,7 +701,7 @@ def delete_folder_with_contents(
         _move_contents(conn, params)
     else:
         trash_id = str(uuid.uuid4())
-        files = trash.trash_in_folders(conn, customer_id, gone, by=by, now=now, trash_id=trash_id)
+        files = trash.trash_in_folders(conn, customer_id, gone, now=now, trash_id=trash_id)
         held = replace(held, files=files, trash_id=trash_id)
         conn.execute(text(_DETACH_TRASHED), {**params, "ids": gone})
         conn.execute(text(_TRASH_TREE), {**params, "ids": gone, "trash": trash_id, "now": now, "by": by})

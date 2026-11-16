@@ -167,15 +167,8 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
         " when visible_folders holds all of it (trashed_folders.as_seen)",
     ),
     ("db/folders.py", "_DESCENDANTS"): (TREE_WALK, "a folder's subtree, after folders_seen on the folder"),
-    ("db/folders.py", "_DETACH_TRASHED"): (WRITE_AFTER_CHECK, "DELETE /folders/{id}: _seen first"),
     ("db/folders.py", "_PARENT"): (TREE_WALK, "PATCH and DELETE /folders: _seen first"),
     ("db/folders.py", "_SUMMARY"): (ADMIN_NUMBERS, "an Admin's delete dialog: true totals (PRD 7 section 5)"),
-    # #594: the refusal before a keep-delete's writes; it compares the stored values of the folder and
-    # of where its contents go, which a view would hide from an Admin (names, not contents).
-    ("db/folders.py", "_MOVE_DOCUMENTS"): (
-        WRITE_AFTER_CHECK,
-        "DELETE /folders/{id}?contents=keep, an Admin's",
-    ),
     ("db/folders.py", "_MOVE_FREE"): (WRITE_AFTER_CHECK, "DELETE /folders/{id}?contents=keep, an Admin's"),
     ("db/folders.py", "_LEFT"): (WRITE_AFTER_CHECK, "DELETE /folders/{id}?contents=keep, an Admin's"),
     ("db/folders.py", "_TRASH_TREE"): (WRITE_AFTER_CHECK, "DELETE /folders/{id}?contents=trash, an Admin's"),
@@ -254,10 +247,6 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
         "POST /documents/{id}/autofile/undo: _document_or_404 first",
     ),
     ("db/trash.py", "_LOCK_FAMILY"): (WRITE_AFTER_CHECK, "the family lock, after the view check (#595)"),
-    ("db/trash.py", "_TRASH_IN_FOLDERS"): (
-        WRITE_AFTER_CHECK,
-        "DELETE /folders/{id}?contents=trash, an Admin's",
-    ),
     ("db/trash.py", "_FAMILY_IN_TRASH"): (WRITE_AFTER_CHECK, "the family lock, after the view check (#595)"),
     # #594: where a restore writes the family when its folder is gone, read under the tree lock and
     # the family lock, after the route found the file through the view. The family's frozen values,
@@ -271,7 +260,8 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
         WRITE_AFTER_CHECK,
         "the row lock of a restore's write: the file (or the trashed folder, one()) through the view first",
     ),
-    ("db/trashed_folders.py", "_SUBTREE"): (TREE_WALK, "restore and delete forever: one() (the view) first"),
+    # Changed on purpose (PR 9b, #606): a restore walks the whole delete in 0092's kaagaz_restore_folder.
+    ("db/trashed_folders.py", "_SUBTREE"): (TREE_WALK, "delete forever: one() (the view) first"),
     ("db/trashed_folders.py", "_CHAIN"): (
         TREE_WALK,
         "contents() keeps only what visible_trashed_folders holds",
@@ -279,23 +269,16 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ("db/trashed_folders.py", "_CHILD_ITEMS"): (TREE_WALK, "the parent's own delete; items from the view"),
     ("db/trashed_folders.py", "_HELD"): (
         TREE_WALK,
-        "who uploaded every file, for the restore rule; counts from views",
+        "counts from views; who uploaded every file from 0092's kaagaz_trash_uploaders",
     ),
     ("db/trashed_folders.py", "_PATHS"): (
         TREE_WALK,
         "a path is shown only when visible_folders holds all of it",
     ),
-    ("db/trashed_folders.py", "_TOP"): (WRITE_AFTER_CHECK, "restore and delete forever: one() first"),
-    ("db/trashed_folders.py", "_MAKE_LIVE"): (WRITE_AFTER_CHECK, "restore: one() or the file first"),
-    ("db/trashed_folders.py", "_RESTORE_IN"): (WRITE_AFTER_CHECK, "restore: one() first"),
-    ("db/trashed_folders.py", "_INTO_LIVE"): (WRITE_AFTER_CHECK, "restore: one() or the file first"),
+    ("db/trashed_folders.py", "_TOP"): (WRITE_AFTER_CHECK, "delete forever: one() first"),
     ("db/trashed_folders.py", "_FILED_IN"): (
         WRITE_AFTER_CHECK,
         "POST /documents/{id}/restore: _document_or_404 first",
-    ),
-    ("db/trashed_folders.py", "_FAMILIES_IN"): (
-        WRITE_AFTER_CHECK,
-        "delete forever: one() and the hidden-inside rule first",
     ),
     ("db/value_keys.py", "_BY_ID"): (SHARED_WITH_WORKER, f"a value's keys; {_WORDS}"),
     ("db/value_keys.py", "_UPSERT"): (SHARED_WITH_WORKER, f"a value's keys; {_WORDS}"),
@@ -388,6 +371,14 @@ OWNER_FN: dict[tuple[str, str], str] = {
     ("db/trashed_folders.py", "_ANY_FILED"): "F6 kaagaz_hidden_inside",
     ("db/trashed_folders.py", "_ANY_LIVE"): "F5 kaagaz_existing",
     ("db/usage.py", "_REPORT"): "F12 kaagaz_admin_usage",
+    # Changed on purpose (PR 9b, #606): the writes over rows the person can't see, 0092's.
+    ("db/folders.py", "_DETACH_TRASHED"): "kaagaz_detach_trashed",
+    ("db/folders.py", "_MOVE_DOCUMENTS"): "kaagaz_admin_move_folder_documents",
+    ("db/trash.py", "_TRASH_IN_FOLDERS"): "kaagaz_admin_trash_in_folders",
+    ("db/trashed_folders.py", "_FAMILIES_IN"): "kaagaz_trash_families",
+    ("db/trashed_folders.py", "_INTO_LIVE"): "kaagaz_restore_folder and kaagaz_restore_with_folders",
+    ("db/trashed_folders.py", "_MAKE_LIVE"): "kaagaz_restore_folder and kaagaz_restore_with_folders",
+    ("db/trashed_folders.py", "_RESTORE_IN"): "kaagaz_restore_folder",
 }
 _SAME_BY_REASON = frozenset({WRITE_AFTER_CHECK})
 # PR 9a (#606): the statements calling a kaagaz_admin_* function that a route for everyone reaches,
@@ -395,6 +386,15 @@ _SAME_BY_REASON = frozenset({WRITE_AFTER_CHECK})
 _ADMIN_FN_BEHIND_A_CHECK = {
     ("db/access.py", "_ADMIN_DOCUMENT"): "the Access routes call admin_document only for an Admin (PR 10a)",
     ("db/audit.py", "_ADMIN_NAMES"): "the activity feeds: only when _IS_ADMIN says the caller is one",
+    # Changed on purpose (PR 9b, #606): the writes an Admin makes on a file they may not see (0092).
+    (
+        "db/access.py",
+        "_ADMIN_TRASH",
+    ): "the names list's Send to Trash: _admin_document first (an Admin session)",
+    ("db/listing.py", "_ADMIN_MOVE"): (
+        "the names list's Move (_admin_document first, an Admin session) and PATCH /documents/{id},"
+        " only when the caller is an Admin (who could move it before; the rule refused the new row)"
+    ),
 }
 # PR 9a (#606): each statement the API reaches that asks "NOT EXISTS (... FROM <covered>", and why the
 # rule hiding a row there is right (a new one fails the test until it is reviewed here).
@@ -456,9 +456,9 @@ PR9: dict[tuple[str, str], str] = {
     (
         "db/trashed_folders.py",
         "_CHAIN",
-    ): "FEWER_OK:the visible tail is shown; a restore through a hidden one is 9b's",
+    ): "FEWER_OK:contents() shows the visible tail; a restore walks the whole delete (0092)",
     ("db/trashed_folders.py", "_CHILD_ITEMS"): "SAME",
-    ("db/trashed_folders.py", "_HELD"): "FIXED:F6 for what is hidden inside",
+    ("db/trashed_folders.py", "_HELD"): "FIXED:F6 for what is hidden inside; 0092 for who uploaded",
     ("db/trashed_folders.py", "_PATHS"): "FIXED:a path must reach the top",
     ("db/trashed_folders.py", "_SUBTREE"): "FEWER_OK:an Admin sees every folder; a member's is refused (F6)",
     # PR 10b and 10c (#601), after the merge.

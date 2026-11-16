@@ -1760,22 +1760,16 @@ def update_document(
                 raise folders_sql.FolderNotFound()
             if "folder_id" in given:  # a move can change who sees it: the tree lock first (0085)
                 folders_sql._lock_tree(conn, customer_id)
+                # PRD 7 (#606): read again under the lock, which a folder's delete takes too: a folder
+                # deleted since the check above is not there (an Admin's move would otherwise meet
+                # 0092's own refusal of a folder that isn't live).
+                if folder_id is not None and not listing.folders_seen(conn, customer_id, [folder_id]):
+                    raise folders_sql.FolderNotFound()
             if trash.lock_live_family(conn, customer_id, target) is None:
                 raise ApiError(404, "not_found")
             moved = _move_rule(conn, user, target, folder_id) if "folder_id" in given else None
             _details(conn, user, body, _document_or_404(conn, user, document_id))
-            if "folder_id" in given:
-                listing.move_family(conn, customer_id, target, folder_id=folder_id)
-                audit.record(
-                    conn,
-                    customer_id,
-                    actor_user_id=user.user_id,
-                    action="document.move",
-                    target_type="document",
-                    target_id=target,
-                    details={"folder_id": folder_id, **(moved or {})},
-                )
-            if name is not None:
+            if name is not None:  # PRD 7 (#606): before the move, which may hide it from an Admin
                 listing.rename_document(conn, customer_id, target, name=name)
                 audit.record(
                     conn,
@@ -1784,6 +1778,20 @@ def update_document(
                     action="document.rename",
                     target_type="document",
                     target_id=target,
+                )
+            if "folder_id" in given:
+                # PRD 7 (#606): an Admin's move, by the owner-rights function: into a place whose
+                # files they can't see, the database rule would refuse the family's new row.
+                move = listing.admin_move_family if user.role == "admin" else listing.move_family
+                move(conn, customer_id, target, folder_id=folder_id)
+                audit.record(
+                    conn,
+                    customer_id,
+                    actor_user_id=user.user_id,
+                    action="document.move",
+                    target_type="document",
+                    target_id=target,
+                    details={"folder_id": folder_id, **(moved or {})},
                 )
             found = listing.get_document(conn, customer_id, target)
             if found is None:  # PRD 7 (#601): an Admin moved it where they can't see it
