@@ -286,6 +286,21 @@ services:
       api:
         condition: service_healthy
 
+  # Kaagaz on WhatsApp's channel (#603): it answers people's WhatsApp messages. Started only with
+  # --profile whatsapp, and it stops at once unless WHATSAPP_ENABLED is true (kaagaz/channel_main.py).
+  # The API's login and role (x-backend's DATABASE_URL), never the workers': it works as the person.
+  whatsapp:
+    <<: *backend
+    profiles: ["whatsapp"]
+    command: ["python", "-m", "kaagaz.channel_main"]
+    networks:
+      - data
+    restart: unless-stopped
+    stop_grace_period: 200s # the answers in hand finish first, as api's (A16)
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
 # Three closed lines between the app's parts (#477, 3 Nov 2026): a container reaches only
 # the services on a network it shares. data: postgres, seaweedfs, elasticmq and the backend
 # containers; scan: clamav and the worker; edge: the website, the API and Caddy

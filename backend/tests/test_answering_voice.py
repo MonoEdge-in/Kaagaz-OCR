@@ -364,7 +364,9 @@ def _v2(*documents: str) -> dict[str, Any]:
 def test_a_saved_answer_drops_a_listed_document_that_is_gone_and_keeps_old_shapes() -> None:
     answer = _v2("live", "binned", "gone")
     assert cited_document_ids(answer)[-3:] == ["live", "binned", "gone"]
-    shown = answer_with_source_states(answer, {"live": "live", "binned": "in_trash"})
+    shown = answer_with_source_states(
+        answer, {"live": "live", "binned": "in_trash", "gone": "in_trash"}
+    )  # #602
     assert [d["document_id"] for d in shown["documents"]] == ["live"]
     assert len(answer["documents"]) == 3  # the stored answer is never changed
     old = {key: value for key, value in answer.items() if key not in ("version", "documents")}

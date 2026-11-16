@@ -184,6 +184,7 @@ class FakeAnswers:
     resumed: list[Pending] = field(default_factory=list)  # PRD 6 B1: each clarify answered
     clarifies: list[bool] = field(default_factory=list)  # PRD 6 (0052): the nlq_clarify switch each got
     cited: list[list[str]] = field(default_factory=list)  # PRD 6 B: the earlier answers' documents each got
+    last_cited: list[list[str]] = field(default_factory=list)  # #629: the last answer's live documents
 
     def answer(
         self,
@@ -199,9 +200,11 @@ class FakeAnswers:
         pending: Pending | None = None,
         clarify: bool = True,
         cited: Sequence[str] = (),
+        last_cited: Sequence[str] = (),
     ) -> _FixedAnswer:
         self.asked.append((customer_id, question))
         self.cited.append(list(cited))
+        self.last_cited.append(list(last_cited))
         self.clarifies.append(clarify)
         self.pins.append(list(pins))
         self.histories.append(list(history))
@@ -581,6 +584,23 @@ OIDC_ROUTES = (
     ("POST", "/api/auth/oidc/code"),
     ("GET", "/api/auth/identities"),
     ("POST", f"/api/auth/identities/{ANY_ID}/remove"),
+)
+
+
+# Kaagaz on WhatsApp (#603): Meta's webhook, 404 while WhatsApp is off, whoever asks
+# (tests/test_api_whatsapp_webhook.py). Changed on purpose (W3): Account, WhatsApp's too (the
+# Admin's, /api/admin/whatsapp, ask for the admin session first, as every admin route).
+WHATSAPP_ROUTES = (
+    ("GET", "/api/whatsapp/webhook"),
+    ("POST", "/api/whatsapp/webhook"),
+    ("GET", "/api/whatsapp/me"),
+    ("POST", "/api/whatsapp/prove"),
+    ("POST", "/api/whatsapp/prove/google"),
+    ("POST", "/api/whatsapp/codes"),
+    ("POST", "/api/whatsapp/codes/verify"),
+    ("GET", "/api/whatsapp/codes/phone"),
+    ("POST", "/api/whatsapp/codes/phone/confirm"),
+    ("POST", "/api/whatsapp/disconnect"),
 )
 
 

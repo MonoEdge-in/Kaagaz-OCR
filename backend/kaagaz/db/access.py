@@ -13,6 +13,7 @@ Only ``kaagaz/api`` calls these: they read the views, which the worker must neve
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy import Connection, RowMapping, text
 
@@ -44,11 +45,12 @@ class AdminDocument:
     locked: bool = False  # PRD 7 (#605)
 
 
-# PRD 7 (#601): in_department, a member of a live department (11c's "Ask your admin for access").
+# PRD 7 (#601): in_department, a member of a live department (11c's "Ask your admin for access");
+# PR 11c (#604): walled, the organisation has kept something to some people (customers.walls_set).
 _ME = text(
     "SELECT a.management, a.heads, EXISTS (SELECT 1 FROM visible_folders f"
     " WHERE f.customer_id = kaagaz_current_customer() AND f.id = ANY (a.departments)"
-    " AND f.parent_id IS NULL AND f.kind = 'department')"
+    " AND f.parent_id IS NULL AND f.kind = 'department'), a.walled"
     " FROM kaagaz_access() a"
 )
 _PERSON = text(
@@ -74,13 +76,10 @@ _NAMED_ON = text(
     " WHERE p.customer_id = :c AND p.user_id = :u ORDER BY lower(f.name), f.id"
 )
 # The files given to :u, one per family (its current version's name and folder): an Admin's screen.
+# PRD 7 (#606): by their true names, the files the Admin can't see too (decision 20): the
+# owner-rights kaagaz_admin_given_to (0091) checks the caller; ``:c`` keeps another customer's id at none.
 _GIVEN_TO = text(
-    "SELECT DISTINCT ON (c.family_id) c.id, c.display_name, c.folder_id, s.given_at, s.given_by"
-    " FROM document_shares s"
-    " JOIN documents v ON v.customer_id = s.customer_id AND v.id = s.document_id"
-    " JOIN documents c ON c.customer_id = v.customer_id AND c.family_id = v.family_id AND c.is_current"
-    " WHERE s.customer_id = :c AND s.user_id = :u AND c.deleted_at IS NULL"
-    " ORDER BY c.family_id, s.given_at"
+    "SELECT * FROM kaagaz_admin_given_to(CAST(:u AS uuid)) WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 _PEOPLE_ON = text(
     "SELECT u.id, u.display_name FROM private_folder_members p"
@@ -138,8 +137,11 @@ _AUDIENCE = text(
     " JOIN users u ON u.customer_id = :c AND u.id = a.user_id ORDER BY lower(u.display_name), u.id"
 )
 # The place of a file already found (the view, or kaagaz_admin_document for an Admin): ids only.
+# PRD 7 (#606): through kaagaz_document_place (0091), so an Admin's "Who can see this" reads a file
+# they can't see too (the database rule hides it from the table).
 _DOCUMENT_PLACE = text(
-    "SELECT department_id, private_folder_id FROM documents WHERE customer_id = :c AND id = :d"
+    "SELECT department_id, private_folder_id FROM kaagaz_document_place(:d)"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 _DEPARTMENT_LIST = text(
     "SELECT f.id, f.name, f.department_only,"
@@ -162,20 +164,23 @@ _MEMBERS_OF = text(
     " WHERE m.customer_id = :c AND m.department_id = :d ORDER BY lower(u.display_name), u.id"
 )
 # The live files whose audience a wall changes (an Admin's preview: true totals, decision 20).
+# PRD 7 (#606): an Admin's preview counts every file (kaagaz_admin_files, 0091), the hidden ones too.
 _DEPARTMENT_FILES = text(
-    "SELECT count(*) FROM documents WHERE customer_id = :c AND department_id = :d"
-    " AND private_folder_id IS NULL AND held_for IS NULL AND deleted_at IS NULL AND is_current"
+    "SELECT kaagaz_admin_files(CAST(:d AS uuid), NULL) WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 _FOLDER_FILES = text(
-    "SELECT count(*) FROM documents WHERE customer_id = :c AND folder_id = ANY(CAST(:f AS uuid[]))"
-    " AND held_for IS NULL AND deleted_at IS NULL AND is_current"
+    "SELECT kaagaz_admin_files(NULL, CAST(:f AS uuid[])) WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 # PR 10c (#601): a file's place with whom it is held for, for a move; who sees a held file.
 _DOCUMENT_HOLD = text(
-    "SELECT department_id, private_folder_id, held_for FROM documents WHERE customer_id = :c AND id = :d"
+    "SELECT department_id, private_folder_id, held_for FROM kaagaz_document_place(:d)"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 _MANAGEMENT = text("SELECT id FROM users WHERE customer_id = :c AND management AND NOT disabled")
-_CLOSED = text("SELECT department_only FROM folders WHERE customer_id = :c AND id = :d")
+# PRD 7 (#606): read whole (kaagaz_folder_place, 0091), as folders._SAME_PLACE.
+_CLOSED = text(
+    "SELECT department_only FROM kaagaz_folder_place(:d) WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
+)
 _NAMES = text(
     "SELECT id, display_name FROM users WHERE customer_id = :c AND id = ANY(CAST(:u AS uuid[]))"
     " ORDER BY lower(display_name), id"
@@ -185,19 +190,25 @@ _KEPT_FROM_ME = text(
     " FROM kaagaz_kept_from_me(:f) LIMIT :n"
 )
 _KEPT_COUNT = text("SELECT count(*) FROM kaagaz_kept_from_me(:f)")
+# PRD 7 section 3 (#606): the names list's Send to Trash, the file's family seen or not (0092).
+_ADMIN_TRASH = text(
+    "SELECT trashed FROM kaagaz_admin_trash_documents(ARRAY[CAST(:d AS uuid)], :now)"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
+)
 
 
-def me(conn: Connection) -> tuple[bool, list[str], bool]:
-    """The caller's Management, the departments they head (``/auth/me``, the Head checks) and
-    whether they are a member of a live department."""
-    management, heads, in_department = conn.execute(_ME).one()
-    return bool(management), [str(each) for each in heads], bool(in_department)
+def me(conn: Connection) -> tuple[bool, list[str], bool, bool]:
+    """The caller's Management, the departments they head (``/auth/me``, the Head checks),
+    whether they are a member of a live department, and whether the organisation has ever kept
+    something to some people (PR 11c)."""
+    management, heads, in_department, walled = conn.execute(_ME).one()
+    return bool(management), [str(each) for each in heads], bool(in_department), bool(walled)
 
 
 def rights(conn: Connection, admin: bool) -> folders.Rights:
     """The caller's rights to move what changes who can see it (PRD 7 decision 18): read under the
     tree lock, so a Head tick or Management taken away meanwhile counts."""
-    management, heads, _ = me(conn)
+    management, heads, _, _ = me(conn)
     return folders.Rights(wide=admin or management, heads=frozenset(heads))
 
 
@@ -406,6 +417,14 @@ def names(conn: Connection, customer_id: str, user_ids: set[str]) -> list[dict[s
         return []
     rows = conn.execute(_NAMES, {"c": customer_id, "u": sorted(user_ids)})
     return [{"id": str(i), "name": str(n)} for i, n in rows]
+
+
+def admin_trash(conn: Connection, customer_id: str, document_id: str, *, now: datetime) -> bool:
+    """The file's whole family to Trash at ``now``, by the calling Admin, whether they can see it or
+    not (``kaagaz_admin_trash_documents``: the tree lock, then the family's); one already there keeps
+    its first time. Whether it went to Trash now (read under the family's lock). The caller found it
+    with ``admin_document``."""
+    return bool(conn.execute(_ADMIN_TRASH, {"c": customer_id, "d": document_id, "now": now}).scalar())
 
 
 def kept_from_me(conn: Connection, folder_id: str, limit: int) -> tuple[int, Sequence[RowMapping]]:

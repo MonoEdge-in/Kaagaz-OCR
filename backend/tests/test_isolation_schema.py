@@ -77,8 +77,15 @@ which no role may run.
 
 Page turns saved for everyone (0088, PRD 7 section 14, #600, NEEDS VRUSHIT'S APPROVAL): read, added
 and deleted by the app, never updated; a save deletes the pages it changes and adds them again.
+Bounded word search (0094, #617, NEEDS VRUSHIT'S SECURITY SIGN-OFF): the word counts, read, added
+and deleted by the worker's rebuild, never updated; and ``kaagaz_word_candidates``, piece ids only.
+Kaagaz on WhatsApp (0097, #603, NEEDS VRUSHIT'S APPROVAL): the Admin's switches, connections,
+codes, messages and pickers (the last three one person's own, as my words), read and added by the
+app, which writes only the columns listed and deletes only a picker; a connection ends, its number
+gone, only through the owner-rights functions; the numbers told they are not connected or blocked
+belong to no organisation and no role reads them.
 
-The version finder (0098, #648, NEEDS VRUSHIT'S APPROVAL): its runs, pairs and group members, never
+The version finder (0099, #648, NEEDS VRUSHIT'S APPROVAL): its runs, pairs and group members, never
 deleted by the app; only a member's decision is ever changed.
 
 Linking files as versions (0100, #648, NEEDS VRUSHIT'S APPROVAL): a link's snapshot, read and added
@@ -218,9 +225,37 @@ FROM_0084 = {
 UPDATES_0084 = {"department_members": {"is_head"}}
 # Page turns saved for everyone (0088, #600): read, added and deleted, never updated.
 FROM_0088 = {"page_rotations": (True, True, False, True)}
-# Changed on purpose (#648, 0098): the version finder's run (read, added, only its progress changed),
+# Bounded word search (0094, #617): the word counts, deleted and added again by the rebuild.
+FROM_0094 = {"term_df": (True, True, False, True), "customer_stats": (True, True, False, True)}
+# Kaagaz on WhatsApp (0097, #603): read and added; a picker deleted; only the columns of UPDATES_0097
+# updated (column grants), never a connection's person, number, sign-in version or end (only
+# kaagaz_whatsapp_end_link and the other owner-rights functions end one).
+FROM_0097 = {
+    "whatsapp_org_settings": (True, True, False, False),
+    "whatsapp_links": (True, True, False, False),
+    "whatsapp_link_codes": (True, True, False, True),  # Changed on purpose (W3): a code used is deleted
+    "whatsapp_messages": (True, True, False, False),
+    "whatsapp_pickers": (True, True, False, True),
+}
+UPDATES_0097 = {
+    # Changed on purpose (W3): the Admin's "our data rules allow WhatsApp", when and who.
+    "whatsapp_org_settings": {
+        "enabled",
+        "roles",
+        "management",
+        "voice",
+        "uploads",
+        "rules_confirmed_at",
+        "rules_confirmed_by",
+    },
+    "whatsapp_links": {"last_used_at", "recent_folder_ids", "busy_until"},
+    "whatsapp_link_codes": {"tries", "used_at"},
+    "whatsapp_messages": {"state", "tries", "body", "batch_id", "document_id", "reply_sent_at"},
+    "whatsapp_pickers": {"generation", "state", "expires_at"},
+}
+# Changed on purpose (#648, 0099): the version finder's run (read, added, only its progress changed),
 # pairs (read and added) and group members (read, added, only a decision changed); none deleted.
-FROM_0098 = {
+FROM_0099 = {
     "version_finder_runs": (True, True, False, False),
     "version_pairs": (True, True, False, False),
     "version_group_members": (True, True, False, False),
@@ -228,7 +263,7 @@ FROM_0098 = {
 # Changed on purpose (#648, 0100): a link's snapshot, read and added; only its Undo recorded.
 FROM_0100 = {"version_links": (True, True, False, False)}
 UPDATES_0100 = {"version_links": {"undone_by", "undone_at"}}
-UPDATES_0098 = {
+UPDATES_0099 = {
     "version_finder_runs": {"after_id", "looked_at", "finished_at", "groups"},
     "version_group_members": {"state", "decided_by", "decided_at"},
 }
@@ -249,6 +284,7 @@ CATALOG_REFRESH = {
     "name", "price_in_usd_per_m", "price_out_usd_per_m", "providers", "efforts", "expires_on", "eligible",
     "seen_at", "chat_eligible",  # 0026, the answer filter
     "price_request_usd", "price_image_usd",  # Changed on purpose (0070, #488 review): the prices a call
+    "parameters",  # Changed on purpose (0095, #647): the supported parameters
 }  # fmt: skip
 CATALOG_POLICIES = {
     ("model_catalog", "read_all"): ("SELECT", "PERMISSIVE", ["public"], "true", None),
@@ -263,6 +299,15 @@ CATALOG_POLICIES = {
 }
 PAGE_READ_UPDATES = {"result", "input_tokens", "output_tokens", "created_at"}
 SECTION_UPDATES = {"embedding", "embed_recipe"}
+# Changed on purpose (#606, 0091): the tables the per-person rule (person_only) holds.
+PERSON_RULE_TABLES = {
+    "documents", "folders", "trashed_folders", "corrections", "document_links", "document_sections",
+    "document_stories", "document_tags", "document_topics", "ensemble_readings", "ensemble_runs",
+    "extracted_values", "invoice_lines", "invoices", "learning_removals", "model_usage",
+    "organization_word_suggestions", "page_blocks", "page_reads", "page_rotations", "pages", "pieces",
+    "processing_runs", "reader_outputs", "source_pins", "table_cells", "user_word_spots", "value_keys",
+    "version_suggestions", "word_changes",
+}  # fmt: skip
 # The second policy of the tables that belong to one user (0008, 0009): it must pass too.
 OWN_USER = "(user_id = (NULLIF(current_setting('kaagaz.user_id'::text, true), ''::text))::uuid)"
 RUN_OUTCOME = {
@@ -278,6 +323,13 @@ RUN_OUTCOME = {
 # each narrow: {name: (what it returns, its search path)}. Those that list across
 # customers or users give ids only.
 EMPTY_PATH = ['search_path=""']
+# A restore's rows (0092): the topmost folder made live and the one asked for, or why nothing was done.
+RESTORED = (
+    "TABLE(id uuid, parent_id uuid, name text, created_at timestamp with time zone, kind text,"
+    " sort_order integer, department_only boolean, private boolean, is_top boolean, is_asked boolean,"
+    " trash_id uuid, refused text, renamed boolean, relocated boolean, sealed boolean, below uuid[],"
+    " families uuid[])"
+)
 OWNER_RIGHTS = {
     # Changed on purpose (#479, 3 Nov 2026): 0067 gives 0001's two the empty path as well.
     "kaagaz_login_lookup": (
@@ -360,6 +412,88 @@ OWNER_RIGHTS = {
     "kaagaz_take_file": ("integer", EMPTY_PATH),
     # Changed on purpose (#601, 0090b): auto-filing gives the uploader the file; no person only.
     "kaagaz_give_uploader": ("integer", EMPTY_PATH),
+    # Changed on purpose (#606, 0091): the database rule's switch, fast path and new-version check.
+    "kaagaz_person_rule_on": ("boolean", EMPTY_PATH),
+    "kaagaz_sees_everything": ("boolean", EMPTY_PATH),
+    "kaagaz_family_visible": ("boolean", EMPTY_PATH),
+    # Changed on purpose (#606, 0091): what the rule would narrow, read whole; ids and numbers only.
+    "kaagaz_duplicate": ("TABLE(sha256 text, size_bytes bigint, answer text, document_id uuid)", EMPTY_PATH),
+    "kaagaz_existing": ("SETOF uuid", EMPTY_PATH),
+    "kaagaz_hidden_inside": (
+        "TABLE(hidden_files bigint, hidden_folders bigint, any_files boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_trash_top": ("TABLE(id uuid, kind text)", EMPTY_PATH),
+    "kaagaz_document_place": (
+        "TABLE(department_id uuid, private_folder_id uuid, held_for uuid, folder_id uuid, family_id uuid)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_folder_place": (
+        "TABLE(department_id uuid, private_folder_id uuid, private boolean, department_only boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_files": ("bigint", EMPTY_PATH),
+    "kaagaz_folder_depth": ("TABLE(depth integer, cycle boolean, height integer)", EMPTY_PATH),
+    "kaagaz_storage_used": ("bigint", EMPTY_PATH),
+    "kaagaz_spent": ("TABLE(spent numeric, unknown boolean)", EMPTY_PATH),
+    "kaagaz_ensemble_runs_this_hour": ("bigint", EMPTY_PATH),
+    "kaagaz_word_suggestions_count": ("bigint", EMPTY_PATH),
+    "kaagaz_ready_stamp": ("text", EMPTY_PATH),
+    # Changed on purpose (#606, 0091): an Admin's names and numbers, whole (decision 20).
+    "kaagaz_admin_stats": (
+        "TABLE(documents_by_status jsonb, questions_total bigint, answered bigint, not_found bigint,"
+        " verified_answers bigint, needs_review_answers bigint, feedback_up bigint, feedback_down bigint,"
+        " open_review_items bigint, older_versions bigint, in_trash bigint)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_member_numbers": (
+        "TABLE(id uuid, display_name text, email text, role text, disabled boolean,"
+        " last_active_at timestamp with time zone, documents_uploaded bigint, pages_read numeric,"
+        " questions_asked bigint, values_verified bigint)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_failed": (
+        "TABLE(id uuid, display_name text, detected_type text, status text, failure_code text,"
+        " page_count integer, attempts integer, max_attempts integer,"
+        " last_run_at timestamp with time zone, total bigint)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_reader_pages": (
+        "TABLE(pages_cells bigint, pages_text_layer bigint, pages_ocr bigint, pages_blank bigint,"
+        " pages_gemini bigint, pages_local bigint, pages_cached bigint, pages_read_again bigint,"
+        " input_tokens bigint, output_tokens bigint)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_usage": (
+        "TABLE(dimension text, user_id uuid, model text, kind text, day date, document_id uuid,"
+        " of_document boolean, calls bigint, cached_calls bigint, input_tokens numeric,"
+        " output_tokens numeric, reasoning_tokens numeric, cost_usd numeric, cost_estimated boolean,"
+        " cost_part_unknown boolean,"
+        " user_name text, model_name text, document_name text)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_usage_rows": (
+        "TABLE(day date, user_name text, model text, kind text, calls bigint, tokens numeric,"
+        " cost_usd numeric, cost_estimated boolean, cost_part_unknown boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_folder_summary": ("TABLE(folders bigint, files bigint, size_bytes numeric)", EMPTY_PATH),
+    "kaagaz_admin_document_names": ("TABLE(id uuid, display_name text, version_no integer)", EMPTY_PATH),
+    "kaagaz_admin_given_to": (
+        "TABLE(id uuid, display_name text, folder_id uuid, given_at timestamp with time zone, given_by uuid)",
+        EMPTY_PATH,
+    ),
+    # Changed on purpose (#606, PR 9b, 0092): the writes over rows the person can't see; ids and counts.
+    "kaagaz_admin_trash_in_folders": ("integer", EMPTY_PATH),
+    "kaagaz_detach_trashed": ("integer", EMPTY_PATH),
+    "kaagaz_admin_move_folder_documents": ("integer", EMPTY_PATH),
+    "kaagaz_restore_folder": (RESTORED, EMPTY_PATH),
+    "kaagaz_restore_with_folders": (RESTORED, EMPTY_PATH),
+    "kaagaz_trash_uploaders": ("uuid[]", EMPTY_PATH),
+    "kaagaz_trash_families": ("SETOF uuid", EMPTY_PATH),
+    "kaagaz_purge_family": ("TABLE(document_id uuid, folder_id uuid)", EMPTY_PATH),
+    "kaagaz_admin_move_documents": ("TABLE(document_id uuid, family_id uuid, from_folder uuid)", EMPTY_PATH),
+    "kaagaz_admin_trash_documents": ("TABLE(document_id uuid, family_id uuid, trashed boolean)", EMPTY_PATH),
     # Changed on purpose (#605, 0093): locked files, each an Admin's only, checked inside.
     "kaagaz_lock": (
         "TABLE(document_id uuid, outcome text, version_id uuid, prepare boolean, rendition boolean)",
@@ -368,6 +502,36 @@ OWNER_RIGHTS = {
     "kaagaz_unlock": ("TABLE(document_id uuid, outcome text, version_id uuid, read boolean)", EMPTY_PATH),
     "kaagaz_lock_grant": ("text", EMPTY_PATH),
     "kaagaz_lock_revoke": ("integer", EMPTY_PATH),
+    # 0094 (#617): the word search's candidates, the current customer's piece ids only, each call
+    # planned for its own query.
+    "kaagaz_word_candidates": ("SETOF uuid", [*EMPTY_PATH, "plan_cache_mode=force_custom_plan"]),
+    # Changed on purpose (#605, 0096): the locked-file pop-ups' names, an Admin's only, checked inside.
+    "kaagaz_admin_place_files": ("bigint", EMPTY_PATH),
+    "kaagaz_admin_place_locked": (
+        "TABLE(id uuid, display_name text, folder_id uuid, open boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_locked_for": (
+        "TABLE(id uuid, display_name text, folder_id uuid, given_at timestamp with time zone, given_by uuid)",
+        EMPTY_PATH,
+    ),
+    # Changed on purpose (#603, 0097): WhatsApp's number lookup and the channel's claim (ids only),
+    # the two ways a connection ends (a count, or yes or no) and the sweep (a count).
+    "kaagaz_whatsapp_lookup": ("TABLE(customer_id uuid, user_id uuid, link_id uuid)", EMPTY_PATH),
+    "kaagaz_whatsapp_claim": (
+        "TABLE(customer_id uuid, user_id uuid, link_id uuid, busy_until timestamp with time zone)",
+        EMPTY_PATH,
+    ),
+    # A number with no connection: whether it may be told so now (yes or no), and its BLOCK.
+    "kaagaz_whatsapp_tell_unknown": ("boolean", EMPTY_PATH),
+    "kaagaz_whatsapp_block": ("void", EMPTY_PATH),
+    "kaagaz_whatsapp_end_number": ("bigint", EMPTY_PATH),
+    "kaagaz_whatsapp_end_link": ("boolean", EMPTY_PATH),
+    "kaagaz_whatsapp_sweep": ("bigint", EMPTY_PATH),
+    # Changed on purpose (W3): whether a connect code may go to a number (a word), and the second
+    # way's "Link <code>" from the number (yes or no).
+    "kaagaz_whatsapp_may_send": ("text", EMPTY_PATH),
+    "kaagaz_whatsapp_phone_code": ("boolean", EMPTY_PATH),
     # Changed on purpose (#648, 0100): a link's stories re-keyed, Admins and Management, checked inside.
     "kaagaz_move_stories": ("SETOF uuid", EMPTY_PATH),
 }
@@ -454,9 +618,10 @@ OPERATOR_RIGHTS = {
         " chat_verified_at timestamp with time zone, scan_pages bigint, scan_pages_costed bigint,"
         " scan_cost_usd numeric, scan_cost_unknown_calls bigint, answer_questions bigint,"
         " answer_questions_costed bigint, answer_cost_usd numeric, answer_cost_unknown_calls bigint,"
-        " price_request_usd numeric, price_image_usd numeric)",
+        " price_request_usd numeric, price_image_usd numeric, parameters text[])",
         # 0026: the answer columns; 0033: the real cost, counts and sums only; changed on purpose
-        # (0070, #488 review): the prices a call, for the operator's check of Ultra low cost's lead
+        # (0070, #488 review): the prices a call, for the operator's check of Ultra low cost's lead;
+        # changed on purpose (0095, #647): the supported parameters
         EMPTY_PATH,
     ),
     "kaagaz_op_set_model_enabled": ("text", EMPTY_PATH),
@@ -673,8 +838,18 @@ TRIGGER_RIGHTS = dict.fromkeys(
 # Changed on purpose (#463, 0064): the accuracy checks are the operator's too.
 OPERATOR_TABLES = {"operators", "platform_audit", "scan_accuracy_checks"}
 PLATFORM_DEFAULTS = {"platform_models", "platform_ai_settings", "feature_switches", "platform_model_override"}
+# Changed on purpose (#606, 0091): the database rule's switch, the owner's only.
+# Changed on purpose (#603, 0097): the WhatsApp numbers with no connection (no role reads them).
 NO_CUSTOMER_ID = (
-    {"customers", "alembic_version", "reader_status", "model_catalog", "model_rate_scheduler"}
+    {
+        "customers",
+        "alembic_version",
+        "reader_status",
+        "model_catalog",
+        "model_rate_scheduler",
+        "kaagaz_person_rule",
+    }
+    | {"whatsapp_unknown_numbers"}
     | PLATFORM_DEFAULTS
     | OPERATOR_TABLES
 )
@@ -724,7 +899,9 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0081)  # Changed on purpose (#542, 0081)
         | set(FROM_0084)  # Changed on purpose (#590, 0084)
         | set(FROM_0088)  # Changed on purpose (#600, 0088)
-        | set(FROM_0098)  # Changed on purpose (#648, 0098)
+        | set(FROM_0094)  # Changed on purpose (#617, 0094)
+        | set(FROM_0097)  # Changed on purpose (#603, 0097)
+        | set(FROM_0099)  # Changed on purpose (#648, 0099)
         | set(FROM_0100)  # Changed on purpose (#648, 0100)
     )
 
@@ -808,7 +985,9 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0081  # Changed on purpose (#542, 0081)
         | FROM_0084  # Changed on purpose (#590, 0084)
         | FROM_0088  # Changed on purpose (#600, 0088)
-        | FROM_0098  # Changed on purpose (#648, 0098)
+        | FROM_0094  # Changed on purpose (#617, 0094)
+        | FROM_0097  # Changed on purpose (#603, 0097)
+        | FROM_0099  # Changed on purpose (#648, 0099)
         | FROM_0100  # Changed on purpose (#648, 0100)
     ).items():
         assert granted[table] == expected, table
@@ -828,9 +1007,19 @@ def test_the_tables_of_one_user_also_have_the_restrictive_own_user_only_policy(d
                 )
             )
         }
-    own = FROM_0008 | FROM_0009
+    own = (
+        set(FROM_0008) | set(FROM_0009) | {"whatsapp_messages", "whatsapp_link_codes", "whatsapp_pickers"}
+    )  # #603
     restrictive = ("ALL", "RESTRICTIVE", ["public"], OWN_USER, OWN_USER)
-    assert policies == {(table, "own_user_only"): restrictive for table in own} | CATALOG_POLICIES
+    # Changed on purpose (#606, 0091): the per-person rule, for the API role only, on documents,
+    # folders, trashed folders and the 27 content tables (test_isolation_person_rule checks them).
+    person = {key: value for key, value in policies.items() if key[1] == "person_only"}
+    assert {table for table, _ in person} == PERSON_RULE_TABLES
+    assert {(command, permissive, tuple(roles)) for command, permissive, roles, *_ in person.values()} == {
+        ("ALL", "RESTRICTIVE", ("kaagaz_app",))
+    }
+    others = {key: value for key, value in policies.items() if key[1] != "person_only"}
+    assert others == {(table, "own_user_only"): restrictive for table in own} | CATALOG_POLICIES
 
 
 def _updatable(db: Database, table: str) -> set[str]:
@@ -902,10 +1091,35 @@ def test_the_app_may_update_no_column_of_a_page_turn(db: Database) -> None:
     assert _updatable(db, "page_rotations") == set()
 
 
+def test_the_app_may_update_only_the_listed_columns_of_whatsapps_tables(db: Database) -> None:
+    """0097 (#603): never a connection's person, number, sign-in version or end, a code's number or
+    hash, or a message's id, person, kind or times, so none can be moved or reopened."""
+    assert {table: _updatable(db, table) for table in FROM_0097} == UPDATES_0097
+
+
+def test_whatsapps_unknown_numbers_are_reached_by_no_role_only_by_their_functions(db: Database) -> None:
+    """0097 (#603): no organisation, so row level security with no policy and no right for the app
+    or the worker role; kaagaz_whatsapp_tell_unknown and kaagaz_whatsapp_block alone write it."""
+    with db.system() as conn:
+        row = conn.execute(
+            text(
+                "SELECT c.relrowsecurity, (SELECT count(*) FROM pg_policy p WHERE p.polrelid = c.oid),"
+                " array_agg(r.rolname ORDER BY r.rolname) FILTER (WHERE"
+                "  has_table_privilege(r.oid, c.oid, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES')"
+                "  OR has_any_column_privilege(r.oid, c.oid, 'SELECT,INSERT,UPDATE,REFERENCES'))"
+                " FROM pg_class c CROSS JOIN pg_roles r"
+                " WHERE c.oid = 'whatsapp_unknown_numbers'::regclass AND r.rolname IN (:a, 'kaagaz_worker')"
+                " GROUP BY c.relrowsecurity, c.oid"
+            ),
+            {"a": APP_ROLE},
+        ).one()
+    assert tuple(row) == (True, 0, None)
+
+
 def test_the_app_may_update_only_the_decision_of_a_possible_version(db: Database) -> None:
-    """0098 (#648): never a member's file, group or place, so a decision can't move a file into
+    """0099 (#648): never a member's file, group or place, so a decision can't move a file into
     another group; never a pair's files or scores; never a run's organisation or start."""
-    assert {table: _updatable(db, table) for table in UPDATES_0098} == UPDATES_0098
+    assert {table: _updatable(db, table) for table in UPDATES_0099} == UPDATES_0099
     # Changed on purpose (#648, 0100): a link's versions, family and snapshot never change; its Undo is.
     assert {table: _updatable(db, table) for table in UPDATES_0100} == UPDATES_0100
     assert _updatable(db, "version_pairs") == set()
@@ -1038,7 +1252,9 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
         | set(FROM_0081)  # Changed on purpose (#542, 0081)
         | set(FROM_0084)  # Changed on purpose (#590, 0084)
         | set(FROM_0088)  # Changed on purpose (#600, 0088)
-        | {"version_pairs", "version_group_members"}  # Changed on purpose (#648, 0098)
+        | set(FROM_0097)
+        - {"whatsapp_org_settings"}  # Changed on purpose (#603, 0097): it has no key but its own
+        | {"version_pairs", "version_group_members"}  # Changed on purpose (#648, 0099)
         | {"version_links"}  # Changed on purpose (#648, 0100)
         | {"pages", "model_usage", "documents"}  # documents.owner_id (0041)
     )

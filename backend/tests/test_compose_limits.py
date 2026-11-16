@@ -17,9 +17,11 @@ LIMITS = {
     "api": "3g",
     "worker": "3g",
     "frontend": "1g",
+    "whatsapp": "1g",  # Changed on purpose (#603): the WhatsApp channel, started with --profile whatsapp
 }
 # The app's own containers (A19): no capability, and no setuid gaining one.
-HARDENED = {"migrate", "api", "worker", "frontend"}
+# Changed on purpose (#603): the WhatsApp channel is one of them.
+HARDENED = {"migrate", "api", "worker", "frontend", "whatsapp"}
 
 
 def _limit(name: str) -> str | None:

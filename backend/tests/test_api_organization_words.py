@@ -111,12 +111,13 @@ def test_viewer_correction_reaches_review_and_approval_is_document_scoped(db: Da
         f"/api/organization/words/{suggestion_id}/decision", json={"decision": "approve"}, headers=CSRF
     )
     assert approved.status_code == 200, approved.text
-    assert [(word.word, word.meaning) for word in PgWords(db).words(customer_id, colleague.user_id)] == []
-    assert [
-        (word.word, word.meaning)
-        for word in PgWords(db).words(customer_id, colleague.user_id, document_id=document)
-    ] == [("Jalna", "district")]
-    assert PgWords(db).words(customer_id, colleague.user_id, document_id=other_document) == []
+    # Changed on purpose (#602, decision 9): a word made on a page helps in any scope, for whoever
+    # can see its document (tests/test_isolation_ask_views.py: never for one who can't).
+    for scope in (None, document, other_document):
+        assert [
+            (word.word, word.meaning)
+            for word in PgWords(db).words(customer_id, colleague.user_id, document_id=scope)
+        ] == [("Jalna", "district")]
 
 
 def test_members_cannot_decide_and_submitters_cannot_approve_their_own_words(db: Database) -> None:

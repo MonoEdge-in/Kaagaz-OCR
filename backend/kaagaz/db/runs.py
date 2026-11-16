@@ -126,19 +126,18 @@ _CLOSE_RUNNING = (
     " WHERE customer_id = :c AND document_id = :d AND status = 'running'"
 )
 
-_PAGES_BY_ROUTE = (
-    "SELECT coalesce(sum(pages_cells), 0) AS cells, coalesce(sum(pages_text_layer), 0) AS text_layer,"
-    " coalesce(sum(pages_ocr), 0) AS ocr, coalesce(sum(pages_blank), 0) AS blank"
-    " FROM processing_runs WHERE customer_id = :c AND started_at >= :start AND started_at < :end"
-)
-
-# PRD 5 U9: the same window's pages by who read them, and the tokens billed.
+# The pages read by route and, PRD 5 U9, by who read them, and the tokens billed, of the runs started
+# in a window: an Admin's numbers, whole (PRD 7 decision 20, #606), so read by the owner-rights
+# kaagaz_admin_reader_pages (0091), which checks the caller; ``:c`` keeps another customer's id at none.
 _READER_PAGES = (
-    "SELECT coalesce(sum(pages_gemini), 0) AS gemini, coalesce(sum(pages_local), 0) AS local,"
-    " coalesce(sum(pages_cached), 0) AS cached, coalesce(sum(pages_read_again), 0) AS read_again,"
-    " coalesce(sum(input_tokens), 0) AS input_tokens, coalesce(sum(output_tokens), 0) AS output_tokens"
-    " FROM processing_runs WHERE customer_id = :c AND started_at >= :start AND started_at < :end"
+    "SELECT * FROM kaagaz_admin_reader_pages(:start, :end) WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
+_ROUTES = ("cells", "text_layer", "ocr", "blank")
+# reader_numbers' names, each its column of kaagaz_admin_reader_pages.
+_READERS = {name: f"pages_{name}" for name in ("gemini", "local", "cached", "read_again")} | {
+    "input_tokens": "input_tokens",
+    "output_tokens": "output_tokens",
+}
 
 _OPEN = (
     "SELECT EXISTS (SELECT 1 FROM processing_runs WHERE customer_id = :c AND document_id = :d"
@@ -206,10 +205,10 @@ def pages_by_route(conn: Connection, customer_id: str, *, start: datetime, end: 
     """The pages read by each route (cells, text_layer, ocr, blank) in this
     customer's runs started in [start, end), 0 for a route with none. Every run
     counts, a superseded or failed one too: its pages were read. A deleted document's
-    runs were deleted with it (0005), so its pages no longer count. One query on the
+    runs were deleted with it (0005), so its pages no longer count. One call on the
     index processing_runs_started: O(log R + runs in the window)."""
-    row = conn.execute(text(_PAGES_BY_ROUTE), {"c": customer_id, "start": start, "end": end}).mappings().one()
-    return {route: int(row[route]) for route in ("cells", "text_layer", "ocr", "blank")}
+    row = conn.execute(text(_READER_PAGES), {"c": customer_id, "start": start, "end": end}).mappings().first()
+    return {route: 0 if row is None else int(row[f"pages_{route}"]) for route in _ROUTES}
 
 
 def reader_numbers(conn: Connection, customer_id: str, *, start: datetime, end: datetime) -> dict[str, int]:
@@ -218,8 +217,8 @@ def reader_numbers(conn: Connection, customer_id: str, *, start: datetime, end: 
     pages read again (read_again), and the input and output tokens billed; 0 when none.
     Every run counts, as in ``pages_by_route``. One query on the index
     processing_runs_started: O(log R + runs in the window)."""
-    row = conn.execute(text(_READER_PAGES), {"c": customer_id, "start": start, "end": end}).mappings().one()
-    return {str(name): int(value) for name, value in row.items()}
+    row = conn.execute(text(_READER_PAGES), {"c": customer_id, "start": start, "end": end}).mappings().first()
+    return {name: 0 if row is None else int(row[column]) for name, column in _READERS.items()}
 
 
 def recent_timings(conn: Connection, customer_id: str) -> list[RunTiming]:

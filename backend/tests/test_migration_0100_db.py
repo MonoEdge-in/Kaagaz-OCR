@@ -1,6 +1,6 @@
 """Migration 0100 (V13 to V19, #648, V-A): the link snapshot (``version_links``), the ``separated``
 status, the join trigger (``kaagaz_version_joined``) and the stories' move. Up, down (the schema as
-at 0098, a pair made separate kept apart as ``rejected``) and up again on a fresh database; the
+at 0099, a pair made separate kept apart as ``rejected``) and up again on a fresh database; the
 CHECKs; who may move stories. Grants and row level security: test_isolation_schema; the trigger and
 the link: test_isolation_version_links; the organisation delete: test_isolation_customer_purge."""
 
@@ -31,14 +31,14 @@ _LINK = (
 )
 
 
-def test_the_revision_follows_0098_for_now() -> None:
-    assert (M0100.revision, M0100.down_revision) == ("0100", "0098")
+def test_the_revision_follows_0099() -> None:  # Changed on purpose: 0099 at merge
+    assert (M0100.revision, M0100.down_revision) == ("0100", "0099")
 
 
 def test_up_down_and_up_again(fresh: tuple[str, Database]) -> None:
     url, db = fresh
-    migrate(url, "0098")
-    at_0098 = _state(db)
+    migrate(url, "0099")
+    at_0099 = _state(db)
     migrate(url, "0100")
     at_0100 = _state(db)
     customer, user = new_customer(db)
@@ -48,13 +48,13 @@ def test_up_down_and_up_again(fresh: tuple[str, Database]) -> None:
     with db.system() as conn:
         assert conn.execute(text(_TABLE)).scalar_one() == 1
 
-    base._downgrade(url, "0098")
+    base._downgrade(url, "0099")
     with db.system() as conn:
         assert conn.execute(text(_TABLE)).scalar_one() == 0
     with db.customer(customer) as conn:
         kept = conn.execute(text("SELECT status FROM version_suggestions WHERE document_id = :d"), {"d": a})
         assert kept.scalar_one() == "rejected"  # still kept apart
-    assert _state(db) == at_0098
+    assert _state(db) == at_0099
 
     migrate(url, "0100")
     assert _state(db) == at_0100

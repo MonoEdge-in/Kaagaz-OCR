@@ -10,6 +10,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
+from scripts import golden_scoring as scoring
 from scripts.golden_scoring import (
     NLQ_SHA256,
     SPLITS,
@@ -132,7 +133,7 @@ def test_a_broken_entry_is_refused() -> None:
         "n003: expect.clarify needs choices (texts) and a pick, or is null",
         "n004: expect.documents lists a document as expected and not",
         "n005: a soft not-found is a not-found question",
-        "n006: scope needs a document from the manifest",
+        "n006: scope needs a document from the manifest, or all: true",  # Changed on purpose (#644)
         "n007: expect.no_total needs allowed: null or the permitted total's text, one number",
     ]
 
@@ -144,3 +145,60 @@ def test_too_few_items_in_a_slice_or_an_expectation_is_refused() -> None:
     assert f"{len(kept)} questions, at least 150" in found
     assert "0 in slice misspelling, at least 15" in found
     assert "0 figure, at least 60" in found
+
+
+def test_629_a_property_clarify_passes_only_with_labelled_choices() -> None:
+    """#629: the clarify expectation also needs each property pick to name its kind, its number and
+    a place or document: never a bare number, a date or several numbers joined."""
+    asked = {"question": "Which property do you mean?"}
+    good = [
+        {"kind": "pick", "label": "Survey ६१ (61), Kusgaon, Maval · Land record"},
+        {"kind": "other", "label": "x"},
+    ]
+    assert scoring.property_choices_labelled({**asked, "choices": good})
+    date = "\u0967\u0969.\u0966\u096c.\u0966\u0966"  # 13.06.00 in Devanagari digits
+    for bad in ("६१", date, "६५/३, ८१, ८५/२"):
+        assert not scoring.property_choices_labelled({**asked, "choices": [{"kind": "pick", "label": bad}]})
+    assert scoring.property_choices_labelled({"question": "Which Nikhil do you mean?", "choices": []})
+
+
+def test_644_focus_related_and_scope_are_marked_on_a_reply() -> None:
+    """Package K: the understood line names the focus's facts; each related document is listed in
+    the first 10 with its reason; a document outside the scope or left out is never shown."""
+    raw, _ = _load()
+    items = {item["id"]: item for item in raw}
+    related = question_from(items["n182"])  # "Find documents related to this land", after Kusgaon
+    assert related.nlq["scope"] == {"all": True} and related.follow_up_of == "n181"
+    names = {"k": "712-kusgaon-45-2.pdf", "u": "712-ulwe-9.pdf", "kh": "sale-deed-khalapur-gat-118.pdf"}
+    names |= {"hj": "712-hinjewadi-12-mr.pdf", "km": "712-kamshet-77-mr.pdf"}
+    why = {"u": "Same person Nikhil Varde", "kh": "Same person Ketaki Mhaskar; same person Nikhil Varde"}
+    why |= {"hj": "Same person Nikhil Varde", "km": "Same person Ketaki Mhaskar"}
+    reply: dict[str, Any] = {
+        "assumptions": ["Searching all your documents for Survey 45/2, Kusgaon (from 712-kusgaon-45-2)."],
+        "documents": [{"document_id": d, "why": w, "citations": []} for d, w in why.items()],
+        "citations": [],
+    }
+    why_docs = reply["documents"]
+    marks = scoring.nlq_score(related, reply, reply, names, "Vrushali").passed()
+    assert marks["focus"] and marks["related"] and marks["scope"]
+    wrong = {**reply, "assumptions": ["Searching all your documents for Survey 9, Ulwe (from 712-ulwe-9)."]}
+    wrong["documents"] = [*reply["documents"][1:], {"document_id": "k", "why": "Same place Kusgaon"}]
+    marks = scoring.nlq_score(related, wrong, wrong, names, "Vrushali").passed()
+    assert not marks["focus"] and not marks["related"] and not marks["scope"]  # the focus listed itself
+    # Every document listed, one without its reason.
+    unsaid = {
+        **reply,
+        "documents": [{**d, "why": "Similar content"} if d["document_id"] == "u" else d for d in why_docs],
+    }
+    assert not scoring.nlq_score(related, unsaid, unsaid, names, "Vrushali").passed()["related"]
+    metrics = scoring.nlq_metrics([scoring.nlq_score(related, reply, reply, names, "Vrushali")])
+    assert metrics["related_recall"] == (4, 4) and metrics["focus"] == (1, 1) and metrics["scope"] == (1, 1)
+
+
+def test_644_a_follow_up_is_marked_by_its_documents() -> None:
+    raw, _ = _load()
+    item = question_from(next(i for i in raw if i["id"] == "n206"))  # the Chowk share, after a switch
+    names = {"c": "712-chowk-31-4.pdf"}
+    right = {"documents": [{"document_id": "c", "why": "", "citations": [1]}], "citations": []}
+    assert scoring.nlq_score(item, right, right, names, "Vrushali").passed()["follow_up"]
+    assert not scoring.nlq_score(item, {}, {}, names, "Vrushali").passed()["follow_up"]

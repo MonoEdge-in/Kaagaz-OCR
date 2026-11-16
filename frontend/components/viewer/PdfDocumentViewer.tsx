@@ -94,6 +94,8 @@ export interface PdfDocumentViewerProps {
   role?: Role;
   /** #589: the signed-in person, whose page turns of this file are kept. */
   userId: string;
+  /** #600: after the turns are saved for everyone (the screen reloads the file's detail). */
+  onTurnsSaved?: () => void;
 }
 
 /**
@@ -159,6 +161,7 @@ export function PdfDocumentViewer({
   wordHits = NO_HITS,
   role,
   userId,
+  onTurnsSaved,
 }: PdfDocumentViewerProps) {
   const viewer = useRef<PDFViewerHandle>(null);
   const turns = usePageTurns(document.id, document.page_turns, userId);
@@ -419,6 +422,7 @@ export function PdfDocumentViewer({
         showDownload={false}
         pageRotations={handedTurns}
         onPageRotationsChange={turns.show}
+        turnMenuDisabled={turns.saving}
         renderPageOverlay={overlay}
         onActivePageChange={pageChanged}
         onDocumentLoadSuccess={() => setOpen(true)}
@@ -427,11 +431,10 @@ export function PdfDocumentViewer({
             <SaveForEveryone
               documentId={document.id}
               userId={userId}
-              saved={turns.saved}
-              shown={turns.shown}
+              turns={turns}
               onSaved={(saved) => {
-                turns.takeSaved(saved);
                 setHandedTurns(saved);
+                onTurnsSaved?.();
               }}
               className={buttonVariants({ variant: "ghost", size: "sm" })}
             />

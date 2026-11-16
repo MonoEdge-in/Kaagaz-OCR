@@ -215,7 +215,9 @@ def test_every_new_function_index_and_policy_has_a_comment(db: Database) -> None
         " 'model_usage'::regclass)",
         {"f": sorted(AT_HEAD), "i": sorted(NEW_INDEXES)},
     )
-    assert len(comments) == len(AT_HEAD) + len(NEW_INDEXES) + 5  # 3 catalogue policies, 2 customer_only
+    # 3 catalogue policies, 2 customer_only; Changed on purpose (PR 9a, #606): and model_usage's
+    # person_only (0091).
+    assert len(comments) == len(AT_HEAD) + len(NEW_INDEXES) + 6
     assert [name for name, comment in comments if not (comment or "").strip()] == []
 
 

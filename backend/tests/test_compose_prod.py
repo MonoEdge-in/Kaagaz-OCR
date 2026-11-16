@@ -16,14 +16,28 @@ from kaagaz.api.upload_guard import MULTIPART_OVERHEAD
 ROOT = Path(__file__).resolve().parents[2]
 PROD = "docker-compose.prod.yml"
 
-PRIVATE_QUERY = ["q", "party", "w", "source_name", "property", "code", "state"]
+# Changed on purpose (#603): the WhatsApp webhook check's verify token and challenge.
+PRIVATE_QUERY = [
+    "q",
+    "party",
+    "w",
+    "source_name",
+    "property",
+    "code",
+    "state",
+    "hub.verify_token",
+    "hub.challenge",
+]
 
 PROD_COMMAND = "docker compose -f docker-compose.yml -f docker-compose.prod.yml <command>"
 LOGGING = 'x-logging: &logging\n  driver: json-file\n  options:\n    max-size: "20m"\n    max-file: "5"\n'
 ONE_SHOT = {"migrate"}  # runs once per deploy and exits
 CLEARED = {"postgres", "seaweedfs", "elasticmq", "clamav", "api", "frontend"}
 # PRD 5 section 7: the scan reader and the model run outside the stack, so these are all.
-BASE_SERVICES = ["postgres", "seaweedfs", "elasticmq", "clamav", "migrate", "api", "worker", "frontend"]
+# Changed on purpose (#603): the WhatsApp channel, started only with --profile whatsapp.
+BASE_SERVICES = [
+    "postgres", "seaweedfs", "elasticmq", "clamav", "migrate", "api", "worker", "frontend", "whatsapp",
+]  # fmt: skip
 _NEXT_KEY = re.compile(r"^ {0,2}[a-z]", re.MULTILINE)  # the next service, or a top-level key
 
 
@@ -292,7 +306,8 @@ def test_the_caddyfile_sends_api_unchanged_to_the_api_and_the_rest_to_the_fronte
 # folder's name: q (/api/search, /api/documents, /api/stories match, and the /search and /chat
 # pages), party (/api/documents), w (/api/documents/{id}/words), source_name
 # (/api/folder-uploads/previous); review: property (/api/documents, a survey number read from a
-# document), and a Google sign-in's code and state (/api/auth/oidc/google/callback).
+# document), and a Google sign-in's code and state (/api/auth/oidc/google/callback); Meta's WhatsApp
+# webhook check's hub.verify_token and hub.challenge (/api/whatsapp/webhook, #603).
 
 
 def test_the_access_log_keeps_no_search_question_or_name() -> None:
@@ -333,6 +348,7 @@ NETWORKS = {
     "api": ["data", "edge"],
     "worker": ["data", "scan"],
     "frontend": ["edge"],
+    "whatsapp": ["data"],  # Changed on purpose (#603): the database, and Meta out on the internet
 }
 
 
@@ -352,6 +368,21 @@ def test_each_service_is_only_on_its_closed_lines() -> None:
     assert {name: networks_of(service(name)) for name in BASE_SERVICES} == NETWORKS
     assert networks_of(service("caddy", PROD)) == ["edge"]
     assert [name for name in services(PROD) if "networks" in keys(service(name, PROD))] == ["caddy"]
+
+
+def test_the_whatsapp_channel_starts_only_with_its_profile_and_logs_in_as_the_api() -> None:
+    """#603: never on a plain `up`; x-backend's login (the API's) and no workers' role, so it works as
+    the person (kaagaz/channel_main.py), with the server's limits."""
+    block = service("whatsapp")
+    assert has(block, 'profiles: ["whatsapp"]')
+    assert has(block, 'command: ["python", "-m", "kaagaz.channel_main"]')
+    assert "    <<: *backend\n" in block
+    assert "DATABASE_URL" not in block and "DB_WORKER_ROLE" not in block and "environment" not in keys(block)
+    prod = service("whatsapp", PROD)
+    assert all(
+        has(prod, line)
+        for line in ("mem_limit: 1g", "cap_drop: [ALL]", "security_opt: [no-new-privileges:true]")
+    )
 
 
 def test_only_migrate_gets_the_storage_admin_key() -> None:

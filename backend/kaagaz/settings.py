@@ -158,6 +158,7 @@ _LOOPBACK_NOTE = " (http only for localhost, 127.0.0.1 or ::1)"
 _URL_MESSAGES = {
     "OPENROUTER_BASE_URL": "OPENROUTER_BASE_URL must be an https URL" + _LOOPBACK_NOTE,
     "APP_URL": "APP_URL must be an https origin such as https://kaagaz.example.com" + _LOOPBACK_NOTE,
+    "WHATSAPP_GRAPH_URL": "WHATSAPP_GRAPH_URL must be an https URL" + _LOOPBACK_NOTE,
 }
 
 
@@ -203,6 +204,11 @@ class Settings:
     # while unset. docker-compose.yml sets it only for the worker, and only once .env names the
     # workers' own login (JOBS_DATABASE_URL), which alone may switch into it.
     db_worker_role: str
+    # PRD 7 (#606, decision 22): what the API and the worker do at start-up with a login the database
+    # rule can't hold (an owner, a superuser, one that skips row level security or can switch into the
+    # worker or operator role): "warn" (the laptop and CI, which sign in as the owner) or "refuse" (a
+    # server, set in its .env once its logins are the limited ones).
+    db_login_check: str
 
     # File storage (S3 API: SeaweedFS on the laptop, Amazon S3 in AWS).
     storage_endpoint_url: str | None
@@ -366,6 +372,12 @@ class Settings:
     # Search inside documents (Q2): at most this many documents in a reply, 1 to 100.
     search_ef: int
     search_max_documents: int
+    # PRD 7 section 7 (#602): hnsw.max_scan_tuples, the most tuples one meaning walk visits (pgvector's
+    # default 20,000), and how few vectors the person can see before meaning search scans them
+    # exactly, never walking the index (PROVISIONAL 2,000: measured
+    # in PR 8, the exact scan and its count cost about what the walk does at about 2,000 vectors).
+    search_max_scan_tuples: int
+    search_exact_below: int
 
     # Answers.
     answer_max_evidence: int
@@ -497,6 +509,25 @@ class Settings:
     folder_upload_calls_per_minute: int = 600
     folder_upload_files_at_once_per_org: int = 4
     folder_upload_files_at_once: int = 8
+    # Kaagaz on WhatsApp (#603, PRD 7 section 15). Off unless WHATSAPP_ENABLED=true: every
+    # /api/whatsapp route is 404 and the channel process (kaagaz.channel_main) will not start. On,
+    # the next seven are required: Meta's Graph API address with its version (https; http only on a
+    # loopback host, the fake server in tests), the Kaagaz number's id, the access token, the app
+    # secret (it signs every webhook), the webhook's verify token, and the key that seals and hashes
+    # people's numbers (32+ characters); and (W3) the Kaagaz number itself, digits only, for the
+    # Connect screen's "Open WhatsApp" link; and (W4) APP_URL, the Kaagaz address every link the bot
+    # sends opens. The webhook has its own rate bucket per address,
+    # whatsapp_webhook_calls_per_minute; the channel handles whatsapp_people_at_once people at once.
+    whatsapp_enabled: bool = False
+    whatsapp_graph_url: str | None = None
+    whatsapp_phone_number_id: str | None = None
+    whatsapp_access_token: str | None = field(default=None, repr=False)
+    whatsapp_app_secret: str | None = field(default=None, repr=False)
+    whatsapp_verify_token: str | None = field(default=None, repr=False)
+    whatsapp_number_key: str | None = field(default=None, repr=False)
+    whatsapp_business_number: str | None = None
+    whatsapp_webhook_calls_per_minute: int = 600
+    whatsapp_people_at_once: int = 4
 
     @property
     def mistral_ready(self) -> bool:
@@ -657,11 +688,19 @@ class Settings:
         )
         if queue_express_url == queue_url:
             raise SettingsError("QUEUE_EXPRESS_URL must name a queue other than QUEUE_URL")
+        # Off unless set to true, as EMAIL_ENABLED (#603).
+        whatsapp_on = env.optional("WHATSAPP_ENABLED") is not None and env.boolean("WHATSAPP_ENABLED")
+        number_key = env.secret("WHATSAPP_NUMBER_KEY") if whatsapp_on else None
+        if number_key == totp_encryption_key:  # one key, one purpose, as TOTP_ENCRYPTION_KEY's
+            raise SettingsError("WHATSAPP_NUMBER_KEY must differ from TOTP_ENCRYPTION_KEY")
         return cls(
             database_url=env.text("DATABASE_URL"),
             ops_database_url=env.optional("OPS_DATABASE_URL") or env.text("DATABASE_URL"),
             db_app_role=env.text("DB_APP_ROLE"),
             db_worker_role=env.optional("DB_WORKER_ROLE") or env.text("DB_APP_ROLE"),
+            db_login_check=(
+                env.choice("DB_LOGIN_CHECK", {"warn", "refuse"}) if env.optional("DB_LOGIN_CHECK") else "warn"
+            ),
             storage_endpoint_url=env.optional("STORAGE_ENDPOINT_URL"),
             storage_region=env.text("STORAGE_REGION"),
             storage_bucket=env.text("STORAGE_BUCKET"),
@@ -773,6 +812,8 @@ class Settings:
             reprocess_per_hour=env.positive("REPROCESS_PER_HOUR"),
             search_ef=env.between("SEARCH_EF", 1, 1000),
             search_max_documents=env.between("SEARCH_MAX_DOCUMENTS", 1, 100),
+            search_max_scan_tuples=env.between_or("SEARCH_MAX_SCAN_TUPLES", 1, 1000000, default=20000),
+            search_exact_below=env.between_or("SEARCH_EXACT_BELOW", 0, 1000000, default=2000),
             answer_max_evidence=env.integer("ANSWER_MAX_EVIDENCE"),
             answer_min_evidence_score=env.number("ANSWER_MIN_EVIDENCE_SCORE"),
             answer_neighbours=env.between("ANSWER_NEIGHBOURS", 0, 3),
@@ -798,7 +839,9 @@ class Settings:
             email_enabled=email_enabled,
             email_from=env.text("EMAIL_FROM") if email_enabled else env.optional("EMAIL_FROM"),
             ses_region=env.optional("SES_REGION") or "ap-south-1",
-            app_url=_app_url(env.text("APP_URL")) if email_enabled else env.optional("APP_URL"),
+            app_url=_app_url(env.text("APP_URL"))
+            if email_enabled or whatsapp_on
+            else env.optional("APP_URL"),
             ops_alert_email=env.optional("OPS_ALERT_EMAIL"),
             google_signin_enabled=google_on,
             google_client_id=env.text("GOOGLE_CLIENT_ID") if google_on else env.optional("GOOGLE_CLIENT_ID"),
@@ -813,6 +856,18 @@ class Settings:
             and env.boolean("MISTRAL_ZDR_APPROVED"),
             ocr_ultra_low_cost=ultra_low_cost,
             ocr_page_ceiling_paise=page_ceiling_paise,
+            whatsapp_enabled=whatsapp_on,
+            whatsapp_graph_url=_https_url(env.text("WHATSAPP_GRAPH_URL"), "WHATSAPP_GRAPH_URL")
+            if whatsapp_on
+            else None,
+            whatsapp_phone_number_id=env.digits("WHATSAPP_PHONE_NUMBER_ID") if whatsapp_on else None,
+            whatsapp_access_token=env.token("WHATSAPP_ACCESS_TOKEN") if whatsapp_on else None,
+            whatsapp_app_secret=env.token("WHATSAPP_APP_SECRET") if whatsapp_on else None,
+            whatsapp_verify_token=env.token("WHATSAPP_VERIFY_TOKEN") if whatsapp_on else None,
+            whatsapp_number_key=number_key,
+            whatsapp_business_number=env.digits("WHATSAPP_BUSINESS_NUMBER") if whatsapp_on else None,
+            whatsapp_webhook_calls_per_minute=env.positive_or("WHATSAPP_WEBHOOK_CALLS_PER_MINUTE", 600),
+            whatsapp_people_at_once=env.between_or("WHATSAPP_PEOPLE_AT_ONCE", 1, 10, default=4),
         )
 
 
@@ -840,6 +895,19 @@ class _Env:
         value = self.text(name)
         if len(value) < 32:
             raise SettingsError(f"{name} must be at least 32 characters")
+        return value
+
+    def token(self, name: str) -> str:
+        """A key or token sent in a header or compared: printable ASCII with no space."""
+        value = self.text(name)
+        if _API_KEY.fullmatch(value) is None:
+            raise SettingsError(f"{name} must be printable ASCII with no spaces")
+        return value
+
+    def digits(self, name: str) -> str:
+        value = self.text(name)
+        if not (value.isascii() and value.isdigit() and len(value) <= 32):
+            raise SettingsError(f"{name} must be digits only")
         return value
 
     def integer(self, name: str) -> int:

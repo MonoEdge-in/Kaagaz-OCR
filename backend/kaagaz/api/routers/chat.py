@@ -63,7 +63,7 @@ import math
 import threading
 import time
 import uuid
-from collections.abc import AsyncGenerator, Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
@@ -94,12 +94,16 @@ from kaagaz.answering.clarify import (
     Pending,
     answers_clarify,
     latin_key,
+    picked_page,
     reply_to,
     without_resume,
 )
-from kaagaz.answering.memory import NO_MEMORY, Memory, from_row, live
+from kaagaz.answering.evidence import looks_like_instructions
+from kaagaz.answering.focus import cut, parts
+from kaagaz.answering.memory import MAX_DOCUMENTS, NO_MEMORY, VERSION, Memory, from_row, live
 from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
+from kaagaz.answering.sanitize import clean_text
 from kaagaz.answering.stream import Events, StreamCancelled
 from kaagaz.answering.voice import SOFT_NOTHING, first_name, numbers, opening, soft_line, unsupported
 from kaagaz.answering.words_text import WordTextError, check_meaning, check_word
@@ -111,11 +115,12 @@ from kaagaz.api.names import clean_name
 from kaagaz.api.routers.health import running_commit
 from kaagaz.api.views import (
     LOCKED_NOTE,
-    answer_with_source_states,
+    NO_ACCESS,
     cited_document_ids,
     conversation_summary,
     message,
-    shown_locked,
+    no_access,
+    shown_message,
 )
 from kaagaz.db import ai_settings, audit, organization_words
 from kaagaz.db import chat as chat_sql
@@ -131,6 +136,7 @@ from kaagaz.db.models import (
     usable_chat_models,
 )
 from kaagaz.db.organization_words import Suggestion
+from kaagaz.db.sqlstate import log_unavailable
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.search.scope import EVERYTHING, ScopeBody, resolve
 from kaagaz.settings import MODEL_ID
@@ -145,6 +151,7 @@ MAX_TITLE = 200
 SHORT_TITLE = 60  # characters of the first question a new conversation's title keeps
 NOT_FOUND_TEXT = SOFT_NOTHING  # PRD 6 decision 9: the screen's words (answering/voice.py)
 MAX_SCOPE_BYTES = 4096  # the messages.scope CHECK (migration 0006)
+MAX_TYPED = 20_000  # characters a question may have; past it, 400
 TOO_MANY_QUESTIONS = "You have asked many questions in a short time. Please wait a minute and ask again."
 FEEDBACK_PER_MINUTE = 20  # PRD 6 F1: ratings a person may send a minute (issue #244)
 TOO_MANY_RATINGS = "You have sent a lot of feedback in a short time. Please wait a minute and try again."
@@ -177,7 +184,8 @@ class ReplyBody(BaseModel):
 class AskBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    question: str = Field(default="", max_length=1000)  # left out with a reply
+    # #644: any length up to MAX_TYPED is answered, cut to focus.MAX_ASKED keeping its questions.
+    question: str = Field(default="", max_length=MAX_TYPED)  # left out with a reply
     reply: ReplyBody | None = None
     conversation_id: uuid.UUID | None = None
     scope: ScopeBody | None = None  # left out: the conversation's last scope, or everything
@@ -359,14 +367,23 @@ async def ask_posted(
         _end_turn(turn)
 
 
-def ask(body: AskBody, user: CurrentUser, context: AppContext, background: BackgroundTasks) -> dict[str, Any]:
+def ask(
+    body: AskBody,
+    user: CurrentUser,
+    context: AppContext,
+    background: BackgroundTasks,
+    *,
+    channel: str | None = None,
+) -> dict[str, Any]:
     """The answer's ids come first (streaming Ask, #535): the question's (the client's
     ``question_id``, else a new one) and its conversation's (the one asked in, else a new one),
     sent as ``started`` on the stream before any database work. A ``question_id`` this person
     already asked returns that saved answer, waiting while this process still works on it: never
     a second model call (a client's fallback after a broken stream). One of anyone else's is 409,
     as an id that never was would be once saved (row level security hides another
-    organisation's). Then ``_ask``."""
+    organisation's). Then ``_ask``. ``channel`` (#603): ``whatsapp`` for a question asked on
+    WhatsApp, run as the person by the channel process (kaagaz/channel/chat.py): a conversation it
+    starts is marked so (history's "From WhatsApp") and its audit row says ``via``; None, the browser."""
     question_id = str(body.question_id) if body.question_id else str(uuid.uuid4())
     landing = str(body.conversation_id) if body.conversation_id else str(uuid.uuid4())
     stream.emit("started", {"conversation_id": landing, "question_id": question_id})
@@ -386,7 +403,7 @@ def ask(body: AskBody, user: CurrentUser, context: AppContext, background: Backg
         raise ApiError(409, "conflict", ANSWERING_ALREADY)
     try:
         found = None if body.question_id is None else _saved_reply(context, user, question_id)
-        reply = found or _ask(body, user, context, background, landing, question_id)
+        reply = found or _ask(body, user, context, background, landing, question_id, channel)
     finally:
         with _IN_PROGRESS_LOCK:
             _IN_PROGRESS.pop(question_id, None)
@@ -403,24 +420,22 @@ def _with_note(context: AppContext, user: CurrentUser, reply: dict[str, Any]) ->
 
 
 def _saved_reply(context: AppContext, user: CurrentUser, question_id: str) -> dict[str, Any] | None:
-    """#535: the reply ``ask`` gave for ``question_id``, as it was saved; None when it was not;
-    409 when it is not this person's question (nothing about it is said)."""
+    """#535: the reply ``ask`` gave for ``question_id``, as it was saved, its sources checked as
+    a conversation's are (PRD 7: replaced whole once one is hidden); None when it was not; 409
+    when it is not this person's question (nothing about it is said)."""
     with context.db.user(user.customer_id, user.user_id) as conn:
         found = chat_sql.saved_turn(conn, user.customer_id, question_id)
-        cited = [] if found is None or found[2] is None else cited_document_ids(found[2]["answer"])
-        states = chat_sql.document_states(conn, user.customer_id, cited)
-    if found is None:
-        return None
-    owner, question, answer = found
-    if owner != user.user_id or question["role"] != "user" or answer is None:
-        raise ApiError(409, "conflict")
-    shown = message(answer)
-    if "locked" in states.values() and shown["answer"]:  # PRD 7 (#605): locked since it was saved
-        shown["answer"] = answer_with_source_states(shown["answer"], states)
+        if found is None:
+            return None
+        owner, question, answer = found
+        if owner != user.user_id or question["role"] != "user" or answer is None:
+            raise ApiError(409, "conflict")
+        named = cited_document_ids(answer["answer"]) + _scope_ids(question)
+        states = chat_sql.document_states(conn, user.customer_id, named)
     return {
         "conversation_id": str(question["conversation_id"]),
         "question": message(question),
-        "answer": shown_locked(shown),
+        "answer": shown_message(answer, states, scope=_scope_ids(question)),
     }
 
 
@@ -431,12 +446,13 @@ def _ask(
     background: BackgroundTasks,
     landing: str,
     question_id: str,
+    channel: str | None = None,
 ) -> dict[str, Any]:
     """``ask``'s work: the answer to ``body``, saved as ``question_id`` in the conversation asked
-    in, else a new one named ``landing``."""
+    in, else a new one named ``landing`` (on ``channel``)."""
     if not chat_limits(context.settings.chat_questions_per_minute).allow(user.user_id):
         raise ApiError(429, "rate_limited", TOO_MANY_QUESTIONS, headers={"Retry-After": "60"})
-    question = body.question.strip()
+    question = cut(body.question.strip())
     answering = body.reply
     if not question and (answering is None or not answering.choice_ids):
         raise ApiError(400, "bad_request", "Type a question first.")
@@ -444,28 +460,42 @@ def _ask(
         answering = None  # B2: a long or question-like text is a new question; the clarify is left
     if answering is not None and body.conversation_id is None:
         raise ApiError(409, "conflict", CLARIFY_GONE)
+    # #644 (cost): each part of a question of several asks beyond the first is one more question.
+    for _ in range(len(parts(question)[0]) - 1 if answering is None else 0):
+        if not chat_limits(context.settings.chat_questions_per_minute).allow(user.user_id):
+            raise ApiError(429, "rate_limited", TOO_MANY_QUESTIONS, headers={"Retry-After": "60"})
     conversation_id = None if body.conversation_id is None else str(body.conversation_id)
     chosen = body.scope
     recent: Sequence[RowMapping] = []
     memory, summary_turn, turns = NO_MEMORY, 0, 0
+    last_cited: list[str] = []
+    names: dict[str, str] = {}  # #621: the documents earlier answers cited that are still live
     earlier: list[str | None] = []  # the conversation's openings so far (PRD 6 A)
     pending: Pending | None = None
+    forget = False  # PRD 7 (#602): the memory tracks a document the asker can no longer see
     with context.db.user(user.customer_id, user.user_id) as conn:
         if conversation_id is not None:
             state = chat_sql.conversation_memory(conn, user.customer_id, conversation_id, user.user_id)
             if state is None:
                 raise ApiError(404, "not_found")
-            memory = _live_memory(conn, user.customer_id, state)
             summary_turn, turns = int(state["summary_turn"]), int(state["turns"])
             pairs = max(context.settings.chat_history_turns, 1)
-            recent = chat_sql.recent_messages(conn, user.customer_id, conversation_id, 2 * pairs)
-            recent = _without_locked(conn, user.customer_id, recent)
+            recent, remembered = _shown_turns(conn, user.customer_id, conversation_id, 2 * pairs, state)
+            forget = remembered is None
+            memory = NO_MEMORY if remembered is None else remembered
+            # #629: the last answer's documents the asker can still see (current, out of Trash, and
+            # theirs to see: visible_documents, PRD 7); with none, #644: the one document the last
+            # question was asked in, while the same holds.
+            asked_in = _scoped_document(recent)
+            names = chat_sql.live_document_names(conn, user.customer_id, [*_cited(recent), *asked_in])  # #621
+            last_cited = [document for document in _cited(recent[:1]) if document in names]
+            last_cited = last_cited or [document for document in asked_in if document in names]
             earlier = chat_sql.openings(conn, user.customer_id, conversation_id)
             if chosen is None:
                 chosen = _saved_scope(recent)
             if answering is not None:
                 pending = _pending(recent, answering, question)
-                question = ", ".join(pending.picked) or question
+                question = ", ".join(pending.labels or pending.picked) or question  # #629: as shown
         scope = (
             EVERYTHING
             if chosen is None
@@ -488,6 +518,7 @@ def _ask(
             else None
         )
     repeat_key, repeated, started = None, None, time.monotonic()
+    kept = None if ready_key is None else ready.READY.get(ready_key)
     if repeatable:
         # #535 (answering/ready.py): a fresh question asked again by this person, with these same
         # inputs, today, on this code, while nothing it reads changed: its stored answer, at once.
@@ -497,12 +528,18 @@ def _ask(
         with context.db.user(user.customer_id, user.user_id) as conn:  # the asker's own words too
             repeat_key = ready.repeat_key(conn, user.customer_id, user.user_id, question, inputs, made_from)
             repeated = chat_sql.repeated_answer(conn, user.customer_id, user.user_id, repeat_key)
+            # PRD 7 (#602): a kept answer naming a document the asker can't see now is not served.
+            ready_json = None if kept is None else kept.to_json()
+            named = cited_document_ids(ready_json) + cited_document_ids(repeated)
+            states = chat_sql.document_states(conn, user.customer_id, named)
+            kept = None if no_access(ready_json, states) else kept
+            repeated = None if no_access(repeated, states) else repeated
     saved = None if chosen is None else chosen.model_dump(mode="json")
     # json.dumps writes ", " and ": " as jsonb's text does, so this is the CHECK's length.
     if saved is not None and len(json.dumps(saved).encode()) > MAX_SCOPE_BYTES:
         raise ApiError(400, "bad_request", "Choose fewer documents or tags.")
 
-    history = _history(recent)
+    history = _history(recent, names)
     with usage_scope(
         context.db,
         customer_id=user.customer_id,
@@ -515,7 +552,6 @@ def _ask(
         if talk is not None:
             answer = small_talk.answer(talk, question, first_name(user.display_name), examples)
         else:
-            kept = None if ready_key is None else ready.READY.get(ready_key)
             reply = (
                 kept
                 or _stored(repeated, started)
@@ -531,6 +567,7 @@ def _ask(
                     pending=pending,
                     clarify=switched["nlq_clarify"],
                     cited=_cited(recent),
+                    last_cited=last_cited,
                 )
             )
             # KZ-006: an outage is never "not found": the reply says the AI is not responding
@@ -562,6 +599,7 @@ def _ask(
                     pending,
                     degraded,
                     copied,
+                    channel,
                 )
         except IntegrityError:  # #535: saved meanwhile by another process (the client's fallback)
             found = _saved_reply(context, user, question_id)
@@ -572,7 +610,8 @@ def _ask(
         spend.conversation_id = conversation_id  # committed: the ledger row may name it
     if fresh:
         ready.SHOWN.used(user.customer_id, user.user_id, question)  # Home's list changes only now
-    if summary_due(turns + 1, summary_turn, context.settings.chat_summary_every):
+    due = summary_due(turns + 1, summary_turn, context.settings.chat_summary_every)
+    if due or (forget and conversation_id is not None and _rebuild_due(conversation_id)):
         background.add_task(
             _remember, context, user.customer_id, user.user_id, conversation_id, summary_turn, turns + 1
         )
@@ -580,8 +619,8 @@ def _ask(
     if copied and shown["answer"]:  # A10: a stored copy is shown as a conversation shows it
         with context.db.user(user.customer_id, user.user_id) as conn:
             states = chat_sql.document_states(conn, user.customer_id, cited_document_ids(shown["answer"]))
-        shown["answer"] = answer_with_source_states(shown["answer"], states)
-    return {"conversation_id": conversation_id, "question": message(asked), "answer": shown_locked(shown)}
+        shown = shown_message(answered, states)
+    return {"conversation_id": conversation_id, "question": message(asked), "answer": shown}
 
 
 def _save(
@@ -601,13 +640,20 @@ def _save(
     pending: Pending | None,
     degraded: bool,
     copied: bool,
+    channel: str | None = None,
 ) -> tuple[str, RowMapping, RowMapping]:
-    """``_ask``'s one save transaction: the conversation (new, named ``landing``), both messages
-    (the question as ``question_id``) and the audit row; (the conversation, the question's row,
-    the answer's row)."""
+    """``_ask``'s one save transaction: the conversation (new, named ``landing``, on ``channel``),
+    both messages (the question as ``question_id``) and the audit row; (the conversation, the
+    question's row, the answer's row)."""
+    first = conversation_id is None  # #624: Home's suggestions belong to a first answer only
     if conversation_id is None:
         conversation_id = chat_sql.create_conversation(
-            conn, user.customer_id, user.user_id, short_title(question), conversation_id=landing
+            conn,
+            user.customer_id,
+            user.user_id,
+            short_title(question),
+            conversation_id=landing,
+            channel=channel,
         )
     elif chat_sql.get_conversation(conn, user.customer_id, conversation_id, user.user_id) is None:
         raise ApiError(404, "not_found")
@@ -616,7 +662,12 @@ def _save(
         answering.message_id
     ):
         raise ApiError(409, "conflict", CLARIFY_GONE)
-    if answer.get("status") == "not_found" and not answer.get("documents") and not answer.get("outage"):
+    if (
+        first
+        and answer.get("status") == "not_found"
+        and not answer.get("documents")
+        and not answer.get("outage")
+    ):
         # Nothing close (24 Oct 2026): the best next step is a question this library answers.
         answer["suggestions"] = [
             text
@@ -662,6 +713,7 @@ def _save(
             # details hold no lists) and at what level.
             "agents": ",".join(agent.model for agent in choice.agents),
             "thinking": choice.thinking,
+            **({"via": channel} if channel else {}),
         },
     )
     if pending is not None:
@@ -852,7 +904,9 @@ def _work(
         except ApiError as error:
             post("error", {"code": error.code, "message": error.message})
             return
-        except (BackendUnavailable, OperationalError, PoolTimeout):
+        except (BackendUnavailable, OperationalError, PoolTimeout) as error:
+            if not isinstance(error, BackendUnavailable):  # #620: one made by unavailable() was logged there
+                log_unavailable(error)
             post("error", {"code": "backend_unavailable", "message": MESSAGES["backend_unavailable"]})
             return
         except Exception as error:  # noqa: BLE001 - the stream's boundary, as ErrorMiddleware's
@@ -935,18 +989,19 @@ def ready_questions(user: User, context: Context, background: BackgroundTasks) -
     ready}]}``, their own most-asked first; any whose answer is not ready yet is made after
     the reply, so a press a moment later answers at once."""
     with context.db.user(user.customer_id, user.user_id) as conn:
+        made_from = ready.stamp(conn, user.customer_id)
+        version = ready.access_of(made_from)  # PRD 7: a list made before an access change is not shown
         # The same questions on every visit until one is used (ready.ShownQuestions).
-        picked = ready.SHOWN.get(user.customer_id, user.user_id) or ready.questions(
+        picked = ready.SHOWN.get(user.customer_id, user.user_id, version) or ready.questions(
             conn, user.customer_id, user.user_id
         )
         inputs = _home_inputs(conn, user, context)
-        made_from = ready.stamp(conn, user.customer_id)
     keys = (
         {}
         if inputs is None
         else {q: ready.key(user.customer_id, user.user_id, q, inputs, made_from) for q, _ in picked}
     )
-    ready.SHOWN.keep(user.customer_id, user.user_id, picked)
+    ready.SHOWN.keep(user.customer_id, user.user_id, picked, version)
     cold = [q for q, _ in picked if q in keys and ready.READY.claim(keys[q])]
     if cold and inputs is not None:
         background.add_task(_make_ready, context, user, cold, inputs, keys)
@@ -992,6 +1047,8 @@ def _make_ready(
                     cited=[],
                 )
         except (SQLAlchemyError, BackendUnavailable, ModelUnavailable, ModelOutputError) as error:
+            if isinstance(error, OperationalError | PoolTimeout):  # #620: its class and SQLSTATE
+                log_unavailable(error)
             logger.warning("ready answer not made", extra={"code": type(error).__name__})
             ready.READY.release(keys[question])
             continue
@@ -1084,29 +1141,55 @@ def _first_allowed(
     return [next((agent for agent in agents if agent in usable), agents[0])]
 
 
-def _live_memory(conn: Connection, customer_id: str, state: RowMapping) -> Memory:
-    """The stored summary and memory, without the documents that are no longer live
-    (Trash, an older version, deleted forever), with the live ones' names. One query when
-    it names documents. PRD 7 (#605): none at all when one of its documents is locked now, as its
-    summary may hold that file's words; the next write builds it again from the answers left."""
+# PRD 7 (#602, review): a memory made again (``forget``) whose rebuild keeps failing is tried at
+# most once in this many seconds a conversation (this process's own record, oldest dropped).
+REBUILD_SECONDS = 600
+_REBUILT: dict[str, float] = {}
+_REBUILT_LOCK = threading.Lock()
+
+
+def _rebuild_due(conversation_id: str) -> bool:
+    """Whether the memory of ``conversation_id`` may be made again now; notes the try."""
+    now = time.monotonic()
+    with _REBUILT_LOCK:
+        if now - _REBUILT.get(conversation_id, -math.inf) < REBUILD_SECONDS:
+            return False
+        _REBUILT[conversation_id] = now
+        if len(_REBUILT) > 10_000:
+            _REBUILT.pop(next(iter(_REBUILT)))
+        return True
+
+
+def _locked(answer: Mapping[str, Any] | None, states: Mapping[str, str]) -> bool:
+    """PRD 7 (#605): whether ``answer`` names a document now locked (``document_states``)."""
+    return any(states.get(document) == "locked" for document in cited_document_ids(answer))
+
+
+def _shown_turns(
+    conn: Connection, customer_id: str, conversation_id: str, limit: int, state: RowMapping
+) -> tuple[list[RowMapping], Memory | None]:
+    """PRD 7 (#602): the conversation's newest ``limit`` messages (``recent_messages``) without
+    the answers the asker may no longer see whole (``views.no_access``) and those naming a document
+    now locked (#605), so no history, cited id
+    or open clarify comes from one; and the stored summary and memory with the live documents'
+    names, or None when it tracks a document they can no longer see (or deleted forever) or one now
+    locked (PRD 7, #605: its summary may hold that file's words), or was
+    written before every document it read was tracked (no ``VERSION``): it is not used, and is
+    made again (question 7). Two statements, three when the memory names a document."""
+    recent = chat_sql.recent_messages(conn, customer_id, conversation_id, limit)
     stored = from_row(state["summary"], state["memory"])
-    if chat_sql.locked_documents(conn, customer_id, stored.documents):
-        return NO_MEMORY
-    return live(stored, chat_sql.live_document_names(conn, customer_id, stored.documents))
-
-
-def _without_locked(conn: Connection, customer_id: str, recent: Sequence[RowMapping]) -> list[RowMapping]:
-    """PRD 7 (#605): ``recent`` without the answers that name a document now locked: their turn is
-    its question only, and nothing of them reaches a prompt or the memory. One query."""
-    named = [
-        each for row in recent if row["role"] == "assistant" for each in cited_document_ids(row["answer"])
+    named = [*stored.documents, *(d for row in recent for d in cited_document_ids(row["answer"]))]
+    states = chat_sql.document_states(conn, customer_id, named)
+    # PRD 7 (#605): an answer naming a document now locked goes too, though the person may open it.
+    shown = [
+        row for row in recent if not no_access(row["answer"], states) and not _locked(row["answer"], states)
     ]
-    locked = chat_sql.locked_documents(conn, customer_id, named)
-    return [
-        row
-        for row in recent
-        if not (row["role"] == "assistant" and locked.intersection(cited_document_ids(row["answer"])))
-    ]
+    written = state["memory"].get("v") if isinstance(state["memory"], Mapping) else None
+    if stored != NO_MEMORY and written != VERSION:
+        return shown, None
+    if any(document not in states or states[document] == "locked" for document in stored.documents):
+        return shown, None
+    return shown, live(stored, chat_sql.live_document_names(conn, customer_id, stored.documents))
 
 
 def summary_due(turn: int, summary_turn: int, every: int) -> bool:
@@ -1143,22 +1226,24 @@ def _write_memory(
     """The summary and memory rewritten from the memory so far and the last
     CHAT_SUMMARY_EVERY turns, with the documents their answers cited, written at ``turn``
     only if ``summary_turn`` is still ``expected_turn``. Nothing is written when the model
-    fails or another reply wrote first. The model call is outside any transaction."""
+    fails or another reply wrote first. The model call is outside any transaction. PRD 7
+    (#602): only the answers the asker may still see; a memory tracking a document they can't
+    is made again from those alone (``NO_MEMORY`` before them)."""
     every = context.settings.chat_summary_every
     with context.db.user(customer_id, user_id) as conn:
         state = chat_sql.conversation_memory(conn, customer_id, conversation_id, user_id)
         if state is None or state["summary_turn"] != expected_turn:
             return
-        previous = _live_memory(conn, customer_id, state)
-        recent = chat_sql.recent_messages(conn, customer_id, conversation_id, 2 * every)
-        recent = _without_locked(conn, customer_id, recent)
+        recent, remembered = _shown_turns(conn, customer_id, conversation_id, 2 * every, state)
+    previous = NO_MEMORY if remembered is None else remembered
+    # PRD 7 (#602, review): every document a shown answer names, a clarify's choices too: the memory
+    # may hold anything the turns say, so it tracks all they read.
     cited = [
-        str(citation["document_id"])
-        for row in reversed(recent)
-        if row["role"] == "assistant" and (row["answer"] or {}).get("status") == "answered"
-        for citation in row["answer"].get("citations", [])
-        if isinstance(citation, dict) and citation.get("document_id")
+        d for row in reversed(recent) if row["role"] == "assistant" for d in cited_document_ids(row["answer"])
     ]
+    if len(set(cited)) > MAX_DOCUMENTS:  # never one id dropped: not written this time
+        logger.info("memory not written", extra={"code": "memory_too_many_documents"})
+        return
     memory = context.answers.remember(_history(recent), previous, cited)
     if memory is None:
         return
@@ -1190,7 +1275,9 @@ def _pending(recent: Sequence[RowMapping], reply: ReplyBody, question: str) -> P
 def _suggest(conn: Connection, user: CurrentUser, pending: Pending) -> None:
     """Decision 6 (PRD 6 B2): a "Did you mean" pick ("Puny" meant Pune) is submitted to the
     organisation-words review as a pending suggestion, never straight to the company; its meaning
-    is the name's Latin spelling, which the vocabulary matches once a reviewer approves it."""
+    is the name's Latin spelling, which the vocabulary matches once a reviewer approves it. PRD 7
+    (#602, question 9): a pick of one document records it and the page its name is on
+    (``picked_page``, through the view), so the word shows and aliases only for who sees it."""
     if not (pending.confirm and pending.as_typed and len(pending.picked) == 1):
         return
     try:
@@ -1199,6 +1286,10 @@ def _suggest(conn: Connection, user: CurrentUser, pending: Pending) -> None:
         return
     texts: dict[str, Any] = {"word": word.text, "word_fold": word.fold, "meaning": meaning.text}
     texts["meaning_fold"] = meaning.fold
+    one = pending.documents[0] if len(pending.documents) == 1 else None
+    page = None if one is None else picked_page(conn, user.customer_id, one, pending)
+    if page is not None:
+        texts |= {"document_id": one, "page_no": page}
     row = organization_words.submit(conn, user.customer_id, user.user_id, **texts)
     if isinstance(row, Suggestion):  # None: already pending or approved; or the company's limit
         details = {"status": "pending", "source": "clarify"}
@@ -1208,19 +1299,24 @@ def _suggest(conn: Connection, user: CurrentUser, pending: Pending) -> None:
         )
 
 
-def _history(recent: Sequence[RowMapping]) -> list[Turn]:
+def _history(recent: Sequence[RowMapping], names: Mapping[str, str] | None = None) -> list[Turn]:
     """The question and answer pairs of ``recent`` (newest first), oldest first. Only an
     answered answer gives its sentences, and a clarify its question: after "not found" the
-    turn is its question only (edge case 3). O(m) for m messages."""
+    turn is its question only (edge case 3). #621: each answered turn also names the documents
+    it cited that are in ``names`` (``chat_sql.live_document_names``: current, out of Trash),
+    each cleaned and never one that reads like instructions. O(m) for m messages."""
     turns: list[Turn] = []
     answer: str | None = None
+    cited: tuple[str, ...] = ()
     for row in recent:  # an answer comes just before its question
         if row["role"] == "assistant":
             saved = row["answer"] or {}
             answer = answer_text(saved) if saved.get("status") in ("answered", "clarify") else None
+            shown = (clean_text((names or {}).get(document, "")) for document in _cited([row]))
+            cited = tuple(dict.fromkeys(n for n in shown if n and not looks_like_instructions(n)))
         else:
-            turns.append(Turn(str(row["text"]), answer))
-            answer = None
+            turns.append(Turn(str(row["text"]), answer, cited))
+            answer, cited = None, ()
     return turns[::-1]
 
 
@@ -1235,6 +1331,13 @@ def _cited(recent: Sequence[RowMapping]) -> list[str]:
         if isinstance(citation, dict) and citation.get("document_id")
     )
     return list(dict.fromkeys(cited))
+
+
+def _scoped_document(recent: Sequence[RowMapping]) -> list[str]:
+    """#644: the one document the newest question of ``recent`` was asked in, else none."""
+    saved = _saved_scope(recent)
+    documents = [] if saved is None or saved.document_ids is None else saved.document_ids
+    return [str(documents[0])] if len(documents) == 1 else []
 
 
 def _saved_scope(recent: Sequence[RowMapping]) -> ScopeBody | None:
@@ -1264,9 +1367,14 @@ def get_conversation(conversation_id: uuid.UUID, user: User, context: Context) -
             raise ApiError(404, "not_found")
         rows = chat_sql.messages_with_feedback(conn, user.customer_id, str(conversation_id), user.user_id)
         cited = [document_id for row in rows for document_id in cited_document_ids(row["answer"])]
-        states = chat_sql.document_states(conn, user.customer_id, cited)
+        states = chat_sql.document_states(
+            conn, user.customer_id, cited + [d for r in rows for d in _scope_ids(r)]
+        )
         opens = chat_sql.opens_locked(conn, user.customer_id, user.user_id)
     messages = []
+    scope: list[str] = []  # the question's, for its answer
+    replaced = False  # an answer before this one was replaced whole
+    picks: set[str] = set()  # the choices of a clarify just replaced
     for row in rows:
         pin = (
             None
@@ -1277,17 +1385,47 @@ def get_conversation(conversation_id: uuid.UUID, user: User, context: Context) -
                 "ref_id": row["pin_ref_id"],
             }
         )
-        shown = message(row, row["feedback"], pin)
-        if shown["answer"]:
-            # Sources moved to Trash, deleted or replaced since: see views.answer_with_source_states.
-            shown["answer"] = answer_with_source_states(shown["answer"], states)
-        messages.append(shown_locked(shown))
+        # Sources moved to Trash, replaced, hidden or deleted since: views.answer_with_source_states.
+        shown = shown_message(row, states, row["feedback"], pin, scope)
+        if row["role"] == "user":
+            scope = _scope_ids(row)
+            if picks and set(str(row["text"]).split(", ")) <= picks:
+                shown["text"] = EARLIER_CHOICE  # PRD 7 (#602): a pick among choices now hidden
+            picks = set()
+        elif shown["answer"] and shown["answer"]["status"] == NO_ACCESS:
+            replaced = True
+            picks = {str(c.get("label")) for c in (row["answer"].get("clarify") or {}).get("choices", [])}
+        elif shown["answer"] and replaced:
+            shown["answer"] = _without_reading(shown["answer"])
+        messages.append(shown)
     return {
         "id": str(found["id"]),
         "title": found["title"],
         "messages": messages,
         "locked_note": LOCKED_NOTE if opens else None,  # PRD 7 (#605, p2:79)
     }
+
+
+# PRD 7 (#602, review): what a reply to a clarify replaced whole says instead of its pick.
+EARLIER_CHOICE = "A choice you made earlier"
+
+
+def _without_reading(answer: dict[str, Any]) -> dict[str, Any]:
+    """An answer after one replaced whole, in the same conversation: how it read the question (a
+    follow-up may have read the hidden answer) is left out."""
+    blank: dict[str, Any] = {
+        "rewritten_question": None,
+        "normalized_question": "",
+        "assumptions": [],
+        "understood_words": [],
+    }
+    return {**answer, **{key: value for key, value in blank.items() if key in answer}}
+
+
+def _scope_ids(row: RowMapping) -> list[str]:
+    """The document ids a question message was asked inside (its ScopeBody), else none."""
+    scope = row["scope"]
+    return [str(each) for each in scope.get("document_ids") or []] if isinstance(scope, Mapping) else []
 
 
 @router.patch("/conversations/{conversation_id}")

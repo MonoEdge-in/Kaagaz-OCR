@@ -1,4 +1,4 @@
-"""Migration 0093 (PRD 7 PR 12, #605): locked files. Up, down (the schema as at 0090b) and up again
+"""Migration 0093 (PRD 7 PR 12, #605): locked files. Up, down (the schema as at 0092) and up again
 on a fresh database; the CHECKs refuse a locked version that is ready or keeps its card, and a
 version in the state locked that is not locked; a run may end locked. What the functions do:
 test_isolation_locked_files; their rights: test_isolation_schema."""
@@ -34,9 +34,8 @@ _COLUMNS = (
 _LOCKED = "UPDATE documents SET locked_at = now(), locked_by = :u, status = :s WHERE id = :d"
 
 
-def test_the_revision_follows_0090b_for_now() -> None:
-    """PROVISIONAL: 0092 once PR 9a and 9b merge."""
-    assert (M0093.revision, M0093.down_revision) == ("0093", "0090b")
+def test_the_revision_follows_0092() -> None:
+    assert (M0093.revision, M0093.down_revision) == ("0093", "0092")
 
 
 def test_the_kinds_with_page_pictures_take_the_office_kinds_drawn_as_pdf() -> None:
@@ -51,14 +50,14 @@ def _counts(db: Database) -> list[int]:
 
 def test_up_down_and_up_again(fresh: tuple[str, Database]) -> None:
     url, db = fresh
-    migrate(url, "0090b")
-    at_0090b = _state(db)
+    migrate(url, "0092")
+    at_0092 = _state(db)
     migrate(url, "0093")
     at_0093 = _state(db)
     assert _counts(db) == [7, len(M0093.TRIGGERS), 2]
 
-    base._downgrade(url, "0090b")
-    assert _state(db) == at_0090b
+    base._downgrade(url, "0092")
+    assert _state(db) == at_0092
     assert _counts(db) == [0, 0, 0]
 
     migrate(url, "0093")
@@ -120,9 +119,9 @@ def test_the_downgrade_is_refused_while_a_file_is_locked(fresh: tuple[str, Datab
         document = insert_document(conn, customer, uploaded_by=user)
     _owner(db, _LOCKED, {"u": user, "s": "received", "d": document})
     with pytest.raises(subprocess.CalledProcessError) as refused:
-        base._downgrade(url, "0090b")
+        base._downgrade(url, "0092")
     assert b"unlock every file first" in refused.value.stderr
     assert _counts(db) == [7, len(M0093.TRIGGERS), 2]  # nothing dropped
     _owner(db, "UPDATE documents SET locked_at = NULL, locked_by = NULL WHERE id = :d", {"d": document})
-    base._downgrade(url, "0090b")
+    base._downgrade(url, "0092")
     assert _counts(db) == [0, 0, 0]

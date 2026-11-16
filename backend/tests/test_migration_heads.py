@@ -107,11 +107,18 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     Changed on purpose (#594, 14 Nov 2026): nothing opens by accident (0089) follows 0088.
     Changed on purpose (#601, 14 Nov 2026): the access API (0090) follows 0089.
     Changed on purpose (#601, 15 Nov 2026): the wall rules (0090b) follow 0090.
-    Changed on purpose (#605, 15 Nov 2026): locked files (0093, PROVISIONAL: after 0092 once PR 9
-    merges) follow 0090b. Changed on purpose (#648, 16 Nov 2026): the version finder (0098,
-    PROVISIONAL: after 0097 once search, model parameters and WhatsApp merge) follows 0093.
-    Changed on purpose (#648, 16 Nov 2026): linking files as versions (0100, PROVISIONAL: after 0099
-    at merge) follows 0098 and is the head."""
+    Changed on purpose (#606, 15 Nov 2026): the database rule (0091) follows 0090b.
+    Changed on purpose (#606, PR 9b, 15 Nov 2026): its writes over rows the person can't see (0092) follow
+    0091.
+    Changed on purpose (#605, PR 12, 15 Nov 2026): locked files (0093) follow 0092.
+    Changed on purpose (#617 part 1, 16 Nov 2026): the bounded word search (0094) follows 0093.
+    Changed on purpose (#647, 16 Nov 2026): each model's supported parameters (0095) follow 0094.
+    Changed on purpose (#605, PR 13, 16 Nov 2026): the locked-file pop-ups' names (0096, 0094 on
+    their branch) follow 0095.
+    Changed on purpose (#603, 16 Nov 2026): Kaagaz on WhatsApp's tables (0097) follow 0096, and
+    its voice notes' spend (0098) follows 0097.
+    Changed on purpose (#648, 16 Nov 2026): the version finder (0099, 0098 on its branch) follows
+    0098, and linking files as versions (0100) follows 0099 and is the head."""
     scripts = _scripts()
     assert scripts.get_revision("0082").down_revision == "0081"
     assert scripts.get_revision("0083").down_revision == "0082"
@@ -123,7 +130,14 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     assert scripts.get_revision("0089").down_revision == "0088"
     assert scripts.get_revision("0090").down_revision == "0089"
     assert scripts.get_revision("0090b").down_revision == "0090"
-    assert scripts.get_revision("0093").down_revision == "0090b"
-    assert scripts.get_revision("0098").down_revision == "0093"
-    assert scripts.get_revision("0100").down_revision == "0098"
+    assert scripts.get_revision("0091").down_revision == "0090b"
+    assert scripts.get_revision("0092").down_revision == "0091"
+    assert scripts.get_revision("0093").down_revision == "0092"
+    assert scripts.get_revision("0094").down_revision == "0093"
+    assert scripts.get_revision("0095").down_revision == "0094"
+    assert scripts.get_revision("0096").down_revision == "0095"
+    assert scripts.get_revision("0097").down_revision == "0096"
+    assert scripts.get_revision("0098").down_revision == "0097"
+    assert scripts.get_revision("0099").down_revision == "0098"
+    assert scripts.get_revision("0100").down_revision == "0099"
     assert scripts.get_heads() == ["0100"]
