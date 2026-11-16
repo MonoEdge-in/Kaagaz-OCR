@@ -6,8 +6,9 @@ driven through the fake WhatsApp, the webhook and the channel in the API's role.
   from them: nothing of it reaches a reply (its id, pieces, name, figures, names, places or topic),
   and the reply is the one a file that never was gets; Finance's member still finds Finance's file.
 * The same question in the browser gives the same answer.
-* A locked file is never named, even to the person who may open it (who sees it in the browser).
-* "Did you mean" offers no name from a hidden file, nor one only a locked file holds.
+* A locked file is never named, even to the person who may open it (who sees it in the browser's
+  list); since PRD 7 PR 12 it holds nothing Ask could find.
+* "Did you mean" offers no name from a hidden file (a locked one can hold none).
 * Aadhaar, PAN, bank and card numbers never reach WhatsApp in full (the browser shows them).
 """
 
@@ -19,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from kaagaz.adapters.whatsapp import MetaWhatsApp
 from kaagaz.answering import rewrite
@@ -181,39 +183,43 @@ def test_a_hidden_file_asked_searched_or_requested_gives_nothing_and_no_hint(
 
 @pytest.mark.parametrize("person", ["member", "plain"])
 def test_the_same_question_in_the_browser_gives_the_same_answer(walled: Walled, person: str) -> None:
-    """The plain reviewer may open the locked file (a lock grant): shortcut, until PR 12 stops Ask
-    reading locked files, a fixed query's totals and counts are "couldn't find" for them on WhatsApp."""
+    """Changed on purpose (PRD 7 PR 12, #649): Ask never reads a locked file, so the plain reviewer,
+    who may open one, gets the browser's answer too (before PR 12 a fixed query's totals were
+    "couldn't find" for them on WhatsApp)."""
     for question in RED_TEAM:
         body, _ = walled.say(person, question)
         _owner(walled.ask.db, "UPDATE messages SET answer = answer - 'repeat_key'", {})  # answered afresh
         browser = walled.browser(person, question)
-        granted = person == "plain" and browser["answer"]["route"] == "fixed_query"
-        assert _answer_text(body) == (NOT_FOUND if granted else browser["text"]), question
+        assert _answer_text(body) == browser["text"], question
 
 
 def test_a_locked_file_is_never_named_even_for_the_person_who_may_open_it(walled: Walled) -> None:
+    """Changed on purpose (PRD 7 PR 12, #649): a locked file's content is never written, so no
+    question finds it; the browser still lists it for the person who may open it, and WhatsApp never
+    names it, searched for or tapped."""
     ask = walled.ask
     locked = ask.id("locked")  # in Sales, locked; the plain reviewer may open it (a lock grant)
-    piece = add_pieces(ask.db, ask.org.c, locked, [("Invoice zebra register", axis(9))])
-    with ask.db.customer(ask.org.c) as conn:
-        insert_key(conn, ask.org.c, locked, "person", "Ramesh zebra")
-    browser = walled.browser("plain", "Tell me about zebra")
-    assert locked in json.dumps(browser)  # the browser shows it to them: WhatsApp never does
-    asked = walled.say("plain", "Tell me about zebra")
+    with pytest.raises(IntegrityError, match="kaagaz_locked"):
+        add_pieces(ask.db, ask.org.c, locked, [("Invoice zebra register", axis(9))])
+    listed = ask.org.people["plain"].client.get("/api/documents", headers=CSRF).json()["items"]
+    assert locked in {row["id"] for row in listed}  # the browser lists it for them: WhatsApp never does
+    walled.say("plain", "Tell me about locked.pdf")
     walled.tap("plain", "get.en")
-    searched = walled.say("plain", "zebra", fresh=False)
+    searched = walled.say("plain", "locked", fresh=False)
     requested = walled.tap("plain", f"file:{locked}:en")
-    assert asked[0] == NOT_FOUND and searched == requested == (NOT_FOUND, ["menu.en"])
-    assert _named(walled, [locked, *piece, "locked.pdf", "invoice zebra", "ramesh zebra"]) == []
+    assert searched == requested == (NOT_FOUND, ["menu.en"])
+    assert _named(walled, [locked, "locked.pdf"]) == []
 
 
 def test_did_you_mean_offers_no_name_of_a_hidden_or_locked_file(walled: Walled) -> None:
+    """Changed on purpose (PRD 7 PR 12, #649): a locked file can no longer hold a name (its content
+    is never written), so no one is offered one; a hidden file's name is never offered either."""
     ask = walled.ask
-    with ask.db.customer(ask.org.c) as conn:  # a name only the locked file holds
+    with pytest.raises(IntegrityError, match="kaagaz_locked"), ask.db.customer(ask.org.c) as conn:
         insert_key(conn, ask.org.c, ask.id("locked"), "person", "Ramesh zebra")
     browser = walled.browser("plain", "What land does Ramesh own?")
     offered = [c["label"] for c in browser["answer"]["clarify"]["choices"]]
-    assert "Ramesh zebra" in offered and "Ramesh aardvark" not in offered  # the browser: PR 8's views
+    assert "Ramesh aardvark" not in offered  # the browser: PR 8's views
     body, choices = walled.say("plain", "What land does Ramesh own?")
     assert body == "Which Ramesh do you mean?" and len(choices) == 3
     raw = walled.fake.requests[-1][2]["interactive"]["action"]["buttons"]

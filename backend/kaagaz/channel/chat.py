@@ -22,10 +22,8 @@ Everything runs as the person (``auth.load_user``, then ``db.user`` only), throu
   document it names, and ``recheck`` (run by ``Channel`` just before each try to send it) turns the
   whole reply into NOT_FOUND once one is hidden, locked or deleted. A "Did you mean" choice whose
   documents are all locked is left out (checked after the question's translation).
-* **Locked files until PRD 7 PR 12** (shortcut): Ask still reads a locked file its asker may open,
-  so for a person holding any lock grant the WhatsApp reply leaves out Ask's assumption lines ("I
-  took X as Y") and answers a fixed query's totals and counts with NOT_FOUND: neither cites the
-  file it may have come from.
+* **Locked files**: Ask never reads one, for anyone (PRD 7 PR 12, #649: a lock clears what Kaagaz
+  worked out from it), so a person who may open one gets Ask's reply as the browser shows it.
 * **Words**: the reply is in the language of the message (``texts.language``), or of the button
   tapped (its id carries it). Ask answers in English; for Hindi or Marathi its text is translated
   (``_in_language``: one model call, billed as the person's Ask; a translation whose numbers differ
@@ -312,14 +310,6 @@ class Chat:
         if answer.get("status") == NO_ACCESS:
             return not_found
         said = [line for line in answer.get("assumptions") or [] if isinstance(line, str)]
-        # shortcut: until PR 12 stops Ask reading locked files, a lock grant holder's reply names
-        # nothing Ask assumed and no fixed query's total or count (neither cites its file).
-        with self.context.db.user(user.customer_id, user.user_id) as conn:
-            granted = wa_chat.holds_lock_grant(conn)
-        if granted:
-            if answer.get("route") == "fixed_query":
-                return not_found
-            said = []
         english, hidden = mask("\n".join([*said, chat_router.answer_text(answer)]))  # before and after
         text, masked = mask(self._in_language(user, english, lang, conversation))
         hidden = hidden or masked
