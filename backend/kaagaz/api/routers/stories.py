@@ -233,6 +233,9 @@ def put_my_story(
         raise ApiError(400, "bad_request", _TEXT[error.reason]) from None
     target = str(document_id)
     with context.db.user(user.customer_id, user.user_id) as conn:
+        # PRD 7 (#595): a file the person cannot see is not found, before its family is locked.
+        if listing.get_document(conn, user.customer_id, target) is None:
+            raise ApiError(404, "not_found")
         _live_family(conn, user, target)
         row = stories_sql.put_story(conn, user.customer_id, user.user_id, target, story)
         if row is None:  # the family went (a purge) before the lock
@@ -253,6 +256,9 @@ def delete_my_story(
     _same_tab(user_id, user)
     target = str(document_id)
     with context.db.user(user.customer_id, user.user_id) as conn:
+        # PRD 7 (#595): a file the person cannot see is not found, before its family is locked.
+        if listing.get_document(conn, user.customer_id, target) is None:
+            raise ApiError(404, "not_found")
         family_id = _live_family(conn, user, target)
         if not stories_sql.delete_story(conn, user.customer_id, user.user_id, target):
             raise ApiError(404, "not_found")

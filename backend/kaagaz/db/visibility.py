@@ -35,8 +35,8 @@ TRASHED = " AND d.deleted_at IS NOT NULL"
 TRASHED_LISTED = " AND d.deleted_at IS NOT NULL AND d.is_current"
 LIVE_SUGGESTION = (
     "s.status = 'pending' AND s.outcome = 'suggested'"
-    " AND EXISTS (SELECT 1 FROM documents sn WHERE sn.customer_id = :c AND sn.id = s.document_id"
+    " AND EXISTS (SELECT 1 FROM visible_documents sn WHERE sn.customer_id = :c AND sn.id = s.document_id"
     " AND sn.deleted_at IS NULL)"
-    " AND EXISTS (SELECT 1 FROM documents sc WHERE sc.customer_id = :c"
+    " AND EXISTS (SELECT 1 FROM visible_documents sc WHERE sc.customer_id = :c"
     " AND sc.family_id = s.candidate_family_id AND sc.deleted_at IS NULL)"
 )

@@ -322,11 +322,18 @@ def link(conn: Connection, customer_id: str, suggestion_id: str, *, by: str | No
 _LIVE = text(
     "SELECT s.id, s.document_id, s.candidate_family_id, s.status FROM version_suggestions s"
     " WHERE s.customer_id = :c AND s.id = :s"
-    " AND EXISTS (SELECT 1 FROM documents sn WHERE sn.customer_id = s.customer_id AND sn.id = s.document_id"
+    " AND EXISTS (SELECT 1 FROM visible_documents sn"
+    " WHERE sn.customer_id = s.customer_id AND sn.id = s.document_id"
     " AND sn.deleted_at IS NULL)"
-    " AND EXISTS (SELECT 1 FROM documents sc WHERE sc.customer_id = s.customer_id"
+    " AND EXISTS (SELECT 1 FROM visible_documents sc WHERE sc.customer_id = s.customer_id"
     " AND sc.family_id = s.candidate_family_id AND sc.deleted_at IS NULL)"
 )
+
+
+def is_live(conn: Connection, customer_id: str, suggestion_id: str) -> bool:
+    """The suggestion is this customer's and both its sides are out of Trash and seen by the person
+    (PRD 7, #595): the accept route's first check. One statement."""
+    return conn.execute(_LIVE, {"c": customer_id, "s": suggestion_id}).first() is not None
 
 
 def reject(conn: Connection, customer_id: str, suggestion_id: str, *, by: str) -> str:
@@ -536,7 +543,7 @@ def make_current(conn: Connection, customer_id: str, document_id: str, *, by: st
 # --- what the screens read (V5, V6, V11) ------------------------------------------------
 # The candidate side's document: its current version, else (an auto link) the newest other.
 _CANDIDATE = (
-    " JOIN LATERAL (SELECT o.id, o.display_name FROM documents o WHERE o.customer_id = s.customer_id"
+    " JOIN LATERAL (SELECT o.id, o.display_name FROM visible_documents o WHERE o.customer_id = s.customer_id"
     " AND o.family_id = s.candidate_family_id AND o.id <> s.document_id AND o.deleted_at IS NULL"
     " ORDER BY o.is_current DESC, o.version_no DESC LIMIT 1) cand ON true"
 )
@@ -545,10 +552,10 @@ _VIEW = (
     " cand.id AS candidate_id, cand.display_name AS candidate_name, s.text_overlap, s.text_overlap_exact,"
     " s.name_similarity,"
     " s.shared_identifier, s.outcome, s.status, s.created_at,"
-    " (SELECT max(v.version_no) FROM documents v WHERE v.customer_id = s.customer_id"
+    " (SELECT max(v.version_no) FROM visible_documents v WHERE v.customer_id = s.customer_id"
     " AND v.family_id = s.candidate_family_id) + 1 AS next_version_no"
     " FROM version_suggestions s"
-    f" JOIN documents n ON n.customer_id = s.customer_id AND n.id = s.document_id{_CANDIDATE}"
+    f" JOIN visible_documents n ON n.customer_id = s.customer_id AND n.id = s.document_id{_CANDIDATE}"
 )
 _FOR_DOCUMENT = text(
     f"{_VIEW} WHERE s.customer_id = :c AND {LIVE_SUGGESTION}"
@@ -565,7 +572,7 @@ _ALLOWED = text(
     f" WHERE s.customer_id = :c AND {LIVE_SUGGESTION}"
     " AND ((s.document_id = a.id AND s.candidate_family_id = b.family_id)"
     " OR (s.document_id = b.id AND s.candidate_family_id = a.family_id)))"
-    " FROM documents a JOIN documents b ON b.customer_id = a.customer_id AND b.id = :b"
+    " FROM visible_documents a JOIN visible_documents b ON b.customer_id = a.customer_id AND b.id = :b"
     " WHERE a.customer_id = :c AND a.id = :a"
 )
 

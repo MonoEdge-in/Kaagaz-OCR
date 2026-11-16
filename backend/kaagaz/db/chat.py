@@ -37,7 +37,7 @@ _DOCUMENT_QUESTIONS = text(
     " JOIN messages q ON q.customer_id = c.customer_id AND q.conversation_id = c.id AND q.role = 'user'"
     " JOIN messages a ON a.customer_id = q.customer_id AND a.conversation_id = q.conversation_id"
     " AND a.role = 'assistant' AND a.created_at = q.created_at"
-    " WHERE c.customer_id = :c AND c.user_id = :u AND EXISTS (SELECT 1 FROM documents v"
+    " WHERE c.customer_id = :c AND c.user_id = :u AND EXISTS (SELECT 1 FROM visible_documents v"
     " WHERE v.customer_id = :c AND v.family_id = CAST(:f AS uuid)"
     " AND (q.scope -> 'document_ids' @> jsonb_build_array(v.id::text)"
     " OR a.answer -> 'citations' @> jsonb_build_array(jsonb_build_object('document_id', v.id::text))))"
@@ -424,7 +424,7 @@ def add_pin(
             " SELECT m.customer_id, m.id, :u, d.id, :page, :ref, :rank"
             " FROM messages m JOIN conversations cv"
             " ON cv.customer_id = m.customer_id AND cv.id = m.conversation_id"
-            " JOIN documents d ON d.customer_id = m.customer_id AND d.id = :d"
+            " JOIN visible_documents d ON d.customer_id = m.customer_id AND d.id = :d"
             " WHERE m.customer_id = :c AND m.id = :m AND m.role = 'assistant' AND cv.user_id = :u"
             " RETURNING id"
         ),

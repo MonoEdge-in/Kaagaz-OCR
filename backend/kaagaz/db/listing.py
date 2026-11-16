@@ -52,18 +52,19 @@ from kaagaz.versions import name_key
 # document as the new one (``new``) or its family as the candidate (``candidate``).
 # ponytail: the candidate probe has no index of its own; suggestions are few per customer.
 _LAST_UPLOAD = (
-    "(SELECT lu.created_at FROM documents lu WHERE lu.customer_id = d.customer_id"
+    "(SELECT lu.created_at FROM visible_documents lu WHERE lu.customer_id = d.customer_id"
     " AND lu.family_id = d.family_id ORDER BY lu.created_at DESC LIMIT 1)"
 )
 _LAST_UPLOADER = (
-    "(SELECT lu.uploaded_by FROM documents lu WHERE lu.customer_id = d.customer_id"
+    "(SELECT lu.uploaded_by FROM visible_documents lu WHERE lu.customer_id = d.customer_id"
     " AND lu.family_id = d.family_id ORDER BY lu.created_at DESC LIMIT 1)"
 )
 _FILE_COLUMNS = (
     " d.owner_id, d.sensitivity, d.document_date, d.version_note,"  # noqa: S608 - fixed fragments only
     " (SELECT ow.display_name FROM users ow WHERE ow.customer_id = d.customer_id AND ow.id = d.owner_id)"
     " AS owner_name,"
-    " (SELECT count(*) FROM documents vc WHERE vc.customer_id = d.customer_id AND vc.family_id = d.family_id)"
+    " (SELECT count(*) FROM visible_documents vc"
+    " WHERE vc.customer_id = d.customer_id AND vc.family_id = d.family_id)"
     " AS versions,"
     f" GREATEST(d.details_updated_at, {_LAST_UPLOAD}) AS last_updated_at,"
     " (SELECT ub.display_name FROM users ub WHERE ub.customer_id = d.customer_id AND ub.id ="
@@ -74,7 +75,7 @@ _FILE_COLUMNS = (
     " UNION ALL SELECT f.id, f.parent_id, up.depth + 1 FROM up JOIN folders f ON f.id = up.parent_id"
     " WHERE f.customer_id = d.customer_id AND up.depth < 101)"
     " SELECT json_build_object('id', dep.id, 'name', dep.name) FROM up"
-    " JOIN folders dep ON dep.customer_id = d.customer_id AND dep.id = up.id"
+    " JOIN visible_folders dep ON dep.customer_id = d.customer_id AND dep.id = up.id"
     " WHERE up.parent_id IS NULL AND dep.kind = 'department') AS department,"
     " (SELECT json_build_object('id', s.id,"
     " 'role', CASE WHEN s.document_id = d.id THEN 'new' ELSE 'candidate' END)"
@@ -106,14 +107,15 @@ _COLUMNS = (
     " (SELECT coalesce(sum(pw.unsure_words + pw.illegible_words), 0) FROM pages pw"
     " WHERE pw.customer_id = d.customer_id AND pw.document_id = d.id AND pw.accepted_at IS NULL)"
     " AS words_unsure,"
-    " (SELECT count(*) FROM documents b WHERE b.customer_id = d.customer_id AND b.batch_id = d.batch_id"
+    " (SELECT count(*) FROM visible_documents b"
+    " WHERE b.customer_id = d.customer_id AND b.batch_id = d.batch_id"
     " AND b.uploaded_by = d.uploaded_by AND b.deleted_at IS NULL AND b.status IN ('received', 'clean')"
     " AND (b.created_at, b.id) < (d.created_at, d.id)) AS batch_ahead,"
     # Every value still waiting to be verified (review.WAITING_VALUE, the review queue's own
     # definition, QA #366), so "All values verified" is never said while one waits.
     " (SELECT count(*) FROM extracted_values v WHERE v.customer_id = d.customer_id"
     f" AND v.document_id = d.id AND {WAITING_VALUE}) AS values_to_review,"
-    " (SELECT array_agg(o.uploaded_by) FROM documents o"
+    " (SELECT array_agg(o.uploaded_by) FROM visible_documents o"
     " WHERE o.customer_id = d.customer_id AND o.family_id = d.family_id) AS family_uploaders,"
     # Issue 407: in progress RETRY_STUCK_HOURS since it was asked for (documents.STUCK), so it
     # may be read again; and while it waits for the reader ({"step": "waiting"}), its last
@@ -128,14 +130,14 @@ _COLUMNS = (
     " (SELECT CASE WHEN r.autofile = 'filed' AND r.folder_id IS NOT NULL THEN 'filed'"
     " WHEN r.autofile = 'skipped' OR (r.autofile = 'pending' AND d.status = 'ready' AND d.is_current"
     " AND d.doc_type IS NULL) THEN 'not_filed' END"
-    " FROM documents r WHERE r.customer_id = d.customer_id AND r.id = d.family_id) AS autofile,"
+    " FROM visible_documents r WHERE r.customer_id = d.customer_id AND r.id = d.family_id) AS autofile,"
     " (SELECT json_build_object('id', n.id, 'version_no', n.version_no, 'status', n.status,"
     " 'failure_code', n.failure_code, 'detected_type', n.detected_type, 'page_count', n.page_count,"
     " 'attempts', n.attempts, 'max_attempts', n.max_attempts, 'progress', n.progress,"
     " 'waiting_code', CASE WHEN n.progress ->> 'step' = 'waiting' THEN (SELECT r.error_code"  # issue 407
     " FROM processing_runs r WHERE r.customer_id = n.customer_id AND r.document_id = n.id"
     " ORDER BY r.started_at DESC LIMIT 1) END)"
-    " FROM documents n WHERE n.customer_id = d.customer_id AND n.family_id = d.family_id"
+    " FROM visible_documents n WHERE n.customer_id = d.customer_id AND n.family_id = d.family_id"
     " AND n.version_no > d.version_no AND n.deleted_at IS NULL"
     " ORDER BY n.version_no DESC LIMIT 1) AS newer," + _FILE_COLUMNS
 )
@@ -144,7 +146,7 @@ _COUNT = "SELECT count(*)"
 
 # By id: the detail, the file, the pages and the reply to an upload.
 _SELECT = (
-    _COLUMNS + " FROM documents d"
+    _COLUMNS + " FROM visible_documents d"
     " LEFT JOIN users u ON u.customer_id = d.customer_id AND u.id = d.uploaded_by"
     " WHERE d.customer_id = :c AND d.id = :d"
 )
@@ -152,7 +154,7 @@ _SELECT = (
 # The list's rows: the current version of each family (the unique index
 # documents_current allows one per family), not in Trash. _COLUMNS or _COUNT goes first.
 _LIST = (
-    " FROM documents d"
+    " FROM visible_documents d"
     " LEFT JOIN users u ON u.customer_id = d.customer_id AND u.id = d.uploaded_by"
     " WHERE d.customer_id = :c AND d.deleted_at IS NULL AND d.is_current"
 )
@@ -171,7 +173,7 @@ _VERSIONS = (
     " d.uploaded_by, u.display_name AS uploaded_by_name,"
     " (SELECT s.outcome FROM version_suggestions s WHERE s.customer_id = d.customer_id"
     " AND s.document_id = d.id AND s.candidate_family_id = d.family_id AND s.status = 'accepted') AS linked"
-    " FROM documents d LEFT JOIN users u ON u.customer_id = d.customer_id AND u.id = d.uploaded_by"
+    " FROM visible_documents d LEFT JOIN users u ON u.customer_id = d.customer_id AND u.id = d.uploaded_by"
     " WHERE d.customer_id = :c AND d.family_id = :f ORDER BY d.version_no"
 )
 
@@ -211,7 +213,7 @@ _IN_DEPARTMENT = " AND d.folder_id = ANY(CAST(:department_folders AS uuid[]))"
 # _DASHBOARD_DEPARTMENTS tree, so the list holds exactly the files it counts).
 _OUTSIDE_DEPARTMENTS = (
     " AND (d.folder_id IS NULL OR d.folder_id NOT IN (WITH RECURSIVE tree (id, depth) AS ("
-    " SELECT id, 1 FROM folders WHERE customer_id = :c AND parent_id IS NULL AND kind = 'department'"
+    " SELECT id, 1 FROM visible_folders WHERE customer_id = :c AND parent_id IS NULL AND kind = 'department'"
     " UNION ALL SELECT f.id, t.depth + 1 FROM tree t JOIN folders f ON f.parent_id = t.id"
     " WHERE f.customer_id = :c AND t.depth < 101) SELECT id FROM tree))"
 )
@@ -450,6 +452,17 @@ def matching_ids(conn: Connection, customer_id: str, **filters: Any) -> list[str
     return [str(document) for document in found]
 
 
+_FOLDERS_SEEN = text(
+    "SELECT id FROM visible_folders WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
+)
+
+
+def folders_seen(conn: Connection, customer_id: str, folder_ids: Sequence[str]) -> set[str]:
+    """Which of ``folder_ids`` the person may see (PRD 7, #595): a path or a folder filter
+    never names one they can't. One statement on the folders' key."""
+    return {str(row[0]) for row in conn.execute(_FOLDERS_SEEN, {"c": customer_id, "ids": list(folder_ids)})}
+
+
 def get_document(conn: Connection, customer_id: str, document_id: str) -> RowMapping | None:
     return conn.execute(text(_SELECT), {"c": customer_id, "d": document_id}).mappings().first()
 
@@ -474,7 +487,7 @@ _FIRST_UNREADABLE = (
     " ORDER BY pf.page_no LIMIT 1) AS first_unreadable"
 )
 _BATCH = (
-    _COLUMNS + ", " + _FIRST_UNREADABLE + ", " + _VALUES_FOUND + " FROM documents d"
+    _COLUMNS + ", " + _FIRST_UNREADABLE + ", " + _VALUES_FOUND + " FROM visible_documents d"
     " LEFT JOIN users u ON u.customer_id = d.customer_id AND u.id = d.uploaded_by"
     " WHERE d.customer_id = :c AND d.batch_id = :b AND d.uploaded_by = :u AND d.deleted_at IS NULL"
     " ORDER BY d.created_at, d.id LIMIT :limit"
@@ -570,7 +583,7 @@ def document_facts(conn: Connection, customer_id: str, document_id: str) -> RowM
     ``_COLUMNS`` so the list stays small. One query by primary key."""
     return (
         conn.execute(
-            text("SELECT document_date, card FROM documents WHERE customer_id = :c AND id = :d"),
+            text("SELECT document_date, card FROM visible_documents WHERE customer_id = :c AND id = :d"),
             {"c": customer_id, "d": document_id},
         )
         .mappings()
@@ -608,7 +621,7 @@ def invoice_for(
 # current, ready one out of Trash.
 _LINKS = text(
     "SELECT DISTINCT d.id, d.display_name, d.doc_type, l.identifier_kind, l.identifier_value"
-    " FROM document_links l JOIN documents d ON d.customer_id = l.customer_id"
+    " FROM document_links l JOIN visible_documents d ON d.customer_id = l.customer_id"
     " AND d.id = CASE WHEN l.document_id = :d THEN l.linked_document_id ELSE l.document_id END"
     " WHERE l.customer_id = :c AND (l.document_id = :d OR l.linked_document_id = :d)"
     " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
@@ -765,7 +778,7 @@ def page_marks(conn: Connection, customer_id: str, document_id: str, page_no: in
 # pieces' text, Latin spelling and regions in seq order (the index pieces_document), for
 # kaagaz/search/page_words.py. No row: no such document; one row of NULL text: no pieces.
 _WORD_LINES = text(
-    "SELECT d.deleted_at IS NOT NULL, d.status, p.text, p.text_latin, p.regions FROM documents d"
+    "SELECT d.deleted_at IS NOT NULL, d.status, p.text, p.text_latin, p.regions FROM visible_documents d"
     " LEFT JOIN pieces p ON p.customer_id = :c AND p.document_id = d.id"
     " WHERE d.customer_id = :c AND d.id = :d ORDER BY p.seq"
 )
@@ -870,36 +883,37 @@ def rename_document(conn: Connection, customer_id: str, document_id: str, *, nam
 # Plain counts over the current, untrashed documents (the documents_current index), with the
 # documents_listing index for the week and month and the recent list.
 _DASHBOARD_TILES = text(
-    "SELECT (SELECT count(*) FROM documents d WHERE d.customer_id = :c"  # noqa: S608 - visibility.LIVE_SUGGESTION
+    "SELECT (SELECT count(*) FROM visible_documents d WHERE d.customer_id = :c"  # noqa: S608 - visibility.LIVE_SUGGESTION
     " AND d.deleted_at IS NULL AND d.is_current) AS documents,"
-    " (SELECT count(*) FROM documents d"
-    " JOIN documents r ON r.customer_id = d.customer_id AND r.id = d.family_id"
+    " (SELECT count(*) FROM visible_documents d"
+    " JOIN visible_documents r ON r.customer_id = d.customer_id AND r.id = d.family_id"
     " WHERE d.customer_id = :c AND d.deleted_at IS NULL AND d.is_current"
     " AND r.created_at >= :week) AS this_week,"
-    " (SELECT count(*) FROM documents d WHERE d.customer_id = :c AND d.deleted_at IS NULL"
+    " (SELECT count(*) FROM visible_documents d WHERE d.customer_id = :c AND d.deleted_at IS NULL"
     " AND d.version_no > 1 AND d.created_at >= :month) AS new_versions,"
     f" (SELECT count(*) FROM version_suggestions s WHERE s.customer_id = :c AND {LIVE_SUGGESTION})"
     " AS to_confirm"
 )
 _DASHBOARD_TYPES = text(
-    "SELECT doc_type, count(*) AS n FROM documents"
+    "SELECT doc_type, count(*) AS n FROM visible_documents"
     " WHERE customer_id = :c AND is_current AND deleted_at IS NULL"
     " GROUP BY doc_type ORDER BY n DESC, doc_type NULLS LAST"
 )
 # Each department with the current, untrashed documents anywhere below it (100 levels at most).
 _DASHBOARD_DEPARTMENTS = text(
     "WITH RECURSIVE tree (id, root, depth) AS ("
-    " SELECT id, id, 1 FROM folders WHERE customer_id = :c AND parent_id IS NULL AND kind = 'department'"
+    " SELECT id, id, 1 FROM visible_folders"
+    " WHERE customer_id = :c AND parent_id IS NULL AND kind = 'department'"
     " UNION ALL SELECT f.id, t.root, t.depth + 1 FROM tree t JOIN folders f ON f.parent_id = t.id"
     " WHERE f.customer_id = :c AND t.depth < 101)"
     " SELECT dep.id, dep.name, dep.sort_order, count(d.id) AS files FROM folders dep"
     " JOIN tree t ON t.root = dep.id"
-    " LEFT JOIN documents d ON d.customer_id = :c AND d.folder_id = t.id"
+    " LEFT JOIN visible_documents d ON d.customer_id = :c AND d.folder_id = t.id"
     " AND d.deleted_at IS NULL AND d.is_current WHERE dep.customer_id = :c"
     " GROUP BY dep.id ORDER BY dep.sort_order NULLS LAST, lower(dep.name), dep.id"
 )
 _DASHBOARD_RECENT = text(
-    "SELECT id, display_name, doc_type, sensitivity, version_no, status, created_at FROM documents"
+    "SELECT id, display_name, doc_type, sensitivity, version_no, status, created_at FROM visible_documents"
     " WHERE customer_id = :c AND is_current AND deleted_at IS NULL ORDER BY created_at DESC, id DESC LIMIT 10"
 )
 

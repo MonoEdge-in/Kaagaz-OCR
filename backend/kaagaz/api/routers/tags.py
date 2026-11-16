@@ -116,6 +116,8 @@ def set_document_tags(
     wanted = [str(tag_id) for tag_id in body.tag_ids]
     try:
         with _refused(), context.db.user(user.customer_id, user.user_id) as conn:
+            if listing.get_document(conn, user.customer_id, target) is None:  # PRD 7 (#595): first
+                raise ApiError(404, "not_found")
             rows = tags_sql.set_document_tags(conn, user.customer_id, target, wanted)
             listing.set_details(conn, user.customer_id, target, by=user.user_id)  # File management O3
             _audit(conn, user, "document.tags", "document", target, {"tag_count": len(rows)})

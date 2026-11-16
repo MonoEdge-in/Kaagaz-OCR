@@ -309,6 +309,11 @@ OWNER_RIGHTS = {
     "kaagaz_customer_ids_held": ("SETOF uuid", EMPTY_PATH),
     # 0068 (#482): the worker removes deleted organisations' audit rows after 365 days (a count).
     "kaagaz_forget_kept_audit": ("bigint", EMPTY_PATH),
+    # Changed on purpose (#595, 0086): the current person's access, for the access views: their
+    # own row and the ids given to them only, from kaagaz.customer_id and kaagaz.user_id alone.
+    "kaagaz_access": ("kaagaz_access_set", EMPTY_PATH),
+    "kaagaz_shared_with_me": ("SETOF uuid", EMPTY_PATH),
+    "kaagaz_lock_open_to_me": ("SETOF uuid", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"

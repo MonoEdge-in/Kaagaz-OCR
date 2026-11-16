@@ -152,7 +152,8 @@ BY_ID: dict[tuple[ModuleType, str], str] = {
     ): "the spend names its documents by id: one in Trash or an older version was still billed",
 }
 
-_JOINS_DOCUMENTS = re.compile(r"\bdocuments d\b")
+# Changed on purpose (#595): or the access view of documents, which these statements read now.
+_JOINS_DOCUMENTS = re.compile(r"\b(?:visible_)?documents d\b")
 _EXISTS = re.compile(r"\bEXISTS\s*\(")
 _CUSTOMER_FILTER = "customer_id = :"
 

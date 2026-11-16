@@ -198,9 +198,24 @@ _SHOWN = (
 # into it (accepted, or undone since), so a linked version's upload and suggestion show too.
 _OF_FAMILY = (
     " AND (a.family_id = CAST(:family AS uuid) OR (a.target_type = 'document' AND a.target_id IN ("
-    "SELECT v.id::text FROM documents v WHERE v.customer_id = :c AND v.family_id = CAST(:family AS uuid)"
+    "SELECT v.id::text FROM visible_documents v"
+    " WHERE v.customer_id = :c AND v.family_id = CAST(:family AS uuid)"
     " UNION SELECT s.document_id::text FROM version_suggestions s WHERE s.customer_id = :c"
     " AND s.candidate_family_id = CAST(:family AS uuid) AND s.status IN ('accepted', 'undone'))))"
+)
+# PRD 7 (#595): the shown feeds (the dashboard's, a document's, a folder's) leave out each entry
+# about a document the person cannot see, and each other entry in a folder they cannot see (an
+# entry about a file follows the file alone, so a file given to them shows its history); one about
+# a document or folder that is gone shows as before. The admin's log (shown_only false) keeps all.
+_TARGET = "CASE WHEN a.target_id ~ '^[0-9a-f-]{36}$' THEN CAST(a.target_id AS uuid) END"
+_SEEN = (
+    " AND (a.target_type <> 'document' OR NOT EXISTS (SELECT 1 FROM documents x"  # noqa: S608 - fixed fragments only
+    f" WHERE x.customer_id = a.customer_id AND x.id = {_TARGET})"
+    " OR EXISTS (SELECT 1 FROM visible_documents v"
+    f" WHERE v.customer_id = a.customer_id AND v.id = {_TARGET}))"
+    " AND (a.target_type = 'document' OR a.folder_id IS NULL OR NOT EXISTS (SELECT 1 FROM folders x"
+    " WHERE x.customer_id = a.customer_id AND x.id = a.folder_id)"
+    " OR EXISTS (SELECT 1 FROM visible_folders v WHERE v.customer_id = a.customer_id AND v.id = a.folder_id))"
 )
 _IN_FOLDERS = " AND a.folder_id = ANY(CAST(:folders AS uuid[]))"
 _BY = " AND a.actor_user_id = CAST(:actor AS uuid)"
@@ -214,13 +229,14 @@ _ORDER = " ORDER BY a.created_at DESC, a.id DESC LIMIT :limit OFFSET :offset"
 _USER_NAMES = text(
     "SELECT id::text, display_name FROM users WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
 )
-# Each folder's path from the top, "Land & Legal / Land records" (100 levels at most).
+# Each folder's path from the top, "Land & Legal / Land records" (100 levels at most), through the
+# folders the person can see (PRD 7, #595): a hidden folder has no path, and a path stops below one.
 _FOLDER_PATHS = text(
     "WITH RECURSIVE up (start, id, parent_id, name, depth) AS ("
-    " SELECT id, id, parent_id, name, 1 FROM folders"
+    " SELECT id, id, parent_id, name, 1 FROM visible_folders"
     " WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
     " UNION ALL SELECT up.start, f.id, f.parent_id, f.name, up.depth + 1 FROM up"
-    " JOIN folders f ON f.customer_id = :c AND f.id = up.parent_id WHERE up.depth < 101)"
+    " JOIN visible_folders f ON f.customer_id = :c AND f.id = up.parent_id WHERE up.depth < 101)"
     " SELECT start::text, string_agg(name, ' / ' ORDER BY depth DESC) FROM up GROUP BY start"
 )
 
@@ -236,7 +252,7 @@ def _where(filters: Filters, params: dict[str, Any]) -> str:
         (filters.start is not None, _FROM, "start", filters.start),
         (filters.end is not None, _TO, "end", filters.end),
     )
-    fragments = []
+    fragments = [_SEEN] if filters.shown_only else []
     for wanted, fragment, name, value in chosen:
         if wanted:
             fragments.append(fragment)
