@@ -13,9 +13,13 @@ organisation already has, in the worker, with no person (it reads tables, never 
   upload (``versions_sql.scored``: a shared fingerprint band, a similar name or a related-documents
   link; the text overlap counted exactly, V4's rule), among its organisation's current, ready files
   out of Trash in other families (a locked file is never ready, 0093), never a pair spotting
-  already suggested or a person already answered. Each file and its candidates are taken FOR SHARE
-  first, as the pipeline's ``still_open`` does, so a lock under way is waited for and then seen:
-  a locked file's text is never read, and its pairs are never written after its lock cleared them.
+  already suggested or a person already answered. The file looked at is taken FOR SHARE first, as
+  the pipeline's ``still_open`` does, so a lock under way is waited for and then seen. Its
+  candidates are scored with no row lock (review, 16 Nov 2026: a lock or a move never waits on up
+  to 200 of them); then only the scored files (at most MAX_CANDIDATES) are taken FOR SHARE, in id
+  order, and checked again (``_LIVE``) before any pair is written, so no pair is written for a file
+  locked or trashed meanwhile, nor after a lock cleared its pairs. As in spotting, a candidate's
+  text can be read in the moment before a lock commits; nothing from it is kept.
 * **The groups** (``finish``): pairs whose two files are still live join into groups
   (``versions.groups``: strongest first, at most MAX_GROUP files), each file's place by its own
   date, else its upload date; the last is the suggested latest. Nothing is ever linked.
@@ -75,7 +79,7 @@ _CANDIDATES = text(
     " AND ((s.document_id = me.id AND s.candidate_family_id = d.family_id)"
     " OR (s.document_id = d.id AND s.candidate_family_id = me.family_id)))"
     " ORDER BY (d.text_bands && me.text_bands) DESC, name_similarity DESC NULLS LAST, d.id"
-    " LIMIT :n FOR SHARE OF d"
+    " LIMIT :n"
 )
 _PAIR = text(
     "INSERT INTO version_pairs (customer_id, first_id, second_id, text_overlap, text_overlap_exact,"
@@ -143,7 +147,14 @@ def look_at(conn: Connection, customer_id: str, document_id: str) -> int:
             _CANDIDATES,
             {**params, "started": started, "name": versions.NAME_SIGNAL, "n": versions_sql.MAX_FETCHED},
         ).mappings()
-        for row, overlap, exact, name in versions_sql.scored(conn, customer_id, document_id, me[0], fetched):
+        found = versions_sql.scored(conn, customer_id, document_id, me[0], fetched)
+        # The scored files alone (at most MAX_CANDIDATES), FOR SHARE in id order and checked again,
+        # before anything is written: one locked or trashed since is never paired.
+        scored_ids = sorted(str(row["id"]) for row, *_ in found)
+        live = {row[0] for row in conn.execute(_LIVE, {"c": customer_id, "ids": scored_ids})}
+        for row, overlap, exact, name in found:
+            if str(row["id"]) not in live:
+                continue
             pair = {"a": document_id, "b": str(row["id"]), "t": overlap, "exact": exact, "n": name}
             conn.execute(_PAIR, {**pair, "c": customer_id, "i": row["shared_identifier"]})
             stored += 1

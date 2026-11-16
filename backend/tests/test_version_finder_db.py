@@ -12,8 +12,10 @@ from datetime import date
 from typing import Any
 
 import pytest
+from sqlalchemy import text
 
 from kaagaz.db import version_finder
+from kaagaz.db import versions as versions_sql
 from kaagaz.db.engine import Database
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.worker_main import FINDER_PASS, FindVersions
@@ -230,6 +232,34 @@ def test_a_file_trashed_or_locked_during_the_run_is_left_out_of_its_group(db: Da
     _lock(db, files["z"])
     _until_done(db, c)
     assert {m[0] for m in _members(db, c)} == {files["x"], copy}
+
+
+def test_a_file_trashed_while_it_is_scored_is_never_paired(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review (#648): the candidates are scored with no row lock on them (a lock or a move never
+    waits on the finder's 200), then only the scored files are taken FOR SHARE, in id order, and
+    checked again before any pair is written: Y, trashed while X's candidates were scored, is
+    never paired; X and Z are a group."""
+    api = Api(db)
+    signed = api.new_signed()
+    c = signed.customer_id
+    low, middle, high = _ordered(3)
+    files = _library(api, signed, x={"id": low}, y={"id": middle}, z={"id": high})
+    real = versions_sql.scored
+
+    def trashing(*args: Any) -> Any:
+        found = real(*args)
+        if args[2] == files["x"]:
+            with db.engine.begin() as conn:  # another session, as a person's Trash would be
+                conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+                conn.execute(text(_TRASH), {"d": files["y"]})
+        return found
+
+    monkeypatch.setattr(versions_sql, "scored", trashing)
+    _until_done(db, c)
+    assert _pairs(db, c) == [(files["x"], files["z"])]
+    assert {m[0] for m in _members(db, c)} == {files["x"], files["z"]}
 
 
 def test_a_pair_spotting_suggested_or_a_person_answered_is_left_out(db: Database) -> None:
