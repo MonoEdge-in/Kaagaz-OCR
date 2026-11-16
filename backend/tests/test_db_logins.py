@@ -5,7 +5,9 @@ The API and the workers open ``DATABASE_URL``: in Compose the app's login (``kaa
 but migrate, which keeps the owner's. ``OPS_DATABASE_URL`` (only the API's operator engine,
 ``kaagaz_ops``) falls back to ``DATABASE_URL`` while unset, so nothing changes on release day.
 The workers never build the operator engine, and api and worker never get ``POSTGRES_PASSWORD``.
-What the two logins may do in PostgreSQL: tests/test_isolation_logins.py.
+The workers' own login (``kaagaz_jobs``, #587, 0083) reaches the worker alone, from
+``JOBS_DATABASE_URL``, together with its role (``DB_WORKER_ROLE``).
+What the logins may do in PostgreSQL: tests/test_isolation_logins.py.
 """
 
 import json
@@ -17,9 +19,9 @@ from unittest import mock
 
 import pytest
 
-from kaagaz import worker_main
+from kaagaz import cli, worker_main
 from kaagaz.api import app as api_app
-from kaagaz.db.engine import OperatorDatabase, make_engine
+from kaagaz.db.engine import Database, OperatorDatabase, make_engine
 from kaagaz.settings import Settings
 from tests.settings_factory import make_settings
 from tests.test_api_support import ApiFakeQueue, ApiFakeStorage, FakeAnswers
@@ -29,6 +31,7 @@ from tests.test_settings import shipped
 OWNER = "postgresql://kaagaz:owner-pass@localhost:1/kaagaz"
 APP = "postgresql://kaagaz_api:app-pass@localhost:1/kaagaz"
 OPS = "postgresql://kaagaz_ops:ops-pass@localhost:1/kaagaz"
+JOBS = "postgresql://kaagaz_jobs:jobs-pass@localhost:1/kaagaz"
 DOCKER = shutil.which("docker")
 
 
@@ -78,6 +81,32 @@ def test_the_worker_opens_only_the_app_login() -> None:
     assert [call.args[0] for call in made.call_args_list] == [APP]
 
 
+def test_the_worker_role_is_the_app_role_while_unset_or_empty_and_its_own_once_set() -> None:
+    """#587 (0083): nothing changes until a server names the workers' role."""
+    for env in (shipped(), shipped(DB_WORKER_ROLE=None)):  # empty, then unset
+        assert Settings.from_env(env).db_worker_role == "kaagaz_app"
+    assert Settings.from_env(shipped(DB_WORKER_ROLE="kaagaz_worker")).db_worker_role == "kaagaz_worker"
+
+
+def test_the_worker_and_the_cli_take_the_worker_role_and_the_api_keeps_the_app_role() -> None:
+    settings = make_settings(database_url=JOBS, ops_database_url=OPS, db_worker_role="kaagaz_worker")
+    stop = RuntimeError("stop here")
+    with (
+        mock.patch.object(worker_main, "make_engine"),
+        mock.patch.object(worker_main, "Database", side_effect=stop) as worker,
+        mock.patch.object(cli, "make_engine"),
+        mock.patch.object(cli, "Database", side_effect=stop) as tool,
+    ):
+        with pytest.raises(RuntimeError, match="stop here"):
+            worker_main._serve(settings)
+        with pytest.raises(RuntimeError, match="stop here"):
+            cli.main(["refresh-models"], settings=settings, environ={})
+    assert [worker.call_args.args[1], tool.call_args.args[1]] == ["kaagaz_worker"] * 2
+    with mock.patch.object(api_app, "Database", wraps=Database) as api:
+        api_app.create_app(settings, storage=ApiFakeStorage(), queue=ApiFakeQueue(), answers=FakeAnswers())
+    assert api.call_args.args[1] == "kaagaz_app"
+
+
 def _rendered(tmp_path: Path, **env: str) -> dict[str, dict[str, str]]:
     """Every service's environment, as Compose makes it from the two server files and a
     made-up ``.env`` (as CI's "Production compose renders" step)."""
@@ -88,6 +117,9 @@ def _rendered(tmp_path: Path, **env: str) -> dict[str, dict[str, str]]:
         "SEAWEEDFS_S3_CONFIG": "/home/ubuntu/kaagaz-secrets/s3.json",
         "STORAGE_ADMIN_ACCESS_KEY": "made-up-admin",  # migrate's, required on the server (#477)
         "STORAGE_ADMIN_SECRET_KEY": "made-up-admin-secret",
+        # Required by docker-compose.prod.yml since Amazon SQS (#547).
+        "QUEUE_URL": "https://sqs.ap-south-1.amazonaws.com/000000000000/kaagaz-jobs",
+        "QUEUE_EXPRESS_URL": "https://sqs.ap-south-1.amazonaws.com/000000000000/kaagaz-jobs-express",
     }
     lines = [f"{name}={value}" for name, value in {**server, **env}.items()]
     (tmp_path / ".env").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -130,6 +162,23 @@ def test_on_release_day_every_backend_service_keeps_the_owner_login(tmp_path: Pa
     assert {name: env[name]["DATABASE_URL"] for name in backend} == dict.fromkeys(backend, OWNER_IN_DOCKER)
     assert not env["api"]["OPS_DATABASE_URL"]  # unset: Settings falls back to DATABASE_URL
     assert not env["api"]["POSTGRES_PASSWORD"]  # read by no backend code
+
+
+JOBS_PASSWORD = "9f8e7d6c5b4a39281706f5e4"  # a made-up workers' login password, to find where it leaks
+
+
+@pytest.mark.skipif(DOCKER is None, reason="needs the docker command (CI has it)")
+def test_the_workers_login_and_role_reach_only_the_worker_and_only_together(tmp_path: Path) -> None:
+    """#587 (0083): JOBS_DATABASE_URL alone moves the workers to ``kaagaz_jobs`` and, with it, to
+    ``kaagaz_worker``, so the login and the role never disagree; without it they keep the app's
+    login and role. No other service gets the login, which can switch into the worker role."""
+    env = _rendered(tmp_path, **OWNER_ENV, APP_DATABASE_URL=APP_IN_DOCKER, OPS_DATABASE_URL=OPS_IN_DOCKER)
+    assert (env["worker"]["DATABASE_URL"], env["worker"]["DB_WORKER_ROLE"]) == (APP_IN_DOCKER, "")
+    jobs = f"postgresql://kaagaz_jobs:{JOBS_PASSWORD}@postgres:5432/kaagaz"
+    env = _rendered(tmp_path, **OWNER_ENV, APP_DATABASE_URL=APP_IN_DOCKER, JOBS_DATABASE_URL=jobs)
+    assert (env["worker"]["DATABASE_URL"], env["worker"]["DB_WORKER_ROLE"]) == (jobs, "kaagaz_worker")
+    assert [name for name in env if JOBS_PASSWORD in json.dumps(env[name])] == ["worker"]
+    assert [name for name in env if env[name].get("DB_WORKER_ROLE")] == ["worker"]
 
 
 ADMIN_SECRET = "f0e1d2c3b4a5968778695a4b"  # a made-up storage admin secret, to find where it leaks

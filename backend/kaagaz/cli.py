@@ -1492,7 +1492,7 @@ def main(
             if args.record:
                 if len(set(args.model)) != 1:
                     raise CliError("--record checks exactly one --model")
-                owner = db or Database(make_engine(checked.database_url), checked.db_app_role)
+                owner = db or Database(make_engine(checked.database_url), checked.db_worker_role)
                 if args.chat:
                     record_chat = functools.partial(_record_chat_verified, owner)
                 else:
@@ -1540,7 +1540,7 @@ def main(
             return 0
         if db is None:
             settings = settings or Settings.from_env(env)
-            db = Database(make_engine(settings.database_url), settings.db_app_role)
+            db = Database(make_engine(settings.database_url), settings.db_worker_role)
         if args.command == "refresh-models":
             stdout.write(_refresh_models(db, settings or Settings.from_env(env)) + "\n")
         elif args.command == "create-customer":
