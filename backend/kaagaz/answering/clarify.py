@@ -26,13 +26,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-from sqlalchemy import RowMapping, text
+from sqlalchemy import Connection, RowMapping, text
 
 from kaagaz.answering.evidence import looks_like_instructions
 from kaagaz.answering.rewrite import MAX_ENTITY_CHARS, Plan
 from kaagaz.answering.sanitize import clean_text
 from kaagaz.chunking.script import latin_spelling, sound_key
 from kaagaz.db.engine import Database, user_or_customer
+from kaagaz.db.visibility import SEEN_DOCUMENT
 from kaagaz.extraction.links import normalise_identifier
 
 _log = logging.getLogger(__name__)
@@ -80,6 +81,7 @@ class Pending:
     picked: tuple[str, ...]
     confirm: bool = False  # a "Did you mean" pick: its spelling is suggested to the company (B2)
     typed: str | None = None  # the words typed instead of a pick (B2)
+    documents: tuple[str, ...] = ()  # PRD 7 (#602): the documents of the one pick, when it was one
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,7 +121,7 @@ _CANDIDATES = text(
     " vocabulary AS MATERIALIZED (SELECT k.kind, k.latin, min(k.sound) AS sound, max(d.created_at) AS newest,"
     " (array_agg(v.value_text ORDER BY d.created_at DESC, v.id))[1] AS label,"
     " array_agg(DISTINCT k.document_id::text) AS documents FROM value_keys k"
-    " JOIN documents d ON d.customer_id = k.customer_id AND d.id = k.document_id"
+    " JOIN visible_documents d ON d.customer_id = k.customer_id AND d.id = k.document_id"
     " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " JOIN extracted_values v ON v.customer_id = k.customer_id AND v.id = k.value_id"
     " WHERE k.customer_id = :c AND k.kind = ANY(CAST(:kinds AS text[]))"
@@ -127,7 +129,8 @@ _CANDIDATES = text(
     " GROUP BY k.kind, k.latin)"
     " SELECT t.n, w.kind, w.latin, w.label, w.documents, w.aliased FROM typed t CROSS JOIN LATERAL ("
     " SELECT x.*, EXISTS (SELECT 1 FROM organization_word_suggestions o WHERE o.customer_id = :c"
-    " AND o.status = 'approved' AND o.document_id IS NULL AND o.word_fold = t.fold"
+    " AND o.status = 'approved' AND o.word_fold = t.fold AND (o.document_id IS NULL OR EXISTS"
+    " (SELECT 1 FROM visible_documents a WHERE a.customer_id = :c AND a.id = o.document_id))"
     " AND o.meaning_fold = x.latin) AS aliased FROM vocabulary x WHERE x.kind = t.kind"
     " ORDER BY x.latin = t.latin DESC, aliased DESC,"
     " string_to_array(x.latin, ' ') && string_to_array(t.latin, ' ') DESC,"
@@ -137,7 +140,7 @@ _CANDIDATES = text(
 _NEAR = text(
     "SELECT k.kind, k.latin, (array_agg(v.value_text ORDER BY d.created_at DESC, v.id))[1] AS label,"
     " array_agg(DISTINCT k.document_id::text) AS documents, false AS aliased FROM value_keys k"
-    " JOIN documents d ON d.customer_id = k.customer_id AND d.id = k.document_id"
+    " JOIN visible_documents d ON d.customer_id = k.customer_id AND d.id = k.document_id"
     " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " JOIN extracted_values v ON v.customer_id = k.customer_id AND v.id = k.value_id"
     " WHERE k.customer_id = :c AND k.kind = 'place' AND k.place_level <> 'district'"
@@ -151,9 +154,31 @@ _NEAR = text(
 )
 
 
+# PRD 7 (#602, question 9): the first page of a "Did you mean" pick's name in its one document, which
+# its suggestion records; none when the person can't see the document (SEEN_DOCUMENT) or no key is left.
+_PICKED_PAGE = text(
+    "SELECT min(v.page_no) FROM value_keys k JOIN extracted_values v ON v.customer_id = k.customer_id"  # noqa: S608 - a fixed fragment
+    " AND v.id = k.value_id WHERE k.customer_id = :c AND k.document_id = :d AND k.latin = :latin"
+    + SEEN_DOCUMENT
+)
+
+
+def picked_page(conn: Connection, customer_id: str, document_id: str, pending: Pending) -> int | None:
+    """The page ``pending``'s one pick is keyed on in ``document_id``, if the person sees it. One
+    statement."""
+    latin = latin_key(pending.picked[0], pending.kind)
+    found = conn.execute(_PICKED_PAGE, {"c": customer_id, "d": document_id, "latin": latin}).scalar()
+    return None if found is None else int(found)
+
+
 # Ask speed (24 Oct 2026): whether the vocabulary has any key in scope, from value_keys_document.
+# PRD 7 (#602): of a document the person can see, as _CANDIDATES reads them, so only hidden keys
+# never start the plan model's call (a second's timing, and a usage row).
 _ANY_KEYS = text(
-    "SELECT EXISTS (SELECT 1 FROM value_keys k WHERE k.customer_id = :c"
+    "SELECT EXISTS (SELECT 1 FROM value_keys k"
+    " JOIN visible_documents d ON d.customer_id = k.customer_id AND d.id = k.document_id"
+    " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " WHERE k.customer_id = :c"
     " AND (CAST(:scoped AS uuid[]) IS NULL OR k.document_id = ANY(CAST(:scoped AS uuid[]))))"
 )
 
@@ -412,6 +437,7 @@ def reply_to(
     an id is not one of its picks (or several are, for a single choice)."""
     clarify, resume = answer.get("clarify") or {}, answer.get("resume") or {}
     picks = {c["id"]: c["label"] for c in clarify.get("choices", []) if c.get("kind") == "pick"}
+    held = {c["id"]: tuple(map(str, c.get("document_ids", []))) for c in clarify.get("choices", [])}
     every = "all" in choice_ids and clarify.get("multi")
     chosen = list(picks) if every else list(dict.fromkeys(choice_ids))
     if answer.get("status") != "clarify" or not (typed or chosen) or not set(chosen) <= set(picks):
@@ -420,7 +446,9 @@ def reply_to(
         return None
     rest = tuple(Entity(kind, name) for kind, name in resume["remaining"])
     fields = {**resume, "remaining": rest, "assumptions": tuple(resume["assumptions"]), "typed": typed}
-    return Pending(**fields, turn=clarify["turn"], picked=() if typed else tuple(picks[i] for i in chosen))
+    documents = held.get(chosen[0], ()) if len(chosen) == 1 and not typed else ()
+    picked = () if typed else tuple(picks[i] for i in chosen)
+    return Pending(**fields, turn=clarify["turn"], picked=picked, documents=documents)
 
 
 MAX_REPLY_WORDS = 4  # "Yes, Pune", "Survey 45/2"; "Total GST paid last month" is a new question

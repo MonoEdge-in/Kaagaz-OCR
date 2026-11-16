@@ -220,7 +220,7 @@ _RESOLVE = text(
     """
     SELECT DISTINCT k.kind, k.latin
     FROM value_keys k
-    JOIN documents d ON d.customer_id = k.customer_id AND d.id = k.document_id
+    JOIN visible_documents d ON d.customer_id = k.customer_id AND d.id = k.document_id
     WHERE k.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
       AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
       AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -243,7 +243,7 @@ _OWNED = text(
            count(DISTINCT k.latin) = cardinality(CAST(:people AS text[])) AS every
     FROM value_keys k
     JOIN extracted_values v ON v.customer_id = k.customer_id AND v.id = k.value_id
-    JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+    JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
     WHERE k.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
       AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
       AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -268,7 +268,7 @@ _KEYED = text(
     SELECT v.document_id::text AS document_id, v.record_key AS land, lower(d.display_name) AS name
     FROM value_keys k
     JOIN extracted_values v ON v.customer_id = k.customer_id AND v.id = k.value_id
-    JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+    JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
     WHERE k.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
       AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
       AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -295,7 +295,7 @@ _EVERY_RECORD = text(
     SELECT v.document_id::text AS document_id, split_part(v.record_key, ':party:', 1) AS land,
            count(*) OVER () AS total
     FROM extracted_values v
-    JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+    JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
     WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
       AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
       AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -321,7 +321,7 @@ _SHARES_AS_PRINTED = text(
            d.display_name, d.detected_type, v.page_no, v.region, v.field, v.value_text, v.label,
            v.label_page_no, v.label_region, v.label_text
     FROM extracted_values v
-    JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+    JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
     LEFT JOIN value_keys k ON k.customer_id = v.customer_id AND k.value_id = v.id
     WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
       AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))

@@ -241,7 +241,7 @@ class Mentions(Protocol):
 
 # The pieces of the scope's current, ready documents out of Trash (hybrid.py's scope predicates).
 _IN_SCOPE = (
-    " FROM pieces p JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
+    " FROM pieces p JOIN visible_documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
     " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
@@ -290,7 +290,7 @@ _PIECES = text(
     " AND i.document_id = p.document_id AND i.check_status = 'failed') THEN 'needs_review' ELSE p.label END,"
     " d.doc_type, p.seq, p.context_header"
     " FROM pieces p"
-    " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
+    " JOIN visible_documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " CROSS JOIN (SELECT phraseto_tsquery('simple', :w) || phraseto_tsquery('simple', :l)) AS w (q)"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND p.document_id = ANY(CAST(:documents AS uuid[])) AND p.tsv_simple @@ w.q"

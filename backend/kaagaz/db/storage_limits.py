@@ -27,10 +27,12 @@ GIB = 1024**3
 DEFAULT_STORAGE_GB = 50
 MOST_STORAGE_GB = 10_000
 
+# PRD 7 (#606): the bytes used are the whole organisation's (kaagaz_storage_used, 0091), never
+# only the files the person can see, so the limit can't fail open.
 _ROOM = text(
-    "SELECT coalesce(o.storage_gb, p.storage_gb, :gb),"
-    " (SELECT coalesce(sum(d.size_bytes), 0) FROM documents d WHERE d.customer_id = :c)"
+    "SELECT coalesce(o.storage_gb, p.storage_gb, :gb), kaagaz_storage_used()"
     " FROM platform_ai_settings p LEFT JOIN org_storage_limits o ON o.customer_id = :c"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 
 

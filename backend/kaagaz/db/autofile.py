@@ -186,19 +186,6 @@ _FILED_IN = (
     "SELECT autofile, folder_id, department_id, private_folder_id FROM documents"
     " WHERE customer_id = :c AND id = :f"
 )
-# Undo's way back (File management F3): the department above the filed folder (the top-level
-# folder at most 100 levels up, when it is of kind department), where a file uploaded into a
-# department was before filing; NULL (the top level) otherwise.
-# ponytail: a type folder a person moved into a department sends Undo there; remember the
-# upload's folder if that matters.
-_DEPARTMENT_ABOVE = (
-    "WITH RECURSIVE up (id, parent_id, depth) AS ("
-    " SELECT f.id, f.parent_id, 1 FROM folders f WHERE f.customer_id = :c AND f.id = :folder"
-    " UNION ALL SELECT f.id, f.parent_id, up.depth + 1 FROM up JOIN folders f ON f.id = up.parent_id"
-    " WHERE f.customer_id = :c AND up.depth < 101)"
-    " SELECT dep.id FROM up JOIN folders dep ON dep.customer_id = :c AND dep.id = up.id"
-    " WHERE up.parent_id IS NULL AND dep.kind = 'department'"
-)
 
 # --- party folders (28b) ---
 PARTY_NAME_MAX = 80
@@ -563,7 +550,13 @@ def undo(
         return None
     params = {"c": customer_id, "f": family_id, "folder": row[1]}
     held = conn.execute(text(_HELD_BEFORE), params).scalar()
-    back = None if held is not None else conn.execute(text(_DEPARTMENT_ABOVE), params).scalar()
+    # Undo's way back (File management F3): the department above the filed folder, where a file
+    # uploaded into a department was before filing; NULL (the top level) otherwise. PRD 7 (#606):
+    # the file's stored department (0085), the same id, never a walk up the tree, which the database
+    # rule stops below a department the person can't see.
+    # ponytail: a type folder a person moved into a department sends Undo there; remember the
+    # upload's folder if that matters.
+    back = None if held is not None else row[2]
     if held is None and back is None:
         held = conn.execute(text(_HOLD_FOR), params).scalar()
     if held is not None and str(held) != by and not management:

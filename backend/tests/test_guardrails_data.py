@@ -24,7 +24,7 @@ from sqlalchemy import text
 from kaagaz.api.auth import require_admin_session, require_admin_with_two_step, require_delete_forever
 from kaagaz.db.engine import Database
 from tests import test_isolation_logins as limited
-from tests.db_support import APP_ROLE, insert_folder
+from tests.db_support import APP_ROLE, insert_folder, rule_on_everywhere
 from tests.test_api_chat_clarify import _clarify
 from tests.test_api_folder_upload_files import ResumableStorage, _fingerprint
 from tests.test_api_folder_uploads import item, plan, register
@@ -288,13 +288,17 @@ def test_a_query_that_forgets_its_filter_sees_only_its_own_customer_in_every_tab
 
     app = api_login()
     app.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(APP_ROLE)))
+    rule_on = rule_on_everywhere()
     for who in ("", a.user_id):  # as the customer, then also as A's user (the one-user tables)
         app.execute("SELECT set_config('kaagaz.customer_id', %s, false)", (a.customer_id,))
         app.execute("SELECT set_config('kaagaz.user_id', %s, false)", (who,))
         others = "SELECT count(*) FROM {} WHERE customer_id <> %s"
         leaked = {table: n for table in tables if (n := _count(app, others, table, a.customer_id))}
         assert leaked == {}, who
-        assert _count(app, "SELECT count(*) FROM {}", "documents") == 1  # A's own, with no WHERE at all
+        # A's own, with no WHERE at all. Changed on purpose (PR 9a, #606): with the database rule
+        # on, the API role
+        # with no person sees no file.
+        assert _count(app, "SELECT count(*) FROM {}", "documents") == (0 if not who and rule_on else 1)
     app.execute("SELECT set_config('kaagaz.customer_id', '', false)")
     for table in seeded:  # no customer: nothing at all
         assert _count(app, "SELECT count(*) FROM {}", table) == 0, table
