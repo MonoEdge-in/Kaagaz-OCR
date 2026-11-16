@@ -329,3 +329,54 @@ def test_decide_later_keeps_the_files_and_puts_the_group_last(db: Database) -> N
 def _files(signed: Signed, group: str) -> list[dict[str, Any]]:
     files: list[dict[str, Any]] = _get(signed, f"/version-groups/{group}")[1]["files"]
     return files
+
+
+def test_a_file_left_out_of_a_link_can_still_be_kept_apart_or_left_for_later(db: Database) -> None:
+    """V-C (#648, the lead's flexible group): sales and top are linked and loose was left unticked.
+    Its only match (top) is linked now, so the group no longer shows it; the screen still asks "Not a
+    version of these?" or "Decide later" about it, and both are taken, with Undo of the first. A
+    file of a group with one hidden from the viewer, or one in Trash, is still refused."""
+    org, ids = _org(Api(db))
+    admin, loose = org.people["admin"], org.files["loose"]
+    _owner(
+        db,
+        "UPDATE version_group_members SET state = 'linked' WHERE document_id IN (:a, :b)",
+        {"a": org.files["sales"], "b": org.files["top"]},
+    )
+    assert _get(admin, f"/version-groups/{ids['open']}")[0] == 404  # under 2 files, none kept apart
+    status, reply = _post(admin, f"/version-groups/{ids['open']}/keep-apart", [loose])
+    assert status == 200, reply
+    assert reply["group"]["kept_apart"] == [{"id": loose, "name": "loose.pdf"}]
+    assert _post(admin, f"/version-groups/{ids['open']}/keep-apart/undo", [loose])[0] == 200
+    assert _post(admin, f"/version-groups/{ids['open']}/later", [loose])[0] == 200
+    assert _states(db, org)["loose"] == ("later", admin.user_id)
+    refused = _post(admin, f"/version-groups/{uuid.uuid4()}/later", [org.files["a"]])
+    assert _post(admin, f"/version-groups/{ids['chain']}/later", [org.files["a"]]) == refused  # b hidden
+    assert _post(admin, f"/version-groups/{ids['open']}/later", [org.files["gone"]]) == refused  # in Trash
+    assert _states(db, org)["a"] == ("open", None)
+
+
+def test_any_two_files_of_a_group_are_compared_by_admins_and_management_only(db: Database) -> None:
+    """V-C (#648, the lead's compare of any two files in one group): sales and loose aren't a pair,
+    but are in one group. Management and the Admin compare them; a member who sees both files gets
+    a random id's 404, as does the Admin for two files of the chain with b hidden from them."""
+    org, _ = _org(Api(db))
+    sales, loose = org.files["sales"], org.files["loose"]
+
+    def compare(signed: Signed, right: str, left: str) -> tuple[int, Any]:
+        reply = signed.client.get(f"/api/documents/{right}/compare", params={"with": left})
+        return reply.status_code, reply.json()
+
+    for name in ("management", "admin"):
+        status, reply = compare(org.people[name], loose, sales)
+        assert status == 200, (name, reply)
+        assert (reply["left_id"], reply["right_id"]) == (sales, loose)
+    member = org.people["member"]
+    for file in (sales, loose):
+        assert member.client.get(f"/api/documents/{file}").status_code == 200  # they see both files
+    missing = compare(member, loose, str(uuid.uuid4()))
+    assert missing[0] == 404
+    assert compare(member, loose, sales) == missing
+    admin = org.people["admin"]
+    assert compare(admin, org.files["c"], org.files["a"]) == compare(admin, org.files["c"], str(uuid.uuid4()))
+    assert compare(org.people["management"], org.files["c"], org.files["a"])[0] == 200

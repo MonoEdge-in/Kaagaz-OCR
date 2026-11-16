@@ -713,6 +713,14 @@ _ALLOWED = text(
     f" WHERE s.customer_id = :c AND {LIVE_SUGGESTION}"
     " AND ((s.document_id = a.id AND s.candidate_family_id = b.family_id)"
     " OR (s.document_id = b.id AND s.candidate_family_id = a.family_id)))"
+    # #648 (V-C): or, for Admins and Management (:grouped), two files of one possible-versions group
+    # whose every file the person can see (V-B's all or nothing).
+    " OR (CAST(:grouped AS boolean) AND EXISTS (SELECT 1 FROM version_group_members ga"
+    " JOIN version_group_members gb ON gb.customer_id = ga.customer_id AND gb.group_id = ga.group_id"
+    " WHERE ga.customer_id = :c AND ga.document_id = a.id AND gb.document_id = b.id"
+    " AND NOT EXISTS (SELECT 1 FROM version_group_members m WHERE m.customer_id = :c"
+    " AND m.group_id = ga.group_id AND NOT EXISTS (SELECT 1 FROM visible_documents v"
+    " WHERE v.customer_id = m.customer_id AND v.id = m.document_id))))"
     " FROM visible_documents a JOIN visible_documents b ON b.customer_id = a.customer_id AND b.id = :b"
     " WHERE a.customer_id = :c AND a.id = :a"
 )
@@ -766,10 +774,14 @@ def in_batch(
     return [view(row, str(row["document_id"])) for row in conn.execute(_IN_BATCH, params).mappings()]
 
 
-def may_compare(conn: Connection, customer_id: str, first: str, second: str) -> bool | None:
-    """V11: the two are in one family or are a live pending suggestion's pair; None when
+def may_compare(
+    conn: Connection, customer_id: str, first: str, second: str, *, grouped: bool = False
+) -> bool | None:
+    """V11: the two are in one family or are a live pending suggestion's pair, or (``grouped``,
+    Admins and Management, #648) in one possible-versions group the person sees whole; None when
     either is not this customer's. One statement."""
-    allowed = conn.execute(_ALLOWED, {"c": customer_id, "a": first, "b": second}).scalar()
+    params = {"c": customer_id, "a": first, "b": second, "grouped": grouped}
+    allowed = conn.execute(_ALLOWED, params).scalar()
     return None if allowed is None else bool(allowed)
 
 

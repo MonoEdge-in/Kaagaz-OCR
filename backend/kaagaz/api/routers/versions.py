@@ -13,7 +13,8 @@ there (row level security and the customer filter). A family in Trash is 409 ``i
 * ``POST /documents/{id}/version-undo``: an accepted or automatic link undone while it is the
   family's newest version; 409 ``not_newest`` after a later one, ``not_linked`` otherwise.
 * ``POST /documents/{id}/make-current``: a ready version out of Trash; 409 ``not_ready``.
-* ``GET /documents/{id}/compare?with=``: the same family, or a pending suggestion's pair (404
+* ``GET /documents/{id}/compare?with=``: the same family, a pending suggestion's pair, or for
+  Admins and Management two files of one possible-versions group they see whole (#648; 404
   otherwise); ``with`` is the left side (removed words), ``id`` the right (added words), page by
   page up to MAX_PAGES.
 """
@@ -262,7 +263,10 @@ def compare(
     customer_id, right, left = user.customer_id, str(document_id), str(other)
     with context.db.user(customer_id, user.user_id) as conn:
         rows = [listing.get_document(conn, customer_id, each) for each in (left, right)]
-        if any(row is None for row in rows) or not versions_sql.may_compare(conn, customer_id, left, right):
+        grouped = user.role == "admin" or access_sql.me(conn)[0]  # #648: any two files of a group
+        if any(row is None for row in rows) or not versions_sql.may_compare(
+            conn, customer_id, left, right, grouped=grouped
+        ):
             raise ApiError(404, "not_found")
         for row in rows:
             if row is not None:

@@ -180,21 +180,17 @@ def decide(
     conn: Connection, customer_id: str, group_id: str, document_ids: Sequence[str], *, to: str, by: str
 ) -> None:
     """Not versions (``kept_apart``), Decide later (``later``) or Undo of Not versions (``open``) for
-    files of one group, all or none, with one ``version.kept_apart``, ``version.later`` or
-    ``version.kept_apart_undone`` row each. Not versions and Decide later take only files the group
-    shows this person; Undo, its live files kept apart, of a group they can see whole. Raises
-    Refused for any other (nothing is written: the caller's transaction rolls back). O(m + p) for
-    the group."""
+    live files of one group this person can see whole, each in a state it may change from, all or
+    none, with one ``version.kept_apart``, ``version.later`` or ``version.kept_apart_undone`` row
+    each. Not versions and Decide later also take an undecided file the group no longer shows: one
+    left unticked by a link, whose matches were all linked (V-C, #648: "Not a version of these?").
+    Raises Refused for any other (nothing is written: the caller's transaction rolls back). O(m)
+    for the group."""
     wanted = sorted(set(document_ids))
-    if to == "open":
-        members = conn.execute(_MEMBERS, {"c": customer_id, "g": group_id}).mappings().all()
-        kept = {m["document_id"] for m in members if m["live"] and m["state"] == "kept_apart"}
-        if not members or not all(m["seen"] for m in members) or not set(wanted) <= kept:
-            raise Refused
-    else:
-        shown = groups(conn, customer_id, group_id)
-        if not shown or not set(wanted) <= {f["id"] for f in shown[0]["files"]}:
-            raise Refused
+    members = conn.execute(_MEMBERS, {"c": customer_id, "g": group_id}).mappings().all()
+    may = {m["document_id"] for m in members if m["live"] and m["state"] in _FROM[to]}
+    if not members or not all(m["seen"] for m in members) or not set(wanted) <= may:
+        raise Refused
     params = {"c": customer_id, "g": group_id, "ids": wanted, "was": list(_FROM[to]), "to": to, "by": by}
     done = sorted(conn.execute(_DECIDE, params).scalars())
     if done != wanted:
