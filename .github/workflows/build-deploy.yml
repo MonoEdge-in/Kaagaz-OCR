@@ -1,0 +1,192 @@
+# Builds one or both app images, pushes them to ECR, then deploys them to the
+# environment of the branch this was run from (CI/CD Phase 3).
+#
+# Manual only: Actions → "Build and deploy" → Run workflow → pick the branch
+# (deploy/stage or deploy/production) and the service. A production deploy waits for an
+# approval (required reviewers on the production GitHub Environment).
+#
+# Images (ap-south-1): kaagaz-backend:<commit> and kaagaz-frontend:<commit>. One
+# image serves staging and production alike: each server's own .env configures it.
+# Each tag is a multi-arch index over <commit>-amd64 and <commit>-arm64, built on
+# native runners. A tag already in ECR is not built again, so a re-run, or
+# production getting a commit staging already has, reuses the image.
+#
+# No migration runs here or on the server: the backend deploy stops unless the
+# database is on the image's migration head (kaagaz schema-check).
+name: Build and deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Which service to build and deploy
+        type: choice
+        options: [backend, frontend, both]
+        default: backend
+
+permissions:
+  id-token: write # OIDC: short-lived AWS credentials, no stored keys
+  contents: read
+
+# One run per branch at a time; a second run waits, it does not cancel the first.
+concurrency:
+  group: build-deploy-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-south-1
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      environment: ${{ steps.plan.outputs.environment }}
+      services: ${{ steps.plan.outputs.services }}
+      backend: ${{ steps.plan.outputs.backend }}
+      frontend: ${{ steps.plan.outputs.frontend }}
+    steps:
+      - id: plan
+        env:
+          SERVICE: ${{ inputs.service }}
+        run: |
+          # The branch decides the environment, so the two can never be mismatched.
+          case "$GITHUB_REF" in
+            refs/heads/deploy/production) environment=production ;;
+            refs/heads/deploy/stage) environment=staging ;;
+            *) echo "::error::Run this from deploy/production or deploy/stage, not $GITHUB_REF_NAME"; exit 1 ;;
+          esac
+          case "$SERVICE" in
+            backend)  services='["backend"]' ;;
+            frontend) services='["frontend"]' ;;
+            both)     services='["backend","frontend"]' ;;
+            *) echo "::error::unknown service $SERVICE"; exit 1 ;;
+          esac
+          {
+            echo "environment=$environment"
+            echo "services=$services"
+            echo "backend=$([[ $SERVICE != frontend ]] && echo true || echo false)"
+            echo "frontend=$([[ $SERVICE != backend ]] && echo true || echo false)"
+          } >>"$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    strategy:
+      fail-fast: true
+      matrix:
+        service: ${{ fromJSON(needs.plan.outputs.services) }}
+        arch: [amd64, arm64]
+    # Native runners: an arm64 build under QEMU emulation would be several times slower.
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build arguments
+        id: args
+        env:
+          SERVICE: ${{ matrix.service }}
+          GA_ID: ${{ vars.GA_ID }}
+        run: |
+          if [[ $SERVICE == backend ]]; then
+            # Shown by /api/health and the operator's Release card (#246 O1).
+            { echo 'list<<EOF'; echo "KAAGAZ_COMMIT=$GITHUB_SHA"; echo 'EOF'; } >>"$GITHUB_OUTPUT"
+          else
+            # The same build arguments docker-compose.yml passes (BACKEND_URL, GA_ID). Next.js
+            # writes both into the build, so they are the same on every server.
+            { echo 'list<<EOF'; echo "BACKEND_URL=http://api:8000"; echo "GA_ID=$GA_ID"; echo 'EOF'; } >>"$GITHUB_OUTPUT"
+          fi
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_BUILD_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # The app repositories have immutable tags, so a re-run reuses what is there.
+      - name: Already in ECR?
+        id: check
+        env:
+          REPO: kaagaz-${{ matrix.service }}
+          TAG: ${{ github.sha }}-${{ matrix.arch }}
+        run: |
+          if aws ecr describe-images --repository-name "$REPO" --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >>"$GITHUB_OUTPUT"
+            echo "$REPO:$TAG is already in ECR; not building it again"
+          else
+            echo "exists=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.check.outputs.exists == 'false'
+        uses: docker/setup-buildx-action@v3
+
+      # The runner starts empty every time, so the build cache lives in ECR
+      # (kaagaz-buildcache), one entry per service and architecture.
+      - if: steps.check.outputs.exists == 'false'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.service }}
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          provenance: false # one plain image per architecture; the merge job joins them
+          tags: ${{ steps.ecr.outputs.registry }}/kaagaz-${{ matrix.service }}:${{ github.sha }}-${{ matrix.arch }}
+          build-args: ${{ steps.args.outputs.list }}
+          cache-from: type=registry,ref=${{ steps.ecr.outputs.registry }}/kaagaz-buildcache:${{ matrix.service }}-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ steps.ecr.outputs.registry }}/kaagaz-buildcache:${{ matrix.service }}-${{ matrix.arch }},mode=max,image-manifest=true,oci-mediatypes=true
+
+  merge:
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        service: ${{ fromJSON(needs.plan.outputs.services) }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_BUILD_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      # One tag for both architectures: the server pulls <commit> and Docker picks
+      # amd64 (today's m7i) or arm64 (Graviton) by itself.
+      - name: Join amd64 and arm64 under one tag
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          SERVICE: ${{ matrix.service }}
+        run: |
+          image="$REGISTRY/kaagaz-$SERVICE:$GITHUB_SHA"
+          if aws ecr describe-images --repository-name "kaagaz-$SERVICE" --image-ids imageTag="$GITHUB_SHA" >/dev/null 2>&1; then
+            echo "$image is already in ECR"
+          else
+            docker buildx imagetools create -t "$image" "$image-amd64" "$image-arm64"
+          fi
+          docker buildx imagetools inspect "$image"
+          echo "**$SERVICE** image: \`$GITHUB_SHA\`" >>"$GITHUB_STEP_SUMMARY"
+
+  deploy-backend:
+    needs: [plan, merge]
+    if: needs.plan.outputs.backend == 'true'
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: ${{ needs.plan.outputs.environment }}
+      service: backend
+      tag: ${{ github.sha }}
+      mode: deploy
+
+  # After the backend when both are deployed (so a new frontend never meets an
+  # old API); on its own when only the frontend was asked for.
+  deploy-frontend:
+    needs: [plan, merge, deploy-backend]
+    if: >-
+      always() && needs.merge.result == 'success' && needs.plan.outputs.frontend == 'true' &&
+      (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped')
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: ${{ needs.plan.outputs.environment }}
+      service: frontend
+      tag: ${{ github.sha }}
+      mode: deploy
