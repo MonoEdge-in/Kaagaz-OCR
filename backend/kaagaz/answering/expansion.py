@@ -134,9 +134,12 @@ class PgWords:
         self._db = db
 
     def words(self, customer_id: str, user_id: str, *, document_id: str | None = None) -> list[PersonalWord]:
+        """``document_id`` (the scope's one document) no longer narrows anything (#602, decision
+        9); kept for ``WordSource``."""
         with self._db.user(customer_id, user_id) as conn:
             rows = user_words.list_words(conn, customer_id, user_id)
-            shared = organization_words.approved(conn, customer_id, document_id=document_id)
+            # #602, decision 9: a word made on a page helps in any scope, for whoever sees its page.
+            shared = organization_words.approved(conn, customer_id)
         personal = [PersonalWord(row.word, row.meaning) for row in rows]
         seen = {(fold(row.word), fold(row.meaning)) for row in personal}
         words = personal.copy()

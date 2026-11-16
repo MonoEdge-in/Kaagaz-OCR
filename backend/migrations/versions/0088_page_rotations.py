@@ -12,8 +12,8 @@ NEEDS VRUSHIT'S APPROVAL: schema.
   (0083's equality test), never update: a save deletes the pages it changes and adds them again.
   The primary key serves the read by document and the deletes; no other index.
 
-Cost: catalog only. The two keys hold ``documents`` and ``users`` SHARE ROW EXCLUSIVE for a moment
-while the empty table is created.
+Cost: catalog only. The three keys hold ``customers``, ``documents`` and ``users`` SHARE ROW
+EXCLUSIVE for a moment while the empty table is created (reads go on, writes wait).
 
 The downgrade drops the table; its rows are lost. PR 9's per-person database rule must list
 ``page_rotations`` among the content tables.

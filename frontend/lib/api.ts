@@ -525,12 +525,6 @@ export const savePageTurnsForEveryone = (
     changes,
     user_id: userId,
   });
-/** Every page back as scanned, for everyone (#600). */
-export const resetPageTurnsForEveryone = (id: string, userId: string) =>
-  request<{ page_turns: PageTurnSaved[] }>(
-    "DELETE",
-    `/documents/${encodeURIComponent(id)}/page-turns${query({ user_id: userId })}`
-  );
 
 /**
  * Upload one file with progress (fetch cannot report upload progress, XHR can),
@@ -1221,7 +1215,8 @@ export function randomId(): string {
  * once `started` has come, the server finishes and saves the answer anyway, so it is fetched
  * from that conversation (savedAnswer), never asked again; before `started`, it asks POST /chat
  * once instead. No error when either works. Stop (`signal`) aborts any of them and never falls
- * back: the server still saves the answer.
+ * back: the server still saves the answer. `questionId`: Ask's own retry (hotfix, 15 Nov 2026)
+ * sends its first try's again, so a try the server saved is answered from that save.
  */
 export async function askStream(
   question: string,
@@ -1231,8 +1226,9 @@ export async function askStream(
   reply: ClarifyReply | undefined,
   signal: AbortSignal | undefined,
   onEvent: (event: StreamEvent) => void,
+  questionId: string = randomId(),
 ): Promise<ChatResponse> {
-  const body = chatBody(question, conversationId, scope, choice, reply, randomId());
+  const body = chatBody(question, conversationId, scope, choice, reply, questionId);
   try {
     return await streamChat(body, signal, onEvent);
   } catch (caught) {
