@@ -20,7 +20,11 @@ from tests import sql_access_scan as scan
 SHARED_WITH_WORKER = "shared with the worker, which must never read a view (#595 condition 1)"
 WRITE_AFTER_CHECK = "a write, or the read or row lock of a write, after the route's check through the view"
 TREE_WALK = "a walk of the folder tree by id; what is shown comes from a view"
-ADMIN_NUMBERS = "an Admin screen's names and numbers, never content (decision 20; PR 10)"
+# Changed on purpose (#601): permanent (decision 20, Admin screens show true names and numbers), and
+# reached only from a route that asks for an admin session (test_admin_numbers_...).
+ADMIN_NUMBERS = (
+    "permanent: an Admin screen's true names and numbers, never content, admin session only (decision 20)"
+)
 DUPLICATE_LOOKUP = "must find a copy the person can't see; the reply goes through the view"
 EXISTENCE_ONLY = "tells only whether a row exists, or names a document already checked"
 CORRELATED = "a fragment, or a correlated subquery, run only inside a statement on a view's row"
@@ -44,6 +48,16 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     # Changed on purpose (#601): the Access page's files given to a person, by their true names; the
     # rows about a file given to several people; a department's kind change, refused while in use.
     ("db/access.py", "_GIVEN_TO"): (ADMIN_NUMBERS, "GET /admin/users/{id}/access"),
+    # PR 10b (#601): the place of a file already found; the files a wall decides for, in its preview.
+    ("db/access.py", "_DOCUMENT_PLACE"): (
+        EXISTENCE_ONLY,
+        "GET /documents/{id}/audience: the view (a Head) or kaagaz_admin_document (an Admin) first",
+    ),
+    ("db/access.py", "_DEPARTMENT_FILES"): (
+        ADMIN_NUMBERS,
+        "GET /admin/departments/{id}/department-only/preview",
+    ),
+    ("db/access.py", "_FOLDER_FILES"): (ADMIN_NUMBERS, "GET /folders/{id}/private/preview: an Admin's"),
     ("db/audit.py", "_INSERT_ABOUT"): (WRITE_AFTER_CHECK, "a file given: its folder and family, by id"),
     ("db/folders.py", "_IN_USE"): (
         WRITE_AFTER_CHECK,
@@ -62,7 +76,12 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ("db/admin.py", "_FAILED_COUNT"): (ADMIN_NUMBERS, "GET /admin/failed"),
     ("db/answer_quality.py", "remove_learning"): (ADMIN_NUMBERS, "DELETE /admin/learned/{id}"),
     ("db/audit.py", "_INSERT"): (WRITE_AFTER_CHECK, "the audit row's folder and family, by id"),
-    ("db/audit.py", "_ENTRIES"): (EXISTENCE_ONLY, "a feed entry's document name; _SEEN drops a hidden one"),
+    # Changed on purpose (#601): GET /access/activity (route 22) reads it with no _SEEN, and
+    # views.timeline's unseen_masked blanks a file Management can't see (test_isolation_access_reads).
+    ("db/audit.py", "_ENTRIES"): (
+        EXISTENCE_ONLY,
+        "a feed entry's document name; _SEEN drops a hidden one, or timeline's unseen_masked blanks it",
+    ),
     ("db/audit.py", "_SEEN"): (EXISTENCE_ONLY, "whether the entry's document or folder still exists"),
     ("db/autofile.py", "_PRE_CHECK"): (SHARED_WITH_WORKER, f"auto-filing; {_UPLOAD}"),
     ("db/autofile.py", "_STATE"): (SHARED_WITH_WORKER, f"auto-filing; {_UPLOAD}"),
@@ -220,10 +239,6 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
         WRITE_AFTER_CHECK,
         "an empty folder Kaagaz made goes; shared with the worker",
     ),
-    ("db/listing.py", "_FILE_COLUMNS"): (
-        TREE_WALK,
-        "the department above a file: shown from visible_folders",
-    ),
     ("db/listing.py", "_WITH_TAGS"): (CORRELATED, "an id filter inside _LIST (visible_documents d)"),
     ("db/listing.py", "_NEEDS_ATTENTION"): (CORRELATED, "inside _LIST, on visible_documents d"),
     ("db/listing.py", "_OUTSIDE_DEPARTMENTS"): (TREE_WALK, "the departments' subtrees from visible_folders"),
@@ -363,7 +378,7 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ("db/word_review.py", "_PAGE_TO_KEEP"): (SHARED_WITH_WORKER, _WORDS),
     ("db/zip_unpacks.py", "_COUNTS"): (
         SHARED_WITH_WORKER,
-        "a zip's unpacking, of a document read through the view",
+        "a zip's unpacking, of a document read through the view; zip_unpacks() blanks a hidden root",
     ),
 }
 
@@ -401,6 +416,20 @@ class SqlAccessGuardTest(unittest.TestCase):
         ask = "SELECT p.id FROM pieces p JOIN documents d ON d.id = p.document_id WHERE p.customer_id = :c"
         self.assertEqual(scan.reads(ask), {"pieces", "documents"})
         self.assertEqual({key for key in _found() if key[0] == "search/hybrid.py"}, set())
+
+    def test_admin_numbers_are_reached_only_from_admin_session_routes(self) -> None:
+        """Decision 20 (#601): each ADMIN_NUMBERS statement is reached from a route, and only from
+        routes that ask for an admin session themselves (``scan.routes``: their router, an
+        AdminSession or require_admin_session named in the route, never only in a helper)."""
+        routes = scan.routes()
+        self.assertFalse(routes[("api/routers/documents.py", "list_documents")][1])  # a plain route
+        for key, (reason, _) in ALLOWED.items():
+            if reason != ADMIN_NUMBERS:
+                continue
+            reaching = {route: admin for route, (reached, admin) in routes.items() if key in reached}
+            with self.subTest(statement=key):
+                self.assertTrue(reaching)
+                self.assertEqual({route for route, admin in reaching.items() if not admin}, set())
 
     def test_no_statement_the_worker_reaches_reads_a_view(self) -> None:
         """#595 condition 1, across modules: the worker (jobs/, worker_main, cli, pipeline, the alerts)

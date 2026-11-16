@@ -443,6 +443,7 @@ def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
         "department",
         "pending_suggestion",
         "stuck",  # changed on purpose (issue 407): may be read again while still in progress
+        "shared_with_you",  # changed on purpose (PRD 7, #601): in a folder the person can't see
     }
     assert (document["folder_id"], document["tags"]) == (None, [])
     assert (document["pages_unreadable"], document["pages_uncertain"], document["values_to_review"]) == (

@@ -352,7 +352,8 @@ VIEW_READERS = {
     "answering/ready.py": {"_TAGGED", "_TYPES", "_WORDS"},
     "answering/owners.py": {"_EVERY_RECORD", "_KEYED", "_OWNED", "_RESOLVE", "_SHARES_AS_PRINTED"},
     "answering/unchecked.py": {"_CARD_DOCUMENTS"},
-    "db/access.py": {"_DEPARTMENTS", "_HOLDS_PRIVATE", "_NAMED_ON", "_PLACE"},  # Changed on purpose (#601)
+    # Changed on purpose (#601): the access API's writes, and 10b's Departments tab and one-time card.
+    "db/access.py": {"_DEPARTMENTS", "_DEPARTMENT_LIST", "_HOLDS_PRIVATE", "_KEEPS", "_NAMED_ON", "_PLACE"},
     "db/audit.py": {"_FOLDER_PATHS", "_OF_FAMILY", "_SEEN"},
     "db/chat.py": {
         "MARKS", "_DOCUMENT_QUESTIONS", "add_pin", "document_states", "live_document_names",

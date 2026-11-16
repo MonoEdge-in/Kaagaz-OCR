@@ -36,7 +36,13 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection
 
-from kaagaz.api.auth import CanDeleteForever, CurrentUser, User, deletes_forever_by_password
+from kaagaz.api.auth import (
+    CanDeleteForever,
+    CurrentUser,
+    User,
+    deletes_forever_by_password,
+    require_admin_session,
+)
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import FOLDER_NAME_MAX, clean_name
@@ -195,6 +201,10 @@ def get_folder_summary(folder_id: uuid.UUID, user: User, context: Context) -> di
     """#537: ``{files, folders, bytes}`` the folder holds at every depth (live files only), so
     the Delete dialog can say it before anything is pressed. Another customer's folder is 404.
     PRD 7 (#599): what the person may see (a hidden folder is 404); an Admin, the true totals."""
+    if user.role == "admin":
+        # The true totals: an admin session's alone (decision 20). It can't fail here (_signed_in
+        # already refuses an admin without one); it is kept for the SQL guard's scanner.
+        require_admin_session(user)
     with _refused(), context.db.user(user.customer_id, user.user_id) as conn:
         held = folders_sql.folder_summary(
             conn, user.customer_id, str(folder_id), seen_only=user.role != "admin"
@@ -217,6 +227,10 @@ def delete_folder(
     with ``{files, folders}``: what moved, or the files that went to Trash."""
     if contents is not None and user.role != "admin":
         raise ApiError(403, "forbidden", "Only an admin can delete a folder that holds files.")
+    if contents is not None:
+        # What's inside, by its true totals (decision 20). It can't fail here (_signed_in already
+        # refuses an admin without one); it is kept for the SQL guard's scanner.
+        require_admin_session(user)
     if to is not None and contents != "keep":
         raise ApiError(400, "bad_request", "Choose where things go only when moving them.")
     target = str(folder_id)

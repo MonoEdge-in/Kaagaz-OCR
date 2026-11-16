@@ -129,12 +129,13 @@ class Database:
             yield conn
 
     @contextmanager
-    def user(self, customer_id: str, user_id: str) -> Iterator[Connection]:
+    def user(self, customer_id: str, user_id: str, *, repeatable_read: bool = False) -> Iterator[Connection]:
         """One transaction as ``user_id`` of ``customer_id``: the customer, and the one
-        user whose own rows (my words) it may see and write. O(1) setup."""
+        user whose own rows (my words) it may see and write. O(1) setup. ``repeatable_read``
+        (PRD 7, #601): every statement sees one snapshot, for reads compared with each other."""
         uuid.UUID(customer_id)
         uuid.UUID(user_id)  # malformed ids fail here, never inside a policy
-        with self._begin() as conn:
+        with self._begin("REPEATABLE READ" if repeatable_read else None) as conn:
             both = "SELECT set_config('kaagaz.customer_id', :c, true), set_config('kaagaz.user_id', :u, true)"
             conn.execute(text(both), {"c": customer_id, "u": user_id})
             yield conn
@@ -198,10 +199,17 @@ class Database:
             raise BackendUnavailable("database") from error
 
     @contextmanager
-    def _begin(self) -> Iterator[Connection]:
-        with self._engine.begin() as conn:
-            conn.execute(self._set_role)
-            yield conn
+    def _begin(self, isolation: str | None = None) -> Iterator[Connection]:
+        if isolation is None:
+            with self._engine.begin() as conn:
+                conn.execute(self._set_role)
+                yield conn
+            return
+        with self._engine.connect() as conn:
+            conn.execution_options(isolation_level=isolation)  # the pool puts it back on return
+            with conn.begin():
+                conn.execute(self._set_role)
+                yield conn
 
 
 def user_or_customer(

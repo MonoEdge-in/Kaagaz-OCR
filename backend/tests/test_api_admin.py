@@ -258,10 +258,11 @@ def test_audit_log_is_newest_first_with_actor_names_and_paginated(db: Database) 
 
     assert body["total"] == 2  # auth.login, settings.update
     entry = body["items"][0]
-    # Changed on purpose (PRD 1, activity/search): A5's entry and the cursor.
+    # Changed on purpose (PRD 1, activity/search): A5's entry and the cursor. Changed on purpose
+    # (PRD 7, #601): subject_id, whom an entry is about.
     assert set(entry) == {
         "id", "action", "actor_id", "actor_name", "target_type", "target_id", "family_id",
-        "document", "folder", "details", "created_at",
+        "document", "folder", "details", "created_at", "subject_id",
     }  # fmt: skip
     assert body["next_cursor"] is not None
     assert entry["action"] == "settings.update"
