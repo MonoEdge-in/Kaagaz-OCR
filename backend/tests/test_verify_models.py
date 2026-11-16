@@ -13,12 +13,15 @@ import json
 import math
 from collections.abc import Iterator
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from kaagaz import cli, verify_models
 from kaagaz.ai import openrouter
 from kaagaz.answering import draft
+from kaagaz.db.engine import Database, make_engine
 from kaagaz.reading.gemini_ocr import PAGE_SCHEMA
 from kaagaz.reading.ocr import READER_PROMPT_VERSION
 from kaagaz.settings import Settings
@@ -31,6 +34,7 @@ from tests.openrouter_fake import (
     Recorded,
     Reply,
     chat_reply,
+    closed_port_url,
     embed_reply,
     endpoints_reply,
     error_reply,
@@ -191,11 +195,29 @@ def _settings(fake: OpenRouterFake, **overrides: Any) -> Settings:
     return make_settings(**{**values, **overrides})
 
 
+# #647: what the catalogue stores for PRO (the fake's own endpoint listing); FLASH not read yet.
+STORED = frozenset({"max_tokens", "reasoning", "response_format", "structured_outputs"})
+
+
+class _Catalogue:
+    """The database cli reads the stored parameters from (#647); ``broken``: it does not answer."""
+
+    def __init__(self, broken: bool = False) -> None:
+        self.broken, self.reads = broken, 0
+
+    def model_parameters(self) -> dict[str, frozenset[str]]:
+        self.reads += 1
+        if self.broken:
+            raise OperationalError("SELECT", {}, Exception("no answer"))
+        return {PRO: STORED}
+
+
 def _run(
-    settings: Settings, *args: str, command: str = "verify-models"
+    settings: Settings, *args: str, command: str = "verify-models", catalogue: Any = None
 ) -> tuple[int, str, dict[str, tuple[str, str]]]:
     out = io.StringIO()
-    code = cli.main([command, *args], settings=settings, out=out, db=None)
+    db = cast(Database, catalogue or _Catalogue())
+    code = cli.main([command, *args], settings=settings, out=out, db=db)
     text = out.getvalue()
     lines = {}
     for line in text.splitlines():
@@ -206,7 +228,9 @@ def _run(
 
 
 def test_every_item_passes_against_an_api_that_answers_as_documented(fake: OpenRouterFake) -> None:
-    code, text, lines = _run(_settings(fake), "--model", FLASH)
+    catalogue = _Catalogue()
+    code, text, lines = _run(_settings(fake), "--model", FLASH, catalogue=catalogue)
+    assert catalogue.reads == 1  # review of #647: once a run, not once a model
     assert list(lines) == ITEMS + MODEL_ITEMS
     verdicts = {item: verdict for item, (verdict, _) in lines.items()}
     info = {"key_limit", "model_devanagari"}
@@ -214,9 +238,11 @@ def test_every_item_passes_against_an_api_that_answers_as_documented(fake: OpenR
     assert code == 0
     assert text.startswith("KEY OPENROUTER_API_KEY set\n")
     assert "SUMMARY 25 PASS, 0 FAIL, 2 INFO" in text
+    # Changed on purpose (#647): each model's stored parameters too.
     assert lines["endpoints"][1] == (
         f"{PRO}: google-vertex listed; parameters all supported; zdr=True;"
-        f" {FLASH}: google-vertex listed; parameters all supported; zdr=True"
+        " stored max_tokens,reasoning,response_format,structured_outputs;"
+        f" {FLASH}: google-vertex listed; parameters all supported; zdr=True; stored not read yet"
     )
     assert lines["model_calls"][1] == f"{PRO}=200 {FLASH}=200; with the provider block"
     assert lines["strict_schema"][1] == "strict=true:200 json strict=false:200 json; requests use strict=true"
@@ -363,9 +389,15 @@ def test_a_detail_that_changes_nothing_is_info_for_a_person(fake: OpenRouterFake
 
 def _split_endpoints() -> Reply:
     """Two Vertex endpoints that each lack one parameter: together they list everything."""
-    first = endpoints_reply(PRO, tags=("google-vertex",), parameters=("reasoning", "max_completion_tokens"))
+    # Changed on purpose (#647 review): structured_outputs on both, now that the endpoint rule
+    # (catalog.lacking) requires it too.
+    first = endpoints_reply(
+        PRO, tags=("google-vertex",), parameters=("reasoning", "max_completion_tokens", "structured_outputs")
+    )
     second = endpoints_reply(
-        PRO, tags=("google-vertex/global",), parameters=("response_format", "max_completion_tokens")
+        PRO,
+        tags=("google-vertex/global",),
+        parameters=("response_format", "max_completion_tokens", "structured_outputs"),
     )
     body = cast(dict[str, Any], first.body)
     body["data"]["endpoints"] += cast(dict[str, Any], second.body)["data"]["endpoints"]
@@ -381,7 +413,9 @@ def _split_endpoints() -> Reply:
         (_split_endpoints(), "google-vertex listed; parameters lack response_format; no zdr field"),
         (
             endpoints_reply(PRO, parameters=("reasoning", "max_completion_tokens")),
-            "google-vertex listed; parameters lack response_format; no zdr field",
+            # Changed on purpose (#647 review): every call sends a strict schema, so
+            # structured_outputs is needed too (catalog.lacking, the env check's rule).
+            "google-vertex listed; parameters lack response_format,structured_outputs; no zdr field",
         ),
         (error_reply(404), "status 404, no endpoints list"),
     ],
@@ -392,7 +426,48 @@ def test_an_endpoint_listing_without_what_we_need_fails(
     fake.script("endpoints", listing)
     code, _, lines = _run(_settings(fake))
     assert code == 1
-    assert lines["endpoints"] == ("FAIL", f"{PRO}: {said}")
+    # Changed on purpose (#647): the stored parameters follow.
+    assert lines["endpoints"] == ("FAIL", f"{PRO}: {said}; stored {','.join(sorted(STORED))}")
+
+
+def test_647_the_endpoints_item_says_unknown_when_the_database_does_not_answer(fake: OpenRouterFake) -> None:
+    code, _, lines = _run(_settings(fake), catalogue=_Catalogue(broken=True))
+    assert lines["endpoints"][1].endswith("; stored unknown (OperationalError)")
+    assert lines["endpoints"][0] == "PASS" and code == 0  # never a failure of its own
+
+
+def test_647_an_unreachable_database_says_unknown_and_never_fails_the_run(fake: OpenRouterFake) -> None:
+    """Review of #647: cli's own engine (no ``db`` given) on a closed port answers at once."""
+    port = urlsplit(closed_port_url()).port
+    settings = _settings(fake, database_url=f"postgresql://nobody:x@127.0.0.1:{port}/none")
+    out = io.StringIO()
+    code = cli.main(["verify-models"], settings=settings, out=out, db=None)
+    [endpoints] = [line for line in out.getvalue().splitlines() if line.startswith("VERIFY endpoints ")]
+    assert endpoints.endswith("; stored unknown (OperationalError)")
+    assert endpoints.startswith("VERIFY endpoints PASS") and code == 0
+
+
+def test_647_verify_models_builds_its_engine_with_a_short_connect_timeout(
+    fake: OpenRouterFake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    made: list[dict[str, Any]] = []
+    real = make_engine
+
+    def spy(url: str, **options: Any) -> Any:
+        made.append(options)
+        return real(url, **options)
+
+    monkeypatch.setattr(cli, "make_engine", spy)
+    port = urlsplit(closed_port_url()).port
+    cli.main(
+        ["verify-models"],
+        settings=_settings(fake, database_url=f"postgresql://nobody:x@127.0.0.1:{port}/none"),
+        out=io.StringIO(),
+        db=None,
+    )
+    assert (
+        made == [{"connect_timeout_seconds": cli.VERIFY_CONNECT_SECONDS}] and cli.VERIFY_CONNECT_SECONDS == 3
+    )
 
 
 def test_a_model_id_that_is_not_openrouters_fails_without_a_request(fake: OpenRouterFake) -> None:
@@ -668,6 +743,25 @@ def test_a_model_with_no_allowed_zdr_endpoint_fails_and_is_never_read(
         assert lines[item] == ("FAIL", f"{FLASH}: no usable endpoint (model_endpoint)")
     pages = [body for body in fake.bodies() if body["model"] == FLASH and "response_format" in body]
     assert pages == []  # only model_calls' one line of text was sent to it
+
+
+def test_647_a_model_endpoint_without_structured_outputs_is_not_usable(fake: OpenRouterFake) -> None:
+    """#647 review: the endpoint rule is catalog.lacking, which needs structured_outputs (every
+    call sends a strict schema)."""
+
+    def no_structured(request: Recorded) -> Reply:
+        if request.action == "endpoints" and FLASH in request.path:
+            parameters = ("response_format", "reasoning", "max_completion_tokens")
+            return endpoints_reply(FLASH, tags=("google-vertex",), parameters=parameters)
+        if request.action == "zdr":
+            return zdr_reply((FLASH, "google-vertex"))
+        return openrouter_like(request)
+
+    fake.responder = no_structured
+    code, _, lines = _model_run(fake, FLASH)
+    assert code == 1
+    assert lines["model_endpoint"][0] == "FAIL"
+    assert "none of OPENROUTER_PROVIDERS" in lines["model_endpoint"][1]
 
 
 def test_an_azure_endpoint_counts_once_azure_is_an_approved_provider(fake: OpenRouterFake) -> None:
