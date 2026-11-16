@@ -352,10 +352,18 @@ def test_more_than_three_choices_are_a_list_and_a_locked_files_choice_is_left_ou
 # --- Get a file ------------------------------------------------------------------------------
 
 
+# Changed on purpose (PRD 7 PR 12, #649, 0093): a locked version is never ready, and keeps no card,
+# summary, type, date, languages or text fingerprint (its CHECKs), as the lock leaves it.
+LOCKED = (
+    "locked_at = now(), locked_by = {by}, status = 'locked', doc_type = NULL, summary = NULL, card = NULL,"
+    " document_date = NULL, languages = '{{}}', text_minhash = NULL, text_bands = NULL"
+)
+
+
 def _lock(world: _World, person: Person, document: str) -> None:
     """``document`` locked, and ``person`` allowed to open it (PRD 7's lock grant)."""
     params = {"c": person.c, "d": document, "u": person.u}
-    _owner(world.db, "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d", params)
+    _owner(world.db, f"UPDATE documents SET {LOCKED.format(by=':u')} WHERE id = :d", params)  # noqa: S608
     _owner(
         world.db,
         "INSERT INTO lock_grants (customer_id, document_id, user_id, given_by) VALUES (:c, :d, :u, :u)",
@@ -529,7 +537,7 @@ class _Meddler:
 # locked, or moved to Trash.
 CHANGES = {
     "hidden": "UPDATE documents SET held_for = :other WHERE id = :d",
-    "locked": "UPDATE documents SET locked_at = now(), locked_by = :other WHERE id = :d",
+    "locked": f"UPDATE documents SET {LOCKED.format(by=':other')} WHERE id = :d",  # noqa: S608 - fixed text
     "trashed": "UPDATE documents SET deleted_at = now(), deleted_by = :other WHERE id = :d",
 }
 
@@ -635,24 +643,20 @@ def test_a_card_refused_for_good_is_never_audited(world: _World) -> None:
 # --- review of W4 (#603): the fallbacks, limits and words ---------------------------------------
 
 
-def test_a_lock_grant_holder_gets_no_assumption_or_total(world: _World) -> None:
-    """shortcut: until PR 12 stops Ask reading locked files. A name only a locked file holds may be
-    in what Ask assumed, or in a fixed query's total, neither citing the file."""
+def test_a_lock_grant_changes_nothing_in_asks_reply(world: _World) -> None:
+    """Changed on purpose (PRD 7 PR 12, #649): Ask never reads a locked file, so what Ask assumed and
+    a fixed query's totals reach a person who may open one as they reach anyone; the shortcut that
+    left them out before PR 12 is gone."""
     person = world.person()
-    _lock(world, person, _filed(world, person, "Zebra Patil land.pdf", "survey"))
-    said = {**answer_json(), "assumptions": ["I took Zebr as Zebra Patil."]}
-    world.api.answers.reply = said
-    body, _ = world.say(person, "Land of Zebr?")
-    assert body.startswith("The total is 1,200.") and "Zebra" not in body
+    _lock(world, person, _filed(world, person, "land.pdf", "survey"))
+    world.api.answers.reply = {**answer_json(), "assumptions": ["I took Zebr as Zebra Patil."]}
+    assert world.say(person, "Land of Zebr?")[0].startswith("I took Zebr as Zebra Patil.\nThe total")
     counted = {**answer_json(), "route": "fixed_query"}
     world.api.answers.reply = {
         **counted,
         "sentences": [{"text": "2 documents name Zebra Patil.", "citations": []}],
     }
-    assert world.say(person, "How many documents mention Zebra?") == (NOT_FOUND, ["another.en", "menu.en"])
-    other = world.person(person.c)  # no grant: the control
-    world.api.answers.reply = said
-    assert world.say(other, "Land of Zebr?")[0].startswith("I took Zebr as Zebra Patil.\nThe total")
+    assert "2 documents name Zebra Patil." in world.say(person, "How many documents mention Zebra?")[0]
 
 
 def test_a_typed_reply_to_a_did_you_mean_gone_since_is_a_new_question(world: _World) -> None:
