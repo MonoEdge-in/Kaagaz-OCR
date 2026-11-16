@@ -7,13 +7,14 @@ list's row (V12) and the one-time fingerprint sweep's worker wrapper. The SQL: t
 import random
 import struct
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from kaagaz import versions, worker_main
 from kaagaz.api.views import document_version
 from kaagaz.db import versions as versions_sql
+from kaagaz.db.engine import Database
 from kaagaz.db.versions import view
 from kaagaz.search.story_match import trigrams
 from kaagaz.worker_main import FINGERPRINT_PASS, FingerprintOld
@@ -512,7 +513,8 @@ def test_v17_the_finder_runs_after_the_fingerprints_in_the_same_passes(
     missing, finding = [2, 0, 0], [7, 0]
     monkeypatch.setattr(worker_main, "fingerprint_missing", lambda _db: missing.pop(0))
     monkeypatch.setattr(worker_main, "find_versions", lambda _db: finding.pop(0))
-    assert [worker_main.old_documents(None) for _ in range(3)] == [2, 7, 0]  # type: ignore[arg-type]
+    no_database = cast(Database, None)  # the two passes are stand-ins: no database is reached
+    assert [worker_main.old_documents(no_database) for _ in range(3)] == [2, 7, 0]
     assert missing == finding == []
 
 
