@@ -524,3 +524,14 @@ def test_a_google_connection_no_longer_approved_is_refused(
     assert back.headers["location"] == "/x?open_error=signed_out"
     assert re.search(r"kaagaz_locked_open=[^;\"]", back.headers.get("set-cookie", "")) is None
     assert _actions(api, org.c) == []
+
+
+def test_a_live_check_never_lets_search_read_a_locked_file(db: Database) -> None:
+    """#649: search inside one locked file answers as for an id that never was; the 10-minute
+    check opens only the pictures, never the file to search or Ask."""
+    api = Api(db)
+    org = _org(api)
+    assert _open(org.given).status_code == 200
+    hidden = org.given.client.get(f"/api/search?q=deed&document_ids={org.locked}", headers=CSRF)
+    missing = org.given.client.get(f"/api/search?q=deed&document_ids={uuid.uuid4()}", headers=CSRF)
+    assert hidden.status_code == 200 and hidden.json() == missing.json()
