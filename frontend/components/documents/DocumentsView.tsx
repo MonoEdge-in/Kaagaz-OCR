@@ -28,6 +28,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import { accessAbilities } from "@/components/access/abilities";
+import { ASK_FOR_ACCESS, asksForAccess } from "@/components/access/askForAccess";
 import { AudiencePanel } from "@/components/access/AudiencePanel";
 import { KeptFromMe } from "@/components/access/KeptFromMe";
 import type { AudienceTarget } from "@/components/access/AudiencePanel";
@@ -592,6 +593,8 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   ) : (
     <span className={`skeleton ${styles.readerSkeleton}`} aria-hidden="true" />
   );
+  // PRD 7 PR 11c (#604): All documents empty for someone the walls keep files from; Upload stays.
+  const askAccess = library.folderId === null && library.departmentId === null && asksForAccess(me);
 
   return (
     <Dropzone
@@ -825,7 +828,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                 >
                   <EmptyState
                     icon="file"
-                    title={current ? "No documents in this folder yet" : "No documents yet"}
+                    title={current ? "No documents in this folder yet" : askAccess ? ASK_FOR_ACCESS.title : "No documents yet"}
                     headingLevel={3}
                     action={
                       <>
@@ -840,7 +843,9 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                   >
                     {current
                       ? "Upload files here, or move documents in from their menu."
-                      : "Upload invoices, registers or bank statements, as PDF, photo or spreadsheet."}
+                      : askAccess
+                        ? ASK_FOR_ACCESS.text
+                        : "Upload invoices, registers or bank statements, as PDF, photo or spreadsheet."}
                   </EmptyState>
                 </Dropzone>
               ) : null}

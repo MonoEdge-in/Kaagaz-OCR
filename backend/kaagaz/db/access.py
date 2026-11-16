@@ -43,11 +43,12 @@ class AdminDocument:
     in_trash: bool
 
 
-# PRD 7 (#601): in_department, a member of a live department (11c's "Ask your admin for access").
+# PRD 7 (#601): in_department, a member of a live department (11c's "Ask your admin for access");
+# PR 11c (#604): walled, the organisation has kept something to some people (customers.walls_set).
 _ME = text(
     "SELECT a.management, a.heads, EXISTS (SELECT 1 FROM visible_folders f"
     " WHERE f.customer_id = kaagaz_current_customer() AND f.id = ANY (a.departments)"
-    " AND f.parent_id IS NULL AND f.kind = 'department')"
+    " AND f.parent_id IS NULL AND f.kind = 'department'), a.walled"
     " FROM kaagaz_access() a"
 )
 _PERSON = text(
@@ -186,17 +187,18 @@ _KEPT_FROM_ME = text(
 _KEPT_COUNT = text("SELECT count(*) FROM kaagaz_kept_from_me(:f)")
 
 
-def me(conn: Connection) -> tuple[bool, list[str], bool]:
-    """The caller's Management, the departments they head (``/auth/me``, the Head checks) and
-    whether they are a member of a live department."""
-    management, heads, in_department = conn.execute(_ME).one()
-    return bool(management), [str(each) for each in heads], bool(in_department)
+def me(conn: Connection) -> tuple[bool, list[str], bool, bool]:
+    """The caller's Management, the departments they head (``/auth/me``, the Head checks),
+    whether they are a member of a live department, and whether the organisation has ever kept
+    something to some people (PR 11c)."""
+    management, heads, in_department, walled = conn.execute(_ME).one()
+    return bool(management), [str(each) for each in heads], bool(in_department), bool(walled)
 
 
 def rights(conn: Connection, admin: bool) -> folders.Rights:
     """The caller's rights to move what changes who can see it (PRD 7 decision 18): read under the
     tree lock, so a Head tick or Management taken away meanwhile counts."""
-    management, heads, _ = me(conn)
+    management, heads, _, _ = me(conn)
     return folders.Rights(wide=admin or management, heads=frozenset(heads))
 
 

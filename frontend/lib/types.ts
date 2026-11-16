@@ -93,7 +93,9 @@ export interface Me {
   // app's "Google connected on 30 Oct." banner. Empty while no provider is on (always sent).
   recent_connections?: { provider: string; linked_at: string }[];
   // PRD 7 (#601): Management, and the departments this person heads. Older servers leave it out.
-  access?: { management: boolean; heads: string[]; in_department?: boolean }; // in_department: PR 10c
+  // in_department (PR 10c): a member of a live department; walled (PR 11c): the organisation has
+  // kept something to some people, ever.
+  access?: { management: boolean; heads: string[]; in_department?: boolean; walled?: boolean };
 }
 
 /** One connected account of the signed-in user (GET /auth/identities). */
@@ -284,6 +286,8 @@ export interface ActivityPage {
   items: ActivityEntry[];
   next_cursor?: string | null;
   total?: number; // the admin log only
+  // PRD 7 (#601): the admin log's first page only, the entries in which an Admin gave themselves access.
+  self_given?: ActivityEntry[];
 }
 
 /** A question this person asked about the document (P2), newest first. */
@@ -1456,13 +1460,16 @@ export interface AuditEntry {
   action: string;
   // File management A3, A5: the row's family, its document (deleted: true once gone) and folder,
   // names filled in when shown; details hold resolved names (folder_path, from_name, to_name).
+  // PRD 7 (#601): in the access activity, a file Management can't see has no id, the name
+  // "a file you can't see", and no folder, version or details but `self`.
   actor_id?: string | null;
   family_id?: string | null;
-  document?: { id: string; name: string | null; version_no: number | null; deleted: boolean } | null;
+  document?: { id: string | null; name: string | null; version_no: number | null; deleted: boolean } | null;
   folder?: { id: string; path: string } | null;
   actor_name: string | null;
   target_type: string | null;
   target_id: string | null;
+  subject_id?: string | null; // PRD 7 (#601): the person an access change is about
   subject_name?: string | null; // a "user" row's person, by name (issue 375); null once removed
   details: Record<string, unknown>;
   created_at: string;

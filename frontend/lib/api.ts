@@ -1469,6 +1469,7 @@ export type AuditParams = {
   offset?: number;
   cursor?: string;
   user_id?: string; // who did it
+  subject_id?: string; // PRD 7 (#601): whom it is about
   folder_id?: string; // with its subfolders
   document_id?: string;
   action?: readonly string[];
@@ -1480,6 +1481,9 @@ export const listAudit = (params: AuditParams = {}) =>
 /** A6 Export to Excel: the filtered rows as CSV, streamed; logged as audit.export. */
 export const auditExportUrl = (params: AuditParams) =>
   `/api/admin/audit/export${query({ ...params, limit: undefined, offset: undefined, cursor: undefined })}`;
+/** PRD 7 (#601): access changes, newest first, for Admins and Management; no export. */
+export const listAccessActivity = (cursor?: string) =>
+  request<ActivityPage>("GET", `/access/activity${query({ cursor })}`);
 export const getStats = () => request<Stats>("GET", "/admin/stats");
 /** #386: each member of the admin's own organisation with what they did in the period. */
 export const getMemberNumbers = (period: MemberPeriod) =>
