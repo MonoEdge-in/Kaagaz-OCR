@@ -1,11 +1,11 @@
 name: CI
 
-# Runs on pull requests into main and production, and by hand. The pull request's own rules
+# Runs on pull requests into main, production and deploy/dev-env, and by hand. The pull request's own rules
 # (title, branch name, size, identity-number shapes) are in pr.yml.
 
 on:
   pull_request:
-    branches: [main, production]
+    branches: [main, production, deploy/dev-env]
   workflow_dispatch:
 
 permissions:

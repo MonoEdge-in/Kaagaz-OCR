@@ -1,60 +1,77 @@
-"""Migration 0089 (PROVISIONAL NUMBER; #603 W6): the operator's daily spend counts WhatsApp's voice
-notes (``transcribe``) as question spend. Up, down (0088's body exactly) and up again, on a fresh
-database; and a day's ``transcribe`` dollars land in the question spend."""
-
-from decimal import Decimal
-from typing import Any
+"""Migration 0089 (#594, 14 Nov 2026): nothing opens to everyone by accident. Up, down (the schema
+as at 0088) and up again on a fresh database; ``version_suggestions.previous_held_for`` carries its
+comment and its key to ``users`` (same organisation), validated; ``customers.walls_set`` is worked
+out for the organisations there (true only where a folder or trashed folder is Department only), and
+the downgrade puts back 0087's ``kaagaz_access()``. What they do: test_isolation_open_paths."""
 
 import pytest
 from sqlalchemy import text
 
-from kaagaz.db import operator_insights as insights
 from kaagaz.db.engine import Database
 from tests import test_migration_0002_db as base
-from tests.db_support import migrate, new_customer
-from tests.test_operator_insights_db import at, new_model, of, operator, read, usage, window_day
+from tests.db_support import insert_folder, migrate, new_customer
+from tests.test_migration_0037 import _load
+from tests.test_migration_0071_db import _state
+from tests.test_operator_auth_db import _owner
 
 pytestmark = pytest.mark.db
 fresh = base.fresh
-
-_DAILY = "pg_get_functiondef('public.kaagaz_op_daily(uuid, date, date, text)'::regprocedure)"
-OLD = "'chat', 'memory', 'search', 'ensemble_chat'"
-NEW = "'chat', 'memory', 'search', 'ensemble_chat', 'transcribe'"
-
-
-def _state(db: Database) -> dict[str, Any]:
-    """The schema, plus the daily function's body (``base._schema`` leaves bodies out)."""
-    with db.system() as conn:
-        daily = conn.execute(text(f"SELECT {_DAILY}")).scalar_one()
-    return {**base._schema(db), "daily": daily}
+M0089 = _load("0089_open_paths.py")
+_COLUMN = (
+    "SELECT col_description('version_suggestions'::regclass, a.attnum) FROM pg_attribute a"
+    " WHERE a.attrelid = 'version_suggestions'::regclass AND a.attname = 'previous_held_for'"
+)
+_KEY = (
+    "SELECT pg_get_constraintdef(oid), convalidated FROM pg_constraint"
+    " WHERE conname = 'version_suggestions_previous_held_for_fk'"
+)
 
 
-def test_0089_up_down_up_counts_transcribe_as_question_spend(fresh: tuple[str, Database]) -> None:
+def test_the_revision_follows_0088() -> None:
+    assert (M0089.revision, M0089.down_revision) == ("0089", "0088")
+
+
+_ACCESS = "SELECT pg_get_functiondef('public.kaagaz_access()'::regprocedure)"
+
+
+def test_up_down_and_up_again(fresh: tuple[str, Database]) -> None:
     url, db = fresh
     migrate(url, "0088")
+    walled, first = new_customer(db)
+    open_one, user = new_customer(db)
+    trashed, someone = new_customer(db)
+    _owner(
+        db,
+        "INSERT INTO trashed_folders (id, customer_id, parent_id, name, kind, created_by, created_at,"
+        " trash_id, root, deleted_at, deleted_by, department_only) VALUES (gen_random_uuid(), :c, NULL,"
+        " 'Old', 'department', :u, now(), gen_random_uuid(), true, now(), :u, true)",
+        {"c": trashed, "u": someone},
+    )
+    with db.customer(open_one) as conn:
+        insert_folder(conn, open_one, user, "Sales")
+    with db.customer(walled) as conn:
+        finance = insert_folder(conn, walled, first, "Finance")
+    _owner(db, "UPDATE folders SET kind = 'department', department_only = true WHERE id = :f", {"f": finance})
     at_0088 = _state(db)
-    assert at_0088["daily"].count(OLD) == 1 and "transcribe" not in at_0088["daily"]
+    with db.system() as conn:
+        access_0088 = conn.execute(text(_ACCESS)).scalar_one()
     migrate(url, "0089")
+    walls = "SELECT id, walls_set FROM customers WHERE id IN (:a, :b, :t)"
+    flags = {str(c): w for c, w in _owner(db, walls, {"a": walled, "b": open_one, "t": trashed})}
+    assert flags == {walled: True, open_one: False, trashed: True}
     at_0089 = _state(db)
-    assert at_0089["daily"].count(NEW) == 1
-    assert at_0089["daily"].replace(NEW, OLD, 1) == at_0088["daily"]
-    assert {k: v for k, v in at_0089.items() if k != "daily"} == {
-        k: v for k, v in at_0088.items() if k != "daily"
-    }
+    with db.system() as conn:
+        assert conn.execute(text(_COLUMN)).scalar_one() == M0089.HELD_COMMENT
+        assert conn.execute(text(_KEY)).one() == (
+            "FOREIGN KEY (customer_id, previous_held_for) REFERENCES users(customer_id, id)",
+            True,
+        )
+
     base._downgrade(url, "0088")
     assert _state(db) == at_0088
+    with db.system() as conn:
+        assert conn.execute(text(_COLUMN)).first() is None
+        assert conn.execute(text(_ACCESS)).scalar_one() == access_0088
+
     migrate(url, "0089")
     assert _state(db) == at_0089
-
-
-def test_a_days_voice_notes_are_question_spend(db: Database) -> None:
-    """The head's daily numbers: a voice note's ``transcribe`` dollars are question spend, with the
-    answer's, as 0026's ``ensemble_chat`` became (tests/test_migration_0026_db.py)."""
-    op, day = operator(db), window_day()
-    customer, _ = new_customer(db)
-    chat = new_model()
-    usage(db, customer, at(day), "chat", chat, 1, "0.02")
-    usage(db, customer, at(day), "transcribe", chat, 1, "0.0007")
-    [daily] = of(read(db, op, insights.daily, day, day, "UTC"), customer)
-    assert daily["cost_questions_usd"] == Decimal("0.0207")
-    assert daily["cost_usd"] == Decimal("0.0207")

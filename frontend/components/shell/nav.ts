@@ -12,9 +12,11 @@ export interface NavLink {
   icon: IconName;
   /** "review": the link shows the values waiting in Review (D-7). */
   count?: "review";
+  /** The phone tab bar's shorter words, when the label is too long for it. */
+  short?: string;
 }
 
-const LINKS: { link: NavLink; roles: readonly Role[]; scope?: SessionScope }[] = [
+const LINKS: { link: NavLink; roles: readonly Role[]; scope?: SessionScope; management?: true }[] = [
   // File management D1: the dashboard is the home screen, first after sign-in.
   { link: { href: "/dashboard", label: "Home", icon: "home" }, roles: ["member", "reviewer", "admin"] },
   {
@@ -25,13 +27,24 @@ const LINKS: { link: NavLink; roles: readonly Role[]; scope?: SessionScope }[] =
   // My words: each user's own, so every role has it.
   { link: { href: "/words", label: "My words", icon: "words" }, roles: ["member", "reviewer", "admin"] },
   { link: { href: "/review", label: "Review", icon: "review", count: "review" }, roles: ["reviewer", "admin"] },
+  // PRD 7 (#601): Management's, a flag not a role. An Admin reads the same in the Admin tab.
+  {
+    link: { href: "/access-activity", label: "Access activity", icon: "history", short: "Access" },
+    roles: ["member", "reviewer", "admin"],
+    management: true,
+  },
   // PRD A1: an admin signed in at /login gets no Admin menu.
   { link: { href: "/admin", label: "Admin", icon: "admin" }, roles: ["admin"], scope: "admin" },
 ];
 
-export function navLinks(role: Role, scope: SessionScope): NavLink[] {
+export function navLinks(role: Role, scope: SessionScope, management = false): NavLink[] {
+  // An Admin has it all in the Admin tab's Activity, Management or not.
+  const access = management && role !== "admin";
   return LINKS.filter(
-    (entry) => entry.roles.includes(role) && (entry.scope === undefined || entry.scope === scope),
+    (entry) =>
+      entry.roles.includes(role) &&
+      (entry.scope === undefined || entry.scope === scope) &&
+      (entry.management === undefined || access),
   ).map((entry) => entry.link);
 }
 

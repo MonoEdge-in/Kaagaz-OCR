@@ -1,6 +1,4 @@
-"""PROVISIONAL NUMBER: renumbered with the WhatsApp drafts (after #612's 0088) before raising.
-
-WhatsApp's voice notes in the operator's spend split (#603 W6, PRD 7 section 15; NEEDS VRUSHIT'S
+"""WhatsApp's voice notes in the operator's spend split (#603 W6, PRD 7 section 15; NEEDS VRUSHIT'S
 APPROVAL: one operator function changed, under the never-do 1 exception as 0034's and 0049's).
 
 **``kaagaz_op_daily``** (0034, last changed by 0069a) counts the new usage kind ``transcribe`` (a
@@ -12,20 +10,20 @@ table, column, index, grant or policy changes.
 
 The downgrade puts the body back as it was, the same way.
 
-Revision ID: 0089
-Revises: 0088 (Kaagaz on WhatsApp's tables)
+Revision ID: 0098
+Revises: 0097 (Kaagaz on WhatsApp's tables)
 """
 
 from alembic import op
 
-revision = "0089"
-down_revision = "0088"
+revision = "0098"
+down_revision = "0097"
 branch_labels = None
 depends_on = None
 
 DAILY = "public.kaagaz_op_daily(uuid, date, date, text)"
 KINDS_0034 = "'chat', 'memory', 'search', 'ensemble_chat'"
-KINDS_0089 = "'chat', 'memory', 'search', 'ensemble_chat', 'transcribe'"
+KINDS_0098 = "'chat', 'memory', 'search', 'ensemble_chat', 'transcribe'"
 
 # The question kinds in the function's body, replaced exactly once (the module docstring).
 _REWRITE_DAILY = """
@@ -43,8 +41,8 @@ $body$
 
 
 def upgrade() -> None:
-    op.execute(_REWRITE_DAILY.format(daily=DAILY, old=KINDS_0034, new=KINDS_0089))
+    op.execute(_REWRITE_DAILY.format(daily=DAILY, old=KINDS_0034, new=KINDS_0098))
 
 
 def downgrade() -> None:
-    op.execute(_REWRITE_DAILY.format(daily=DAILY, old=KINDS_0089, new=KINDS_0034))
+    op.execute(_REWRITE_DAILY.format(daily=DAILY, old=KINDS_0098, new=KINDS_0034))

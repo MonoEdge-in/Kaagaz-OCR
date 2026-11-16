@@ -130,10 +130,12 @@ TEMPLATES = (
     # Changed on purpose (#603): WhatsApp connected, and turned on for the organisation.
     emails.whatsapp_connected,
     emails.whatsapp_turned_on,
+    emails.access_given,  # Changed on purpose (PRD 7, #601): the kind of access only
 )
 # What an email may be told: never a document, its name or content, never an id.
 # Changed on purpose (#507): the invite's Google line is a yes or no.
-ALLOWED_ARGUMENTS = {"name", "organisation", "link", "google"}
+# Changed on purpose (PRD 7, #601): who gave access to whom, and its kind (a fixed list).
+ALLOWED_ARGUMENTS = {"name", "organisation", "link", "google", "admin", "person", "kind"}
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
@@ -148,6 +150,9 @@ def test_no_email_can_be_given_a_document_and_none_holds_an_id(
         "organisation": "Sharma Traders",
         "link": "https://kaagaz.example.com/x#t=abc",
         "google": True,
+        "admin": "Sunita",
+        "person": "Ravi",
+        "kind": "file",
     }
     subject, text = template(**{key: values[key] for key in parameters})
     assert subject and text
@@ -228,3 +233,13 @@ def test_a_failed_send_says_why_and_an_invite_is_an_error(
     assert invite.getMessage() == f'{{"event":"email_failed","purpose":"invite","error":"{said}"}}'
     assert (invite.levelno, reset.levelno) == (logging.ERROR, logging.WARNING)
     assert "ramesh" not in caplog.text
+
+
+def test_access_given_names_the_kind_only_and_who() -> None:
+    """PRD 7 (#601): never a file, a folder or a department by name; "themselves" for an Admin's own."""
+    for kind in emails.ACCESS_KINDS:
+        _, text = emails.access_given("Ramesh", "Sharma Traders", "Sunita", None, kind)
+        assert "Sunita gave themselves " + emails.ACCESS_KINDS[kind] in text
+        assert "http" not in text
+    _, text = emails.access_given("Ramesh", "Sharma Traders", "Sunita", "Ravi", "management")
+    assert "Sunita gave Ravi Management" in text

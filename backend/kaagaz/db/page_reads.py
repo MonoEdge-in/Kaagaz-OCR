@@ -38,11 +38,18 @@ _GET = text(
     " AND image_sha256 = :image_sha256 AND model = :model AND prompt_version = :prompt_version"
 )
 # The key's columns are never updated (only result, the counts and the time are granted).
+# PRD 7 (#605): nothing while the document is locked, read FOR SHARE in the same statement: a lock
+# under way is waited for and then seen (nothing written), or waits for this write and then
+# deletes it. The only late write the run fence does not cover. A document not found is still
+# refused by the foreign key, as before.
 _PUT = text(
-    "INSERT INTO page_reads (customer_id, document_id, page_no, image_sha256, model, prompt_version,"
+    "WITH found AS MATERIALIZED"
+    " (SELECT locked_at FROM documents WHERE customer_id = :c AND id = :d FOR SHARE)"
+    " INSERT INTO page_reads (customer_id, document_id, page_no, image_sha256, model, prompt_version,"
     " result, input_tokens, output_tokens)"
-    " VALUES (:c, :d, :page_no, :image_sha256, :model, :prompt_version, CAST(:result AS jsonb),"
-    " :input_tokens, :output_tokens)"
+    " SELECT CAST(:c AS uuid), CAST(:d AS uuid), :page_no, :image_sha256, :model, :prompt_version,"
+    " CAST(:result AS jsonb), :input_tokens, :output_tokens"
+    " WHERE NOT EXISTS (SELECT 1 FROM found WHERE locked_at IS NOT NULL)"
     " ON CONFLICT (document_id, page_no, image_sha256, model, prompt_version) DO UPDATE"
     " SET result = EXCLUDED.result, input_tokens = EXCLUDED.input_tokens,"
     " output_tokens = EXCLUDED.output_tokens, created_at = now()"

@@ -18,7 +18,8 @@ an upload.
   never holds more than MAX_FILES_PER_BATCH and ``batch_full`` can't happen.
 * "Add new files only": a file registered with the browser's SHA-256 (``NewItem.sha256``) of a
   document of this organisation of the same size (``_ALREADY_IN``, on UNIQUE (customer_id,
-  sha256)) is registered ``duplicate`` of it, so it is never sent. The hash is only looked up,
+  sha256); PRD 7 #606: by ``kaagaz_duplicate``, so a copy the person can't see counts too, named
+  by no id) is registered ``duplicate`` of it, so it is never sent. The hash is only looked up,
   never kept; no document is written or moved, and a file that is sent is hashed again by the
   server. Already-in files are not counted against the limits (``items_counted``,
   ``bytes_registered``), only against the declared count. A page that looked hashes up is
@@ -45,7 +46,6 @@ from typing import Any, Literal
 from sqlalchemy import Connection, text
 
 from kaagaz.db import audit
-from kaagaz.db.documents import REFUSED_ALONE
 from kaagaz.db.folder_uploads import FolderUploadLimits
 
 FAILURE_CODES = ("too_large", "unsupported_type", "empty_file", "folder_gone", "bad_name")
@@ -143,12 +143,15 @@ _KNOWN_KEYS = text(
     "SELECT path_key FROM folder_upload_items"
     " WHERE customer_id = :c AND folder_upload_id = :u AND path_key = ANY(CAST(:keys AS text[]))"
 )
-# "Add new files only": the document of this organisation each hash and size is, if any; a
-# refused copy alone is not, so the file is sent and replaces it (#554, ``db/documents.py``).
+# "Add new files only": the document of this organisation each hash is, if any; a refused copy
+# alone is not, so the file is sent and replaces it (#554, ``db/documents.py``). PRD 7 (#606): asked
+# of kaagaz_duplicate (0091), which finds a copy the person can't see too and names it by no id.
 _ALREADY_IN = text(
-    "SELECT w.k, d.id FROM unnest(CAST(:keys AS text[]), CAST(:hashes AS text[]), CAST(:sizes AS bigint[]))"  # noqa: S608 - a fixed fragment
-    " AS w (k, h, s) JOIN documents d ON d.customer_id = :c AND d.sha256 = w.h AND d.size_bytes = w.s"
-    " AND NOT (" + REFUSED_ALONE + ")"
+    "SELECT w.k, f.document_id"
+    " FROM unnest(CAST(:keys AS text[]), CAST(:hashes AS text[]), CAST(:sizes AS bigint[])) AS w (k, h, s)"
+    " JOIN kaagaz_duplicate(CAST(:hashes AS text[]), CAST(:sizes AS bigint[])) f"
+    " ON f.sha256 = w.h AND f.size_bytes = w.s AND f.answer <> 'none'"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 # Each row: failed with its code, else a duplicate of the document it already is, else waiting.
 _INSERT = text(
@@ -242,7 +245,11 @@ def _register_new(
             "hashes": [item.sha256 for item in looked_up],
             "sizes": [item.size for item in looked_up],
         }
-        already = {str(k): str(d) for k, d in conn.execute(_ALREADY_IN, {**params, **hashes})}
+        # A hidden copy is named by a new id that names no row, so the item says only "hidden".
+        already = {
+            str(k): str(uuid.uuid4() if d is None else d)
+            for k, d in conn.execute(_ALREADY_IN, {**params, **hashes})
+        }
     sent = [item for item in new if item.path_key not in already]
     count, counted = registered + len(new), counted + len(sent)
     # A file refused here by its type or name is never sent, and the browser leaves the files it

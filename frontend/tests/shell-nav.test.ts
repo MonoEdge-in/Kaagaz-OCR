@@ -244,7 +244,8 @@ describe("one nav list for the sidebar and the drawer", () => {
   });
 
   it("passes the session scope to navLinks()", () => {
-    expect(shell).toContain("navLinks(me.user.role, sessionScope(me))");
+    // Changed on purpose (PRD 7 PR 11c, #604): and Management, for the Access activity link.
+    expect(shell).toContain("navLinks(me.user.role, sessionScope(me), me.access?.management === true)");
   });
 
   // PRD 7: "Sign out everywhere" in the account menu.

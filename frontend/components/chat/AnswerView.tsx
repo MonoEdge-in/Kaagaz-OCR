@@ -246,12 +246,13 @@ export const AnswerView = memo(function AnswerView({
       </div>
     );
   }
-  // PRD 7 (#602): replaced whole by the server; its one line, no sources, rating or pick.
+  // PRD 7 (#602): replaced whole by the server; its one line, no sources, rating or pick. A file
+  // now locked that the person may open (#605) has its own line, the server's.
   if (answer.status === "no_access") {
     return (
       <div {...card} className={`${motion} ${styles.answerCard}`}>
         <span className="visually-hidden">Answer: </span>
-        <p className={styles.plain}>{NO_ACCESS_TEXT}</p>
+        <p className={styles.plain}>{answer.reason === "locked" ? answer.sentences[0]?.text : NO_ACCESS_TEXT}</p>
       </div>
     );
   }

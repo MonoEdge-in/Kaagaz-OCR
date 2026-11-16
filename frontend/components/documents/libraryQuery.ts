@@ -58,6 +58,7 @@ export type DocumentListParams = {
   doc_date_from?: string; // YYYY-MM-DD, both days included
   doc_date_to?: string;
   has_newer_version?: boolean;
+  shared?: boolean; // PRD 7 (#601): only files given to this person directly (Shared with me)
   sort?: SortKey;
   order?: SortOrder;
 };
@@ -67,6 +68,7 @@ export interface LibraryState {
   readonly folderId: string | null; // null: all documents, in every folder (or Trash)
   readonly subfolders: boolean; // in a folder: also the documents in its subfolders
   readonly trash: boolean; // Trash: every folder, only what is in Trash
+  readonly shared: boolean; // PRD 7 (#604): Shared with me, a place like All documents (no folder, not Trash)
   readonly tagIds: readonly string[]; // every tag must match
   readonly type: DetectedType | null;
   readonly from: string | null; // YYYY-MM-DD, the first day included
@@ -90,6 +92,7 @@ export const ALL_DOCUMENTS: LibraryState = {
   folderId: null,
   subfolders: false,
   trash: false,
+  shared: false,
   tagIds: [],
   type: null,
   from: null,
@@ -214,6 +217,7 @@ const uuid = (text: string | null) => (text !== null && UUID.test(text) ? text.t
 export function libraryFromSearch(search: SearchLike): LibraryState {
   const trash = search.get("trash") === "1";
   const folderId = trash ? null : uuid(search.get("folder"));
+  const shared = !trash && folderId === null && search.get("shared") === "1";
   const tags = search
     .getAll("tag")
     .filter((id) => UUID.test(id))
@@ -224,6 +228,7 @@ export function libraryFromSearch(search: SearchLike): LibraryState {
     folderId,
     subfolders: folderId !== null && search.get("sub") === "1",
     trash,
+    shared,
     tagIds: [...new Set(tags)].slice(0, MAX_TAG_FILTERS),
     type: FILTER_TYPES.find((kind) => kind === type) ?? null,
     from: day(search.get("from")),
@@ -247,6 +252,8 @@ export function libraryHref(state: LibraryState): string {
   const defaultSort = state.sort === "created_at" && state.order === "desc";
   return `/documents${query({
     trash: state.trash ? "1" : undefined,
+    // A folder or Trash opened from Shared with me leaves it.
+    shared: state.shared && state.folderId === null && !state.trash ? "1" : undefined,
     folder: state.folderId ?? undefined,
     sub: state.folderId !== null && state.subfolders ? "1" : undefined,
     tag: state.tagIds,
@@ -308,6 +315,7 @@ export function listParams(state: LibraryState, q: string, offset: number): Docu
     uploaded_to: state.to === null ? undefined : dayAfter(state.to),
     attention: state.attention ? true : undefined,
     ...fileFilterParams(state),
+    shared: state.shared ? true : undefined,
     sort: defaultSort ? undefined : state.sort,
     order: defaultSort ? undefined : state.order,
   };

@@ -4,8 +4,9 @@ questions about Devanagari documents (council 2 Oct 2026, PR2 C and D).
 ``EQUIVALENTS`` maps an English keyword, as ``hinglish.normalise`` gives it,
 to at most three NFC Devanagari words: code constants of Devanagari letters
 and marks only (tests/test_answering_glossary.py checks it), so ``word_query``
-can hand them to ``to_tsquery`` safely. A term of ``PREFIX_MIN`` code points
-or more matches a word that starts with it (भोगवटादार finds भोगवटादाराचे,
+can hand them to ``to_tsquery`` safely; a word printed two ways in Latin letters
+also lists its other spelling, ASCII lower case letters only (gat and gut, #625).
+A term of ``PREFIX_MIN`` code points or more matches a word that starts with it (भोगवटादार finds भोगवटादाराचे,
 ``:*`` in SQL); a shorter one a whole word only (कुल is not in कुलकर्णी, कर
 not in करार). Words are runs of letters and marks (L and M), not regex word
 characters, which split a Devanagari word at its vowel sign. ``GENERIC`` words are on
@@ -59,7 +60,9 @@ EQUIVALENTS: dict[str, tuple[str, ...]] = {
     "land": ("जमीन", "जमिन", "भूमि"),
     "area": ("क्षेत्र", "क्षेत्रफळ", "रकबा"),
     "survey": ("सर्वे", "सर्व्हे"),
-    "gat": ("गट",),
+    # #625: land records print the survey number both ways in Latin letters (गट), so each finds the other.
+    "gat": ("गट", "gut"),
+    "gut": ("गट", "gat"),
     "crop": ("पीक", "पिके", "फसल"),
     "tenant": ("कूळ", "किरायेदार"),
     "mutation": ("फेरफार",),
@@ -214,14 +217,14 @@ def present(keyword: str, text: str) -> bool:
     terms = () if concept(keyword) in GENERIC else equivalents(keyword)
     if not terms:
         return False
-    words = _words(unicodedata.normalize("NFC", text))
+    words = _words(unicodedata.normalize("NFC", text).casefold())  # a Latin term (gut) in any case
     return any(_matches(term, word) for term in terms for word in words)
 
 
 def english_for(text: str) -> set[str]:
     """The English keys one of whose words is in ``text`` (GENERIC ones too), by the same
     match as ``present``: the English an answer may use for that text. O(t * g) for g words."""
-    words = _words(unicodedata.normalize("NFC", text))
+    words = _words(unicodedata.normalize("NFC", text).casefold())
     return {key for key, terms in EQUIVALENTS.items() if any(_matches(t, w) for t in terms for w in words)}
 
 

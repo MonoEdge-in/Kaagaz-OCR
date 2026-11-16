@@ -126,6 +126,9 @@ export function unturnedBox(box: Box, turn: number): Box {
   }
 }
 
+/** A box of the page as it shows turned clockwise by `turn` degrees on top (#600): unturnedBox undone. */
+export const turnedBox = (box: Box, turn: number): Box => unturnedBox(box, (360 - turn) % 360);
+
 /** Where a box marker goes on a page drawn at width x height: never under MIN_MARKER_PX, kept on the page. */
 export function markerRect(box: Box, width: number, height: number): PixelRect {
   const px = boxToPixels(box, width, height);

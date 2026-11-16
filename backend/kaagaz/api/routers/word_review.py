@@ -42,6 +42,7 @@ from kaagaz.api import names, views
 from kaagaz.api.auth import CurrentUser, Reviewer, User, require_feature
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
+from kaagaz.api.locked import refuse_locked
 from kaagaz.api.readers import usable
 from kaagaz.api.views import latest_run_json
 from kaagaz.db import ai_settings, listing, word_review
@@ -111,6 +112,7 @@ def _document(conn: Connection, user: CurrentUser, document_id: uuid.UUID) -> Ro
     row = listing.get_document(conn, user.customer_id, str(document_id))
     if row is None or row["status"] == "rejected":
         raise ApiError(404, "not_found")
+    refuse_locked(row)  # PRD 7 (#605)
     return row
 
 

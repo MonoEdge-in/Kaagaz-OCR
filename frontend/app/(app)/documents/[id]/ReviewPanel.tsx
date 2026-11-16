@@ -49,6 +49,7 @@ import {
 } from "@/components/review/wordReview";
 import type { HistoryFilter } from "@/components/review/wordReview";
 import { PageViewer } from "@/components/viewer/PageViewer";
+import { fromServer, turnOf } from "@/components/viewer/viewer";
 import { listChanges, readPageAgain } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import type { DocumentDetail, DocumentSummary, EnsembleScope, WordChange } from "@/lib/types";
@@ -234,6 +235,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
                     highlights={[flag.region]}
                     crop={flag.region}
                     cropMaxHeight={CROP_HEIGHTS[zoomed ? 1 : 0]}
+                    turn={turnOf(fromServer(detail.page_turns ?? []), page.page_no)}
                   />
                   <button type="button" className="btn btn-quiet" aria-pressed={zoomed} onClick={() => setZoomed(!zoomed)}>
                     {zoomed ? "Zoom out" : "Zoom in"}

@@ -100,7 +100,9 @@ import { ALL_DOCUMENTS, libraryHref } from "./libraryQuery";
 import {
   FALLBACK_UPLOAD_LIMITS,
   HIDDEN_COPY,
+  LOCKED_COPY,
   canSendAgain,
+  copyState,
   estimateIngestSeconds,
   flaggedText,
   scanPhrase,
@@ -287,8 +289,8 @@ export function useUploads(onUploaded: () => void) {
       times.repliedAt = performance.now();
       times.sentAt ??= times.repliedAt;
       kept.current.delete(key);
-      const state: UploadState = result.hidden
-        ? { kind: "elsewhere" }
+      const state: UploadState = result.document === null
+        ? copyState(result)
         : result.duplicate
         ? {
             kind: "duplicate",
@@ -885,19 +887,42 @@ export function TrayChoice({
   onDone(chosen: Chosen): void;
   onUndone(): void;
 }) {
+  const [undoError, setUndoError] = useState<string | null>(null); // PR 10c: a refused Undo says why
   if (!chosen) return <VersionChoice suggestion={suggestion} onDone={onDone} />;
   return (
-    <p className={styles.small} role="status">
-      {undone ? VERSION_TEXT.reverted : chosen.message}{" "}
-      {chosen.undo && !undone && (
-        <button
-          type="button"
-          className={`btn btn-quiet ${styles.inlineAction}`}
-          onClick={() => void chosen.undo?.().then(onUndone, () => undefined)}
-        >
-          {VERSION_TEXT.undo}
-        </button>
+    <>
+      <p className={styles.small} role="status">
+        {undone ? VERSION_TEXT.reverted : chosen.message}{" "}
+        {chosen.undo && !undone && (
+          <button
+            type="button"
+            className={`btn btn-quiet ${styles.inlineAction}`}
+            onClick={() => {
+              setUndoError(null);
+              void chosen.undo?.().then(onUndone, (caught: unknown) => setUndoError(undoErrorText(caught)));
+            }}
+          >
+            {VERSION_TEXT.undo}
+          </button>
+        )}
+      </p>
+      {undoError && (
+        <p className="error-text" role="alert">
+          {undoError}
+        </p>
       )}
+    </>
+  );
+}
+
+/** PRD 7 (#605, p2:91): a locked copy the uploader may open: the PRD's line and its link only. */
+export function LockedCopy({ documentId, name }: { documentId: string; name: string }) {
+  return (
+    <p className={styles.small}>
+      {LOCKED_COPY}{" "}
+      <Link href={`/documents/${documentId}`}>
+        Open it<span className="visually-hidden">{` ${name}`}</span>
+      </Link>
     </p>
   );
 }
@@ -991,6 +1016,7 @@ function UploadRow({
           </p>
         )}
         {state.kind === "elsewhere" && <p className={styles.small}>{HIDDEN_COPY}</p>}
+        {state.kind === "locked" && <LockedCopy documentId={state.documentId} name={entry.name} />}
         {state.kind === "duplicate" && entry.reading !== undefined && (
           <p className={`muted ${styles.small}`}>{DUPLICATE_READER_NOTE}</p>
         )}

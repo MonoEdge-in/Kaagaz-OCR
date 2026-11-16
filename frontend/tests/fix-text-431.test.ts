@@ -50,9 +50,10 @@ const signMark = flag("mark", "[?]", SIGN);
 
 describe("#431 Save fixes the [?] the box names", () => {
   it("works on the line's word mark before the line's own flag, then on the line", () => {
-    expect(wordToFix([lineFlag, unread], line)).toBe(unread);
-    expect(wordToFix([lineFlag], line)).toBe(lineFlag); // its words done: the line itself
-    expect(wordToFix([flag("mark", "x", [0.1, 0.5, 0.2, 0.55])], line)).toBeUndefined(); // another line's
+    // Changed on purpose (#614): wordToFix is given the page's lines (a word is the smallest's).
+    expect(wordToFix([lineFlag, unread], line, [line])).toBe(unread);
+    expect(wordToFix([lineFlag], line, [line])).toBe(lineFlag); // its words done: the line itself
+    expect(wordToFix([flag("mark", "x", [0.1, 0.5, 0.2, 0.55])], line, [line])).toBeUndefined(); // another line's
     expect(fixBox(unread)).toEqual({ hint: "Type the word you see on the page in place of [?].", draft: "" });
   });
 
@@ -65,17 +66,20 @@ describe("#431 Save fixes the [?] the box names", () => {
   });
 
   it("settles a line that is only the word with the same Save, and no other line", () => {
-    expect(fixesFor(signMark, [signLine, signMark])).toEqual([signMark, signLine]);
-    expect(fixesFor(unread, [lineFlag, unread])).toEqual([unread]); // the line holds more than the word
-    expect(fixesFor(lineFlag, [lineFlag, unread])).toEqual([lineFlag]);
+    // Changed on purpose (#614): fixesFor is given the row the Save came from.
+    const signRow = { text: "[?]", region: region(SIGN) };
+    expect(fixesFor(signMark, [signLine, signMark], signRow)).toEqual([signMark, signLine]);
+    expect(fixesFor(unread, [lineFlag, unread], line)).toEqual([unread]); // the line holds more than the word
+    expect(fixesFor(lineFlag, [lineFlag, unread], line)).toEqual([lineFlag]);
   });
 
   it("saves every flag fixesFor names, one after the other, and closes only when all went through", () => {
     const panel = read(PANEL);
-    expect(panel).toContain("const toFix = first && onFix ? wordToFix(flags, line) : undefined;");
+    // Changed on purpose (#614): with the page's lines, and the row the Save came from.
+    expect(panel).toContain("const toFix = first && onFix ? wordToFix(flags, line, lines) : undefined;");
     // Changed on purpose (#443): Confirm sends each word's own text (asRead).
     expect(panel).toContain(
-      "for (const each of fixesFor(flag, flags)) if (done.ok) done = await onFix(each, asRead ? each.text : typed);",
+      "for (const each of fixesFor(flag, flags, row)) if (done.ok) done = await onFix(each, asRead ? each.text : typed);",
     );
     expect(panel).toContain("if (done.ok) closeFix(index);");
     expect(panel).toContain('const ask = toFix ? fixBox(toFix.kind === "line" ? { text: read } : toFix) : null;');

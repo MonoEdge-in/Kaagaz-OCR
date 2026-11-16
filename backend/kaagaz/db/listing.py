@@ -70,9 +70,12 @@ _FILE_COLUMNS = (
     " (SELECT ub.display_name FROM users ub WHERE ub.customer_id = d.customer_id AND ub.id ="
     f" CASE WHEN d.details_updated_at >= {_LAST_UPLOAD} THEN d.details_updated_by ELSE {_LAST_UPLOADER} END)"
     " AS last_updated_by_name,"
+    # PRD 7 (#601): through visible_folders, so a file in a folder the person can't see names no
+    # department either.
     " (WITH RECURSIVE up (id, parent_id, depth) AS ("
-    " SELECT f.id, f.parent_id, 1 FROM folders f WHERE f.customer_id = d.customer_id AND f.id = d.folder_id"
-    " UNION ALL SELECT f.id, f.parent_id, up.depth + 1 FROM up JOIN folders f ON f.id = up.parent_id"
+    " SELECT f.id, f.parent_id, 1 FROM visible_folders f"
+    " WHERE f.customer_id = d.customer_id AND f.id = d.folder_id"
+    " UNION ALL SELECT f.id, f.parent_id, up.depth + 1 FROM up JOIN visible_folders f ON f.id = up.parent_id"
     " WHERE f.customer_id = d.customer_id AND up.depth < 101)"
     " SELECT json_build_object('id', dep.id, 'name', dep.name) FROM up"
     " JOIN visible_folders dep ON dep.customer_id = d.customer_id AND dep.id = up.id"
@@ -97,8 +100,13 @@ _FILE_COLUMNS = (
 # customer's load never shows in it.
 _COLUMNS = (
     "SELECT d.id, d.display_name, d.detected_type, d.size_bytes, d.status, d.failure_code,"  # noqa: S608 - fixed fragments, review.WAITING_VALUE and documents.STUCK
-    " d.page_count, d.created_at, d.uploaded_by, d.folder_id, d.deleted_at, d.family_id, d.version_no,"
+    " d.page_count, d.created_at, d.uploaded_by, d.deleted_at, d.family_id, d.version_no,"
     " d.attempts, d.max_attempts, d.progress, d.doc_type, d.languages, d.summary, d.read_model,"
+    " d.locked_at IS NOT NULL AS locked,"  # PRD 7 (#605): the routes refuse a locked file on it
+    # PRD 7 (#601): the folder only when the person can see it; in_a_folder says a file is in one
+    # (in one they can't see: "Shared with you", never its id).
+    " (SELECT sf.id FROM visible_folders sf WHERE sf.customer_id = d.customer_id AND sf.id = d.folder_id)"
+    " AS folder_id, d.folder_id IS NOT NULL AS in_a_folder,"
     " u.display_name AS uploaded_by_name,"
     " (SELECT count(*) FROM pages pu WHERE pu.customer_id = d.customer_id AND pu.document_id = d.id"
     " AND pu.read_quality = 'unreadable' AND pu.accepted_at IS NULL) AS pages_unreadable,"
@@ -199,6 +207,8 @@ _WITH_TAGS = (
     " GROUP BY dt.document_id HAVING count(DISTINCT dt.tag_id) = :tag_count)"
 )
 _OF_TYPE = " AND d.detected_type = :detected_type"
+# PRD 7 (#601): Shared with me, the files given to the person directly (every version is given).
+_SHARED = " AND d.id IN (SELECT kaagaz_shared_with_me())"
 # PRD 5 U2 "Needs attention": a page unreadable or uncertain still on the attention list
 # (not kept as is), or a value to review; the same rows _COLUMNS counts.
 _NEEDS_ATTENTION = (
@@ -272,6 +282,14 @@ _MOVE_FAMILY = (
     "UPDATE documents SET folder_id = :f, autofile = NULL WHERE customer_id = :c"
     " AND family_id = (SELECT family_id FROM documents WHERE customer_id = :c AND id = :d)"
 )
+# PRD 7 (#606): an Admin's move of a family, seen or not, and into a place whose files they can't
+# see (kaagaz_admin_move_documents, 0092): under the database rule the family's new row would fail
+# the rule for them. The folder each moved family was in, for the prune.
+_ADMIN_MOVE = (
+    "SELECT document_id, from_folder"
+    " FROM kaagaz_admin_move_documents(ARRAY[CAST(:d AS uuid)], CAST(:f AS uuid))"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
+)
 # The folders the family is in now, before a move.
 _FAMILY_FOLDERS = (
     "SELECT DISTINCT folder_id FROM documents WHERE customer_id = :c AND folder_id IS NOT NULL"
@@ -312,6 +330,7 @@ def list_documents(
     doc_date_from: date | None = None,
     doc_date_to: date | None = None,
     has_newer_version: bool = False,
+    shared: bool = False,
     sort: str = "created_at",
     descending: bool = True,
 ) -> tuple[Sequence[RowMapping], int]:
@@ -329,9 +348,9 @@ def list_documents(
     attention); File management Q3: ``department_folders`` (a department's subtree),
     ``outside_departments`` (the dashboard's "Not in a department"),
     ``owner_id``, ``sensitivities`` (any of), ``party``, ``property_number`` (normalised),
-    ``doc_date_from`` to ``doc_date_to`` (both inclusive) and ``has_newer_version``. All of
-    them apply in both queries, before LIMIT. A sort other than ``created_at`` reads every
-    match before the page.
+    ``doc_date_from`` to ``doc_date_to`` (both inclusive) and ``has_newer_version``; PRD 7:
+    ``shared`` (given to the person directly). All of them apply in both queries, before LIMIT.
+    A sort other than ``created_at`` reads every match before the page.
 
     Two queries (the page and the count). Cost for this customer's D documents:
     no filter, O(limit + offset) rows on the (customer_id, created_at) index; a
@@ -371,6 +390,8 @@ def list_documents(
         params["uploaded_to"] = uploaded_to
     if attention:
         chosen.append(_NEEDS_ATTENTION)
+    if shared:
+        chosen.append(_SHARED)
     chosen.append(
         file_filters(
             params,
@@ -1026,6 +1047,19 @@ def move_family(conn: Connection, customer_id: str, document_id: str, *, folder_
     prune_empty(conn, customer_id, left)
 
 
+def admin_move_family(conn: Connection, customer_id: str, document_id: str, *, folder_id: str | None) -> bool:
+    """``move_family`` for an Admin (PRD 7, #606): every version, by the owner-rights
+    ``kaagaz_admin_move_documents`` (the tree lock, then the family's), so a move into a place whose
+    files they can't see is not refused by the database rule. The caller found the file and the
+    folder and holds the tree lock. A folder Kaagaz made that the move leaves empty is deleted
+    (``prune_empty``). False, and nothing moved, when the family is in Trash (read again under its
+    lock) or gone. One statement, then one a folder left."""
+    rows = conn.execute(text(_ADMIN_MOVE), {"c": customer_id, "d": document_id, "f": folder_id}).all()
+    left = [str(row.from_folder) for row in rows if row.from_folder is not None]
+    prune_empty(conn, customer_id, [f for f in left if f != folder_id])
+    return any(str(row.document_id) == document_id for row in rows)
+
+
 # --- Model choice and AI spend (council 11 Oct 2026, MS5, SP2, SP4) -------------------
 
 # Features 26 and 27 (0026): a mode given replaces read_also too, in the same statement, so
@@ -1076,17 +1110,13 @@ def ai_budget(conn: Connection, customer_id: str) -> float | None:
 # grouped by id, so two users with one name stay apart; a NULL user (work no user asked
 # for, or a removed user) has no name. The index model_usage_period. #463 review: an
 # operator's accuracy checks are the operator's, never in the admin's file.
+# PRD 7 (#606): an Admin's numbers, whole (decision 20): read by the owner-rights
+# kaagaz_admin_usage_rows (0091), which checks the caller and holds this statement; ``:c`` keeps
+# another customer's id at none.
 _USAGE_ROWS = (
-    "SELECT (u.created_at AT TIME ZONE :tz)::date AS day, max(us.display_name) AS user_name,"
-    " u.model, u.kind, sum(u.calls) AS calls, sum(u.input_tokens + u.output_tokens) AS tokens,"
-    " sum(u.cost_usd) AS cost_usd, bool_or(u.cost_estimated) AS cost_estimated,"
-    " bool_or(u.cost_usd IS NULL) AS cost_part_unknown"
-    " FROM model_usage u"
-    " LEFT JOIN users us ON us.customer_id = u.customer_id AND us.id = u.user_id"
-    " WHERE u.customer_id = :c AND u.kind <> 'accuracy_check'"
-    " AND u.created_at >= :start AND u.created_at < :end"
+    "SELECT * FROM kaagaz_admin_usage_rows(:start, :end, :tz, CAST(:u AS uuid))"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
-_USAGE_ROWS_ORDER = " GROUP BY 1, u.user_id, u.model, u.kind ORDER BY 1, 2 NULLS FIRST, u.model, u.kind"
 
 
 def usage_rows(
@@ -1100,6 +1130,5 @@ def usage_rows(
 ) -> Sequence[RowMapping]:
     """The ledger from ``start`` to ``end`` (not included), for one user when given, one row
     per day, user, model and kind. O(rows in the period)."""
-    statement = _USAGE_ROWS + ("" if user_id is None else " AND u.user_id = :u") + _USAGE_ROWS_ORDER
     params = {"c": customer_id, "start": start, "end": end, "tz": timezone, "u": user_id}
-    return conn.execute(text(statement), params).mappings().all()
+    return conn.execute(text(_USAGE_ROWS), params).mappings().all()

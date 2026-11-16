@@ -144,7 +144,7 @@ import math
 import uuid
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from os.path import splitext
 from typing import Annotated, Any, Literal, cast
@@ -161,11 +161,13 @@ from starlette.datastructures import FormData, UploadFile
 from kaagaz.api.auth import CanDeleteForever, CurrentUser, Reviewer, User, deletes_forever_by_password
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
+from kaagaz.api.locked import refuse_locked, refuse_locked_id
 from kaagaz.api.names import CONTROL_CHARACTERS, DOCUMENT_NAME_MAX, clean_document_name, without_hidden
 from kaagaz.api.readers import SINGLE, ReadingChoice, check_reading, check_shape, offer
 from kaagaz.api.upload_guard import check_upload_request
 from kaagaz.api.views import (
     CURSOR,
+    LOCKED_NOTE,
     answer_with_source_states,
     can_delete,
     cited_document_ids,
@@ -183,7 +185,8 @@ from kaagaz.api.views import (
     shown_folder,
     timeline,
 )
-from kaagaz.db import audit, autofile, listing, reading_days, storage_limits, trash
+from kaagaz.db import access as access_sql
+from kaagaz.db import audit, autofile, listing, page_turns, reading_days, storage_limits, trash
 from kaagaz.db import chat as chat_sql
 from kaagaz.db import folder_upload_items as items_sql
 from kaagaz.db import folders as folders_sql
@@ -214,7 +217,15 @@ from kaagaz.ingestion.errors import BackendUnavailable, RejectCode, UploadReject
 from kaagaz.ingestion.messages import over_every_limit_message, storage_full_message, too_large_message
 from kaagaz.ingestion.pagecount import goes_express
 from kaagaz.ingestion.policy import UploadPolicy
-from kaagaz.ingestion.ports import BlobNotFound, Job, JobQueue, StorageRoom, UnknownFamily, UnknownFolder
+from kaagaz.ingestion.ports import (
+    BlobNotFound,
+    Job,
+    JobQueue,
+    PlaceHidden,
+    StorageRoom,
+    UnknownFamily,
+    UnknownFolder,
+)
 from kaagaz.ingestion.service import UploadResult, UploadService
 from kaagaz.jobs.reading_pause import BUDGET, DAILY_LIMIT, pause_reason
 from kaagaz.reading.ocr import GEMINI
@@ -364,7 +375,12 @@ def _folder_scope(
     subtree = folders_sql.descendant_ids(conn, customer_id, str(folder_id))
     if not subtree:
         raise ApiError(404, "not_found")
-    return subtree if subfolders else [str(folder_id)]
+    if not subfolders:
+        return [str(folder_id)]
+    # PRD 7 (#601): only the folders the person sees, so a filter never says a file given to them
+    # sits below one (a hidden folder's place in the tree).
+    seen = listing.folders_seen(conn, customer_id, subtree)
+    return [each for each in subtree if each in seen]
 
 
 @router.get("/documents")
@@ -392,6 +408,7 @@ def list_documents(
     doc_date_from: IsoDay = None,
     doc_date_to: IsoDay = None,
     has_newer_version: bool = False,
+    shared: bool = False,  # PRD 7 (#601): Shared with me
     sort: SortParam = "created_at",
     order: Literal["asc", "desc"] = "desc",
 ) -> dict[str, Any]:
@@ -452,6 +469,7 @@ def list_documents(
             doc_date_from=dated_from,
             doc_date_to=dated_to,
             has_newer_version=has_newer_version,
+            shared=shared,
             sort=sort,
             descending=order == "desc",
         )
@@ -476,7 +494,17 @@ def zip_unpacks(conn: Connection, customer_id: str, rows: Sequence[RowMapping]) 
     """#522 PR 3: the unpacking of each zip among ``rows`` (``DocumentSummary.unpack``); no
     query when there is none."""
     zips = [str(row["id"]) for row in rows if row["detected_type"] == "zip"]
-    return unpacks_sql.unpacks(conn, customer_id, zips) if zips else {}
+    found = unpacks_sql.unpacks(conn, customer_id, zips) if zips else {}
+    # PRD 7 (#601): a root folder the person can't see is named as one gone (the worker shares
+    # unpacks, so the view is read here).
+    roots = [each.root_folder_id for each in found.values() if each.root_folder_id is not None]
+    seen = listing.folders_seen(conn, customer_id, roots) if roots else set()
+    return {
+        key: each
+        if each.root_folder_id is None or each.root_folder_id in seen
+        else replace(each, root_folder_id=None)
+        for key, each in found.items()
+    }
 
 
 def user_upload_policy(context: AppContext, user: CurrentUser) -> UploadPolicy:
@@ -746,6 +774,8 @@ def _store(
         if item is not None:
             raise ApiError(409, "folder_gone", _FOLDER_GONE) from None
         raise ApiError(404, "not_found") from None
+    except PlaceHidden:  # PRD 7 (#606, Q6): the database rule's check; the stored file is removed
+        raise ApiError(409, "upload_place_hidden") from None
     return result, reading
 
 
@@ -779,6 +809,13 @@ def _upload_reply(
         return dict(HIDDEN_COPY)
     if row is None:  # deleted in the moment since; nothing to show
         raise ApiError(404, "not_found")
+    if result.duplicate and row["locked"]:  # PRD 7 (#605, p2:91): a locked copy the person may open
+        return {
+            "document": None,
+            "duplicate": True,
+            "in_trash": row["deleted_at"] is not None,
+            "locked": {"id": str(row["id"])},
+        }
     summary = document_summary(
         row,
         max_pages=context.settings.max_pages,
@@ -792,7 +829,8 @@ def _upload_reply(
 
 # PRD 7 section 5 (#599): the file is already in Kaagaz, where the uploader can't see it. No
 # name, no place, no link; the screen says "This file is already in Kaagaz, in a place you can't
-# see. Ask your admin if you need it."
+# see. Ask your admin if you need it." A locked copy the uploader may open (#605) is named by its
+# link only, ``locked: {id}``; the screen says "A copy already exists and is locked."
 HIDDEN_COPY: dict[str, Any] = {"document": None, "duplicate": True, "in_trash": False, "hidden": True}
 # PRD 7 (#599): a restore that would bring back a department the person can't see names none.
 ASK_AN_ADMIN = "Ask an admin to restore this folder."
@@ -1321,10 +1359,16 @@ def _store_completed(
     return result, status
 
 
-def _document_or_404(conn: Connection, user: CurrentUser, document_id: uuid.UUID) -> RowMapping:
+def _document_or_404(
+    conn: Connection, user: CurrentUser, document_id: uuid.UUID, *, locked_ok: bool = False
+) -> RowMapping:
+    """The file through the access view: 404 for one the person can't see, as for one that never
+    was; then, unless ``locked_ok``, 409 ``locked`` for a locked one (PRD 7, #605, kaagaz.api.locked)."""
     row = listing.get_document(conn, user.customer_id, str(document_id))
     if row is None:
         raise ApiError(404, "not_found")
+    if not locked_ok:
+        refuse_locked(row)
     return row
 
 
@@ -1341,15 +1385,22 @@ def _readable_or_409(conn: Connection, user: CurrentUser, document_id: uuid.UUID
 def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
     customer_id, target = user.customer_id, str(document_id)
     with context.db.user(customer_id, user.user_id) as conn:
-        row = _document_or_404(conn, user, document_id)
+        row = _document_or_404(conn, user, document_id, locked_ok=True)
+        if row["locked"]:
+            return _locked_detail(conn, context, user, row)
         pages = listing.list_pages(conn, customer_id, target)
+        turns = page_turns.for_document(conn, customer_id, target)
         values = listing.list_values(conn, customer_id, target)
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
         folder = row["folder_id"]
         path = [] if folder is None else folders_sql.folder_path(conn, customer_id, str(folder))
         # PRD 7 (#595): a path with a folder the person can't see is not shown at all (a file given
-        # to them alone, or a private folder inside a department they are not in).
-        if path and len(listing.folders_seen(conn, customer_id, [each.id for each in path])) < len(path):
+        # to them alone, or a private folder inside a department they are not in). #606: under the
+        # database rule the walk stops below such a folder, so a path not starting at the top is one.
+        if path and (
+            path[0].parent_id is not None
+            or len(listing.folders_seen(conn, customer_id, [each.id for each in path])) < len(path)
+        ):
             path = []
         versions = listing.family_versions(conn, customer_id, str(row["family_id"]))
         fixes = listing.reviewer_fix_count(conn, customer_id, target)
@@ -1390,7 +1441,52 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         "read_model": row["read_model"],
         # File management V6: the pending suggestion with the banner's reasons in plain words.
         "version_suggestion": suggestion,
+        # PRD 7 section 14 (#600): the pages turned for everyone, [{page_no, turn}].
+        "page_turns": turns,
     }
+
+
+def _locked_detail(
+    conn: Connection, context: AppContext, user: CurrentUser, row: RowMapping
+) -> dict[str, Any]:
+    """PRD 7 (#605, p2:8): a locked file's detail is its name and place only: the list's summary
+    (its content fields empty: the lock cleared them), its pages' sizes and pictures, its folder,
+    versions, tags and page turns. Values, summary, card, invoice, links, facts and suggestion are
+    sent empty, never read, so the detail keeps its shape; no view is logged (PR 13's page pictures
+    log their own)."""
+    customer_id, target = user.customer_id, str(row["id"])
+    tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
+    folder = row["folder_id"]
+    path = [] if folder is None else folders_sql.folder_path(conn, customer_id, str(folder))
+    if path and len(listing.folders_seen(conn, customer_id, [each.id for each in path])) < len(path):
+        path = []
+    pages = listing.list_pages(conn, customer_id, target)
+    summary = document_summary(
+        row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
+    )
+    return {
+        **summary,
+        "pages": [{key: page_summary(page)[key] for key in _LOCKED_PAGE_FIELDS} for page in pages],
+        "folder": document_folder(path),
+        "versions": [
+            document_version(version)
+            for version in listing.family_versions(conn, customer_id, str(row["family_id"]))
+        ],
+        "page_turns": page_turns.for_document(conn, customer_id, target),
+        "values": [],
+        "reviewer_fixes": 0,
+        "summary": None,
+        "document_date": None,
+        "card": None,
+        "invoice": None,
+        "links": [],
+        "read_model": None,
+        "version_suggestion": None,
+    }
+
+
+# The page fields a locked file shows: its size and picture, never its reading (PRD 7, #605).
+_LOCKED_PAGE_FIELDS = ("page_no", "width", "height", "unit", "has_image")
 
 
 @router.get("/documents/{document_id}/summary")
@@ -1399,7 +1495,7 @@ def get_document_summary(document_id: uuid.UUID, user: User, context: Context) -
     while a document is read, then for the whole detail once it settles."""
     customer_id, target = user.customer_id, str(document_id)
     with context.db.user(customer_id, user.user_id) as conn:
-        row = _document_or_404(conn, user, document_id)
+        row = _document_or_404(conn, user, document_id, locked_ok=True)
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
         unpack = zip_unpacks(conn, customer_id, [row]).get(target)
     return document_summary(
@@ -1460,7 +1556,7 @@ def get_document_activity(
     """File management A5: ``{items: [AuditEntry], next_cursor}``, what happened to every
     version of the family, newest first (document, version and folder actions only)."""
     with context.db.user(user.customer_id, user.user_id) as conn:
-        family = str(_document_or_404(conn, user, document_id)["family_id"])
+        family = str(_document_or_404(conn, user, document_id, locked_ok=True)["family_id"])
         return timeline(conn, user.customer_id, audit.Filters(family_id=family), limit=limit, cursor=cursor)
 
 
@@ -1476,7 +1572,9 @@ def get_document_questions(document_id: uuid.UUID, user: User, context: Context)
         # (views.answer_with_source_states: replaced whole for one hidden, PRD 7).
         cited = [each for row in rows if row["answer"] for each in cited_document_ids(row["answer"])]
         states = chat_sql.document_states(conn, user.customer_id, cited)
+        opens = chat_sql.opens_locked(conn, user.customer_id, user.user_id)
     return {
+        "locked_note": LOCKED_NOTE if opens else None,  # PRD 7 (#605, p2:79)
         "items": [
             {
                 "id": str(row["id"]),
@@ -1488,7 +1586,7 @@ def get_document_questions(document_id: uuid.UUID, user: User, context: Context)
                 else row["answer"],
             }
             for row in rows
-        ]
+        ],
     }
 
 
@@ -1503,7 +1601,11 @@ def reprocess_document(
     body = body or ReadAgainBody()
     read_model = body.read_model
     with context.db.user(customer_id, user.user_id) as conn:
-        _document_or_404(conn, user, document_id)
+        row = _document_or_404(conn, user, document_id, locked_ok=True)
+        if row["status"] != "failed":
+            # PRD 7 (#605): a locked version is never read; one whose preparing failed is only
+            # prepared again (the worker never reads a locked version).
+            refuse_locked(row)
         reading = check_reading(
             conn,
             customer_id,
@@ -1542,7 +1644,7 @@ def reprocess_document(
             target_id=target,
             details=details,
         )
-        row = _document_or_404(conn, user, document_id)
+        row = _document_or_404(conn, user, document_id, locked_ok=True)
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
         reply = document_summary(
             row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
@@ -1743,27 +1845,24 @@ def update_document(
     folder_id = None if body.folder_id is None else str(body.folder_id)
     try:
         with context.db.user(customer_id, user.user_id) as conn:
-            _document_or_404(conn, user, document_id)  # PRD 7 (#595): a hidden file is not found, first
+            # PRD 7 (#595): a hidden file is not found, first. A locked one is renamed and moved
+            # as any (#605).
+            _document_or_404(conn, user, document_id, locked_ok=True)
             # PRD 7 (#599): a folder the person can't see is one that isn't there, before any lock.
             if folder_id is not None and not listing.folders_seen(conn, customer_id, [folder_id]):
                 raise folders_sql.FolderNotFound()
             if "folder_id" in given:  # a move can change who sees it: the tree lock first (0085)
                 folders_sql._lock_tree(conn, customer_id)
+                # PRD 7 (#606): read again under the lock, which a folder's delete takes too: a folder
+                # deleted since the check above is not there (an Admin's move would otherwise meet
+                # 0092's own refusal of a folder that isn't live).
+                if folder_id is not None and not listing.folders_seen(conn, customer_id, [folder_id]):
+                    raise folders_sql.FolderNotFound()
             if trash.lock_live_family(conn, customer_id, target) is None:
                 raise ApiError(404, "not_found")
-            _details(conn, user, body, _document_or_404(conn, user, document_id))
-            if "folder_id" in given:
-                listing.move_family(conn, customer_id, target, folder_id=folder_id)
-                audit.record(
-                    conn,
-                    customer_id,
-                    actor_user_id=user.user_id,
-                    action="document.move",
-                    target_type="document",
-                    target_id=target,
-                    details={"folder_id": folder_id},
-                )
-            if name is not None:
+            moved = _move_rule(conn, user, target, folder_id) if "folder_id" in given else None
+            _details(conn, user, body, _document_or_404(conn, user, document_id, locked_ok=True))
+            if name is not None:  # PRD 7 (#606): before the move, which may hide it from an Admin
                 listing.rename_document(conn, customer_id, target, name=name)
                 audit.record(
                     conn,
@@ -1773,15 +1872,66 @@ def update_document(
                     target_type="document",
                     target_id=target,
                 )
-            row = _document_or_404(conn, user, document_id)
+            if "folder_id" in given:
+                # PRD 7 (#606): an Admin's move, by the owner-rights function: into a place whose
+                # files they can't see, the database rule would refuse the family's new row.
+                move = listing.admin_move_family if user.role == "admin" else listing.move_family
+                move(conn, customer_id, target, folder_id=folder_id)
+                audit.record(
+                    conn,
+                    customer_id,
+                    actor_user_id=user.user_id,
+                    action="document.move",
+                    target_type="document",
+                    target_id=target,
+                    details={"folder_id": folder_id, **(moved or {})},
+                )
+            found = listing.get_document(conn, customer_id, target)
+            if found is None:  # PRD 7 (#601): an Admin moved it where they can't see it
+                return {"id": target, "hidden": True}
+            row = found
             tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
     except folders_sql.FolderNotFound:  # not this customer's folder; nothing was changed
         raise ApiError(404, "not_found") from None
+    except folders_sql.MoveChangesAccess:
+        raise ApiError(403, "move_changes_access", MOVE_REFUSED) from None
     except trash.InTrash:  # Trash means deleted: nothing was changed
         raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.") from None
     return document_summary(
         row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
     )
+
+
+# PRD 7 section 5 (#601): a move that changes who can see it, by someone who may not make one.
+MOVE_REFUSED = "You can't move this here, because it would change who can see it. Ask an admin."
+
+
+def _move_rule(
+    conn: Connection, user: CurrentUser, document_id: str, folder_id: str | None
+) -> dict[str, audit.DetailValue] | None:
+    """PRD 7 decision 18 (#601), under the tree lock and the family's, before anything is written:
+    a move that changes who can see the file is an Admin's, Management's or (inside their
+    department) a Head's, else MoveChangesAccess; one that changes nothing is anyone's, and so is a
+    file held for the person (theirs to file, PRD 7 section 4). Returns the audit's ``losing`` and
+    ``gaining`` counts of a move that changes access (as its preview counts them), else None; a
+    held file left in no folder moves nowhere."""
+    found = access_sql.document_hold(conn, user.customer_id, document_id)
+    if found is None:  # can't happen: the family is locked and was found above
+        raise ApiError(404, "not_found")
+    place, held = found
+    if held is not None and folder_id is None:
+        return None
+    move = folders_sql.Move(
+        before=place, after=folders_sql.place_of(conn, user.customer_id, folder_id), private=[]
+    )
+    changed = held is not None or folders_sql.changes_access(conn, user.customer_id, move.before, move.after)
+    if not changed:
+        return None
+    rights = access_sql.rights(conn, user.role == "admin")
+    if held != user.user_id and not rights.allow(move.before[0], move.after[0]):
+        raise folders_sql.MoveChangesAccess()
+    losing, gaining = access_sql.moved(conn, user.customer_id, move, held)
+    return {"losing": len(losing), "gaining": len(gaining)}
 
 
 @router.post("/documents/{document_id}/autofile/undo")
@@ -1791,12 +1941,17 @@ def undo_autofile(document_id: uuid.UUID, user: User, context: Context) -> dict[
     customer_id, target = user.customer_id, str(document_id)
     try:
         with context.db.user(customer_id, user.user_id) as conn:
-            _document_or_404(conn, user, document_id)  # PRD 7 (#595): a hidden file is not found, first
+            # PRD 7 (#595): a hidden file is not found, first; a locked one was un-filed by its lock.
+            _document_or_404(conn, user, document_id, locked_ok=True)
             folders_sql._lock_tree(conn, customer_id)  # before the family's, as filing (0085)
             family_id = trash.lock_live_family(conn, customer_id, target)
             if family_id is None:
                 raise ApiError(404, "not_found")
-            folder_id = autofile.undo(conn, customer_id, family_id)
+            rights = access_sql.rights(conn, user.role == "admin")  # under the tree lock (#601)
+            management = access_sql.me(conn)[0]
+            folder_id = autofile.undo(
+                conn, customer_id, family_id, by=user.user_id, management=management, rights=rights
+            )
             if folder_id is None:
                 raise ApiError(409, "already_moved", "This document was moved since. Nothing was changed.")
             audit.record(
@@ -1808,10 +1963,16 @@ def undo_autofile(document_id: uuid.UUID, user: User, context: Context) -> dict[
                 target_id=target,
                 details={"folder_id": folder_id},
             )
-            row = _document_or_404(conn, user, document_id)
+            row = _document_or_404(conn, user, document_id, locked_ok=True)
             tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
     except trash.InTrash:
         raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.") from None
+    except folders_sql.MoveChangesAccess:  # PRD 7 decision 18 (#601): Undo is a move
+        raise ApiError(403, "move_changes_access", MOVE_REFUSED) from None
+    except autofile.HeldForAnother:  # PRD 7 (#601)
+        raise ApiError(
+            403, "forbidden", "Only the person this file was kept for, or Management, can undo this."
+        ) from None
     return document_summary(
         row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
     )
@@ -1921,6 +2082,7 @@ def get_document_words(
         found = listing.word_lines(conn, user.customer_id, str(document_id))
         if found is None:
             raise ApiError(404, "not_found")
+        refuse_locked_id(conn, user.customer_id, str(document_id))  # PRD 7 (#605)
         in_trash, status, pieces = found
         if in_trash:
             raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.")
@@ -1979,7 +2141,7 @@ def delete_document(document_id: uuid.UUID, user: User, context: Context) -> Res
     """Move the whole family to Trash. A family already there keeps its first time."""
     customer_id, target = user.customer_id, str(document_id)
     with context.db.user(customer_id, user.user_id) as conn:
-        row = _document_or_404(conn, user, document_id)
+        row = _document_or_404(conn, user, document_id, locked_ok=True)  # PRD 7: Trash keeps the lock
         _may_trash(user, row)
         if not trash.trash_document(conn, customer_id, target, by=user.user_id, now=context.clock()):
             raise ApiError(404, "not_found")
@@ -2002,9 +2164,11 @@ def restore_document(document_id: uuid.UUID, user: User, context: Context) -> di
     (``trashed_folders.restore_document``; audited ``folder.restore`` too)."""
     customer_id, target = user.customer_id, str(document_id)
     with context.db.user(customer_id, user.user_id) as conn:
-        _may_trash(user, _document_or_404(conn, user, document_id))
+        _may_trash(user, _document_or_404(conn, user, document_id, locked_ok=True))
         try:
-            found, chain = trashed_sql.restore_document(conn, customer_id, target, admin=user.role == "admin")
+            placed, chain = trashed_sql.restore_document(
+                conn, customer_id, target, admin=user.role == "admin", by=user.user_id
+            )
         except trashed_sql.DepartmentAdminOnly as refused:  # its folders could not come back: nothing changed
             seen = trashed_sql.seen(conn, customer_id, [refused.folder_id])  # PRD 7 (#599)
             words = "Its folder is a department, which only an admin can restore." if seen else ASK_AN_ADMIN
@@ -2015,7 +2179,7 @@ def restore_document(document_id: uuid.UUID, user: User, context: Context) -> di
             ) from None
         except folders_sql.FolderError as error:
             raise ApiError(404 if error.code == "not_found" else 409, error.code) from None
-        if not found:
+        if placed is None:
             raise ApiError(404, "not_found")
         if chain is not None:
             audit.record(
@@ -2034,13 +2198,19 @@ def restore_document(document_id: uuid.UUID, user: User, context: Context) -> di
             action="document.restore",
             target_type="document",
             target_id=target,
+            details=_placed_details(placed),
         )
-        row = _document_or_404(conn, user, document_id)
+        row = _document_or_404(conn, user, document_id, locked_ok=True)
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
         # PRD 7 (#599): a folder that came back is named only when the person may see it, and its
         # place only when they may see every folder on it (a file given to them alone).
         shown = None if chain is None else trashed_sql.as_seen(conn, customer_id, chain)
         folder_shown = None if shown is None else shown_folder(conn, customer_id, shown.folder)
+        # #594: its folder was gone: the folder it went into, named only when the person may see it.
+        into = placed.into
+        visible = into is not None and bool(listing.folders_seen(conn, customer_id, [into]))
+        path = folders_sql.folder_path(conn, customer_id, into) if visible and into is not None else []
+        placed_folder = shown_folder(conn, customer_id, path[-1]) if path else None
     summary = document_summary(
         row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
     )
@@ -2053,9 +2223,22 @@ def restore_document(document_id: uuid.UUID, user: User, context: Context) -> di
             "location": None if shown.location is None else list(shown.location),
             "renamed": shown.renamed,
             "relocated": shown.relocated,
+            "sealed": shown.sealed,  # #594
         }
     )
+    # #594: where it went when its folder was gone (null: back where it was): the folder it went
+    # into (null when the person can't see it), or held for them until it is filed.
+    summary["placed"] = (
+        None if placed.into is None and not placed.held else {"held": placed.held, "folder": placed_folder}
+    )
     return summary
+
+
+def _placed_details(placed: trash.Placed) -> dict[str, audit.DetailValue] | None:
+    """``document.restore``'s details (#594): ids only; ``to`` the folder it went into, or ``held``."""
+    if placed.held:
+        return {"held": True}
+    return None if placed.into is None else {"to": placed.into}
 
 
 @router.delete("/documents/{document_id}/permanent", status_code=204)
@@ -2068,7 +2251,7 @@ def delete_document_forever(document_id: uuid.UUID, user: CanDeleteForever, cont
     customer_id, target = user.customer_id, str(document_id)
     with context.db.user(customer_id, user.user_id) as conn:
         if user.role != "admin":  # PRD 7 (#595): a hidden file is not found; an Admin's is PR 10's
-            _document_or_404(conn, user, document_id)
+            _document_or_404(conn, user, document_id, locked_ok=True)
         try:
             versions = delete_family_forever(conn, context.storage, customer_id, target)
         except NotInTrash:

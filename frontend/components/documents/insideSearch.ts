@@ -57,7 +57,7 @@ export type DocumentSearchParams = {
 
 /** Trash is left out of search, so it only has the name search. */
 export function searchModeFor(mode: SearchMode, state: LibraryState): SearchMode {
-  return state.trash ? "names" : mode;
+  return state.trash || state.shared ? "names" : mode; // PRD 7: Shared with me lists by name, as Trash
 }
 
 /** The search request for a view and a question (already trimmed, not empty). */

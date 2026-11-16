@@ -86,20 +86,11 @@ _TYPES = text(
 # yet (received or clean) is left out: its progress writes move its updated_at page by page, and
 # each move made Home pay for its answers again (production QA B2). PRD 7 (#602, question 2): the
 # organisation's access version last, so a change of who sees what moves every ready and repeat key.
-# Hashed into a key, never shown: so it reads the tables (the SQL guard's EXISTENCE_ONLY).
+# Hashed into a key, never shown: so it reads the tables, whole (PRD 7 #606: kaagaz_ready_stamp,
+# 0091, this statement as it was, so the database rule never runs on each piece and value).
 # shortcut: three scans of one customer's rows, fine at today's thousands; an index on
 # (customer_id, updated_at) or a change counter when a customer holds millions.
-_STAMP = text(
-    "SELECT (SELECT count(*) || '/' || count(*) FILTER (WHERE deleted_at IS NULL) || '/'"
-    " || coalesce(max(updated_at)::text, '') FROM documents WHERE customer_id = :c"
-    " AND status NOT IN ('received', 'clean')) || '|' || (SELECT"
-    " count(*) || '/' || coalesce(max(updated_at)::text, '') FROM extracted_values WHERE customer_id = :c)"
-    " || '|' || (SELECT count(*) || '/' || coalesce(max(greatest(created_at, undone_at))::text, '')"
-    " FROM word_changes WHERE customer_id = :c"
-    " AND before_text <> after_text) || '|' || (SELECT count(*) FILTER (WHERE embedding IS NULL) || '/'"
-    " || coalesce(string_agg(DISTINCT embedding_model, ','), '') FROM pieces WHERE customer_id = :c)"
-    " || '|' || (SELECT access_version FROM customers WHERE id = :c)"
-)
+_STAMP = text("SELECT kaagaz_ready_stamp() WHERE CAST(:c AS uuid) = kaagaz_current_customer()")
 # #535: the documents a tag scope holds, with their tags, so a tag put on or taken off moves the key;
 # those the person can see (PRD 7, #602).
 _TAGGED = text(
