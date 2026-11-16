@@ -749,3 +749,14 @@ def test_undo_is_for_whoever_sees_every_version_not_only_the_one_asked(db: Datab
     assert hidden[0] == 404
     assert hidden == _post(admin, f"/documents/{uuid.uuid4()}/link-versions/undo")
     assert _everything(db, org) == before
+
+
+def test_undo_of_a_file_going_back_where_the_person_cant_see_it_is_kept(db: Database) -> None:
+    """Review 8: fin linked into Sales, where the Admin sees it; the Admin's Undo puts fin back in
+    Finance, which they can't see: undone (no summary), and kept."""
+    org = _org(Api(db))
+    assert _link(org.people["management"], org, ["fin", "sales"], "sales")[0] == 200
+    status, reply = _undo(org.people["admin"], org, "fin")
+    assert (status, reply) == (200, {"id": org.files["fin"], "undone": True})
+    fin = _state(db, org, "fin")["fin"]
+    assert (fin["family_id"], fin["folder_id"]) == ("fin", org.folders["finance"])

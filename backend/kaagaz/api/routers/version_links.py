@@ -16,7 +16,8 @@ the locks).
   ``already_versions`` or ``changed``; 403 ``password_required`` when the link opens a file to the
   Admin linking it (a wall opened to themselves, as a folder move).
 * ``POST /documents/{id}/link-versions/undo {password?}``: Undo of the newest link of the file's
-  family, while it holds exactly the versions the link left; the file's summary. 409
+  family, while it holds exactly the versions the link left; the file's summary, or ``{id, undone:
+  true}`` once it is back where the person can't see it. 409
   ``not_linked``, ``not_newest``, ``folder_gone``, ``locked`` or ``in_trash``.
 * ``GET /version-kept-apart``: V18's Kept apart list: ``{pairs, groups}``, pairs kept separate or
   made separate whose two sides the person sees (each can be linked again here), and files kept
@@ -210,6 +211,8 @@ def undo_link(
             if user.user_id in _audience(conn, user, plan.moves)[1]:
                 _self_grant(user, password)
             links_sql.apply_undo(conn, user.customer_id, plan, by=user.user_id)
+            if not listing.documents_seen(conn, user.customer_id, [target]):
+                return {"id": target, "undone": True}  # review (#658): back where the person can't see it
             return _summary(conn, context, user, target)
 
     return _written(user, target, transaction)
