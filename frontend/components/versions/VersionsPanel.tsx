@@ -20,7 +20,7 @@ import { ApiError, makeCurrent, undoLinkVersions, updateDocument } from "@/lib/a
 import { withFrom } from "@/lib/backLink";
 import { formatDateTime } from "@/lib/format";
 import type { DocumentDetail, DocumentVersion } from "@/lib/types";
-import { LINK_TEXT, fromSummary, linkErrorText, needsPassword } from "./link";
+import { LINK_TEXT, fromSummary, linkErrorText, needsPassword, undoneText } from "./link";
 import { LinkDialog } from "./LinkDialog";
 import { SeparateDialog } from "./SeparateDialog";
 import { compareHref } from "./VersionChoice";
@@ -53,9 +53,9 @@ export function VersionsPanel({
     setBusy("link");
     setError(null);
     try {
-      await undoLinkVersions(detail.id, undoPassword ?? undefined);
+      const reply = await undoLinkVersions(detail.id, undoPassword ?? undefined);
       setUndoPassword(null);
-      onChanged(LINK_TEXT.undone);
+      onChanged(undoneText(reply));
     } catch (caught) {
       setError(linkErrorText(caught));
       if (needsPassword(caught) && undoPassword === null) {

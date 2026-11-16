@@ -44,6 +44,7 @@ export const LINK_TEXT = {
   linked: (n: number, name: string) => `Linked ${n} files as versions. Ask answers from "${name}".`,
   undone: "Undone. The files are back as they were.",
   undoInTab: "To undo this, open the file and use Undo linking in its Versions tab.",
+  undoneOutOfSight: "Undone. This file went back to a folder you can't see.",
   connection: "Check your connection, then try again.",
   // The library and the Versions tab (the row menu's words are in documents/library.ts).
   addVersion: "Add an older or newer version",
@@ -269,3 +270,10 @@ export function withoutAsked(before: readonly Asked[], ids: readonly string[]): 
 
 /** Whether a group, as a decision answered it, still shows this file (null: no group shown). */
 export const shownIn = (group: VersionGroup | null, id: string) => group?.files.some((file) => file.id === id) === true;
+
+/** What an Undo of a link says: V-A (#658) answers {id, undone: true} when the file went back to a
+ * place the person can't see, so the page about it will not load again. */
+export function undoneText(reply: unknown): string {
+  const outOfSight = typeof reply === "object" && reply !== null && (reply as { undone?: unknown }).undone === true;
+  return outOfSight ? LINK_TEXT.undoneOutOfSight : LINK_TEXT.undone;
+}

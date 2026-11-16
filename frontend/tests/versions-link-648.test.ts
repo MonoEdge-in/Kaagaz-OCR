@@ -27,6 +27,7 @@ import {
   reasonLine,
   shownIn,
   undoLink,
+  undoneText,
   withAsked,
   withoutAsked,
 } from "@/components/versions/link";
@@ -552,5 +553,15 @@ describe("the pick step's files (second review of #659)", () => {
     const dialog = readFileSync(join(__dirname, "..", "components/versions/LinkDialog.tsx"), "utf8");
     expect(dialog).not.toContain("pageImageUrl");
     expect(dialog).not.toContain("<Thumb");
+  });
+});
+
+describe("V-A's review replies (#658)", () => {
+  it("says when an Undo put the file back where the person can't see it", () => {
+    expect(undoneText({ id: "y", undone: true })).toBe("Undone. This file went back to a folder you can't see.");
+    expect(undoneText({ id: "y", display_name: "Lease.pdf" })).toBe(LINK_TEXT.undone);
+    expect(undoneText(undefined)).toBe(LINK_TEXT.undone);
+    const panel = readFileSync(join(__dirname, "..", "components/versions/VersionsPanel.tsx"), "utf8");
+    expect(panel).toContain("onChanged(undoneText(reply))");
   });
 });
