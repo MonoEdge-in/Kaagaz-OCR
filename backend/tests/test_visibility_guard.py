@@ -19,7 +19,7 @@ from sqlalchemy import TextClause
 from kaagaz.answering import clarify, exhaustive, fixed_queries, hard_to_read, owners, unchecked
 from kaagaz.db import admin, listing, models, pipeline_store, review, usage
 from kaagaz.db.visibility import LISTED, LIVE, LIVE_CURRENT, TRASHED_LISTED
-from kaagaz.search import hybrid, indexing, story_search
+from kaagaz.search import hybrid, indexing, story_search, word_counts
 
 MODULES: tuple[ModuleType, ...] = (
     hybrid,
@@ -37,6 +37,7 @@ MODULES: tuple[ModuleType, ...] = (
     indexing,
     models,
     usage,
+    word_counts,
 )
 
 
@@ -63,6 +64,12 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (hybrid, "_TOPIC_PIECES"): LIVE_CURRENT,
     (hybrid, "_SECTION_PIECES"): LIVE_CURRENT,  # in the sections' step and the pieces' step
     (hybrid, "_CARDS"): LIVE_CURRENT,
+    # #617 part 1: a scope's documents, and the pieces on an asked identifier's pages.
+    (hybrid, "_SCOPE_DOCUMENTS"): LIVE_CURRENT,
+    (hybrid, "_IDENTIFIED"): LIVE_CURRENT,
+    # #617 part 1: the word counts are of the pieces search can find.
+    (word_counts, "_LIVE"): LIVE_CURRENT,
+    (word_counts, "_COUNT_TERMS"): LIVE_CURRENT,
     # Every document holding a word, and its matching pieces (16 Oct 2026): the same.
     (exhaustive, "_DOCUMENTS"): LIVE_CURRENT,
     (exhaustive, "_PIECES"): LIVE_CURRENT,
@@ -154,6 +161,9 @@ BY_ID: dict[tuple[ModuleType, str], str] = {
 _JOINS_DOCUMENTS = re.compile(r"\b(?:visible_)?documents d\b")
 _EXISTS = re.compile(r"\bEXISTS\s*\(")
 _CUSTOMER_FILTER = "customer_id = :"
+# #617: ts_stat runs a query text, which takes no bound parameter: its customer filter is
+# format's literal of the bound customer instead (``customer_id = %L``).
+_LITERAL_CUSTOMER = {(word_counts, "_COUNT_TERMS"): "customer_id = %L"}
 
 
 def _bracketed(sql: str, start: int) -> str:
@@ -205,7 +215,8 @@ class VisibilityGuardTest(unittest.TestCase):
         for module, name in set(FILTERED) | set(BY_ID) | set(ALL_VERSIONS):
             with self.subTest(statement=f"{module.__name__}.{name}"):
                 sql = _sql(module, name)
-                self.assertIn(_CUSTOMER_FILTER, sql)
+                # Changed on purpose (#617): ts_stat's query text names the customer as a literal.
+                self.assertIn(_LITERAL_CUSTOMER.get((module, name), _CUSTOMER_FILTER), sql)
                 for found in _EXISTS.finditer(sql):
                     self.assertIn(_CUSTOMER_FILTER, _bracketed(sql, found.end() - 1))
 
