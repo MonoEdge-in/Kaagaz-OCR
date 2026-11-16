@@ -40,12 +40,15 @@ _ITEM = (
     " p.width, p.height, p.unit, p.has_image, p.route, p.effective_dpi, p.low_resolution,"
     " p.read_by, p.read_quality, p.read_issues, p.unsure_words, p.illegible_words, p.unpinned_lines,"
     " p.accepted_by, p.accepted_at, p.read_again_requested_at,"
-    " coalesce(i.check_reasons, '{}') AS check_reasons"
+    " coalesce(i.check_reasons, '{}') AS check_reasons, coalesce(pt.turn, 0) AS page_turn"
     " FROM extracted_values v"
     " JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
     " JOIN pages p ON p.customer_id = v.customer_id AND p.document_id = v.document_id"
     " AND p.page_no = v.page_no"
     " LEFT JOIN invoices i ON i.customer_id = v.customer_id AND i.document_id = v.document_id"
+    # PRD 7 section 14 (#600): the page's turn saved for everyone, 0 when it has none.
+    " LEFT JOIN page_rotations pt ON pt.customer_id = v.customer_id AND pt.document_id = v.document_id"
+    " AND pt.page_no = v.page_no"
     " WHERE v.customer_id = :c"
 )
 

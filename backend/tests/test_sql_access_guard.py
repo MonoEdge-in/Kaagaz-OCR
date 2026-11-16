@@ -1,6 +1,6 @@
 """The SQL guard (PRD 7 section 10 and 11, "Guard tests"; #599): a statement the API reaches reads
 ``documents``, ``folders`` and ``trashed_folders`` only through their views, and a content table
-(appendix A's 26) only through a document the person can see: the statement, or a fragment it
+(appendix A's 27) only through a document the person can see: the statement, or a fragment it
 names, reads ``visible_documents`` (joined, ``visibility.SEEN_DOCUMENT``, or the outer row a
 correlated fragment runs in). Anything else is on ALLOWED with one of the seven reasons and a note
 naming why it may (for a statement shared with the worker, the route that checks the document

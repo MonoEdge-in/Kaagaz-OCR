@@ -673,6 +673,13 @@ export interface DocumentDetail extends DocumentSummary {
   // P1, V6 (stage 2): who uploaded version 1, and a version suggestion about this document.
   author_name?: string | null;
   version_suggestion?: VersionSuggestion | null;
+  page_turns: PageTurnSaved[]; // pages turned for everyone (PRD 7 section 14, #600); a page not listed is not turned
+}
+
+/** A page turned for everyone: clockwise degrees on top of the file's own turn. */
+export interface PageTurnSaved {
+  page_no: number; // from 1
+  turn: 90 | 180 | 270;
 }
 
 /** A related document (PRD 3 Y2). The value is stored normalised: no spaces, lower case. */
@@ -1215,6 +1222,7 @@ export interface ReviewItem {
   detected_type: DetectedType;
   page: PageSummary;
   check_reasons: string[]; // why its document's invoice check failed (PRD 3 Y5); [] otherwise
+  page_turn: 0 | 90 | 180 | 270; // the page's turn saved for everyone (#600); 0: not turned
 }
 
 /** The review queue's reason filter (PRD 3 Y5; PRD 5 U6 adds four, then #524's amount four). */

@@ -183,7 +183,7 @@ from kaagaz.api.views import (
     shown_folder,
     timeline,
 )
-from kaagaz.db import audit, autofile, listing, reading_days, storage_limits, trash
+from kaagaz.db import audit, autofile, listing, page_turns, reading_days, storage_limits, trash
 from kaagaz.db import chat as chat_sql
 from kaagaz.db import folder_upload_items as items_sql
 from kaagaz.db import folders as folders_sql
@@ -1319,6 +1319,7 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
     with context.db.user(customer_id, user.user_id) as conn:
         row = _document_or_404(conn, user, document_id)
         pages = listing.list_pages(conn, customer_id, target)
+        turns = page_turns.for_document(conn, customer_id, target)
         values = listing.list_values(conn, customer_id, target)
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
         folder = row["folder_id"]
@@ -1366,6 +1367,8 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         "read_model": row["read_model"],
         # File management V6: the pending suggestion with the banner's reasons in plain words.
         "version_suggestion": suggestion,
+        # PRD 7 section 14 (#600): the pages turned for everyone, [{page_no, turn}].
+        "page_turns": turns,
     }
 
 

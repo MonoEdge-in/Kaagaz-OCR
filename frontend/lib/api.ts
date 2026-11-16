@@ -88,6 +88,7 @@ import type {
   OrgNumbersReply,
   OrganisationCreated,
   PageReadings,
+  PageTurnSaved,
   PageSummary,
   DocumentWords,
   PasswordReset,
@@ -509,6 +510,17 @@ export const saveMyStory = (id: string, body: { story: string; user_id: string }
 /** 204; 404 when there is none. userId: who this tab signed in (409 session_changed otherwise). */
 export const deleteMyStory = (id: string, userId: string) =>
   request<void>("DELETE", `/documents/${encodeURIComponent(id)}/my-story${query({ user_id: userId })}`);
+
+/** Turn pages for everyone (#600): only the pages named, turn 0 puts one back; the reply is the whole set. */
+export const savePageTurnsForEveryone = (
+  id: string,
+  changes: { page_no: number; turn: 0 | 90 | 180 | 270 }[],
+  userId: string
+) =>
+  request<{ page_turns: PageTurnSaved[] }>("PATCH", `/documents/${encodeURIComponent(id)}/page-turns`, {
+    changes,
+    user_id: userId,
+  });
 
 /**
  * Upload one file with progress (fetch cannot report upload progress, XHR can),

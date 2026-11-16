@@ -913,6 +913,7 @@ def review_item(row: RowMapping) -> dict[str, Any]:
         "detected_type": row["detected_type"],
         "page": page_fields(row),
         "check_reasons": list(row["check_reasons"]),
+        "page_turn": int(row["page_turn"]),  # PRD 7 section 14 (#600): saved for everyone, 0 none
     }
 
 

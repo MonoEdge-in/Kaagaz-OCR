@@ -148,6 +148,8 @@ SHOWN_DETAILS: dict[str, tuple[str, ...]] = {
     "document.owner_change": ("from", "to"),
     "document.reprocess": ("page_no",),
     "document.page_accept": ("page_no",),
+    # PRD 7 section 14 (#600): pages the save changed, and pages left turned after it.
+    "document.page_turns": ("pages", "turned"),
     "folder.create": ("parent_id",),
     "folder.move": ("parent_id",),
     "folder.kind": ("kind",),
