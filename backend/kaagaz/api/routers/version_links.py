@@ -109,6 +109,17 @@ def _seen(conn: Connection, user: CurrentUser, ids: list[str]) -> None:
         raise ApiError(404, "not_found")
 
 
+def _audience(conn: Connection, user: CurrentUser, moves: list[links_sql.Moved]) -> tuple[set[str], set[str]]:
+    """Who loses and who gains the files the link or its Undo moves (PRD 7 section 5)."""
+    losing: set[str] = set()
+    gaining: set[str] = set()
+    for move, held, held_after in moves:
+        lost, gained = access_sql.moved(conn, user.customer_id, move, held, held_after)
+        losing |= lost
+        gaining |= gained
+    return losing, gaining
+
+
 def _refused(refused: links_sql.Refused) -> ApiError:
     if refused.code == "not_found":
         return ApiError(404, "not_found")
@@ -148,6 +159,7 @@ def preview_link(body: LinkBody, user: User, context: Context) -> dict[str, Any]
         except links_sql.Refused as refused:
             raise _refused(refused) from None
         latest = plan.rows[current]
+        losing, gaining = _audience(conn, user, plan.moves)
         folder = latest["folder_id"]
         path = None if folder is None else access_sql.paths(conn, user.customer_id, [folder]).get(folder)
         return {
@@ -155,8 +167,8 @@ def preview_link(body: LinkBody, user: User, context: Context) -> dict[str, Any]
             "folder": None if folder is None else {"id": folder, "path": path},
             "held": latest["held_for"] is not None,
             "versions": len(plan.order),
-            "losing": access_sql.names(conn, user.customer_id, plan.losing),
-            "gaining": access_sql.names(conn, user.customer_id, plan.gaining),
+            "losing": access_sql.names(conn, user.customer_id, losing),
+            "gaining": access_sql.names(conn, user.customer_id, gaining),
         }
 
 
@@ -171,7 +183,7 @@ def link_versions(body: LinkWithPassword, user: User, context: Context) -> dict[
             _allowed(conn, user)
             _seen(conn, user, ids)
             plan = links_sql.prepare(conn, user.customer_id, ids, order, current)
-            if user.user_id in plan.gaining:
+            if user.user_id in _audience(conn, user, plan.moves)[1]:
                 _self_grant(user, body.password)
             link = links_sql.apply(conn, user.customer_id, plan, by=user.user_id)
             return {"link_id": link, "document": _summary(conn, context, user, current)}
@@ -193,7 +205,7 @@ def undo_link(
             _allowed(conn, user)
             _seen(conn, user, [target])
             plan = links_sql.prepare_undo(conn, user.customer_id, target)
-            if user.user_id in plan.gaining:
+            if user.user_id in _audience(conn, user, plan.moves)[1]:
                 _self_grant(user, password)
             links_sql.apply_undo(conn, user.customer_id, plan, by=user.user_id)
             return _summary(conn, context, user, target)

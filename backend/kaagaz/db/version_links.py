@@ -14,8 +14,9 @@ which also checks every chosen file through ``visible_documents`` before anythin
   chosen file's place in ``order``; the versions are numbered 1 to n. The latest's family keeps its
   id; the other families join it. The person picks the latest (``current``), which Ask answers from.
 * **Where they go** (V15): into the latest's place (its folder, or whom it is held for), with its
-  owner, label and tags, as Accept does (``versions.link``). Who loses and who gains each joining
-  family, for the confirm step and the route's password rule.
+  owner, label and tags, as Accept does (``versions.link``). Each joining family's move, for the
+  route to count who loses and gains it (the confirm step, the password rule): ``access.moved``
+  reads the views, which only the API may call.
 * **The link** (``apply``), in the same transaction: the joining families' stories are carried
   (``kaagaz_move_stories``), their versions take the family's people (0100's trigger), the group
   members linked (V-B's ``linked``), one ``version_links`` row with what Undo puts back, and one
@@ -34,7 +35,7 @@ from typing import Any
 from sqlalchemy import Connection, RowMapping, text
 from sqlalchemy.exc import OperationalError
 
-from kaagaz.db import access, audit
+from kaagaz.db import audit
 from kaagaz.db.folders import Move, _lock_tree, place_of
 from kaagaz.db.sqlstate import sqlstate
 from kaagaz.db.trash import LIVE_FOLDERS, lock_live_family
@@ -181,8 +182,12 @@ class Plan:
     order: list[str]  # every version, in its new order
     joining: list[str]  # the other families, in id order
     rows: dict[str, RowMapping]  # every version as it is now
-    losing: set[str]
-    gaining: set[str]
+    moves: list["Moved"]
+
+
+# A family's move as the access rules see it, with whom it is held for before and after (#601): the
+# route counts who loses and gains it (``access.moved``, which reads the views: the API's alone).
+Moved = tuple[Move, str | None, str | None]
 
 
 def _place(row: RowMapping) -> tuple[str | None, str | None]:
@@ -229,23 +234,20 @@ def prepare(
         by_family.setdefault(row["family_id"], []).append(row["id"])
     family = latest["family_id"]
     joining = [each for each in families if each != family]
-    losing: set[str] = set()
-    gaining: set[str] = set()
     after = place_of(conn, customer_id, latest["folder_id"])
+    moves: list[Moved] = []
     for each in joining:
         first = rows[by_family[each][0]]
-        move = Move(before=_place(first), after=after, private=[])
-        lost, gained = access.moved(conn, customer_id, move, first["held_for"], latest["held_for"])
-        losing |= lost
-        gaining |= gained
+        moves.append(
+            (Move(before=_place(first), after=after, private=[]), first["held_for"], latest["held_for"])
+        )
     return Plan(
         family=family,
         current=current_id,
         order=[version for document in order for version in by_family[asked[document]]],
         joining=joining,
         rows=rows,
-        losing=losing,
-        gaining=gaining,
+        moves=moves,
     )
 
 
@@ -345,8 +347,7 @@ class UndoPlan:
     family: str
     order: list[str]
     snapshot: dict[str, Any]
-    losing: set[str]
-    gaining: set[str]
+    moves: list[Moved]
 
 
 def prepare_undo(conn: Connection, customer_id: str, document_id: str) -> UndoPlan:
@@ -372,15 +373,12 @@ def prepare_undo(conn: Connection, customer_id: str, document_id: str) -> UndoPl
     if len(conn.execute(text(LIVE_FOLDERS), {"c": c, "ids": folders}).all()) < len(folders):
         raise Refused("folder_gone")
     here = rows[document_id]  # where every version is now: the family's place
-    losing: set[str] = set()
-    gaining: set[str] = set()
+    moves: list[Moved] = []
     for each in snapshot["families"]:
         first = back[next(id_ for id_ in order if back[id_]["family_id"] == each)]
         move = Move(before=_place(here), after=place_of(conn, c, first["folder_id"]), private=[])
-        lost, gained = access.moved(conn, c, move, here["held_for"], first["held_for"])
-        losing |= lost
-        gaining |= gained
-    return UndoPlan(link, family, order, snapshot, losing, gaining)
+        moves.append((move, here["held_for"], first["held_for"]))
+    return UndoPlan(link, family, order, snapshot, moves)
 
 
 def apply_undo(conn: Connection, customer_id: str, plan: UndoPlan, *, by: str) -> None:
