@@ -297,13 +297,10 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     # Changed on purpose (#648, V-A): linking files as versions and its Undo, every chosen file through
     # the view first (and every version of their families checked through it under the locks).
     ("db/version_links.py", "_FAMILIES"): (WRITE_AFTER_CHECK, _LINK),
-    ("db/version_links.py", "_LOCK"): (WRITE_AFTER_CHECK, _LINK),
     ("db/version_links.py", "_STATE"): (
         WRITE_AFTER_CHECK,
         "link and its Undo: the view first, and each version's own check through it (seen)",
     ),
-    ("db/version_links.py", "_COPY_TAGS"): (WRITE_AFTER_CHECK, _LINK),
-    ("db/version_links.py", "_MEMBERS_LOCK"): (WRITE_AFTER_CHECK, "link and Undo: a write's row lock"),
     ("db/version_links.py", "_NEWEST_LINK"): (
         WRITE_AFTER_CHECK,
         "POST /documents/{id}/link-versions/undo: the view first",
@@ -462,8 +459,20 @@ ACCESS_READERS = {
     # PR 12 (#605): an Admin's list of who may open a locked file, and Ask's fixed line (the person's
     # own grants, on files the view shows them).
     ("db/locks.py", "_GRANTS"), ("db/chat.py", "opens_locked"),
+    # Changed on purpose (#648, after PR 9): a link's versions, each seen first (kaagaz_link_families), with
+    # whom each is given to, for its count and Undo; Accept's Undo taking back the gifts the join copied.
+    ("db/version_links.py", "_STATE"), ("db/versions.py", "_JOIN_GIFTS"),
 }  # fmt: skip
 PR9: dict[tuple[str, str], str] = {
+    # Changed on purpose (#648, after PR 9): Undo's name check and the Versions tab's Undo hint.
+    (
+        "db/version_links.py",
+        "_NAME_TAKEN",
+    ): "FEWER_OK:a same-name file the person can't see doesn't stop Undo, as separate's own check",
+    (
+        "db/version_links.py",
+        "_FAMILY_LINK",
+    ): "FEWER_OK:can_undo is a hint; Undo reads the family whole (kaagaz_link_families) and refuses",
     ("db/answer_quality.py", "remove_learning"): "FEWER_OK:Q14, the narrowed Admin lists",
     ("db/audit.py", "_ENTRIES"): "FIXED:F13 names the Admin's log; the feeds drop a hidden one (_SEEN, F5)",
     (

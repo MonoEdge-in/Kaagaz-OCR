@@ -534,6 +534,11 @@ OWNER_RIGHTS = {
     "kaagaz_whatsapp_phone_code": ("boolean", EMPTY_PATH),
     # Changed on purpose (#648, 0100): a link's stories re-keyed, Admins and Management, checked inside.
     "kaagaz_move_stories": ("SETOF uuid", EMPTY_PATH),
+    # Changed on purpose (#648, after PR 9): a link reads and locks whole families, and writes the link
+    # and its Undo, through these (Admins and Management who see every version, checked inside).
+    "kaagaz_link_families": ("TABLE(id uuid, family_id uuid, seen boolean)", EMPTY_PATH),
+    "kaagaz_link_versions": ("uuid", EMPTY_PATH),
+    "kaagaz_link_undo": ("void", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"

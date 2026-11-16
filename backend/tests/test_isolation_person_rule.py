@@ -351,6 +351,13 @@ EXEMPT = {
     # Changed on purpose (#603, 0097): a WhatsApp message is its person's own (own_user_only).
     "whatsapp_messages": "the person's own message: the id of the file their upload saved, joined to a"
     " file only through visible_documents",
+    # Changed on purpose (#648, 0099 and 0100, NEEDS VRUSHIT'S APPROVAL): the version finder's and the
+    # link's. The worker writes the first two with no person; the API reads them through
+    # visible_documents, and a group must see that a member is hidden to hide the whole group.
+    "version_pairs": "ids and scores, written by the worker; read only joined to visible_documents for both",
+    "version_group_members": "a group is all or nothing: its hidden member must be seen to hide the group",
+    "version_links": "ids only; read after every version is checked whole, and by the prune, which must"
+    " keep a live link's folder whoever prunes",
 }
 
 
