@@ -184,6 +184,7 @@ class FakeAnswers:
     resumed: list[Pending] = field(default_factory=list)  # PRD 6 B1: each clarify answered
     clarifies: list[bool] = field(default_factory=list)  # PRD 6 (0052): the nlq_clarify switch each got
     cited: list[list[str]] = field(default_factory=list)  # PRD 6 B: the earlier answers' documents each got
+    last_cited: list[list[str]] = field(default_factory=list)  # #629: the last answer's live documents
 
     def answer(
         self,
@@ -199,9 +200,11 @@ class FakeAnswers:
         pending: Pending | None = None,
         clarify: bool = True,
         cited: Sequence[str] = (),
+        last_cited: Sequence[str] = (),
     ) -> _FixedAnswer:
         self.asked.append((customer_id, question))
         self.cited.append(list(cited))
+        self.last_cited.append(list(last_cited))
         self.clarifies.append(clarify)
         self.pins.append(list(pins))
         self.histories.append(list(history))

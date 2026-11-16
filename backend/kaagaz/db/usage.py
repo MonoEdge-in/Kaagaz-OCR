@@ -95,44 +95,20 @@ _COUNTS = ("calls", "cached_calls", "input_tokens", "output_tokens", "reasoning_
 # the missing-vector pass writes embed rows with no document too; a kind of its own if needed.
 # Names are looked up after the grouping (users and documents by the customer's own key).
 # #463 review: an operator's accuracy checks are the operator's, never on the admin's screen.
+# PRD 7 (#606): an Admin's numbers, whole (decision 20): read by the owner-rights kaagaz_admin_usage
+# (0091), which checks the caller and holds this statement; ``:c`` keeps another customer's id at none.
 _REPORT = text(
-    "WITH r AS ("
-    " SELECT u.user_id, u.model, u.kind, CAST(timezone(:tz, u.created_at) AS date) AS day, u.document_id,"
-    " (u.document_id IS NOT NULL OR (u.conversation_id IS NULL AND u.kind IN"
-    " ('scan', 'upgrade', 'card', 'invoice', 'land', 'map', 'careful', 'ensemble_scan', 'ulc_scan')))"
-    " AS of_document,"
-    " u.cached, u.calls, u.input_tokens, u.output_tokens, u.reasoning_tokens, u.cost_usd, u.cost_estimated"
-    " FROM model_usage u"
-    " WHERE u.customer_id = :c AND u.kind <> 'accuracy_check'"
-    " AND u.created_at >= :start_at AND u.created_at < :end_at"
-    " AND (CAST(:user AS uuid) IS NULL OR u.user_id = CAST(:user AS uuid))"
-    "), g AS ("
-    " SELECT CASE WHEN GROUPING(r.user_id) = 0 THEN 'user' WHEN GROUPING(r.model) = 0 THEN 'model'"
-    " WHEN GROUPING(r.kind) = 0 THEN 'kind' WHEN GROUPING(r.day) = 0 THEN 'day'"
-    " WHEN GROUPING(r.document_id) = 0 THEN 'document' ELSE 'total' END AS dimension,"
-    " r.user_id, r.model, r.kind, r.day, r.document_id, r.of_document,"
-    " sum(r.calls) AS calls, COALESCE(sum(r.calls) FILTER (WHERE r.cached), 0) AS cached_calls,"
-    " sum(r.input_tokens) AS input_tokens, sum(r.output_tokens) AS output_tokens,"
-    " sum(r.reasoning_tokens) AS reasoning_tokens, sum(r.cost_usd) AS cost_usd,"
-    " bool_or(r.cost_estimated) AS cost_estimated, bool_or(r.cost_usd IS NULL) AS cost_part_unknown"
-    " FROM r"
-    " GROUP BY GROUPING SETS ((), (r.user_id), (r.model), (r.kind), (r.day), (r.document_id, r.of_document))"
-    ")"
-    " SELECT g.*, x.display_name AS user_name, m.name AS model_name, d.display_name AS document_name"
-    " FROM g"
-    " LEFT JOIN users x ON x.customer_id = :c AND x.id = g.user_id"
-    " LEFT JOIN model_catalog m ON m.id = g.model"
-    " LEFT JOIN documents d ON d.customer_id = :c AND d.id = g.document_id"
-    " ORDER BY g.dimension, g.day, g.cost_usd DESC NULLS LAST, g.calls DESC,"
-    " g.user_id, g.model, g.kind, g.document_id"
+    "SELECT * FROM kaagaz_admin_usage(:start_at, :end_at, :tz, CAST(:user AS uuid))"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 
 # The dollars spent in a period (unknown costs count nothing), and whether any was unknown.
-# #463: an operator's accuracy checks are never the organisation's budget.
+# #463: an operator's accuracy checks are never the organisation's budget. PRD 7 (#606): the whole
+# organisation's (kaagaz_spent, 0091), so the budget can't fail open; another customer's id, none.
 _SPENT = text(
-    "SELECT COALESCE(sum(u.cost_usd), 0), COALESCE(bool_or(u.cost_usd IS NULL), false) FROM model_usage u"
-    " WHERE u.customer_id = :c AND u.kind <> 'accuracy_check'"
-    " AND u.created_at >= :start_at AND u.created_at < :end_at"
+    "SELECT coalesce(sum(s.spent), 0), coalesce(bool_or(s.unknown), false)"
+    " FROM kaagaz_spent(:start_at, :end_at) s"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 
 

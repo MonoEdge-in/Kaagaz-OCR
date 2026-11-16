@@ -10,6 +10,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
+from scripts import golden_scoring as scoring
 from scripts.golden_scoring import (
     NLQ_SHA256,
     SPLITS,
@@ -144,3 +145,18 @@ def test_too_few_items_in_a_slice_or_an_expectation_is_refused() -> None:
     assert f"{len(kept)} questions, at least 150" in found
     assert "0 in slice misspelling, at least 15" in found
     assert "0 figure, at least 60" in found
+
+
+def test_629_a_property_clarify_passes_only_with_labelled_choices() -> None:
+    """#629: the clarify expectation also needs each property pick to name its kind, its number and
+    a place or document: never a bare number, a date or several numbers joined."""
+    asked = {"question": "Which property do you mean?"}
+    good = [
+        {"kind": "pick", "label": "Survey ६१ (61), Kusgaon, Maval · Land record"},
+        {"kind": "other", "label": "x"},
+    ]
+    assert scoring.property_choices_labelled({**asked, "choices": good})
+    date = "\u0967\u0969.\u0966\u096c.\u0966\u0966"  # 13.06.00 in Devanagari digits
+    for bad in ("६१", date, "६५/३, ८१, ८५/२"):
+        assert not scoring.property_choices_labelled({**asked, "choices": [{"kind": "pick", "label": bad}]})
+    assert scoring.property_choices_labelled({"question": "Which Nikhil do you mean?", "choices": []})

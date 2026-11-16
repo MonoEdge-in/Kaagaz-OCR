@@ -227,8 +227,8 @@ def messages_with_feedback(
     conn: Connection, customer_id: str, conversation_id: str, user_id: str
 ) -> Sequence[RowMapping]:
     """Messages oldest first, each with this user's rating and newest source pick
-    (``pin_document_id``, ``pin_page_no``; 0036). One query (no N+1): the pick is one
-    index lookup per message (source_pins_message)."""
+    (``pin_document_id``, ``pin_page_no``; 0036) of a document they can still see (PRD 7,
+    #602). One query (no N+1): the pick is one index lookup per message (source_pins_message)."""
     return (
         conn.execute(
             text(
@@ -239,6 +239,8 @@ def messages_with_feedback(
                 " AND f.user_id = :u"
                 " LEFT JOIN LATERAL (SELECT s.document_id, s.page_no, s.source_ref FROM source_pins s"
                 " WHERE s.customer_id = m.customer_id AND s.message_id = m.id AND s.user_id = :u"
+                " AND EXISTS (SELECT 1 FROM visible_documents v WHERE v.customer_id = s.customer_id"
+                " AND v.id = s.document_id)"
                 " ORDER BY s.created_at DESC, s.id LIMIT 1) p ON true"
                 " WHERE m.customer_id = :c AND m.conversation_id = :conv"
                 " ORDER BY m.created_at, m.role DESC, m.id"
@@ -371,31 +373,59 @@ def recent_messages(
 def document_states(conn: Connection, customer_id: str, document_ids: Sequence[str]) -> dict[str, str]:
     """What became of each document a saved answer cites: ``live`` (the current
     version, out of Trash), ``older_version`` (a newer version replaced it),
-    ``in_trash``. A document deleted forever is simply missing from the result.
+    ``in_trash``, or ``locked`` (PRD 7, #605: locked since, in Trash or not; the answer is
+    replaced whole). PRD 7 (#602, question 1): read through the view only, so a document
+    missing from the result is one the person can no longer see, hidden or deleted
+    forever alike (``views.answer_with_source_states`` then replaces the whole answer).
     One query, O(k log D) for k ids."""
     if not document_ids:
         return {}
     rows = conn.execute(
         text(
-            "SELECT id, deleted_at IS NOT NULL AS in_trash, is_current FROM documents"
-            " WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
+            "SELECT id, deleted_at IS NOT NULL AS in_trash, is_current, locked_at IS NOT NULL AS locked"
+            " FROM visible_documents WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
         ),
         {"c": customer_id, "ids": sorted(set(document_ids))},
     ).all()
     return {
-        str(row.id): "in_trash" if row.in_trash else "live" if row.is_current else "older_version"
+        str(row.id): "locked"
+        if row.locked
+        else "in_trash"
+        if row.in_trash
+        else "live"
+        if row.is_current
+        else "older_version"
         for row in rows
     }
 
 
+def opens_locked(conn: Connection, customer_id: str, user_id: str) -> bool:
+    """PRD 7 (#605, p2:79): whether the person may open a locked file out of Trash: one of their
+    lock grants (its index) on a file the access view shows them, read as them, so Ask's fixed
+    line shows to them alone. One query, O(g log D) for their g grants."""
+    return bool(
+        conn.execute(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM lock_grants g JOIN visible_documents d"
+                " ON d.customer_id = g.customer_id AND d.id = g.document_id"
+                " WHERE g.customer_id = :c AND g.user_id = :u AND d.locked_at IS NOT NULL"
+                " AND d.deleted_at IS NULL)"
+            ),
+            {"c": customer_id, "u": user_id},
+        ).scalar()
+    )
+
+
 def live_document_names(conn: Connection, customer_id: str, document_ids: Sequence[str]) -> dict[str, str]:
     """M3: the display name of each of ``document_ids`` that is live (the current version,
-    out of Trash); one replaced, in Trash or deleted forever is missing. One query."""
+    out of Trash) and that the person can see; one replaced, in Trash, deleted forever or
+    hidden (PRD 7) is missing. One query."""
     if not document_ids:
         return {}
     rows = conn.execute(
         text(
-            "SELECT id, display_name FROM documents WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
+            "SELECT id, display_name FROM visible_documents WHERE customer_id = :c"
+            " AND id = ANY(CAST(:ids AS uuid[]))"
             " AND deleted_at IS NULL AND is_current"
         ),
         {"c": customer_id, "ids": sorted(set(document_ids))},
@@ -424,7 +454,8 @@ def add_pin(
             " SELECT m.customer_id, m.id, :u, d.id, :page, :ref, :rank"
             " FROM messages m JOIN conversations cv"
             " ON cv.customer_id = m.customer_id AND cv.id = m.conversation_id"
-            " JOIN visible_documents d ON d.customer_id = m.customer_id AND d.id = :d"
+            # PRD 7 (#605): never a locked document, as for a replaced answer.
+            " JOIN visible_documents d ON d.customer_id = m.customer_id AND d.id = :d AND d.locked_at IS NULL"
             " WHERE m.customer_id = :c AND m.id = :m AND m.role = 'assistant' AND cv.user_id = :u"
             " RETURNING id"
         ),
@@ -448,7 +479,7 @@ def pins_for(
     conn: Connection, customer_id: str, user_id: str, conversation_id: str | None
 ) -> Sequence[RowMapping]:
     """This user's newest pick of each of their answers (the table keeps every pick), on a
-    live document (out of Trash, the current version): ``document_id``, ``page_no``,
+    live document (out of Trash, the current version) they can see: ``document_id``, ``page_no``,
     ``same`` (in ``conversation_id``) and ``question``, the answer's ``normalized_question``.
     Those of this conversation first, then the newest, at most ``PIN_LIMIT``. One query.
 
@@ -467,7 +498,7 @@ def pins_for(
                 " AND cv.user_id = :u"
                 " WHERE s.customer_id = :c AND s.user_id = :u"
                 " ORDER BY s.message_id, s.created_at DESC, s.id) p"
-                " JOIN documents d ON d.customer_id = :c AND d.id = p.document_id"
+                " JOIN visible_documents d ON d.customer_id = :c AND d.id = p.document_id"
                 " AND d.deleted_at IS NULL AND d.is_current"
                 " ORDER BY same DESC, p.created_at DESC, p.id LIMIT :n"
             ),
@@ -483,7 +514,9 @@ LEARN_DAYS = 90  # PRD 6 F3: a Useful or Wrong documents mark older than this te
 
 # PRD 6 F3 (answering/pins.py): each cited page of an answered message rated Useful, or Not
 # useful for wrong documents, in the last :days days, on a live current document that no
-# admin removed since (learning_removals). Every person's in the customer (RLS and :c).
+# admin removed since (learning_removals). Every person's in the customer (RLS and :c), on a
+# document the asker can see (PRD 7, #602; it narrows the Admin's "What Kaagaz learned" list
+# too, until PR 10's owner-rights functions: question 5).
 MARKS = (
     "SELECT f.user_id, f.rating, f.created_at, c.document_id, c.page_no, d.display_name,"
     " coalesce(m.answer ->> 'normalized_question', '') AS question"
@@ -493,7 +526,7 @@ MARKS = (
     " CAST(e ->> 'page_no' AS integer) AS page_no FROM jsonb_array_elements(CASE WHEN"
     " jsonb_typeof(m.answer -> 'citations') = 'array' THEN m.answer -> 'citations' ELSE '[]' END) e"
     " WHERE e ->> 'document_id' ~ '^[0-9a-f-]{36}$' AND e ->> 'page_no' ~ '^[0-9]{1,6}$') c"
-    " JOIN documents d ON d.customer_id = f.customer_id AND d.id = c.document_id"
+    " JOIN visible_documents d ON d.customer_id = f.customer_id AND d.id = c.document_id"
     " AND d.deleted_at IS NULL AND d.is_current"
     " WHERE f.customer_id = :c AND f.created_at >= now() - make_interval(days => :days)"
     " AND m.answer ->> 'status' = 'answered'"

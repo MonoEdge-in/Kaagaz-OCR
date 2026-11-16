@@ -304,14 +304,28 @@ def test_a_new_version_takes_its_familys_access_and_join_undo_and_separate_chang
     _run(db, c, given.format("document_shares"), d=first, u=b, by=u)
     _run(db, c, given.format("document_shares"), d=loose, u=b, by=u)
     _run(db, c, given.format("lock_grants"), d=first, u=lock_holder, by=u)
-    _run(db, c, "UPDATE documents SET locked_at = :t, locked_by = :u WHERE id = :d", t=NOW, u=u, d=first)
+    # Changed on purpose (#605, 0093): a locked version is never ready, and a new one starts received.
+    _run(
+        db,
+        c,
+        "UPDATE documents SET locked_at = :t, locked_by = :u, status = 'locked' WHERE id = :d",
+        t=NOW,
+        u=u,
+        d=first,
+    )
 
     family = [first]
     for number in (2, 3):
         with db.customer(c) as conn:
             family.append(
                 insert_document(
-                    conn, c, folder_id=finance, family_id=first, version_no=number, is_current=False
+                    conn,
+                    c,
+                    folder_id=finance,
+                    family_id=first,
+                    version_no=number,
+                    is_current=False,
+                    status="received",
                 )
             )
     assert _given(db, c) == (
@@ -329,7 +343,12 @@ def test_a_new_version_takes_its_familys_access_and_join_undo_and_separate_chang
     _run(db, c, "DELETE FROM lock_grants WHERE document_id = :d AND user_id = :u", d=family[2], u=lock_holder)
     assert _given(db, c) == {("share", loose, b)}
     assert _version(db, c) == before + 2
-    _run(db, c, "UPDATE documents SET locked_at = NULL, locked_by = NULL WHERE family_id = :f", f=first)
+    _run(
+        db,
+        c,
+        "UPDATE documents SET locked_at = NULL, locked_by = NULL, status = 'ready' WHERE family_id = :f",
+        f=first,
+    )
 
     # Join (versions._JOIN takes the family's folder), Undo, Separate: no access row moves.
     rows = _given(db, c)
@@ -339,7 +358,8 @@ def test_a_new_version_takes_its_familys_access_and_join_undo_and_separate_chang
     assert _values(db, c)[loose] == (finance, None)
     assert (_given(db, c), _differences(db, c)) == (rows, [])
     with db.customer(c) as conn:
-        conn.execute(versions._ALONE_AGAIN, {"c": c, "d": loose, "folder": ops})
+        # Changed on purpose (#594): Undo also writes whom it is held for (here nobody).
+        conn.execute(versions._ALONE_AGAIN, {"c": c, "d": loose, "folder": ops, "held": None})
     assert _values(db, c)[loose] == (ops, None)
     assert (_given(db, c), _differences(db, c)) == (rows, [])
     with db.customer(c) as conn:
@@ -406,7 +426,10 @@ def test_the_access_version_goes_up_once_per_statement_that_changes_access(db: D
         ("UPDATE folders SET department_only = true WHERE id = :f", 1),
         ("UPDATE folders SET parent_id = :o WHERE id = :b", 1),
         ("UPDATE documents SET status = 'failed' WHERE id = :d", 0),
-        ("UPDATE documents SET locked_at = now(), locked_by = :u WHERE family_id = :d", 1),
+        (
+            "UPDATE documents SET locked_at = now(), locked_by = :u, status = 'locked' WHERE family_id = :d",
+            1,
+        ),  # Changed on purpose (#605, 0093): a locked version is never ready
         (
             "INSERT INTO document_shares (customer_id, document_id, user_id, given_by)"
             " SELECT :c, d, p, CAST(:u AS uuid) FROM unnest(CAST(:p AS uuid[])) AS p,"

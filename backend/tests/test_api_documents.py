@@ -443,6 +443,8 @@ def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
         "department",
         "pending_suggestion",
         "stuck",  # changed on purpose (issue 407): may be read again while still in progress
+        "shared_with_you",  # changed on purpose (PRD 7, #601): in a folder the person can't see
+        "locked",  # changed on purpose (PRD 7, #605): opened only as page pictures, never read
     }
     assert (document["folder_id"], document["tags"]) == (None, [])
     assert (document["pages_unreadable"], document["pages_uncertain"], document["values_to_review"]) == (
@@ -1763,11 +1765,13 @@ def test_move_files_every_version_and_an_explicit_null_goes_to_the_top_level(db:
     assert [_columns(db, signed.customer_id, d)[0] for d in (first, second)] == [None, None]
 
     rows = [row for row in api.audit_rows(signed.customer_id) if row[0].startswith("document.")]
+    # Changed on purpose (PR 9b, #606): a PATCH that renames and moves renames first, as the move may
+    # hide the file from an Admin making it (the rename would then reach no row under the database rule).
     assert rows == [
         ("document.move", "document", second, {"folder_id": folder}),
         ("document.rename", "document", first, {}),
-        ("document.move", "document", first, {"folder_id": None}),
         ("document.rename", "document", first, {}),
+        ("document.move", "document", first, {"folder_id": None}),
     ]
 
 

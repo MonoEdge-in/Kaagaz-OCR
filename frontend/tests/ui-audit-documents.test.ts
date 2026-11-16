@@ -255,7 +255,9 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
     expect(actions).not.toContain('<Icon name="plus" />');
     expect(view).not.toContain("<Drawer");
     expect(css("components/documents/Library.module.css")).toMatch(/^\.treePane \{\s*display: flex;/m);
-    expect(view).toContain("updateDocument(documentId, { folder_id: folderId })");
+    // Changed on purpose (PRD 7 PR 11b, #637): a drop moves through moveDocument, which knows PR
+    // 10c's `{id, hidden: true}` reply.
+    expect(view).toContain("moveDocument(documentId, folderId)");
     expect(table).toContain("event.dataTransfer.setData(DOCUMENT_DRAG, document.id);");
   });
 

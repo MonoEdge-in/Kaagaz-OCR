@@ -163,6 +163,7 @@ from kaagaz.api.twostep import digits as _digits
 from kaagaz.api.twostep import refused as _refused
 from kaagaz.api.twostep import unix as _unix
 from kaagaz.api.views import iso, me_json
+from kaagaz.db import access as access_sql
 from kaagaz.db import audit, identities
 from kaagaz.db import email_links as links_sql
 from kaagaz.db import users as users_sql
@@ -490,11 +491,13 @@ def logout_everywhere(user: UserAllowGoogleLink, context: Context) -> Response: 
 
 @router.get("/auth/me")
 def me(user: UserAllowPasswordChange, context: Context) -> dict[str, Any]:
+    recent, access = _recent_connections(context, user)
     return me_json(
         user,
         email_on=email_on(context),
         providers=oidc.enabled_providers(context.settings),
-        recent_connections=_recent_connections(context, user),
+        recent_connections=recent,
+        access=access,
     )
 
 
@@ -513,28 +516,41 @@ def session(request: Request) -> dict[str, Any]:
             }
         raise
     context = get_context(request)
-    recent = _recent_connections(context, user)
+    recent, access = _recent_connections(context, user)
     providers = oidc.enabled_providers(context.settings)
-    me = me_json(user, email_on=email_on(context), providers=providers, recent_connections=recent)
+    me = me_json(
+        user, email_on=email_on(context), providers=providers, recent_connections=recent, access=access
+    )
     return {"signed_in": True, "me": me}
+
+
+def _access(context: AppContext, user: CurrentUser) -> tuple[bool, list[str], bool, bool]:
+    """PRD 7 (#601): the person's Management, the departments they head, whether they are in a
+    live department and whether walls are set (``access_sql.me``)."""
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        return access_sql.me(conn)
 
 
 # --- the steps they share ----------------------------------------------------------------
 
 
-def _recent_connections(context: AppContext, user: CurrentUser) -> list[dict[str, str]]:
+def _recent_connections(
+    context: AppContext, user: CurrentUser
+) -> tuple[list[dict[str, str]], tuple[bool, list[str], bool, bool]]:
     """The user's approved connections made in the last RECENT_DAYS, for the app's "Google
-    connected on 30 Oct." banner (#457 phase 1); none, and nothing read, while no provider is on."""
-    if not oidc.enabled_providers(context.settings):
-        return []
+    connected on 30 Oct." banner (#457 phase 1; none, and nothing read, while no provider is on),
+    and their access (PRD 7, #601), in one transaction."""
+    providers = oidc.enabled_providers(context.settings)
     since = context.clock() - timedelta(days=RECENT_DAYS)
     with context.db.user(user.customer_id, user.user_id) as conn:
-        rows = identities.for_user(conn, user.customer_id, user.user_id)
-    return [
+        rows = identities.for_user(conn, user.customer_id, user.user_id) if providers else []
+        access = access_sql.me(conn)
+    recent = [
         {"provider": str(row["provider"]), "linked_at": iso(row["linked_at"])}
         for row in rows
         if row["status"] == "approved" and row["linked_at"] >= since
     ]
+    return recent, access
 
 
 def _check_password(context: AppContext, email: str, password: str, address: str) -> AttemptRow:
@@ -667,6 +683,25 @@ def _check_current_password(
     return attempt
 
 
+def prove_password(context: AppContext, user: CurrentUser, password: str) -> None:
+    """An Admin giving themselves access (PRD 7, #601): their own password, counted like a sign-in
+    (``_check_current_password``), with its own codes: 400 ``password_locked`` while the sign-in
+    lock is on, 400 ``wrong_password``; then the count starts again."""
+    attempt = _begin(context, user.customer_id, user.user_id, context.clock(), signed_in=True)
+    if attempt is None:
+        minutes = context.settings.login_lock_minutes
+        raise ApiError(
+            400,
+            "password_locked",
+            f"Too many wrong passwords were tried on this account. Try again in {minutes} minutes,"
+            " or ask another admin to unlock it.",
+        )
+    if not verify_password(password, attempt.password_hash):
+        _failed(context, attempt, "wrong_password", signed_in=True)
+        raise ApiError(400, "wrong_password", "Your password is not right.")
+    _succeeded(context, attempt, signed_in=True)
+
+
 def _prove(context: AppContext, user: CurrentUser, password: str, code: str | None) -> None:
     """The signed-in user's proof before a change to how they sign in: the password, then the
     code for anyone with two-step sign-in on (always an admin), each counted like a sign-in,
@@ -776,7 +811,9 @@ def _keep_this_browser(
         raise ApiError(401, "not_signed_in")
     renewed = dataclasses.replace(claims, session_version=user.session_version)
     providers = oidc.enabled_providers(context.settings)
-    response = JSONResponse(me_json(user, email_on=email_on(context), providers=providers))
+    response = JSONResponse(
+        me_json(user, email_on=email_on(context), providers=providers, access=_access(context, user))
+    )
     set_session_cookie(response, renewed, context.settings, now=_unix(now))
     return response
 
@@ -793,7 +830,9 @@ def _start_session(
     """The ``Me`` reply and a new session cookie of this scope; clears the count."""
     user, claims = _open_session(context, customer_id, user_id, scope=scope, action=action, details=details)
     providers = oidc.enabled_providers(context.settings)
-    response = JSONResponse(me_json(user, email_on=email_on(context), providers=providers))
+    response = JSONResponse(
+        me_json(user, email_on=email_on(context), providers=providers, access=_access(context, user))
+    )
     set_session_cookie(response, claims, context.settings, now=_unix(context.clock()))
     return response
 

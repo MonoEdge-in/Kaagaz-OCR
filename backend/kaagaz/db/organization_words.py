@@ -21,15 +21,20 @@ class Suggestion:
     page_no: int | None
 
 
-def approved(conn: Connection, customer_id: str, *, document_id: str | None = None) -> list[Suggestion]:
+def approved(conn: Connection, customer_id: str) -> list[Suggestion]:
+    """The organisation's approved words, and those made on a page of a document the person can
+    see, in any scope (PRD 7, #602, decision 9; changed on purpose: a word made on a page helped
+    inside its document only). One the person can't see never helps or is echoed, so a hidden
+    scope id answers as a random one (understood_words)."""
     rows = conn.execute(
         text(
             "SELECT id, word, meaning, status, submitted_by, created_at, document_id, page_no"
             " FROM organization_word_suggestions WHERE customer_id = :c AND status = 'approved'"
-            " AND (document_id IS NULL OR document_id = CAST(:doc AS uuid))"
+            " AND (document_id IS NULL OR EXISTS (SELECT 1 FROM visible_documents d"
+            " WHERE d.customer_id = :c AND d.id = document_id))"
             " ORDER BY word_fold, meaning_fold, id LIMIT 500"
         ),
-        {"c": customer_id, "doc": document_id},
+        {"c": customer_id},
     ).mappings()
     return [_suggestion(row) for row in rows]
 
@@ -67,7 +72,8 @@ def submit(
     duplicate = conn.execute(
         text(
             "SELECT 1 FROM organization_word_suggestions WHERE customer_id = :c"
-            " AND document_id IS NOT DISTINCT FROM CAST(:doc AS uuid)"
+            # #602, decision 9: the organisation's own word, or the same document's.
+            " AND (document_id IS NULL OR document_id IS NOT DISTINCT FROM CAST(:doc AS uuid))"
             " AND word_fold = :wf AND meaning_fold = :mf AND status IN ('pending', 'approved')"
         ),
         {"c": customer_id, "doc": document_id, "wf": word_fold, "mf": meaning_fold},
@@ -76,8 +82,8 @@ def submit(
         return None
     active = conn.execute(
         text(
-            "SELECT count(*) FROM organization_word_suggestions WHERE customer_id = :c"
-            " AND status IN ('pending', 'approved')"
+            # PRD 7 (#606): the whole organisation's (0091), so the cap can't fail open.
+            "SELECT kaagaz_word_suggestions_count() WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
         ),
         {"c": customer_id},
     ).scalar_one()

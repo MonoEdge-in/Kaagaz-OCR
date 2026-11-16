@@ -28,6 +28,10 @@ export const NOT_FOUND_TEXT = "Nothing in your documents matches this yet.";
 // An "unchecked" answer (a figure only in values not confirmed yet): no number, no
 // Review wording (Tushar, 16 Oct 2026); the documents follow it.
 export const UNCHECKED_TEXT = "This figure is in these documents. Open them to see it.";
+// PRD 7 (#602): the server's line for a saved answer behind a file the person can no longer see
+// (backend/kaagaz/api/views.py NO_ACCESS_LINE, a test reads both).
+export const NO_ACCESS_TEXT =
+  "You no longer have access to a document behind this answer. Ask again to get an answer from the files you can see.";
 export const MAX_QUESTION_LENGTH = 1000;
 
 // The chat's one status line for screen readers; the log itself stays quiet.
@@ -98,6 +102,7 @@ export function answerStatusText(answer: Answer | null): string {
     const said = [answer.sentences[0]?.text.trim(), count > 0 ? `${plural(count, "document", "documents")}.` : ""];
     return ["Answer ready.", ...said].filter(Boolean).join(" ");
   }
+  if (answer?.status === "no_access") return answer.reason === "locked" ? (answer.sentences[0]?.text ?? NO_ACCESS_TEXT) : NO_ACCESS_TEXT; // #605
   if (!answer || answer.status === "not_found") return NO_ANSWER_STATUS;
   if (answer.status === "clarify") return answer.clarify?.question ?? NO_ANSWER_STATUS; // PRD 6 B2
   const first = answer.status === "unchecked" ? UNCHECKED_TEXT : answer.sentences[0]?.text.trim();

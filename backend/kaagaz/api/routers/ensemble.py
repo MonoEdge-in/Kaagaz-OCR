@@ -35,6 +35,7 @@ from sqlalchemy import Connection
 from kaagaz.api.auth import CurrentUser, Reviewer, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
+from kaagaz.api.locked import refuse_locked
 from kaagaz.api.routers import word_review as review_router
 from kaagaz.api.routers.documents import refuse_while_paused
 from kaagaz.api.views import latest_run_json, run_json
@@ -87,6 +88,7 @@ def _document(conn: Connection, user: CurrentUser, document_id: uuid.UUID) -> No
     row = listing.get_document(conn, user.customer_id, str(document_id))
     if row is None or row["status"] == "rejected":
         raise ApiError(404, "not_found")
+    refuse_locked(row)  # PRD 7 (#605): a locked file is never read again by a model
 
 
 def _refused(error: Refused) -> ApiError:

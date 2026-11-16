@@ -104,7 +104,15 @@ export function failureWords(code: string): string {
   return Object.hasOwn(FAILURES, code) ? FAILURES[code]! : plain(code);
 }
 
-const STATUSES: readonly DocumentStatus[] = ["ready", "received", "clean", "needs_reader", "rejected", "failed"];
+const STATUSES: readonly DocumentStatus[] = [
+  "ready",
+  "received",
+  "clean",
+  "needs_reader",
+  "rejected",
+  "failed",
+  "locked", // PRD 7 (#605)
+];
 
 /** "12 Ready", "2 Failed": the document app's status words, known ones first, none at 0. */
 export function countsInWords(counts: Record<string, number>, words: (code: string) => string): string[] {

@@ -219,7 +219,10 @@ describe("the limited session (a Google-only person with no passing account)", (
     expect(appChrome(me())).toBe(true);
     const shell = read("components/shell/AppShell.tsx");
     expect(shell).toContain("const chrome = appChrome(me);");
-    expect(shell).toContain("const links = chrome ? navLinks(me.user.role, sessionScope(me)) : [];");
+    // Changed on purpose (PRD 7 PR 11c, #604): Management's Access activity link.
+    expect(shell).toContain(
+      "const links = chrome ? navLinks(me.user.role, sessionScope(me), me.access?.management === true) : [];",
+    );
     expect(shell.match(/\{chrome && \(/g)?.length).toBe(3); // the menu button, search and Upload, the tab bar
     expect(shell).toContain("<AccountMenu me={me} onChanged={refresh} />");
   });

@@ -24,6 +24,10 @@ class ApiStorage(RenditionStorage, Protocol):
 
     def get_page_image(self, customer_id: str, document_id: str, page_no: int) -> bytes: ...
 
+    def delete_rendition(self, customer_id: str, document_id: str) -> None:
+        """PRD 7 (#605): a locked Word or PowerPoint file's stored PDF; none is fine."""
+        ...
+
     def ping(self) -> None: ...
 
     def start_resumable(self, customer_id: str, user_id: str, session_id: str) -> tuple[str, str]: ...
@@ -79,6 +83,7 @@ class Answers(Protocol):
         pending: Pending | None = None,
         clarify: bool = True,
         cited: Sequence[str] = (),
+        last_cited: Sequence[str] = (),
     ) -> AnswerLike:
         """``question`` is the stripped question text; ``scope`` is resolved for this customer;
         ``history`` is the conversation's earlier turns, oldest first; ``user_id`` is the
@@ -89,7 +94,8 @@ class Answers(Protocol):
         this answers, read from the stored message (PRD 6 B1, ``clarify.reply_to``); ``clarify``
         False (the ``nlq_clarify`` switch is off, 0052): no plan and no clarifying question;
         ``cited`` the documents this conversation's earlier answers cite, newest turn first, read
-        from its stored messages (PRD 6 B: a missing subject offers their names first)."""
+        from its stored messages (PRD 6 B: a missing subject offers their names first);
+        ``last_cited`` the last answer's documents the asker can still see (#629)."""
         ...
 
     def remember(self, turns: Sequence[Turn], memory: Memory, cited: Sequence[str]) -> Memory | None:

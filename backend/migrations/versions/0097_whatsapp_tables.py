@@ -1,6 +1,4 @@
-"""PROVISIONAL NUMBER: renumbered to follow PRD 7's last migration before raising.
-
-Kaagaz on WhatsApp: the tables, their row level security and the owner-rights functions (PRD 7
+"""Kaagaz on WhatsApp: the tables, their row level security and the owner-rights functions (PRD 7
 section 15, W1, #603, Tushar, 14 Nov 2026). NEEDS VRUSHIT'S APPROVAL: schema and security.
 
 * ``whatsapp_org_settings``: the organisation Admin's switches, one row an organisation (no row:
@@ -60,8 +58,8 @@ New tables only, but ``conversations``: a NULL column and its CHECK, NOT VALID (
 then validated outside the transaction (SHARE UPDATE EXCLUSIVE: writes go on), as 0085 does. The downgrade drops it all (every connection and message is lost) and puts back
 0084's finish.
 
-Revision ID: 0088
-Revises: 0087
+Revision ID: 0097
+Revises: 0096
 """
 
 import importlib.util
@@ -70,8 +68,8 @@ from types import ModuleType
 
 from alembic import op
 
-revision = "0088"
-down_revision = "0087"
+revision = "0097"
+down_revision = "0096"
 branch_labels = None
 depends_on = None
 

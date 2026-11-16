@@ -1,4 +1,4 @@
-"""Kaagaz on WhatsApp's SQL (#603, PRD 7 section 15; migration 0088).
+"""Kaagaz on WhatsApp's SQL (#603, PRD 7 section 15; migration 0097).
 
 * With no organisation (``db.system``), the owner-rights functions only: ``lookup`` (a number's live
   connection, ids only), ``claim`` (the channel's queue: ids and the lease) and ``sweep``.
@@ -48,7 +48,7 @@ class Waiting:
 @dataclass(frozen=True, slots=True)
 class Check:
     """``sealed``: the connection's number while it is live, else None. ``refused``: why it may no
-    longer be used (an end reason of 0088), or None."""
+    longer be used (an end reason of 0097), or None."""
 
     sealed: str | None
     refused: str | None
@@ -68,7 +68,7 @@ _NEXT = text(
     " WHERE customer_id = :c AND link_id = :l AND state = 'waiting'"
     " ORDER BY sent_at, received_at, id LIMIT 1"
 )
-# The checks every message runs (PRD 7 section 15), each one end reason, as the sweep's (0088).
+# The checks every message runs (PRD 7 section 15), each one end reason, as the sweep's (0097).
 _CHECK = text(
     "SELECT l.phone_sealed,"
     " CASE WHEN l.ended_at IS NOT NULL THEN l.end_reason"
