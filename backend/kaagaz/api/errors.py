@@ -20,7 +20,7 @@ from sqlalchemy.exc import TimeoutError as PoolTimeout
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from kaagaz.db.documents import RETRY_STUCK_HOURS
-from kaagaz.db.sqlstate import INSUFFICIENT_PRIVILEGE, sqlstate
+from kaagaz.db.sqlstate import INSUFFICIENT_PRIVILEGE, log_unavailable, sqlstate
 from kaagaz.ingestion.errors import BackendUnavailable
 
 _log = logging.getLogger(__name__)
@@ -156,6 +156,10 @@ async def _http_error(request: Request, exc: Exception) -> Response:
 
 
 async def _unavailable(request: Request, exc: Exception) -> Response:
+    # #620: every 503 says why, once: the database's BackendUnavailable was logged where it was made
+    # (engine.unavailable, Database.ping); any other error is logged here.
+    if not (isinstance(exc, BackendUnavailable) and exc.args == ("database",)):
+        log_unavailable(exc, path=request.url.path)
     return error_response(503, "backend_unavailable")
 
 

@@ -510,6 +510,7 @@ class _NoAnswers:
         pending: Any = None,
         clarify: Any = True,
         cited: Any = (),
+        last_cited: Any = (),
     ) -> AnswerLike:
         raise AssertionError("not used here")
 

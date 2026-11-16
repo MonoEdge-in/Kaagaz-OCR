@@ -92,6 +92,10 @@ export interface Me {
   // Ways to sign in (#457 phase 1): approved connections made in the last 14 days, for the
   // app's "Google connected on 30 Oct." banner. Empty while no provider is on (always sent).
   recent_connections?: { provider: string; linked_at: string }[];
+  // PRD 7 (#601): Management, and the departments this person heads. Older servers leave it out.
+  // in_department (PR 10c): a member of a live department; walled (PR 11c): the organisation has
+  // kept something to some people, ever.
+  access?: { management: boolean; heads: string[]; in_department?: boolean; walled?: boolean };
 }
 
 /** One connected account of the signed-in user (GET /auth/identities). */
@@ -148,7 +152,9 @@ export interface DocumentSummary {
   page_count: number | null;
   created_at: string; // ISO 8601
   uploaded_by_name: string | null;
-  folder_id: string | null; // null: at the top level, in no folder
+  folder_id: string | null; // null: at the top level, in no folder, or in one this person can't see
+  // PRD 7 (#601): in a folder this person can't see (folder_id null): "Shared with you", never a path.
+  shared_with_you?: boolean;
   tags: Tag[];
   deleted_at: string | null; // set while the document (its whole family) is in Trash
   version_no: number; // 1 for the first upload
@@ -280,6 +286,8 @@ export interface ActivityPage {
   items: ActivityEntry[];
   next_cursor?: string | null;
   total?: number; // the admin log only
+  // PRD 7 (#601): the admin log's first page only, the entries in which an Admin gave themselves access.
+  self_given?: ActivityEntry[];
 }
 
 /** A question this person asked about the document (P2), newest first. */
@@ -445,6 +453,8 @@ export interface Folder {
   created_at: string;
   kind?: FolderKind; // F1; left out by older replies: custom
   sort_order?: number | null; // a department's place on the dashboard and in the tree
+  department_only?: boolean; // PRD 7 (#601): a department kept to its people
+  private?: boolean; // PRD 7 (#601): only the people named on it (and its head, Management) see it
 }
 
 /** #542: a folder in Trash, with what it holds at every depth (files: a file's versions count once). */
@@ -1304,6 +1314,95 @@ export interface AdminUser {
   google_needed?: boolean;
   // #507 review: and their connected account's domain is not checked yet (one Google sign-in does).
   google_unchecked?: boolean;
+  // PRD 7 (#601): sees every file. The list also sends their departments (head: they head it).
+  management?: boolean;
+  departments?: { id: string; name: string; head: boolean }[];
+}
+
+/** PRD 7 (#601), GET /admin/users/{id}/access: what one person can see, beyond their role. Paths
+ * are an Admin's (every folder name); `added_by` and `given_by` are user ids. */
+export interface PersonAccess {
+  user: { id: string; name: string; role: Role; management: boolean; disabled: boolean };
+  departments: { id: string; name: string; head: boolean; added_at: string; added_by: string }[];
+  private_folders: { id: string; name: string; path: string | null }[];
+  files: { id: string; name: string; path: string | null; given_at: string; given_by: string | null }[];
+}
+
+/** PRD 7 (#601), GET /admin/departments: one department with its access. */
+export interface AdminDepartment {
+  id: string;
+  name: string;
+  department_only: boolean;
+  members: number;
+  heads: Person[];
+  warnings: string[]; // "no_members": Department only, with nobody in it
+}
+
+/** GET /admin/departments/{id}/members */
+export interface DepartmentMember {
+  id: string;
+  name: string;
+  head: boolean;
+  added_at: string;
+}
+
+/** PRD 7 (#601): who would lose and who would gain a place's files, and how many files it holds. */
+export interface PlacePreview {
+  losing: Person[];
+  gaining: Person[];
+  files: number;
+  // Make private's preview (PR 10b, coming): the people named on it before, who see it again.
+  named_before?: Person[];
+}
+
+/** PRD 7 PR 10c (#601), a move's preview: for the person a file is held for, counts only (the lists
+ * empty, never anyone's name). */
+export interface MovePreview extends PlacePreview {
+  losing_count?: number;
+  gaining_count?: number;
+}
+
+/** PRD 7 PR 10c (#601), PATCH /documents/{id}: an admin moved the file where they can't see it.
+ * The move stands. */
+export interface HiddenMove {
+  id: string;
+  hidden: true;
+}
+
+/** PRD 7 (#601), GET /{documents|folders}/{id}/audience: who can see it, grouped by why, in the
+ * Audience panel's order; `place`: the department (head, member) or the private folder (named). */
+export interface Audience {
+  groups: { reason: string; place?: { id: string; name: string }; people: Person[] }[];
+  everyone_else: number; // how many people of the organisation can't see it
+}
+
+/** The same with ?user_id= (Check a person): the reasons in the same order. */
+export interface AudienceCheck {
+  can_see: boolean;
+  reasons: string[];
+}
+
+/** PRD 7 (#601), GET /folders/{id}/kept-from-me: an Admin's names list, the files in a folder
+ * they can't open (`count`: all of them; `items`: the first 500 by name). */
+export interface KeptFromMe {
+  count: number;
+  items: {
+    id: string;
+    name: string;
+    kind: string; // the detected type
+    uploader: string | null;
+    created_at: string;
+    version_no: number;
+    locked: boolean;
+  }[];
+}
+
+/** PRD 7 (#601), GET /folders/{id}/named: a private folder's list; `can_edit`: may change it. */
+export interface NamedList {
+  folder: { id: string; name: string; path: string | null };
+  named: Person[];
+  heads: Person[];
+  can_edit: boolean;
 }
 
 /** POST /admin/users: the new user; with email on (#457), whether the invite email went. */
@@ -1361,13 +1460,16 @@ export interface AuditEntry {
   action: string;
   // File management A3, A5: the row's family, its document (deleted: true once gone) and folder,
   // names filled in when shown; details hold resolved names (folder_path, from_name, to_name).
+  // PRD 7 (#601): in the access activity, a file Management can't see has no id, the name
+  // "a file you can't see", and no folder, version or details but `self`.
   actor_id?: string | null;
   family_id?: string | null;
-  document?: { id: string; name: string | null; version_no: number | null; deleted: boolean } | null;
+  document?: { id: string | null; name: string | null; version_no: number | null; deleted: boolean } | null;
   folder?: { id: string; path: string } | null;
   actor_name: string | null;
   target_type: string | null;
   target_id: string | null;
+  subject_id?: string | null; // PRD 7 (#601): the person an access change is about
   subject_name?: string | null; // a "user" row's person, by name (issue 375); null once removed
   details: Record<string, unknown>;
   created_at: string;

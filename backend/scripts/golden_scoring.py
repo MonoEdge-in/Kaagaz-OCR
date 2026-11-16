@@ -768,6 +768,19 @@ def clarify_of(answer: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return {} if answer.get("kind") == "clarify" else None
 
 
+# #629 (Tushar, 15 Nov 2026): a property choice names its kind, its number and a place or document.
+PROPERTY_CHOICE = re.compile(r"(Gat|Survey|Khata|Plot|CTS) \S*\d\S*( \(\S+\))?, .+")
+
+
+def property_choices_labelled(clarify: Mapping[str, Any]) -> bool:
+    """True unless ``clarify`` asks which property and one of its picks is not ``PROPERTY_CHOICE``
+    (a bare number, a date, several numbers joined, no place): the clarify expectation's too."""
+    if clarify.get("question") != "Which property do you mean?":
+        return True
+    picks = [c.get("label") for c in _dicts(clarify.get("choices")) if c.get("kind") == "pick"]
+    return all(isinstance(label, str) and PROPERTY_CHOICE.fullmatch(label) for label in picks)
+
+
 def choice_labels(clarify: Mapping[str, Any]) -> list[str]:
     """Its choices' labels: a choice is a text, or {"id", "label"} (council: choices by id)."""
     choices = clarify.get("choices")
@@ -941,7 +954,8 @@ def nlq_score(
         clarify_expected=None if "clarify" not in nlq else want is not None,
         asked=asked is not None,
         choices_right=want is not None
-        and all(any(phrase_in(c, got) for got in labels) for c in want["choices"]),
+        and all(any(phrase_in(c, got) for got in labels) for c in want["choices"])
+        and property_choices_labelled(asked or {}),  # #629
         figure=None if "figure" not in nlq else figure_right(nlq["figure"], final, names),
         violations=None if "no_total" not in nlq else tuple(no_total_violations(question, final, names)),
         soft=None if "soft_not_found" not in nlq else soft_right(nlq["soft_not_found"], final, names, asker),

@@ -423,7 +423,8 @@ def test_login_sets_the_cookie_and_me_works(db: Database) -> None:
             "management": False,
             "heads": [],
             "in_department": False,
-        },  # Changed on purpose (PRD 7, #601)
+            "walled": False,
+        },  # Changed on purpose (PRD 7, #601; walled: PR 11c, #604)
         "user": {
             "id": user_id,
             "email": email,

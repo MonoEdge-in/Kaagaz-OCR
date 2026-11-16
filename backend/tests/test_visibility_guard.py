@@ -50,6 +50,7 @@ def _load_0091() -> ModuleType:
 FILTERED: dict[tuple[ModuleType, str], str] = {
     # Search and chat: the current version of a read document, not in Trash.
     (hybrid, "_WORD"): LIVE_CURRENT,
+    (hybrid, "_SOUND"): LIVE_CURRENT,  # Changed on purpose (#619): the word list's sound rung
     (hybrid, "_FUZZY"): LIVE_CURRENT,
     (hybrid, "_MEANING"): LIVE_CURRENT,
     (hybrid, "_MEANING_EXACT"): LIVE_CURRENT,

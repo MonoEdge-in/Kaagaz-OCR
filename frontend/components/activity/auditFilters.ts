@@ -1,5 +1,6 @@
 // The admin Activity tab's filters (File management A5, A6): person, folder (with its
-// subfolders), file, action and date range, as chips and as the request. Pure functions,
+// subfolders), file, action and date range, as chips and as the request; PRD 7 (#601): and whom
+// an access change is about (About a person). Pure functions,
 // unit tested in node (tests/file-management.test.ts).
 
 import type { AuditParams } from "@/lib/api";
@@ -8,6 +9,7 @@ import { ACTION_CHOICES, ACTIVITY_TEXT } from "./words";
 
 export interface AuditFilters {
   actorId: string | null;
+  subjectId: string | null; // PRD 7 (#601): About a person
   folderId: string | null;
   document: { id: string; name: string } | null;
   actions: readonly string[];
@@ -17,6 +19,7 @@ export interface AuditFilters {
 
 export const NO_AUDIT_FILTERS: AuditFilters = {
   actorId: null,
+  subjectId: null,
   folderId: null,
   document: null,
   actions: [],
@@ -28,6 +31,7 @@ export const NO_AUDIT_FILTERS: AuditFilters = {
 export function auditParams(filters: AuditFilters): AuditParams {
   return {
     user_id: filters.actorId ?? undefined,
+    subject_id: filters.subjectId ?? undefined,
     folder_id: filters.folderId ?? undefined,
     document_id: filters.document?.id ?? undefined,
     action: filters.actions.length > 0 ? filters.actions : undefined,
@@ -40,6 +44,7 @@ export function auditParams(filters: AuditFilters): AuditParams {
 export function auditFilterCount(filters: AuditFilters): number {
   return [
     filters.actorId !== null,
+    filters.subjectId !== null,
     filters.folderId !== null,
     filters.document !== null,
     filters.actions.length > 0,
@@ -52,8 +57,8 @@ const named = (name: string, value: string | null) => (value === null ? name : `
 /** Each chip's words, saying what it is set to. */
 export function auditChipTexts(
   filters: AuditFilters,
-  names: { person: string | null; folder: string | null },
-): { person: string; folder: string; file: string; action: string; date: string } {
+  names: { person: string | null; about: string | null; folder: string | null },
+): { person: string; about: string; folder: string; file: string; action: string; date: string } {
   const actions = filters.actions.map(
     (action) => ACTION_CHOICES.find((choice) => choice.action === action)?.label ?? action,
   );
@@ -71,6 +76,7 @@ export function auditChipTexts(
           : null;
   return {
     person: named(ACTIVITY_TEXT.person, names.person),
+    about: names.about === null ? ACTIVITY_TEXT.about : `About: ${names.about}`,
     folder: named(ACTIVITY_TEXT.folder, names.folder),
     file: named(ACTIVITY_TEXT.file, filters.document?.name ?? null),
     action: named(ACTIVITY_TEXT.action, action),
