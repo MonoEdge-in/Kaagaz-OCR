@@ -3,8 +3,8 @@
 The organisation is test_isolation_access_views' ``_walled`` one, with five groups written as the
 finder leaves them (members and pairs, as the owner):
 
-* ``open``: sales (open), top (no folder), loose (open) and gone (Sales, in Trash); sales~top,
-  top~loose, sales~gone.
+* ``open``: sales (open), top (no folder), loose (open), gone (Sales, in Trash) and lone (Sales);
+  sales~top, top~loose, sales~gone, and lone~gone, lone's only reason, so lone is never shown.
 * ``walled``: fin (Finance, Department only), sal (Salaries, private), given (Finance, given to the
   plain reviewer) and trashed (Salaries, in Trash); fin~sal, sal~given, fin~trashed.
 * ``chain``: a~c, c~b, b~e, e~f, where a, c, e and f are in Sales and b in Finance.
@@ -43,8 +43,9 @@ _STATES = (
     "SELECT document_id::text, state, decided_by::text FROM version_group_members WHERE customer_id = :c"
 )
 GROUPS = {
-    "open": (["sales", "top", "loose", "gone"],
-             [("sales", "top", 0.9), ("top", "loose", 0.85), ("sales", "gone", 0.99)]),
+    "open": (["sales", "top", "loose", "gone", "lone"],
+             [("sales", "top", 0.9), ("top", "loose", 0.85), ("sales", "gone", 0.99),
+              ("lone", "gone", 0.95)]),
     "walled": (["fin", "sal", "given", "trashed"],
                [("fin", "sal", 0.95), ("sal", "given", 0.9), ("fin", "trashed", 0.99)]),
     "chain": (["a", "c", "b", "e", "f"],
@@ -52,7 +53,7 @@ GROUPS = {
     "locked": (["locked", "x", "y"], [("locked", "x", 0.9), ("x", "y", 0.9), ("locked", "y", 0.9)]),
     "duo": (["p", "q"], [("p", "q", 0.9)]),
 }  # fmt: skip
-EXTRA = dict.fromkeys(("gone", "a", "c", "e", "f", "x", "y", "p", "q"), "sales") | {"b": "finance"}
+EXTRA = dict.fromkeys(("gone", "lone", "a", "c", "e", "f", "x", "y", "p", "q"), "sales") | {"b": "finance"}
 
 
 def _org(api: Api) -> tuple[Org, dict[str, str]]:
@@ -171,6 +172,7 @@ def test_a_group_never_names_a_file_in_trash_and_says_why_in_plain_words(db: Dat
     ]
     said = json.dumps(group)
     assert org.files["gone"] not in said and "gone.pdf" not in said
+    assert org.files["lone"] not in said  # its only reason is with the file in Trash
     walled = _get(org.people["management"], f"/version-groups/{ids['walled']}")[1]
     sal = next(f for f in walled["files"] if f["name"] == "sal.pdf")
     assert sorted(r["with"] for r in sal["reasons"]) == sorted([org.files["fin"], org.files["given"]])
