@@ -805,6 +805,8 @@ const ACTION_WORDS: Record<string, string> = {
   "version.kept_apart": "Marked as not versions",
   "version.kept_apart_undone": "Undid not versions",
   "version.later": "Left for later",
+  "version.linked": "Linked files as versions", // #648 (V-A): the admin log only
+  "version.unlinked": "Undid linking versions",
   "audit.export": "Exported the activity",
   // #482 and #481 (3 Nov 2026): reads logged since, and the super admin's two-step rule.
   "search.run": "Searched inside documents",

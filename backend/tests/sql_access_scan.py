@@ -56,6 +56,8 @@ CONTENT = frozenset(
         # Changed on purpose (#648, 0098): the version finder's pairs and groups point at documents.
         "version_pairs",
         "version_group_members",
+        # Changed on purpose (#648, 0100): a link's snapshot points at its family.
+        "version_links",
     ]
 )
 PLACES = frozenset({"documents", "folders", "trashed_folders"})

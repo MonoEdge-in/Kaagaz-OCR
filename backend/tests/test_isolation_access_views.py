@@ -391,6 +391,8 @@ VIEW_READERS = {
     },
     "db/user_words.py": {"_SPOTS"},
     "db/version_groups.py": {"_DECIDE", "_MEMBERS", "_PAIRS"},  # Changed on purpose (#648): possible versions
+    # Changed on purpose (#648, V-A): what a link may take, checked version by version; Kept apart.
+    "db/version_links.py": {"_KEPT_APART", "_STATE"},
     "db/versions.py": {"_ALLOWED", "_CANDIDATE", "_FOR_DOCUMENT", "_IN_BATCH", "_LIVE", "_VIEW"},
     "db/visibility.py": {"LIVE_SUGGESTION", "SEEN_DOCUMENT"},
     # Changed on purpose (#603 W4): the WhatsApp channel, as the person, in the app's role; never a worker.

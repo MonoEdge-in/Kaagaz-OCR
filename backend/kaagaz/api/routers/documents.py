@@ -193,6 +193,7 @@ from kaagaz.db import folders as folders_sql
 from kaagaz.db import tags as tags_sql
 from kaagaz.db import trashed_folders as trashed_sql
 from kaagaz.db import upload_sessions as upload_sessions_sql
+from kaagaz.db import version_links as links_sql
 from kaagaz.db import versions as versions_sql
 from kaagaz.db import zip_unpacks as unpacks_sql
 from kaagaz.db.documents import (
@@ -1408,6 +1409,10 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         typed = listing.invoice_for(conn, customer_id, target)
         links = listing.document_links(conn, customer_id, target)
         suggestion = versions_sql.for_document(conn, customer_id, target, str(row["family_id"]))
+        # #648 (V16): the family's link and whether Undo still can, for the Admins and Management who
+        # link; null for anyone else.
+        may_link = user.role == "admin" or access_sql.me(conn)[0]
+        link = links_sql.family_link(conn, customer_id, str(row["family_id"])) if may_link else None
         unpack = zip_unpacks(conn, customer_id, [row]).get(target)
         audit.record_view(conn, customer_id, actor_user_id=user.user_id, document_id=target)  # A1
     document_date = None if facts is None else facts["document_date"]
@@ -1441,6 +1446,7 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         "read_model": row["read_model"],
         # File management V6: the pending suggestion with the banner's reasons in plain words.
         "version_suggestion": suggestion,
+        "version_link": link,
         # PRD 7 section 14 (#600): the pages turned for everyone, [{page_no, turn}].
         "page_turns": turns,
     }
@@ -1482,6 +1488,7 @@ def _locked_detail(
         "links": [],
         "read_model": None,
         "version_suggestion": None,
+        "version_link": None,
     }
 
 

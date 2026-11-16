@@ -88,6 +88,8 @@ GONE_FIRST = {
     ("version_suggestions", "users"),
     # Changed on purpose (0099, #648): cascades from its document, NO ACTION to who decided
     ("version_group_members", "users"),
+    # Changed on purpose (0100, #648): cascades from its family, NO ACTION to who linked and undid it
+    ("version_links", "users"),
 }
 
 

@@ -87,6 +87,9 @@ belong to no organisation and no role reads them.
 
 The version finder (0099, #648, NEEDS VRUSHIT'S APPROVAL): its runs, pairs and group members, never
 deleted by the app; only a member's decision is ever changed.
+
+Linking files as versions (0100, #648, NEEDS VRUSHIT'S APPROVAL): a link's snapshot, read and added
+by the app, never deleted; only its Undo is ever recorded on it.
 """
 
 import re
@@ -257,6 +260,9 @@ FROM_0099 = {
     "version_pairs": (True, True, False, False),
     "version_group_members": (True, True, False, False),
 }
+# Changed on purpose (#648, 0100): a link's snapshot, read and added; only its Undo recorded.
+FROM_0100 = {"version_links": (True, True, False, False)}
+UPDATES_0100 = {"version_links": {"undone_by", "undone_at"}}
 UPDATES_0099 = {
     "version_finder_runs": {"after_id", "looked_at", "finished_at", "groups"},
     "version_group_members": {"state", "decided_by", "decided_at"},
@@ -526,6 +532,8 @@ OWNER_RIGHTS = {
     # way's "Link <code>" from the number (yes or no).
     "kaagaz_whatsapp_may_send": ("text", EMPTY_PATH),
     "kaagaz_whatsapp_phone_code": ("boolean", EMPTY_PATH),
+    # Changed on purpose (#648, 0100): a link's stories re-keyed, Admins and Management, checked inside.
+    "kaagaz_move_stories": ("SETOF uuid", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"
@@ -817,6 +825,7 @@ TRIGGER_RIGHTS = dict.fromkeys(
         "kaagaz_user_switched",  # Changed on purpose (#601, 0090)
         "kaagaz_lock_grants_follow",  # Changed on purpose (#605, 0093)
         "kaagaz_refuse_locked_content",  # Changed on purpose (#605, 0093)
+        "kaagaz_version_joined",  # Changed on purpose (#648, 0100)
     ),
     ("trigger", EMPTY_PATH),
 ) | {
@@ -893,6 +902,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0094)  # Changed on purpose (#617, 0094)
         | set(FROM_0097)  # Changed on purpose (#603, 0097)
         | set(FROM_0099)  # Changed on purpose (#648, 0099)
+        | set(FROM_0100)  # Changed on purpose (#648, 0100)
     )
 
     with db.system() as conn:
@@ -978,6 +988,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0094  # Changed on purpose (#617, 0094)
         | FROM_0097  # Changed on purpose (#603, 0097)
         | FROM_0099  # Changed on purpose (#648, 0099)
+        | FROM_0100  # Changed on purpose (#648, 0100)
     ).items():
         assert granted[table] == expected, table
 
@@ -1109,6 +1120,8 @@ def test_the_app_may_update_only_the_decision_of_a_possible_version(db: Database
     """0099 (#648): never a member's file, group or place, so a decision can't move a file into
     another group; never a pair's files or scores; never a run's organisation or start."""
     assert {table: _updatable(db, table) for table in UPDATES_0099} == UPDATES_0099
+    # Changed on purpose (#648, 0100): a link's versions, family and snapshot never change; its Undo is.
+    assert {table: _updatable(db, table) for table in UPDATES_0100} == UPDATES_0100
     assert _updatable(db, "version_pairs") == set()
 
 
@@ -1242,6 +1255,7 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
         | set(FROM_0097)
         - {"whatsapp_org_settings"}  # Changed on purpose (#603, 0097): it has no key but its own
         | {"version_pairs", "version_group_members"}  # Changed on purpose (#648, 0099)
+        | {"version_links"}  # Changed on purpose (#648, 0100)
         | {"pages", "model_usage", "documents"}  # documents.owner_id (0041)
     )
     for name, _table, _parent, columns, parent_columns in between:

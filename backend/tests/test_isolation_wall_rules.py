@@ -360,11 +360,10 @@ def test_a_join_or_undo_with_a_file_given_to_them_in_department_only_needs_the_r
     assert _place(db, new)[0] is None
     assert _call(org.people["management"], "POST", accept, {})[0] == 200
     assert _place(db, new)[0] == org.folders["finance"]
-    _owner(  # a share reaches the versions live when it is given: this one is given to them too
-        db,
-        "INSERT INTO document_shares (customer_id, document_id, user_id) VALUES (:c, :d, :u)",
-        {"c": org.c, "d": new, "u": plain.user_id},
-    )
+    # Changed on purpose (#648, 0100): the join itself gives the joining version its family's people
+    # (kaagaz_version_joined), so the file given to them is given to them in this version already.
+    given = "SELECT 1 FROM document_shares WHERE customer_id = :c AND document_id = :d AND user_id = :u"
+    assert len(_owner(db, given, {"c": org.c, "d": new, "u": plain.user_id})) == 1
     undo = _call(plain, "POST", f"/api/documents/{new}/version-undo", {})
     assert _code(undo) == (403, "move_changes_access")
     assert _place(db, new)[0] == org.folders["finance"]

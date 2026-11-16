@@ -118,7 +118,7 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     Changed on purpose (#603, 16 Nov 2026): Kaagaz on WhatsApp's tables (0097) follow 0096, and
     its voice notes' spend (0098) follows 0097.
     Changed on purpose (#648, 16 Nov 2026): the version finder (0099, 0098 on its branch) follows
-    0098 and is the head."""
+    0098, and linking files as versions (0100) follows 0099 and is the head."""
     scripts = _scripts()
     assert scripts.get_revision("0082").down_revision == "0081"
     assert scripts.get_revision("0083").down_revision == "0082"
@@ -139,4 +139,5 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     assert scripts.get_revision("0097").down_revision == "0096"
     assert scripts.get_revision("0098").down_revision == "0097"
     assert scripts.get_revision("0099").down_revision == "0098"
-    assert scripts.get_heads() == ["0099"]
+    assert scripts.get_revision("0100").down_revision == "0099"
+    assert scripts.get_heads() == ["0100"]
