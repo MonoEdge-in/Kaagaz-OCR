@@ -41,6 +41,8 @@ from kaagaz.db.folders import Place, _lock_tree, place_of
 from kaagaz.db.sqlstate import sqlstate
 from kaagaz.db.trash import LIVE_FOLDERS, lock_live_family
 
+# The most versions one link may leave in a family (review on #658).
+MAX_VERSIONS = 200
 # A version still being read: received (waiting) or clean (scanned, its reading under way).
 BEING_READ = ("received", "clean")
 # A version's number while a link or its Undo renumbers (unique within a family, 0002).
@@ -250,6 +252,8 @@ def prepare(
         raise Refused("changed")  # linked, separated or deleted before its family's lock was taken
     if not all(row["seen"] for row in rows.values()):
         raise Refused("not_found")
+    if len(rows) > MAX_VERSIONS:
+        raise Refused("too_many_versions")
     if len(families) < len(asked):
         raise Refused("already_versions")
     if any(row["in_trash"] for row in rows.values()):

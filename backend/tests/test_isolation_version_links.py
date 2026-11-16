@@ -760,3 +760,15 @@ def test_undo_of_a_file_going_back_where_the_person_cant_see_it_is_kept(db: Data
     assert (status, reply) == (200, {"id": org.files["fin"], "undone": True})
     fin = _state(db, org, "fin")["fin"]
     assert (fin["family_id"], fin["folder_id"]) == ("fin", org.folders["finance"])
+
+
+def test_a_link_of_too_many_versions_is_refused(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review 9: at most MAX_VERSIONS versions in one link (here 3: g1, g2, x and y are 4)."""
+    org = _org(Api(db))
+    management = org.people["management"]
+    monkeypatch.setattr(links_sql, "MAX_VERSIONS", 3)
+    before = _everything(db, org)
+    status, reply = _link(management, org, ["g2", "x", "y"], "x")
+    assert (status, reply["error"]["code"]) == (409, "too_many_versions")
+    assert _everything(db, org) == before
+    assert _link(management, org, ["x", "y"], "x")[0] == 200

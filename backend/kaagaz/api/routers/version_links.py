@@ -58,6 +58,7 @@ _MESSAGES = {
     "not_ready": "A file here is still being read. Try again once it is ready.",
     "already_versions": "Some of these files are already versions of one file.",
     "changed": "These files changed just now. Try again.",
+    "too_many_versions": f"Together these files have over {links_sql.MAX_VERSIONS} versions. Link fewer.",
     "not_linked": "These versions weren't linked here, so there is nothing to undo.",
     "not_newest": "The versions changed since they were linked, so this can't be undone.",
     "folder_gone": "A folder these files were in is gone, so this can't be undone. Move them by hand.",
