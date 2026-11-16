@@ -245,6 +245,11 @@ def test_not_versions_is_kept_until_undone_and_audited(db: Database) -> None:
         ("version.kept_apart", management.user_id, fin, ids["walled"]),
         ("version.kept_apart_undone", management.user_id, fin, ids["walled"]),
     ]
+    # Undo in a group with a file hidden from the Admin (b): for them the group doesn't exist.
+    a = org.files["a"]
+    assert _post(management, f"/version-groups/{ids['chain']}/keep-apart", [a])[0] == 200
+    assert _post(org.people["admin"], f"/version-groups/{ids['chain']}/keep-apart/undo", [a])[0] == 404
+    assert _states(db, org)["a"][0] == "kept_apart"
 
 
 def test_a_group_with_under_two_files_left_leaves_the_list_but_keeps_its_undo(db: Database) -> None:
