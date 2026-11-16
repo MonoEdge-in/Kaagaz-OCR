@@ -48,10 +48,6 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     # Changed on purpose (#601): a department's kind change, refused while in use. (PR 9a, #606: the
     # Access page's files given, a file's place, the audit rows' folder and family and the walls'
     # preview counts read 0091's functions now: OWNER_FN below.)
-    # Changed on purpose (#605, PR 13): the locked files a place gives, and a person may open, by name.
-    ("db/lock_places.py", "_FILES"): (ADMIN_NUMBERS, "the give pop-up: its count of files"),
-    ("db/lock_places.py", "_LOCKED"): (ADMIN_NUMBERS, "the give pop-up: GET …/locked-files"),
-    ("db/lock_places.py", "_LOCKED_FOR"): (ADMIN_NUMBERS, "GET /admin/users/{id}/access"),
     ("db/folders.py", "_IN_USE"): (
         WRITE_AFTER_CHECK,
         "PATCH /folders/{id}: _seen first, under the tree lock",

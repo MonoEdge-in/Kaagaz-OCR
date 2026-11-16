@@ -7,36 +7,28 @@ outside private folders (and, for its Head, those inside them too), or a private
 current versions out of Trash, none held for its uploader. ``open``: the person may open that
 locked file already (a lock grant). Every statement takes a connection from
 ``Database.user(customer_id, user_id)`` for an Admin, already checked by the route, and names the
-customer. The API alone calls them.
+customer. The API alone calls them, through 0094's owner-rights functions (which check the caller is
+an Admin and name the customer themselves); ``customer_id`` must be the transaction's, else none.
 """
 
 from collections.abc import Sequence
 
 from sqlalchemy import Connection, RowMapping, text
 
+# 0094 (#605): owner-rights functions, as 0091's per-person rule hides from an Admin the rows of a
+# file they can't open; each checks the caller is an Admin and names the customer itself.
 _FILES = text(
-    "SELECT count(*) FROM documents d WHERE d.customer_id = :c AND d.deleted_at IS NULL AND d.is_current"
-    " AND d.held_for IS NULL AND CASE WHEN CAST(:p AS uuid) IS NOT NULL"
-    " THEN d.private_folder_id = CAST(:p AS uuid)"
-    " ELSE d.department_id = CAST(:d AS uuid) AND (d.private_folder_id IS NULL OR :head) END"
+    "SELECT kaagaz_admin_place_files(CAST(:d AS uuid), CAST(:p AS uuid), :head)"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 _LOCKED = text(
-    "SELECT d.id, d.display_name, d.folder_id, EXISTS (SELECT 1 FROM lock_grants g"
-    " WHERE g.customer_id = d.customer_id AND g.document_id = d.id AND g.user_id = CAST(:u AS uuid)) AS open"
-    " FROM documents d WHERE d.customer_id = :c AND d.deleted_at IS NULL AND d.is_current"
-    " AND d.held_for IS NULL AND d.locked_at IS NOT NULL AND CASE WHEN CAST(:p AS uuid) IS NOT NULL"
-    " THEN d.private_folder_id = CAST(:p AS uuid)"
-    " ELSE d.department_id = CAST(:d AS uuid) AND (d.private_folder_id IS NULL OR :head) END"
-    " ORDER BY lower(d.display_name), d.id"
+    "SELECT id, display_name, folder_id, open"
+    " FROM kaagaz_admin_place_locked(CAST(:d AS uuid), CAST(:p AS uuid), :head, CAST(:u AS uuid))"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
-# The Access page: the locked files a person may open, one row a file (its current version).
 _LOCKED_FOR = text(
-    "SELECT DISTINCT ON (c.family_id) c.id, c.display_name, c.folder_id, g.given_at, g.given_by"
-    " FROM lock_grants g"
-    " JOIN documents v ON v.customer_id = g.customer_id AND v.id = g.document_id"
-    " JOIN documents c ON c.customer_id = v.customer_id AND c.family_id = v.family_id AND c.is_current"
-    " WHERE g.customer_id = :c AND g.user_id = :u AND c.deleted_at IS NULL AND c.locked_at IS NOT NULL"
-    " ORDER BY c.family_id, g.given_at"
+    "SELECT id, display_name, folder_id, given_at, given_by FROM kaagaz_admin_locked_for(CAST(:u AS uuid))"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 
 
@@ -50,7 +42,7 @@ def files(
     conn: Connection, customer_id: str, department_id: str | None, private_id: str | None, *, head: bool
 ) -> int:
     """How many files the place gives (``private_id``: a private folder's; else the department's)."""
-    return int(conn.execute(_FILES, _place(customer_id, department_id, private_id, head)).scalar_one())
+    return int(conn.execute(_FILES, _place(customer_id, department_id, private_id, head)).scalar() or 0)
 
 
 def locked(

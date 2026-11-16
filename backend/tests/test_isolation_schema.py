@@ -446,6 +446,16 @@ OWNER_RIGHTS = {
     "kaagaz_unlock": ("TABLE(document_id uuid, outcome text, version_id uuid, read boolean)", EMPTY_PATH),
     "kaagaz_lock_grant": ("text", EMPTY_PATH),
     "kaagaz_lock_revoke": ("integer", EMPTY_PATH),
+    # Changed on purpose (#605, 0094): the locked-file pop-ups' names, an Admin's only, checked inside.
+    "kaagaz_admin_place_files": ("bigint", EMPTY_PATH),
+    "kaagaz_admin_place_locked": (
+        "TABLE(id uuid, display_name text, folder_id uuid, open boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_locked_for": (
+        "TABLE(id uuid, display_name text, folder_id uuid, given_at timestamp with time zone, given_by uuid)",
+        EMPTY_PATH,
+    ),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"

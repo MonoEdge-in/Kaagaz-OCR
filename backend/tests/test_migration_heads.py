@@ -110,8 +110,9 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     Changed on purpose (#606, 15 Nov 2026): the database rule (0091) follows 0090b.
     Changed on purpose (#606, PR 9b, 15 Nov 2026): its writes over rows the person can't see (0092) follow
     0091.
-    Changed on purpose (#605, PR 12, 15 Nov 2026): locked files (0093) follow 0092 and are the
-    head."""
+    Changed on purpose (#605, PR 12, 15 Nov 2026): locked files (0093) follow 0092.
+    Changed on purpose (#605, PR 13, 16 Nov 2026): the locked-file pop-ups' names (0094) follow 0093
+    and are the head."""
     scripts = _scripts()
     assert scripts.get_revision("0082").down_revision == "0081"
     assert scripts.get_revision("0083").down_revision == "0082"
@@ -126,4 +127,5 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     assert scripts.get_revision("0091").down_revision == "0090b"
     assert scripts.get_revision("0092").down_revision == "0091"
     assert scripts.get_revision("0093").down_revision == "0092"
-    assert scripts.get_heads() == ["0093"]
+    assert scripts.get_revision("0094").down_revision == "0093"
+    assert scripts.get_heads() == ["0094"]
