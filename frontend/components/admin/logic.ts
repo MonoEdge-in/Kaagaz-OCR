@@ -59,6 +59,17 @@ export const TABS = [
 
 export type TabId = (typeof TABS)[number]["id"];
 
+/** Where an admin with an app session signs in, coming back to this admin screen (a person's
+ * Access page too, #604); anything but a plain /admin path comes back to /admin. */
+export function adminSignInPath(pathname: string): string {
+  return /^\/admin(\/[\w-]+)*$/.test(pathname) ? `/login?next=${pathname}` : "/login?next=/admin";
+}
+
+/** The tab /admin?tab=… opens (PRD 7 lead decision 12): a tab's id, else Users. */
+export function tabFrom(asked: string | undefined): TabId {
+  return TABS.find((tab) => tab.id === asked)?.id ?? "users";
+}
+
 /** Arrow keys, Home and End move between tabs (the WAI-ARIA tabs pattern). */
 export function tabAfterKey(index: number, key: string, count: number): number | null {
   switch (key) {
