@@ -50,9 +50,12 @@ until it is told to stop:
   crashes the worker.
 * Documents read before version spotting get their text fingerprint once, a pass of 50 a
   minute on idle turns, never making a suggestion (``FingerprintOld``, File management
-  section 7). Once none is missing, the same passes run the version finder (V17, #648), once per
-  organisation, 10 files a pass: it stores groups of possible versions and never links anything
-  (``kaagaz/db/version_finder.py``). It stops for good once a pass finds nothing to do.
+  section 7); it stops for good once a pass finds none. The version finder (V17, #648) is a sweep
+  of the same kind after it, under its own lock: once per organisation, an organisation only once
+  none of its files waits for a fingerprint, 10 files a pass (a full pass goes on at the next idle
+  turn), the organisations in turn; it stores groups of possible versions and never links anything
+  (``FindVersions``, ``kaagaz/db/version_finder.py``), and stops once every organisation's run
+  has finished.
 * WORKER_REPLICAS copies of this process run at once (PRD 5 Q3). Each sweep
   between jobs (the purge, EmbedMissing, StoryVectors, UpgradeLocalReads) takes
   its Postgres advisory lock ``kaagaz.sweep:<name>`` first (``sweep_lock``), on a
@@ -633,16 +636,17 @@ class StoryVectors:
 
 
 class FingerprintOld:
-    """Wraps the worker: the one-time fingerprint sweep (File management section 7, the
-    EmbedMissing pattern). After a turn the queue had nothing for, at most every
-    FINGERPRINT_EVERY, runs ``sweep`` (``old_documents``: how many it found, the fingerprints
-    and then the version finder's) under ``lock("fingerprints")``; a full pass runs again on the
-    next idle turn, and the first pass that finds none, while ``pending()`` says nothing is still
-    to do (review, #648: an organisation's finder run not finished, its switch off or a new file
-    waiting for its fingerprint), ends the sweep for this process (new documents get theirs when
-    they are read). It never makes a suggestion or a link (the version finder only stores groups
-    for a person to decide). A database error is logged by its type and swallowed, as in
-    EmbedMissing. O(1) per turn, plus one pass at most every minute."""
+    """Wraps the worker: a one-time sweep of old documents, the EmbedMissing pattern: the
+    fingerprint sweep (File management section 7, ``fingerprint_missing``) and, wrapped again with
+    its own ``name`` and ``full`` pass, the version finder (V17, #648, ``FindVersions``). After a
+    turn the queue had nothing for, at most every FINGERPRINT_EVERY, runs ``sweep`` (how many it
+    found) under ``lock(name)``; a pass of ``full`` or more runs again on the next idle turn, and
+    the first pass that finds none, while ``pending()`` says nothing is still to do (review, #648:
+    an organisation's finder run not finished, its switch off or a new file waiting for its
+    fingerprint), ends the sweep for this process (new documents get theirs when they are read).
+    It never makes a suggestion or a link (the version finder only stores groups for a person to
+    decide). A database error is logged by its type and swallowed, as in EmbedMissing. O(1) per
+    turn, plus one pass at most every minute."""
 
     def __init__(
         self,
@@ -652,12 +656,16 @@ class FingerprintOld:
         *,
         lock: SweepLock = no_lock,
         pending: Callable[[], bool] = lambda: False,
+        name: str = "fingerprints",
+        full: int = FINGERPRINT_PASS,
     ) -> None:
         self._worker = worker
         self._sweep = sweep
         self._clock = clock
         self._lock = lock
         self._pending = pending
+        self._name = name
+        self._full = full
         self._next: datetime | None = None
         self._done = False
 
@@ -669,25 +677,19 @@ class FingerprintOld:
             return False
         self._next = now + FINGERPRINT_EVERY  # noted first: a pass that fails waits too
         try:
-            with self._lock("fingerprints") as mine:
+            with self._lock(self._name) as mine:
                 found = self._sweep() if mine else None
                 pending = found == 0 and self._pending()
         except (SQLAlchemyError, BackendUnavailable) as error:
-            logger.error("fingerprint sweep failed", extra={"code": type(error).__name__})
+            logger.error("%s sweep failed", self._name, extra={"code": type(error).__name__})
             return True
         if found is None:
             return False
         self._done = found == 0 and not pending
-        if found >= FINGERPRINT_PASS:
+        if found >= self._full:
             self._next = now  # more are waiting
-        logger.info("fingerprints: %d documents", found)
+        logger.info("%s: %d documents", self._name, found)
         return True
-
-
-def old_documents(db: Database, finder: Callable[[], int]) -> int:
-    """FingerprintOld's pass: the fingerprints first; once none is missing, the version finder's
-    (V17, #648). How many documents it did."""
-    return fingerprint_missing(db) or finder()
 
 
 class FindVersions:
@@ -1035,14 +1037,15 @@ def _serve(settings: Settings) -> None:
     lock = sweep_lock(db.engine)
     pieces = EmbedMissing(PurgeHourly(jobs, purge, _utc_now, lock=lock), embed, _utc_now, lock=lock)
     stories_done = StoryVectors(pieces, stories, _utc_now, lock=lock)
+    vectors = FingerprintOld(stories_done, functools.partial(fingerprint_missing, db), _utc_now, lock=lock)
     finder = FindVersions(db)
-    vectors = FingerprintOld(
-        stories_done, functools.partial(old_documents, db, finder), _utc_now, lock=lock, pending=finder.pending
+    found = FingerprintOld(
+        vectors, finder, _utc_now, lock=lock, pending=finder.pending, name="version_finder", full=FINDER_PASS
     )
     # Q7: only Gemini's pages are ever read locally (its outage fallback).
     upgrade = functools.partial(upgrade_oldest, db, queue) if settings.ocr_engine == "gemini" else None
     upgrades = UpgradeLocalReads(
-        vectors, upgrade, lambda: gate.status()[0], _utc_now, copies=settings.worker_replicas, lock=lock
+        found, upgrade, lambda: gate.status()[0], _utc_now, copies=settings.worker_replicas, lock=lock
     )
     if settings.ocr_engine == GEMINI:
         check_env_models(db, settings)  # production QA L2: a withdrawn OCR_MODEL named at start

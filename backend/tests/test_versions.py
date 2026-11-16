@@ -4,20 +4,21 @@ two invoices of one template (#521), the banner's words (V6, NB-17), compare (V1
 list's row (V12) and the one-time fingerprint sweep's worker wrapper. The SQL: test_versions_db.py.
 """
 
+import contextlib
 import random
 import struct
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
-from kaagaz import versions, worker_main
+from kaagaz import versions
 from kaagaz.api.views import document_version
 from kaagaz.db import versions as versions_sql
-from kaagaz.db.engine import Database
 from kaagaz.db.versions import view
 from kaagaz.search.story_match import trigrams
-from kaagaz.worker_main import FINGERPRINT_PASS, FingerprintOld
+from kaagaz.worker_main import FINDER_PASS, FINGERPRINT_PASS, FingerprintOld
 
 _ENGLISH = (  # noqa: SIM905 - a word list reads best as words
     "the tenant shall pay rent of rupees every month to landlord on or before fifth day agreement"
@@ -528,17 +529,31 @@ def test_v17_a_pass_with_nothing_due_ends_the_sweep_only_once_nothing_is_pending
     assert not wrapper.run_once() and len(calls) == 3
 
 
-def test_v17_the_finder_runs_after_the_fingerprints_in_the_same_passes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#648: a pass that found fingerprints to write does no finding; once none is missing it finds;
-    the sweep ends only when neither has anything left."""
-    missing, finding = [2, 0, 0], [7, 0]
-    monkeypatch.setattr(worker_main, "fingerprint_missing", lambda _db: missing.pop(0))
-    no_database = cast(Database, None)  # the two passes are stand-ins: no database is reached
-    passes = [worker_main.old_documents(no_database, lambda: finding.pop(0)) for _ in range(3)]
-    assert passes == [2, 7, 0]
-    assert missing == finding == []
+class _Busy:
+    def run_once(self) -> bool:
+        return True
+
+
+def test_v17_a_full_finder_pass_runs_again_on_the_next_idle_turn_and_jobs_go_first() -> None:
+    """Review (#648): the finder's own sweep (its lock, its pass of FINDER_PASS files): a full pass
+    asks for the next idle turn, as a full fingerprint pass does; a shorter one waits a minute; a
+    turn with a job never runs it."""
+    now = [datetime(2026, 10, 20, tzinfo=UTC)]
+    found = [FINDER_PASS, 3]
+    locks: list[str] = []
+
+    @contextlib.contextmanager
+    def lock(name: str) -> Iterator[bool]:
+        locks.append(name)
+        yield True
+
+    finder = FingerprintOld(
+        _Idle(), lambda: found.pop(0), lambda: now[0], lock=lock, name="version_finder", full=FINDER_PASS
+    )
+    assert finder.run_once() and finder.run_once()  # a full pass: the next idle turn goes on
+    assert not finder.run_once() and found == []  # 3: the next waits a minute
+    assert locks == ["version_finder", "version_finder"]
+    assert FingerprintOld(_Busy(), lambda: found.pop(), lambda: now[0]).run_once()  # a job: no pass
 
 
 # --- V17 (#648): the version finder's groups -------------------------------------------------
