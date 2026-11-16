@@ -23,6 +23,7 @@ from kaagaz.db.trash import (
     trash_document,
 )
 from tests.db_support import insert_document, name_session, new_customer, wait_until_blocked
+from tests.test_migration_0037 import _load
 
 pytestmark = pytest.mark.db
 
@@ -112,7 +113,11 @@ def test_trash_statements_use_the_fragments() -> None:
     assert visibility.TRASHED in trash._RESTORE
     assert visibility.TRASHED in trash._PURGE_PICK
     assert visibility.TRASHED in trash._PURGE_LOCK
-    assert visibility.TRASHED in folders._DETACH_TRASHED
+    # Changed on purpose (PR 9b, #606): folders._DETACH_TRASHED's statement is 0092's kaagaz_detach_trashed.
+    assert "kaagaz_detach_trashed" in folders._DETACH_TRASHED
+    assert (
+        visibility.TRASHED in _load("0092_database_rule_writes.py").FUNCTIONS["kaagaz_detach_trashed(uuid[])"]
+    )
 
 
 # --- trash and restore ----------------------------------------------------------------
@@ -134,7 +139,7 @@ def test_trash_and_restore_act_on_the_whole_family(db: Database) -> None:
     }
 
     with db.customer(customer) as conn:
-        assert restore_document(conn, customer, third) is True
+        assert restore_document(conn, customer, third, by=admin) is not None
     assert _state(db, customer) == dict.fromkeys((first, second, third, unrelated), (None, None))
 
 
@@ -147,8 +152,8 @@ def test_trash_keeps_the_first_time_and_restore_of_a_live_family_changes_nothing
     assert _state(db, customer) == {first: (NOW, admin), second: (NOW, admin)}
 
     with db.customer(customer) as conn:
-        restore_document(conn, customer, first)
-        assert restore_document(conn, customer, second) is True
+        restore_document(conn, customer, first, by=admin)
+        assert restore_document(conn, customer, second, by=admin) is not None
     assert _state(db, customer) == {first: (None, None), second: (None, None)}
 
 
@@ -163,7 +168,7 @@ def test_trash_and_restore_of_a_missing_or_other_customers_document_are_false(db
         for document in (str(uuid.uuid4()), theirs):
             assert trash_document(conn, customer, document, by=admin, now=NOW) is False
         for document in (str(uuid.uuid4()), binned):
-            assert restore_document(conn, customer, document) is False
+            assert restore_document(conn, customer, document, by=admin) is None
     assert _state(db, other) == {theirs: (None, None), binned: (NOW, other_admin)}
 
 
@@ -187,17 +192,17 @@ def test_a_restore_waits_for_a_trash_of_the_same_family(db: Database) -> None:
         first, second = _family(conn, customer, 2)
     session = f"trash-{uuid.uuid4().hex[:16]}"
 
-    def restore_second() -> bool:
+    def restore_second() -> trash.Placed | None:
         with db.customer(customer) as conn:
             name_session(conn, session)
-            return restore_document(conn, customer, second)
+            return restore_document(conn, customer, second, by=admin)
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         with db.customer(customer) as conn:
             assert trash_document(conn, customer, first, by=admin, now=NOW) is True
             restoring = pool.submit(restore_second)
             wait_until_blocked(db, application_name=session)
-        assert restoring.result(timeout=10) is True
+        assert restoring.result(timeout=10) is not None
 
     assert _state(db, customer) == {first: (None, None), second: (None, None)}
 
@@ -224,10 +229,10 @@ def test_a_family_that_grows_while_a_trash_waits_still_queues(db: Database) -> N
             go.wait(timeout=10)
             conn.execute(text(trash._TRASH), {"c": customer, "f": first, "by": admin, "now": NOW})
 
-    def restore() -> bool:
+    def restore() -> trash.Placed | None:
         with db.customer(customer) as conn:
             name_session(conn, restorer)
-            return restore_document(conn, customer, first)
+            return restore_document(conn, customer, first, by=admin)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         with db.customer(customer) as conn:  # the version insert, under the family lock
@@ -240,7 +245,7 @@ def test_a_family_that_grows_while_a_trash_waits_still_queues(db: Database) -> N
         wait_until_blocked(db, application_name=restorer)
         go.set()
         trashing.result(timeout=10)
-        assert restoring.result(timeout=10) is True
+        assert restoring.result(timeout=10) is not None
 
     assert _state(db, customer) == {first: (None, None), smaller: (None, None)}
 

@@ -70,7 +70,8 @@ def test_the_words() -> None:
     ]
     # Generic words and one-digit words never count; alternatives are 4+ letters only.
     assert words("the land papers of 7 kagaz file") == [("land", ("jamin", "bhumi"))]
-    assert words("loan tax name") == [("loan", ("karja",)), ("tax", ("jiesati",)), ("name", ())]
+    # Changed on purpose (#622): "name" is a request word now, never a word of the question.
+    assert words("loan tax name") == [("loan", ("karja",)), ("tax", ("jiesati",))]
     assert words("दरेगाव जमीन ७/१२ जमीन") == [("daregav", ()), ("jamin", ("bhumi",)), ("7/12", ())]
     assert words("INV-1042 inv-1042 2 11") == [("inv-1042", ()), ("11", ())]
     assert len(m.question_words(" ".join(f"word{chr(97 + i)}x" for i in range(20)))) == m.WORDS_MAX == 12

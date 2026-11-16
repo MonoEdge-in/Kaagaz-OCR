@@ -123,6 +123,15 @@ def test_question_words_and_fillers_give_no_sound_term() -> None:
     assert sound_query("kon kiti kuthe the and of this month") == ""  # date words too
 
 
+def test_request_words_give_no_sound_term() -> None:
+    # #622 (production, 15 Nov 2026): "find", "seen", "other", "document" and "name" matched most
+    # pieces by sound, so the word list ran past its timeout.
+    assert sound_query("Can you find me the measurement of this if it is seen in any other document?") == (
+        "mesurement:* | mesuremen | mesureme | mesurem | mesure | mesur | mesu"
+    )
+    assert sound_query("which document have krishna jindal name") == "krisn:* | kris ; jindl:* | jind"
+
+
 def test_the_sound_query_leaves_out_identifiers_and_anything_but_letters() -> None:
     assert sound_query("gat48 INV-1042 ४७ malak") == "mlk:*"
     assert sound_query("'mlk' | !x & y:* <-> (z)") == "mlk"  # nothing but [a-z] terms survive

@@ -14,10 +14,18 @@ from typing import Any
 import pytest
 from sqlalchemy import text
 
+from kaagaz.db import folders, trash
 from kaagaz.db.documents import PgDocuments, add_version
 from kaagaz.db.engine import Database
 from kaagaz.ingestion.ports import DocumentRecord
-from tests.db_support import insert_document, name_session, new_customer, new_library, wait_until_blocked
+from tests.db_support import (
+    insert_document,
+    insert_folder,
+    name_session,
+    new_customer,
+    new_library,
+    wait_until_blocked,
+)
 
 pytestmark = pytest.mark.db
 
@@ -98,3 +106,46 @@ def test_two_versions_at_once_get_2_and_3_never_the_same_number(db: Database) ->
         (first, 3, True),
     ]
     assert [(v[2], v[3]) for v in _versions(db, customer)] == [(1, True), (2, False), (3, False)]
+
+
+def test_a_new_version_and_a_folder_made_private_meanwhile_both_finish(db: Database) -> None:
+    """#601: a new version takes the tree lock before the family lock, as making a folder private
+    does (the Private route takes the tree lock, then the folder, then its files' families). With
+    the family lock first, the version would hold the family and wait for the folder (its
+    trigger's FOR SHARE) while Private held the folder and waited for the family: a deadlock.
+    A third session holds the family first, so both are queued before either can go on."""
+    customer, user = new_customer(db)
+    with db.customer(customer) as conn:
+        bills = insert_folder(conn, customer, user, "Bills")
+        inside = insert_folder(conn, customer, user, "2026", bills)
+        first = insert_document(conn, customer, folder_id=inside)
+    adding, private = (f"{name}-{uuid.uuid4().hex[:12]}" for name in ("version", "private"))
+    added: list[tuple[DocumentRecord, bool] | None] = []
+
+    def new_version() -> None:
+        with db.customer(customer) as conn:
+            name_session(conn, adding)
+            added.append(add_version(conn, _record(customer), of_document_id=first))
+
+    def make_private() -> None:
+        with db.customer(customer) as conn:
+            name_session(conn, private)
+            folders._lock_tree(conn, customer)
+            conn.execute(text("UPDATE folders SET private = true WHERE id = :f"), {"f": bills})
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        with db.customer(customer) as conn:
+            assert trash.lock_family(conn, customer, first) == first  # as saving a reading
+            version = pool.submit(new_version)
+            wait_until_blocked(db, application_name=adding)
+            switch = pool.submit(make_private)
+            wait_until_blocked(db, application_name=private)
+        version.result(timeout=20)
+        switch.result(timeout=20)
+
+    assert added[0] is not None and added[0][1]
+    with db.customer(customer) as conn:
+        rows = conn.execute(
+            text("SELECT private_folder_id FROM documents WHERE family_id = :f"), {"f": first}
+        ).all()
+    assert [str(row[0]) for row in rows] == [bills, bills]

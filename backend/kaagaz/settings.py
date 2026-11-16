@@ -204,6 +204,11 @@ class Settings:
     # while unset. docker-compose.yml sets it only for the worker, and only once .env names the
     # workers' own login (JOBS_DATABASE_URL), which alone may switch into it.
     db_worker_role: str
+    # PRD 7 (#606, decision 22): what the API and the worker do at start-up with a login the database
+    # rule can't hold (an owner, a superuser, one that skips row level security or can switch into the
+    # worker or operator role): "warn" (the laptop and CI, which sign in as the owner) or "refuse" (a
+    # server, set in its .env once its logins are the limited ones).
+    db_login_check: str
 
     # File storage (S3 API: SeaweedFS on the laptop, Amazon S3 in AWS).
     storage_endpoint_url: str | None
@@ -693,6 +698,9 @@ class Settings:
             ops_database_url=env.optional("OPS_DATABASE_URL") or env.text("DATABASE_URL"),
             db_app_role=env.text("DB_APP_ROLE"),
             db_worker_role=env.optional("DB_WORKER_ROLE") or env.text("DB_APP_ROLE"),
+            db_login_check=(
+                env.choice("DB_LOGIN_CHECK", {"warn", "refuse"}) if env.optional("DB_LOGIN_CHECK") else "warn"
+            ),
             storage_endpoint_url=env.optional("STORAGE_ENDPOINT_URL"),
             storage_region=env.text("STORAGE_REGION"),
             storage_bucket=env.text("STORAGE_BUCKET"),

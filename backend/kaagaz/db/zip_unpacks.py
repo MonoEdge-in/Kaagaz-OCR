@@ -13,7 +13,9 @@ also filters on ``customer_id`` (two locks, docs/architecture.md).
 * ``place``: what decides whether the zip is unpacked at all. Only a zip a person uploaded on its
   own is: a first version, with an uploader, out of Trash, and not a file of a folder upload
   (one of any upload's batches, ``batch_for``): a zip inside a zip, or inside a folder upload,
-  is kept as an ordinary file and not read.
+  is kept as an ordinary file and not read. PRD 7 (#601): so is a zip held for its uploader (an
+  upload with no folder once the organisation keeps something to some people): its folder would
+  be made at the top level, open to everyone.
 * ``unpacks``: each zip's upload with its items counted by state and failure code, and its first
   SHOWN_SKIPPED refused files in order, for the zip's document (the result line).
 """
@@ -47,7 +49,8 @@ class Place:
 
 _PLACE = text(
     "SELECT d.uploaded_by, d.folder_id,"
-    " d.version_no = 1 AND d.uploaded_by IS NOT NULL AND d.deleted_at IS NULL AND NOT EXISTS ("
+    " d.version_no = 1 AND d.uploaded_by IS NOT NULL AND d.deleted_at IS NULL AND d.held_for IS NULL"
+    " AND NOT EXISTS ("
     "SELECT 1 FROM folder_upload_items i WHERE i.customer_id = :c AND i.batch_id = d.batch_id),"
     " u.id IS NOT NULL, u.parent_folder_id, coalesce(u.source_name, '')"
     " FROM documents d LEFT JOIN folder_uploads u ON u.customer_id = :c AND u.id = :u"
@@ -87,7 +90,7 @@ def attach(conn: Connection, customer_id: str, upload_id: str, document_id: str)
 @dataclass(frozen=True, slots=True)
 class Unpack:
     upload_id: str
-    root_folder_id: str | None  # None once that folder is deleted
+    root_folder_id: str | None  # None once that folder is deleted (the API: or one not seen, #601)
     root_name: str
     file_count: int  # every file of the zip that isn't a Mac's own, refused ones too
     stored: int

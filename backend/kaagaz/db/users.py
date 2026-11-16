@@ -257,7 +257,7 @@ _ADMIN_COLUMNS = (
     " u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
     " u.locked_until, u.totp_enabled_at, u.totp_off_at, u.must_change_password,"
     " u.session_version, u.delete_forever_allowed_at, EXISTS (SELECT 1 FROM customers c"
-    " WHERE c.id = u.customer_id AND c.admin_two_step_required) AS two_step_required"
+    " WHERE c.id = u.customer_id AND c.admin_two_step_required) AS two_step_required, u.management"
 )
 
 
@@ -574,6 +574,19 @@ def admin_contacts(conn: Connection, customer_id: str, *, management: bool = Fal
     return [(str(row[0]), str(row[1])) for row in rows]
 
 
+def access_watchers(conn: Connection, customer_id: str, *, but: str) -> list[tuple[str, str]]:
+    """Every enabled Management person's and admin's (e-mail, name) but ``but``'s, for "access was
+    given" (PRD 7, #601). O(users of this customer)."""
+    rows = conn.execute(
+        text(
+            "SELECT email, display_name FROM users WHERE customer_id = :c AND (management OR role = 'admin')"
+            " AND NOT disabled AND id <> :but ORDER BY email"
+        ),
+        {"c": customer_id, "but": but},
+    )
+    return [(str(row[0]), str(row[1])) for row in rows]
+
+
 def awaiting_confirm(conn: Connection, customer_id: str, user_id: str) -> tuple[str, str] | None:
     """The (e-mail, name) of an enabled user whose e-mail is not confirmed yet and whose
     customer is a sign-up waiting for an operator (0061), for "Send the link again" (#457);
@@ -727,6 +740,23 @@ def set_delete_forever(
                 " RETURNING" + _ADMIN_COLUMNS
             ),
             {"c": customer_id, "u": user_id, "allowed": allowed, "now": now},
+        )
+        .mappings()
+        .first()
+    )
+
+
+def set_management(conn: Connection, customer_id: str, user_id: str, *, on: bool) -> RowMapping | None:
+    """Management on or off for an enabled user (PRD 7, #601); None for a switched-off one or no
+    such user. O(log n)."""
+    return (
+        conn.execute(
+            text(
+                "UPDATE users AS u SET management = :on"  # noqa: S608 - a fixed fragment, _ADMIN_COLUMNS
+                " WHERE u.customer_id = :c AND u.id = :u AND NOT u.disabled"
+                " RETURNING" + _ADMIN_COLUMNS
+            ),
+            {"c": customer_id, "u": user_id, "on": on},
         )
         .mappings()
         .first()

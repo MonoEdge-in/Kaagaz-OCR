@@ -1,4 +1,4 @@
-"""Kaagaz on WhatsApp's SQL (#603, PRD 7 section 15; migration 0088).
+"""Kaagaz on WhatsApp's SQL (#603, PRD 7 section 15; migration 0097).
 
 * With no organisation (``db.system``), the owner-rights functions only: ``lookup`` (a number's live
   connection, ids only), ``claim`` (the channel's queue: ids and the lease) and ``sweep``; and (W3)
@@ -100,7 +100,7 @@ class Mine:
 @dataclass(frozen=True, slots=True)
 class Check:
     """``sealed``: the connection's number while it is live, else None. ``refused``: why it may no
-    longer be used (an end reason of 0088), or None."""
+    longer be used (an end reason of 0097), or None."""
 
     sealed: str | None
     refused: str | None
@@ -122,7 +122,7 @@ _NEXT = text(
     " ORDER BY document_id IS NOT NULL, sent_at, received_at, id LIMIT 1"
 )
 # WhatsApp on for the person's organisation (u): the Admin's switch and the super admin's two (no row
-# is on, 0038 and 0039); and their role allowed (Management only with its extra tick). As 0088's sweep.
+# is on, 0038 and 0039); and their role allowed (Management only with its extra tick). As 0097's sweep.
 _OFF = (
     "NOT coalesce(s.enabled, false)"
     " OR NOT coalesce((SELECT f.enabled FROM feature_switches f WHERE f.feature = 'whatsapp'), true)"
@@ -130,7 +130,7 @@ _OFF = (
     "  WHERE o.customer_id = u.customer_id AND o.feature = 'whatsapp'), true)"
 )
 _ROLE_REFUSED = "NOT u.role = ANY (s.roles) OR (u.management AND NOT s.management)"
-# The checks every message runs (PRD 7 section 15), each one end reason, as the sweep's (0088).
+# The checks every message runs (PRD 7 section 15), each one end reason, as the sweep's (0097).
 _CHECK = text(
     "SELECT l.phone_sealed,"  # noqa: S608 - fixed fragments only
     " CASE WHEN l.ended_at IS NOT NULL THEN l.end_reason"

@@ -40,6 +40,7 @@ from kaagaz.ai.openrouter import (
     page_request,
     process_gate,
 )
+from kaagaz.answering.rewrite import Turn, rewrite
 from kaagaz.db.engine import Database
 from kaagaz.ingestion.ports import Job
 from kaagaz.settings import NO_THINKING, Settings
@@ -1488,3 +1489,48 @@ def test_a_list_schema_goes_out_with_no_min_or_max_items(fake: OpenRouterFake) -
     (body,) = fake.bodies()
     sent = json.dumps(body["response_format"])
     assert '"lines"' in sent and "minItems" not in sent and "maxItems" not in sent
+
+
+# Production, 15 Nov 2026: Vertex's gemini-3.5-flash-lite stopped listing temperature, so with
+# require_parameters every rewrite was 404 no_endpoints, then rewrite_model_down.
+NO_TEMPERATURE = "No endpoints found that can handle the requested parameters."
+
+
+def test_a_404_for_no_endpoint_is_sent_once_more_without_temperature(
+    fake: OpenRouterFake, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger="kaagaz.ai.openrouter")
+    rewritten = "What were the expenses in September?"
+    fake.script("completions", error_reply(404, message=NO_TEMPERATURE), json_reply({"question": rewritten}))
+    client = _client(fake.url, Clock())
+    history = [Turn("What was the profit in September?", "The profit in September was 12,000.")]
+
+    assert rewrite(client, "And the expenses?", history) == (rewritten, ())
+
+    first, second = fake.bodies()
+    assert first["temperature"] == 0.0 and "temperature" not in second
+    assert {key: value for key, value in first.items() if key != "temperature"} == second
+    dropped = _lines(caplog, "temperature dropped")
+    assert [(line["code"], line["model"]) for line in dropped] == [("temperature_dropped", client.chat_model)]
+
+    # Principal review: the model is remembered, so its next call sends none and is one request.
+    fake.script("completions", json_reply({"question": rewritten}))
+    assert rewrite(client, "And the expenses?", history) == (rewritten, ())
+    assert len(fake.bodies()) == 3 and "temperature" not in fake.bodies()[2]
+    assert len(_lines(caplog, "temperature dropped")) == 1
+
+
+def test_a_404_without_temperature_too_is_not_sent_a_third_time(fake: OpenRouterFake) -> None:
+    fake.script("completions", *[error_reply(404, message=NO_TEMPERATURE)] * 3)
+    client = _client(fake.url, Clock())
+    schema = {"type": "object", "properties": {"question": {"type": "string"}}, "required": ["question"]}
+
+    with pytest.raises(ModelUnavailable) as caught:
+        client.chat_json(system="Rewrite.", user="q", schema=schema, max_tokens=100, temperature=0.0)
+    assert caught.value.code == "no_endpoints"
+    assert ["temperature" in body for body in fake.bodies()] == [True, False]
+
+    fake.script("completions", error_reply(404, message=NO_TEMPERATURE))  # no temperature asked: one call
+    with pytest.raises(ModelUnavailable):
+        client.chat_json(system="Rewrite.", user="q", schema=schema, max_tokens=100)
+    assert len(fake.bodies()) == 3

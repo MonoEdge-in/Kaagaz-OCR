@@ -9,16 +9,24 @@ Changing what CI selects is Vrushit's call; this file needs his OK before any
 pull request.
 """
 
+import os
 from collections.abc import Iterator
 from typing import Any
 
 import pytest
+from sqlalchemy import text
 
 from kaagaz.db.engine import Database
 
 
 def pytest_configure(config: Any) -> None:
     config.addinivalue_line("markers", "isolation: proves one customer cannot reach another customer's data")
+
+
+def pytest_runtest_setup(item: Any) -> None:
+    from tests import rule_shadow
+
+    rule_shadow.test_name = item.nodeid
 
 
 def pytest_collection_modifyitems(items: list[Any]) -> None:
@@ -28,13 +36,40 @@ def pytest_collection_modifyitems(items: list[Any]) -> None:
             item.add_marker("isolation")
 
 
+@pytest.fixture
+def the_rule_on(db: Database) -> Iterator[None]:
+    """PRD 7 (#606): a test of the rule itself: on for every organisation, in a baseline session too
+    (after the session's database is migrated). Asked for by ``usefixtures``."""
+    from tests.db_support import rule_on
+
+    with rule_on():
+        yield
+
+
 @pytest.fixture(scope="session")
 def db() -> Iterator[Database]:
-    """A real database, migrated once per session (tests marked ``db`` only)."""
-    from tests.db_support import database_url, make_database, migrate
+    """A real database, migrated once per session (tests marked ``db`` only). PRD 7 (#606): the
+    per-person database rule is on for every organisation, unless KAAGAZ_TEST_PERSON_RULE=off (the
+    baseline run)."""
+    from tests.db_support import database_url, make_database, migrate, person_rule
 
     url = database_url()
     migrate(url)
     database = make_database(url)
+    with database.engine.begin() as conn:  # put back as found: a laptop's database keeps its own
+        was_on = conn.execute(
+            text("SELECT EXISTS (SELECT 1 FROM kaagaz_person_rule WHERE for_customer_id IS NULL)")
+        ).scalar()
+    on = os.environ.get("KAAGAZ_TEST_PERSON_RULE", "on") != "off"
+    person_rule(database, on=on)
+    shadow = os.environ.get("KAAGAZ_RULE_SHADOW", "")
+    if shadow:  # PRD 7 (#606): the shadow diff harness (tests/rule_shadow.py)
+        from tests import rule_shadow
+
+        rule_shadow.install(database.engine)
     yield database
+    if shadow:
+        rule_shadow.write(shadow, rule_shadow.found)
+    if on != was_on:
+        person_rule(database, on=bool(was_on))
     database.engine.dispose()

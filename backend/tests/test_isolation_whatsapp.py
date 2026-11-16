@@ -1,4 +1,4 @@
-"""Kaagaz on WhatsApp's rows stay in their organisation (#603, migration 0088): another organisation
+"""Kaagaz on WhatsApp's rows stay in their organisation (#603, migration 0097): another organisation
 sees, writes and ends none of them; a message is seen and written only in its own person's
 transaction (not by a colleague, an Admin included, and not with no person). The webhook's side:
 tests/test_isolation_whatsapp_webhook.py."""
@@ -11,7 +11,7 @@ from sqlalchemy.exc import DBAPIError
 
 from kaagaz.db.engine import Database
 from tests.test_api_support import Api
-from tests.test_migration_0088_db import connect, new_number
+from tests.test_migration_0097_db import connect, new_number
 
 pytestmark = pytest.mark.db
 TABLES = (

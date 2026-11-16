@@ -69,7 +69,7 @@ NOT_CASCADING = {
         (table, "users")
         for table in ("department_members", "private_folder_members", "document_shares", "lock_grants")
     ],
-    # Changed on purpose (0088, #603): WhatsApp's rows point at their person with NO ACTION too.
+    # Changed on purpose (0097, #603): WhatsApp's rows point at their person with NO ACTION too.
     *[
         (table, "users")
         for table in ("whatsapp_links", "whatsapp_link_codes", "whatsapp_messages", "whatsapp_pickers")
@@ -83,6 +83,9 @@ GONE_FIRST = {
     ("ai_task_settings", "users"),
     ("learning_removals", "users"),  # 0051, PRD 6 F3: cascades from its document, SET NULL to its admin
     ("user_identities", "users"),  # 0062, #457: cascades with its user, SET NULL to the admin who approved it
+    ("page_rotations", "users"),  # 0088, #600: cascades from its document, NO ACTION to who saved it
+    # 0089, #594: cascades from its document, NO ACTION to whom it was held for
+    ("version_suggestions", "users"),
 }
 
 
@@ -209,11 +212,14 @@ def _organisation(api: Api, storage: KeyStorage, label: str) -> tuple[str, str, 
             "INSERT INTO document_shares (customer_id, document_id, user_id, given_by)"
             " VALUES (:c, :d, :u, :u)",
             "INSERT INTO lock_grants (customer_id, document_id, user_id, given_by) VALUES (:c, :d, :u, :u)",
+            # 0088 (#600): a page turned for everyone.
+            "INSERT INTO page_rotations (customer_id, document_id, page_no, turn, set_by)"
+            " VALUES (:c, :d, 1, 90, :u)",
             # #478: the day's counter and a document held at the daily limit.
             "INSERT INTO reading_days (customer_id, day, pages, cost_usd, alerted_at)"
             " VALUES (:c, current_date, 10, 0.5, now())",
             "UPDATE documents SET reading_held = 'daily_limit' WHERE customer_id = :c AND id = :held",
-            # 0088 (#603): a row in each WhatsApp table, the message one that saved the first document.
+            # 0097 (#603): a row in each WhatsApp table, the message one that saved the first document.
             "INSERT INTO whatsapp_org_settings (customer_id, enabled) VALUES (:c, true)",
             "INSERT INTO whatsapp_links (customer_id, user_id, phone_hash, phone_sealed, phone_last4,"
             " session_version) VALUES (:c, :u, sha256(CAST(:s AS bytea)), 'v1:x', '1234', 1)",

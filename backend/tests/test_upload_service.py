@@ -73,6 +73,7 @@ class AcceptTest(unittest.TestCase):
                 "batch_id",
                 "keep_place",  # Changed on purpose (#484): a flag, never a name
                 "in_trash",  # Changed on purpose (A8): a flag, never a name
+                "locked",  # Changed on purpose (PRD 7, #605): a flag, never a name
             },
         )
 
