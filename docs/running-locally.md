@@ -12,7 +12,7 @@ placeholder**, never a real secret.
 | `frontend` | 3000 | Next.js web app (open this) | the same image, behind Caddy |
 | `api` | 8000, on 127.0.0.1 only | FastAPI, `/api/*` | the same image, behind Caddy |
 | `worker` | none | `python -m kaagaz.worker_main`, one job at a time | the same image |
-| `migrate` | none | one-shot: `alembic upgrade head`, then makes the storage bucket | on every deploy |
+| `migrate` | none | one-shot: `alembic upgrade head`, then makes the storage bucket | by hand, for a migration; a deploy only borrows the service for its two step-2 commands |
 | `postgres` | 5432 | PostgreSQL 17 with pgvector | the same container (no RDS in this phase) |
 | `seaweedfs` | 8333 | file storage, S3 API | the same container (no S3 in this phase) |
 | `elasticmq` | 9324 | job queue `kaagaz-jobs` and its failure bin `kaagaz-jobs-failed`, SQS API; messages kept in the volume `elasticmq-data` | not run: jobs are in Amazon SQS (ap-south-1), through the instance role |
@@ -339,9 +339,13 @@ and the site keeps serving the old release until step 3:
 
 1. Build `kaagaz-backend:<commit>` and `kaagaz-frontend:<commit>`. A failed
    build changes nothing.
-2. `alembic upgrade head` in a throwaway container from the new image
-   (`KAAGAZ_TAG=<commit> dc run --rm -T migrate`). A failed migration changes
-   no container and logs `migrate failed; site still on <commit>`.
+2. Check the schema, read-only, in a throwaway container from the new image
+   (`KAAGAZ_TAG=<commit> dc run --rm -T migrate python -m kaagaz.cli schema-check`),
+   then make sure the storage bucket is there (the same `run`, with
+   `python -m kaagaz.cli ensure-bucket`). **A deploy never migrates**: with one
+   central database a schema change is a deliberate, scheduled act, so a person
+   runs the migration (below). A failed check changes no container and logs
+   `schema check failed; site still on <commit>`.
 3. Point `kaagaz-backend:local` and `kaagaz-frontend:local` (what `dc` runs) at
    the new images, start every service but `migrate` with `--no-deps`, and wait
    up to 3 minutes for api and frontend to be healthy (frontend since #477;
@@ -379,8 +383,23 @@ stopped; since M2, `alembic upgrade head` on such a database changes nothing,
 logs one `database_ahead` line and exits 0. Use
 `dc up -d --no-deps <service>`, and never `dc up --build` or `dc build`.
 
-If `migrate` fails: the site is still on the old release, and every 5 minutes
-the timer tries again. Read the error with `journalctl -u kaagaz-deploy -n 50`.
+**To run a migration**, as `ubuntu`, when a commit on `production` carries one: take
+a dump first (`~/kaagaz/infra/ec2/pgdump.sh`), then `cd ~/kaagaz && dc run --rm migrate`.
+It runs `alembic upgrade head` and makes the bucket, exactly as before; the next timer
+run then finds the schema matching and deploys. Until it is run, the deploy stops with
+`schema check failed` and the commit stays undeployed, retried every 5 minutes. Owner-only
+CLI commands run in the same container (below).
+
+`schema-check` prints one line and exits: `0` with `schema matches: [<head>]`; `3` with
+`database is BEHIND: at [<db>], image needs [<head>]`, meaning run the migration above; `4`
+with `database is AHEAD of this image: at [<db>], image knows up to [<head>]`, meaning the
+image is older than the schema, which a normal deploy never expects (a rollback does, and
+never runs the check). Any other error is `2`. It connects read-only
+(`default_transaction_read_only`) with the owner's login and the same driver
+`migrations/env.py` uses, and reads only `alembic_version`.
+
+If the schema check or the bucket step fails: the site is still on the old release, and
+every 5 minutes the timer tries again. Read the error with `journalctl -u kaagaz-deploy -n 50`.
 Fix it in a PR, never by hand on the server. Before any `alembic stamp` (Vrushit's
 decision), take a backup (`~/kaagaz/infra/ec2/pgdump.sh`) and check
 `alembic_version` against the real schema: on 24 Oct 2026 the row said 0042
