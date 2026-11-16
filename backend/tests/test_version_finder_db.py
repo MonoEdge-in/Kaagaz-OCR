@@ -6,6 +6,7 @@ run began left to spotting, and another organisation's files never mixed in. Not
 The API that shows the groups: test_isolation_version_groups.py. The groups' rule without a
 database: test_versions.py."""
 
+import uuid
 from datetime import date
 from typing import Any
 
@@ -52,6 +53,11 @@ def _library(api: Api, signed: Signed, **columns: dict[str, Any]) -> dict[str, s
     }
     _old(api.db, signed.customer_id, *found.values())
     return found
+
+
+def _ordered(count: int) -> list[str]:
+    """New ids in their order, so a test knows which file of a pair is looked at first (the lower)."""
+    return sorted(str(uuid.uuid4()) for _ in range(count))
 
 
 def _members(db: Database, customer: str) -> list[tuple[Any, ...]]:
@@ -106,11 +112,15 @@ def test_the_finder_runs_once_per_organisation(db: Database) -> None:
     api = Api(db)
     signed = api.new_signed()
     c = signed.customer_id
-    files = _library(api, signed)
-    later = _doc(api, signed, [*BASE, "late"], "Lease late.pdf", hours_ago=-100_000)  # after the run began
-    _old(db, c, later)
+    low, middle, high = _ordered(3)
+    files = _library(api, signed, x={"id": middle})
+    late = [  # after the run began, ids either side of X's, so both sides of a pair are checked
+        _doc(api, signed, [*BASE, "late"], f"Lease late {n}.pdf", hours_ago=-100_000, id=each)
+        for n, each in enumerate((low, high))
+    ]
+    _old(db, c, *late)
     _until_done(db, c)
-    assert later not in {m[0] for m in _members(db, c)} | {f for pair in _pairs(db, c) for f in pair}
+    assert not set(late) & ({m[0] for m in _members(db, c)} | {f for pair in _pairs(db, c) for f in pair})
     done = (_members(db, c), _pairs(db, c), _run(db, c))
     copy = _doc(api, signed, [*BASE, "copy"], "Lease copy.pdf", hours_ago=100)
     _old(db, c, copy)
@@ -154,7 +164,7 @@ def test_the_finder_waits_for_the_switch_and_the_fingerprints(db: Database) -> N
     api = Api(db)
     signed = api.new_signed()
     c = signed.customer_id
-    files = _library(api, signed)
+    _library(api, signed)
     with db.customer(c) as conn:
         assert version_finder.due(conn, c)
     with switched_off(db, "version_spotting"), db.customer(c) as conn:
@@ -165,19 +175,22 @@ def test_the_finder_waits_for_the_switch_and_the_fingerprints(db: Database) -> N
     _old(db, c, unprinted)
     with db.customer(c) as conn:
         assert version_finder.due(conn, c)
-    assert files
 
 
 def test_locked_and_trashed_files_are_never_grouped(db: Database) -> None:
-    """Y is in Trash and Z locked before the run: neither is ever paired (a locked file is never
-    ready and keeps no fingerprint, 0093); X and the copy C are a group."""
+    """Y and a second copy in Trash (ids either side of X's, so both sides of a pair are checked)
+    and Z locked before the run: none is ever paired (a locked file is never ready and keeps no
+    fingerprint, 0093); X and the copy C are a group."""
     api = Api(db)
     signed = api.new_signed()
     c = signed.customer_id
-    files = _library(api, signed)
+    low, middle, high = _ordered(3)
+    files = _library(api, signed, x={"id": middle}, y={"id": low})
     copy = _doc(api, signed, [*BASE, "copy"], "Lease copy.pdf", hours_ago=80)
-    _old(db, c, copy)
-    _owner(db, _TRASH, {"d": files["y"]})
+    again = _doc(api, signed, [*BASE, "again"], "Lease again.pdf", hours_ago=80, id=high)
+    _old(db, c, copy, again)
+    for trashed in (files["y"], again):
+        _owner(db, _TRASH, {"d": trashed})
     _lock(db, files["z"])
     _until_done(db, c)
     assert {m[0] for m in _members(db, c)} == {files["x"], copy}

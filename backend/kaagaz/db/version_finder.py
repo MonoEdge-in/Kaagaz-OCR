@@ -51,7 +51,8 @@ _CURSOR = text(
 # The next files to look at: current, ready (never locked, 0093), out of Trash, uploaded before the run.
 _NEXT = text(
     "SELECT id FROM documents WHERE customer_id = :c"
-    " AND deleted_at IS NULL AND is_current AND status = 'ready' AND created_at < :started AND (CAST(:after AS uuid) IS NULL OR id > CAST(:after AS uuid))"
+    " AND deleted_at IS NULL AND is_current AND status = 'ready' AND created_at < :started"
+    " AND (CAST(:after AS uuid) IS NULL OR id > CAST(:after AS uuid))"
     " ORDER BY id LIMIT :n"
 )
 _ME = text(
