@@ -24,6 +24,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
+from kaagaz.api.routers import version_links as links_route
 from kaagaz.cli import main
 from kaagaz.db import audit, trash
 from kaagaz.db import locks as locks_sql
@@ -828,3 +829,20 @@ def test_a_folder_kaagaz_made_that_a_link_empties_is_kept_for_its_undo(db: Datab
     status, reply = _undo(management, org, "x")
     assert status == 200, reply
     assert _state(db, org, "y")["y"]["folder_id"] == made
+
+
+def test_an_undo_that_opens_a_file_to_the_admin_asks_their_password(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review C: Undo asks the password of an Admin it opens a file to, as the link does. With every
+    version seen (review 4), a real case needs a wall the view and the count see differently, so the
+    count is made to say the Admin gains: refused, nothing written; with the password, done."""
+    org = _org(Api(db))
+    admin = org.people["admin"]
+    assert _link(org.people["management"], org, ["x", "z"], "z")[0] == 200
+    monkeypatch.setattr(links_route, "_audience", lambda conn, user, moves: (set(), {user.user_id}))
+    before = _everything(db, org)
+    status, reply = _undo(admin, org, "x")
+    assert (status, reply["error"]["code"]) == (403, "password_required")
+    assert _everything(db, org) == before
+    assert _undo(admin, org, "x", password=PASSWORD)[0] == 200
