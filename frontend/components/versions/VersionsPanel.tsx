@@ -5,16 +5,23 @@
 // joined (uploaded, or linked from a suggestion), a Current chip, and View, Compare and
 // Make current. Notes are plain text. With two versions or more, each row's ⋯ menu offers Make
 // it a separate file (#521, SeparateDialog).
+// #648 (V13, V16), for Admins and Management (`canLink`): "Add an older or newer version" opens the
+// link dialog with this document chosen, and "Undo linking" undoes the family's newest link while
+// it can (`version_link.can_undo`), asking for the password when the server does.
 
 import Link from "next/link";
 import { useId, useState } from "react";
 import type { FormEvent } from "react";
+import { flushSync } from "react-dom";
 import { RowMenu } from "@/components/admin/RowMenu";
 import { sortedVersions } from "@/components/viewer/versions";
-import { ApiError, makeCurrent, updateDocument } from "@/lib/api";
+import { PasswordField } from "@/components/ui/PasswordField";
+import { ApiError, makeCurrent, undoLinkVersions, updateDocument } from "@/lib/api";
 import { withFrom } from "@/lib/backLink";
 import { formatDateTime } from "@/lib/format";
 import type { DocumentDetail, DocumentVersion } from "@/lib/types";
+import { LINK_TEXT, fromSummary, linkErrorText, needsPassword, undoneText } from "./link";
+import { LinkDialog } from "./LinkDialog";
 import { SeparateDialog } from "./SeparateDialog";
 import { compareHref } from "./VersionChoice";
 import { NOTE_MAX, VERSION_TEXT, canMakeCurrent, cleanNote, joinedText } from "./words";
@@ -23,9 +30,11 @@ import styles from "./Versions.module.css";
 export function VersionsPanel({
   detail,
   onChanged,
+  canLink = false,
 }: {
   detail: DocumentDetail;
   onChanged(message: string, undo?: () => Promise<unknown>): void;
+  canLink?: boolean;
 }) {
   const versions = sortedVersions(detail.versions).reverse();
   const inTrash = detail.deleted_at !== null;
@@ -34,6 +43,30 @@ export function VersionsPanel({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
+  const [linking, setLinking] = useState(false);
+  const [undoPassword, setUndoPassword] = useState<string | null>(null); // null: not asked for
+  const linkable = canLink && !inTrash && detail.locked !== true;
+  const canUndoLink = canLink && !inTrash && detail.version_link?.can_undo === true;
+
+  async function undoLink(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+    setBusy("link");
+    setError(null);
+    try {
+      const reply = await undoLinkVersions(detail.id, undoPassword ?? undefined);
+      setUndoPassword(null);
+      onChanged(undoneText(reply));
+    } catch (caught) {
+      setError(linkErrorText(caught));
+      if (needsPassword(caught) && undoPassword === null) {
+        // The password box appears, a form of its own, and takes the focus (review of #659).
+        flushSync(() => setUndoPassword(""));
+        document.getElementById("undo-link-password")?.focus();
+      }
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function act(versionId: string, work: () => Promise<unknown>, said: string) {
     setBusy(versionId);
@@ -55,6 +88,35 @@ export function VersionsPanel({
         {VERSION_TEXT.versions}
       </h2>
       {versions.length < 2 && <p className="muted">{VERSION_TEXT.onlyOne}</p>}
+      {(linkable || canUndoLink) && (
+        <div className={styles.versionActions}>
+          {linkable && (
+            <button type="button" className="btn" onClick={() => setLinking(true)}>
+              {LINK_TEXT.addVersion}
+            </button>
+          )}
+          {canUndoLink && undoPassword === null && (
+            <button type="button" className="btn" disabled={busy !== null} onClick={() => void undoLink()}>
+              {LINK_TEXT.undoLink}
+            </button>
+          )}
+        </div>
+      )}
+      {canUndoLink && undoPassword !== null && (
+        <form className={styles.noteForm} onSubmit={(event) => void undoLink(event)}>
+          <PasswordField
+            id="undo-link-password"
+            label={LINK_TEXT.password}
+            hint={LINK_TEXT.passwordNote}
+            autoComplete="current-password"
+            value={undoPassword}
+            onChange={setUndoPassword}
+          />
+          <button type="submit" className="btn" disabled={busy !== null || undoPassword === ""}>
+            {LINK_TEXT.undoLink}
+          </button>
+        </form>
+      )}
       <ol className={styles.versions}>
         {versions.map((version) => (
           <li key={version.id} className={styles.version} aria-current={version.id === detail.id ? "true" : undefined}>
@@ -131,6 +193,18 @@ export function VersionsPanel({
         <p className="error-text" role="alert">
           {error}
         </p>
+      )}
+      {linking && (
+        <LinkDialog
+          files={[fromSummary(detail)]}
+          start="pick"
+          fixed={detail.id}
+          onClose={() => setLinking(false)}
+          onLinked={(done) => {
+            setLinking(false);
+            onChanged(done.message, done.undo);
+          }}
+        />
       )}
       {separating && (
         <SeparateDialog

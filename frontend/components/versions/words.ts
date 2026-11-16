@@ -92,7 +92,7 @@ export function identifierWords(kind: string): string {
 type Scores = Pick<VersionSuggestion, "text_overlap" | "name_similarity" | "shared_identifier"> &
   Partial<Pick<VersionSuggestion, "reasons" | "text_overlap_estimated">>;
 
-const joinAnd = (parts: readonly string[]) =>
+export const joinAnd = (parts: readonly string[]) =>
   parts.length <= 1 ? parts.join("") : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
 
 // The lines of kaagaz/versions.py (TEXT_ALONE, NAME_SIGNAL), for a reply without the server's words.
@@ -106,7 +106,7 @@ const SAME_NAME = 0.8;
  * never from the estimate (kaagaz/versions.py share_percent). The overlap was a 4-byte real, so
  * it is first rounded to 4 places of the percent (0.83 reads 0.8299999833: 83).
  */
-function sharePercent(overlap: number, estimated: boolean): number {
+export function sharePercent(overlap: number, estimated: boolean): number {
   const percent = Math.floor(Math.round(overlap * 100 * 10_000) / 10_000);
   if (percent >= 100) return overlap >= 1 && !estimated ? 100 : 99;
   return percent;

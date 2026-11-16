@@ -56,6 +56,8 @@ export interface RowMenuProps {
   /** The document screen's menu (DD2): Read again first when `readAgain`. */
   place?: "list" | "document";
   readAgain?: boolean;
+  /** #648 (V13): Link to another version… (Admins and Management). */
+  linkVersions?: boolean;
   /** The document screen's other actions (24 Oct 2026: Ensemble, Export as Data, Download original),
    * after the menu's own and before Move to Trash, each with one plain line; disabled ones say why. */
   more?: readonly MoreItem[];
@@ -79,6 +81,7 @@ export function RowMenu({
   toggleRef,
   place = "list",
   readAgain = false,
+  linkVersions = false,
   more = [],
   access,
 }: RowMenuProps) {
@@ -87,7 +90,7 @@ export function RowMenu({
   const button = useRef<HTMLButtonElement | null>(null);
   const list = useRef<HTMLUListElement>(null);
   const menuId = useId();
-  const entries = menuEntries(item, canForever, place, readAgain, access);
+  const entries = menuEntries(item, canForever, place, readAgain, access, linkVersions);
 
   const setButton = useCallback(
     (element: HTMLButtonElement | null) => {

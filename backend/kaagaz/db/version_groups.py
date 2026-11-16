@@ -142,6 +142,48 @@ def _group(
     }
 
 
+def _shown_part(group_id: str, members: Sequence[RowMapping], pairs: Sequence[RowMapping]) -> set[str] | None:
+    """V-C (#648, review of #659): the live files a group's page stands for, None when a file of it
+    is hidden from this person. The files it shows, with every live file joined to them by pairs (one
+    linked, kept apart, or left unticked by a link whose matches were all linked); with none shown,
+    the part holding the last live file that has a pair. A member whose rows went splits a group
+    (review, #648): its other part is never in this one. O(m + p) for the group."""
+    if not members or not all(m["seen"] for m in members):
+        return None
+    live = [m["document_id"] for m in members if m["live"]]
+    alive = set(live)
+    joined: dict[str, set[str]] = {}
+    for pair in pairs:
+        if pair["first_id"] in alive and pair["second_id"] in alive:
+            joined.setdefault(pair["first_id"], set()).add(pair["second_id"])
+            joined.setdefault(pair["second_id"], set()).add(pair["first_id"])
+    shown = _group(group_id, members, pairs)
+    start = [file["id"] for file in shown["files"]] if shown else []
+    if not start:
+        start = [each for each in live if each in joined][-1:]
+    part, todo = set(start), list(start)
+    while todo:
+        for other in joined.get(todo.pop(), ()):
+            if other not in part:
+                part.add(other)
+                todo.append(other)
+    return part
+
+
+def same_part(conn: Connection, customer_id: str, first: str, second: str) -> bool:
+    """V-C (#648): the two files are in the part of one group's page that this person sees whole
+    (``_shown_part``), for Compare of any two files of a group. Three statements, O(m + p) for the
+    organisation's members and the group's pairs."""
+    rows = conn.execute(_MEMBERS, {"c": customer_id, "g": None}).mappings().all()
+    group = next((row["group_id"] for row in rows if row["document_id"] == first), None)
+    if group is None:
+        return False
+    members = [row for row in rows if row["group_id"] == group]
+    pairs = conn.execute(_PAIRS, {"c": customer_id, "g": group}).mappings().all()
+    part = _shown_part(group, members, pairs)
+    return part is not None and first in part and second in part
+
+
 def groups(conn: Connection, customer_id: str, group_id: str | None = None) -> list[dict[str, Any]]:
     """The groups shown to this person with 2 files or more (module notes), those with a file not
     yet left for later first, at most MAX_GROUPS + 1 (the caller says ``more``); with ``group_id``,
@@ -180,21 +222,22 @@ def decide(
     conn: Connection, customer_id: str, group_id: str, document_ids: Sequence[str], *, to: str, by: str
 ) -> None:
     """Not versions (``kept_apart``), Decide later (``later``) or Undo of Not versions (``open``) for
-    files of one group, all or none, with one ``version.kept_apart``, ``version.later`` or
-    ``version.kept_apart_undone`` row each. Not versions and Decide later take only files the group
-    shows this person; Undo, its live files kept apart, of a group they can see whole. Raises
-    Refused for any other (nothing is written: the caller's transaction rolls back). O(m + p) for
-    the group."""
+    live files of one group this person can see whole, each in a state it may change from, all or
+    none, with one ``version.kept_apart``, ``version.later`` or ``version.kept_apart_undone`` row
+    each. Not versions and Decide later take the files of the part the group's page stands for
+    (``_shown_part``): those it shows, and one left unticked by a link whose matches were all linked
+    (V-C, #648: "Not a version of these?"), never one of a split group's other part. Raises Refused
+    for any other (nothing is written: the caller's transaction rolls back). O(m + p) for the
+    group."""
     wanted = sorted(set(document_ids))
-    if to == "open":
-        members = conn.execute(_MEMBERS, {"c": customer_id, "g": group_id}).mappings().all()
-        kept = {m["document_id"] for m in members if m["live"] and m["state"] == "kept_apart"}
-        if not members or not all(m["seen"] for m in members) or not set(wanted) <= kept:
-            raise Refused
-    else:
-        shown = groups(conn, customer_id, group_id)
-        if not shown or not set(wanted) <= {f["id"] for f in shown[0]["files"]}:
-            raise Refused
+    where = {"c": customer_id, "g": group_id}
+    members = conn.execute(_MEMBERS, where).mappings().all()
+    part: set[str] | None = {m["document_id"] for m in members}
+    if to != "open":
+        part = _shown_part(group_id, members, conn.execute(_PAIRS, where).mappings().all())
+    may = {m["document_id"] for m in members if m["live"] and m["state"] in _FROM[to]} & (part or set())
+    if not members or not all(m["seen"] for m in members) or not set(wanted) <= may:
+        raise Refused
     params = {"c": customer_id, "g": group_id, "ids": wanted, "was": list(_FROM[to]), "to": to, "by": by}
     done = sorted(conn.execute(_DECIDE, params).scalars())
     if done != wanted:

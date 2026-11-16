@@ -288,6 +288,76 @@ export interface VersionSuggestion {
   reasons?: string | string[] | null;
 }
 
+/** #648 (V16): a link of files as versions; Undo while the family holds the versions it left. */
+export interface VersionLink {
+  id: string;
+  linked_at: string;
+  can_undo: boolean;
+}
+
+/** #648 (V17): why a file of a group is there, against one other file of it (`with`). */
+export interface VersionGroupReason {
+  with: string;
+  text_overlap: number | null;
+  text_overlap_estimated: boolean;
+  name_similarity: number | null;
+  shared_identifier: string | null;
+  words: string;
+}
+
+/** One file of a group of possible versions, in the finder's order (`position`, oldest first). */
+export interface VersionGroupFile {
+  id: string;
+  name: string;
+  folder_id: string | null;
+  doc_type: DocType | null;
+  document_date: string | null; // YYYY-MM-DD
+  uploaded_at: string;
+  page_count: number | null;
+  position: number;
+  state: "open" | "later";
+  reasons: VersionGroupReason[];
+}
+
+/** GET /version-groups/{id}: a group the person sees whole; `files` is empty once only its files
+ * kept apart are left (for their Undo). */
+export interface VersionGroup {
+  id: string;
+  files: VersionGroupFile[];
+  suggested_latest_id: string | null;
+  kept_apart: { id: string; name: string }[];
+}
+
+/** The link body (V13): the files, their order (oldest first) and the latest. */
+export interface LinkVersionsBody {
+  document_ids: string[];
+  order: string[];
+  current_id: string;
+}
+
+/** POST /documents/link-versions/preview: the confirm step (V13, V15). */
+export interface LinkPreview {
+  latest: { id: string; name: string };
+  folder: { id: string; path: string | null } | null;
+  held: boolean; // the latest is held for one person
+  versions: number;
+  losing: Person[];
+  gaining: Person[];
+}
+
+/** GET /version-kept-apart (V18): pairs kept separate (each can be linked again), and files
+ * marked "Not versions" in groups the person sees whole. */
+export interface KeptApart {
+  pairs: {
+    id: string;
+    separated: boolean;
+    decided_at: string | null;
+    document: { id: string; name: string };
+    other: { id: string; name: string };
+  }[];
+  groups: { group_id: string; id: string; name: string }[];
+}
+
 /** GET /api/chat/ready-questions: Home's questions for this person, their own habits first;
  * ``ready`` when the answer waits made, so pressing it answers at once. */
 export interface ReadyQuestion {
@@ -734,6 +804,8 @@ export interface DocumentDetail extends DocumentSummary {
   // P1, V6 (stage 2): who uploaded version 1, and a version suggestion about this document.
   author_name?: string | null;
   version_suggestion?: VersionSuggestion | null;
+  // #648 (V16): the family's newest link not undone, for Admins and Management; null otherwise.
+  version_link?: VersionLink | null;
   page_turns: PageTurnSaved[]; // pages turned for everyone (PRD 7 section 14, #600); a page not listed is not turned
 }
 
