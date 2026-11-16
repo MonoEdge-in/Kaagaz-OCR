@@ -32,7 +32,7 @@ from pydantic import BaseModel, ConfigDict
 from kaagaz.api.auth import AdminSession, require_admin_session
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
-from kaagaz.api.views import answer_with_source_states, cited_document_ids, iso
+from kaagaz.api.views import answer_with_source_states, cited_document_ids, iso, no_access
 from kaagaz.db import answer_quality as quality_sql
 from kaagaz.db import audit
 from kaagaz.db import chat as chat_sql
@@ -96,10 +96,18 @@ def list_answer_quality(
                 "id": str(row["id"]),
                 "message_id": str(row["message_id"]),
                 "asked_by": row["asked_by"],
-                "question": row["question"],
+                # PRD 7 (#602, question 4): an answer naming a file this Admin can't see shows
+                # "Source not visible to you", with no question or reason.
+                **(
+                    {"question": None, "reason_codes": [], "reason": None}
+                    if no_access(row["answer"], states)
+                    else {
+                        "question": row["question"],
+                        "reason_codes": list(row["reason_codes"]),
+                        "reason": row["reason"],
+                    }
+                ),
                 "answer": answer_with_source_states(row["answer"], states),
-                "reason_codes": list(row["reason_codes"]),
-                "reason": row["reason"],
                 "given_at": iso(row["created_at"]),
                 "handled_at": None if row["handled_at"] is None else iso(row["handled_at"]),
             }

@@ -82,17 +82,19 @@ def test_0011_up_down_up(fresh: tuple[str, Database]) -> None:
 
 def test_the_word_statement_reads_the_stored_keys(db: Database) -> None:
     """As the app role, the word statement tests ``tsv_sound`` and never runs the
-    function: the keys were stored when the piece was written."""
+    function: the keys were stored when the piece was written. Changed on purpose (#619): the
+    sound query is the word list's second rung, ``_SOUND``."""
     customer, _ = new_customer(db)
     (wanted, _) = add_pieces(
         db, customer, add_document(db, customer), [("भोगवटादार रामचंद्र", None), ("Rent", None)]
     )
     words = {"c": customer, "q": "zzz", "k": "zzz", "g": "", "sk": hybrid.sound_query("bhogwatdar"), "n": 50}
+    words |= {"exact": [], "ranked": hybrid.SOUND_RANKED}
     with db.customer(customer) as conn:
         plan = "\n".join(
-            conn.execute(text("EXPLAIN VERBOSE " + hybrid._WORD.text), words | EVERYTHING.params()).scalars()
+            conn.execute(text("EXPLAIN VERBOSE " + hybrid._SOUND.text), words | EVERYTHING.params()).scalars()
         )
-        found = conn.execute(hybrid._WORD, words | EVERYTHING.params()).all()
+        found = conn.execute(hybrid._SOUND, words | EVERYTHING.params()).all()
 
     assert "tsv_sound @@" in plan
     assert "kaagaz_sound_key_v1" not in plan

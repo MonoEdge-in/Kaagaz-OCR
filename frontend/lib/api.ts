@@ -15,6 +15,10 @@ import type {
   ActivityPage,
   AddedUser,
   AdminChange,
+  AdminDepartment,
+  DepartmentMember,
+  PersonAccess,
+  PlacePreview,
   AdminCreated,
   AdminStorage,
   AdminUser,
@@ -525,12 +529,6 @@ export const savePageTurnsForEveryone = (
     changes,
     user_id: userId,
   });
-/** Every page back as scanned, for everyone (#600). */
-export const resetPageTurnsForEveryone = (id: string, userId: string) =>
-  request<{ page_turns: PageTurnSaved[] }>(
-    "DELETE",
-    `/documents/${encodeURIComponent(id)}/page-turns${query({ user_id: userId })}`
-  );
 
 /**
  * Upload one file with progress (fetch cannot report upload progress, XHR can),
@@ -1221,7 +1219,8 @@ export function randomId(): string {
  * once `started` has come, the server finishes and saves the answer anyway, so it is fetched
  * from that conversation (savedAnswer), never asked again; before `started`, it asks POST /chat
  * once instead. No error when either works. Stop (`signal`) aborts any of them and never falls
- * back: the server still saves the answer.
+ * back: the server still saves the answer. `questionId`: Ask's own retry (hotfix, 15 Nov 2026)
+ * sends its first try's again, so a try the server saved is answered from that save.
  */
 export async function askStream(
   question: string,
@@ -1231,8 +1230,9 @@ export async function askStream(
   reply: ClarifyReply | undefined,
   signal: AbortSignal | undefined,
   onEvent: (event: StreamEvent) => void,
+  questionId: string = randomId(),
 ): Promise<ChatResponse> {
-  const body = chatBody(question, conversationId, scope, choice, reply, randomId());
+  const body = chatBody(question, conversationId, scope, choice, reply, questionId);
   try {
     return await streamChat(body, signal, onEvent);
   } catch (caught) {
@@ -1368,6 +1368,41 @@ export const declineConnection = (id: string) =>
 /** Every connected account of this person goes, and they are signed out; the password stays. */
 export const removeConnections = (id: string) =>
   request<AdminUser>("POST", `/admin/users/${encodeURIComponent(id)}/remove-connections`);
+
+// --- access (PRD 7, #601) --------------------------------------------------------------------
+// Every write that can give the admin themselves access takes their `password` (403
+// password_required without it; components/access/passwordStep.ts).
+
+/** A path part: an id typed into the address bar may hold "/" or "?". */
+const segment = (part: string) => encodeURIComponent(part);
+export const getPersonAccess = (userId: string) => request<PersonAccess>("GET", `/admin/users/${segment(userId)}/access`);
+export const setManagement = (userId: string, on: boolean, password?: string) =>
+  request<AdminUser>("PUT", `/admin/users/${segment(userId)}/management`, { on, password });
+/** Adds the person to the department, or sets their Head tick; `head` left out keeps the tick. */
+export const putMembership = (userId: string, departmentId: string, change: { head?: boolean; password?: string } = {}) =>
+  request<{ head: boolean; changed: boolean }>("PUT", `/admin/users/${segment(userId)}/departments/${segment(departmentId)}`, change);
+export const removeMembership = (userId: string, departmentId: string) =>
+  request<void>("DELETE", `/admin/users/${segment(userId)}/departments/${segment(departmentId)}`);
+export const listAdminDepartments = () =>
+  request<{ items: AdminDepartment[]; keeps_files_to_some_people: boolean }>("GET", "/admin/departments");
+export const listDepartmentMembers = (departmentId: string) =>
+  request<{ items: DepartmentMember[] }>("GET", `/admin/departments/${segment(departmentId)}/members`);
+export const departmentOnlyPreview = (departmentId: string, on: boolean) =>
+  request<PlacePreview>("GET", `/admin/departments/${segment(departmentId)}/department-only/preview${query({ on })}`);
+export const setDepartmentOnly = (departmentId: string, on: boolean, password?: string) =>
+  request<{ department_only: boolean; members: number; warnings: string[] }>(
+    "PUT",
+    `/admin/departments/${segment(departmentId)}/department-only`,
+    { on, password },
+  );
+export const addNamed = (folderId: string, userId: string, password?: string) =>
+  request<{ changed: boolean }>("PUT", `/folders/${segment(folderId)}/named/${segment(userId)}`, { password });
+export const removeNamed = (folderId: string, userId: string) =>
+  request<void>("DELETE", `/folders/${segment(folderId)}/named/${segment(userId)}`);
+export const giveFile = (documentId: string, userId: string, password?: string) =>
+  request<{ versions: number; changed: boolean }>("PUT", `/documents/${segment(documentId)}/shares/${segment(userId)}`, { password });
+export const takeFile = (documentId: string, userId: string) =>
+  request<void>("DELETE", `/documents/${segment(documentId)}/shares/${segment(userId)}`);
 /** ``autofileOn`` left out: the switch is left as it is (feature 28). ``google`` (#507), when
  * given, replaces the three Google sign-in rules; left out, they stay. */
 export const updateSettings = (maxUploadMb: number | null, autofileOn?: boolean, google?: GoogleRulesChange) =>

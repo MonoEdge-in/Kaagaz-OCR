@@ -2,7 +2,7 @@
 name another organisation's document or person (every key holds the organisation, and the key
 checks run without row level security), and one organisation sees none of another's turns. Inside
 one organisation, a file the person cannot see (PRD 7's walls, test_isolation_access_views) answers
-both writes exactly as a random id, its turns are left as they were, and its detail is 404."""
+a save exactly as a random id, its turns are left as they were, and its detail is 404."""
 
 import uuid
 
@@ -60,7 +60,8 @@ def test_a_hidden_file_answers_as_a_random_id_and_keeps_its_turns(db: Database) 
     for name in ("fin", "trashed"):
         _owner(db, _TURN.text, {"c": org.c, "d": org.files[name], "u": plain.user_id})
     before = _owner(db, saved, {"c": org.c})
-    for body in ({"changes": [{"page_no": 1, "turn": 180}]}, {"changes": [{"page_no": 99, "turn": 180}]}):
+    bodies = [{"changes": [{"page_no": page, "turn": turn}]} for page, turn in ((1, 180), (1, 0), (99, 180))]
+    for body in bodies:
         replies = [
             plain.client.patch(f"/api/documents/{document}/page-turns", json=body, headers=CSRF)
             for document in (org.files["fin"], org.files["trashed"], str(uuid.uuid4()))
@@ -68,8 +69,6 @@ def test_a_hidden_file_answers_as_a_random_id_and_keeps_its_turns(db: Database) 
         assert [r.status_code for r in replies] == [404, 404, 404]
         assert replies[0].json() == replies[1].json() == replies[2].json()
     for document in (org.files["fin"], org.files["trashed"]):
-        reset = plain.client.delete(f"/api/documents/{document}/page-turns", headers=CSRF)
-        assert (reset.status_code, reset.json()["error"]["code"]) == (404, "not_found")
         assert plain.client.get(f"/api/documents/{document}").status_code == 404
     assert _owner(db, saved, {"c": org.c}) == before
     member = org.people["member"].client.get(f"/api/documents/{org.files['fin']}").json()

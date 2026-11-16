@@ -1,0 +1,191 @@
+// What the access screens say (PRD 7 PR 11, #604, section 4 of the plan), as constants and pure
+// functions, tested in node (tests/access-words.test.ts). Every name here is React text.
+
+import { ApiError } from "@/lib/api";
+import { errorWords } from "@/lib/errorWords";
+import type { Person } from "@/lib/types";
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** "Priya", "Priya and Amit", "Priya, Amit and Ravi", "Priya, Amit and 12 more". */
+export function namesPreview(people: readonly Person[]): string {
+  const names = people.map((person) => person.name);
+  if (names.length <= 2) return names.join(" and ");
+  if (names.length === 3) return `${names[0]}, ${names[1]} and ${names[2]}`;
+  return `${names[0]}, ${names[1]} and ${names.length - 2} more`;
+}
+
+/** "1 person", "12 people". */
+export const peopleCount = (n: number) => plural(n, "person", "people");
+
+// --- the password step ---------------------------------------------------------------------------
+
+export const PASSWORD_TITLE = "Confirm it's you";
+export const PASSWORD_LABEL = "Your Kaagaz password";
+export const PASSWORD_BUTTON = "Give myself access";
+export const WRONG_PASSWORD = "That password isn't right. Try again.";
+
+/** `what`: "Finance", "“Salaries”", "“Sale deed.pdf”" or "every file (Management)". */
+export const selfGrantText = (what: string) =>
+  `You're giving yourself access to ${what}. Enter your Kaagaz password to go on. Management and the other admins will get an email saying you gave yourself access. The email doesn't name any file.`;
+export const quoted = (name: string) => `“${name}”`;
+export const MANAGEMENT_WHAT = "every file (Management)";
+
+// --- toasts --------------------------------------------------------------------------------------
+
+export const ACCESS_REMOVED = "Access removed.";
+export const managementToast = (name: string, on: boolean) => `${name}: ${on ? "now" : "no longer"} Management.`;
+export const canNowSeeToast = (name: string, place: string) => `${name} can now see ${place}.`;
+export const headToast = (name: string, department: string, on: boolean) =>
+  on ? `${name} is now head of ${department}.` : `${name} is no longer head of ${department}.`;
+export const departmentOnlyToast = (department: string, on: boolean) =>
+  on ? `${department} is now for its people only.` : `${department} is open to everyone again.`;
+export const newDepartmentToast = (department: string, head: string | null) =>
+  head ? `${department} added. ${head} heads it.` : `${department} added. No head yet.`;
+export const addedPeopleToast = (n: number, department: string) => `Added ${peopleCount(n)} to ${department}.`;
+
+/** Files given: "Shared with Priya.", "Shared with Priya and Amit.", "Shared with 3 people.",
+ * "8 files shared with Priya." */
+export function sharedToast(files: number, people: readonly Person[]): string {
+  const whom = people.length <= 2 ? namesPreview(people) : peopleCount(people.length);
+  return files === 1 ? `Shared with ${whom}.` : `${files} files shared with ${whom}.`;
+}
+
+// --- Management ----------------------------------------------------------------------------------
+
+export const makeManagementQuestion = (name: string) =>
+  `Make ${name} Management? ${name} will see every file in the organisation, including private folders. Management and the other admins get an email about it.`;
+export const stopManagementQuestion = (name: string) =>
+  `Stop Management for ${name}? ${name} will see only their departments' files, private folders they are named on and files given to them.`;
+export const MANAGEMENT_CHIP = "Management";
+export const MANAGEMENT_TITLE = "Sees all files";
+export const MANAGEMENT_MEANS = ": sees all files"; // read after the chip, for screen readers
+export const NO_DEPARTMENT = "No department";
+
+/** The Users tab's Access cell: "Finance (head), Sales", or "No department". */
+export function departmentsText(departments: readonly { name: string; head: boolean }[]): string {
+  if (departments.length === 0) return NO_DEPARTMENT;
+  return departments.map((each) => (each.head ? `${each.name} (head)` : each.name)).join(", ");
+}
+
+// --- remove dialogs ------------------------------------------------------------------------------
+
+export const removeDepartmentQuestion = (name: string, department: string) =>
+  `Remove ${name} from ${department}? Files given to ${name} directly stay given.`;
+export const removeFolderQuestion = (name: string, folder: string) =>
+  `Take ${name} off ${quoted(folder)}? ${name} won't see this folder any more, unless they are Management or head of its department.`;
+export const removeFileQuestion = (name: string, file: string) =>
+  `Remove ${name}'s access to ${quoted(file)}? This takes away every version of the file.`;
+/** Lead decision (#604 review): taking the Head tick away asks first. */
+export const removeHeadQuestion = (name: string, department: string) =>
+  `Remove ${name} as head of ${department}? ${name} won't see ${department}'s private folders any more, unless they are named on them.`;
+export const REMOVE_AS_HEAD = "Remove as head";
+
+// --- the Access page -----------------------------------------------------------------------------
+
+export const ACCESS_PAGE = {
+  back: "Back to Users",
+  loadFailed: "Could not load this person's access.",
+  notFound: "We couldn't find this person.",
+  departments: "Departments",
+  privateFolders: "Private folders",
+  give: "Give access",
+  selfHint: "Giving yourself access asks for your password. Management and the other admins get an email.",
+  noPrivateFolders: "There are no private folders yet. Make a folder private from Who can see this in Documents.",
+  fileSearch: "Find a file",
+  noFiles: "No files match.",
+  noDepartments: "There is no other department to add.",
+} as const;
+export const accessTitle = (name: string) => `Access for ${name}`;
+export const filesHeading = (name: string) => `Files given to ${name}`;
+// Lead decision (#604 review): the app's own word for a turned-off account, "disabled".
+export const DISABLED_BANNER = "This account is disabled. Enable it from the Users tab to give access again.";
+export const managementLine = (on: boolean) => `Sees all files (Management): ${on ? "Yes" : "No"}`;
+export const noDepartmentsText = (name: string) => `${name} isn't in any department yet.`;
+export const noFoldersText = (name: string) => `${name} isn't named on any private folder.`;
+export const noFilesText = (name: string) => `No files have been given to ${name}.`;
+/** "Added 3 Nov 2026 by Ravi", "Given 3 Nov 2026" (by someone no longer listed). */
+export const byLine = (verb: string, day: string, by: string | null | undefined) => (by ? `${verb} ${day} by ${by}` : `${verb} ${day}`);
+
+// --- the Departments tab -------------------------------------------------------------------------
+
+export const headLine = (heads: readonly Person[]) => (heads.length ? `Head: ${heads.map((h) => h.name).join(", ")}` : "No head yet");
+export const DEPARTMENT_ONLY = "Department only";
+export const OPEN_TO_EVERYONE = "Open to everyone";
+export const KEEP_TO_PEOPLE = "Keep to its people";
+export const ADD_PEOPLE = "Add people";
+export const noMembersWarning = (department: string) =>
+  `No one is in ${department} yet. Only Management and people given a file directly will see its files.`;
+export const loadingMembers = (department: string) => `Loading the people in ${department}…`;
+export const noMembers = (department: string) => `No one is in ${department} yet.`;
+export const NO_ONE_MATCHES = "No one matches.";
+export const chosenCount = (n: number) => `${n} chosen`;
+export const departmentAdded = (department: string) => `${department} added.`;
+export const accessLoadFailed = (why: string) => `Who can see each department did not load. ${why}`;
+
+/** One toast for adding people: who was added, then each person who wasn't and why; null when
+ * nothing changed and nothing failed (they were all in it already). */
+export function addedPeopleText(added: number, department: string, failed: readonly { person: Person; reason: string }[]): string | null {
+  const parts = [
+    ...(added > 0 ? [addedPeopleToast(added, department)] : []),
+    ...failed.map(({ person, reason }) => `Couldn't add ${person.name}: ${reason.replace(/\.$/, "")}.`),
+  ];
+  return parts.length ? parts.join(" ") : null;
+}
+
+export const headQuestion = (department: string) => `Who heads ${department}?`;
+export const headExplained = (department: string) =>
+  `The head sees every ${department} file, including its private folders, and chooses who is named on them.`;
+export const HEAD_STEP = { choose: "Choose a person", me: "Me", later: "Decide later", make: "Make head" } as const;
+
+export const PREVIEW_LOADING = "Checking who would lose access…";
+export const PREVIEW_FAILED = "Couldn't check who would lose access.";
+export const keepQuestion = (department: string) => `Keep ${department} to its people?`;
+export const openQuestion = (department: string) => `Open ${department} to everyone?`;
+
+/** Department only, on: who loses Finance's files, from the preview. */
+export function departmentOnlyText(department: string, losing: readonly Person[], members: number): string {
+  const nobody = `No one is in ${department} yet, so only Management will see its files.`;
+  if (losing.length === 0) {
+    // With nobody in it, "everyone who sees its files is in it" would be wrong.
+    return members === 0
+      ? `Nobody loses access. ${nobody}`
+      : `Nobody loses access: everyone who sees ${department} files today is in ${department} or is Management.`;
+  }
+  const lose = `${peopleCount(losing.length)} will no longer see ${department} files: ${namesPreview(losing)}. Management and anyone you add to ${department} still will.`;
+  return members === 0 ? `${lose} ${nobody}` : lose;
+}
+export const openText = (department: string, files: number) =>
+  `Everyone in the organisation will be able to see ${department}'s ${plural(files, "file", "files")}.`;
+export const showAll = (n: number) => `Show all ${n}`;
+
+// --- the one-time card (Home) --------------------------------------------------------------------
+
+export const CARD = {
+  title: "Everyone can see every file today.",
+  text: "Want to keep some files to some people?",
+  steps: ["Name a head for each department.", "Keep a department to its people.", "Make private folders."],
+  setUp: "Set up access",
+  notNow: "Not now",
+} as const;
+
+// --- errors --------------------------------------------------------------------------------------
+
+export const CHOOSE_PEOPLE_CAP = (cap: number) => `Choose ${cap} people or fewer.`;
+
+const ACCESS_ERRORS: Record<string, string> = {
+  wrong_password: WRONG_PASSWORD,
+  disabled: "This account is disabled. Enable it before giving access.",
+  not_a_department: "This isn't a department any more. Reload the page.",
+  not_private: "This folder isn't private any more. Reload the page.",
+  in_trash: "This file is in Trash. Restore it first.",
+  department_in_use: "This department has people or private folders. Remove them first.",
+};
+
+/** An access refusal in its own words; `password_locked` keeps the server's (how long the lock
+ * lasts); anything else as `fallback` says it. */
+export function accessErrorText(caught: unknown, fallback: (caught: unknown) => string = errorWords): string {
+  if (caught instanceof ApiError && Object.hasOwn(ACCESS_ERRORS, caught.code)) return ACCESS_ERRORS[caught.code] ?? "";
+  if (caught instanceof ApiError && caught.code === "password_locked") return caught.message;
+  return fallback(caught);
+}

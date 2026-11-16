@@ -400,6 +400,8 @@ export function DocumentView({
   const showLine = (spot: Spot) =>
     showSpot(spot, `${spot.name.charAt(0).toUpperCase()}${spot.name.slice(1)} highlighted on page ${spot.region.page}.`);
   const changePage = (pageNo: number) => choose(pageChange(selection, pageNo));
+  // #600: a save of the page turns reloads the detail, so the review panel's crop shows them too.
+  const reloadAfterTurns = () => setReloads((n) => n + 1);
   // Keep as is (F5): the page's new summary, still flagged, off the attention list.
   const keepPage = (kept: PageSummary) =>
     setLoaded((now) =>
@@ -599,6 +601,7 @@ export function DocumentView({
                   wordHits={wordHits}
                   role={me.user.role}
                   userId={me.user.id}
+                  onTurnsSaved={reloadAfterTurns}
                 />
               </ViewerBoundary>
             </div>
@@ -635,6 +638,7 @@ export function DocumentView({
                         pageNo={page.page_no}
                         documentId={detail.id}
                         userId={me.user.id}
+                        onTurnsSaved={reloadAfterTurns}
                       />
                     ) : undefined
                   }

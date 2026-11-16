@@ -43,9 +43,11 @@ MODULES: tuple[ModuleType, ...] = (
 FILTERED: dict[tuple[ModuleType, str], str] = {
     # Search and chat: the current version of a read document, not in Trash.
     (hybrid, "_WORD"): LIVE_CURRENT,
+    (hybrid, "_SOUND"): LIVE_CURRENT,  # Changed on purpose (#619): the word list's sound rung
     (hybrid, "_FUZZY"): LIVE_CURRENT,
     (hybrid, "_MEANING"): LIVE_CURRENT,
     (hybrid, "_MEANING_EXACT"): LIVE_CURRENT,
+    (hybrid, "_VISIBLE_VECTORS"): LIVE_CURRENT,  # PRD 7 section 7: the small-set count before them
     (hybrid, "_DETAILS"): LIVE_CURRENT,
     (hybrid, "_NEIGHBOURS"): LIVE_CURRENT,  # Q4: the pieces next to an answer's hits
     # PRD 5: whole documents (CX5), topic and section pieces (CX6) and cards (M2).
@@ -65,6 +67,7 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     # Clarifying questions (PRD 6 B1): names and places only of the documents chat may cite.
     (clarify, "_CANDIDATES"): LIVE_CURRENT,
     (clarify, "_NEAR"): LIVE_CURRENT,  # B2: the places of a district
+    (clarify, "_ANY_KEYS"): LIVE_CURRENT,  # PRD 7 (#602): whether any key is one the person sees
     # The numbers in answers: the same, in every CTE.
     (fixed_queries, "_AVAILABLE_FIELDS"): LIVE_CURRENT,
     (fixed_queries, "_TOP_GROUP"): LIVE_CURRENT,

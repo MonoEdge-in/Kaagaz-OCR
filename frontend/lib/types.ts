@@ -92,6 +92,8 @@ export interface Me {
   // Ways to sign in (#457 phase 1): approved connections made in the last 14 days, for the
   // app's "Google connected on 30 Oct." banner. Empty while no provider is on (always sent).
   recent_connections?: { provider: string; linked_at: string }[];
+  // PRD 7 (#601): Management, and the departments this person heads. Older servers leave it out.
+  access?: { management: boolean; heads: string[] };
 }
 
 /** One connected account of the signed-in user (GET /auth/identities). */
@@ -445,6 +447,8 @@ export interface Folder {
   created_at: string;
   kind?: FolderKind; // F1; left out by older replies: custom
   sort_order?: number | null; // a department's place on the dashboard and in the tree
+  department_only?: boolean; // PRD 7 (#601): a department kept to its people
+  private?: boolean; // PRD 7 (#601): only the people named on it (and its head, Management) see it
 }
 
 /** #542: a folder in Trash, with what it holds at every depth (files: a file's versions count once). */
@@ -1010,7 +1014,9 @@ export interface Answer {
   outage_reason?: "timeout";
   // "unchecked": the figure asked for is only in unchecked card values, so no
   // number is given; closest_documents says where.
-  status: "answered" | "not_found" | "unchecked" | "clarify";
+  // "no_access" (PRD 7, #602): a saved answer that names a file the person can no longer see,
+  // replaced whole by the server: one sentence (NO_ACCESS_TEXT), every list empty.
+  status: "answered" | "not_found" | "unchecked" | "clarify" | "no_access";
   // PRD 6 A, answer contract v2 (24 Oct 2026); all four missing on answers saved before it,
   // which render as they did. The opening and assumptions are code-written lines.
   version?: 2;
@@ -1302,6 +1308,43 @@ export interface AdminUser {
   google_needed?: boolean;
   // #507 review: and their connected account's domain is not checked yet (one Google sign-in does).
   google_unchecked?: boolean;
+  // PRD 7 (#601): sees every file. The list also sends their departments (head: they head it).
+  management?: boolean;
+  departments?: { id: string; name: string; head: boolean }[];
+}
+
+/** PRD 7 (#601), GET /admin/users/{id}/access: what one person can see, beyond their role. Paths
+ * are an Admin's (every folder name); `added_by` and `given_by` are user ids. */
+export interface PersonAccess {
+  user: { id: string; name: string; role: Role; management: boolean; disabled: boolean };
+  departments: { id: string; name: string; head: boolean; added_at: string; added_by: string }[];
+  private_folders: { id: string; name: string; path: string | null }[];
+  files: { id: string; name: string; path: string | null; given_at: string; given_by: string | null }[];
+}
+
+/** PRD 7 (#601), GET /admin/departments: one department with its access. */
+export interface AdminDepartment {
+  id: string;
+  name: string;
+  department_only: boolean;
+  members: number;
+  heads: Person[];
+  warnings: string[]; // "no_members": Department only, with nobody in it
+}
+
+/** GET /admin/departments/{id}/members */
+export interface DepartmentMember {
+  id: string;
+  name: string;
+  head: boolean;
+  added_at: string;
+}
+
+/** PRD 7 (#601): who would lose and who would gain a place's files, and how many files it holds. */
+export interface PlacePreview {
+  losing: Person[];
+  gaining: Person[];
+  files: number;
 }
 
 /** POST /admin/users: the new user; with email on (#457), whether the invite email went. */
