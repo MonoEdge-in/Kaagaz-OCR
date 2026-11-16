@@ -203,7 +203,7 @@ def test_a_locked_file_is_never_named_even_for_the_person_who_may_open_it(walled
         add_pieces(ask.db, ask.org.c, locked, [("Invoice zebra register", axis(9))])
     listed = ask.org.people["plain"].client.get("/api/documents", headers=CSRF).json()["items"]
     assert locked in {row["id"] for row in listed}  # the browser lists it for them: WhatsApp never does
-    walled.say("plain", "Tell me about locked.pdf")
+    walled.say("plain", "Tell me about zebra")
     walled.tap("plain", "get.en")
     searched = walled.say("plain", "locked", fresh=False)
     requested = walled.tap("plain", f"file:{locked}:en")
