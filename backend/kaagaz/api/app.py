@@ -69,6 +69,7 @@ from kaagaz.api.routers import (
     stories,
     tags,
     version_groups,
+    version_links,
     versions,
     word_review,
     words,
@@ -179,6 +180,7 @@ def create_app(
         email.router,
         oidc.router,
         locked_open.router,  # PRD 7 (#605): before /documents/{document_id}, which would take locked-open
+        version_links.router,  # V13 (#648): before /documents/{document_id}, which would take link-versions
         documents.router,
         versions.router,
         version_groups.router,  # V17 (#648): possible versions

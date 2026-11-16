@@ -435,14 +435,18 @@ def _sees(conn: Connection, customer_id: str, place: folders.Place, held: str | 
 
 
 def moved(
-    conn: Connection, customer_id: str, move: folders.Move, held: str | None = None
+    conn: Connection,
+    customer_id: str,
+    move: folders.Move,
+    held: str | None = None,
+    held_after: str | None = None,
 ) -> tuple[set[str], set[str]]:
     """Who loses and who gains what a move carries (PRD 7 section 5, "6 people won't see this"): the
-    files of its place (``own``; a file held for ``held``: from its holder and Management) and of each
-    private folder it carries, whose Head is the department's. Admins, Management and a Head
-    (``kaagaz_place_audience``)."""
+    files of its place (``own``; a file held for ``held``: from its holder and Management; held for
+    ``held_after`` once moved, #648: to them and Management) and of each private folder it carries,
+    whose Head is the department's. Admins, Management and a Head (``kaagaz_place_audience``)."""
     pairs = (
-        [(_sees(conn, customer_id, move.before, held), _sees(conn, customer_id, move.after))]
+        [(_sees(conn, customer_id, move.before, held), _sees(conn, customer_id, move.after, held_after))]
         if move.own
         else []
     )

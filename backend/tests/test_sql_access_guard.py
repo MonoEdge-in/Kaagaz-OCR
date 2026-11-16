@@ -43,6 +43,7 @@ REASONS = frozenset(
 _UPLOAD = "POST /documents and /documents/{id}/versions: the folder through folders_seen first"
 _WORDS = "word review and Ensemble routes: get_document (the view) first, in the same transaction"
 _ENSEMBLE = "ensemble routes: get_document (the view) first"
+_LINK = "POST /documents/link-versions: the view first"  # #648, V-A
 
 ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     # Changed on purpose (#601): the Access page's files given to a person, by their true names; the
@@ -362,6 +363,23 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ("db/usage.py", "_REPORT"): (ADMIN_NUMBERS, "GET /admin/usage: names and spend"),
     ("db/value_keys.py", "_BY_ID"): (SHARED_WITH_WORKER, f"a value's keys; {_WORDS}"),
     ("db/value_keys.py", "_UPSERT"): (SHARED_WITH_WORKER, f"a value's keys; {_WORDS}"),
+    # Changed on purpose (#648, V-A): linking files as versions and its Undo, every chosen file through
+    # the view first (and every version of their families checked through it under the locks).
+    ("db/version_links.py", "_FAMILIES"): (WRITE_AFTER_CHECK, _LINK),
+    ("db/version_links.py", "_LOCK"): (WRITE_AFTER_CHECK, _LINK),
+    ("db/version_links.py", "_STATE"): (
+        WRITE_AFTER_CHECK,
+        "link and its Undo: the view first, and each version's own check through it (seen)",
+    ),
+    ("db/version_links.py", "_COPY_TAGS"): (WRITE_AFTER_CHECK, _LINK),
+    ("db/version_links.py", "_NEWEST_LINK"): (
+        WRITE_AFTER_CHECK,
+        "POST /documents/{id}/link-versions/undo: the view first",
+    ),
+    ("db/version_links.py", "_FAMILY_LINK"): (
+        EXISTENCE_ONLY,
+        "GET /documents/{id}: the file through the view first; ids and a time only",
+    ),
     ("db/versions.py", "_KEPT_APART_AGAIN"): (WRITE_AFTER_CHECK, "separate: the view first"),
     ("db/versions.py", "_DECIDE"): (
         WRITE_AFTER_CHECK,
