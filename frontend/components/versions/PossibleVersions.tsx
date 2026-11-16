@@ -16,6 +16,7 @@ import Link from "next/link";
 import { useEffect, useId, useState } from "react";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
+import { Icon as KitIcon } from "@/components/ui/Icon/Icon";
 import { Toast } from "@/components/ui/Toast";
 import { decideVersionGroup, getDocumentSummary, getVersionGroup, listKeptApart, listVersionGroups } from "@/lib/api";
 import { formatDate } from "@/lib/format";
@@ -383,6 +384,7 @@ export function GroupCard({
                 </option>
               ))}
             </select>
+            <KitIcon name="chev-down" size="sm" className="k-ic" />
           </span>
           <label htmlFor={`${id}-right`}>{LINK_TEXT.compareWith}</label>
           <span className="k-select-wrap">
@@ -393,6 +395,7 @@ export function GroupCard({
                 </option>
               ))}
             </select>
+            <KitIcon name="chev-down" size="sm" className="k-ic" />
           </span>
           {left !== right ? (
             <Link className="btn" href={compareHref(right, left)}>

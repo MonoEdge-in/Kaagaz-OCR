@@ -365,6 +365,8 @@ describe("a group of possible versions (V17, the lead's flexible group)", () => 
     const html = card(group());
     expect(html).toContain('href="/documents/y/compare?with=x"');
     expect(html.match(/<select/g)).toHaveLength(2);
+    // The second review of #659: each select shows its arrow, as the documents screen's does.
+    expect(html.match(/<\/select><svg[^>]*class="k-ic"/g)).toHaveLength(2);
   });
 
   it("names no file it was not sent", () => {
@@ -542,5 +544,13 @@ describe("the password step (review of #659)", () => {
     const panel = source("components/versions/VersionsPanel.tsx");
     expect(panel).toContain('getElementById("undo-link-password")?.focus()');
     expect(panel).toMatch(/<form[^>]*onSubmit=/);
+  });
+});
+
+describe("the pick step's files (second review of #659)", () => {
+  it("shows no page pictures: each one would be logged as a view and fetched in full", () => {
+    const dialog = readFileSync(join(__dirname, "..", "components/versions/LinkDialog.tsx"), "utf8");
+    expect(dialog).not.toContain("pageImageUrl");
+    expect(dialog).not.toContain("<Thumb");
   });
 });

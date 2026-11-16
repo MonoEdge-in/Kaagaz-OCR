@@ -1,7 +1,8 @@
 "use client";
 
 // Link as versions (#648, V13 to V15): three steps, plain words, large targets.
-// 1, Pick the files: find them by name, each with its folder, date, pages and first page; the list
+// 1, Pick the files: find them by name, each with its folder, date and pages (no page picture: each
+// would be logged as a view, review of #659); the list
 // holds only files the person can see, out of Trash, and a locked file is never offered. A file of
 // a family already chosen is left out (it comes with its family).
 // 2, Put them in order: oldest first, by the document's own date, else the upload; drag a file, or
@@ -12,7 +13,6 @@
 // types their password (403 password_required), as a folder move asks.
 // Linked, the caller says so in its toast, with Undo (V16).
 
-import Image from "next/image";
 import { useEffect, useId, useMemo, useState } from "react";
 import type { DragEvent, FormEvent, ReactNode } from "react";
 import { flushSync } from "react-dom";
@@ -22,7 +22,7 @@ import { buildTree, pathLabel } from "@/components/documents/folderTree";
 import type { FolderTree } from "@/components/documents/folderTree";
 import { Icon as KIcon } from "@/components/ui/Icon/Icon";
 import { PasswordField } from "@/components/ui/PasswordField";
-import { listDocuments, listFolders, linkVersions, pageImageUrl, previewLinkVersions } from "@/lib/api";
+import { listDocuments, listFolders, linkVersions, previewLinkVersions } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import type { DocumentSummary, LinkPreview } from "@/lib/types";
 import {
@@ -299,7 +299,6 @@ function PickStep({
             const file = fromSummary(item);
             return (
               <li key={item.id} className={styles.fileRow}>
-                <Thumb document={item} />
                 <span className={styles.fileWords}>
                   <span className={styles.fileName}>{file.name}</span>
                   <span className={styles.fileFacts}>{facts(file)}</span>
@@ -340,25 +339,6 @@ function PickStep({
         ))}
       </ul>
     </>
-  );
-}
-
-/** A file's first page, small; nothing for a spreadsheet, or when the picture does not load. */
-function Thumb({ document }: { document: DocumentSummary }) {
-  const [failed, setFailed] = useState(false);
-  const shown = !failed && document.status === "ready" && ["pdf", "png", "jpeg", "tiff", "webp"].includes(document.detected_type);
-  if (!shown) return <span className={styles.thumb} aria-hidden="true" />;
-  return (
-    <Image
-      className={styles.thumb}
-      src={pageImageUrl(document.id, 1)}
-      alt=""
-      width={40}
-      height={52}
-      unoptimized
-      loading="lazy"
-      onError={() => setFailed(true)}
-    />
   );
 }
 
