@@ -81,9 +81,10 @@ export const POSSIBLE_PATH = "/documents/possible-versions";
 export const MAX_LINK = 20;
 export const MIN_LINK = 2;
 
-/** Admins in an admin session (the link's rule) and Management; never anyone else. */
+/** Admins in an admin session (the server asks every Admin for one, Management or not) and
+ * Management; never anyone else. */
 export function mayLinkVersions(me: Me): boolean {
-  return (me.user.role === "admin" && me.session.scope === "admin") || me.access?.management === true;
+  return me.user.role === "admin" ? me.session.scope === "admin" : me.access?.management === true;
 }
 
 /** A file in the link dialog: `date` is its own date, else the upload date (ISO). */

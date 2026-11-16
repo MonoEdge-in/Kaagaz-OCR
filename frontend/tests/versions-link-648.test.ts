@@ -58,6 +58,9 @@ describe("who sees the screens", () => {
     expect(mayLinkVersions(me("member", "app", true))).toBe(true);
     expect(mayLinkVersions(me("reviewer", "app", true))).toBe(true);
     expect(mayLinkVersions(me("admin", "app"))).toBe(false); // the link needs the admin session
+    // Review (#659): the server asks every Admin for an admin session, Management or not.
+    expect(mayLinkVersions(me("admin", "app", true))).toBe(false);
+    expect(mayLinkVersions(me("admin", "admin", true))).toBe(true);
     expect(mayLinkVersions(me("member", "app"))).toBe(false);
     expect(mayLinkVersions(me("reviewer", "app"))).toBe(false);
     const older = { user: { id: "u1", role: "member" }, session: { scope: "app" } } as unknown as Me;
