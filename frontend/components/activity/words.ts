@@ -34,6 +34,10 @@ export const ACTIVITY_WORDS: Record<string, (entry: Entry) => string> = {
   "version.kept_apart": () => "marked it as not versions",
   "version.kept_apart_undone": () => "undid not versions",
   "version.later": () => "left it for later",
+  // #648 (V-A): files linked as versions by Admins and Management, and its Undo; the admin log only.
+  "version.linked": (entry) =>
+    typeof entry.details.version_no === "number" ? `linked it as version ${entry.details.version_no}` : "linked it as a version",
+  "version.unlinked": () => "undid linking the versions",
   "document.rename": (entry) => `renamed to ${text(entry.details.to_name) ?? entry.document?.name ?? "…"}`,
   "document.move": (entry) => `moved to ${place(entry) ?? "Not in a folder"}`,
   "document.label_change": (entry) => `changed the label to ${labelName(text(entry.details.to) ?? "…")}`,
