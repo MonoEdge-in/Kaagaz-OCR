@@ -22,8 +22,9 @@ which also checks every chosen file through ``visible_documents`` before anythin
   members linked (V-B's ``linked``), one ``version_links`` row with what Undo puts back, and one
   ``version.linked`` row per version. Nothing is read again: no spend.
 * **Undo** (V16), while the family holds exactly the versions the link left: each version's family,
-  number, current, folder, held for, owner, label, tags and group decision put back, the people the
-  link gave it and the stories it carried taken back, one ``version.unlinked`` row per version.
+  number, current, folder, held for, owner, label, tags and group decision put back, each version
+  given to exactly whom it was given before (but to a person switched off since), the stories the
+  link carried taken back, one ``version.unlinked`` row per version.
   Refused once a folder they came from is gone (``folder_gone``).
 """
 
@@ -62,8 +63,9 @@ _STATE = text(
     " EXISTS (SELECT 1 FROM visible_documents v WHERE v.customer_id = d.customer_id AND v.id = d.id) AS seen,"
     " ARRAY(SELECT t.tag_id::text FROM document_tags t WHERE t.customer_id = d.customer_id"
     " AND t.document_id = d.id ORDER BY t.tag_id) AS tags,"
-    " ARRAY(SELECT s.user_id::text FROM document_shares s WHERE s.customer_id = d.customer_id"
-    " AND s.document_id = d.id ORDER BY s.user_id) AS shares,"
+    " (SELECT coalesce(json_agg(json_build_object('user', s.user_id, 'given_by', s.given_by,"
+    " 'given_at', s.given_at) ORDER BY s.user_id), '[]') FROM document_shares s"
+    " WHERE s.customer_id = d.customer_id AND s.document_id = d.id) AS shares,"
     " (SELECT json_build_object('state', g.state, 'by', g.decided_by, 'at', g.decided_at)"
     " FROM version_group_members g WHERE g.customer_id = d.customer_id AND g.document_id = d.id) AS member"
     " FROM documents d WHERE d.customer_id = :c AND d.family_id = ANY(CAST(:f AS uuid[]))"
@@ -100,12 +102,21 @@ _PUT_TAGS = text(
     " SELECT :c, x.id, x.tag FROM unnest(CAST(:ids AS uuid[]), CAST(:tags AS uuid[])) AS x (id, tag)"
     " JOIN tags t ON t.customer_id = :c AND t.id = x.tag"
 )
-_SHARES = text(
-    "SELECT user_id::text FROM document_shares WHERE customer_id = :c AND document_id = :d ORDER BY user_id"
+# Undo (review on #658): each version given to exactly whom it was given before the link, version by
+# version (a family's versions need not be given alike). First every other gift goes (a gift taken
+# goes from the whole family, 0085), then the saved ones come back, but to a person switched off
+# since (0090 took their gifts then).
+_EXTRA_SHARES = text(
+    "DELETE FROM document_shares x WHERE x.customer_id = :c AND x.document_id = ANY(CAST(:ids AS uuid[]))"
+    ' AND NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(CAST(:keep AS jsonb)) AS k (id uuid, "user" uuid)'
+    ' WHERE k.id = x.document_id AND k."user" = x.user_id)'
 )
-_TAKE_SHARES = text(
-    "DELETE FROM document_shares WHERE customer_id = :c AND document_id = ANY(CAST(:ids AS uuid[]))"
-    " AND user_id = ANY(CAST(:users AS uuid[]))"
+_PUT_SHARES = text(
+    "INSERT INTO document_shares (customer_id, document_id, user_id, given_by, given_at)"
+    ' SELECT :c, k.id, k."user", k.given_by, k.given_at FROM jsonb_to_recordset(CAST(:keep AS jsonb))'
+    ' AS k (id uuid, "user" uuid, given_by uuid, given_at timestamptz)'
+    ' JOIN users u ON u.customer_id = :c AND u.id = k."user" AND NOT u.disabled'
+    " ON CONFLICT DO NOTHING"
 )
 _MOVE_STORIES = text("SELECT kaagaz_move_stories(:from, :to, CAST(:users AS uuid[]))")
 # The group members of these versions, taken in id order without waiting (V-B's NOWAIT, review on
@@ -280,6 +291,7 @@ def _snapshot(row: RowMapping) -> dict[str, Any]:
         "sensitivity": row["sensitivity"],
         "sensitivity_set_by_person": bool(row["sensitivity_set_by_person"]),
         "tags": list(row["tags"]),
+        "shares": list(row["shares"]),
         "member": None if member is None else {k: member[k] for k in ("state", "by", "at")},
     }
 
@@ -297,7 +309,6 @@ def apply(conn: Connection, customer_id: str, plan: Plan, *, by: str) -> str:
     joined: list[str] = []
     for family in plan.joining:  # one family a statement (0100's trigger reads the family's first)
         versions = [id_ for id_ in every if plan.rows[id_]["family_id"] == family]
-        before = set(plan.rows[versions[0]]["shares"])
         conn.execute(
             _JOIN,
             {
@@ -311,9 +322,8 @@ def apply(conn: Connection, customer_id: str, plan: Plan, *, by: str) -> str:
                 "set": latest["sensitivity_set_by_person"],
             },
         )
-        given = set(conn.execute(_SHARES, {"c": c, "d": versions[0]}).scalars()) - before
         stories = conn.execute(_MOVE_STORIES, {"from": family, "to": plan.family, "users": None}).scalars()
-        snapshot["families"][family] = {"shares": sorted(given), "stories": sorted(str(u) for u in stories)}
+        snapshot["families"][family] = {"stories": sorted(str(u) for u in stories)}
         joined += versions
     conn.execute(_NUMBERS, {"c": c, "ids": every, "nos": list(range(1, len(every) + 1))})
     conn.execute(_CURRENT, {"c": c, "ids": [plan.current]})
@@ -410,8 +420,9 @@ def apply_undo(conn: Connection, customer_id: str, plan: UndoPlan, *, by: str) -
         ]
         conn.execute(_BACK, {"c": c, "g": family, "rows": json.dumps(rows)})
         ids = [row["id"] for row in rows]
-        if carried["shares"]:
-            conn.execute(_TAKE_SHARES, {"c": c, "ids": ids, "users": carried["shares"]})
+        keep = [{"id": id_, **share} for id_ in ids for share in back[id_]["shares"]]
+        conn.execute(_EXTRA_SHARES, {"c": c, "ids": ids, "keep": json.dumps(keep)})
+        conn.execute(_PUT_SHARES, {"c": c, "keep": json.dumps(keep)})
         if carried["stories"]:
             conn.execute(_MOVE_STORIES, {"from": plan.family, "to": family, "users": carried["stories"]})
     conn.execute(

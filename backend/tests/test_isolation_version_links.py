@@ -667,3 +667,51 @@ def test_a_file_still_being_read_is_never_linked(db: Database, status: str) -> N
         assert (status_code, reply["error"]["code"]) == (409, "not_ready"), name
         assert _everything(db, org) == before
         _owner(db, "UPDATE documents SET status = 'ready' WHERE id = :d", {"d": org.files[name]})
+
+
+def test_undo_gives_each_version_to_exactly_whom_it_was_given_and_never_to_someone_switched_off(
+    db: Database,
+) -> None:
+    """Review 6 and 12: g1 is given to the named person, g2 to no one (versions need not be given alike),
+    x to the plain reviewer, held to the head; held is held for the member and owned by the head.
+    Linked, every joining version is given to the plain reviewer (0100). The member and the head are
+    switched off meanwhile. Undo: g1 to the named person alone, g2 to no one, x to the plain reviewer,
+    held to no one (the head is switched off); held is held for the member and owned by the head again."""
+    org = _org(Api(db))
+    management, people = org.people["management"], org.people
+    _give(db, org, "document_shares", "g1", people["named"].user_id)
+    _give(db, org, "document_shares", "x", people["plain"].user_id)
+    _give(db, org, "document_shares", "held", people["head"].user_id)
+    _owner(
+        db,
+        "UPDATE documents SET owner_id = :u WHERE id = :d",
+        {"u": people["head"].user_id, "d": org.files["held"]},
+    )
+    shares = (
+        "SELECT document_id::text, user_id::text FROM document_shares"
+        " WHERE document_id = ANY(CAST(:d AS uuid[]))"
+    )
+    names = ("g1", "g2", "x", "held")
+    ids = {org.files[n]: n for n in names}
+
+    def given() -> set[tuple[str, str]]:
+        who = {p.user_id: n for n, p in people.items()}
+        return {(ids[d], who[u]) for d, u in _owner(db, shares, {"d": list(ids)})}
+
+    assert given() == {("g1", "named"), ("x", "plain"), ("held", "head")}
+    assert _link(management, org, ["g2", "held", "x"], "x")[0] == 200
+    assert {("g1", "plain"), ("g2", "plain"), ("held", "plain")} <= given()
+    _owner(
+        db,
+        "UPDATE users SET disabled = true WHERE id IN (:a, :b)",
+        {"a": people["member"].user_id, "b": people["head"].user_id},
+    )
+    status, reply = _undo(management, org, "x")
+    assert status == 200, reply
+    assert given() == {("g1", "named"), ("x", "plain")}
+    held = _state(db, org, "held")["held"]
+    assert (held["held_for"], held["owner_id"], held["folder_id"]) == (
+        people["member"].user_id,
+        people["head"].user_id,
+        None,
+    )
