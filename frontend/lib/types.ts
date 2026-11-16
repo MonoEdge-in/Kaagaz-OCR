@@ -1638,6 +1638,7 @@ export interface OperatorModel {
   vendor_allowed: boolean; // its maker is in OPENROUTER_MODEL_VENDORS; else never used
   ulc_ready: boolean; // #488: may lead Ultra low cost (a Gemini with a known price that takes minimal)
   ulc_why: string | null; // #488: the one plain reason it can't; null when it can
+  parameters: string[] | null; // #647: the parameters its approved endpoints take; null: not read yet
 }
 
 /** A thinking level, as the operator console says it (High / Medium / Low). */

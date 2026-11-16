@@ -149,6 +149,10 @@ export const VENDOR_NOT_ALLOWED = "Never used: its maker is not on the allowed l
 export const NO_LEVELS = "No thinking levels";
 export const hasNoLevels = (model: Pick<OperatorModel, "efforts">) => (model.efforts ?? []).length === 0;
 
+/** #647: the parameters a model's approved endpoints take, from the daily refresh. */
+export const parametersText = (model: Pick<OperatorModel, "parameters">) =>
+  model.parameters === null ? "Parameters: not read yet" : `Parameters: ${model.parameters.join(", ") || "none"}`;
+
 // --- AI settings: one organisation's, or the platform defaults (features 25-27) ----------
 
 export const LEVELS: AiLevel[] = ["low", "medium", "high"];
