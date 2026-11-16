@@ -49,7 +49,7 @@ class FakeExhaustive:
         self.scopes: list[Scope] = []
 
     def documents_with(
-        self, customer_id: str, term: str, scope: Scope, listed: int
+        self, customer_id: str, term: str, scope: Scope, listed: int, *, user_id: str | None = None
     ) -> tuple[int, list[list[Hit]]]:
         self.calls.append((customer_id, term, listed))
         self.scopes.append(scope)
@@ -389,7 +389,14 @@ class FakeMentions:
         self.calls: list[tuple[str, list[str], list[str]]] = []
 
     def mentions(
-        self, customer_id: str, terms: Sequence[str], scope: Scope, exclude: Sequence[str], listed: int
+        self,
+        customer_id: str,
+        terms: Sequence[str],
+        scope: Scope,
+        exclude: Sequence[str],
+        listed: int,
+        *,
+        user_id: str | None = None,
     ) -> tuple[int, list[dict[str, object]]]:
         self.calls.append((customer_id, list(terms), list(exclude)))
         rows = [
@@ -450,7 +457,7 @@ def test_a_not_found_answers_closest_documents_are_not_mentioned_again() -> None
         mentions=port,
     )
     port.calls.clear()
-    service._mentioned(A, "Where is the shop on Jalna road?", closest, Scope())
+    service._mentioned(A, None, "Where is the shop on Jalna road?", closest, Scope())
     assert "c9" in port.calls[0][2]
 
 

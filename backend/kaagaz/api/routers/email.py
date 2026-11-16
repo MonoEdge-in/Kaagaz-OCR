@@ -121,7 +121,8 @@ def confirm_email(body: TokenBody, context: Context) -> dict[str, bool]:
 @router.post("/auth/email/send-confirm")
 def send_confirm(user: User, context: Context) -> dict[str, bool]:
     _per_user_limit(confirm_limits, user, TOO_MANY_LINKS)
-    link = new_link(context, user.customer_id, user.user_id, "confirm")
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        link = emails.add_link(conn, context, user.customer_id, user.user_id, "confirm")
     return {"ok": True, "sent": send(context, user.email, "confirm", emails.confirm_email(link))}
 
 

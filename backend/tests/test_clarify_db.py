@@ -23,7 +23,7 @@ pytestmark = pytest.mark.db
 
 
 def test_the_scope_narrows_the_vocabulary_and_a_property_pick_stays_live(db: Database) -> None:
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     with db.customer(customer) as conn:
         mine, other = insert_document(conn, customer), insert_document(conn, customer)
         insert_key(conn, customer, mine, "person", "Nikhil Patel")
@@ -32,13 +32,18 @@ def test_the_scope_narrows_the_vocabulary_and_a_property_pick_stays_live(db: Dat
     everywhere, scoped = PgVocabulary(db), PgVocabulary(db).within([mine])
     asked = [Entity("person", "Nikhil")]
 
-    assert sorted(e.label for e in everywhere.candidates(customer, asked)[0]) == [
+    assert sorted(e.label for e in everywhere.candidates(customer, asked, user_id=user)[0]) == [
         "Nikhil Desai",
         "Nikhil Patel",
     ]
-    assert [e.label for e in scoped.candidates(customer, asked)[0]] == ["Nikhil Patel"]  # review 4
+    assert [e.label for e in scoped.candidates(customer, asked, user_id=user)[0]] == [
+        "Nikhil Patel"
+    ]  # review 4
     pending = Pending("Unowned share of the property?", "property", None, (), (), 1, ("Survey 45/2",))
-    assert after_reply(everywhere, customer, pending).question == "Unowned share of the property Survey 45/2"
+    assert (
+        after_reply(everywhere, customer, None, pending).question
+        == "Unowned share of the property Survey 45/2"
+    )
 
 
 def test_the_vocabulary_is_aggregated_once_and_read_through_indexes_under_rls(db: Database) -> None:
@@ -66,7 +71,7 @@ def test_the_vocabulary_is_aggregated_once_and_read_through_indexes_under_rls(db
 
 
 def test_any_keys_is_one_exists_read_through_an_index_under_rls(db: Database) -> None:  # Ask speed
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
     with db.customer(customer) as conn:
         document = insert_document(conn, customer)
         for n in range(200):
@@ -80,7 +85,9 @@ def test_any_keys_is_one_exists_read_through_an_index_under_rls(db: Database) ->
             plan = "\n".join(conn.execute(text("EXPLAIN " + clarify._ANY_KEYS.text), params).scalars())
         assert "Seq Scan on value_keys" not in plan, plan
         assert any("value_keys_" in line and "Index" in line for line in plan.splitlines()), plan
-    assert PgVocabulary(db).any_keys(customer) and PgVocabulary(db).within([document]).any_keys(customer)
+    assert PgVocabulary(db).any_keys(customer, user_id=user) and PgVocabulary(db).within([document]).any_keys(
+        customer, user_id=user
+    )
 
 
 def test_a_property_pick_is_answered_when_the_word_list_times_out(
@@ -124,7 +131,7 @@ def test_property_choices_read_their_records_village_and_never_a_boundary_or_tra
         boundary = {"k": "property", "f": "land_boundary_north", "v": "80", "level": None, "latin": "80"}
         conn.execute(db_support._KEY, {"c": customer, "d": kept, "box": box, "sound": "", **boundary})
 
-    (found,) = PgVocabulary(db).candidates(customer, [Entity("property", "")])
+    (found,) = PgVocabulary(db).candidates(customer, [Entity("property", "")], user_id=user)
 
     assert [(e.label, e.village, e.field, e.documents) for e in found] == [
         ("६१", "Kusgaon", "land_survey_number", (kept,))

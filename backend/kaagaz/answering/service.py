@@ -619,6 +619,8 @@ class AnswerService:
             neighbours=settings.answer_neighbours,
             topic_pieces=settings.topic_expand_max_pieces,
             min_score=settings.answer_min_evidence_score,
+            max_scan_tuples=settings.search_max_scan_tuples,
+            exact_below=settings.search_exact_below,
         )
         self._retriever: Retriever = pg if retriever is None else retriever
         self._translated: TranslatedSearch | None = pg if retriever is None else translated_search
@@ -651,7 +653,9 @@ class AnswerService:
     ) -> Answer:
         """Answer ``question`` for ``customer_id`` only, from documents inside ``scope``;
         ``history`` is the conversation's earlier turns, oldest first; ``user_id``, the
-        asker, whose own words (only) may help the search (None: nobody's); ``memory``, the
+        asker, whose own words (only) may help the search and as whom every transaction of the
+        answer runs, on every thread (PRD 7, ``Database.user``; None: nobody's, on the
+        organisation, for tests and tools); ``memory``, the
         conversation's (M3), for the rewrite only; ``choice``, who drafts the answer
         (``kaagaz.db.models.resolve_chat``, features 25-27; None: MODEL_CHAT at low, as
         before). Only the draft uses it: the rewrite, translation and memory stay on
@@ -714,7 +718,8 @@ class AnswerService:
     ) -> Answer:
         """``answer``'s work, timed by it."""
         stream.emit("stage", {"stage": "understanding"})  # step 21: the rewrite and plan, when any
-        if pending is not None and pending.documents:  # #629: a property pick searches its own documents
+        # #629: a property pick searches its own documents (a pick of another kind, every one).
+        if pending is not None and pending.kind == "property" and pending.documents:
             inside = scope.document_ids
             picked = (
                 pending.documents if inside is None else tuple(d for d in pending.documents if d in inside)
@@ -722,12 +727,12 @@ class AnswerService:
             scope = replace(scope, document_ids=picked)
         if scope.matches_nothing:
             return _not_found("search", question.strip(), [], model_used=False, reason="notfound_empty_scope")
-        whole = self._whole(customer_id, scope, self._input_cap(choice))
+        whole = self._whole(customer_id, user_id, scope, self._input_cap(choice))
         _timing().lap("search")
         # Step 18: the names of the scope's documents only, when it names them.
         vocabulary = None if self._vocabulary is None else self._vocabulary.within(scope.document_ids)
         if pending is not None:  # step 18: its picks checked again, then the names left; no rewrite
-            step = after_reply(vocabulary, customer_id, pending)
+            step = after_reply(vocabulary, customer_id, user_id, pending)
             return self._step_answer(
                 customer_id, step, pending.question, scope, user_id, whole, (), choice, pins
             )
@@ -740,7 +745,7 @@ class AnswerService:
         most = self._settings.query_aspects_max if whole is None and self._widens() else 0
         planned = clarify and self._vocabulary is not None  # step 18: the plan, on every question
         alone = self._model is not None and planned and not (recent or remembered or most)
-        if alone and vocabulary is not None and not vocabulary.any_keys(customer_id):
+        if alone and vocabulary is not None and not vocabulary.any_keys(customer_id, user_id=user_id):
             planned = False  # step 19: a call for the plan alone, with no name it could check or offer
         if self._model is not None and (recent or remembered or most or planned):
             first = not (recent or remembered)  # step 19: a first question's call has its deadline
@@ -770,7 +775,9 @@ class AnswerService:
         narrowed = replace(scope, timezone=EVERYTHING.timezone) != EVERYTHING  # any filter at all
         if done.plan is not None and vocabulary is not None:
             last = last_cited if refers_back(question) else ()
-            step = first_step(vocabulary, customer_id, step.question, done.plan, narrowed, cited, last)
+            step = first_step(
+                vocabulary, customer_id, user_id, step.question, done.plan, narrowed, cited, last
+            )
         kept = early if step.question == question else None  # step 19: searched the question as asked
         return self._step_answer(
             customer_id, step, question, scope, user_id, whole, done.aspects, choice, pins, kept
@@ -816,11 +823,11 @@ class AnswerService:
             if fused and self._translated is not None:
                 limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
                 found = self._translated.search_translated(
-                    customer_id, query_text, vector, [], limit, scope, expansion
+                    customer_id, query_text, vector, [], limit, scope, expansion, user_id=user_id
                 )
                 hits, lists = found.hits, found.lists
             else:
-                hits = self._hits(customer_id, query_text, vector, [], scope, expansion)
+                hits = self._hits(customer_id, user_id, query_text, vector, [], scope, expansion)
         took = (time.monotonic() - start) * 1000
         return _Early(expansion, vector, hits, _timing().degraded, took, lists)
 
@@ -852,10 +859,11 @@ class AnswerService:
         # said as one (``outage``), never as "not found", with the closest documents still listed
         # (never "busy", 24 Oct 2026).
         unavailable = answer.status == "not_found" and _timing().degraded
-        answer = self._unreadable(customer_id, answer, scope)
+        answer = self._unreadable(customer_id, user_id, answer, scope)
         if not unavailable:  # an outage says so instead (KZ-006)
-            answer = self._missing(customer_id, asked, answer, scope)
-        answer = self._shaped(customer_id, asked, self._mentioned(customer_id, asked, answer, scope), scope)
+            answer = self._missing(customer_id, user_id, asked, answer, scope)
+        mentioned = self._mentioned(customer_id, user_id, asked, answer, scope)
+        answer = self._shaped(customer_id, user_id, asked, mentioned, scope)
         said = [*answer.assumptions, *step.assumptions]
         degraded = _timing().degraded or _timing().vectorless  # #535: never reused for a repeat
         reason = "timeout" if unavailable and _timing().outage == "timeout" else None
@@ -907,7 +915,9 @@ class AnswerService:
             backing={new[old]: text for old, text in answer.backing.items() if old in new},
         )
 
-    def _shaped(self, customer_id: str, question: str, answer: Answer, scope: Scope) -> Answer:
+    def _shaped(
+        self, customer_id: str, user_id: str | None, question: str, answer: Answer, scope: Scope
+    ) -> Answer:
         """Contract v2's ``documents`` (PRD 6 A): at most MAX_DOCUMENTS, each with its title
         and why (voice.py, from its card and the question) and the citations that are its. An
         answer's are the documents it cites, in order, but a count of documents (step 13),
@@ -925,7 +935,8 @@ class AnswerService:
         listed = list(rows.items())[: voice.MAX_DOCUMENTS]
         if not listed:
             return answer
-        found = self._context.cards(customer_id, [d for d, _ in listed], scope) if self._context else {}
+        listed_ids = [d for d, _ in listed]
+        found = self._context.cards(customer_id, listed_ids, scope, user_id=user_id) if self._context else {}
         normalised = normalise(question)
         keywords = [
             k for k in glossary.content_words(normalised.keywords) if not any(ch.isdigit() for ch in k)
@@ -954,7 +965,9 @@ class AnswerService:
             )
         return replace(answer, documents=documents)
 
-    def _mentioned(self, customer_id: str, question: str, answer: Answer, scope: Scope) -> Answer:
+    def _mentioned(
+        self, customer_id: str, user_id: str | None, question: str, answer: Answer, scope: Scope
+    ) -> Answer:
         """ "Also mentions" (Tushar, 17 Oct 2026): every other document in ``scope`` that holds
         one of the question's key terms (``key_terms``, the cited text's first) as whole words,
         not cited nor in "Also in", most matching pieces first, at most MAX_MENTIONED, and how
@@ -972,12 +985,16 @@ class AnswerService:
             | {d["document_id"] for d in answer.related_documents}
             | {d["id"] for d in answer.closest_documents}  # a not-found answer's list (CodeRabbit)
         )
-        total, documents = self._mentions.mentions(customer_id, terms, scope, sorted(shown), MAX_MENTIONED)
+        total, documents = self._mentions.mentions(
+            customer_id, terms, scope, sorted(shown), MAX_MENTIONED, user_id=user_id
+        )
         if not total:
             return answer
         return replace(answer, mentions={"terms": terms, "total": total, "documents": documents})
 
-    def _missing(self, customer_id: str, question: str, answer: Answer, scope: Scope) -> Answer:
+    def _missing(
+        self, customer_id: str, user_id: str | None, question: str, answer: Answer, scope: Scope
+    ) -> Answer:
         """#410 (Vrushit's UAT, 27 Oct 2026): a not-found answer names the question's key terms
         (``key_terms``: never a frame, total, date or form word) that no document in ``scope``
         holds as whole words, by the word index "Also mentions" uses, so the soft line can say
@@ -988,7 +1005,7 @@ class AnswerService:
         missing = tuple(
             term
             for term in key_terms(question)
-            if not self._mentions.mentions(customer_id, [term], scope, [], 1)[0]
+            if not self._mentions.mentions(customer_id, [term], scope, [], 1, user_id=user_id)[0]
         )
         return replace(answer, missing_words=missing) if missing else answer
 
@@ -1009,7 +1026,9 @@ class AnswerService:
         quick = choice is not None and choice.thinking in ("low", "medium")
         return cap if quick and cap > 0 else None
 
-    def _whole(self, customer_id: str, scope: Scope, cap: int | None = None) -> Sequence[Hit] | None:
+    def _whole(
+        self, customer_id: str, user_id: str | None, scope: Scope, cap: int | None = None
+    ) -> Sequence[Hit] | None:
         """CX5: every piece of ``scope``, in reading order, when the model is on and they fit
         ANSWER_WHOLE_DOC_TOKENS (or ``cap``, the smaller), counted cautiously as the evidence
         is; None otherwise. The port's size check (characters / 4) comes first, so a big
@@ -1021,32 +1040,37 @@ class AnswerService:
         )
         if self._model is None or self._context is None or budget <= 0:
             return None
-        pieces = self._context.whole(customer_id, scope, budget)
+        pieces = self._context.whole(customer_id, scope, budget, user_id=user_id)
         if pieces is None or sum(_tokens(item) for item in number_evidence(pieces)) > budget:
             return None
         return pieces
 
-    def _unreadable(self, customer_id: str, answer: Answer, scope: Scope) -> Answer:
+    def _unreadable(self, customer_id: str, user_id: str | None, answer: Answer, scope: Scope) -> Answer:
         """F6: a not-found answer names the pages in ``scope`` that couldn't be read well
         (unreadable or uncertain, kept as is or not), with the note; any other answer, or
         no such page, is as it was. One statement for a not-found answer."""
         if answer.status != "not_found" or self._reading is None:
             return answer
-        pages, total = self._reading.flagged_pages(customer_id, scope=scope)
+        pages, total = self._reading.flagged_pages(customer_id, scope=scope, user_id=user_id)
         note = not_found_note(pages, total)
         if note is None:
             return answer
         return replace(answer, reading_note=note, unreadable_pages=tuple(pages), unreadable_page_count=total)
 
     def _marked(
-        self, customer_id: str, citations: list[Citation], regions: dict[int, list[dict[str, Any]]]
+        self,
+        customer_id: str,
+        user_id: str | None,
+        citations: list[Citation],
+        regions: dict[int, list[dict[str, Any]]],
     ) -> list[Citation]:
         """F6: each citation ``hard_to_read`` when a word mark sits inside the cited text,
         at ``regions`` (by citation number: a piece's every line, a value's box). One
         statement for the cited documents' word marks."""
         if self._reading is None or not citations:
             return citations
-        marks = self._reading.word_marks(customer_id, [citation.document_id for citation in citations])
+        cited = [citation.document_id for citation in citations]
+        marks = self._reading.word_marks(customer_id, cited, user_id=user_id)
         if not marks:
             return citations
         return [
@@ -1054,14 +1078,15 @@ class AnswerService:
             for citation in citations
         ]
 
-    def _hard_values(self, customer_id: str, values: Sequence[ValueRef]) -> set[str]:
+    def _hard_values(self, customer_id: str, user_id: str | None, values: Sequence[ValueRef]) -> set[str]:
         """F6 for every figure a total or a ranking compares, listed or not (PRD 6 C): the ids
         of the values whose spot holds a word mark. One statement for all their documents' word
         marks; each value is checked against its own document's marks only."""
         if self._reading is None or not values:
             return set()
         marks: dict[str, list[WordMark]] = {}
-        for mark in self._reading.word_marks(customer_id, [value.document_id for value in values]):
+        documents = [value.document_id for value in values]
+        for mark in self._reading.word_marks(customer_id, documents, user_id=user_id):
             marks.setdefault(mark.document_id, []).append(mark)
         return {
             value.value_id
@@ -1090,22 +1115,22 @@ class AnswerService:
         # "Hinglish understood as" is shown only when there was Hinglish to understand.
         shown = normalised.english if normalised.hinglish else question.strip()
         if self._owners is not None:
-            owned = self._owners_answer(self._owners, customer_id, question, shown, scope)
+            owned = self._owners_answer(self._owners, customer_id, user_id, question, shown, scope)
             if owned is not None:
                 return owned
         query = exhaustive_query(question)
         if query is not None and self._exhaustive is not None:
-            counted = self._exhaustive_answer(self._exhaustive, customer_id, *query, shown, scope)
+            counted = self._exhaustive_answer(self._exhaustive, customer_id, user_id, *query, shown, scope)
             if counted is not None:
                 return counted
         found_range = date_range(normalised, self._today())
         fixed = self._fixed.scoped(scope)
-        fields = partial(fixed.available_fields, customer_id)  # asked for only if a plan could follow
+        fields = partial(fixed.available_fields, customer_id, user_id=user_id)  # only if a plan could follow
         bound = bound_asked(normalised, numbers_asked(question, normalised.keywords))  # #381
         plan = plan_fixed(normalised, found_range, mentions_date(normalised), fields, bound)
         if plan is not None:
-            return self._fixed_answer(customer_id, plan, shown, fixed)
-        unchecked = self._unchecked_answer(customer_id, normalised, shown, scope)
+            return self._fixed_answer(customer_id, user_id, plan, shown, fixed)
+        unchecked = self._unchecked_answer(customer_id, user_id, normalised, shown, scope)
         if unchecked is not None:
             return unchecked
         found = None if early is None else early.result()  # read beside the plan call (step 19)
@@ -1113,7 +1138,18 @@ class AnswerService:
             self._expansion(customer_id, question, scope, user_id) if found is None else found.expansion
         )
         answer = self._search_answer(
-            customer_id, question, normalised, shown, scope, expansion, whole, aspects, choice, pins, found
+            customer_id,
+            user_id,
+            question,
+            normalised,
+            shown,
+            scope,
+            expansion,
+            whole,
+            aspects,
+            choice,
+            pins,
+            found,
         )
         if not expansion.used:
             return answer
@@ -1130,7 +1166,7 @@ class AnswerService:
         return expand(question, words) if words else NO_EXPANSION
 
     def _unchecked_answer(
-        self, customer_id: str, normalised: NormalisedQuestion, shown: str, scope: Scope
+        self, customer_id: str, user_id: str | None, normalised: NormalisedQuestion, shown: str, scope: Scope
     ) -> Answer | None:
         """A figure asked for that no checked value holds but a card does: no number,
         the documents where it appears, and a calm line to open them
@@ -1139,7 +1175,7 @@ class AnswerService:
         if asked is None:
             return None
         concept, fields = asked
-        documents = self._unchecked.documents_with(customer_id, fields, scope=scope)
+        documents = self._unchecked.documents_with(customer_id, fields, scope=scope, user_id=user_id)
         if not documents:
             return None
         return Answer(
@@ -1156,12 +1192,12 @@ class AnswerService:
     # --- fixed route --------------------------------------------------------
 
     def _owners_answer(
-        self, source: PgOwners, customer_id: str, question: str, shown: str, scope: Scope
+        self, source: PgOwners, customer_id: str, user_id: str | None, question: str, shown: str, scope: Scope
     ) -> Answer | None:
         """Step 17 (kaagaz/answering/owners.py): not found, offering the records that match only
         part of it, when none matches all; None when it asks no such thing or no record matches."""
-        ask = owner_ask(question, partial(source.resolve, customer_id, scope=scope))
-        found = None if ask is None else owners_reply(source, customer_id, ask, scope)
+        ask = owner_ask(question, partial(source.resolve, customer_id, scope=scope, user_id=user_id))
+        found = None if ask is None else owners_reply(source, customer_id, user_id, ask, scope)
         if found is None:
             return None
         if not found.answered:
@@ -1187,7 +1223,7 @@ class AnswerService:
             {"document_id": document_id, "title": title, "why": why, "citations": cite(refs)}
             for document_id, title, why, refs in found.documents
         ]
-        citations = self._marked(customer_id, citations, {c.n: c.regions for c in citations})
+        citations = self._marked(customer_id, user_id, citations, {c.n: c.regions for c in citations})
         hard = any(c.hard_to_read for c in citations)
         verified = all(c.label == "verified" for c in citations) and not hard
         return Answer(
@@ -1211,6 +1247,7 @@ class AnswerService:
         self,
         source: Exhaustive,
         customer_id: str,
+        user_id: str | None,
         term: str,
         kinds: tuple[str, ...],
         shown: str,
@@ -1225,7 +1262,7 @@ class AnswerService:
         if kinds:
             within = kinds if scope.doc_types is None else tuple(k for k in scope.doc_types if k in kinds)
             scope = replace(scope, doc_types=within)
-        total, documents = source.documents_with(customer_id, term, scope, MAX_LISTED)
+        total, documents = source.documents_with(customer_id, term, scope, MAX_LISTED, user_id=user_id)
         said = clean_text(term)
         citations: list[Citation] = []
         lines: dict[int, list[dict[str, Any]]] = {}
@@ -1246,7 +1283,7 @@ class AnswerService:
         if not total or not citations or not said:
             return None
         counted |= {len(citations), total - len(citations)}
-        citations = self._marked(customer_id, citations, lines)
+        citations = self._marked(customer_id, user_id, citations, lines)
         hard = any(c.hard_to_read for c in citations)
         head = count_sentence(said, total, kinds)
         if total > len(citations):
@@ -1266,13 +1303,15 @@ class AnswerService:
             vouched=frozenset(str(number) for number in counted),
         )
 
-    def _fixed_answer(self, customer_id: str, plan: FixedPlan, shown: str, fixed: FixedQueries) -> Answer:
+    def _fixed_answer(
+        self, customer_id: str, user_id: str | None, plan: FixedPlan, shown: str, fixed: FixedQueries
+    ) -> Answer:
         if plan.aggregate == "total" or plan.group_fields:
             # PRD 6 C2: a party's sum, like a total, only when the numbers rule holds.
-            listed = self._total_answer(customer_id, plan, shown, fixed)
+            listed = self._total_answer(customer_id, user_id, plan, shown, fixed)
             if listed is not None:
                 return listed
-        rows = self._run_plan(fixed, customer_id, plan)
+        rows = self._run_plan(fixed, customer_id, user_id, plan)
         if not rows:
             return _not_found("fixed_query", shown, [], model_used=False, reason="notfound_fixed_no_rows")
         top = [row for row in rows if row.number == rows[0].number]  # a tie is shown, never broken
@@ -1289,7 +1328,7 @@ class AnswerService:
         citations = [
             _value_citation(index, value, regions) for index, (value, regions) in enumerate(cited, start=1)
         ]
-        citations = self._marked(customer_id, citations, {c.n: c.regions for c in citations})
+        citations = self._marked(customer_id, user_id, citations, {c.n: c.regions for c in citations})
         hard = any(c.hard_to_read for c in citations)
         verified = (
             all(row.verified for row in top)
@@ -1336,7 +1375,7 @@ class AnswerService:
         )
 
     def _total_answer(
-        self, customer_id: str, plan: FixedPlan, shown: str, fixed: FixedQueries
+        self, customer_id: str, user_id: str | None, plan: FixedPlan, shown: str, fixed: FixedQueries
     ) -> Answer | None:
         """A total, or every matching record and why there is none (PRD 6 C, answering/totals.py),
         written in code. Verified only for a total whose every cited value is, and no figure of
@@ -1354,6 +1393,7 @@ class AnswerService:
             plan.end,
             invoices=plan.invoices,
             group_fields=plan.group_fields,
+            user_id=user_id,
         )
         noun = "invoice" if plan.invoices else "record"
         period = describe_range(plan.start, plan.end) if plan.start and plan.end else ""
@@ -1375,7 +1415,7 @@ class AnswerService:
         citations = [
             _value_citation(n, value, regions) for n, (_, value, regions) in enumerate(told.lines, start=1)
         ]
-        hard = self._hard_values(customer_id, [figure.value for figure in figures if figure.value])
+        hard = self._hard_values(customer_id, user_id, [figure.value for figure in figures if figure.value])
         citations = [replace(c, hard_to_read=c.ref_id in hard) for c in citations]
         if hard:
             told = tell(figures, *said, hard, ranking=ranking)  # the same records, in the same order
@@ -1400,11 +1440,15 @@ class AnswerService:
             vouched=frozenset().union(*map(voice.numbers, [told.head, *(text for text, _, _ in told.lines)])),
         )
 
-    def _run_plan(self, fixed: FixedQueries, customer_id: str, plan: FixedPlan) -> list[FixedRow]:
+    def _run_plan(
+        self, fixed: FixedQueries, customer_id: str, user_id: str | None, plan: FixedPlan
+    ) -> list[FixedRow]:
         if plan.aggregate == "count":
             if plan.invoices:
-                return fixed.count_invoices(customer_id, plan.start, plan.end)
-            return fixed.count_documents(customer_id, plan.start, plan.end, date_fields=plan.date_fields)
+                return fixed.count_invoices(customer_id, plan.start, plan.end, user_id=user_id)
+            return fixed.count_documents(
+                customer_id, plan.start, plan.end, date_fields=plan.date_fields, user_id=user_id
+            )
         if plan.metric is None:
             return []
         descending = plan.aggregate == "highest"
@@ -1417,9 +1461,10 @@ class AnswerService:
                 plan.start,
                 plan.end,
                 descending,
+                user_id=user_id,
             )
         return fixed.extreme_value(
-            customer_id, plan.metric, plan.date_fields, plan.start, plan.end, descending
+            customer_id, plan.metric, plan.date_fields, plan.start, plan.end, descending, user_id=user_id
         )
 
     # --- search route -------------------------------------------------------
@@ -1427,6 +1472,7 @@ class AnswerService:
     def _search_answer(
         self,
         customer_id: str,
+        user_id: str | None,
         question: str,
         normalised: NormalisedQuestion,
         shown: str,
@@ -1465,7 +1511,9 @@ class AnswerService:
                 extra = [
                     (_search_text(text), meaning) for text, meaning in zip(aspects, meanings, strict=True)
                 ]
-                hits = self._hits(customer_id, query_text, vector, extra, scope, expansion, early.lists)
+                hits = self._hits(
+                    customer_id, user_id, query_text, vector, extra, scope, expansion, early.lists
+                )
             else:
                 # Its aspects (CX6) are embedded with the question, in one call.
                 vector, *meanings = self._embed_all([spoken, *aspects])
@@ -1473,13 +1521,13 @@ class AnswerService:
                 extra = [
                     (_search_text(text), meaning) for text, meaning in zip(aspects, meanings, strict=True)
                 ]
-                hits = self._hits(customer_id, query_text, vector, extra, scope, expansion)
+                hits = self._hits(customer_id, user_id, query_text, vector, extra, scope, expansion)
             if self._model is not None and (vector is None or any(m is None for _, m in extra)):
                 _timing().vectorless = True  # #535: no outage, but never reused for a repeat
             if hits:  # never stuck (17 Oct 2026): found by words and typos, a missing vector is no outage
                 _timing().degraded = False
             translated = self._translated_search(
-                customer_id, question, query_text, vector, hits, scope, expansion, extra
+                customer_id, user_id, question, query_text, vector, hits, scope, expansion, extra
             )
             if translated is not None:
                 own = number_evidence(hits)
@@ -1492,7 +1540,7 @@ class AnswerService:
         # document's pieces are in reading order, so its closest come from a search (``_closest``).
         def closest() -> list[dict[str, Any]]:
             return self._closest(
-                customer_id, query_text, scope, expansion, normalised.keywords, hits_only, whole
+                customer_id, user_id, query_text, scope, expansion, normalised.keywords, hits_only, whole
             )
 
         gate = enough_evidence(evidence, normalised.keywords, min_score, numbers, expansion)
@@ -1518,7 +1566,7 @@ class AnswerService:
             evidence, moved = pinned_first(evidence, lifts(pins, normalised.keywords), alone)
             _timing().pinned = moved
             terms = [question, *aspects]
-            widened = self._widened(customer_id, terms, normalised.keywords, vector, evidence, scope)
+            widened = self._widened(customer_id, user_id, terms, normalised.keywords, vector, evidence, scope)
             evidence += number_evidence(widened, start=len(evidence) + 1)
             # Q4: neighbours only after the gate passed on the hits, numbered after all of them,
             # while they fit the room the evidence and the question leave in MODEL_CONTEXT_TOKENS
@@ -1527,7 +1575,9 @@ class AnswerService:
                 num_ctx=self._settings.model_context_tokens, max_tokens=_REPLY_TOKENS, system=SYSTEM_PROMPT
             )
             room -= estimate_tokens_cautiously(question) + sum(_tokens(item) for item in evidence)
-            near = self._retriever.neighbours(customer_id, [item.hit for item in evidence], scope)
+            near = self._retriever.neighbours(
+                customer_id, [item.hit for item in evidence], scope, user_id=user_id
+            )
             for item in number_evidence(near, start=len(evidence) + 1, neighbour=True):
                 room -= _tokens(item)
                 if room < 0:
@@ -1536,11 +1586,19 @@ class AnswerService:
             _timing().lap("widen")
         else:
             # Step 20 (#381): most relevant first, so the prompt puts them at its ends.
-            evidence = self._ranked(customer_id, query_text, spoken, scope, expansion, evidence)
+            evidence = self._ranked(customer_id, user_id, query_text, spoken, scope, expansion, evidence)
             _timing().lap("widen")
 
         drafted = self._draft(
-            customer_id, scope, question, normalised, evidence, expansion, choice, whole=whole is not None
+            customer_id,
+            user_id,
+            scope,
+            question,
+            normalised,
+            evidence,
+            expansion,
+            choice,
+            whole=whole is not None,
         )
         _timing().lap("draft")
         stream.emit("stage", {"stage": "checking"})  # step 21: verify, the labels, the final check
@@ -1555,7 +1613,7 @@ class AnswerService:
         renumber, citations = _citations(kept, by_n, whole is not None)
         # F6: the cited text is the whole piece, every line of it.
         lines = {new: by_n[old].regions for old, new in renumber.items()}
-        citations = self._marked(customer_id, citations, lines)
+        citations = self._marked(customer_id, user_id, citations, lines)
         hard = any(c.hard_to_read for c in citations)
         # A sentence backed by neighbours only, or with a number only a neighbour holds, is never
         # verified: the gate never judged them (PROVISIONAL, plan decision 8).
@@ -1622,6 +1680,7 @@ class AnswerService:
     def _ranked(
         self,
         customer_id: str,
+        user_id: str | None,
         query_text: str,
         spoken: str,
         scope: Scope,
@@ -1639,7 +1698,9 @@ class AnswerService:
         timing.degraded = down
         timing.vectorless = timing.vectorless or vector is None  # #535: another order, never reused
         limit = max(1, min(len(evidence), MAX_LIMIT))
-        found = self._retriever.search(customer_id, query_text, vector, limit, scope, expansion)
+        found = self._retriever.search(
+            customer_id, query_text, vector, limit, scope, expansion, user_id=user_id
+        )
         place: dict[str, int] = {}
         for hit in found:
             place.setdefault(hit.piece_id, len(place))
@@ -1648,6 +1709,7 @@ class AnswerService:
     def _closest(
         self,
         customer_id: str,
+        user_id: str | None,
         query_text: str,
         scope: Scope,
         expansion: Expansion,
@@ -1662,12 +1724,13 @@ class AnswerService:
         if whole is None:
             return closest_documents([item.hit for item in evidence], keywords)
         limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
-        hits = self._retriever.search(customer_id, query_text, None, limit, scope, expansion)
+        hits = self._retriever.search(customer_id, query_text, None, limit, scope, expansion, user_id=user_id)
         return closest_documents([item.hit for item in number_evidence(hits)], keywords)
 
     def _translated_search(
         self,
         customer_id: str,
+        user_id: str | None,
         question: str,
         query_text: str,
         vector: list[float] | None,
@@ -1690,12 +1753,13 @@ class AnswerService:
         texts = [*extra, *((query.text, self._embed(query.text)) for query in queries)]
         limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
         return self._translated.search_translated(
-            customer_id, query_text, vector, texts, limit, scope, expansion
+            customer_id, query_text, vector, texts, limit, scope, expansion, user_id=user_id
         )
 
     def _hits(
         self,
         customer_id: str,
+        user_id: str | None,
         query_text: str,
         vector: list[float] | None,
         extra: Sequence[tuple[str, list[float] | None]],
@@ -1708,12 +1772,17 @@ class AnswerService:
         limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
         if extra and self._translated is not None:
             fused = self._translated.search_translated
-            return fused(customer_id, query_text, vector, extra, limit, scope, expansion, asked).hits
-        return self._retriever.search(customer_id, query_text, vector, limit, scope, expansion)
+            return fused(
+                customer_id, query_text, vector, extra, limit, scope, expansion, asked, user_id=user_id
+            ).hits
+        return self._retriever.search(
+            customer_id, query_text, vector, limit, scope, expansion, user_id=user_id
+        )
 
     def _widened(
         self,
         customer_id: str,
+        user_id: str | None,
         texts: Sequence[str],
         keywords: Sequence[str],
         vector: list[float] | None,
@@ -1727,8 +1796,10 @@ class AnswerService:
         if self._context is None or self._model is None:
             return []
         hits = [item.hit for item in evidence]
-        topics = self._context.topic_pieces(customer_id, topic_terms(texts), hits, scope)
-        sections = self._context.section_pieces(customer_id, keywords, vector, [*hits, *topics], scope)
+        topics = self._context.topic_pieces(customer_id, topic_terms(texts), hits, scope, user_id=user_id)
+        sections = self._context.section_pieces(
+            customer_id, keywords, vector, [*hits, *topics], scope, user_id=user_id
+        )
         return [*topics, *sections]
 
     def _embed(self, english: str) -> list[float] | None:
@@ -1754,19 +1825,22 @@ class AnswerService:
         found: Iterator[list[float]] = iter(vectors)
         return [next(found) if text else None for text in texts]
 
-    def _cards(self, customer_id: str, scope: Scope, seen: Sequence[Evidence]) -> list[str]:
+    def _cards(
+        self, customer_id: str, user_id: str | None, scope: Scope, seen: Sequence[Evidence]
+    ) -> list[str]:
         """M2: one card line for each document of ``seen``, in its order; none without the
         context port. A line that reads like instructions is left out. One statement."""
         if self._context is None or not seen:
             return []
         documents = list(dict.fromkeys(item.hit.document_id for item in seen))
-        found = self._context.cards(customer_id, documents, scope)
+        found = self._context.cards(customer_id, documents, scope, user_id=user_id)
         lines = [card_line(*found[document]) for document in documents if document in found]
         return [line for line in lines if line is not None and not looks_like_instructions(line)]
 
     def _draft(
         self,
         customer_id: str,
+        user_id: str | None,
         scope: Scope,
         question: str,
         normalised: NormalisedQuestion,
@@ -1811,7 +1885,7 @@ class AnswerService:
                     seen = picked
             if seen:
                 stream.emit("sources", _sources(seen))
-                cards = fit_cards(asked, seen, self._cards(customer_id, scope, seen), budget)
+                cards = fit_cards(asked, seen, self._cards(customer_id, user_id, scope, seen), budget)
                 stream.emit("stage", {"stage": "writing"})
                 draft_with = partial(
                     model_draft,

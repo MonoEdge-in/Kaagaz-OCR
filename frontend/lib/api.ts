@@ -55,6 +55,7 @@ import type {
   FolderItemsPage,
   FolderLimits,
   FolderBack,
+  FilePlaced,
   FolderRestored,
   FolderSummary,
   TrashedFolder,
@@ -88,6 +89,7 @@ import type {
   OrgNumbersReply,
   OrganisationCreated,
   PageReadings,
+  PageTurnSaved,
   PageSummary,
   DocumentWords,
   PasswordReset,
@@ -388,7 +390,10 @@ export const deleteDocument = (id: string) => request<void>("DELETE", `/document
 /** Brings a document in Trash back, with every version of it; #542: and the folder that came
  * back with it, when it went to Trash with its folder (null otherwise). */
 export const restoreDocument = (id: string) =>
-  request<DocumentSummary & { restored_folder?: FolderBack | null }>("POST", `/documents/${id}/restore`);
+  request<DocumentSummary & { restored_folder?: FolderBack | null; placed?: FilePlaced | null }>(
+    "POST",
+    `/documents/${id}/restore`,
+  );
 /**
  * Read the document again from the start (PRD 2, X1): a reviewer or an admin,
  * for a ready, failed or unreadable document out of Trash (403 forbidden or
@@ -509,6 +514,17 @@ export const saveMyStory = (id: string, body: { story: string; user_id: string }
 /** 204; 404 when there is none. userId: who this tab signed in (409 session_changed otherwise). */
 export const deleteMyStory = (id: string, userId: string) =>
   request<void>("DELETE", `/documents/${encodeURIComponent(id)}/my-story${query({ user_id: userId })}`);
+
+/** Turn pages for everyone (#600): only the pages named, turn 0 puts one back; the reply is the whole set. */
+export const savePageTurnsForEveryone = (
+  id: string,
+  changes: { page_no: number; turn: 0 | 90 | 180 | 270 }[],
+  userId: string
+) =>
+  request<{ page_turns: PageTurnSaved[] }>("PATCH", `/documents/${encodeURIComponent(id)}/page-turns`, {
+    changes,
+    user_id: userId,
+  });
 
 /**
  * Upload one file with progress (fetch cannot report upload progress, XHR can),

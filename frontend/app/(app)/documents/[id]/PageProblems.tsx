@@ -22,7 +22,7 @@ import Link from "next/link";
 import { useCallback, useReducer, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { BusyLabel } from "@/components/documents/BusyLabel";
-import { ACCEPT_ATTRIBUTE } from "@/components/documents/logic";
+import { ACCEPT_ATTRIBUTE, HIDDEN_COPY } from "@/components/documents/logic";
 import { Icon } from "@/components/ui/Icon";
 import {
   KEEP_MEMBER_NOTE,
@@ -51,7 +51,7 @@ export interface PageProblemsProps {
   inline?: boolean;
 }
 
-type Upload = { step: "sending" } | { step: "sent"; id: string; words: string } | { step: "error"; message: string };
+type Upload = { step: "sending" } | { step: "sent"; id: string | null; words: string } | { step: "error"; message: string };
 
 export function PageProblems({
   documentId,
@@ -122,13 +122,17 @@ export function PageProblems({
     setUpload({ step: "sending" });
     uploadVersion(documentId, file, userId, () => undefined).then(
       (reply) =>
-        setUpload({
-          step: "sent",
-          id: reply.document.id,
-          words: reply.duplicate
-            ? `This file was uploaded before, as “${reply.document.display_name}”. Nothing new was stored.`
-            : `Sent as version ${reply.document.version_no}. It is read in full.`,
-        }),
+        setUpload(
+          reply.hidden
+            ? { step: "sent", id: null, words: HIDDEN_COPY }
+            : {
+                step: "sent",
+                id: reply.document.id,
+                words: reply.duplicate
+                  ? `This file was uploaded before, as “${reply.document.display_name}”. Nothing new was stored.`
+                  : `Sent as version ${reply.document.version_no}. It is read in full.`,
+              },
+        ),
       (caught: unknown) => setUpload({ step: "error", message: fixErrorText(caught) }),
     );
   }
@@ -236,8 +240,13 @@ export function PageProblems({
         )}
         {upload?.step === "sent" && (
           <p className={styles.problemNote} role="status">
-            {upload.words}{" "}
-            <Link href={withFrom(`/documents/${upload.id}`, `/documents/${encodeURIComponent(documentId)}`)}>Open it</Link>
+            {upload.words}
+            {upload.id !== null && (
+              <>
+                {" "}
+                <Link href={withFrom(`/documents/${upload.id}`, `/documents/${encodeURIComponent(documentId)}`)}>Open it</Link>
+              </>
+            )}
           </p>
         )}
         {upload?.step === "error" && (

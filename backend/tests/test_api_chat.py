@@ -20,7 +20,7 @@ from kaagaz.api.app import create_app
 from kaagaz.api.auth import CurrentUser, current_user
 from kaagaz.api.routers import chat as chat_router
 from kaagaz.api.routers.chat import NOT_FOUND_TEXT, SHORT_TITLE, TOO_MANY_QUESTIONS, answer_text, short_title
-from kaagaz.api.views import GONE_SENTENCE, answer_with_source_states, cited_document_ids
+from kaagaz.api.views import GONE_SENTENCE, answer_with_source_states, cited_document_ids, no_access_answer
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.search.scope import ScopeBody
 from tests.settings_factory import make_settings
@@ -113,16 +113,21 @@ def test_also_mentions_documents_are_checked_and_a_gone_one_leaves_the_list_and_
     }
     answer = {**_cited_answer("d1"), "mentions": mentions}
     assert cited_document_ids(answer) == ["d1", "m1", "m2", "m3"]
-    shown = answer_with_source_states(answer, {"d1": "live", "m1": "live", "m2": "in_trash"})
-    assert [d["document_id"] for d in shown["mentions"]["documents"]] == ["m1"]
-    assert shown["mentions"]["total"] == 7
+    shown = answer_with_source_states(answer, {"d1": "live", "m1": "live", "m2": "in_trash", "m3": "live"})
+    assert [d["document_id"] for d in shown["mentions"]["documents"]] == ["m1", "m3"]
+    assert shown["mentions"]["total"] == 8
     assert answer["mentions"] is mentions and len(mentions["documents"]) == 3  # stored answer unchanged
     assert "mentions" not in answer_with_source_states(_cited_answer("d1"), {"d1": "live"})
 
 
 def test_a_saved_answer_shows_each_source_as_it_is_now() -> None:
     answer = _cited_answer("live", "older", "binned", "gone", closest=("live", "binned", "gone"))
-    states = {"live": "live", "older": "older_version", "binned": "in_trash"}  # "gone": deleted forever
+    # Changed on purpose (#602, question 1): a document missing from the states (hidden from the
+    # person, or deleted forever) replaces the whole answer; "gone" is in Trash here.
+    states = {"live": "live", "older": "older_version", "binned": "in_trash", "gone": "in_trash"}
+    assert answer_with_source_states(answer, {k: v for k, v in states.items() if k != "gone"}) == (
+        no_access_answer()
+    )
 
     shown = answer_with_source_states(answer, states)
 
@@ -130,7 +135,7 @@ def test_a_saved_answer_shows_each_source_as_it_is_now() -> None:
         ("live", "live"),
         ("older", "older_version"),
         ("binned", "in_trash"),
-        ("gone", "deleted"),
+        ("gone", "in_trash"),
     ]
     # A live or older citation keeps its words and its place on the page.
     for kept in shown["citations"][:2]:
@@ -159,7 +164,7 @@ def test_a_sentence_whose_every_source_is_gone_is_replaced_and_one_without_sourc
             {"text": "No source.", "citations": []},
         ],
     }
-    shown = answer_with_source_states(answer, {"binned": "in_trash"})
+    shown = answer_with_source_states(answer, {"binned": "in_trash", "gone": "in_trash"})  # #602
     assert [sentence["text"] for sentence in shown["sentences"]] == [GONE_SENTENCE, "No source."]
     assert {key: shown[key] for key in ("status", "label", "route")} == {
         key: answer[key] for key in ("status", "label", "route")

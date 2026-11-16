@@ -510,7 +510,15 @@ def test_v6_accept_losing_a_race_to_reject_is_already_decided_and_writes_nothing
     """The suggestion still read pending, but a reject (no family locks) decided it first: the
     accept's guarded UPDATE finds no row, so Refused rolls the link back before any write."""
     suggestion = {"id": "s1", "document_id": "n1", "candidate_family_id": "f1", "status": "pending"}
-    state = {"in_trash": False, "current_id": "c1", "alone": True, "status": "ready", "from_folder": None}
+    # Changed on purpose (#594): the state says whom the document was held for too.
+    state = {
+        "in_trash": False,
+        "current_id": "c1",
+        "alone": True,
+        "status": "ready",
+        "from_folder": None,
+        "held_for": None,
+    }
     replies = {
         versions_sql._SUGGESTION: suggestion,
         versions_sql._LINK_STATE: state,
@@ -536,6 +544,8 @@ def test_v6_accept_losing_a_race_to_reject_is_already_decided_and_writes_nothing
             return _Result(replies[statement])
 
     monkeypatch.setattr(versions_sql, "lock_family", lambda *_args: "locked")
+    # Changed on purpose (#593, 0085): the link takes the tree lock before the family locks.
+    monkeypatch.setattr(versions_sql, "_lock_tree", lambda *_args: None)
     with pytest.raises(versions_sql.Refused) as refused:
         versions_sql.link(_Conn(), "c", "s1", by="u")  # type: ignore[arg-type]
     assert refused.value.code == "already_decided"

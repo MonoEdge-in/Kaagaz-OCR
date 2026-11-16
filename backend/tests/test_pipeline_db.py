@@ -160,7 +160,7 @@ def test_a_document_in_trash_is_acknowledged_unread_and_read_once_restored(db: D
     )
     assert one(db, customer, "SELECT count(*) FROM processing_runs WHERE document_id = :d", doc) == (0,)
     with db.customer(customer) as conn:
-        assert restore_document(conn, customer, doc)
+        assert restore_document(conn, customer, doc, by=admin)
     sent: list[Job] = []
     done = revive_stuck(
         db, lambda job, tries: sent.append(job), lambda c: c != customer, stale_seconds=0, max_attempts=5
