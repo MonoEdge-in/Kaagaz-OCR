@@ -394,6 +394,8 @@ VIEW_READERS = {
     "db/visibility.py": {"LIVE_SUGGESTION", "SEEN_DOCUMENT"},
     # Changed on purpose (#603 W4): the WhatsApp channel, as the person, in the app's role; never a worker.
     "db/whatsapp_chat.py": {"_ON_WHATSAPP"},
+    # Changed on purpose (#603 W5): the folder browser, as the person, in the app's role; never a worker.
+    "db/whatsapp_upload.py": {"_ABOUT", "_BATCH_NOTICES", "_LEVEL", "_LOCKED", "_NAMED"},
     "db/word_review.py": {"_PAGES", "_PIECES_BY_ID", "_VALUES_BY_ID", "_WORDS"},
     # PR 8 (#602): Ask and search, reached from the API only (the SQL guard's worker test).
     "search/hybrid.py": {
@@ -833,7 +835,8 @@ def test_no_module_outside_the_api_calls_a_function_that_reads_a_view() -> None:
     its statements (or call one that does) are called only from kaagaz/api, search/scope.py and
     answering/expansion.py (PgWords, Ask's and search's word source, #602: reached from the API only,
     as the SQL guard's worker test proves). Changed on purpose (#603 W4): and channel/chat.py, the
-    WhatsApp channel, as the person, in the app's role; never a worker (tests/test_whatsapp_guard.py)."""
+    WhatsApp channel, as the person, in the app's role; never a worker (tests/test_whatsapp_guard.py);
+    and (W5) channel/upload.py, its uploads and folder browser, the same way."""
     root = Path(kaagaz.__file__).parent
     readers: dict[str, set[str]] = {}
     for file, names in VIEW_READERS.items():
@@ -855,6 +858,7 @@ def test_no_module_outside_the_api_calls_a_function_that_reads_a_view() -> None:
             "search/scope.py",
             "answering/expansion.py",
             "channel/chat.py",
+            "channel/upload.py",
         ):
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))

@@ -7,7 +7,8 @@ the API's (DATABASE_URL), so every person transaction is held to the views and t
 a browser's (tests/test_whatsapp_guard.py). W4: the chat gets the API's own context on that one
 Database (``api.app.headless_context``), so Ask and search are the browser's.
 
-The loop (``run``): free the finished, claim up to WHATSAPP_PEOPLE_AT_ONCE connections with
+The loop (``run``): free the finished, put back in line the notices whose time came (W5,
+``Channel.revive``), claim up to WHATSAPP_PEOPLE_AT_ONCE connections with
 waiting messages (``kaagaz_whatsapp_claim``: one person at a time each, different people side by
 side on a thread pool), and when nothing is waiting look again in POLL_SECONDS. The sweep
 (``kaagaz_whatsapp_sweep``, also the worker's hourly) runs once at start and every SWEEP_SECONDS,
@@ -85,6 +86,7 @@ def run(
                         extra={"code": type(error).__name__, "where": crash_site(error)},
                     )
             try:
+                channel.revive()  # W5: notices put aside whose time came, back in line
                 free = people_at_once - len(running)
                 claimed = channel.claim(free) if free > 0 else []
             except BackendUnavailable:

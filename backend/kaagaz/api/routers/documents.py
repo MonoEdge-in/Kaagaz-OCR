@@ -694,10 +694,32 @@ def _accept(
     folder_id: str | None,
     batch_id: str | None,
     asked: _Asked,
+    *,
+    via: str | None = None,
 ) -> dict[str, Any]:
-    """An upload's file stored (``_store``), and its reply."""
+    """An upload's file stored (``_store``), and its reply. ``via``: the way it came when not the
+    browser (#603 W5: ``whatsapp``), in its audit row, with the uploader as its subject."""
     result, reading = _store(context, user, upload, policy, folder_id, batch_id, asked)
-    return _upload_reply(context, user, result, action="document.upload", details=reading.details() or None)
+    details = {**reading.details(), **({"via": via} if via else {})}
+    subject = user.user_id if via else None
+    return _upload_reply(
+        context, user, result, action="document.upload", details=details or None, subject_user_id=subject
+    )
+
+
+def store_upload(
+    context: AppContext,
+    user: CurrentUser,
+    upload: UploadFile,
+    policy: UploadPolicy,
+    folder_id: str | None,
+    batch_id: str | None,
+) -> dict[str, Any]:
+    """A file sent on WhatsApp (#603 W5, PRD 7 section 15: "the same checks as a browser upload"):
+    ``POST /documents``'s own ``_accept``, never a second way in: the folder checked as the person
+    before anything is stored, the type, size, storage limit, duplicates (and PRD 7's three answers),
+    the batch cap and the scan job, audited ``via: whatsapp``. ApiError as the route's."""
+    return _accept(context, user, upload, policy, folder_id, batch_id, _Asked(), via="whatsapp")
 
 
 def _store(
@@ -764,6 +786,7 @@ def _upload_reply(
     *,
     action: str,
     details: Mapping[str, audit.DetailValue] | None = None,
+    subject_user_id: str | None = None,
 ) -> dict[str, Any]:
     """The reply to an upload or a new version: the document, and whether it was a
     duplicate and is in Trash. A new file (not a duplicate) is audited first."""
@@ -778,6 +801,7 @@ def _upload_reply(
                 target_type="document",
                 target_id=result.document_id,
                 details=details,
+                subject_user_id=subject_user_id,
             )
         row = listing.get_document(conn, customer_id, result.document_id)
         tags = tags_sql.tags_for_documents(conn, customer_id, [result.document_id])

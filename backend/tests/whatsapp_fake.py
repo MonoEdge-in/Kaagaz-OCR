@@ -5,8 +5,13 @@ server").
   /<version>/<number id>/messages`` is recorded and answered as Meta does, or with the next of
   ``failures`` (a status; 0 closes the connection with no reply). ``texts()``: (to, body) of each
   text sent, in order; ``sent()`` (W3): (to, what) of every message: a text's body, a template's
-  name and its parameters, or the buttons' text and ids. Files are never sent on WhatsApp, so there
-  is no media endpoint.
+  name and its parameters, or the buttons' text and ids. Files are never sent on WhatsApp: nothing
+  takes one. W5: a typing indicator (a message marked read) goes to ``typing`` (the wamids), never
+  to ``requests`` or ``failures``. The files people send: ``add_media`` keeps bytes under a new
+  media id; ``GET /<version>/<media id>`` (the access token needed) gives an address that works
+  ``media_seconds`` (Meta's 5 minutes) and the size (``sizes`` may say another), ``gone`` media ids
+  answer 404 as Meta does after 7 days; ``GET /media/<token>`` gives the bytes. ``fetched``: the
+  media ids whose bytes were read.
 * ``whatsapp_settings``: settings with WhatsApp on, pointed at the fake.
 * ``delivery``: the JSON Meta posts for messages; ``post``: posts it to the webhook signed with
   the app secret as Meta does (or with the ``signature`` given).
@@ -15,12 +20,15 @@ server").
 * ``Echo`` (W4): a chat that answers every message PLACEHOLDER, for the tests of the channel's
   queue, which are about when and to whom a reply goes, not what it says. ``sent()`` shows a
   list as (its text, its row ids).
+* ``file_message`` (W5): a document or photo as Meta delivers it.
 """
 
 import hashlib
 import hmac
 import json
+import secrets
 import threading
+import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -57,6 +65,9 @@ class Echo:
     def recheck(self, linked: Linked, reply: Outgoing) -> Outgoing:
         return reply
 
+    def notice(self, linked: Linked, message: Waiting) -> Outgoing | None:
+        return None  # W5: a notice is still being read; the queue's tests are about replies
+
 
 class WhatsAppFake:
     def __init__(self) -> None:
@@ -64,6 +75,20 @@ class WhatsAppFake:
         self.requests: list[tuple[str, dict[str, str], Any]] = []  # (path, headers, body)
         self.failures: list[int] = []
         self.lock = threading.Lock()
+        self.typing: list[str] = []  # W5: the wamids marked read, with the typing indicator
+        self.media: dict[str, bytes] = {}  # W5: media id: the file's bytes
+        self.sizes: dict[str, int] = {}  # a size Meta says instead of the real one
+        self.gone: set[str] = set()
+        self.broken: set[str] = set()  # media ids Meta answers 500 for (down for a moment)
+        self.media_seconds = 300.0
+        self.addresses: dict[str, tuple[str, float]] = {}  # token: (media id, until)
+        self.fetched: list[str] = []
+
+    def add_media(self, data: bytes) -> str:
+        media_id = str(uuid.uuid4().int)[:15]
+        with self.lock:
+            self.media[media_id] = data
+        return media_id
 
     def texts(self) -> list[tuple[str, str]]:
         with self.lock:
@@ -100,17 +125,53 @@ def _handler(fake: WhatsAppFake) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:
             raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
             headers = {name.lower(): value for name, value in self.headers.items()}
+            body = json.loads(raw)
+            if body.get("status") == "read":  # W5: the typing indicator
+                with fake.lock:
+                    fake.typing.append(str(body.get("message_id")))
+                self._reply(200, b'{"success": true}')
+                return
             with fake.lock:
                 status = fake.failures.pop(0) if fake.failures else 200
                 if status == 200:
-                    fake.requests.append((self.path, headers, json.loads(raw)))
+                    fake.requests.append((self.path, headers, body))
             if status == 0:
                 self.close_connection = True
                 return
             reply: dict[str, object] = {"error": {"code": status}}
             if status == 200:
                 reply = {"messages": [{"id": f"wamid.out.{uuid.uuid4().hex}"}]}
-            payload = json.dumps(reply).encode()
+            self._reply(status, json.dumps(reply).encode())
+
+        def do_GET(self) -> None:
+            """W5: a media id's address and size, then the bytes at that address, as Meta's."""
+            if self.headers.get("Authorization") != f"Bearer {TOKEN}":
+                self._reply(401, b'{"error": {"code": 190}}')
+                return
+            name = self.path.rsplit("/", 1)[-1]
+            if name in fake.broken:
+                self._reply(500, b'{"error": {"code": 2}}')
+                return
+            with fake.lock:
+                if self.path.startswith("/media/"):
+                    media_id, until = fake.addresses.get(name, ("", 0.0))
+                    data = fake.media.get(media_id) if time.monotonic() < until else None
+                    if data is not None:
+                        fake.fetched.append(media_id)
+                elif name in fake.media and name not in fake.gone:
+                    token = secrets.token_hex(8)
+                    fake.addresses[token] = (name, time.monotonic() + fake.media_seconds)
+                    size = fake.sizes.get(name, len(fake.media[name]))
+                    address = f"{fake.url.removesuffix(VERSION)}/media/{token}"
+                    data = json.dumps({"url": address, "file_size": size, "id": name}).encode()
+                else:
+                    data = None
+            if data is None:
+                self._reply(404, b'{"error": {"code": 100}}')
+                return
+            self._reply(200, data)
+
+        def _reply(self, status: int, payload: bytes) -> None:
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))
@@ -168,6 +229,22 @@ def message(
         "timestamp": str(int(sent_at.timestamp())),
         "type": "text",
         "text": {"body": body},
+    }
+
+
+def file_message(
+    number: str, sent_at: datetime, media_id: str, *, filename: str | None = None, kind: str = "document"
+) -> dict[str, Any]:
+    """W5: a document (with its file name) or a photo (``kind="image"``) as Meta delivers it."""
+    part: dict[str, Any] = {"id": media_id, "mime_type": "application/octet-stream", "sha256": "x"}
+    if filename is not None:
+        part["filename"] = filename
+    return {
+        "from": number.removeprefix("+"),
+        "id": f"wamid.{uuid.uuid4().hex}",
+        "timestamp": str(int(sent_at.timestamp())),
+        "type": kind,
+        kind: part,
     }
 
 

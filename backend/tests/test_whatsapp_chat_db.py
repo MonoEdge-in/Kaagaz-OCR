@@ -137,29 +137,31 @@ def world(db: Database, fake: WhatsAppFake) -> _World:
 
 def test_the_menu_is_in_the_language_of_the_message_and_after_the_welcomes_start(world: _World) -> None:
     person = world.person()
+    # Changed on purpose (#603 W5): [Ask a question] [Upload a file] [Get a file]; More is typed.
     assert world.say(person, "Hi") == (
-        "Hello Test. What would you like to do?",
-        ["ask.en", "get.en", "more.en"],
+        "Hello Test. What would you like to do?\nType More for language, help or to disconnect.",
+        ["ask.en", "upload.en", "get.en"],
     )
     marathi = world.say(person, "नमस्कार")
-    assert marathi == (say("menu", "mr", "Test"), ["ask.mr", "get.mr", "more.mr"])
+    assert marathi == (say("menu", "mr", "Test"), ["ask.mr", "upload.mr", "get.mr"])
     start = {**message(person.number, world.api.clock()), "type": "button", "button": {"payload": "start"}}
-    assert world.send(person, start)[1] == ["ask.en", "get.en", "more.en"]
-    assert world.tap(person, "more.hi", row=False) == (
+    assert world.send(person, start)[1] == ["ask.en", "upload.en", "get.en"]
+    assert world.tap(person, "more.hi", row=False) == (  # an older menu's [More]
         say("more", "hi"),
         ["menu.en", "menu.hi", "menu.mr", "help.hi", "disconnect"],
     )
-    assert world.tap(person, "menu.mr", row=True)[1] == ["ask.mr", "get.mr", "more.mr"]  # a language picked
-    assert world.tap(person, "made up")[1] == ["ask.en", "get.en", "more.en"]  # an unknown tap: the menu
+    assert world.tap(person, "menu.mr", row=True)[1] == ["ask.mr", "upload.mr", "get.mr"]  # a language
+    assert world.tap(person, "made up")[1] == ["ask.en", "upload.en", "get.en"]  # an unknown tap: the menu
     assert world.tap(person, "ask.mr") == say("ask", "mr")
     assert world.tap(person, "disconnect", row=True)[1] == ["disconnect_yes", "keep"]  # W3's, asked first
     assert world.tap(person, "help.en")[0] == say("help", "en", APP_URL)
 
 
-def test_a_photo_or_a_voice_note_gets_type_only_and_a_long_question_is_refused(world: _World) -> None:
+def test_a_voice_note_gets_type_only_and_a_long_question_is_refused(world: _World) -> None:
     person = world.person()
-    photo = {**message(person.number, world.api.clock()), "type": "image", "image": {"id": "media.1"}}
-    assert world.send(person, photo) == say("typed_only", "en")
+    # Changed on purpose (#603 W5): a photo is a file to save now (tests/test_whatsapp_upload_db.py).
+    voice = {**message(person.number, world.api.clock()), "type": "audio", "audio": {"id": "1"}}
+    assert world.send(person, voice) == say("typed_only", "en")
     assert world.say(person, "x" * 1001) == say("too_long", "en")
     assert world.api.answers.asked == []
 
@@ -719,11 +721,12 @@ def test_a_person_who_must_set_a_new_password_gets_only_that(world: _World) -> N
     assert world.api.answers.asked == []
 
 
-def test_a_photo_after_which_file_is_answered_in_its_language(world: _World) -> None:
+def test_a_voice_note_after_which_file_is_answered_in_its_language(world: _World) -> None:
     person = world.person()
     world.tap(person, "get.mr")
-    photo = {**message(person.number, world.api.clock()), "type": "image", "image": {"id": "media.1"}}
-    assert world.send(person, photo) == say("typed_only", "mr")
+    # Changed on purpose (#603 W5): a photo is a file to save now; a voice note is still typed only.
+    voice = {**message(person.number, world.api.clock()), "type": "audio", "audio": {"id": "1"}}
+    assert world.send(person, voice) == say("typed_only", "mr")
 
 
 def test_a_number_is_masked_before_it_is_translated(db: Database, fake: WhatsAppFake) -> None:

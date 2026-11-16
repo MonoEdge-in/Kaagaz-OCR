@@ -24,6 +24,7 @@ FILES = sorted(
         PACKAGE / "channel_main.py",
         PACKAGE / "db" / "whatsapp.py",
         PACKAGE / "db" / "whatsapp_chat.py",  # W4: the chat's SQL
+        PACKAGE / "db" / "whatsapp_upload.py",  # W5: the uploads' and the folder browser's SQL
         PACKAGE / "api" / "routers" / "whatsapp.py",
     ]
 )

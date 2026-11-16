@@ -22,7 +22,9 @@ class Outgoing:
     ``documents``: every document the reply names, checked again just before each try to send it
     (``Chat.recheck``). ``link``: the document whose preview card it is, audited only once the reply
     was sent. ``lang``: its language, for the "couldn't find" that stands in for it. ``later``: work
-    to do once it was sent (Ask's memory)."""
+    to do once it was sent (Ask's memory). W5: ``finished``, the person's other messages it answers
+    too (the files sent with this one), done with it; ``notice``, a saved file's "ready" notice,
+    which goes not at all (an empty ``body``) once its file is hidden, locked or deleted."""
 
     body: str
     buttons: tuple[tuple[str, str], ...] = ()
@@ -32,3 +34,5 @@ class Outgoing:
     link: str | None = None
     lang: str = "en"
     later: tuple[Callable[[], None], ...] = ()
+    finished: tuple[str, ...] = ()
+    notice: bool = False
