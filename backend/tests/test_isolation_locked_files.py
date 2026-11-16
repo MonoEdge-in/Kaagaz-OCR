@@ -19,7 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from kaagaz.answering.service import AnswerService
-from kaagaz.api.views import LOCKED_LINE, LOCKED_NOTE
+from kaagaz.api.views import LOCKED_LINE, LOCKED_NOTE, NO_ACCESS_LINE
 from kaagaz.db import locks as locks_sql
 from kaagaz.db.documents import STUCK as _STUCK
 from kaagaz.db.documents import PgDocuments, stuck_documents
@@ -27,6 +27,7 @@ from kaagaz.db.engine import Database
 from kaagaz.db.page_reads import PageKey, PgPageReads
 from kaagaz.ingestion.ports import Job
 from kaagaz.search.scope import Scope
+from tests.db_support import rule_on
 from tests.settings_factory import make_settings
 from tests.test_amount_guard_db import TOTAL, add_bill
 from tests.test_answering_fixed_queries_db import NOW
@@ -500,6 +501,10 @@ ADMINS = {
     ("DELETE", "/api/documents/{document_id}/shares/{user_id}"),
     ("GET", "/api/documents/{document_id}/audience"),
     ("GET", "/api/documents/{document_id}/move-preview"),
+    # Changed on purpose (PR 9b, #606): the names list's Move and Send to Trash, an Admin's, found by
+    # kaagaz_admin_document (a locked file is moved and trashed as any).
+    ("POST", "/api/documents/{document_id}/kept/move"),
+    ("POST", "/api/documents/{document_id}/kept/trash"),
 }
 # The body or query a refused route needs to reach its lookup (an empty one is 422 first).
 _BODIES: dict[str, Any] = {
@@ -778,7 +783,10 @@ def test_an_old_answer_from_a_file_now_locked_is_replaced_whole_and_the_line_sho
     for name, who in (("plain", plain), ("member", member)):
         shown = who.client.get(f"/api/conversations/{asked[name]}", headers=CSRF).json()
         answer = shown["messages"][-1]
-        assert answer["answer"]["status"] == "no_access" and answer["text"] == LOCKED_LINE
+        # Changed on purpose (PR 8's states through the view, #602): a person who may not open it
+        # gets the line of any hidden source; the person given it, the locked line.
+        line = LOCKED_LINE if name == "plain" else NO_ACCESS_LINE
+        assert answer["answer"]["status"] == "no_access" and answer["text"] == line
         assert "Zebra" not in json.dumps(shown)
         assert shown["locked_note"] == (LOCKED_NOTE if name == "plain" else None)  # never saved
     saved = _owner(db, "SELECT count(*) FROM messages WHERE answer::text LIKE '%locked%'", {})
@@ -1107,3 +1115,34 @@ def test_a_version_suggestion_of_a_locked_family_goes_with_the_lock(db: Database
     )[0][0]
     assert _lock(admin, file)[0] == 200
     assert _call(admin, "POST", f"/api/version-suggestions/{suggestion}/accept", {})[0] == 404
+
+
+def test_lock_unlock_and_a_locked_copy_work_with_the_database_rule_on(db: Database) -> None:
+    """PR 9a's per-person rule on (whatever the session's default): the Admin locks and unlocks a
+    file they may not open, its rows narrowed to them by the rule; a hidden locked file answers as
+    an id that never was; a copy of it names it to the person given it and hides it from the rest."""
+    with rule_on():
+        api = Api(db)
+        org = _walled(api)
+        admin, plain, member = org.people["admin"], org.people["plain"], org.people["member"]
+        v1, v2 = _family(api, org)
+        assert _lock(admin, v2, [plain.user_id]) == (200, {"locked": True, "versions": 2, "open_to": 1})
+        assert _count(db, "pieces", [v1, v2]) == 0 and _count(db, "lock_grants", [v1, v2]) == 2
+        for who in (member, admin):
+            _same_as_random(who, "GET", "/api/documents/{id}", v2)
+            _same_as_random(who, "GET", "/api/documents/{id}/pages/1/image", v2)
+        assert plain.client.get(f"/api/documents/{v2}", headers=CSRF).json()["locked"] is True
+        data = api.storage.get(org.c, v2)
+        sha = hashlib.sha256(data).hexdigest()
+        _owner(db, "UPDATE documents SET sha256 = :h WHERE id = :d", {"h": sha, "d": v2})
+        for name, expected in (("plain", {"id": v2}), ("member", None)):
+            files = {"file": ("again.pdf", data, "application/pdf")}
+            body = org.people[name].client.post("/api/documents", files=files, headers=CSRF).json()
+            assert (
+                body["duplicate"] is True and body["document"] is None and body.get("locked") == expected
+            ), name
+        status, reply = _call(admin, "POST", f"/api/documents/{v2}/unlock", {"password": PASSWORD})
+        assert (status, reply) == (200, {"unlocked": True, "reading": True})
+        state = "SELECT count(*) FROM documents WHERE id IN (:a, :b) AND locked_at IS NULL"
+        assert _owner(db, state, {"a": v1, "b": v2})[0][0] == 2
+        assert _count(db, "lock_grants", [v1, v2]) == 0

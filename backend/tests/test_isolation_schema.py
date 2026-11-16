@@ -243,6 +243,15 @@ CATALOG_POLICIES = {
 }
 PAGE_READ_UPDATES = {"result", "input_tokens", "output_tokens", "created_at"}
 SECTION_UPDATES = {"embedding", "embed_recipe"}
+# Changed on purpose (#606, 0091): the tables the per-person rule (person_only) holds.
+PERSON_RULE_TABLES = {
+    "documents", "folders", "trashed_folders", "corrections", "document_links", "document_sections",
+    "document_stories", "document_tags", "document_topics", "ensemble_readings", "ensemble_runs",
+    "extracted_values", "invoice_lines", "invoices", "learning_removals", "model_usage",
+    "organization_word_suggestions", "page_blocks", "page_reads", "page_rotations", "pages", "pieces",
+    "processing_runs", "reader_outputs", "source_pins", "table_cells", "user_word_spots", "value_keys",
+    "version_suggestions", "word_changes",
+}  # fmt: skip
 # The second policy of the tables that belong to one user (0008, 0009): it must pass too.
 OWN_USER = "(user_id = (NULLIF(current_setting('kaagaz.user_id'::text, true), ''::text))::uuid)"
 RUN_OUTCOME = {
@@ -258,6 +267,13 @@ RUN_OUTCOME = {
 # each narrow: {name: (what it returns, its search path)}. Those that list across
 # customers or users give ids only.
 EMPTY_PATH = ['search_path=""']
+# A restore's rows (0092): the topmost folder made live and the one asked for, or why nothing was done.
+RESTORED = (
+    "TABLE(id uuid, parent_id uuid, name text, created_at timestamp with time zone, kind text,"
+    " sort_order integer, department_only boolean, private boolean, is_top boolean, is_asked boolean,"
+    " trash_id uuid, refused text, renamed boolean, relocated boolean, sealed boolean, below uuid[],"
+    " families uuid[])"
+)
 OWNER_RIGHTS = {
     # Changed on purpose (#479, 3 Nov 2026): 0067 gives 0001's two the empty path as well.
     "kaagaz_login_lookup": (
@@ -340,6 +356,88 @@ OWNER_RIGHTS = {
     "kaagaz_take_file": ("integer", EMPTY_PATH),
     # Changed on purpose (#601, 0090b): auto-filing gives the uploader the file; no person only.
     "kaagaz_give_uploader": ("integer", EMPTY_PATH),
+    # Changed on purpose (#606, 0091): the database rule's switch, fast path and new-version check.
+    "kaagaz_person_rule_on": ("boolean", EMPTY_PATH),
+    "kaagaz_sees_everything": ("boolean", EMPTY_PATH),
+    "kaagaz_family_visible": ("boolean", EMPTY_PATH),
+    # Changed on purpose (#606, 0091): what the rule would narrow, read whole; ids and numbers only.
+    "kaagaz_duplicate": ("TABLE(sha256 text, size_bytes bigint, answer text, document_id uuid)", EMPTY_PATH),
+    "kaagaz_existing": ("SETOF uuid", EMPTY_PATH),
+    "kaagaz_hidden_inside": (
+        "TABLE(hidden_files bigint, hidden_folders bigint, any_files boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_trash_top": ("TABLE(id uuid, kind text)", EMPTY_PATH),
+    "kaagaz_document_place": (
+        "TABLE(department_id uuid, private_folder_id uuid, held_for uuid, folder_id uuid, family_id uuid)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_folder_place": (
+        "TABLE(department_id uuid, private_folder_id uuid, private boolean, department_only boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_files": ("bigint", EMPTY_PATH),
+    "kaagaz_folder_depth": ("TABLE(depth integer, cycle boolean, height integer)", EMPTY_PATH),
+    "kaagaz_storage_used": ("bigint", EMPTY_PATH),
+    "kaagaz_spent": ("TABLE(spent numeric, unknown boolean)", EMPTY_PATH),
+    "kaagaz_ensemble_runs_this_hour": ("bigint", EMPTY_PATH),
+    "kaagaz_word_suggestions_count": ("bigint", EMPTY_PATH),
+    "kaagaz_ready_stamp": ("text", EMPTY_PATH),
+    # Changed on purpose (#606, 0091): an Admin's names and numbers, whole (decision 20).
+    "kaagaz_admin_stats": (
+        "TABLE(documents_by_status jsonb, questions_total bigint, answered bigint, not_found bigint,"
+        " verified_answers bigint, needs_review_answers bigint, feedback_up bigint, feedback_down bigint,"
+        " open_review_items bigint, older_versions bigint, in_trash bigint)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_member_numbers": (
+        "TABLE(id uuid, display_name text, email text, role text, disabled boolean,"
+        " last_active_at timestamp with time zone, documents_uploaded bigint, pages_read numeric,"
+        " questions_asked bigint, values_verified bigint)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_failed": (
+        "TABLE(id uuid, display_name text, detected_type text, status text, failure_code text,"
+        " page_count integer, attempts integer, max_attempts integer,"
+        " last_run_at timestamp with time zone, total bigint)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_reader_pages": (
+        "TABLE(pages_cells bigint, pages_text_layer bigint, pages_ocr bigint, pages_blank bigint,"
+        " pages_gemini bigint, pages_local bigint, pages_cached bigint, pages_read_again bigint,"
+        " input_tokens bigint, output_tokens bigint)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_usage": (
+        "TABLE(dimension text, user_id uuid, model text, kind text, day date, document_id uuid,"
+        " of_document boolean, calls bigint, cached_calls bigint, input_tokens numeric,"
+        " output_tokens numeric, reasoning_tokens numeric, cost_usd numeric, cost_estimated boolean,"
+        " cost_part_unknown boolean,"
+        " user_name text, model_name text, document_name text)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_usage_rows": (
+        "TABLE(day date, user_name text, model text, kind text, calls bigint, tokens numeric,"
+        " cost_usd numeric, cost_estimated boolean, cost_part_unknown boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_folder_summary": ("TABLE(folders bigint, files bigint, size_bytes numeric)", EMPTY_PATH),
+    "kaagaz_admin_document_names": ("TABLE(id uuid, display_name text, version_no integer)", EMPTY_PATH),
+    "kaagaz_admin_given_to": (
+        "TABLE(id uuid, display_name text, folder_id uuid, given_at timestamp with time zone, given_by uuid)",
+        EMPTY_PATH,
+    ),
+    # Changed on purpose (#606, PR 9b, 0092): the writes over rows the person can't see; ids and counts.
+    "kaagaz_admin_trash_in_folders": ("integer", EMPTY_PATH),
+    "kaagaz_detach_trashed": ("integer", EMPTY_PATH),
+    "kaagaz_admin_move_folder_documents": ("integer", EMPTY_PATH),
+    "kaagaz_restore_folder": (RESTORED, EMPTY_PATH),
+    "kaagaz_restore_with_folders": (RESTORED, EMPTY_PATH),
+    "kaagaz_trash_uploaders": ("uuid[]", EMPTY_PATH),
+    "kaagaz_trash_families": ("SETOF uuid", EMPTY_PATH),
+    "kaagaz_purge_family": ("TABLE(document_id uuid, folder_id uuid)", EMPTY_PATH),
+    "kaagaz_admin_move_documents": ("TABLE(document_id uuid, family_id uuid, from_folder uuid)", EMPTY_PATH),
+    "kaagaz_admin_trash_documents": ("TABLE(document_id uuid, family_id uuid, trashed boolean)", EMPTY_PATH),
     # Changed on purpose (#605, 0093): locked files, each an Admin's only, checked inside.
     "kaagaz_lock": (
         "TABLE(document_id uuid, outcome text, version_id uuid, prepare boolean, rendition boolean)",
@@ -650,8 +748,16 @@ TRIGGER_RIGHTS = dict.fromkeys(
 # Changed on purpose (#463, 0064): the accuracy checks are the operator's too.
 OPERATOR_TABLES = {"operators", "platform_audit", "scan_accuracy_checks"}
 PLATFORM_DEFAULTS = {"platform_models", "platform_ai_settings", "feature_switches", "platform_model_override"}
+# Changed on purpose (#606, 0091): the database rule's switch, the owner's only.
 NO_CUSTOMER_ID = (
-    {"customers", "alembic_version", "reader_status", "model_catalog", "model_rate_scheduler"}
+    {
+        "customers",
+        "alembic_version",
+        "reader_status",
+        "model_catalog",
+        "model_rate_scheduler",
+        "kaagaz_person_rule",
+    }
     | PLATFORM_DEFAULTS
     | OPERATOR_TABLES
 )
@@ -803,7 +909,15 @@ def test_the_tables_of_one_user_also_have_the_restrictive_own_user_only_policy(d
         }
     own = FROM_0008 | FROM_0009
     restrictive = ("ALL", "RESTRICTIVE", ["public"], OWN_USER, OWN_USER)
-    assert policies == {(table, "own_user_only"): restrictive for table in own} | CATALOG_POLICIES
+    # Changed on purpose (#606, 0091): the per-person rule, for the API role only, on documents,
+    # folders, trashed folders and the 27 content tables (test_isolation_person_rule checks them).
+    person = {key: value for key, value in policies.items() if key[1] == "person_only"}
+    assert {table for table, _ in person} == PERSON_RULE_TABLES
+    assert {(command, permissive, tuple(roles)) for command, permissive, roles, *_ in person.values()} == {
+        ("ALL", "RESTRICTIVE", ("kaagaz_app",))
+    }
+    others = {key: value for key, value in policies.items() if key[1] != "person_only"}
+    assert others == {(table, "own_user_only"): restrictive for table in own} | CATALOG_POLICIES
 
 
 def _updatable(db: Database, table: str) -> set[str]:

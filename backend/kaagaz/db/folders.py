@@ -263,15 +263,9 @@ _PATH = (
     " ORDER BY depth DESC"
 )
 
-_DEPTH = (
-    "WITH RECURSIVE up (id, parent_id, depth) AS ("
-    " SELECT f.id, f.parent_id, 1 FROM folders f WHERE f.customer_id = :c AND f.id = :f"
-    " UNION ALL"
-    " SELECT f.id, f.parent_id, up.depth + 1 FROM up"
-    " JOIN folders f ON f.id = up.parent_id"
-    " WHERE f.customer_id = :c AND up.depth < 101)"
-    " SELECT max(depth) FROM up"
-)
+# PRD 7 (#606): the walk up the whole tree (kaagaz_folder_depth, 0091): under the database rule a
+# folder the person can't see would end it early, and the 100-level limit would let more through.
+_DEPTH = "SELECT depth FROM kaagaz_folder_depth(:f, NULL) WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 
 # The folder and everything inside it; depth 1 is the folder itself.
 _DESCENDANTS = (
@@ -286,23 +280,12 @@ _DESCENDANTS = (
 
 # One statement for a move under :p: the target's depth (its ancestors), whether
 # the moved folder :f is one of them (a cycle), and the height of :f's subtree.
-# A NULL depth or height means that folder does not exist for this customer.
+# A NULL depth or height means that folder does not exist for this customer. PRD 7 (#606): on the
+# whole tree (kaagaz_folder_depth, 0091): a folder the person can't see would end a walk early, and
+# a cycle through it, or a level past 100, would go unseen.
 _MOVE_CHECK = (
-    "WITH RECURSIVE up (id, parent_id, depth) AS ("
-    " SELECT f.id, f.parent_id, 1 FROM folders f WHERE f.customer_id = :c AND f.id = :p"
-    " UNION ALL"
-    " SELECT f.id, f.parent_id, up.depth + 1 FROM up"
-    " JOIN folders f ON f.id = up.parent_id"
-    " WHERE f.customer_id = :c AND up.depth < 101),"
-    " down (id, depth) AS ("
-    " SELECT f.id, 1 FROM folders f WHERE f.customer_id = :c AND f.id = :f"
-    " UNION ALL"
-    " SELECT f.id, down.depth + 1 FROM down"
-    " JOIN folders f ON f.parent_id = down.id"
-    " WHERE f.customer_id = :c AND down.depth < 101)"
-    " SELECT (SELECT max(depth) FROM up),"
-    " EXISTS (SELECT 1 FROM up WHERE up.id = :f),"
-    " (SELECT max(depth) FROM down)"
+    "SELECT depth, cycle, height FROM kaagaz_folder_depth(:p, :f)"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 
 # Trashed documents keep their folder until they are restored or purged; a
@@ -313,12 +296,10 @@ _MOVE_CHECK = (
 # and a restore of one of its families queue instead of deadlocking. Like every
 # write of folder_id, it clears the auto-filing state (feature 28, R3), so a family
 # Kaagaz filed there is no longer "filed" and its Undo is refused.
+# PRD 7 (#606): every one, seen or not, by the owner-rights kaagaz_detach_trashed (0092): under the
+# database rule a file in Trash the person can't see would stay, and its key refuse the delete.
 _DETACH_TRASHED = (
-    "UPDATE documents d SET folder_id = NULL, autofile = NULL FROM ("
-    " SELECT id FROM documents WHERE customer_id = :c AND folder_id = ANY(CAST(:ids AS uuid[]))"
-    " AND deleted_at IS NOT NULL"
-    " ORDER BY family_id, (id <> family_id), id FOR NO KEY UPDATE) AS l"
-    " WHERE d.customer_id = :c AND d.id = l.id AND d.deleted_at IS NOT NULL"
+    "SELECT kaagaz_detach_trashed(CAST(:ids AS uuid[])) WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 
 _DELETE = "DELETE FROM folders WHERE customer_id = :c AND id = :f RETURNING id, parent_id"
@@ -345,6 +326,11 @@ _SUMMARY = (
 _SUMMARY_SEEN = _SUMMARY.replace(" folders f", " visible_folders f").replace(
     " documents d", " visible_documents d"
 )
+# PRD 7 (#606): an Admin's dialog reads the whole organisation's totals (decision 20), through the
+# owner-rights kaagaz_admin_folder_summary (0091, _SUMMARY's statement), which checks the caller.
+_SUMMARY_ADMIN = (
+    "SELECT * FROM kaagaz_admin_folder_summary(:f) WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
+)
 # A folder upload (a zip the worker unpacks too) whose plan holds one of :ids, that still has a
 # file waiting, and that planned, registered or sent something since :since: the uploads with
 # one waiting first, on folder_upload_items_state, then their plan on folder_upload_folders_folder.
@@ -365,37 +351,38 @@ _SAME_PLACE = (
     "SELECT (CAST(:d1 AS uuid), CAST(:p1 AS uuid))"
     " IS NOT DISTINCT FROM (CAST(:d2 AS uuid), CAST(:p2 AS uuid))"
     " OR (CAST(:p1 AS uuid) IS NULL AND CAST(:p2 AS uuid) IS NULL AND NOT :inner"
-    " AND NOT EXISTS (SELECT 1 FROM folders d WHERE d.customer_id = :c"
-    " AND d.id IN (CAST(:d1 AS uuid), CAST(:d2 AS uuid)) AND d.department_only))"
+    " AND NOT EXISTS (SELECT 1 FROM unnest(ARRAY[CAST(:d1 AS uuid), CAST(:d2 AS uuid)]) AS d (id),"
+    " kaagaz_folder_place(d.id) p WHERE p.department_only))"
+    " FROM (SELECT 1) one WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
-_PLACE_OF = "SELECT department_id, private_folder_id, private FROM folders WHERE customer_id = :c AND id = :f"
+# PRD 7 (#606): both read whole (kaagaz_folder_place, 0091): under the database rule a Department only
+# department, or a target folder, the person can't see reads as no row, so as open or the top level.
+_PLACE_OF = (
+    "SELECT department_id, private_folder_id, private FROM kaagaz_folder_place(:f)"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
+)
 _PRIVATE_AMONG = (
     "SELECT id FROM folders WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[])) AND private ORDER BY id"
 )
 # PRD 7 section 5 (#601): the subtree of :f holds a folder, or a file (in Trash too), the person
 # can't see.
+# PRD 7 (#606): the whole subtree, walked on the whole tables (kaagaz_hidden_inside, 0091): under
+# the database rule the table walk would find nothing hidden, and the delete would go ahead.
 _HIDDEN_INSIDE = (
-    "WITH RECURSIVE down (id, depth) AS ("
-    " SELECT f.id, 1 FROM folders f WHERE f.customer_id = :c AND f.id = :f"
-    " UNION ALL"
-    " SELECT f.id, down.depth + 1 FROM down"
-    " JOIN folders f ON f.parent_id = down.id"
-    " WHERE f.customer_id = :c AND down.depth < 101)"
-    " SELECT EXISTS (SELECT 1 FROM down WHERE NOT EXISTS (SELECT 1 FROM visible_folders v"
-    " WHERE v.customer_id = :c AND v.id = down.id))"
-    " OR EXISTS (SELECT 1 FROM documents d WHERE d.customer_id = :c AND d.folder_id IN (SELECT id FROM down)"
-    " AND NOT EXISTS (SELECT 1 FROM visible_documents v WHERE v.customer_id = :c AND v.id = d.id))"
+    "SELECT x.hidden_files > 0 OR x.hidden_folders > 0"
+    " FROM kaagaz_hidden_inside(ARRAY[CAST(:f AS uuid)], NULL) x"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 # The deleted folder steps out of its siblings' names first, so a folder inside it may take its
 # name where they meet. Its id is its name only inside this transaction (36 characters).
 _NAME_AWAY = "UPDATE folders SET name = id::text WHERE customer_id = :c AND id = :f"
 # Every document directly in :f, Trash included, into :p; locked in family order as
-# _DETACH_TRASHED, and the auto-filing state cleared as every write of folder_id does.
+# _DETACH_TRASHED, and the auto-filing state cleared as every write of folder_id does. PRD 7 (#606):
+# every one, seen or not, by the owner-rights kaagaz_admin_move_folder_documents (0092), which reads
+# #594's gate (_SAME_PLACE, for these files) again under its locks unless :confirmed (PR 10c).
 _MOVE_DOCUMENTS = (
-    "UPDATE documents d SET folder_id = CAST(:p AS uuid), autofile = NULL FROM ("
-    " SELECT id FROM documents WHERE customer_id = :c AND folder_id = :f"
-    " ORDER BY family_id, (id <> family_id), id FOR NO KEY UPDATE) AS l"
-    " WHERE d.customer_id = :c AND d.id = l.id"
+    "SELECT kaagaz_admin_move_folder_documents(:f, CAST(:p AS uuid), :confirmed)"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
 # A13: the trashed folders that were directly in :f now restore into :p (0082's column grant).
 _REPARENT_TRASHED = (
@@ -633,13 +620,17 @@ def delete_folder(conn: Connection, customer_id: str, folder_id: str, *, seen_on
 
 
 def folder_summary(
-    conn: Connection, customer_id: str, folder_id: str, *, seen_only: bool = False
+    conn: Connection, customer_id: str, folder_id: str, *, seen_only: bool = False, admin: bool = False
 ) -> FolderSummary:
     """What the folder holds at every depth (FolderSummary); with ``seen_only`` only what the
-    person may see (PRD 7). Raises FolderNotFound (with ``seen_only`` a hidden folder too).
-    One statement, O(s log F + n log D) for the s folders and n documents of its subtree."""
-    statement = _SUMMARY_SEEN if seen_only else _SUMMARY
-    count, files, size = conn.execute(text(statement), {"c": customer_id, "f": folder_id}).one()
+    person may see (PRD 7); with ``admin`` (an Admin's dialog) the whole organisation's, the
+    files they can't see too (#606). Raises FolderNotFound (with ``seen_only`` a hidden folder
+    too). One statement, O(s log F + n log D) for the s folders and n documents of its subtree."""
+    statement = _SUMMARY_SEEN if seen_only else _SUMMARY_ADMIN if admin else _SUMMARY
+    found = conn.execute(text(statement), {"c": customer_id, "f": folder_id}).first()
+    if found is None:  # another customer's id: no row (the Admin's)
+        raise FolderNotFound()
+    count, files, size = found
     if not count:
         raise FolderNotFound()
     return FolderSummary(files=int(files), folders=int(count) - 1, bytes=int(size))
@@ -683,8 +674,8 @@ def delete_folder_with_contents(
     a fixed number of statements plus two a clashing name.
     """
     _lock_tree(conn, customer_id)
-    held = folder_summary(conn, customer_id, folder_id)
-    params: dict[str, Any] = {"c": customer_id, "f": folder_id, "p": to}
+    held = folder_summary(conn, customer_id, folder_id, admin=True)  # PRD 7 (#606): an Admin's, whole
+    params: dict[str, Any] = {"c": customer_id, "f": folder_id, "p": to, "confirmed": confirm}
     if contents == "keep" and to is not None:
         target_depth, cycle, height = conn.execute(text(_MOVE_CHECK), params).one()
         if target_depth is None:
@@ -710,7 +701,7 @@ def delete_folder_with_contents(
         _move_contents(conn, params)
     else:
         trash_id = str(uuid.uuid4())
-        files = trash.trash_in_folders(conn, customer_id, gone, by=by, now=now, trash_id=trash_id)
+        files = trash.trash_in_folders(conn, customer_id, gone, now=now, trash_id=trash_id)
         held = replace(held, files=files, trash_id=trash_id)
         conn.execute(text(_DETACH_TRASHED), {**params, "ids": gone})
         conn.execute(text(_TRASH_TREE), {**params, "ids": gone, "trash": trash_id, "now": now, "by": by})

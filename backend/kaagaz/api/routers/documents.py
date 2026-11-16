@@ -217,7 +217,15 @@ from kaagaz.ingestion.errors import BackendUnavailable, RejectCode, UploadReject
 from kaagaz.ingestion.messages import over_every_limit_message, storage_full_message, too_large_message
 from kaagaz.ingestion.pagecount import goes_express
 from kaagaz.ingestion.policy import UploadPolicy
-from kaagaz.ingestion.ports import BlobNotFound, Job, JobQueue, StorageRoom, UnknownFamily, UnknownFolder
+from kaagaz.ingestion.ports import (
+    BlobNotFound,
+    Job,
+    JobQueue,
+    PlaceHidden,
+    StorageRoom,
+    UnknownFamily,
+    UnknownFolder,
+)
 from kaagaz.ingestion.service import UploadResult, UploadService
 from kaagaz.jobs.reading_pause import BUDGET, DAILY_LIMIT, pause_reason
 from kaagaz.reading.ocr import GEMINI
@@ -744,6 +752,8 @@ def _store(
         if item is not None:
             raise ApiError(409, "folder_gone", _FOLDER_GONE) from None
         raise ApiError(404, "not_found") from None
+    except PlaceHidden:  # PRD 7 (#606, Q6): the database rule's check; the stored file is removed
+        raise ApiError(409, "upload_place_hidden") from None
     return result, reading
 
 
@@ -1361,8 +1371,12 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         folder = row["folder_id"]
         path = [] if folder is None else folders_sql.folder_path(conn, customer_id, str(folder))
         # PRD 7 (#595): a path with a folder the person can't see is not shown at all (a file given
-        # to them alone, or a private folder inside a department they are not in).
-        if path and len(listing.folders_seen(conn, customer_id, [each.id for each in path])) < len(path):
+        # to them alone, or a private folder inside a department they are not in). #606: under the
+        # database rule the walk stops below such a folder, so a path not starting at the top is one.
+        if path and (
+            path[0].parent_id is not None
+            or len(listing.folders_seen(conn, customer_id, [each.id for each in path])) < len(path)
+        ):
             path = []
         versions = listing.family_versions(conn, customer_id, str(row["family_id"]))
         fixes = listing.reviewer_fix_count(conn, customer_id, target)
@@ -1530,7 +1544,8 @@ def get_document_questions(document_id: uuid.UUID, user: User, context: Context)
     with context.db.user(user.customer_id, user.user_id) as conn:
         family = str(_document_or_404(conn, user, document_id)["family_id"])
         rows = chat_sql.document_questions(conn, user.customer_id, user.user_id, family)
-        # As the chat view: sources in Trash, deleted or replaced since (views.answer_with_source_states).
+        # As the chat view: sources in Trash, replaced, hidden or deleted since
+        # (views.answer_with_source_states: replaced whole for one hidden, PRD 7).
         cited = [each for row in rows if row["answer"] for each in cited_document_ids(row["answer"])]
         states = chat_sql.document_states(conn, user.customer_id, cited)
         opens = chat_sql.opens_locked(conn, user.customer_id, user.user_id)
@@ -1814,22 +1829,16 @@ def update_document(
                 raise folders_sql.FolderNotFound()
             if "folder_id" in given:  # a move can change who sees it: the tree lock first (0085)
                 folders_sql._lock_tree(conn, customer_id)
+                # PRD 7 (#606): read again under the lock, which a folder's delete takes too: a folder
+                # deleted since the check above is not there (an Admin's move would otherwise meet
+                # 0092's own refusal of a folder that isn't live).
+                if folder_id is not None and not listing.folders_seen(conn, customer_id, [folder_id]):
+                    raise folders_sql.FolderNotFound()
             if trash.lock_live_family(conn, customer_id, target) is None:
                 raise ApiError(404, "not_found")
             moved = _move_rule(conn, user, target, folder_id) if "folder_id" in given else None
             _details(conn, user, body, _document_or_404(conn, user, document_id, locked_ok=True))
-            if "folder_id" in given:
-                listing.move_family(conn, customer_id, target, folder_id=folder_id)
-                audit.record(
-                    conn,
-                    customer_id,
-                    actor_user_id=user.user_id,
-                    action="document.move",
-                    target_type="document",
-                    target_id=target,
-                    details={"folder_id": folder_id, **(moved or {})},
-                )
-            if name is not None:
+            if name is not None:  # PRD 7 (#606): before the move, which may hide it from an Admin
                 listing.rename_document(conn, customer_id, target, name=name)
                 audit.record(
                     conn,
@@ -1838,6 +1847,20 @@ def update_document(
                     action="document.rename",
                     target_type="document",
                     target_id=target,
+                )
+            if "folder_id" in given:
+                # PRD 7 (#606): an Admin's move, by the owner-rights function: into a place whose
+                # files they can't see, the database rule would refuse the family's new row.
+                move = listing.admin_move_family if user.role == "admin" else listing.move_family
+                move(conn, customer_id, target, folder_id=folder_id)
+                audit.record(
+                    conn,
+                    customer_id,
+                    actor_user_id=user.user_id,
+                    action="document.move",
+                    target_type="document",
+                    target_id=target,
+                    details={"folder_id": folder_id, **(moved or {})},
                 )
             found = listing.get_document(conn, customer_id, target)
             if found is None:  # PRD 7 (#601): an Admin moved it where they can't see it

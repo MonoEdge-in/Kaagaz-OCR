@@ -282,6 +282,14 @@ _MOVE_FAMILY = (
     "UPDATE documents SET folder_id = :f, autofile = NULL WHERE customer_id = :c"
     " AND family_id = (SELECT family_id FROM documents WHERE customer_id = :c AND id = :d)"
 )
+# PRD 7 (#606): an Admin's move of a family, seen or not, and into a place whose files they can't
+# see (kaagaz_admin_move_documents, 0092): under the database rule the family's new row would fail
+# the rule for them. The folder each moved family was in, for the prune.
+_ADMIN_MOVE = (
+    "SELECT document_id, from_folder"
+    " FROM kaagaz_admin_move_documents(ARRAY[CAST(:d AS uuid)], CAST(:f AS uuid))"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
+)
 # The folders the family is in now, before a move.
 _FAMILY_FOLDERS = (
     "SELECT DISTINCT folder_id FROM documents WHERE customer_id = :c AND folder_id IS NOT NULL"
@@ -1039,6 +1047,19 @@ def move_family(conn: Connection, customer_id: str, document_id: str, *, folder_
     prune_empty(conn, customer_id, left)
 
 
+def admin_move_family(conn: Connection, customer_id: str, document_id: str, *, folder_id: str | None) -> bool:
+    """``move_family`` for an Admin (PRD 7, #606): every version, by the owner-rights
+    ``kaagaz_admin_move_documents`` (the tree lock, then the family's), so a move into a place whose
+    files they can't see is not refused by the database rule. The caller found the file and the
+    folder and holds the tree lock. A folder Kaagaz made that the move leaves empty is deleted
+    (``prune_empty``). False, and nothing moved, when the family is in Trash (read again under its
+    lock) or gone. One statement, then one a folder left."""
+    rows = conn.execute(text(_ADMIN_MOVE), {"c": customer_id, "d": document_id, "f": folder_id}).all()
+    left = [str(row.from_folder) for row in rows if row.from_folder is not None]
+    prune_empty(conn, customer_id, [f for f in left if f != folder_id])
+    return any(str(row.document_id) == document_id for row in rows)
+
+
 # --- Model choice and AI spend (council 11 Oct 2026, MS5, SP2, SP4) -------------------
 
 # Features 26 and 27 (0026): a mode given replaces read_also too, in the same statement, so
@@ -1089,17 +1110,13 @@ def ai_budget(conn: Connection, customer_id: str) -> float | None:
 # grouped by id, so two users with one name stay apart; a NULL user (work no user asked
 # for, or a removed user) has no name. The index model_usage_period. #463 review: an
 # operator's accuracy checks are the operator's, never in the admin's file.
+# PRD 7 (#606): an Admin's numbers, whole (decision 20): read by the owner-rights
+# kaagaz_admin_usage_rows (0091), which checks the caller and holds this statement; ``:c`` keeps
+# another customer's id at none.
 _USAGE_ROWS = (
-    "SELECT (u.created_at AT TIME ZONE :tz)::date AS day, max(us.display_name) AS user_name,"
-    " u.model, u.kind, sum(u.calls) AS calls, sum(u.input_tokens + u.output_tokens) AS tokens,"
-    " sum(u.cost_usd) AS cost_usd, bool_or(u.cost_estimated) AS cost_estimated,"
-    " bool_or(u.cost_usd IS NULL) AS cost_part_unknown"
-    " FROM model_usage u"
-    " LEFT JOIN users us ON us.customer_id = u.customer_id AND us.id = u.user_id"
-    " WHERE u.customer_id = :c AND u.kind <> 'accuracy_check'"
-    " AND u.created_at >= :start AND u.created_at < :end"
+    "SELECT * FROM kaagaz_admin_usage_rows(:start, :end, :tz, CAST(:u AS uuid))"
+    " WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
 )
-_USAGE_ROWS_ORDER = " GROUP BY 1, u.user_id, u.model, u.kind ORDER BY 1, 2 NULLS FIRST, u.model, u.kind"
 
 
 def usage_rows(
@@ -1113,6 +1130,5 @@ def usage_rows(
 ) -> Sequence[RowMapping]:
     """The ledger from ``start`` to ``end`` (not included), for one user when given, one row
     per day, user, model and kind. O(rows in the period)."""
-    statement = _USAGE_ROWS + ("" if user_id is None else " AND u.user_id = :u") + _USAGE_ROWS_ORDER
     params = {"c": customer_id, "start": start, "end": end, "tz": timezone, "u": user_id}
-    return conn.execute(text(statement), params).mappings().all()
+    return conn.execute(text(_USAGE_ROWS), params).mappings().all()

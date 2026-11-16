@@ -356,7 +356,8 @@ Quiet time; the site is down for about 15 minutes.
   time estimate uses its default for an unknown reader.
 * **Old vectors:** vectors with the old recipe tag are embedded again by the
   worker's missing-vector pass (PRD 5 M5), or at once with
-  `dc exec api python -m kaagaz.cli reembed`.
+  `dc run --rm migrate python -m kaagaz.cli reembed` until JOBS_DATABASE_URL is set, then in worker
+  (PRD 7, #606: the CLI is refused in api).
 * **CPU credits:** Standard credits would slow the workers once spent, so the
   instance runs Unlimited; watch CPUSurplusCreditsCharged (step 15).
 * **The machine image:** the disk was set up on a Deep Learning AMI for the

@@ -1016,7 +1016,9 @@ export interface Answer {
   outage_reason?: "timeout";
   // "unchecked": the figure asked for is only in unchecked card values, so no
   // number is given; closest_documents says where.
-  // "no_access" (PRD 7, #605): a saved answer that used a file now locked, replaced whole by one line.
+  // "no_access" (PRD 7, #602): a saved answer that names a file the person can no longer see,
+  // replaced whole by the server: one sentence (NO_ACCESS_TEXT), every list empty. reason
+  // "locked" (#605): the file is now locked and the person may open it (its own sentence).
   status: "answered" | "not_found" | "unchecked" | "clarify" | "no_access";
   reason?: "locked";
   // PRD 6 A, answer contract v2 (24 Oct 2026); all four missing on answers saved before it,

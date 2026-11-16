@@ -67,6 +67,7 @@ from kaagaz.ingestion.ports import (
     DocumentRepository,
     Job,
     JobQueue,
+    PlaceHidden,
     UnknownFamily,
     UnknownFolder,
 )
@@ -241,7 +242,7 @@ class UploadService:
 
         try:
             stored, created = add(record)
-        except (BackendUnavailable, UnknownFolder, UnknownFamily) as error:
+        except (BackendUnavailable, UnknownFolder, UnknownFamily, PlaceHidden) as error:
             _undo(error, delete_file)
             raise
 

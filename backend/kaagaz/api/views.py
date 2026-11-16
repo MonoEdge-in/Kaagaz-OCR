@@ -967,7 +967,6 @@ def failed_document(row: RowMapping, *, max_pages: int) -> dict[str, Any]:
             page_count=row["page_count"],
             attempts=int(row["attempts"]),
             max_attempts=row["max_attempts"],
-            locked=bool(row["locked"]),
         ),
         "last_run_at": None if run is None else iso(run),
     }
@@ -997,10 +996,15 @@ def message(
 
 # The words that stand in for a sentence whose every source has been deleted.
 GONE_SENTENCE = "This part of the answer came from a document that has since been deleted."
-_GONE = ("in_trash", "deleted")
-# PRD 7 (#605, p2:80): a saved answer that used a document now locked is this one line, never its
-# words. (With PR 8's states read through the access view, a person who can't open the document
-# gets PR 8's line for any hidden source instead.)
+# PRD 7 (#602, questions 1 and 3): the one line of a saved answer the person may no longer see whole.
+NO_ACCESS = "no_access"
+NO_ACCESS_LINE = (
+    "You no longer have access to a document behind this answer. Ask again to get an answer from the"
+    " files you can see."
+)
+# PRD 7 (#605, p2:80): a saved answer that used a document now locked, shown to a person who may
+# open it, is this one line, never its words (one who may not gets NO_ACCESS_LINE, as for any
+# hidden source: the view leaves the document out of ``document_states``).
 LOCKED_LINE = "This answer used a document that is now locked. Open it directly to read it."
 # p2:79: the fixed line for a person who may open a locked file, added when shown, never saved.
 LOCKED_NOTE = "Ask doesn't read locked files. To check one, open it directly."
@@ -1035,11 +1039,38 @@ def _choices(answer: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return list(clarify.get("choices", [])) if isinstance(clarify, Mapping) else []
 
 
+def no_access(answer: Mapping[str, Any] | None, states: Mapping[str, str], scope: Sequence[str] = ()) -> bool:
+    """PRD 7 (#602, question 1): whether ``answer`` names a document missing from ``states``
+    (db/chat.py ``document_states``, read through the view): one the person can no longer see,
+    or deleted forever. Such an answer is never shown, quoted or fed to a prompt again. A
+    not-found answer names no document, so its question's ``scope`` ids count as its own: the
+    words it understood may have come from them."""
+    named = cited_document_ids(answer)
+    if answer and answer.get("status") == "not_found":
+        named += [str(each) for each in scope]
+    return any(document not in states for document in named)
+
+
+def no_access_answer() -> dict[str, Any]:
+    """The whole answer replaced (question 3): status ``no_access``, NO_ACCESS_LINE, and nothing
+    else of it, no list, word, question as understood, clarify, note or opening."""
+    return {
+        "status": NO_ACCESS,
+        "label": None,
+        "sentences": [{"text": NO_ACCESS_LINE, "citations": []}],
+        "citations": [],
+        "closest_documents": [],
+        "route": "search",
+        "normalized_question": "",
+        "model_used": False,
+    }
+
+
 def locked_answer() -> dict[str, Any]:
     """PRD 7 (#605): a saved answer that used a document now locked, replaced whole: status
     ``no_access``, reason ``locked``, LOCKED_LINE, and nothing else of it."""
     return {
-        "status": "no_access",
+        "status": NO_ACCESS,
         "reason": "locked",
         "label": None,
         "sentences": [{"text": LOCKED_LINE, "citations": []}],
@@ -1051,23 +1082,40 @@ def locked_answer() -> dict[str, Any]:
     }
 
 
-def shown_locked(shown: dict[str, Any]) -> dict[str, Any]:
-    """A ``message`` whose answer was replaced by ``locked_answer``: its text is the line too, and
-    its pick goes (PRD 7, #605)."""
-    if shown.get("answer") and shown["answer"].get("reason") == "locked":
-        shown["text"], shown["pin"] = LOCKED_LINE, None
+def shown_message(
+    row: RowMapping,
+    states: Mapping[str, str],
+    feedback: str | None = None,
+    pin: Mapping[str, Any] | None = None,
+    scope: Sequence[str] = (),
+) -> dict[str, Any]:
+    """``message`` with its answer as it may be shown now (``answer_with_source_states``; ``scope``,
+    its question's document ids); one replaced whole loses its text (the joined sentences) and
+    its pick too."""
+    shown = message(row, feedback, pin)
+    if shown["answer"]:
+        shown["answer"] = answer_with_source_states(shown["answer"], states, scope)
+        if shown["answer"]["status"] == NO_ACCESS:
+            locked = shown["answer"].get("reason") == "locked"  # PRD 7 (#605)
+            shown["text"], shown["pin"] = LOCKED_LINE if locked else NO_ACCESS_LINE, None
     return shown
 
 
-def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, str]) -> dict[str, Any]:
+def answer_with_source_states(
+    answer: Mapping[str, Any], states: Mapping[str, str], scope: Sequence[str] = ()
+) -> dict[str, Any]:
     """A saved answer as it may be shown now (``states`` from db/chat.py
-    ``document_states``; a missing id was deleted forever).
+    ``document_states``, through the view).
 
-    * PRD 7 (#605): one naming a document now ``locked`` is replaced whole (``locked_answer``).
-
-    * Each citation gets ``source_state``. One from a document in Trash or
-      deleted loses its snippet and its highlight regions: Trash means deleted,
-      so its words and its place on the page must not show any more.
+    * PRD 7 (#602): one naming a document missing from ``states`` (the person can no longer see
+      it, or it was deleted forever; ``no_access``, with its question's ``scope``) is replaced
+      whole (``no_access_answer``). Changed on purpose: a document deleted forever was a
+      sentence's GONE_SENTENCE before. So every document it names is in ``states``.
+    * PRD 7 (#605): one naming a document the person may see but that is now ``locked`` is
+      replaced whole too (``locked_answer``: LOCKED_LINE).
+    * Each citation gets ``source_state``. One from a document in Trash loses its snippet and
+      its highlight regions: Trash means deleted, so its words and its place on the page must
+      not show any more.
     * A sentence whose every citation is gone is replaced by ``GONE_SENTENCE``.
     * Closest, related, "Also mentions" and listed (PRD 6 A) documents that are gone are left out.
     * PRD 5 F6: a page that couldn't be read, of a document that is gone, is left out
@@ -1077,14 +1125,20 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
     ``older_version``: it was true of that version. The stored answer is never
     changed, so a restore brings everything back. O(citations + sentences + pages).
     """
+    if no_access(answer, states, scope):
+        return no_access_answer()
     if any(states.get(document) == "locked" for document in cited_document_ids(answer)):
         return locked_answer()
+
+    def kept(document: Any) -> bool:
+        return states.get(str(document)) not in (None, "in_trash")
+
     citations = []
     gone: set[int] = set()
     for each in answer.get("citations", []):
-        state = states.get(str(each.get("document_id")), "deleted")
+        state = states.get(str(each.get("document_id")), "in_trash")
         citation = {**each, "source_state": state}
-        if state in _GONE:
+        if state == "in_trash":
             citation["snippet"] = None
             citation["regions"] = citation["label_regions"] = []
             gone.add(each.get("n"))
@@ -1095,16 +1149,8 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
         if cited and all(number in gone for number in cited):
             sentence = {**sentence, "text": GONE_SENTENCE}
         sentences.append(sentence)
-    closest = [
-        each
-        for each in answer.get("closest_documents", [])
-        if states.get(str(each.get("id"))) not in (None, *_GONE)
-    ]
-    related = [
-        each
-        for each in answer.get("related_documents", [])
-        if states.get(str(each.get("document_id"))) not in (None, *_GONE)
-    ]
+    closest = [each for each in answer.get("closest_documents", []) if kept(each.get("id"))]
+    related = [each for each in answer.get("related_documents", []) if kept(each.get("document_id"))]
     shown = {
         **without_resume(answer),
         "citations": citations,
@@ -1114,26 +1160,22 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
     if "related_documents" in answer:
         shown["related_documents"] = related
     if "documents" in answer:
-        shown["documents"] = [
-            each
-            for each in answer.get("documents") or []
-            if states.get(str(each.get("document_id"))) not in (None, *_GONE)
-        ]
+        shown["documents"] = [each for each in answer.get("documents") or [] if kept(each.get("document_id"))]
     if answer.get("clarify"):  # PRD 6 B1: a choice whose every document is gone is no choice
-        alive = {document for document, state in states.items() if state not in _GONE}
+        alive = {document for document, state in states.items() if state != "in_trash"}
         documents = [set(map(str, c.get("document_ids", []))) for c in _choices(answer)]
         live = [c for c, d in zip(_choices(answer), documents, strict=True) if not d or d & alive]
         shown["clarify"] = {**answer["clarify"], "choices": live}
     if answer.get("mentions"):
         # "Also mentions": a gone document leaves the list and the count.
         listed = answer["mentions"].get("documents", [])
-        live = [each for each in listed if states.get(str(each.get("document_id"))) not in (None, *_GONE)]
+        live = [each for each in listed if kept(each.get("document_id"))]
         total = int(answer["mentions"].get("total") or 0) - (len(listed) - len(live))
         shown["mentions"] = {**answer["mentions"], "documents": live, "total": total}
     pages = answer.get("unreadable_pages") or []
-    kept = [page for page in pages if states.get(str(page.get("document_id"))) not in (None, *_GONE)]
-    if len(kept) != len(pages):
-        total = int(answer.get("unreadable_page_count") or 0) - (len(pages) - len(kept)) if kept else 0
+    left = [page for page in pages if kept(page.get("document_id"))]
+    if len(left) != len(pages):
+        total = int(answer.get("unreadable_page_count") or 0) - (len(pages) - len(left)) if left else 0
         named = [
             FlaggedPage(
                 str(page["document_id"]),
@@ -1141,10 +1183,10 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
                 int(page["page_no"]),
                 str(page["read_quality"]),
             )
-            for page in kept
+            for page in left
         ]
         shown.update(
-            unreadable_pages=kept, unreadable_page_count=total, reading_note=not_found_note(named, total)
+            unreadable_pages=left, unreadable_page_count=total, reading_note=not_found_note(named, total)
         )
     return shown
 
