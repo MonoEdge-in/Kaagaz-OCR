@@ -42,7 +42,7 @@ _STORIES = text(
     " CASE WHEN s.embedding_model = CAST(:recipe AS text)"
     " THEN 1 - (s.embedding <=> CAST(:vec AS halfvec(1024))) END AS meaning"
     " FROM document_stories s"
-    " JOIN documents d ON d.customer_id = s.customer_id AND d.family_id = s.family_id"
+    " JOIN visible_documents d ON d.customer_id = s.customer_id AND d.family_id = s.family_id"
     " WHERE s.customer_id = :c AND s.user_id = :me"
     " AND d.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"

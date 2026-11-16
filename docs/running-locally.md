@@ -61,7 +61,9 @@ plus the new `MAX_PAGES`, `MAX_IMAGE_PIXELS` and `QUEUE_LEASE_SECONDS` values. R
 PRD 3 adds four required settings, each checked at start-up by name:
 `SEARCH_EF` (100, 1 to 1000), how many candidates the meaning index walk keeps
 (`hnsw.ef_search`); `SEARCH_MAX_DOCUMENTS` (20, 1 to 100), the most documents
-one search inside documents returns; `ANSWER_NEIGHBOURS` (1, 0 to 3), the
+one search inside documents returns; `SEARCH_MAX_SCAN_TUPLES` (20000), the most
+tuples one meaning index walk visits, and `SEARCH_EXACT_BELOW` (2000), how few vectors a
+person can see before meaning search scans them exactly (PRD 7); `ANSWER_NEIGHBOURS` (1, 0 to 3), the
 pieces on each side of an evidence piece also given to the draft; and
 `CHAT_HISTORY_TURNS` (3, 0 to 10), the question and answer pairs a follow-up
 is rewritten with (0: no rewrite).

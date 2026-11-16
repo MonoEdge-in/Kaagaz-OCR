@@ -12,7 +12,10 @@ from kaagaz.search import hybrid
 from kaagaz.search.scope import EVERYTHING
 
 SCOPED = [
-    *((hybrid, name) for name in ("_WORD", "_FUZZY", "_MEANING", "_MEANING_EXACT", "_NEIGHBOURS")),
+    *(
+        (hybrid, name)
+        for name in ("_WORD", "_FUZZY", "_MEANING", "_MEANING_EXACT", "_VISIBLE_VECTORS", "_NEIGHBOURS")
+    ),
     *(
         (fixed_queries, name)
         for name in ("_AVAILABLE_FIELDS", "_TOP_GROUP", "_FIGURES", "_EXTREME_VALUE", "_COUNT_DOCUMENTS")
@@ -28,7 +31,7 @@ def test_each_scoped_statement_has_every_scope_predicate_per_documents_join(
     module: ModuleType, name: str
 ) -> None:
     sql, one = getattr(module, name).text, hybrid._WORD.text
-    joins = len(re.findall(r"\bdocuments d\b", sql))
+    joins = len(re.findall(r"\b(?:visible_)?documents d\b", sql))  # #602: or the view
     assert joins > 0
     for param in EVERYTHING.params():
         assert len(re.findall(rf":{param}\b", sql)) == joins * len(re.findall(rf":{param}\b", one)), param

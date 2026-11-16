@@ -4,10 +4,12 @@
 "What were the expenses in September?". When the conversation has earlier turns
 and the model is on, one ``chat_json`` call gets the last CHAT_HISTORY_TURNS
 question and answer pairs and the new question, both fenced and escaped as data
-(draft.py's rule), and replies ``{"question": "..."}``. An answer gives its
-sentences only, and a not-found answer gives nothing, so the history after it is
-its question only (edge case 3). The history is at most ``MAX_HISTORY_CHARS``,
-the newest kept. The rewrite goes through ``clean_text``.
+(draft.py's rule), and replies ``{"question": "..."}``. Each turn is compact (#621): its
+question, its answer's sentences cut to about ``MAX_ANSWER_CHARS``, and the names of the
+documents it cited that the asker can still see ("Documents: ...", what "this" and "it"
+point at), so the oldest turn is not cut away. A not-found answer gives nothing, so the
+history after it is its question only (edge case 3). The history is at most
+``MAX_HISTORY_CHARS``, the newest kept. The rewrite goes through ``clean_text``.
 
 The question as asked is used instead, with a reason code logged (never the
 question or the rewrite), when the model is down or replies badly, the reply is
@@ -20,9 +22,10 @@ messages.rewritten_question CHECK), reads like instructions, or fails the guard.
 without its trailing zeros. So 12,000 in Devanagari digits is "12000",
 "1,20,000" is "120000" and "पाटील" is "patil" (markup is cleaned off first, as off
 the rewrite). A rewrite is refused when it holds any token that is in neither the
-question, the history nor ``_STOP`` (a name, a number, a month, a period, a metric
-or a "whose" of its own); a number or a name (a capitalised or Devanagari word)
-may come from an earlier question only, never from an answer. It is also refused
+question, the history (its questions, answers and cited documents' names: #621, 15 Nov 2026,
+when "this" was never resolved because the earlier document's name was only in an answer)
+nor ``_STOP`` (a name, a number, a month, a period, a metric or a "whose" of its own). It
+is also refused
 when it leaves out a number, a topic word or a date word of the question, but for
 fillers ("what about", "ok", "then") and a bare "month" or "year" the rewrite
 pins to a date word of the history ("for that month" -> "in September").
@@ -63,9 +66,9 @@ from typing import Any
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable, estimate_tokens_cautiously
 from kaagaz.answering.draft import _escape
 from kaagaz.answering.evidence import looks_like_instructions
-from kaagaz.answering.hinglish import _NOT_KEYWORDS, DATE_WORDS, normalise
+from kaagaz.answering.hinglish import _NOT_KEYWORDS, DATE_WORDS, date_words, normalise
 from kaagaz.answering.sanitize import clean_text
-from kaagaz.chunking.script import fold_digits, has_devanagari_letters
+from kaagaz.chunking.script import fold_digits
 
 # Steady search (Tushar, 16 Oct 2026): the rewrite and its aspects decide what is searched, so
 # they are asked for at temperature 0 (a short JSON reply, not reasoning), and so is the
@@ -78,7 +81,8 @@ REWRITE_TEMPERATURE = 0.0
 _log = logging.getLogger(__name__)
 
 MAX_QUESTION = 300  # the messages.rewritten_question CHECK (migration 0006)
-MAX_HISTORY_CHARS = 2000
+MAX_HISTORY_CHARS = 3000  # #621: three compact turns always fit
+MAX_ANSWER_CHARS = 300  # #621: an answer's first sentences, enough to say what it was about
 MAX_ASPECT_CHARS = 100
 MAX_REPLY_TOKENS = 900  # 300 characters of English, the aspects, the plan and the JSON around them
 ASKS, ROLES = ("documents", "figure", "passage"), ("owner", "buyer", "seller", "any")
@@ -144,18 +148,24 @@ _DIGIT_COMMA = re.compile(r"(?<=\d),(?=\d)")
 # fillers): never a topic, nor a word a fixed-query plan reads ("how much" asks for a total,
 # "whose" for a party, kaagaz/answering/intent.py). "s" is the possessive ("Patil's"), "aur"
 # the Hinglish "and".
-_STOP = (_NOT_KEYWORDS - {"much", "many", "who", "whose", "whom", "which"}) | {"now", "aur", "s"}
+# "this" (#621 review): never free to add or leave out, as "this month" is a period.
+_STOP = (_NOT_KEYWORDS - {"much", "many", "who", "whose", "whom", "which", "this"}) | {"now", "aur", "s"}
 # Words of the question a rewrite may leave out: fillers that say nothing about the facts.
 _FILLERS = _STOP | {"about", "ok", "okay", "then", "same", "that", "can", "could", "also", "too", "so"}
+_EXTENSION = re.compile(r"\.[A-Za-z][A-Za-z0-9]{1,4}$")  # a file name's ".pdf", never "24.02.2003"
+_JOINER = re.compile(r"(?<=[^\W\d_])[-_](?=[^\W\d_])")  # Sale-Deed_Wagholi: words, for the guard
+MAX_TURN_DOCUMENTS, MAX_DOCUMENT_CHARS = 5, 80  # #621 review: a turn's question and answer always fit
 _PERIODS = frozenset({"month", "months", "year", "years", "week", "day", "days"})
 
 
 @dataclass(frozen=True, slots=True)
 class Turn:
-    """An earlier question, and its answer's sentences (None when it was not answered)."""
+    """An earlier question, its answer's sentences (None when it was not answered) and the names
+    of the documents that answer cited, still live (#621)."""
 
     question: str
     answer: str | None
+    documents: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,13 +345,19 @@ def _aspects(listed: Sequence[Any], question: str) -> tuple[str, ...]:
 
 
 def history_text(history: Sequence[Turn]) -> str:
-    """The turns as "Question:" and "Answer:" lines, oldest first, cut to the newest
-    ``MAX_HISTORY_CHARS`` at the start of a line. O(h)."""
+    """The turns as "Question:", "Answer:" (cut to about MAX_ANSWER_CHARS at a word) and
+    "Documents:" lines, oldest first, cut to the newest ``MAX_HISTORY_CHARS`` at the start of a
+    line. O(h)."""
     lines: list[str] = []
     for turn in history:
         lines.append("Question: " + " ".join(turn.question.split()))
         if turn.answer:
-            lines.append("Answer: " + " ".join(turn.answer.split()))
+            lines.append("Answer: " + _cut(" ".join(turn.answer.split()), MAX_ANSWER_CHARS))
+        if turn.documents:  # each name without its extension and with its words apart
+            names = (_JOINER.sub(" ", _EXTENSION.sub("", " ".join(n.split()))) for n in turn.documents)
+            lines.append(
+                "Documents: " + "; ".join(n[:MAX_DOCUMENT_CHARS] for n in list(names)[:MAX_TURN_DOCUMENTS])
+            )
     text = "\n".join(lines)
     if len(text) <= MAX_HISTORY_CHARS:
         return text
@@ -355,9 +371,14 @@ def guard(rewritten: str, question: str, history: str, allowed: Collection[str] 
     found, past = tokens(rewritten), _history_tokens(history)
     if found - tokens(question) - past - _STOP - set(allowed):
         return "rewrite_adds_facts"
+    # #621 review: a date only from a question (this one or an earlier one), never from an answer
+    # or a document's name ("registered on 24 February 2003" is no period the asker named).
+    questions = " ".join([question, *(text for kind, _, text in _lines(history) if kind == "Question")])
+    if date_words(normalise(_canonical(clean_text(rewritten)))) - tokens(questions):
+        return "rewrite_adds_facts"
     asked = normalise(_canonical(clean_text(question)))
-    needed = {*asked.keywords, *(word for word in asked.words if word in DATE_WORDS or _has_digit(word))}
-    needed = {_number(word) for word in needed} - _FILLERS
+    needed = {*asked.keywords, *date_words(asked), *filter(_has_digit, asked.words)}
+    needed = ({_number(word) for word in needed} - _FILLERS) | date_words(asked)  # "this month" kept
     pinned = not {"last", "this"} & set(asked.words) and not any(map(_has_digit, asked.words))
     if pinned and found & past & DATE_WORDS - _PERIODS:
         needed -= _PERIODS
@@ -371,19 +392,20 @@ def tokens(text: str) -> set[str]:
 
 def _history_tokens(history: str) -> set[str]:
     """The tokens a rewrite may take from ``history_text``: every one of its questions',
-    and its answers' but for numbers and names (a word with a digit, a capital first
-    letter or a Devanagari letter). O(h)."""
-    asked: list[str] = []
-    answered: list[str] = []
-    for line in history.splitlines():
-        kind, _, text = line.partition(": ")
-        (asked if kind == "Question" else answered).append(text)
-    plain = [word for text in answered for word in text.split() if not _number_or_name(word)]
-    return tokens(" ".join(asked)) | tokens(" ".join(plain))
+    answers' and documents' names (#621: an answer's name or number too, which the chat itself
+    wrote from the documents). O(h)."""
+    return tokens(" ".join(line.partition(": ")[2] for line in history.splitlines()))
 
 
-def _number_or_name(word: str) -> bool:
-    return _has_digit(word) or word[:1].isupper() or has_devanagari_letters(word)
+def _lines(history: str) -> list[tuple[str, str, str]]:
+    return [line.partition(": ") for line in history.splitlines()]
+
+
+def _cut(text: str, most: int) -> str:
+    """``text``, or its first ``most`` characters cut back to a whole word, then "…"."""
+    if len(text) <= most:
+        return text
+    return text[:most].rsplit(" ", 1)[0] + " …"
 
 
 def _canonical(text: str) -> str:

@@ -110,18 +110,24 @@ _HINDI_STOP = frozenset(
 )
 _SHARED_STOP = frozenset({"the", "me"})
 
-# Not topics: question words and English filler.
+# Not topics: question words and English filler. The last line (#622, production 15 Nov 2026):
+# request words ("Can you find me ... in any other document", "which document have ... name"),
+# which matched most pieces by sound and named "Can" and "find" in the not-found line.
 _NOT_KEYWORDS = frozenset(
     {"a", "an", "is", "was", "were", "are", "be", "been", "of", "in", "on", "at", "for", "to"}
     | {"from", "by", "and", "or", "with", "what", "which", "who", "whose", "whom", "when", "where"}
     | {"how", "much", "many", "my", "our", "us", "we", "i", "you", "show", "tell", "give", "list"}
     | {"please", "did", "do", "does", "has", "have", "had", "there", "that", "it", "its", "any"}
+    | {"can", "find", "seen", "if", "other", "document", "documents", "name"}
+    | {"this"}  # #623: a date word only before a period ("this month"): _date_positions
 )
 
-# Date words (dates.py reads them). A year and the number in "last 30 days" are
+# Date words (dates.py reads them). A year, the number in "last 30 days" and "this" before a
+# period ("this month", never "this" alone: #623, it read "measurement of this" as dated) are
 # date words too; see _date_positions.
+THIS_PERIODS = frozenset({"month", "year", "week", "quarter"})
 DATE_WORDS = frozenset(
-    {"last", "this", "month", "months", "year", "years", "day", "days", "week", "ago"}
+    {"last", "month", "months", "year", "years", "day", "days", "week", "ago"}
     | {"january", "february", "march", "april", "may", "june", "july", "august", "september"}
     | {"october", "november", "december", "jan", "feb", "mar", "apr", "jun", "jul", "aug"}
     | {"sep", "sept", "oct", "nov", "dec"}
@@ -188,12 +194,19 @@ def normalise(question: str) -> NormalisedQuestion:
     return NormalisedQuestion(english=" ".join(out), keywords=keywords, hinglish=hinglish)
 
 
+def date_words(normalised: NormalisedQuestion) -> set[str]:
+    """The question's date words, as ``normalise`` reads them (``_date_positions``)."""
+    words = normalised.words
+    return {words[position] for position in _date_positions(words)}
+
+
 def _date_positions(words: list[str]) -> set[int]:
     """Positions of date words: month and period words, years, and N in "last N days"."""
     positions: set[int] = set()
     for position, word in enumerate(words):
         next_word = words[position + 1] if position + 1 < len(words) else ""
         days_count = word.isdigit() and next_word in {"days", "day"}
-        if word in DATE_WORDS or _YEAR.fullmatch(word) or days_count:
+        this_period = word == "this" and next_word in THIS_PERIODS
+        if word in DATE_WORDS or _YEAR.fullmatch(word) or days_count or this_period:
             positions.add(position)
     return positions
