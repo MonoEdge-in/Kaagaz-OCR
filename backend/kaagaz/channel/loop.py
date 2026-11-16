@@ -10,7 +10,9 @@ other process off it) and goes through its waiting messages oldest first, by Wha
    sign-in version unchanged; WhatsApp on for the organisation and for their role).
 2. A message older than WhatsApp's 24 hours is expired, with no reply: the reply window is shut.
 3. Refused: NOT_CONNECTED once to the connected number, then the connection ends (its number
-   goes, audited). One that ended already gets no reply.
+   goes, audited). One that ended already gets no reply. (W7) Silent for 60 days: the sweep ends it
+   first, as its own end reason (the app may not end a connection as silent); then NOT_CONNECTED,
+   and the number is told as any number not connected (once a day).
 4. (W3) STOP, Yes to "Disconnect?", or [Not me] on this connection's own welcome: the connection
    ends first (audited), then DISCONNECTED goes once (never tried again: the number is no longer
    connected). "Disconnect" (typed, or Menu's in W4) asks first, with [Disconnect] [Keep it].
@@ -44,7 +46,9 @@ goes first): RETRY_SECONDS, doubling each try to RETRY_MAX_SECONDS, until the me
 (then it expires). Meta refusing it for good (a 4xx but 401, 403 and 429) fails it at once; 401 and
 403 (the token or app set up wrong) are logged at ERROR, ``whatsapp_auth``, and tried again. An
 error while answering counts a try too (MAX_TRIES of them fail the message) and keeps the lease,
-so nothing is sent again until it runs out. A failed message is logged at ERROR with its last code.
+so nothing is sent again until it runs out. A failed message is logged at ERROR with its last code;
+(W7, W4's follow-up) one that failed so, while answered, gets one plain WENT_WRONG reply in its
+language, so the person is not left waiting (none to a connection ended or refused, nor for a notice).
 A crash between a reply and its "done" sends that one reply again once the lease runs out: the only
 duplicate left.
 """
@@ -60,7 +64,7 @@ from typing import Protocol
 
 from kaagaz.adapters.whatsapp import NOT_ME, WhatsAppError
 from kaagaz.api.secret_box import SecretBoxError
-from kaagaz.channel.numbers import open_number
+from kaagaz.channel.numbers import number_hash, open_number
 from kaagaz.channel.outgoing import Outgoing
 from kaagaz.channel.texts import LANGUAGES, Language, language, say
 from kaagaz.db import audit
@@ -222,8 +226,11 @@ class Channel:
                 try:
                     wait = self._answer(linked, message, check)
                 except Exception as error:
-                    if self._not_sent(linked, message, type(error).__name__, most=MAX_TRIES) is None:
+                    over, tries = self._not_sent(linked, message, type(error).__name__, most=MAX_TRIES)
+                    if over:
                         self.made.pop(_key(linked, message), None)
+                        if tries:  # its last try was this one (not a message another process answered)
+                            self._went_wrong(linked, message)
                     raise
         finally:
             _KEEP.reset(held)
@@ -313,10 +320,11 @@ class Channel:
         status = error.status or 0
         for_good = 400 <= status < 500 and status not in _AUTH and status != 429
         code = f"{error.code}:{status or '-'}"
-        tries = self._not_sent(linked, message, code, most=UNTIL_IT_EXPIRES, fail=for_good)
-        if tries is None:
+        over, tries = self._not_sent(linked, message, code, most=UNTIL_IT_EXPIRES, fail=for_good)
+        if over:
             self.made.pop(key, None)
-        return 0 if tries is None else min(RETRY_SECONDS * 2 ** (tries - 1), RETRY_MAX_SECONDS)
+            return 0
+        return min(RETRY_SECONDS << (tries - 1), RETRY_MAX_SECONDS)  # doubling each try
 
     def _quiet(self, linked: Linked, message: Waiting) -> int:
         """W5: 0 when ``message`` may be answered now; for a file, the seconds until QUIET_SECONDS
@@ -360,12 +368,38 @@ class Channel:
                 made.set()
 
     def _refused(self, linked: Linked, message: Waiting, number: str, reason: str) -> int:
-        """NOT_CONNECTED once to the number; the connection ends regardless (audited)."""
+        """NOT_CONNECTED once to the number; the connection ends regardless (audited). W7: silent,
+        by the sweep (its end reason is the sweep's own), before anything is sent, so a sweep that
+        fails sends nothing to repeat; then the number is told as any number not connected is, so
+        its next message within a day gets no second reply."""
+        if reason == "silent":
+            self.sweep()
         sent = self._send(lambda: self.sender.send_text(number, NOT_CONNECTED)) is None
         with self.db.user(linked.customer_id, linked.user_id) as conn:
-            wa.end(conn, linked, reason)
+            if reason != "silent":
+                wa.end(conn, linked, reason)
             wa.finish(conn, linked, message.id, "done", replied=sent)
+        if reason == "silent" and sent:
+            with self.db.system() as conn:
+                wa.tell_unknown(conn, number_hash(self.number_key, number))
         return 0
+
+    def _went_wrong(self, linked: Linked, message: Waiting) -> None:
+        """W7 (W4's follow-up): WENT_WRONG once to the connected number, for a message of the
+        person's that failed for good while it was answered; nothing for a notice, or to a
+        connection ended or refused (checked again just before: STOP, BLOCK or a password change
+        may have come while it was tried)."""
+        if message.document_id is not None:
+            return
+        with self.db.user(linked.customer_id, linked.user_id) as conn:
+            check = wa.check(conn, linked)
+        if check.sealed is None or check.refused is not None:
+            return
+        try:
+            number = open_number(self.number_key, check.sealed, linked.customer_id, linked.user_id)
+        except SecretBoxError:
+            return
+        self._send(lambda: self.sender.send_text(number, say("went_wrong", _language_of(message))))
 
     def _deliver(self, number: str, reply: Outgoing) -> None:
         if reply.rows:
@@ -389,14 +423,14 @@ class Channel:
 
     def _not_sent(
         self, linked: Linked, message: Waiting, code: str, *, most: int, fail: bool = False
-    ) -> int | None:
-        """One more try counted: the count, or None once the message failed for good (logged)."""
+    ) -> tuple[bool, int]:
+        """One more try counted: (failed for good, the count); (True, 0) for a message no longer
+        waiting (another process answered it). Failed is logged."""
         with self.db.user(linked.customer_id, linked.user_id) as conn:
             failed, tries = wa.not_sent(conn, linked, message.id, most=most, fail=fail)
-        if not failed:
-            return tries
-        _log.error("whatsapp message failed", extra={"code": code, "customer_id": linked.customer_id})
-        return None
+        if failed:
+            _log.error("whatsapp message failed", extra={"code": code, "customer_id": linked.customer_id})
+        return failed, tries
 
     def _finish(
         self,
