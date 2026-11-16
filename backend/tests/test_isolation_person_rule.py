@@ -348,6 +348,9 @@ EXEMPT = {
     "lock_grants": "Q2: an access table",
     "folder_upload_items": "the uploader's own items; a hidden copy is blanked by views.seen_items",
     "folder_uploads": "a zip's own document id; its items and their files go through the view",
+    # Changed on purpose (#603, 0097): a WhatsApp message is its person's own (own_user_only).
+    "whatsapp_messages": "the person's own message: the id of the file their upload saved, joined to a"
+    " file only through visible_documents",
 }
 
 
