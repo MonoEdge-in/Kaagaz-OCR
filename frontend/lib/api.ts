@@ -133,6 +133,10 @@ import type {
   WordChange,
   WordFlag,
   WordSaved,
+  KeptApart,
+  LinkPreview,
+  LinkVersionsBody,
+  VersionGroup,
 } from "./types";
 
 export class ApiError extends Error {
@@ -459,6 +463,33 @@ export const undoSeparate = (id: string, familyId: string, name?: string) =>
 /** V11: the reader text of `withId` (left) against `id` (right), page by page. */
 export const compareDocuments = (id: string, withId: string) =>
   request<DocumentCompare>("GET", `${doc(id)}/compare${query({ with: withId })}`);
+// #648: possible versions (V17, V18) and linking files as versions (V13 to V16). Admins (in an
+// admin session, for a link) and Management only; anyone else gets 403.
+/** The groups of possible versions the person sees whole; `more` past the first 200. */
+export const listVersionGroups = () =>
+  request<{ items: VersionGroup[]; more: boolean }>("GET", "/version-groups");
+export const getVersionGroup = (id: string) =>
+  request<VersionGroup>("GET", `/version-groups/${encodeURIComponent(id)}`);
+type GroupDecision = "keep-apart" | "keep-apart/undo" | "later";
+/** Not versions, its Undo, or Decide later, for these files of the group: the group as now shown,
+ * null once it is not. */
+export const decideVersionGroup = (id: string, decision: GroupDecision, documentIds: readonly string[]) =>
+  request<{ group: VersionGroup | null }>("POST", `/version-groups/${encodeURIComponent(id)}/${decision}`, {
+    document_ids: documentIds,
+  });
+/** The confirm step: which file Ask will answer from, where they'll be kept, who loses access. */
+export const previewLinkVersions = (body: LinkVersionsBody) =>
+  request<LinkPreview>("POST", "/documents/link-versions/preview", body);
+/** 403 password_required when the link opens a file to the Admin linking it: send it again with it. */
+export const linkVersions = (body: LinkVersionsBody, password?: string) =>
+  request<{ link_id: string; document: DocumentSummary }>("POST", "/documents/link-versions", {
+    ...body,
+    ...(password === undefined ? {} : { password }),
+  });
+/** V16: every version back as it was, while nothing newer joined; this file's summary. */
+export const undoLinkVersions = (id: string, password?: string) =>
+  request<DocumentSummary>("POST", `${doc(id)}/link-versions/undo`, password === undefined ? undefined : { password });
+export const listKeptApart = () => request<KeptApart>("GET", "/version-kept-apart");
 /** A5: every version of the family, newest first. */
 export const documentActivity = (id: string, cursor?: string) =>
   request<ActivityPage>("GET", `${doc(id)}/activity${query({ cursor })}`);
