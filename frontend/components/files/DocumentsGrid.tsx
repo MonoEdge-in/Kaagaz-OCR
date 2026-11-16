@@ -8,6 +8,7 @@
 // link, so their titles (the chip's description, a cut type's or owner's whole words) show.
 
 import Link from "next/link";
+import { SHARED } from "@/components/access/words";
 import { docTypeLabel, formatDate } from "@/lib/format";
 import type { DocumentSummary } from "@/lib/types";
 import { LabelChip } from "./LabelChip";
@@ -31,6 +32,8 @@ export function DocumentsGrid({ items, label }: { items: readonly DocumentSummar
                 {versionCell(document.version_no, newer)}
                 {newer && <span className="visually-hidden">{`, ${NEWER_SPOKEN}`}</span>}
               </span>
+              {/* PRD 7 (#604): a file in a folder this person can't see. */}
+              {document.shared_with_you && <span>{SHARED.row}</span>}
               <span title={docTypeLabel(document.doc_type)}>{docTypeLabel(document.doc_type)}</span>
             </span>
             <span className={styles.cardMeta}>

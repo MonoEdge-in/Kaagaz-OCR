@@ -2,6 +2,7 @@
 // documents screen and the viewer header. Pure functions, unit tested in node
 // (tests/shell-documents.test.ts). The server checks everything again.
 
+import { AUDIENCE_HELP, GIVE_HELP, LIBRARY_REFUSALS, WHO_CAN_SEE } from "@/components/access/words";
 import { ApiError, downloadUrl } from "@/lib/api";
 import { docTypeLabel, formatDate, typeLabel } from "@/lib/format";
 import type {
@@ -27,7 +28,7 @@ export function downloadHref(document: Pick<DocumentSummary, "id" | "status">): 
 }
 
 export type EditAction = "rename" | "move" | "tags";
-export type RowAction = EditAction | "version" | "trash" | "restore" | "forever" | "read";
+export type RowAction = EditAction | "version" | "trash" | "restore" | "forever" | "read" | "give" | "audience";
 
 /** What each action does, in one plain line under it in the menu (plain words, 25 Oct 2026). */
 export const ACTION_HELP: Record<RowAction | "download", string> = {
@@ -40,7 +41,14 @@ export const ACTION_HELP: Record<RowAction | "download", string> = {
   restore: "Take it out of Trash, back with your documents.",
   trash: "Moves it to Trash. It can be restored from there.",
   forever: "Deletes it for good. It can't be recovered.",
+  give: GIVE_HELP, // PRD 7 (#604)
+  audience: AUDIENCE_HELP,
 };
+
+/** PRD 7 (#604): the access items a menu may offer (accessAbilities: Give access is an admin
+ * session's; Who can see this, an admin session's or the Head of the file's department's). */
+export type MenuAccess = { giveFile: boolean; audience: boolean };
+const NO_ACCESS: MenuAccess = { giveFile: false, audience: false };
 
 export type MenuEntry =
   | { kind: "action"; action: RowAction; words: string; danger: boolean }
@@ -55,12 +63,15 @@ export type MenuEntry =
  * On the document screen (UI audit DD2, 16 Oct 2026) the menu starts with Read again
  * (`readAgain`: canReprocess) and leaves out Download original (a button beside it) and
  * Upload new version (the reading problems' Upload a better scan).
+ * PRD 7 (#604): Give access and Who can see this (`access`) come before Move to Trash; a file in
+ * Trash has neither (the server says 409 in_trash).
  */
 export function menuEntries(
   item: Pick<DocumentSummary, "id" | "status" | "deleted_at" | "can_delete">,
   canForever: boolean,
   place: "list" | "document" = "list",
   readAgain = false,
+  access: MenuAccess = NO_ACCESS,
 ): MenuEntry[] {
   const act = (action: RowAction, words: string, danger = false): MenuEntry => ({
     kind: "action",
@@ -69,6 +80,9 @@ export function menuEntries(
     danger,
   });
   const trashed = item.deleted_at !== null;
+  const shares: MenuEntry[] = trashed
+    ? []
+    : [...(access.giveFile ? [act("give", "Give access")] : []), ...(access.audience ? [act("audience", WHO_CAN_SEE)] : [])];
   const entries: MenuEntry[] = trashed
     ? item.can_delete
       ? [act("restore", "Restore")]
@@ -82,12 +96,14 @@ export function menuEntries(
   if (place === "document") {
     const kept = entries.filter((entry) => entry.kind === "action" && entry.action !== "version");
     if (readAgain && !trashed) kept.unshift(act("read", "Read again"));
+    kept.push(...shares);
     if (!trashed && item.can_delete) kept.push(act("trash", "Move to Trash", true));
     return kept;
   }
   // Trash means deleted: a document there can only be restored or deleted forever.
   const download = trashed ? null : downloadHref(item);
   if (download) entries.push({ kind: "download", href: download });
+  entries.push(...shares);
   if (trashed && canForever) entries.push(act("forever", "Delete forever", true));
   if (!trashed && item.can_delete) entries.push(act("trash", "Move to Trash", true));
   return entries;
@@ -214,6 +230,18 @@ export function movableItems<T extends Pick<DocumentSummary, "id" | "deleted_at"
 }
 
 /** "Moved to Invoices.", "Moved 3 documents to Invoices.", with how many stayed and why. */
+/** How a saved change is said: a move in the toast, with Undo when it has one; PR 10c, one with no
+ * Undo (an admin moved a file where they can't see it) in the toast too; anything else is only
+ * announced (null). */
+export function savedToast(
+  message: string,
+  undo: (() => Promise<void>) | undefined,
+  moved: boolean,
+): { message: string; undo?: () => Promise<void>; undone?: string } | null {
+  if (undo) return { message, undo, undone: "Moved back." };
+  return moved ? { message } : null;
+}
+
 export function movedMessage(moved: number, total: number, where: string, reason = ""): string {
   const said = total === 1 ? `Moved to ${where}.` : `Moved ${documentsCount(moved)} to ${where}.`;
   const left = total - moved;
@@ -229,10 +257,14 @@ export function findTagByName(tags: readonly Tag[], name: string): Tag | null {
 /**
  * What to say next to the form when a change fails. A taken name gets its own
  * words; the folder rules (folder_cycle, folder_too_deep, folder_not_empty)
- * come with the server's own message.
+ * come with the server's own message. PRD 7 (#604): a move that would change who can see the
+ * files, or a delete of a folder holding what the person can't see, is refused in the server's
+ * words (PR 10c), ours when it sends none; so is a private folder moved inside another
+ * (409 inside_private).
  */
 export function libraryErrorText(error: unknown, what: "folder" | "department" | "tag" | "document"): string {
   if (!(error instanceof ApiError)) return "Check your internet connection, then try again.";
+  if (error.status === 403 && Object.hasOwn(LIBRARY_REFUSALS, error.code)) return error.message || (LIBRARY_REFUSALS[error.code] ?? "");
   if (error.code === "conflict" && what === "folder") {
     return "A folder with this name is already here. Choose another name.";
   }

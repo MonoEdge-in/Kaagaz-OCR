@@ -11,6 +11,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { RowMenu } from "@/components/admin/RowMenu";
 import { USER_MENU_HELP } from "@/components/admin/UsersPanel";
+import { MYSELF_HELP } from "@/components/access/words";
 import { ACTION_HELP } from "@/components/documents/library";
 import { orgConfirm } from "@/components/operator/confirms";
 import { MENU_HELP } from "@/components/operator/OrganisationsView";
@@ -58,6 +59,13 @@ describe("the super admin's organisation menu", () => {
     expect(row).toContain("onSelect: () => onChange(change)");
     const enable = orgConfirm(org, "enable", 0);
     expect([enable.action, enable.done]).toEqual(["Enable organisation", "Enabled Sharma Traders."]);
+  });
+});
+
+describe("an Admin's names list menu (PRD 7, #604)", () => {
+  it("says what Give myself access does in one plain line", () => {
+    plainLine(MYSELF_HELP);
+    expect(MYSELF_HELP).toBe("Asks for your password, tells Management, then lets you open this file.");
   });
 });
 

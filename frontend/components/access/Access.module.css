@@ -170,3 +170,85 @@
 .card ol {
   margin: 0;
 }
+
+/* PR 11b: the people icon after a folder's name (tree, tiles, Move picker): it never shrinks, so
+   the name is the part cut with "…" (issue 572). */
+.placeIcon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  color: var(--text-secondary);
+}
+
+/* The people icon with its words, under the place heading. */
+.placeBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--badge-h);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  background: var(--bg-subdued);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.placeLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+/* The Audience panel: its groups, each a heading over its names. */
+.audience:focus {
+  outline: none; /* focused only to bring a screen reader back to the list after a form */
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.group h3 {
+  margin: 0;
+  font-size: var(--fs-base);
+}
+
+/* The kept-from-me strip, under the place heading. */
+.kept {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+/* The names list: a long name wraps anywhere; on a phone, Kind and Date go under the name. */
+.keptName {
+  overflow-wrap: anywhere;
+}
+
+.keptFacts {
+  display: none;
+}
+
+@media (max-width: 639.98px) {
+  .keptWide {
+    display: none;
+  }
+
+  .keptFacts {
+    display: block;
+    color: var(--text-secondary);
+    font-size: var(--fs-sm);
+  }
+}

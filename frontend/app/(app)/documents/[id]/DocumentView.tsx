@@ -55,7 +55,7 @@ import { askAboutHref } from "@/components/chat/logic";
 import { downloadHref, folderTrail } from "@/components/documents/library";
 import libraryStyles from "@/components/documents/Library.module.css";
 import { ALL_DOCUMENTS, libraryHref } from "@/components/documents/libraryQuery";
-import { FILED_HERE_TEXT } from "@/components/documents/batchTray";
+import { FILED_HERE_TEXT, undoErrorText } from "@/components/documents/batchTray";
 import { UNDERSTANDING_TEXT } from "@/components/documents/logic";
 import { TimeLeft } from "@/components/documents/TimeLeft";
 import { AutofileNote } from "@/components/documents/UploadArea";
@@ -557,7 +557,8 @@ export function DocumentView({
             ? () =>
                 void toastUndo().then(
                   () => reloadWith(VERSION_TEXT.reverted),
-                  () => setToast("It could not be undone. Check your connection, then try again."),
+                  // PR 10c: a refused Undo (403 move_changes_access) says why, in the server's words.
+                  (caught: unknown) => setToast(undoErrorText(caught)),
                 )
             : undefined
         }
