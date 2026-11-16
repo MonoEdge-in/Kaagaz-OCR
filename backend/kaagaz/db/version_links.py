@@ -279,7 +279,7 @@ def prepare(
         order=[version for document in order for version in by_family[asked[document]]],
         joining=joining,
         rows=rows,
-        moves=moves,
+        moves=list(dict.fromkeys(moves)),  # review (#658): each move counted once
     )
 
 
@@ -411,7 +411,7 @@ def prepare_undo(conn: Connection, customer_id: str, document_id: str) -> UndoPl
         now, then = _given([rows[id_] for id_ in versions]), _given([back[id_] for id_ in versions])
         after = place_of(conn, c, first["folder_id"])
         moves.append(Moved(_place(here), here["held_for"], now, after, first["held_for"], then))
-    return UndoPlan(link, family, order, snapshot, moves)
+    return UndoPlan(link, family, order, snapshot, list(dict.fromkeys(moves)))
 
 
 def apply_undo(conn: Connection, customer_id: str, plan: UndoPlan, *, by: str) -> None:
