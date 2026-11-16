@@ -195,6 +195,11 @@ _SAFE_FIELDS = (
     "step",
     "seconds",
     "model",
+    # #620: the database error behind a 503 (class names, SQLSTATE) and the route's path.
+    "error_class",
+    "driver_error",
+    "sqlstate",
+    "path",
 )
 
 

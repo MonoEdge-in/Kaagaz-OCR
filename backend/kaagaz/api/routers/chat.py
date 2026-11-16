@@ -132,6 +132,7 @@ from kaagaz.db.models import (
     usable_chat_models,
 )
 from kaagaz.db.organization_words import Suggestion
+from kaagaz.db.sqlstate import log_unavailable
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.search.scope import EVERYTHING, ScopeBody, resolve
 from kaagaz.settings import MODEL_ID
@@ -850,7 +851,9 @@ def _work(
         except ApiError as error:
             post("error", {"code": error.code, "message": error.message})
             return
-        except (BackendUnavailable, OperationalError, PoolTimeout):
+        except (BackendUnavailable, OperationalError, PoolTimeout) as error:
+            if not isinstance(error, BackendUnavailable):  # #620: one made by unavailable() was logged there
+                log_unavailable(error)
             post("error", {"code": "backend_unavailable", "message": MESSAGES["backend_unavailable"]})
             return
         except Exception as error:  # noqa: BLE001 - the stream's boundary, as ErrorMiddleware's
@@ -991,6 +994,8 @@ def _make_ready(
                     cited=[],
                 )
         except (SQLAlchemyError, BackendUnavailable, ModelUnavailable, ModelOutputError) as error:
+            if isinstance(error, OperationalError | PoolTimeout):  # #620: its class and SQLSTATE
+                log_unavailable(error)
             logger.warning("ready answer not made", extra={"code": type(error).__name__})
             ready.READY.release(keys[question])
             continue
