@@ -389,7 +389,7 @@ VIEW_READERS = {
     # PR 8 (#602): Ask and search, reached from the API only (the SQL guard's worker test).
     "search/hybrid.py": {
         "_CARDS", "_DETAILS", "_FUZZY", "_MEANING", "_MEANING_EXACT", "_NEIGHBOURS", "_SECTION_PIECES",
-        "_TOPIC_PIECES", "_VISIBLE_VECTORS", "_WHOLE", "_WHOLE_SIZE", "_WORD",
+        "_SOUND", "_TOPIC_PIECES", "_VISIBLE_VECTORS", "_WHOLE", "_WHOLE_SIZE", "_WORD",
     },
     "search/story_search.py": {"_STORIES"},
 }  # fmt: skip
@@ -546,7 +546,6 @@ _ROUTES: list[tuple[str, str, Any]] = [
     ("DELETE", "/api/documents/{d}/my-story?user_id={u}", None),
     # Changed on purpose (#600): page turns saved for everyone.
     ("PATCH", "/api/documents/{d}/page-turns", {"changes": [{"page_no": 1, "turn": 90}], "user_id": "{u}"}),
-    ("DELETE", "/api/documents/{d}/page-turns?user_id={u}", None),
     ("DELETE", "/api/documents/{d}", None),
 ]
 _KEY = "0" * 64

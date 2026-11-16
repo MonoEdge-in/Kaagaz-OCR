@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 from sqlalchemy import text
 
+from kaagaz.answering import ready
 from kaagaz.answering.unchecked import unchecked_sentence
 from kaagaz.answering.voice import SOFT_CLOSEST
 from kaagaz.api.app import create_app
@@ -797,3 +798,22 @@ def test_a_pick_on_a_question_a_colleagues_answer_or_an_unknown_document_is_404(
     assert pin(signed.client, body["answer"]["id"], {**pick, "document_id": str(uuid.uuid4())}) == 404
     with db.customer(signed.customer_id) as conn:
         assert conn.execute(text("SELECT count(*) FROM source_pins")).scalar_one() == 0
+
+
+@pytest.mark.db
+def test_624_home_suggestions_come_with_a_first_answer_only(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#624: "Try one of these" (Home's questions) follows a first answer that found nothing close,
+    never a follow-up in a conversation, where they do not fit."""
+    monkeypatch.setattr(ready, "questions", lambda *_: [("What is the rent?", "d1")])
+    api = Api(db)
+    signed = api.new_signed()
+    api.answers.reply = answer_json(status="not_found")
+
+    first = signed.client.post("/api/chat", json={"question": "Measurement?"}, headers=CSRF).json()
+    follow = {"question": "And the other document?", "conversation_id": first["conversation_id"]}
+    second = signed.client.post("/api/chat", json=follow, headers=CSRF).json()
+
+    assert first["answer"]["answer"]["suggestions"] == ["What is the rent?"]
+    assert "suggestions" not in second["answer"]["answer"]

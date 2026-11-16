@@ -10,6 +10,7 @@
 
 import { useId, useState } from "react";
 import type { ReactNode } from "react";
+import { PlaceIcon } from "@/components/access/PlaceBadge";
 import { Icon } from "@/components/ui/Icon/Icon";
 import { formatNumber } from "@/lib/format";
 import { CHILD_CAP, TOP_LIST, pathLabel, searchFolders, shortPathLabel, visibleNodes } from "./folderTree";
@@ -60,6 +61,7 @@ export function FolderPicker({ tree, name, choice, onChoose, disabled, note, ope
         onChange={() => onChoose(node.folder.id)}
       />
       {label}
+      <PlaceIcon folder={node.folder} />
       {note?.(node)}
     </label>
   );

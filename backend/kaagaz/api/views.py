@@ -1150,7 +1150,7 @@ def me_json(
     email_on: bool,
     providers: Sequence[str],
     recent_connections: Sequence[dict[str, str]] = (),
-    access: tuple[bool, Sequence[str], bool],
+    access: tuple[bool, Sequence[str], bool, bool],
 ) -> dict[str, Any]:
     """``Me``: who is signed in, their customer, and the session's scope ("app" for a
     member or reviewer, "admin" for an admin; the screen shows Admin only for "admin").
@@ -1164,9 +1164,15 @@ def me_json(
     connected Google account is from before its domain was checked, so they sign in with Google
     once instead. ``access`` (PRD 7, #601): the person's Management and the departments they head,
     so the screens show a Head's menus, and whether they are in a live department (``in_department``,
-    PR 10c: "Ask your admin for access" when not)."""
+    PR 10c: "Ask your admin for access" when not), and whether the organisation has ever kept
+    something to some people (``walled``, PR 11c: that message only once it has)."""
     return {
-        "access": {"management": access[0], "heads": list(access[1]), "in_department": access[2]},
+        "access": {
+            "management": access[0],
+            "heads": list(access[1]),
+            "in_department": access[2],
+            "walled": access[3],
+        },
         "user": {
             "id": user.user_id,
             "email": user.email,

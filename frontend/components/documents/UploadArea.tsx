@@ -885,20 +885,31 @@ export function TrayChoice({
   onDone(chosen: Chosen): void;
   onUndone(): void;
 }) {
+  const [undoError, setUndoError] = useState<string | null>(null); // PR 10c: a refused Undo says why
   if (!chosen) return <VersionChoice suggestion={suggestion} onDone={onDone} />;
   return (
-    <p className={styles.small} role="status">
-      {undone ? VERSION_TEXT.reverted : chosen.message}{" "}
-      {chosen.undo && !undone && (
-        <button
-          type="button"
-          className={`btn btn-quiet ${styles.inlineAction}`}
-          onClick={() => void chosen.undo?.().then(onUndone, () => undefined)}
-        >
-          {VERSION_TEXT.undo}
-        </button>
+    <>
+      <p className={styles.small} role="status">
+        {undone ? VERSION_TEXT.reverted : chosen.message}{" "}
+        {chosen.undo && !undone && (
+          <button
+            type="button"
+            className={`btn btn-quiet ${styles.inlineAction}`}
+            onClick={() => {
+              setUndoError(null);
+              void chosen.undo?.().then(onUndone, (caught: unknown) => setUndoError(undoErrorText(caught)));
+            }}
+          >
+            {VERSION_TEXT.undo}
+          </button>
+        )}
+      </p>
+      {undoError && (
+        <p className="error-text" role="alert">
+          {undoError}
+        </p>
       )}
-    </p>
+    </>
   );
 }
 

@@ -686,6 +686,22 @@ def test_me_says_whether_the_person_is_in_a_live_department(db: Database) -> Non
         assert me["access"]["in_department"] is inside, name
 
 
+def test_me_says_whether_the_organisation_keeps_files_to_some_people(db: Database) -> None:
+    """PR 11c (#604): "Ask your admin for access" waits for walls, so day one says nothing new. A
+    private folder the person can't see sets it for them too: it is the organisation's flag, read
+    from the table, not from what the person sees."""
+    api = Api(db)
+    c, first = api.customer()
+    member, admin = api.sign_in(c), api.admin_sign_in(c)
+    with db.customer(c) as conn:
+        vault = insert_folder(conn, c, first, "Vault")
+    for signed in (member, admin):
+        assert signed.client.get("/api/auth/me").json()["access"]["walled"] is False
+    _owner(db, "UPDATE folders SET private = true WHERE id = :f", {"f": vault})
+    for signed in (member, admin):
+        assert signed.client.get("/api/auth/me").json()["access"]["walled"] is True
+
+
 def test_making_a_folder_private_again_can_drop_people_named_before(db: Database) -> None:
     """The kept names: the Finance member, named before, dropped in the same step never sees the
     folder once it is private; one kept sees it again; an id not on the list is ignored."""

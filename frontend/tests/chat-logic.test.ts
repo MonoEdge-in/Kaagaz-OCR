@@ -224,8 +224,11 @@ describe("a question that could not be sent", () => {
     expect(askErrorText({ status: 400, message: "Something went wrong." })).toBe(
       "Could not get an answer right now. Try again in a minute.",
     );
-    // QA 17 Oct: 503 backend_unavailable (the AI service is down) says busy; the question goes back in the box.
-    expect(askErrorText({ status: 503, message: "Upstream down" })).toBe("Kaagaz is busy right now. Try again in a minute.");
+    // Changed on purpose (Ask hotfix, 15 Nov 2026): a 503 never says "busy". Ask shows it in the
+    // answer's place (unfinishedText, with the first name); the question still goes back in the box.
+    expect(askErrorText({ status: 503, message: "Upstream down" })).toBe(
+      "Sorry, I couldn't finish that just now. Please try again in a moment.",
+    );
     expect(askErrorText({ status: 502, message: "Bad gateway" })).toBe(
       "Could not get an answer right now. Try again in a minute.",
     );
