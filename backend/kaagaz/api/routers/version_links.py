@@ -16,7 +16,8 @@ the locks).
   ``already_versions`` or ``changed``; 403 ``password_required`` when the link opens a file to the
   Admin linking it (a wall opened to themselves, as a folder move).
 * ``POST /documents/{id}/link-versions/undo {password?}``: Undo of the newest link of the file's
-  family, while it holds exactly the versions the link left; the file's summary. 409
+  family, while it holds exactly the versions the link left; the file's summary, or ``{id, undone:
+  true}`` once it is back where the person can't see it. 409
   ``not_linked``, ``not_newest``, ``folder_gone``, ``locked`` or ``in_trash``.
 * ``GET /version-kept-apart``: V18's Kept apart list: ``{pairs, groups}``, pairs kept separate or
   made separate whose two sides the person sees (each can be linked again here), and files kept
@@ -54,12 +55,13 @@ MAX_KEPT_APART = 200
 _MESSAGES = {
     "in_trash": "This document is in the Trash. Restore it first.",
     "locked": UNLOCK_FIRST,
-    "not_ready": "The file Ask will answer from is still being read. Choose another, or try again once it"
-    " is ready.",
+    "not_ready": "A file here is still being read. Try again once it is ready.",
     "already_versions": "Some of these files are already versions of one file.",
     "changed": "These files changed just now. Try again.",
+    "too_many_versions": f"Together these files have over {links_sql.MAX_VERSIONS} versions. Link fewer.",
     "not_linked": "These versions weren't linked here, so there is nothing to undo.",
     "not_newest": "The versions changed since they were linked, so this can't be undone.",
+    "name_taken": "A file of the same name is now where a version would go back to. Rename one first.",
     "folder_gone": "A folder these files were in is gone, so this can't be undone. Move them by hand.",
 }
 
@@ -110,13 +112,16 @@ def _seen(conn: Connection, user: CurrentUser, ids: list[str]) -> None:
 
 
 def _audience(conn: Connection, user: CurrentUser, moves: list[links_sql.Moved]) -> tuple[set[str], set[str]]:
-    """Who loses and who gains the files the link or its Undo moves (PRD 7 section 5)."""
+    """Who loses and who gains the files the link or its Undo moves (PRD 7 section 5): who sees each
+    family's place, or is given it, before and after (review on #658: a gift is copied by 0100's
+    trigger, and a person given only a joining file loses it)."""
     losing: set[str] = set()
     gaining: set[str] = set()
-    for move, held, held_after in moves:
-        lost, gained = access_sql.moved(conn, user.customer_id, move, held, held_after)
-        losing |= lost
-        gaining |= gained
+    for move in moves:
+        before = access_sql.audience_of(conn, user.customer_id, move.before, move.held) | move.given
+        after = access_sql.audience_of(conn, user.customer_id, move.after, move.held_after) | move.given_after
+        losing |= before - after
+        gaining |= after - before
     return losing, gaining
 
 
@@ -208,6 +213,8 @@ def undo_link(
             if user.user_id in _audience(conn, user, plan.moves)[1]:
                 _self_grant(user, password)
             links_sql.apply_undo(conn, user.customer_id, plan, by=user.user_id)
+            if not listing.documents_seen(conn, user.customer_id, [target]):
+                return {"id": target, "undone": True}  # review (#658): back where the person can't see it
             return _summary(conn, context, user, target)
 
     return _written(user, target, transaction)

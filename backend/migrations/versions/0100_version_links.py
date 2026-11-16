@@ -9,8 +9,10 @@ here is spliced from another migration); ``test_migration_heads`` follows.
 * ``version_links``: one row per link (``POST /documents/link-versions``), keyed on the family the
   files were linked into, with every version it left in that family (``document_ids``) and, per
   version, what Undo puts back (``snapshot``: its family, number, current or not, folder, whom it
-  was held for, owner, label, tags, group decision, and the people the link gave it to and whose
-  stories it carried). Ids and flags only, never content. Undone once (``undone_at``).
+  was held for, owner, label, tags, group decision, whom it was given to and whose stories the
+  link carried), and the folders it left (``folder_ids``: Kaagaz's empty folders among them are not
+  pruned while the link is not undone, ``kaagaz.db.folders``). Ids and flags only, never content.
+  Undone once (``undone_at``).
 * ``version_suggestions.status`` gains ``separated``: the pair kept apart by "Make it a separate
   file" (#521), the only pair its Undo may join again (V18: the join-again back door is closed to a
   pair a person kept separate). Rows from before stay ``rejected`` (no way to tell them apart), so
@@ -76,6 +78,7 @@ LINKS = """
         customer_id uuid NOT NULL REFERENCES customers (id) ON DELETE CASCADE,
         family_id uuid NOT NULL,
         document_ids uuid[] NOT NULL CONSTRAINT version_links_documents CHECK (cardinality(document_ids) >= 2),
+        folder_ids uuid[] NOT NULL DEFAULT '{}',
         snapshot jsonb NOT NULL,
         linked_by uuid NOT NULL,
         linked_at timestamptz NOT NULL DEFAULT now(),
@@ -93,6 +96,8 @@ COMMENTS = {
     "family_id": "documents.id (same customer) of the family the files were linked into: its first version.",
     "document_ids": "Every version the link left in the family, in their new order. Undo only while the"
     " family holds exactly these.",
+    "folder_ids": "folders.id (no foreign key) of the folders the link moved files out of: Kaagaz's empty"
+    " folders are never pruned while the link is not undone, so its Undo has them to go back to.",
     "snapshot": "Per version id, what Undo puts back: family, number, current, folder, held for, owner,"
     " label, tags, group decision, and the people the link gave it to and whose stories it carried. Ids"
     " only.",

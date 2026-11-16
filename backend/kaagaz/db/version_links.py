@@ -22,8 +22,9 @@ which also checks every chosen file through ``visible_documents`` before anythin
   members linked (V-B's ``linked``), one ``version_links`` row with what Undo puts back, and one
   ``version.linked`` row per version. Nothing is read again: no spend.
 * **Undo** (V16), while the family holds exactly the versions the link left: each version's family,
-  number, current, folder, held for, owner, label, tags and group decision put back, the people the
-  link gave it and the stories it carried taken back, one ``version.unlinked`` row per version.
+  number, current, folder, held for, owner, label, tags and group decision put back, each version
+  given to exactly whom it was given before (but to a person switched off since), the stories the
+  link carried taken back, one ``version.unlinked`` row per version.
   Refused once a folder they came from is gone (``folder_gone``).
 """
 
@@ -36,10 +37,14 @@ from sqlalchemy import Connection, RowMapping, text
 from sqlalchemy.exc import OperationalError
 
 from kaagaz.db import audit
-from kaagaz.db.folders import Move, _lock_tree, place_of
+from kaagaz.db.folders import Place, _lock_tree, place_of, prune_empty
 from kaagaz.db.sqlstate import sqlstate
 from kaagaz.db.trash import LIVE_FOLDERS, lock_live_family
 
+# The most versions one link may leave in a family (review on #658).
+MAX_VERSIONS = 200
+# A version still being read: received (waiting) or clean (scanned, its reading under way).
+BEING_READ = ("received", "clean")
 # A version's number while a link or its Undo renumbers (unique within a family, 0002).
 _SHIFT = 1_000_000
 
@@ -60,8 +65,9 @@ _STATE = text(
     " EXISTS (SELECT 1 FROM visible_documents v WHERE v.customer_id = d.customer_id AND v.id = d.id) AS seen,"
     " ARRAY(SELECT t.tag_id::text FROM document_tags t WHERE t.customer_id = d.customer_id"
     " AND t.document_id = d.id ORDER BY t.tag_id) AS tags,"
-    " ARRAY(SELECT s.user_id::text FROM document_shares s WHERE s.customer_id = d.customer_id"
-    " AND s.document_id = d.id ORDER BY s.user_id) AS shares,"
+    " (SELECT coalesce(json_agg(json_build_object('user', s.user_id, 'given_by', s.given_by,"
+    " 'given_at', s.given_at) ORDER BY s.user_id), '[]') FROM document_shares s"
+    " WHERE s.customer_id = d.customer_id AND s.document_id = d.id) AS shares,"
     " (SELECT json_build_object('state', g.state, 'by', g.decided_by, 'at', g.decided_at)"
     " FROM version_group_members g WHERE g.customer_id = d.customer_id AND g.document_id = d.id) AS member"
     " FROM documents d WHERE d.customer_id = :c AND d.family_id = ANY(CAST(:f AS uuid[]))"
@@ -92,16 +98,27 @@ _COPY_TAGS = text(
     " SELECT :c, j.id, t.tag_id FROM unnest(CAST(:ids AS uuid[])) AS j (id)"
     " JOIN document_tags t ON t.customer_id = :c AND t.document_id = :from"
 )
+# Review (#658): only the tags still there; one deleted since is gone from every file anyway.
 _PUT_TAGS = text(
     "INSERT INTO document_tags (customer_id, document_id, tag_id)"
     " SELECT :c, x.id, x.tag FROM unnest(CAST(:ids AS uuid[]), CAST(:tags AS uuid[])) AS x (id, tag)"
+    " JOIN tags t ON t.customer_id = :c AND t.id = x.tag"
 )
-_SHARES = text(
-    "SELECT user_id::text FROM document_shares WHERE customer_id = :c AND document_id = :d ORDER BY user_id"
+# Undo (review on #658): each version given to exactly whom it was given before the link, version by
+# version (a family's versions need not be given alike). First every other gift goes (a gift taken
+# goes from the whole family, 0085), then the saved ones come back, but to a person switched off
+# since (0090 took their gifts then).
+_EXTRA_SHARES = text(
+    "DELETE FROM document_shares x WHERE x.customer_id = :c AND x.document_id = ANY(CAST(:ids AS uuid[]))"
+    ' AND NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(CAST(:keep AS jsonb)) AS k (id uuid, "user" uuid)'
+    ' WHERE k.id = x.document_id AND k."user" = x.user_id)'
 )
-_TAKE_SHARES = text(
-    "DELETE FROM document_shares WHERE customer_id = :c AND document_id = ANY(CAST(:ids AS uuid[]))"
-    " AND user_id = ANY(CAST(:users AS uuid[]))"
+_PUT_SHARES = text(
+    "INSERT INTO document_shares (customer_id, document_id, user_id, given_by, given_at)"
+    ' SELECT :c, k.id, k."user", k.given_by, k.given_at FROM jsonb_to_recordset(CAST(:keep AS jsonb))'
+    ' AS k (id uuid, "user" uuid, given_by uuid, given_at timestamptz)'
+    ' JOIN users u ON u.customer_id = :c AND u.id = k."user" AND NOT u.disabled'
+    " ON CONFLICT DO NOTHING"
 )
 _MOVE_STORIES = text("SELECT kaagaz_move_stories(:from, :to, CAST(:users AS uuid[]))")
 # The group members of these versions, taken in id order without waiting (V-B's NOWAIT, review on
@@ -122,12 +139,14 @@ _MEMBERS_BACK = text(
     " WHERE g.customer_id = :c AND g.document_id = m.id AND g.state = 'linked'"
 )
 _LINK = text(
-    "INSERT INTO version_links (customer_id, family_id, document_ids, snapshot, linked_by)"
-    " VALUES (:c, :f, CAST(:ids AS uuid[]), CAST(:snapshot AS jsonb), :by) RETURNING id::text"
+    "INSERT INTO version_links (customer_id, family_id, document_ids, folder_ids, snapshot, linked_by)"
+    " VALUES (:c, :f, CAST(:ids AS uuid[]), CAST(:folders AS uuid[]), CAST(:snapshot AS jsonb), :by)"
+    " RETURNING id::text"
 )
 # Undo: the family's newest link not undone, naming the version.
 _NEWEST_LINK = text(
-    "SELECT id::text, document_ids::text[], snapshot FROM version_links WHERE customer_id = :c"
+    "SELECT id::text, document_ids::text[], snapshot, folder_ids::text[] FROM version_links"
+    " WHERE customer_id = :c"
     " AND family_id = :f AND undone_at IS NULL ORDER BY linked_at DESC LIMIT 1"
 )
 # Each restored version's own place, owner and label, in one statement for one family.
@@ -159,6 +178,13 @@ _FAMILY_LINK = text(
     " FROM version_links l WHERE l.customer_id = :c AND l.family_id = :f AND l.undone_at IS NULL"
     " ORDER BY l.linked_at DESC LIMIT 1"
 )
+# Review (#658): a listed file of this name in the folder a family goes back to (separate's rule).
+_NAME_TAKEN = text(
+    "SELECT EXISTS (SELECT 1 FROM documents o WHERE o.customer_id = :c AND o.deleted_at IS NULL"
+    " AND o.is_current AND o.id <> ALL(CAST(:ids AS uuid[]))"
+    " AND o.folder_id IS NOT DISTINCT FROM CAST(:f AS uuid)"
+    " AND lower(o.display_name) = lower(:name))"
+)
 _UNDONE = text(
     "UPDATE version_links SET undone_by = :by, undone_at = now() WHERE customer_id = :c AND id = :l"
 )
@@ -185,9 +211,24 @@ class Plan:
     moves: list["Moved"]
 
 
-# A family's move as the access rules see it, with whom it is held for before and after (#601): the
-# route counts who loses and gains it (``access.moved``, which reads the views: the API's alone).
-Moved = tuple[Move, str | None, str | None]
+@dataclass(frozen=True, slots=True)
+class Moved:
+    """A family's move as the access rules see it (#601): its place, whom it is held for and whom
+    its versions are given to, before and after. The route counts who loses and gains it
+    (``access.audience_of`` reads the views: the API's alone). Review (#658): the gifts count, since
+    0100's trigger gives every joining version to whom the latest's family is given."""
+
+    before: Place
+    held: str | None
+    given: frozenset[str]
+    after: Place
+    held_after: str | None
+    given_after: frozenset[str]
+
+
+def _given(rows: Sequence[RowMapping | dict[str, Any]]) -> frozenset[str]:
+    """Everyone these versions are given to."""
+    return frozenset(str(share["user"]) for row in rows for share in row["shares"])
 
 
 def _place(row: RowMapping) -> tuple[str | None, str | None]:
@@ -220,6 +261,8 @@ def prepare(
         raise Refused("changed")  # linked, separated or deleted before its family's lock was taken
     if not all(row["seen"] for row in rows.values()):
         raise Refused("not_found")
+    if len(rows) > MAX_VERSIONS:
+        raise Refused("too_many_versions")
     if len(families) < len(asked):
         raise Refused("already_versions")
     if any(row["in_trash"] for row in rows.values()):
@@ -227,7 +270,9 @@ def prepare(
     if any(row["locked"] for row in rows.values()):
         raise Refused("locked")
     latest = rows[current_id]
-    if latest["status"] != "ready":
+    # Review (#658): nor any version still being read, which its run would make current, or close as
+    # gone when it found its family changed under it.
+    if latest["status"] != "ready" or any(row["status"] in BEING_READ for row in rows.values()):
         raise Refused("not_ready")
     by_family: dict[str, list[str]] = {}
     for row in rows.values():  # in version order (the statement's)
@@ -235,19 +280,19 @@ def prepare(
     family = latest["family_id"]
     joining = [each for each in families if each != family]
     after = place_of(conn, customer_id, latest["folder_id"])
+    given_after = _given([rows[id_] for id_ in by_family[family]])
     moves: list[Moved] = []
     for each in joining:
         first = rows[by_family[each][0]]
-        moves.append(
-            (Move(before=_place(first), after=after, private=[]), first["held_for"], latest["held_for"])
-        )
+        given = _given([rows[id_] for id_ in by_family[each]])
+        moves.append(Moved(_place(first), first["held_for"], given, after, latest["held_for"], given_after))
     return Plan(
         family=family,
         current=current_id,
         order=[version for document in order for version in by_family[asked[document]]],
         joining=joining,
         rows=rows,
-        moves=moves,
+        moves=list(dict.fromkeys(moves)),  # review (#658): each move counted once
     )
 
 
@@ -274,6 +319,7 @@ def _snapshot(row: RowMapping) -> dict[str, Any]:
         "sensitivity": row["sensitivity"],
         "sensitivity_set_by_person": bool(row["sensitivity_set_by_person"]),
         "tags": list(row["tags"]),
+        "shares": list(row["shares"]),
         "member": None if member is None else {k: member[k] for k in ("state", "by", "at")},
     }
 
@@ -291,7 +337,6 @@ def apply(conn: Connection, customer_id: str, plan: Plan, *, by: str) -> str:
     joined: list[str] = []
     for family in plan.joining:  # one family a statement (0100's trigger reads the family's first)
         versions = [id_ for id_ in every if plan.rows[id_]["family_id"] == family]
-        before = set(plan.rows[versions[0]]["shares"])
         conn.execute(
             _JOIN,
             {
@@ -305,9 +350,8 @@ def apply(conn: Connection, customer_id: str, plan: Plan, *, by: str) -> str:
                 "set": latest["sensitivity_set_by_person"],
             },
         )
-        given = set(conn.execute(_SHARES, {"c": c, "d": versions[0]}).scalars()) - before
         stories = conn.execute(_MOVE_STORIES, {"from": family, "to": plan.family, "users": None}).scalars()
-        snapshot["families"][family] = {"shares": sorted(given), "stories": sorted(str(u) for u in stories)}
+        snapshot["families"][family] = {"stories": sorted(str(u) for u in stories)}
         joined += versions
     conn.execute(_NUMBERS, {"c": c, "ids": every, "nos": list(range(1, len(every) + 1))})
     conn.execute(_CURRENT, {"c": c, "ids": [plan.current]})
@@ -315,11 +359,16 @@ def apply(conn: Connection, customer_id: str, plan: Plan, *, by: str) -> str:
     conn.execute(_COPY_TAGS, {"c": c, "ids": joined, "from": plan.current})
     _lock_members(conn, c, every)
     conn.execute(_LINKED, {"c": c, "ids": every, "by": by})
-    link = str(
-        conn.execute(
-            _LINK, {"c": c, "f": plan.family, "ids": every, "snapshot": json.dumps(snapshot), "by": by}
-        ).scalar_one()
-    )
+    left = sorted({folder for id_ in joined if (folder := plan.rows[id_]["folder_id"]) is not None})
+    params = {
+        "c": c,
+        "f": plan.family,
+        "ids": every,
+        "folders": left,
+        "snapshot": json.dumps(snapshot),
+        "by": by,
+    }
+    link = str(conn.execute(_LINK, params).scalar_one())
     for number, version in enumerate(every, 1):
         audit.record(
             conn,
@@ -348,6 +397,7 @@ class UndoPlan:
     order: list[str]
     snapshot: dict[str, Any]
     moves: list[Moved]
+    folders: list[str]  # the folders the link left
 
 
 def prepare_undo(conn: Connection, customer_id: str, document_id: str) -> UndoPlan:
@@ -360,25 +410,35 @@ def prepare_undo(conn: Connection, customer_id: str, document_id: str) -> UndoPl
     if family is None:
         raise Refused("not_found")
     rows = {row["id"]: row for row in conn.execute(_STATE, {"c": c, "f": [family]}).mappings()}
+    if not all(row["seen"] for row in rows.values()):
+        raise Refused("not_found")  # review (#658): every version, not only the one asked
     if any(row["locked"] for row in rows.values()):
         raise Refused("locked")
     found = conn.execute(_NEWEST_LINK, {"c": c, "f": family}).first()
     if found is None or document_id not in found[1]:
         raise Refused("not_linked")
-    link, order, snapshot = found[0], list(found[1]), found[2]
+    link, order, snapshot, left = found[0], list(found[1]), found[2], list(found[3])
     if set(rows) != set(order):
         raise Refused("not_newest")  # a version uploaded, linked or made separate since
     back = snapshot["versions"]
     folders = sorted({v["folder_id"] for v in back.values() if v["folder_id"] is not None})
     if len(conn.execute(text(LIVE_FOLDERS), {"c": c, "ids": folders}).all()) < len(folders):
         raise Refused("folder_gone")
+    for id_ in order:
+        version = back[id_]
+        if version["family_id"] in snapshot["families"] and version["is_current"]:
+            params = {"c": c, "ids": order, "f": version["folder_id"], "name": rows[id_]["display_name"]}
+            if conn.execute(_NAME_TAKEN, params).scalar_one():
+                raise Refused("name_taken")
     here = rows[document_id]  # where every version is now: the family's place
     moves: list[Moved] = []
     for each in snapshot["families"]:
-        first = back[next(id_ for id_ in order if back[id_]["family_id"] == each)]
-        move = Move(before=_place(here), after=place_of(conn, c, first["folder_id"]), private=[])
-        moves.append((move, here["held_for"], first["held_for"]))
-    return UndoPlan(link, family, order, snapshot, moves)
+        versions = [id_ for id_ in order if back[id_]["family_id"] == each]
+        first = back[versions[0]]
+        now, then = _given([rows[id_] for id_ in versions]), _given([back[id_] for id_ in versions])
+        after = place_of(conn, c, first["folder_id"])
+        moves.append(Moved(_place(here), here["held_for"], now, after, first["held_for"], then))
+    return UndoPlan(link, family, order, snapshot, list(dict.fromkeys(moves)), left)
 
 
 def apply_undo(conn: Connection, customer_id: str, plan: UndoPlan, *, by: str) -> None:
@@ -404,8 +464,9 @@ def apply_undo(conn: Connection, customer_id: str, plan: UndoPlan, *, by: str) -
         ]
         conn.execute(_BACK, {"c": c, "g": family, "rows": json.dumps(rows)})
         ids = [row["id"] for row in rows]
-        if carried["shares"]:
-            conn.execute(_TAKE_SHARES, {"c": c, "ids": ids, "users": carried["shares"]})
+        keep = [{"id": id_, **share} for id_ in ids for share in back[id_]["shares"]]
+        conn.execute(_EXTRA_SHARES, {"c": c, "ids": ids, "keep": json.dumps(keep)})
+        conn.execute(_PUT_SHARES, {"c": c, "keep": json.dumps(keep)})
         if carried["stories"]:
             conn.execute(_MOVE_STORIES, {"from": plan.family, "to": family, "users": carried["stories"]})
     conn.execute(
@@ -423,6 +484,7 @@ def apply_undo(conn: Connection, customer_id: str, plan: UndoPlan, *, by: str) -
     _lock_members(conn, c, plan.order)
     conn.execute(_MEMBERS_BACK, {"c": c, "members": json.dumps(members)})
     conn.execute(_UNDONE, {"c": c, "l": plan.link, "by": by})
+    prune_empty(conn, c, plan.folders)  # no longer kept for this link (``folders._PRUNE``)
     for version in plan.order:
         audit.record(
             conn,

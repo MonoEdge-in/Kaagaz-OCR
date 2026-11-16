@@ -434,19 +434,23 @@ def _sees(conn: Connection, customer_id: str, place: folders.Place, held: str | 
     return place_audience(conn, place[0], place[1], department_only=closed)
 
 
+def audience_of(
+    conn: Connection, customer_id: str, place: folders.Place, held: str | None = None
+) -> set[str]:
+    """The active people who see what is in ``place``; a file held for ``held``: them and Management
+    (#648: a link's and its Undo's count, with whom the files are given to)."""
+    return _sees(conn, customer_id, place, held)
+
+
 def moved(
-    conn: Connection,
-    customer_id: str,
-    move: folders.Move,
-    held: str | None = None,
-    held_after: str | None = None,
+    conn: Connection, customer_id: str, move: folders.Move, held: str | None = None
 ) -> tuple[set[str], set[str]]:
     """Who loses and who gains what a move carries (PRD 7 section 5, "6 people won't see this"): the
-    files of its place (``own``; a file held for ``held``: from its holder and Management; held for
-    ``held_after`` once moved, #648: to them and Management) and of each private folder it carries,
-    whose Head is the department's. Admins, Management and a Head (``kaagaz_place_audience``)."""
+    files of its place (``own``; a file held for ``held``: from its holder and Management) and of each
+    private folder it carries, whose Head is the department's. Admins, Management and a Head
+    (``kaagaz_place_audience``)."""
     pairs = (
-        [(_sees(conn, customer_id, move.before, held), _sees(conn, customer_id, move.after, held_after))]
+        [(_sees(conn, customer_id, move.before, held), _sees(conn, customer_id, move.after))]
         if move.own
         else []
     )

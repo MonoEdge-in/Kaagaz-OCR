@@ -459,6 +459,12 @@ _ALONE_AGAIN = text(
     "UPDATE documents SET family_id = id, version_no = 1, folder_id = :folder, held_for = :held,"
     " is_current = (status = 'ready') WHERE customer_id = :c AND id = :d"
 )
+# #658 (lead decision): the gifts 0100's trigger copied onto the version when it joined (the same
+# person and time as on the family's first version) go with Undo; one it had of its own stays.
+_JOIN_GIFTS = text(
+    "DELETE FROM document_shares x USING document_shares f WHERE x.customer_id = :c AND x.document_id = :d"
+    " AND f.customer_id = :c AND f.document_id = :f AND f.user_id = x.user_id AND f.given_at = x.given_at"
+)
 _HIGHEST_READY_CURRENT = text(
     "UPDATE documents SET is_current = true WHERE customer_id = :c AND id = (SELECT v.id FROM documents v"
     " WHERE v.customer_id = :c AND v.family_id = :f AND v.status = 'ready'"
@@ -492,7 +498,8 @@ def undo(
     """V7: a document linked from a suggestion (accepted or auto) gets its own family back,
     as version 1, where ``_way_back`` says (#594: the folder it had before, or held again for
     whom it was held for; never open to more people than while it was linked); the
-    family's highest ready version is current again; the suggestion is ``undone`` and one
+    family's highest ready version is current again; the gifts it took from the family when it joined
+    go (#658); the suggestion is ``undone`` and one
     ``version.undone`` row is written. Raises Refused: not_found, not_linked, or not_newest
     once a later version exists, forbidden when it would be held for someone else and ``by`` is
     not Management (Q4); with ``rights`` (the person's, under the tree lock), MoveChangesAccess
@@ -540,6 +547,7 @@ def undo(
         },
     )
     conn.execute(_ALONE_AGAIN, {**params, "folder": folder, "held": held})
+    conn.execute(_JOIN_GIFTS, params)
     conn.execute(_HIGHEST_READY_CURRENT, params)
     conn.execute(
         _DECIDE, {"c": customer_id, "s": suggestion, "status": "undone", "by": by, "was": "accepted"}

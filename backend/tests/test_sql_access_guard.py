@@ -377,6 +377,10 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
         WRITE_AFTER_CHECK,
         "POST /documents/{id}/link-versions/undo: the view first",
     ),
+    ("db/version_links.py", "_NAME_TAKEN"): (
+        EXISTENCE_ONLY,
+        "POST /documents/{id}/link-versions/undo: separate's name rule, a yes or no",
+    ),
     ("db/version_links.py", "_FAMILY_LINK"): (
         EXISTENCE_ONLY,
         "GET /documents/{id}: the file through the view first; ids and a time only",

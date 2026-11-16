@@ -13,6 +13,7 @@ chosen order, into the latest's place with its owner, label and tags; the family
 stories follow (0100); Undo puts everything back while nothing newer joined. Two sessions at once
 wait for each other on the tree lock and never deadlock."""
 
+import io
 import json
 import threading
 import uuid
@@ -23,8 +24,10 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
+from kaagaz.api.routers import version_links as links_route
+from kaagaz.cli import main
+from kaagaz.db import audit, trash
 from kaagaz.db import locks as locks_sql
-from kaagaz.db import trash
 from kaagaz.db import version_links as links_sql
 from kaagaz.db.engine import Database
 from tests.db_support import name_session, violation, wait_until_blocked
@@ -278,7 +281,7 @@ def test_the_order_the_latest_and_files_already_versions(db: Database) -> None:
     _owner(db, "UPDATE documents SET status = 'failed' WHERE id = :d", {"d": y})
     status, reply = _link(management, org, ["x", "y"], "y")
     assert (status, reply["error"]["code"]) == (409, "not_ready")
-    assert _link(management, org, ["y", "x"], "x")[0] == 200  # a version still read may be an older one
+    assert _link(management, org, ["y", "x"], "x")[0] == 200  # a version whose reading failed may be older
 
 
 def test_the_confirm_step_names_the_latest_its_folder_and_who_loses_access(db: Database) -> None:
@@ -313,19 +316,25 @@ def test_the_confirm_step_names_the_latest_its_folder_and_who_loses_access(db: D
     assert _everything(db, org) == before
 
 
-def test_an_admin_who_would_open_a_wall_to_themselves_types_their_password(db: Database) -> None:
-    """fin is given to the Admin: linking it into Sales opens Finance's file to them by its place,
-    so their password is asked (as a folder move asks it), and with it the link is made."""
+def test_an_admin_who_would_open_a_wall_to_themselves_types_their_password(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """fin is given to the Admin: linking it into Sales opens nothing new to them (review A on #658:
+    the count knows they were given it), so no password. Every file linked is one they see, so a
+    real gain needs a wall the view and the count see differently: the count is made to say the
+    Admin gains, and their password is asked (as a folder move asks it); with it the link is made."""
     api = Api(db)
     org = _org(api)
     admin = org.people["admin"]
     _give(db, org, "document_shares", "fin", admin.user_id)
+    assert _link(admin, org, ["fin", "sales"], "sales")[0] == 200
+    assert _state(db, org, "fin")["fin"]["family_id"] == "sales"
+    monkeypatch.setattr(links_route, "_audience", lambda conn, user, moves: (set(), {user.user_id}))
     before = _everything(db, org)
-    status, reply = _link(admin, org, ["fin", "sales"], "sales")
+    status, reply = _link(admin, org, ["x", "z"], "z")
     assert (status, reply["error"]["code"]) == (403, "password_required")
     assert _everything(db, org) == before
-    assert _link(admin, org, ["fin", "sales"], "sales", password=PASSWORD)[0] == 200
-    assert _state(db, org, "fin")["fin"]["family_id"] == "sales"
+    assert _link(admin, org, ["x", "z"], "z", password=PASSWORD)[0] == 200
 
 
 # --- what follows a link, and Undo ---------------------------------------------------------------
@@ -634,3 +643,212 @@ def test_a_link_waiting_on_a_trash_is_refused_once_it_commits(db: Database) -> N
 
 def _now(conn: Any) -> Any:
     return conn.execute(text("SELECT now()")).scalar_one()
+
+
+# --- review fixes (#658) --------------------------------------------------------------------------
+
+
+def _undo(signed: Signed, org: Org, name: str, **body: Any) -> tuple[int, Any]:
+    return _post(signed, f"/documents/{org.files[name]}/link-versions/undo", body or None)
+
+
+def test_undo_works_after_a_tag_it_would_put_back_was_deleted(db: Database) -> None:
+    """Review 1: g1's tag t2 deleted while linked; Undo puts back the tags still there."""
+    org = _org(Api(db))
+    management = org.people["management"]
+    assert _link(management, org, ["g2", "x"], "x")[0] == 200
+    _owner(db, "DELETE FROM tags WHERE id = :t", {"t": org.folders["t2"]})
+    status, reply = _undo(management, org, "x")
+    assert status == 200, reply
+    assert _state(db, org, "g1")["g1"]["tags"] == []
+
+
+@pytest.mark.parametrize("status", ["received", "clean"])
+def test_a_file_still_being_read_is_never_linked(db: Database, status: str) -> None:
+    """Review 2: a joining file, or another version of a joining family, still being read would be
+    made current by its run, or its run would find its family changed: 409 not_ready, nothing written."""
+    org = _org(Api(db))
+    management = org.people["management"]
+    for name, others in (("y", ["x", "y"]), ("g1", ["x", "g2"])):
+        _owner(db, "UPDATE documents SET status = :s WHERE id = :d", {"s": status, "d": org.files[name]})
+        before = _everything(db, org)
+        status_code, reply = _link(management, org, others, "x")
+        assert (status_code, reply["error"]["code"]) == (409, "not_ready"), name
+        assert _everything(db, org) == before
+        _owner(db, "UPDATE documents SET status = 'ready' WHERE id = :d", {"d": org.files[name]})
+
+
+def test_undo_gives_each_version_to_exactly_whom_it_was_given_and_never_to_someone_switched_off(
+    db: Database,
+) -> None:
+    """Review 6 and 12: g1 is given to the named person, g2 to no one (versions need not be given alike),
+    x to the plain reviewer, held to the head; held is held for the member and owned by the head.
+    Linked, every joining version is given to the plain reviewer (0100). The member and the head are
+    switched off meanwhile. Undo: g1 to the named person alone, g2 to no one, x to the plain reviewer,
+    held to no one (the head is switched off); held is held for the member and owned by the head again."""
+    org = _org(Api(db))
+    management, people = org.people["management"], org.people
+    _give(db, org, "document_shares", "g1", people["named"].user_id)
+    _give(db, org, "document_shares", "x", people["plain"].user_id)
+    _give(db, org, "document_shares", "held", people["head"].user_id)
+    _owner(
+        db,
+        "UPDATE documents SET owner_id = :u WHERE id = :d",
+        {"u": people["head"].user_id, "d": org.files["held"]},
+    )
+    shares = (
+        "SELECT document_id::text, user_id::text FROM document_shares"
+        " WHERE document_id = ANY(CAST(:d AS uuid[]))"
+    )
+    names = ("g1", "g2", "x", "held")
+    ids = {org.files[n]: n for n in names}
+
+    def given() -> set[tuple[str, str]]:
+        who = {p.user_id: n for n, p in people.items()}
+        return {(ids[d], who[u]) for d, u in _owner(db, shares, {"d": list(ids)})}
+
+    assert given() == {("g1", "named"), ("x", "plain"), ("held", "head")}
+    assert _link(management, org, ["g2", "held", "x"], "x")[0] == 200
+    assert {("g1", "plain"), ("g2", "plain"), ("held", "plain")} <= given()
+    _owner(
+        db,
+        "UPDATE users SET disabled = true WHERE id IN (:a, :b)",
+        {"a": people["member"].user_id, "b": people["head"].user_id},
+    )
+    status, reply = _undo(management, org, "x")
+    assert status == 200, reply
+    assert given() == {("g1", "named"), ("x", "plain")}
+    held = _state(db, org, "held")["held"]
+    assert (held["held_for"], held["owner_id"], held["folder_id"]) == (
+        people["member"].user_id,
+        people["head"].user_id,
+        None,
+    )
+
+
+def test_the_confirm_step_counts_whom_the_files_are_given_to(db: Database) -> None:
+    """Review 3 and A: ``given`` (Finance) is given to the plain reviewer. Linked into fin, it is no
+    longer theirs: they lose it, though Finance is Finance. A new Finance file linked into ``given``
+    is given to them by 0100's trigger: they gain it, and lose nothing."""
+    api = Api(db)
+    org = _org(api)
+    management, plain = org.people["management"], org.people["plain"].user_id
+    org.files["fin2"] = api.add_document(org.c, name="fin2.pdf", folder_id=org.folders["finance"])
+
+    def preview(other: str, current: str) -> dict[str, Any]:
+        ids = [org.files[other], org.files[current]]
+        body = {"document_ids": ids, "order": ids, "current_id": ids[1]}
+        status, reply = _post(management, "/documents/link-versions/preview", body)
+        assert status == 200, reply
+        return {key: {p["id"] for p in reply[key]} for key in ("losing", "gaining")}
+
+    assert preview("given", "fin") == {"losing": {plain}, "gaining": set()}
+    assert preview("fin2", "given") == {"losing": set(), "gaining": {plain}}
+
+
+def test_undo_is_for_whoever_sees_every_version_not_only_the_one_asked(db: Database) -> None:
+    """Review 4: x, given to the Admin, linked into fin (Finance, which the Admin can't see): the
+    Admin still sees x through its gift, but Undo is the reply of a file that never was."""
+    org = _org(Api(db))
+    admin = org.people["admin"]
+    _give(db, org, "document_shares", "x", admin.user_id)
+    assert _link(org.people["management"], org, ["x", "fin"], "fin")[0] == 200
+    before = _everything(db, org)
+    hidden = _undo(admin, org, "x")
+    assert hidden[0] == 404
+    assert hidden == _post(admin, f"/documents/{uuid.uuid4()}/link-versions/undo")
+    assert _everything(db, org) == before
+
+
+def test_undo_of_a_file_going_back_where_the_person_cant_see_it_is_kept(db: Database) -> None:
+    """Review 8: fin linked into Sales, where the Admin sees it; the Admin's Undo puts fin back in
+    Finance, which they can't see: undone (no summary), and kept."""
+    org = _org(Api(db))
+    assert _link(org.people["management"], org, ["fin", "sales"], "sales")[0] == 200
+    status, reply = _undo(org.people["admin"], org, "fin")
+    assert (status, reply) == (200, {"id": org.files["fin"], "undone": True})
+    fin = _state(db, org, "fin")["fin"]
+    assert (fin["family_id"], fin["folder_id"]) == ("fin", org.folders["finance"])
+
+
+def test_a_link_of_too_many_versions_is_refused(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review 9: at most MAX_VERSIONS versions in one link (here 3: g1, g2, x and y are 4)."""
+    org = _org(Api(db))
+    management = org.people["management"]
+    monkeypatch.setattr(links_sql, "MAX_VERSIONS", 3)
+    before = _everything(db, org)
+    status, reply = _link(management, org, ["g2", "x", "y"], "x")
+    assert (status, reply["error"]["code"]) == (409, "too_many_versions")
+    assert _everything(db, org) == before
+    assert _link(management, org, ["x", "y"], "x")[0] == 200
+
+
+def test_undo_never_puts_a_file_beside_one_of_the_same_name(db: Database) -> None:
+    """Review 11: y linked into x; a new y.pdf uploaded where y was (the top level): Undo is 409
+    name_taken, nothing changed; once it is renamed, Undo goes through."""
+    api = Api(db)
+    org = _org(api)
+    management = org.people["management"]
+    assert _link(management, org, ["y", "x"], "x")[0] == 200
+    other = api.add_document(org.c, name="Y.pdf")
+    before = _everything(db, org)
+    status, reply = _undo(management, org, "x")
+    assert (status, reply["error"]["code"]) == (409, "name_taken")
+    assert _everything(db, org) == before
+    _owner(db, "UPDATE documents SET display_name = 'y (2).pdf' WHERE id = :d", {"d": other})
+    assert _undo(management, org, "x")[0] == 200
+
+
+def test_undo_of_accept_takes_back_the_gifts_the_join_copied(db: Database) -> None:
+    """Review 5 (lead decision): x is given to the plain reviewer, z to the named person. Accepted,
+    z is given to the plain reviewer too (0100); Undo takes that back and keeps z's own."""
+    org = _org(Api(db))
+    management, people = org.people["management"], org.people
+    _give(db, org, "document_shares", "x", people["plain"].user_id)
+    _give(db, org, "document_shares", "z", people["named"].user_id)
+    given = "SELECT user_id::text FROM document_shares WHERE document_id = :d ORDER BY user_id"
+    suggestion = _owner(db, _SUGGEST, {"c": org.c, "d": org.files["z"], "f": org.files["x"]})[0][0]
+    assert _post(management, f"/version-suggestions/{suggestion}/accept")[0] == 200
+    plain, named = people["plain"].user_id, people["named"].user_id
+    assert {r[0] for r in _owner(db, given, {"d": org.files["z"]})} == {plain, named}
+    status, reply = _post(management, f"/documents/{org.files['z']}/version-undo")
+    assert status == 200, reply
+    assert [r[0] for r in _owner(db, given, {"d": org.files["z"]})] == [named]
+    assert [r[0] for r in _owner(db, given, {"d": org.files["x"]})] == [plain]
+
+
+def test_a_folder_kaagaz_made_that_a_link_empties_is_kept_for_its_undo(db: Database) -> None:
+    """Review B: y is the only file of a folder Kaagaz made. Linked into x, the folder is empty, but
+    ``prune-folders --apply`` keeps it while the link is not undone, and Undo puts y back in it."""
+    api = Api(db)
+    org = _org(api)
+    management, first = org.people["management"], org.people["admin"].user_id
+    made = api.add_folder(org.c, first, "Made by Kaagaz")
+    with db.customer(org.c) as conn:
+        audit.record(conn, org.c, actor_user_id=None, action="folder.create", target_type="folder",
+                     target_id=made, details={"auto": True})  # fmt: skip
+    _owner(db, "UPDATE documents SET folder_id = :f WHERE id = :d", {"f": made, "d": org.files["y"]})
+    assert _link(management, org, ["y", "x"], "x")[0] == 200
+    out = io.StringIO()
+    assert main(["prune-folders", "--customer-id", org.c, "--apply"], db=db, environ={}, out=out) == 0
+    assert _owner(db, "SELECT count(*) FROM folders WHERE id = :f", {"f": made})[0][0] == 1, out.getvalue()
+    status, reply = _undo(management, org, "x")
+    assert status == 200, reply
+    assert _state(db, org, "y")["y"]["folder_id"] == made
+
+
+def test_an_undo_that_opens_a_file_to_the_admin_asks_their_password(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review C: Undo asks the password of an Admin it opens a file to, as the link does. With every
+    version seen (review 4), a real case needs a wall the view and the count see differently, so the
+    count is made to say the Admin gains: refused, nothing written; with the password, done."""
+    org = _org(Api(db))
+    admin = org.people["admin"]
+    assert _link(org.people["management"], org, ["x", "z"], "z")[0] == 200
+    monkeypatch.setattr(links_route, "_audience", lambda conn, user, moves: (set(), {user.user_id}))
+    before = _everything(db, org)
+    status, reply = _undo(admin, org, "x")
+    assert (status, reply["error"]["code"]) == (403, "password_required")
+    assert _everything(db, org) == before
+    assert _undo(admin, org, "x", password=PASSWORD)[0] == 200
