@@ -1661,6 +1661,8 @@ def update_document(
     folder_id = None if body.folder_id is None else str(body.folder_id)
     try:
         with context.db.user(customer_id, user.user_id) as conn:
+            if "folder_id" in given:  # a move can change who sees it: the tree lock first (0085)
+                folders_sql._lock_tree(conn, customer_id)
             if trash.lock_live_family(conn, customer_id, target) is None:
                 raise ApiError(404, "not_found")
             _details(conn, user, body, _document_or_404(conn, user, document_id))
@@ -1703,6 +1705,7 @@ def undo_autofile(document_id: uuid.UUID, user: User, context: Context) -> dict[
     customer_id, target = user.customer_id, str(document_id)
     try:
         with context.db.user(customer_id, user.user_id) as conn:
+            folders_sql._lock_tree(conn, customer_id)  # before the family's, as filing (0085)
             family_id = trash.lock_live_family(conn, customer_id, target)
             if family_id is None:
                 raise ApiError(404, "not_found")
