@@ -23,8 +23,21 @@ import { useSession } from "@/lib/session";
 import type { KeptApart, VersionGroup } from "@/lib/types";
 import { LinkDialog } from "./LinkDialog";
 import type { Linked } from "./LinkDialog";
-import { LINK_TEXT, MAX_LINK, MIN_LINK, byDate, fromSummary, groupLink, linkErrorText, mayLinkVersions, reasonLine } from "./link";
-import type { LinkFile } from "./link";
+import {
+  LINK_TEXT,
+  MAX_LINK,
+  MIN_LINK,
+  byDate,
+  fromSummary,
+  groupLink,
+  linkErrorText,
+  mayLinkVersions,
+  reasonLine,
+  shownIn,
+  withAsked,
+  withoutAsked,
+} from "./link";
+import type { Asked, LinkFile } from "./link";
 import { compareHref } from "./VersionChoice";
 import styles from "./Link.module.css";
 
@@ -49,7 +62,7 @@ export function PossibleVersions() {
   const [reload, setReload] = useState(0);
   const [toast, setToast] = useState<{ message: string; undo?: () => Promise<unknown>; undone?: string } | null>(null);
   const [linking, setLinking] = useState<Linking | null>(null);
-  const [asking, setAsking] = useState<{ groupId: string; files: Named[] } | null>(null);
+  const [asking, setAsking] = useState<Asked[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -103,8 +116,15 @@ export function PossibleVersions() {
       () => decideVersionGroup(group.id, "keep-apart", ids),
       LINK_TEXT.keptApart(ids.length),
       () => decideVersionGroup(group.id, "keep-apart/undo", ids),
-      LINK_TEXT.backInGroup,
+      LINK_TEXT.notMarked(ids.length),
     );
+  }
+
+  /** Undo of Not versions for one file. A file no group shows afterwards (its matches were all
+   * linked) is asked about again, so it is never left on no screen (reviews of #659). */
+  async function undoNotVersion(groupId: string, file: Named) {
+    const { group } = await decideVersionGroup(groupId, "keep-apart/undo", [file.id]);
+    if (!shownIn(group, file.id)) setAsking((before) => withAsked(before, [{ groupId, file }]));
   }
 
   async function linkPair(pair: KeptApart["pairs"][number]) {
@@ -121,32 +141,37 @@ export function PossibleVersions() {
   async function linked(done: Linked) {
     const from = linking;
     setLinking(null);
-    setToast({ message: done.message, undo: done.undo, undone: LINK_TEXT.undone });
+    const unticked = from?.unticked.map((file) => file.id) ?? [];
+    // Undo of the link puts the files back in their group: the question about them goes.
+    const undo = async () => {
+      await done.undo();
+      setAsking((before) => withoutAsked(before, unticked));
+    };
+    setToast({ message: done.message, undo, undone: LINK_TEXT.undone });
     setReload((n) => n + 1);
-    if (!from?.groupId || from.unticked.length === 0) return;
+    const groupId = from?.groupId;
+    if (!groupId || unticked.length === 0) return;
     // Unticked files that still match each other stay as a smaller group; the others are asked about.
     let still = new Set<string>();
     try {
-      still = new Set((await getVersionGroup(from.groupId)).files.map((file) => file.id));
+      still = new Set((await getVersionGroup(groupId)).files.map((file) => file.id));
     } catch {
       // 404: the group is gone, so every unticked file is asked about.
     }
-    const left = from.unticked.filter((file) => !still.has(file.id));
-    if (left.length > 0) setAsking({ groupId: from.groupId, files: left });
+    const left = (from?.unticked ?? []).filter((file) => !still.has(file.id));
+    setAsking((before) => withAsked(before, left.map((file) => ({ groupId, file }))));
   }
 
-  function answer(file: Named, decision: "keep-apart" | "later") {
-    if (!asking) return;
-    const groupId = asking.groupId;
-    const rest = asking.files.filter((each) => each.id !== file.id);
+  function answer(asked: Asked, decision: "keep-apart" | "later") {
+    const { groupId, file } = asked;
     void act(
       async () => {
         await decideVersionGroup(groupId, decision, [file.id]);
-        setAsking(rest.length > 0 ? { groupId, files: rest } : null);
+        setAsking((before) => withoutAsked(before, [file.id]));
       },
       decision === "later" ? `${LINK_TEXT.laterNote}.` : LINK_TEXT.keptApart(1),
-      decision === "later" ? undefined : () => decideVersionGroup(groupId, "keep-apart/undo", [file.id]),
-      LINK_TEXT.backInGroup,
+      decision === "later" ? undefined : () => undoNotVersion(groupId, file),
+      LINK_TEXT.notMarked(1),
     );
   }
 
@@ -201,17 +226,17 @@ export function PossibleVersions() {
         </p>
       )}
 
-      {asking && (
+      {asking.length > 0 && (
         <section className={styles.asking} aria-label={LINK_TEXT.notLinkedHeading}>
           <ul className={styles.fileList}>
-            {asking.files.map((file) => (
-              <li key={file.id} className={styles.askRow}>
-                <p className={styles.fileName}>{LINK_TEXT.notLinked(file.name)}</p>
+            {asking.map((asked) => (
+              <li key={asked.file.id} className={styles.askRow}>
+                <p className={styles.fileName}>{LINK_TEXT.notLinked(asked.file.name)}</p>
                 <div className={styles.groupButtons}>
-                  <button type="button" className="btn" disabled={busy} onClick={() => answer(file, "keep-apart")}>
+                  <button type="button" className="btn" disabled={busy} onClick={() => answer(asked, "keep-apart")}>
                     {LINK_TEXT.notVersion}
                   </button>
-                  <button type="button" className="btn btn-quiet" disabled={busy} onClick={() => answer(file, "later")}>
+                  <button type="button" className="btn btn-quiet" disabled={busy} onClick={() => answer(asked, "later")}>
                     {LINK_TEXT.decideLater}
                   </button>
                 </div>
@@ -244,8 +269,8 @@ export function PossibleVersions() {
           kept={kept}
           busy={busy}
           onLink={(pair) => void linkPair(pair)}
-          onUndo={(groupId, file) =>
-            void act(() => decideVersionGroup(groupId, "keep-apart/undo", [file]), LINK_TEXT.backInGroup)
+          onUndo={(file) =>
+            void act(() => undoNotVersion(file.group_id, { id: file.id, name: file.name }), LINK_TEXT.notMarked(1))
           }
         />
       )}
@@ -408,7 +433,7 @@ export function KeptApartList({
   kept: KeptApart;
   busy: boolean;
   onLink(pair: KeptApart["pairs"][number]): void;
-  onUndo(groupId: string, file: string): void;
+  onUndo(file: KeptApart["groups"][number]): void;
 }) {
   const empty = kept.pairs.length === 0 && kept.groups.length === 0;
   return (
@@ -440,7 +465,7 @@ export function KeptApartList({
                 <span className={styles.fileName}>{file.name}</span>
                 <span className={styles.fileFacts}>{LINK_TEXT.notVersions}</span>
               </span>
-              <button type="button" className="btn" disabled={busy} onClick={() => onUndo(file.group_id, file.id)}>
+              <button type="button" className="btn" disabled={busy} onClick={() => onUndo(file)}>
                 {LINK_TEXT.undo}
                 <span className="visually-hidden">{`: ${file.name}`}</span>
               </button>

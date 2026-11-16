@@ -25,7 +25,10 @@ import {
   moved,
   movedTo,
   reasonLine,
+  shownIn,
   undoLink,
+  withAsked,
+  withoutAsked,
 } from "@/components/versions/link";
 import { GroupCard, KeptApartList } from "@/components/versions/PossibleVersions";
 import { VersionsPanel } from "@/components/versions/VersionsPanel";
@@ -416,6 +419,29 @@ describe("the order and the confirm steps (V13)", () => {
     expect(html).not.toContain('type="password"');
     const asked = render(createElement(ConfirmStep, { preview, files: 2, password: "", onPassword: () => undefined }));
     expect(asked).toContain('type="password"');
+  });
+});
+
+describe("the question about files left out of a link (reviews of #659)", () => {
+  const ask = (id: string, groupId = "g1") => ({ groupId, file: { id, name: `${id}.pdf` } });
+
+  it("adds a link's files to the ones still asked about, once each, and drops them again", () => {
+    const first = withAsked([], [ask("z")]);
+    const second = withAsked(first, [ask("w", "g2"), ask("z")]);
+    expect(second).toEqual([ask("z"), ask("w", "g2")]);
+    expect(withoutAsked(second, ["z"])).toEqual([ask("w", "g2")]); // answered, or the link undone
+  });
+
+  it("knows whether a group still shows a file after an Undo", () => {
+    expect(shownIn(group(), "x")).toBe(true);
+    expect(shownIn(group(), "z")).toBe(false);
+    expect(shownIn(null, "x")).toBe(false);
+  });
+
+  it("never promises the file is back with its possible versions", () => {
+    expect(LINK_TEXT.notMarked(1)).toBe("Undone. It's no longer marked as not a version.");
+    expect(LINK_TEXT.notMarked(3)).toBe("Undone. They're no longer marked as not versions.");
+    expect(JSON.stringify(LINK_TEXT)).not.toContain("Back with its possible versions");
   });
 });
 

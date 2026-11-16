@@ -4,7 +4,15 @@
 // confirm step names people) and Management see them; the server checks every rule again.
 
 import { ApiError, undoLinkVersions } from "@/lib/api";
-import type { DocumentSummary, LinkPreview, LinkVersionsBody, Me, VersionGroupFile, VersionGroupReason } from "@/lib/types";
+import type {
+  DocumentSummary,
+  LinkPreview,
+  LinkVersionsBody,
+  Me,
+  VersionGroup,
+  VersionGroupFile,
+  VersionGroupReason,
+} from "@/lib/types";
 import { identifierWords, joinAnd, sharePercent } from "./words";
 
 export const LINK_TEXT = {
@@ -72,7 +80,8 @@ export const LINK_TEXT = {
   keptSeparate: "Kept separate",
   notVersions: "Marked as not versions",
   undo: "Undo",
-  backInGroup: "Back with its possible versions.",
+  notMarked: (n: number) =>
+    n === 1 ? "Undone. It's no longer marked as not a version." : "Undone. They're no longer marked as not versions.",
 };
 
 /** The Possible versions view and its Kept apart list (V17, V18). */
@@ -239,3 +248,25 @@ export async function undoLink(id: string): Promise<unknown> {
     throw caught;
   }
 }
+
+/** A file left out of a link, asked "Not a version of these?" on the Possible versions page. */
+export interface Asked {
+  groupId: string;
+  file: { id: string; name: string };
+}
+
+/** The files asked about with `added` after them, each file once (reviews of #659: a second link
+ * adds to the question, never replaces it). */
+export function withAsked(before: readonly Asked[], added: readonly Asked[]): Asked[] {
+  const asked = [...before];
+  for (const each of added) if (!asked.some((one) => one.file.id === each.file.id)) asked.push(each);
+  return asked;
+}
+
+/** The files asked about without these (answered, or their link undone). */
+export function withoutAsked(before: readonly Asked[], ids: readonly string[]): Asked[] {
+  return before.filter((one) => !ids.includes(one.file.id));
+}
+
+/** Whether a group, as a decision answered it, still shows this file (null: no group shown). */
+export const shownIn = (group: VersionGroup | null, id: string) => group?.files.some((file) => file.id === id) === true;
