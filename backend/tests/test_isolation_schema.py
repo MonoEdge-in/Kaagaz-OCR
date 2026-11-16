@@ -69,6 +69,10 @@ reads in two columns only, written by the operator's two functions (step-up).
 
 A folder in Trash (0081, #542, NEEDS VRUSHIT'S APPROVAL): read, added and deleted by the app,
 never updated.
+
+Who can see what (0084, PRD 7, #590, NEEDS VRUSHIT'S APPROVAL): department members, the people
+named on a private folder, files given and lock grants, read, added and deleted by the app; only a
+membership's Head tick is ever changed.
 """
 
 import re
@@ -193,6 +197,15 @@ FROM_0071 = {
 FROM_0061D = {"org_storage_limits": (False, False, False, False)}
 # A folder in Trash (0081, #542): read, added and deleted (restored, forever, purged), never updated.
 FROM_0081 = {"trashed_folders": (True, True, False, True)}
+# Who can see what (0084, #590): read, added and deleted; a membership's Head tick alone is changed
+# (UPDATES_0084, a column grant).
+FROM_0084 = {
+    "department_members": (True, True, False, True),
+    "private_folder_members": (True, True, False, True),
+    "document_shares": (True, True, False, True),
+    "lock_grants": (True, True, False, True),
+}
+UPDATES_0084 = {"department_members": {"is_head"}}
 # Logout ends this browser's session (0076, #502): the app adds and reads ended sessions only;
 # the worker's sweep deletes them through kaagaz_sweep_ended_sessions.
 FROM_0076 = {"ended_sessions": (True, True, False, False)}
@@ -627,6 +640,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0061D)
         | set(FROM_0076)
         | set(FROM_0081)  # Changed on purpose (#542, 0081)
+        | set(FROM_0084)  # Changed on purpose (#590, 0084)
     )
 
     with db.system() as conn:
@@ -707,6 +721,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0061D
         | FROM_0076
         | FROM_0081  # Changed on purpose (#542, 0081)
+        | FROM_0084  # Changed on purpose (#590, 0084)
     ).items():
         assert granted[table] == expected, table
 
@@ -784,6 +799,14 @@ def test_the_app_may_update_only_the_parent_of_a_trashed_folder(db: Database) ->
     """0082 (A13): never a trashed folder's name, kind, delete or owner; only where it would be
     restored to, when the folder it was in is deleted with its contents kept elsewhere."""
     assert _updatable(db, "trashed_folders") == {"parent_id"}
+
+
+def test_the_app_may_update_only_the_head_tick_of_a_department_membership(db: Database) -> None:
+    """0084 (#590): never a membership's department, person or who added it, so a row can't be
+    moved to another department or person; nothing of the other access tables."""
+    assert {table: _updatable(db, table) for table in FROM_0084} == {
+        table: UPDATES_0084.get(table, set()) for table in FROM_0084
+    }
 
 
 def test_the_app_may_update_only_the_spellings_of_a_value_key(db: Database) -> None:
@@ -911,6 +934,7 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
         | {"folder_upload_folders", "folder_upload_items"}  # 0071
         | set(FROM_0076)
         | set(FROM_0081)  # Changed on purpose (#542, 0081)
+        | set(FROM_0084)  # Changed on purpose (#590, 0084)
         | {"pages", "model_usage", "documents"}  # documents.owner_id (0041)
     )
     for name, _table, _parent, columns, parent_columns in between:

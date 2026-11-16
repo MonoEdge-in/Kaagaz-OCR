@@ -263,6 +263,39 @@ def test_restore_brings_back_the_same_ids_parents_names_kinds_and_files_with_eve
     ]
 
 
+def test_a_folder_keeps_its_access_switches_and_stored_values_through_trash_and_restore(db: Database) -> None:
+    """PRD 7 (#590, 0084): both copies carry Department only, Private and the stored department
+    and private folder, which no screen sets yet."""
+    api = Api(db)
+    admin = api.new_admin()
+    c = admin.customer_id
+    t = _tree(api, admin)
+    accounts, bills = t["accounts"], t["bills"]
+    with db.customer(c) as conn:
+        conn.execute(
+            text("UPDATE folders SET kind = 'department', department_only = true WHERE id = :a"),
+            {"a": accounts},
+        )
+        conn.execute(
+            text(
+                "UPDATE folders SET department_id = :a, private = (id = :b), private_folder_id = CASE"
+                " WHEN id IN (:b, :o) THEN CAST(:b AS uuid) END WHERE customer_id = :c"
+            ),
+            {"a": accounts, "b": bills, "o": t["old"], "c": c},
+        )
+    access = (
+        "SELECT id, department_only, private, department_id, private_folder_id FROM {} WHERE customer_id = :c"
+    )
+    before = _rows(db, c, access.format("folders"))
+    assert before[accounts] == ("True", "False", accounts, None)
+    assert before[bills] == ("False", "True", accounts, bills)
+
+    _trash(admin, accounts)
+    assert _rows(db, c, access.format("trashed_folders")) == before
+    assert _restore(admin, accounts).status_code == 200
+    assert _rows(db, c, access.format("folders")) == before
+
+
 def test_a_folder_whose_parent_is_gone_comes_back_at_the_top_level(db: Database) -> None:
     api = Api(db)
     admin = api.new_admin()
