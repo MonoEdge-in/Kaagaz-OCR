@@ -81,6 +81,8 @@ GONE_FIRST = {
     ("page_rotations", "users"),  # 0088, #600: cascades from its document, NO ACTION to who saved it
     # 0089, #594: cascades from its document, NO ACTION to whom it was held for
     ("version_suggestions", "users"),
+    # Changed on purpose (0098, #648): cascades from its document, NO ACTION to who decided
+    ("version_group_members", "users"),
 }
 
 

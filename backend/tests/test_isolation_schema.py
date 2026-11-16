@@ -77,6 +77,9 @@ which no role may run.
 
 Page turns saved for everyone (0088, PRD 7 section 14, #600, NEEDS VRUSHIT'S APPROVAL): read, added
 and deleted by the app, never updated; a save deletes the pages it changes and adds them again.
+
+The version finder (0098, #648, NEEDS VRUSHIT'S APPROVAL): its runs, pairs and group members, never
+deleted by the app; only a member's decision is ever changed.
 """
 
 import re
@@ -212,6 +215,17 @@ FROM_0084 = {
 UPDATES_0084 = {"department_members": {"is_head"}}
 # Page turns saved for everyone (0088, #600): read, added and deleted, never updated.
 FROM_0088 = {"page_rotations": (True, True, False, True)}
+# Changed on purpose (#648, 0098): the version finder's run (read, added, only its progress changed),
+# pairs (read and added) and group members (read, added, only a decision changed); none deleted.
+FROM_0098 = {
+    "version_finder_runs": (True, True, False, False),
+    "version_pairs": (True, True, False, False),
+    "version_group_members": (True, True, False, False),
+}
+UPDATES_0098 = {
+    "version_finder_runs": {"after_id", "looked_at", "finished_at", "groups"},
+    "version_group_members": {"state", "decided_by", "decided_at"},
+}
 # Logout ends this browser's session (0076, #502): the app adds and reads ended sessions only;
 # the worker's sweep deletes them through kaagaz_sweep_ended_sessions.
 FROM_0076 = {"ended_sessions": (True, True, False, False)}
@@ -701,6 +715,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0081)  # Changed on purpose (#542, 0081)
         | set(FROM_0084)  # Changed on purpose (#590, 0084)
         | set(FROM_0088)  # Changed on purpose (#600, 0088)
+        | set(FROM_0098)  # Changed on purpose (#648, 0098)
     )
 
     with db.system() as conn:
@@ -783,6 +798,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0081  # Changed on purpose (#542, 0081)
         | FROM_0084  # Changed on purpose (#590, 0084)
         | FROM_0088  # Changed on purpose (#600, 0088)
+        | FROM_0098  # Changed on purpose (#648, 0098)
     ).items():
         assert granted[table] == expected, table
 
@@ -873,6 +889,13 @@ def test_the_app_may_update_only_the_head_tick_of_a_department_membership(db: Da
 def test_the_app_may_update_no_column_of_a_page_turn(db: Database) -> None:
     """0088 (#600): never a turn's page, version or who saved it; a save deletes and adds."""
     assert _updatable(db, "page_rotations") == set()
+
+
+def test_the_app_may_update_only_the_decision_of_a_possible_version(db: Database) -> None:
+    """0098 (#648): never a member's file, group or place, so a decision can't move a file into
+    another group; never a pair's files or scores; never a run's organisation or start."""
+    assert {table: _updatable(db, table) for table in UPDATES_0098} == UPDATES_0098
+    assert _updatable(db, "version_pairs") == set()
 
 
 def test_the_app_may_update_only_the_spellings_of_a_value_key(db: Database) -> None:
@@ -1002,6 +1025,7 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
         | set(FROM_0081)  # Changed on purpose (#542, 0081)
         | set(FROM_0084)  # Changed on purpose (#590, 0084)
         | set(FROM_0088)  # Changed on purpose (#600, 0088)
+        | {"version_pairs", "version_group_members"}  # Changed on purpose (#648, 0098)
         | {"pages", "model_usage", "documents"}  # documents.owner_id (0041)
     )
     for name, _table, _parent, columns, parent_columns in between:

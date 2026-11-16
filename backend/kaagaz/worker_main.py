@@ -50,7 +50,9 @@ until it is told to stop:
   crashes the worker.
 * Documents read before version spotting get their text fingerprint once, a pass of 50 a
   minute on idle turns, never making a suggestion (``FingerprintOld``, File management
-  section 7); it stops for good once a pass finds none.
+  section 7). Once none is missing, the same passes run the version finder (V17, #648), once per
+  organisation, 10 files a pass: it stores groups of possible versions and never links anything
+  (``kaagaz/db/version_finder.py``). It stops for good once a pass finds nothing to do.
 * WORKER_REPLICAS copies of this process run at once (PRD 5 Q3). Each sweep
   between jobs (the purge, EmbedMissing, StoryVectors, UpgradeLocalReads) takes
   its Postgres advisory lock ``kaagaz.sweep:<name>`` first (``sweep_lock``), on a
@@ -117,7 +119,7 @@ from kaagaz.adapters.storage import S3Storage
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.ai.openrouter import KEY_PROBLEM as READER_KEY_PROBLEM
 from kaagaz.ai.openrouter import OpenRouterClient, process_gate
-from kaagaz.db import ai_settings, reader_status, versions
+from kaagaz.db import ai_settings, reader_status, version_finder, versions
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -181,6 +183,9 @@ STORY_PASS_STORIES = 32
 # File management section 7: the one-time fingerprint sweep, a pass a minute on idle turns.
 FINGERPRINT_EVERY = timedelta(minutes=1)
 FINGERPRINT_PASS = 50
+# V17 (#648): the version finder's pass, after the fingerprints: this many files looked at, so an
+# idle turn stays short (each file reads up to 20 others' text), then a minute's wait.
+FINDER_PASS = 10
 
 # The only extra fields a log line may carry. Anything else passed in
 # ``extra`` is dropped, so a careless call cannot log document data.
@@ -627,10 +632,11 @@ class StoryVectors:
 class FingerprintOld:
     """Wraps the worker: the one-time fingerprint sweep (File management section 7, the
     EmbedMissing pattern). After a turn the queue had nothing for, at most every
-    FINGERPRINT_EVERY, runs ``sweep`` (``fingerprint_missing``: how many it found) under
-    ``lock("fingerprints")``; a full pass runs again on the next idle turn, and the first
-    pass that finds none ends the sweep for this process (new documents get theirs when they
-    are read). It never makes a suggestion. A database error is logged by its type and
+    FINGERPRINT_EVERY, runs ``sweep`` (``old_documents``: how many it found, the fingerprints
+    and then the version finder's) under ``lock("fingerprints")``; a full pass runs again on the
+    next idle turn, and the first pass that finds none ends the sweep for this process (new
+    documents get theirs when they are read). It never makes a suggestion or a link (the version
+    finder only stores groups for a person to decide). A database error is logged by its type and
     swallowed, as in EmbedMissing. O(1) per turn, plus one pass at most every minute."""
 
     def __init__(
@@ -668,6 +674,45 @@ class FingerprintOld:
             self._next = now  # more are waiting
         logger.info("fingerprints: %d documents", found)
         return True
+
+
+def old_documents(db: Database) -> int:
+    """FingerprintOld's pass: the fingerprints first; once none is missing, the version finder's
+    (V17, #648). How many documents it did."""
+    return fingerprint_missing(db) or find_versions(db)
+
+
+def find_versions(db: Database, limit: int = FINDER_PASS) -> int:
+    """One pass of the version finder (V17, #648, ``kaagaz/db/version_finder.py``): the first
+    organisation in id order it is due for, ``find_versions_of``; 0 when it is due for none.
+    O(customers) statements to find it."""
+    with db.system() as conn:
+        customers = customer_ids(conn)
+    for customer in customers:
+        with db.customer(customer) as conn:
+            due = version_finder.due(conn, customer)
+        if due:
+            return find_versions_of(db, customer, limit)
+    return 0
+
+
+def find_versions_of(db: Database, customer_id: str, limit: int = FINDER_PASS) -> int:
+    """At most ``limit`` of the organisation's files looked at, each in its own transaction (a
+    restart resumes after the last one), and the groups made once none is left. How many it looked
+    at (at least 1 for the pass that made the groups); 0 once its run has finished. Database
+    errors propagate (FingerprintOld logs them)."""
+    with db.customer(customer_id) as conn:
+        documents = version_finder.next_documents(conn, customer_id, limit)
+    if documents is None:
+        return 0
+    for document in documents:
+        with db.customer(customer_id) as conn:
+            version_finder.look_at(conn, customer_id, document)
+    if len(documents) < limit:
+        with db.customer(customer_id) as conn:
+            groups = version_finder.finish(conn, customer_id)
+        logger.info("version finder: %d groups", groups, extra={"customer_id": customer_id})
+    return max(len(documents), 1)
 
 
 def fingerprint_missing(db: Database, limit: int = FINGERPRINT_PASS) -> int:
@@ -931,7 +976,7 @@ def _serve(settings: Settings) -> None:
     lock = sweep_lock(db.engine)
     pieces = EmbedMissing(PurgeHourly(jobs, purge, _utc_now, lock=lock), embed, _utc_now, lock=lock)
     stories_done = StoryVectors(pieces, stories, _utc_now, lock=lock)
-    vectors = FingerprintOld(stories_done, functools.partial(fingerprint_missing, db), _utc_now, lock=lock)
+    vectors = FingerprintOld(stories_done, functools.partial(old_documents, db), _utc_now, lock=lock)
     # Q7: only Gemini's pages are ever read locally (its outage fallback).
     upgrade = functools.partial(upgrade_oldest, db, queue) if settings.ocr_engine == "gemini" else None
     upgrades = UpgradeLocalReads(

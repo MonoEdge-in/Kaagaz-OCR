@@ -108,7 +108,9 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     Changed on purpose (#601, 14 Nov 2026): the access API (0090) follows 0089.
     Changed on purpose (#601, 15 Nov 2026): the wall rules (0090b) follow 0090.
     Changed on purpose (#605, 15 Nov 2026): locked files (0093, PROVISIONAL: after 0092 once PR 9
-    merges) follow 0090b and are the head."""
+    merges) follow 0090b. Changed on purpose (#648, 16 Nov 2026): the version finder (0098,
+    PROVISIONAL: after 0097 once search, model parameters and WhatsApp merge) follows 0093 and is the
+    head."""
     scripts = _scripts()
     assert scripts.get_revision("0082").down_revision == "0081"
     assert scripts.get_revision("0083").down_revision == "0082"
@@ -121,4 +123,5 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     assert scripts.get_revision("0090").down_revision == "0089"
     assert scripts.get_revision("0090b").down_revision == "0090"
     assert scripts.get_revision("0093").down_revision == "0090b"
-    assert scripts.get_heads() == ["0093"]
+    assert scripts.get_revision("0098").down_revision == "0093"
+    assert scripts.get_heads() == ["0098"]

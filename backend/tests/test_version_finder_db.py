@@ -1,0 +1,258 @@
+"""The version finder (V17, #648, V-B) against PostgreSQL, as the worker runs it (no person, the
+worker role): its groups and their order, once per organisation, resuming after a stop, the
+switch and the fingerprints first, locked and Trash files left out (also when that happens during
+the run), pairs spotting already suggested or a person answered left out, files uploaded since the
+run began left to spotting, and another organisation's files never mixed in. Nothing is linked.
+The API that shows the groups: test_isolation_version_groups.py. The groups' rule without a
+database: test_versions.py."""
+
+from datetime import date
+from typing import Any
+
+import pytest
+
+from kaagaz.db import version_finder
+from kaagaz.db.engine import Database
+from kaagaz.worker_main import find_versions_of
+from tests.test_ai_settings_db import switched_off
+from tests.test_api_support import Api, Signed
+from tests.test_operator_auth_db import _owner
+from tests.test_versions_db import _doc, _old
+
+pytestmark = pytest.mark.db
+
+BASE = [f"w{n}" for n in range(300)]
+# X~Y (296 of 326 shingles) and X~Z (296 of 356) pass V4's 80%; Y~Z (296 of 386, 77%) does not.
+TEXTS = {
+    "x": BASE,
+    "y": [*BASE, *(f"y{n}" for n in range(30))],
+    "z": [*BASE, *(f"z{n}" for n in range(60))],
+    "w": [f"q{n}" for n in range(300)],  # a stranger
+}
+_MEMBERS = (
+    "SELECT document_id::text, group_id::text, position, state FROM version_group_members"
+    " WHERE customer_id = :c ORDER BY group_id, position"
+)
+_PAIRS = "SELECT first_id::text, second_id::text FROM version_pairs WHERE customer_id = :c ORDER BY 1, 2"
+_RUN = (
+    "SELECT looked_at, after_id::text, finished_at IS NOT NULL, groups FROM version_finder_runs"
+    " WHERE customer_id = :c"
+)
+_TRASH = "UPDATE documents SET deleted_at = now(), deleted_by = uploaded_by WHERE id = :d"
+_DOCUMENTS = "SELECT id, family_id, version_no, is_current FROM documents WHERE customer_id = :c ORDER BY id"
+
+
+def _library(api: Api, signed: Signed, **columns: dict[str, Any]) -> dict[str, str]:
+    """Files x (oldest upload), y (its own date years before), z and the stranger w, fingerprinted
+    by the sweep as files read before spotting are; ``columns`` adds columns to a file by name."""
+    hours = {"x": 72, "y": 48, "z": 24, "w": 12}
+    found = {
+        name: _doc(api, signed, words, f"Lease {name}.pdf", hours_ago=hours[name], **columns.get(name, {}))
+        for name, words in TEXTS.items()
+    }
+    _old(api.db, signed.customer_id, *found.values())
+    return found
+
+
+def _members(db: Database, customer: str) -> list[tuple[Any, ...]]:
+    return [tuple(row) for row in _owner(db, _MEMBERS, {"c": customer})]
+
+
+def _pairs(db: Database, customer: str) -> list[tuple[str, str]]:
+    return [(str(a), str(b)) for a, b in _owner(db, _PAIRS, {"c": customer})]
+
+
+def _run(db: Database, customer: str) -> tuple[Any, ...]:
+    return tuple(_owner(db, _RUN, {"c": customer})[0])
+
+
+def _until_done(db: Database, customer: str, limit: int = 10) -> int:
+    """Passes until the run has finished; how many passes it took (at most 50)."""
+    for passes in range(1, 51):
+        if find_versions_of(db, customer, limit) == 0:
+            return passes
+    raise AssertionError("the run never finished")
+
+
+def _families(db: Database, customer: str) -> list[tuple[Any, ...]]:
+    return [tuple(row) for row in _owner(db, _DOCUMENTS, {"c": customer})]
+
+
+def test_x_y_and_z_are_one_group_by_date_and_nothing_is_linked(db: Database) -> None:
+    """X~Y and X~Z: one group of three though Y and Z are not alike (77%); the stranger in none.
+    The order is each file's own date, else its upload: Y (dated 2020), X, Z; Z the latest. No
+    suggestion, no link, no family changed."""
+    api = Api(db)
+    signed = api.new_signed()
+    c = signed.customer_id
+    files = _library(api, signed, y={"document_date": date(2020, 1, 1)})
+    before = _families(db, c)
+    _until_done(db, c)
+    members = _members(db, c)
+    assert [m[0] for m in members] == [files["y"], files["x"], files["z"]]
+    assert {m[1] for m in members} == {members[0][1]} and [m[2:] for m in members] == [
+        (1, "open"), (2, "open"), (3, "open"),
+    ]  # fmt: skip
+    assert set(_pairs(db, c)) == {tuple(sorted((files["x"], files[o]))) for o in ("y", "z")}
+    assert _families(db, c) == before
+    assert _owner(db, "SELECT count(*) FROM version_suggestions WHERE customer_id = :c", {"c": c}) == [(0,)]
+    assert _run(db, c)[2:] == (True, 1)
+
+
+def test_the_finder_runs_once_per_organisation(db: Database) -> None:
+    """A finished run never starts again: a near copy of X added afterwards (uploaded before it,
+    as an old file) is never looked at, and the next pass does nothing. One added after the run
+    began is spotting's, never the finder's, even while the run goes on."""
+    api = Api(db)
+    signed = api.new_signed()
+    c = signed.customer_id
+    files = _library(api, signed)
+    later = _doc(api, signed, [*BASE, "late"], "Lease late.pdf", hours_ago=-100_000)  # after the run began
+    _old(db, c, later)
+    _until_done(db, c)
+    assert later not in {m[0] for m in _members(db, c)} | {f for pair in _pairs(db, c) for f in pair}
+    done = (_members(db, c), _pairs(db, c), _run(db, c))
+    copy = _doc(api, signed, [*BASE, "copy"], "Lease copy.pdf", hours_ago=100)
+    _old(db, c, copy)
+    with db.customer(c) as conn:
+        assert not version_finder.due(conn, c)
+    assert find_versions_of(db, c) == 0
+    assert (_members(db, c), _pairs(db, c), _run(db, c)) == done
+    assert {m[0] for m in done[0]} == {files["x"], files["y"], files["z"]}
+
+
+def test_a_stopped_run_resumes_after_the_last_file_it_looked_at(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One file a pass; the worker stops while looking at the second (its transaction rolls back):
+    the run goes on from that file, and the groups are those of a run never stopped."""
+    api = Api(db)
+    signed = api.new_signed()
+    c = signed.customer_id
+    files = _library(api, signed)
+    assert find_versions_of(db, c, 1) == 1
+    first = _run(db, c)
+    assert first[:2] == (1, min(files.values())) and not first[2]
+    real = version_finder.look_at
+
+    def stop(*_: Any) -> int:
+        raise RuntimeError("the worker stopped")
+
+    monkeypatch.setattr(version_finder, "look_at", stop)
+    with pytest.raises(RuntimeError):
+        find_versions_of(db, c, 1)
+    assert _run(db, c) == first
+    monkeypatch.setattr(version_finder, "look_at", real)
+    assert _until_done(db, c, 1) == 5  # the 3 files left, the pass that groups, the one that finds it done
+    assert _run(db, c)[0] == 4
+    members = _members(db, c)
+    assert {m[0] for m in members} == {files["x"], files["y"], files["z"]}
+    assert len(_pairs(db, c)) == 2
+
+
+def test_the_finder_waits_for_the_switch_and_the_fingerprints(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    c = signed.customer_id
+    files = _library(api, signed)
+    with db.customer(c) as conn:
+        assert version_finder.due(conn, c)
+    with switched_off(db, "version_spotting"), db.customer(c) as conn:
+        assert not version_finder.due(conn, c)
+    unprinted = _doc(api, signed, BASE, "Lease new.pdf", hours_ago=1)  # ready, no fingerprint yet
+    with db.customer(c) as conn:
+        assert not version_finder.due(conn, c)
+    _old(db, c, unprinted)
+    with db.customer(c) as conn:
+        assert version_finder.due(conn, c)
+    assert files
+
+
+def test_locked_and_trashed_files_are_never_grouped(db: Database) -> None:
+    """Y is in Trash and Z locked before the run: neither is ever paired (a locked file is never
+    ready and keeps no fingerprint, 0093); X and the copy C are a group."""
+    api = Api(db)
+    signed = api.new_signed()
+    c = signed.customer_id
+    files = _library(api, signed)
+    copy = _doc(api, signed, [*BASE, "copy"], "Lease copy.pdf", hours_ago=80)
+    _old(db, c, copy)
+    _owner(db, _TRASH, {"d": files["y"]})
+    _lock(db, files["z"])
+    _until_done(db, c)
+    assert {m[0] for m in _members(db, c)} == {files["x"], copy}
+    assert _pairs(db, c) == [tuple(sorted((files["x"], copy)))]
+
+
+def _lock(db: Database, document: str) -> None:
+    """Locked as 0093 leaves a version: the state ``locked`` and no fingerprint or type."""
+    _owner(
+        db,
+        "UPDATE documents SET locked_at = now(), locked_by = uploaded_by, status = 'locked', doc_type = NULL,"
+        " text_minhash = NULL, text_bands = NULL WHERE id = :d",
+        {"d": document},
+    )
+
+
+def test_a_file_trashed_or_locked_during_the_run_is_left_out_of_its_group(db: Database) -> None:
+    """Every file looked at and paired, then Y goes to Trash and Z is locked before the groups are
+    made: the group is X and the copy alone."""
+    api = Api(db)
+    signed = api.new_signed()
+    c = signed.customer_id
+    files = _library(api, signed)
+    copy = _doc(api, signed, [*BASE, "copy"], "Lease copy.pdf", hours_ago=80)
+    _old(db, c, copy)
+    assert find_versions_of(db, c, 5) == 5  # all 5 looked at, the groups not made yet
+    assert len(_pairs(db, c)) == 5  # x~y, x~z, x~copy, y~copy, z~copy
+    _owner(db, _TRASH, {"d": files["y"]})
+    _lock(db, files["z"])
+    _until_done(db, c)
+    assert {m[0] for m in _members(db, c)} == {files["x"], copy}
+
+
+def test_a_pair_spotting_suggested_or_a_person_answered_is_left_out(db: Database) -> None:
+    """Y was kept separate from X's family once (a rejected suggestion): only X~Z is a group."""
+    api = Api(db)
+    signed = api.new_signed()
+    c = signed.customer_id
+    files = _library(api, signed)
+    _owner(
+        db,
+        "INSERT INTO version_suggestions (customer_id, document_id, candidate_family_id, outcome, status)"
+        " VALUES (:c, :y, :x, 'suggested', 'rejected')",
+        {"c": c, "x": files["x"], "y": files["y"]},
+    )
+    _until_done(db, c)
+    assert {m[0] for m in _members(db, c)} == {files["x"], files["z"]}
+
+
+def test_another_organisations_files_are_never_mixed_in(db: Database) -> None:
+    """Two organisations with the same files: each one's groups and pairs hold its own files only."""
+    api = Api(db)
+    ours, theirs = api.new_signed(), api.new_signed()
+    mine, other = _library(api, ours), _library(api, theirs)
+    for signed in (ours, theirs):
+        _until_done(db, signed.customer_id)
+    for signed, files in ((ours, mine), (theirs, other)):
+        c = signed.customer_id
+        assert {m[0] for m in _members(db, c)} == {files["x"], files["y"], files["z"]}
+        assert {f for pair in _pairs(db, c) for f in pair} <= set(files.values())
+    rows = _owner(
+        db,
+        "SELECT count(*) FROM version_group_members m JOIN documents d ON d.id = m.document_id"
+        " WHERE d.customer_id <> m.customer_id",
+        {},
+    )
+    assert rows == [(0,)]
+
+
+def test_a_document_with_text_like_none_is_in_no_group(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    c = signed.customer_id
+    alone = _doc(api, signed, TEXTS["w"], "Alone.pdf", hours_ago=5)
+    _old(db, c, alone)
+    _until_done(db, c)
+    assert _members(db, c) == [] and _run(db, c)[2:] == (True, 0)
+    assert _pairs(db, c) == []

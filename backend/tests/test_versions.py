@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from kaagaz import versions
+from kaagaz import versions, worker_main
 from kaagaz.api.views import document_version
 from kaagaz.db import versions as versions_sql
 from kaagaz.db.versions import view
@@ -502,6 +502,51 @@ def test_the_fingerprint_sweep_runs_on_idle_turns_until_a_pass_finds_none() -> N
     assert wrapper.run_once()  # none found: done for good
     now[0] += timedelta(hours=1)
     assert not wrapper.run_once() and len(calls) == 3
+
+
+def test_v17_the_finder_runs_after_the_fingerprints_in_the_same_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#648: a pass that found fingerprints to write does no finding; once none is missing it finds;
+    the sweep ends only when neither has anything left."""
+    missing, finding = [2, 0, 0], [7, 0]
+    monkeypatch.setattr(worker_main, "fingerprint_missing", lambda _db: missing.pop(0))
+    monkeypatch.setattr(worker_main, "find_versions", lambda _db: finding.pop(0))
+    assert [worker_main.old_documents(None) for _ in range(3)] == [2, 7, 0]  # type: ignore[arg-type]
+    assert missing == finding == []
+
+
+# --- V17 (#648): the version finder's groups -------------------------------------------------
+
+
+def _strong(text_overlap: float) -> tuple[float, float, bool]:
+    return (text_overlap, 0.0, False)
+
+
+def test_v17_connected_pairs_make_one_group_and_a_lone_file_none() -> None:
+    """X~Y and X~Z make one group of three, though Y and Z are not alike; a pair's files are in
+    the group once; a file with no pair is in none."""
+    pairs = [("x", "y", _strong(0.9)), ("x", "z", _strong(0.83)), ("a", "b", _strong(0.81))]
+    assert versions.groups(pairs) == [["a", "b"], ["x", "y", "z"]]
+    assert versions.groups([]) == []
+
+
+def test_v17_a_chain_longer_than_the_cap_is_cut_at_its_weakest_links() -> None:
+    """25 files in a chain, each pair weaker than the one before: the 20 strongest-joined make one
+    group, the 5 at the weak end another; never a group over MAX_GROUP."""
+    files = [f"f{n:02}" for n in range(25)]
+    chain = [(files[n], files[n + 1], _strong(0.99 - n / 100)) for n in range(24)]
+    found = versions.groups(chain)
+    assert [len(group) for group in found] == [20, 5]
+    assert found[0] == files[:20] and found[1] == files[20:]
+    assert all(len(group) <= versions.MAX_GROUP for group in versions.groups(chain, cap=3))
+
+
+def test_v17_the_strongest_pair_joins_first_and_the_same_pairs_give_the_same_groups() -> None:
+    """With room for 2 files, b joins a (0.95), not c (0.85); in any order of the pairs."""
+    pairs = [("b", "c", _strong(0.85)), ("a", "b", _strong(0.95)), ("c", "d", _strong(0.9))]
+    assert versions.groups(pairs, cap=2) == [["a", "b"], ["c", "d"]]
+    assert versions.groups(list(reversed(pairs)), cap=2) == [["a", "b"], ["c", "d"]]
 
 
 def test_v6_accept_losing_a_race_to_reject_is_already_decided_and_writes_nothing(

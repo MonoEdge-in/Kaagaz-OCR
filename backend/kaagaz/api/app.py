@@ -68,6 +68,7 @@ from kaagaz.api.routers import (
     search,
     stories,
     tags,
+    version_groups,
     versions,
     word_review,
     words,
@@ -180,6 +181,7 @@ def create_app(
         locked_open.router,  # PRD 7 (#605): before /documents/{document_id}, which would take locked-open
         documents.router,
         versions.router,
+        version_groups.router,  # V17 (#648): possible versions
         read_clearly.router,
         batches.router,
         dashboard.router,
