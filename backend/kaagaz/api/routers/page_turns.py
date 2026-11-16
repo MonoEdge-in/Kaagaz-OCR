@@ -23,8 +23,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection, RowMapping
 
-from kaagaz.api import locked_open
-from kaagaz.api.auth import CurrentUser, User
+from kaagaz.api.auth import CurrentUser, User, require_locked_open
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.routers.documents import same_user
@@ -63,7 +62,7 @@ def _live_version(
     if row is None:
         raise ApiError(404, "not_found")
     if row["locked"]:
-        locked_open.require_open(request, user, context.settings, unix(context.clock()))
+        require_locked_open(request, user, context.settings, unix(context.clock()))
     try:
         family_id = trash.lock_live_family(conn, user.customer_id, str(document_id))
     except trash.InTrash:

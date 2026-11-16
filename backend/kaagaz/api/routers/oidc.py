@@ -70,7 +70,7 @@ provider's own routes: while that one is off), before anything else is read.
   approved connection (else ``not_yours``) and Google's ``auth_time`` within FRESH_SECONDS and no
   more than LEEWAY_SECONDS ahead (else ``not_fresh``; a missing one too, never ``iat``), each
   audited ``lock.open_failed`` {via, reason}; then ``lock.open`` {via: google}, the 10-minute
-  check (``kaagaz/api/locked_open.py``) for this browser session, and back to ``next``; a refusal
+  check (``kaagaz/api/auth.py``) for this browser session, and back to ``next``; a refusal
   goes back to ``next`` with ``open_error=<code>``.
 * ``GET /auth/oidc/notice``: "isn't connected" names the provider's email, which never goes in
   a URL (history, logs): the callback leaves it in a signed 60-second cookie, read here once.
@@ -101,8 +101,9 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from kaagaz.api import emails, locked_open, oidc
+from kaagaz.api import emails, oidc
 from kaagaz.api.auth import (
+    LOCKED_OPEN_SECONDS,
     NOTICE_COOKIE,
     OIDC_COOKIE,
     OIDC_SECONDS,
@@ -116,12 +117,14 @@ from kaagaz.api.auth import (
     clear_flow_cookie,
     clear_notice_cookie,
     clear_pending_cookie,
+    confirms_with_google,
     current_user_allow_google_link,
     read_flow,
     read_notice,
     read_pending,
     session_claims,
     set_flow_cookie,
+    set_locked_open_cookie,
     set_notice_cookie,
     set_pending_cookie,
     set_session_cookie,
@@ -299,7 +302,7 @@ def connect(
 @router.post("/auth/oidc/{provider}/confirm")
 def confirm(provider: ProviderOn, body: ConfirmBody, user: User, context: Context) -> JSONResponse:
     """PRD 7 decision 5 (#605): a Google-only person's fresh Google sign-in opens locked files."""
-    if not locked_open.confirms_with_google(user, context.settings):
+    if not confirms_with_google(user, context.settings):
         raise ApiError(409, "use_password", USE_PASSWORD)
     _per_user_limit(confirm_limits, user, TOO_MANY_CONFIRMS)
     now = unix(context.clock())
@@ -696,7 +699,7 @@ def _locked_open(
     approved connection: the 10-minute check for locked files, for this browser session. Each
     outcome is audited about the person."""
     user = _flow_user(request, flow)
-    if not locked_open.confirms_with_google(user, context.settings):  # changed since the start
+    if not confirms_with_google(user, context.settings):  # changed since the start
         raise _Refused("signed_out")
     now = unix(context.clock())
     session = session_claims(request, context.settings, now)
@@ -718,8 +721,8 @@ def _locked_open(
     if session is None:  # never: ``_flow_user`` read the user from this session
         raise _Refused("signed_out")
     response = RedirectResponse(flow.next_path, status_code=303)
-    until = now + locked_open.LOCKED_OPEN_SECONDS
-    locked_open.set_cookie(response, user, session.session_id, context.settings, until=until)
+    until = now + LOCKED_OPEN_SECONDS
+    set_locked_open_cookie(response, user, session.session_id, context.settings, until=until)
     return response
 
 

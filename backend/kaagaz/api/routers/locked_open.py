@@ -1,7 +1,7 @@
 """Opening a locked file (PRD 7 section 6, decisions 3, 5, 6 and 7; #605, PR 13).
 
 * ``GET /documents/locked-open``: ``{open, until, seconds, via}``: whether this browser's
-  10-minute check is live (``kaagaz/api/locked_open.py``), when it ends, the seconds left by the
+  10-minute check is live (``kaagaz/api/auth.py``), when it ends, the seconds left by the
   server's clock (the screen counts down from them, never from the PC's clock), and how this
   person confirms (``password``, or ``google`` for a person whose role signs in with Google only).
 * ``POST /documents/locked-open`` {password}: the person's own Kaagaz password and nothing else; a
@@ -39,8 +39,16 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection
 
-from kaagaz.api import locked_open
-from kaagaz.api.auth import CurrentUser, User, session_claims
+from kaagaz.api.auth import (
+    LOCKED_OPEN_SECONDS,
+    CurrentUser,
+    User,
+    confirms_with_google,
+    locked_open_until,
+    require_locked_open,
+    session_claims,
+    set_locked_open_cookie,
+)
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.middleware import RateLimiter
@@ -87,7 +95,7 @@ def _state(until: int | None, user: CurrentUser, context: AppContext, now: int) 
         "open": until is not None,
         "until": None if until is None else datetime.fromtimestamp(until, UTC).isoformat(),
         "seconds": None if until is None else until - now,
-        "via": "google" if locked_open.confirms_with_google(user, context.settings) else "password",
+        "via": "google" if confirms_with_google(user, context.settings) else "password",
     }
 
 
@@ -107,12 +115,12 @@ def _record(conn: Connection, user: CurrentUser, action: str, details: dict[str,
 @router.get("/documents/locked-open")
 def get_locked_open(request: Request, user: User, context: Context) -> dict[str, Any]:
     now = unix(context.clock())
-    return _state(locked_open.open_until(request, user, context.settings, now), user, context, now)
+    return _state(locked_open_until(request, user, context.settings, now), user, context, now)
 
 
 @router.post("/documents/locked-open")
 def open_locked_files(body: OpenBody, request: Request, user: User, context: Context) -> JSONResponse:
-    if locked_open.confirms_with_google(user, context.settings):  # nothing counted
+    if confirms_with_google(user, context.settings):  # nothing counted
         raise ApiError(409, "google_confirm_required", GOOGLE_INSTEAD)
     _per_user_limit(open_limits, user, TOO_MANY_OPENS)
     now = context.clock()
@@ -120,15 +128,15 @@ def open_locked_files(body: OpenBody, request: Request, user: User, context: Con
     if session is None:  # never: ``user`` was read from these claims
         raise ApiError(401, "not_signed_in")
     customer_id, user_id = user.customer_id, user.user_id
-    with context.db.user(customer_id, user_id) as conn:  # neither counts anything
+    with context.db.user(user.customer_id, user.user_id) as conn:  # neither counts anything
         blocked = locked_sql.blocked_until(conn, customer_id, user_id, now=now)
         signed_in_lock = users_sql.peek_attempt(conn, customer_id, user_id, now=now) is None
     tries = 0
     if blocked is None and not signed_in_lock:
-        with context.db.user(customer_id, user_id) as conn:
+        with context.db.user(user.customer_id, user.user_id) as conn:
             counted = locked_sql.begin_try(conn, customer_id, user_id, now=now)
         if counted is None:  # blocked a moment ago
-            with context.db.user(customer_id, user_id) as conn:
+            with context.db.user(user.customer_id, user.user_id) as conn:
                 blocked = locked_sql.blocked_until(conn, customer_id, user_id, now=now) or now
         tries = counted or 0
     if blocked is not None:
@@ -146,17 +154,17 @@ def open_locked_files(body: OpenBody, request: Request, user: User, context: Con
         prove_password(context, user, body.password)
     except ApiError as refused:
         if refused.code == "wrong_password":
-            with context.db.user(customer_id, user_id) as conn:
+            with context.db.user(user.customer_id, user.user_id) as conn:
                 _record(conn, user, "lock.open_failed", {"via": "password", "reason": "wrong_password"})
                 if tries >= locked_sql.MAX_TRIES:
                     _record(conn, user, "lock.open_blocked", {"minutes": locked_sql.BLOCK_MINUTES})
         raise
-    with context.db.user(customer_id, user_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         locked_sql.succeeded(conn, customer_id, user_id)
         _record(conn, user, "lock.open", {"via": "password"})
-    until = unix(now) + locked_open.LOCKED_OPEN_SECONDS
+    until = unix(now) + LOCKED_OPEN_SECONDS
     response = JSONResponse(_state(until, user, context, unix(now)))
-    locked_open.set_cookie(response, user, session.session_id, context.settings, until=until)
+    set_locked_open_cookie(response, user, session.session_id, context.settings, until=until)
     return response
 
 
@@ -175,7 +183,7 @@ def get_locked_page(
             raise ApiError(409, "not_ready", NOT_READY)
         if row["in_trash"]:
             raise ApiError(409, "in_trash", IN_TRASH)
-        locked_open.require_open(request, user, context.settings, unix(context.clock()))
+        require_locked_open(request, user, context.settings, unix(context.clock()))
         if not 1 <= page_no <= (row["page_count"] or 0) or not locked_sql.has_picture(
             conn, customer_id, target, page_no
         ):

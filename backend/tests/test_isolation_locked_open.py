@@ -16,7 +16,7 @@ from typing import Any
 import httpx2 as httpx
 import pytest
 
-from kaagaz.api import locked_open
+from kaagaz.api.auth import LOCKED_OPEN_COOKIE, LOCKED_OPEN_SECONDS
 from kaagaz.api.routers.locked_open import OPENS_PER_HOUR
 from kaagaz.db import locked_open as locked_sql
 from kaagaz.db.engine import Database
@@ -122,7 +122,7 @@ def test_a_given_person_sees_the_pictures_only_after_their_password(db: Database
     assert org.given.client.get(OPEN).json() == closed
     opened = _open(org.given)
     assert opened.status_code == 200, opened.text
-    until = int(api.clock().timestamp()) + locked_open.LOCKED_OPEN_SECONDS
+    until = int(api.clock().timestamp()) + LOCKED_OPEN_SECONDS
     assert opened.json()["open"] is True and opened.json()["seconds"] == 600
     assert opened.json() == org.given.client.get(OPEN).json()
     cookie = opened.headers["set-cookie"].lower()
@@ -213,7 +213,7 @@ def test_the_check_ends_after_ten_minutes_whatever_the_person_does(db: Database)
     api = Api(db)
     org = _org(api)
     assert _open(org.given).status_code == 200
-    api.clock.advance(locked_open.LOCKED_OPEN_SECONDS - 1)
+    api.clock.advance(LOCKED_OPEN_SECONDS - 1)
     assert _page(org.given, org.locked).status_code == 200  # used just before the end: not extended
     api.clock.advance(1)
     assert _code(_page(org.given, org.locked)) == (403, "locked_open_required")
@@ -224,7 +224,7 @@ def test_sign_out_ends_it_and_a_new_sign_in_does_not_bring_it_back(db: Database)
     api = Api(db)
     org = _org(api)
     assert _open(org.given).status_code == 200
-    kept = org.given.client.cookies.get(locked_open.LOCKED_OPEN_COOKIE, path="/api/documents")
+    kept = org.given.client.cookies.get(LOCKED_OPEN_COOKIE, path="/api/documents")
     assert kept
     out = org.given.client.post("/api/auth/logout", headers=CSRF)
     assert out.status_code == 204
@@ -238,7 +238,7 @@ def test_sign_out_ends_it_and_a_new_sign_in_does_not_bring_it_back(db: Database)
         "/api/auth/login", json={"email": org.given.email, "password": PASSWORD}, headers=CSRF
     )
     assert back.status_code == 200
-    org.given.client.cookies.set(locked_open.LOCKED_OPEN_COOKIE, kept, path="/api/documents")
+    org.given.client.cookies.set(LOCKED_OPEN_COOKIE, kept, path="/api/documents")
     assert _code(_page(org.given, org.locked)) == (403, "locked_open_required")  # another browser session
 
 
@@ -258,9 +258,9 @@ def test_another_browser_and_a_new_password_end_it(db: Database) -> None:
     assert _open(org.given).status_code == 200
     other = api.client()  # the same person in a second browser, with this browser's check copied in
     assert other.post("/api/auth/login", json={"email": org.given.email, "password": PASSWORD}, headers=CSRF)
-    kept = org.given.client.cookies.get(locked_open.LOCKED_OPEN_COOKIE, path="/api/documents")
+    kept = org.given.client.cookies.get(LOCKED_OPEN_COOKIE, path="/api/documents")
     assert kept
-    other.cookies.set(locked_open.LOCKED_OPEN_COOKIE, kept, path="/api/documents")
+    other.cookies.set(LOCKED_OPEN_COOKIE, kept, path="/api/documents")
     assert _code(_page(other, org.locked)) == (403, "locked_open_required")  # its sid is this browser's
     assert _page(org.given, org.locked).status_code == 200
     changed = org.given.client.post(
@@ -280,14 +280,14 @@ def test_the_delete_forever_confirm_never_opens_a_locked_file_nor_the_other_way(
     assert _code(_page(org.given, org.locked)) == (403, "locked_open_required")
     confirm = org.given.client.cookies.get("kaagaz_confirm", path="/api/documents")
     assert confirm
-    org.given.client.cookies.set(locked_open.LOCKED_OPEN_COOKIE, confirm, path="/api/documents")
+    org.given.client.cookies.set(LOCKED_OPEN_COOKIE, confirm, path="/api/documents")
     assert _code(_page(org.given, org.locked)) == (403, "locked_open_required")
 
     reader = api.sign_in(org.c, "member")
     assert _grant(org.admin, reader.user_id) == (200, True)
     trashed = api.add_document(org.c, deleted_at=api.clock())
     assert _open(reader).status_code == 200
-    check = reader.client.cookies.get(locked_open.LOCKED_OPEN_COOKIE, path="/api/documents")
+    check = reader.client.cookies.get(LOCKED_OPEN_COOKIE, path="/api/documents")
     assert check
     reader.client.cookies.set("kaagaz_confirm", check, path="/api/documents")
     forever = reader.client.delete(f"/api/documents/{trashed}/permanent", headers=CSRF)
@@ -477,7 +477,7 @@ def test_an_old_or_missing_google_sign_in_or_another_account_is_refused(
         subject = str(_owner(db, "SELECT subject FROM user_identities WHERE id = :i", {"i": theirs})[0][0])
     back = _confirm_google(org.given, google, subject, now, **given)
     assert (back.status_code, back.headers["location"]) == (303, f"/documents/abc?open_error={code}")
-    assert locked_open.LOCKED_OPEN_COOKIE not in back.headers.get("set-cookie", "")
+    assert LOCKED_OPEN_COOKIE not in back.headers.get("set-cookie", "")
     assert _code(_page(org.given, org.locked)) == (403, "locked_open_required")
     assert _actions(api, org.c) == [
         ("lock.open_failed", org.given.user_id, {"via": "google", "reason": code})
