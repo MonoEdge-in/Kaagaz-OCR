@@ -486,9 +486,10 @@ export const linkVersions = (body: LinkVersionsBody, password?: string) =>
     ...body,
     ...(password === undefined ? {} : { password }),
   });
-/** V16: every version back as it was, while nothing newer joined; this file's summary. */
+/** V16: every version back as it was, while nothing newer joined. The reply is not read: V-A
+ * answers the file's summary, or {id, undone: true} after its review fixes. */
 export const undoLinkVersions = (id: string, password?: string) =>
-  request<DocumentSummary>("POST", `${doc(id)}/link-versions/undo`, password === undefined ? undefined : { password });
+  request<unknown>("POST", `${doc(id)}/link-versions/undo`, password === undefined ? undefined : { password });
 export const listKeptApart = () => request<KeptApart>("GET", "/version-kept-apart");
 /** A5: every version of the family, newest first. */
 export const documentActivity = (id: string, cursor?: string) =>
