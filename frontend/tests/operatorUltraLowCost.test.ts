@@ -585,6 +585,7 @@ const scanModel = (id: string, name: string, why: string | null): OperatorModel 
   vendor_allowed: true,
   ulc_ready: why === null,
   ulc_why: why,
+  parameters: null, // Changed on purpose (#647): the stored parameters
 });
 const LITE = scanModel("google/gemini-3.5-flash-lite", "Gemini 3.5 Flash Lite", null);
 const PRO = scanModel("google/gemini-3.1-pro", "Gemini 3.1 Pro", "It can't read with minimal thinking.");

@@ -205,6 +205,7 @@ _SAFE_FIELDS = (
     "step",
     "seconds",
     "model",
+    "parameter",  # #647: a model parameter's name (parameter_missing, parameter_dropped)
     # #620: the database error behind a 503 (class names, SQLSTATE) and the route's path.
     "error_class",
     "driver_error",
