@@ -453,6 +453,14 @@ def _sees(conn: Connection, customer_id: str, place: folders.Place, held: str | 
     return place_audience(conn, place[0], place[1], department_only=closed)
 
 
+def audience_of(
+    conn: Connection, customer_id: str, place: folders.Place, held: str | None = None
+) -> set[str]:
+    """The active people who see what is in ``place``; a file held for ``held``: them and Management
+    (#648: a link's and its Undo's count, with whom the files are given to)."""
+    return _sees(conn, customer_id, place, held)
+
+
 def moved(
     conn: Connection, customer_id: str, move: folders.Move, held: str | None = None
 ) -> tuple[set[str], set[str]]:

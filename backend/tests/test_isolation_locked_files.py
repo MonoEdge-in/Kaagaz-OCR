@@ -81,6 +81,7 @@ KEPT = {
     "document_shares",
     "lock_grants",
     "whatsapp_messages",  # Changed on purpose (#603, 0097): the person's own message that saved it
+    "version_links",  # Changed on purpose (#648, 0100): a link's ids for its Undo, never content
 }
 CLEARED_COLUMNS = {
     "doc_type",
@@ -525,6 +526,9 @@ ADMINS = {
     # kaagaz_admin_document (a locked file is moved and trashed as any).
     ("POST", "/api/documents/{document_id}/kept/move"),
     ("POST", "/api/documents/{document_id}/kept/trash"),
+    # Changed on purpose (#648, V-A): Admins' and Management's, 409 locked once a linked family is locked
+    # (test_isolation_version_links).
+    ("POST", "/api/documents/{document_id}/link-versions/undo"),
 }
 # The body or query a refused route needs to reach its lookup (an empty one is 422 first).
 _BODIES: dict[str, Any] = {

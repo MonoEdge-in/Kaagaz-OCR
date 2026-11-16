@@ -235,6 +235,13 @@ describe("the activity words (A4)", () => {
     expect(describeAction("version.later")).toBe("Left for later");
   });
 
+  it("says linking files as versions and its Undo in plain words, in the admin log too (#648)", () => {
+    expect(activitySentence(entry("version.linked", { details: { version_no: 2 } }))).toBe("Priya linked it as version 2");
+    expect(activitySentence(entry("version.unlinked"))).toBe("Priya undid linking the versions");
+    expect(describeAction("version.linked")).toBe("Linked files as versions");
+    expect(describeAction("version.unlinked")).toBe("Undid linking versions");
+  });
+
   it("lives in one table in components/activity/words.ts", () => {
     expect(Object.keys(ACTIVITY_WORDS)).toContain("document.view");
     expect(read("components/activity/words.ts")).toContain("export const ACTIVITY_WORDS");

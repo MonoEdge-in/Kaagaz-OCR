@@ -161,6 +161,21 @@ def groups(conn: Connection, customer_id: str, group_id: str | None = None) -> l
     return found[: MAX_GROUPS + 1]
 
 
+def kept_apart(conn: Connection, customer_id: str) -> list[dict[str, str]]:
+    """V18's Kept apart list (#648, V-A): each live file kept apart ("Not versions") in a group this
+    person can see whole, ``{group_id, id, name}``, by group then place. One statement, O(m)."""
+    members: dict[str, list[RowMapping]] = {}
+    for row in conn.execute(_MEMBERS, {"c": customer_id, "g": None}).mappings():
+        members.setdefault(row["group_id"], []).append(row)
+    return [
+        {"group_id": group, "id": m["document_id"], "name": m["display_name"]}
+        for group, rows in sorted(members.items())
+        if all(m["seen"] for m in rows)
+        for m in rows
+        if m["live"] and m["state"] == "kept_apart"
+    ]
+
+
 def decide(
     conn: Connection, customer_id: str, group_id: str, document_ids: Sequence[str], *, to: str, by: str
 ) -> None:

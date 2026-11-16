@@ -459,6 +459,12 @@ _ALONE_AGAIN = text(
     "UPDATE documents SET family_id = id, version_no = 1, folder_id = :folder, held_for = :held,"
     " is_current = (status = 'ready') WHERE customer_id = :c AND id = :d"
 )
+# #658 (lead decision): the gifts 0100's trigger copied onto the version when it joined (the same
+# person and time as on the family's first version) go with Undo; one it had of its own stays.
+_JOIN_GIFTS = text(
+    "DELETE FROM document_shares x USING document_shares f WHERE x.customer_id = :c AND x.document_id = :d"
+    " AND f.customer_id = :c AND f.document_id = :f AND f.user_id = x.user_id AND f.given_at = x.given_at"
+)
 _HIGHEST_READY_CURRENT = text(
     "UPDATE documents SET is_current = true WHERE customer_id = :c AND id = (SELECT v.id FROM documents v"
     " WHERE v.customer_id = :c AND v.family_id = :f AND v.status = 'ready'"
@@ -492,7 +498,8 @@ def undo(
     """V7: a document linked from a suggestion (accepted or auto) gets its own family back,
     as version 1, where ``_way_back`` says (#594: the folder it had before, or held again for
     whom it was held for; never open to more people than while it was linked); the
-    family's highest ready version is current again; the suggestion is ``undone`` and one
+    family's highest ready version is current again; the gifts it took from the family when it joined
+    go (#658); the suggestion is ``undone`` and one
     ``version.undone`` row is written. Raises Refused: not_found, not_linked, or not_newest
     once a later version exists, forbidden when it would be held for someone else and ``by`` is
     not Management (Q4); with ``rights`` (the person's, under the tree lock), MoveChangesAccess
@@ -540,6 +547,7 @@ def undo(
         },
     )
     conn.execute(_ALONE_AGAIN, {**params, "folder": folder, "held": held})
+    conn.execute(_JOIN_GIFTS, params)
     conn.execute(_HIGHEST_READY_CURRENT, params)
     conn.execute(
         _DECIDE, {"c": customer_id, "s": suggestion, "status": "undone", "by": by, "was": "accepted"}
@@ -568,16 +576,18 @@ _NEWEST_CURRENT = text(
     " AND NOT EXISTS (SELECT 1 FROM documents x WHERE x.customer_id = :c AND x.family_id = :f"
     " AND x.is_current)"
 )
-# Keep separate's row for the pair (V6): spotting never suggests it again, and Undo is its Accept.
+# The pair made separate (V6): spotting never suggests it again, and Undo is its Accept. #648 (V18):
+# ``separated``, not ``rejected``, so only a pair made separate is joined again by its Undo, never one
+# a person kept separate.
 _KEPT_APART = text(
     "INSERT INTO version_suggestions (customer_id, document_id, candidate_family_id, outcome, status,"
-    " decided_by, decided_at) VALUES (:c, :d, :rest, 'suggested', 'rejected', :by, now())"
-    " ON CONFLICT (document_id, candidate_family_id) DO UPDATE SET status = 'rejected',"
+    " decided_by, decided_at) VALUES (:c, :d, :rest, 'suggested', 'separated', :by, now())"
+    " ON CONFLICT (document_id, candidate_family_id) DO UPDATE SET status = 'separated',"
     " decided_by = :by, decided_at = now()"
 )
 _KEPT_APART_AGAIN = text(
     "UPDATE version_suggestions SET status = 'pending', decided_by = NULL, decided_at = NULL"
-    " WHERE customer_id = :c AND document_id = :d AND candidate_family_id = :f AND status = 'rejected'"
+    " WHERE customer_id = :c AND document_id = :d AND candidate_family_id = :f AND status = 'separated'"
     " RETURNING id"
 )
 
@@ -693,8 +703,11 @@ _VIEW = (
     " FROM version_suggestions s"
     f" JOIN visible_documents n ON n.customer_id = s.customer_id AND n.id = s.document_id{_CANDIDATE}"
 )
+# #648 (V22): also this document's accepted link while it is in that family, so the banner's
+# "Linked" and its Undo come back after a reload.
 _FOR_DOCUMENT = text(
-    f"{_VIEW} WHERE s.customer_id = :c AND {LIVE_SUGGESTION}"
+    f"{_VIEW} WHERE s.customer_id = :c AND (({LIVE_SUGGESTION})"
+    " OR (s.status = 'accepted' AND s.document_id = :d AND s.candidate_family_id = :f))"
     " AND (s.document_id = :d OR s.candidate_family_id = :f)"
     " ORDER BY (s.document_id = :d) DESC, s.created_at DESC LIMIT 1"
 )
@@ -744,8 +757,9 @@ def view(row: Mapping[Any, Any], document_id: str) -> dict[str, Any]:
 def for_document(
     conn: Connection, customer_id: str, document_id: str, family_id: str
 ) -> dict[str, Any] | None:
-    """The live pending suggestion naming this document as the new version, else its family
-    as the candidate; None when there is none. One statement."""
+    """The live pending suggestion naming this document as the new version, or its accepted link
+    into its family (#648, V22), else its family as the candidate; None when there is none. One
+    statement."""
     params = {"c": customer_id, "d": document_id, "f": family_id}
     row = conn.execute(_FOR_DOCUMENT, params).mappings().first()
     return None if row is None else view(row, document_id)

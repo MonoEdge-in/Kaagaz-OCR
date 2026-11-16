@@ -802,6 +802,9 @@ _PRUNE = (
     " AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.customer_id = :c AND d.folder_id = f.id)"
     " AND NOT EXISTS (SELECT 1 FROM version_suggestions s"
     " WHERE s.customer_id = :c AND s.previous_folder_id = f.id)"
+    # #658 review: nor a folder a link not undone left, where its Undo puts files back.
+    " AND NOT EXISTS (SELECT 1 FROM version_links l"
+    " WHERE l.customer_id = :c AND l.undone_at IS NULL AND f.id = ANY(l.folder_ids))"
     " AND NOT EXISTS (SELECT 1 FROM folders k WHERE k.customer_id = :c"
     " AND k.autofile_key LIKE '%:' || f.id::text)"
     " AND NOT EXISTS (SELECT 1 FROM trashed_folders t WHERE t.customer_id = :c"
@@ -817,6 +820,9 @@ _EMPTY_MADE = (
     " AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.customer_id = :c AND d.folder_id = f.id)"
     " AND NOT EXISTS (SELECT 1 FROM version_suggestions s"
     " WHERE s.customer_id = :c AND s.previous_folder_id = f.id)"
+    # #658 review: nor a folder a link not undone left, where its Undo puts files back.
+    " AND NOT EXISTS (SELECT 1 FROM version_links l"
+    " WHERE l.customer_id = :c AND l.undone_at IS NULL AND f.id = ANY(l.folder_ids))"
     " AND NOT EXISTS (SELECT 1 FROM folders k WHERE k.customer_id = :c"
     " AND k.autofile_key LIKE '%:' || f.id::text)"
     " AND NOT EXISTS (SELECT 1 FROM trashed_folders t WHERE t.customer_id = :c"
