@@ -792,13 +792,18 @@ def test_a_file_that_could_not_be_read_is_said_so_with_its_link(world: World) ->
 
 
 @pytest.mark.parametrize(
-    "change", ["deleted_at = now(), deleted_by = uploaded_by", "locked_at = now(), locked_by = uploaded_by"]
+    "change",
+    [
+        "status = 'ready', deleted_at = now(), deleted_by = uploaded_by",
+        # Changed on purpose (PRD 7 PR 12, #649, 0093): a locked version is never ready.
+        "status = 'locked', locked_at = now(), locked_by = uploaded_by",
+    ],
 )
 def test_no_notice_goes_for_a_file_deleted_or_locked_since(world: World, change: str) -> None:
     person = world.person()
     document = _saved(world, person)
     sent = len(world.replies(person))
-    _owner(world.db, f"UPDATE documents SET status = 'ready', {change} WHERE id = :d", {"d": document})  # noqa: S608
+    _owner(world.db, f"UPDATE documents SET {change} WHERE id = :d", {"d": document})  # noqa: S608
     world.free(person)
     world.run()
     assert len(world.replies(person)) == sent
