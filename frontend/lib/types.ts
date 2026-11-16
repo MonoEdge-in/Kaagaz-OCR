@@ -1273,6 +1273,8 @@ export interface ConversationSummary {
   id: string;
   title: string;
   created_at: string;
+  /** "whatsapp" for a conversation asked on WhatsApp (#603); null for the browser. */
+  channel?: "whatsapp" | null;
 }
 
 export interface Conversation {

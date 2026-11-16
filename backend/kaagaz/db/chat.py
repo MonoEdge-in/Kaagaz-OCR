@@ -57,16 +57,22 @@ def document_questions(
 
 
 def create_conversation(
-    conn: Connection, customer_id: str, user_id: str, title: str, *, conversation_id: str | None = None
+    conn: Connection,
+    customer_id: str,
+    user_id: str,
+    title: str,
+    *,
+    conversation_id: str | None = None,
+    channel: str | None = None,
 ) -> str:
     """A new conversation; ``conversation_id``: the id named for it before (streaming Ask's
-    ``started``, #535), else a new one."""
+    ``started``, #535), else a new one; ``channel``: ``whatsapp`` (#603), else None (the browser)."""
     made: object = conn.execute(
         text(
-            "INSERT INTO conversations (id, customer_id, user_id, title)"
-            " VALUES (COALESCE(CAST(:id AS uuid), gen_random_uuid()), :c, :u, :t) RETURNING id"
+            "INSERT INTO conversations (id, customer_id, user_id, title, channel)"
+            " VALUES (COALESCE(CAST(:id AS uuid), gen_random_uuid()), :c, :u, :t, :channel) RETURNING id"
         ),
-        {"id": conversation_id, "c": customer_id, "u": user_id, "t": title},
+        {"id": conversation_id, "c": customer_id, "u": user_id, "t": title, "channel": channel},
     ).scalar_one()
     return str(made)
 
@@ -148,7 +154,8 @@ def rename_conversation(
         conn.execute(
             text(
                 "UPDATE conversations SET title = :t"
-                " WHERE customer_id = :c AND id = :id AND user_id = :u RETURNING id, title, created_at"
+                " WHERE customer_id = :c AND id = :id AND user_id = :u"
+                " RETURNING id, title, created_at, channel"
             ),
             {"c": customer_id, "id": conversation_id, "u": user_id, "t": title},
         )
@@ -168,11 +175,12 @@ def delete_conversation(conn: Connection, customer_id: str, conversation_id: str
 
 
 def list_conversations(conn: Connection, customer_id: str, user_id: str) -> Sequence[RowMapping]:
-    """This user's newest conversations. Index (customer_id, user_id, created_at)."""
+    """This user's newest conversations, with their channel (#603). Index (customer_id, user_id,
+    created_at)."""
     return (
         conn.execute(
             text(
-                "SELECT id, title, created_at FROM conversations"
+                "SELECT id, title, created_at, channel FROM conversations"
                 " WHERE customer_id = :c AND user_id = :u"
                 " ORDER BY created_at DESC, id DESC LIMIT :limit"
             ),

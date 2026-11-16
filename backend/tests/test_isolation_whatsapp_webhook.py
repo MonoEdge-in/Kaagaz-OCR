@@ -6,11 +6,13 @@ import pytest
 from sqlalchemy import text
 
 from kaagaz.adapters.whatsapp import MetaWhatsApp
-from kaagaz.channel.loop import PLACEHOLDER, Channel
+from kaagaz.channel.loop import Channel
 from kaagaz.db.engine import Database
 from tests.test_api_support import Api
 from tests.whatsapp_fake import (
     NUMBER_KEY,
+    PLACEHOLDER,
+    Echo,
     connect,
     delivery,
     message,
@@ -42,7 +44,7 @@ def test_a_delivery_is_stored_and_answered_only_in_the_organisation_of_each_numb
             with db.user(customer, person) as conn:
                 bodies = conn.execute(text("SELECT body FROM whatsapp_messages")).scalars().all()
             assert bodies == [body]
-        channel = Channel(api.app_db, MetaWhatsApp.from_settings(api.settings), NUMBER_KEY, api.clock)
+        channel = Channel(api.app_db, MetaWhatsApp.from_settings(api.settings), NUMBER_KEY, api.clock, Echo())
         while claimed := channel.claim(100):
             for linked in claimed:
                 channel.handle(linked)

@@ -105,6 +105,7 @@ ON = {
     "WHATSAPP_VERIFY_TOKEN": "verify-me",
     "WHATSAPP_NUMBER_KEY": NUMBER_KEY,
     "WHATSAPP_BUSINESS_NUMBER": "15550001111",  # Changed on purpose (W3): the Connect screen's link
+    "APP_URL": "https://kaagaz.example.test",  # Changed on purpose (W4): where the bot's links open
 }
 
 

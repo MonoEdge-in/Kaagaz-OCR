@@ -1192,8 +1192,13 @@ def answer_with_source_states(
 
 
 def conversation_summary(row: RowMapping) -> dict[str, Any]:
-    """``ConversationSummary``."""
-    return {"id": str(row["id"]), "title": row["title"], "created_at": iso(row["created_at"])}
+    """``ConversationSummary``; ``channel``: ``whatsapp`` for one asked on WhatsApp (#603), else None."""
+    return {
+        "id": str(row["id"]),
+        "title": row["title"],
+        "created_at": iso(row["created_at"]),
+        "channel": row["channel"],
+    }
 
 
 def me_json(

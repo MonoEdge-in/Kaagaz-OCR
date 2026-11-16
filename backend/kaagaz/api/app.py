@@ -233,6 +233,20 @@ def create_app(
     return app
 
 
+def headless_context(settings: Settings, db: Database) -> AppContext:
+    """The context ``create_app`` gives its routes, for a process that answers people without a web
+    request (the WhatsApp channel, #603): the same answers, model, storage and queue, on ``db``."""
+    return AppContext(
+        settings=settings,
+        db=db,
+        storage=_default_storage(settings),
+        queue=_default_queue(settings),
+        answers=_default_answers(settings, db, _utc_now),
+        clock=_utc_now,
+        model=_default_model(settings, db),
+    )
+
+
 def check_operator_login(operator_db: OperatorDatabase) -> None:
     """One ``SELECT 1`` as kaagaz_operator. On failure, one plain log line (the SQLSTATE or the
     error's type, never its message), then RuntimeError, which stops uvicorn's start-up. On the

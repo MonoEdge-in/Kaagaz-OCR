@@ -89,6 +89,11 @@ const timeFormat = new Intl.DateTimeFormat("en-IN", {
   timeZone: "Asia/Kolkata",
 });
 
+/** Beside a conversation asked on WhatsApp (#603): "From WhatsApp"; null for the browser's. */
+export function conversationOrigin(item: ConversationSummary): string | null {
+  return item.channel === "whatsapp" ? "From WhatsApp" : null;
+}
+
 /** Beside each item: the time for Today and Yesterday ("2:30 pm"), the date for Earlier. */
 export function conversationTime(createdAt: string, group: ConversationGroupKey): string {
   const created = Date.parse(createdAt);

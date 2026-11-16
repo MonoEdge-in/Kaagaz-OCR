@@ -4,6 +4,7 @@
   token: one text to one number, link previews off (a preview robot never opens a Kaagaz link).
   Files are never sent on WhatsApp, so there is no media call.
 * ``send_buttons`` (W3): one text with up to 3 reply buttons, each an id and a title.
+* ``send_list`` (W4): one text with a list of up to 10 rows, each an id, a title and a description.
 * The templates Meta approved (W3), which may go outside WhatsApp's 24 hours, in English:
   ``send_code``, the authentication template with its copy-code button (Meta fixes its words);
   ``send_welcome``, WELCOME_BODY: the person, their sign-in email masked (``masked_email``, which
@@ -79,6 +80,17 @@ class MetaWhatsApp:
         """``body`` with reply buttons, each (id, title): up to 3, as WhatsApp allows."""
         rows = [{"type": "reply", "reply": {"id": id_, "title": title}} for id_, title in buttons]
         interactive = {"type": "button", "body": {"text": body}, "action": {"buttons": rows}}
+        self._post(to, {"type": "interactive", "interactive": interactive})
+
+    def send_list(self, to: str, body: str, button: str, rows: Sequence[tuple[str, str, str]]) -> None:
+        """``body`` with a list opened by ``button``: its rows, each (id, title, description), in
+        one section (up to 10, as WhatsApp allows)."""
+        items = [
+            {"id": id_, "title": title, **({"description": description} if description else {})}
+            for id_, title, description in rows
+        ]
+        action = {"button": button, "sections": [{"rows": items}]}
+        interactive = {"type": "list", "body": {"text": body}, "action": action}
         self._post(to, {"type": "interactive", "interactive": interactive})
 
     def send_code(self, to: str, code: str) -> None:

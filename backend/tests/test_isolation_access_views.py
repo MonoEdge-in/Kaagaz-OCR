@@ -339,9 +339,9 @@ def test_day_one_never_runs_the_given_or_lock_lookups(db: Database) -> None:
 
 
 # The SQL that names a view, by file and constant (or function, for SQL written inside one). Each is
-# reached from kaagaz/api only (#595, condition 1: no worker statement reads a view; the workers may
-# still run as kaagaz_app with no person on a server, and would see nothing). A new one belongs here
-# only once its callers are checked.
+# reached from kaagaz/api, or (#603) from the WhatsApp channel as the person (#595, condition 1: no
+# worker statement reads a view; the workers may still run as kaagaz_app with no person on a server,
+# and would see nothing). A new one belongs here only once its callers are checked.
 VIEW_READERS = {
     # Changed on purpose (#601): the access API's writes, and 10b's Departments tab and one-time card.
     # Changed on purpose (#601, PR 10c): in_department (_ME); a folder holding what the person can't see.
@@ -392,6 +392,8 @@ VIEW_READERS = {
     "db/user_words.py": {"_SPOTS"},
     "db/versions.py": {"_ALLOWED", "_CANDIDATE", "_FOR_DOCUMENT", "_IN_BATCH", "_LIVE", "_VIEW"},
     "db/visibility.py": {"LIVE_SUGGESTION", "SEEN_DOCUMENT"},
+    # Changed on purpose (#603 W4): the WhatsApp channel, as the person, in the app's role; never a worker.
+    "db/whatsapp_chat.py": {"_ON_WHATSAPP"},
     "db/word_review.py": {"_PAGES", "_PIECES_BY_ID", "_VALUES_BY_ID", "_WORDS"},
     # PR 8 (#602): Ask and search, reached from the API only (the SQL guard's worker test).
     "search/hybrid.py": {
@@ -830,7 +832,8 @@ def test_no_module_outside_the_api_calls_a_function_that_reads_a_view() -> None:
     """Condition 1 on #595, kept by a scan: the functions of VIEW_READERS' modules that use one of
     its statements (or call one that does) are called only from kaagaz/api, search/scope.py and
     answering/expansion.py (PgWords, Ask's and search's word source, #602: reached from the API only,
-    as the SQL guard's worker test proves)."""
+    as the SQL guard's worker test proves). Changed on purpose (#603 W4): and channel/chat.py, the
+    WhatsApp channel, as the person, in the app's role; never a worker (tests/test_whatsapp_guard.py)."""
     root = Path(kaagaz.__file__).parent
     readers: dict[str, set[str]] = {}
     for file, names in VIEW_READERS.items():
@@ -848,7 +851,11 @@ def test_no_module_outside_the_api_calls_a_function_that_reads_a_view() -> None:
     calls = []
     for path in sorted(root.rglob("*.py")):
         where = path.relative_to(root).as_posix()
-        if where.startswith("api/") or where in ("search/scope.py", "answering/expansion.py"):
+        if where.startswith("api/") or where in (
+            "search/scope.py",
+            "answering/expansion.py",
+            "channel/chat.py",
+        ):
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         aliases = {

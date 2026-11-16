@@ -367,14 +367,23 @@ async def ask_posted(
         _end_turn(turn)
 
 
-def ask(body: AskBody, user: CurrentUser, context: AppContext, background: BackgroundTasks) -> dict[str, Any]:
+def ask(
+    body: AskBody,
+    user: CurrentUser,
+    context: AppContext,
+    background: BackgroundTasks,
+    *,
+    channel: str | None = None,
+) -> dict[str, Any]:
     """The answer's ids come first (streaming Ask, #535): the question's (the client's
     ``question_id``, else a new one) and its conversation's (the one asked in, else a new one),
     sent as ``started`` on the stream before any database work. A ``question_id`` this person
     already asked returns that saved answer, waiting while this process still works on it: never
     a second model call (a client's fallback after a broken stream). One of anyone else's is 409,
     as an id that never was would be once saved (row level security hides another
-    organisation's). Then ``_ask``."""
+    organisation's). Then ``_ask``. ``channel`` (#603): ``whatsapp`` for a question asked on
+    WhatsApp, run as the person by the channel process (kaagaz/channel/chat.py): a conversation it
+    starts is marked so (history's "From WhatsApp") and its audit row says ``via``; None, the browser."""
     question_id = str(body.question_id) if body.question_id else str(uuid.uuid4())
     landing = str(body.conversation_id) if body.conversation_id else str(uuid.uuid4())
     stream.emit("started", {"conversation_id": landing, "question_id": question_id})
@@ -394,7 +403,7 @@ def ask(body: AskBody, user: CurrentUser, context: AppContext, background: Backg
         raise ApiError(409, "conflict", ANSWERING_ALREADY)
     try:
         found = None if body.question_id is None else _saved_reply(context, user, question_id)
-        reply = found or _ask(body, user, context, background, landing, question_id)
+        reply = found or _ask(body, user, context, background, landing, question_id, channel)
     finally:
         with _IN_PROGRESS_LOCK:
             _IN_PROGRESS.pop(question_id, None)
@@ -437,9 +446,10 @@ def _ask(
     background: BackgroundTasks,
     landing: str,
     question_id: str,
+    channel: str | None = None,
 ) -> dict[str, Any]:
     """``ask``'s work: the answer to ``body``, saved as ``question_id`` in the conversation asked
-    in, else a new one named ``landing``."""
+    in, else a new one named ``landing`` (on ``channel``)."""
     if not chat_limits(context.settings.chat_questions_per_minute).allow(user.user_id):
         raise ApiError(429, "rate_limited", TOO_MANY_QUESTIONS, headers={"Retry-After": "60"})
     question = cut(body.question.strip())
@@ -589,6 +599,7 @@ def _ask(
                     pending,
                     degraded,
                     copied,
+                    channel,
                 )
         except IntegrityError:  # #535: saved meanwhile by another process (the client's fallback)
             found = _saved_reply(context, user, question_id)
@@ -629,14 +640,20 @@ def _save(
     pending: Pending | None,
     degraded: bool,
     copied: bool,
+    channel: str | None = None,
 ) -> tuple[str, RowMapping, RowMapping]:
-    """``_ask``'s one save transaction: the conversation (new, named ``landing``), both messages
-    (the question as ``question_id``) and the audit row; (the conversation, the question's row,
-    the answer's row)."""
+    """``_ask``'s one save transaction: the conversation (new, named ``landing``, on ``channel``),
+    both messages (the question as ``question_id``) and the audit row; (the conversation, the
+    question's row, the answer's row)."""
     first = conversation_id is None  # #624: Home's suggestions belong to a first answer only
     if conversation_id is None:
         conversation_id = chat_sql.create_conversation(
-            conn, user.customer_id, user.user_id, short_title(question), conversation_id=landing
+            conn,
+            user.customer_id,
+            user.user_id,
+            short_title(question),
+            conversation_id=landing,
+            channel=channel,
         )
     elif chat_sql.get_conversation(conn, user.customer_id, conversation_id, user.user_id) is None:
         raise ApiError(404, "not_found")
@@ -696,6 +713,7 @@ def _save(
             # details hold no lists) and at what level.
             "agents": ",".join(agent.model for agent in choice.agents),
             "thinking": choice.thinking,
+            **({"via": channel} if channel else {}),
         },
     )
     if pending is not None:

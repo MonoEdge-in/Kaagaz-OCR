@@ -12,6 +12,9 @@ server").
   the app secret as Meta does (or with the ``signature`` given).
 * ``connect``: a live connection for a person and WhatsApp on for their organisation, as W3's
   connecting will leave them.
+* ``Echo`` (W4): a chat that answers every message PLACEHOLDER, for the tests of the channel's
+  queue, which are about when and to whom a reply goes, not what it says. ``sent()`` shows a
+  list as (its text, its row ids).
 """
 
 import hashlib
@@ -29,7 +32,9 @@ from sqlalchemy import text
 
 from kaagaz.adapters.whatsapp import CODE_TEMPLATE
 from kaagaz.channel.numbers import number_hash, seal
+from kaagaz.channel.outgoing import Outgoing
 from kaagaz.db.engine import Database
+from kaagaz.db.whatsapp import Linked, Waiting
 from kaagaz.settings import Settings
 from tests.settings_factory import make_settings
 
@@ -41,6 +46,16 @@ NUMBER_KEY = "fake-number-key-" + "k" * 32
 BUSINESS_NUMBER = "15550001111"  # the Kaagaz number, made up
 VERSION = "/v0.0"
 WEBHOOK = "/api/whatsapp/webhook"
+APP_URL = "https://kaagaz.test"  # where the bot's links open
+PLACEHOLDER = "Kaagaz got your message."
+
+
+class Echo:
+    def reply(self, linked: Linked, message: Waiting) -> Outgoing:
+        return Outgoing(PLACEHOLDER)
+
+    def recheck(self, linked: Linked, reply: Outgoing) -> Outgoing:
+        return reply
 
 
 class WhatsAppFake:
@@ -74,6 +89,9 @@ def _what(body: dict[str, Any]) -> Any:
         given = [part for component in body["template"]["components"] for part in component["parameters"]]
         return (body["template"]["name"], [part.get("text") or part.get("payload") for part in given])
     interactive = body["interactive"]
+    if interactive["type"] == "list":
+        rows = [row["id"] for section in interactive["action"]["sections"] for row in section["rows"]]
+        return (interactive["body"]["text"], rows)
     return (interactive["body"]["text"], [row["reply"]["id"] for row in interactive["action"]["buttons"]])
 
 
@@ -131,7 +149,7 @@ def whatsapp_settings(fake: WhatsAppFake | None = None, **overrides: Any) -> Set
         whatsapp_verify_token=VERIFY_TOKEN,
         whatsapp_number_key=NUMBER_KEY,
         whatsapp_business_number=BUSINESS_NUMBER,
-        **overrides,
+        **{"app_url": APP_URL, **overrides},
     )
 
 

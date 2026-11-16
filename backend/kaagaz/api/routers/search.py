@@ -8,7 +8,8 @@ are story matches, which need the embedding (``story_matches`` stays an empty li
 My words (Q2): the searcher's own words, read and expanded exactly as Ask does
 (``PgWords`` inside ``Database.user``, the own-user policy, then ``expand``), passed to
 ``search_documents`` as ``expansion``. Another person's words are never read. The reply's
-``understood_words`` are the ones used (``Expansion.understood``).
+``understood_words`` are the ones used (``Expansion.understood``). The search itself is
+search/find.py's, shared with WhatsApp's "Get a file" (#603).
 
 Why the order: the scope (Q1, and File management Q3's filters through
 ``scope.narrow``) is resolved in one short transaction; one that matches nothing (an
@@ -38,14 +39,12 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import Field
 
 from kaagaz.answering.evidence import valid_regions
-from kaagaz.answering.expansion import NO_EXPANSION, PgWords, expand
 from kaagaz.answering.sanitize import clean_snippet
 from kaagaz.api.auth import User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.routers.documents import DetectedTypeParam
-from kaagaz.db import audit
-from kaagaz.search.hybrid import DocumentResult, search_documents
-from kaagaz.search.indexing import recipe_tag
+from kaagaz.search.find import find_documents
+from kaagaz.search.hybrid import DocumentResult
 from kaagaz.search.scope import FileFilters, ScopeBody, narrow, resolve
 
 router = APIRouter()
@@ -84,41 +83,24 @@ def search_inside_documents(
     if scope.matches_nothing:
         return _nothing()
     # My words: read once, for this search and this user only, never cached (as Ask does).
-    document_id = (
-        scope.document_ids[0] if scope.document_ids is not None and len(scope.document_ids) == 1 else None
+    found = find_documents(
+        context.db,
+        customer_id=customer_id,
+        user_id=user.user_id,
+        question=question,
+        scope=scope,
+        most=settings.search_max_documents,
+        embed_model=settings.model_embed,
+        ef_search=settings.search_ef,
     )
-    words = PgWords(context.db).words(customer_id, user.user_id, document_id=document_id)
-    expansion = expand(question, words) if words else NO_EXPANSION
-    with context.db.user(customer_id, user.user_id) as conn:
-        found = search_documents(
-            conn,
-            customer_id=customer_id,
-            query_text=question,
-            embedding=None,
-            max_documents=settings.search_max_documents + 1,  # one more tells a capped list
-            recipe=recipe_tag(settings.model_embed),
-            ef_search=settings.search_ef,
-            scope=scope,
-            expansion=expansion,
-        )
-        capped = len(found) > settings.search_max_documents
-        audit.record(
-            conn,
-            customer_id,
-            actor_user_id=user.user_id,
-            action="search.run",
-            target_type="customer",
-            target_id=customer_id,
-            details={"documents": min(len(found), settings.search_max_documents), "capped": capped},
-        )
     return {
-        "documents": [_document(result) for result in found[: settings.search_max_documents]],
+        "documents": [_document(result) for result in found.documents],
         "story_matches": [],
         "understood_words": [
             {"word": w, "meaning": m, **({"origin": origin} if origin != "personal" else {})}
-            for w, m, origin in expansion.understood()
+            for w, m, origin in found.expansion.understood()
         ],
-        **({"capped": True} if capped else {}),
+        **({"capped": True} if found.capped else {}),
     }
 
 
