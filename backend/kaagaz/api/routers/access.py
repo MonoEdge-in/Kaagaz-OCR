@@ -28,7 +28,7 @@ Admin ever gets a kept-from-me count.
 """
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response
@@ -43,7 +43,7 @@ from kaagaz.api.routers.admin import MAX_PASSWORD
 from kaagaz.api.routers.auth import prove_password
 from kaagaz.api.views import CURSOR, admin_user, iso, timeline
 from kaagaz.db import access as access_sql
-from kaagaz.db import audit, listing
+from kaagaz.db import audit, listing, lock_places
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import locks as locks_sql
 from kaagaz.db import users as users_sql
@@ -73,6 +73,8 @@ class MemberBody(BaseModel):
 
     head: bool | None = None  # left out: a new member is not Head, a member keeps their tick
     password: Password = None
+    # PR 13 (#605): the department's locked files the person may open too (the give pop-up)
+    locked_files: list[uuid.UUID] = Field(default=[], max_length=MAX_FILES)
 
 
 class SwitchBody(BaseModel):
@@ -97,6 +99,17 @@ class PasswordBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     password: Password = None
+
+
+class NamedBody(PasswordBody):
+    # PR 13 (#605): the private folder's locked files the person may open too (the give pop-up)
+    locked_files: list[uuid.UUID] = Field(default=[], max_length=MAX_FILES)
+
+
+class PreviewBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    document_ids: list[uuid.UUID] = Field(min_length=1, max_length=MAX_FILES)
 
 
 class KeptMoveBody(BaseModel):
@@ -215,8 +228,9 @@ def _department_only(conn: Connection, user: CurrentUser, department_id: str | N
 
 @admin_router.get("/admin/users/{user_id}/access")
 def get_user_access(user_id: uuid.UUID, user: AdminSession, context: Context) -> dict[str, Any]:
-    """The Access page: ``{user, departments, private_folders, files, locked}`` (PR 12 fills
-    ``locked``). True names (decision 20). Another organisation's person is 404."""
+    """The Access page: ``{user, departments, private_folders, files, locked}``: ``locked``, the
+    locked files they may open (PR 13, #605). True names (decision 20). Another organisation's
+    person is 404."""
     target, customer_id = str(user_id), user.customer_id
     with context.db.user(customer_id, user.user_id) as conn:
         found = access_sql.person(conn, customer_id, target)
@@ -226,7 +240,10 @@ def get_user_access(user_id: uuid.UUID, user: AdminSession, context: Context) ->
         member_of = access_sql.departments(conn, customer_id, target)
         named = access_sql.named_on(conn, customer_id, target)
         given = access_sql.given_to(conn, customer_id, target)
-        places = [str(row["id"]) for row in named] + [str(r["folder_id"]) for r in given if r["folder_id"]]
+        locked = lock_places.locked_for(conn, customer_id, target)
+        places = [str(row["id"]) for row in named] + [
+            str(r["folder_id"]) for r in [*given, *locked] if r["folder_id"]
+        ]
         paths = access_sql.paths(conn, customer_id, places)
     return {
         "user": {
@@ -259,7 +276,16 @@ def get_user_access(user_id: uuid.UUID, user: AdminSession, context: Context) ->
             }
             for row in given
         ],
-        "locked": [],
+        "locked": [
+            {
+                "id": str(row["id"]),
+                "name": row["display_name"],
+                "path": None if row["folder_id"] is None else paths.get(str(row["folder_id"])),
+                "given_at": iso(row["given_at"]),
+                "given_by": str(row["given_by"]),
+            }
+            for row in locked
+        ],
     }
 
 
@@ -319,6 +345,16 @@ def add_member(
         if mine:
             _self_grant(user, body.password)
         added = access_sql.join(conn, customer_id, department, target, head=body.head, by=user.user_id)
+        _give_locked(
+            conn,
+            user,
+            target,
+            body.locked_files,
+            (department, None),
+            head=head,
+            via="member",
+            password=body.password,
+        )
         if added is not None:
             details: dict[str, audit.DetailValue] = {"head": head}
             if mine:
@@ -537,7 +573,14 @@ def get_named(folder_id: uuid.UUID, user: User, context: Context) -> dict[str, A
 
 
 def _change_named(
-    context: AppContext, user: CurrentUser, folder_id: str, person: str, password: str | None, *, add: bool
+    context: AppContext,
+    user: CurrentUser,
+    folder_id: str,
+    person: str,
+    password: str | None,
+    *,
+    add: bool,
+    give: Callable[[Connection, access_sql.Place], None] | None = None,
 ) -> tuple[bool, str | None, list[tuple[str, str]]]:
     """Name or unname: the checks in a short first transaction, the password proved with no
     connection held, then the write under the tree lock, with the folder and the Head tick read
@@ -550,7 +593,7 @@ def _change_named(
     _password_given(context, user, password)
     with context.db.user(customer_id, user.user_id) as conn:
         folders_sql._lock_tree(conn, customer_id)
-        _private_seen(conn, user, folder_id)
+        place = _private_seen(conn, user, folder_id)
         if not add:
             if not access_sql.unname(conn, customer_id, folder_id, person):
                 raise ApiError(404, "not_found")
@@ -565,6 +608,8 @@ def _change_named(
         changed = access_sql.name(conn, customer_id, folder_id, person, by=user.user_id)
         if changed:
             _audit(conn, user, "access.named_add", ("folder", folder_id), person, _self(user, person))
+        if give is not None:  # PR 13: the locked files ticked with it, in this transaction
+            give(conn, place)
         watchers = _watchers(conn, context, user)
     if not changed or not found.admin:  # an Admin's own, or any Admin's: emailed
         return changed, None, []
@@ -575,14 +620,23 @@ def _change_named(
 def add_named(
     folder_id: uuid.UUID,
     user_id: uuid.UUID,
-    body: PasswordBody,
+    body: NamedBody,
     user: User,
     background: BackgroundTasks,
     context: Context,
 ) -> dict[str, bool]:
-    """Name a person on a private folder: ``{changed}`` (false: they were already)."""
+    """Name a person on a private folder: ``{changed}`` (false: they were already), with the
+    folder's locked files ticked in the give pop-up (``locked_files``: an Admin's session only, PR 13)."""
+    person, wanted = str(user_id), body.locked_files
+
+    def give(conn: Connection, place: access_sql.Place) -> None:
+        where = (place.department_id, place.id)
+        _give_locked(conn, user, person, wanted, where, head=False, via="named", password=body.password)
+
+    if wanted:
+        require_admin_session(user)
     changed, tell, watchers = _change_named(
-        context, user, str(folder_id), str(user_id), body.password, add=True
+        context, user, str(folder_id), person, body.password, add=True, give=give if wanted else None
     )
     if tell is not None:
         _tell(background, context, user, "named", tell or None, watchers)
@@ -1170,3 +1224,138 @@ def access_activity(
         return timeline(
             conn, customer_id, filters, limit=limit, cursor=cursor, full=True, unseen_masked=not admin
         )
+
+
+# --- locked files: the pop-ups (PR 13, #605) ------------------------------------------------------
+
+
+def _give_locked(
+    conn: Connection,
+    user: CurrentUser,
+    person: str,
+    files: list[uuid.UUID],
+    place: tuple[str | None, str | None],
+    *,
+    head: bool,
+    via: str,
+    password: str | None,
+) -> None:
+    """The locked files ticked in the give pop-up (PRD 7 section 6), in the place's own write, under
+    its tree lock: each must be a locked file the place gives (409 ``not_in_place``, nothing
+    written); then the person may open it, on every version (``kaagaz_lock_grant``), audited
+    ``lock.grant`` {via}. Its routes ask for an Admin's session; the Admin themselves: the password,
+    as any self-grant. None ticked: nothing (the person gets the place's other files)."""
+    wanted = list(dict.fromkeys(str(each) for each in files))
+    if not wanted:
+        return
+    if person == user.user_id:
+        _self_grant(user, password)
+    in_place = lock_places.locked(conn, user.customer_id, place[0], place[1], head=head, user_id=None)
+    if not set(wanted) <= {str(row["id"]) for row in in_place}:
+        raise ApiError(409, "not_in_place", "Choose only locked files of this place.")
+    for document in wanted:
+        if locks_sql.grant(conn, document, person) == "granted":
+            details: dict[str, audit.DetailValue] = {
+                "via": via,
+                **({"self": True} if person == user.user_id else {}),
+            }
+            _audit(conn, user, "lock.grant", ("document", document), person, details)
+
+
+def _who_can_see(conn: Connection, user: CurrentUser, documents: list[str]) -> list[dict[str, str | bool]]:
+    """Everyone who can see any of these files today (``kaagaz_audience``'s ``sees``), and the Admin
+    asking (``you``, ticked by default), by name."""
+    people: dict[str, str] = {user.user_id: user.display_name}
+    for document in documents:
+        for row in access_sql.audience(conn, user.customer_id, "document", document, None):
+            if row["sees"]:
+                people[str(row["user_id"])] = row["display_name"]
+    ordered = sorted(people.items(), key=lambda each: (each[1].lower(), each[0]))
+    return [{"id": person, "name": name, "you": person == user.user_id} for person, name in ordered]
+
+
+@router.get("/documents/{document_id}/lock-preview")
+def lock_preview(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
+    """The lock dialog's people (PRD 7 section 6): ``{people: [{id, name, you}]}``, everyone who can
+    see the file today, unticked, and the locking Admin. An Admin about any file (names only); anyone
+    else: 404 for a file they can't see, then 403."""
+    target = str(document_id)
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        if user.role != "admin":
+            if listing.get_document(conn, user.customer_id, target) is None:
+                raise ApiError(404, "not_found")
+            raise ApiError(403, "forbidden", "Only an admin can lock a file.")
+        _admin_document(conn, user, target)
+        return {"people": _who_can_see(conn, user, [target])}
+
+
+@admin_router.post("/documents/lock-preview")
+def lock_preview_many(body: PreviewBody, user: AdminSession, context: Context) -> dict[str, Any]:
+    """The bulk bar's: ``{people}`` who can see any of the files, and the Admin. A file unknown: 404."""
+    documents = list(dict.fromkeys(str(each) for each in body.document_ids))
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        for document in documents:
+            _admin_document(conn, user, document)
+        return {"people": _who_can_see(conn, user, documents)}
+
+
+def _locked_files(
+    conn: Connection,
+    user: CurrentUser,
+    department: str | None,
+    private: str | None,
+    person: uuid.UUID | None,
+    *,
+    head: bool,
+) -> dict[str, Any]:
+    customer_id = user.customer_id
+    rows = lock_places.locked(
+        conn, customer_id, department, private, head=head, user_id=None if person is None else str(person)
+    )
+    paths = access_sql.paths(conn, customer_id, [str(row["folder_id"]) for row in rows if row["folder_id"]])
+    return {
+        "files": lock_places.files(conn, customer_id, department, private, head=head),
+        "locked": [
+            {
+                "id": str(row["id"]),
+                "name": row["display_name"],
+                "path": None if row["folder_id"] is None else paths.get(str(row["folder_id"])),
+                "open": bool(row["open"]),
+            }
+            for row in rows
+        ],
+    }
+
+
+@admin_router.get("/admin/departments/{department_id}/locked-files")
+def department_locked_files(
+    department_id: uuid.UUID,
+    user: AdminSession,
+    context: Context,
+    user_id: Annotated[uuid.UUID | None, Query(alias="user")] = None,
+    head: bool = False,
+) -> dict[str, Any]:
+    """Giving a person a department that holds locked files (PRD 7 section 6): ``{files, locked:
+    [{id, name, path, open}]}``, the files a membership gives (``head``: its private folders' too)
+    and which of them are locked, by name; ``open`` when ``user`` may open one already. 404 none;
+    409 ``not_a_department``."""
+    department = str(department_id)
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        _department(conn, user, department)
+        return _locked_files(conn, user, department, None, user_id, head=head)
+
+
+@admin_router.get("/folders/{folder_id}/locked-files")
+def folder_locked_files(
+    folder_id: uuid.UUID,
+    user: AdminSession,
+    context: Context,
+    user_id: Annotated[uuid.UUID | None, Query(alias="user")] = None,
+) -> dict[str, Any]:
+    """The same for naming a person on a private folder. 404 none; 409 ``not_private``."""
+    target = str(folder_id)
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        place = _folder_seen(conn, user, target)
+        if not place.private:
+            raise ApiError(409, "not_private", "This folder isn't private.")
+        return _locked_files(conn, user, place.department_id, target, user_id, head=False)

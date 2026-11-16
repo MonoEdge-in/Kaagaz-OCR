@@ -51,6 +51,9 @@ export const ACTIVITY_WORDS: Record<string, (entry: Entry) => string> = {
     if (typeof pages !== "number") return "changed the turn of the pages for everyone";
     return `changed the turn of ${formatNumber(pages)} ${pages === 1 ? "page" : "pages"} for everyone`;
   },
+  // PRD 7 section 6 (PR 13): a file's own lock; opening locked files shows in the admin log only.
+  "lock.lock": () => "locked it",
+  "lock.unlock": () => "unlocked it",
   "audit.export": () => "exported the activity",
   "folder.upload": (entry) =>
     typeof entry.details.files === "number" ? `uploaded a folder of ${formatNumber(entry.details.files)} files` : "uploaded a folder",

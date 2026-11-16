@@ -207,10 +207,11 @@ describe("question box", () => {
     expect(sendsOnKey({ key: "Enter", shiftKey: false, isComposing: false }, false)).toBe(true);
   });
 
-  it("sends nothing blank and at most 1000 characters", () => {
+  it("sends nothing blank and at most 20,000 characters (#644)", () => {
     expect(cleanQuestion("   \n ")).toBeNull();
     expect(cleanQuestion("  total?  ")).toBe("total?");
-    expect(cleanQuestion("x".repeat(1200))?.length).toBe(1000);
+    expect(cleanQuestion("x".repeat(3000))?.length).toBe(3000); // a 3,000 character question is sent whole
+    expect(cleanQuestion("x".repeat(20001))?.length).toBe(20000);
   });
 
   it("makes a down vote's reason optional and short", () => {

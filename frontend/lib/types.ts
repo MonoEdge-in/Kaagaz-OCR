@@ -2384,3 +2384,29 @@ export interface TestModel {
   since: { pages: number; questions: number; cost_usd: number | null; avg_seconds_per_page: number | null } | null; // null when none runs
   note: string | null;
 }
+
+// --- locked files (PRD 7 section 6, PRs 12 and 13) ---
+
+/** GET /documents/locked-open: whether this browser's 10-minute check is live, until when, how
+ * many seconds it has left by the server's clock (the countdown never trusts this PC's clock), and
+ * how this person confirms (Google for a person whose role signs in with Google only). */
+export interface LockedOpen {
+  open: boolean;
+  until: string | null; // ISO 8601
+  seconds: number | null; // whole seconds left by the server's clock; null when not open
+  via: "password" | "google";
+}
+
+/** Someone the lock dialog may tick (GET /documents/{id}/lock-preview): everyone who can see
+ * the file today, and the Admin locking it (you). */
+export interface LockPerson {
+  id: string;
+  name: string;
+  you: boolean;
+}
+
+/** One file a bulk lock refused (409), and why. */
+export interface LockRefusal {
+  id: string;
+  reason: string;
+}

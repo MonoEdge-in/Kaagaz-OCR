@@ -807,6 +807,15 @@ const ACTION_WORDS: Record<string, string> = {
   "org.admin_two_step_on": "Two-step sign-in required for admins",
   "org.admin_two_step_off": "Two-step sign-in no longer required for admins",
   "document.reading_released": "Reading started again after a pause", // QA P2: a held file let go
+  // PRD 7 section 6 (PR 13): locked files, and every open, wrong password and block.
+  "lock.lock": "Locked a file",
+  "lock.unlock": "Unlocked a file",
+  "lock.grant": "Allowed someone to open a locked file",
+  "lock.revoke": "Stopped someone opening a locked file",
+  "lock.open": "Opened locked files with their password",
+  "lock.open_failed": "Typed a wrong password to open locked files",
+  "lock.open_blocked": "Blocked from opening locked files after wrong passwords",
+  "lock.view": "Viewed a locked file",
 };
 
 /** The audit action in words; an action this screen does not know is shown as is. */
@@ -814,6 +823,8 @@ export function describeAction(action: string, details: Record<string, unknown> 
   if (action === "folder.create" && details.auto === true) return "Kaagaz made a folder";
   // #600: a save that left no page turned.
   if (action === "document.page_turns" && details.turned === 0) return "Put a document's pages back as scanned";
+  if (action === "lock.open" && details.via === "google") return "Opened locked files with Google";
+  if (action === "lock.open_failed" && details.via === "google") return "A Google sign-in to open locked files was refused";
   return ACTION_WORDS[action] ?? action;
 }
 
