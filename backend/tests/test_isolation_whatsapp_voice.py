@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from kaagaz.adapters.whatsapp import MetaWhatsApp
 from kaagaz.answering.service import AnswerService
@@ -22,7 +23,6 @@ from kaagaz.channel.chat import Chat
 from kaagaz.channel.loop import Channel
 from kaagaz.channel.texts import MASK
 from kaagaz.db.engine import Database
-from tests.db_support import insert_key
 from tests.test_answering_golden import NOW
 from tests.test_api_support import Api
 from tests.test_isolation_access_views import _app
@@ -119,17 +119,17 @@ def test_a_hidden_file_asked_by_voice_gives_nothing_and_the_typed_reply(walled: 
 
 
 def test_a_locked_file_is_never_named_by_voice(walled: Spoken) -> None:
+    """Changed on purpose (PRD 7 PR 12, #649): a locked file's content is never written, so no
+    question finds it; asked for by its name, by voice, it is never named to the person who may
+    open it."""
     ask = walled.ask
     locked = ask.id("locked")  # the plain reviewer may open it (a lock grant)
-    piece = add_pieces(ask.db, ask.org.c, locked, [("Invoice zebra register", axis(9))])
-    with ask.db.customer(ask.org.c) as conn:
-        insert_key(conn, ask.org.c, locked, "person", "Ramesh zebra")
-    asked = walled.speak("plain", "Tell me about zebra")
+    with pytest.raises(IntegrityError, match="kaagaz_locked"):
+        add_pieces(ask.db, ask.org.c, locked, [("Invoice zebra register", axis(9))])
     walled.tap("plain", "get.en")
-    searched = walled.speak("plain", "zebra", fresh=False)
-    assert _after_heard(asked[0], "Tell me about zebra") == NOT_FOUND
-    assert _after_heard(searched[0], "zebra") == NOT_FOUND
-    assert _named(walled, [locked, *piece, "locked.pdf", "invoice zebra", "ramesh zebra"]) == []
+    searched = walled.speak("plain", "locked", fresh=False)
+    assert _after_heard(searched[0], "locked") == NOT_FOUND
+    assert _named(walled, [locked, "locked.pdf"]) == []
 
 
 def test_id_numbers_never_reach_whatsapp_in_full_by_voice(walled: Spoken) -> None:
