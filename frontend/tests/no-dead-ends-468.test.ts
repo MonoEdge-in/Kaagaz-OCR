@@ -28,6 +28,11 @@ describe("Ask about the words: filled in, never sent", () => {
     expect(questionFromSearch(href.slice("/chat".length))).toBe("rent paid & GST"); // what ChatScreen puts in the box
   });
 
+  it("keeps an address's question up to 20,000 characters (#644)", () => {
+    expect(questionFromSearch(`?q=${"a".repeat(3000)}`)).toHaveLength(3000);
+    expect(questionFromSearch(`?q=${"a".repeat(20001)}`)).toHaveLength(20000);
+  });
+
   it("names the words on the button, cut short when they are long", () => {
     expect(askAboutLabel("rent")).toBe("Ask Kaagaz about “rent”");
     const long = "a".repeat(80);
