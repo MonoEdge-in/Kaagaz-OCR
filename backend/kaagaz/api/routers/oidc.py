@@ -366,7 +366,7 @@ def remove_identity(
     (it never signed in, so no password). Every other browser is signed out, this one stays;
     the password keeps working."""
     _per_user_limit(remove_limits, user, TOO_MANY_REMOVES)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         mine = {str(row["id"]): row for row in identities.for_user(conn, user.customer_id, user.user_id)}
     found = mine.get(str(identity_id))
     if found is None:  # someone else's, or none
@@ -375,8 +375,9 @@ def remove_identity(
     if not waiting:
         if body.password is None:
             raise ApiError(400, "bad_request", PROOF_NEEDED)
-        _succeeded(context, _check_current_password(context, user, body.password, context.clock()))
-    with context.db.customer(user.customer_id) as conn:
+        attempt = _check_current_password(context, user, body.password, context.clock())
+        _succeeded(context, attempt, signed_in=True)
+    with context.db.user(user.customer_id, user.user_id) as conn:
         # Without the password, only while it still waits (an admin may approve it meanwhile).
         status = "pending" if waiting else None
         removed = identities.remove(
@@ -408,7 +409,7 @@ def remove_identity(
 def _identities_json(context: AppContext, user: CurrentUser) -> dict[str, Any]:
     """Ways to sign in: the providers switched on, the user's own connections, and the
     organisation's rules for them (#507): Google only for the user's role, and the domains."""
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         rows = identities.for_user(conn, user.customer_id, user.user_id)
     return {
         "providers": oidc.enabled_providers(context.settings),
@@ -543,7 +544,7 @@ def _link_refused(
     details: dict[str, audit.DetailValue] = {"provider": provider.name, "reason": reason}
     if domain is not None:
         details["domain"] = domain
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         action = "auth.identity_link_refused"
         _record(conn, user.customer_id, action, actor=user.user_id, target=user.user_id, details=details)
     raise _Refused(reason)
@@ -574,7 +575,7 @@ def _connect(
         _link_refused(context, user, provider, "domain_refused", google_rules.email_domain(identity.email))
     customer_id, user_id = user.customer_id, user.user_id
     hosted = google_rules.kept_hosted_domain(identity.hosted_domain, identity.email_verified)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user_id) as conn:
         mine = identities.for_user(conn, customer_id, user_id)
         organisation = admin_sql.get_settings(conn, customer_id)
         reapproval = audit.recent(
@@ -593,7 +594,7 @@ def _connect(
     auto = organisation is not None and bool(organisation["auto_approve_connections"])
     approved = not reapproval and (user.role == "admin" or auto or same_person)
     try:
-        with context.db.customer(customer_id) as conn:
+        with context.db.user(customer_id, user_id) as conn:
             # In the insert's own transaction: the email is another user's sign-in email (never says whose).
             if identity.email is not None and identities.email_belongs_to_other(
                 conn, identity.email, user_id

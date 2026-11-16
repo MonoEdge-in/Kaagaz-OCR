@@ -155,6 +155,7 @@ export function ReviewCard({
           page={item.page}
           highlights={[value.region]}
           crop={value.region}
+          turn={item.page_turn}
         />
       </div>
 

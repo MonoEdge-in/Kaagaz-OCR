@@ -111,9 +111,9 @@ def test_the_last_use_is_written_at_most_once_a_minute() -> None:
 
 def test_current_user_ends_an_idle_session_and_touches_a_used_one(monkeypatch: pytest.MonkeyPatch) -> None:
     """The wiring in current_user: 401 past the limit; the last use written only when a
-    minute old, inside the same customer transaction kind as every request."""
+    minute old, inside the same person's transaction kind as every request."""
     touched: list[tuple[str, str, datetime]] = []
-    monkeypatch.setattr(Database, "customer", lambda self, customer_id: nullcontext(None))
+    monkeypatch.setattr(Database, "user", lambda self, customer_id, user_id: nullcontext(None))
     monkeypatch.setattr(users_sql, "touch_seen", lambda conn, c, u, *, now: touched.append((c, u, now)))
     now = datetime.fromtimestamp(tokens.NOW, UTC)
     for seen_at, hours, expected in (

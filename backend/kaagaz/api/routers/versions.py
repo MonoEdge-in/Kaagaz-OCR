@@ -58,7 +58,17 @@ class AcceptBody(BaseModel):
 def _refused(refused: versions_sql.Refused) -> ApiError:
     if refused.code == "not_found":
         return ApiError(404, "not_found")
+    if refused.code == "forbidden":  # #594 (Q4)
+        return ApiError(
+            403, "forbidden", "Only the person this file was kept for, or Management, can undo this."
+        )
     return ApiError(409, refused.code, _MESSAGES[refused.code])
+
+
+def _visible(conn: Connection, user: CurrentUser, document_id: str) -> None:
+    """PRD 7 (#595): a file the person cannot see is not found, before anything else is checked."""
+    if listing.get_document(conn, user.customer_id, document_id) is None:
+        raise ApiError(404, "not_found")
 
 
 def _summary(conn: Connection, context: AppContext, user: CurrentUser, document_id: str) -> dict[str, Any]:
@@ -82,7 +92,10 @@ def accept_suggestion(
     changes = {"version_note": clean_note(body.version_note)} if body is not None and given else {}
     customer_id = user.customer_id
     try:
-        with context.db.customer(customer_id) as conn:
+        with context.db.user(customer_id, user.user_id) as conn:
+            # PRD 7 (#595): a suggestion is accepted only by a person who sees both its sides.
+            if not versions_sql.is_live(conn, customer_id, str(suggestion_id)):
+                raise ApiError(404, "not_found")
             document = versions_sql.link(conn, customer_id, str(suggestion_id), by=user.user_id)
             listing.set_details(conn, customer_id, document, by=user.user_id, **changes)
             return _summary(conn, context, user, document)
@@ -94,7 +107,7 @@ def accept_suggestion(
 def reject_suggestion(suggestion_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
     """Keep separate (V6)."""
     try:
-        with context.db.customer(user.customer_id) as conn:
+        with context.db.user(user.customer_id, user.user_id) as conn:
             document = versions_sql.reject(conn, user.customer_id, str(suggestion_id), by=user.user_id)
     except versions_sql.Refused as refused:
         raise _refused(refused) from None
@@ -105,7 +118,8 @@ def reject_suggestion(suggestion_id: uuid.UUID, user: User, context: Context) ->
 def undo_version(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
     """Undo a link (V7): the document's summary, on its own again."""
     try:
-        with context.db.customer(user.customer_id) as conn:
+        with context.db.user(user.customer_id, user.user_id) as conn:
+            _visible(conn, user, str(document_id))
             versions_sql.undo(conn, user.customer_id, str(document_id), by=user.user_id)
             return _summary(conn, context, user, str(document_id))
     except versions_sql.Refused as refused:
@@ -118,7 +132,8 @@ def undo_version(document_id: uuid.UUID, user: User, context: Context) -> dict[s
 def make_current(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
     """Make current (V10): the version's summary, now current."""
     try:
-        with context.db.customer(user.customer_id) as conn:
+        with context.db.user(user.customer_id, user.user_id) as conn:
+            _visible(conn, user, str(document_id))
             versions_sql.make_current(conn, user.customer_id, str(document_id), by=user.user_id)
             return _summary(conn, context, user, str(document_id))
     except versions_sql.Refused as refused:
@@ -163,7 +178,8 @@ def separate_version(
     name = _document_name(body.name)
     customer_id, document = user.customer_id, str(document_id)
     try:
-        with context.db.customer(customer_id) as conn:
+        with context.db.user(customer_id, user.user_id) as conn:
+            _visible(conn, user, document)
             family = versions_sql.separate(conn, customer_id, document, name=name, by=user.user_id)
             listing.rename_document(conn, customer_id, document, name=name)
             return {"document": _summary(conn, context, user, document), "family_id": family}
@@ -192,7 +208,9 @@ def join_again(document_id: uuid.UUID, body: JoinAgainBody, user: User, context:
     name = None if body.name is None else _document_name(body.name)
     customer_id, document = user.customer_id, str(document_id)
     try:
-        with context.db.customer(customer_id) as conn:
+        with context.db.user(customer_id, user.user_id) as conn:
+            _visible(conn, user, document)
+            _visible(conn, user, str(body.family_id))  # the family it rejoins too, before any lock
             versions_sql.join_again(conn, customer_id, document, str(body.family_id), by=user.user_id)
             if name is not None:
                 listing.rename_document(conn, customer_id, document, name=name)
@@ -213,7 +231,7 @@ def compare(
     ``id``); each page also counts its words changed and each side's words, and ``overview``
     says it all in plain words (#521, See the differences)."""
     customer_id, right, left = user.customer_id, str(document_id), str(other)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         rows = [listing.get_document(conn, customer_id, each) for each in (left, right)]
         if any(row is None for row in rows) or not versions_sql.may_compare(conn, customer_id, left, right):
             raise ApiError(404, "not_found")

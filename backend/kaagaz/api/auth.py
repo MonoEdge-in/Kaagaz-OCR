@@ -856,7 +856,7 @@ def _signed_in(request: Request) -> CurrentUser:
     if touch_due(user.seen_at, now):
         # ponytail: one last use per user, not per browser; a use or a sign-in anywhere keeps
         # every session of that user alive. Per session needs a server-side session row.
-        with context.db.customer(user.customer_id) as conn:
+        with context.db.user(user.customer_id, user.user_id) as conn:
             users_sql.touch_seen(conn, user.customer_id, user.user_id, now=now)
     return user
 
@@ -993,11 +993,11 @@ Admin = Annotated[CurrentUser, Depends(require_role("admin"))]
 FEATURE_OFF = "This is turned off for now."
 
 
-def feature_on(context: AppContext, feature: str, customer_id: str | None = None) -> bool:
-    """The super admin's switch for ``feature`` (0038) and ``customer_id``'s own (0039; None:
-    the platform's alone); no row: on. One statement."""
-    with context.db.system() if customer_id is None else context.db.customer(customer_id) as conn:
-        return ai_settings.switch_on(conn, feature, customer_id)
+def feature_on(context: AppContext, feature: str, user: CurrentUser | None = None) -> bool:
+    """The super admin's switch for ``feature`` (0038) and ``user``'s organisation's own (0039;
+    None: the platform's alone); no row: on. One statement."""
+    with context.db.system() if user is None else context.db.user(user.customer_id, user.user_id) as conn:
+        return ai_settings.switch_on(conn, feature, None if user is None else user.customer_id)
 
 
 def require_feature(feature: str) -> Callable[[Request, CurrentUser], None]:
@@ -1005,7 +1005,7 @@ def require_feature(feature: str) -> Callable[[Request, CurrentUser], None]:
     every organisation (0038) or for the user's own (0039)."""
 
     def dependency(request: Request, user: User) -> None:
-        if not feature_on(get_context(request), feature, user.customer_id):
+        if not feature_on(get_context(request), feature, user):
             raise ApiError(403, "feature_off", FEATURE_OFF)
 
     return dependency

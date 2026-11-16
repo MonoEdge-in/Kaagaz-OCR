@@ -15,7 +15,7 @@ import { shortPathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
 import { attentionOf, folderLine, itemProblemText, readingLine } from "./folderUpload";
 import type { FolderUploadView } from "./folderUpload";
-import { uploadStateText } from "./logic";
+import { HIDDEN_COPY, uploadStateText } from "./logic";
 import styles from "./Documents.module.css";
 
 /** A file this tab could not send, and whether sending it again may help. */
@@ -244,13 +244,24 @@ function AttentionItem({ item, tree, limits }: { item: FolderUploadItem; tree: F
   );
 }
 
-/** "Already in Kaagaz, in <path>": Open, and Move it here (after asking), or Restore. */
-function DuplicateItem({ item, tree }: { item: FolderUploadItem; tree: FolderTree }) {
+/** "Already in Kaagaz, in <path>": Open, and Move it here (after asking), or Restore; for a copy of a
+ * file this person can't see (PRD 7, #599), only that it is in Kaagaz. */
+export function DuplicateItem({ item, tree }: { item: FolderUploadItem; tree: FolderTree }) {
   const document = item.document;
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  if (item.hidden) {
+    return (
+      <li className={styles.upload}>
+        <div className={styles.uploadBody}>
+          <span className={styles.fileName}>{item.name}</span>
+          <p className={styles.small}>{HIDDEN_COPY}</p>
+        </div>
+      </li>
+    );
+  }
   if (!document || !item.document_id) return null;
   const documentId = item.document_id;
   const from = document.in_trash ? "the Trash" : where(tree, document.folder_id);

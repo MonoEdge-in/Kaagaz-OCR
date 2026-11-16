@@ -24,6 +24,9 @@ from kaagaz.db.engine import Database, make_engine
 
 BACKEND = Path(__file__).resolve().parent.parent
 APP_ROLE = "kaagaz_app"
+# PRD 7 (#595): tests build their data in the worker role, which sees the whole organisation when
+# no person is set; the application under test runs in the API role (test_api_support.Api).
+WORKER_ROLE = "kaagaz_worker"
 
 
 def database_url() -> str:
@@ -48,8 +51,8 @@ def migrate(url: str, revision: str = "head") -> None:
     )
 
 
-def make_database(url: str) -> Database:
-    return Database(make_engine(url), APP_ROLE)
+def make_database(url: str, role: str = WORKER_ROLE) -> Database:
+    return Database(make_engine(url), role)
 
 
 def new_customer(db: Database, *, name: str = "Test customer") -> tuple[str, str]:

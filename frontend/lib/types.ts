@@ -470,12 +470,20 @@ export interface TrashedFolderContents {
 /** #542: the folder that came back with a file restored from a folder in Trash (restoreDocument's reply). */
 export type FolderBack = Omit<FolderRestored, "files" | "folders">;
 
+/** #594: where a restored file went because its folder no longer exists (restoreDocument's reply):
+ * held for the person until it is filed, or into `folder` (null: one they can't see). */
+export interface FilePlaced {
+  held: boolean;
+  folder: Folder | null;
+}
+
 /** #542: a restored folder, where it went ([] the top level), and why it is not as it was. */
 export interface FolderRestored {
   folder: Folder;
-  location: string[];
+  location: string[] | null; // PRD 7: null when a folder on its path is one you can't see
   renamed: boolean; // a folder there had its name: it is "Name (2)" now
-  relocated: boolean; // its folder no longer exists: it is at the top level
+  relocated: boolean; // its folder no longer exists: it is at `location` instead
+  sealed: boolean; // #594: a department or private folder it was in no longer exists: it came back private
   files: number;
   folders: number;
 }
@@ -673,6 +681,13 @@ export interface DocumentDetail extends DocumentSummary {
   // P1, V6 (stage 2): who uploaded version 1, and a version suggestion about this document.
   author_name?: string | null;
   version_suggestion?: VersionSuggestion | null;
+  page_turns: PageTurnSaved[]; // pages turned for everyone (PRD 7 section 14, #600); a page not listed is not turned
+}
+
+/** A page turned for everyone: clockwise degrees on top of the file's own turn. */
+export interface PageTurnSaved {
+  page_no: number; // from 1
+  turn: 90 | 180 | 270;
 }
 
 /** A related document (PRD 3 Y2). The value is stored normalised: no spaces, lower case. */
@@ -768,6 +783,7 @@ export interface FolderUploadItem {
     folder_id: string | null;
     in_trash: boolean;
   } | null;
+  hidden?: boolean; // PRD 7 (#599): a copy of a file this person can't see; document_id and document are null
 }
 
 /** GET /folder-uploads/previous: this person's latest upload of a folder of that name whose folder is still there. */
@@ -827,11 +843,15 @@ export interface UploadReader {
   default?: boolean; // a model: the organisation's default scan model (MS4, R14); Auto has none
 }
 
-export interface UploadResult {
-  document: DocumentSummary;
-  duplicate: boolean;
-  in_trash: boolean; // a duplicate of a document that is in Trash
-}
+export type UploadResult =
+  | {
+      document: DocumentSummary;
+      duplicate: boolean;
+      in_trash: boolean; // a duplicate of a document that is in Trash
+      hidden?: false;
+    }
+  // PRD 7 (#599): the file is already in Kaagaz, in a place this person can't see. Nothing more.
+  | { document: null; duplicate: true; in_trash: false; hidden: true };
 
 export interface SheetCells {
   page_no: number;
@@ -990,7 +1010,9 @@ export interface Answer {
   outage_reason?: "timeout";
   // "unchecked": the figure asked for is only in unchecked card values, so no
   // number is given; closest_documents says where.
-  status: "answered" | "not_found" | "unchecked" | "clarify";
+  // "no_access" (PRD 7, #602): a saved answer that names a file the person can no longer see,
+  // replaced whole by the server: one sentence (NO_ACCESS_TEXT), every list empty.
+  status: "answered" | "not_found" | "unchecked" | "clarify" | "no_access";
   // PRD 6 A, answer contract v2 (24 Oct 2026); all four missing on answers saved before it,
   // which render as they did. The opening and assumptions are code-written lines.
   version?: 2;
@@ -1208,6 +1230,7 @@ export interface ReviewItem {
   detected_type: DetectedType;
   page: PageSummary;
   check_reasons: string[]; // why its document's invoice check failed (PRD 3 Y5); [] otherwise
+  page_turn: 0 | 90 | 180 | 270; // the page's turn saved for everyone (#600); 0: not turned
 }
 
 /** The review queue's reason filter (PRD 3 Y5; PRD 5 U6 adds four, then #524's amount four). */

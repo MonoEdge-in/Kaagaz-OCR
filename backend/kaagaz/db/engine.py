@@ -7,6 +7,8 @@ Every transaction starts the same way (CLAUDE.md never-do 1):
    even when the connection logged in as the owner (as in CI and on the laptop).
    On the server the API and the workers log in as ``kaagaz_api`` (#479, 0067),
    which holds no right until this switch, so a transaction without it reads nothing.
+   The workers and the CLI switch to ``db_worker_role`` instead: ``kaagaz_worker``, with the
+   same rights, on their own login ``kaagaz_jobs`` once a server names it (#587, 0083).
 2. ``set_config('kaagaz.customer_id', <customer>, true)``: the current customer
    for this transaction only. Every table's policy compares its ``customer_id``
    with it, so a forgotten ``WHERE`` still returns nothing from another customer.
@@ -25,7 +27,7 @@ Never build SQL from strings (ruff's S608 checks for it).
 
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 
 from sqlalchemy import Connection, Engine, create_engine, text
 from sqlalchemy.exc import OperationalError
@@ -200,6 +202,14 @@ class Database:
         with self._engine.begin() as conn:
             conn.execute(self._set_role)
             yield conn
+
+
+def user_or_customer(
+    db: Database, customer_id: str, user_id: str | None
+) -> AbstractContextManager[Connection]:
+    """PRD 7 (#585): ``db.user`` for the person ``user_id`` asked for (an API request's work);
+    ``db.customer`` when no person did (None: a worker's, a tool's or a test's work)."""
+    return db.customer(customer_id) if user_id is None else db.user(customer_id, user_id)
 
 
 # The platform operator's role (0015), a fixed name like the migration's.

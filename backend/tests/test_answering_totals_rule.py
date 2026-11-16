@@ -46,7 +46,9 @@ class Preset(FakeFixedQueries):
         super().__init__({A: []})
         self.preset = list(figures)
 
-    def available_fields(self, customer_id: str, fields: Sequence[str]) -> set[str]:
+    def available_fields(
+        self, customer_id: str, fields: Sequence[str], *, user_id: str | None = None
+    ) -> set[str]:
         return {"profit", "invoice_date"} & set(fields)
 
     def figures(
@@ -59,6 +61,7 @@ class Preset(FakeFixedQueries):
         *,
         invoices: bool,
         group_fields: Sequence[str] = (),
+        user_id: str | None = None,
     ) -> list[Figure]:
         assert (metric, start, end) == ("profit", date(2026, 9, 1), date(2026, 10, 1))
         return self.preset

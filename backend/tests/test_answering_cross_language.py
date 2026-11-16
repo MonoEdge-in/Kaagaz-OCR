@@ -106,10 +106,14 @@ class Hits:
         limit: int,
         scope: Scope,
         expansion: Expansion = NO_EXPANSION,
+        *,
+        user_id: str | None = None,
     ) -> list[FakeHit]:
         return self.hits[:limit]
 
-    def neighbours(self, customer_id: str, hits: Sequence[Any], scope: Scope) -> list[FakeHit]:
+    def neighbours(
+        self, customer_id: str, hits: Sequence[Any], scope: Scope, *, user_id: str | None = None
+    ) -> list[FakeHit]:
         return []
 
 

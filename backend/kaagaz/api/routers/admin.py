@@ -109,6 +109,7 @@ from kaagaz.api.errors import ApiError
 from kaagaz.api.readers import usable
 from kaagaz.api.routers.documents import day_start
 from kaagaz.api.views import CURSOR, admin_user, failed_document, iso, timeline, without_money
+from kaagaz.db import access as access_sql
 from kaagaz.db import admin as admin_sql
 from kaagaz.db import audit, google_rules, identities, listing, reading_days, storage_limits
 from kaagaz.db import email_links as links_sql
@@ -262,9 +263,16 @@ def _people(
 
 @router.get("/admin/users")
 def list_users(user: AdminSession, context: Context) -> dict[str, Any]:
-    with context.db.customer(user.customer_id) as conn:
+    """Each person with their Management and departments (PRD 7, #601: ``[{id, name, head}]``)."""
+    with context.db.user(user.customer_id, user.user_id) as conn:
         rows = users_sql.list_users(conn, user.customer_id)
-        return {"items": _people(conn, context, user.customer_id, rows)}
+        people = _people(conn, context, user.customer_id, rows)
+        member_of: dict[str, list[dict[str, Any]]] = {}
+        for row in access_sql.departments(conn, user.customer_id):
+            member_of.setdefault(str(row["user_id"]), []).append(
+                {"id": str(row["department_id"]), "name": row["name"], "head": bool(row["is_head"])}
+            )
+    return {"items": [{**person, "departments": member_of.get(person["id"], [])} for person in people]}
 
 
 @router.post("/admin/users", status_code=201)
@@ -279,7 +287,7 @@ def create_user(body: NewUserBody, user: AdminSession, context: Context) -> JSON
     with context.db.system() as conn:  # a stale, unconfirmed sign-up gives the e-mail back (0063)
         users_sql.release_stale_signup(conn, email)
     try:
-        with context.db.customer(user.customer_id) as conn:
+        with context.db.user(user.customer_id, user.user_id) as conn:
             row = users_sql.create_user(
                 conn,
                 user.customer_id,
@@ -308,7 +316,7 @@ def create_user(body: NewUserBody, user: AdminSession, context: Context) -> JSON
     google = rules is not None and body.role in rules.allowed_roles  # #507: "connect your Google account"
     invited = emails.send(context, email, "invite", emails.invite(user.customer_name, link, google))
     if invited:  # the one follow-up write, only when the email went
-        with context.db.customer(user.customer_id) as conn:
+        with context.db.user(user.customer_id, user.user_id) as conn:
             _audit_user(conn, user, "auth.invite_sent", target)
     return JSONResponse({**admin_user(row, now=context.clock()), "invited": invited}, status_code=201)
 
@@ -325,7 +333,9 @@ def update_user(
     if target == user.user_id and (body.disabled is True or (body.role is not None and body.role != "admin")):
         raise ApiError(400, "bad_request", "You can't disable yourself or remove your own admin role.")
     password_hash = None if body.password is None else hash_password(body.password)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        if body.disabled is not None:  # PRD 7 (#601): users_switched raises the access version
+            folders_sql._lock_tree(conn, user.customer_id)
         promoted = body.role == "admin" and users_sql.role_of(conn, user.customer_id, target) not in (
             None,
             "admin",
@@ -392,7 +402,7 @@ def tell_admins(context: AppContext, customer_id: str, organisation: str, but: s
 def unlock_user(user_id: uuid.UUID, user: AdminSession, context: Context) -> dict[str, Any]:
     """End a lock early; the count of wrong passwords starts again at 0."""
     target = str(user_id)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         row = users_sql.unlock(conn, user.customer_id, target)
         if row is None:
             raise ApiError(404, "not_found")
@@ -411,7 +421,7 @@ def reset_password(user_id: uuid.UUID, user: AdminSession, context: Context) -> 
         raise ApiError(400, "bad_request", "You can't reset your own password here. Use Change password.")
     temporary = secrets.token_urlsafe(TEMPORARY_PASSWORD_BYTES)
     password_hash = hash_password(temporary)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         row = users_sql.set_password(
             conn, user.customer_id, target, password_hash=password_hash, must_change=True
         )
@@ -436,7 +446,7 @@ def reset_two_step(
             "bad_request",
             "You can't reset your own two-step code. Ask another admin, or use the command line.",
         )
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         row = users_sql.reset_totp(conn, user.customer_id, target)
         if row is None:
             raise ApiError(404, "not_found")
@@ -456,7 +466,7 @@ def set_delete_forever(
     if body.allowed and not user.totp_enabled:
         raise ApiError(403, "two_step_required", "Turn on two-step sign-in in Account to allow this.")
     target = str(user_id)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         row = users_sql.set_delete_forever(
             conn, user.customer_id, target, allowed=body.allowed, now=context.clock()
         )
@@ -505,7 +515,7 @@ def pending_identities(
 ) -> dict[str, Any]:
     """Connections to approve: who, the provider, the connected email and when, oldest first."""
     _connections_on(context)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         return _pending_json(conn, user.customer_id)
 
 
@@ -519,7 +529,7 @@ def approve_identity(
     approves it), and only what the organisation's Google rules let in now."""
     _connections_on(context)
     target = str(identity_id)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         waiting = next(
             (row for row in identities.pending(conn, user.customer_id) if str(row["id"]) == target), None
         )
@@ -532,7 +542,7 @@ def approve_identity(
         taken = email is not None and identities.email_belongs_to_other(conn, email, str(waiting["user_id"]))
     if taken:
         raise ApiError(409, "conflict", ALREADY_BELONGS)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         _approvable(conn, context, user.customer_id, target)
         row = identities.approve(conn, user.customer_id, target, user.user_id, context.clock())
         if row is None:  # approved or declined a moment ago
@@ -569,7 +579,7 @@ def decline_identity(
 ) -> dict[str, Any]:
     """A waiting connection is removed; the person gets a notice. The list left."""
     _connections_on(context)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         row = identities.remove(conn, user.customer_id, str(identity_id), status="pending")
         if row is None:
             raise ApiError(404, "not_found")
@@ -591,7 +601,7 @@ def remove_connections(
     audited."""
     _connections_on(context)
     target = str(user_id)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         if users_sql.role_of(conn, user.customer_id, target) is None:
             raise ApiError(404, "not_found")
         count = identities.remove_all(conn, user.customer_id, target)
@@ -675,7 +685,7 @@ def _google_json(conn: Connection, context: AppContext, user: CurrentUser) -> di
 
 @router.get("/admin/settings")
 def get_settings(user: AdminSession, context: Context) -> dict[str, Any]:
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         row = admin_sql.get_settings(conn, user.customer_id)
         google = _google_json(conn, context, user)
     if row is None:
@@ -761,7 +771,7 @@ def update_settings(body: SettingsBody, user: AdminSession, context: Context) ->
     try:
         return _update_settings(body, user, context, wanted)
     except _Lockout as refused:  # the whole PATCH was rolled back; the refusal is kept on its own
-        with context.db.customer(user.customer_id) as conn:
+        with context.db.user(user.customer_id, user.user_id) as conn:
             _audit_settings(conn, user, "settings.google_rules_refused", {"reason": refused.reason})
         raise ApiError(409, "google_lockout", LOCKOUT[refused.reason]) from None
 
@@ -774,7 +784,7 @@ def _update_settings(
 ) -> dict[str, Any]:
     """Every field given, in one transaction."""
     given = body.model_fields_set
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         before = admin_sql.get_settings(conn, user.customer_id)
         if before is None:
             raise ApiError(404, "not_found")
@@ -872,7 +882,7 @@ def list_audit(
     """``{items: [AuditEntry], next_cursor, total}``, newest first: the next page is
     ``cursor=next_cursor`` (``offset`` still pages as before). Every action, every detail
     but money: the admin's alone."""
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         filters = _audit_filters(conn, context, user, asked)
         page = timeline(conn, user.customer_id, filters, limit=limit, cursor=cursor, offset=offset, full=True)
         return {**page, "total": audit.count(conn, user.customer_id, filters)}
@@ -886,7 +896,7 @@ def export_audit(
     streamed AUDIT_EXPORT_PAGE rows at a time, each page its own short transaction. The
     export itself is logged first as ``audit.export``, with the filters' ids."""
     customer_id = user.customer_id
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         filters = _audit_filters(conn, context, user, asked)
         details: dict[str, audit.DetailValue] = {
             "user_id": None if asked.user_id is None else str(asked.user_id),
@@ -910,7 +920,7 @@ def export_audit(
         yield _csv_text([AUDIT_CSV_COLUMNS])
         cursor = None
         while True:
-            with context.db.customer(customer_id) as conn:
+            with context.db.user(customer_id, user.user_id) as conn:
                 page = timeline(conn, customer_id, filters, limit=AUDIT_EXPORT_PAGE, cursor=cursor, full=True)
             yield _csv_text(_audit_line(entry) for entry in page["items"])
             cursor = page["next_cursor"]
@@ -968,7 +978,7 @@ def get_stats(user: AdminSession, context: Context) -> dict[str, Any]:
     pages read by any AI model (the run's model), so the screen may call it "Read by AI
     model"."""
     start, end = month_window(context.clock(), context.settings.timezone)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         numbers = admin_sql.stats(conn, user.customer_id)
         numbers["pages_this_month"] = runs_sql.pages_by_route(conn, user.customer_id, start=start, end=end)
         reader = runs_sql.reader_numbers(conn, user.customer_id, start=start, end=end)
@@ -987,7 +997,7 @@ MEMBER_DAYS = 30
 @router.get("/admin/storage")
 def get_storage(user: AdminSession, context: Context) -> dict[str, Any]:
     """#516: ``{used_bytes, limit_bytes, limit_gb}`` of the admin's own organisation."""
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         room = storage_limits.storage_room(conn, user.customer_id)
     return {
         "used_bytes": room.used_bytes,
@@ -1014,7 +1024,7 @@ def get_member_numbers(
     elif period == "30d":
         start = day_start((today - timedelta(days=MEMBER_DAYS - 1)).isoformat(), zone)
         end = day_start((today + timedelta(days=1)).isoformat(), zone)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         rows = admin_sql.member_numbers(conn, user.customer_id, start=start, end=end)
     return {
         "period": period,
@@ -1050,7 +1060,7 @@ def get_models(user: AdminSession, context: Context) -> dict[str, Any]:
     organisation's scans and answer its questions, the default marked. Names only, no
     prices or budget (Tushar, 15 Oct 2026). One query."""
     settings = context.settings
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         rows = usable(conn, user.customer_id, settings)
     default = default_scan(rows, settings)
     scan = [{"name": row["name"], "default": str(row["id"]) == default} for row in rows]
@@ -1114,7 +1124,7 @@ def get_usage(
     sums). Two queries."""
     customer_id = user.customer_id
     day_from, day_to, start, end = _usage_window(context, first, to)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         report = usage_sql.usage_report(
             conn,
             customer_id,
@@ -1152,7 +1162,7 @@ def get_usage_csv(
     kind, with USAGE_CSV_COLUMNS. One query, and one ``usage.export`` audit row with the
     period and the person filtered on (#482)."""
     day_from, day_to, start, end = _usage_window(context, first, to)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         audit.record(
             conn,
             user.customer_id,
@@ -1215,7 +1225,7 @@ def list_failed(
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> dict[str, Any]:
     """Documents that failed or can't be read, with their message and last run (PRD 3 Z1)."""
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         rows, total = admin_sql.failed_documents(conn, user.customer_id, limit=limit, offset=offset)
     max_pages = context.settings.max_pages
     return {"items": [failed_document(row, max_pages=max_pages) for row in rows], "total": total}

@@ -168,6 +168,8 @@ class Search:
         limit: int,
         scope: Scope,
         expansion: Expansion = NO_EXPANSION,
+        *,
+        user_id: str | None = None,
     ) -> list[FakeHit]:
         self.texts.append(text)
         return self.first[:limit]
@@ -182,11 +184,15 @@ class Search:
         scope: Scope,
         expansion: Expansion = NO_EXPANSION,
         asked: Lists | None = None,
+        *,
+        user_id: str | None = None,
     ) -> Translated:
         self.translations.append(list(translations))
         return Translated(self.second[:limit], self.original)
 
-    def neighbours(self, customer_id: str, hits: Sequence[Any], scope: Scope) -> list[FakeHit]:
+    def neighbours(
+        self, customer_id: str, hits: Sequence[Any], scope: Scope, *, user_id: str | None = None
+    ) -> list[FakeHit]:
         return []
 
 

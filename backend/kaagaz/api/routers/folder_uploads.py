@@ -46,8 +46,8 @@ from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import DOCUMENT_NAME_MAX, FOLDER_NAME_MAX, shown_upload_name, upload_name
 from kaagaz.api.routers.documents import same_user, storage_full, user_upload_policy
-from kaagaz.api.views import folder_upload_item, held_message, iso
-from kaagaz.db import audit
+from kaagaz.api.views import folder_upload_item, held_message, iso, seen_items
+from kaagaz.db import audit, listing
 from kaagaz.db import folder_upload_items as items_sql
 from kaagaz.db.folder_upload_items import NewItem, Summary
 from kaagaz.db.folder_uploads import (
@@ -61,7 +61,7 @@ from kaagaz.db.folder_uploads import (
     effective_limits,
     plan_folders,
 )
-from kaagaz.db.folders import MAX_DEPTH, FolderError
+from kaagaz.db.folders import MAX_DEPTH, FolderError, FolderNotFound
 from kaagaz.db.storage_limits import storage_room
 
 router = APIRouter()
@@ -171,7 +171,7 @@ def _plan(context: AppContext, user: CurrentUser, body: PlanBody) -> dict[str, A
     customer_id = user.customer_id
     parent = None if body.parent_folder_id is None else str(body.parent_folder_id)
     try:
-        with context.db.customer(customer_id) as conn:
+        with context.db.user(customer_id, user.user_id) as conn:
             limits = effective_limits(conn, customer_id)
             if not body.only_new:  # #516: the bytes not sent yet must fit (module notes)
                 room = storage_room(conn, customer_id)
@@ -180,6 +180,8 @@ def _plan(context: AppContext, user: CurrentUser, body: PlanBody) -> dict[str, A
                 )
                 if room.used_bytes + unsent > room.limit_bytes:
                     raise storage_full(room)
+            if parent is not None and not listing.folders_seen(conn, customer_id, [parent]):
+                raise FolderNotFound()  # PRD 7 (#599): a folder the person can't see isn't there
             plan = _plan_and_audit(conn, user, body, folders, parent, limits)
     except FolderError as refused:  # out of the block first: the plan is rolled back
         if refused.code == "not_found":
@@ -274,7 +276,7 @@ def _register(
         items.append(NewItem(entry.path_key, name, str(entry.folder_id), entry.size, refused, entry.sha256))
     largest = user_upload_policy(context, user).largest_limit
     customer_id = user.customer_id
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         limits = effective_limits(conn, customer_id)
         try:
             rows = items_sql.register_items(
@@ -290,12 +292,13 @@ def _register(
         except items_sql.ItemsRefused as refused:
             status = {"not_found": 404, "bad_request": 400}.get(refused.code, 409)
             raise ApiError(status, refused.code, _words(refused.code, limits) or None) from None
+        rows = seen_items(conn, customer_id, rows)  # PRD 7 (#599): a hidden copy names no document
     return {"items": [folder_upload_item(row) for row in rows]}
 
 
 @router.get("/folder-uploads")
 def list_folder_uploads(user: User, context: Context) -> dict[str, Any]:
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         rows = items_sql.summaries(conn, user.customer_id, user_id=user.user_id)
     return {"items": [summary_json(row) for row in rows]}
 
@@ -309,7 +312,7 @@ def previous_folder_upload(
     name = upload_name(source_name, max_length=FOLDER_NAME_MAX)
     found = None
     if name is not None:
-        with context.db.customer(user.customer_id) as conn:
+        with context.db.user(user.customer_id, user.user_id) as conn:
             found = items_sql.previous(conn, user.customer_id, user_id=user.user_id, source_name=name)
     if found is None:
         return {"previous": None}
@@ -326,7 +329,7 @@ def previous_folder_upload(
 
 @router.get("/folder-uploads/{upload_id}")
 def get_folder_upload(upload_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         row = items_sql.progress(conn, user.customer_id, str(upload_id), user_id=user.user_id)
     if row is None:
         raise ApiError(404, "not_found")
@@ -345,12 +348,13 @@ def list_folder_upload_items(
     """``{items: [FolderUploadItem], next_after}``: one page in order; ``next_after`` is the
     ``after`` of the next page, null after the last."""
     customer_id = user.customer_id
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         if not items_sql.owned(conn, customer_id, str(upload_id), user_id=user.user_id):
             raise ApiError(404, "not_found")
         rows = items_sql.list_items(
             conn, customer_id, str(upload_id), view=view, after_seq=after, limit=limit
         )
+        rows = seen_items(conn, customer_id, rows)  # PRD 7 (#599): a hidden copy names no document
     return {
         "items": [folder_upload_item(row) for row in rows],
         "next_after": rows[-1].seq if len(rows) == limit else None,

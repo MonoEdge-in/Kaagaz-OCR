@@ -132,7 +132,7 @@ def estimate_run(
 ) -> dict[str, int]:
     keys = word_keys or []
     _check_keys(scope, keys)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         _document(conn, user, document_id)
         try:
             return ensemble_sql.estimate(conn, user.customer_id, str(document_id), scope, keys)
@@ -146,7 +146,7 @@ def start_run(
 ) -> dict[str, Any]:
     _check_keys(body.scope, body.word_keys)
     customer_id, target = user.customer_id, str(document_id)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         _document(conn, user, document_id)
         others = _others(conn, context, user, document_id)
         refuse_while_paused(conn, customer_id, context.clock())
@@ -167,7 +167,7 @@ def start_run(
 
 @router.get("/documents/{document_id}/ensemble")
 def get_run(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         _document(conn, user, document_id)
         reply = latest_run_json(conn, user.customer_id, str(document_id))
     if reply is None:
@@ -178,7 +178,7 @@ def get_run(document_id: uuid.UUID, user: User, context: Context) -> dict[str, A
 @router.post("/documents/{document_id}/ensemble/{run_id}/stop")
 def stop_run(document_id: uuid.UUID, run_id: uuid.UUID, user: Reviewer, context: Context) -> dict[str, Any]:
     customer_id, target = user.customer_id, str(document_id)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         _document(conn, user, document_id)
         try:
             ensemble_sql.stop(
@@ -195,7 +195,7 @@ def stop_run(document_id: uuid.UUID, run_id: uuid.UUID, user: Reviewer, context:
 @router.post("/documents/{document_id}/ensemble/{run_id}/retry", status_code=202)
 def retry_run(document_id: uuid.UUID, run_id: uuid.UUID, user: Reviewer, context: Context) -> dict[str, Any]:
     customer_id, target = user.customer_id, str(document_id)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         _document(conn, user, document_id)
         others = _others(conn, context, user, document_id)
         refuse_while_paused(conn, customer_id, context.clock())
@@ -213,7 +213,7 @@ def retry_run(document_id: uuid.UUID, run_id: uuid.UUID, user: Reviewer, context
 @router.post("/documents/{document_id}/ensemble/{run_id}/keep-all")
 def keep_all(document_id: uuid.UUID, run_id: uuid.UUID, user: Reviewer, context: Context) -> dict[str, int]:
     customer_id = user.customer_id
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         _document(conn, user, document_id)
         _granted(conn, user)
         try:
@@ -229,7 +229,7 @@ def keep_reading(
     document_id: uuid.UUID, reading_id: uuid.UUID, user: Reviewer, context: Context
 ) -> dict[str, Any]:
     customer_id = user.customer_id
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         _document(conn, user, document_id)
         _granted(conn, user)
         try:
@@ -251,7 +251,7 @@ def revert_reading(
     document_id: uuid.UUID, reading_id: uuid.UUID, user: Reviewer, context: Context
 ) -> dict[str, Any]:
     customer_id = user.customer_id
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         _document(conn, user, document_id)
         _granted(conn, user)
         try:

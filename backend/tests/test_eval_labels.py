@@ -323,8 +323,10 @@ class RecordingRetriever(PgRetriever):
         limit: int,
         scope: Scope,
         expansion: Expansion = NO_EXPANSION,
+        *,
+        user_id: str | None = None,
     ) -> Sequence[Hit]:
-        self.last = super().search(customer_id, text, embedding, limit, scope, expansion)
+        self.last = super().search(customer_id, text, embedding, limit, scope, expansion, user_id=user_id)
         return self.last
 
 

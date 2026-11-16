@@ -56,6 +56,8 @@ class FolderRow:
     created_at: datetime
     kind: str = "custom"  # File management F1 (0041)
     sort_order: int | None = None
+    department_only: bool = False  # PRD 7 (0084)
+    private: bool = False
 
 
 class FolderError(Exception):
@@ -116,6 +118,22 @@ class FolderChanged(FolderError):
         super().__init__("folder_changed")
 
 
+class AccessWouldChange(FolderError):
+    """#594: what a folder deleted with ``keep`` holds would go where other people see it (Q5).
+    shortcut: refused; the move-rules PR replaces it with the PRD's warning and confirm."""
+
+    def __init__(self) -> None:
+        super().__init__("access_would_change")
+
+
+class DepartmentInUse(FolderError):
+    """PRD 7 lead decision 6 (#601): a department with members, Department only, or a private
+    folder inside keeps its kind."""
+
+    def __init__(self) -> None:
+        super().__init__("department_in_use")
+
+
 class DestinationNotFound(FolderNotFound):
     """The folder chosen to take what is inside is not there for this customer (#537)."""
 
@@ -138,46 +156,59 @@ class DepartmentNotTopLevel(FolderError):
 
 
 _LOCK_TREE = "SELECT 1 FROM customers WHERE id = :c FOR NO KEY UPDATE"
+# PRD 7 (#601): the department :f has members, is Department only, or holds a private folder.
+_IN_USE = (
+    "SELECT EXISTS (SELECT 1 FROM department_members m WHERE m.customer_id = :c AND m.department_id = :f)"
+    " OR EXISTS (SELECT 1 FROM folders f WHERE f.customer_id = :c AND f.department_id = :f"
+    " AND (f.department_only OR f.private))"
+)
 
+# PRD 7 (#599): only the folders the person may see; one whose parent they can't see is at the top
+# level for them, so no hidden folder's id reaches the tree.
 _LIST = (
-    "SELECT id, parent_id, name, created_at, kind, sort_order FROM folders WHERE customer_id = :c"
-    " ORDER BY lower(name), id"
+    "SELECT f.id, p.id AS parent_id, f.name, f.created_at, f.kind, f.sort_order, f.department_only, f.private"
+    " FROM visible_folders f"
+    " LEFT JOIN visible_folders p ON p.customer_id = f.customer_id AND p.id = f.parent_id"
+    " WHERE f.customer_id = :c ORDER BY lower(f.name), f.id"
 )
 
 _INSERT = (
     "INSERT INTO folders (customer_id, parent_id, name, created_by, kind, sort_order)"
     " VALUES (:c, :p, :name, :u, :kind, :sort)"
-    " RETURNING id, parent_id, name, created_at, kind, sort_order"
+    " RETURNING id, parent_id, name, created_at, kind, sort_order, department_only, private"
 )
 
 # File management F1: a folder's kind and the department order, each only when given.
 _SET_KIND = (
     "UPDATE folders SET kind = CASE WHEN :set_kind THEN :kind ELSE kind END,"
     " sort_order = CASE WHEN :set_sort THEN CAST(:sort AS integer) ELSE sort_order END"
-    " WHERE customer_id = :c AND id = :f RETURNING id, parent_id, name, created_at, kind, sort_order"
+    " WHERE customer_id = :c AND id = :f RETURNING id, parent_id, name, created_at, kind, sort_order,"
+    " department_only, private"
 )
 
 _RENAME = (
     "UPDATE folders SET name = :name WHERE customer_id = :c AND id = :f RETURNING "
-    "id, parent_id, name, created_at, kind, sort_order"
+    "id, parent_id, name, created_at, kind, sort_order, department_only, private"
 )
 
 _MOVE = (
     "UPDATE folders SET parent_id = :p WHERE customer_id = :c AND id = :f RETURNING "
-    "id, parent_id, name, created_at, kind, sort_order"
+    "id, parent_id, name, created_at, kind, sort_order, department_only, private"
 )
 
 # The folder and its ancestors; depth 1 is the folder itself, so the largest
 # depth is the folder's own depth in the tree, and the root comes last.
 _PATH = (
-    "WITH RECURSIVE up (id, parent_id, name, created_at, kind, sort_order, depth) AS ("
-    " SELECT f.id, f.parent_id, f.name, f.created_at, f.kind, f.sort_order, 1 FROM folders f"
+    "WITH RECURSIVE up (id, parent_id, name, created_at, kind, sort_order, department_only, private, depth)"
+    " AS (SELECT f.id, f.parent_id, f.name, f.created_at, f.kind, f.sort_order, f.department_only,"
+    " f.private, 1 FROM folders f"
     " WHERE f.customer_id = :c AND f.id = :f"
     " UNION ALL"
-    " SELECT f.id, f.parent_id, f.name, f.created_at, f.kind, f.sort_order, up.depth + 1 FROM up"
-    " JOIN folders f ON f.id = up.parent_id"
+    " SELECT f.id, f.parent_id, f.name, f.created_at, f.kind, f.sort_order, f.department_only, f.private,"
+    " up.depth + 1 FROM up JOIN folders f ON f.id = up.parent_id"
     " WHERE f.customer_id = :c AND up.depth < 101)"
-    " SELECT id, parent_id, name, created_at, kind, sort_order FROM up ORDER BY depth DESC"
+    " SELECT id, parent_id, name, created_at, kind, sort_order, department_only, private FROM up"
+    " ORDER BY depth DESC"
 )
 
 _DEPTH = (
@@ -223,7 +254,8 @@ _MOVE_CHECK = (
 )
 
 # Trashed documents keep their folder until they are restored or purged; a
-# folder holding only those can still be deleted, and they go to the top level.
+# folder holding only those can still be deleted, and they leave it (their restore
+# then goes where trash.place_family says, #594).
 # The rows are locked in family order (each family's first version, id =
 # family_id, then by id), the order every family lock uses, so a folder delete
 # and a restore of one of its families queue instead of deadlocking. Like every
@@ -255,6 +287,12 @@ _SUMMARY = (
     " SELECT (SELECT count(*) FROM down), (SELECT count(DISTINCT family_id) FROM live),"
     " (SELECT coalesce(sum(size_bytes), 0) FROM live)"
 )
+# PRD 7 (#599): the same, of what the person may see: a hidden folder is not there (0 folders), and
+# its files and the hidden ones inside a visible folder are not counted. An Admin's delete dialog
+# reads the true totals (_SUMMARY, PRD 7 section 5).
+_SUMMARY_SEEN = _SUMMARY.replace(" folders f", " visible_folders f").replace(
+    " documents d", " visible_documents d"
+)
 # A folder upload (a zip the worker unpacks too) whose plan holds one of :ids, that still has a
 # file waiting, and that planned, registered or sent something since :since: the uploads with
 # one waiting first, on folder_upload_items_state, then their plan on folder_upload_folders_folder.
@@ -266,6 +304,18 @@ _UPLOAD_RUNNING = (
     " AND r.folder_upload_id = u.id AND r.updated_at > :since))"
     " AND EXISTS (SELECT 1 FROM folder_upload_folders m WHERE m.customer_id = :c"
     " AND m.folder_upload_id = u.id AND m.folder_id = ANY(CAST(:ids AS uuid[]))))"
+)
+# #594: what the folder :f holds sees the same people in :p (None: the top level, no department
+# and no private folder): the same department and private folder, or both open (no private folder,
+# and no department or one not Department only, read from the live department). NULL: refused.
+_SAME_ACCESS = (
+    "SELECT (f.department_id, f.private_folder_id)"
+    " IS NOT DISTINCT FROM (t.department_id, t.private_folder_id)"
+    " OR (f.private_folder_id IS NULL AND t.private_folder_id IS NULL"
+    " AND NOT EXISTS (SELECT 1 FROM folders d WHERE d.customer_id = :c"
+    " AND d.id IN (f.department_id, t.department_id) AND d.department_only))"
+    " FROM folders f LEFT JOIN folders t ON t.customer_id = :c AND t.id = CAST(:p AS uuid)"
+    " WHERE f.customer_id = :c AND f.id = :f"
 )
 # The deleted folder steps out of its siblings' names first, so a folder inside it may take its
 # name where they meet. Its id is its name only inside this transaction (36 characters).
@@ -296,9 +346,11 @@ _DELETE_ALL = "DELETE FROM folders WHERE customer_id = :c AND id = ANY(CAST(:ids
 # #542: the subtree into Trash as it is, every column folders has, under one trash_id; :f is the root.
 _TRASH_TREE = (
     "INSERT INTO trashed_folders (id, customer_id, parent_id, name, kind, sort_order, autofile_key,"
-    " created_by, created_at, trash_id, root, deleted_at, deleted_by)"
+    " created_by, created_at, trash_id, root, deleted_at, deleted_by, department_only, private,"
+    " department_id, private_folder_id)"
     " SELECT f.id, f.customer_id, f.parent_id, f.name, f.kind, f.sort_order, f.autofile_key, f.created_by,"
-    " f.created_at, CAST(:trash AS uuid), f.id = :f, :now, :by"
+    " f.created_at, CAST(:trash AS uuid), f.id = :f, :now, :by, f.department_only, f.private,"
+    " f.department_id, f.private_folder_id"
     " FROM folders f WHERE f.customer_id = :c AND f.id = ANY(CAST(:ids AS uuid[]))"
 )
 # The first candidate name no sibling has, compared as folders_sibling_name compares (lower()), NFC.
@@ -354,6 +406,13 @@ def create_folder(
         "sort": sort_order,
     }
     return _folder(_write_named(conn, _INSERT, params).one())
+
+
+def department_in_use(conn: Connection, customer_id: str, folder_id: str) -> bool:
+    """Whether the department ``folder_id`` has members, is Department only or holds a private
+    folder (``_IN_USE``): its kind may not change (PRD 7 lead decision 6). The caller holds the
+    tree lock. Two index probes and its folders by department."""
+    return bool(conn.execute(text(_IN_USE), {"c": customer_id, "f": folder_id}).scalar())
 
 
 def set_kind(
@@ -442,10 +501,14 @@ def delete_folder(conn: Connection, customer_id: str, folder_id: str) -> None:
     prune_empty(conn, customer_id, [None if deleted[1] is None else str(deleted[1])])
 
 
-def folder_summary(conn: Connection, customer_id: str, folder_id: str) -> FolderSummary:
-    """What the folder holds at every depth (FolderSummary). Raises FolderNotFound.
+def folder_summary(
+    conn: Connection, customer_id: str, folder_id: str, *, seen_only: bool = False
+) -> FolderSummary:
+    """What the folder holds at every depth (FolderSummary); with ``seen_only`` only what the
+    person may see (PRD 7). Raises FolderNotFound (with ``seen_only`` a hidden folder too).
     One statement, O(s log F + n log D) for the s folders and n documents of its subtree."""
-    count, files, size = conn.execute(text(_SUMMARY), {"c": customer_id, "f": folder_id}).one()
+    statement = _SUMMARY_SEEN if seen_only else _SUMMARY
+    count, files, size = conn.execute(text(statement), {"c": customer_id, "f": folder_id}).one()
     if not count:
         raise FolderNotFound()
     return FolderSummary(files=int(files), folders=int(count) - 1, bytes=int(size))
@@ -475,15 +538,15 @@ def delete_folder_with_contents(
     being read goes too, as with a single delete.
 
     Raises FolderNotFound, DestinationNotFound (``to``), FolderCycle (``to`` is the folder or
-    inside it), FolderTooDeep, FolderUploadRunning (a folder upload into what is deleted still has
-    files waiting and was active in the last UPLOAD_QUIET_HOURS: with keep, the folder itself, as
-    its folders only move), FolderNameTaken (no free number up to 100) or FolderChanged (a file
-    arrived meanwhile: a document insert or move takes no tree lock). Nothing is written before
-    the checks; a refusal after a write leaves the caller's transaction to roll back. ``files``
-    in what it returns is, with trash, the families that went to Trash now, and ``trash_id`` is set.
-    O(s log F + n log D)
-    for the s folders and n documents of the subtree, in a fixed number of statements plus two a
-    clashing name.
+    inside it), FolderTooDeep, AccessWouldChange (with keep, ``to`` is seen by other people than
+    the folder, #594; Trash inside it too), FolderUploadRunning (a folder upload into what is
+    deleted still has files waiting and was active in the last UPLOAD_QUIET_HOURS: with keep, the
+    folder itself, as its folders only move), FolderNameTaken (no free number up to 100) or
+    FolderChanged (a file arrived meanwhile: a document insert takes no tree lock). Nothing is
+    written before the checks; a refusal after a write leaves the caller's transaction to roll
+    back. ``files`` in what it returns is, with trash, the families that went to Trash now, and
+    ``trash_id`` is set. O(s log F + n log D) for the s folders and n documents of the subtree, in
+    a fixed number of statements plus two a clashing name.
     """
     _lock_tree(conn, customer_id)
     held = folder_summary(conn, customer_id, folder_id)
@@ -496,6 +559,8 @@ def delete_folder_with_contents(
             raise FolderCycle()
         if int(target_depth) + int(height) - 1 > MAX_DEPTH:  # its folders land just below ``to``
             raise FolderTooDeep()
+    if contents == "keep" and not conn.execute(text(_SAME_ACCESS), params).scalar():
+        raise AccessWouldChange()
     gone = [folder_id] if contents == "keep" else descendant_ids(conn, customer_id, folder_id)
     since = now - timedelta(hours=UPLOAD_QUIET_HOURS)
     if conn.execute(text(_UPLOAD_RUNNING), {**params, "ids": gone, "since": since}).scalar_one():
@@ -560,6 +625,12 @@ def _write_named(conn: Connection, statement: str, params: dict[str, Any]) -> Cu
         if sqlstate(error) == UNIQUE_VIOLATION:
             raise FolderNameTaken() from None
         if sqlstate(error) == CHECK_VIOLATION:
+            # #601: folders_department_only is the other CHECK a kind change can meet.
+            if (
+                getattr(getattr(error.orig, "diag", None), "constraint_name", None)
+                == "folders_department_only"
+            ):
+                raise DepartmentInUse() from None
             raise DepartmentNotTopLevel() from None
         raise
 
@@ -578,6 +649,8 @@ def _folder(row: Sequence[Any]) -> FolderRow:
         created_at=row[3],
         kind=str(row[4]),
         sort_order=row[5],
+        department_only=bool(row[6]),
+        private=bool(row[7]),
     )
 
 

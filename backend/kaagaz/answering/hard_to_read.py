@@ -31,7 +31,7 @@ from typing import Any, Protocol
 
 from sqlalchemy import text
 
-from kaagaz.db.engine import Database
+from kaagaz.db.engine import Database, user_or_customer
 from kaagaz.reading.spans import BoxLocation, location_from_json
 from kaagaz.search.scope import EVERYTHING, Scope
 
@@ -43,7 +43,7 @@ _FLAGGED_PAGES = text(
     """
     SELECT d.id::text AS document_id, d.display_name, p.page_no, p.read_quality, count(*) OVER () AS total
     FROM pages p
-    JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id
+    JOIN visible_documents d ON d.customer_id = p.customer_id AND d.id = p.document_id
     WHERE p.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
       AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
       AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -69,11 +69,14 @@ _FLAGGED_PAGES = text(
 # citation of it is always hard to read. O(s + p) in the cited documents' spans and pages.
 # Word review (0030): a mark a person confirmed or edited, still in force, is no longer hard
 # to read (matched on its page, spot and text as read, the parts of its word key).
+# PRD 7 (#602): only of the cited documents the person can see, in both arms.
 _WORD_MARKS = text(
     """
     SELECT r.document_id::text AS document_id, mark -> 'region' AS region
     FROM reader_outputs r CROSS JOIN LATERAL jsonb_array_elements(r.output) AS mark
     WHERE r.customer_id = :customer_id AND r.document_id = ANY(CAST(:documents AS uuid[]))
+      AND r.document_id IN (SELECT s.id FROM visible_documents s WHERE s.customer_id = :customer_id
+        AND s.id = ANY(CAST(:documents AS uuid[])))
       AND r.role = 'first' AND mark ->> 'origin' = 'ocr' AND mark ->> 'kind' IS NULL
       AND mark ->> 'quality' IN ('unsure', 'illegible')
       AND NOT EXISTS (SELECT 1 FROM word_changes w WHERE w.customer_id = r.customer_id
@@ -85,6 +88,8 @@ _WORD_MARKS = text(
            jsonb_build_object('kind', 'box', 'page', p.page_no, 'box', jsonb_build_array(0, 0, 1, 1))
     FROM pages p
     WHERE p.customer_id = :customer_id AND p.document_id = ANY(CAST(:documents AS uuid[]))
+      AND p.document_id IN (SELECT s.id FROM visible_documents s WHERE s.customer_id = :customer_id
+        AND s.id = ANY(CAST(:documents AS uuid[])))
       AND (p.read_quality = 'unreadable'
         OR p.read_issues && CAST(ARRAY['read_locally', 'reader_refused'] AS text[]))
     """
@@ -119,12 +124,17 @@ class WordMark:
 
 
 class ReadingQuality(Protocol):
-    def flagged_pages(self, customer_id: str, *, scope: Scope = EVERYTHING) -> tuple[list[FlaggedPage], int]:
+    def flagged_pages(
+        self, customer_id: str, *, scope: Scope = EVERYTHING, user_id: str | None
+    ) -> tuple[list[FlaggedPage], int]:
         """At most ``MAX_NAMED_PAGES`` unreadable or uncertain pages of the documents in
-        ``scope``, unreadable first, and how many there are in all."""
+        ``scope``, unreadable first, and how many there are in all; ``user_id``: the asker,
+        whose transaction it is (``word_marks``' too)."""
         ...
 
-    def word_marks(self, customer_id: str, document_ids: Sequence[str]) -> list[WordMark]:
+    def word_marks(
+        self, customer_id: str, document_ids: Sequence[str], *, user_id: str | None
+    ) -> list[WordMark]:
         """The word marks of these documents (their first reader's)."""
         ...
 
@@ -133,9 +143,11 @@ class PgReadingQuality:
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    def flagged_pages(self, customer_id: str, *, scope: Scope = EVERYTHING) -> tuple[list[FlaggedPage], int]:
+    def flagged_pages(
+        self, customer_id: str, *, scope: Scope = EVERYTHING, user_id: str | None
+    ) -> tuple[list[FlaggedPage], int]:
         params = {"customer_id": customer_id, "limit": MAX_NAMED_PAGES} | scope.params()
-        with self._db.customer(customer_id) as conn:
+        with user_or_customer(self._db, customer_id, user_id) as conn:
             rows = conn.execute(_FLAGGED_PAGES, params).all()
         pages = [
             FlaggedPage(str(row.document_id), str(row.display_name), int(row.page_no), str(row.read_quality))
@@ -143,11 +155,13 @@ class PgReadingQuality:
         ]
         return pages, int(rows[0].total) if rows else 0
 
-    def word_marks(self, customer_id: str, document_ids: Sequence[str]) -> list[WordMark]:
+    def word_marks(
+        self, customer_id: str, document_ids: Sequence[str], *, user_id: str | None
+    ) -> list[WordMark]:
         if not document_ids:
             return []
         params = {"customer_id": customer_id, "documents": sorted(set(document_ids))}
-        with self._db.customer(customer_id) as conn:
+        with user_or_customer(self._db, customer_id, user_id) as conn:
             rows = conn.execute(_WORD_MARKS, params).all()
         marks = []
         for row in rows:

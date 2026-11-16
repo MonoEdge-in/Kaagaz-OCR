@@ -16,7 +16,7 @@ import { buildTree } from "@/components/documents/folderTree";
 import type { EditAction, RowAction } from "@/components/documents/library";
 import libraryStyles from "@/components/documents/Library.module.css";
 import { deletedMessage } from "@/components/documents/logic";
-import { restoredMessage, trashQuestion } from "@/components/documents/trash";
+import { placedMessage, restoredMessage, trashQuestion } from "@/components/documents/trash";
 import { ApiError, deleteDocument, listFolders, listTags, restoreDocument } from "@/lib/api";
 import type { DocumentDetail, Folder, Tag } from "@/lib/types";
 import type { MoreItem } from "@/components/documents/DocumentActions";
@@ -86,7 +86,7 @@ export function DocumentMenu({
     else if (action === "trash") setTrashing(true);
     else if (action === "restore") {
       restoreDocument(detail.id).then(
-        () => onChanged(restoredMessage(detail.display_name)),
+        ({ placed }) => onChanged([restoredMessage(detail.display_name), placed && placedMessage(placed)].filter(Boolean).join(" ")),
         (caught: unknown) => setError(failed(caught)),
       );
     } else if (action === "rename" || action === "move" || action === "tags") setEditing(action);

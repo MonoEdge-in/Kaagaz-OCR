@@ -50,7 +50,7 @@ from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobNotFound
 from kaagaz.search.scope import Scope
 from kaagaz.settings import Settings
-from tests.db_support import insert_document, insert_folder, insert_tag, new_customer, tag_document
+from tests.db_support import APP_ROLE, insert_document, insert_folder, insert_tag, new_customer, tag_document
 from tests.fakes import MemoryQueue, MemoryStorage
 from tests.settings_factory import make_settings
 
@@ -277,9 +277,10 @@ class Api:
         self.storage = storage or ApiFakeStorage()
         self.queue = queue or ApiFakeQueue()
         self.answers = FakeAnswers()
+        self.app_db = Database(db.engine, APP_ROLE)  # PRD 7 (#595): the app in the API role, as on a server
         self.app = create_app(
             self.settings,
-            db=db,
+            db=self.app_db,
             storage=self.storage,
             queue=self.queue,
             answers=self.answers if answers is None else answers,
