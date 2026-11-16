@@ -512,9 +512,9 @@ def test_v17_the_finder_runs_after_the_fingerprints_in_the_same_passes(
     the sweep ends only when neither has anything left."""
     missing, finding = [2, 0, 0], [7, 0]
     monkeypatch.setattr(worker_main, "fingerprint_missing", lambda _db: missing.pop(0))
-    monkeypatch.setattr(worker_main, "find_versions", lambda _db: finding.pop(0))
     no_database = cast(Database, None)  # the two passes are stand-ins: no database is reached
-    assert [worker_main.old_documents(no_database) for _ in range(3)] == [2, 7, 0]
+    passes = [worker_main.old_documents(no_database, lambda: finding.pop(0)) for _ in range(3)]
+    assert passes == [2, 7, 0]
     assert missing == finding == []
 
 

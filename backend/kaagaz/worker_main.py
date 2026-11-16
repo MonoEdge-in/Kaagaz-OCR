@@ -94,6 +94,7 @@ adding a setting; back-off with jitter needs Vrushit's queue settings.
 
 import contextlib
 import functools
+from collections import Counter
 import json
 import logging
 import os
@@ -186,6 +187,8 @@ FINGERPRINT_PASS = 50
 # V17 (#648): the version finder's pass, after the fingerprints: this many files looked at, so an
 # idle turn stays short (each file reads up to 20 others' text), then a minute's wait.
 FINDER_PASS = 10
+# Review (16 Nov 2026): a file whose look fails this many times in one process is passed over.
+FINDER_FILE_TRIES = 3
 
 # The only extra fields a log line may carry. Anything else passed in
 # ``extra`` is dropped, so a careless call cannot log document data.
@@ -676,43 +679,85 @@ class FingerprintOld:
         return True
 
 
-def old_documents(db: Database) -> int:
+def old_documents(db: Database, finder: Callable[[], int]) -> int:
     """FingerprintOld's pass: the fingerprints first; once none is missing, the version finder's
     (V17, #648). How many documents it did."""
-    return fingerprint_missing(db) or find_versions(db)
+    return fingerprint_missing(db) or finder()
 
 
-def find_versions(db: Database, limit: int = FINDER_PASS) -> int:
-    """One pass of the version finder (V17, #648, ``kaagaz/db/version_finder.py``): the first
-    organisation in id order it is due for, ``find_versions_of``; 0 when it is due for none.
-    O(customers) statements to find it."""
-    with db.system() as conn:
-        customers = customer_ids(conn)
-    for customer in customers:
-        with db.customer(customer) as conn:
-            due = version_finder.due(conn, customer)
-        if due:
-            return find_versions_of(db, customer, limit)
-    return 0
+class FindVersions:
+    """The version finder's passes (V17, #648, ``kaagaz/db/version_finder.py``) in one worker
+    process. Each pass takes the next organisation it is due for, in turn after the one it did last
+    (``customers``: every organisation, in id order), and looks at up to ``limit`` of its files,
+    each in its own transaction (a restart resumes after the last one); once none is left, it makes
+    the groups. A file whose look fails, but for the database being out of reach, never stalls the
+    finder (review, 16 Nov 2026): it is logged by the organisation, the file and the error's type,
+    never a message, and that organisation's pass ends, to try it again; after FINDER_FILE_TRIES
+    failures in this process the run's cursor moves past it, with a warning. Database outages
+    propagate (FingerprintOld logs them)."""
 
+    def __init__(
+        self, db: Database, *, limit: int = FINDER_PASS, customers: Callable[[], list[str]] | None = None
+    ) -> None:
+        self._db = db
+        self._limit = limit
+        self._customers = customers
+        self._last: str | None = None
+        self._failures: Counter[tuple[str, str]] = Counter()
 
-def find_versions_of(db: Database, customer_id: str, limit: int = FINDER_PASS) -> int:
-    """At most ``limit`` of the organisation's files looked at, each in its own transaction (a
-    restart resumes after the last one), and the groups made once none is left. How many it looked
-    at (at least 1 for the pass that made the groups); 0 once its run has finished. Database
-    errors propagate (FingerprintOld logs them)."""
-    with db.customer(customer_id) as conn:
-        documents = version_finder.next_documents(conn, customer_id, limit)
-    if documents is None:
+    def _every(self) -> list[str]:
+        if self._customers is not None:
+            return self._customers()
+        with self._db.system() as conn:
+            return [str(each) for each in customer_ids(conn)]
+
+    def __call__(self) -> int:
+        """One pass: how many files it looked at (at least 1 for the pass that made the groups); 0
+        when it is due for no organisation. O(customers) statements to find one."""
+        customers = self._every()
+        if self._last in customers:
+            turn = customers.index(self._last) + 1
+            customers = customers[turn:] + customers[:turn]
+        for customer in customers:
+            with self._db.customer(customer) as conn:
+                due = version_finder.due(conn, customer)
+            if due:
+                self._last = customer
+                return self.of(customer)
         return 0
-    for document in documents:
-        with db.customer(customer_id) as conn:
-            version_finder.look_at(conn, customer_id, document)
-    if len(documents) < limit:
-        with db.customer(customer_id) as conn:
-            groups = version_finder.finish(conn, customer_id)
-        logger.info("version finder: %d groups", groups, extra={"customer_id": customer_id})
-    return max(len(documents), 1)
+
+    def of(self, customer_id: str) -> int:
+        """One pass of this organisation (class notes); 0 once its run has finished."""
+        with self._db.customer(customer_id) as conn:
+            documents = version_finder.next_documents(conn, customer_id, self._limit)
+        if documents is None:
+            return 0
+        for looked, document in enumerate(documents):
+            try:
+                with self._db.customer(customer_id) as conn:
+                    version_finder.look_at(conn, customer_id, document)
+            except Exception as error:  # noqa: BLE001 - one file never stalls the finder (class notes)
+                if isinstance(error, BackendUnavailable) or database_unreachable(error):
+                    raise
+                if not self._passed_over(customer_id, document, error):
+                    return looked + 1
+        if len(documents) < self._limit:
+            with self._db.customer(customer_id) as conn:
+                groups = version_finder.finish(conn, customer_id)
+            logger.info("version finder: %d groups", groups, extra={"customer_id": customer_id})
+        return max(len(documents), 1)
+
+    def _passed_over(self, customer_id: str, document_id: str, error: Exception) -> bool:
+        """Log the failure; at its FINDER_FILE_TRIES-th, move the run past the file (True)."""
+        ids = {"customer_id": customer_id, "document_id": document_id}
+        logger.warning("version finder: a file failed", extra={**ids, "code": type(error).__name__})
+        self._failures[(customer_id, document_id)] += 1
+        if self._failures[(customer_id, document_id)] < FINDER_FILE_TRIES:
+            return False
+        with self._db.customer(customer_id) as conn:
+            version_finder.pass_over(conn, customer_id, document_id)
+        logger.warning("version finder: a file passed over", extra={**ids, "code": "passed_over"})
+        return True
 
 
 def fingerprint_missing(db: Database, limit: int = FINGERPRINT_PASS) -> int:
@@ -976,7 +1021,8 @@ def _serve(settings: Settings) -> None:
     lock = sweep_lock(db.engine)
     pieces = EmbedMissing(PurgeHourly(jobs, purge, _utc_now, lock=lock), embed, _utc_now, lock=lock)
     stories_done = StoryVectors(pieces, stories, _utc_now, lock=lock)
-    vectors = FingerprintOld(stories_done, functools.partial(old_documents, db), _utc_now, lock=lock)
+    finder = FindVersions(db)
+    vectors = FingerprintOld(stories_done, functools.partial(old_documents, db, finder), _utc_now, lock=lock)
     # Q7: only Gemini's pages are ever read locally (its outage fallback).
     upgrade = functools.partial(upgrade_oldest, db, queue) if settings.ocr_engine == "gemini" else None
     upgrades = UpgradeLocalReads(

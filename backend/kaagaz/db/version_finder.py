@@ -147,6 +147,12 @@ def look_at(conn: Connection, customer_id: str, document_id: str) -> int:
     return stored
 
 
+def pass_over(conn: Connection, customer_id: str, document_id: str) -> None:
+    """Move the run's cursor past a file whose look keeps failing (the worker's FindVersions), so it
+    never stalls the run; the file is in no pair. One statement."""
+    conn.execute(_ADVANCE, {"c": customer_id, "d": document_id})
+
+
 def finish(conn: Connection, customer_id: str) -> int:
     """Make the groups from the run's pairs whose files are still live (module notes) and finish
     the run, in one transaction; how many groups. O(p log p) for the p pairs."""

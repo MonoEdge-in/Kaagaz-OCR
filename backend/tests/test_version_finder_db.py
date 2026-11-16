@@ -6,6 +6,7 @@ run began left to spotting, and another organisation's files never mixed in. Not
 The API that shows the groups: test_isolation_version_groups.py. The groups' rule without a
 database: test_versions.py."""
 
+import logging
 import uuid
 from datetime import date
 from typing import Any
@@ -14,7 +15,8 @@ import pytest
 
 from kaagaz.db import version_finder
 from kaagaz.db.engine import Database
-from kaagaz.worker_main import find_versions_of
+from kaagaz.ingestion.errors import BackendUnavailable
+from kaagaz.worker_main import FINDER_PASS, FindVersions
 from tests.test_ai_settings_db import switched_off
 from tests.test_api_support import Api, Signed
 from tests.test_operator_auth_db import _owner
@@ -72,10 +74,15 @@ def _run(db: Database, customer: str) -> tuple[Any, ...]:
     return tuple(_owner(db, _RUN, {"c": customer})[0])
 
 
+def _pass(db: Database, customer: str, limit: int = FINDER_PASS) -> int:
+    """One pass of the finder over this organisation alone."""
+    return FindVersions(db, limit=limit).of(customer)
+
+
 def _until_done(db: Database, customer: str, limit: int = 10) -> int:
     """Passes until the run has finished; how many passes it took (at most 50)."""
     for passes in range(1, 51):
-        if find_versions_of(db, customer, limit) == 0:
+        if _pass(db, customer, limit) == 0:
             return passes
     raise AssertionError("the run never finished")
 
@@ -126,7 +133,7 @@ def test_the_finder_runs_once_per_organisation(db: Database) -> None:
     _old(db, c, copy)
     with db.customer(c) as conn:
         assert not version_finder.due(conn, c)
-    assert find_versions_of(db, c) == 0
+    assert _pass(db, c) == 0
     assert (_members(db, c), _pairs(db, c), _run(db, c)) == done
     assert {m[0] for m in done[0]} == {files["x"], files["y"], files["z"]}
 
@@ -134,23 +141,24 @@ def test_the_finder_runs_once_per_organisation(db: Database) -> None:
 def test_a_stopped_run_resumes_after_the_last_file_it_looked_at(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One file a pass; the worker stops while looking at the second (its transaction rolls back):
-    the run goes on from that file, and the groups are those of a run never stopped."""
+    """One file a pass; the database goes away while the worker looks at the second (its
+    transaction rolls back, and an outage is never counted against the file): the run goes on from
+    that file, and the groups are those of a run never stopped."""
     api = Api(db)
     signed = api.new_signed()
     c = signed.customer_id
     files = _library(api, signed)
-    assert find_versions_of(db, c, 1) == 1
+    assert _pass(db, c, 1) == 1
     first = _run(db, c)
     assert first[:2] == (1, min(files.values())) and not first[2]
     real = version_finder.look_at
 
     def stop(*_: Any) -> int:
-        raise RuntimeError("the worker stopped")
+        raise BackendUnavailable("database")
 
     monkeypatch.setattr(version_finder, "look_at", stop)
-    with pytest.raises(RuntimeError):
-        find_versions_of(db, c, 1)
+    with pytest.raises(BackendUnavailable):
+        _pass(db, c, 1)
     assert _run(db, c) == first
     monkeypatch.setattr(version_finder, "look_at", real)
     assert _until_done(db, c, 1) == 5  # the 3 files left, the pass that groups, the one that finds it done
@@ -216,7 +224,7 @@ def test_a_file_trashed_or_locked_during_the_run_is_left_out_of_its_group(db: Da
     files = _library(api, signed)
     copy = _doc(api, signed, [*BASE, "copy"], "Lease copy.pdf", hours_ago=80)
     _old(db, c, copy)
-    assert find_versions_of(db, c, 5) == 5  # all 5 looked at, the groups not made yet
+    assert _pass(db, c, 5) == 5  # all 5 looked at, the groups not made yet
     assert len(_pairs(db, c)) == 5  # x~y, x~z, x~copy, y~copy, z~copy
     _owner(db, _TRASH, {"d": files["y"]})
     _lock(db, files["z"])
@@ -269,3 +277,41 @@ def test_a_document_with_text_like_none_is_in_no_group(db: Database) -> None:
     _until_done(db, c)
     assert _members(db, c) == [] and _run(db, c)[2:] == (True, 0)
     assert _pairs(db, c) == []
+
+
+def test_one_failing_file_never_stalls_the_finder(
+    db: Database, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Review (#648): the first organisation's first file (the stranger W, lowest id) fails each
+    time it is looked at. Each failure is logged by organisation, file and error type, never its
+    text, and ends that organisation's pass; the organisations take turns, so the second finishes
+    meanwhile; the third failure in this process passes the file over (a warning), and the first
+    organisation's run finishes with the rest: X, Y and Z still a group."""
+    api = Api(db)
+    ours, theirs = api.new_signed(), api.new_signed()
+    stranger = f"00000000-0000-4000-8000-{uuid.uuid4().hex[:12]}"
+    mine = _library(api, ours, w={"id": stranger})
+    other = _library(api, theirs)
+    real = version_finder.look_at
+
+    def failing(conn: Any, customer: str, document: str) -> int:
+        if document == stranger:
+            raise ValueError("Zebra, a line of the file's text")
+        return real(conn, customer, document)
+
+    monkeypatch.setattr(version_finder, "look_at", failing)
+    caplog.set_level(logging.INFO, logger="kaagaz.worker")
+    finder = FindVersions(db, customers=lambda: [ours.customer_id, theirs.customer_id])
+    assert finder() == 1  # ours: W fails at once, the pass ends there
+    assert _run(db, ours.customer_id)[:2] == (0, None)
+    assert finder() == 4 and _run(db, theirs.customer_id)[2]  # theirs' turn: all 4, then grouped
+    assert finder() == 1  # ours again (theirs is done): W fails a second time
+    assert finder() == 4  # the third: W passed over, the other 3 looked at, then grouped
+    assert _run(db, ours.customer_id)[:3] == (4, max(mine.values()), True)
+    assert {m[0] for m in _members(db, ours.customer_id)} == {mine["x"], mine["y"], mine["z"]}
+    assert {m[0] for m in _members(db, theirs.customer_id)} == {other["x"], other["y"], other["z"]}
+    failed = [r for r in caplog.records if getattr(r, "document_id", None) == stranger]
+    assert [(r.levelname, r.__dict__["customer_id"], r.__dict__["code"]) for r in failed] == [
+        ("WARNING", ours.customer_id, "ValueError"),
+    ] * 3 + [("WARNING", ours.customer_id, "passed_over")]
+    assert not any("Zebra" in r.getMessage() for r in caplog.records)
