@@ -636,7 +636,7 @@ def search(
     """The best ``limit`` pieces of this customer's ready, current documents
     that are not in Trash and are inside ``scope``, best first.
 
-    ``conn`` must come from ``Database.customer(customer_id)``; its transaction
+    ``conn`` must come from ``Database.user`` as the asker (PRD 7); its transaction
     gets this search's settings (the timeout, custom plans, the fuzzy threshold,
     the index walk), which end with it. ``recipe`` is the ``embedding_model`` of
     vectors made the current way; ``ef_search`` is SEARCH_EF. An empty question
@@ -670,7 +670,7 @@ def search_translated(
     list fused (the module docstring), and each piece a list of the question itself found,
     with its own meaning score (None: no meaning list of the question found it). The
     user's own words (``expansion``) go with the question only. ``begin`` opens one
-    ``Database.customer(customer_id)`` transaction: each text's lists run in one of their own,
+    ``Database.user`` transaction, as the asker: each text's lists run in one of their own,
     SEARCH_FAN_OUT at once (Ask speed, 24 Oct 2026), so no connection is shared across threads;
     they are fused in the texts' order, the question's first, so the ranking is the one they
     give one after another. The details, in one more. O(t) times ``search``'s cost for t
@@ -837,7 +837,7 @@ def neighbours(
 ) -> list[SearchHit]:
     """Q4: the pieces up to ``size`` either side of each hit in its document, in ``scope``,
     each once, never a hit: the first hit's first, in seq order. ``conn`` comes from
-    ``Database.customer(customer_id)``. One statement, O(h * size * log N) for h hits."""
+    ``Database.user`` as the asker. One statement, O(h * size * log N) for h hits."""
     if size < 1 or not hits or scope.matches_nothing:
         return []
     params = {

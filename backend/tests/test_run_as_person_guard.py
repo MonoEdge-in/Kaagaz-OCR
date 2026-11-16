@@ -11,10 +11,9 @@ Every file of kaagaz/api is read with ``ast``. On a database (``db``, ``context.
   where ``user`` is the route's signed-in user parameter and is never rebound. Any other shape,
   for example ``(user.customer_id, target_user_id)``, is in USER_EXCEPTIONS with its reason.
 
-It covers kaagaz/api call sites only. Request-time work in shared code still opens
-``Database.customer``: PgDocuments (kaagaz/db/documents.py: the upload's insert, duplicate
-check and filing) and the usage ledger (kaagaz/ai/usage.py, ``usage_scope``) are converted in
-PR 2 with the Ask service.
+It covers kaagaz/api call sites only. The shared code a request reaches, the Ask service and
+search, PgDocuments and the usage ledger, is test_ask_as_person_guard.py's and
+test_ask_as_person_db.py's (PR 2, #585).
 """
 
 import ast

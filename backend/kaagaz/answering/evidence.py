@@ -1,7 +1,8 @@
 """Search evidence for the search route: fetch it, number it, and decide if it is enough.
 
 ``Retriever`` is the small port the service depends on, so tests use a fake.
-``PgRetriever`` wraps ``kaagaz.search.hybrid.search`` inside ``db.customer``;
+``PgRetriever`` wraps ``kaagaz.search.hybrid.search`` inside ``db.user`` as the asker,
+``user_id`` (PRD 7, #585; ``db.customer`` when no person asks, None: tests and tools);
 the search module is imported there only, so everything else here is plain
 Python.
 
@@ -93,7 +94,7 @@ from kaagaz.answering import glossary
 from kaagaz.answering.expansion import NO_EXPANSION, Expansion
 from kaagaz.answering.sanitize import clean_snippet, strip_ignorable
 from kaagaz.chunking.script import ascii_digits, is_devanagari
-from kaagaz.db.engine import Database
+from kaagaz.db.engine import Database, user_or_customer
 from kaagaz.extraction.parsing import _INDIAN, _WESTERN
 from kaagaz.reading.spans import BoxLocation, location_from_json, location_to_json
 from kaagaz.search.scope import Scope
@@ -228,11 +229,16 @@ class Retriever(Protocol):
         limit: int,
         scope: Scope,
         expansion: Expansion = NO_EXPANSION,
+        *,
+        user_id: str | None,
     ) -> Sequence[Hit]:
-        """``expansion``: the asking user's words the question used (OR alternatives only)."""
+        """``expansion``: the asking user's words the question used (OR alternatives only);
+        ``user_id``: the asker, whose transaction it is (every port's, PRD 7)."""
         ...
 
-    def neighbours(self, customer_id: str, hits: Sequence[Hit], scope: Scope) -> Sequence[Hit]:
+    def neighbours(
+        self, customer_id: str, hits: Sequence[Hit], scope: Scope, *, user_id: str | None
+    ) -> Sequence[Hit]:
         """Q4: the pieces next to ``hits`` in ``scope``, each once, never one of them."""
         ...
 
@@ -263,6 +269,8 @@ class TranslatedSearch(Protocol):
         scope: Scope,
         expansion: Expansion = NO_EXPANSION,
         asked: Lists | None = None,
+        *,
+        user_id: str | None,
     ) -> Translated:
         """``Retriever.search`` for the question and each (text, embedding) translation, fused.
         ``asked``: the question's lists from an earlier search of it (``Translated.lists``), used
@@ -274,13 +282,21 @@ class Context(Protocol):
     """PRD 5: the whole documents (CX5), the pieces topics and sections add (CX6), and the
     documents' cards (M2), each inside ``scope``."""
 
-    def whole(self, customer_id: str, scope: Scope, budget: int) -> Sequence[Hit] | None:
+    def whole(
+        self, customer_id: str, scope: Scope, budget: int, *, user_id: str | None
+    ) -> Sequence[Hit] | None:
         """Every piece of ``scope`` in reading order; None when there is none or their text
         is more than about ``budget`` tokens (characters / 4)."""
         ...
 
     def topic_pieces(
-        self, customer_id: str, terms: Sequence[str], hits: Sequence[Hit], scope: Scope
+        self,
+        customer_id: str,
+        terms: Sequence[str],
+        hits: Sequence[Hit],
+        scope: Scope,
+        *,
+        user_id: str | None,
     ) -> Sequence[Hit]:
         """The pieces of the topics a term names or a hit belongs to, never a hit."""
         ...
@@ -292,13 +308,15 @@ class Context(Protocol):
         embedding: list[float] | None,
         hits: Sequence[Hit],
         scope: Scope,
+        *,
+        user_id: str | None,
     ) -> Sequence[Hit]:
         """The pieces of the two sections the keywords or the vector find (near enough),
         never a hit, at most TOPIC_EXPAND_MAX_PIECES a section."""
         ...
 
     def cards(
-        self, customer_id: str, document_ids: Sequence[str], scope: Scope
+        self, customer_id: str, document_ids: Sequence[str], scope: Scope, *, user_id: str | None
     ) -> Mapping[str, tuple[str, Any]]:
         """Each live document's (display name, card JSON or None)."""
         ...
@@ -307,7 +325,7 @@ class Context(Protocol):
 class PgRetriever:
     """``Retriever``, ``TranslatedSearch`` and ``Context`` over PostgreSQL: hybrid search, the
     hits' neighbours, and PRD 5's whole documents, topics, sections and cards, each inside
-    ``db.customer``."""
+    ``db.user`` as ``user_id`` (``db.customer`` with None)."""
 
     def __init__(
         self,
@@ -340,12 +358,14 @@ class PgRetriever:
         limit: int,
         scope: Scope,
         expansion: Expansion = NO_EXPANSION,
+        *,
+        user_id: str | None,
     ) -> Sequence[Hit]:
         # Imported here so the answering rules (and their tests) do not need the
         # search module; only the real retriever does.
         from kaagaz.search.hybrid import search
 
-        with self._db.customer(customer_id) as conn:
+        with user_or_customer(self._db, customer_id, user_id) as conn:
             return search(
                 conn,
                 customer_id=customer_id,
@@ -368,11 +388,14 @@ class PgRetriever:
         scope: Scope,
         expansion: Expansion = NO_EXPANSION,
         asked: Lists | None = None,
+        *,
+        user_id: str | None,
     ) -> Translated:
         from kaagaz.search.hybrid import search_translated
 
         hits, original, lists = search_translated(
-            partial(self._db.customer, customer_id),  # a transaction for each text, as each thread's
+            # a transaction for each text, as each thread's, every one as the asker
+            partial(user_or_customer, self._db, customer_id, user_id),
             customer_id=customer_id,
             query_text=text,
             embedding=embedding,
@@ -386,27 +409,37 @@ class PgRetriever:
         )
         return Translated(hits, original, lists)
 
-    def neighbours(self, customer_id: str, hits: Sequence[Hit], scope: Scope) -> Sequence[Hit]:
+    def neighbours(
+        self, customer_id: str, hits: Sequence[Hit], scope: Scope, *, user_id: str | None
+    ) -> Sequence[Hit]:
         from kaagaz.search.hybrid import neighbours
 
         if not self._neighbours or not hits:
             return []
-        with self._db.customer(customer_id) as conn:
+        with user_or_customer(self._db, customer_id, user_id) as conn:
             return neighbours(conn, customer_id=customer_id, hits=hits, size=self._neighbours, scope=scope)
 
-    def whole(self, customer_id: str, scope: Scope, budget: int) -> Sequence[Hit] | None:
+    def whole(
+        self, customer_id: str, scope: Scope, budget: int, *, user_id: str | None
+    ) -> Sequence[Hit] | None:
         from kaagaz.search.hybrid import whole
 
-        with self._db.customer(customer_id) as conn:
+        with user_or_customer(self._db, customer_id, user_id) as conn:
             return whole(conn, customer_id=customer_id, scope=scope, max_bytes=4 * budget)
 
     def topic_pieces(
-        self, customer_id: str, terms: Sequence[str], hits: Sequence[Hit], scope: Scope
+        self,
+        customer_id: str,
+        terms: Sequence[str],
+        hits: Sequence[Hit],
+        scope: Scope,
+        *,
+        user_id: str | None,
     ) -> Sequence[Hit]:
         from kaagaz.search.hybrid import topic_pieces
 
         per_document = self._topic_pieces
-        with self._db.customer(customer_id) as conn:
+        with user_or_customer(self._db, customer_id, user_id) as conn:
             return topic_pieces(
                 conn, customer_id=customer_id, terms=terms, hits=hits, per_document=per_document, scope=scope
             )
@@ -418,10 +451,12 @@ class PgRetriever:
         embedding: list[float] | None,
         hits: Sequence[Hit],
         scope: Scope,
+        *,
+        user_id: str | None,
     ) -> Sequence[Hit]:
         from kaagaz.search.hybrid import section_pieces
 
-        with self._db.customer(customer_id) as conn:
+        with user_or_customer(self._db, customer_id, user_id) as conn:
             return section_pieces(
                 conn,
                 customer_id=customer_id,
@@ -435,11 +470,11 @@ class PgRetriever:
             )
 
     def cards(
-        self, customer_id: str, document_ids: Sequence[str], scope: Scope
+        self, customer_id: str, document_ids: Sequence[str], scope: Scope, *, user_id: str | None
     ) -> Mapping[str, tuple[str, Any]]:
         from kaagaz.search.hybrid import cards
 
-        with self._db.customer(customer_id) as conn:
+        with user_or_customer(self._db, customer_id, user_id) as conn:
             return cards(conn, customer_id=customer_id, document_ids=document_ids, scope=scope)
 
 

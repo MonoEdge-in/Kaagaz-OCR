@@ -23,7 +23,7 @@ kept as typed; the answer's wording stays English, as for every question.
 **The count** (``PgExhaustive``): a document counts when one of its saved pieces holds the
 phrase as whole words, upper or lower case, ``pieces.tsv_simple @@
 phraseto_tsquery('simple', term)``: the word index search already keeps (text and its Latin
-spelling, no stemming, any script), inside ``db.customer`` and the scope, current, ready
+spelling, no stemming, any script), inside ``db.user`` as the asker and the scope, current, ready
 documents out of Trash only. The first ``MAX_LISTED`` documents by name are listed with
 the pages the phrase is on, each citing its first matching piece; the rest are counted.
 
@@ -61,7 +61,7 @@ from kaagaz.answering.format import indian_number
 from kaagaz.answering.hinglish import DATE_WORDS, STOP_WORDS, normalise
 from kaagaz.answering.sanitize import clean_text
 from kaagaz.chunking.script import fold_digits, has_devanagari_letters, latin_spelling, spaced_words
-from kaagaz.db.engine import Database
+from kaagaz.db.engine import Database, user_or_customer
 from kaagaz.search.scope import DocType, Scope
 
 MAX_LISTED = 50  # documents named in one answer; the rest are counted
@@ -214,17 +214,24 @@ def latin_term(term: str) -> str:
 
 class Exhaustive(Protocol):
     def documents_with(
-        self, customer_id: str, term: str, scope: Scope, listed: int
+        self, customer_id: str, term: str, scope: Scope, listed: int, *, user_id: str | None
     ) -> tuple[int, list[list[Hit]]]:
         """How many documents in ``scope`` hold ``term`` as whole words, and the matching
         pieces of the first ``listed`` of them by name, document by document, each in
-        reading order."""
+        reading order; ``user_id``: the asker, whose transaction it is."""
         ...
 
 
 class Mentions(Protocol):
     def mentions(
-        self, customer_id: str, terms: Sequence[str], scope: Scope, exclude: Sequence[str], listed: int
+        self,
+        customer_id: str,
+        terms: Sequence[str],
+        scope: Scope,
+        exclude: Sequence[str],
+        listed: int,
+        *,
+        user_id: str | None,
     ) -> tuple[int, list[dict[str, Any]]]:
         """How many documents in ``scope``, but ``exclude``, hold any of ``terms`` as whole
         words, and the first ``listed`` of them, most matching pieces first, then by name:
@@ -292,18 +299,19 @@ _PIECES = text(
 
 
 class PgExhaustive:
-    """``Exhaustive`` over PostgreSQL, inside ``db.customer``: two statements."""
+    """``Exhaustive`` over PostgreSQL, inside ``db.user`` as ``user_id`` (``db.customer`` with
+    None): two statements."""
 
     def __init__(self, db: Database) -> None:
         self._db = db
 
     def documents_with(
-        self, customer_id: str, term: str, scope: Scope, listed: int
+        self, customer_id: str, term: str, scope: Scope, listed: int, *, user_id: str | None
     ) -> tuple[int, list[list[Hit]]]:
         from kaagaz.search.hybrid import FusedPiece, _hit
 
         params = {"c": customer_id, "w": term, "l": latin_term(term)}
-        with self._db.customer(customer_id) as conn:
+        with user_or_customer(self._db, customer_id, user_id) as conn:
             rows = conn.execute(_DOCUMENTS, params | scope.params() | {"n": max(1, listed)}).all()
             if not rows:
                 return 0, []
@@ -316,16 +324,23 @@ class PgExhaustive:
         return int(rows[0][1]), [found[document] for document in shown]
 
     def mentions(
-        self, customer_id: str, terms: Sequence[str], scope: Scope, exclude: Sequence[str], listed: int
+        self,
+        customer_id: str,
+        terms: Sequence[str],
+        scope: Scope,
+        exclude: Sequence[str],
+        listed: int,
+        *,
+        user_id: str | None,
     ) -> tuple[int, list[dict[str, Any]]]:
-        """``Mentions`` over PostgreSQL, inside ``db.customer``: one statement."""
+        """``Mentions`` over PostgreSQL, as ``documents_with``: one statement."""
         if not terms:
             return 0, []
         three = [*terms[:3], *[terms[0]] * (3 - len(terms[:3]))]  # an unused slot repeats the first
         params: dict[str, Any] = {"c": customer_id, "exclude": list(exclude), "n": max(1, listed)}
         for i, term in enumerate(three, start=1):
             params |= {f"w{i}": term, f"l{i}": latin_term(term)}
-        with self._db.customer(customer_id) as conn:
+        with user_or_customer(self._db, customer_id, user_id) as conn:
             rows = conn.execute(_MENTIONS, params | scope.params()).all()
         if not rows:
             return 0, []

@@ -173,7 +173,9 @@ def _embed_now(context: AppContext, model: ModelClient, user: CurrentUser, row: 
     """One embed of the saved story, then frees its slot. Never raises for the model
     or the database."""
     try:
-        with usage_scope(context.db, customer_id=user.customer_id, user_id=user.user_id, kind="story"):
+        with usage_scope(
+            context.db, customer_id=user.customer_id, user_id=user.user_id, kind="story", as_person=True
+        ):
             return embed_story(context.db, model, user.customer_id, user.user_id, row.family_id, row.story)
     except (ModelUnavailable, ModelOutputError, BackendUnavailable, SQLAlchemyError) as error:
         logger.warning("story saved without a vector", extra={"code": type(error).__name__})
@@ -284,7 +286,9 @@ def my_story_matches(body: StoryMatchBody, user: User, context: Context) -> dict
     on = meaning_threshold(settings.model_embed) is not None
     embedding = None
     if on:
-        with usage_scope(context.db, customer_id=user.customer_id, user_id=user.user_id, kind="story"):
+        with usage_scope(
+            context.db, customer_id=user.customer_id, user_id=user.user_id, kind="story", as_person=True
+        ):
             embedding = embed_question(context.model, question)
     if not ranking_slots.acquire(blocking=False):
         raise ApiError(503, "backend_unavailable")

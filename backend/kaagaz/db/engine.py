@@ -25,7 +25,7 @@ Never build SQL from strings (ruff's S608 checks for it).
 
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 
 from sqlalchemy import Connection, Engine, create_engine, text
 from sqlalchemy.exc import OperationalError
@@ -196,6 +196,14 @@ class Database:
         with self._engine.begin() as conn:
             conn.execute(self._set_role)
             yield conn
+
+
+def user_or_customer(
+    db: Database, customer_id: str, user_id: str | None
+) -> AbstractContextManager[Connection]:
+    """PRD 7 (#585): ``db.user`` for the person ``user_id`` asked for (an API request's work);
+    ``db.customer`` when no person did (None: a worker's, a tool's or a test's work)."""
+    return db.customer(customer_id) if user_id is None else db.user(customer_id, user_id)
 
 
 # The platform operator's role (0015), a fixed name like the migration's.

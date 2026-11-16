@@ -41,9 +41,9 @@ def test_b_never_sees_as_unreadable_pages_or_word_marks(db: Database) -> None:
         assert answer.status == "not_found"
         assert (answer.reading_note, answer.unreadable_pages, answer.unreadable_page_count) == (None, (), 0)
         assert "Sharma" not in str(answer.to_json())
-    assert reading.flagged_pages(b) == ([], 0)
-    assert reading.flagged_pages(b, scope=Scope(document_ids=(a_doc,))) == ([], 0)
-    assert reading.word_marks(b, [a_doc]) == []
+    assert reading.flagged_pages(b, user_id=None) == ([], 0)
+    assert reading.flagged_pages(b, scope=Scope(document_ids=(a_doc,)), user_id=None) == ([], 0)
+    assert reading.word_marks(b, [a_doc], user_id=None) == []
 
     a_answer = service.answer(a, QUESTION)
     assert a_answer.reading_note == (
@@ -51,4 +51,4 @@ def test_b_never_sees_as_unreadable_pages_or_word_marks(db: Database) -> None:
     )
     # Changed on purpose (ca9bb36, council 16 Oct 2026): an unreadable page is also one mark over
     # the whole page, so A's page has two marks: the word's and the page's.
-    assert [mark.document_id for mark in reading.word_marks(a, [a_doc])] == [a_doc, a_doc]
+    assert [mark.document_id for mark in reading.word_marks(a, [a_doc], user_id=None)] == [a_doc, a_doc]

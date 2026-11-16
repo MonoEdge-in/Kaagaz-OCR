@@ -99,7 +99,7 @@ EVERYTHING = Scope()  # no scope: every ready, current document of the customer
 def resolve(
     conn: Connection, customer_id: str, body: ScopeBody, *, timezone: str, detected_type: str | None = None
 ) -> Scope:
-    """``body`` for this customer, now. ``conn`` comes from ``Database.customer(customer_id)``."""
+    """``body`` for this customer, now. ``conn`` comes from ``Database.user`` (the asker)."""
     folder_ids: tuple[str, ...] | None = None
     if body.folder_id is not None:
         # The folder first, then its subfolders; empty when this customer has no such folder.
