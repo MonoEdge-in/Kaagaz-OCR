@@ -92,9 +92,11 @@ _COPY_TAGS = text(
     " SELECT :c, j.id, t.tag_id FROM unnest(CAST(:ids AS uuid[])) AS j (id)"
     " JOIN document_tags t ON t.customer_id = :c AND t.document_id = :from"
 )
+# Review (#658): only the tags still there; one deleted since is gone from every file anyway.
 _PUT_TAGS = text(
     "INSERT INTO document_tags (customer_id, document_id, tag_id)"
     " SELECT :c, x.id, x.tag FROM unnest(CAST(:ids AS uuid[]), CAST(:tags AS uuid[])) AS x (id, tag)"
+    " JOIN tags t ON t.customer_id = :c AND t.id = x.tag"
 )
 _SHARES = text(
     "SELECT user_id::text FROM document_shares WHERE customer_id = :c AND document_id = :d ORDER BY user_id"

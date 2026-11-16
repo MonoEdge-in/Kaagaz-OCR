@@ -634,3 +634,21 @@ def test_a_link_waiting_on_a_trash_is_refused_once_it_commits(db: Database) -> N
 
 def _now(conn: Any) -> Any:
     return conn.execute(text("SELECT now()")).scalar_one()
+
+
+# --- review fixes (#658) --------------------------------------------------------------------------
+
+
+def _undo(signed: Signed, org: Org, name: str, **body: Any) -> tuple[int, Any]:
+    return _post(signed, f"/documents/{org.files[name]}/link-versions/undo", body or None)
+
+
+def test_undo_works_after_a_tag_it_would_put_back_was_deleted(db: Database) -> None:
+    """Review 1: g1's tag t2 deleted while linked; Undo puts back the tags still there."""
+    org = _org(Api(db))
+    management = org.people["management"]
+    assert _link(management, org, ["g2", "x"], "x")[0] == 200
+    _owner(db, "DELETE FROM tags WHERE id = :t", {"t": org.folders["t2"]})
+    status, reply = _undo(management, org, "x")
+    assert status == 200, reply
+    assert _state(db, org, "g1")["g1"]["tags"] == []
