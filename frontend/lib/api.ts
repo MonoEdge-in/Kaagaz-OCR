@@ -525,12 +525,6 @@ export const savePageTurnsForEveryone = (
     changes,
     user_id: userId,
   });
-/** Every page back as scanned, for everyone (#600). */
-export const resetPageTurnsForEveryone = (id: string, userId: string) =>
-  request<{ page_turns: PageTurnSaved[] }>(
-    "DELETE",
-    `/documents/${encodeURIComponent(id)}/page-turns${query({ user_id: userId })}`
-  );
 
 /**
  * Upload one file with progress (fetch cannot report upload progress, XHR can),

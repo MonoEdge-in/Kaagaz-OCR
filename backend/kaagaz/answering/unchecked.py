@@ -28,7 +28,7 @@ _CARD_DOCUMENTS = text(
     """
     SELECT d.id, d.display_name
     FROM extracted_values v
-    JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+    JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
     WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
       AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
       AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
