@@ -109,13 +109,16 @@ def _seen(conn: Connection, user: CurrentUser, ids: list[str]) -> None:
 
 
 def _audience(conn: Connection, user: CurrentUser, moves: list[links_sql.Moved]) -> tuple[set[str], set[str]]:
-    """Who loses and who gains the files the link or its Undo moves (PRD 7 section 5)."""
+    """Who loses and who gains the files the link or its Undo moves (PRD 7 section 5): who sees each
+    family's place, or is given it, before and after (review on #658: a gift is copied by 0100's
+    trigger, and a person given only a joining file loses it)."""
     losing: set[str] = set()
     gaining: set[str] = set()
-    for move, held, held_after in moves:
-        lost, gained = access_sql.moved(conn, user.customer_id, move, held, held_after)
-        losing |= lost
-        gaining |= gained
+    for move in moves:
+        before = access_sql.audience_of(conn, user.customer_id, move.before, move.held) | move.given
+        after = access_sql.audience_of(conn, user.customer_id, move.after, move.held_after) | move.given_after
+        losing |= before - after
+        gaining |= after - before
     return losing, gaining
 
 

@@ -715,3 +715,23 @@ def test_undo_gives_each_version_to_exactly_whom_it_was_given_and_never_to_someo
         people["head"].user_id,
         None,
     )
+
+
+def test_the_confirm_step_counts_whom_the_files_are_given_to(db: Database) -> None:
+    """Review 3 and A: ``given`` (Finance) is given to the plain reviewer. Linked into fin, it is no
+    longer theirs: they lose it, though Finance is Finance. A new Finance file linked into ``given``
+    is given to them by 0100's trigger: they gain it, and lose nothing."""
+    api = Api(db)
+    org = _org(api)
+    management, plain = org.people["management"], org.people["plain"].user_id
+    org.files["fin2"] = api.add_document(org.c, name="fin2.pdf", folder_id=org.folders["finance"])
+
+    def preview(other: str, current: str) -> dict[str, Any]:
+        ids = [org.files[other], org.files[current]]
+        body = {"document_ids": ids, "order": ids, "current_id": ids[1]}
+        status, reply = _post(management, "/documents/link-versions/preview", body)
+        assert status == 200, reply
+        return {key: {p["id"] for p in reply[key]} for key in ("losing", "gaining")}
+
+    assert preview("given", "fin") == {"losing": {plain}, "gaining": set()}
+    assert preview("fin2", "given") == {"losing": set(), "gaining": {plain}}

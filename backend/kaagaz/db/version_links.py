@@ -37,7 +37,7 @@ from sqlalchemy import Connection, RowMapping, text
 from sqlalchemy.exc import OperationalError
 
 from kaagaz.db import audit
-from kaagaz.db.folders import Move, _lock_tree, place_of
+from kaagaz.db.folders import Place, _lock_tree, place_of
 from kaagaz.db.sqlstate import sqlstate
 from kaagaz.db.trash import LIVE_FOLDERS, lock_live_family
 
@@ -200,9 +200,24 @@ class Plan:
     moves: list["Moved"]
 
 
-# A family's move as the access rules see it, with whom it is held for before and after (#601): the
-# route counts who loses and gains it (``access.moved``, which reads the views: the API's alone).
-Moved = tuple[Move, str | None, str | None]
+@dataclass(frozen=True, slots=True)
+class Moved:
+    """A family's move as the access rules see it (#601): its place, whom it is held for and whom
+    its versions are given to, before and after. The route counts who loses and gains it
+    (``access.audience_of`` reads the views: the API's alone). Review (#658): the gifts count, since
+    0100's trigger gives every joining version to whom the latest's family is given."""
+
+    before: Place
+    held: str | None
+    given: frozenset[str]
+    after: Place
+    held_after: str | None
+    given_after: frozenset[str]
+
+
+def _given(rows: Sequence[RowMapping | dict[str, Any]]) -> frozenset[str]:
+    """Everyone these versions are given to."""
+    return frozenset(str(share["user"]) for row in rows for share in row["shares"])
 
 
 def _place(row: RowMapping) -> tuple[str | None, str | None]:
@@ -252,12 +267,12 @@ def prepare(
     family = latest["family_id"]
     joining = [each for each in families if each != family]
     after = place_of(conn, customer_id, latest["folder_id"])
+    given_after = _given([rows[id_] for id_ in by_family[family]])
     moves: list[Moved] = []
     for each in joining:
         first = rows[by_family[each][0]]
-        moves.append(
-            (Move(before=_place(first), after=after, private=[]), first["held_for"], latest["held_for"])
-        )
+        given = _given([rows[id_] for id_ in by_family[each]])
+        moves.append(Moved(_place(first), first["held_for"], given, after, latest["held_for"], given_after))
     return Plan(
         family=family,
         current=current_id,
@@ -391,9 +406,11 @@ def prepare_undo(conn: Connection, customer_id: str, document_id: str) -> UndoPl
     here = rows[document_id]  # where every version is now: the family's place
     moves: list[Moved] = []
     for each in snapshot["families"]:
-        first = back[next(id_ for id_ in order if back[id_]["family_id"] == each)]
-        move = Move(before=_place(here), after=place_of(conn, c, first["folder_id"]), private=[])
-        moves.append((move, here["held_for"], first["held_for"]))
+        versions = [id_ for id_ in order if back[id_]["family_id"] == each]
+        first = back[versions[0]]
+        now, then = _given([rows[id_] for id_ in versions]), _given([back[id_] for id_ in versions])
+        after = place_of(conn, c, first["folder_id"])
+        moves.append(Moved(_place(here), here["held_for"], now, after, first["held_for"], then))
     return UndoPlan(link, family, order, snapshot, moves)
 
 
