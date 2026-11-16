@@ -1,16 +1,18 @@
 """Page turns saved for everyone (PRD 7 section 14 step 2, #600). The detail reads them
-(``page_turns`` in GET /api/documents/{id}); these two routes write them.
+(``page_turns`` in GET /api/documents/{id}); this route writes them.
 
 * **Who.** Anyone who can see the file (there is no read-only role). A file the person cannot see
   answers exactly as an id that does not exist (404), before its family is locked: Trash, an
   unread file and a bad page are never told for it.
 * **PATCH** ``{"changes": [{"page_no", "turn"}], "user_id"}`` sets each named page's turn (0: not
   turned), so the last save wins per page and two people turning different pages both keep theirs.
-  **DELETE** removes every turn of the version ("back as scanned"). Both reply with the whole set.
+  There is no whole-file write (the lead's decision on the review): putting pages back as scanned
+  is a save of turn 0 for the pages the person sees turned, so it never takes away a turn someone
+  else saved on another page. The reply is the whole set after the save.
 * **Order**, in one transaction: the session check (409 ``session_changed``), the body (400), the
   file as the person sees it (404), the family lock (409 ``in_trash``; saves of one family queue
-  on it), its page count (409 ``not_ready`` while unknown; 400 for a page past the end), the write,
-  one audit row (ids and counts only).
+  on it), its page count (409 ``not_ready`` while unknown, or for a file that could not be read;
+  400 for a page past the end), the write, one audit row (ids and counts only).
 * **A locked file** (PRD 7 question 12, #605 PR 13): only a person who may open it sees it, and
   they turn its pages only while their 10-minute check is live (403 ``locked_open_required``),
   checked after the 404, so a hidden file still answers as a random id. The lock keeps the rows.
@@ -19,7 +21,7 @@
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection, RowMapping
 
@@ -36,6 +38,7 @@ Context = Annotated[AppContext, Depends(get_context)]
 TURNS = (0, 90, 180, 270)  # clockwise degrees; 0, not turned
 IN_TRASH = "This document is in the Trash. Restore it first."
 NOT_READY = "Kaagaz is still counting this file's pages. Try again in a minute."
+UNREADABLE = "Kaagaz couldn't read this file's pages, so its pages can't be turned."
 
 
 class TurnChange(BaseModel):
@@ -72,18 +75,6 @@ def _live_version(
     return row
 
 
-def _record(conn: Connection, user: CurrentUser, action: str, target: str, details: dict[str, int]) -> None:
-    audit.record(
-        conn,
-        user.customer_id,
-        actor_user_id=user.user_id,
-        action=action,
-        target_type="document",
-        target_id=target,
-        details=details,
-    )
-
-
 @router.patch("/documents/{document_id}/page-turns")
 def save_page_turns(
     document_id: uuid.UUID, body: PageTurnsBody, request: Request, user: User, context: Context
@@ -100,27 +91,19 @@ def save_page_turns(
     with context.db.user(user.customer_id, user.user_id) as conn:
         row = _live_version(conn, user, document_id, request, context)
         if row["page_count"] is None:
-            raise ApiError(409, "not_ready", NOT_READY)
+            failed = row["status"] in ("failed", "rejected")
+            raise ApiError(409, "not_ready", UNREADABLE if failed else NOT_READY)
         if (last := max(changes)) > row["page_count"]:
             raise ApiError(400, "bad_request", f"Page {last} is not in this file.")
         page_turns.save(conn, user.customer_id, target, changes, by=user.user_id)
         turns = page_turns.for_document(conn, user.customer_id, target)
-        _record(conn, user, "document.page_turns", target, {"pages": len(changes), "turned": len(turns)})
+        audit.record(
+            conn,
+            user.customer_id,
+            actor_user_id=user.user_id,
+            action="document.page_turns",
+            target_type="document",
+            target_id=target,
+            details={"pages": len(changes), "turned": len(turns)},
+        )
     return {"page_turns": turns}
-
-
-@router.delete("/documents/{document_id}/page-turns")
-def reset_page_turns(
-    document_id: uuid.UUID,
-    request: Request,
-    user: User,
-    context: Context,
-    user_id: Annotated[str | None, Query()] = None,
-) -> dict[str, Any]:
-    same_user(user_id, user, SESSION_CHANGED)
-    target = str(document_id)
-    with context.db.user(user.customer_id, user.user_id) as conn:
-        _live_version(conn, user, document_id, request, context)
-        removed = page_turns.reset(conn, user.customer_id, target)
-        _record(conn, user, "document.page_turns_reset", target, {"pages": removed})
-    return {"page_turns": []}

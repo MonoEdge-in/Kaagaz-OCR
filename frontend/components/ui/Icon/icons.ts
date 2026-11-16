@@ -70,6 +70,9 @@ export const K_ICONS = {
   sun: { d: "M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5", circle: { cx: 12, cy: 12, r: 4 } }, // Components.html, Theme
   moon: { d: "M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" }, // Components.html, Theme
   unlock: { d: "M6 11h12v10H6zM8 11V7a4 4 0 0 1 7.5-2" }, // Admin.html
+  // PRD 7 (#604): no screen draws one, so it is drawn here in the kit's style (one path and a
+  // circle, the 1.6 stroke): two people, for Department only and Private. Needs design sign-off.
+  people: { d: "M2.5 20a6.5 6.5 0 0 1 13 0M15.5 4.3a3.8 3.8 0 0 1 0 7.4M21.5 20a6.5 6.5 0 0 0-4.5-6.2", circle: { cx: 9, cy: 8, r: 3.8 } },
 } satisfies Record<string, KIconShape>;
 
 export type KIconName = keyof typeof K_ICONS;

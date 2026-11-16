@@ -527,9 +527,9 @@ def session(request: Request) -> dict[str, Any]:
     return {"signed_in": True, "me": me}
 
 
-def _access(context: AppContext, user: CurrentUser) -> tuple[bool, list[str], bool]:
-    """PRD 7 (#601): the person's Management, the departments they head and whether they are in a
-    live department (``access_sql.me``)."""
+def _access(context: AppContext, user: CurrentUser) -> tuple[bool, list[str], bool, bool]:
+    """PRD 7 (#601): the person's Management, the departments they head, whether they are in a
+    live department and whether walls are set (``access_sql.me``)."""
     with context.db.user(user.customer_id, user.user_id) as conn:
         return access_sql.me(conn)
 
@@ -539,7 +539,7 @@ def _access(context: AppContext, user: CurrentUser) -> tuple[bool, list[str], bo
 
 def _recent_connections(
     context: AppContext, user: CurrentUser
-) -> tuple[list[dict[str, str]], tuple[bool, list[str], bool]]:
+) -> tuple[list[dict[str, str]], tuple[bool, list[str], bool, bool]]:
     """The user's approved connections made in the last RECENT_DAYS, for the app's "Google
     connected on 30 Oct." banner (#457 phase 1; none, and nothing read, while no provider is on),
     and their access (PRD 7, #601), in one transaction."""

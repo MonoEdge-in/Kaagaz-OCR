@@ -374,7 +374,8 @@ def ask_all(
             body["conversation_id"] = conversations[question.follow_up_of]
         scope = question.nlq.get("scope")
         if nlq and scope is not None:
-            body["scope"] = {"document_ids": [ids[scope["document"]]]}
+            # Package K (#644): {"all": true} switches the scope to All documents mid-conversation.
+            body["scope"] = {} if scope.get("all") else {"document_ids": [ids[scope["document"]]]}
         replies = [api.call("POST", "/api/chat", body, timeout=CHAT_TIMEOUT)]
         conversation = conversations[question.id] = replies[0]["conversation_id"]
         while nlq and len(replies) <= scoring.MAX_CLARIFY_TURNS:

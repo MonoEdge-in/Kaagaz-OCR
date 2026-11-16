@@ -33,6 +33,7 @@ from sqlalchemy import Connection, Engine, create_engine, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeout
 
+from kaagaz.db.sqlstate import log_unavailable
 from kaagaz.ingestion.errors import BackendUnavailable
 
 
@@ -58,6 +59,7 @@ def make_engine(
     statement_timeout_seconds: int = 0,
     lock_timeout_seconds: int = 0,
     idle_in_transaction_timeout_seconds: int = 0,
+    connect_timeout_seconds: int = 0,
 ) -> Engine:
     """``hide_parameters``: a failing statement's error and the engine's log lines
     never show the bound values, which can be row values or document text.
@@ -67,13 +69,17 @@ def make_engine(
     A statement's own ``set_config('statement_timeout', ..., true)`` (search, listing,
     insights) still wins inside its transaction. A statement or lock wait cut short is an
     OperationalError, so ``unavailable()`` makes it BackendUnavailable (503 busy, or the
-    worker's retry), never a crash."""
+    worker's retry), never a crash. ``connect_timeout_seconds`` (#647 review, verify-models
+    only): the longest wait for a connection to open; 0, the driver's own (none)."""
     timeouts = {
         "statement_timeout": statement_timeout_seconds,
         "lock_timeout": lock_timeout_seconds,
         "idle_in_transaction_session_timeout": idle_in_transaction_timeout_seconds,
     }
     options = " ".join(f"-c {name}={seconds * 1000}" for name, seconds in timeouts.items() if seconds > 0)
+    connect_args: dict[str, object] = {"options": options} if options else {}
+    if connect_timeout_seconds > 0:
+        connect_args["connect_timeout"] = connect_timeout_seconds
     return create_engine(
         normalise_url(database_url),
         pool_pre_ping=True,
@@ -82,7 +88,7 @@ def make_engine(
         pool_timeout=POOL_TIMEOUT_SECONDS,
         future=True,
         hide_parameters=True,
-        connect_args={"options": options} if options else {},
+        connect_args=connect_args,
     )
 
 
@@ -90,10 +96,12 @@ def make_engine(
 def unavailable() -> Iterator[None]:
     """Turn "cannot reach the database" (OperationalError, or no free pooled connection)
     into BackendUnavailable, the error the upload service undoes and retries on and the
-    worker retries the job on. Constraint errors stay what they are: they are bugs, not outages."""
+    worker retries the job on. Constraint errors stay what they are: they are bugs, not outages.
+    The error's class and SQLSTATE are logged first (#620, ``log_unavailable``)."""
     try:
         yield
-    except (OperationalError, PoolTimeout):
+    except (OperationalError, PoolTimeout) as error:
+        log_unavailable(error)
         raise BackendUnavailable("database") from None
 
 
@@ -185,6 +193,13 @@ class Database:
         with self.system() as conn:
             return float(conn.execute(statement, params).scalar_one())
 
+    def model_parameters(self) -> dict[str, frozenset[str]]:
+        """#647: each catalogue model's supported parameters (``model_catalog.parameters``, 0095),
+        the models with none stored (NULL: not read yet) left out. One statement."""
+        with self.system() as conn:
+            rows = conn.execute(text("SELECT id, parameters FROM model_catalog WHERE parameters IS NOT NULL"))
+            return {str(row[0]): frozenset(row[1]) for row in rows}
+
     def ping(self) -> None:
         """Raise BackendUnavailable unless the database answers. No free pooled connection
         counts as no answer."""
@@ -192,6 +207,7 @@ class Database:
             with self.system() as conn:
                 conn.execute(text("SELECT 1"))
         except (OperationalError, PoolTimeout) as error:
+            log_unavailable(error)
             raise BackendUnavailable("database") from error
 
     @contextmanager

@@ -1,6 +1,7 @@
-"""Migration 0094 (PRD 7 PR 13, #605): the locked-file pop-ups' owner-rights functions. Up, down (the
-schema as at 0093) and up again on a fresh database, with their comments. What they return:
-test_isolation_lock_popups (with the per-person rule on, too); their rights: test_isolation_schema."""
+"""Migration 0094 (#617 part 1): the GIN index on ``tsv_sound`` (built concurrently), the word
+counts' two tables and the owner-rights candidate function. Up, down and up again: the schema,
+bodies, comments and grants as before each time. The behaviour: test_search_bounded_db.py; the
+grants and the function's rights: test_isolation_schema; separation: test_isolation_word_search."""
 
 import pytest
 from sqlalchemy import text
@@ -13,40 +14,39 @@ from tests.test_migration_0071_db import _state
 
 pytestmark = pytest.mark.db
 fresh = base.fresh
-M0094 = _load("0094_locked_places.py")
-_FUNCTIONS = (
-    "SELECT p.proname, obj_description(p.oid, 'pg_proc') FROM pg_proc p"
-    " WHERE p.proname IN ('kaagaz_admin_place_files', 'kaagaz_admin_place_locked', 'kaagaz_admin_locked_for')"
-    " ORDER BY p.proname"
+M0094 = _load("0094_bounded_search.py")
+_ADDED = text(
+    "SELECT (SELECT indexdef FROM pg_indexes WHERE indexname = 'pieces_tsv_sound'),"
+    " (SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass('public.pieces_tsv_sound')),"
+    " to_regclass('public.term_df') IS NOT NULL, to_regclass('public.customer_stats') IS NOT NULL,"
+    " to_regprocedure('public.kaagaz_word_candidates(text, tsquery, uuid[], integer)') IS NOT NULL"
 )
 
 
-def test_the_revision_follows_0093() -> None:
-    assert (M0094.revision, M0094.down_revision) == ("0094", "0093")
-
-
-def _functions(db: Database) -> list[tuple[str, str | None]]:
+def _added(db: Database) -> tuple[object, ...]:
     with db.system() as conn:
-        return [(str(name), comment) for name, comment in conn.execute(text(_FUNCTIONS))]
+        return tuple(conn.execute(_ADDED).one())
+
+
+def test_the_revision_follows_0093() -> None:  # Changed on purpose: renumbered after PR 12's 0093
+    assert (M0094.revision, M0094.down_revision) == ("0094", "0093")
 
 
 def test_up_down_and_up_again(fresh: tuple[str, Database]) -> None:
     url, db = fresh
     migrate(url, "0093")
     at_0093 = _state(db)
+    assert _added(db) == (None, None, False, False, False)
+
     migrate(url, "0094")
     at_0094 = _state(db)
-    found = _functions(db)
-    assert [name for name, _ in found] == [
-        "kaagaz_admin_locked_for",
-        "kaagaz_admin_place_files",
-        "kaagaz_admin_place_locked",
-    ]
-    assert all(comment and "An Admin" in comment for _, comment in found)
+    index, valid, *rest = _added(db)
+    assert index == "CREATE INDEX pieces_tsv_sound ON public.pieces USING gin (tsv_sound)" and valid
+    assert rest == [True, True, True]
 
     base._downgrade(url, "0093")
     assert _state(db) == at_0093
-    assert _functions(db) == []
+    assert _added(db) == (None, None, False, False, False)
 
     migrate(url, "0094")
     assert _state(db) == at_0094

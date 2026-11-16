@@ -7,7 +7,7 @@ outside private folders (and, for its Head, those inside them too), or a private
 current versions out of Trash, none held for its uploader. ``open``: the person may open that
 locked file already (a lock grant). Every statement takes a connection from
 ``Database.user(customer_id, user_id)`` for an Admin, already checked by the route, and names the
-customer. The API alone calls them, through 0094's owner-rights functions (which check the caller is
+customer. The API alone calls them, through 0096's owner-rights functions (which check the caller is
 an Admin and name the customer themselves); ``customer_id`` must be the transaction's, else none.
 """
 
@@ -15,7 +15,7 @@ from collections.abc import Sequence
 
 from sqlalchemy import Connection, RowMapping, text
 
-# 0094 (#605): owner-rights functions, as 0091's per-person rule hides from an Admin the rows of a
+# 0096 (#605): owner-rights functions, as 0091's per-person rule hides from an Admin the rows of a
 # file they can't open; each checks the caller is an Admin and names the customer itself.
 _FILES = text(
     "SELECT kaagaz_admin_place_files(CAST(:d AS uuid), CAST(:p AS uuid), :head)"

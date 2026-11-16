@@ -1,7 +1,8 @@
 "use client";
 
 // Models, a tab of /operator (model choice, council 11 Oct 2026, MC1-MC3): the catalogue
-// from OpenRouter's live list, refreshed daily, with each model's providers, live price
+// from OpenRouter's live list, refreshed daily, with each model's providers (and the
+// parameters they take, #647), live price
 // per million tokens, whether it passes the catalogue's rules, whether verify-models
 // passed for the reader's current prompt (and its measured cost a page) and for the answer
 // prompt, and whether it is enabled (a model whose maker is not allowed is said to be never
@@ -22,7 +23,7 @@ import { modelConfirm, modelFocusId } from "./confirms";
 import { LoadFailed } from "./LoadFailed";
 import { LoadingRows } from "./LoadingRows";
 import { afterDone, operatorErrorMessage } from "./logic";
-import { NO_LEVELS, VENDOR_NOT_ALLOWED, hasNoLevels, modelAction, notEnabledReason, priceText, realCostText, yesNo } from "./models";
+import { NO_LEVELS, VENDOR_NOT_ALLOWED, hasNoLevels, modelAction, notEnabledReason, parametersText, priceText, realCostText, yesNo } from "./models";
 import { PlatformDefaults } from "./PlatformDefaults";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
@@ -125,6 +126,7 @@ function ModelRow({ model, onChange }: { model: OperatorModel; onChange(enable: 
       </td>
       <td role="cell" data-label="Providers">
         {model.providers.length > 0 ? model.providers.join(", ") : <span className="muted">None</span>}
+        <span className={styles.statusNote}>{parametersText(model)}</span>
       </td>
       <td role="cell" data-label="Price per 1M tokens" className="tabular">
         {priceText(model.price_in_usd_per_m)} in, {priceText(model.price_out_usd_per_m)} out

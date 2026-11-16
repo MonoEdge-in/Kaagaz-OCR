@@ -77,6 +77,8 @@ which no role may run.
 
 Page turns saved for everyone (0088, PRD 7 section 14, #600, NEEDS VRUSHIT'S APPROVAL): read, added
 and deleted by the app, never updated; a save deletes the pages it changes and adds them again.
+Bounded word search (0094, #617, NEEDS VRUSHIT'S SECURITY SIGN-OFF): the word counts, read, added
+and deleted by the worker's rebuild, never updated; and ``kaagaz_word_candidates``, piece ids only.
 """
 
 import re
@@ -212,6 +214,8 @@ FROM_0084 = {
 UPDATES_0084 = {"department_members": {"is_head"}}
 # Page turns saved for everyone (0088, #600): read, added and deleted, never updated.
 FROM_0088 = {"page_rotations": (True, True, False, True)}
+# Bounded word search (0094, #617): the word counts, deleted and added again by the rebuild.
+FROM_0094 = {"term_df": (True, True, False, True), "customer_stats": (True, True, False, True)}
 # Logout ends this browser's session (0076, #502): the app adds and reads ended sessions only;
 # the worker's sweep deletes them through kaagaz_sweep_ended_sessions.
 FROM_0076 = {"ended_sessions": (True, True, False, False)}
@@ -229,6 +233,7 @@ CATALOG_REFRESH = {
     "name", "price_in_usd_per_m", "price_out_usd_per_m", "providers", "efforts", "expires_on", "eligible",
     "seen_at", "chat_eligible",  # 0026, the answer filter
     "price_request_usd", "price_image_usd",  # Changed on purpose (0070, #488 review): the prices a call
+    "parameters",  # Changed on purpose (0095, #647): the supported parameters
 }  # fmt: skip
 CATALOG_POLICIES = {
     ("model_catalog", "read_all"): ("SELECT", "PERMISSIVE", ["public"], "true", None),
@@ -446,7 +451,10 @@ OWNER_RIGHTS = {
     "kaagaz_unlock": ("TABLE(document_id uuid, outcome text, version_id uuid, read boolean)", EMPTY_PATH),
     "kaagaz_lock_grant": ("text", EMPTY_PATH),
     "kaagaz_lock_revoke": ("integer", EMPTY_PATH),
-    # Changed on purpose (#605, 0094): the locked-file pop-ups' names, an Admin's only, checked inside.
+    # 0094 (#617): the word search's candidates, the current customer's piece ids only, each call
+    # planned for its own query.
+    "kaagaz_word_candidates": ("SETOF uuid", [*EMPTY_PATH, "plan_cache_mode=force_custom_plan"]),
+    # Changed on purpose (#605, 0096): the locked-file pop-ups' names, an Admin's only, checked inside.
     "kaagaz_admin_place_files": ("bigint", EMPTY_PATH),
     "kaagaz_admin_place_locked": (
         "TABLE(id uuid, display_name text, folder_id uuid, open boolean)",
@@ -540,9 +548,10 @@ OPERATOR_RIGHTS = {
         " chat_verified_at timestamp with time zone, scan_pages bigint, scan_pages_costed bigint,"
         " scan_cost_usd numeric, scan_cost_unknown_calls bigint, answer_questions bigint,"
         " answer_questions_costed bigint, answer_cost_usd numeric, answer_cost_unknown_calls bigint,"
-        " price_request_usd numeric, price_image_usd numeric)",
+        " price_request_usd numeric, price_image_usd numeric, parameters text[])",
         # 0026: the answer columns; 0033: the real cost, counts and sums only; changed on purpose
-        # (0070, #488 review): the prices a call, for the operator's check of Ultra low cost's lead
+        # (0070, #488 review): the prices a call, for the operator's check of Ultra low cost's lead;
+        # changed on purpose (0095, #647): the supported parameters
         EMPTY_PATH,
     ),
     "kaagaz_op_set_model_enabled": ("text", EMPTY_PATH),
@@ -817,6 +826,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0081)  # Changed on purpose (#542, 0081)
         | set(FROM_0084)  # Changed on purpose (#590, 0084)
         | set(FROM_0088)  # Changed on purpose (#600, 0088)
+        | set(FROM_0094)  # Changed on purpose (#617, 0094)
     )
 
     with db.system() as conn:
@@ -899,6 +909,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0081  # Changed on purpose (#542, 0081)
         | FROM_0084  # Changed on purpose (#590, 0084)
         | FROM_0088  # Changed on purpose (#600, 0088)
+        | FROM_0094  # Changed on purpose (#617, 0094)
     ).items():
         assert granted[table] == expected, table
 

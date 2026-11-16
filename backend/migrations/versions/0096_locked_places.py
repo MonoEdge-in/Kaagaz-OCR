@@ -2,8 +2,6 @@
 6, "Giving a folder or department that holds locked files", and the Access page's "Locked files";
 PR 13, #605, Tushar, 16 Nov 2026). NEEDS VRUSHIT'S APPROVAL: schema and security.
 
-PROVISIONAL number: 0094 follows 0093 (#649).
-
 0091's per-person rule hides from an Admin the rows of a file they can't open, a locked one not
 given to them among them. The give pop-up and the Access page show such files by their true names
 (decision 20), so they read them through owner-rights functions, as 0091's
@@ -24,8 +22,8 @@ Admin of this organisation; anyone else insufficient_privilege), nothing for PUB
 app and the worker role alike (0083's equality test). Names and ids only, never content. Catalog
 only: no table is locked, read or written. The downgrade drops them.
 
-Revision ID: 0094
-Revises: 0093
+Revision ID: 0096
+Revises: 0095 (each model's supported parameters)
 """
 
 import importlib.util
@@ -34,15 +32,15 @@ from types import ModuleType
 
 from alembic import op
 
-revision = "0094"
-down_revision = "0093"
+revision = "0096"
+down_revision = "0095"
 branch_labels = None
 depends_on = None
 
 
 def _load(name: str) -> ModuleType:
     path = Path(__file__).with_name(name)
-    spec = importlib.util.spec_from_file_location(f"migration_{path.stem}_for_0094", path)
+    spec = importlib.util.spec_from_file_location(f"migration_{path.stem}_for_0096", path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load {path}")
     module = importlib.util.module_from_spec(spec)

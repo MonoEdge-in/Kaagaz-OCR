@@ -98,9 +98,12 @@ from kaagaz.answering.clarify import (
     reply_to,
     without_resume,
 )
+from kaagaz.answering.evidence import looks_like_instructions
+from kaagaz.answering.focus import cut, parts
 from kaagaz.answering.memory import MAX_DOCUMENTS, NO_MEMORY, VERSION, Memory, from_row, live
 from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
+from kaagaz.answering.sanitize import clean_text
 from kaagaz.answering.stream import Events, StreamCancelled
 from kaagaz.answering.voice import SOFT_NOTHING, first_name, numbers, opening, soft_line, unsupported
 from kaagaz.answering.words_text import WordTextError, check_meaning, check_word
@@ -133,6 +136,7 @@ from kaagaz.db.models import (
     usable_chat_models,
 )
 from kaagaz.db.organization_words import Suggestion
+from kaagaz.db.sqlstate import log_unavailable
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.search.scope import EVERYTHING, ScopeBody, resolve
 from kaagaz.settings import MODEL_ID
@@ -147,6 +151,7 @@ MAX_TITLE = 200
 SHORT_TITLE = 60  # characters of the first question a new conversation's title keeps
 NOT_FOUND_TEXT = SOFT_NOTHING  # PRD 6 decision 9: the screen's words (answering/voice.py)
 MAX_SCOPE_BYTES = 4096  # the messages.scope CHECK (migration 0006)
+MAX_TYPED = 20_000  # characters a question may have; past it, 400
 TOO_MANY_QUESTIONS = "You have asked many questions in a short time. Please wait a minute and ask again."
 FEEDBACK_PER_MINUTE = 20  # PRD 6 F1: ratings a person may send a minute (issue #244)
 TOO_MANY_RATINGS = "You have sent a lot of feedback in a short time. Please wait a minute and try again."
@@ -179,7 +184,8 @@ class ReplyBody(BaseModel):
 class AskBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    question: str = Field(default="", max_length=1000)  # left out with a reply
+    # #644: any length up to MAX_TYPED is answered, cut to focus.MAX_ASKED keeping its questions.
+    question: str = Field(default="", max_length=MAX_TYPED)  # left out with a reply
     reply: ReplyBody | None = None
     conversation_id: uuid.UUID | None = None
     scope: ScopeBody | None = None  # left out: the conversation's last scope, or everything
@@ -436,7 +442,7 @@ def _ask(
     in, else a new one named ``landing``."""
     if not chat_limits(context.settings.chat_questions_per_minute).allow(user.user_id):
         raise ApiError(429, "rate_limited", TOO_MANY_QUESTIONS, headers={"Retry-After": "60"})
-    question = body.question.strip()
+    question = cut(body.question.strip())
     answering = body.reply
     if not question and (answering is None or not answering.choice_ids):
         raise ApiError(400, "bad_request", "Type a question first.")
@@ -444,10 +450,16 @@ def _ask(
         answering = None  # B2: a long or question-like text is a new question; the clarify is left
     if answering is not None and body.conversation_id is None:
         raise ApiError(409, "conflict", CLARIFY_GONE)
+    # #644 (cost): each part of a question of several asks beyond the first is one more question.
+    for _ in range(len(parts(question)[0]) - 1 if answering is None else 0):
+        if not chat_limits(context.settings.chat_questions_per_minute).allow(user.user_id):
+            raise ApiError(429, "rate_limited", TOO_MANY_QUESTIONS, headers={"Retry-After": "60"})
     conversation_id = None if body.conversation_id is None else str(body.conversation_id)
     chosen = body.scope
     recent: Sequence[RowMapping] = []
     memory, summary_turn, turns = NO_MEMORY, 0, 0
+    last_cited: list[str] = []
+    names: dict[str, str] = {}  # #621: the documents earlier answers cited that are still live
     earlier: list[str | None] = []  # the conversation's openings so far (PRD 6 A)
     pending: Pending | None = None
     forget = False  # PRD 7 (#602): the memory tracks a document the asker can no longer see
@@ -461,12 +473,19 @@ def _ask(
             recent, remembered = _shown_turns(conn, user.customer_id, conversation_id, 2 * pairs, state)
             forget = remembered is None
             memory = NO_MEMORY if remembered is None else remembered
+            # #629: the last answer's documents the asker can still see (current, out of Trash, and
+            # theirs to see: visible_documents, PRD 7); with none, #644: the one document the last
+            # question was asked in, while the same holds.
+            asked_in = _scoped_document(recent)
+            names = chat_sql.live_document_names(conn, user.customer_id, [*_cited(recent), *asked_in])  # #621
+            last_cited = [document for document in _cited(recent[:1]) if document in names]
+            last_cited = last_cited or [document for document in asked_in if document in names]
             earlier = chat_sql.openings(conn, user.customer_id, conversation_id)
             if chosen is None:
                 chosen = _saved_scope(recent)
             if answering is not None:
                 pending = _pending(recent, answering, question)
-                question = ", ".join(pending.picked) or question
+                question = ", ".join(pending.labels or pending.picked) or question  # #629: as shown
         scope = (
             EVERYTHING
             if chosen is None
@@ -510,7 +529,7 @@ def _ask(
     if saved is not None and len(json.dumps(saved).encode()) > MAX_SCOPE_BYTES:
         raise ApiError(400, "bad_request", "Choose fewer documents or tags.")
 
-    history = _history(recent)
+    history = _history(recent, names)
     with usage_scope(
         context.db,
         customer_id=user.customer_id,
@@ -538,6 +557,7 @@ def _ask(
                     pending=pending,
                     clarify=switched["nlq_clarify"],
                     cited=_cited(recent),
+                    last_cited=last_cited,
                 )
             )
             # KZ-006: an outage is never "not found": the reply says the AI is not responding
@@ -613,6 +633,7 @@ def _save(
     """``_ask``'s one save transaction: the conversation (new, named ``landing``), both messages
     (the question as ``question_id``) and the audit row; (the conversation, the question's row,
     the answer's row)."""
+    first = conversation_id is None  # #624: Home's suggestions belong to a first answer only
     if conversation_id is None:
         conversation_id = chat_sql.create_conversation(
             conn, user.customer_id, user.user_id, short_title(question), conversation_id=landing
@@ -624,7 +645,12 @@ def _save(
         answering.message_id
     ):
         raise ApiError(409, "conflict", CLARIFY_GONE)
-    if answer.get("status") == "not_found" and not answer.get("documents") and not answer.get("outage"):
+    if (
+        first
+        and answer.get("status") == "not_found"
+        and not answer.get("documents")
+        and not answer.get("outage")
+    ):
         # Nothing close (24 Oct 2026): the best next step is a question this library answers.
         answer["suggestions"] = [
             text
@@ -860,7 +886,9 @@ def _work(
         except ApiError as error:
             post("error", {"code": error.code, "message": error.message})
             return
-        except (BackendUnavailable, OperationalError, PoolTimeout):
+        except (BackendUnavailable, OperationalError, PoolTimeout) as error:
+            if not isinstance(error, BackendUnavailable):  # #620: one made by unavailable() was logged there
+                log_unavailable(error)
             post("error", {"code": "backend_unavailable", "message": MESSAGES["backend_unavailable"]})
             return
         except Exception as error:  # noqa: BLE001 - the stream's boundary, as ErrorMiddleware's
@@ -1001,6 +1029,8 @@ def _make_ready(
                     cited=[],
                 )
         except (SQLAlchemyError, BackendUnavailable, ModelUnavailable, ModelOutputError) as error:
+            if isinstance(error, OperationalError | PoolTimeout):  # #620: its class and SQLSTATE
+                log_unavailable(error)
             logger.warning("ready answer not made", extra={"code": type(error).__name__})
             ready.READY.release(keys[question])
             continue
@@ -1251,19 +1281,24 @@ def _suggest(conn: Connection, user: CurrentUser, pending: Pending) -> None:
         )
 
 
-def _history(recent: Sequence[RowMapping]) -> list[Turn]:
+def _history(recent: Sequence[RowMapping], names: Mapping[str, str] | None = None) -> list[Turn]:
     """The question and answer pairs of ``recent`` (newest first), oldest first. Only an
     answered answer gives its sentences, and a clarify its question: after "not found" the
-    turn is its question only (edge case 3). O(m) for m messages."""
+    turn is its question only (edge case 3). #621: each answered turn also names the documents
+    it cited that are in ``names`` (``chat_sql.live_document_names``: current, out of Trash),
+    each cleaned and never one that reads like instructions. O(m) for m messages."""
     turns: list[Turn] = []
     answer: str | None = None
+    cited: tuple[str, ...] = ()
     for row in recent:  # an answer comes just before its question
         if row["role"] == "assistant":
             saved = row["answer"] or {}
             answer = answer_text(saved) if saved.get("status") in ("answered", "clarify") else None
+            shown = (clean_text((names or {}).get(document, "")) for document in _cited([row]))
+            cited = tuple(dict.fromkeys(n for n in shown if n and not looks_like_instructions(n)))
         else:
-            turns.append(Turn(str(row["text"]), answer))
-            answer = None
+            turns.append(Turn(str(row["text"]), answer, cited))
+            answer, cited = None, ()
     return turns[::-1]
 
 
@@ -1278,6 +1313,13 @@ def _cited(recent: Sequence[RowMapping]) -> list[str]:
         if isinstance(citation, dict) and citation.get("document_id")
     )
     return list(dict.fromkeys(cited))
+
+
+def _scoped_document(recent: Sequence[RowMapping]) -> list[str]:
+    """#644: the one document the newest question of ``recent`` was asked in, else none."""
+    saved = _saved_scope(recent)
+    documents = [] if saved is None or saved.document_ids is None else saved.document_ids
+    return [str(documents[0])] if len(documents) == 1 else []
 
 
 def _saved_scope(recent: Sequence[RowMapping]) -> ScopeBody | None:

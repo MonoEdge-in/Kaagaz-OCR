@@ -4,6 +4,7 @@
 // The server checks the role and the status again (403 forbidden, 409
 // not_reprocessable).
 
+import { NOT_FOUND_DOCUMENT, NOT_FOUND_TEXT } from "@/components/access/words";
 import { canReview } from "@/components/review/review";
 import { ApiError } from "@/lib/api";
 import { errorWords } from "@/lib/errorWords";
@@ -95,9 +96,11 @@ export function reprocessErrorText(error: unknown): string {
   return "Check your internet connection, then try again.";
 }
 
-/** Why the document could not be shown, and whether Try again can help: not when it is not there (404). */
+/** Why the document could not be shown, and whether Try again can help: not when it is not there
+ * (404). PRD 7 (#604): one 404 text for a document deleted, never there, or hidden. */
 export function loadFailure(error: unknown): { message: string; retry: boolean } {
-  if (error instanceof ApiError) return { message: errorWords(error), retry: error.status !== 404 };
+  if (error instanceof ApiError && error.status === 404) return { message: `${NOT_FOUND_DOCUMENT} ${NOT_FOUND_TEXT}`, retry: false };
+  if (error instanceof ApiError) return { message: errorWords(error), retry: true };
   return { message: "Check your internet connection, then try again.", retry: true };
 }
 

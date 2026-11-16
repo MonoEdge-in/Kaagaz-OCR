@@ -318,6 +318,7 @@ def test_day_one_never_runs_the_given_or_lock_lookups(db: Database) -> None:
     # PR 8 (#602): the meaning walk and the word list too.
     add_pieces(db, c, document, [("Invoice ledger", axis(0))])
     words = {"q": "ledger", "k": "ledger", "g": "", "sk": "", "n": 50}
+    words |= {"gc": "", "gk": "", "docs": None, "cap": hybrid.CANDIDATE_CAP}  # #617's candidates (0094)
     vector = {"vec": hybrid.vector_literal(axis(0)), "recipe": RECIPE, "n": 50}
     for statement, params in (
         (listing._SELECT, {"c": c, "d": document}),
@@ -350,6 +351,8 @@ VIEW_READERS = {
     # PR 8 (#602): Ask, reached from the API only (the SQL guard's worker test).
     "answering/clarify.py": {"_ANY_KEYS", "_CANDIDATES", "_NEAR", "_PICKED_PAGE"},
     "answering/exhaustive.py": {"_IN_SCOPE", "_PIECES"},
+    # Changed on purpose (#644): package K's focus profile and related documents, through the view.
+    "answering/focus.py": {"_MATCHES", "_PROFILE"},
     "answering/fixed_queries.py": {
         "_AVAILABLE_FIELDS", "_COUNT_DOCUMENTS", "_COUNT_INVOICES", "_EXTREME_VALUE", "_FIGURES",
         "_TOP_GROUP", "_VALUE_REFS",
@@ -392,8 +395,9 @@ VIEW_READERS = {
     "db/word_review.py": {"_PAGES", "_PIECES_BY_ID", "_VALUES_BY_ID", "_WORDS"},
     # PR 8 (#602): Ask and search, reached from the API only (the SQL guard's worker test).
     "search/hybrid.py": {
-        "_CARDS", "_DETAILS", "_FUZZY", "_MEANING", "_MEANING_EXACT", "_NEIGHBOURS", "_SECTION_PIECES",
-        "_TOPIC_PIECES", "_VISIBLE_VECTORS", "_WHOLE", "_WHOLE_SIZE", "_WORD",
+        "_CARDS", "_DETAILS", "_FUZZY", "_IDENTIFIED", "_MEANING", "_MEANING_EXACT", "_NEIGHBOURS",
+        "_SCOPE_DOCUMENTS", "_SECTION_PIECES", "_SOUND", "_TOPIC_PIECES", "_VISIBLE_VECTORS", "_WHOLE",
+        "_WHOLE_SIZE", "_WORD",
     },
     "search/story_search.py": {"_STORIES"},
 }  # fmt: skip
@@ -550,7 +554,6 @@ _ROUTES: list[tuple[str, str, Any]] = [
     ("DELETE", "/api/documents/{d}/my-story?user_id={u}", None),
     # Changed on purpose (#600): page turns saved for everyone.
     ("PATCH", "/api/documents/{d}/page-turns", {"changes": [{"page_no": 1, "turn": 90}], "user_id": "{u}"}),
-    ("DELETE", "/api/documents/{d}/page-turns?user_id={u}", None),
     ("DELETE", "/api/documents/{d}", None),
 ]
 _KEY = "0" * 64

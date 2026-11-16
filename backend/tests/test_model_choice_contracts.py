@@ -134,7 +134,9 @@ def test_a_save_that_fails_is_logged_and_never_fails_the_work(caplog: pytest.Log
         usage.usage_scope(db, customer_id=CUSTOMER, user_id=None, kind="map"),
     ):
         usage.record_call(CLAUDE, None, 1, 1, 0, 0.1)
-    assert [getattr(record, "code", None) for record in caplog.records] == ["usage_not_saved"]
+    # Changed on purpose (#620): the database error behind it is logged first, by class and SQLSTATE.
+    codes = [getattr(record, "code", None) for record in caplog.records]
+    assert codes == ["backend_unavailable", "usage_not_saved"]
 
 
 def test_the_provider_block_names_one_slug_and_keeps_the_rules() -> None:

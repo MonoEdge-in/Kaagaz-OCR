@@ -473,11 +473,11 @@ REFUSED = {
     ("GET", "/api/documents/{document_id}/compare"),
 }
 # Changed on purpose (PR 13): what a person who may open it does only while their 10-minute check
-# is live (403 locked_open_required without it): its page pictures, and turning its pages.
+# is live (403 locked_open_required without it): its page pictures, and turning its pages (no
+# whole-file DELETE since #600's fix).
 OPENED = {
     ("GET", "/api/documents/{document_id}/locked-pages/{page_no}"),
     ("PATCH", "/api/documents/{document_id}/page-turns"),
-    ("DELETE", "/api/documents/{document_id}/page-turns"),
 }
 ALLOWED = {
     ("GET", "/api/documents/{document_id}"),

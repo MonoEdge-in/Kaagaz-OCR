@@ -39,7 +39,8 @@ the thinking itself never comes back. The output cap is ``max_completion_tokens`
 Structured output is ``response_format`` ``json_schema`` named ``page`` with ``strict:
 STRICT_SCHEMA``. Temperature is left at the default (PRD 5 section 14), but for a ``chat_json``
 call that names one (Ask's question rewrite and translation, 16 Oct 2026), sent to a Google
-model only. A repair turn sends
+model only, and only while its stored parameters list it or are not known (#647,
+``takes_temperature``). A repair turn sends
 the first reply back with role assistant. ``python -m kaagaz.cli verify-models`` checks
 each of these against the live API.
 
@@ -173,6 +174,8 @@ from email.message import Message
 from http.client import HTTPException, HTTPMessage
 from typing import IO, Any
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from kaagaz.ai import replies, usage
 from kaagaz.ai.replies import REPAIR, ModelOutputError, ModelUnavailable, parse_reply
 from kaagaz.db.engine import Database
@@ -260,8 +263,12 @@ CHAT_THINKING_TOKENS = {"low": 8192, "medium": 16384, "high": 32768}
 MAX_LENGTH_VENDOR = "google"
 # Ask's steady search (16 Oct 2026): only these vendors' models get a chat_json ``temperature``.
 # Anthropic's refuse a temperature other than 1 while thinking, and with require_parameters
-# a model whose endpoint lists no temperature would be routed nowhere.
+# a model whose endpoint lists no temperature would be routed nowhere: #647, so a model whose
+# stored parameters leave it out gets none either (``takes_temperature``).
 TEMPERATURE_VENDORS = frozenset({"google"})
+# #647: how long a process keeps the catalogue's stored parameters (``ModelGate.parameters``)
+# before reading them again; the refresh writes them once a day.
+PARAMETERS_SECONDS = 10 * 60.0
 
 # Backoff (G6): attempt n waits a random time up to min(BACKOFF_MAX_SECONDS,
 # BACKOFF_BASE_SECONDS * 2**n) ("full jitter"), or the server's Retry-After if longer.
@@ -492,6 +499,13 @@ def detail_level(name: str) -> str:
     if name not in SENDABLE_MEDIA_RESOLUTIONS[MEDIA_RESOLUTION_SHAPE]:
         raise ValueError("this media resolution cannot be sent with image_url.detail")
     return name
+
+
+def takes_temperature(model: str, stored: frozenset[str] | None) -> bool:
+    """#647: whether ``model`` is sent a temperature, the one optional parameter Kaagaz sends: a
+    model of TEMPERATURE_VENDORS whose stored parameters (``model_catalog.parameters``) list it,
+    or are not known (``stored`` None: as before #647)."""
+    return model.split("/", 1)[0] in TEMPERATURE_VENDORS and (stored is None or "temperature" in stored)
 
 
 def reasoning(name: str) -> dict[str, Any]:
@@ -992,6 +1006,31 @@ class ModelGate:
         # Issue 407: OCR_MODEL, the platform's reader, answered 404 or a redirect (``reader_unfixable``).
         self._reader_model = settings.ocr_model
         self._reader_unfixable_at: float | None = None
+        # #647: the catalogue's stored parameters, and when they were read (``parameters``).
+        self._parameters: dict[str, frozenset[str]] = {}
+        self._parameters_at = -math.inf
+
+    def parameters(self, model: str) -> frozenset[str] | None:
+        """#647: ``model``'s stored parameters (``Database.model_parameters``), read again once
+        PARAMETERS_SECONDS old: one statement a process that often, never one a call. None: not
+        known (no database, not in the catalogue, or NULL). A read that fails keeps the last one,
+        logged at warning by its type, and is tried again PARAMETERS_SECONDS later."""
+        if self.database is None:
+            return None
+        with self._lock:
+            due = self.clock() >= self._parameters_at + PARAMETERS_SECONDS
+            if due:
+                self._parameters_at = self.clock()  # noted first: one read at a time
+        if due:
+            try:
+                held = self.database.model_parameters()
+            except SQLAlchemyError as error:
+                _log.warning("model parameters not read", extra={"code": type(error).__name__})
+            else:
+                with self._lock:
+                    self._parameters = held
+        with self._lock:
+            return self._parameters.get(model)
 
     def status(self) -> tuple[str, float | None]:
         """(the reader's state, since when on the gate's clock) for Health (U9) and the
@@ -1213,6 +1252,9 @@ class OpenRouterClient:
         self.gate = ModelGate(settings) if gate is None else gate
         self._opener = build_opener()
         self._lock = threading.Lock()
+        # Chat models whose endpoints refused temperature (404 no_endpoints, then a 200 without it):
+        # sent none again in this process, so one 404 a model, never one a call (``_chat_reply``).
+        self._no_temperature: set[str] = set()
         self._input_tokens = 0
         self._output_tokens = 0
         self._cost: float | None = None
@@ -1294,7 +1336,8 @@ class OpenRouterClient:
         ``invalid_output``. A reply longer than ``max_tokens`` (thinking not counted) raises
         ``output_truncated`` with no repair. ``deadline`` (on ``time.monotonic()``): both
         tries end by then (``timeout`` once it has passed); None, each has the chat
-        timeout. ``temperature``: sent only to a model of TEMPERATURE_VENDORS; None, the
+        timeout. ``temperature``: sent only where the model takes it (``_optional``), and dropped
+        once when the model's endpoints answer 404 no_endpoints (``_chat_reply``); None, the
         default."""
         body, output_limit, ends = self._chat_body(
             system, user, schema, max_tokens, model, thinking, provider, deadline, temperature
@@ -1381,9 +1424,18 @@ class OpenRouterClient:
             provider_slug=slug,
             stream=stream,
         )
-        if temperature is not None and chosen.split("/", 1)[0] in TEMPERATURE_VENDORS:
-            body["temperature"] = temperature
+        body.update(self._optional(chosen, temperature))
         return body, output_limit, ends
+
+    def _optional(self, model: str, temperature: float | None) -> dict[str, Any]:
+        """#647: the one place the optional parameters of a request are decided; temperature is the
+        only one Kaagaz sends (response_format, structured_outputs, reasoning and the output cap
+        are required, and never left out). It goes when asked, when ``takes_temperature`` with the
+        model's stored parameters (``ModelGate.parameters``), and when the model's endpoints have
+        not refused it in this process (#631's backstop, ``_chat_reply``)."""
+        if temperature is None or model in self._no_temperature:
+            return {}
+        return {"temperature": temperature} if takes_temperature(model, self.gate.parameters(model)) else {}
 
     # The reader's call (G1, G2, G3).
 
@@ -1559,7 +1611,23 @@ class OpenRouterClient:
         limit with no ``deadline`` is ANSWER_STREAM_MAX_SECONDS, the chat timeout being its idle one."""
         whole = self._chat_timeout if on_text is None else self._stream_timeout
         ends = self.now() + whole if deadline is None else deadline
-        reply = self._call(CHAT_PATH, body, ends, on_text=on_text)
+        try:
+            reply = self._call(CHAT_PATH, body, ends, on_text=on_text)
+        except ModelUnavailable as error:
+            # Production, 15 Nov 2026: Vertex's gemini-3.5-flash-lite (and 3.6 to 3.8-flash)
+            # stopped listing temperature, so with require_parameters every call was 404
+            # no_endpoints. Sent once more without it (and so is the repair: ``body`` is shared).
+            # #647: the catalogue's stored parameters now leave it out; this is the backstop for
+            # a change between two daily refreshes.
+            if error.code != "no_endpoints" or "temperature" not in body:
+                raise
+            del body["temperature"]
+            _log.warning(
+                "temperature dropped", extra={"code": "temperature_dropped", "model": str(body["model"])}
+            )
+            reply = self._call(CHAT_PATH, body, ends, on_text=on_text)
+            with self._lock:  # principal review: one 404 a model in this process, never one a call
+                self._no_temperature.add(str(body["model"]))
         text, _ = _billed_text(reply, before)
         input_tokens, output_tokens = reply_usage(reply)
         spent = (before[0] + input_tokens, before[1] + output_tokens)

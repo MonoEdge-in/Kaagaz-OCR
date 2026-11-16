@@ -71,7 +71,9 @@ def test_on_is_refused_until_every_recent_worker_runs_as_kaagaz_worker_and_9b_is
     # Changed on purpose (PR 9b, #606): 0092 is in (the head), so on passes the migration check; one
     # still to come is asked for to see the refusal.
     # Changed on purpose (PR 12, #605): 0093 is the head now; a revision still to come is asked for.
-    # Changed on purpose (PR 13, #605): PR 13's migration is the head (0094 here, 0096 once renumbered).
+    # Changed on purpose (#617 part 1): 0094 is the head now; 0095 is still to come.
+    # Changed on purpose (#647): 0095 is the head now; 0096 is still to come.
+    # Changed on purpose (PR 13, #605): PR 13's migration (0096) is the head; 0097 is still to come.
     monkeypatch.setattr(person_rule, "NEEDS_REVISION", "0097")
     assert _run(db, "on", "--customer", customer)[0] == 2  # the head is below what it needs
     assert "PR 9b (migration 0097) is not in yet" in capsys.readouterr().err

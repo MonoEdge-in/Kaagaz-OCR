@@ -663,8 +663,13 @@ def test_bulk_giving_gives_every_pair_or_nothing(db: Database) -> None:
 def test_me_says_management_and_heads_and_the_folders_say_their_walls(db: Database) -> None:
     org = _walled(Api(db))
     me = org.people["head"].client.get("/api/auth/me").json()
-    # Changed on purpose (#601, PR 10c): in_department.
-    assert me["access"] == {"management": False, "heads": [org.folders["finance"]], "in_department": True}
+    # Changed on purpose (#601, PR 10c): in_department; (#604, PR 11c): walled.
+    assert me["access"] == {
+        "management": False,
+        "heads": [org.folders["finance"]],
+        "in_department": True,
+        "walled": True,
+    }
     assert org.people["management"].client.get("/api/auth/me").json()["access"]["management"] is True
     folders = {f["id"]: f for f in org.people["admin"].client.get("/api/folders").json()["items"]}
     assert (
