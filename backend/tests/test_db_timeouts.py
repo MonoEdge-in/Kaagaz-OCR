@@ -51,6 +51,15 @@ def test_each_timeout_is_set_in_milliseconds_and_a_zero_one_is_left_out() -> Non
     ) == {"options": "-c statement_timeout=120000 -c idle_in_transaction_session_timeout=900000"}
 
 
+def test_647_a_connect_timeout_is_handed_to_the_driver_only_when_asked() -> None:
+    """#647 review: verify-models waits at most a few seconds for the database to answer."""
+    assert _connect_args(connect_timeout_seconds=3) == {"connect_timeout": 3}
+    assert _connect_args(connect_timeout_seconds=3, lock_timeout_seconds=5) == {
+        "options": "-c lock_timeout=5000",
+        "connect_timeout": 3,
+    }
+
+
 def test_the_settings_default_when_unset_so_an_older_env_still_starts() -> None:
     settings = Settings.from_env(shipped(**dict.fromkeys(SETTINGS)))
     assert (
