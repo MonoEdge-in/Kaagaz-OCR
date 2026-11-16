@@ -380,3 +380,35 @@ def test_any_two_files_of_a_group_are_compared_by_admins_and_management_only(db:
     admin = org.people["admin"]
     assert compare(admin, org.files["c"], org.files["a"]) == compare(admin, org.files["c"], str(uuid.uuid4()))
     assert compare(org.people["management"], org.files["c"], org.files["a"])[0] == 200
+
+
+def test_a_split_group_decides_and_compares_only_the_part_it_shows(db: Database) -> None:
+    """Review of #659: b of the chain is purged or locked (its rows gone), so the group shows only e
+    and f. Not versions, Decide later and Compare answer for e and f, never for a or c of the other
+    part: those are a random id's 404, and nothing is written."""
+    org, ids = _org(Api(db))
+    b = org.files["b"]
+    _owner(db, "DELETE FROM version_pairs WHERE first_id = :b OR second_id = :b", {"b": b})
+    _owner(db, "DELETE FROM version_group_members WHERE document_id = :b", {"b": b})
+    a, c, e, f = (org.files[name] for name in ("a", "c", "e", "f"))
+    random_group = str(uuid.uuid4())
+    for name in ("management", "admin"):
+        signed = org.people[name]
+        for action in ("keep-apart", "later"):
+            refused = _post(signed, f"/version-groups/{random_group}/{action}", [a])
+            for file in (a, c):
+                assert _post(signed, f"/version-groups/{ids['chain']}/{action}", [file]) == refused, (
+                    name,
+                    action,
+                )
+
+        def compare(right: str, left: str) -> tuple[int, Any]:
+            reply = signed.client.get(f"/api/documents/{right}/compare", params={"with": left})  # noqa: B023
+            return reply.status_code, reply.json()
+
+        missing = compare(e, str(uuid.uuid4()))
+        assert compare(e, a) == missing and compare(c, a) == missing, name
+        assert compare(f, e)[0] == 200, name
+    assert {_states(db, org)[name][0] for name in ("a", "c", "e", "f")} == {"open"}
+    status, reply = _post(org.people["management"], f"/version-groups/{ids['chain']}/later", [e])
+    assert status == 200 and _states(db, org)["e"][0] == "later", reply
