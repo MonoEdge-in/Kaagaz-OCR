@@ -349,6 +349,14 @@ def test_the_type_narrows_the_scope_and_names_the_count() -> None:
 # --- Also mentions (Tushar, 17 Oct 2026) ---------------------------------------------------
 
 
+def test_the_not_found_line_never_names_a_request_word() -> None:
+    # #622 (production, 15 Nov 2026): it said 'No document searched has the words "Can", "find"
+    # or "measurement".'
+    question = "Can you find me the measurement of this if it is seen in any other document?"
+    assert key_terms(question) == ["measurement"]
+    assert key_terms("which document have krishna jindal name") == ["krishna", "jindal"]
+
+
 def test_key_terms_keep_names_and_places_and_drop_the_rest() -> None:
     assert key_terms("Who is the owner of the land in Jalna?") == ["Jalna"]
     assert key_terms("गाव दरेगांव जालना जिल्हा कोणता आहे?") == ["दरेगांव", "जालना"]

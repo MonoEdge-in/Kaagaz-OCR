@@ -189,7 +189,15 @@ from kaagaz.ai.client import (
 from kaagaz.ai.openrouter import LIMITER_WAIT
 from kaagaz.ai.usage import billed_as
 from kaagaz.answering import glossary, stream, voice
-from kaagaz.answering.clarify import Pending, PgVocabulary, Step, Vocabulary, after_reply, first_step
+from kaagaz.answering.clarify import (
+    Pending,
+    PgVocabulary,
+    Step,
+    Vocabulary,
+    after_reply,
+    first_step,
+    refers_back,
+)
 from kaagaz.answering.dates import date_range, describe_range, mentions_date
 from kaagaz.answering.draft import (
     ANSWER_PROMPT_HASH,
@@ -641,6 +649,7 @@ class AnswerService:
         pending: Pending | None = None,
         clarify: bool = True,
         cited: Sequence[str] = (),
+        last_cited: Sequence[str] = (),
     ) -> Answer:
         """Answer ``question`` for ``customer_id`` only, from documents inside ``scope``;
         ``history`` is the conversation's earlier turns, oldest first; ``user_id``, the
@@ -657,15 +666,39 @@ class AnswerService:
         this answers (step 18, ``clarify.reply_to``), whose question is answered instead;
         ``clarify`` False (the ``nlq_clarify`` switch, 0052): no plan, so no clarify. ``cited``:
         the documents the conversation's earlier answers cite, newest turn first (a missing
-        subject's choices, ``clarify.first_step``)."""
+        subject's choices, ``clarify.first_step``). ``last_cited``: the documents the last answer
+        cited, which the asker can still see (#629): when "this" points back at one, its property
+        is never asked."""
         if choice is not None and not choice.agents:
             keyless = copy.copy(self)  # shallow: the same ports, without the model clients
             keyless._model = keyless._translator = None
             return keyless._respond(
-                customer_id, question, scope, history, user_id, memory, None, pins, pending, clarify, cited
+                customer_id,
+                question,
+                scope,
+                history,
+                user_id,
+                memory,
+                None,
+                pins,
+                pending,
+                clarify,
+                cited,
+                last_cited,
             )
         return self._respond(
-            customer_id, question, scope, history, user_id, memory, choice, pins, pending, clarify, cited
+            customer_id,
+            question,
+            scope,
+            history,
+            user_id,
+            memory,
+            choice,
+            pins,
+            pending,
+            clarify,
+            cited,
+            last_cited,
         )
 
     def _respond(
@@ -681,9 +714,17 @@ class AnswerService:
         pending: Pending | None,
         clarify: bool = True,
         cited: Sequence[str] = (),
+        last_cited: Sequence[str] = (),
     ) -> Answer:
         """``answer``'s work, timed by it."""
         stream.emit("stage", {"stage": "understanding"})  # step 21: the rewrite and plan, when any
+        # #629: a property pick searches its own documents (a pick of another kind, every one).
+        if pending is not None and pending.kind == "property" and pending.documents:
+            inside = scope.document_ids
+            picked = (
+                pending.documents if inside is None else tuple(d for d in pending.documents if d in inside)
+            )
+            scope = replace(scope, document_ids=picked)
         if scope.matches_nothing:
             return _not_found("search", question.strip(), [], model_used=False, reason="notfound_empty_scope")
         whole = self._whole(customer_id, user_id, scope, self._input_cap(choice))
@@ -733,7 +774,10 @@ class AnswerService:
         step = Step(done.question or question, ())
         narrowed = replace(scope, timezone=EVERYTHING.timezone) != EVERYTHING  # any filter at all
         if done.plan is not None and vocabulary is not None:
-            step = first_step(vocabulary, customer_id, user_id, step.question, done.plan, narrowed, cited)
+            last = last_cited if refers_back(question) else ()
+            step = first_step(
+                vocabulary, customer_id, user_id, step.question, done.plan, narrowed, cited, last
+            )
         kept = early if step.question == question else None  # step 19: searched the question as asked
         return self._step_answer(
             customer_id, step, question, scope, user_id, whole, done.aspects, choice, pins, kept

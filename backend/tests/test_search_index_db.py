@@ -233,13 +233,14 @@ def test_a_meaning_list_past_the_timeout_is_dropped_and_words_still_answer(
 
 
 @pytest.mark.parametrize("statement", ["_WORD", "_FUZZY"])
-def test_a_word_or_typo_list_past_the_timeout_fails_the_search_as_503(
+def test_a_word_or_typo_list_past_the_timeout_is_dropped_and_the_other_still_answers(
     db: Database, monkeypatch: pytest.MonkeyPatch, statement: str
 ) -> None:
-    """Only the meaning list falls back: a cancelled word or typo list raises, and the
-    API's OperationalError handler answers 503 backend_unavailable."""
+    """Changed on purpose (#619, production 15 Nov 2026): a cancelled word or typo list is dropped
+    like the meaning list, never a 503 for the whole question; the other list still answers. The
+    API's handler still answers 503 to an OperationalError that reaches it."""
     customer, _ = new_customer(db)
-    add_pieces(db, customer, add_document(db, customer), [("Invoice INV-3003", None)])
+    (piece,) = add_pieces(db, customer, add_document(db, customer), [("Invoice INV-3003", None)])
     monkeypatch.setattr(hybrid, "STATEMENT_TIMEOUT_MS", 200)
     monkeypatch.setattr(
         hybrid,
@@ -250,9 +251,11 @@ def test_a_word_or_typo_list_past_the_timeout_fails_the_search_as_503(
         ),
     )
 
-    with pytest.raises(OperationalError) as cancelled:
-        run(db, customer, "INV-3003")
+    assert [hit.piece_id for hit in run(db, customer, "INV-3003")] == [piece]
 
+    with pytest.raises(OperationalError) as cancelled, db.customer(customer) as conn:
+        conn.execute(text("SELECT set_config('statement_timeout', '200', true)"))
+        conn.execute(getattr(hybrid, statement), {"c": customer, "q": "x", "k": "y", "n": 1})
     assert getattr(cancelled.value.orig, "sqlstate", None) == "57014"
     response = _client_raising(cancelled.value).get("/api/boom")
     assert (response.status_code, response.json()["error"]["code"]) == (503, "backend_unavailable")

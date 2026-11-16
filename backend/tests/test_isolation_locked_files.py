@@ -471,8 +471,7 @@ REFUSED = {
     ("POST", "/api/documents/{document_id}/separate"),
     ("POST", "/api/documents/{document_id}/separate/undo"),
     ("GET", "/api/documents/{document_id}/compare"),
-    ("PATCH", "/api/documents/{document_id}/page-turns"),
-    ("DELETE", "/api/documents/{document_id}/page-turns"),
+    ("PATCH", "/api/documents/{document_id}/page-turns"),  # no whole-file DELETE since #600's fix
 }
 ALLOWED = {
     ("GET", "/api/documents/{document_id}"),

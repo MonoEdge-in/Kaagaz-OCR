@@ -39,9 +39,20 @@ describe("the icon set", () => {
       .join("\n")
       // The handoff sometimes splits one icon into two paths; ours is one.
       .replaceAll('"></path><path d="', "");
-    const extra = K_ICON_NAMES.slice(52);
+    // Changed on purpose (PRD 7, #604): `people` comes after them, drawn for Kaagaz (next test).
+    const extra = K_ICON_NAMES.slice(52, -1);
     expect(extra).toEqual(["more", "file", "chev-left", "menu", "zoom-out", "external", "calendar", "sun", "moon", "unlock"]);
     for (const name of extra) expect(screens, name).toContain(`d="${K_ICONS[name].d}"`);
+  });
+
+  it("ends with the people icon, drawn in the kit's style: one path and a circle at the 1.6 stroke", () => {
+    // Changed on purpose (PRD 7, #604): the one icon not copied from the handoff (design sign-off).
+    expect(K_ICON_NAMES.at(-1)).toBe("people");
+    const html = renderToStaticMarkup(createElement(Icon, { name: "people", size: "sm" }));
+    expect(html).toContain('stroke-width="1.6"');
+    expect(html.match(/<path /g)).toHaveLength(1);
+    expect(html).toContain('<circle cx="9" cy="8" r="3.8"></circle>');
+    expect(html).toContain('aria-hidden="true"');
   });
 
   it("draws at a 1.6 stroke, hidden from screen readers, at 14, 18 and 22", () => {

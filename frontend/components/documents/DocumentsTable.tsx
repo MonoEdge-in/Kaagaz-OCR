@@ -40,6 +40,11 @@ import Link from "next/link";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, RefCallback } from "react";
 import { flushSync } from "react-dom";
+import { accessAbilities } from "@/components/access/abilities";
+import { AudiencePanel } from "@/components/access/AudiencePanel";
+import { GiveAccessDialog } from "@/components/access/GiveAccessDialog";
+import { CHOOSE_FILES_CAP, MAX_GIVE_FILES, SHARED } from "@/components/access/words";
+import { adminGate } from "@/components/admin/logic";
 import { extensionOf } from "@/components/dashboard/words";
 import { LabelChip } from "@/components/files/LabelChip";
 import { labelName } from "@/components/files/labels";
@@ -123,8 +128,10 @@ export interface RowEvents {
   /** Moved to Trash, restored or deleted for good: say it and ask for the list again; a move
    * to Trash or a restore can be undone (issue 372). */
   onRemoved(message: string, undo?: RemovalUndo): void;
-  /** Renamed, moved or tagged: announce it and ask for the list again; a move can be undone. */
-  onSaved(message: string, undo?: () => Promise<void>): void;
+  /** Renamed, moved or tagged: announce it and ask for the list again; a move can be undone.
+   * `moved`: a move, said in the toast even with no Undo (PR 10c: an admin who moved a file where
+   * they can't see it). */
+  onSaved(message: string, undo?: () => Promise<void>, moved?: boolean): void;
   /** After a move the row may be gone: focus the list's heading. */
   onFocusList(): void;
   onTagCreated(): void;
@@ -132,6 +139,8 @@ export interface RowEvents {
   onFolderCreated(): void;
   /** "Upload new version": the screen opens the file picker for this document. */
   onUploadVersion(document: DocumentSummary): void;
+  /** PRD 7 (#604): files given to people: the toast's words. */
+  onShared?(message: string): void;
 }
 
 interface Props extends RowEvents {
@@ -257,6 +266,7 @@ export function DocumentsTable({
     ...deletableItems.map((item) => item.id),
   ];
   const [moving, setMoving] = useState(false);
+  const [givingMany, setGivingMany] = useState(false); // PRD 7 (#604): the bar's Give access
   const bulkMoved = useRef(false);
   const [password, setPassword] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
@@ -309,11 +319,12 @@ export function DocumentsTable({
   const rowEvents = useMemo<RowEvents>(
     () => ({
       onRemoved: (message, undo) => latestEvents.current.onRemoved(message, undo),
-      onSaved: (message, undo) => latestEvents.current.onSaved(message, undo),
+      onSaved: (message, undo, moved) => latestEvents.current.onSaved(message, undo, moved),
       onFocusList: () => latestEvents.current.onFocusList(),
       onTagCreated: () => latestEvents.current.onTagCreated(),
       onFolderCreated: () => latestEvents.current.onFolderCreated(),
       onUploadVersion: (document) => latestEvents.current.onUploadVersion(document),
+      onShared: (message) => latestEvents.current.onShared?.(message),
     }),
     [],
   );
@@ -520,6 +531,7 @@ export function DocumentsTable({
               suggestions={suggestions}
               movedLeaves={movedLeaves}
               events={rowEvents}
+              me={me}
             />
           ))}
         </tbody>
@@ -574,6 +586,26 @@ export function DocumentsTable({
                     <button type="button" className="btn" onClick={() => setMoving(true)}>
                       Move to folder ({movable.length})
                     </button>
+                  )}
+                  {/* PRD 7 (#604): an admin session's, at most 100 files at once. */}
+                  {movable.length > 0 && adminGate(me) === "allow" && (
+                    <>
+                      {/* Past 100: it stays reachable and says why, but does nothing. */}
+                      <button
+                        type="button"
+                        className="btn"
+                        aria-disabled={movable.length > MAX_GIVE_FILES || undefined}
+                        aria-describedby={movable.length > MAX_GIVE_FILES ? "bulk-give-cap" : undefined}
+                        onClick={() => movable.length <= MAX_GIVE_FILES && setGivingMany(true)}
+                      >
+                        Give access ({movable.length})
+                      </button>
+                      {movable.length > MAX_GIVE_FILES && (
+                        <span id="bulk-give-cap" className="hint">
+                          {CHOOSE_FILES_CAP}
+                        </span>
+                      )}
+                    </>
                   )}
                   {readableIds.length > 0 && (
                     <button type="button" className="btn" onClick={() => setConfirming("read")}>
@@ -657,13 +689,25 @@ export function DocumentsTable({
             if (box) box.focus();
             else events.onFocusList();
           }}
-          onSaved={(message, _moved, undo) => {
+          onSaved={(message, moved, undo) => {
             bulkMoved.current = true;
             setMoving(false);
             clearSelection();
-            events.onSaved(message, undo);
+            events.onSaved(message, undo, moved);
           }}
           onFolderCreated={events.onFolderCreated}
+        />
+      )}
+      {givingMany && (
+        <GiveAccessDialog
+          files={movable}
+          myId={me.user.id}
+          onClose={() => setGivingMany(false)}
+          onGiven={(message) => {
+            setGivingMany(false);
+            clearSelection();
+            events.onShared?.(message);
+          }}
         />
       )}
     </>
@@ -766,6 +810,7 @@ const DocumentRow = memo(function DocumentRow({
   suggestions,
   movedLeaves,
   events,
+  me,
 }: {
   document: DocumentSummary;
   whenShort: string;
@@ -782,9 +827,12 @@ const DocumentRow = memo(function DocumentRow({
   suggestions: readonly string[];
   movedLeaves: boolean;
   events: RowEvents;
+  me: Me;
 }) {
   const [confirming, setConfirming] = useState<Confirming>(null);
   const [editing, setEditing] = useState<EditAction | null>(null);
+  const [sharing, setSharing] = useState<"give" | "audience" | null>(null); // PRD 7 (#604)
+  const abilities = accessAbilities(me, { departmentId: document.department?.id ?? null });
   const [busy, setBusy] = useState(false);
   // What the row says while Restore or Retry runs (Trash and Delete forever say it in their dialog).
   const [working, setWorking] = useState(BUSY_WORDS.restore);
@@ -839,6 +887,10 @@ const DocumentRow = memo(function DocumentRow({
       return;
     }
     if (action === "read") return; // only the document screen's menu offers it
+    if (action === "give" || action === "audience") {
+      setSharing(action);
+      return;
+    }
     afterEdit.current = "actions";
     setEditing(action);
   }
@@ -846,7 +898,7 @@ const DocumentRow = memo(function DocumentRow({
   function saved(message: string, moved = false, undo?: () => Promise<void>) {
     afterEdit.current = moved && movedLeaves ? "list" : "actions";
     setEditing(null);
-    events.onSaved(message, undo);
+    events.onSaved(message, undo, moved);
   }
 
   // The dialog is shut: hand focus back to Actions, or to the list after a move.
@@ -964,7 +1016,7 @@ const DocumentRow = memo(function DocumentRow({
     `${typeWords} · ${formatBytes(document.size_bytes)}`,
     versionCell(document.version_no, newer),
     document.document_date && FILES_TEXT.dated(formatDate(document.document_date)),
-    folderPath && `In ${folderPath}`,
+    document.shared_with_you ? SHARED.row : folderPath && `In ${folderPath}`,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -1077,7 +1129,12 @@ const DocumentRow = memo(function DocumentRow({
           )}
           {/* Where it is filed, so a move shows in All documents too (16 Oct 2026); on the facts'
               line, not a line of its own, so a row stays short (issue 371). */}
-          {folderShort && <span className={styles.inFolder}>In {folderShort}</span>}
+          {/* PRD 7 (#604): in a folder this person can't see, the server's flag, never a path. */}
+          {document.shared_with_you ? (
+            <span className={styles.inFolder}>{SHARED.row}</span>
+          ) : (
+            folderShort && <span className={styles.inFolder}>In {folderShort}</span>
+          )}
         </span>
         {tagList(styles.factTags)}
         {document.newer_version && (
@@ -1160,6 +1217,29 @@ const DocumentRow = memo(function DocumentRow({
             canForever={canForever}
             onPick={pick}
             toggleRef={holdActions}
+            access={abilities}
+          />
+        )}
+        {sharing === "give" && (
+          <GiveAccessDialog
+            files={[document]}
+            myId={me.user.id}
+            onClose={() => setSharing(null)}
+            onClosed={() => actionsButton.current?.focus()}
+            onGiven={(message) => {
+              setSharing(null);
+              events.onShared?.(message);
+            }}
+          />
+        )}
+        {sharing === "audience" && (
+          <AudiencePanel
+            target={{ kind: "document", id: document.id, name: document.display_name }}
+            myId={me.user.id}
+            abilities={abilities}
+            onClose={() => setSharing(null)}
+            onClosed={() => actionsButton.current?.focus()}
+            onChanged={(message) => events.onShared?.(message)}
           />
         )}
         {confirming !== null && (

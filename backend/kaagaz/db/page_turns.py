@@ -26,7 +26,6 @@ _ADD = text(
     " SELECT :c, :d, p.page_no, p.turn, :by"
     " FROM unnest(CAST(:pages AS int[]), CAST(:turns AS smallint[])) AS p (page_no, turn)"
 )
-_RESET = text("DELETE FROM page_rotations WHERE customer_id = :c AND document_id = :d")
 
 
 def for_document(conn: Connection, customer_id: str, document_id: str) -> list[dict[str, int]]:
@@ -45,8 +44,3 @@ def save(
     if turned:
         params = {"c": customer_id, "d": document_id, "by": by}
         conn.execute(_ADD, {**params, "pages": turned, "turns": [changes[page] for page in turned]})
-
-
-def reset(conn: Connection, customer_id: str, document_id: str) -> int:
-    """Remove every turn of the version; how many pages were turned."""
-    return conn.execute(_RESET, {"c": customer_id, "d": document_id}).rowcount
