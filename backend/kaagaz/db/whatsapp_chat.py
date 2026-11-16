@@ -7,8 +7,6 @@
   view), they are out of Trash, and they are not locked (a locked file never appears on WhatsApp,
   even for a person who may open it).
 * ``shared_with_me``: whether a document was given to the person directly ("Shared with you").
-* ``holds_lock_grant``: whether the person may open any locked file (until PRD 7 PR 12, Ask still
-  reads those: the chat then leaves out what cites no file, kaagaz/channel/chat.py).
 * ``step``, ``set_step``, ``clear_step``: what the next message answers ("Which file?"), kept in the
   person's ``whatsapp_pickers`` row (``own_user_only``) until it expires; it holds no id.
 
@@ -54,7 +52,6 @@ _ON_WHATSAPP = text(
     " AND deleted_at IS NULL AND locked_at IS NULL"
 )
 _SHARED = text("SELECT CAST(:d AS uuid) IN (SELECT public.kaagaz_shared_with_me())")
-_LOCK_GRANT = text("SELECT EXISTS (SELECT 1 FROM public.kaagaz_lock_open_to_me())")
 _STEP = text(
     "SELECT state FROM whatsapp_pickers WHERE customer_id = :c AND user_id = :u AND expires_at > now()"
 )
@@ -85,10 +82,6 @@ def on_whatsapp(conn: Connection, customer_id: str, document_ids: Sequence[str])
 
 def shared_with_me(conn: Connection, document_id: str) -> bool:
     return bool(conn.execute(_SHARED, {"d": document_id}).scalar_one())
-
-
-def holds_lock_grant(conn: Connection) -> bool:
-    return bool(conn.execute(_LOCK_GRANT).scalar_one())
 
 
 def step(conn: Connection, customer_id: str, user_id: str) -> dict[str, Any] | None:

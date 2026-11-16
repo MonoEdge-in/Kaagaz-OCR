@@ -439,6 +439,8 @@ class Upload:
         is new. A locked copy first, in Trash or not: never named, even to a person who may open it."""
         if reply.get("hidden"):
             return say("hidden_copy", lang), None, False
+        if reply.get("locked"):  # PRD 7 PR 12 (#649): a locked copy the person may open, never named
+            return say("locked_copy", lang), None, False
         document = reply["document"]
         document_id = str(document["id"])
         if not reply.get("duplicate"):
