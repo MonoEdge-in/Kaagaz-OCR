@@ -40,7 +40,7 @@ def clear_copy(document_id: uuid.UUID, user: User, context: Context) -> dict[str
     """Three statements for the whole document: its pages, then its lines and its marks, each
     unpacking the stored output once, under a document-wide cap (``truncated``)."""
     customer_id, target = user.customer_id, str(document_id)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         _readable(conn, customer_id, document_id)
         pages = [page["page_no"] for page in listing.list_pages(conn, customer_id, target)]
         lines, marks = listing.clear_copy(conn, customer_id, target)

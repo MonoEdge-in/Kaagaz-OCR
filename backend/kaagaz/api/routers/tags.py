@@ -82,7 +82,7 @@ def _audit(
 
 @router.get("/tags")
 def list_tags(user: User, context: Context) -> dict[str, Any]:
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         rows = tags_sql.list_tags(conn, user.customer_id)
     return {"items": [tag(row) for row in rows]}
 
@@ -92,7 +92,7 @@ def create_tag(body: NewTagBody, user: User, context: Context) -> dict[str, Any]
     name = clean_name(body.name, max_length=TAG_NAME_MAX)
     if name is None:
         raise ApiError(400, "bad_request", f"Enter a tag name of 1 to {TAG_NAME_MAX} characters.")
-    with _refused(), context.db.customer(user.customer_id) as conn:
+    with _refused(), context.db.user(user.customer_id, user.user_id) as conn:
         row = tags_sql.create_tag(conn, user.customer_id, name=name, created_by=user.user_id)
         _audit(conn, user, "tag.create", "tag", row.id)
     return tag(row)
@@ -101,7 +101,7 @@ def create_tag(body: NewTagBody, user: User, context: Context) -> dict[str, Any]
 @router.delete("/tags/{tag_id}", status_code=204)
 def delete_tag(tag_id: uuid.UUID, user: AdminWithTwoStep, context: Context) -> Response:
     target = str(tag_id)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         if not tags_sql.delete_tag(conn, user.customer_id, target):
             raise ApiError(404, "not_found")
         _audit(conn, user, "tag.delete", "tag", target)
@@ -115,7 +115,7 @@ def set_document_tags(
     target = str(document_id)
     wanted = [str(tag_id) for tag_id in body.tag_ids]
     try:
-        with _refused(), context.db.customer(user.customer_id) as conn:
+        with _refused(), context.db.user(user.customer_id, user.user_id) as conn:
             rows = tags_sql.set_document_tags(conn, user.customer_id, target, wanted)
             listing.set_details(conn, user.customer_id, target, by=user.user_id)  # File management O3
             _audit(conn, user, "document.tags", "document", target, {"tag_count": len(rows)})

@@ -342,7 +342,7 @@ def test_m3_a_background_write_that_fails_logs_only_its_code(
     from kaagaz.api.routers.chat import _remember
 
     class Down:
-        def customer(self, customer_id: str) -> Any:
+        def user(self, customer_id: str, user_id: str) -> Any:
             raise error
 
     context = cast(AppContext, SimpleNamespace(settings=make_settings(), db=Down(), answers=None))
