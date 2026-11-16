@@ -9,15 +9,17 @@ import io
 import unittest
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
+from unittest import mock
 
 from kaagaz.ingestion import resolve, sniff
 from kaagaz.ingestion.ports import Job
-from kaagaz.pipeline import CANNOT_DRAW
+from kaagaz.pipeline import CANNOT_DRAW, OnPicture
 from kaagaz.reading import office
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.spans import Span
 from kaagaz.scanning.gate import DocumentStatus
-from tests.fakes import FakePreparer, PresetSocket
+from tests.fakes import FakePrepared, FakePreparer, MemoryStorage, PresetSocket
 from tests.support import PDF_BYTES
 from tests.test_pipeline import CUSTOMER, FakeConverter, RecordingSocket, _direct, _pictured, build
 from tests.test_pipeline_runs import beat, rig
@@ -92,7 +94,7 @@ class _LockingSocket(PresetSocket):
 
     def __init__(self, lock: Callable[[], None]) -> None:
         super().__init__({sniff.PDF: _SPANS}, {sniff.PDF: _SPANS})
-        self._lock = lock
+        self._on_lock = lock
         self.reads = self.seconds = 0
 
     def read(
@@ -103,7 +105,7 @@ class _LockingSocket(PresetSocket):
         on_page: Callable[[RouteDecision | None], None] | None = None,
     ) -> list[Span]:
         self.reads += 1
-        self._lock()
+        self._on_lock()
         return super().read(detected_type, data, on_page=on_page)
 
     def read_second(self, detected_type: str, data: bytes) -> list[Span] | None:
@@ -133,6 +135,120 @@ class LockWhileReadingTest(unittest.TestCase):
         self.assertEqual(
             [(run.status, run.error_code) for run in system.runs_of(job)], [("superseded", "locked")]
         )
+
+
+class _LockingPreparer(FakePreparer):
+    """A lock under way once the pages are drawn: seen by ``still_open`` (PgDocuments reads the
+    version FOR SHARE, so it waits for the lock), before its run fence is closed."""
+
+    def __init__(self, lock: Callable[[], None]) -> None:
+        super().__init__({sniff.PDF: _pictured(pages=1)})
+        self._on_lock = lock
+
+    def prepare(self, detected_type: str, data: bytes, on_picture: OnPicture) -> FakePrepared:
+        prepared = super().prepare(detected_type, data, on_picture)
+        self._on_lock()
+        return prepared
+
+
+class _LockingStorage(MemoryStorage):
+    """A lock that commits while a Word file's PDF is being stored (``kaagaz_lock`` ends the run)."""
+
+    def __init__(self, lock: Callable[[], None]) -> None:
+        super().__init__()
+        self._on_lock = lock
+        self.puts = 0
+
+    def put_rendition(self, customer_id: str, document_id: str, pdf: bytes) -> None:
+        super().put_rendition(customer_id, document_id, pdf)
+        self.puts += 1
+        self._on_lock()
+
+
+class _LockingConverter(FakeConverter):
+    """A lock that commits while LibreOffice converts the file."""
+
+    def __init__(self, output: bytes, lock: Callable[[], None]) -> None:
+        super().__init__(output)
+        self._on_lock = lock
+
+    def __call__(self, kind: str, data: bytes) -> bytes:
+        self._on_lock()
+        return super().__call__(kind, data)
+
+
+class LockBeforeTheReadingTest(unittest.TestCase):
+    """Review (15 Nov 2026): a lock that lands before the first page is sent anywhere."""
+
+    def test_a_lock_between_the_first_read_and_the_run_is_seen_and_the_version_only_prepared(self) -> None:
+        socket = RecordingSocket({sniff.PDF: _SPANS})
+        system = rig(socket=socket, preparer=FakePreparer({sniff.PDF: _pictured(pages=1)}))
+        job = system.job(PDF_BYTES)
+        start = system.runs.start
+
+        def lock_then_start(customer_id: str, document_id: str, *, now: datetime) -> str:
+            system.repo.locked.add((customer_id, document_id))  # committed after the worker's get
+            return start(customer_id, document_id, now=now)
+
+        with mock.patch.object(system.runs, "start", lock_then_start):
+            system.processor(job, beat)
+
+        self.assertEqual((socket.reads, system.store.saves), ([], 0))  # never sent anywhere
+        self.assertIs(system.statuses.get_status(job.customer_id, job.document_id), DocumentStatus.LOCKED)
+        self.assertIn((job.customer_id, job.document_id), system.repo.locked_pages)  # prepared instead
+        self.assertEqual([(run.status, run.error_code) for run in system.runs_of(job)], [("locked", None)])
+
+    def test_a_lock_under_way_as_the_reading_starts_stops_it_before_the_first_page(self) -> None:
+        holder: dict[str, Job] = {}
+
+        def lock_now() -> None:
+            system.repo.locked.add((holder["job"].customer_id, holder["job"].document_id))
+
+        socket = RecordingSocket({sniff.PDF: _SPANS})
+        system = rig(socket=socket, preparer=_LockingPreparer(lock_now))
+        job = holder["job"] = system.job(PDF_BYTES)
+
+        system.processor(job, beat)
+
+        self.assertEqual((socket.reads, system.store.saves), ([], 0))
+        self.assertEqual([run.status for run in system.runs_of(job)], ["superseded"])
+
+
+class LockWhileConvertingTest(unittest.TestCase):
+    """Review (15 Nov 2026): a Word file's PDF holds its words; a lock that comes as it is stored
+    deletes it again, and one that came before it is stored keeps it from being stored at all."""
+
+    def _run(
+        self, *, lock_on_store: bool
+    ) -> tuple[_LockingStorage, RecordingSocket, list[tuple[str, str | None]]]:
+        held: dict[str, Any] = {}
+
+        def lock_now() -> None:
+            job, system = held["job"], held["system"]
+            system.repo.locked.add((job.customer_id, job.document_id))
+            system.runs.close_running(
+                job.customer_id, job.document_id, status="superseded", error_code="locked", now=_NOW
+            )
+
+        storage = _LockingStorage(lock_now if lock_on_store else lambda: None)
+        converter = FakeConverter(PDF_BYTES) if lock_on_store else _LockingConverter(PDF_BYTES, lock_now)
+        socket = RecordingSocket({office.RENDITION: _SPANS})
+        preparer = FakePreparer({sniff.PDF: _pictured(pages=1)})
+        system = held["system"] = rig(socket=socket, preparer=preparer, office=converter, renditions=storage)
+        job = held["job"] = system.job(make_zip({"word/document.xml": b"<w/>"}))
+        system.processor(job, beat)
+        return storage, socket, [(run.status, run.error_code) for run in system.runs_of(job)]
+
+    def test_a_lock_while_the_pdf_is_stored_deletes_it_and_nothing_is_read(self) -> None:
+        storage, socket, runs = self._run(lock_on_store=True)
+        self.assertEqual(storage.puts, 1)
+        self.assertEqual(storage.renditions, {})  # stored, then deleted again
+        self.assertEqual((socket.reads, runs), ([], [("superseded", "locked")]))
+
+    def test_a_lock_before_the_pdf_is_stored_keeps_it_from_being_stored(self) -> None:
+        storage, socket, runs = self._run(lock_on_store=False)
+        self.assertEqual((storage.puts, storage.renditions), (0, {}))
+        self.assertEqual((socket.reads, runs), ([], [("superseded", "locked")]))
 
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@ from kaagaz.api.views import (
 )
 from kaagaz.db.tags import TagRow
 from kaagaz.eta import time_left
+from kaagaz.pipeline import CANNOT_DRAW
 from tests.test_api_support import NOW
 
 WAITING = {"step": "waiting"}
@@ -129,6 +130,7 @@ def _row(
         "autofile": None,
         "batch_ahead": counts.get("ahead", 0),
         "stuck": False,  # issue 407: listing._COLUMNS
+        "locked": False,  # Changed on purpose (PRD 7, #605): listing._COLUMNS
         "waiting_code": None,
         "family_uploaders": [USER.user_id],
         "newer": None,
@@ -184,7 +186,16 @@ def test_a_batch_counts_each_file_once_and_its_bar_is_pages_read_over_total() ->
     view = _view(rows)
 
     assert view["id"] == "b1"
-    assert view["counts"] == {"total": 7, "ready": 1, "reading": 1, "waiting": 2, "attention": 1, "failed": 2}
+    # Changed on purpose (PRD 7, #605): the locked count too.
+    assert view["counts"] == {
+        "total": 7,
+        "ready": 1,
+        "reading": 1,
+        "waiting": 2,
+        "attention": 1,
+        "failed": 2,
+        "locked": 0,
+    }
     assert (view["pages_read"], view["pages_total"]) == (8, 16)
     assert [item["id"] for item in view["documents"]] == [str(row["id"]) for row in rows]  # upload order
     assert view["documents"][5]["status_message"] == "Waiting: 4 files ahead in your batch"
@@ -296,3 +307,40 @@ def test_a_file_over_its_kinds_own_limit_says_so() -> None:
     assert status_message("failed", "too_large", detected_type="ole2", max_pages=100) == (
         "This file is larger than files of its kind can be. Split it into smaller files and upload them."
     )
+
+
+def test_a_locked_file_in_a_batch_is_finished_and_counted_as_locked() -> None:
+    """Review (15 Nov 2026): a locked, pictured file is never read, so it is finished (read whole),
+    never waiting: the drop's bar and time reach the end."""
+    locked = {**_row("locked", pages=3), "locked": True}
+    view = _view([cast(RowMapping, locked), _row("ready")])
+    assert view["counts"] == {
+        "total": 2,
+        "ready": 1,
+        "reading": 0,
+        "waiting": 0,
+        "attention": 0,
+        "failed": 0,
+        "locked": 1,
+    }
+    assert (view["pages_read"], view["pages_total"]) == (5, 5)
+    assert view["time_left"] is None
+
+
+@pytest.mark.parametrize(
+    ("code", "words"),
+    [
+        ("retries_exhausted", "Locked. Its page pictures couldn't be made yet. Retry to try again."),
+        ("stuck_no_job", "Locked. Its page pictures couldn't be made yet. Retry to try again."),
+        (
+            CANNOT_DRAW,
+            "Locked. Its pages can't be shown as pictures, so it can't be viewed. Unlock it to read it.",
+        ),
+    ],
+)
+def test_a_locked_version_that_failed_has_its_own_words_never_read_it_again(code: str, words: str) -> None:
+    """Review (15 Nov 2026): a locked version whose preparing failed is never told to read it again."""
+    assert status_message("failed", code, detected_type="pdf", max_pages=100, locked=True) == words
+    row = cast(RowMapping, {**_row("failed"), "failure_code": code, "locked": True})
+    assert document_summary(row, max_pages=100, tags=[], user=USER, now=NOW)["status_message"] == words
+    assert "Read it again" in status_message("failed", "stuck_no_job", detected_type="pdf", max_pages=100)

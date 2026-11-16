@@ -39,6 +39,13 @@ _STATUS_MESSAGES = {
     "locked": "Locked. It can only be viewed.",  # PRD 7 (#605)
 }
 _IN_PROGRESS = ("received", "clean")
+# PRD 7 (#605): a locked version whose page pictures were not made (storage down, a stuck job, its
+# tries used up): Retry only prepares it again, never reads it. ``cannot_draw`` (kaagaz.pipeline
+# CANNOT_DRAW): a page of it can't be drawn at all.
+LOCKED_NOT_PREPARED = "Locked. Its page pictures couldn't be made yet. Retry to try again."
+LOCKED_CANNOT_DRAW = (
+    "Locked. Its pages can't be shown as pictures, so it can't be viewed. Unlock it to read it."
+)
 # All formats (#522): a file that can never be read as it is, in words that say what to do.
 FILE_FAILURES = {
     "corrupt_file": "This file is damaged, so it can't be opened. Save it again and upload that copy.",
@@ -129,6 +136,7 @@ def status_message(
     batch_ahead: int = 0,
     pages_unreadable: int = 0,
     waiting_code: str | None = None,
+    locked: bool = False,
 ) -> str:
     """``max_pages`` is the MAX_PAGES setting, named when a file had too many pages
     (a PDF's pages, or a TIFF's frames: ``detected_type`` says which to call it),
@@ -143,7 +151,10 @@ def status_message(
     how many are ahead. A ready document with ``pages_unreadable`` pages still flagged
     says so (council 16 Oct 2026: such a document is ready, not failed, since e01b937d).
     ``waiting_code`` is the last run's code while it waits: a key problem is READER_STOPPED
-    (issue 407), a reading pause (#478) PAUSED_FOR_TODAY or PAUSED_BUDGET."""
+    (issue 407), a reading pause (#478) PAUSED_FOR_TODAY or PAUSED_BUDGET. ``locked`` (PRD 7,
+    #605): a locked version that failed is never "read it again": its own words."""
+    if status == "failed" and locked:
+        return LOCKED_CANNOT_DRAW if failure_code == "cannot_draw" else LOCKED_NOT_PREPARED
     if status == "rejected":
         return CUSTOMER_MESSAGES.get(failure_code or "", "This file was not processed.")
     if status == "failed" and failure_code == "too_many_pages":
@@ -329,6 +340,7 @@ def document_summary(
             batch_ahead=int(row["batch_ahead"]),
             pages_unreadable=int(row["pages_unreadable"]),
             waiting_code=row["waiting_code"],
+            locked=bool(row["locked"]),
         ),
         "progress": in_progress(row["status"], row["progress"]),
         "stuck": bool(row["stuck"]),  # issue 407: may be read again (db/documents.py STUCK)
@@ -455,7 +467,8 @@ def batch_view(
     * waiting: in progress with no step yet (queued) or waiting for the reader (Q6);
     * reading: in progress with a step (scanning, preparing, reading, understanding);
     * attention: ready, with a page or a value that needs attention (U2's rule);
-    * ready: ready with none.
+    * ready: ready with none;
+    * locked: locked and pictured (PRD 7, #605): finished, never read.
 
     The bar is pages read over total pages: a file whose page count is not known yet
     counts as 1 page; a finished file (ready or failed) is read whole; one past reading
@@ -464,7 +477,15 @@ def batch_view(
     over ``max_active`` (MAX_ACTIVE_PER_CUSTOMER, Q5); null while no file has an estimate.
     ponytail: one rate for the whole drop; per-file estimates if drops mix scans and text.
     Only this user's files, so no other customer's load reaches it. O(files)."""
-    counts = {"total": len(rows), "ready": 0, "reading": 0, "waiting": 0, "attention": 0, "failed": 0}
+    counts = {
+        "total": len(rows),
+        "ready": 0,
+        "reading": 0,
+        "waiting": 0,
+        "attention": 0,
+        "failed": 0,
+        "locked": 0,
+    }
     pages_read = pages_total = pages_waiting = 0
     estimates = []
     for row in rows:
@@ -478,6 +499,8 @@ def batch_view(
                 int(row["pages_unreadable"]) + int(row["pages_uncertain"]) + int(row["values_to_review"])
             )
             counts["attention" if flagged else "ready"] += 1
+        elif status == "locked":
+            counts["locked"] += 1  # finished: read whole
         elif progress is None or progress.get("step") == _WAITING_STEP:
             counts["waiting"] += 1
             done = 0
@@ -944,6 +967,7 @@ def failed_document(row: RowMapping, *, max_pages: int) -> dict[str, Any]:
             page_count=row["page_count"],
             attempts=int(row["attempts"]),
             max_attempts=row["max_attempts"],
+            locked=bool(row["locked"]),
         ),
         "last_run_at": None if run is None else iso(run),
     }

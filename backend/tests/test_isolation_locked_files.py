@@ -12,6 +12,7 @@ import hashlib
 import json
 import uuid
 from typing import Any
+from unittest import mock
 
 import pytest
 from sqlalchemy import text
@@ -21,8 +22,11 @@ from kaagaz.answering.service import AnswerService
 from kaagaz.api.views import LOCKED_LINE, LOCKED_NOTE
 from kaagaz.db import locks as locks_sql
 from kaagaz.db.documents import STUCK as _STUCK
+from kaagaz.db.documents import PgDocuments, stuck_documents
 from kaagaz.db.engine import Database
 from kaagaz.db.page_reads import PageKey, PgPageReads
+from kaagaz.ingestion.ports import Job
+from kaagaz.search.scope import Scope
 from tests.settings_factory import make_settings
 from tests.test_amount_guard_db import TOTAL, add_bill
 from tests.test_answering_fixed_queries_db import NOW
@@ -253,6 +257,31 @@ def test_every_document_column_is_cleared_or_kept(db: Database) -> None:
     )
     assert {str(row[0]) for row in rows} == CLEARED_COLUMNS | KEPT_COLUMNS
     assert not CLEARED_COLUMNS & KEPT_COLUMNS
+
+
+# Review (15 Nov 2026): every column of ``pages`` is reset by the lock (0093's pages UPDATE) or kept.
+PAGES_RESET = {
+    "route", "read_by", "read_quality", "read_issues", "unsure_words", "illegible_words", "unpinned_lines",
+    "accepted_by", "accepted_at", "read_again_requested_at", "read_again_regions", "read_thinking",
+    "read_resolution", "read_pass", "read_output_tokens",
+}  # fmt: skip
+PAGES_KEPT = {
+    "customer_id", "document_id", "page_no", "width", "height", "unit", "has_image", "effective_dpi",
+    "low_resolution",
+}  # fmt: skip
+
+
+def test_every_pages_column_is_reset_or_kept(db: Database) -> None:
+    rows = _owner(
+        db,
+        "SELECT attname FROM pg_attribute WHERE attrelid = 'pages'::regclass AND attnum > 0"
+        " AND NOT attisdropped",
+        {},
+    )
+    assert {str(row[0]) for row in rows} == PAGES_RESET | PAGES_KEPT
+    reset = M0093.CLEAR_DERIVED[M0093.CLEAR_DERIVED.index("UPDATE public.pages p") :]
+    for column in PAGES_RESET:
+        assert f" {column} = " in reset, column
 
 
 def test_a_label_a_person_set_is_kept(db: Database) -> None:
@@ -811,10 +840,14 @@ def test_ask_never_reads_a_locked_file_for_anyone(db: Database) -> None:
     )
     service = AnswerService(db=db, model=None, settings=make_settings(), clock=lambda: NOW)
     assert "7,78,777" in json.dumps(service.answer(c, TOTAL).to_json())  # both, before
+    scope = Scope(document_ids=(zebra,))  # Ask scoped to the one file (the /chat scope)
+    assert "7,77,777" in json.dumps(service.answer(c, TOTAL, scope=scope).to_json())
     with _app(db).user(c, org.people["admin"].user_id) as conn:
         assert not locks_sql.lock(conn, [zebra], []).refused
     after = json.dumps(service.answer(c, TOTAL).to_json())
     assert "7,77,777" not in after and "Z-777" not in after and "zebra" not in after and zebra not in after
+    scoped = json.dumps(service.answer(c, TOTAL, scope=scope).to_json())
+    assert "7,77,777" not in scoped and "Z-777" not in scoped and zebra not in scoped
     assert _count(db, "extracted_values", [zebra]) == 0
 
 
@@ -836,3 +869,264 @@ def test_a_duplicate_of_a_locked_file_says_so_only_to_those_given_it(
         body = reply.json()
         assert body["duplicate"] is True and body["document"] is None
         assert body.get("locked") == expected, name
+
+
+# --- review fixes (15 Nov 2026) -------------------------------------------------------------------
+
+
+def test_a_correction_remembered_on_review_names_its_file_and_goes_with_the_lock(db: Database) -> None:
+    api = Api(db)
+    org = _walled(api)
+    c, file, plain = org.c, org.files["sales"], org.people["plain"]
+    api.add_page(c, file)
+    total = api.add_value(c, file, raw="1,2OO", value="1,2OO")
+    number = api.add_value(c, file, field_name="invoice_number", raw="Z-1O", value="Z-1O")
+    for value, typed in ((total, "1,200"), (number, "Z-10")):
+        body = {"choice": "typed", "value": typed, "remember": True}
+        reply = plain.client.post(f"/api/review/{value}", json=body, headers=CSRF)
+        assert reply.status_code == 200, reply.text
+    learned = (
+        "SELECT field, source_document_id::text FROM learned_corrections WHERE customer_id = :c"
+        " ORDER BY field"
+    )
+    rows = [tuple(row) for row in _owner(db, learned, {"c": c})]
+    assert rows == [("invoice_number", file), ("total_amount", file)]
+    # One remembered before a correction named its file (0084's old rows), and another file's old row.
+    _owner(
+        db,
+        "UPDATE learned_corrections SET source_document_id = NULL WHERE customer_id = :c"
+        " AND field = 'invoice_number'",
+        {"c": c},
+    )
+    _owner(
+        db,
+        "INSERT INTO learned_corrections (customer_id, field, raw_value, corrected_value, created_by)"
+        " VALUES (:c, 'invoice_number', 'Q-1', 'Q-2', :u)",
+        {"c": c, "u": org.people["admin"].user_id},
+    )
+    assert _lock(org.people["admin"], file)[0] == 200
+    left = _owner(db, "SELECT corrected_value FROM learned_corrections WHERE customer_id = :c", {"c": c})
+    assert [row[0] for row in left] == ["Q-2"]
+
+
+def test_a_rejected_version_keeps_its_code_when_locked(db: Database) -> None:
+    api = Api(db)
+    org = _walled(api)
+    file = org.files["loose"]
+    api.add_page(org.c, file)
+    rejected = api.add_document(
+        org.c,
+        name="loose v2.pdf",
+        folder_id=org.folders["loose"],
+        family_id=file,
+        version_no=2,
+        is_current=False,
+    )
+    _owner(
+        db,
+        "UPDATE documents SET status = 'rejected', failure_code = 'infected' WHERE id = :d",
+        {"d": rejected},
+    )
+    assert _lock(org.people["admin"], file)[0] == 200
+    state = "SELECT status, failure_code, locked_at IS NOT NULL FROM documents WHERE id = :d"
+    assert tuple(_owner(db, state, {"d": rejected})[0]) == ("rejected", "infected", True)
+
+
+def test_a_link_to_a_locked_file_or_a_suggestion_of_its_family_is_never_written(
+    locked: tuple[Api, Org, str, str],
+) -> None:
+    api, org, _, v2 = locked
+    for statement in (
+        "INSERT INTO document_links (customer_id, document_id, linked_document_id, identifier_kind,"
+        " identifier_value) VALUES (:c, :o, :d, 'invoice_number', 'Z-2')",
+        "INSERT INTO version_suggestions (customer_id, document_id, candidate_family_id, outcome, status)"
+        " SELECT :c, :o, family_id, 'suggested', 'pending' FROM documents WHERE id = :d",
+    ):
+        with pytest.raises(DBAPIError) as refused:
+            _owner(api.db, statement, {"c": org.c, "o": org.files["top"], "d": v2})
+        assert getattr(refused.value.orig, "sqlstate", None) == "23514", statement
+
+
+def test_storage_down_rolls_a_lock_back_and_a_queue_down_leaves_its_job_to_the_sweep(db: Database) -> None:
+    api = Api(db)
+    org = _walled(api)
+    admin = org.people["admin"]
+    deck = api.add_document(org.c, name="deck.pptx", detected_type="pptx", folder_id=org.folders["sales"])
+    api.add_page(org.c, deck)
+    api.storage.put_rendition(org.c, deck, b"%PDF-1.7 words")
+    api.storage.fail_delete = True
+    assert _lock(admin, deck)[0] == 503
+    state = _owner(db, "SELECT locked_at IS NULL, status FROM documents WHERE id = :d", {"d": deck})
+    assert tuple(state[0]) == (True, "ready") and (org.c, deck) in api.storage.renditions
+    assert _audit(db, org.c, "lock.lock") == []
+    api.storage.fail_delete = False
+    # The queue down after the commit: the lock stands, and the stuck sweep finds its prepare job.
+    reading = api.add_document(org.c, name="reading.pdf", status="clean", folder_id=org.folders["sales"])
+    api.queue.fail_enqueue = True
+    assert _lock(admin, reading)[0] == 200
+    state = _owner(db, "SELECT locked_at IS NOT NULL, status FROM documents WHERE id = :d", {"d": reading})
+    assert tuple(state[0]) == (True, "received") and api.queue.jobs == []
+    with db.customer(org.c) as conn:
+        assert reading in {found for found, _ in stuck_documents(conn, org.c, stale_seconds=0, limit=50)}
+
+
+def test_a_bulk_lock_and_unlock_reply_with_their_counts_and_audit_each_file(db: Database) -> None:
+    api = Api(db)
+    org = _walled(api)
+    admin, files = org.people["admin"], sorted([org.files["loose"], org.files["top"]])
+    for file in files:
+        api.add_page(org.c, file)
+    reply = _call(admin, "POST", "/api/documents/lock", {"document_ids": files, "password": PASSWORD})
+    assert reply == (200, {"locked": 2})
+    locks = _audit(db, org.c, "lock.lock")
+    assert sorted(row[2] for row in locks) == files
+    assert all(row[4] == {"versions": 1, "open_to": 1, "batch": 2} for row in locks)
+    reply = _call(admin, "POST", "/api/documents/unlock", {"document_ids": files, "password": PASSWORD})
+    assert reply == (200, {"unlocked": 2})
+    unlocks = _audit(db, org.c, "lock.unlock")
+    assert sorted(row[2] for row in unlocks) == files
+    assert all(row[4] == {"versions": 1, "batch": 2} for row in unlocks)
+    reads = [row for row in _audit(db, org.c, "document.reprocess") if row[4] == {"via": "unlock"}]
+    assert sorted(row[2] for row in reads) == files
+    assert sorted(job.document_id for job in api.queue.jobs) == files
+
+
+def test_a_bulk_unlock_with_one_refused_file_changes_nothing(db: Database) -> None:
+    api = Api(db)
+    org = _walled(api)
+    admin = org.people["admin"]
+    kept, trashed, open_file = org.files["loose"], org.files["top"], org.files["sales"]
+    for file in (kept, trashed):
+        api.add_page(org.c, file)
+        assert _lock(admin, file)[0] == 200
+    assert _call(admin, "DELETE", f"/api/documents/{trashed}")[0] < 300  # Trash keeps the lock
+    body = {"document_ids": [kept, trashed, open_file], "password": PASSWORD}
+    status, reply = _call(admin, "POST", "/api/documents/unlock", body)
+    refused = [{"id": trashed, "reason": "in_trash"}, {"id": open_file, "reason": "not_locked"}]
+    assert status == 409 and reply["error"]["details"]["refused"] == sorted(
+        refused, key=lambda each: each["id"]
+    )
+    still = "SELECT count(*) FROM documents WHERE id IN (:a, :b) AND locked_at IS NOT NULL"
+    assert _owner(db, still, {"a": kept, "b": trashed})[0][0] == 2
+    assert _audit(db, org.c, "lock.unlock") == [] and api.queue.jobs == []
+
+
+def test_an_unlocks_read_is_queued_after_it_commits_so_the_worker_reads_it(
+    locked: tuple[Api, Org, str, str],
+) -> None:
+    """A worker that takes the job at once reads what is committed: before the fix it found the
+    version still locked (settled) and acked the job unread."""
+    api, org, _, v2 = locked
+    seen: list[tuple[Any, bool | None]] = []
+    enqueue = api.queue.enqueue
+
+    def worker_takes_it(job: Job, *, express: bool = False) -> None:
+        worker = PgDocuments(api.db)  # the worker's own session, as DocumentProcessor.__call__ starts
+        record = worker.get(job.customer_id, job.document_id)
+        status = worker.get_status(job.customer_id, job.document_id)
+        seen.append((status, None if record is None else record.locked))
+        enqueue(job, express=express)
+
+    body = {"document_ids": [v2], "password": PASSWORD}
+    with mock.patch.object(api.queue, "enqueue", worker_takes_it):
+        assert _call(org.people["admin"], "POST", "/api/documents/unlock", body) == (200, {"unlocked": 1})
+    assert seen == [(None, False)]  # received (not settled) and not locked: it is read
+
+
+def test_an_ordinary_read_again_still_works_after_a_bulk_unlock(db: Database) -> None:
+    """p2:31: an unlock's read is never counted on the hourly Read again limit, after it either."""
+    api = Api(db, settings=make_settings(reprocess_per_hour=1))
+    org = _walled(api)
+    admin = org.people["admin"]
+    files = [org.files["loose"], org.files["top"]]
+    for file in files:
+        api.add_page(org.c, file)
+        assert _lock(admin, file)[0] == 200
+    body = {"document_ids": files, "password": PASSWORD}
+    assert _call(admin, "POST", "/api/documents/unlock", body)[0] == 200
+    status, reply = _call(admin, "POST", f"/api/documents/{org.files['sales']}/reprocess")
+    assert status == 200, reply
+
+
+def test_a_locked_version_whose_preparing_failed_is_prepared_again_on_retry(db: Database) -> None:
+    api = Api(db)
+    org = _walled(api)
+    file, plain = org.files["sales"], org.people["plain"]
+    _owner(db, "UPDATE documents SET status = 'clean' WHERE id = :d", {"d": file})  # no picture yet
+    assert _lock(org.people["admin"], file, [plain.user_id])[0] == 200
+    failed = "UPDATE documents SET status = 'failed', failure_code = 'stuck_no_job' WHERE id = :d"
+    _owner(db, failed, {"d": file})
+    listed = {row["id"]: row for row in plain.client.get("/api/documents", headers=CSRF).json()["items"]}
+    assert (
+        listed[file]["status_message"]
+        == "Locked. Its page pictures couldn't be made yet. Retry to try again."
+    )
+    api.queue.jobs.clear()
+    status, reply = _call(plain, "POST", f"/api/documents/{file}/reprocess")
+    assert status == 200, reply
+    state = _owner(db, "SELECT status, locked_at IS NOT NULL FROM documents WHERE id = :d", {"d": file})
+    assert tuple(state[0]) == ("received", True)  # the worker prepares it, never reads it
+    assert [job.document_id for job in api.queue.jobs] == [file]
+    # Read again of a locked version that has not failed is still refused.
+    _owner(db, "UPDATE documents SET status = 'clean' WHERE id = :d", {"d": file})
+    status, reply = _call(plain, "POST", f"/api/documents/{file}/reprocess")
+    assert (status, reply["error"]["code"]) == (409, "locked")
+
+
+def test_the_allowed_writes_work_on_a_locked_file(db: Database) -> None:
+    api = Api(db)
+    org = _walled(api)
+    admin, file = org.people["admin"], org.files["loose"]
+    api.add_page(org.c, file)
+    assert _lock(admin, file)[0] == 200  # the Admin may open it
+    assert _call(admin, "PATCH", f"/api/documents/{file}", {"display_name": "renamed.pdf"})[0] == 200
+    tag = api.add_tag(org.c, admin.user_id, "deeds")
+    assert _call(admin, "PUT", f"/api/documents/{file}/tags", {"tag_ids": [tag]})[0] == 200
+    assert _call(admin, "DELETE", f"/api/documents/{file}")[0] < 300
+    assert _call(admin, "POST", f"/api/documents/{file}/restore")[0] == 200
+    files = {"file": ("v2.pdf", b"%PDF-1.7\n" + b"2" * 200, "application/pdf")}
+    reply = admin.client.post(f"/api/documents/{file}/versions", files=files, headers=CSRF)
+    assert reply.status_code == 201, reply.text
+    row = _owner(db, "SELECT display_name, locked_at IS NOT NULL FROM documents WHERE id = :d", {"d": file})
+    assert tuple(row[0]) == ("renamed.pdf", True)
+    versions = "SELECT bool_and(locked_at IS NOT NULL), count(*) FROM documents WHERE family_id = :d"
+    assert tuple(_owner(db, versions, {"d": file})[0]) == (True, 2)  # the new version locked from the start
+
+
+def test_routes_that_name_a_locked_file_in_their_body_refuse_it(locked: tuple[Api, Org, str, str]) -> None:
+    _, org, _, v2 = locked
+    plain, member = org.people["plain"], org.people["member"]
+    region = {"kind": "box", "page": 1, "box": [0.1, 0.1, 0.2, 0.2]}
+    word = {"word": "zebu", "meaning": "a cow", "spot": {"document_id": v2, "page_no": 1, "region": region}}
+    status, reply = _call(plain, "POST", "/api/me/words", word)
+    assert (status, reply["error"]["code"]) == (409, "locked")
+    never = {**word, "spot": {"document_id": ANY_ID, "page_no": 1, "region": region}}
+    hidden, missing = (member.client.post("/api/me/words", json=each, headers=CSRF) for each in (word, never))
+    assert hidden.status_code == 404 and (hidden.status_code, hidden.content) == (
+        missing.status_code,
+        missing.content,
+    )
+    # A source put on top of an answer: never a locked file, even for a person who may open it.
+    asked = plain.client.post("/api/chat", json={"question": "who paid zebra?"}, headers=CSRF).json()
+    pin = {"document_id": v2, "page_no": 1, "previous_rank": 2}
+    assert _call(plain, "POST", f"/api/messages/{asked['answer']['id']}/pin", pin)[0] == 404
+    # Search inside one locked file, and Ask scoped to it: as for an id that never was.
+    for who in (plain, member):
+        hidden = who.client.get(f"/api/search?q=Zebra&document_ids={v2}", headers=CSRF)
+        missing = who.client.get(f"/api/search?q=Zebra&document_ids={ANY_ID}", headers=CSRF)
+        assert hidden.status_code == 200 and hidden.json() == missing.json()
+
+
+def test_a_version_suggestion_of_a_locked_family_goes_with_the_lock(db: Database) -> None:
+    api = Api(db)
+    org = _walled(api)
+    admin, file = org.people["admin"], org.files["loose"]
+    api.add_page(org.c, file)
+    suggestion = _owner(
+        db,
+        "INSERT INTO version_suggestions (customer_id, document_id, candidate_family_id, outcome, status)"
+        " SELECT :c, :o, family_id, 'suggested', 'pending' FROM documents WHERE id = :d RETURNING id",
+        {"c": org.c, "o": org.files["top"], "d": file},
+    )[0][0]
+    assert _lock(admin, file)[0] == 200
+    assert _call(admin, "POST", f"/api/version-suggestions/{suggestion}/accept", {})[0] == 404

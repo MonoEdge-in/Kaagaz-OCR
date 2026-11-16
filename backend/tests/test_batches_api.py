@@ -64,6 +64,7 @@ SUMMARY_KEYS = {
     "department",
     "pending_suggestion",
     "stuck",  # changed on purpose (issue 407): may be read again while still in progress
+    "locked",  # changed on purpose (PRD 7, #605): a locked file, opened only as page pictures
     "shared_with_you",  # changed on purpose (PRD 7, #601): in a folder the person can't see
 }
 # Changed on purpose (#239, 27 Oct 2026): V5's version suggestions (PRD 1 stage 2, d82ada4).
@@ -143,7 +144,16 @@ def test_a_batch_shows_its_files_in_upload_order_with_counts_and_pages(db: Datab
     assert body["id"] == batch
     assert [item["id"] for item in body["documents"]] == [ready, flagged, reading, waiting, stalled]
     assert all(set(item) == SUMMARY_KEYS | {"first_unreadable", "values_found"} for item in body["documents"])
-    assert body["counts"] == {"total": 5, "ready": 1, "reading": 1, "waiting": 2, "attention": 1, "failed": 0}
+    # Changed on purpose (PRD 7, #605): the locked count too.
+    assert body["counts"] == {
+        "total": 5,
+        "ready": 1,
+        "reading": 1,
+        "waiting": 2,
+        "attention": 1,
+        "failed": 0,
+        "locked": 0,
+    }
     assert (body["pages_read"], body["pages_total"]) == (2 + 1 + 1, 2 + 1 + 4 + 3 + 1)
     by_id = {item["id"]: item for item in body["documents"]}
     assert by_id[flagged]["words_unsure"] == 14

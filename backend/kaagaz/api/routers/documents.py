@@ -1562,7 +1562,11 @@ def reprocess_document(
     body = body or ReadAgainBody()
     read_model = body.read_model
     with context.db.user(customer_id, user.user_id) as conn:
-        _document_or_404(conn, user, document_id)
+        row = _document_or_404(conn, user, document_id, locked_ok=True)
+        if row["status"] != "failed":
+            # PRD 7 (#605): a locked version is never read; one whose preparing failed is only
+            # prepared again (the worker never reads a locked version).
+            refuse_locked(row)
         reading = check_reading(
             conn,
             customer_id,
@@ -1601,7 +1605,7 @@ def reprocess_document(
             target_id=target,
             details=details,
         )
-        row = _document_or_404(conn, user, document_id)
+        row = _document_or_404(conn, user, document_id, locked_ok=True)
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
         reply = document_summary(
             row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()

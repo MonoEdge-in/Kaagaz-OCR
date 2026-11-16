@@ -167,7 +167,7 @@ def member_numbers(
 # newest first, with the start of its last run (the index processing_runs_document).
 _FAILED = (
     "SELECT d.id, d.display_name, d.detected_type, d.status, d.failure_code, d.page_count,"
-    " d.attempts, d.max_attempts, r.started_at AS last_run_at"
+    " d.attempts, d.max_attempts, r.started_at AS last_run_at, d.locked_at IS NOT NULL AS locked"
     " FROM documents d"
     " LEFT JOIN LATERAL (SELECT pr.started_at FROM processing_runs pr"
     " WHERE pr.customer_id = :c AND pr.document_id = d.id ORDER BY pr.started_at DESC LIMIT 1) r ON true"

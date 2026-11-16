@@ -41,7 +41,9 @@ renumbered and ``down_revision`` points at 0092 (a one-line change).
   * ``kaagaz_clear_derived(version)``: appendix B for one version (rows deleted, the card's columns
     and every page's reading cleared); the original, the page pictures and sizes, the name, kind,
     page count, tags, stories, runs, usage, marks, page turns and learning removals are kept.
-    ``learned_corrections`` made on the version go too (the PRD's appendix B left them out).
+    ``learned_corrections`` made on the version go too (the PRD's appendix B left them out), and
+    one remembered before its file was recorded that this version's corrections made. A rejected
+    version keeps its code.
 * Triggers, owner's rights, run by no role:
 
   * ``kaagaz_lock_grants_follow``: a membership, a name on a private folder or a file given taken
@@ -49,7 +51,7 @@ renumbered and ``down_revision`` points at 0092 (a one-line change).
     folder (but those still given to them directly), or on every version of the file taken back.
     Fails closed: the Admin ticks again (PRD 7 section 6).
   * ``kaagaz_refuse_locked_content``: an insert of a locked version's content into any content
-    table fails (``kaagaz_locked``). It takes the version FOR SHARE, which a lock's FOR NO KEY
+    table fails (``kaagaz_locked``), and a link to one or a suggestion of its family. It takes the version FOR SHARE, which a lock's FOR NO KEY
     UPDATE waits for and which waits for a lock: either the insert sees the lock and fails, or
     the lock comes after it and deletes what it wrote. The backstop for a write path nobody has
     listed yet.
@@ -58,8 +60,9 @@ Cost: catalog only, but for the two CHECKs validated (``documents`` and ``proces
 once each, SHARE UPDATE EXCLUSIVE: writes go on) and the CREATE TRIGGERs (each table locked a
 moment). ``documents`` is altered first (0004's order); ``users`` last, catalog only.
 
-The downgrade drops the triggers, the functions, the columns and the CHECKs and puts back 0004's
-run status CHECK (refused while a run is ``locked``).
+The downgrade is refused while any file is locked ("unlock every file first"); then it drops the
+triggers, the functions, the columns and the CHECKs and puts back 0004's run status CHECK (refused
+while a run is ``locked``).
 
 Revision ID: 0093
 Revises: 0090b
@@ -176,6 +179,12 @@ CLEAR_DERIVED = f"""
         DELETE FROM public.value_keys x WHERE x.customer_id = v_customer AND x.document_id = p_version;
         DELETE FROM public.extracted_values x WHERE x.customer_id = v_customer AND x.document_id = p_version;
         DELETE FROM public.pieces x WHERE x.customer_id = v_customer AND x.document_id = p_version;
+        -- A correction remembered before its file was recorded (source_document_id NULL): the one
+        -- this version's corrections made (same field, same new value), before they are deleted.
+        DELETE FROM public.learned_corrections x USING public.corrections k
+            WHERE x.customer_id = v_customer AND x.source_document_id IS NULL
+            AND k.customer_id = v_customer AND k.document_id = p_version
+            AND x.field = k.field AND x.corrected_value = k.new_value;
         DELETE FROM public.corrections x WHERE x.customer_id = v_customer AND x.document_id = p_version;
         DELETE FROM public.invoice_lines x WHERE x.customer_id = v_customer AND x.document_id = p_version;
         DELETE FROM public.invoices x WHERE x.customer_id = v_customer AND x.document_id = p_version;
@@ -198,7 +207,8 @@ CLEAR_DERIVED = f"""
             WHERE x.customer_id = v_customer AND x.source_document_id = p_version;
         UPDATE public.documents d SET doc_type = NULL, languages = '{{}}', summary = NULL, document_date = NULL,
             card = NULL, sensitivity = CASE WHEN d.sensitivity_set_by_person THEN d.sensitivity ELSE 'internal' END,
-            text_minhash = NULL, text_bands = NULL, autofile = NULL, progress = NULL, failure_code = NULL
+            text_minhash = NULL, text_bands = NULL, autofile = NULL, progress = NULL,
+            failure_code = CASE WHEN d.status = 'rejected' THEN d.failure_code END
         WHERE d.customer_id = v_customer AND d.id = p_version;
         UPDATE public.pages p SET route = NULL, read_by = NULL, read_quality = 'good', read_issues = '{{}}',
             unsure_words = 0, illegible_words = 0, unpinned_lines = 0, accepted_by = NULL, accepted_at = NULL,
@@ -425,6 +435,21 @@ REFUSE = """
             WHERE (d.customer_id, d.id) IN (SELECT n.customer_id, n.document_id FROM new_rows n)
             FOR SHARE OF d
         ) x;
+        -- A link's other file, and every version of a suggestion's family, read with no row lock:
+        -- two saves that link to each other hold their own families, so waiting on the other's
+        -- would deadlock them. A row written as a lock commits can stay: a link is shown only
+        -- between ready files, and kaagaz.db.versions.link refuses a locked family under its locks.
+        IF TG_TABLE_NAME = 'document_links' THEN
+            v_locked := coalesce(v_locked, false) OR EXISTS (
+                SELECT 1 FROM public.documents d
+                WHERE (d.customer_id, d.id) IN (SELECT n.customer_id, n.linked_document_id FROM new_rows n)
+                AND d.locked_at IS NOT NULL);
+        ELSIF TG_TABLE_NAME = 'version_suggestions' THEN
+            v_locked := coalesce(v_locked, false) OR EXISTS (
+                SELECT 1 FROM public.documents d
+                WHERE (d.customer_id, d.family_id) IN (SELECT n.customer_id, n.candidate_family_id FROM new_rows n)
+                AND d.locked_at IS NOT NULL);
+        END IF;
         IF v_locked THEN
             RAISE EXCEPTION 'kaagaz_locked: a locked document''s content is never written'
                 USING ERRCODE = 'check_violation';
@@ -530,7 +555,18 @@ UPGRADE = [
 
 OLD_RUN_COMMENT = "running, ready, failed, needs_reader, rejected or superseded (a newer try took over)."
 DOWNGRADE = [
-    "LOCK TABLE documents IN ACCESS EXCLUSIVE MODE",  # first, 0004's order
+    "LOCK TABLE documents IN ACCESS EXCLUSIVE MODE",  # first, 0004's order: no lock can come after
+    # A locked file would be left locked with nothing to open or unlock it: refused.
+    """
+    DO $$
+    BEGIN
+        IF EXISTS (SELECT 1 FROM public.documents WHERE locked_at IS NOT NULL) THEN
+            RAISE EXCEPTION 'a file is locked; unlock every file first, then downgrade'
+                USING ERRCODE = 'check_violation';
+        END IF;
+    END
+    $$
+    """,
     *[f"DROP TRIGGER IF EXISTS {name} ON {table}" for name, (table, _) in TRIGGERS.items()],
     *[f"DROP FUNCTION IF EXISTS public.{name}" for name in reversed(FUNCTIONS)],
     *[f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {name}" for name, table in CHECKS.items()],

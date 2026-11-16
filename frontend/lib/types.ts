@@ -339,7 +339,8 @@ export interface FirstUnreadablePage {
 export interface BatchView {
   id: string;
   documents: DocumentSummary[]; // in upload order; the tray sorts them worst first
-  counts: { total: number; ready: number; reading: number; waiting: number; attention: number; failed: number };
+  // locked (PRD 7, #605): locked and pictured, finished and never read.
+  counts: { total: number; ready: number; reading: number; waiting: number; attention: number; failed: number; locked?: number };
   pages_read: number; // of pages_total (U1); the bar weighs each document's own fraction (batchTray.ts)
   pages_total: number;
   time_left: TimeLeft | null; // until the whole drop is ready; null when nothing is left to read
@@ -854,7 +855,9 @@ export type UploadResult =
       hidden?: false;
     }
   // PRD 7 (#599): the file is already in Kaagaz, in a place this person can't see. Nothing more.
-  | { document: null; duplicate: true; in_trash: false; hidden: true };
+  | { document: null; duplicate: true; in_trash: false; hidden: true }
+  // PRD 7 (#605, p2:91): a copy is in Kaagaz, locked, and this person may open it: its link only.
+  | { document: null; duplicate: true; in_trash: boolean; hidden?: false; locked: { id: string } };
 
 export interface SheetCells {
   page_no: number;
