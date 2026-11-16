@@ -372,6 +372,7 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
         "link and its Undo: the view first, and each version's own check through it (seen)",
     ),
     ("db/version_links.py", "_COPY_TAGS"): (WRITE_AFTER_CHECK, _LINK),
+    ("db/version_links.py", "_MEMBERS_LOCK"): (WRITE_AFTER_CHECK, "link and Undo: a write's row lock"),
     ("db/version_links.py", "_NEWEST_LINK"): (
         WRITE_AFTER_CHECK,
         "POST /documents/{id}/link-versions/undo: the view first",
