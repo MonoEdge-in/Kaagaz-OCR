@@ -111,8 +111,9 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     Changed on purpose (#606, PR 9b, 15 Nov 2026): its writes over rows the person can't see (0092) follow
     0091.
     Changed on purpose (#605, PR 12, 15 Nov 2026): locked files (0093) follow 0092.
-    Changed on purpose (#617 part 1, 16 Nov 2026): the bounded word search (0094) follows 0093 and
-    is the head."""
+    Changed on purpose (#617 part 1, 16 Nov 2026): the bounded word search (0094) follows 0093.
+    Changed on purpose (#647, 16 Nov 2026): each model's supported parameters (0095) follow 0094 and
+    are the head."""
     scripts = _scripts()
     assert scripts.get_revision("0082").down_revision == "0081"
     assert scripts.get_revision("0083").down_revision == "0082"
@@ -128,4 +129,5 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     assert scripts.get_revision("0092").down_revision == "0091"
     assert scripts.get_revision("0093").down_revision == "0092"
     assert scripts.get_revision("0094").down_revision == "0093"
-    assert scripts.get_heads() == ["0094"]
+    assert scripts.get_revision("0095").down_revision == "0094"
+    assert scripts.get_heads() == ["0095"]
