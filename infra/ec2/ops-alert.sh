@@ -33,7 +33,7 @@ fi
 cd "$KAAGAZ_DIR"
 if ! docker run --rm --network host --env-file .env \
   -e POSTGRES_PASSWORD= -e STORAGE_ADMIN_SECRET_KEY= -e DATABASE_URL=none \
-  -e APP_DATABASE_URL= -e OPS_DATABASE_URL= \
+  -e APP_DATABASE_URL= -e OPS_DATABASE_URL= -e JOBS_DATABASE_URL= \
   kaagaz-backend:local python -m kaagaz.cli ops-alert --subject "$subject" --text "$body"; then
   echo "ALERT NOT SENT: $subject: the lines above say why" >&2
   exit 1

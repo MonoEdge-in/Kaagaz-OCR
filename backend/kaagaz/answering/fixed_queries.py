@@ -9,7 +9,7 @@ only ever be compared with, never run.
 
 Rules shared by every query (never a guess, CLAUDE.md never-do 6):
 
-* Only documents with status ``ready``, always inside ``db.customer`` and
+* Only documents with status ``ready``, always inside ``db.user`` as the asker (PRD 7) and
   always ``WHERE customer_id = :customer_id`` (the second lock next to row
   level security).
 * Only the current version of a family, and nothing in Trash (PRD 1 F5 and
@@ -89,7 +89,7 @@ from typing import Any, Protocol
 
 from sqlalchemy import Connection, TextClause, text
 
-from kaagaz.db.engine import Database
+from kaagaz.db.engine import Database, user_or_customer
 from kaagaz.search.scope import EVERYTHING, Scope
 
 MAX_CITED_VALUES = 20  # PROVISIONAL: how many sources one number shows
@@ -148,7 +148,10 @@ class FixedQueries(Protocol):
         """The same queries over the documents inside ``scope`` only (PRD 3 H2)."""
         ...
 
-    def available_fields(self, customer_id: str, fields: Sequence[str]) -> set[str]: ...
+    # Every query's ``user_id``: the asker, whose transaction it is (PRD 7).
+    def available_fields(
+        self, customer_id: str, fields: Sequence[str], *, user_id: str | None
+    ) -> set[str]: ...
 
     def top_group(
         self,
@@ -159,6 +162,8 @@ class FixedQueries(Protocol):
         start: date | None,
         end: date | None,
         descending: bool,
+        *,
+        user_id: str | None,
     ) -> list[FixedRow]: ...
 
     def figures(
@@ -171,13 +176,22 @@ class FixedQueries(Protocol):
         *,
         invoices: bool,
         group_fields: Sequence[str] = (),
+        user_id: str | None,
     ) -> list[Figure]: ...
 
     def count_documents(
-        self, customer_id: str, start: date | None, end: date | None, *, date_fields: Sequence[str]
+        self,
+        customer_id: str,
+        start: date | None,
+        end: date | None,
+        *,
+        date_fields: Sequence[str],
+        user_id: str | None,
     ) -> list[FixedRow]: ...
 
-    def count_invoices(self, customer_id: str, start: date | None, end: date | None) -> list[FixedRow]: ...
+    def count_invoices(
+        self, customer_id: str, start: date | None, end: date | None, *, user_id: str | None
+    ) -> list[FixedRow]: ...
 
     def extreme_value(
         self,
@@ -187,6 +201,8 @@ class FixedQueries(Protocol):
         start: date | None,
         end: date | None,
         descending: bool,
+        *,
+        user_id: str | None,
     ) -> list[FixedRow]: ...
 
 
@@ -199,7 +215,7 @@ _AVAILABLE_FIELDS = text(
     WHERE EXISTS (
         SELECT 1
         FROM extracted_values v
-        JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+        JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
           AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -256,7 +272,7 @@ _TOP_GROUP = text(
                    WHERE i.customer_id = :customer_id AND i.document_id = v.document_id
                    AND i.check_status = 'failed') AS verified
         FROM extracted_values v
-        JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+        JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
           AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -284,7 +300,7 @@ _TOP_GROUP = text(
         SELECT v.document_id, v.record_key, (array_agg(v.id))[1] AS value_id,
                (array_agg(v.value_text))[1] AS name, bool_and(v.label = 'verified') AS verified
         FROM extracted_values v
-        JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+        JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
           AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -310,7 +326,7 @@ _TOP_GROUP = text(
         SELECT v.document_id, v.record_key, (array_agg(v.id))[1] AS value_id,
                bool_and(v.label = 'verified') AS verified
         FROM extracted_values v
-        JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+        JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
           AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -398,7 +414,7 @@ _FIGURES = text(
     ), tables AS (
         SELECT DISTINCT v.document_id, split_part(v.record_key, ':row:', 1) AS part, d.display_name
         FROM extracted_values v
-        JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+        JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
           AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -418,7 +434,7 @@ _FIGURES = text(
     ), invoiced AS (
         SELECT i.document_id, i.invoice_date, d.display_name
         FROM invoices i
-        JOIN documents d ON d.customer_id = i.customer_id AND d.id = i.document_id
+        JOIN visible_documents d ON d.customer_id = i.customer_id AND d.id = i.document_id
         WHERE i.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
           AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -546,7 +562,7 @@ _EXTREME_VALUE = text(
                EXISTS (SELECT 1 FROM totals x WHERE x.customer_id = :customer_id  -- reads like a total
                    AND x.document_id = v.document_id AND x.record_key = v.record_key) AS looks_total
         FROM extracted_values v
-        JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+        JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
           AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -573,7 +589,7 @@ _EXTREME_VALUE = text(
         SELECT v.document_id, v.record_key, (array_agg(v.id))[1] AS value_id,
                bool_and(v.label = 'verified') AS verified, (array_agg(v.value_date))[1] AS day
         FROM extracted_values v
-        JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+        JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
           AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -632,7 +648,7 @@ _COUNT_DOCUMENTS = text(
                    WHERE i.customer_id = :customer_id AND i.document_id = v.document_id
                    AND i.check_status = 'failed') AS verified
         FROM extracted_values v
-        JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+        JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
           AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -676,7 +692,7 @@ _COUNT_INVOICES = text(
         SELECT i.document_id, ev.value_id,
                i.label = 'verified' AND i.check_status = 'passed' AND coalesce(ev.verified, false) AS verified
         FROM invoices i
-        JOIN documents d ON d.customer_id = i.customer_id AND d.id = i.document_id
+        JOIN visible_documents d ON d.customer_id = i.customer_id AND d.id = i.document_id
         LEFT JOIN LATERAL (
             SELECT v.id AS value_id, v.label = 'verified' AS verified
             FROM extracted_values v
@@ -718,7 +734,7 @@ _VALUE_REFS = text(
                THEN 'needs_review' ELSE v.label END AS label,
            v.label_page_no, v.label_region
     FROM extracted_values v
-    JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+    JOIN visible_documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
     WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
       AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
       AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
@@ -737,7 +753,8 @@ _VALUE_REFS = text(
 
 
 class PgFixedQueries:
-    """``FixedQueries`` over PostgreSQL, inside ``scope``. Every call runs inside ``db.customer``."""
+    """``FixedQueries`` over PostgreSQL, inside ``scope``. Every call runs inside ``db.user`` as
+    ``user_id`` (``db.customer`` with None)."""
 
     def __init__(self, db: Database, scope: Scope = EVERYTHING) -> None:
         self._db = db
@@ -746,9 +763,9 @@ class PgFixedQueries:
     def scoped(self, scope: Scope) -> "PgFixedQueries":
         return PgFixedQueries(self._db, scope)
 
-    def available_fields(self, customer_id: str, fields: Sequence[str]) -> set[str]:
+    def available_fields(self, customer_id: str, fields: Sequence[str], *, user_id: str | None) -> set[str]:
         """Which of ``fields`` the customer has: O(f) index probes for f fields."""
-        with self._db.customer(customer_id) as conn:
+        with user_or_customer(self._db, customer_id, user_id) as conn:
             params = {"customer_id": customer_id, "candidates": list(fields), **self._scope.params()}
             rows = conn.execute(_AVAILABLE_FIELDS, params)
             return {str(row.field) for row in rows}
@@ -762,10 +779,12 @@ class PgFixedQueries:
         start: date | None,
         end: date | None,
         descending: bool,
+        *,
+        user_id: str | None,
     ) -> list[FixedRow]:
         params = _params(customer_id, date_fields, start, end)
         params.update(metric=metric, group_fields=list(group_fields), descending=descending, limit=_TOP_ROWS)
-        return self._run(customer_id, _TOP_GROUP, params)
+        return self._run(customer_id, _TOP_GROUP, params, user_id)
 
     def figures(
         self,
@@ -777,12 +796,13 @@ class PgFixedQueries:
         *,
         invoices: bool,
         group_fields: Sequence[str] = (),
+        user_id: str | None,
     ) -> list[Figure]:
         """Every matching record, by date then document, and the printed total rows of their
         sheets; ``invoices``: the question names them; ``group_fields``: a ranking's parties."""
         params = _params(customer_id, date_fields, start, end)
         params.update(metric=metric, invoices=invoices, group_fields=list(group_fields))
-        with self._db.customer(customer_id) as conn:
+        with user_or_customer(self._db, customer_id, user_id) as conn:
             rows = conn.execute(_FIGURES, params | self._scope.params()).all()
             ids = [str(row.value_id) for row in rows if row.value_id is not None]
             refs = _value_refs(conn, customer_id, ids, self._scope)
@@ -803,17 +823,27 @@ class PgFixedQueries:
         ]
 
     def count_documents(
-        self, customer_id: str, start: date | None, end: date | None, *, date_fields: Sequence[str]
+        self,
+        customer_id: str,
+        start: date | None,
+        end: date | None,
+        *,
+        date_fields: Sequence[str],
+        user_id: str | None,
     ) -> list[FixedRow]:
-        return self._run(customer_id, _COUNT_DOCUMENTS, _params(customer_id, date_fields, start, end))
+        params = _params(customer_id, date_fields, start, end)
+        return self._run(customer_id, _COUNT_DOCUMENTS, params, user_id)
 
-    def count_invoices(self, customer_id: str, start: date | None, end: date | None) -> list[FixedRow]:
+    def count_invoices(
+        self, customer_id: str, start: date | None, end: date | None, *, user_id: str | None
+    ) -> list[FixedRow]:
         if (start is None) != (end is None):
             raise ValueError("start and end go together")
         return self._run(
             customer_id,
             _COUNT_INVOICES,
             {"customer_id": customer_id, "start": start, "end": end},
+            user_id,
         )
 
     def extreme_value(
@@ -824,13 +854,17 @@ class PgFixedQueries:
         start: date | None,
         end: date | None,
         descending: bool,
+        *,
+        user_id: str | None,
     ) -> list[FixedRow]:
         params = _params(customer_id, date_fields, start, end)
         params.update(metric=metric, descending=descending, limit=_TOP_ROWS, cap=MAX_CITED_VALUES)
-        return self._run(customer_id, _EXTREME_VALUE, params)
+        return self._run(customer_id, _EXTREME_VALUE, params, user_id)
 
-    def _run(self, customer_id: str, query: TextClause, params: dict[str, Any]) -> list[FixedRow]:
-        with self._db.customer(customer_id) as conn:
+    def _run(
+        self, customer_id: str, query: TextClause, params: dict[str, Any], user_id: str | None
+    ) -> list[FixedRow]:
+        with user_or_customer(self._db, customer_id, user_id) as conn:
             aggregates = conn.execute(query, params | self._scope.params()).all()
             cited = [_cited_ids(row.metric_ids, row.group_ids, row.date_ids) for row in aggregates]
             # Highest and lowest only: the compared values not verified (the counts have none).

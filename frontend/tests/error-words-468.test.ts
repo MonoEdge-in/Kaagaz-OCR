@@ -120,8 +120,12 @@ describe("where the plain words are used", () => {
   });
 
   it("a document that can't open: the plain not-found sentence, no Try again; 5xx in plain words", () => {
-    // Changed on purpose (#468): the raw "We couldn't find that." becomes the plain sentence.
-    expect(loadFailure(new ApiError(404, "not_found", "We couldn't find that."))).toEqual({ message: NOT_FOUND, retry: false });
+    // Changed on purpose (#468): the raw "We couldn't find that." becomes the plain sentence; (PRD
+    // 7, #604) the document's own: one text for one deleted, never there, or hidden.
+    expect(loadFailure(new ApiError(404, "not_found", "We couldn't find that."))).toEqual({
+      message: "We couldn't find this document. It may have been moved or deleted, or you may not have access to it.",
+      retry: false,
+    });
     expect(loadFailure(noCode(502))).toEqual({ message: SERVER_PROBLEM, retry: true });
     expect(loadFailure(new ApiError(403, "forbidden", "x"))).toEqual({ message: FORBIDDEN, retry: true });
     expect(reprocessErrorText(noCode(500))).toBe(SERVER_PROBLEM);

@@ -20,6 +20,7 @@ the statements below: ``LIVE`` in ``_TRASH``, ``TRASHED`` in the others.
 """
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import Connection, text
@@ -50,11 +51,29 @@ _TRASH_IN_FOLDERS = (
 )
 
 # #542: never a family that went to Trash with its folder (trashed_folders.restore_document's).
+# #594: a version in no folder goes into :into, or is held for :by (one already held keeps its
+# holder); a version whose folder is live stays in it.
 _RESTORE = (
-    "UPDATE documents d SET deleted_at = NULL, deleted_by = NULL"
+    "UPDATE documents d SET deleted_at = NULL, deleted_by = NULL,"
+    " folder_id = CASE WHEN d.folder_id IS NULL THEN CAST(:into AS uuid) ELSE d.folder_id END,"
+    " held_for = CASE WHEN d.folder_id IS NULL AND :hold AND d.held_for IS NULL THEN CAST(:by AS uuid)"
+    " ELSE d.held_for END"
     " WHERE d.customer_id = :c AND d.family_id = :f AND d.deleted_at IS NOT NULL"
     " AND d.trashed_folder_id IS NULL"
 )
+
+# #594: what a family in Trash and in no folder kept of its folder (0085 froze it there).
+_KEPT_PLACE = (
+    "SELECT DISTINCT department_id, private_folder_id FROM documents WHERE customer_id = :c"
+    " AND family_id = :f AND deleted_at IS NOT NULL AND folder_id IS NULL"
+)
+# #594: which of these folders are live, FOR SHARE: the CLI's prune-folders takes no tree lock, so
+# it waits for this restore instead of deleting one under it. One constant, for PR 9's owner-rights
+# functions to reuse.
+LIVE_FOLDERS = "SELECT id FROM folders WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[])) FOR SHARE"
+# #594 (decision 3): the organisation has kept something to some people (0089); read under the tree
+# lock, which is this row's lock, so it can't change before the restore commits.
+WALLED = "SELECT walls_set FROM customers WHERE id = :c"
 
 _CUSTOMERS_WITH_TRASH = "SELECT t.id FROM kaagaz_customer_ids_with_trash(:before) AS t (id) ORDER BY t.id"
 
@@ -139,17 +158,64 @@ def trash_in_folders(
     return len(set(conn.execute(text(_TRASH_IN_FOLDERS), params).scalars()))
 
 
-def restore_document(conn: Connection, customer_id: str, document_id: str) -> bool:
-    """Bring the document's whole family back from Trash, into the folder it was
-    in (a folder deleted since has already moved it to the top level; one in Trash with it is
-    ``trashed_folders.restore_document``'s). False if there
-    is no such document; a live family is left as it was (still True).
-    O(v log D) time, O(v) space."""
+@dataclass(frozen=True, slots=True)
+class Placed:
+    """Where a restored family went when its folder was gone (#594): ``into`` the folder it went
+    into, or ``held`` for the restorer; neither when it went back where it was (or stayed in no
+    folder, open to everyone as it was)."""
+
+    into: str | None = None
+    held: bool = False
+
+
+def place_out_of_folder(
+    conn: Connection, customer_id: str, department_id: str | None, private_folder_id: str | None
+) -> Placed:
+    """Where a file whose folder is gone goes back (#594), from the department and private folder
+    it kept: its private folder while that is live; else the top of its department while that is
+    live; else no folder. Once the organisation is walled (``WALLED``), held for the restorer
+    instead when its private folder is gone (the top of its department would show it to more
+    people, Q1) or its department is (Q2). Day one, unwalled, it is the old result (decision 3). A
+    folder in Trash is not live. The caller holds the tree lock and the family's. Two statements."""
+    kept = [f for f in (private_folder_id, department_id) if f is not None]
+    if not kept:
+        return Placed()
+    live = {str(f) for f in conn.execute(text(LIVE_FOLDERS), {"c": customer_id, "ids": kept}).scalars()}
+    walled = bool(conn.execute(text(WALLED), {"c": customer_id}).scalar())
+    if private_folder_id in live:
+        return Placed(into=private_folder_id)
+    if private_folder_id is not None and walled:
+        return Placed(held=True)
+    if department_id in live:
+        return Placed(into=department_id)
+    return Placed(held=walled)
+
+
+def place_family(conn: Connection, customer_id: str, family_id: str) -> Placed:
+    """``place_out_of_folder`` for a family (locked already) in Trash and in no folder; versions
+    that disagree are held (fail closed). One or two statements."""
+    kept = conn.execute(text(_KEPT_PLACE), {"c": customer_id, "f": family_id}).all()
+    if len(kept) > 1:
+        return Placed(held=True)
+    if not kept:
+        return Placed()
+    department_id, private_folder_id = (None if v is None else str(v) for v in kept[0])
+    return place_out_of_folder(conn, customer_id, department_id, private_folder_id)
+
+
+def restore_document(conn: Connection, customer_id: str, document_id: str, *, by: str) -> Placed | None:
+    """Bring the document's whole family back from Trash, by user ``by``, into the folder it was
+    in (one in Trash with it is ``trashed_folders.restore_document``'s). #594: when that folder
+    is gone (a folder delete emptied its link), ``place_family`` says where: never somewhere
+    more people see it. None if there is no such document; a live family is left as it was.
+    The caller holds the tree lock (0085). O(v log D) time, O(v) space."""
     family_id = lock_family(conn, customer_id, document_id)
     if family_id is None:
-        return False
-    conn.execute(text(_RESTORE), {"c": customer_id, "f": family_id})
-    return True
+        return None
+    placed = place_family(conn, customer_id, family_id)
+    params = {"c": customer_id, "f": family_id, "into": placed.into, "hold": placed.held, "by": by}
+    conn.execute(text(_RESTORE), params)
+    return placed
 
 
 def customer_ids_with_trash(conn: Connection, *, before: datetime) -> list[str]:

@@ -50,6 +50,7 @@ ADMIN_COLUMNS = {
     "session_version",
     "delete_forever_allowed_at",
     "two_step_required",  # 0068, #481
+    "management",  # Changed on purpose (#601): Management on the person
 }
 
 # --- helpers ---------------------------------------------------------------------------

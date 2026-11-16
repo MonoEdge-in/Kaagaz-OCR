@@ -49,7 +49,7 @@ class FakeExhaustive:
         self.scopes: list[Scope] = []
 
     def documents_with(
-        self, customer_id: str, term: str, scope: Scope, listed: int
+        self, customer_id: str, term: str, scope: Scope, listed: int, *, user_id: str | None = None
     ) -> tuple[int, list[list[Hit]]]:
         self.calls.append((customer_id, term, listed))
         self.scopes.append(scope)
@@ -349,6 +349,14 @@ def test_the_type_narrows_the_scope_and_names_the_count() -> None:
 # --- Also mentions (Tushar, 17 Oct 2026) ---------------------------------------------------
 
 
+def test_the_not_found_line_never_names_a_request_word() -> None:
+    # #622 (production, 15 Nov 2026): it said 'No document searched has the words "Can", "find"
+    # or "measurement".'
+    question = "Can you find me the measurement of this if it is seen in any other document?"
+    assert key_terms(question) == ["measurement"]
+    assert key_terms("which document have krishna jindal name") == ["krishna", "jindal"]
+
+
 def test_key_terms_keep_names_and_places_and_drop_the_rest() -> None:
     assert key_terms("Who is the owner of the land in Jalna?") == ["Jalna"]
     assert key_terms("गाव दरेगांव जालना जिल्हा कोणता आहे?") == ["दरेगांव", "जालना"]
@@ -381,7 +389,14 @@ class FakeMentions:
         self.calls: list[tuple[str, list[str], list[str]]] = []
 
     def mentions(
-        self, customer_id: str, terms: Sequence[str], scope: Scope, exclude: Sequence[str], listed: int
+        self,
+        customer_id: str,
+        terms: Sequence[str],
+        scope: Scope,
+        exclude: Sequence[str],
+        listed: int,
+        *,
+        user_id: str | None = None,
     ) -> tuple[int, list[dict[str, object]]]:
         self.calls.append((customer_id, list(terms), list(exclude)))
         rows = [
@@ -442,7 +457,7 @@ def test_a_not_found_answers_closest_documents_are_not_mentioned_again() -> None
         mentions=port,
     )
     port.calls.clear()
-    service._mentioned(A, "Where is the shop on Jalna road?", closest, Scope())
+    service._mentioned(A, None, "Where is the shop on Jalna road?", closest, Scope())
     assert "c9" in port.calls[0][2]
 
 

@@ -38,7 +38,9 @@ class Invoices(FakeFixedQueries):
         self.preset = list(figures)
         self.asked: list[tuple[str, bool]] = []
 
-    def available_fields(self, customer_id: str, fields: Sequence[str]) -> set[str]:
+    def available_fields(
+        self, customer_id: str, fields: Sequence[str], *, user_id: str | None = None
+    ) -> set[str]:
         return {"total_amount", "invoice_date"} & set(fields)
 
     def figures(
@@ -51,6 +53,7 @@ class Invoices(FakeFixedQueries):
         *,
         invoices: bool,
         group_fields: Sequence[str] = (),
+        user_id: str | None = None,
     ) -> list[Figure]:
         self.asked.append((metric, invoices))
         return self.preset

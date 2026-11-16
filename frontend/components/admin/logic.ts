@@ -59,6 +59,17 @@ export const TABS = [
 
 export type TabId = (typeof TABS)[number]["id"];
 
+/** Where an admin with an app session signs in, coming back to this admin screen (a person's
+ * Access page too, #604); anything but a plain /admin path comes back to /admin. */
+export function adminSignInPath(pathname: string): string {
+  return /^\/admin(\/[\w-]+)*$/.test(pathname) ? `/login?next=${pathname}` : "/login?next=/admin";
+}
+
+/** The tab /admin?tab=… opens (PRD 7 lead decision 12): a tab's id, else Users. */
+export function tabFrom(asked: string | undefined): TabId {
+  return TABS.find((tab) => tab.id === asked)?.id ?? "users";
+}
+
 /** Arrow keys, Home and End move between tabs (the WAI-ARIA tabs pattern). */
 export function tabAfterKey(index: number, key: string, count: number): number | null {
   switch (key) {
@@ -694,6 +705,7 @@ const ACTION_WORDS: Record<string, string> = {
   "document.read_upgrade": "Read a document again after an upgrade",
   "document.land_facts": "Read a land record's owners and places again", // PRD 6 D3
   "document.page_accept": "Kept a page as it was read",
+  "document.page_turns": "Changed the turn of a document's pages", // #600: for everyone
   "document.line_corrected": "Corrected a line in a clean copy", // #527
   "document.line_correction_undone": "Undid a line correction in a clean copy", // #527
   "document_story.saved": "Saved a document's story",
@@ -791,6 +803,8 @@ const ACTION_WORDS: Record<string, string> = {
 /** The audit action in words; an action this screen does not know is shown as is. */
 export function describeAction(action: string, details: Record<string, unknown> = {}): string {
   if (action === "folder.create" && details.auto === true) return "Kaagaz made a folder";
+  // #600: a save that left no page turned.
+  if (action === "document.page_turns" && details.turned === 0) return "Put a document's pages back as scanned";
   return ACTION_WORDS[action] ?? action;
 }
 

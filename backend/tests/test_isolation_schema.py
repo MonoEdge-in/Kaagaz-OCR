@@ -69,6 +69,14 @@ reads in two columns only, written by the operator's two functions (step-up).
 
 A folder in Trash (0081, #542, NEEDS VRUSHIT'S APPROVAL): read, added and deleted by the app,
 never updated.
+
+Who can see what (0084, PRD 7, #590, NEEDS VRUSHIT'S APPROVAL): department members, the people
+named on a private folder, files given and lock grants, read, added and deleted by the app; only a
+membership's Head tick is ever changed. Their triggers (0085, #593) run with the owner's rights,
+which no role may run.
+
+Page turns saved for everyone (0088, PRD 7 section 14, #600, NEEDS VRUSHIT'S APPROVAL): read, added
+and deleted by the app, never updated; a save deletes the pages it changes and adds them again.
 """
 
 import re
@@ -193,6 +201,17 @@ FROM_0071 = {
 FROM_0061D = {"org_storage_limits": (False, False, False, False)}
 # A folder in Trash (0081, #542): read, added and deleted (restored, forever, purged), never updated.
 FROM_0081 = {"trashed_folders": (True, True, False, True)}
+# Who can see what (0084, #590): read, added and deleted; a membership's Head tick alone is changed
+# (UPDATES_0084, a column grant).
+FROM_0084 = {
+    "department_members": (True, True, False, True),
+    "private_folder_members": (True, True, False, True),
+    "document_shares": (True, True, False, True),
+    "lock_grants": (True, True, False, True),
+}
+UPDATES_0084 = {"department_members": {"is_head"}}
+# Page turns saved for everyone (0088, #600): read, added and deleted, never updated.
+FROM_0088 = {"page_rotations": (True, True, False, True)}
 # Logout ends this browser's session (0076, #502): the app adds and reads ended sessions only;
 # the worker's sweep deletes them through kaagaz_sweep_ended_sessions.
 FROM_0076 = {"ended_sessions": (True, True, False, False)}
@@ -295,6 +314,32 @@ OWNER_RIGHTS = {
     "kaagaz_customer_ids_held": ("SETOF uuid", EMPTY_PATH),
     # 0068 (#482): the worker removes deleted organisations' audit rows after 365 days (a count).
     "kaagaz_forget_kept_audit": ("bigint", EMPTY_PATH),
+    # Changed on purpose (#595, 0086): the current person's access, for the access views: their
+    # own row and the ids given to them only, from kaagaz.customer_id and kaagaz.user_id alone.
+    "kaagaz_access": ("kaagaz_access_set", EMPTY_PATH),
+    "kaagaz_shared_with_me": ("SETOF uuid", EMPTY_PATH),
+    "kaagaz_lock_open_to_me": ("SETOF uuid", EMPTY_PATH),
+    # Changed on purpose (#601, 0090): the access API's, each checking its caller inside (an Admin;
+    # who sees a file or folder, also the Head of its department who can see it).
+    "kaagaz_audience": (
+        "TABLE(user_id uuid, management boolean, admin boolean, member boolean, head boolean, named boolean,"
+        " given boolean, held boolean, everyone boolean, may_open_locked boolean, sees boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_place_audience": ("TABLE(user_id uuid, sees boolean)", EMPTY_PATH),
+    "kaagaz_kept_from_me": (
+        "TABLE(id uuid, display_name text, detected_type text, uploader text,"
+        " created_at timestamp with time zone, version_no integer, locked boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_admin_document": (
+        "TABLE(id uuid, family_id uuid, display_name text, in_trash boolean, locked boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_give_file": ("TABLE(user_id uuid, versions integer, added integer)", EMPTY_PATH),
+    "kaagaz_take_file": ("integer", EMPTY_PATH),
+    # Changed on purpose (#601, 0090b): auto-filing gives the uploader the file; no person only.
+    "kaagaz_give_uploader": ("integer", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"
@@ -572,6 +617,20 @@ OPERATOR_RIGHTS = {
         EMPTY_PATH,
     ),
 }
+# Changed on purpose (#593, 0085): who-can-see-what's triggers, owner's rights so a person's rule
+# never hides a row from them; no role may run them, only their triggers do.
+TRIGGER_RIGHTS = dict.fromkeys(
+    (
+        "kaagaz_folder_access",
+        "kaagaz_document_access",
+        "kaagaz_version_access",
+        "kaagaz_access_removed",
+        "kaagaz_access_changed",
+        "kaagaz_walls_set",  # 0089 (#594)
+        "kaagaz_user_switched",  # Changed on purpose (#601, 0090)
+    ),
+    ("trigger", EMPTY_PATH),
+) | {"kaagaz_access_of": ("kaagaz_access_set", EMPTY_PATH)}  # 0090: internal, run by none (#601)
 # The only tables without customer_id: the customers themselves, alembic's own, the
 # platform operator's (0015), the workers' reader status (0022) and the model catalogue
 # (0023) and the platform AI defaults (0026), which belong to no customer.
@@ -627,6 +686,8 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0061D)
         | set(FROM_0076)
         | set(FROM_0081)  # Changed on purpose (#542, 0081)
+        | set(FROM_0084)  # Changed on purpose (#590, 0084)
+        | set(FROM_0088)  # Changed on purpose (#600, 0088)
     )
 
     with db.system() as conn:
@@ -707,6 +768,8 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0061D
         | FROM_0076
         | FROM_0081  # Changed on purpose (#542, 0081)
+        | FROM_0084  # Changed on purpose (#590, 0084)
+        | FROM_0088  # Changed on purpose (#600, 0088)
     ).items():
         assert granted[table] == expected, table
 
@@ -784,6 +847,19 @@ def test_the_app_may_update_only_the_parent_of_a_trashed_folder(db: Database) ->
     """0082 (A13): never a trashed folder's name, kind, delete or owner; only where it would be
     restored to, when the folder it was in is deleted with its contents kept elsewhere."""
     assert _updatable(db, "trashed_folders") == {"parent_id"}
+
+
+def test_the_app_may_update_only_the_head_tick_of_a_department_membership(db: Database) -> None:
+    """0084 (#590): never a membership's department, person or who added it, so a row can't be
+    moved to another department or person; nothing of the other access tables."""
+    assert {table: _updatable(db, table) for table in FROM_0084} == {
+        table: UPDATES_0084.get(table, set()) for table in FROM_0084
+    }
+
+
+def test_the_app_may_update_no_column_of_a_page_turn(db: Database) -> None:
+    """0088 (#600): never a turn's page, version or who saved it; a save deletes and adds."""
+    assert _updatable(db, "page_rotations") == set()
 
 
 def test_the_app_may_update_only_the_spellings_of_a_value_key(db: Database) -> None:
@@ -911,6 +987,8 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
         | {"folder_upload_folders", "folder_upload_items"}  # 0071
         | set(FROM_0076)
         | set(FROM_0081)  # Changed on purpose (#542, 0081)
+        | set(FROM_0084)  # Changed on purpose (#590, 0084)
+        | set(FROM_0088)  # Changed on purpose (#600, 0088)
         | {"pages", "model_usage", "documents"}  # documents.owner_id (0041)
     )
     for name, _table, _parent, columns, parent_columns in between:
@@ -929,10 +1007,32 @@ def test_only_the_listed_tables_have_no_customer_id(db: Database) -> None:
     assert names - set(_customer_tables(db)) == NO_CUSTOMER_ID
 
 
+# Changed on purpose (#601, 0090): the access and lock entries of an organisation, newest first.
+ACCESS_INDEX = (
+    "CREATE INDEX audit_log_access ON public.audit_log USING btree (customer_id, created_at DESC, id DESC)"
+    " WHERE ((action ~~ 'access.%'::text) OR (action ~~ 'lock.%'::text))"
+)
+
+
+def test_the_access_entries_have_their_own_index(db: Database) -> None:
+    with db.system() as conn:
+        found = (
+            conn.execute(
+                text(
+                    "SELECT indexdef FROM pg_indexes"
+                    " WHERE schemaname = 'public' AND indexname = 'audit_log_access'"
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert found == [ACCESS_INDEX]
+
+
 def test_only_the_listed_owner_rights_functions_exist_and_only_their_role_may_run_them(db: Database) -> None:
     """Found from the catalog, so a new one can't be left out: what it returns, its
     fixed search path, never runnable by PUBLIC, and by the app (OWNER_RIGHTS) or
-    the operator (OPERATOR_RIGHTS), never both."""
+    the operator (OPERATOR_RIGHTS), never both; a trigger's (TRIGGER_RIGHTS) by neither."""
     with db.system() as conn:
         functions = conn.execute(
             text(
@@ -945,7 +1045,7 @@ def test_only_the_listed_owner_rights_functions_exist_and_only_their_role_may_ru
         ).all()
     assert {
         name: (result, config) for name, result, config, *_ in functions
-    } == OWNER_RIGHTS | OPERATOR_RIGHTS
+    } == OWNER_RIGHTS | OPERATOR_RIGHTS | TRIGGER_RIGHTS
     for name, *_, public_may_run, app_may_run, operator_may_run in functions:
         expected = (False, name in OWNER_RIGHTS, name in OPERATOR_RIGHTS)
         assert (public_may_run, app_may_run, operator_may_run) == expected, name

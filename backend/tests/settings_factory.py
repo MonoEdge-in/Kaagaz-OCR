@@ -16,6 +16,7 @@ _BASE: dict[str, Any] = {
     "database_url": TEST_DATABASE_URL or "postgresql://unused@localhost/unused",
     "ops_database_url": TEST_DATABASE_URL or "postgresql://unused@localhost/unused",
     "db_app_role": "kaagaz_app",
+    "db_worker_role": "kaagaz_app",  # as on a server until its .env names the workers' login (#587)
     "storage_endpoint_url": "http://localhost:8333",
     "storage_region": "us-east-1",
     "storage_bucket": "kaagaz-test",
@@ -96,6 +97,8 @@ _BASE: dict[str, Any] = {
     "trash_days": 30,
     "reprocess_per_hour": 20,
     "search_ef": 100,
+    "search_max_scan_tuples": 20000,
+    "search_exact_below": 2000,
     "search_max_documents": 20,
     "answer_max_evidence": 8,
     "answer_min_evidence_score": 0.2,

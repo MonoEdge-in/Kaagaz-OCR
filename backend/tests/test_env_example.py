@@ -27,6 +27,8 @@ NOT_BACKEND = {
     "STORAGE_ADMIN_SECRET_KEY",
     # the app's login, which docker-compose.yml makes api's and worker's DATABASE_URL (#479).
     "APP_DATABASE_URL",
+    # the workers' login, which docker-compose.yml makes the worker's DATABASE_URL (#587).
+    "JOBS_DATABASE_URL",
     # the off-server backup's bucket and certificate, read by infra/ec2/pgdump.sh only (#476).
     "BACKUP_BUCKET",
     "BACKUP_CERT",

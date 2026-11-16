@@ -122,3 +122,17 @@ def test_a_devanagari_question_is_spelled_in_latin_letters_not_dropped() -> None
         True,
     )
     assert normalise("INV-१०४२ ka total").keywords == ["inv-1042", "total"]  # Devanagari digits
+
+
+# #622 (production, 15 Nov 2026): the words of a request are never topics, so they are never
+# searched (hybrid.py's word and sound queries take the keywords) nor named as missing.
+@pytest.mark.parametrize(
+    ("question", "keywords"),
+    [
+        ("Can you find me the measurement of this if it is seen in any other document?", ["measurement"]),
+        ("which document have krishna jindal name", ["krishna", "jindal"]),
+        ("Show me the other documents", []),
+    ],
+)
+def test_request_words_are_not_keywords(question: str, keywords: list[str]) -> None:
+    assert normalise(question).keywords == keywords

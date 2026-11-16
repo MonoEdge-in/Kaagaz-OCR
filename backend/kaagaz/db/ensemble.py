@@ -44,6 +44,7 @@ from typing import Any
 from sqlalchemy import Connection, RowMapping, text
 
 from kaagaz.db import audit, word_review
+from kaagaz.db.visibility import SEEN_DOCUMENT
 from kaagaz.db.word_review import Refused
 from kaagaz.extraction.flags import LINE, MARK, READINGS_DIFFER, REVIEW, Flag, overlaps, word_key
 from kaagaz.extraction.labels import majority
@@ -65,8 +66,9 @@ _EDGES = string.punctuation + "\u0964\u0965"  # Latin and Devanagari punctuation
 # A run's row is every column of ensemble_runs (0030, 0032).
 _RUN = text("SELECT * FROM ensemble_runs WHERE customer_id = :c AND document_id = :d AND id = :r")
 _LATEST = text(
-    "SELECT * FROM ensemble_runs WHERE customer_id = :c AND document_id = :d"
-    " ORDER BY created_at DESC, id DESC LIMIT 1"
+    "SELECT * FROM ensemble_runs WHERE customer_id = :c AND document_id = :d"  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
+    + SEEN_DOCUMENT
+    + " ORDER BY created_at DESC, id DESC LIMIT 1"
 )
 _ACTIVE_RUN = text(
     "SELECT * FROM ensemble_runs WHERE customer_id = :c AND document_id = :d"
@@ -150,26 +152,27 @@ _INSERT_READING = text(
     " :outcome, :proposal, CAST(:reads AS jsonb)) ON CONFLICT (run_id, word_key) DO NOTHING RETURNING id"
 )
 _READING = text(
-    "SELECT id, run_id, word_key, before_text, outcome, proposal, reads, decision FROM ensemble_readings"
-    " WHERE customer_id = :c AND document_id = :d AND id = :id FOR UPDATE"
+    "SELECT id, run_id, word_key, before_text, outcome, proposal, reads, decision FROM ensemble_readings"  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
+    " WHERE customer_id = :c AND document_id = :d AND id = :id" + SEEN_DOCUMENT + " FOR UPDATE"
 )
 _DECIDE = text(
     "UPDATE ensemble_readings SET decision = :decision, decided_by = :u, decided_at = :now"
     " WHERE customer_id = :c AND id = :id"
 )
 _PENDING = text(
-    "SELECT id FROM ensemble_readings WHERE customer_id = :c AND document_id = :d AND run_id = :r"
-    " AND outcome = 'changed' AND decision IS NULL ORDER BY page_no, id"
+    "SELECT id FROM ensemble_readings WHERE customer_id = :c AND document_id = :d AND run_id = :r"  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
+    " AND outcome = 'changed' AND decision IS NULL" + SEEN_DOCUMENT + " ORDER BY page_no, id"
 )
 _COUNTS = text(
-    "SELECT outcome, decision, count(*) AS n FROM ensemble_readings WHERE customer_id = :c AND run_id = :r"
-    " GROUP BY outcome, decision"
+    "SELECT outcome, decision, count(*) AS n FROM ensemble_readings WHERE customer_id = :c AND run_id = :r"  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
+    " AND document_id = :d" + SEEN_DOCUMENT + " GROUP BY outcome, decision"
 )
 # Each word's latest reading, for its flag's state and readings (any run of the document).
 _LATEST_READINGS = text(
-    "SELECT DISTINCT ON (word_key) id, run_id, word_key, outcome, proposal, reads, decision"
+    "SELECT DISTINCT ON (word_key) id, run_id, word_key, outcome, proposal, reads, decision"  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
     " FROM ensemble_readings WHERE customer_id = :c AND document_id = :d"
-    " ORDER BY word_key, created_at DESC, id DESC"
+    + SEEN_DOCUMENT
+    + " ORDER BY word_key, created_at DESC, id DESC"
 )
 
 
@@ -432,10 +435,10 @@ def latest_run(conn: Connection, customer_id: str, document_id: str) -> RowMappi
     return conn.execute(_LATEST, {"c": customer_id, "d": document_id}).mappings().first()
 
 
-def run_counts(conn: Connection, customer_id: str, run_id: str) -> dict[str, int]:
+def run_counts(conn: Connection, customer_id: str, document_id: str, run_id: str) -> dict[str, int]:
     """A run's readings by outcome, ``kept`` and ``total``. One statement."""
     counts = {"agreed": 0, "changed": 0, "unresolved": 0, "skipped_user_edit": 0, "kept": 0, "total": 0}
-    for row in conn.execute(_COUNTS, {"c": customer_id, "r": run_id}).mappings():
+    for row in conn.execute(_COUNTS, {"c": customer_id, "d": document_id, "r": run_id}).mappings():
         counts[row["outcome"]] += row["n"]
         counts["kept"] += row["n"] if row["decision"] == "kept" else 0
         counts["total"] += row["n"]

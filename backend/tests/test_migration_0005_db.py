@@ -54,10 +54,17 @@ TO_DOCUMENTS = {
     "learning_removals",
     "page_blocks",
     "table_cells",
+    # Changed on purpose (#590, 0084): a file given and a lock grant go with their version.
+    "document_shares",
+    "lock_grants",
+    # Changed on purpose (#600, 0088): a page turn goes with its version.
+    "page_rotations",
 }
 # Changed on purpose (#239, 27 Oct 2026): 0023's spend ledger keeps its rows when a document
 # goes: SET NULL (document_id), never a cascade.
-KEEPS_ITS_ROWS = {"model_usage"}
+# Changed on purpose (#590, 0084): and a remembered correction keeps its row, losing only the
+# document it was made on (SET NULL (source_document_id)), as one made before PRD 7.
+KEEPS_ITS_ROWS = {"model_usage", "learned_corrections"}
 
 
 def _runs(database: Database, customer_id: str) -> list[tuple[str, str | None]]:

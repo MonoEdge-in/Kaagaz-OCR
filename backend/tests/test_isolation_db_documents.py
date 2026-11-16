@@ -14,7 +14,7 @@ from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database
 from kaagaz.ingestion.ports import DocumentRecord
 from kaagaz.scanning.gate import DocumentStatus
-from tests.db_support import new_customer
+from tests.db_support import APP_ROLE, new_customer
 
 pytestmark = pytest.mark.db
 
@@ -57,7 +57,8 @@ def test_even_naming_another_customer_in_sql_finds_nothing(db: Database) -> None
     a, _ = new_customer(db)
     b, _ = new_customer(db)
     record, _ = PgDocuments(db).add_if_absent(_record(a))
-    with db.customer(b) as conn:
+    # Changed on purpose (#595): the db fixture is the workers' role now; this is the app's.
+    with Database(db.engine, APP_ROLE).customer(b) as conn:
         found = conn.execute(text("SELECT count(*) FROM documents WHERE id = :d"), {"d": record.document_id})
         assert found.scalar_one() == 0
         assert conn.execute(text("SELECT current_user")).scalar_one() == "kaagaz_app"

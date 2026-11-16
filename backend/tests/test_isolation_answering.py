@@ -137,18 +137,18 @@ def test_b_never_gets_a_search_answer_from_as_pieces(db: Database) -> None:
 
 
 def test_fixed_queries_for_b_find_nothing_even_with_as_field_names(db: Database) -> None:
-    a, _ = new_customer(db)
-    b, _ = new_customer(db)
+    a, a_user = new_customer(db)
+    b, b_user = new_customer(db)
     _seed(db, a)
     fixed = PgFixedQueries(db)
     august = (date(2026, 8, 1), date(2026, 9, 1))
-    assert fixed.available_fields(a, FIELDS) == {"party_name", "profit", "date"}
-    assert fixed.available_fields(b, FIELDS) == set()
-    assert fixed.top_group(b, "profit", ["party_name"], ["date"], *august, True) == []
-    assert fixed.figures(b, "profit", [], None, None, invoices=False) == []
-    assert fixed.figures(b, "profit", ["date"], *august, invoices=True) == []
-    assert fixed.extreme_value(b, "profit", [], None, None, True) == []
-    assert fixed.count_documents(b, None, None, date_fields=["date"]) == []
+    assert fixed.available_fields(a, FIELDS, user_id=a_user) == {"party_name", "profit", "date"}
+    assert fixed.available_fields(b, FIELDS, user_id=b_user) == set()
+    assert fixed.top_group(b, "profit", ["party_name"], ["date"], *august, True, user_id=b_user) == []
+    assert fixed.figures(b, "profit", [], None, None, invoices=False, user_id=b_user) == []
+    assert fixed.figures(b, "profit", ["date"], *august, invoices=True, user_id=b_user) == []
+    assert fixed.extreme_value(b, "profit", [], None, None, True, user_id=b_user) == []
+    assert fixed.count_documents(b, None, None, date_fields=["date"], user_id=b_user) == []
 
 
 def test_b_never_gets_as_pieces_as_neighbours(db: Database) -> None:
@@ -163,16 +163,16 @@ def test_b_never_gets_as_pieces_as_neighbours(db: Database) -> None:
 
 def test_b_never_counts_as_invoices(db: Database) -> None:
     """#228's invoice count reads the invoices table: still only the asker's own rows."""
-    a, _ = new_customer(db)
-    b, _ = new_customer(db)
+    a, a_user = new_customer(db)
+    b, b_user = new_customer(db)
     add_invoice_row(db, a, date(2026, 8, 5))
     add_invoice_row(db, a, date(2026, 8, 6))
     fixed = PgFixedQueries(db)
 
-    [counted] = fixed.count_invoices(a, None, None)
+    [counted] = fixed.count_invoices(a, None, None, user_id=a_user)
     assert counted.number == 2
-    assert fixed.count_invoices(b, None, None) == []
-    assert fixed.count_invoices(b, date(2026, 8, 1), date(2026, 9, 1)) == []
+    assert fixed.count_invoices(b, None, None, user_id=b_user) == []
+    assert fixed.count_invoices(b, date(2026, 8, 1), date(2026, 9, 1), user_id=b_user) == []
 
 
 def test_bs_invoices_never_enter_as_total_or_its_list(db: Database) -> None:

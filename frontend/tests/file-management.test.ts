@@ -168,6 +168,7 @@ const detail = (over: Partial<DocumentDetail> = {}): DocumentDetail => ({
   read_model: null,
   author_name: "Priya",
   version_suggestion: suggestion(),
+  page_turns: [],
   ...over,
 });
 
@@ -556,8 +557,10 @@ describe("the filters and the sort in the page address (Q3, Q4)", () => {
     });
     expect(auditFilterCount(filters)).toBe(5);
     expect(auditFilterCount(NO_AUDIT_FILTERS)).toBe(0);
-    expect(auditChipTexts(filters, { person: "Priya", folder: "Land & Legal" })).toEqual({
+    // Changed on purpose (PRD 7 PR 11c, #604): the About a person chip, unset here.
+    expect(auditChipTexts(filters, { person: "Priya", about: null, folder: "Land & Legal" })).toEqual({
       person: "Person: Priya",
+      about: "About a person",
       folder: "Folder: Land & Legal",
       file: "File: a.pdf",
       action: "Action: Viewed and 1 more",

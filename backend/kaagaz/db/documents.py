@@ -3,7 +3,8 @@
 Implements ``DocumentRepository`` (kaagaz.ingestion.ports) and ``StatusStore``
 (kaagaz.scanning.gate). Every method opens its own transaction as the given
 customer, so row level security and the explicit ``customer_id`` filter both
-apply (two locks, docs/architecture.md).
+apply (two locks, docs/architecture.md); as the signed-in person too when an API request
+builds it with ``user_id`` (PRD 7, #585).
 
 Status writes never move a document out of ``rejected``: the UPDATE says so,
 and a trigger refuses it as well (the gate's adapter contract).
@@ -86,7 +87,7 @@ from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
 from kaagaz.db import audit, autofile, customers, folders, storage_limits, versions
-from kaagaz.db.engine import Database, unavailable
+from kaagaz.db.engine import Database, unavailable, user_or_customer
 from kaagaz.db.runs import close_running, finish_run, is_run_open
 from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, retry_on_deadlock, sqlstate
 from kaagaz.db.trash import lock_family
@@ -122,6 +123,18 @@ _DROP_REFUSED = (
     "DELETE FROM documents d WHERE d.customer_id = :c AND d.id = :old AND "  # noqa: S608 - a fixed fragment
     + REFUSED_ALONE
     + " RETURNING d.folder_id"
+)
+
+# PRD 7 decision 10 (#601): an upload with no folder, once the organisation keeps something to some
+# people (customers.walls_set), goes into the uploader's one live department, else it is held for
+# them; on day one it stays in no folder, open, as before. Tables only: the worker stores a zip's
+# files through the same insert, and it never reads a view.
+_NO_FOLDER = (
+    "SELECT c.walls_set, (SELECT (array_agg(m.department_id))[1] FROM department_members m"
+    " JOIN folders f ON f.customer_id = m.customer_id AND f.id = m.department_id"
+    " AND f.parent_id IS NULL AND f.kind = 'department'"
+    " WHERE m.customer_id = :c AND m.user_id = :by HAVING count(*) = 1)"
+    " FROM customers c WHERE c.id = :c"
 )
 
 
@@ -251,9 +264,12 @@ def _drop_refused_copy(conn: Connection, record: DocumentRecord) -> tuple[str, s
     """#554: delete this customer's refused copy of ``record``'s bytes (``REFUSED_ALONE``) under
     its family lock, so the new record can go in; its id and folder, or None. Its folder and
     file go in ``_after_refused_copy``, once the new row is in: the new one may be filed in that
-    folder, and a file deleted before an insert that fails could not come back."""
+    folder, and a file deleted before an insert that fails could not come back. The tree lock
+    comes before the family lock (#601), as for every write that can meet a folder made private."""
     params = {"c": record.customer_id, "h": record.sha256}
     old = conn.execute(text(_REFUSED_COPY), params).scalar()
+    if old is not None:
+        folders._lock_tree(conn, record.customer_id)
     if old is None or lock_family(conn, record.customer_id, str(old)) is None:
         return None  # none, or one that went while this upload waited for its lock
     dropped = conn.execute(text(_DROP_REFUSED), {**params, "old": old}).first()
@@ -739,11 +755,14 @@ def add_version(
 
     The family lock (``trash.lock_family``) comes first, so a second new version
     waits, then sees this one and takes the next number (the unique index
-    ``documents_family_version`` refuses a repeat anyway). 4 statements for a
-    new version (lock, family, insert, tags); O(v log D + t log N) time and
-    O(v + t) space for the family's v versions and t tags.
+    ``documents_family_version`` refuses a repeat anyway). The tree lock comes before it (PRD 7,
+    #601): the insert's trigger reads the folder FOR SHARE (0085), so a folder made private
+    meanwhile, which holds the folder and then needs the family, would otherwise deadlock with
+    it. 5 statements for a new version (two locks, family, insert, tags); O(v log D + t log N)
+    time and O(v + t) space for the family's v versions and t tags.
     """
     customer_id = record.customer_id
+    folders._lock_tree(conn, customer_id)
     family_id = lock_family(conn, customer_id, of_document_id)
     if family_id is None:
         return None
@@ -776,16 +795,21 @@ def add_version(
 
 
 class PgDocuments:
-    def __init__(self, db: Database, *, storage: BlobStorage | None = None) -> None:
+    def __init__(
+        self, db: Database, *, storage: BlobStorage | None = None, user_id: str | None = None
+    ) -> None:
         """``storage``: the upload paths give it, so a refused copy can be replaced (#554,
-        module notes); without it a refused copy is a duplicate, as before."""
+        module notes); without it a refused copy is a duplicate, as before. ``user_id``: the
+        signed-in person an API request builds it for, whose transactions it opens (PRD 7, #585);
+        None: a worker's, on the organisation."""
         self._db = db
         self._storage = storage
+        self._user_id = user_id
 
     # --- DocumentRepository ---------------------------------------------------
 
     def get(self, customer_id: str, document_id: str) -> DocumentRecord | None:
-        with unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), user_or_customer(self._db, customer_id, self._user_id) as conn:
             row = conn.execute(
                 text(_SELECT + " AND id = :d"),
                 {"c": customer_id, "d": document_id},
@@ -795,23 +819,33 @@ class PgDocuments:
     def customer_active(self, customer_id: str) -> bool:
         """Is this customer active (0014)? The worker asks at the start of each job;
         a database that is down is BackendUnavailable, so the job is tried again. O(1)."""
-        with unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), user_or_customer(self._db, customer_id, self._user_id) as conn:
             return customers.is_active(conn, customer_id)
 
     def find_by_fingerprint(self, customer_id: str, sha256: str) -> DocumentRecord | None:
         query = _SELECT + " AND sha256 = :h"
         if self._storage is not None:  # #554: a refused copy alone is not "already in"
             query += " AND NOT EXISTS (" + _REFUSED_COPY + ")"
-        with unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), user_or_customer(self._db, customer_id, self._user_id) as conn:
             row = conn.execute(text(query), {"c": customer_id, "h": sha256}).first()
         return None if row is None else _record(row)
 
     def add_if_absent(self, record: DocumentRecord) -> tuple[DocumentRecord, bool]:
         """Atomic per (customer, fingerprint): the unique index decides the race.
         Raises UnknownFolder when the record's folder is not this customer's. With the
-        storage, a refused copy alone is replaced (#554, module notes)."""
-        with unavailable(), self._db.customer(record.customer_id) as conn:
+        storage, a refused copy alone is replaced (#554, module notes). PRD 7 (#601): a record
+        with no folder is placed by ``_NO_FOLDER``; the record returned has the folder it went in."""
+        with unavailable(), user_or_customer(self._db, record.customer_id, self._user_id) as conn:
             refused = None if self._storage is None else _drop_refused_copy(conn, record)
+            held = None
+            if record.folder_id is None and record.uploaded_by is not None:
+                walled, department = conn.execute(
+                    text(_NO_FOLDER), {"c": record.customer_id, "by": record.uploaded_by}
+                ).one()
+                if walled and department is not None:
+                    record = dataclasses.replace(record, folder_id=str(department))
+                elif walled:
+                    held = record.uploaded_by
             params = {
                 "d": record.document_id,
                 "c": record.customer_id,
@@ -826,14 +860,16 @@ class PgDocuments:
                 "ocr": record.ocr_choice,
                 "batch": record.batch_id,
                 "keep": record.keep_place,
+                "held": held,
             }
             try:
                 inserted = conn.execute(
                     text(
                         "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes,"  # noqa: S608 - a fixed fragment, APPLIES
                         " detected_type, uploaded_by, read_requested_by, folder_id, family_id, version_no,"
-                        " ocr_choice, batch_id, owner_id, autofile) VALUES (:d, :c, :name, :h, :size, :type,"
-                        " :by, :by, :folder, :family, :version, :ocr, :batch, :by,"
+                        " ocr_choice, batch_id, owner_id" + (", held_for" if held else "") + ", autofile)"
+                        " VALUES (:d, :c, :name, :h, :size, :type, :by, :by, :folder, :family, :version,"
+                        " :ocr, :batch, :by," + (" :held," if held else "") +
                         # File management F2: no folder, or a department (filed inside it, F3);
                         # never a folder upload's file (#484, keep_place).
                         " CASE WHEN CAST(:keep AS boolean) THEN NULL ELSE"
@@ -863,11 +899,11 @@ class PgDocuments:
         self, record: DocumentRecord, *, of_document_id: str
     ) -> tuple[DocumentRecord, bool] | None:
         """``add_version`` in its own transaction."""
-        with unavailable(), self._db.customer(record.customer_id) as conn:
+        with unavailable(), user_or_customer(self._db, record.customer_id, self._user_id) as conn:
             return add_version(conn, record, of_document_id=of_document_id)
 
     def remove(self, record: DocumentRecord) -> None:
-        with unavailable(), self._db.customer(record.customer_id) as conn:
+        with unavailable(), user_or_customer(self._db, record.customer_id, self._user_id) as conn:
             conn.execute(
                 text("DELETE FROM documents WHERE customer_id = :c AND id = :d AND sha256 = :h"),
                 {"c": record.customer_id, "d": record.document_id, "h": record.sha256},
@@ -875,13 +911,13 @@ class PgDocuments:
 
     def storage_room(self, customer_id: str) -> StorageRoom:
         """The storage limit and the bytes used (#516, ``storage_limits.storage_room``)."""
-        with unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), user_or_customer(self._db, customer_id, self._user_id) as conn:
             return storage_limits.storage_room(conn, customer_id)
 
     # --- StatusStore ----------------------------------------------------------
 
     def get_status(self, customer_id: str, document_id: str) -> DocumentStatus | None:
-        with unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), user_or_customer(self._db, customer_id, self._user_id) as conn:
             status = conn.execute(
                 text("SELECT status FROM documents WHERE customer_id = :c AND id = :d"),
                 {"c": customer_id, "d": document_id},
@@ -896,7 +932,7 @@ class PgDocuments:
     ) -> None:
         """With ``run_id``, the run fence, as ``set_failed``: under the family lock,
         raise Superseded and change nothing unless that run is still open."""
-        with unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), user_or_customer(self._db, customer_id, self._user_id) as conn:
             if run_id is not None:
                 lock_family(conn, customer_id, document_id)
                 if not is_run_open(conn, customer_id, document_id, run_id):
@@ -921,7 +957,7 @@ class PgDocuments:
         A document failed for good keeps no read-again mark (F5): they are cleared in
         this transaction, so a page asked to be read again after it commits (the
         document is failed, so it may be read again) keeps its mark for the next run."""
-        with unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), user_or_customer(self._db, customer_id, self._user_id) as conn:
             if run_id is not None:
                 lock_family(conn, customer_id, document_id)
                 if not is_run_open(conn, customer_id, document_id, run_id):
@@ -950,7 +986,7 @@ class PgDocuments:
         the one before the document is understood, with ``open_run``)."""
 
         def transaction() -> None:
-            with self._db.customer(customer_id) as conn:
+            with user_or_customer(self._db, customer_id, self._user_id) as conn:
                 mark_ready(conn, customer_id, document_id, page_count, run=run, open_run=open_run)
 
         with unavailable():
@@ -962,11 +998,11 @@ class PgDocuments:
         decided is logged as a code with the ids only."""
 
         def transaction() -> str | None:
-            with self._db.customer(customer_id) as conn:
+            with user_or_customer(self._db, customer_id, self._user_id) as conn:
                 return autofile.file_document(conn, customer_id, document_id)
 
         def spotting() -> str | None:
-            with self._db.customer(customer_id) as conn:
+            with user_or_customer(self._db, customer_id, self._user_id) as conn:
                 return versions.spot(conn, customer_id, document_id)
 
         ids = {"customer_id": customer_id, "document_id": document_id}
@@ -993,7 +1029,7 @@ class PgDocuments:
         still open, so a stale delivery never overwrites the newer run's progress. Its
         own short transaction, one indexed statement (three with the fence); never
         called while this process holds another transaction."""
-        with unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), user_or_customer(self._db, customer_id, self._user_id) as conn:
             if run_id is not None:
                 lock_family(conn, customer_id, document_id)
                 if not is_run_open(conn, customer_id, document_id, run_id):
@@ -1019,7 +1055,7 @@ class PgDocuments:
         if waiting not in (None, "reader"):
             raise ValueError("waiting must be None or 'reader'")
         progress = None if waiting is None else json.dumps(WAITING_FOR_READER)
-        with unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), user_or_customer(self._db, customer_id, self._user_id) as conn:
             if run_id is not None:
                 lock_family(conn, customer_id, document_id)
                 if not is_run_open(conn, customer_id, document_id, run_id):
@@ -1036,7 +1072,7 @@ class PgDocuments:
         """The pages a user asked to be read again, harder (F5), in page order: the run
         that reads the document reads them so. Empty when none (or no such document).
         Its own short transaction, one statement on the pages key: O(log P + p)."""
-        with unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), user_or_customer(self._db, customer_id, self._user_id) as conn:
             rows = conn.execute(text(_PAGES_TO_READ_AGAIN), {"c": customer_id, "d": document_id})
             return tuple(int(row[0]) for row in rows)
 
@@ -1044,7 +1080,7 @@ class PgDocuments:
         """The regions asked for (#385) on the pages to read again, by page; a page asked
         for whole is not in it. Its own short transaction, one statement on the pages key:
         O(log P + p)."""
-        with unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), user_or_customer(self._db, customer_id, self._user_id) as conn:
             rows = conn.execute(text(_REGIONS_TO_READ_AGAIN), {"c": customer_id, "d": document_id})
             return {
                 int(page_no): tuple(
@@ -1054,7 +1090,7 @@ class PgDocuments:
             }
 
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None:
-        with unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), user_or_customer(self._db, customer_id, self._user_id) as conn:
             conn.execute(
                 text("UPDATE documents SET page_count = :n WHERE customer_id = :c AND id = :d"),
                 {"n": page_count, "c": customer_id, "d": document_id},
@@ -1063,7 +1099,7 @@ class PgDocuments:
     def set_detected_type(self, customer_id: str, document_id: str, detected_type: str) -> None:
         """#522: the kind resolve.py told after the virus scan, in place of the sniffed type
         (0078's CHECK holds both). One indexed statement."""
-        with unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), user_or_customer(self._db, customer_id, self._user_id) as conn:
             conn.execute(
                 text("UPDATE documents SET detected_type = :t WHERE customer_id = :c AND id = :d"),
                 {"t": detected_type, "c": customer_id, "d": document_id},
@@ -1083,7 +1119,7 @@ class PgDocuments:
         later tries are then not written and its last delivery fails nothing, and the stuck
         sweep counts on from it (``requeue_stuck``), so it is settled later but always settled.
         One indexed statement."""
-        with unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), user_or_customer(self._db, customer_id, self._user_id) as conn:
             conn.execute(
                 text(
                     "UPDATE documents SET attempts = :a, max_attempts = :m"
@@ -1099,7 +1135,7 @@ class PgDocuments:
         at most every 10 minutes, well inside the stuck sweep's QUEUE_LEASE_SECONDS x
         JOB_MAX_ATTEMPTS, so the sweep never takes a waiting document for one no job holds
         (kaagaz/jobs/revive.py). Nothing else changes. One indexed statement."""
-        with unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), user_or_customer(self._db, customer_id, self._user_id) as conn:
             conn.execute(
                 text(
                     "UPDATE documents SET attempts = attempts"
@@ -1122,7 +1158,7 @@ class PgDocuments:
         ``now`` (AR11), and its read-again marks are cleared (F5, as ``set_failed``),
         in the same transaction.
         """
-        with unavailable(), self._db.customer(customer_id) as conn:
+        with unavailable(), user_or_customer(self._db, customer_id, self._user_id) as conn:
             marked = conn.execute(
                 text(
                     "UPDATE documents SET status = 'failed', failure_code = 'retries_exhausted'"

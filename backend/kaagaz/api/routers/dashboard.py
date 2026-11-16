@@ -30,7 +30,7 @@ _PEOPLE = text(
 @router.get("/people")
 def list_people(user: User, context: Context) -> dict[str, Any]:
     """``{items: [{id, name}]}``: the company's active users. Any signed-in user."""
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         rows = conn.execute(_PEOPLE, {"c": user.customer_id}).all()
     return {"items": [{"id": str(row[0]), "name": row[1]} for row in rows]}
 
@@ -40,7 +40,7 @@ def get_dashboard(user: User, context: Context) -> dict[str, Any]:
     now = context.clock()
     local = now.astimezone(ZoneInfo(context.settings.timezone))
     month = local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         found = listing.dashboard(conn, user.customer_id, week=now - timedelta(days=7), month=month)
         activity = timeline(conn, user.customer_id, audit.Filters(), limit=DASHBOARD_ACTIVITY)["items"]
     tiles, departments = found["tiles"], found["departments"]

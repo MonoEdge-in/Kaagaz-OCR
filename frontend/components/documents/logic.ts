@@ -293,6 +293,9 @@ export function formatProgressPercent(done: number, total: number): string {
   return `${Math.round((done / total) * 100)}%`;
 }
 
+/** PRD 7 section 5 (#599): a copy of a file the uploader can't see. No name, no place, no link. */
+export const HIDDEN_COPY = "This file is already in Kaagaz, in a place you can't see. Ask your admin if you need it.";
+
 // PRD 5 U10: sending (bytes sent), saving (from the last byte to the server's reply),
 // reading (the stored document, followed through GET /api/batches/{id} until it is
 // no longer being read), then done, with the document when it was followed.
@@ -306,6 +309,8 @@ export type UploadState =
   | { kind: "done"; documentId: string; document?: DocumentSummary }
   // inTrash: the earlier copy is in Trash, so the row offers Restore.
   | { kind: "duplicate"; documentId: string; existingName: string; inTrash: boolean; restoreError?: string }
+  // PRD 7 (#599): already in Kaagaz, in a place this person can't see: no name, no link.
+  | { kind: "elsewhere" }
   | { kind: "restoring"; documentId: string; existingName: string }
   | { kind: "restored"; documentId: string; existingName: string }
   // retry: it was not sent (the connection or the server), and this tab still has the file.
@@ -338,6 +343,8 @@ export function uploadStateText(state: UploadState): string {
     }
     case "duplicate":
       return state.inTrash ? "Already uploaded, in Trash" : "Already uploaded";
+    case "elsewhere":
+      return "Already in Kaagaz";
     case "restoring":
       return "Restoring";
     case "restored":

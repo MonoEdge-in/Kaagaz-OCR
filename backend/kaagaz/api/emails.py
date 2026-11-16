@@ -64,7 +64,8 @@ def new_link(context: AppContext, customer_id: str, user_id: str, purpose: str) 
 
 
 def add_link(conn: Connection, context: AppContext, customer_id: str, user_id: str, purpose: str) -> str:
-    """``new_link`` in the caller's transaction (``conn`` from ``Database.customer``)."""
+    """``new_link`` in the caller's transaction (``conn`` from ``Database.customer``, or
+    ``Database.user`` for the signed-in user's own link)."""
     token = secrets.token_urlsafe(TOKEN_BYTES)
     now = context.clock()
     links_sql.add(
@@ -267,4 +268,29 @@ def connection_waiting(name: str, organisation: str, link: str) -> Message:
         f"Hello {name},\n\nSomeone in {organisation} asked to sign in to Kaagaz with a Google"
         " account. It works only once an admin approves it. Open the approval list:\n\n"
         f"{link}\n\nIf you do not recognise the request, decline it." + _SIGN_OFF,
+    )
+
+
+# --- who can see what (PRD 7, #601) -----------------------------------------------------------
+
+# The kind of access given, in words: never a file, a folder or a department by name.
+ACCESS_KINDS = {
+    "management": "Management, which sees every file but locked ones",
+    "member": "a place in a department",
+    "head": "the Head tick of a department",
+    "named": "a place on a private folder's list",
+    "file": "a file, given directly",
+    "wall": "access to files by opening them to more people",
+}
+
+
+def access_given(name: str, organisation: str, admin: str, person: str | None, kind: str) -> Message:
+    """To each Management person and each other admin: ``admin`` gave ``person`` (None:
+    themselves) a kind of access (``ACCESS_KINDS``)."""
+    who = "themselves" if person is None else person
+    return (
+        "Access was given in Kaagaz",
+        f"Hello {name},\n\n{admin} gave {who} {ACCESS_KINDS[kind]} in {organisation} on Kaagaz."
+        "\n\nThe Activity tab shows who has access. If you do not expect this, ask your"
+        " organisation's admins." + _SIGN_OFF,
     )

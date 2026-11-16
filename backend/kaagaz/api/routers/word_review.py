@@ -223,7 +223,7 @@ def _ensemble(conn: Connection, context: AppContext, user: CurrentUser, row: Row
 @router.get("/documents/{document_id}/review-status")
 def get_review_status(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
     customer_id, target = user.customer_id, str(document_id)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         row = _document(conn, user, document_id)
         review = word_review.load(conn, customer_id, target)
         numbers = word_review.counts(conn, customer_id, target, review)
@@ -253,7 +253,7 @@ def list_flags(
     state: Literal["open", "reviewed", "resolved", "in_ensemble", "proposed"] | None = None,
 ) -> dict[str, Any]:
     customer_id, target = user.customer_id, str(document_id)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         _document(conn, user, document_id)
         review = word_review.load(conn, customer_id, target)
         readings = ensemble_sql.latest_readings(conn, customer_id, target)
@@ -280,7 +280,7 @@ def _change(
 ) -> dict[str, Any]:
     """Confirm or edit one word in one transaction, then return its flag as it is now."""
     customer_id, target = user.customer_id, str(document_id)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         _document(conn, user, document_id)
         try:
             word_review.change_word(
@@ -322,7 +322,7 @@ def edit_line(
     if names.clean_name(typed, max_length=MAX_TEXT) != typed:
         raise ApiError(400, "bad_request", MESSAGES["hidden_text"])
     customer_id, target = user.customer_id, str(document_id)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         _document(conn, user, document_id)
         try:
             change_id = word_review.change_word(
@@ -371,7 +371,7 @@ def list_changes(
     before: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     customer_id = user.customer_id
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         _document(conn, user, document_id)
         review = word_review.load(conn, customer_id, str(document_id))
         keys = word_review.on_page(conn, customer_id, str(document_id), review)
@@ -390,7 +390,7 @@ def undo_change(
     document_id: uuid.UUID, change_id: uuid.UUID, user: Reviewer, context: Context
 ) -> dict[str, Any]:
     customer_id, target = user.customer_id, str(document_id)
-    with context.db.customer(customer_id) as conn:
+    with context.db.user(customer_id, user.user_id) as conn:
         _document(conn, user, document_id)
         try:
             word_review.undo_change(

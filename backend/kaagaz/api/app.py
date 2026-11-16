@@ -40,6 +40,7 @@ from kaagaz.api.context import AppContext
 from kaagaz.api.middleware import ErrorMiddleware, RateLimiter, RequestMiddleware
 from kaagaz.api.ports import Answers, ApiQueue, ApiStorage
 from kaagaz.api.routers import (
+    access,
     admin,
     ai_settings,
     answer_quality,
@@ -59,6 +60,7 @@ from kaagaz.api.routers import (
     operator_insights,
     operator_models,
     operator_orgs,
+    page_turns,
     read_clearly,
     review,
     search,
@@ -179,6 +181,8 @@ def create_app(
         batches.router,
         dashboard.router,
         folders.router,
+        access.router,  # PRD 7 (#601): who can see what
+        access.admin_router,
         folder_uploads.router,
         tags.router,
         chat.router,
@@ -189,6 +193,7 @@ def create_app(
         answer_quality.router,
         words.router,
         stories.router,
+        page_turns.router,
         words.router,
         word_review.router,
         ensemble.router,

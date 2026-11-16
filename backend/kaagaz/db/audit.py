@@ -44,10 +44,20 @@ DetailValue = str | int | bool | None
 # A3: the document's folder and family, or the folder itself, in the same statement.
 _INSERT = text(
     "INSERT INTO audit_log (customer_id, actor_user_id, action, target_type, target_id, details,"
-    " folder_id, family_id)"
+    " folder_id, family_id, subject_user_id)"
     " SELECT CAST(:c AS uuid), CAST(:actor AS uuid), CAST(:action AS text), CAST(:tt AS text),"
-    " CAST(:tid AS text), CAST(:details AS jsonb), coalesce(d.folder_id, CAST(:folder AS uuid)), d.family_id"
+    " CAST(:tid AS text), CAST(:details AS jsonb), coalesce(d.folder_id, CAST(:folder AS uuid)), d.family_id,"
+    " CAST(:subject AS uuid)"
     " FROM (SELECT 1) AS one"
+    " LEFT JOIN documents d ON d.customer_id = CAST(:c AS uuid) AND d.id = CAST(:document AS uuid)"
+)
+# PRD 7 (#601): one row about the document :document per person in :subjects, with its own details.
+_INSERT_ABOUT = text(
+    "INSERT INTO audit_log (customer_id, actor_user_id, action, target_type, target_id, details,"
+    " folder_id, family_id, subject_user_id)"
+    " SELECT CAST(:c AS uuid), CAST(:actor AS uuid), CAST(:action AS text), 'document',"
+    " CAST(:document AS text), s.details, d.folder_id, d.family_id, s.subject"
+    " FROM unnest(CAST(:subjects AS uuid[]), CAST(:details AS jsonb[])) AS s (subject, details)"
     " LEFT JOIN documents d ON d.customer_id = CAST(:c AS uuid) AND d.id = CAST(:document AS uuid)"
 )
 # #482: views of one document by one person wait for each other here, so two at once write one row.
@@ -75,8 +85,10 @@ def record(
     target_type: str | None = None,
     target_id: str | None = None,
     details: Mapping[str, DetailValue] | None = None,
+    subject_user_id: str | None = None,
 ) -> None:
-    """Write one audit row. O(log n): one indexed insert, with one key lookup for a document."""
+    """Write one audit row. O(log n): one indexed insert, with one key lookup for a document.
+    ``subject_user_id``: the person the entry is about (PRD 7: given access, for example)."""
     if not _ACTION.match(action):
         raise ValueError("audit action must match ^[a-z_.]+$")
     target = None if target_id is None else _uuid(target_id)
@@ -91,6 +103,33 @@ def record(
             "details": json.dumps(dict(details or {})),
             "document": target if target_type == "document" else None,
             "folder": target if target_type == "folder" else None,
+            "subject": subject_user_id,
+        },
+    )
+
+
+def record_about(
+    conn: Connection,
+    customer_id: str,
+    *,
+    actor_user_id: str,
+    action: str,
+    document_id: str,
+    subjects: Mapping[str, Mapping[str, DetailValue]],
+) -> None:
+    """``record`` about one document for each person in ``subjects`` (their details), in one
+    statement (PRD 7, #601: a file given to several people). O(people)."""
+    if not _ACTION.match(action):
+        raise ValueError("audit action must match ^[a-z_.]+$")
+    conn.execute(
+        _INSERT_ABOUT,
+        {
+            "c": customer_id,
+            "actor": actor_user_id,
+            "action": action,
+            "document": document_id,
+            "subjects": list(subjects),
+            "details": [json.dumps(dict(details)) for details in subjects.values()],
         },
     )
 
@@ -148,6 +187,8 @@ SHOWN_DETAILS: dict[str, tuple[str, ...]] = {
     "document.owner_change": ("from", "to"),
     "document.reprocess": ("page_no",),
     "document.page_accept": ("page_no",),
+    # PRD 7 section 14 (#600): pages the save changed, and pages left turned after it.
+    "document.page_turns": ("pages", "turned"),
     "folder.create": ("parent_id",),
     "folder.move": ("parent_id",),
     "folder.kind": ("kind",),
@@ -175,6 +216,11 @@ class Filters:
     actions: tuple[str, ...] = ()
     start: datetime | None = None
     end: datetime | None = None
+    # PRD 7 (#601): the person an entry is about; only access and lock entries; only an Admin's
+    # own access (details.self, an access entry).
+    subject_user_id: str | None = None
+    access_only: bool = False
+    self_only: bool = False
 
 
 Cursor = tuple[datetime, int]
@@ -182,7 +228,8 @@ Cursor = tuple[datetime, int]
 # The target document's own row (any version), for its name: NULL once deleted.
 _ENTRIES = (
     "SELECT a.id, a.action, a.actor_user_id, a.target_type, a.target_id, a.details, a.created_at,"
-    " a.folder_id, a.family_id, t.display_name AS document_name, t.version_no AS document_version_no,"
+    " a.folder_id, a.family_id, a.subject_user_id, t.display_name AS document_name,"
+    " t.version_no AS document_version_no,"
     " t.id IS NOT NULL AS document_exists"
     " FROM audit_log a"
     " LEFT JOIN documents t ON t.customer_id = a.customer_id AND t.id = CASE WHEN a.target_type = 'document'"
@@ -196,16 +243,37 @@ _SHOWN = (
 )
 # A5: rows written while in the family, and every row of its versions and of a document linked
 # into it (accepted, or undone since), so a linked version's upload and suggestion show too.
+# PRD 7 (#601): the linked documents come through the view, so for a family the Admin can't open
+# the Admin's log under-reports them (never a leak); PR 9's owner-rights functions can widen it.
 _OF_FAMILY = (
     " AND (a.family_id = CAST(:family AS uuid) OR (a.target_type = 'document' AND a.target_id IN ("
-    "SELECT v.id::text FROM documents v WHERE v.customer_id = :c AND v.family_id = CAST(:family AS uuid)"
+    "SELECT v.id::text FROM visible_documents v"
+    " WHERE v.customer_id = :c AND v.family_id = CAST(:family AS uuid)"
     " UNION SELECT s.document_id::text FROM version_suggestions s WHERE s.customer_id = :c"
     " AND s.candidate_family_id = CAST(:family AS uuid) AND s.status IN ('accepted', 'undone'))))"
+)
+# PRD 7 (#595): the shown feeds (the dashboard's, a document's, a folder's) leave out each entry
+# about a document the person cannot see, and each other entry in a folder they cannot see (an
+# entry about a file follows the file alone, so a file given to them shows its history); one about
+# a document or folder that is gone shows as before. The admin's log (shown_only false) keeps all.
+_TARGET = "CASE WHEN a.target_id ~ '^[0-9a-f-]{36}$' THEN CAST(a.target_id AS uuid) END"
+_SEEN = (
+    " AND (a.target_type <> 'document' OR NOT EXISTS (SELECT 1 FROM documents x"  # noqa: S608 - fixed fragments only
+    f" WHERE x.customer_id = a.customer_id AND x.id = {_TARGET})"
+    " OR EXISTS (SELECT 1 FROM visible_documents v"
+    f" WHERE v.customer_id = a.customer_id AND v.id = {_TARGET}))"
+    " AND (a.target_type = 'document' OR a.folder_id IS NULL OR NOT EXISTS (SELECT 1 FROM folders x"
+    " WHERE x.customer_id = a.customer_id AND x.id = a.folder_id)"
+    " OR EXISTS (SELECT 1 FROM visible_folders v WHERE v.customer_id = a.customer_id AND v.id = a.folder_id))"
 )
 _IN_FOLDERS = " AND a.folder_id = ANY(CAST(:folders AS uuid[]))"
 _BY = " AND a.actor_user_id = CAST(:actor AS uuid)"
 _ON_DOCUMENT = " AND a.target_type = 'document' AND a.target_id = :document"
 _ACTIONS = " AND a.action = ANY(CAST(:actions AS text[]))"
+_ABOUT = " AND a.subject_user_id = CAST(:subject AS uuid)"
+# PRD 7 (#601): written as audit_log_access's predicate (0090), so these reads use it.
+_ACCESS = " AND (a.action LIKE 'access.%' OR a.action LIKE 'lock.%')"
+_SELF = _ACCESS + " AND a.details @> '{\"self\": true}'"
 _FROM = " AND a.created_at >= :start"
 _TO = " AND a.created_at < :end"
 _BEFORE = " AND (a.created_at, a.id) < (CAST(:before_at AS timestamptz), CAST(:before_id AS bigint))"
@@ -214,13 +282,14 @@ _ORDER = " ORDER BY a.created_at DESC, a.id DESC LIMIT :limit OFFSET :offset"
 _USER_NAMES = text(
     "SELECT id::text, display_name FROM users WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
 )
-# Each folder's path from the top, "Land & Legal / Land records" (100 levels at most).
+# Each folder's path from the top, "Land & Legal / Land records" (100 levels at most), through the
+# folders the person can see (PRD 7, #595): a hidden folder has no path, and a path stops below one.
 _FOLDER_PATHS = text(
     "WITH RECURSIVE up (start, id, parent_id, name, depth) AS ("
-    " SELECT id, id, parent_id, name, 1 FROM folders"
+    " SELECT id, id, parent_id, name, 1 FROM visible_folders"
     " WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
     " UNION ALL SELECT up.start, f.id, f.parent_id, f.name, up.depth + 1 FROM up"
-    " JOIN folders f ON f.customer_id = :c AND f.id = up.parent_id WHERE up.depth < 101)"
+    " JOIN visible_folders f ON f.customer_id = :c AND f.id = up.parent_id WHERE up.depth < 101)"
     " SELECT start::text, string_agg(name, ' / ' ORDER BY depth DESC) FROM up GROUP BY start"
 )
 
@@ -233,10 +302,13 @@ def _where(filters: Filters, params: dict[str, Any]) -> str:
         (filters.actor_user_id is not None, _BY, "actor", filters.actor_user_id),
         (filters.document_id is not None, _ON_DOCUMENT, "document", filters.document_id),
         (bool(filters.actions), _ACTIONS, "actions", list(filters.actions)),
+        (filters.subject_user_id is not None, _ABOUT, "subject", filters.subject_user_id),
+        (filters.access_only, _ACCESS, "access", None),
+        (filters.self_only, _SELF, "self", None),
         (filters.start is not None, _FROM, "start", filters.start),
         (filters.end is not None, _TO, "end", filters.end),
     )
-    fragments = []
+    fragments = [_SEEN] if filters.shown_only else []
     for wanted, fragment, name, value in chosen:
         if wanted:
             fragments.append(fragment)
@@ -295,7 +367,8 @@ def names(conn: Connection, customer_id: str, rows: Sequence[RowMapping]) -> Nam
         details = row["details"] if isinstance(row["details"], dict) else {}
         owners = (details.get("from"), details.get("to")) if row["action"] == "document.owner_change" else ()
         subject = row["target_id"] if row["target_type"] == "user" else None
-        users.update(filter(None, map(_uuid, (row["actor_user_id"], *owners, subject))))
+        about = row["subject_user_id"]  # PRD 7 (#601)
+        users.update(filter(None, map(_uuid, (row["actor_user_id"], *owners, subject, about))))
         folders.update(
             filter(None, map(_uuid, (row["folder_id"], details.get("folder_id"), details.get("parent_id"))))
         )

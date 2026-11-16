@@ -66,14 +66,14 @@ class OrganisationBody(BaseModel):
 
 @router.get("/ai-settings")
 def get_ai_settings(user: User, context: Context) -> dict[str, Any]:
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         tasks = _tasks(conn, user, context.settings)
     return _reply(user, tasks)
 
 
 @router.put("/ai-settings/me")
 def save_mine(body: MineBody, user: User, context: Context) -> dict[str, Any]:
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         tasks = _tasks(conn, user, context.settings)
         for name, level in body.tasks.items():
             task = tasks[name]
@@ -96,7 +96,7 @@ def save_mine(body: MineBody, user: User, context: Context) -> dict[str, Any]:
 
 @router.put("/ai-settings/organisation")
 def save_organisation(body: OrganisationBody, user: Admin, context: Context) -> dict[str, Any]:
-    with context.db.customer(user.customer_id) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         tasks = _tasks(conn, user, context.settings)
         for name, choice in body.tasks.items():
             _check(tasks[name], choice.level)

@@ -32,6 +32,9 @@ x-backend: &backend
     DATABASE_URL: ${APP_DATABASE_URL:-postgresql://${POSTGRES_USER:-kaagaz}:${POSTGRES_PASSWORD:-kaagaz}@postgres:5432/${POSTGRES_DB:-kaagaz}}
     POSTGRES_PASSWORD: ""
     OPS_DATABASE_URL: ""
+    # The workers' login and role (#587), the worker's alone (below).
+    JOBS_DATABASE_URL: ""
+    DB_WORKER_ROLE: ""
     # env_file hands every .env line to each container; the storage admin key is migrate's
     # alone (#477), so it is blanked here and migrate sets its own below.
     STORAGE_ADMIN_ACCESS_KEY: ""
@@ -215,6 +218,12 @@ services:
 
   worker:
     <<: *backend
+    environment:
+      <<: *backend-env
+      # The workers' own login (#587, migration 0083) once .env sets JOBS_DATABASE_URL, and with
+      # it their role, which only that login may switch into; until then the app's, as before.
+      DATABASE_URL: ${JOBS_DATABASE_URL:-${APP_DATABASE_URL:-postgresql://${POSTGRES_USER:-kaagaz}:${POSTGRES_PASSWORD:-kaagaz}@postgres:5432/${POSTGRES_DB:-kaagaz}}}
+      DB_WORKER_ROLE: ${JOBS_DATABASE_URL:+kaagaz_worker}
     command: ["python", "-m", "kaagaz.worker_main"]
     # An init process as PID 1 (#522): when a LibreOffice conversion runs out of time its whole
     # process group is killed, and soffice.bin, whose parent died with it, is left to PID 1 to

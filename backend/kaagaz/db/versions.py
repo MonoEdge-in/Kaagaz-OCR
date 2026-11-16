@@ -30,7 +30,8 @@ Why here: the family rules next to their SQL. Every function takes a connection 
   document the family, the next number, the family's folder, tags, owner and label, and makes
   it current (the highest ready version); a family in no folder moves into the document's
   folder instead (issue 414). **Undo** (V7) puts it back alone, in the folder it
-  had before (``previous_folder_id``), and the family's highest ready version is current again.
+  had before (``previous_folder_id``; #594: or held again for ``previous_held_for``, never open to
+  more people than while linked), and the family's highest ready version is current again.
 * A suggestion whose document or candidate family went to Trash or was deleted is no longer
   shown or answered (``visibility.LIVE_SUGGESTION``).
 """
@@ -42,6 +43,7 @@ from sqlalchemy import Connection, RowMapping, text
 
 from kaagaz import versions
 from kaagaz.db import ai_settings, audit
+from kaagaz.db.folders import Move, MoveChangesAccess, Rights, _lock_tree, changes_access, place_of
 from kaagaz.db.trash import lock_family, lock_live_family
 from kaagaz.db.visibility import LIVE_SUGGESTION
 
@@ -53,8 +55,8 @@ MAX_FETCHED = 200
 
 
 class Refused(Exception):
-    """The change can't be made: ``code`` is not_found (404), or already_decided, not_ready,
-    not_linked or not_newest (409)."""
+    """The change can't be made: ``code`` is not_found (404), forbidden (403, #594), or
+    already_decided, not_ready, not_linked or not_newest (409)."""
 
     def __init__(self, code: str) -> None:
         super().__init__(code)
@@ -216,14 +218,21 @@ _SUGGESTION = text(
     " s.name_similarity, s.shared_identifier FROM version_suggestions s"
     " WHERE s.customer_id = :c AND s.id = :s"
 )
+# PRD 7 (#601): each side's place (department, private folder, hold), for the move rule.
 _LINK_STATE = text(
-    "SELECT n.status, n.deleted_at IS NOT NULL AS in_trash, n.folder_id AS from_folder,"
+    "SELECT n.status, n.deleted_at IS NOT NULL AS in_trash, n.folder_id AS from_folder, n.held_for,"
+    " n.department_id, n.private_folder_id,"
+    " (SELECT ARRAY[cur.department_id, cur.private_folder_id, cur.held_for] FROM documents cur"
+    " WHERE cur.customer_id = n.customer_id AND cur.family_id = :f AND cur.is_current) AS family_place,"
     " n.family_id = n.id AND NOT EXISTS (SELECT 1 FROM documents o WHERE o.customer_id = n.customer_id"
     " AND o.family_id = n.family_id AND o.id <> n.id) AS alone,"
     " (SELECT cur.id FROM documents cur WHERE cur.customer_id = n.customer_id"
     " AND cur.family_id = :f AND cur.is_current AND cur.deleted_at IS NULL) AS current_id,"
     " (SELECT cur.folder_id FROM documents cur WHERE cur.customer_id = n.customer_id"
     " AND cur.family_id = :f AND cur.is_current) AS folder_id,"
+    # #594: whom the family is held for (none: not held).
+    " (SELECT cur.held_for FROM documents cur WHERE cur.customer_id = n.customer_id"
+    " AND cur.family_id = :f AND cur.is_current) AS family_held,"
     " (SELECT max(v.version_no) FROM documents v WHERE v.customer_id = n.customer_id"
     " AND v.family_id = :f) + 1 AS version_no"
     " FROM documents n WHERE n.customer_id = :c AND n.id = :n"
@@ -236,7 +245,9 @@ _FAMILY_NOT_CURRENT = text(
 _JOIN = text(
     "UPDATE documents n SET family_id = :f, version_no = :v, folder_id = cur.folder_id,"
     " owner_id = cur.owner_id, sensitivity = cur.sensitivity,"
-    " sensitivity_set_by_person = cur.sensitivity_set_by_person, autofile = NULL, is_current = true"
+    " sensitivity_set_by_person = cur.sensitivity_set_by_person, autofile = NULL, is_current = true,"
+    # #594: a held family stays held, the joiner with it (the trigger clears it in a folder).
+    " held_for = coalesce(cur.held_for, n.held_for)"
     " FROM documents cur WHERE n.customer_id = :c AND n.id = :n AND cur.customer_id = :c AND cur.id = :cur"
 )
 # Issue 414: a family in no folder joins the folder of the document linked to it, so the
@@ -253,26 +264,32 @@ _DECIDE = text(
     "UPDATE version_suggestions SET status = :status, decided_by = :by, decided_at = now()"
     " WHERE customer_id = :c AND id = :s AND status = :was RETURNING id"
 )
-# Accepted, with the folder the document leaves (Undo's way back, V7).
+# Accepted, with the folder the document leaves and whom it was held for (Undo's way back, V7; #594).
 _ACCEPT = text(
     "UPDATE version_suggestions SET status = 'accepted', decided_by = :by, decided_at = now(),"
-    " previous_folder_id = :previous WHERE customer_id = :c AND id = :s AND status = 'pending' RETURNING id"
+    " previous_folder_id = :previous, previous_held_for = :held"
+    " WHERE customer_id = :c AND id = :s AND status = 'pending' RETURNING id"
 )
 
 
-def link(conn: Connection, customer_id: str, suggestion_id: str, *, by: str | None) -> str:
+def link(
+    conn: Connection, customer_id: str, suggestion_id: str, *, by: str | None, rights: Rights | None = None
+) -> str:
     """Make the suggestion's document the next version of its candidate family (V6): both
     families locked in id order, then in this transaction the family, number, folder, tags,
     owner and label, current; the suggestion accepted by ``by`` (None: Kaagaz's own ``auto``
     links, made only before #521), and
     one ``version.accepted`` row naming the folders. The accept route writes the note (V9) and
     the details stamp in the same transaction. Returns the document's id. Raises Refused:
-    not_found (no such live suggestion), already_decided, or not_ready. O(v log D)."""
+    not_found (no such live suggestion), already_decided, or not_ready; with ``rights`` (the
+    person's, read under the tree lock), MoveChangesAccess for a join that changes who can see
+    either side (PRD 7 decision 18, ``_join_rule``). O(v log D)."""
     params: dict[str, Any] = {"c": customer_id, "s": suggestion_id}
     first = conn.execute(_SUGGESTION, params).mappings().first()
     if first is None:
         raise Refused("not_found")
     new, family = str(first["document_id"]), str(first["candidate_family_id"])
+    _lock_tree(conn, customer_id)  # first: the join moves the document (0085)
     for document in sorted((new, family)):
         if lock_family(conn, customer_id, document) is None:
             raise Refused("not_found")  # deleted for good
@@ -284,13 +301,17 @@ def link(conn: Connection, customer_id: str, suggestion_id: str, *, by: str | No
         raise Refused("already_decided")
     if state["status"] != "ready":
         raise Refused("not_ready")
+    if rights is not None:
+        _join_rule(conn, customer_id, state, rights, by)
     # First, and only while still pending: a reject (no family locks) racing this one wins or loses
     # here, before anything else is written.
-    if conn.execute(_ACCEPT, {**params, "by": by, "previous": state["from_folder"]}).first() is None:
+    accepted = {**params, "by": by, "previous": state["from_folder"], "held": state["held_for"]}
+    if conn.execute(_ACCEPT, accepted).first() is None:
         raise Refused("already_decided")
     ids = {**params, "n": new, "f": family, "cur": str(state["current_id"]), "v": int(state["version_no"])}
     folder_id = state["folder_id"]
-    if folder_id is None and state["from_folder"] is not None:
+    # #594: never a held family, which would leave its hold and be seen by whoever sees that folder.
+    if folder_id is None and state["from_folder"] is not None and state["family_held"] is None:
         folder_id = state["from_folder"]
         conn.execute(_FAMILY_INTO, {**ids, "folder": folder_id})
     conn.execute(_FAMILY_NOT_CURRENT, ids)
@@ -317,14 +338,49 @@ def link(conn: Connection, customer_id: str, suggestion_id: str, *, by: str | No
     return new
 
 
+def _join_rule(conn: Connection, customer_id: str, state: RowMapping, rights: Rights, by: str | None) -> None:
+    """PRD 7 decision 18 (#601): a join is a move, of the family into the document's folder when
+    the family is in none, held for no one, and the document in one (issue 414), else of the
+    document into the family's place (into a held family: held for its holder, #594): one that
+    changes who can see the side that moves needs ``rights`` (MoveChangesAccess). A side held for
+    ``by``, or a document going into ``by``'s own hold, is theirs to file."""
+    family_held = None if state["family_held"] is None else str(state["family_held"])
+    if state["folder_id"] is None and state["from_folder"] is not None and family_held is None:
+        moving, into = state["family_place"] or (None, None, None), state["from_folder"]
+    else:
+        moving, into = (
+            (state["department_id"], state["private_folder_id"], state["held_for"]),
+            state["folder_id"],
+        )
+    department, private, held = (None if v is None else str(v) for v in moving)
+    if (held is not None and held == by) or (into is None and family_held is not None and family_held == by):
+        return
+    target = None if into is None else str(into)
+    move = Move(before=(department, private), after=place_of(conn, customer_id, target), private=[])
+    changed = (
+        held is not None
+        or (into is None and family_held is not None)
+        or changes_access(conn, customer_id, move.before, move.after)
+    )
+    if changed and not rights.allow(move.before[0], move.after[0]):
+        raise MoveChangesAccess()
+
+
 _LIVE = text(
     "SELECT s.id, s.document_id, s.candidate_family_id, s.status FROM version_suggestions s"
     " WHERE s.customer_id = :c AND s.id = :s"
-    " AND EXISTS (SELECT 1 FROM documents sn WHERE sn.customer_id = s.customer_id AND sn.id = s.document_id"
+    " AND EXISTS (SELECT 1 FROM visible_documents sn"
+    " WHERE sn.customer_id = s.customer_id AND sn.id = s.document_id"
     " AND sn.deleted_at IS NULL)"
-    " AND EXISTS (SELECT 1 FROM documents sc WHERE sc.customer_id = s.customer_id"
+    " AND EXISTS (SELECT 1 FROM visible_documents sc WHERE sc.customer_id = s.customer_id"
     " AND sc.family_id = s.candidate_family_id AND sc.deleted_at IS NULL)"
 )
+
+
+def is_live(conn: Connection, customer_id: str, suggestion_id: str) -> bool:
+    """The suggestion is this customer's and both its sides are out of Trash and seen by the person
+    (PRD 7, #595): the accept route's first check. One statement."""
+    return conn.execute(_LIVE, {"c": customer_id, "s": suggestion_id}).first() is not None
 
 
 def reject(conn: Connection, customer_id: str, suggestion_id: str, *, by: str) -> str:
@@ -350,18 +406,25 @@ def reject(conn: Connection, customer_id: str, suggestion_id: str, *, by: str) -
 
 
 # --- V7: Undo ---------------------------------------------------------------------------
+# The accepted link, its previous folder while live, and (#594) whether it had none, whom it was
+# held for, where it is now (its private folder, its department and whether that is Department
+# only) and whether the person undoing it is Management.
 _UNDO_STATE = text(
     "SELECT d.version_no, (SELECT max(v.version_no) FROM documents v WHERE v.customer_id = :c"
-    " AND v.family_id = :f) AS newest,"
-    " (SELECT s.id FROM version_suggestions s WHERE s.customer_id = :c AND s.document_id = :d"
-    " AND s.candidate_family_id = :f AND s.status = 'accepted') AS suggestion_id,"
-    " (SELECT fo.id FROM version_suggestions s JOIN folders fo ON fo.customer_id = s.customer_id"
-    " AND fo.id = s.previous_folder_id WHERE s.customer_id = :c AND s.document_id = :d"
-    " AND s.candidate_family_id = :f AND s.status = 'accepted') AS folder_id"
-    " FROM documents d WHERE d.customer_id = :c AND d.id = :d"
+    " AND v.family_id = :f) AS newest, s.id AS suggestion_id, fo.id AS folder_id,"
+    " s.previous_folder_id IS NULL AS had_none, s.previous_held_for,"
+    " d.folder_id AS now_in, d.held_for AS now_held,"
+    " d.private_folder_id, d.department_id, coalesce(dep.department_only, false) AS department_only,"
+    " coalesce((SELECT u.management FROM users u WHERE u.customer_id = :c AND u.id = :by), false)"
+    " AS management"
+    " FROM documents d LEFT JOIN version_suggestions s ON s.customer_id = :c AND s.document_id = :d"
+    " AND s.candidate_family_id = :f AND s.status = 'accepted'"
+    " LEFT JOIN folders fo ON fo.customer_id = :c AND fo.id = s.previous_folder_id"
+    " LEFT JOIN folders dep ON dep.customer_id = :c AND dep.id = d.department_id"
+    " WHERE d.customer_id = :c AND d.id = :d"
 )
 _ALONE_AGAIN = text(
-    "UPDATE documents SET family_id = id, version_no = 1, folder_id = :folder,"
+    "UPDATE documents SET family_id = id, version_no = 1, folder_id = :folder, held_for = :held,"
     " is_current = (status = 'ready') WHERE customer_id = :c AND id = :d"
 )
 _HIGHEST_READY_CURRENT = text(
@@ -374,24 +437,59 @@ _HIGHEST_READY_CURRENT = text(
 )
 
 
-def undo(conn: Connection, customer_id: str, document_id: str, *, by: str) -> None:
+def _way_back(state: RowMapping) -> tuple[str | None, str | None]:
+    """Where an Undo puts the document (#594): (its folder, whom it is held for). Its previous
+    folder while live; no folder, held for whom it was held for, when it had none (nobody: open, as
+    before the link); its previous folder gone: in no folder now (its family held by a restore),
+    held as it is; else no folder while it is open to everyone where it is now (day one), else its
+    private folder, else the top of its department, both live as it is in them, so it is never
+    wider than while it was linked."""
+    if state["folder_id"] is not None:
+        return str(state["folder_id"]), None
+    if state["had_none"] or state["now_in"] is None:
+        held = state["previous_held_for"] if state["had_none"] else state["now_held"]
+        return None, None if held is None else str(held)
+    if state["private_folder_id"] is None and not state["department_only"]:
+        return None, None
+    return str(state["private_folder_id"] or state["department_id"]), None
+
+
+def undo(
+    conn: Connection, customer_id: str, document_id: str, *, by: str, rights: Rights | None = None
+) -> None:
     """V7: a document linked from a suggestion (accepted or auto) gets its own family back,
-    as version 1, in the folder it had before (the top level when that folder is gone); the
+    as version 1, where ``_way_back`` says (#594: the folder it had before, or held again for
+    whom it was held for; never open to more people than while it was linked); the
     family's highest ready version is current again; the suggestion is ``undone`` and one
     ``version.undone`` row is written. Raises Refused: not_found, not_linked, or not_newest
-    once a later version exists; trash.InTrash in Trash. O(v log D).
+    once a later version exists, forbidden when it would be held for someone else and ``by`` is
+    not Management (Q4); with ``rights`` (the person's, under the tree lock), MoveChangesAccess
+    when going back changes who can see it (PRD 7 decision 18, #601); trash.InTrash in Trash.
+    O(v log D).
     ponytail: "the previous current" is the highest ready one left (one made current by hand
     since the link stays); a version made current by hand before the link is not remembered."""
+    _lock_tree(conn, customer_id)  # first: Undo moves the document back (0085)
     family = lock_live_family(conn, customer_id, document_id)
     if family is None:
         raise Refused("not_found")
     params = {"c": customer_id, "d": document_id, "f": family}
-    state = conn.execute(_UNDO_STATE, params).mappings().one()
+    state = conn.execute(_UNDO_STATE, {**params, "by": by}).mappings().one()
     if state["suggestion_id"] is None:
         raise Refused("not_linked")
     if state["version_no"] < state["newest"]:
         raise Refused("not_newest")
-    folder = None if state["folder_id"] is None else str(state["folder_id"])
+    folder, held = _way_back(state)
+    if held is not None and held != by and not state["management"]:
+        raise Refused("forbidden")
+    if held is None and rights is not None:
+        department, private = (
+            None if v is None else str(v) for v in (state["department_id"], state["private_folder_id"])
+        )
+        after = place_of(conn, customer_id, folder)
+        if changes_access(conn, customer_id, (department, private), after) and not rights.allow(
+            department, after[0]
+        ):
+            raise MoveChangesAccess()
     suggestion = str(state["suggestion_id"])
     # Before the split, so the row carries the family and shows on its timeline (A5).
     audit.record(
@@ -401,9 +499,14 @@ def undo(conn: Connection, customer_id: str, document_id: str, *, by: str) -> No
         action="version.undone",
         target_type="document",
         target_id=document_id,
-        details={"suggestion_id": suggestion, "family_id": family, "folder_id": folder},
+        details={
+            "suggestion_id": suggestion,
+            "family_id": family,
+            "folder_id": folder,
+            **({"held": True} if held is not None else {}),  # #594: held again
+        },
     )
-    conn.execute(_ALONE_AGAIN, {**params, "folder": folder})
+    conn.execute(_ALONE_AGAIN, {**params, "folder": folder, "held": held})
     conn.execute(_HIGHEST_READY_CURRENT, params)
     conn.execute(
         _DECIDE, {"c": customer_id, "s": suggestion, "status": "undone", "by": by, "was": "accepted"}
@@ -485,7 +588,15 @@ def separate(conn: Connection, customer_id: str, document_id: str, *, name: str,
     return rest
 
 
-def join_again(conn: Connection, customer_id: str, document_id: str, family_id: str, *, by: str) -> str:
+def join_again(
+    conn: Connection,
+    customer_id: str,
+    document_id: str,
+    family_id: str,
+    *,
+    by: str,
+    rights: Rights | None = None,
+) -> str:
     """Undo of Make it a separate file (#521): the pair kept apart is asked again and accepted at
     once (``link``), so the document is its family's newest, current version again. Raises
     Refused: not_found (no such pair kept apart), and ``link``'s refusals."""
@@ -493,7 +604,7 @@ def join_again(conn: Connection, customer_id: str, document_id: str, family_id: 
     suggestion = conn.execute(_KEPT_APART_AGAIN, params).scalar()
     if suggestion is None:
         raise Refused("not_found")
-    return link(conn, customer_id, str(suggestion), by=by)
+    return link(conn, customer_id, str(suggestion), by=by, rights=rights)
 
 
 # --- V10: make current ------------------------------------------------------------------
@@ -533,7 +644,7 @@ def make_current(conn: Connection, customer_id: str, document_id: str, *, by: st
 # --- what the screens read (V5, V6, V11) ------------------------------------------------
 # The candidate side's document: its current version, else (an auto link) the newest other.
 _CANDIDATE = (
-    " JOIN LATERAL (SELECT o.id, o.display_name FROM documents o WHERE o.customer_id = s.customer_id"
+    " JOIN LATERAL (SELECT o.id, o.display_name FROM visible_documents o WHERE o.customer_id = s.customer_id"
     " AND o.family_id = s.candidate_family_id AND o.id <> s.document_id AND o.deleted_at IS NULL"
     " ORDER BY o.is_current DESC, o.version_no DESC LIMIT 1) cand ON true"
 )
@@ -542,10 +653,10 @@ _VIEW = (
     " cand.id AS candidate_id, cand.display_name AS candidate_name, s.text_overlap, s.text_overlap_exact,"
     " s.name_similarity,"
     " s.shared_identifier, s.outcome, s.status, s.created_at,"
-    " (SELECT max(v.version_no) FROM documents v WHERE v.customer_id = s.customer_id"
+    " (SELECT max(v.version_no) FROM visible_documents v WHERE v.customer_id = s.customer_id"
     " AND v.family_id = s.candidate_family_id) + 1 AS next_version_no"
     " FROM version_suggestions s"
-    f" JOIN documents n ON n.customer_id = s.customer_id AND n.id = s.document_id{_CANDIDATE}"
+    f" JOIN visible_documents n ON n.customer_id = s.customer_id AND n.id = s.document_id{_CANDIDATE}"
 )
 _FOR_DOCUMENT = text(
     f"{_VIEW} WHERE s.customer_id = :c AND {LIVE_SUGGESTION}"
@@ -562,7 +673,7 @@ _ALLOWED = text(
     f" WHERE s.customer_id = :c AND {LIVE_SUGGESTION}"
     " AND ((s.document_id = a.id AND s.candidate_family_id = b.family_id)"
     " OR (s.document_id = b.id AND s.candidate_family_id = a.family_id)))"
-    " FROM documents a JOIN documents b ON b.customer_id = a.customer_id AND b.id = :b"
+    " FROM visible_documents a JOIN visible_documents b ON b.customer_id = a.customer_id AND b.id = :b"
     " WHERE a.customer_id = :c AND a.id = :a"
 )
 

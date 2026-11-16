@@ -119,6 +119,12 @@
   department, type, property, party and year folders with nothing in them, ``folders.prune_empty``'s
   rules), listed by each customer's count; ``--apply`` deletes them and then their parents left
   empty, each audited. Folders people made are never listed. Ids and counts only.
+* ``check-access`` (PRD 7, #590): works out every live folder's and live document's department
+  and private folder again from the folder tree, each customer in its own ``db.customer()``, and
+  prints one line for each stored value that differs, then one for each member row whose folder
+  is in neither ``folders`` nor ``trashed_folders``, then how many; exit 1 when any. A folder or
+  document in Trash is left out: it keeps the values it had when it went there (PRD 7 section 5),
+  which its tree need not give any more. Ids only.
 * ``backup-files`` and ``restore-files`` (#476, 3 Nov 2026): every stored file, every
   customer's, as one tar on stdout, read through the S3 API (``S3Storage.write_tar``), for the
   nightly backup (infra/ec2/pgdump.sh); and that tar from stdin back into an EMPTY bucket, made
@@ -357,6 +363,8 @@ def _parser() -> argparse.ArgumentParser:
     prune = commands.add_parser("prune-folders", help="the empty folders Kaagaz made; --apply deletes them")
     prune.add_argument("--customer-id", help="one customer only (default: every customer)")
     prune.add_argument("--apply", action="store_true", help="delete them (default: only count them)")
+
+    commands.add_parser("check-access", help="each stored department and private folder against the tree")
 
     saving = commands.add_parser("cost-saving", help="what Cost saving read and saved in the last runs")
     saving.add_argument("--customer-id", "--customer", help="one customer only (default: every customer)")
@@ -836,6 +844,65 @@ def _prune_folders(db: Database, customer_id: str | None, apply: bool, out: Text
         total += count
     verb = "deleted" if apply else "empty, not deleted (add --apply)"
     out.write(f"{total} folder{'' if total == 1 else 's'} {verb}\n")
+
+
+# check-access: each live folder's department (its top-level folder when that is a department) and
+# private folder (the nearest private one, itself included), walked down from the top level; then
+# each live folder and live document whose stored values differ: (kind, id, stored, worked out).
+_ACCESS_DIFFERENCES = text(
+    "WITH RECURSIVE tree (id, department_id, private_folder_id, depth) AS ("
+    " SELECT f.id, CASE WHEN f.kind = 'department' THEN f.id END, CASE WHEN f.private THEN f.id END, 1"
+    " FROM folders f WHERE f.customer_id = :c AND f.parent_id IS NULL"
+    " UNION ALL"
+    " SELECT f.id, t.department_id, CASE WHEN f.private THEN f.id ELSE t.private_folder_id END, t.depth + 1"
+    " FROM tree t JOIN folders f ON f.parent_id = t.id WHERE f.customer_id = :c AND t.depth < 101)"
+    " SELECT 'folder', f.id, f.department_id, f.private_folder_id, t.department_id, t.private_folder_id"
+    " FROM folders f LEFT JOIN tree t ON t.id = f.id WHERE f.customer_id = :c"
+    " AND (f.department_id, f.private_folder_id) IS DISTINCT FROM (t.department_id, t.private_folder_id)"
+    " UNION ALL"
+    " SELECT 'document', d.id, d.department_id, d.private_folder_id, t.department_id, t.private_folder_id"
+    " FROM documents d LEFT JOIN tree t ON t.id = d.folder_id"
+    " WHERE d.customer_id = :c AND d.deleted_at IS NULL"
+    " AND (d.department_id, d.private_folder_id) IS DISTINCT FROM (t.department_id, t.private_folder_id)"
+    " ORDER BY 1, 2"
+)
+# Member rows whose folder is in neither table (it has no key to folders, 0084).
+_ACCESS_ORPHANS = text(
+    "SELECT 'department_members', m.department_id, m.user_id FROM department_members m"
+    " WHERE m.customer_id = :c"
+    " AND NOT EXISTS (SELECT 1 FROM folders f WHERE f.customer_id = :c AND f.id = m.department_id)"
+    " AND NOT EXISTS (SELECT 1 FROM trashed_folders t WHERE t.customer_id = :c AND t.id = m.department_id)"
+    " UNION ALL"
+    " SELECT 'private_folder_members', m.folder_id, m.user_id FROM private_folder_members m"
+    " WHERE m.customer_id = :c"
+    " AND NOT EXISTS (SELECT 1 FROM folders f WHERE f.customer_id = :c AND f.id = m.folder_id)"
+    " AND NOT EXISTS (SELECT 1 FROM trashed_folders t WHERE t.customer_id = :c AND t.id = m.folder_id)"
+    " ORDER BY 1, 2, 3"
+)
+
+
+def _check_access(db: Database, out: TextIO) -> int:
+    """check-access: every customer's differences (``_ACCESS_DIFFERENCES``, ``_ACCESS_ORPHANS``),
+    one line each, then how many; returns how many. O(F + D) a customer for F folders and D
+    documents."""
+    with db.system() as conn:
+        customers = indexing.customer_ids(conn)
+    found = 0
+    for customer in customers:
+        with db.customer(customer) as conn:
+            differences = conn.execute(_ACCESS_DIFFERENCES, {"c": customer}).all()
+            orphans = conn.execute(_ACCESS_ORPHANS, {"c": customer}).all()
+        for kind, row_id, department, private, tree_department, tree_private in differences:
+            out.write(
+                f"customer {customer}: {kind} {row_id} stores department {department or 'none'}"
+                f" private folder {private or 'none'}; the tree gives department {tree_department or 'none'}"
+                f" private folder {tree_private or 'none'}\n"
+            )
+        for table, folder, user in orphans:
+            out.write(f"customer {customer}: {table} of user {user}: folder {folder} is in neither table\n")
+        found += len(differences) + len(orphans)
+    out.write(f"{found} difference{'' if found == 1 else 's'}\n")
+    return found
 
 
 def _scan_times(db: Database, customer_id: str | None, last: int, out: TextIO) -> None:
@@ -1492,7 +1559,7 @@ def main(
             if args.record:
                 if len(set(args.model)) != 1:
                     raise CliError("--record checks exactly one --model")
-                owner = db or Database(make_engine(checked.database_url), checked.db_app_role)
+                owner = db or Database(make_engine(checked.database_url), checked.db_worker_role)
                 if args.chat:
                     record_chat = functools.partial(_record_chat_verified, owner)
                 else:
@@ -1540,7 +1607,7 @@ def main(
             return 0
         if db is None:
             settings = settings or Settings.from_env(env)
-            db = Database(make_engine(settings.database_url), settings.db_app_role)
+            db = Database(make_engine(settings.database_url), settings.db_worker_role)
         if args.command == "refresh-models":
             stdout.write(_refresh_models(db, settings or Settings.from_env(env)) + "\n")
         elif args.command == "create-customer":
@@ -1565,6 +1632,9 @@ def main(
             _measure_compact(db, args.days, stdout)
         elif args.command == "prune-folders":
             _prune_folders(db, args.customer_id, args.apply, stdout)
+        elif args.command == "check-access":
+            if _check_access(db, stdout):
+                return 1
         elif args.command == "cost-saving":
             stdout.write(cost_saving_report(_ready_runs(db, args.customer_id, args.last)) + "\n")
         elif args.command in CUSTOMER_STATUS:

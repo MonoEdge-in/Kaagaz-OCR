@@ -295,14 +295,14 @@ def test_a_save_writes_the_changes_again_and_keeps_words_no_longer_on_the_page(d
 def test_a_reviewed_mark_is_no_longer_hard_to_read(db: Database) -> None:
     customer, user, document = saved(db)
     quality = PgReadingQuality(db)
-    assert len(quality.word_marks(customer, [document])) == 2
+    assert len(quality.word_marks(customer, [document], user_id=user)) == 2
     first = change(
         db, customer, document, key(load(db, customer, document), "mark", "4,850"), "4,850", None, user
     )
-    marks = quality.word_marks(customer, [document])
+    marks = quality.word_marks(customer, [document], user_id=user)
     assert [(mark.location.x0, mark.location.x1) for mark in marks] == [(ILLEGIBLE.x0, ILLEGIBLE.x1)]
     undo(db, customer, document, first, user)
-    assert len(quality.word_marks(customer, [document])) == 2
+    assert len(quality.word_marks(customer, [document], user_id=user)) == 2
 
 
 def test_a_value_the_readers_read_differently_is_verified_only_with_every_flag_in_its_box(
