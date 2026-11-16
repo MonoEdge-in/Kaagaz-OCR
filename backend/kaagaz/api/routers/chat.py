@@ -98,9 +98,11 @@ from kaagaz.answering.clarify import (
     reply_to,
     without_resume,
 )
+from kaagaz.answering.evidence import looks_like_instructions
 from kaagaz.answering.memory import MAX_DOCUMENTS, NO_MEMORY, VERSION, Memory, from_row, live
 from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
+from kaagaz.answering.sanitize import clean_text
 from kaagaz.answering.stream import Events, StreamCancelled
 from kaagaz.answering.voice import SOFT_NOTHING, first_name, numbers, opening, soft_line, unsupported
 from kaagaz.answering.words_text import WordTextError, check_meaning, check_word
@@ -111,6 +113,7 @@ from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.names import clean_name
 from kaagaz.api.routers.health import running_commit
 from kaagaz.api.views import (
+    LOCKED_NOTE,
     NO_ACCESS,
     cited_document_ids,
     conversation_summary,
@@ -132,6 +135,7 @@ from kaagaz.db.models import (
     usable_chat_models,
 )
 from kaagaz.db.organization_words import Suggestion
+from kaagaz.db.sqlstate import log_unavailable
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.search.scope import EVERYTHING, ScopeBody, resolve
 from kaagaz.settings import MODEL_ID
@@ -391,16 +395,25 @@ def ask(
         running.wait(context.settings.answer_stream_max_seconds + 30)
         found = _saved_reply(context, user, question_id)
         if found is not None:
-            return found
+            return _with_note(context, user, found)
     if mine is None:
         raise ApiError(409, "conflict", ANSWERING_ALREADY)
     try:
         found = None if body.question_id is None else _saved_reply(context, user, question_id)
-        return found or _ask(body, user, context, background, landing, question_id, channel)
+        reply = found or _ask(body, user, context, background, landing, question_id, channel)
     finally:
         with _IN_PROGRESS_LOCK:
             _IN_PROGRESS.pop(question_id, None)
         mine.set()
+    return _with_note(context, user, reply)
+
+
+def _with_note(context: AppContext, user: CurrentUser, reply: dict[str, Any]) -> dict[str, Any]:
+    """PRD 7 (#605, p2:79): the reply with Ask's fixed line, ``locked_note``, for a person who may
+    open a locked file (None for anyone else). Added each time it is shown, never saved."""
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        opens = chat_sql.opens_locked(conn, user.customer_id, user.user_id)
+    return {**reply, "locked_note": LOCKED_NOTE if opens else None}
 
 
 def _saved_reply(context: AppContext, user: CurrentUser, question_id: str) -> dict[str, Any] | None:
@@ -448,6 +461,8 @@ def _ask(
     chosen = body.scope
     recent: Sequence[RowMapping] = []
     memory, summary_turn, turns = NO_MEMORY, 0, 0
+    last_cited: list[str] = []
+    names: dict[str, str] = {}  # #621: the documents earlier answers cited that are still live
     earlier: list[str | None] = []  # the conversation's openings so far (PRD 6 A)
     pending: Pending | None = None
     forget = False  # PRD 7 (#602): the memory tracks a document the asker can no longer see
@@ -461,12 +476,15 @@ def _ask(
             recent, remembered = _shown_turns(conn, user.customer_id, conversation_id, 2 * pairs, state)
             forget = remembered is None
             memory = NO_MEMORY if remembered is None else remembered
+            # #629: the last answer's documents the asker can still see (current, out of Trash).
+            names = chat_sql.live_document_names(conn, user.customer_id, _cited(recent))  # #621
+            last_cited = [document for document in _cited(recent[:1]) if document in names]
             earlier = chat_sql.openings(conn, user.customer_id, conversation_id)
             if chosen is None:
                 chosen = _saved_scope(recent)
             if answering is not None:
                 pending = _pending(recent, answering, question)
-                question = ", ".join(pending.picked) or question
+                question = ", ".join(pending.labels or pending.picked) or question  # #629: as shown
         scope = (
             EVERYTHING
             if chosen is None
@@ -510,7 +528,7 @@ def _ask(
     if saved is not None and len(json.dumps(saved).encode()) > MAX_SCOPE_BYTES:
         raise ApiError(400, "bad_request", "Choose fewer documents or tags.")
 
-    history = _history(recent)
+    history = _history(recent, names)
     with usage_scope(
         context.db,
         customer_id=user.customer_id,
@@ -538,6 +556,7 @@ def _ask(
                     pending=pending,
                     clarify=switched["nlq_clarify"],
                     cited=_cited(recent),
+                    last_cited=last_cited,
                 )
             )
             # KZ-006: an outage is never "not found": the reply says the AI is not responding
@@ -615,6 +634,7 @@ def _save(
     """``_ask``'s one save transaction: the conversation (new, named ``landing``, on ``channel``),
     both messages (the question as ``question_id``) and the audit row; (the conversation, the
     question's row, the answer's row)."""
+    first = conversation_id is None  # #624: Home's suggestions belong to a first answer only
     if conversation_id is None:
         conversation_id = chat_sql.create_conversation(
             conn,
@@ -631,7 +651,12 @@ def _save(
         answering.message_id
     ):
         raise ApiError(409, "conflict", CLARIFY_GONE)
-    if answer.get("status") == "not_found" and not answer.get("documents") and not answer.get("outage"):
+    if (
+        first
+        and answer.get("status") == "not_found"
+        and not answer.get("documents")
+        and not answer.get("outage")
+    ):
         # Nothing close (24 Oct 2026): the best next step is a question this library answers.
         answer["suggestions"] = [
             text
@@ -868,7 +893,9 @@ def _work(
         except ApiError as error:
             post("error", {"code": error.code, "message": error.message})
             return
-        except (BackendUnavailable, OperationalError, PoolTimeout):
+        except (BackendUnavailable, OperationalError, PoolTimeout) as error:
+            if not isinstance(error, BackendUnavailable):  # #620: one made by unavailable() was logged there
+                log_unavailable(error)
             post("error", {"code": "backend_unavailable", "message": MESSAGES["backend_unavailable"]})
             return
         except Exception as error:  # noqa: BLE001 - the stream's boundary, as ErrorMiddleware's
@@ -1009,6 +1036,8 @@ def _make_ready(
                     cited=[],
                 )
         except (SQLAlchemyError, BackendUnavailable, ModelUnavailable, ModelOutputError) as error:
+            if isinstance(error, OperationalError | PoolTimeout):  # #620: its class and SQLSTATE
+                log_unavailable(error)
             logger.warning("ready answer not made", extra={"code": type(error).__name__})
             ready.READY.release(keys[question])
             continue
@@ -1120,24 +1149,34 @@ def _rebuild_due(conversation_id: str) -> bool:
         return True
 
 
+def _locked(answer: Mapping[str, Any] | None, states: Mapping[str, str]) -> bool:
+    """PRD 7 (#605): whether ``answer`` names a document now locked (``document_states``)."""
+    return any(states.get(document) == "locked" for document in cited_document_ids(answer))
+
+
 def _shown_turns(
     conn: Connection, customer_id: str, conversation_id: str, limit: int, state: RowMapping
 ) -> tuple[list[RowMapping], Memory | None]:
     """PRD 7 (#602): the conversation's newest ``limit`` messages (``recent_messages``) without
-    the answers the asker may no longer see whole (``views.no_access``), so no history, cited id
+    the answers the asker may no longer see whole (``views.no_access``) and those naming a document
+    now locked (#605), so no history, cited id
     or open clarify comes from one; and the stored summary and memory with the live documents'
-    names, or None when it tracks a document they can no longer see (or deleted forever), or was
+    names, or None when it tracks a document they can no longer see (or deleted forever) or one now
+    locked (PRD 7, #605: its summary may hold that file's words), or was
     written before every document it read was tracked (no ``VERSION``): it is not used, and is
     made again (question 7). Two statements, three when the memory names a document."""
     recent = chat_sql.recent_messages(conn, customer_id, conversation_id, limit)
     stored = from_row(state["summary"], state["memory"])
     named = [*stored.documents, *(d for row in recent for d in cited_document_ids(row["answer"]))]
     states = chat_sql.document_states(conn, customer_id, named)
-    shown = [row for row in recent if not no_access(row["answer"], states)]
+    # PRD 7 (#605): an answer naming a document now locked goes too, though the person may open it.
+    shown = [
+        row for row in recent if not no_access(row["answer"], states) and not _locked(row["answer"], states)
+    ]
     written = state["memory"].get("v") if isinstance(state["memory"], Mapping) else None
     if stored != NO_MEMORY and written != VERSION:
         return shown, None
-    if any(document not in states for document in stored.documents):
+    if any(document not in states or states[document] == "locked" for document in stored.documents):
         return shown, None
     return shown, live(stored, chat_sql.live_document_names(conn, customer_id, stored.documents))
 
@@ -1249,19 +1288,24 @@ def _suggest(conn: Connection, user: CurrentUser, pending: Pending) -> None:
         )
 
 
-def _history(recent: Sequence[RowMapping]) -> list[Turn]:
+def _history(recent: Sequence[RowMapping], names: Mapping[str, str] | None = None) -> list[Turn]:
     """The question and answer pairs of ``recent`` (newest first), oldest first. Only an
     answered answer gives its sentences, and a clarify its question: after "not found" the
-    turn is its question only (edge case 3). O(m) for m messages."""
+    turn is its question only (edge case 3). #621: each answered turn also names the documents
+    it cited that are in ``names`` (``chat_sql.live_document_names``: current, out of Trash),
+    each cleaned and never one that reads like instructions. O(m) for m messages."""
     turns: list[Turn] = []
     answer: str | None = None
+    cited: tuple[str, ...] = ()
     for row in recent:  # an answer comes just before its question
         if row["role"] == "assistant":
             saved = row["answer"] or {}
             answer = answer_text(saved) if saved.get("status") in ("answered", "clarify") else None
+            shown = (clean_text((names or {}).get(document, "")) for document in _cited([row]))
+            cited = tuple(dict.fromkeys(n for n in shown if n and not looks_like_instructions(n)))
         else:
-            turns.append(Turn(str(row["text"]), answer))
-            answer = None
+            turns.append(Turn(str(row["text"]), answer, cited))
+            answer, cited = None, ()
     return turns[::-1]
 
 
@@ -1308,6 +1352,7 @@ def get_conversation(conversation_id: uuid.UUID, user: User, context: Context) -
         states = chat_sql.document_states(
             conn, user.customer_id, cited + [d for r in rows for d in _scope_ids(r)]
         )
+        opens = chat_sql.opens_locked(conn, user.customer_id, user.user_id)
     messages = []
     scope: list[str] = []  # the question's, for its answer
     replaced = False  # an answer before this one was replaced whole
@@ -1335,7 +1380,12 @@ def get_conversation(conversation_id: uuid.UUID, user: User, context: Context) -
         elif shown["answer"] and replaced:
             shown["answer"] = _without_reading(shown["answer"])
         messages.append(shown)
-    return {"id": str(found["id"]), "title": found["title"], "messages": messages}
+    return {
+        "id": str(found["id"]),
+        "title": found["title"],
+        "messages": messages,
+        "locked_note": LOCKED_NOTE if opens else None,  # PRD 7 (#605, p2:79)
+    }
 
 
 # PRD 7 (#602, review): what a reply to a clarify replaced whole says instead of its pick.

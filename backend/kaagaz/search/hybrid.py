@@ -26,7 +26,9 @@ The three searches (docs/architecture.md, "Search, in simple terms"):
    checked to be ``[a-z]`` letters, never from the question's text; "" is
    NULL, as for ``g``. A piece scores the highest ``ts_rank_cd`` of the four,
    and every piece one of the three exact queries matched comes first, so a
-   piece found only by sound fills the slots the exact matches leave. The exact
+   piece found only by sound fills the slots the exact matches leave. So the sound query
+   runs only when the exact ones matched fewer than ``CANDIDATES`` pieces (#619, 15 Nov
+   2026: ``_WORD``, then ``_SOUND``), and ranks at most ``SOUND_RANKED`` pieces. The exact
    queries need every word, the sound one any word: when no exact query
    matches, the list is "any word", not "every word". So in the sound tier a
    piece ranks by the words it matches, each weighed by how rare it is among
@@ -35,6 +37,22 @@ The three searches (docs/architecture.md, "Search, in simple terms"):
    salary slips.
    ``search_documents`` shares this list, so library search finds these
    pieces too.
+   **Bounded** (#617 part 1, 15 Nov 2026): under row level security ``@@`` never runs inside a
+   GIN index, so each query's candidates come from ``kaagaz_word_candidates`` (migration 0094,
+   owner rights, the ids of the current customer's live pieces the asker can see only, PRD 7), at
+   most ``CANDIDATE_CAP`` a query, each query its own call; the pieces are then ranked here as
+   before. Of the glossary's and the
+   sound query's ORed alternatives, those on more than a fifth of the organisation's live pieces
+   (``word_counts``, rebuilt by the worker) only score: the rest bring the candidates (the
+   glossary's common ones in a call of their own when no rare one is held; the sound words ANDed
+   when none is rare, and a single common word not at all). Inside a scope's documents every
+   alternative brings candidates. A scope with a folder, tag,
+   type or date lists its documents first (``_SCOPE_DOCUMENTS``), so the cap never takes others.
+   **Identifiers** (#617 item 9): a Gat, Survey, Khata or Plot number named with its kind, in
+   either script, is compared with the stored values' numbers (``_IDENTIFIED``: land values'
+   ``value_keys``, cards' identifiers); its pieces come first (the other words searched in its
+   documents, then the value's page), then the question as typed over the whole scope, so a
+   document that prints the number with no stored value still comes. None stored: as typed.
 2. **Typo tolerant:** pg_trgm ``word_similarity(q, ...)`` with ``q <% ...``
    against the text and its Latin spelling (W2), the higher of the two, so
    "invioce" still finds "invoice" and "shindey" finds "शिंदे". The ``<%``
@@ -59,8 +77,11 @@ The three searches (docs/architecture.md, "Search, in simple terms"):
    person can see fewer than SEARCH_EXACT_BELOW vectors in the scope (a bounded
    count, ``_VISIBLE_VECTORS``), only the exact scan runs, so a person given a
    few files never pays for a walk over everyone's vectors. A search statement past
-   ``STATEMENT_TIMEOUT_MS`` is cancelled; a meaning list that times out is
-   dropped (logged, code ``meaning_timeout``) and the words and typos still answer.
+   ``STATEMENT_TIMEOUT_MS`` is cancelled; a list that times out is dropped, with
+   ``word_timeout``, ``sound_timeout``, ``fuzzy_timeout`` or ``meaning_timeout`` logged,
+   and the others still answer (#619: until 15 Nov 2026 a word or typo list that timed
+   out failed the question with 503). A walk that times out (``meaning_timeout``) still
+   falls back to the exact scan.
 
 Every query filters on ``p.customer_id = :c`` itself, on top of row level
 security (two locks, docs/architecture.md), and sees only pieces of documents
@@ -101,15 +122,19 @@ only the translation found. ``search_documents`` is never translated.
 PROVISIONAL: the search design is Vrushit's (Sprint 2); RRF with k = 60, 50
 candidates per list and the fuzzy threshold are starting values.
 
-Cost: the word and fuzzy lists are GIN index scans whose posting lists hold
-every customer's pieces, then O(m log m) to rank this customer's m matches.
+Cost: the word list's candidates are GIN index scans (as the owner, 0094) whose posting lists
+hold every customer's pieces, stopped at CANDIDATE_CAP of this customer's live ones, then
+O(c log c) to rank the c <= 3 * CANDIDATE_CAP candidates; the fuzzy list is a scan of this
+customer's pieces under row level security, then O(m log m) for its m matches.
 The meaning list is about O(ef_search * log N * dim) on the index for N vectors
 when the scope is large, at worst O(min(max_scan_tuples, N) * dim); the exact
 fallback is O(n * dim) over the scope's n vectors, and the visible count before
 them O(min(n, SEARCH_EXACT_BELOW)). The merge is O(150 log 150)
 and the grouping O(150); then one indexed fetch of at most ``limit`` (or
-``max_documents``) pieces. At most eleven statements in the caller's transaction
-(with the meaning list's savepoint).
+``max_documents``) pieces. The sound rung is O(c) for its c <= CANDIDATE_CAP candidates, and
+ranks at most ``SOUND_RANKED`` of them. At most sixteen statements in the caller's
+transaction (#617: the identifier lookup, a scope's documents and two word-count reads more),
+each list in a savepoint.
 
 ponytail: the GIN posting lists span all customers (the customer filter comes
 after the index); fine at this size, a per-customer partition is the upgrade.
@@ -121,7 +146,7 @@ import re
 from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import Connection, text
@@ -132,11 +157,13 @@ from kaagaz.answering.expansion import NO_EXPANSION, Expansion, word_query
 from kaagaz.answering.hinglish import DATE_WORDS, STOP_WORDS, normalise
 from kaagaz.chunking.script import (
     SOUND_KEY_MIN,
+    fold_digits,
     has_devanagari_letters,
     latin_spelling,
     number_words,
     sound_keys,
 )
+from kaagaz.search import word_counts
 from kaagaz.search.scope import EVERYTHING, Scope
 
 if TYPE_CHECKING:
@@ -152,12 +179,19 @@ RRF_K = 60
 MAX_LIMIT = 100
 # pg_trgm word similarity cut-off for the typo tolerant list. PROVISIONAL.
 FUZZY_THRESHOLD = 0.3
-# Every search statement is cancelled after this long (PROVISIONAL). A meaning
-# list that runs out of time is dropped; the word and fuzzy lists still answer.
+# Every search statement is cancelled after this long (PROVISIONAL). A list that runs out of
+# time is dropped, a code logged, and the others still answer (#619: the word and fuzzy lists
+# too, since 15 Nov 2026).
 STATEMENT_TIMEOUT_MS = 3000
 # PRD 7 section 7 (#602): SEARCH_MAX_SCAN_TUPLES and SEARCH_EXACT_BELOW's defaults (settings.py).
 MAX_SCAN_TUPLES = 20000  # pgvector's own default, so day one is unchanged
 EXACT_BELOW = 2000  # PROVISIONAL: the exact scan and its count cost about what the walk does here (PR 8)
+# After a list is dropped, the transaction's other statements have this long (principal review of
+# #619): one slow text never holds its pooled connection for every list's full timeout.
+DROPPED_TIMEOUT_MS = 1000
+# The sound rung (_SOUND) ranks at most this many sound-only pieces, the heaviest by their
+# words' rarity (#619): a question whose sound keys match most pieces ranks only these.
+SOUND_RANKED = 10 * CANDIDATES
 # A fused search (search_translated: CX6's aspects, the translation) runs at most this many
 # texts' lists at once, each on its own pooled connection (Ask speed, 24 Oct 2026).
 SEARCH_FAN_OUT = 4
@@ -172,6 +206,36 @@ SOUND_START_MIN = 4  # letters: the shortest start of a key that is a term of it
 # and date words ("this", "last", "month").
 _NO_SOUND = STOP_WORDS | DATE_WORDS | glossary.ROMANISED_STOP
 _SOUND_TERM = re.compile(f"[a-z]{{{SOUND_KEY_MIN},}}")
+# #617: the candidates a word query gives, at most (0094's kaagaz_word_candidates caps at the
+# same 2,000), the first the index gives, before anything is ranked.
+CANDIDATE_CAP = 2000
+# The scope's filters other than its documents: with one set, its documents are listed first.
+_NARROWING = ("s_folders", "s_tags", "s_doc_types", "s_detected_type", "s_from", "s_to")
+# A scope's documents passed to kaagaz_word_candidates, at most; more, and the outer statement
+# applies the scope alone (review of #617 part 1).
+SCOPE_DOCUMENTS_MOST = 5000
+# #617 item 9: a Gat, Survey, Khata or Plot number asked, in either script, and the fields that
+# hold it. Its kind word, then perhaps "No.", "number", नं or क्रमांक, then the number (digits,
+# "/" and "-" between them); the number is compared in Latin digits. Chat searches a Devanagari
+# question's Latin spelling (``normalise``: गट नंबर ६१ is "gat nambar 61"), so those spellings too.
+_DIGIT = r"[0-9\u0966-\u096f]"
+_IDENTIFIER_KINDS = {
+    "survey": (
+        ("land_survey_number", "survey_number"),
+        r"g[au]t|survey|sarvhe|sarve|sy\.?\s?no|s\.?\s?no|khasra|गट|ग\.?\s?नं|सर्व्हे|सर्वे|स\.?\s?नं|खसरा",
+    ),
+    "khata": (("land_khata_number", "khata_number"), r"khata|khate|खाते|खाता"),
+    "plot": (("land_plot_number",), r"plot|bhukhanda?|प्लॉट|भूखंड"),
+}
+_IDENTIFIER = re.compile(
+    r"(?<![\w\u0900-\u097f])(?:"
+    + "|".join(f"(?P<{kind}>{said})" for kind, (_, said) in _IDENTIFIER_KINDS.items())
+    + r")(?:\s*(?:number|num|nos?|nambar|nan|kramank|kra|क्रमांक|क्र|नंबर|नं)\.?)?\s*[:.#-]?\s*"
+    + f"(?P<number>{_DIGIT}+(?:\\s*[/-]\\s*{_DIGIT}+)*)(?!{_DIGIT})",
+    re.IGNORECASE,
+)
+# The raw word score of a piece on an asked identifier's page (#617): it holds the number exactly.
+IDENTIFIER_SCORE = 1.0
 
 # Every statement below repeats the same filter in full, so each one can be read
 # (and checked for the customer filter) on its own: this customer's pieces of
@@ -179,17 +243,29 @@ _SOUND_TERM = re.compile(f"[a-z]{{{SOUND_KEY_MIN},}}")
 # is written out in each one, before any LIMIT (tests/test_visibility_guard.py),
 # and so is the scope (the s_* parameters, Scope.params; tests/test_search_scope_db.py).
 
-# The sound query's words are separated by ";" (sound_query): sw holds one tsquery per word,
-# heard the words a piece matches, and rare each word's weight, ln(candidates / candidates
-# matching it): a word on every candidate weighs 0.
+# The word list is a ladder (#619, production 15 Nov 2026): _WORD, the pieces the three exact
+# queries match, best first; then, only when they are fewer than :n, _SOUND, the pieces only
+# the sound query matches. A piece's score is the highest ts_rank_cd of the four queries.
+# #617: the candidates come first, at most :cap a query, from kaagaz_word_candidates (0094: the
+# GIN indexes, which row level security cannot use), each query its own call (UNION, never one
+# OR); the glossary's rare alternatives (:gc) and, only when none of them is held, its common
+# ones (:gk) in a call of their own, so a new or rare word is never crowded out by a common one.
+# The pieces are then read and ranked here, under row level security, with every filter and
+# the scope.
 _WORD = text(
-    "WITH c AS MATERIALIZED ("
-    "SELECT p.id, p.document_id, p.seq, d.created_at,"
+    "WITH ids AS MATERIALIZED ("
+    "SELECT w.id FROM kaagaz_word_candidates('tsv', websearch_to_tsquery('english', :q),"
+    " CAST(:docs AS uuid[]), :cap) AS w (id)"
+    " UNION SELECT w.id FROM kaagaz_word_candidates('tsv_simple', websearch_to_tsquery('simple', :k),"
+    " CAST(:docs AS uuid[]), :cap) AS w (id)"
+    " UNION SELECT w.id FROM kaagaz_word_candidates('tsv_simple', CASE WHEN CAST(:gc AS text) = '' THEN NULL"
+    " ELSE to_tsquery('simple', CAST(:gc AS text)) END, CAST(:docs AS uuid[]), :cap) AS w (id)"
+    " UNION SELECT w.id FROM kaagaz_word_candidates('tsv_simple', CASE WHEN CAST(:gk AS text) = '' THEN NULL"
+    " ELSE to_tsquery('simple', CAST(:gk AS text)) END, CAST(:docs AS uuid[]), :cap) AS w (id))"
+    " SELECT p.id, p.document_id,"
     " GREATEST(ts_rank_cd(p.tsv, e.q), ts_rank_cd(p.tsv_simple, s.q),"
-    " ts_rank_cd(p.tsv_simple, g.q), ts_rank_cd(p.tsv_sound, sk.q)) AS score,"
-    " coalesce(p.tsv @@ e.q OR p.tsv_simple @@ s.q OR p.tsv_simple @@ g.q, false) AS exact,"
-    " ARRAY(SELECT u.i FROM unnest(sw.qs) WITH ORDINALITY AS u (q, i) WHERE p.tsv_sound @@ u.q) AS heard"
-    " FROM pieces p"
+    " ts_rank_cd(p.tsv_simple, g.q), ts_rank_cd(p.tsv_sound, sk.q)) AS score"
+    " FROM ids JOIN pieces p ON p.customer_id = :c AND p.id = ids.id"
     " JOIN visible_documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " CROSS JOIN websearch_to_tsquery('english', :q) AS e (q)"
     " CROSS JOIN websearch_to_tsquery('simple', :k) AS s (q)"
@@ -197,6 +273,41 @@ _WORD = text(
     " ELSE to_tsquery('simple', CAST(:g AS text)) END) AS g (q)"
     " CROSS JOIN (SELECT CASE WHEN CAST(:sk AS text) = '' THEN NULL"
     " ELSE to_tsquery('simple', replace(CAST(:sk AS text), ';', '|')) END) AS sk (q)"
+    " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
+    " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
+    " WHERE dt.customer_id = :c AND dt.tag_id = ANY(CAST(:s_tags AS uuid[])) GROUP BY dt.document_id"
+    " HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))"
+    " AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))"
+    " AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))"
+    " AND (CAST(:s_documents AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:s_documents AS uuid[])))"
+    " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
+    " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
+    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
+    " AND (p.tsv @@ e.q OR p.tsv_simple @@ s.q OR p.tsv_simple @@ g.q)"
+    " ORDER BY score DESC, d.created_at, p.document_id, p.seq, p.id LIMIT :n"
+)
+
+# The sound rung. The sound query's words are separated by ";" (sound_query): sw holds one
+# tsquery per word, heard the words a piece matches, and rare each word's weight,
+# ln(candidates / candidates matching it), over the candidates: the sound matches and :exact,
+# the exact rung's pieces (all of them, as it found fewer than :n). A word on every candidate
+# weighs 0. #617: the sound matches are at most :cap, from kaagaz_word_candidates, by :skc (the
+# rare words ORed, or every word ANDed when none is rare: ``_sound_candidates``); every word
+# (:sk) still scores. Only the SOUND_RANKED heaviest sound-only
+# pieces (then the oldest) are ranked, on tsv_sound alone: the exact queries do not match them,
+# so their ts_rank_cd is 0.
+_SOUND = text(
+    "WITH ids AS MATERIALIZED ("
+    "SELECT w.id FROM kaagaz_word_candidates('tsv_sound', to_tsquery('simple', CAST(:skc AS text)),"
+    " CAST(:docs AS uuid[]), :cap) AS w (id)"
+    " UNION SELECT unnest(CAST(:exact AS uuid[]))),"
+    " c AS MATERIALIZED ("
+    "SELECT p.id, p.document_id, p.seq, d.created_at, p.id = ANY(CAST(:exact AS uuid[])) AS exact,"
+    " ARRAY(SELECT u.i FROM unnest(sw.qs) WITH ORDINALITY AS u (q, i) WHERE p.tsv_sound @@ u.q) AS heard"
+    " FROM ids JOIN pieces p ON p.customer_id = :c AND p.id = ids.id"
+    " JOIN visible_documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
+    " CROSS JOIN (SELECT to_tsquery('simple', replace(CAST(:sk AS text), ';', '|'))) AS sk (q)"
     " CROSS JOIN (SELECT ARRAY(SELECT to_tsquery('simple', w)"
     " FROM unnest(string_to_array(CAST(:sk AS text), ';')) AS w WHERE w <> '')) AS sw (qs)"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
@@ -210,13 +321,69 @@ _WORD = text(
     " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
     " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
     " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
-    " AND (p.tsv @@ e.q OR p.tsv_simple @@ s.q OR p.tsv_simple @@ g.q OR p.tsv_sound @@ sk.q)),"
+    " AND (p.tsv_sound @@ sk.q OR p.id = ANY(CAST(:exact AS uuid[])))),"
     " rare AS MATERIALIZED (SELECT h.i, ln((SELECT count(*) FROM c) / CAST(count(*) AS float8)) AS w"
-    " FROM c CROSS JOIN unnest(c.heard) AS h (i) GROUP BY h.i)"
-    " SELECT c.id, c.document_id, c.score, c.exact FROM c"
-    " ORDER BY c.exact DESC,"
-    " CASE WHEN c.exact THEN 0 ELSE (SELECT sum(r.w) FROM rare r WHERE r.i = ANY(c.heard)) END DESC,"
-    " c.score DESC, c.created_at, c.document_id, c.seq, c.id LIMIT :n"
+    " FROM c CROSS JOIN unnest(c.heard) AS h (i) GROUP BY h.i),"
+    " heavy AS MATERIALIZED (SELECT c.id, c.document_id, c.seq, c.created_at,"
+    " (SELECT sum(r.w) FROM rare r WHERE r.i = ANY(c.heard)) AS weight FROM c WHERE NOT c.exact"
+    " ORDER BY weight DESC, c.created_at, c.document_id, c.seq, c.id LIMIT :ranked)"
+    " SELECT h.id, h.document_id, ts_rank_cd(p.tsv_sound, sk.q) AS score FROM heavy h"
+    " JOIN pieces p ON p.customer_id = :c AND p.id = h.id"
+    " CROSS JOIN (SELECT to_tsquery('simple', replace(CAST(:sk AS text), ';', '|'))) AS sk (q)"
+    " ORDER BY h.weight DESC, score DESC, h.created_at, h.document_id, h.seq, h.id LIMIT :n"
+)
+
+# #617: the documents a scope with a folder, tag, type or date keeps, so a word's candidates are
+# taken from them only (kaagaz_word_candidates's documents), never capped away by others.
+_SCOPE_DOCUMENTS = text(
+    "SELECT d.id FROM visible_documents d"
+    " WHERE d.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
+    " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
+    " WHERE dt.customer_id = :c AND dt.tag_id = ANY(CAST(:s_tags AS uuid[])) GROUP BY dt.document_id"
+    " HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))"
+    " AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))"
+    " AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))"
+    " AND (CAST(:s_documents AS uuid[]) IS NULL OR d.id = ANY(CAST(:s_documents AS uuid[])))"
+    " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
+    " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
+    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
+)
+
+# #617 item 9: the pieces on the pages of the property values that hold a number asked in its
+# own kind's field (:fields and :numbers, pairs: "gat 61 khata 12" is survey 61 and khata 12,
+# never khata 61): a land record's (value_keys) or a card's or document's own identifier. Each
+# stored number is its first run of digits (with "/" or "-" between), Indic digits folded
+# (links.normalise_identifier, as value_keys.latin holds it): "गट नं. ६१" is 61. That run is
+# compared, not the stored text, so it is read for every property value of the organisation.
+_IDENTIFIED = text(
+    "WITH a AS (SELECT * FROM unnest(CAST(:fields AS text[]), CAST(:numbers AS text[]))"
+    " AS a (field, number)),"
+    " v AS (SELECT x.document_id, x.page_no FROM value_keys k"
+    " JOIN extracted_values x ON x.customer_id = k.customer_id AND x.id = k.value_id"
+    " JOIN a ON a.field = x.field AND a.number = substring(k.latin from '[0-9]+(?:[/-][0-9]+)*')"
+    " WHERE k.customer_id = :c AND k.kind = 'property'"
+    " UNION SELECT x.document_id, x.page_no FROM extracted_values x"
+    " JOIN a ON a.field = x.field AND a.number = substring(translate(lower("
+    r"regexp_replace(x.value_text, '\s', '', 'g')), '०१२३४५६७८९', '0123456789')"
+    " from '[0-9]+(?:[/-][0-9]+)*')"
+    " WHERE x.customer_id = :c AND x.record_key IN ('card', 'document'))"
+    " SELECT DISTINCT p.id, p.document_id, d.created_at, p.seq FROM v"
+    " JOIN pieces p ON p.customer_id = :c AND p.document_id = v.document_id"
+    " AND v.page_no BETWEEN p.page_from AND p.page_to"
+    " JOIN visible_documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
+    " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
+    " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
+    " WHERE dt.customer_id = :c AND dt.tag_id = ANY(CAST(:s_tags AS uuid[])) GROUP BY dt.document_id"
+    " HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))"
+    " AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))"
+    " AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))"
+    " AND (CAST(:s_documents AS uuid[]) IS NULL OR p.document_id = ANY(CAST(:s_documents AS uuid[])))"
+    " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
+    " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
+    " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
+    " ORDER BY d.created_at, p.document_id, p.seq, p.id LIMIT :cap"
 )
 
 # set_config(..., true) is SET LOCAL with a bound value (SET LOCAL takes none):
@@ -643,6 +810,54 @@ def sound_query(question: str) -> str:
     return " ; ".join(group for group in groups if group)
 
 
+def identifiers(question: str) -> list[tuple[tuple[str, ...], str, tuple[int, int]]]:
+    """#617 item 9: each Gat, Survey, Khata or Plot number the question names with its kind word,
+    in either script ("gat 61", "Survey No. 45/2", "गट नं. ६१", "khata 3"): (the fields that hold
+    it, its number in Latin digits without spaces, where it is in the question). A bare number
+    names none. O(n)."""
+    found = []
+    for match in _IDENTIFIER.finditer(question):
+        kind = next(name for name in _IDENTIFIER_KINDS if match[name])
+        number = fold_digits("".join(match["number"].split()))
+        found.append((_IDENTIFIER_KINDS[kind][0], number, match.span()))
+    return found
+
+
+def _identified(
+    conn: Connection, customer_id: str, question: str, scope: Scope
+) -> tuple[list[tuple[str, str]], str] | None:
+    """The pieces (id, document) on the pages of the stored property values whose number the
+    question names with its kind (``identifiers``), in reading order, at most CANDIDATE_CAP; and
+    the question without those names, for the word search. None when it names none or no stored
+    value holds one: the words are searched as typed. One statement."""
+    named = identifiers(question)
+    if not named:
+        return None
+    pairs = sorted({(field, number) for kinds, number, _ in named for field in kinds})
+    params = {"c": customer_id, "fields": [f for f, _ in pairs], "numbers": [n for _, n in pairs]}
+    rows = conn.execute(_IDENTIFIED, params | scope.params() | {"cap": CANDIDATE_CAP}).all()
+    if not rows:
+        return None
+    rest, end = [], 0
+    for _, _, (start, stop) in named:
+        rest.append(question[end:start])
+        end = stop
+    return [(str(row[0]), str(row[1])) for row in rows], " ".join(" ".join([*rest, question[end:]]).split())
+
+
+def _identifier_first(
+    on_pages: Sequence[tuple[str, str]], rows: Sequence[Sequence[Any]]
+) -> list[Sequence[Any]]:
+    """The word list of a question naming a stored identifier: the pieces on its pages the words
+    matched, best first; then its other pieces, in reading order (IDENTIFIER_SCORE); then the
+    words' other matches in its documents. O(r + p)."""
+    pages = {piece for piece, _ in on_pages}
+    matched = [row for row in rows if str(row[0]) in pages]
+    seen = {str(row[0]) for row in matched}
+    held = [(piece, document, IDENTIFIER_SCORE) for piece, document in on_pages if piece not in seen]
+    return [*matched, *held, *(row for row in rows if str(row[0]) not in pages)]
+
+
 def _numbers_as_written(rows: Iterable[Sequence[Any]], asked: frozenset[str]) -> list[Sequence[Any]]:
     """#556: the typo list's rows (id, document, score, text, text_latin) holding every number
     the question asked as written, by the viewer's own word rule (``number_words``: "1,50,000"
@@ -747,7 +962,7 @@ def search_translated(
             try:
                 walk = _walks(conn, {"c": customer_id, "recipe": recipe} | scope.params(), exact_below)
             except OperationalError as error:
-                _cancelled(error)  # each list counts for itself
+                _cancelled(conn, error, "meaning_timeout")  # each list counts for itself
 
     def lists(text_: str, vector: list[float] | None, words: Expansion) -> Lists:
         with begin() as conn:
@@ -873,27 +1088,126 @@ def _lists(
     fuzzy: list[tuple[str, float]] = []
     meaning: list[tuple[str, float]] = []
     if query_text.strip():
-        asked = normalise(query_text).keywords
         latin = latin_spelling(query_text) if has_devanagari_letters(query_text) else query_text
-        params = {
-            "c": customer_id,
-            "q": query_text,
-            "k": " ".join(asked),
-            "g": word_query(asked, expansion),
-            "sk": sound_query(latin),
-            "ql": latin,
-            "n": CANDIDATES,
-        }
-        word = _ranked(conn.execute(_WORD, {**params, **scope.params()}), owners)
+        params = {"c": customer_id, "q": query_text, "ql": latin, "n": CANDIDATES}
+        word = _ranked(_word_list(conn, customer_id, query_text, scope, expansion), owners)
         conn.execute(_SET_FUZZY_THRESHOLD, {"t": str(FUZZY_THRESHOLD)})
-        typo_rows = conn.execute(_FUZZY, {**params, **scope.params()}).all()
-        fuzzy = _ranked(_numbers_as_written(typo_rows, number_words(query_text)), owners)
+        typo_rows = _in_time(
+            conn, "fuzzy_timeout", lambda: conn.execute(_FUZZY, {**params, **scope.params()}).all()
+        )
+        fuzzy = _ranked(_numbers_as_written(typo_rows or [], number_words(query_text)), owners)
     if embedding is not None:
         vector = {"c": customer_id, "vec": vector_literal(embedding), "recipe": recipe, "n": CANDIDATES}
         meaning = _meaning(
             conn, vector | scope.params(), ef_search, owners, max_scan_tuples, exact_below, walk
         )
     return word, fuzzy, meaning
+
+
+def _word_params(customer_id: str, words: str, expansion: Expansion) -> dict[str, Any]:
+    """The word list's queries for ``words``: as typed (q), its ``normalise`` keywords (k), their
+    glossary equivalents and the user's own words (g), and its sound keys (sk)."""
+    asked = normalise(words).keywords
+    latin = latin_spelling(words) if has_devanagari_letters(words) else words
+    return {
+        "c": customer_id,
+        "q": words,
+        "k": " ".join(asked),
+        "g": word_query(asked, expansion),
+        "sk": sound_query(latin),
+        "n": CANDIDATES,
+    }
+
+
+def _word_list(
+    conn: Connection, customer_id: str, query_text: str, scope: Scope, expansion: Expansion
+) -> list[Sequence[Any]]:
+    """The word list's rows (piece, document, score), best first (``_word``). A question naming
+    a stored Gat, Survey, Khata or Plot number (#617 item 9, ``_identified``) lists first that
+    property's pieces: its other words searched in its documents only, the number compared with
+    the stored values (``_identifier_first``); then, after them, the question as typed over the
+    whole scope, so a document that prints the number but has no stored value still comes
+    (review of #617 part 1). Each piece once, at most CANDIDATES."""
+    identified = _in_time(conn, "word_timeout", lambda: _identified(conn, customer_id, query_text, scope))
+    typed = _word_params(customer_id, query_text, expansion) | scope.params()
+    if identified is None:
+        return _word(conn, typed)
+    on_pages, rest = identified
+    within = replace(scope, document_ids=tuple(sorted({document for _, document in on_pages})))
+    rows = _word(conn, _word_params(customer_id, rest, expansion) | within.params()) if rest else []
+    first = _identifier_first(on_pages, rows)[:CANDIDATES]
+    if len(first) == CANDIDATES:
+        return first
+    seen = {str(row[0]) for row in first}
+    return [*first, *(row for row in _word(conn, typed) if str(row[0]) not in seen)][:CANDIDATES]
+
+
+def _candidate_documents(conn: Connection, params: dict[str, Any]) -> list[str] | None:
+    """The documents a word query's candidates are taken from (#617): the scope's own list, or
+    with a folder, tag, type or date, the documents it keeps (one statement); None: any, and so
+    for more than SCOPE_DOCUMENTS_MOST (the statement applies the scope then)."""
+    documents: list[str] | None = params["s_documents"]
+    if not all(params[name] is None for name in _NARROWING):
+        documents = [str(row[0]) for row in conn.execute(_SCOPE_DOCUMENTS, params)]
+    return None if documents is not None and len(documents) > SCOPE_DOCUMENTS_MOST else documents
+
+
+def _shares(
+    conn: Connection, customer_id: str, field: str, alternatives: Sequence[str]
+) -> list[float] | None:
+    """#617: each glossary alternative's share of the organisation's live pieces of ``field`` (a
+    user's own words, "( a & b )", 0); None: no counts, or few pieces (``word_counts.shares``).
+    One statement."""
+    terms = [
+        [] if alternative.startswith("(") else alternative.split(" | ")[:1] for alternative in alternatives
+    ]
+    return word_counts.shares(conn, customer_id, field, terms, CANDIDATE_CAP)
+
+
+def _glossary_candidates(conn: Connection, params: dict[str, Any], docs: list[str] | None) -> tuple[str, str]:
+    """(:gc, :gk) of ``_WORD``: the glossary's alternatives that are rare (on at most
+    COMMON_SHARE of the live pieces; one new since the counts is 0, so rare too), and its common
+    ones only when no rare one is held, each a capped call of its own. Every alternative as :gc
+    when the counts can't tell or ``docs`` already bounds the candidates. One statement."""
+    if not params["g"]:
+        return "", ""
+    alternatives = params["g"].split(" | ")
+    shares = None if docs is not None else _shares(conn, params["c"], "tsv_simple", alternatives)
+    if shares is None:
+        return params["g"], ""
+    rare = [a for a, share in zip(alternatives, shares, strict=True) if share <= word_counts.COMMON_SHARE]
+    common = [a for a in alternatives if a not in rare]
+    held = any(
+        0 < share <= word_counts.COMMON_SHARE or a.startswith("(")
+        for a, share in zip(alternatives, shares, strict=True)
+    )
+    return " | ".join(rare), "" if held else " | ".join(common)
+
+
+def _sound_candidates(conn: Connection, params: dict[str, Any], docs: list[str] | None) -> str:
+    """The sound rung's :skc. A word (its own key, then its shorter starts: ``sound_query``) is rare
+    when its own key is on at most COMMON_SHARE of the live pieces (a key new since the counts is
+    0, so rare too); the rare words bring candidates by their terms that are not common
+    themselves, ORed. With no rare word, two or more words ANDed, and one word not at all (""
+    skips the rung: #617 item 2, sound for rare words). Every word ORed when the counts can't tell
+    or ``docs`` bounds the candidates. One statement."""
+    words = params["sk"].split(" ; ")
+    if docs is not None:
+        return " | ".join(words)
+    terms = [word.split(" | ") for word in words]
+    flat = [term for group in terms for term in group]
+    shares = word_counts.shares(conn, params["c"], "tsv_sound", [[term] for term in flat], CANDIDATE_CAP)
+    if shares is None:
+        return " | ".join(words)
+    share = dict(zip(flat, shares, strict=True))
+    rare = [
+        " | ".join(term for term in group if share[term] <= word_counts.COMMON_SHARE)
+        for group in terms
+        if share[group[0]] <= word_counts.COMMON_SHARE
+    ]
+    if rare:
+        return " | ".join(rare)
+    return " & ".join(f"( {word} )" for word in words) if len(words) > 1 else ""
 
 
 def _ranked(rows: Iterable[Sequence[Any]], owners: dict[str, str]) -> list[tuple[str, float]]:
@@ -1054,12 +1368,14 @@ def _hit(row: Sequence[Any], fused: FusedPiece) -> SearchHit:
     )
 
 
-def _cancelled(error: OperationalError) -> None:
-    """A meaning statement cancelled by the statement timeout is logged (``meaning_timeout``);
+def _cancelled(conn: Connection, error: OperationalError, code: str) -> None:
+    """A statement cancelled by the statement timeout (57014) logs ``code`` (never the question
+    or a statement), and the transaction's other statements then have DROPPED_TIMEOUT_MS (#619);
     any other error is raised."""
     if getattr(error.orig, "sqlstate", None) != _QUERY_CANCELED:
         raise error
-    logger.warning("meaning search timed out", extra={"code": "meaning_timeout"})
+    logger.warning("search statement timed out", extra={"code": code})
+    conn.execute(_SET_SEARCH, {"ms": str(min(DROPPED_TIMEOUT_MS, STATEMENT_TIMEOUT_MS))})
 
 
 def _walks(conn: Connection, params: dict[str, Any], exact_below: int) -> bool:
@@ -1085,7 +1401,8 @@ def _meaning(
     them already); else the index walk of at most ``max_scan_tuples`` tuples, then the exact
     scan when the walk came back with fewer than CANDIDATES rows or ran out of time. Each in
     its own savepoint, so a statement the timeout cancels (logged, ``meaning_timeout``) leaves
-    the transaction usable; empty when the count or the exact scan is cancelled."""
+    the transaction usable, its other statements then with DROPPED_TIMEOUT_MS (#619); empty
+    when the count or the exact scan is cancelled."""
     conn.execute(_SET_INDEX_SCAN, {"ef": str(ef_search), "tuples": str(max_scan_tuples)})
     rows: Sequence[Any] = []
     try:
@@ -1096,13 +1413,59 @@ def _meaning(
                 with conn.begin_nested():
                     rows = conn.execute(_MEANING, params).all()
             except OperationalError as error:
-                _cancelled(error)  # the exact scan below still answers
+                _cancelled(conn, error, "meaning_timeout")  # the exact scan below still answers
         if len(rows) < CANDIDATES:
             with conn.begin_nested():
                 rows = conn.execute(_MEANING_EXACT, params).all()
     except OperationalError as error:
-        _cancelled(error)
+        _cancelled(conn, error, "meaning_timeout")
         return []
     # A zero vector has no direction: its distance is NaN and says nothing.
     found = [row for row in rows if math.isfinite(float(row[2]))]
     return _ranked([(row[0], row[1], 1.0 - float(row[2])) for row in found], owners)
+
+
+def _word(conn: Connection, params: dict[str, Any]) -> list[Sequence[Any]]:
+    """The word list's rows (piece, document, score), best first (#619): the exact rung, then,
+    while it found fewer than CANDIDATES and the question has sound terms, the sound rung for
+    the rest. A rung that times out is dropped (the exact rung's drop is the whole list's).
+    #617: each query's candidates are at most CANDIDATE_CAP, from the scope's documents
+    (``_candidate_documents``); common glossary and sound words only score
+    (``_glossary_candidates``, ``_sound_candidates``)."""
+
+    def exact_rung() -> tuple[list[str] | None, Sequence[Sequence[Any]]]:
+        docs = _candidate_documents(conn, params)
+        gc, gk = _glossary_candidates(conn, params, docs)
+        bounds = {"docs": docs, "cap": CANDIDATE_CAP, "gc": gc, "gk": gk}
+        return docs, conn.execute(_WORD, params | bounds).all()
+
+    done = _in_time(conn, "word_timeout", exact_rung)
+    if done is None:
+        return []
+    docs, rows = done
+    found: list[Sequence[Any]] = list(rows)
+    if len(found) < CANDIDATES and params["sk"]:
+        exact = [str(row[0]) for row in found]
+
+        def sound_rung() -> Sequence[Sequence[Any]]:
+            rare = _sound_candidates(conn, params, docs)
+            if not rare:
+                return []
+            rest = {"exact": exact, "n": CANDIDATES - len(found), "ranked": SOUND_RANKED}
+            return conn.execute(
+                _SOUND, params | rest | {"skc": rare, "docs": docs, "cap": CANDIDATE_CAP}
+            ).all()
+
+        found += _in_time(conn, "sound_timeout", sound_rung) or []
+    return found
+
+
+def _in_time[T](conn: Connection, code: str, run: Callable[[], T]) -> T | None:
+    """``run()`` in a savepoint, or None when the statement timeout cancelled it (``_cancelled``):
+    the savepoint keeps the transaction usable for the other lists. Any other error is raised."""
+    try:
+        with conn.begin_nested():
+            return run()
+    except OperationalError as error:
+        _cancelled(conn, error, code)
+        return None

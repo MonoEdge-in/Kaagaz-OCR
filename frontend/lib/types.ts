@@ -9,7 +9,8 @@ export type DocumentStatus =
   | "rejected"
   | "needs_reader"
   | "ready"
-  | "failed";
+  | "failed"
+  | "locked"; // PRD 7 (#605): locked, pictured and never read
 
 /**
  * The file's type: at upload, the one sniffed from its first bytes (pdf, png, jpeg, tiff, heic,
@@ -92,6 +93,10 @@ export interface Me {
   // Ways to sign in (#457 phase 1): approved connections made in the last 14 days, for the
   // app's "Google connected on 30 Oct." banner. Empty while no provider is on (always sent).
   recent_connections?: { provider: string; linked_at: string }[];
+  // PRD 7 (#601): Management, and the departments this person heads. Older servers leave it out.
+  // in_department (PR 10c): a member of a live department; walled (PR 11c): the organisation has
+  // kept something to some people, ever.
+  access?: { management: boolean; heads: string[]; in_department?: boolean; walled?: boolean };
   // Kaagaz on WhatsApp (#603): sent, true, only while the server has WhatsApp on: Account shows WhatsApp.
   whatsapp?: boolean;
 }
@@ -187,7 +192,9 @@ export interface DocumentSummary {
   page_count: number | null;
   created_at: string; // ISO 8601
   uploaded_by_name: string | null;
-  folder_id: string | null; // null: at the top level, in no folder
+  folder_id: string | null; // null: at the top level, in no folder, or in one this person can't see
+  // PRD 7 (#601): in a folder this person can't see (folder_id null): "Shared with you", never a path.
+  shared_with_you?: boolean;
   tags: Tag[];
   deleted_at: string | null; // set while the document (its whole family) is in Trash
   version_no: number; // 1 for the first upload
@@ -201,6 +208,8 @@ export interface DocumentSummary {
   understanding?: boolean; // Ready first (16 Oct 2026): ready and usable, its card and map still coming
   // Issue 407: still being read 6 hours after it was uploaded or last read again, so it may be read again (Retry).
   stuck?: boolean;
+  // PRD 7 (#605): locked: found by its name only, never read, opened only as page pictures (PR 13).
+  locked?: boolean;
   doc_type: DocType | null; // from the AI model's document card; null without one (PRD 2, D6)
   languages: string[]; // "en", "hi", "mr", "other"; [] when not known
   // PRD 5 F4: pages unreadable or uncertain still on the attention list (a page kept as is
@@ -319,6 +328,8 @@ export interface ActivityPage {
   items: ActivityEntry[];
   next_cursor?: string | null;
   total?: number; // the admin log only
+  // PRD 7 (#601): the admin log's first page only, the entries in which an Admin gave themselves access.
+  self_given?: ActivityEntry[];
 }
 
 /** A question this person asked about the document (P2), newest first. */
@@ -375,7 +386,8 @@ export interface FirstUnreadablePage {
 export interface BatchView {
   id: string;
   documents: DocumentSummary[]; // in upload order; the tray sorts them worst first
-  counts: { total: number; ready: number; reading: number; waiting: number; attention: number; failed: number };
+  // locked (PRD 7, #605): locked and pictured, finished and never read.
+  counts: { total: number; ready: number; reading: number; waiting: number; attention: number; failed: number; locked?: number };
   pages_read: number; // of pages_total (U1); the bar weighs each document's own fraction (batchTray.ts)
   pages_total: number;
   time_left: TimeLeft | null; // until the whole drop is ready; null when nothing is left to read
@@ -484,6 +496,8 @@ export interface Folder {
   created_at: string;
   kind?: FolderKind; // F1; left out by older replies: custom
   sort_order?: number | null; // a department's place on the dashboard and in the tree
+  department_only?: boolean; // PRD 7 (#601): a department kept to its people
+  private?: boolean; // PRD 7 (#601): only the people named on it (and its head, Management) see it
 }
 
 /** #542: a folder in Trash, with what it holds at every depth (files: a file's versions count once). */
@@ -509,12 +523,20 @@ export interface TrashedFolderContents {
 /** #542: the folder that came back with a file restored from a folder in Trash (restoreDocument's reply). */
 export type FolderBack = Omit<FolderRestored, "files" | "folders">;
 
+/** #594: where a restored file went because its folder no longer exists (restoreDocument's reply):
+ * held for the person until it is filed, or into `folder` (null: one they can't see). */
+export interface FilePlaced {
+  held: boolean;
+  folder: Folder | null;
+}
+
 /** #542: a restored folder, where it went ([] the top level), and why it is not as it was. */
 export interface FolderRestored {
   folder: Folder;
   location: string[] | null; // PRD 7: null when a folder on its path is one you can't see
   renamed: boolean; // a folder there had its name: it is "Name (2)" now
-  relocated: boolean; // its folder no longer exists: it is at the top level
+  relocated: boolean; // its folder no longer exists: it is at `location` instead
+  sealed: boolean; // #594: a department or private folder it was in no longer exists: it came back private
   files: number;
   folders: number;
 }
@@ -712,6 +734,13 @@ export interface DocumentDetail extends DocumentSummary {
   // P1, V6 (stage 2): who uploaded version 1, and a version suggestion about this document.
   author_name?: string | null;
   version_suggestion?: VersionSuggestion | null;
+  page_turns: PageTurnSaved[]; // pages turned for everyone (PRD 7 section 14, #600); a page not listed is not turned
+}
+
+/** A page turned for everyone: clockwise degrees on top of the file's own turn. */
+export interface PageTurnSaved {
+  page_no: number; // from 1
+  turn: 90 | 180 | 270;
 }
 
 /** A related document (PRD 3 Y2). The value is stored normalised: no spaces, lower case. */
@@ -875,7 +904,9 @@ export type UploadResult =
       hidden?: false;
     }
   // PRD 7 (#599): the file is already in Kaagaz, in a place this person can't see. Nothing more.
-  | { document: null; duplicate: true; in_trash: false; hidden: true };
+  | { document: null; duplicate: true; in_trash: false; hidden: true }
+  // PRD 7 (#605, p2:91): a copy is in Kaagaz, locked, and this person may open it: its link only.
+  | { document: null; duplicate: true; in_trash: boolean; hidden?: false; locked: { id: string } };
 
 export interface SheetCells {
   page_no: number;
@@ -1035,8 +1066,10 @@ export interface Answer {
   // "unchecked": the figure asked for is only in unchecked card values, so no
   // number is given; closest_documents says where.
   // "no_access" (PRD 7, #602): a saved answer that names a file the person can no longer see,
-  // replaced whole by the server: one sentence (NO_ACCESS_TEXT), every list empty.
+  // replaced whole by the server: one sentence (NO_ACCESS_TEXT), every list empty. reason
+  // "locked" (#605): the file is now locked and the person may open it (its own sentence).
   status: "answered" | "not_found" | "unchecked" | "clarify" | "no_access";
+  reason?: "locked";
   // PRD 6 A, answer contract v2 (24 Oct 2026); all four missing on answers saved before it,
   // which render as they did. The opening and assumptions are code-written lines.
   version?: 2;
@@ -1233,6 +1266,7 @@ export interface ChatResponse {
   conversation_id: string;
   question: Message;
   answer: Message;
+  locked_note?: string | null; // PRD 7 (#605): Ask's fixed line for a person who may open a locked file
 }
 
 export interface ConversationSummary {
@@ -1247,6 +1281,7 @@ export interface Conversation {
   id: string;
   title: string;
   messages: Message[];
+  locked_note?: string | null; // PRD 7 (#605): as ChatResponse's
 }
 
 export interface ReviewItem {
@@ -1256,6 +1291,7 @@ export interface ReviewItem {
   detected_type: DetectedType;
   page: PageSummary;
   check_reasons: string[]; // why its document's invoice check failed (PRD 3 Y5); [] otherwise
+  page_turn: 0 | 90 | 180 | 270; // the page's turn saved for everyone (#600); 0: not turned
 }
 
 /** The review queue's reason filter (PRD 3 Y5; PRD 5 U6 adds four, then #524's amount four). */
@@ -1329,6 +1365,95 @@ export interface AdminUser {
   google_needed?: boolean;
   // #507 review: and their connected account's domain is not checked yet (one Google sign-in does).
   google_unchecked?: boolean;
+  // PRD 7 (#601): sees every file. The list also sends their departments (head: they head it).
+  management?: boolean;
+  departments?: { id: string; name: string; head: boolean }[];
+}
+
+/** PRD 7 (#601), GET /admin/users/{id}/access: what one person can see, beyond their role. Paths
+ * are an Admin's (every folder name); `added_by` and `given_by` are user ids. */
+export interface PersonAccess {
+  user: { id: string; name: string; role: Role; management: boolean; disabled: boolean };
+  departments: { id: string; name: string; head: boolean; added_at: string; added_by: string }[];
+  private_folders: { id: string; name: string; path: string | null }[];
+  files: { id: string; name: string; path: string | null; given_at: string; given_by: string | null }[];
+}
+
+/** PRD 7 (#601), GET /admin/departments: one department with its access. */
+export interface AdminDepartment {
+  id: string;
+  name: string;
+  department_only: boolean;
+  members: number;
+  heads: Person[];
+  warnings: string[]; // "no_members": Department only, with nobody in it
+}
+
+/** GET /admin/departments/{id}/members */
+export interface DepartmentMember {
+  id: string;
+  name: string;
+  head: boolean;
+  added_at: string;
+}
+
+/** PRD 7 (#601): who would lose and who would gain a place's files, and how many files it holds. */
+export interface PlacePreview {
+  losing: Person[];
+  gaining: Person[];
+  files: number;
+  // Make private's preview (PR 10b, coming): the people named on it before, who see it again.
+  named_before?: Person[];
+}
+
+/** PRD 7 PR 10c (#601), a move's preview: for the person a file is held for, counts only (the lists
+ * empty, never anyone's name). */
+export interface MovePreview extends PlacePreview {
+  losing_count?: number;
+  gaining_count?: number;
+}
+
+/** PRD 7 PR 10c (#601), PATCH /documents/{id}: an admin moved the file where they can't see it.
+ * The move stands. */
+export interface HiddenMove {
+  id: string;
+  hidden: true;
+}
+
+/** PRD 7 (#601), GET /{documents|folders}/{id}/audience: who can see it, grouped by why, in the
+ * Audience panel's order; `place`: the department (head, member) or the private folder (named). */
+export interface Audience {
+  groups: { reason: string; place?: { id: string; name: string }; people: Person[] }[];
+  everyone_else: number; // how many people of the organisation can't see it
+}
+
+/** The same with ?user_id= (Check a person): the reasons in the same order. */
+export interface AudienceCheck {
+  can_see: boolean;
+  reasons: string[];
+}
+
+/** PRD 7 (#601), GET /folders/{id}/kept-from-me: an Admin's names list, the files in a folder
+ * they can't open (`count`: all of them; `items`: the first 500 by name). */
+export interface KeptFromMe {
+  count: number;
+  items: {
+    id: string;
+    name: string;
+    kind: string; // the detected type
+    uploader: string | null;
+    created_at: string;
+    version_no: number;
+    locked: boolean;
+  }[];
+}
+
+/** PRD 7 (#601), GET /folders/{id}/named: a private folder's list; `can_edit`: may change it. */
+export interface NamedList {
+  folder: { id: string; name: string; path: string | null };
+  named: Person[];
+  heads: Person[];
+  can_edit: boolean;
 }
 
 /** POST /admin/users: the new user; with email on (#457), whether the invite email went. */
@@ -1386,13 +1511,16 @@ export interface AuditEntry {
   action: string;
   // File management A3, A5: the row's family, its document (deleted: true once gone) and folder,
   // names filled in when shown; details hold resolved names (folder_path, from_name, to_name).
+  // PRD 7 (#601): in the access activity, a file Management can't see has no id, the name
+  // "a file you can't see", and no folder, version or details but `self`.
   actor_id?: string | null;
   family_id?: string | null;
-  document?: { id: string; name: string | null; version_no: number | null; deleted: boolean } | null;
+  document?: { id: string | null; name: string | null; version_no: number | null; deleted: boolean } | null;
   folder?: { id: string; path: string } | null;
   actor_name: string | null;
   target_type: string | null;
   target_id: string | null;
+  subject_id?: string | null; // PRD 7 (#601): the person an access change is about
   subject_name?: string | null; // a "user" row's person, by name (issue 375); null once removed
   details: Record<string, unknown>;
   created_at: string;

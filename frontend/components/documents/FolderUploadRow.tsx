@@ -7,7 +7,8 @@
 import Link from "next/link";
 import { useState } from "react";
 import type { ReactNode } from "react";
-import { ApiError, restoreDocument, updateDocument } from "@/lib/api";
+import { hiddenMovedText } from "@/components/access/words";
+import { ApiError, isHiddenMove, moveDocument, restoreDocument } from "@/lib/api";
 import { formatNumber } from "@/lib/format";
 import type { FolderItemsPage, FolderUploadItem, UploadLimits } from "@/lib/types";
 import { BusyLabel } from "./BusyLabel";
@@ -268,12 +269,14 @@ export function DuplicateItem({ item, tree }: { item: FolderUploadItem; tree: Fo
   const to = where(tree, item.folder_id);
   const here = !document.in_trash && document.folder_id === item.folder_id;
 
+  /** `work` may answer the words to say instead of `said` (a move that stands where the admin
+   * can't see it, PR 10c). */
   function run(work: () => Promise<unknown>, said: string) {
     setBusy(true);
     setError(null);
     work().then(
-      () => {
-        setDone(said);
+      (result) => {
+        setDone(typeof result === "string" ? result : said);
         setAsking(false);
         setBusy(false);
       },
@@ -320,7 +323,12 @@ export function DuplicateItem({ item, tree }: { item: FolderUploadItem; tree: Fo
                 type="button"
                 className="btn btn-primary"
                 disabled={busy}
-                onClick={() => run(() => updateDocument(documentId, { folder_id: item.folder_id }), `Moved to ${to}.`)}
+                onClick={() =>
+                  run(async () => {
+                    const reply = await moveDocument(documentId, item.folder_id);
+                    return isHiddenMove(reply) ? `Moved to ${to}. ${hiddenMovedText(1, 1)}` : undefined;
+                  }, `Moved to ${to}.`)
+                }
               >
                 <BusyLabel busy={busy} idle="Move it" working="Moving…" />
               </button>

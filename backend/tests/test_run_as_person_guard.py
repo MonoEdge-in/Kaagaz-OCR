@@ -131,10 +131,15 @@ def _from_user(owner: Function, chain: list[Function]) -> bool:
     return bool(stores) and all(bound.get(id(name)) == "user.customer_id" for name in stores)
 
 
+# Changed on purpose (PR 10b): the one keyword that leaves the person as they are (a REPEATABLE READ
+# snapshot for the previews, kaagaz.db.engine). Any other keyword, or **kwargs, is refused.
+SAME_PERSON_KEYWORDS = {"repeatable_read"}
+
+
 def _plain_user_call(node: ast.Call, chain: list[Function]) -> bool:
     shape = [ast.unparse(arg) for arg in node.args]
     owner = _signed_in_owner(chain)
-    if node.keywords or owner is None:
+    if any(keyword.arg not in SAME_PERSON_KEYWORDS for keyword in node.keywords) or owner is None:
         return False
     if shape == ["user.customer_id", "user.user_id"]:
         return True
@@ -216,3 +221,17 @@ def test_every_person_transaction_names_the_signed_in_user() -> None:
         "Open these with the signed-in user's own ids, (user.customer_id, user.user_id), or, where"
         " the person is that user by another name, review the count in USER_EXCEPTIONS:\n" + "\n".join(wrong)
     )
+
+
+def test_only_the_repeatable_read_keyword_keeps_a_call_plain() -> None:
+    """Changed on purpose (PR 10b): ``repeatable_read=True`` keeps ``.user(...)`` plain; any other
+    keyword, or ``**kwargs``, makes it one to review."""
+    source = (
+        "def route(user: User, context: Context) -> None:\n"
+        "    context.db.user(user.customer_id, user.user_id, repeatable_read=True)\n"
+        "    context.db.user(user.customer_id, user.user_id, as_of=1)\n"
+        "    context.db.user(user.customer_id, user.user_id, **extra)\n"
+    )
+    visitor = _Sites("example.py")
+    visitor.visit(ast.parse(source))
+    assert visitor.odd == [("example.py:route", 3), ("example.py:route", 4)]

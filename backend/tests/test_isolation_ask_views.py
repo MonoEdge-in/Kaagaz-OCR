@@ -44,7 +44,7 @@ from kaagaz.search import hybrid
 from kaagaz.search.hybrid import FusedPiece
 from kaagaz.search.scope import EVERYTHING
 from kaagaz.search.story_search import read_stories
-from tests.db_support import insert_key, insert_tag, tag_document
+from tests.db_support import insert_key, insert_tag, rule_on_everywhere, tag_document
 from tests.settings_factory import make_settings
 from tests.test_answering_golden import NOW, evidence_blocks
 from tests.test_api_chat import _cited_answer
@@ -180,7 +180,17 @@ def _list_rows(statement: Any, ask: AskOrg, conn: Connection, query: str) -> lis
     list itself is checked here."""
     conn.execute(hybrid._SET_FUZZY_THRESHOLD, {"t": str(hybrid.FUZZY_THRESHOLD)})
     words = {"c": ask.org.c, "q": query, "k": query, "ql": query, "g": "", "sk": "", "n": 50}
+    # #617 (0094): the word list's candidates, unbounded by documents, at the cap.
+    words |= {"gc": "", "gk": "", "docs": None, "cap": hybrid.CANDIDATE_CAP}
     return [r[1] for r in conn.execute(statement, words | EVERYTHING.params())]
+
+
+def _sound_rows(ask: AskOrg, conn: Connection, query: str) -> list[Any]:
+    """#617's sound rung (0094's candidates, then the pieces through the view): its documents."""
+    sk = hybrid.sound_query(query)
+    sound = {"c": ask.org.c, "sk": sk, "skc": " | ".join(sk.split(" ; ")), "exact": [], "n": 50}
+    sound |= {"ranked": hybrid.SOUND_RANKED, "docs": None, "cap": hybrid.CANDIDATE_CAP}
+    return [r[1] for r in conn.execute(hybrid._SOUND, sound | EVERYTHING.params())]
 
 
 def _meaning_rows(statement: Any, ask: AskOrg) -> Callable[[Connection], list[Any]]:
@@ -222,6 +232,13 @@ _CALLS: list[tuple[str, _Call]] = [
     ("search, typos", lambda conn, a: _search(conn, a, "aardvrk")),
     ("_WORD", lambda conn, a: _list_rows(hybrid._WORD, a, conn, WORDS["fin"])),
     ("_FUZZY", lambda conn, a: _list_rows(hybrid._FUZZY, a, conn, "aardvrk")),
+    ("_SOUND", lambda conn, a: _sound_rows(a, conn, WORDS["fin"])),  # #617, after PRD 7
+    (
+        "_SCOPE_DOCUMENTS",
+        lambda conn, a: [
+            r[0] for r in conn.execute(hybrid._SCOPE_DOCUMENTS, {"c": a.org.c} | EVERYTHING.params())
+        ],
+    ),
     ("search, meaning", lambda conn, a: _search(conn, a, "", axis(a.axes["fin"]))),
     ("_MEANING", lambda conn, a: _meaning_rows(hybrid._MEANING, a)(conn)),
     ("_MEANING_EXACT", lambda conn, a: _meaning_rows(hybrid._MEANING_EXACT, a)(conn)),
@@ -758,7 +775,11 @@ def test_the_chat_statements_name_no_hidden_document(db: Database, ask: AskOrg) 
         picked = [str(row["pin_document_id"]) for row in rows if row["role"] == "assistant"]
         assert picked == [ask.id("fin") if sees_fin else ask.id("sales")], person
         # Most relevant reads each answer's newest pick only: fin's, so none for the plain reviewer.
-        assert pins == ({ask.id("fin")} if sees_fin else set()), person
+        # Changed on purpose (PR 9a, #606): under the database rule fin's pick is not in source_pins
+        # for the plain reviewer, so their own older pick of sales is the newest they have (nothing
+        # hidden); with the rule off, none.
+        expected = {ask.id("fin")} if sees_fin else ({ask.id("sales")} if rule_on_everywhere() else set())
+        assert pins == expected, person
         assert learned == set(states), person
 
 
@@ -1099,6 +1120,20 @@ def test_no_hidden_piece_is_in_a_list_before_the_details(db: Database, ask: AskO
             found = set(owners.values())
             assert not found & {ask.id(f) for f in HIDDEN[person]}, (person, query)
             assert (ask.id("fin") in found) == (person == "member"), (person, query)
+
+
+def test_the_word_candidates_are_only_the_persons(db: Database, ask: AskOrg) -> None:
+    """#617's kaagaz_word_candidates (0094) reads as the owner, so it asks the view itself: a hidden
+    piece is never one of its capped ids, for any person (integration of #646 with PRD 7)."""
+    query = text("SELECT kaagaz_word_candidates('tsv_simple', to_tsquery('simple', 'ledger'), NULL, 2000)")
+    for person in ("plain", "member"):
+        with _as(db, ask, person) as conn:
+            found = {str(piece) for piece in conn.execute(query).scalars()}
+        hidden = {piece for name in HIDDEN[person] for piece in ask.pieces[name]}
+        assert found and not found & hidden, person
+        assert bool(found & set(ask.pieces["fin"])) == (person == "member"), person
+    with _app(db).customer(ask.org.c) as conn:  # the API role with no person: nothing
+        assert conn.execute(query).all() == []
 
 
 def test_a_walk_cut_by_the_timeout_falls_back_to_the_exact_scan(

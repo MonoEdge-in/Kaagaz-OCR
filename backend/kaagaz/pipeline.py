@@ -367,7 +367,12 @@ _VERDICT_CODES = REJECTION_CODES - {"rejected"}
 # at least once: a delete that failed hands the job out again) and is acked unread.
 # Read again, one page again and the upgrade sweep set it to received before queueing
 # it, so they are read. Rejected is not here: the scan gate refuses it for good.
-_SETTLED = frozenset({DocumentStatus.READY, DocumentStatus.FAILED, DocumentStatus.NEEDS_READER})
+_SETTLED = frozenset(
+    {DocumentStatus.READY, DocumentStatus.FAILED, DocumentStatus.NEEDS_READER, DocumentStatus.LOCKED}
+)
+# PRD 7 (#605): a locked version with a page that can't be drawn (a sheet, a text file, a page
+# the drawing failed on). It stays locked and failed; a lock never reads it to show it otherwise.
+CANNOT_DRAW = "cannot_draw"
 # The detected types whose every page is a picture read by OCR (the time left, fast scan).
 _PHOTO_TYPES = frozenset({sniff.PNG, sniff.JPEG, sniff.TIFF, sniff.HEIC})
 # Read from their cells, never by AI (kaagaz/reading/wiring.py): the daily page limit never holds
@@ -591,6 +596,20 @@ class DocumentStore(Protocol):
         understood, and its progress is kept; otherwise the progress is cleared."""
         ...
 
+    def save_locked_pages(
+        self, customer_id: str, document_id: str, pages: Sequence["PageRecord"], *, run: FinishedRun | None
+    ) -> None:
+        """PRD 7 (#605): a locked version's page rows (sizes and pictures only), its page count and
+        the state ``locked``, current as ``mark_ready`` makes a ready one, and ``run`` finished
+        ``locked``, in one transaction; Superseded, and nothing written, unless the run is open and
+        the version is still locked and clean."""
+        ...
+
+    def still_open(self, customer_id: str, document_id: str, run_id: str) -> bool:
+        """PRD 7 (#605): the run is still running and the version not locked (one indexed
+        query): checked before each model step, so a lock stops what is sent to an AI."""
+        ...
+
     def file_document(self, customer_id: str, document_id: str) -> None:
         """Auto-filing (feature 28): file a ready document's family by its type, in its own
         transaction, when its upload went in no folder and the organisation's switch is on."""
@@ -703,6 +722,10 @@ class PageImageStore(Protocol):
 class RenditionStore(Protocol):
     def put_rendition(self, customer_id: str, document_id: str, pdf: bytes) -> None:
         """#522 PR 2: a Word or PowerPoint file's PDF, beside its original, for the viewer."""
+        ...
+
+    def delete_rendition(self, customer_id: str, document_id: str) -> None:
+        """PRD 7 (#605): the PDF stored as a lock came, which holds the file's words."""
         ...
 
 
@@ -1060,7 +1083,14 @@ class DocumentProcessor:
         try:
             if self._customer_active is not None and not self._customer_active(job.customer_id):
                 raise JobFailed("customer_disabled", retryable=False)  # marked failed below, never read
-            self._process(job, record, heartbeat, run)
+            # PRD 7 (#605): the first progress write takes the family lock, so a lock under way is
+            # waited for; the record read again after it says whether a lock came since ``get``.
+            self._progress(job, run, "scanning", 0, 1)
+            record = self._documents.get(job.customer_id, job.document_id) or record
+            if record.locked:
+                self._prepare_locked(job, record, heartbeat, run)  # PRD 7 (#605): never read
+            else:
+                self._process(job, record, heartbeat, run)
             settled = True
         except Superseded:
             settled = True
@@ -1163,13 +1193,12 @@ class DocumentProcessor:
         if record.detected_type == sniff.ZIP and record.size > ZIP_MAX_BYTES:
             # #522 PR 3: refused before the scan gate loads it into memory (policy.ZIP_MAX_BYTES).
             raise JobFailed("zip_over_limit", retryable=False)
-        self._progress(job, run, "scanning", 0, 1)
-        data = self._scan(job, run, record.display_name)
+        data = self._scan(job, run, record.display_name)  # "scanning" was shown by __call__
         if hashlib.sha256(data).hexdigest() != record.sha256:
             raise JobFailed("content_changed", retryable=False)
         record = self._resolved(record, data)
         heartbeat()
-        converted, data = self._converted(record, data)
+        converted, data = self._converted(job, run, record, data)
         # #522: a Word or PowerPoint file's PDF is read by the rendition's readers.
         reading = RENDITION if converted.detected_type == sniff.PDF != record.detected_type else None
         record = converted
@@ -1205,32 +1234,7 @@ class DocumentProcessor:
             self._documents.mark_ready(customer_id, document_id, 0, run=self._finished(run, "ready", None))
             return
 
-        run.rates, run.preparing_started = self._rates(job, record.detected_type), self._timer()
-        pictured: set[int] = set()  # the pages whose picture is stored
-        # Fast scan: encoding a page's WebP takes ~90% of preparing, so pages are encoded and
-        # stored PICTURE_WORKERS at a time (Pillow lets go of the GIL), and at most that many
-        # drawn pictures wait in memory. All are stored before reading starts.
-        slots = threading.BoundedSemaphore(PICTURE_WORKERS)
-        storing: list[Future[None]] = []
-
-        def store(page_no: int, picture: Image.Image) -> None:
-            try:
-                self._page_images.put_page_image(customer_id, document_id, page_no, _stored_picture(picture))
-                pictured.add(page_no)
-            finally:
-                slots.release()
-
-        with ThreadPoolExecutor(PICTURE_WORKERS) as pool:
-
-            def on_picture(page_no: int, count: int, picture: Image.Image) -> None:
-                slots.acquire()
-                storing.append(pool.submit(store, page_no, picture))
-                heartbeat()
-                self._progress(job, run, "preparing", page_no, count)
-
-            prepared = _or_fail(lambda: self._prepare_or_count(job, record.detected_type, data, on_picture))
-            for stored in storing:
-                stored.result()  # the first error, as when they were stored one by one
+        prepared, pictured = self._draw(job, record.detected_type, data, heartbeat, run)
         pages = [_page_record(info, prepared, pictured) for info in prepared.pages]
 
         run.pages_prepared = len(pictured)
@@ -1242,6 +1246,7 @@ class DocumentProcessor:
             # Closed before anything else, whatever happened; the heartbeat beats while a page
             # is being read (fast scan: a page may make several slow calls in a row).
             with self._reading_document(job, run, page_count=len(pages)), waiting(heartbeat):
+                self._still_open(job, run)  # PRD 7 (#605): a lock since the last write stops it here
                 spans = _or_fail(lambda: self._socket.read(reads_as, data, on_page=on_page))
         except NoReader:
             require_clean(self._statuses, job)
@@ -1256,6 +1261,7 @@ class DocumentProcessor:
             return
         if self._ocr_meter is not None:
             run.page_reads = self._ocr_meter.take_page_reads()
+            self._still_open(job, run)
             spans = self._read_carefully(job, reads_as, data, heartbeat, run, spans)
         run.reading_ended = self._timer()
 
@@ -1267,6 +1273,7 @@ class DocumentProcessor:
         unreadable = self._count_unreadable(run, _with_results(pages, run.page_reads, Counter()))
 
         self._progress(job, run, "understanding", 0, 2)  # read: the time left is now until ready
+        self._still_open(job, run)
         second = self._read_second(job, reads_as, data)
         heartbeat()
 
@@ -1310,6 +1317,7 @@ class DocumentProcessor:
         # Ready first (Tushar, 16 Oct 2026): saved and ready with the rule values, checked and
         # labelled as with the model off, before the card and the map are asked (Ready waits
         # on no model call); then understood and saved again, filed, and indexed.
+        self._still_open(job, run)
         with self._timed(run, "checker", when=self._checker is not None):
             checks = self._second_readings(rule, prepared, pictured, heartbeat, run, line_texts)
         without_model = Understanding(DocumentFacts(), rule, [], None, 0, None)
@@ -1333,6 +1341,69 @@ class DocumentProcessor:
         self._file(job)  # reads the card's type, never a vector
         self._index(job, run, heartbeat)
 
+    def _draw(
+        self, job: Job, detected_type: str, data: bytes, heartbeat: Heartbeat, run: _Run
+    ) -> tuple[Prepared, set[int]]:
+        """The file's pages drawn and each picture stored: (the prepared pages, the pages whose
+        picture is stored)."""
+        customer_id, document_id = job.customer_id, job.document_id
+        run.rates, run.preparing_started = self._rates(job, detected_type), self._timer()
+        pictured: set[int] = set()  # the pages whose picture is stored
+        # Fast scan: encoding a page's WebP takes ~90% of preparing, so pages are encoded and
+        # stored PICTURE_WORKERS at a time (Pillow lets go of the GIL), and at most that many
+        # drawn pictures wait in memory. All are stored before reading starts.
+        slots = threading.BoundedSemaphore(PICTURE_WORKERS)
+        storing: list[Future[None]] = []
+
+        def store(page_no: int, picture: Image.Image) -> None:
+            try:
+                self._page_images.put_page_image(customer_id, document_id, page_no, _stored_picture(picture))
+                pictured.add(page_no)
+            finally:
+                slots.release()
+
+        with ThreadPoolExecutor(PICTURE_WORKERS) as pool:
+
+            def on_picture(page_no: int, count: int, picture: Image.Image) -> None:
+                slots.acquire()
+                storing.append(pool.submit(store, page_no, picture))
+                heartbeat()
+                self._progress(job, run, "preparing", page_no, count)
+
+            prepared = _or_fail(lambda: self._prepare_or_count(job, detected_type, data, on_picture))
+            for stored in storing:
+                stored.result()  # the first error, as when they were stored one by one
+        return prepared, pictured
+
+    def _prepare_locked(self, job: Job, record: DocumentRecord, heartbeat: Heartbeat, run: _Run) -> None:
+        """PRD 7 (#605, p2:18): a locked version is scanned, its kind told, a Word or PowerPoint
+        file converted (its PDF never stored), and its page pictures drawn and stored; then its
+        page rows (sizes only) and the state ``locked`` (``save_locked_pages``). No reading
+        pause, no billing, no reader and no model: nothing of it is ever sent to an AI. A file
+        with a page that can't be drawn fails ``cannot_draw``, still locked."""
+        data = self._scan(job, run, record.display_name)  # "scanning" was shown by __call__
+        if hashlib.sha256(data).hexdigest() != record.sha256:
+            raise JobFailed("content_changed", retryable=False)
+        record = self._resolved(record, data)
+        heartbeat()
+        record, data = self._converted(job, run, record, data, store=False)
+        heartbeat()
+        prepared, pictured = self._draw(job, record.detected_type, data, heartbeat, run)
+        if not prepared.pages or len(pictured) != len(prepared.pages):
+            raise JobFailed(CANNOT_DRAW, retryable=False)
+        pages = [_page_record(info, prepared, pictured) for info in prepared.pages]
+        run.pages_prepared = len(pictured)
+        finished = self._finished(run, "locked", None)
+        self._documents.save_locked_pages(job.customer_id, job.document_id, pages, run=finished)
+
+    def _still_open(self, job: Job, run: _Run) -> None:
+        """PRD 7 (#605): before a step that sends the file to a model, Superseded unless its run
+        is still open and the version not locked. A call already in flight can't be called back."""
+        if run.run_id is not None and not self._documents.still_open(
+            job.customer_id, job.document_id, run.run_id
+        ):
+            raise Superseded(run.run_id)
+
     def _understand_after_ready(
         self,
         job: Job,
@@ -1351,6 +1422,7 @@ class DocumentProcessor:
         run (a read again) makes it raise Superseded and write nothing; and it writes each
         person's word change again (``word_review.reapply``). The model down or its reply
         unusable saves the rule values again, with the run's code (``model_<code>``)."""
+        self._still_open(job, run)  # Ready was written: a lock since then stops the card and the map
         with ThreadPoolExecutor(1) as mapper:
             mapping = mapper.submit(contextvars.copy_context().run, self._map, job, run, read.pieces)
             with self._timed(run, "card", when=self._chat is not None):
@@ -1369,6 +1441,7 @@ class DocumentProcessor:
             if value.record_key != CARD_RECORD and not spot_unsure(value)
         ]
         readings, checked = checks
+        self._still_open(job, run)
         with self._timed(run, "checker", when=self._checker is not None and bool(quoted)):
             more, more_checked = self._second_readings(
                 quoted, read.prepared, read.pictured, heartbeat, run, read.line_texts, already=checked
@@ -1588,19 +1661,30 @@ class DocumentProcessor:
             self._documents.set_detected_type(record.customer_id, record.document_id, kind)
         return replace(record, detected_type=kind)
 
-    def _converted(self, record: DocumentRecord, data: bytes) -> tuple[DocumentRecord, bytes]:
+    def _converted(
+        self, job: Job, run: _Run, record: DocumentRecord, data: bytes, *, store: bool = True
+    ) -> tuple[DocumentRecord, bytes]:
         """#522 PR 2: a Word or PowerPoint file as the PDF LibreOffice makes of it, stored as its
         rendition, and an old Excel file as an XLSX; the record says what it is read as (pdf or
         xlsx) from here on, while the stored kind stays the file's own. Any other kind, or none
-        with no converter, as it is. A file LibreOffice can't open fails with ``office_unreadable``."""
+        with no converter, as it is. A file LibreOffice can't open fails with ``office_unreadable``.
+        ``store`` False (a locked version, PRD 7): the PDF is drawn from, never stored. PRD 7
+        (#605): the PDF holds the file's words, so it is stored only while the run is open and the
+        version not locked, and deleted again (Superseded) when a lock came while it was stored."""
         kind = record.detected_type
         if self._office is None or self._renditions is None or kind not in OFFICE_KINDS:
             return record, data
         convert = self._office
         converted = _or_fail(lambda: convert(kind, data))
         converted_type = read_as(kind)
-        if converted_type == sniff.PDF:
+        if converted_type == sniff.PDF and store:
+            self._still_open(job, run)
             self._renditions.put_rendition(record.customer_id, record.document_id, converted)
+            try:
+                self._still_open(job, run)
+            except Superseded:
+                self._renditions.delete_rendition(record.customer_id, record.document_id)
+                raise
         return replace(record, detected_type=converted_type), converted
 
     def _scan(self, job: Job, run: _Run, name: str) -> bytes:

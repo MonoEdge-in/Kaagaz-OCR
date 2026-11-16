@@ -68,7 +68,7 @@ def test_trash_and_restore_of_another_customer_document_are_false(db: Database) 
     a_trashed = new_trashed_document(db, a["customer"], deleted_at=NOW - timedelta(days=1))
     with db.customer(b["customer"]) as conn:
         assert trash_document(conn, b["customer"], a["document"], by=b["user"], now=NOW) is False
-        assert restore_document(conn, b["customer"], a_trashed) is False
+        assert restore_document(conn, b["customer"], a_trashed, by=b["user"]) is None
 
     with db.customer(a["customer"]) as conn:
         rows = conn.execute(

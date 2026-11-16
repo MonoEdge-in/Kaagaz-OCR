@@ -114,7 +114,8 @@ def _walled(api: Api) -> Org:
     _owner(db, "UPDATE documents SET held_for = :u WHERE id = :d", {"u": ids["member"], "d": files["held"]})
     _owner(
         db,
-        "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d",
+        # Changed on purpose (#605, 0093): a locked version is never ready.
+        "UPDATE documents SET locked_at = now(), locked_by = :u, status = 'locked' WHERE id = :d",
         {"u": first, "d": files["locked"]},
     )
     _owner(
@@ -155,15 +156,11 @@ def _expected(db: Database, org: Org, user: str, *, folders: bool = False) -> se
     # Changed on purpose (#599, 0087): once the organisation has a Department only department (live
     # or in Trash), open is a department still there and not Department only, so one deleted since
     # is closed (fail closed); with none, every department is open, as on day one.
-    walled = bool(
-        _owner(
-            db,
-            "SELECT 1 FROM folders WHERE customer_id = :c AND parent_id IS NULL AND department_only"
-            " UNION ALL SELECT 1 FROM trashed_folders WHERE customer_id = :c AND parent_id IS NULL"
-            " AND department_only",
-            {"c": c},
-        )
-    )
+    # Changed on purpose (#594, 0089): once it ever had one (customers.walls_set, never cleared).
+    # The oracle reads the flag as kaagaz_access() does; that the flag is set right (from folders and
+    # trashed folders, never cleared, worked out for old rows) is test_isolation_open_paths's and
+    # test_migration_0089_db's.
+    walled = bool(_owner(db, "SELECT walls_set FROM customers WHERE id = :c", {"c": c})[0][0])
     opened = {
         str(r[0])
         for r in _owner(
@@ -321,6 +318,7 @@ def test_day_one_never_runs_the_given_or_lock_lookups(db: Database) -> None:
     # PR 8 (#602): the meaning walk and the word list too.
     add_pieces(db, c, document, [("Invoice ledger", axis(0))])
     words = {"q": "ledger", "k": "ledger", "g": "", "sk": "", "n": 50}
+    words |= {"gc": "", "gk": "", "docs": None, "cap": hybrid.CANDIDATE_CAP}  # #617's candidates (0094)
     vector = {"vec": hybrid.vector_literal(axis(0)), "recipe": RECIPE, "n": 50}
     for statement, params in (
         (listing._SELECT, {"c": c, "d": document}),
@@ -345,6 +343,11 @@ def test_day_one_never_runs_the_given_or_lock_lookups(db: Database) -> None:
 # worker statement reads a view; the workers may still run as kaagaz_app with no person on a server,
 # and would see nothing). A new one belongs here only once its callers are checked.
 VIEW_READERS = {
+    # Changed on purpose (#601): the access API's writes, and 10b's Departments tab and one-time card.
+    # Changed on purpose (#601, PR 10c): in_department (_ME); a folder holding what the person can't see.
+    "db/access.py": {
+        "_DEPARTMENTS", "_DEPARTMENT_LIST", "_HOLDS_PRIVATE", "_KEEPS", "_ME", "_NAMED_ON", "_PLACE",
+    },
     # PR 8 (#602): Ask, reached from the API only (the SQL guard's worker test).
     "answering/clarify.py": {"_ANY_KEYS", "_CANDIDATES", "_NEAR", "_PICKED_PAGE"},
     "answering/exhaustive.py": {"_IN_SCOPE", "_PIECES"},
@@ -357,13 +360,16 @@ VIEW_READERS = {
     "answering/owners.py": {"_EVERY_RECORD", "_KEYED", "_OWNED", "_RESOLVE", "_SHARES_AS_PRINTED"},
     "answering/unchecked.py": {"_CARD_DOCUMENTS"},
     "db/audit.py": {"_FOLDER_PATHS", "_OF_FAMILY", "_SEEN"},
+    # Changed on purpose (#605): who may open a locked file (Ask's fixed line), and a route's lock check.
     "db/chat.py": {
         "MARKS", "_DOCUMENT_QUESTIONS", "add_pin", "document_states", "live_document_names",
-        "messages_with_feedback", "pins_for",
+        "messages_with_feedback", "pins_for", "opens_locked",
     },
+    "api/locked.py": {"_LOCKED"},
     "db/document_stories.py": {"_DELETE", "_PUT"},
     "db/ensemble.py": {"_COUNTS", "_LATEST", "_LATEST_READINGS", "_PENDING", "_READING"},
     "db/folder_upload_items.py": {"_PREVIOUS"},
+    # Changed on purpose (PR 9a, #606): _HIDDEN_INSIDE reads kaagaz_hidden_inside (0091) now.
     "db/folders.py": {"_LIST", "_SUMMARY_SEEN"},
     "db/listing.py": {
         "_BATCH", "_CLEAR_COPY_MARKS", "_COLUMNS", "_DASHBOARD_DEPARTMENTS", "_DASHBOARD_RECENT",
@@ -374,6 +380,7 @@ VIEW_READERS = {
         "list_values", "reviewer_fix_count", "sheet_cells",
     },
     "db/organization_words.py": {"approved", "decide", "visible"},
+    "db/page_turns.py": {"_FOR_DOCUMENT"},  # Changed on purpose (#600): page turns saved for everyone
     "db/review.py": {"_COUNT", "_COUNT_FOR_DOCUMENT", "_ITEM", "_LOCK_VALUE", "_NEXT_CHUNK"},
     "db/tags.py": {"_FOR_DOCUMENTS"},
     "db/trashed_folders.py": {
@@ -389,8 +396,9 @@ VIEW_READERS = {
     "db/word_review.py": {"_PAGES", "_PIECES_BY_ID", "_VALUES_BY_ID", "_WORDS"},
     # PR 8 (#602): Ask and search, reached from the API only (the SQL guard's worker test).
     "search/hybrid.py": {
-        "_CARDS", "_DETAILS", "_FUZZY", "_MEANING", "_MEANING_EXACT", "_NEIGHBOURS", "_SECTION_PIECES",
-        "_TOPIC_PIECES", "_VISIBLE_VECTORS", "_WHOLE", "_WHOLE_SIZE", "_WORD",
+        "_CARDS", "_DETAILS", "_FUZZY", "_IDENTIFIED", "_MEANING", "_MEANING_EXACT", "_NEIGHBOURS",
+        "_SCOPE_DOCUMENTS", "_SECTION_PIECES", "_SOUND", "_TOPIC_PIECES", "_VISIBLE_VECTORS", "_WHOLE",
+        "_WHOLE_SIZE", "_WORD",
     },
     "search/story_search.py": {"_STORIES"},
 }  # fmt: skip
@@ -545,6 +553,8 @@ _ROUTES: list[tuple[str, str, Any]] = [
     ("PUT", "/api/documents/{d}/tags", {"tag_ids": []}),
     ("PUT", "/api/documents/{d}/my-story", {"story": "My note", "user_id": "{u}"}),
     ("DELETE", "/api/documents/{d}/my-story?user_id={u}", None),
+    # Changed on purpose (#600): page turns saved for everyone.
+    ("PATCH", "/api/documents/{d}/page-turns", {"changes": [{"page_no": 1, "turn": 90}], "user_id": "{u}"}),
     ("DELETE", "/api/documents/{d}", None),
 ]
 _KEY = "0" * 64
@@ -659,7 +669,8 @@ def test_versions_links_and_family_columns_show_no_hidden_version(db: Database) 
     )
     _owner(
         db,
-        "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d",
+        # Changed on purpose (#605, 0093): a locked version is never ready.
+        "UPDATE documents SET locked_at = now(), locked_by = :u, status = 'locked' WHERE id = :d",
         {"u": org.people["admin"].user_id, "d": second},
     )
     _owner(
@@ -698,7 +709,8 @@ def test_new_versions_this_month_count_only_versions_the_person_sees(db: Databas
     )
     _owner(
         db,
-        "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d",
+        # Changed on purpose (#605, 0093): a locked version is never ready.
+        "UPDATE documents SET locked_at = now(), locked_by = :u, status = 'locked' WHERE id = :d",
         {"u": admin, "d": hidden[0][0]},
     )
     for name in ("plain", "member", "management", "admin"):
@@ -710,6 +722,8 @@ def test_a_closed_department_in_trash_stays_closed(db: Database) -> None:
     """Finance (Department only) goes to Trash with its files: the plain reviewer still can't see
     its files, its member still can, and every person still sees exactly the written rule."""
     org = _walled(Api(db))
+    # Changed on purpose (PR 9b, #606): an Admin who can't see Finance's files deletes it with them, with the
+    # rule on (0092's owner-rights functions).
     reply = org.people["admin"].client.delete(
         f"/api/folders/{org.folders['finance']}?contents=trash", headers=CSRF
     )
@@ -763,9 +777,10 @@ def test_the_feed_names_no_hidden_folder_and_shows_a_given_files_history(db: Dat
 
 
 def test_join_again_needs_the_family_it_rejoins_to_be_visible(db: Database) -> None:
-    """D was made a separate file from F; F is now held for the member and locked. The plain
-    reviewer, who sees D but not F, can't join them again: 404, and nothing changes. The member,
-    given F's lock, can."""
+    """D was made a separate file from F; F is now held for the member. The plain reviewer, who
+    sees D but not F, can't join them again: 404, and nothing changes. The member, whom F is held
+    for, can. Changed on purpose (#605, question 11): F was locked here too, but a locked family is
+    never joined ("Unlock it first."); its hold alone hides it from the reviewer."""
     api = Api(db)
     org = _walled(api)
     admin = org.people["admin"]
@@ -783,13 +798,8 @@ def test_join_again_needs_the_family_it_rejoins_to_be_visible(db: Database) -> N
     member = org.people["member"].user_id
     _owner(
         db,
-        "UPDATE documents SET held_for = :m, locked_at = now(), locked_by = :a WHERE family_id = :f",
-        {"m": member, "a": admin.user_id, "f": family},
-    )
-    _owner(
-        db,
-        "INSERT INTO lock_grants (customer_id, document_id, user_id, given_by) VALUES (:c, :d, :m, :a)",
-        {"c": org.c, "d": family, "m": member, "a": admin.user_id},
+        "UPDATE documents SET held_for = :m WHERE family_id = :f",
+        {"m": member, "f": family},
     )
     state = "SELECT row_to_json(d)::text FROM documents d WHERE family_id = :f OR id = :l ORDER BY id"
     tags = "SELECT tag_id FROM document_tags WHERE document_id = :l"

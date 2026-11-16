@@ -62,7 +62,16 @@ from sqlalchemy import Connection, RowMapping, text
 
 from kaagaz.chunking.script import fold_digits, is_devanagari, latin_spelling, sound_key
 from kaagaz.db import ai_settings, audit
-from kaagaz.db.folders import _DEPTH, MAX_DEPTH, _lock_tree, prune_empty
+from kaagaz.db.folders import (
+    _DEPTH,
+    MAX_DEPTH,
+    MoveChangesAccess,
+    Rights,
+    _lock_tree,
+    changes_access,
+    place_of,
+    prune_empty,
+)
 from kaagaz.db.trash import InTrash, lock_live_family
 from kaagaz.extraction.checks import gstin_valid
 
@@ -109,7 +118,8 @@ _PRE_CHECK = (
 _STATE = (
     "SELECT r.autofile, d.family_id, d.status, d.is_current, d.doc_type, d.uploaded_by,"
     " c.status AS org_status, c.autofile_on, c.autofile_granted,"
-    " d.folder_id, fo.kind AS folder_kind, d.card, d.document_date, d.created_at FROM documents d"
+    " d.folder_id, fo.kind AS folder_kind, d.card, d.document_date, d.created_at, d.held_for"
+    " FROM documents d"
     " JOIN documents r ON r.customer_id = d.customer_id AND r.id = d.family_id"
     " JOIN customers c ON c.id = d.customer_id"
     " LEFT JOIN folders fo ON fo.customer_id = d.customer_id AND fo.id = d.folder_id"
@@ -151,25 +161,30 @@ _CHILD = (
     "SELECT id, autofile_key FROM folders"
     " WHERE customer_id = :c AND parent_id = :p AND lower(name) = lower(:name)"
 )
-# The family into a folder (filed) or back to the top level (undone), its state with it.
+# The family into a folder (filed) or back to the top level (undone, held again for :held), its
+# state with it.
 _FILE_FAMILY = (
-    "UPDATE documents SET folder_id = :folder,"
+    "UPDATE documents SET folder_id = :folder, held_for = CAST(:held AS uuid),"
     " autofile = CASE WHEN id = family_id THEN CAST(:state AS text) END"
     " WHERE customer_id = :c AND family_id = :f"
 )
-_FILED_IN = "SELECT autofile, folder_id FROM documents WHERE customer_id = :c AND id = :f"
-# Undo's way back (File management F3): the department above the filed folder (the top-level
-# folder at most 100 levels up, when it is of kind department), where a file uploaded into a
-# department was before filing; NULL (the top level) otherwise.
-# ponytail: a type folder a person moved into a department sends Undo there; remember the
-# upload's folder if that matters.
-_DEPARTMENT_ABOVE = (
-    "WITH RECURSIVE up (id, parent_id, depth) AS ("
-    " SELECT f.id, f.parent_id, 1 FROM folders f WHERE f.customer_id = :c AND f.id = :folder"
-    " UNION ALL SELECT f.id, f.parent_id, up.depth + 1 FROM up JOIN folders f ON f.id = up.parent_id"
-    " WHERE f.customer_id = :c AND up.depth < 101)"
-    " SELECT dep.id FROM up JOIN folders dep ON dep.customer_id = :c AND dep.id = up.id"
-    " WHERE up.parent_id IS NULL AND dep.kind = 'department'"
+# PRD 7 (#601): when it filed the file where its uploader can't see it, the file given to them.
+_GIVE_UPLOADER = "SELECT kaagaz_give_uploader(:d)"
+# PRD 7 decision 10 (#601; #594's note on this Undo): whom the family was held for when it was
+# filed (its filing's audit row says), so its Undo holds it for them again.
+_HELD_BEFORE = (
+    "SELECT details ->> 'held_for' FROM audit_log WHERE customer_id = :c AND family_id = :f"
+    " AND action = 'document.autofile' ORDER BY id DESC LIMIT 1"
+)
+# An Undo back to no folder of a file that was open there holds it for its uploader once the
+# organisation keeps something to some people (fail closed).
+_HOLD_FOR = (
+    "SELECT r.uploaded_by FROM documents r JOIN customers c ON c.id = r.customer_id"
+    " WHERE r.customer_id = :c AND r.id = :f AND c.walls_set"
+)
+_FILED_IN = (
+    "SELECT autofile, folder_id, department_id, private_folder_id FROM documents"
+    " WHERE customer_id = :c AND id = :f"
 )
 
 # --- party folders (28b) ---
@@ -240,7 +255,9 @@ def file_document(conn: Connection, customer_id: str, document_id: str) -> str |
             _set(conn, customer_id, family, SKIPPED)
             return "no_department"
         folder = _in_department(conn, customer_id, department, state, own)
-    conn.execute(text(_FILE_FAMILY), {"c": customer_id, "f": family, "folder": folder, "state": FILED})
+    filing = {"c": customer_id, "f": family, "folder": folder, "state": FILED, "held": None}
+    conn.execute(text(_FILE_FAMILY), filing)
+    given = conn.execute(text(_GIVE_UPLOADER), {"d": document_id}).scalar_one()
     audit.record(
         conn,
         customer_id,
@@ -248,7 +265,11 @@ def file_document(conn: Connection, customer_id: str, document_id: str) -> str |
         action="document.autofile",
         target_type="document",
         target_id=document_id,
-        details={"folder_id": folder},
+        details={
+            "folder_id": folder,
+            **({"given": given} if given else {}),
+            **({"held_for": str(state["held_for"])} if state["held_for"] is not None else {}),
+        },
     )
     return FILED
 
@@ -500,17 +521,53 @@ def _set(conn: Connection, customer_id: str, family_id: str, state: str | None) 
     conn.execute(text(_SET_STATE), {"c": customer_id, "f": family_id, "state": state})
 
 
-def undo(conn: Connection, customer_id: str, family_id: str) -> str | None:
+class HeldForAnother(Exception):
+    """PRD 7 (#601): the Undo would hold the file for its uploader, and the person undoing it is
+    neither them nor Management (as #594's Q4 for a version's Undo)."""
+
+
+def undo(
+    conn: Connection,
+    customer_id: str,
+    family_id: str,
+    *,
+    by: str | None = None,
+    management: bool = False,
+    rights: Rights | None = None,
+) -> str | None:
     """Move a family Kaagaz filed back where it was before filing (R16): its department when
-    it was filed inside one (F3), else the top level; the folder it leaves, and its parents,
+    it was filed inside one (F3), else the top level. PRD 7 decision 10 (#601): a family held when
+    it was filed is held again for the same person, and one open in no folder is held for its
+    uploader once the organisation keeps something to some people (HeldForAnother when ``by`` is
+    neither the holder nor ``management``); one not held is a move, under ``rights``, the person's
+    (MoveChangesAccess, PRD 7 decision 18). The folder it leaves, and its parents,
     go when that leaves them empty (``folders.prune_empty``). Returns the folder it was in;
     None when it is not filed now (a person moved it since, or its folder was deleted), and
-    nothing changes. The caller holds the family lock (``trash.lock_live_family``).
-    O(v log D + depth)."""
+    nothing changes. The caller holds the tree lock and the family lock
+    (``trash.lock_live_family``). O(v log D + depth)."""
     row = conn.execute(text(_FILED_IN), {"c": customer_id, "f": family_id}).first()
     if row is None or row[0] != FILED or row[1] is None:
         return None
-    back = conn.execute(text(_DEPARTMENT_ABOVE), {"c": customer_id, "folder": row[1]}).scalar()
-    conn.execute(text(_FILE_FAMILY), {"c": customer_id, "f": family_id, "folder": back, "state": None})
+    params = {"c": customer_id, "f": family_id, "folder": row[1]}
+    held = conn.execute(text(_HELD_BEFORE), params).scalar()
+    # Undo's way back (File management F3): the department above the filed folder, where a file
+    # uploaded into a department was before filing; NULL (the top level) otherwise. PRD 7 (#606):
+    # the file's stored department (0085), the same id, never a walk up the tree, which the database
+    # rule stops below a department the person can't see.
+    # ponytail: a type folder a person moved into a department sends Undo there; remember the
+    # upload's folder if that matters.
+    back = None if held is not None else row[2]
+    if held is None and back is None:
+        held = conn.execute(text(_HOLD_FOR), params).scalar()
+    if held is not None and str(held) != by and not management:
+        raise HeldForAnother()
+    if held is None and rights is not None:
+        before = tuple(None if v is None else str(v) for v in (row[2], row[3]))
+        after = place_of(conn, customer_id, None if back is None else str(back))
+        if changes_access(conn, customer_id, (before[0], before[1]), after) and not rights.allow(
+            before[0], after[0]
+        ):
+            raise MoveChangesAccess()
+    conn.execute(text(_FILE_FAMILY), {**params, "folder": back, "state": None, "held": held})
     prune_empty(conn, customer_id, [str(row[1])])
     return str(row[1])

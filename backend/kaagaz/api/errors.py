@@ -8,18 +8,22 @@ names, identity numbers, SQL or a stack trace. Validation errors are not
 echoed back either, because they can quote what was typed (a password).
 """
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.exc import TimeoutError as PoolTimeout
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from kaagaz.db.documents import RETRY_STUCK_HOURS
+from kaagaz.db.sqlstate import INSUFFICIENT_PRIVILEGE, log_unavailable, sqlstate
 from kaagaz.ingestion.errors import BackendUnavailable
+
+_log = logging.getLogger(__name__)
 
 MESSAGES = {
     "bad_request": "The request is not valid.",
@@ -44,6 +48,7 @@ MESSAGES = {
     "method_not_allowed": "This action is not available here.",
     "conflict": "That already exists.",
     "folder_cycle": "A folder can't go inside itself or one of its own folders.",
+    "inside_private": "A private folder can't go inside another private folder.",  # PRD 7 (#601)
     "folder_too_deep": "Folders can be at most 100 levels deep.",
     "folder_not_empty": "This folder isn't empty. Move or delete what is inside it first.",
     "folder_upload_running": "An upload into this folder is still running. Try again when it finishes.",
@@ -71,6 +76,12 @@ MESSAGES = {
     "rate_limited": "Too many requests. Please wait a minute and try again.",
     "backend_unavailable": "The service is busy right now. Please try again in a minute.",
     "internal_error": "Something went wrong on our side.",
+    # PRD 7 (#606, Q8): the database rule refused a write the route let through.
+    "access_would_change": "This would change who can see a file, so it wasn't done. Ask your admin.",
+    # PRD 7 (#606, Q6): an Admin may not upload into a place whose files they can't see.
+    "upload_place_hidden": (
+        "You can't upload into this folder: you can't see its files. Choose another folder."
+    ),
 }
 
 _STATUS_CODES = {
@@ -145,7 +156,31 @@ async def _http_error(request: Request, exc: Exception) -> Response:
 
 
 async def _unavailable(request: Request, exc: Exception) -> Response:
+    # #620: every 503 says why, once: the database's BackendUnavailable was logged where it was made
+    # (engine.unavailable, Database.ping); any other error is logged here.
+    if not (isinstance(exc, BackendUnavailable) and exc.args == ("database",)):
+        log_unavailable(exc, path=request.url.path)
     return error_response(503, "backend_unavailable")
+
+
+async def _refused_by_rule(request: Request, exc: Exception) -> Response:
+    """PRD 7 (#606, Q8): the database rule refused a row (42501 with PostgreSQL's row-level security
+    message, a row the person can't see): a route's own check missed it, so it is logged critical
+    with the method and path (never the statement or a value), and the reply is 409, never a 500.
+    Any other ProgrammingError, 42501 for a missing right included, is a bug: ErrorMiddleware's 500."""
+    diag = getattr(getattr(exc, "orig", None), "diag", None)
+    said = str(getattr(diag, "message_primary", None) or "")
+    if (
+        not isinstance(exc, ProgrammingError)
+        or sqlstate(exc) != INSUFFICIENT_PRIVILEGE
+        or "row-level security" not in said
+    ):
+        raise exc
+    _log.critical(
+        "the database rule refused a statement",
+        extra={"code": "access_would_change", "method": request.method, "path": request.url.path},
+    )
+    return error_response(409, "access_would_change")
 
 
 def install(app: FastAPI) -> None:
@@ -157,3 +192,4 @@ def install(app: FastAPI) -> None:
     app.add_exception_handler(BackendUnavailable, _unavailable)
     app.add_exception_handler(OperationalError, _unavailable)
     app.add_exception_handler(PoolTimeout, _unavailable)  # no free pooled connection
+    app.add_exception_handler(ProgrammingError, _refused_by_rule)

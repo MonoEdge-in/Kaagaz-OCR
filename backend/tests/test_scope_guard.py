@@ -23,6 +23,9 @@ SCOPED = [
     (fixed_queries, "_VALUE_REFS"),
     (unchecked, "_CARD_DOCUMENTS"),
     (exhaustive, "_DOCUMENTS"),  # every document holding a word (16 Oct 2026); _PIECES takes its ids
+    # #617 part 1: a scope's documents, and the pieces on an asked identifier's pages.
+    (hybrid, "_SCOPE_DOCUMENTS"),
+    (hybrid, "_IDENTIFIED"),
 ]
 
 

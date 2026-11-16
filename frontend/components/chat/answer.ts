@@ -102,7 +102,7 @@ export function answerStatusText(answer: Answer | null): string {
     const said = [answer.sentences[0]?.text.trim(), count > 0 ? `${plural(count, "document", "documents")}.` : ""];
     return ["Answer ready.", ...said].filter(Boolean).join(" ");
   }
-  if (answer?.status === "no_access") return NO_ACCESS_TEXT;
+  if (answer?.status === "no_access") return answer.reason === "locked" ? (answer.sentences[0]?.text ?? NO_ACCESS_TEXT) : NO_ACCESS_TEXT; // #605
   if (!answer || answer.status === "not_found") return NO_ANSWER_STATUS;
   if (answer.status === "clarify") return answer.clarify?.question ?? NO_ANSWER_STATUS; // PRD 6 B2
   const first = answer.status === "unchecked" ? UNCHECKED_TEXT : answer.sentences[0]?.text.trim();
