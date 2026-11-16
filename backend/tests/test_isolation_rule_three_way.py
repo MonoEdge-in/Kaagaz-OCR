@@ -22,6 +22,12 @@ from tests.test_api_support import Api
 from tests.test_isolation_access_views import Org, _all, _expected
 from tests.test_operator_auth_db import _owner
 
+# Changed on purpose (PR 12, #605, 0093): a locked version is never ready or needs_reader (its CHECK).
+_HAND_LOCK = (
+    "UPDATE documents SET locked_at = now(), locked_by = :u,"
+    " status = CASE WHEN status IN ('ready', 'needs_reader') THEN 'locked' ELSE status END WHERE id = :d"
+)
+
 pytestmark = [pytest.mark.db, pytest.mark.usefixtures("the_rule_on")]
 
 
@@ -118,7 +124,7 @@ def _build(db: Database, seed: int) -> tuple[Org, list[str]]:
                 d=document,
             )
         elif roll < 0.3:
-            run("UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d", u=admin, d=document)
+            run(_HAND_LOCK, u=admin, d=document)
             if rng.random() < 0.5:
                 run(
                     "INSERT INTO lock_grants (customer_id, document_id, user_id, given_by)"

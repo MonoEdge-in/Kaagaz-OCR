@@ -25,6 +25,12 @@ from tests.test_isolation_access_views import Org, _all, _expected, _walled
 from tests.test_isolation_schema import PERSON_RULE_TABLES
 from tests.test_operator_auth_db import _owner
 
+# Changed on purpose (PR 12, #605, 0093): a locked version is never ready or needs_reader (its CHECK).
+_HAND_LOCK = (
+    "UPDATE documents SET locked_at = now(), locked_by = :u,"
+    " status = CASE WHEN status IN ('ready', 'needs_reader') THEN 'locked' ELSE status END WHERE id = :d"
+)
+
 pytestmark = [pytest.mark.db, pytest.mark.usefixtures("the_rule_on")]
 
 
@@ -68,9 +74,19 @@ def org(db: Database) -> Org:
     too), a link between two files and a suggestion between two families."""
     walled = _walled(Api(db))
     user = walled.people["admin"].user_id
+    # Changed on purpose (PR 12, #605, 0093): no content is ever written for a locked file, so the
+    # locked file's rows are written with its lock lifted, then it is locked again (rows from before a
+    # lock, which the lock's own clearing would delete), so the rule's R0 is still tested on them.
+    locked = {"c": walled.c, "d": walled.files["locked"], "u": user}
+    _owner(
+        db, "UPDATE documents SET locked_at = NULL, locked_by = NULL, status = 'ready' WHERE id = :d", locked
+    )
     for document in walled.files.values():
         for statement in _ROWS.values():
             _owner(db, statement, {"c": walled.c, "d": document, "u": user})
+    _owner(
+        db, "UPDATE documents SET locked_at = now(), locked_by = :u, status = 'locked' WHERE id = :d", locked
+    )
     _owner(db, _ROWS["model_usage"], {"c": walled.c, "d": None, "u": user})
     f = walled.files
     _owner(
@@ -219,7 +235,7 @@ def test_the_switch_is_per_organisation(db: Database, org: Org) -> None:
     hidden = Api(db).add_document(other, name="h.pdf", uploaded_by=other_admin)
     _owner(
         db,
-        "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d",
+        _HAND_LOCK,
         {"u": other_admin, "d": hidden},
     )
     with rule_off():  # Changed on purpose (PR 9b, #606): the helper's new name
@@ -253,13 +269,13 @@ def test_the_fast_path_holds_only_when_every_file_is_seen(db: Database) -> None:
     assert (_sees_everything(db, customer, member), _sees_everything(db, customer, None)) == (True, False)
     _owner(db, "UPDATE documents SET held_for = :u WHERE id = :d", {"u": admin, "d": file})
     assert (_sees_everything(db, customer, member), _sees_everything(db, customer, boss)) == (False, True)
-    _owner(
-        db, "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d", {"u": admin, "d": file}
-    )
+    _owner(db, _HAND_LOCK, {"u": admin, "d": file})
     assert _sees_everything(db, customer, boss) is False
     _owner(
         db,
-        "UPDATE documents SET held_for = NULL, locked_at = NULL, locked_by = NULL WHERE id = :d",
+        # Changed on purpose (PR 12, #605, 0093): unlocked, it is ready again (the locked state's CHECK).
+        "UPDATE documents SET held_for = NULL, locked_at = NULL, locked_by = NULL, status = 'ready'"
+        " WHERE id = :d",
         {"d": file},
     )
     _owner(db, "UPDATE customers SET walls_set = true WHERE id = :c", {"c": customer})

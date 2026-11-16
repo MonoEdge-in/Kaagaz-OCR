@@ -33,6 +33,12 @@ from tests.test_isolation_access_api import _email_api
 from tests.test_isolation_access_views import Org, _app, _seen, _walled
 from tests.test_operator_auth_db import _owner
 
+# Changed on purpose (PR 12, #605, 0093): a locked version is never ready or needs_reader (its CHECK).
+_HAND_LOCK = (
+    "UPDATE documents SET locked_at = now(), locked_by = :u,"
+    " status = CASE WHEN status IN ('ready', 'needs_reader') THEN 'locked' ELSE status END WHERE id = :d"
+)
+
 pytestmark = pytest.mark.db
 
 # Each function, called so that a caller it lets in changes nothing with random ids (``:ids`` a
@@ -227,7 +233,7 @@ def test_a_member_may_not_restore_a_folder_holding_a_hidden_file_someone_else_up
     theirs = api.add_document(org.c, name="theirs.pdf", folder_id=plans, uploaded_by=admin.user_id)
     _owner(
         db,
-        "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d",
+        _HAND_LOCK,
         {"u": admin.user_id, "d": theirs},
     )
     _trash_folder(org, plans)
@@ -324,7 +330,7 @@ def test_a_person_deletes_forever_no_family_with_a_version_they_cant_see(db: Dat
         )
     _owner(
         db,
-        "UPDATE documents SET locked_at = now(), locked_by = :u WHERE id = :d",
+        _HAND_LOCK,
         {"u": org.people["admin"].user_id, "d": second},
     )
     _owner(db, "UPDATE documents SET deleted_at = now() WHERE family_id = :f", {"f": first})
