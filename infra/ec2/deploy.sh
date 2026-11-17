@@ -9,9 +9,12 @@
 # (`docker compose run --rm migrate`), never a side effect of a deploy.
 #
 #   1. Room on the disk.
-#   2. Config: a deploy checks out <commit>'s compose files and Caddyfile and applies
-#      them to the infra services and Caddy. A rollback keeps the current ones, so
-#      every release must keep its compose files working for the release before it.
+#   2. Config: a deploy checks out <commit>'s compose files and Caddyfile; a rollback
+#      keeps the current ones, so every release must keep its compose files working for
+#      the release before it. An infra service whose compose config changed is updated
+#      now: clamav with docker rollout (the workers keep scanning on the old one until
+#      the new one is healthy), caddy recreated (a few seconds without the site; rare).
+#      Unchanged ones are left alone.
 #   3. Pull <registry>/kaagaz/<service>:<commit>.
 #   4. Backend only, from the new image, before anything is switched:
 #      `kaagaz schema-check` (read-only, backend/kaagaz/cli.py). It stops on a
@@ -21,11 +24,14 @@
 #   5. Roll out api or frontend with docker rollout: the old container serves until
 #      the new one is healthy; if it never is, the new one is removed and nothing
 #      has changed.
-#   6. Record the tag in .env (BACKEND_TAG, FRONTEND_TAG), which every docker compose
+#   6. A changed Caddyfile is reloaded, after the switch, so a new route never points
+#      at an app that is not there yet. Caddy reloads without dropping connections, and
+#      keeps its running config if it refuses the file.
+#   7. Record the tag in .env (BACKEND_TAG, FRONTEND_TAG), which every docker compose
 #      command on the server reads, so `docker compose ps` and the rest just work.
-#   7. Backend only: recreate the workers (each finishes the job in hand first,
+#   8. Backend only: recreate the workers (each finishes the job in hand first,
 #      stop_grace_period 600 s).
-#   8. Keep the live image and the newest other one (the quick way back) per
+#   9. Keep the live image and the newest other one (the quick way back) per
 #      service; remove the rest.
 #
 # A changed deploy.sh takes effect on the next run (git replaces files, so this
@@ -43,6 +49,8 @@ AWS_REGION=ap-south-1
 MIN_FREE_GB=5
 # api's healthcheck: start_period 20 s, then up to 12 tries 10 s apart.
 ROLLOUT_TIMEOUT=180
+# clamav loads its signatures before it is healthy (start_period 6m in docker-compose.yml).
+CLAMAV_ROLLOUT_TIMEOUT=420
 COMPOSE=(-f docker-compose.yml -f docker-compose.prod.yml)
 # kaagaz schema-check's exit codes (backend/kaagaz/cli.py: SCHEMA_BEHIND, SCHEMA_AHEAD).
 SCHEMA_BEHIND=3
@@ -107,10 +115,16 @@ KAAGAZ_REGISTRY="$(env_value KAAGAZ_REGISTRY)"
 
 dc() { docker compose "${COMPOSE[@]}" "$@"; }
 
-# Compose must be able to read .env and both files before anything else runs; otherwise
-# every later step fails with a misleading message (a frontend "not healthy" after 0 s).
-compose_errors="$(dc config --quiet 2>&1)" || die "docker compose cannot read its configuration:
-$compose_errors"
+# Compose must be able to read .env and both files before anything runs that depends on
+# them; otherwise every later step fails with a misleading message (a frontend "not
+# healthy" after 0 s). Checked once now, and again after the commit's own compose files
+# are checked out (step 2), since those may differ.
+check_compose() {
+  local errors
+  errors="$(dc config --quiet 2>&1)" || die "docker compose cannot read its configuration$1:
+$errors"
+}
+check_compose ""
 
 # A kaagaz CLI command (backend/kaagaz/cli.py) in a throwaway container of the
 # backend image being deployed, as the migrate service: the owner's DATABASE_URL (it
@@ -127,27 +141,73 @@ kaagaz_cli() {
 # Never fatal; a failed reload is tried again on the next deploy.
 reload_caddy() {
   if cmp -s infra/caddy/Caddyfile "$CADDY_FILE"; then
+    log "Caddyfile: unchanged, no reload"
     return 0
   fi
+  log "Caddyfile: changed, reloading caddy"
   if ! dc exec -T caddy sh -c 'cat >/tmp/Caddyfile && caddy reload --config /tmp/Caddyfile --adapter caddyfile' \
     <infra/caddy/Caddyfile >/dev/null; then
-    log "caddy reload failed; Caddy keeps its previous config"
+    log "Caddyfile: caddy refused or could not reload it; it keeps its previous config (tried again next deploy)"
     return 0
   fi
   cp -f infra/caddy/Caddyfile "$CADDY_FILE" || log "could not record $CADDY_FILE; caddy reloads again next deploy"
-  log "caddy reloaded the changed Caddyfile"
+  log "Caddyfile: reloaded"
 }
 
 # docker rollout replaces running containers; with none running (the first start,
 # or a crash) it has nothing to replace, so start the service plainly and wait for
 # its healthcheck instead.
 roll_out() {
-  local svc=$1
+  local svc=$1 timeout=${2:-$ROLLOUT_TIMEOUT}
   if [[ -n "$(dc ps -q "$svc")" ]]; then
-    docker rollout "${COMPOSE[@]}" --timeout "$ROLLOUT_TIMEOUT" "$svc"
+    docker rollout "${COMPOSE[@]}" --timeout "$timeout" "$svc"
   else
-    dc up -d --no-deps --wait --wait-timeout "$ROLLOUT_TIMEOUT" "$svc"
+    dc up -d --no-deps --wait --wait-timeout "$timeout" "$svc"
   fi
+}
+
+# The compose config hash a service would get now, and the one its running container was
+# made with (compose labels each container with it). Empty when none runs.
+wanted_hash() { dc config --hash "$1" | awk '{print $2}'; }
+running_hash() {
+  local id
+  id="$(dc ps -q "$1" | head -n 1)"
+  [[ -n "$id" ]] || return 0
+  docker inspect -f '{{index .Config.Labels "com.docker.compose.config-hash"}}' "$id"
+}
+
+# Updates only the infra services that need it, each the least disruptive way, and logs
+# every decision (skipped, started, updated), so a deploy's log shows what it touched.
+apply_infra() {
+  local svc have
+  for svc in "${infra[@]}"; do
+    have="$(running_hash "$svc")"
+    if [[ -n "$have" && "$have" == "$(wanted_hash "$svc")" ]]; then
+      log "$svc: configuration unchanged, skipping"
+      continue
+    fi
+    if [[ -z "$have" ]]; then
+      log "$svc: not running, starting it"
+    else
+      log "$svc: configuration changed, applying update"
+    fi
+    case "$svc" in
+      clamav)
+        log "clamav: rolling out; the workers scan on the current instance until the new one is healthy (up to ${CLAMAV_ROLLOUT_TIMEOUT}s)"
+        roll_out clamav "$CLAMAV_ROLLOUT_TIMEOUT" ||
+          die "clamav: the new instance was not healthy within ${CLAMAV_ROLLOUT_TIMEOUT}s; the current one keeps scanning"
+        ;;
+      caddy)
+        log "caddy: recreating the container; the site is unreachable for a few seconds"
+        dc up -d --no-deps caddy || die "caddy: did not start; see docker compose logs caddy"
+        ;;
+      *)
+        log "$svc: recreating the container"
+        dc up -d --no-deps "$svc" || die "$svc: did not start; see docker compose logs $svc"
+        ;;
+    esac
+    log "$svc: update completed"
+  done
 }
 
 # Per service, keeps the live image and the newest other one (docker lists the
@@ -186,14 +246,12 @@ free_gb="$(df --output=avail -BG / | tail -n 1 | tr -dc '0-9')"
 if [[ "$rollback" == false ]]; then
   git fetch --quiet origin "$tag" || die "git fetch $tag"
   git -c advice.detachedHead=false checkout --quiet --force --detach "$tag" || die "git checkout $tag"
+  check_compose " (with $tag's compose files)"
 fi
 # Every service but the apps (caddy, clamav and whatever else this release's compose
-# files run here), recreated only where their config changed.
+# files run here).
 mapfile -t infra < <(dc config --services | grep -vxE 'api|worker|frontend|migrate' || true)
-if ((${#infra[@]})); then
-  dc up -d --no-deps "${infra[@]}" || die "starting ${infra[*]}"
-fi
-reload_caddy
+apply_infra
 
 # ---- 3. Pull the image ----
 image="$KAAGAZ_REGISTRY/kaagaz/$service:$tag"
@@ -231,19 +289,21 @@ if [[ "$service" == backend ]]; then
   kaagaz_cli ensure-bucket || die "ensure-bucket; nothing was switched"
 fi
 
-# ---- 5-7. Switch, record, workers ----
+# ---- 5-8. Switch, Caddyfile, record, workers ----
 if [[ "$service" == backend ]]; then
   log "rolling out api"
   roll_out api || die "api was not healthy on $tag within ${ROLLOUT_TIMEOUT}s; the previous api keeps serving"
+  reload_caddy
   set_env_value BACKEND_TAG "$tag"
   log "recreating the workers (each finishes its job first, up to 10 minutes)"
   dc up -d --no-deps worker || die "workers did not start on $tag (api is on it); see docker compose ps -a"
 else
   log "rolling out frontend"
   roll_out frontend || die "frontend was not healthy on $tag within ${ROLLOUT_TIMEOUT}s; the previous frontend keeps serving"
+  reload_caddy
   set_env_value FRONTEND_TAG "$tag"
 fi
 
-# ---- 8. Old images ----
+# ---- 9. Old images ----
 prune_images
 log "done: $service is on $tag"
