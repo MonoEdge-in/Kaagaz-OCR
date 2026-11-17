@@ -47,7 +47,8 @@ describe("each department's row", () => {
     expect(finance).toContain("People (12)");
     expect(finance).toMatch(/>Keep to its people<span class="visually-hidden">: Finance<\/span>/);
     expect(sales).toContain("No head yet");
-    expect(sales).toContain('<span class="status-chip" data-tone="working">Department only</span>');
+    // Changed on purpose: "working" draws a spinner forever; Department only is a state, not work.
+    expect(sales).toContain('<span class="status-chip" data-tone="info">Department only</span>');
     expect(sales).toMatch(/>Open to everyone<span class="visually-hidden">: Sales<\/span>/);
   });
 
@@ -169,5 +170,23 @@ describe("the new department's head step", () => {
   it("is keyed by the department, so a second one starts fresh", () => {
     const panel = readFileSync(join(__dirname, "..", "components/admin/DepartmentsPanel.tsx"), "utf8");
     expect(panel).toContain("key={heading.id}");
+  });
+});
+
+describe("labels that are a state, not work in progress", () => {
+  const read = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");
+
+  it("never use the spinning working tone (Department only, Management, the sign-in tag)", () => {
+    for (const path of ["components/admin/DepartmentsPanel.tsx", "components/admin/UsersPanel.tsx"]) {
+      expect(read(path), path).not.toContain('data-tone="working"');
+    }
+  });
+
+  it("get a still blue chip: the info tone has the working colours and no animation", () => {
+    const css = read("app/globals.css");
+    const rule = (selector: string) => css.match(new RegExp(`${selector.replace(/[[\]".]/g, "\\$&")}\\s*\\{([^}]*)\\}`))?.[1];
+    expect(rule('.status-chip[data-tone="info"]')).toMatch(/color:\s*var\(--k-info\)/);
+    expect(rule('.status-chip[data-tone="info"]')).toMatch(/background:\s*var\(--k-info-soft\)/);
+    expect(css).not.toMatch(/\.status-chip\[data-tone="info"\][^{]*\{[^}]*animation/);
   });
 });
