@@ -75,8 +75,12 @@ flock -w 1200 9 || die "another deploy has held $LOCK_FILE for 20 minutes"
 
 cd "$KAAGAZ_DIR"
 
-# A KEY=value line of the server's .env (the last one wins, as in compose).
-env_value() { sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1; }
+# A KEY=value line of the server's .env (the last one wins, as in compose). Only lines that
+# start with KEY= count; anything else is ignored. Quotes around the value are removed.
+# .env is read, never sourced: it is compose's format, not a shell script.
+env_value() {
+  sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1 | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/"
+}
 
 # Sets KEY=value in .env, replacing the line or adding it, in one atomic move.
 set_env_value() {
@@ -91,10 +95,22 @@ set_env_value() {
   mv -f "$tmp" "$ENV_FILE"
 }
 
+# Every line of .env must be blank, a comment or KEY=value; anything else (a pasted shell
+# prompt, a stray command) breaks every docker compose command, so stop here and say where.
+if bad="$(grep -nvE '^[[:space:]]*($|#|[A-Za-z_][A-Za-z0-9_]*=)' "$ENV_FILE")"; then
+  die "$ENV_FILE has lines that are not KEY=value (fix or delete them):
+$bad"
+fi
+
 KAAGAZ_REGISTRY="$(env_value KAAGAZ_REGISTRY)"
 [[ -n "$KAAGAZ_REGISTRY" ]] || die "KAAGAZ_REGISTRY is not set in $ENV_FILE"
 
 dc() { docker compose "${COMPOSE[@]}" "$@"; }
+
+# Compose must be able to read .env and both files before anything else runs; otherwise
+# every later step fails with a misleading message (a frontend "not healthy" after 0 s).
+compose_errors="$(dc config --quiet 2>&1)" || die "docker compose cannot read its configuration:
+$compose_errors"
 
 # A kaagaz CLI command (backend/kaagaz/cli.py) in a throwaway container of the
 # backend image being deployed, as the migrate service: the owner's DATABASE_URL (it
