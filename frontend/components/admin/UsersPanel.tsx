@@ -380,7 +380,7 @@ export function AccessCell({ user }: { user: AdminUser }) {
   return (
     <span className={styles.statusList}>
       {user.management && (
-        <span className="status-chip" data-tone="working" title={MANAGEMENT_TITLE}>
+        <span className="status-chip" data-tone="info" title={MANAGEMENT_TITLE}>
           {MANAGEMENT_CHIP}
           <span className="visually-hidden">{MANAGEMENT_MEANS}</span>
         </span>
@@ -586,7 +586,7 @@ function UserRow({
         <span className={styles.statusList}>
           {signsInWith(user.signs_in_with)}
           {tag && (
-            <span className="status-chip" data-tone="working">
+            <span className="status-chip" data-tone="info">
               {tag}
             </span>
           )}

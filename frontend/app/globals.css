@@ -1244,7 +1244,8 @@ td.num {
   flex: none;
 }
 
-.status-chip[data-tone="working"] {
+.status-chip[data-tone="working"],
+.status-chip[data-tone="info"] {
   color: var(--k-info);
   background: var(--k-info-soft);
 }

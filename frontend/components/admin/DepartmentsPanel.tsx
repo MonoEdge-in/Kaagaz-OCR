@@ -288,7 +288,7 @@ export function DepartmentAccess({
         <span>{headLine(department.heads)}</span>
         <span>{peopleCount(department.members)}</span>
         {department.department_only ? (
-          <span className="status-chip" data-tone="working">
+          <span className="status-chip" data-tone="info">
             {DEPARTMENT_ONLY}
           </span>
         ) : (
