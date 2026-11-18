@@ -58,12 +58,14 @@ def scanned(
     votes: Any = None,
     quality: str = "unsure",
     issues: tuple[str, ...] = ("blurry", "illegible_words"),
+    page_two: str = "uncertain",
 ) -> DocumentContent:
     """A two-page scan: page 1's line holds the unsure word ``mark`` and a [?], with a total
     in the word's box; page 2's line is unpinned. Two pieces: the lines, and a line naming
     the word twice (so an edit never goes there). ``quality`` "illegible" makes the word a
     review item too (#432: an unsure word is a check, listed and counted nowhere); ``issues``
-    are page 1's problems."""
+    are page 1's problems; ``page_two`` page 2's grade (PRD 9 D5: "unreadable" keeps its unpinned line
+    a review item, as Ensemble's two-page runs need)."""
     line = f"Total Rs {mark} paid [?]"
     spans = (
         Span(line, line, LINE, None, "paragraph", "ocr", quality="ok", box_source="found"),
@@ -75,7 +77,7 @@ def scanned(
     pages = [
         PageRecord(PageInfo(1, 595.0, 842.0, "pt"), True, "ocr", read_quality="uncertain",
                    read_issues=issues, unsure_words=1, illegible_words=1),
-        PageRecord(PageInfo(2, 595.0, 842.0, "pt"), True, "ocr", read_quality="uncertain",
+        PageRecord(PageInfo(2, 595.0, 842.0, "pt"), True, "ocr", read_quality=page_two,
                    read_issues=("unpinned",), unpinned_lines=1),
     ]  # fmt: skip
     pieces = [
