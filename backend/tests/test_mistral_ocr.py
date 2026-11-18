@@ -501,6 +501,9 @@ def test_a_multi_line_block_whose_rows_do_not_match_its_lines_stays_unpinned(
         ("Name  Asha\nAmount  500", 250.0, [(110.0, 105.0, 800.0, 125.0), (600.0, 200.0, 850.0, 245.0)]),
         # Two lines, the first wrapped onto a second found line, the second missed.
         ("Name  Asha\nAmount  500", 250.0, [(110.0, 105.0, 800.0, 125.0), (110.0, 130.0, 800.0, 150.0)]),
+        # Rows 60 apart filling the block: row 1 wraps, row 2 is missed, row 3 is found.
+        ("Name  Asha\nAmount  500\nDate  1 Nov", 250.0,
+         [(110.0, 105.0, 800.0, 125.0), (500.0, 128.0, 800.0, 148.0), (110.0, 225.0, 800.0, 245.0)]),
     ],
 )  # fmt: skip
 def test_rows_that_match_the_count_but_not_the_layout_pin_no_line(
