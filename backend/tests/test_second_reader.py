@@ -26,17 +26,26 @@ from typing import Any
 import pytest
 
 from kaagaz.ai import usage
-from kaagaz.ai.openrouter import PageReply
+from kaagaz.ai.openrouter import PageReply, ProviderNotAllowed
 from kaagaz.ai.replies import ModelOutputError, ModelUnavailable
 from kaagaz.ai.usage import ULC_SCAN
 from kaagaz.db import models
+from kaagaz.db.page_reads import PageKey
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.jobs.reading_pause import DAILY_LIMIT, ReadingPaused
 from kaagaz.jobs.worker import JobFailed
-from kaagaz.reading.gemini_ocr import GeminiEngine
+from kaagaz.reading.gemini_ocr import PROVIDER_NOT_ALLOWED, ULC_MARK, GeminiEngine, pixels_sha256
 from kaagaz.reading.mistral_reader import BadReply, MistralUnavailable
-from kaagaz.reading.ocr import DocumentPages, PageRead, SecondReader, UlcCeiling, UlcPrices, as_page_engine
+from kaagaz.reading.ocr import (
+    COMPACT_PROMPT_VERSION,
+    DocumentPages,
+    PageRead,
+    SecondReader,
+    UlcCeiling,
+    UlcPrices,
+    as_page_engine,
+)
 from kaagaz.reading.page_quality import NO_TEXT, READER_REFUSED
 from kaagaz.reading.spans import ReadError
 from kaagaz.reading.wiring import build_reader_socket
@@ -248,6 +257,41 @@ def test_a_second_read_refused_leaves_the_page_as_mistral_left_it() -> None:
     read = rig.read(with_second())
     assert (read.lines, read.issues, read.read_by) == ((), (READER_REFUSED,), BY_4)
     assert len(rig.client.calls) == 1
+    assert rig.local.pages == 0  # #664 review: never read locally only to be thrown away
+
+
+@pytest.mark.parametrize(
+    ("second", "failure"),
+    [
+        (NORMAL, ProviderNotAllowed(PROVIDER_NOT_ALLOWED)),  # outside OPENROUTER_PROVIDERS: nothing sent
+        (NORMAL, ModelUnavailable("timeout")),  # the page's time ran out
+        (dataclasses.replace(NORMAL, model=FLASH), ModelUnavailable("model_not_found")),  # withdrawn
+        (ULC, ModelOutputError("output_truncated")),  # cut off at its ceiling's cap
+        (ULC, ModelOutputError("invalid_output")),
+        (dataclasses.replace(ULC, ulc_prices=None), None),  # no known price: nothing sent
+    ],
+)
+def test_no_local_read_is_made_on_any_path_where_the_model_does_not_read(
+    second: SecondReader, failure: Exception | None
+) -> None:
+    """#664 review: every path where Gemini alone reads the page locally (a refusal, a timeout, a
+    withdrawn model, Ultra low cost's ceiling) leaves the backup's page as Mistral left it, with
+    no local read, its billed tokens kept."""
+    rig = Rig(FakeMistral(BadReply("refused_request")), *([] if failure is None else [failure]))
+    read = rig.read(with_second(second))
+    assert (read.lines, read.issues, read.read_by) == ((), (READER_REFUSED,), BY_4)
+    assert rig.local.pages == 0
+
+
+def test_a_page_ultra_low_cost_refused_before_is_not_read_locally_again() -> None:
+    """Its ULC_MARK (a billed refusal cached) is read again, never locally."""
+    cache = FakeCache()
+    key = PageKey(CUSTOMER, DOCUMENT, 1, pixels_sha256(page()), FLASH, f"{COMPACT_PROMPT_VERSION}+ulc40")
+    cache.rows[key] = ({ULC_MARK: "cost_ceiling"}, 2400, 300)
+    rig = Rig(FakeMistral(BadReply("refused_request")))  # Gemini has nothing scripted
+    read = rig.read(on_mistral(cache, second=ULC))
+    assert (read.lines, read.read_by, rig.local.pages, rig.client.calls) == ((), BY_4, 0, [])
+    assert key in cache.gets
 
 
 @pytest.mark.parametrize(("failure", "code"), [("server_error", "gemini"), ("key_rejected", "gemini_key")])
@@ -271,6 +315,7 @@ def test_past_the_outage_window_the_page_stays_as_mistral_left_it() -> None:
     read = rig.read(with_second())
     assert (read.lines, read.issues, read.read_by) == ((), (READER_REFUSED,), BY_4)
     assert len(rig.client.calls) == 2
+    assert rig.local.pages == 0  # #664 review: past the window, no local read either
 
 
 def test_an_outage_of_the_second_reader_leaves_the_document_waiting_not_failed() -> None:

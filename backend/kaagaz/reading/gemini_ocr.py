@@ -559,6 +559,19 @@ CROPS_SCHEMA: dict[str, Any] = {
 
 _log = logging.getLogger(__name__)
 
+# #664 review: set while a second read runs (``_second_read``), so a page its model does not read is
+# never read locally only to be thrown away (``_read_locally`` raises ``_LeftUnread``). A
+# ContextVar, so the reads it starts on threads of their own (``copy_context().run``) see it too.
+_NO_LOCAL: contextvars.ContextVar[bool] = contextvars.ContextVar("gemini_no_local", default=False)
+
+
+class _LeftUnread(Exception):
+    """#664 review: a second read's page its model did not read, with the tokens it was billed."""
+
+    def __init__(self, tokens: tuple[int, int]) -> None:
+        super().__init__("left_unread")
+        self.tokens = tokens
+
 
 class PageClient(Protocol):
     """The model client's part the reader uses: ``kaagaz.ai.openrouter.OpenRouterClient``."""
@@ -1186,11 +1199,12 @@ class GeminiEngine:
         """#664: the page Mistral read no text on (``first``) read by ``second``, normal (``_read``:
         the page cache, at the page's time left) or Ultra low cost (``_ulc``: once, under its
         ceiling), billed as that read is. Its read when it is the model's with lines; else
-        ``first`` with the tokens the try was billed: a refusal, a local read (past
-        READER_OUTAGE_FALLBACK_MINUTES of an outage too) or no text never reads locally here. An
-        outage or a key problem of ``second`` (``BackendUnavailable``) goes up: the document
-        waits, as a Gemini document does (#664 review). With no time left for a call, ``first``
-        at once: nothing sent, nothing read locally."""
+        ``first`` with the tokens the try was billed: wherever Gemini alone would read the page
+        locally (a refusal, a timeout, a withdrawn model, past READER_OUTAGE_FALLBACK_MINUTES of
+        an outage, Ultra low cost's ceiling), nothing is read locally (``_NO_LOCAL``), and no text
+        is no read either. An outage or a key problem of ``second`` (``BackendUnavailable``) goes
+        up: the document waits, as a Gemini document does (#664 review). With no time left for a
+        call, ``first`` at once: nothing sent, nothing read locally."""
         if self._left() < MIN_CALL_SECONDS:
             return first
         on_second = dataclasses.replace(
@@ -1203,13 +1217,21 @@ class GeminiEngine:
             ulc_prices=second.ulc_prices,
             second=None,
         )
-        if second.ulc is not None:
-            read = self._ulc(image, page_no, on_second, second.ulc)
-        else:
-            read = self._read(image, page_no=page_no, pages=on_second, sha=sha, boxes=boxes)
         ids = {"customer_id": pages.customer_id, "document_id": pages.document_id, "page_no": page_no}
-        if read.read_by != second.model or not read.lines:
-            _log.warning("second reader did not read the page", extra={**ids, "code": SECOND_READER_FAILED})
+        failed = {**ids, "code": SECOND_READER_FAILED}
+        no_local = _NO_LOCAL.set(True)
+        try:
+            if second.ulc is not None:
+                read = self._ulc(image, page_no, on_second, second.ulc)
+            else:
+                read = self._read(image, page_no=page_no, pages=on_second, sha=sha, boxes=boxes)
+        except _LeftUnread as unread:
+            _log.warning("second reader did not read the page", extra=failed)
+            return _plus(first, *unread.tokens)
+        finally:
+            _NO_LOCAL.reset(no_local)
+        if read.read_by != second.model or not read.lines:  # no text (or, never, another reader's)
+            _log.warning("second reader did not read the page", extra=failed)
             return _plus(first, read.input_tokens, read.output_tokens)
         _log.info(
             "page read by the second reader", extra={**ids, "code": SECOND_READER, "model": second.model}
@@ -1790,7 +1812,10 @@ class GeminiEngine:
     ) -> PageRead:
         """The page as the local reader reads it, with ``issue`` first and ``tokens``, what
         the model's calls for the page were billed before it was refused (G9). Logs the
-        code only."""
+        code only. #664 review: inside a second read (``_NO_LOCAL``), ``_LeftUnread`` with the
+        tokens instead: that page keeps Mistral's read, so a local read would be thrown away."""
+        if _NO_LOCAL.get():
+            raise _LeftUnread(tokens)
         read = self._local_reader().read_page(image, page_no=page_no)
         _log.warning("page read by the local reader", extra={"code": code})
         return dataclasses.replace(
