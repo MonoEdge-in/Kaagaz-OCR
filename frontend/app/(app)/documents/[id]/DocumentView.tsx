@@ -453,6 +453,9 @@ export function DocumentView({
   // #443: one rule, toSettle; until the words come (or if they cannot), the pages' marked spots count.
   const openWords = review.status === null ? null : openFlags;
   const attention = attentionCount(detail.pages, openWords);
+  // PRD 9 F-14: until the words come (null) the tab shows, with a loader, while a page is on the list.
+  const listed = (each: PageSummary) => each.read_quality !== "good" && each.accepted_at === null;
+  const attentionTab = attention === null ? detail.pages.some(listed) : attention > 0;
   // File management P1 (Changed on purpose, PRD 1 screens): Details (was Overview), Text (was
   // Scanned text), and Questions, Versions and Activity; Needs attention and My words stay.
   // Document panel UX (25 Oct 2026): Needs attention only with something in it (or while
@@ -461,7 +464,10 @@ export function DocumentView({
   // a wide panel shows (it was last, always under More).
   const tabs: TabItem[] = [
     { id: "overview", label: FILES_TEXT.details },
-    ...(attention > 0 || reviewing ? [{ id: "attention" as const, label: "Needs attention", count: attention || undefined }] : []),
+    // PRD 9 F-14: a loader in the badge until known, none at zero; open, the tab stays ("Everything is checked").
+    ...(attentionTab || reviewing || tabChoice?.tab === "attention"
+      ? [{ id: "attention" as const, label: "Needs attention", count: attention === null ? (review.failed ? undefined : null) : attention || undefined }]
+      : []),
     ...(hasScannedText ? [{ id: "scanned" as const, label: "Text" }] : []),
     { id: "words", label: "My words" },
     { id: "questions", label: QUESTIONS_TEXT.heading },
@@ -956,11 +962,9 @@ export function DocumentView({
                     flags={pageFlags}
                     onFix={review.status?.can_review && detail.deleted_at === null ? fixWord : undefined}
                     member={review.status?.can_review === false}
-                    // Every flagged word holds its place; only a person's edit changes its text (an
-                    // Ensemble proposal is not shown as fixed until a person takes it).
-                    fixed={review.flags
-                      .filter((flag) => flag.page_no === page.page_no)
-                      .map((flag) => (flag.change?.action === "edit" ? flag : { ...flag, text: flag.as_read }))}
+                    // PRD 9 F-12: the lines carry their fixes from the server; an Undo there asks for
+                    // the words again (and the page, which the Undo may take off its kept state).
+                    onUndone={() => review.reload()}
                   />
                 )
               ) : shownTab === "clear" ? (
@@ -1022,7 +1026,7 @@ export function DocumentView({
 }
 
 type TabId = "overview" | "attention" | "scanned" | "clear" | "questions" | "versions" | "activity" | "words";
-type TabItem = { id: TabId; label: string; count?: number };
+type TabItem = { id: TabId; label: string; count?: number | null }; // null: not known yet, a loader (PRD 9 F-14)
 const tabId = (id: TabId) => `document-tab-${id}`;
 const tabPanelId = (id: TabId) => `document-panel-${id}`;
 const TAB_BAR_ID = "document-tabs";
@@ -1078,7 +1082,9 @@ function PanelTabs({
               onKeyDown={(event) => onKeyDown(event, index)}
             >
               <span data-label={item.label}>{item.label}</span>
-              {item.count !== undefined && (
+              {item.count === null ? (
+                <span className="spinner" role="status" aria-label="Counting" />
+              ) : item.count !== undefined && (
                 <span
                   className={`tab-count ${styles.tabCount}`}
                   data-zero={item.count === 0 ? "true" : undefined}
@@ -1094,7 +1100,7 @@ function PanelTabs({
           name="the other tabs"
           compact={room < 3}
           items={more.map((item) => ({
-            label: item.count === undefined ? item.label : `${item.label} ${item.count.toLocaleString("en-IN")}`,
+            label: typeof item.count !== "number" ? item.label : `${item.label} ${item.count.toLocaleString("en-IN")}`,
             onSelect: () => onChange(item.id),
           }))}
         />

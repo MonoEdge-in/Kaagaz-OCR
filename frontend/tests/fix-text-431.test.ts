@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { markLabel, settled } from "@/components/review/wordReview";
 import { markChecked, markName } from "@/components/viewer/readingMarks";
-import { fixBox, fixesFor, withFixes, wordToFix } from "@/components/viewer/scanned";
+import { fixBox, fixesFor, wordToFix } from "@/components/viewer/scanned";
 import type { ReadingMark, WordFlag } from "@/lib/types";
 
 const ROOT = join(__dirname, "..");
@@ -57,13 +57,9 @@ describe("#431 Save fixes the [?] the box names", () => {
     expect(fixBox(unread)).toEqual({ hint: "Type the word you see on the page in place of [?].", draft: "" });
   });
 
-  it("shows the word typed in the line, whatever the line's own flag", () => {
-    const typed = { ...unread, text: "Wheat" };
-    // The line's flag as read is the whole line: it used to swallow the line and hide the fix.
-    expect(withFixes(line, [{ ...lineFlag }, typed])).toBe("For: Wheat and pulses");
-    // A line a person typed in full shows as typed.
-    expect(withFixes(line, [{ ...lineFlag, text: "For: Rice and pulses" }, typed])).toBe("For: Rice and pulses");
-  });
+  // Changed on purpose (PRD 9 F-12): the word typed is shown in its line by the server now (the
+  // readings' lines carry their fixes, as the clean copy's: backend/tests/test_api_text_fixes.py),
+  // so the browser's withFixes and its test are gone.
 
   it("settles a line that is only the word with the same Save, and no other line", () => {
     // Changed on purpose (#614): fixesFor is given the row the Save came from.
@@ -81,8 +77,10 @@ describe("#431 Save fixes the [?] the box names", () => {
     expect(panel).toContain(
       "for (const each of fixesFor(flag, flags, row)) if (done.ok) done = await onFix(each, asRead ? each.text : typed);",
     );
-    expect(panel).toContain("if (done.ok) closeFix(index);");
-    expect(panel).toContain('const ask = toFix ? fixBox(toFix.kind === "line" ? { text: read } : toFix) : null;');
+    // Changed on purpose (PRD 9 F-12): once closed, the lines are asked for again (their fixes);
+    // a line's box starts from its text now on one line.
+    expect(panel).toMatch(/if \(done\.ok\) \{\s*closeFix\(index\);\s*void refresh\(\);/);
+    expect(panel).toContain('const ask = toFix ? fixBox(toFix.kind === "line" ? { text: oneLine(line.text) } : toFix) : null;');
   });
 });
 
@@ -93,7 +91,8 @@ describe("#431 one action: the open box, never a second Fix text beside it", () 
     expect(panel).toMatch(/\{toFix && ask && !box && \(\s*<button\s+type="button"\s+className=\{`btn btn-quiet \$\{styles\.addMeaning\}`\}\s+aria-expanded=\{false\}/);
     expect(panel).not.toContain("fixInput.current?.focus() : openFix");
     // Opening puts the keys in the field; Save, Cancel or Esc gives focus back to the line.
-    expect(panel).toContain("useEffect(() => fixInput.current?.focus(), [fixKey]);");
+    // Changed on purpose (PRD 9 F-13): and a word in it selected (fix-text-counts-prd9.test.ts).
+    expect(panel).toMatch(/useEffect\(\(\) => \{\s*fixInput\.current\?\.focus\(\);[^}]*\}, \[fixKey\]\);/);
     expect(panel).toContain('rows.current[index]?.querySelector("button")?.focus();');
     expect(panel).toMatch(/<button type="submit" className="btn btn-primary"/);
   });

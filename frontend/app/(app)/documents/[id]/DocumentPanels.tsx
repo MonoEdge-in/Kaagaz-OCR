@@ -16,9 +16,9 @@ import type { ReactNode } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { labelBadgeClass, labelIcon } from "@/components/viewer/labels";
 import { groupLinks, linkText, untilRead } from "@/components/viewer/panels";
-import { ALL_CLEAR, attentionPages, toSettle } from "@/components/viewer/pageProblems";
+import { ALL_CHECKED, ALL_CLEAR, attentionPages, toSettle } from "@/components/viewer/pageProblems";
 import type { OpenWord } from "@/components/viewer/pageProblems";
-import { markChipText, markName, marksOnPage } from "@/components/viewer/readingMarks";
+import { markChipText, markName, marksOnPage, openMarks } from "@/components/viewer/readingMarks";
 import { withFrom } from "@/lib/backLink";
 import { docTypeLabel } from "@/lib/format";
 import type { DocumentDetail, DocumentStatus, PageSummary, ReadingMark, WordFlag } from "@/lib/types";
@@ -81,7 +81,9 @@ export function AttentionPanel({
   fix?: ReactNode;
   status: DocumentStatus;
   pages: PageSummary[];
-  open: OpenWord[] | null; // the words still open on the review list; null until they load (toSettle)
+  // the words still open on the review list; null until they load (toSettle). PRD 9 F-14: with their
+  // spot and text as read, so the chips are the open marks alone (openMarks).
+  open: (OpenWord & Pick<WordFlag, "region" | "as_read">)[] | null;
   current: number | null; // the page shown
   marks: ReadingMark[]; // the shown page's marks
   onPage: (pageNo: number) => void;
@@ -91,8 +93,9 @@ export function AttentionPanel({
   onHot?: (index: number | null) => void;
 }) {
   const problemPages = attentionPages(pages, open ?? []);
-  const shownMarks = current === null ? [] : marksOnPage(marks, current); // as numbered on the page
-  const lead = toCheck(pages, open);
+  // PRD 9 F-14: the chips are the open marks alone, numbered over them; `index` is the page's (hot).
+  const shownMarks = current === null ? [] : openMarks(marksOnPage(marks, current), open ?? []);
+  const lead = toCheck(pages, open); // undefined: not known yet
   return (
     <section
       className={lead ? `${styles.panel} ${styles.attentionToCheck}` : styles.panel}
@@ -106,8 +109,12 @@ export function AttentionPanel({
             {lead.count.toLocaleString("en-IN")} to check
           </span>
         )}
+        {lead === undefined && (
+          <span className="spinner" role="status" aria-label="Counting what is left to check" />
+        )}
       </h2>
       {lead && <p className={styles.attentionLead}>{lead.text}</p>}
+      {lead === null && problemPages.length > 0 && <p className={styles.attentionLead}>{ALL_CHECKED}</p>}
       {problemPages.length === 0 ? (
         <p className="muted">{untilRead(status, ALL_CLEAR)}</p>
       ) : (
@@ -139,8 +146,8 @@ export function AttentionPanel({
               {item.pageNo === current ? fix : null}
               {item.pageNo === current && shownMarks.length > 0 && (
                 <ul className={styles.markChips} aria-label={`Marks on page ${item.pageNo}`}>
-                  {shownMarks.map((mark, index) => {
-                    const name = markName(mark, index, shownMarks.length);
+                  {shownMarks.map(({ mark, index }, at) => {
+                    const name = markName(mark, at, shownMarks.length);
                     return (
                       <li key={index}>
                         <button
@@ -158,7 +165,7 @@ export function AttentionPanel({
                         >
                           <bdi className={`mono ${styles.markWord}`}>{markChipText(mark)}</bdi>
                           <span className="tabular">
-                            {index + 1}/{shownMarks.length}
+                            {at + 1}/{shownMarks.length}
                           </span>
                           <Icon name="open" size={16} />
                         </button>
@@ -176,19 +183,21 @@ export function AttentionPanel({
 }
 
 /** The Needs attention tab's count (DD6): what is left to settle (toSettle), as "N to check" says;
- * `open` null until the words load, or when they cannot: the pages' marked spots then. */
+ * PRD 9 F-14: null until the words load, or when they cannot (a loader, never a guess). */
 export const attentionCount = (pages: PageSummary[], open: Pick<WordFlag, "page_no">[] | null) =>
-  toSettle(pages, open).count;
+  toSettle(pages, open)?.count ?? null;
 
 /**
  * The Attention panel's "N to check" and its lead line, from toSettle (#443, #444): the words still
- * open and the pages still to keep as is; null when there are none.
+ * open and the pages still to keep as is; null when there are none, undefined until it is known.
  */
 function toCheck(
   pages: PageSummary[],
   openWords: Pick<WordFlag, "page_no">[] | null,
-): { count: number; text: string } | null {
-  const { count, pages: pagesWithAny } = toSettle(pages, openWords);
+): { count: number; text: string } | null | undefined {
+  const settle = toSettle(pages, openWords);
+  if (settle === null) return undefined;
+  const { count, pages: pagesWithAny } = settle;
   if (count === 0) return null;
   const one = pagesWithAny.length === 1;
   const where = one ? `page ${pagesWithAny[0]}` : `${pagesWithAny.length.toLocaleString("en-IN")} pages`;

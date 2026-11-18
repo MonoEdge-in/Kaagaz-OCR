@@ -1,13 +1,13 @@
 // #614 (live since the 12 Nov release): Fix text on one line could save another line's text over
 // a line that was right. The #523 review taught lineMarked that a cited band inside a block's box
-// marks the block; wordToFix, fixesFor and withFixes call it with the flag in the line's place, so
+// marks the block; wordToFix, fixesFor and withFixes (gone, PRD 9 F-12) called it with the flag in the line's place, so
 // a table-sized line flag (a model box, a blob line) sat on every row inside it. Each of those rows
 // offered it, the same box opened under all of them, and a Save wrote that row's text over it.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { fixBoxKey, fixesFor, lineMarked, withFixes, wordToFix } from "@/components/viewer/scanned";
+import { fixBoxKey, fixesFor, lineMarked, wordToFix } from "@/components/viewer/scanned";
 import type { WordFlag } from "@/lib/types";
 
 const panel = readFileSync(join(__dirname, "..", "components/viewer/ScannedTextPanel.tsx"), "utf8");
@@ -80,10 +80,8 @@ describe("#614 a row's Fix text works on that row's own flags only", () => {
     const lone = flag("line", "[?]", BIG);
     expect(fixesFor(mark, [rice, lone, mark], riceRow)).toEqual([mark]);
     expect(fixesFor(mark, [rice, lone, mark], { text: "[?]", region: region(BIG) })).toEqual([mark, lone]);
-    // A row read as "40" alone in the same box, typed as "45": shown in that row only.
-    const forty = { ...flag("line", "40", BIG), text: "45" };
-    expect(withFixes(riceRow, [forty])).toBe("Rice 2 40 80");
-    expect(withFixes({ text: "40", region: region(BIG) }, [forty])).toBe("45");
+    // Changed on purpose (PRD 9 F-12): a row's fix is shown by the server now, keyed by its line
+    // (spot and text as read: backend/tests/test_api_text_fixes.py); withFixes is gone.
   });
 
   // #614 review: a [?] inside a big line read as [?] is the inner row's, never the big line's.
@@ -102,13 +100,8 @@ describe("#614 a row's Fix text works on that row's own flags only", () => {
     expect(panel).toContain("for (const each of fixesFor(flag, flags, row)) if (done.ok)");
   });
 
-  it("shows a line's fix in that line only, a word's in the line holding it", () => {
-    const edited = { ...flag("line", "40", BIG), text: "45" }; // a big line read as "40", typed as "45"
-    const word = { ...mark, text: "Rice" };
-    expect(withFixes(inner, [edited, word])).toBe("Rice 2 40 80");
-    expect(withFixes({ text: "40", region: big.region }, [edited])).toBe("45");
-    expect(withFixes(bigRow, [edited])).toBe(big.as_read); // read as more than "40": another line
-  });
+  // Changed on purpose (PRD 9 F-12): "shows a line's fix in that line only" is the server's now
+  // (word_review.line_text, backend/tests/test_api_text_fixes.py and test_line_correction_db.py).
 
   it("still marks the block a cited band lies in, for citations (#523)", () => {
     const block = { region: region([0.1, 0.2, 0.9, 0.7]) };

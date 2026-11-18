@@ -590,11 +590,13 @@ def in_force(conn: Connection, customer_id: str, document_id: str) -> list[RowMa
 
 def line_correction(row: Mapping[Any, Any], live: Sequence[RowMapping]) -> RowMapping | None:
     """The line's own latest change in force (``live``, oldest first) when it corrects the line:
-    an edit, back to the text as read too, or any change to other text; else None."""
+    an edit, back to the text as read too, or any change to other text; else the last change of a
+    word or value inside it that ``line_text`` wrote into it (PRD 9 F-12: the line shows as
+    corrected, with that change's Undo); else None."""
     key = line_key(row)
     change = next((change for change in reversed(live) if change["word_key"] == key), None)
     if change is None or (change["action"] != "edit" and change["after_text"] == row["as_read"]):
-        return None
+        return _line_now(row, live)[1]
     return change
 
 
@@ -604,7 +606,12 @@ def line_text(row: Mapping[Any, Any], live: Sequence[RowMapping]) -> str | None:
     inside it (its box, or its centre) where the word's text is there once, as ``_apply`` wrote
     it. None when no change touches it (the clean copy then shows the text as the reader gave
     it). O(changes)."""
-    key, text_now, touched = line_key(row), str(row["as_read"]), False
+    return _line_now(row, live)[0]
+
+
+def _line_now(row: Mapping[Any, Any], live: Sequence[RowMapping]) -> tuple[str | None, RowMapping | None]:
+    """``line_text``, and the last change of a word or value inside the line that it wrote, or None."""
+    key, text_now, touched, word = line_key(row), str(row["as_read"]), False, None
     for change in live:
         before, after = str(change["before_text"]), str(change["after_text"])
         if change["word_key"] == key:
@@ -616,8 +623,8 @@ def line_text(row: Mapping[Any, Any], live: Sequence[RowMapping]) -> str | None:
             and _inside(change["region"], row["region"])
             and occurrences(text_now, before) == 1
         ):
-            text_now, touched = text_now.replace(before, after, 1), True
-    return text_now if touched else None
+            text_now, touched, word = text_now.replace(before, after, 1), True, change
+    return (text_now if touched else None), word
 
 
 def on_page(conn: Connection, customer_id: str, document_id: str, review: Review) -> set[str]:
