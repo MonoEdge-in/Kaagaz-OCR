@@ -1,7 +1,9 @@
 """PRD 9 F-17: Review's "By document" list (the Review page's own request,
-``GET /api/documents?attention=true&limit=100``) never shows another customer's documents, nor a
+``GET /api/documents?attention=true&limit=50``) never shows another customer's documents, nor a
 document of the person's own organisation they can't open (PRD 7 walls). The control: each sees
 its own flagged documents, a page kept as is leaves the list, and a waiting value alone is enough."""
+
+from typing import Any
 
 import pytest
 
@@ -13,13 +15,11 @@ from tests.test_isolation_access_views import _walled
 pytestmark = pytest.mark.db
 
 # The parameters frontend/components/review/review.ts (REVIEW_DOCUMENTS) sends.
-REVIEW_DOCUMENTS = {"attention": "true", "limit": 100}
+REVIEW_DOCUMENTS: dict[str, str | int] = {"attention": "true", "limit": 50}
 
 
-def _listed(reply_json: dict[str, object]) -> list[str]:
-    items = reply_json["items"]
-    assert isinstance(items, list)
-    return [str(item["id"]) for item in items]
+def _listed(reply_json: Any) -> list[str]:
+    return [str(item["id"]) for item in reply_json["items"]]
 
 
 def test_by_document_never_lists_another_customers_documents(db: Database) -> None:
