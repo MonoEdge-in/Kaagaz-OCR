@@ -1,13 +1,17 @@
 """PRD 9 F-17: Review's "By document" list (the Review page's own request,
 ``GET /api/documents?attention=true&limit=50``) never shows another customer's documents, nor a
-document of the person's own organisation they can't open (PRD 7 walls). The control: each sees
-its own flagged documents, a page kept as is leaves the list, and a waiting value alone is enough."""
+document of the person's own organisation they can't open (PRD 7 walls), with the database's
+per-person rule on and off (off, as on release day, the list's own view is what keeps them out).
+The control: each sees its own flagged documents, a page kept as is leaves the list, and a
+waiting value alone is enough."""
 
+from contextlib import nullcontext
 from typing import Any
 
 import pytest
 
 from kaagaz.db.engine import Database
+from tests.db_support import rule_off
 from tests.test_api_page_fixes import accept, read_page
 from tests.test_api_support import Api
 from tests.test_isolation_access_views import _walled
@@ -54,7 +58,8 @@ def test_by_document_never_lists_another_customers_documents(db: Database) -> No
     assert "challan" not in own.text
 
 
-def test_by_document_never_lists_a_document_the_person_cannot_open(db: Database) -> None:
+@pytest.mark.parametrize("database_rule", ["on", "off"])
+def test_by_document_never_lists_a_document_the_person_cannot_open(db: Database, database_rule: str) -> None:
     api = Api(db)
     org = _walled(api)
     # "plain", a reviewer in no department, may open "given" (a Finance file given to them) and
@@ -63,7 +68,8 @@ def test_by_document_never_lists_a_document_the_person_cannot_open(db: Database)
         read_page(api, org.c, org.files[name], read_quality="unreadable", read_issues=["no_text"])
         api.add_value(org.c, org.files[name])
 
-    plain = org.people["plain"].client.get("/api/documents", params=REVIEW_DOCUMENTS)
+    with rule_off() if database_rule == "off" else nullcontext():
+        plain = org.people["plain"].client.get("/api/documents", params=REVIEW_DOCUMENTS)
     assert plain.status_code == 200
     assert sorted(_listed(plain.json())) == sorted([org.files["given"], org.files["top"]])
     assert plain.json()["total"] == 2
