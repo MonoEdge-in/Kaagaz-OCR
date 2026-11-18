@@ -18,11 +18,12 @@ from sqlalchemy import text
 
 from kaagaz.answering.hard_to_read import PgReadingQuality
 from kaagaz.chunking.piece import Piece
-from kaagaz.db import word_review
+from kaagaz.db import listing, word_review
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.extraction.values import ExtractedValue
 from kaagaz.pipeline import DocumentContent, PageRecord, ReaderOutput
+from kaagaz.reading.page_quality import grade
 from kaagaz.reading.spans import BoxLocation, PageInfo, Span
 from tests.db_support import insert_document, new_customer, new_trashed_document
 
@@ -365,6 +366,38 @@ def test_settling_a_pages_last_review_item_keeps_it_when_its_flags_are_its_only_
     assert rows(db, customer, KEPT, document) == []
     action, details = rows(db, customer, audits, document)[1]
     assert (action, details["kept"], details["page_no"]) == ("word_review.undo", True, 1)
+
+
+def test_a_page_whose_only_problem_is_unpinned_lines_is_off_needs_attention(db: Database) -> None:
+    """PRD 9 F-11, D5 (G3 review): unpinned lines alone grade a page good, so it is not on Needs
+    attention (listing._NEEDS_ATTENTION); a value on such a line still waits to be verified, and
+    so still lists its document, as a value to review (CLAUDE.md rule 5)."""
+    quality = grade(("unpinned",), model_quality="good", words=4, illegible_words=0, unsure_words=0)
+    assert quality == "good"
+    customer, user = new_customer(db)
+    with db.customer(customer) as conn:
+        document = insert_document(conn, customer, uploaded_by=user, detected_type="jpeg")
+    content = scanned(customer, document, page_two=quality)
+    clean = dataclasses.replace(content.pages[0], read_quality="good", read_issues=(), unsure_words=0,
+                                illegible_words=0)  # fmt: skip
+    needs = "SELECT d.id::text FROM documents d WHERE d.customer_id = :c"
+    attention = text(needs + listing._NEEDS_ATTENTION)
+    PgPipelineStore(db).save(dataclasses.replace(content, pages=[clean, content.pages[1]], values=[]))
+    with db.customer(customer) as conn:
+        assert conn.execute(attention, {"c": customer}).all() == []
+
+    buyer = ExtractedValue(
+        "document", "buyer", "Patil Stores", "Patil Stores", BoxLocation(2, 0.3, 0.5, 0.6, 0.55), None,
+        None, "needs_review", "box_unanchored",
+    )  # fmt: skip
+    PgPipelineStore(db).save(dataclasses.replace(content, pages=[clean, content.pages[1]], values=[buyer]))
+    review = load(db, customer, document)
+    assert [flag.page_no for flag in review.listed] == [1]  # the [?]; nothing on page 2 to settle it
+    with db.customer(customer) as conn:
+        assert conn.execute(attention, {"c": customer}).scalars().all() == [document]
+    assert rows(db, customer, "SELECT label FROM extracted_values WHERE document_id = :d", document) == [
+        ("needs_review",)
+    ]
 
 
 def test_an_unconfirmed_spot_is_a_check_that_still_blocks_its_value(db: Database) -> None:
