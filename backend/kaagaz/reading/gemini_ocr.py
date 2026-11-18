@@ -168,11 +168,12 @@ normal (``_read``: the page cache, the page's time left) or Ultra low cost (``_u
 its ceiling), billed as that read is, in the same document's scope, and its ``read_by`` names the
 model. Once a page an open document (``_first_try``): a page the image or PDF reader reads again
 is asked of Mistral again, never of the second reader. A second read that does not give the
-model's lines (a refusal or a local read, a wait for an outage or its key, no text) leaves the page
-as Mistral left it, with the tokens billed: it never waits, reads locally or tries again, so the
-file fails as it did. An outage, a key or credit problem, or Mistral not set up raises before any
-of this, and the document waits as above: the second reader is never a fallback for Mistral being
-down.
+model's lines (a refusal, a local read, no text) leaves the page as Mistral left it, with the
+tokens billed: nothing is read locally for it, so the file fails as it did. An outage or a key
+problem of the second reader waits, as a Gemini document does (#664 review), until
+READER_OUTAGE_FALLBACK_MINUTES, after which the page is left as Mistral left it. An outage, a key
+or credit problem, or Mistral not set up raises before any of this, and the document waits as
+above: the second reader is never a fallback for Mistral being down.
 
 **Ultra low cost** (#488, Tushar, 4 Nov 2026: a page never costs more than ₹0.20 to ₹0.55). A
 document whose ``DocumentPages.ulc`` is set has each page read once by its model in the compact
@@ -1185,8 +1186,10 @@ class GeminiEngine:
         """#664: the page Mistral read no text on (``first``) read by ``second``, normal (``_read``:
         the page cache, at the page's time left) or Ultra low cost (``_ulc``: once, under its
         ceiling), billed as that read is. Its read when it is the model's with lines; else
-        ``first`` with the tokens the try was billed: a refusal, a local read, a wait (an outage
-        or a key problem of ``second``) or no text never waits or reads locally here."""
+        ``first`` with the tokens the try was billed: a refusal, a local read (past
+        READER_OUTAGE_FALLBACK_MINUTES of an outage too) or no text never reads locally here. An
+        outage or a key problem of ``second`` (``BackendUnavailable``) goes up: the document
+        waits, as a Gemini document does (#664 review)."""
         on_second = dataclasses.replace(
             pages,
             model=second.model,
@@ -1197,17 +1200,14 @@ class GeminiEngine:
             ulc_prices=second.ulc_prices,
             second=None,
         )
-        try:
-            if second.ulc is not None:
-                read: PageRead | None = self._ulc(image, page_no, on_second, second.ulc)
-            else:
-                read = self._read(image, page_no=page_no, pages=on_second, sha=sha, boxes=boxes)
-        except BackendUnavailable:
-            read = None
+        if second.ulc is not None:
+            read = self._ulc(image, page_no, on_second, second.ulc)
+        else:
+            read = self._read(image, page_no=page_no, pages=on_second, sha=sha, boxes=boxes)
         ids = {"customer_id": pages.customer_id, "document_id": pages.document_id, "page_no": page_no}
-        if read is None or read.read_by != second.model or not read.lines:
+        if read.read_by != second.model or not read.lines:
             _log.warning("second reader did not read the page", extra={**ids, "code": SECOND_READER_FAILED})
-            return first if read is None else _plus(first, read.input_tokens, read.output_tokens)
+            return _plus(first, read.input_tokens, read.output_tokens)
         _log.info(
             "page read by the second reader", extra={**ids, "code": SECOND_READER, "model": second.model}
         )

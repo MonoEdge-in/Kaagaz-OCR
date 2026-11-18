@@ -242,19 +242,43 @@ def test_a_gemini_document_never_uses_the_second_reader() -> None:
 # --- once a page, and a second read that fails ------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "failure",
-    [
-        ModelOutputError("invalid_output"),  # refused: Gemini alone would read it locally
-        ModelUnavailable("server_error"),  # down: Gemini alone would wait
-        ModelUnavailable("key_rejected"),  # its key: Gemini alone would wait for a person
-    ],
-)
-def test_a_second_read_that_fails_leaves_the_page_as_mistral_left_it(failure: Exception) -> None:
-    rig = Rig(FakeMistral(BadReply("refused_request")), failure)
+def test_a_second_read_refused_leaves_the_page_as_mistral_left_it() -> None:
+    # Changed on purpose (#664 review): only a refusal (or no text) keeps Mistral's page; a wait waits.
+    rig = Rig(FakeMistral(BadReply("refused_request")), ModelOutputError("invalid_output"))
     read = rig.read(with_second())
     assert (read.lines, read.issues, read.read_by) == ((), (READER_REFUSED,), BY_4)
     assert len(rig.client.calls) == 1
+
+
+@pytest.mark.parametrize(("failure", "code"), [("server_error", "gemini"), ("key_rejected", "gemini_key")])
+def test_an_outage_or_key_problem_of_the_second_reader_waits(failure: str, code: str) -> None:
+    """#664 review: the document waits, as a Gemini document does, never failing for it."""
+    rig = Rig(FakeMistral(BadReply("refused_request")), ModelUnavailable(failure))
+    with pytest.raises(BackendUnavailable) as waited:
+        rig.read(with_second())
+    assert str(waited.value) == code and rig.local.pages == 0
+
+
+def test_past_the_outage_window_the_page_stays_as_mistral_left_it() -> None:
+    """A second reader down past READER_OUTAGE_FALLBACK_MINUTES: Gemini would read the page
+    locally; the second reader leaves it as Mistral did, and the document goes on."""
+    refused = BadReply("refused_request")
+    down = ModelUnavailable("server_error")
+    rig = Rig(FakeMistral(refused, refused), down, down, reader_outage_fallback_minutes=1)
+    with pytest.raises(BackendUnavailable, match=r"^gemini$"):
+        rig.read(with_second())  # the first try waits
+    rig.client.clock += 61  # the next try, past the window
+    read = rig.read(with_second())
+    assert (read.lines, read.issues, read.read_by) == ((), (READER_REFUSED,), BY_4)
+    assert len(rig.client.calls) == 2
+
+
+def test_an_outage_of_the_second_reader_leaves_the_document_waiting_not_failed() -> None:
+    rig = Rig(FakeMistral((map_reply(), 1)), ModelUnavailable("server_error"))
+    system = gemini_rig(rig.engine, checker=FakeChecker(), job_reading=job_reading(NORMAL))
+    with pytest.raises(BackendUnavailable, match=r"^gemini$"):
+        system.run(make_pdf([SCANNED]))
+    assert system.status(system.jobs[0]) != DocumentStatus.FAILED
 
 
 def test_no_time_left_the_page_stays_as_mistral_left_it() -> None:
