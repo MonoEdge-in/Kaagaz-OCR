@@ -120,11 +120,13 @@ def exact_overlap(first: Mapping[int, str], second: Mapping[int, str]) -> float 
 def word_share(first: Mapping[int, str], second: Mapping[int, str]) -> float | None:
     """PRD 9 F-06: the share of two short texts' words in common (``words``, pages in order), each
     word counted as often as it is in both: 2 x common / (both counts), so 9 of 11 words the same
-    each side is 82%. None unless each has 1 to SHORT_WORDS words. O(w)."""
+    each side is 82%; at most 0.99 unless the words are the same in the same order (it ignores the
+    order). None unless each has 1 to SHORT_WORDS words. O(w)."""
     a, b = ([word for n in sorted(pages) for word in words(pages[n])] for pages in (first, second))
     if not 0 < len(a) <= SHORT_WORDS or not 0 < len(b) <= SHORT_WORDS:
         return None
-    return 2 * sum((Counter(a) & Counter(b)).values()) / (len(a) + len(b))
+    share = 2 * sum((Counter(a) & Counter(b)).values()) / (len(a) + len(b))
+    return share if a == b else min(share, 0.99)
 
 
 # --- V2: the name key, as 0041's NAME_KEY -------------------------------------------------
@@ -158,9 +160,12 @@ def outcome(
     """V4 (#521): ``suggested`` or None (nothing); a person always decides. A shared identifier
     alone is never enough, and two signals without the text need TEXT_FLOOR of it when there is
     a text overlap (None: a text under MIN_WORDS words). ``short`` (PRD 9 F-06): the overlap is
-    ``word_share``, one signal, never enough alone (short forms of one template share their words)."""
+    ``word_share``: suggested only at TEXT_SIGNAL with the name or an identifier, never alone nor as
+    the floor of the other two (short forms and bills of one template share their words)."""
     text, name = text_overlap or 0.0, name_similarity or 0.0
-    if text >= TEXT_ALONE and not short:
+    if short:
+        return SUGGESTED if text >= TEXT_SIGNAL and (name >= NAME_SIGNAL or shared_identifier) else None
+    if text >= TEXT_ALONE:
         return SUGGESTED
     signals = (text >= TEXT_SIGNAL) + (name >= NAME_SIGNAL) + shared_identifier
     if signals >= 2 and (text_overlap is None or text >= TEXT_FLOOR):

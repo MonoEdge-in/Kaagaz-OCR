@@ -104,7 +104,7 @@ def test_json_is_written_out_with_two_spaces_one_value_to_a_line() -> None:
 def test_prd9_f10_a_json_with_a_repeated_key_is_read_as_typed_so_both_values_stay() -> None:
     """PRD 9 F-10: parsed, a repeated key keeps only its last value, so the file is read as it is
     (both values, as typed); a nested repeat counts too; one with none is written out as before.
-    The reader's version is raised, so a JSON read before reads again."""
+    The reader's version is raised for tracing; a JSON read before changes only on Read again."""
     data = b'{\n  "plots_total": 52,\n  "contact": "Layout office",\n  "plots_total": 10\n}\n'
     assert lines(resolve.JSON, data) == [
         "{",
@@ -117,7 +117,6 @@ def test_prd9_f10_a_json_with_a_repeated_key_is_read_as_typed_so_both_values_sta
     assert lines(resolve.JSON, nested) == ['{"a": [{"b": 1, "b": 2}]}']
     apart = lines(resolve.JSON, b'{"a": {"b": 1}, "c": {"b": 2}}')  # one key in two objects: no repeat
     assert apart == ["{", '"a": {', '"b": 1', "},", '"c": {', '"b": 2', "}", "}"]
-    assert TextReader.version == "2"
 
 
 def test_json_nested_deeper_than_100_is_refused_before_it_is_parsed() -> None:

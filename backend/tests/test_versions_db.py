@@ -586,6 +586,32 @@ def test_prd9_f06_a_short_file_with_other_words_under_its_name_is_not_suggested(
     assert _suggestions(db, customer) == []
 
 
+def test_prd9_f06_short_monthly_bills_of_one_name_and_account_number_are_not_suggested(db: Database) -> None:
+    """Review of #678: #521's monthly bills, but short (60 words): one name key and account number,
+    a quarter of the words other numbers. Word by word 75%, under the 80% the short rule needs, so
+    the share never stands for the floor of name and identifier."""
+    api = Api(db)
+    signed = api.new_signed()
+    customer = signed.customer_id
+    template = _text(12, 45)
+
+    def bill(month: int) -> list[str]:
+        words = list(template)
+        for place in range(15):
+            words.insert(place * 4, f"{month}{place:02}")
+        return words
+
+    names = ("Invoice 2025-01.pdf", "Invoice 2025-02.pdf")
+    old = _doc(api, signed, bill(1), names[0], hours_ago=48, doc_type="invoice")
+    _old(db, customer, old)
+    new = _doc(api, signed, bill(2), names[1], hours_ago=0, doc_type="invoice")
+    _link(db, customer, old, new, "account_number")
+    assert versions.word_share({1: " ".join(bill(1))}, {1: " ".join(bill(2))}) == 0.75
+    with db.customer(customer) as conn:
+        assert versions_sql.spot(conn, customer, new) == "none"
+    assert _suggestions(db, customer) == []
+
+
 def test_521_two_near_copies_of_one_batch_spotted_at_once_are_matched_once(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:

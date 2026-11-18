@@ -163,16 +163,16 @@ def scored(
     limits (#521), and those ``versions.outcome`` suggests, each with its overlap, whether that was
     counted exactly, and its name similarity. Two short texts the runs don't suggest are compared
     word by word too (PRD 9 F-06, ``versions.word_share``), a signal that needs the name or an
-    identifier. Spotting keeps the best; the version finder (V17) keeps them all. O(w) for the w
-    words read."""
+    identifier; a candidate's text is read only when both have a fingerprint or this text is short.
+    Spotting keeps the best; the version finder (V17) keeps them all. O(w) for the w words read."""
     estimated = [(versions.overlap(minhash, row["text_minhash"]), row) for row in fetched]
     estimated.sort(key=lambda pair: pair[0] or 0.0, reverse=True)
-    mine: dict[int, str] | None = None
+    mine = page_texts(conn, customer_id, document_id) if estimated else {}
+    short = sum(len(versions.words(text)) for text in mine.values()) <= versions.SHORT_WORDS
     found = []
     for overlap, row in estimated[:MAX_CANDIDATES]:
         exact = None
-        mine = page_texts(conn, customer_id, document_id) if mine is None else mine
-        theirs = page_texts(conn, customer_id, str(row["id"]))
+        theirs = page_texts(conn, customer_id, str(row["id"])) if overlap is not None or short else {}
         if overlap is not None:  # both have a fingerprint: count it exactly when within the limits
             counted = versions.exact_overlap(mine, theirs)
             overlap, exact = (overlap, False) if counted is None else (counted, True)

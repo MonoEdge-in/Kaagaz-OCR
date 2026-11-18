@@ -258,6 +258,8 @@ def test_prd9_f06_a_short_file_edited_in_two_values_has_82_percent_of_its_words_
     assert versions.exact_overlap({1: PLOT}, {1: PLOT_EDITED}) is None
     assert versions.word_share({1: PLOT}, {1: PLOT_EDITED}) == pytest.approx(9 / 11)
     assert versions.word_share({2: PLOT_EDITED.upper()}, {1: PLOT_EDITED}) == 1.0  # words() and pages
+    reordered = " ".join(reversed(versions.words(PLOT)))
+    assert versions.word_share({1: reordered}, {1: PLOT}) == 0.99  # the same words, another order: never 100%
     long = " ".join(_text(5, versions.SHORT_WORDS + 1))
     assert versions.word_share({1: long}, {1: long}) is None
     assert versions.word_share({1: ""}, {1: PLOT}) is None
@@ -265,7 +267,8 @@ def test_prd9_f06_a_short_file_edited_in_two_values_has_82_percent_of_its_words_
 
 def test_prd9_f06_outcome_with_a_short_text_needs_the_name_or_an_identifier_too() -> None:
     """Same name and 80% of the words in common suggest, with no identifier; the short text's share
-    alone never does (one template's short forms share their words); the floor still holds."""
+    alone never does (one template's short forms share their words), nor does it stand for the floor
+    of name and identifier (short monthly bills, review of #678)."""
     share = versions.word_share({1: PLOT}, {1: PLOT_EDITED})
     outcome = versions.outcome
     assert outcome(share, 1.0, False, short=True) == versions.SUGGESTED
@@ -274,6 +277,7 @@ def test_prd9_f06_outcome_with_a_short_text_needs_the_name_or_an_identifier_too(
     assert outcome(share, None, True, short=True) == versions.SUGGESTED  # the text and an identifier
     assert outcome(0.79, 1.0, False, short=True) is None
     assert outcome(0.49, 1.0, True, short=True) is None  # monthly bills: under half the text
+    assert outcome(0.7, 1.0, True, short=True) is None  # name and identifier, but under 80% word by word
     assert versions.reasons(share, 1.0, None) == "81% the same text"
 
 
