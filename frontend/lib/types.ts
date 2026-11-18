@@ -1900,6 +1900,8 @@ export type Resolution = "low" | "high";
  * read as briefly as possible under a ceiling on what one page may cost. */
 export type ScanReader = "openrouter" | "mistral" | "ultra_low_cost";
 export type MistralModelId = "mistral-ocr-4-1" | "mistral-ocr-2512";
+/** How the second reader reads, once, a page Mistral reads no text on (#664), or off. */
+export type SecondReaderWay = "off" | "openrouter" | "ultra_low_cost";
 /** A Mistral OCR model (#473); has_blocks: it says where each line is on the page. */
 export interface MistralModel {
   id: MistralModelId;
@@ -1937,6 +1939,8 @@ export interface AiValues {
   mistral_model: MistralModelId | null;
   daily_page_limit: number | null; // #478: pages AI may read in one India day; the platform's null: no limit
   ulc_ceiling_paise: number | null; // #488: the most a page may cost under ultra low cost, 20 to 55; null follows (40)
+  second_reader: SecondReaderWay | null; // #664: null follows with its model (the platform's: off)
+  second_model: string | null; // set exactly with a way to read
 }
 
 /** What the server uses when the platform defaults name no model or scan setting, and
@@ -1987,7 +1991,8 @@ export interface AiDefaults {
     | "scan_reader"
     | "mistral_model"
     | "daily_page_limit"
-    | "ulc_ceiling_paise",
+    | "ulc_ceiling_paise"
+    | "second_reader",
     number
   >;
 }

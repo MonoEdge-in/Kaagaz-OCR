@@ -23,6 +23,7 @@ import type {
   ScanCostAsk,
   ScanLevel,
   ScanReader,
+  SecondReaderWay,
   UsageTotals,
 } from "@/lib/types";
 import { ApiError } from "@/lib/api";
@@ -244,6 +245,50 @@ export function pickedReader(draft: AiDraft, value: string, defaults: AiValues, 
   };
 }
 
+// The second reader (#664, Tushar, 18 Nov 2026): a page Mistral reads no text on is read once
+// more by a model the super admin chooses, normal or ultra low cost. Off until chosen.
+export const SECOND_READER_LABEL = "Second reader";
+export const SECOND_READER_HINT =
+  "When Mistral finds no text on a page (a map, a drawing, a page it can't read), that page alone is read once more by this model, billed like any page. Never when Mistral is down or out of credit.";
+const SECOND_OFF = "Off";
+const SECOND_WAY_WORDS: Record<Exclude<SecondReaderWay, "off">, string> = { openrouter: "normal read", ultra_low_cost: "ultra low cost" };
+
+type SecondPair = Pick<AiValues, "second_reader" | "second_model">;
+
+/** The second reader's select value: "" follows, "off", or "<way>:<model>". */
+export const secondValue = (values: SecondPair) =>
+  values.second_reader === null || values.second_reader === "off" ? (values.second_reader ?? "") : `${values.second_reader}:${values.second_model ?? ""}`;
+
+/** "Gemini 3.5 Flash, normal read", "Off", or null when it follows; a model the catalogue no longer has is its id. */
+export function secondWords(values: SecondPair, catalogue: OperatorModel[]): string | null {
+  if (values.second_reader === null) return null;
+  if (values.second_reader === "off" || values.second_model === null) return SECOND_OFF;
+  const name = catalogue.find((model) => model.id === values.second_model)?.name ?? values.second_model;
+  return `${name}, ${SECOND_WAY_WORDS[values.second_reader]}`;
+}
+
+/** The select's options: off (an organisation's own), then each enabled scanning model (and the saved
+ * one), normal or ultra low cost, ultra low cost only for a model that can (else said why). */
+export function secondOptions(catalogue: OperatorModel[], saved: SecondPair, platform: boolean) {
+  const models = offered(catalogue, "scan", saved.second_model === null ? [] : [saved.second_model]);
+  return [
+    ...(platform ? [] : [{ value: "off", words: SECOND_OFF }]),
+    ...models.flatMap((model) => [
+      { value: `openrouter:${model.id}`, words: `${model.name}, ${SECOND_WAY_WORDS.openrouter}` },
+      model.ulc_ready
+        ? { value: `ultra_low_cost:${model.id}`, words: `${model.name}, ${SECOND_WAY_WORDS.ultra_low_cost}` }
+        : { value: `ultra_low_cost:${model.id}`, words: `${model.name}, ${SECOND_WAY_WORDS.ultra_low_cost} (not available: ${model.ulc_why})`, disabled: true },
+    ]),
+  ];
+}
+
+/** Pick the second reader from its select value: the way and the model together. */
+export function pickedSecond(draft: AiDraft, value: string): AiDraft {
+  if (value === "" || value === "off") return { ...draft, second_reader: value === "off" ? "off" : null, second_model: null };
+  const at = value.indexOf(":");
+  return { ...draft, second_reader: value.slice(0, at) as SecondReaderWay, second_model: value.slice(at + 1) };
+}
+
 /** The banner's lines while Mistral is stopped; null while it reads. The count is every
  * organisation's. Mistral chosen on a server where it isn't set up says that, and why. */
 export function mistralStoppedText(env: Pick<AiEnv, "mistral_status" | "mistral_ready" | "mistral_missing">): string[] | null {
@@ -287,6 +332,8 @@ export interface AiDraft {
   scan_reader: ScanReader | null; // #473
   mistral_model: MistralModelId | null;
   ulc_ceiling: string; // #488: rupees as typed ("0.30"); empty follows
+  second_reader: SecondReaderWay | null; // #664: with its model; null follows
+  second_model: string | null;
   ensemble: boolean; // an organisation's own; never a platform default
   budget: string; // US dollars as typed; empty: no budget (organisation only)
 }
@@ -309,6 +356,8 @@ export function draftOf(values: AiValues, extra: { ensemble: boolean; ai_budget_
     scan_reader: values.scan_reader,
     mistral_model: values.mistral_model,
     ulc_ceiling: values.ulc_ceiling_paise === null ? "" : (values.ulc_ceiling_paise / 100).toFixed(2),
+    second_reader: values.second_reader,
+    second_model: values.second_model,
     ensemble: extra.ensemble,
     budget: extra.ai_budget_usd === null ? "" : String(extra.ai_budget_usd),
   };
@@ -343,6 +392,8 @@ export function resetSection(draft: AiDraft, section: Section): AiDraft {
         scan_reader: null,
         mistral_model: null,
         ulc_ceiling: "",
+        second_reader: null,
+        second_model: null,
       };
     case "chat":
       return { ...draft, chat_models: [], chat_default: null, chat_levels: [], chat_default_level: null };
@@ -454,6 +505,7 @@ export const pagesTodayText = (today: { pages: number; cost_usd: number | null }
 /** Where a problem is shown: next to its field. "form" is the form's own line. */
 export type AiField =
   | "scan_reader"
+  | "second_reader"
   | "ulc_ceiling_paise"
   | "mistral_model"
   | "scan_models"
@@ -519,6 +571,8 @@ export function aiBody(draft: AiDraft): AiValues {
     mistral_model: draft.mistral_model,
     daily_page_limit: parseDailyPages(draft.daily_page_limit) ?? null,
     ulc_ceiling_paise: parseCeiling(draft.ulc_ceiling) ?? null,
+    second_reader: draft.second_reader,
+    second_model: draft.second_model,
   };
 }
 
@@ -548,6 +602,8 @@ export function follows(own: AiValues, followed: ScanReader): { scan: "all" | "s
       // #488 review: the ceiling only while ultra low cost really reads, its own or followed.
       ...(own.scan_reader === "openrouter" || own.scan_reader === "ultra_low_cost" ? [] : [own.mistral_model === null]),
       ...((own.scan_reader ?? followed) === "ultra_low_cost" ? [own.ulc_ceiling_paise === null] : []),
+      // #664: the second reader only while Mistral reads, its own or followed.
+      ...((own.scan_reader ?? followed) === "mistral" ? [own.second_reader === null] : []),
     ]),
     chat: part([own.chat_models.length === 0, own.chat_levels === null]),
   };
@@ -578,6 +634,7 @@ export function inheritedText(
     | "page_max_output_tokens"
     | "daily_page_limit"
     | "ulc_ceiling_paise"
+    | "second_reader"
     | "chat_levels"
     | "dynamic",
   defaults: AiValues,
@@ -604,6 +661,8 @@ export function inheritedText(
       return defaults.daily_page_limit === null ? "no limit" : `${formatNumber(defaults.daily_page_limit)} pages`;
     case "ulc_ceiling_paise":
       return ceilingText(defaults.ulc_ceiling_paise ?? serverCeiling(defaults.scan_reader, env));
+    case "second_reader": // #664: the platform's none is off
+      return secondWords(defaults, catalogue) ?? SECOND_OFF;
     case "chat_levels":
       return levelText(defaults);
     case "dynamic":
@@ -684,6 +743,12 @@ const DEFAULT_AREAS: {
     now: (v) => (v.ulc_ceiling_paise === null ? "platform default" : ceilingText(v.ulc_ceiling_paise)),
   },
   {
+    area: "second_reader", // #664, with its model
+    label: SECOND_READER_LABEL.toLowerCase(),
+    changed: (a, b) => a.second_reader !== b.second_reader || a.second_model !== b.second_model,
+    now: (v, catalogue) => secondWords(v, catalogue) ?? "platform default",
+  },
+  {
     area: "page_max_output_tokens",
     label: "most output tokens a page",
     changed: (a, b) => a.page_max_output_tokens !== b.page_max_output_tokens,
@@ -721,8 +786,8 @@ const budgetWords = (text: string) => {
 };
 
 /** The save bar's list (board 9): what saving the draft changes, in words; empty: nothing.
- * With the organisation's reply, the Mistral model is left out unless Mistral reads after the save,
- * and the ceiling unless ultra low cost does (#488). */
+ * With the organisation's reply, the Mistral model and the second reader (#664) are left out unless
+ * Mistral reads after the save, and the ceiling unless ultra low cost does (#488). */
 export function changesText(
   saved: AiDraft,
   draft: AiDraft,
@@ -733,7 +798,8 @@ export function changesText(
   const reader = reply === undefined ? null : readerOf(draft, reply.defaults, reply.env, false);
   const leftOut = (area: string) =>
     reader !== null &&
-    ((area === "mistral_model" && reader !== "mistral") || (area === "ulc_ceiling_paise" && reader !== "ultra_low_cost"));
+    (((area === "mistral_model" || area === "second_reader") && reader !== "mistral") ||
+      (area === "ulc_ceiling_paise" && reader !== "ultra_low_cost"));
   const changes = DEFAULT_AREAS.filter((each) => each.changed(before, after) && !leftOut(each.area)).map(
     (each) => `${capital(each.label)}: ${each.now(after, catalogue, reply?.env.mistral_models ?? [])}`,
   );
@@ -792,6 +858,8 @@ export function refusalField(code: string): AiField {
       return "scan_reader";
     case "ceiling_out_of_range": // #488
       return "ulc_ceiling_paise";
+    case "second_reader_incomplete": // #664
+      return "second_reader";
     default: // unavailable, default_not_allowed, level_not_supported: either area
       return "form";
   }
