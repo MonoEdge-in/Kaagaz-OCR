@@ -76,8 +76,9 @@ export type MenuEntry =
  * Upload new version (the reading problems' Upload a better scan).
  * PRD 7 (#604): Give access and Who can see this (`access`) come before Move to Trash; a file in
  * Trash has neither (the server says 409 in_trash).
- * #648 (V13): Link to another version… after Upload new version, in the list, for whoever may link
- * (`linkVersions`: Admins and Management).
+ * #648 (V13): Make it a version of… (PRD 9 F-09; was Link to another version…) after Upload new
+ * version, in the list and on the document screen, for whoever may link (`linkVersions`: Admins and
+ * Management).
  */
 export function menuEntries(
   item: Pick<DocumentSummary, "id" | "status" | "deleted_at" | "can_delete" | "locked">,
@@ -106,7 +107,7 @@ export function menuEntries(
         act("move", "Move to folder"),
         act("tags", "Tags"),
         act("version", "Upload new version"),
-        ...(linkVersions && place === "list" ? [act("link", "Link to another version…")] : []),
+        ...(linkVersions ? [act("link", "Make it a version of…")] : []),
       ];
   if (place === "document") {
     const kept = entries.filter((entry) => entry.kind === "action" && entry.action !== "version");

@@ -872,7 +872,7 @@ const DocumentRow = memo(function DocumentRow({
   inTrash: boolean;
   deletable: boolean; // it gets a checkbox (selectable)
   readable: boolean; // it may be read again (canReprocess): its status cell may offer Retry
-  linkVersions: boolean; // #648: its menu offers Link to another version…
+  linkVersions: boolean; // #648: its menu offers Make it a version of… (PRD 9 F-09)
   canForever: boolean;
   askPassword: boolean;
   selected: boolean;

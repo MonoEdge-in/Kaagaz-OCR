@@ -456,7 +456,8 @@ describe("Compare (V11)", () => {
   it("renders two columns, removed struck and added underlined, as plain text, with Next change", () => {
     const html = render(
       createElement(CompareBody, {
-        data: { left_id: "d1", right_id: "d3", pages, summary: "2 changes on page 2" },
+        // Changed on purpose (PRD 9 F-08): the reply names each side's pages with a picture.
+        data: { left_id: "d1", right_id: "d3", pages, summary: "2 changes on page 2", image_pages: { left: [], right: [] } },
       }),
     );
     expect(html).toContain("2 changes on page 2");

@@ -22,6 +22,13 @@ export const VERSION_TEXT = {
   working: "Saving…",
   // V5: the upload tray.
   review: "Review",
+  // PRD 9 F-06 (D4): the pop-up once a file just uploaded looks like a new version.
+  popupTitle: "A new version?",
+  saveAsVersion: "Save it as a new version?",
+  yes: "Yes",
+  no: "No",
+  yesToAll: "Yes to all",
+  close: "Close",
   // V12: the Versions tab.
   versions: "Versions",
   current: "Current",

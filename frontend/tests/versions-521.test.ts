@@ -171,6 +171,8 @@ describe("See the differences", () => {
     summary: "1 change on page 1",
     truncated: false,
     overview: "94% the same. 2 words changed on page 1.",
+    // Changed on purpose (PRD 9 F-08): the reply names each side's pages with a picture (scans here).
+    image_pages: { left: [1, 2], right: [1, 2] },
   };
 
   it("says it in plain words, marks each change with + and − and a label, and jumps to the next change", () => {
@@ -240,7 +242,7 @@ describe("See the differences", () => {
   });
 
   it("shows a page image only for a side that has that page, else says so", () => {
-    const short = { ...data, left_pages: 1, right_pages: 2 };
+    const short = { ...data, left_pages: 1, right_pages: 2, image_pages: { left: [1], right: [1, 2] } };
     const html = render(createElement(CompareBody, { data: short }));
     expect(html).not.toContain('src="/api/documents/d1/pages/2/image"');
     expect(html).toContain("No page 2 in this file");

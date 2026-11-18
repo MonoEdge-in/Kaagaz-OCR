@@ -263,15 +263,17 @@ describe("V22: the Linked banner after a reload", () => {
 describe("where it starts (V13): the row menu and the selection", () => {
   const row = { id: "d1", status: "ready" as const, deleted_at: null, can_delete: true, locked: false };
 
-  it("offers Link to another version in the row menu only when the person may link", () => {
+  it("offers Make it a version of in the row menu only when the person may link", () => {
+    // Changed on purpose (PRD 9 F-09): "Make it a version of…" (was "Link to another version…"), and
+    // on the document screen's menu too (tests/versions-prd9-g4.test.ts).
     const words = (entries: ReturnType<typeof menuEntries>) =>
       entries.map((entry) => (entry.kind === "action" ? entry.words : "Download"));
-    expect(words(menuEntries(row, false, "list", false, undefined, true))).toContain("Link to another version…");
-    expect(words(menuEntries(row, false))).not.toContain("Link to another version…");
+    expect(words(menuEntries(row, false, "list", false, undefined, true))).toContain("Make it a version of…");
+    expect(words(menuEntries(row, false))).not.toContain("Make it a version of…");
     expect(words(menuEntries({ ...row, deleted_at: "2026-11-01T00:00:00Z" }, false, "list", false, undefined, true))).not.toContain(
-      "Link to another version…",
+      "Make it a version of…",
     );
-    expect(words(menuEntries(row, false, "document", false, undefined, true))).not.toContain("Link to another version…");
+    expect(words(menuEntries(row, false, "document", false, undefined, true))).toContain("Make it a version of…");
   });
 
   it("links the ticked files that are not locked, 2 to 20 of them", () => {

@@ -25,6 +25,7 @@ from kaagaz.worker_main import FINDER_PASS, FindVersions
 from tests.test_ai_settings_db import switched_off
 from tests.test_api_support import Api, Signed
 from tests.test_operator_auth_db import _owner
+from tests.test_versions import PLOT, PLOT_EDITED
 from tests.test_versions_db import _doc, _old
 
 pytestmark = pytest.mark.db
@@ -339,6 +340,22 @@ def test_a_document_with_text_like_none_is_in_no_group(db: Database) -> None:
     _until_done(db, c)
     assert _members(db, c) == [] and _run(db, c)[2:] == (True, 0)
     assert _pairs(db, c) == []
+
+
+def test_prd9_f06_two_short_files_of_one_name_are_a_group_word_by_word(db: Database) -> None:
+    """PRD 9 F-06: the finder scores as spotting does (``versions_sql.scored``), so two short files
+    of one name, two of their 11 words changed, are a group; a third of that name with other words
+    is in none."""
+    api = Api(db)
+    signed = api.new_signed()
+    c = signed.customer_id
+    first = _doc(api, signed, PLOT.split(), "plot data.json", hours_ago=48, doc_type=None)
+    second = _doc(api, signed, PLOT_EDITED.split(), "plot data.json", hours_ago=24, doc_type=None)
+    other = _doc(api, signed, ["other", "words"], "plot data.json", hours_ago=12, doc_type=None)
+    _old(db, c, first, second, other)
+    _until_done(db, c)
+    assert _pairs(db, c) == [tuple(sorted((first, second)))]
+    assert [m[0] for m in _members(db, c)] == [first, second]
 
 
 def test_a_switch_turned_on_later_still_gets_its_run(db: Database) -> None:
