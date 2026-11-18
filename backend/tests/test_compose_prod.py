@@ -11,6 +11,7 @@ import json
 import re
 from pathlib import Path
 
+from kaagaz import cli
 from kaagaz.api.upload_guard import MULTIPART_OVERHEAD
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -208,11 +209,14 @@ def test_the_queue_is_amazon_sqs_and_elasticmq_never_starts() -> None:
     assert "QUEUE_EXPRESS_URL: ${QUEUE_EXPRESS_URL:?set QUEUE_EXPRESS_URL in .env}" in text
     # Defined so its ports stay cleared, but never started on a plain `up`.
     assert has(service("elasticmq", PROD), 'profiles: ["elasticmq-retired"]')
-    # api and worker take the SQS env and no longer wait on elasticmq.
-    for name in ("api", "worker"):
+    # api and worker take the SQS env and no longer wait on elasticmq. #667: so does migrate,
+    # where the owner-login CLI runs (`dc run --rm migrate python -m kaagaz.cli ...`), so a
+    # command that queues jobs (read-again-failed --apply) reaches SQS, not the retired elasticmq.
+    for name in ("api", "worker", "migrate"):
         block = service(name, PROD)
         assert "      <<: [*s3-env, *sqs-env]\n" in block, name
         assert "      elasticmq:\n" not in block, name  # not a depends_on entry
+    assert "$DC run --rm migrate python -m kaagaz.cli read-again-failed" in (cli.__doc__ or "")
 
 
 def test_caddy_is_pinned_and_gets_its_values_from_the_servers_env() -> None:
@@ -407,7 +411,7 @@ def test_only_migrate_gets_the_storage_admin_key() -> None:
         ("STORAGE_ACCESS_KEY", '""'),
         ("STORAGE_SECRET_KEY", '""'),
     ]
-    assert "      <<: *s3-env\n" in prod_migrate
+    assert "      <<: [*s3-env, *sqs-env]\n" in prod_migrate  # #667: and SQS (the queue test)
     assert "STORAGE_ADMIN" not in prod_migrate
     assert "alembic upgrade head" in prod_migrate and "ensure_bucket()" in prod_migrate
     check = 'test -n "$$STORAGE_ACCESS_KEY" && test -n "$$STORAGE_SECRET_KEY" ||'
