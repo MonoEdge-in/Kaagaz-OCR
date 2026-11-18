@@ -4,7 +4,8 @@
 // ?page=n&region=<encoded> (from a source card or review item) opens on that
 // spot, highlighted; &scanned=1 opens that page's Scanned text too; &words= lights
 // the lines holding the asker's words (package H, YourWords.tsx); &from= is the
-// screen that opened it, for the back link (lib/backLink.ts, #436). The URL is
+// screen that opened it, for the back link (lib/backLink.ts, #436); &tab=attention and &next=
+// come from Review's By document (PRD 9 F-17). The URL is
 // read inside Suspense, as Next.js requires.
 
 import { useParams, useSearchParams } from "next/navigation";
@@ -25,6 +26,8 @@ function DocumentRoute() {
       wordsParam={search.get("words")}
       fromParam={search.get(FROM_PARAM)}
       openErrorParam={search.get("open_error")}
+      tabParam={search.get("tab")}
+      nextParam={search.get("next")}
     />
   );
 }

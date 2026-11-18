@@ -103,7 +103,7 @@ import { beingRead, canReprocess, loadFailure, settledText } from "@/components/
 import { highlightsOf, initialSelection, pageChange } from "@/components/viewer/selection";
 import { selectSpot } from "@/components/viewer/selection";
 import type { Selection } from "@/components/viewer/selection";
-import { canReview } from "@/components/review/review";
+import { canReview, nextDocumentHref } from "@/components/review/review";
 import { flagDomId, saveWord, settled, trustText } from "@/components/review/wordReview";
 import { Timeline } from "@/components/activity/Timeline";
 import { ACTIVITY_TEXT } from "@/components/activity/words";
@@ -162,6 +162,8 @@ export interface DocumentViewProps {
   wordsParam: string | null;
   fromParam: string | null;
   openErrorParam?: string | null; // PRD 7 (PR 13): a Google confirm that did not open locked files
+  tabParam?: string | null; // PRD 9 F-17: ?tab=attention, opened from Review's By document
+  nextParam?: string | null; // PRD 9 F-17: the documents after it in that list, for Next document
 }
 
 // Said after "Highlighted: <field>" when the spot came in a link (a source card, a search
@@ -192,6 +194,8 @@ export function DocumentView({
   wordsParam,
   fromParam,
   openErrorParam = null,
+  tabParam = null,
+  nextParam = null,
 }: DocumentViewProps) {
   const { me } = useSession();
   const [attempt, setAttempt] = useState(0);
@@ -473,7 +477,7 @@ export function DocumentView({
     setTab("clear");
     document.getElementById(TAB_BAR_ID)?.scrollIntoView({ block: "nearest" });
   };
-  const chosenTab = tabChoice && tabChoice.linkKey === linkKey ? tabChoice.tab : scannedParam === "1" ? "scanned" : "overview";
+  const chosenTab = tabChoice && tabChoice.linkKey === linkKey ? tabChoice.tab : scannedParam === "1" ? "scanned" : tabParam === "attention" ? "attention" : "overview";
   const tab = tabs.some((each) => each.id === chosenTab) ? chosenTab : "overview";
   const setTab = (next: TabId) => setTabChoice({ linkKey, tab: next });
   // A reading problem pressed (U3): its spot on the page, and the line with both readings.
@@ -547,6 +551,7 @@ export function DocumentView({
       : folder
         ? { href: libraryHref({ ...ALL_DOCUMENTS, folderId: folder.id }), name: folder.name }
         : { href: "/documents", name: "documents" });
+  const next = nextDocumentHref(nextParam);
   const chip = statusChip(detail.status, detail.detected_type);
   const barSaysStatus = detail.status !== "rejected" && review.status !== null && review.status.status !== "ready";
   // Trash means deleted: no download from there, only Restore (the Trash view).
@@ -687,6 +692,12 @@ export function DocumentView({
                 Back to <ScriptText text={back.name} />
               </span>
             </Link>
+            {next && (
+              <Link href={next} className={styles.back}>
+                Next document
+                <Icon name="chevron-right" />
+              </Link>
+            )}
             <h1 ref={headingRef} tabIndex={-1} className={styles.title}>
               <ScriptText text={detail.display_name} />
             </h1>
