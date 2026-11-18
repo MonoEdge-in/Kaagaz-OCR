@@ -293,7 +293,7 @@ Resolution = Literal["low", "high"]  # #463: the picture detail OpenRouter can s
 # (MISTRAL_OCR_MODELS' ids; migration 0065's CHECKs list the same).
 ScanReader = Literal["openrouter", "mistral", "ultra_low_cost"]  # #488: Ultra low cost (0070)
 MistralModelId = Literal["mistral-ocr-4-1", "mistral-ocr-2512"]
-# #664 (0101): how the second reader reads a page Mistral read no text on (models.SECOND_READERS).
+# #664 (0101): how the second reader reads a page Mistral read no text on, or off (0101's CHECK).
 SecondReaderWay = Literal["off", "openrouter", "ultra_low_cost"]
 # #463: a page read's output limit, in tokens (TOKENS_LOW to openrouter.PAGE_MAX_OUTPUT_TOKENS).
 OutputTokens = Annotated[int, Field(strict=True)]

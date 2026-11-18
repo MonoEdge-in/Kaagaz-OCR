@@ -117,9 +117,6 @@ ULC_DEFAULT_PAISE = 40  # None saved anywhere
 # shortcut: a fixed rate; make it a platform setting if the rupee moves.
 INR_PER_USD = 88  # frontend/components/operator/models.ts INR_PER_USD
 ULC_VENDOR = "google"  # a Gemini model
-# #664 (0101): how the second reader reads a page Mistral read no text on, or off.
-OFF = "off"
-SECOND_READERS = (OFF, OPENROUTER, ULTRA_LOW_COST)
 
 # The organisation's own models of an area, else the platform's (only when it has none of
 # its own), each with the catalogue row and the average tokens of its scan calls (not

@@ -74,7 +74,7 @@ SET_ORG_AI = SET_ORG_AI_OLD.removesuffix(")") + ", text, text)"
 SET_AI_DEFAULTS = SET_AI_DEFAULTS_OLD.removesuffix(")") + ", text, text)"
 SET_MODEL_ENABLED = "kaagaz_op_set_model_enabled(uuid, text, boolean, text, text, bigint)"
 
-# kaagaz.db.models.SECOND_READERS, and OFF.
+# How the second reader reads, or off; the ways that name a model (the API's SecondReaderWay).
 READERS = "('off', 'openrouter', 'ultra_low_cost')"
 MODEL_READERS = "('openrouter', 'ultra_low_cost')"
 
