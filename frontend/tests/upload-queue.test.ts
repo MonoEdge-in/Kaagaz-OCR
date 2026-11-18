@@ -147,3 +147,22 @@ describe("following a stored file (U10)", () => {
     expect(after.entries[1]).toMatchObject({ name: "d2.pdf", size: 1000, pages: 2, batchId: "b1" });
   });
 });
+
+describe("removing a row not uploaded (PRD 9 F-04)", () => {
+  it("takes out that failed or refused row only, and leaves every other row", () => {
+    const queue = {
+      ...EMPTY_QUEUE,
+      entries: [
+        entry("refused", { kind: "error", message: "Kaagaz can’t read .docm files." }),
+        entry("lost", { kind: "error", message: "Not sent.", retry: true }),
+        entry("sent", { kind: "done", documentId: "d1" }),
+        entry("going", { kind: "sending", fraction: 0.5 }),
+      ],
+    };
+    const once = queueReducer(queue, { type: "remove", key: "refused" });
+    expect(once.entries.map((row) => row.key)).toEqual(["lost", "sent", "going"]);
+    const twice = queueReducer(once, { type: "remove", key: "lost" });
+    expect(twice.entries.map((row) => row.key)).toEqual(["sent", "going"]);
+    for (const key of ["sent", "going"]) expect(queueReducer(twice, { type: "remove", key }).entries).toEqual(twice.entries);
+  });
+});
