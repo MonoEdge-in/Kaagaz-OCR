@@ -260,6 +260,15 @@ def test_a_backup_read_refused_leaves_the_page_as_mistral_left_it() -> None:
     assert rig.local.pages == 0  # #664 review: never read locally only to be thrown away
 
 
+def test_a_backup_read_with_no_text_leaves_the_page_as_mistral_left_it() -> None:
+    """The backup model read the page and found no text: no better than Mistral's, so Mistral's
+    page stays (who read it, its issues), with the backup's billed tokens."""
+    rig = Rig(FakeMistral(BadReply("refused_request")), reply(value(), 1700, 40))
+    read = rig.read(with_backup())
+    assert (read.lines, read.issues, read.read_by) == ((), (READER_REFUSED,), BY_4)
+    assert (read.input_tokens, read.output_tokens, rig.local.pages) == (1700, 40, 0)
+
+
 @pytest.mark.parametrize(
     ("backup", "failure"),
     [
