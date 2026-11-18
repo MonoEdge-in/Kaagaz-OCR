@@ -15,6 +15,7 @@ import {
   draftOf,
   follows,
   inheritedText,
+  pickedReader,
   pickedSecond,
   refusalField,
   resetSection,
@@ -226,6 +227,20 @@ describe("second reader: the draft and what it saves", () => {
       lead: "This save changes, for 6 organisations still on platform defaults:",
       areas: ["Second reader"],
     });
+  });
+
+  it("is let go of when an organisation stops reading with Mistral, never hidden while saved (#664 review)", () => {
+    const own = values({ scan_reader: "mistral", second_reader: "openrouter", second_model: FLASH.id });
+    for (const reader of ["openrouter", "ultra_low_cost"]) {
+      expect(pickedReader(draftOf(own), reader, values(), ENV, false)).toMatchObject({ second_reader: null, second_model: null });
+    }
+    expect(pickedReader(draftOf(own), "mistral", values(), ENV, false)).toMatchObject({ second_reader: "openrouter" });
+    // Following a platform that reads with Mistral keeps it; the platform's own is every Mistral organisation's.
+    expect(pickedReader(draftOf(own), "", MISTRAL, ENV, false)).toMatchObject({ second_reader: "openrouter" });
+    expect(pickedReader(draftOf(own), "openrouter", values(), ENV, true)).toMatchObject({ second_reader: "openrouter" });
+    // Saved on an organisation that reads with Gemini (an older save): shown, so it can be seen and turned off.
+    const hidden = values({ scan_reader: "openrouter", second_reader: "off" });
+    expect(fields({ own: hidden })).toContain(`id="${ID}"`);
   });
 
   it("shows the server's refusal of an incomplete pair next to it", () => {

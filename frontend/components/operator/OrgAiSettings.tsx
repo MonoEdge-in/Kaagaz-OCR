@@ -648,8 +648,9 @@ export function AiFields(props: {
                   onPick={(value) => onChange({ ...draft, mistral_model: (value || null) as MistralModelId | null })}
                 />
               )}
-              {(mistral || platform) && (
-                // #664: the platform's is every Mistral organisation's that follows it, whoever the platform reads with.
+              {(mistral || platform || draft.second_reader !== null) && (
+                // #664: the platform's is every Mistral organisation's that follows it, whoever the platform
+                // reads with; an organisation's own is never hidden (#664 review).
                 <SettingSelect
                   id={secondId}
                   label={SECOND_READER_LABEL}

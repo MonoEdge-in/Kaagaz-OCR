@@ -234,14 +234,18 @@ export const mistralModelOf = (draft: Pick<AiDraft, "mistral_model">, defaults: 
   draft.mistral_model ?? (platform ? null : defaults.mistral_model) ?? env.mistral_model;
 
 /** Pick a reader ("" follows); the Mistral model is let go of unless Mistral then reads, and the
- * ceiling unless ultra low cost then reads (#488). */
+ * ceiling unless ultra low cost then reads (#488). #664 review: an organisation's second reader
+ * is let go of too unless Mistral then reads (the platform's is every Mistral organisation's). */
 export function pickedReader(draft: AiDraft, value: string, defaults: AiValues, env: AiEnv, platform: boolean): AiDraft {
   const next = { ...draft, scan_reader: (value || null) as ScanReader | null };
   const reader = readerOf(next, defaults, env, platform);
+  const keepSecond = platform || reader === "mistral";
   return {
     ...next,
     mistral_model: reader === "mistral" ? next.mistral_model : null,
     ulc_ceiling: reader === "ultra_low_cost" ? next.ulc_ceiling : "",
+    second_reader: keepSecond ? next.second_reader : null,
+    second_model: keepSecond ? next.second_model : null,
   };
 }
 
