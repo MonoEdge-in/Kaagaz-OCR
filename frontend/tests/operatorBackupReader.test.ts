@@ -1,4 +1,4 @@
-// The second reader (#664, Tushar, 18 Nov 2026): a page Mistral reads no text on (a map, a
+// The backup reader (#664, Tushar, 18 Nov 2026): a page Mistral reads no text on (a map, a
 // drawing, a page it refuses) is read once more by a model the super admin chooses, normal or
 // ultra low cost, per organisation and as the platform default, off until chosen. The picker
 // right under the reader choice, its words and options, the draft and the body it saves, what it
@@ -8,7 +8,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
-  SECOND_READER_HINT,
+  BACKUP_READER_HINT,
   aiBody,
   changesText,
   defaultsImpact,
@@ -16,7 +16,7 @@ import {
   follows,
   inheritedText,
   pickedReader,
-  pickedSecond,
+  pickedBackup,
   refusalField,
   resetSection,
 } from "@/components/operator/models";
@@ -42,8 +42,8 @@ const values = (overrides: Partial<AiValues> = {}): AiValues => ({
   mistral_model: null,
   daily_page_limit: null,
   ulc_ceiling_paise: null,
-  second_reader: null,
-  second_model: null,
+  backup_reader: null,
+  backup_model: null,
   ...overrides,
 });
 const ENV: AiEnv = {
@@ -77,7 +77,7 @@ const COUNTS: AiDefaults["orgs_inheriting"] = {
   mistral_model: 2,
   daily_page_limit: 1,
   ulc_ceiling_paise: 9,
-  second_reader: 6,
+  backup_reader: 6,
 };
 const scanModel = (id: string, name: string, why: string | null, enabled = true): OperatorModel => ({
   id,
@@ -116,7 +116,7 @@ const PRO = scanModel("google/gemini-3.1-pro", "Gemini 3.1 Pro", "It can't read 
 const OLD = scanModel("google/gemini-old", "Gemini Old", null, false); // no longer enabled
 const CATALOGUE = [FLASH, PRO, OLD];
 const MISTRAL = values({ scan_reader: "mistral" });
-const ID = "ai-second-reader";
+const ID = "ai-backup-reader";
 
 const fields = (props: { platform?: boolean; own?: AiValues; defaults?: AiValues; draft?: AiDraft; errors?: Record<string, string> } = {}) => {
   const own = props.own ?? values();
@@ -142,17 +142,17 @@ const optionsOf = (html: string, id: string) => {
 };
 const escaped = (text: string) => text.replace(/'/g, "&#x27;");
 
-describe("second reader: the picker", () => {
+describe("backup reader: the picker", () => {
   it("sits right under the reader choice while Mistral reads, with a plain hint", () => {
-    expect(fieldId("second_reader")).toBe(ID);
+    expect(fieldId("backup_reader")).toBe(ID);
     const html = fields({ own: MISTRAL });
-    expect(html).toContain(`<label for="${ID}" class="label">Second reader</label>`);
+    expect(html).toContain(`<label for="${ID}" class="label">Backup reader</label>`);
     expect(html.indexOf(`id="${ID}"`)).toBeGreaterThan(html.indexOf('id="ai-mistral-model"'));
     expect(html.indexOf(`id="${ID}"`)).toBeLessThan(html.indexOf(escaped("Gemini's reading settings are hidden")));
-    expect(SECOND_READER_HINT).toBe(
+    expect(BACKUP_READER_HINT).toBe(
       "When Mistral finds no text on a page (a map, a drawing, a page it can't read), that page alone is read once more by this model, billed like any page. Never when Mistral is down or out of credit.",
     );
-    expect(html).toContain(`<span id="${ID}-hint" class="hint">${escaped(SECOND_READER_HINT)}</span>`);
+    expect(html).toContain(`<span id="${ID}-hint" class="hint">${escaped(BACKUP_READER_HINT)}</span>`);
     expect(fields({ defaults: MISTRAL })).toContain(`id="${ID}"`); // Mistral followed
   });
 
@@ -172,114 +172,114 @@ describe("second reader: the picker", () => {
       "Gemini 3.1 Pro, normal read",
       "Gemini 3.1 Pro, ultra low cost (not available: It can&#x27;t read with minimal thinking.) [disabled]",
     ]);
-    // On the platform, nothing chosen is off: no second "Off".
+    // On the platform, nothing chosen is off: no extra "Off".
     expect(optionsOf(fields({ platform: true }), ID).slice(0, 2)).toEqual(["Off", "Gemini 3.5 Flash, normal read"]);
     // A saved model no longer enabled stays listed, so the form shows what is saved.
-    const saved = values({ scan_reader: "mistral", second_reader: "openrouter", second_model: OLD.id });
+    const saved = values({ scan_reader: "mistral", backup_reader: "openrouter", backup_model: OLD.id });
     expect(optionsOf(fields({ own: saved }), ID)).toContain("Gemini Old, normal read");
     expect(fields({ own: saved })).toMatch(new RegExp(`<option value="openrouter:${OLD.id}" selected="">`));
   });
 
   it("says what the organisation follows", () => {
-    const platform = values({ second_reader: "ultra_low_cost", second_model: FLASH.id });
+    const platform = values({ backup_reader: "ultra_low_cost", backup_model: FLASH.id });
     expect(optionsOf(fields({ own: MISTRAL, defaults: platform }), ID)[0]).toBe("Platform default (Gemini 3.5 Flash, ultra low cost)");
-    expect(inheritedText("second_reader", values(), ENV, CATALOGUE)).toBe("Off");
-    expect(inheritedText("second_reader", values({ second_reader: "off" }), ENV, CATALOGUE)).toBe("Off");
-    expect(inheritedText("second_reader", values({ second_reader: "openrouter", second_model: "google/gone" }), ENV, CATALOGUE)).toBe(
+    expect(inheritedText("backup_reader", values(), ENV, CATALOGUE)).toBe("Off");
+    expect(inheritedText("backup_reader", values({ backup_reader: "off" }), ENV, CATALOGUE)).toBe("Off");
+    expect(inheritedText("backup_reader", values({ backup_reader: "openrouter", backup_model: "google/gone" }), ENV, CATALOGUE)).toBe(
       "google/gone, normal read",
     );
   });
 });
 
-describe("second reader: the draft and what it saves", () => {
+describe("backup reader: the draft and what it saves", () => {
   it("picks a way and a model together, off, or what it follows", () => {
     const draft = draftOf(MISTRAL);
-    expect(pickedSecond(draft, `openrouter:${FLASH.id}`)).toMatchObject({ second_reader: "openrouter", second_model: FLASH.id });
-    expect(pickedSecond(draft, `ultra_low_cost:${FLASH.id}`)).toMatchObject({ second_reader: "ultra_low_cost", second_model: FLASH.id });
-    expect(pickedSecond(draft, "off")).toMatchObject({ second_reader: "off", second_model: null });
-    expect(pickedSecond(pickedSecond(draft, "off"), "")).toMatchObject({ second_reader: null, second_model: null });
+    expect(pickedBackup(draft, `openrouter:${FLASH.id}`)).toMatchObject({ backup_reader: "openrouter", backup_model: FLASH.id });
+    expect(pickedBackup(draft, `ultra_low_cost:${FLASH.id}`)).toMatchObject({ backup_reader: "ultra_low_cost", backup_model: FLASH.id });
+    expect(pickedBackup(draft, "off")).toMatchObject({ backup_reader: "off", backup_model: null });
+    expect(pickedBackup(pickedBackup(draft, "off"), "")).toMatchObject({ backup_reader: null, backup_model: null });
     // A model id with a colon in it keeps it.
-    expect(pickedSecond(draft, "openrouter:google/gemini-x:free")).toMatchObject({ second_model: "google/gemini-x:free" });
+    expect(pickedBackup(draft, "openrouter:google/gemini-x:free")).toMatchObject({ backup_model: "google/gemini-x:free" });
   });
 
   it("round-trips through the draft and is saved as the pair", () => {
-    const own = values({ scan_reader: "mistral", second_reader: "ultra_low_cost", second_model: FLASH.id });
+    const own = values({ scan_reader: "mistral", backup_reader: "ultra_low_cost", backup_model: FLASH.id });
     expect(aiBody(draftOf(own))).toEqual(own);
-    expect(aiBody(draftOf(values()))).toMatchObject({ second_reader: null, second_model: null });
+    expect(aiBody(draftOf(values()))).toMatchObject({ backup_reader: null, backup_model: null });
   });
 
   it("counts in Scanning's own settings while Mistral reads, and resets with it", () => {
-    const own = values({ scan_reader: "mistral", second_reader: "openrouter", second_model: FLASH.id });
-    expect(follows(values({ second_reader: "off" }), "mistral").scan).toBe("some");
-    expect(follows(values({ second_reader: "off" }), "openrouter").scan).toBe("all"); // unused while Gemini reads
-    expect(resetSection(draftOf(own), "scan")).toMatchObject({ second_reader: null, second_model: null });
+    const own = values({ scan_reader: "mistral", backup_reader: "openrouter", backup_model: FLASH.id });
+    expect(follows(values({ backup_reader: "off" }), "mistral").scan).toBe("some");
+    expect(follows(values({ backup_reader: "off" }), "openrouter").scan).toBe("all"); // unused while Gemini reads
+    expect(resetSection(draftOf(own), "scan")).toMatchObject({ backup_reader: null, backup_model: null });
   });
 
   it("is said in the save bar while Mistral reads, and in the defaults' impact with its count", () => {
     const saved = draftOf(MISTRAL);
-    const picked = pickedSecond(saved, `openrouter:${FLASH.id}`);
+    const picked = pickedBackup(saved, `openrouter:${FLASH.id}`);
     const reply = { defaults: values(), env: ENV };
-    expect(changesText(saved, picked, CATALOGUE, reply)).toEqual(["Second reader: Gemini 3.5 Flash, normal read"]);
+    expect(changesText(saved, picked, CATALOGUE, reply)).toEqual(["Backup reader: Gemini 3.5 Flash, normal read"]);
     const gemini = draftOf(values());
-    expect(changesText(gemini, pickedSecond(gemini, `openrouter:${FLASH.id}`), CATALOGUE, reply)).toEqual([]);
-    expect(changesText(saved, pickedSecond(saved, "off"), CATALOGUE, reply)).toEqual(["Second reader: Off"]);
-    expect(defaultsImpact(values(), aiBody(pickedSecond(draftOf(values()), `openrouter:${FLASH.id}`)), COUNTS)).toEqual({
+    expect(changesText(gemini, pickedBackup(gemini, `openrouter:${FLASH.id}`), CATALOGUE, reply)).toEqual([]);
+    expect(changesText(saved, pickedBackup(saved, "off"), CATALOGUE, reply)).toEqual(["Backup reader: Off"]);
+    expect(defaultsImpact(values(), aiBody(pickedBackup(draftOf(values()), `openrouter:${FLASH.id}`)), COUNTS)).toEqual({
       lead: "This save changes, for 6 organisations still on platform defaults:",
-      areas: ["Second reader"],
+      areas: ["Backup reader"],
     });
   });
 
   it("is let go of when an organisation stops reading with Mistral, never hidden while saved (#664 review)", () => {
-    const own = values({ scan_reader: "mistral", second_reader: "openrouter", second_model: FLASH.id });
+    const own = values({ scan_reader: "mistral", backup_reader: "openrouter", backup_model: FLASH.id });
     for (const reader of ["openrouter", "ultra_low_cost"]) {
-      expect(pickedReader(draftOf(own), reader, values(), ENV, false)).toMatchObject({ second_reader: null, second_model: null });
+      expect(pickedReader(draftOf(own), reader, values(), ENV, false)).toMatchObject({ backup_reader: null, backup_model: null });
     }
-    expect(pickedReader(draftOf(own), "mistral", values(), ENV, false)).toMatchObject({ second_reader: "openrouter" });
+    expect(pickedReader(draftOf(own), "mistral", values(), ENV, false)).toMatchObject({ backup_reader: "openrouter" });
     // Following a platform that reads with Mistral keeps it; the platform's own is every Mistral organisation's.
-    expect(pickedReader(draftOf(own), "", MISTRAL, ENV, false)).toMatchObject({ second_reader: "openrouter" });
-    expect(pickedReader(draftOf(own), "openrouter", values(), ENV, true)).toMatchObject({ second_reader: "openrouter" });
+    expect(pickedReader(draftOf(own), "", MISTRAL, ENV, false)).toMatchObject({ backup_reader: "openrouter" });
+    expect(pickedReader(draftOf(own), "openrouter", values(), ENV, true)).toMatchObject({ backup_reader: "openrouter" });
     // Saved on an organisation that reads with Gemini (an older save): shown, so it can be seen and turned off.
-    const hidden = values({ scan_reader: "openrouter", second_reader: "off" });
+    const hidden = values({ scan_reader: "openrouter", backup_reader: "off" });
     expect(fields({ own: hidden })).toContain(`id="${ID}"`);
   });
 
   it("shows the ultra low cost ceiling while it reads that way, and keeps it on a reader switch (#664 review)", () => {
     const CEILING = "ai-ulc-ceiling-paise";
-    const ulcSecond = values({ scan_reader: "mistral", second_reader: "ultra_low_cost", second_model: FLASH.id });
+    const ulcBackup = values({ scan_reader: "mistral", backup_reader: "ultra_low_cost", backup_model: FLASH.id });
     expect(fields({ own: MISTRAL })).not.toContain(`id="${CEILING}"`);
-    const html = fields({ own: ulcSecond });
+    const html = fields({ own: ulcBackup });
     expect(html).toContain(`id="${CEILING}"`);
     expect(html.indexOf(`id="${CEILING}"`)).toBeGreaterThan(html.indexOf(`id="${ID}"`));
     // The option says the ceiling in effect: the draft's own, else the platform's, else ₹0.40.
     const option = (html: string) => optionsOf(html, ID).find((words) => words?.startsWith("Gemini 3.5 Flash, ultra low cost"));
-    expect(option(fields({ own: { ...ulcSecond, ulc_ceiling_paise: 30 } }))).toBe("Gemini 3.5 Flash, ultra low cost, at most ₹0.30 a page");
-    expect(option(fields({ own: ulcSecond, defaults: values({ ulc_ceiling_paise: 25 }) }))).toBe(
+    expect(option(fields({ own: { ...ulcBackup, ulc_ceiling_paise: 30 } }))).toBe("Gemini 3.5 Flash, ultra low cost, at most ₹0.30 a page");
+    expect(option(fields({ own: ulcBackup, defaults: values({ ulc_ceiling_paise: 25 }) }))).toBe(
       "Gemini 3.5 Flash, ultra low cost, at most ₹0.25 a page",
     );
     // Mistral still reads: the ceiling stays with the draft.
-    const typed = { ...draftOf(ulcSecond), ulc_ceiling: "0.30" };
+    const typed = { ...draftOf(ulcBackup), ulc_ceiling: "0.30" };
     expect(pickedReader(typed, "mistral", values(), ENV, false).ulc_ceiling).toBe("0.30");
     expect(pickedReader(typed, "", MISTRAL, ENV, false).ulc_ceiling).toBe("0.30");
-    expect(changesText(draftOf(ulcSecond), typed, CATALOGUE, { defaults: values(), env: ENV })).toEqual(["Most a page may cost: ₹0.30"]);
-    // Gemini reads instead: the second reader goes, and the ceiling with it.
-    expect(pickedReader(typed, "openrouter", values(), ENV, false)).toMatchObject({ second_reader: null, ulc_ceiling: "" });
-    // On the platform the second reader stays, and so does its ceiling.
+    expect(changesText(draftOf(ulcBackup), typed, CATALOGUE, { defaults: values(), env: ENV })).toEqual(["Most a page may cost: ₹0.30"]);
+    // Gemini reads instead: the backup reader goes, and the ceiling with it.
+    expect(pickedReader(typed, "openrouter", values(), ENV, false)).toMatchObject({ backup_reader: null, ulc_ceiling: "" });
+    // On the platform the backup reader stays, and so does its ceiling.
     expect(pickedReader(typed, "openrouter", values(), ENV, true).ulc_ceiling).toBe("0.30");
   });
 
   it("shows the server's refusal of an incomplete pair next to it", () => {
-    expect(refusalField("second_reader_incomplete")).toBe("second_reader");
-    const html = fields({ own: MISTRAL, errors: { second_reader: "Choose the second reader's model, or turn the second reader off." } });
+    expect(refusalField("backup_reader_incomplete")).toBe("backup_reader");
+    const html = fields({ own: MISTRAL, errors: { backup_reader: "Choose the backup reader's model, or turn the backup reader off." } });
     expect(html).toContain(`<span id="${ID}-error" class="error-text" role="alert">`);
   });
 });
 
-describe("second reader: the platform defaults' summary", () => {
-  it("says the platform's second reader and how many organisations follow it", () => {
-    const reply: AiDefaults = { defaults: values({ second_reader: "openrouter", second_model: FLASH.id }), env: ENV, orgs_inheriting: COUNTS };
+describe("backup reader: the platform defaults' summary", () => {
+  it("says the platform's backup reader and how many organisations follow it", () => {
+    const reply: AiDefaults = { defaults: values({ backup_reader: "openrouter", backup_model: FLASH.id }), env: ENV, orgs_inheriting: COUNTS };
     const html = renderToStaticMarkup(createElement(DefaultsSummary, { reply, catalogue: CATALOGUE }));
-    expect(html).toMatch(/Second reader[\s\S]*?Gemini 3.5 Flash, normal read[\s\S]*?6/);
+    expect(html).toMatch(/Backup reader[\s\S]*?Gemini 3.5 Flash, normal read[\s\S]*?6/);
     const off = renderToStaticMarkup(createElement(DefaultsSummary, { reply: { ...reply, defaults: values() }, catalogue: CATALOGUE }));
-    expect(off).toMatch(/Second reader[\s\S]*?Off/);
+    expect(off).toMatch(/Backup reader[\s\S]*?Off/);
   });
 });

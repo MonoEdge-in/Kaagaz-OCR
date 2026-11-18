@@ -98,8 +98,8 @@ import {
   RESOLUTION_HINT,
   RESOLUTION_WORDS,
   SCAN_LEVELS,
-  SECOND_READER_HINT,
-  SECOND_READER_LABEL,
+  BACKUP_READER_HINT,
+  BACKUP_READER_LABEL,
   TOKENS_HINT,
   TOKENS_LOW,
   TOKENS_RANGE,
@@ -142,7 +142,7 @@ import {
   parseBudget,
   parseTokens,
   pickedReader,
-  pickedSecond,
+  pickedBackup,
   pickerText,
   readerOf,
   realCostText,
@@ -153,9 +153,9 @@ import {
   savedText,
   scanModelsDiffer,
   scanSettings,
-  secondCeilingOf,
-  secondOptions,
-  secondValue,
+  backupCeilingOf,
+  backupOptions,
+  backupValue,
   shownErrors,
   statusText,
   toggled,
@@ -194,7 +194,7 @@ export const onPage = (field: AiField) => document.getElementById(fieldId(field)
 
 /** The first field with a problem, in the form's order, for the focus. */
 export function firstProblem(errors: AiErrors): AiField | null {
-  const order: AiField[] = ["second_reader", "ulc_ceiling_paise", "scan_models", "scan_default", "page_max_output_tokens", "daily_page_limit", "chat_models", "chat_default", "chat_levels", "budget", "form"];
+  const order: AiField[] = ["backup_reader", "ulc_ceiling_paise", "scan_models", "scan_default", "page_max_output_tokens", "daily_page_limit", "chat_models", "chat_default", "chat_levels", "budget", "form"];
   return order.find((field) => errors[field]) ?? null;
 }
 
@@ -597,7 +597,7 @@ export function AiFields(props: {
   const mistralModel = env.mistral_models.find((each) => each.id === mistralModelOf(draft, defaults, env, platform));
   const waiting = !platform && !env.mistral_ready && readerOf(saved, defaults, env, false) === "mistral";
   const readerId = fieldId("scan_reader");
-  const secondId = fieldId("second_reader"); // #664
+  const backupId = fieldId("backup_reader"); // #664
   const scanOffered = offered(catalogue, "scan", saved.scan_models);
   // #488: the model ultra low cost reads with is the default scan model: the draft's own, or "" while it follows.
   const ulcModel = draft.scan_models.length > 0 ? (draft.scan_default ?? "") : "";
@@ -649,24 +649,24 @@ export function AiFields(props: {
                   onPick={(value) => onChange({ ...draft, mistral_model: (value || null) as MistralModelId | null })}
                 />
               )}
-              {(mistral || platform || draft.second_reader !== null) && (
+              {(mistral || platform || draft.backup_reader !== null) && (
                 // #664: the platform's is every Mistral organisation's that follows it, whoever the platform
                 // reads with; an organisation's own is never hidden (#664 review).
                 <SettingSelect
-                  id={secondId}
-                  label={SECOND_READER_LABEL}
+                  id={backupId}
+                  label={BACKUP_READER_LABEL}
                   platform={platform}
-                  inherit={platform ? "Off" : `Platform default (${from("second_reader")})`}
-                  value={secondValue(draft)}
-                  options={secondOptions(catalogue, saved, platform, secondCeilingOf(draft, defaults, env, platform))}
-                  hint={SECOND_READER_HINT}
-                  problem={<FieldError field="second_reader" errors={errors} />}
-                  problemId={errors.second_reader ? `${secondId}-error` : undefined}
-                  onPick={(value) => onChange(pickedSecond(draft, value))}
+                  inherit={platform ? "Off" : `Platform default (${from("backup_reader")})`}
+                  value={backupValue(draft)}
+                  options={backupOptions(catalogue, saved, platform, backupCeilingOf(draft, defaults, env, platform))}
+                  hint={BACKUP_READER_HINT}
+                  problem={<FieldError field="backup_reader" errors={errors} />}
+                  problemId={errors.backup_reader ? `${backupId}-error` : undefined}
+                  onPick={(value) => onChange(pickedBackup(draft, value))}
                 />
               )}
-              {(ulc || draft.second_reader === "ultra_low_cost") && (
-                // #664 review: the second reader reads at this ceiling under ultra low cost too.
+              {(ulc || draft.backup_reader === "ultra_low_cost") && (
+                // #664 review: the backup reader reads at this ceiling under ultra low cost too.
                 <SettingField
                   id={ceilingId}
                   label={CEILING_LABEL}

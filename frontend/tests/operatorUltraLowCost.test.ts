@@ -68,8 +68,8 @@ const values = (overrides: Partial<AiValues> = {}): AiValues => ({
   mistral_model: null,
   daily_page_limit: null,
   ulc_ceiling_paise: null,
-  second_reader: null, // Changed on purpose (#664): the second reader
-  second_model: null,
+  backup_reader: null, // Changed on purpose (#664): the backup reader
+  backup_model: null,
   ...overrides,
 });
 const ENV: AiEnv = {
@@ -103,7 +103,7 @@ const COUNTS: AiDefaults["orgs_inheriting"] = {
   mistral_model: 2,
   daily_page_limit: 1,
   ulc_ceiling_paise: 9,
-  second_reader: 2, // Changed on purpose (#664)
+  backup_reader: 2, // Changed on purpose (#664)
 };
 const ULC = values({ scan_reader: "ultra_low_cost" });
 const GEMINI_REPLY = { defaults: values(), env: ENV };
@@ -375,8 +375,8 @@ describe("ultra low cost: follow, reset, status and the save bar", () => {
       dynamic: false,
     };
     expect(follows(values({ ...gemini, scan_reader: "openrouter" }), "openrouter").scan).toBe("none");
-    // Changed on purpose (#664): reading with Mistral, the second reader is a scan setting of its own too.
-    const mistral: Partial<AiValues> = { ...gemini, scan_reader: "mistral", mistral_model: "mistral-ocr-4-1", second_reader: "off" };
+    // Changed on purpose (#664): reading with Mistral, the backup reader is a scan setting of its own too.
+    const mistral: Partial<AiValues> = { ...gemini, scan_reader: "mistral", mistral_model: "mistral-ocr-4-1", backup_reader: "off" };
     expect(follows(values(mistral), "openrouter").scan).toBe("none");
     // Under ultra low cost a Mistral model left over doesn't count; the ceiling does.
     expect(follows(values({ ...gemini, scan_reader: "ultra_low_cost" }), "openrouter").scan).toBe("some");

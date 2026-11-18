@@ -170,8 +170,8 @@ The Gemini reader (PRD 5), when the processor is given its parts:
 * #488: a document read under Ultra low cost (``Reading.ulc``, its ceiling) has it passed on in
   ``DocumentPages.ulc``, with its lead's catalogue prices taken once at the job's start
   (``JobReading.ulc_prices``), so the reader holds each page under the ceiling at one price.
-* #664: a document on Mistral has its second reader (``JobReading.second``,
-  ``models.second_reader``, checked at the job's start) passed on in ``DocumentPages.second``,
+* #664: a document on Mistral has its backup reader (``JobReading.backup``,
+  ``models.backup_reader``, checked at the job's start) passed on in ``DocumentPages.backup``,
   for the pages Mistral reads no text on; a page it read is the run's (``run.models``), so it is
   checked and counted as a model's page. Any other document never has one.
 * With OCR_ENGINE=rapidocr and no model there is no checker, no page counted as
@@ -312,11 +312,11 @@ from kaagaz.reading.ocr import (
     HARD_LINES_MAX,
     HARD_SHARE,
     LOCAL_READ_BY,
+    BackupReader,
     DocumentPages,
     PageCache,
     PageRead,
     Region,
-    SecondReader,
     UlcPrices,
     careful_pages,
     careful_plan,
@@ -788,7 +788,7 @@ class JobReading:
     super admin's pages of one document read at once (package S, 0053), read at the job's
     start; None: OCR_PAGE_CONCURRENCY. ``ulc_prices`` (#488): for a document read under Ultra
     low cost, its lead's catalogue prices, taken once at the job's start (None: no row).
-    ``second`` (#664): the second reader of a document on Mistral (``models.second_reader``,
+    ``backup`` (#664): the backup reader of a document on Mistral (``models.backup_reader``,
     checked at the job's start; None: off)."""
 
     user_id: str | None
@@ -797,7 +797,7 @@ class JobReading:
     reading: "Reading | None" = None
     pages_at_once: int | None = None
     ulc_prices: UlcPrices | None = None
-    second: SecondReader | None = None
+    backup: BackupReader | None = None
 
 
 class ReadingAdmission(Protocol):
@@ -900,7 +900,7 @@ class _Run:
     # (page, pixels), and what the run adds to run_config.reading (escalated, cap_hit, ...).
     reading: "Reading | None" = None
     ulc_prices: UlcPrices | None = None  # #488: JobReading.ulc_prices
-    second: SecondReader | None = None  # #664: JobReading.second, for a document on Mistral only
+    backup: BackupReader | None = None  # #664: JobReading.backup, for a document on Mistral only
     models: frozenset[str] = frozenset()
     memo: dict[tuple[int, str], PageRead] | None = None
     reading_notes: dict[str, Any] = field(default_factory=dict)
@@ -1155,19 +1155,19 @@ class DocumentProcessor:
             run.user_id = reading.user_id
             if reading.model is not None:
                 run.model, run.provider = reading.model, reading.provider
-            run.reading, run.ulc_prices, run.second = reading.reading, reading.ulc_prices, reading.second
+            run.reading, run.ulc_prices, run.backup = reading.reading, reading.ulc_prices, reading.backup
         if run.reading is not None and run.reading.scan_reader == MISTRAL:  # #473: Mistral reads it
             if self._mistral_ready is not None:
                 self._mistral_ready()  # review, 2 Nov 2026: wait now, before any page is drawn
             run.model = read_by(run.reading.mistral_model)
         else:
-            run.second = None  # #664: only the pages Mistral read no text on
+            run.backup = None  # #664: only the pages Mistral read no text on
         extra = () if run.reading is None else (run.reading.careful, *run.reading.others)
-        # #664: a page the second reader read is checked and counted as the run's model's.
-        second = () if run.second is None else (run.second.model,)
+        # #664: a page the backup reader read is checked and counted as the run's model's.
+        backup = () if run.backup is None else (run.backup.model,)
         run.models = frozenset(
             model
-            for model in (run.model, *(agent.model for agent in extra if agent is not None), *second)
+            for model in (run.model, *(agent.model for agent in extra if agent is not None), *backup)
             if model
         )
         upgrade = self._job_reading is not None and run.user_id is None  # the upgrade sweep's
@@ -1854,7 +1854,7 @@ class DocumentProcessor:
         meter, cache = self._ocr_meter, self._page_cache
         if meter is None or cache is None:
             return contextlib.nullcontext()
-        reading, second = run.reading, run.second
+        reading, backup = run.reading, run.backup
         if self._read_again is not None:
             run.read_again = frozenset(self._read_again.pages_to_read_again(job.customer_id, job.document_id))
             if run.read_again:  # #385: a second short query only when a page was asked for
@@ -1906,18 +1906,18 @@ class DocumentProcessor:
                     if agent is not None and not agent.thinks
                 )
             )
-            # #664: a second reader with no thinking levels is sent none, a read again too.
-            | ({second.model} if second is not None and not second.thinks else set()),
+            # #664: a backup reader with no thinking levels is sent none, a read again too.
+            | ({backup.model} if backup is not None and not backup.thinks else set()),
             # #463 review: a Careful or read-again level its model does not take is not sent.
             levels={
                 **({} if reading is None else reading.accepted()),
-                **({second.model: second.levels} if second is not None and second.levels else {}),
+                **({backup.model: backup.levels} if backup is not None and backup.levels else {}),
             },
             scan_reader=OPENROUTER if reading is None else reading.scan_reader,  # #473: who reads
             mistral_model=DEFAULT_MISTRAL_MODEL if reading is None else reading.mistral_model,
             ulc=None if reading is None else reading.ulc,  # #488: Ultra low cost, held to its ceiling
             ulc_prices=run.ulc_prices,
-            second=second,  # #664: a page Mistral read no text on, read once more
+            backup=backup,  # #664: a page Mistral read no text on, read once more
         )
         return meter.document(pages)
 
@@ -2593,7 +2593,7 @@ def build_processor(
                 # #488: Ultra low cost's lead prices, once a document (a price change never moves its pages).
                 prices = None if scan.ulc is None else models.ulc_prices(conn, scan.lead.model)
                 # #664: on Mistral, who reads once a page it read no text on (None: off).
-                second = models.second_reader(conn, customer_id, scan, settings=settings)
+                backup = models.backup_reader(conn, customer_id, scan, settings=settings)
             return JobReading(
                 user_id,
                 scan.lead.model,
@@ -2601,7 +2601,7 @@ def build_processor(
                 reading=scan,
                 pages_at_once=at_once,
                 ulc_prices=prices,
-                second=second,
+                backup=backup,
             )
 
         job_reading = read_job

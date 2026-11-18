@@ -604,13 +604,13 @@ class UlcPrices:
 
 
 @dataclass(frozen=True, slots=True)
-class SecondReader:
+class BackupReader:
     """#664 (Tushar, 18 Nov 2026): who reads, once, a page Mistral OCR read no text on (it read
     the page as a picture, or refused it): ``model`` through ``provider`` at ``thinking`` (the
     level sent), normal, or Ultra low cost with ``ulc`` and ``ulc_prices`` (as
     ``DocumentPages``'). ``thinks`` False: its catalogue row lists no thinking levels, so it is
     sent none, a read again too; ``levels``, the ones it takes (none: any), so a read again's
-    level it does not take is not sent (``DocumentPages.levels``). ``kaagaz.db.models.second_reader``
+    level it does not take is not sent (``DocumentPages.levels``). ``kaagaz.db.models.backup_reader``
     makes one, checked at job time."""
 
     model: str
@@ -675,7 +675,7 @@ class DocumentPages:
     ``ulc_prices`` (None: no known price, so nothing is sent); never Careful, Ensemble, routing,
     regions or halves (``gemini_ocr``'s module notes). None: everything above, as before.
 
-    #664: ``second``, for a document on Mistral, reads once each page Mistral read no text on
+    #664: ``backup``, for a document on Mistral, reads once each page Mistral read no text on
     (``gemini_ocr``'s module notes); None: off, as before."""
 
     customer_id: str
@@ -714,7 +714,7 @@ class DocumentPages:
     mistral_model: str = DEFAULT_MISTRAL_MODEL
     ulc: UlcCeiling | None = None
     ulc_prices: UlcPrices | None = None
-    second: SecondReader | None = None
+    backup: BackupReader | None = None
 
 
 @runtime_checkable

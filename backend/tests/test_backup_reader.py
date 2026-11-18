@@ -1,4 +1,4 @@
-"""The second reader (#664, Tushar, 18 Nov 2026): a page Mistral OCR reads no text on is read once
+"""The backup reader (#664, Tushar, 18 Nov 2026): a page Mistral OCR reads no text on is read once
 by the backup model the super admin chose.
 
 How a map ends failed on Mistral today: Mistral answers a map with the whole page as a picture
@@ -7,9 +7,9 @@ How a map ends failed on Mistral today: Mistral answers a map with the whole pag
 falls back to another reader (#473), so a file whose every page is like that has no text at all:
 the image and PDF readers raise ``ReadError("no_text")`` and the pipeline fails it for good.
 
-With a second reader set, only such a page is read again, once, by the chosen model, normal or
+With a backup reader set, only such a page is read again, once, by the chosen model, normal or
 Ultra low cost, billed to the document like any page read. An outage, a key or credit problem, or
-Mistral not set up still waits as before; a page Mistral read is never read again; a second read
+Mistral not set up still waits as before; a page Mistral read is never read again; a backup read
 that fails leaves the page as Mistral left it.
 
 No network and never a real key: Mistral and Gemini are fakes (``test_mistral_wiring``'s, the
@@ -39,9 +39,9 @@ from kaagaz.reading.gemini_ocr import PROVIDER_NOT_ALLOWED, ULC_MARK, GeminiEngi
 from kaagaz.reading.mistral_reader import BadReply, MistralUnavailable
 from kaagaz.reading.ocr import (
     COMPACT_PROMPT_VERSION,
+    BackupReader,
     DocumentPages,
     PageRead,
-    SecondReader,
     UlcCeiling,
     UlcPrices,
     as_page_engine,
@@ -84,11 +84,11 @@ from tests.test_pipeline_gemini import page_read as pipeline_page
 from tests.test_pipeline_gemini import rig as gemini_rig
 
 FLASH = "google/gemini-3.5-flash-lite"
-NORMAL = SecondReader(MODEL, "google-vertex", "low")
+NORMAL = BackupReader(MODEL, "google-vertex", "low")
 PRICES = UlcPrices(
     price_in_usd_per_m=0.30, price_out_usd_per_m=2.50, tokens_per_page_in=2500, per_call_usd=0.0
 )
-ULC = SecondReader(
+ULC = BackupReader(
     FLASH, "google-vertex", "minimal", ulc=UlcCeiling(usd=40 / 100 / 88, paise=40), ulc_prices=PRICES
 )
 MAP_TEXT = ["Survey No 42", "Village Wagholi"]
@@ -150,8 +150,8 @@ def gemini_map() -> PageReply:
     return reply(value(*(line(text, order=index) for index, text in enumerate(MAP_TEXT))))
 
 
-def with_second(second: SecondReader | None = NORMAL, **more: Any) -> DocumentPages:
-    return on_mistral(FakeCache(), second=second, **more)
+def with_backup(backup: BackupReader | None = NORMAL, **more: Any) -> DocumentPages:
+    return on_mistral(FakeCache(), backup=backup, **more)
 
 
 def png() -> bytes:
@@ -181,7 +181,7 @@ def test_a_map_on_mistral_alone_fails_the_file_with_no_text(script: Any) -> None
     assert failed.value.code == "no_text"
 
 
-# --- the second reader --------------------------------------------------------------------------
+# --- the backup reader --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -193,9 +193,9 @@ def test_a_map_on_mistral_alone_fails_the_file_with_no_text(script: Any) -> None
         ({"markdown": 5}, 1),  # a 200 page_read can't read (bad_reply)
     ],
 )
-def test_a_page_mistral_read_no_text_on_is_read_by_the_second_reader(script: Any) -> None:
+def test_a_page_mistral_read_no_text_on_is_read_by_the_backup_reader(script: Any) -> None:
     rig = Rig(FakeMistral(script), gemini_map())
-    read = rig.read(with_second())
+    read = rig.read(with_backup())
     assert texts(read) == MAP_TEXT
     assert (read.read_by, read.read_thinking) == (MODEL, "low")
     assert READER_REFUSED not in read.issues and NO_TEXT not in read.issues
@@ -204,24 +204,24 @@ def test_a_page_mistral_read_no_text_on_is_read_by_the_second_reader(script: Any
     assert rig.local.pages == 0
 
 
-def test_the_map_file_is_read_with_the_second_reader() -> None:
+def test_the_map_file_is_read_with_the_backup_reader() -> None:
     rig = Rig(FakeMistral((map_reply(), 1)), gemini_map())
     socket = build_reader_socket(make_settings(), rig.engine)
-    with rig.engine.document(with_second()):
+    with rig.engine.document(with_backup()):
         spans = socket.read(sniff.PNG, png())
     assert [span.text for span in spans] == MAP_TEXT
 
 
 def test_a_page_mistral_read_is_never_read_again() -> None:
     rig = Rig(FakeMistral((mistral_reply("INVOICE 1042"), 1)))  # Gemini has nothing scripted
-    read = rig.read(with_second())
+    read = rig.read(with_backup())
     assert (texts(read), read.read_by, rig.client.calls) == (["INVOICE 1042"], BY_4, [])
 
 
 @pytest.mark.parametrize("script", [(map_reply(), 1), BadReply("refused_request")])
 def test_off_nothing_changes(script: Any) -> None:
     rig = Rig(FakeMistral(script))
-    read = rig.read(with_second(None))
+    read = rig.read(with_backup(None))
     assert (read.lines, read.read_by, rig.client.calls, rig.local.pages) == ((), BY_4, [], 0)
 
 
@@ -229,7 +229,7 @@ def test_off_nothing_changes(script: Any) -> None:
 def test_an_outage_a_key_or_no_credit_still_waits(code: str) -> None:
     rig = Rig(FakeMistral(MistralUnavailable(code)))
     with pytest.raises(BackendUnavailable) as waited:
-        rig.read(with_second())
+        rig.read(with_backup())
     assert str(waited.value) == code
     assert (rig.client.calls, rig.local.pages) == ([], 0)
 
@@ -237,31 +237,31 @@ def test_an_outage_a_key_or_no_credit_still_waits(code: str) -> None:
 def test_mistral_not_set_up_still_waits() -> None:
     rig = Rig(None)
     with pytest.raises(BackendUnavailable, match=r"^mistral_setup$"):
-        rig.read(with_second())
+        rig.read(with_backup())
     assert rig.client.calls == []
 
 
-def test_a_gemini_document_never_uses_the_second_reader() -> None:
+def test_a_gemini_document_never_uses_the_backup_reader() -> None:
     rig = Rig(FakeMistral(), ModelOutputError("invalid_output"))
-    read = rig.read(dataclasses.replace(with_second(), scan_reader="openrouter"))
+    read = rig.read(dataclasses.replace(with_backup(), scan_reader="openrouter"))
     assert READER_REFUSED in read.issues and read.read_by == "rapidocr"  # Gemini's own local read
     assert len(rig.client.calls) == 1 and rig.mistral is not None and rig.mistral.calls == []
 
 
-# --- once a page, and a second read that fails ------------------------------------------------
+# --- once a page, and a backup read that fails ------------------------------------------------
 
 
-def test_a_second_read_refused_leaves_the_page_as_mistral_left_it() -> None:
+def test_a_backup_read_refused_leaves_the_page_as_mistral_left_it() -> None:
     # Changed on purpose (#664 review): only a refusal (or no text) keeps Mistral's page; a wait waits.
     rig = Rig(FakeMistral(BadReply("refused_request")), ModelOutputError("invalid_output"))
-    read = rig.read(with_second())
+    read = rig.read(with_backup())
     assert (read.lines, read.issues, read.read_by) == ((), (READER_REFUSED,), BY_4)
     assert len(rig.client.calls) == 1
     assert rig.local.pages == 0  # #664 review: never read locally only to be thrown away
 
 
 @pytest.mark.parametrize(
-    ("second", "failure"),
+    ("backup", "failure"),
     [
         (NORMAL, ProviderNotAllowed(PROVIDER_NOT_ALLOWED)),  # outside OPENROUTER_PROVIDERS: nothing sent
         (NORMAL, ModelUnavailable("timeout")),  # the page's time ran out
@@ -272,13 +272,13 @@ def test_a_second_read_refused_leaves_the_page_as_mistral_left_it() -> None:
     ],
 )
 def test_no_local_read_is_made_on_any_path_where_the_model_does_not_read(
-    second: SecondReader, failure: Exception | None
+    backup: BackupReader, failure: Exception | None
 ) -> None:
     """#664 review: every path where Gemini alone reads the page locally (a refusal, a timeout, a
     withdrawn model, Ultra low cost's ceiling) leaves the backup's page as Mistral left it, with
     no local read, its billed tokens kept."""
     rig = Rig(FakeMistral(BadReply("refused_request")), *([] if failure is None else [failure]))
-    read = rig.read(with_second(second))
+    read = rig.read(with_backup(backup))
     assert (read.lines, read.issues, read.read_by) == ((), (READER_REFUSED,), BY_4)
     assert rig.local.pages == 0
 
@@ -289,36 +289,36 @@ def test_a_page_ultra_low_cost_refused_before_is_not_read_locally_again() -> Non
     key = PageKey(CUSTOMER, DOCUMENT, 1, pixels_sha256(page()), FLASH, f"{COMPACT_PROMPT_VERSION}+ulc40")
     cache.rows[key] = ({ULC_MARK: "cost_ceiling"}, 2400, 300)
     rig = Rig(FakeMistral(BadReply("refused_request")))  # Gemini has nothing scripted
-    read = rig.read(on_mistral(cache, second=ULC))
+    read = rig.read(on_mistral(cache, backup=ULC))
     assert (read.lines, read.read_by, rig.local.pages, rig.client.calls) == ((), BY_4, 0, [])
     assert key in cache.gets
 
 
 @pytest.mark.parametrize(("failure", "code"), [("server_error", "gemini"), ("key_rejected", "gemini_key")])
-def test_an_outage_or_key_problem_of_the_second_reader_waits(failure: str, code: str) -> None:
+def test_an_outage_or_key_problem_of_the_backup_reader_waits(failure: str, code: str) -> None:
     """#664 review: the document waits, as a Gemini document does, never failing for it."""
     rig = Rig(FakeMistral(BadReply("refused_request")), ModelUnavailable(failure))
     with pytest.raises(BackendUnavailable) as waited:
-        rig.read(with_second())
+        rig.read(with_backup())
     assert str(waited.value) == code and rig.local.pages == 0
 
 
 def test_past_the_outage_window_the_page_stays_as_mistral_left_it() -> None:
-    """A second reader down past READER_OUTAGE_FALLBACK_MINUTES: Gemini would read the page
-    locally; the second reader leaves it as Mistral did, and the document goes on."""
+    """A backup reader down past READER_OUTAGE_FALLBACK_MINUTES: Gemini would read the page
+    locally; the backup reader leaves it as Mistral did, and the document goes on."""
     refused = BadReply("refused_request")
     down = ModelUnavailable("server_error")
     rig = Rig(FakeMistral(refused, refused), down, down, reader_outage_fallback_minutes=1)
     with pytest.raises(BackendUnavailable, match=r"^gemini$"):
-        rig.read(with_second())  # the first try waits
+        rig.read(with_backup())  # the first try waits
     rig.client.clock += 61  # the next try, past the window
-    read = rig.read(with_second())
+    read = rig.read(with_backup())
     assert (read.lines, read.issues, read.read_by) == ((), (READER_REFUSED,), BY_4)
     assert len(rig.client.calls) == 2
     assert rig.local.pages == 0  # #664 review: past the window, no local read either
 
 
-def test_an_outage_of_the_second_reader_leaves_the_document_waiting_not_failed() -> None:
+def test_an_outage_of_the_backup_reader_leaves_the_document_waiting_not_failed() -> None:
     rig = Rig(FakeMistral((map_reply(), 1)), ModelUnavailable("server_error"))
     system = gemini_rig(rig.engine, checker=FakeChecker(), job_reading=job_reading(NORMAL))
     with pytest.raises(BackendUnavailable, match=r"^gemini$"):
@@ -328,7 +328,7 @@ def test_an_outage_of_the_second_reader_leaves_the_document_waiting_not_failed()
 
 def test_no_time_left_the_page_stays_as_mistral_left_it() -> None:
     rig = Rig(FakeMistral(), ocr_timeout_seconds=60, ocr_seconds_per_page=60)
-    with rig.engine.document(with_second(page_count=1)):
+    with rig.engine.document(with_backup(page_count=1)):
         rig.client.clock += 60  # the document's time is spent: Mistral refuses (mistral_no_time)
         read = rig.engine.read_page(page(), page_no=1)
     assert (read.lines, read.issues, read.read_by) == ((), (READER_REFUSED,), BY_4)
@@ -336,13 +336,13 @@ def test_no_time_left_the_page_stays_as_mistral_left_it() -> None:
     assert rig.local.pages == 0  # #664 review: no local read made only to be thrown away
 
 
-def test_each_page_is_read_by_the_second_reader_once() -> None:
+def test_each_page_is_read_by_the_backup_reader_once() -> None:
     """The image and PDF readers read a page that gave nothing once more (at full size, or at the
-    ceiling DPI): Mistral is asked again, the second reader never."""
+    ceiling DPI): Mistral is asked again, the backup reader never."""
     refused = BadReply("refused_request")
     mistral = FakeMistral(refused, refused, (map_reply(), 1))
     rig = Rig(mistral, ModelOutputError("invalid_output"), gemini_map())
-    with rig.engine.document(with_second()):
+    with rig.engine.document(with_backup()):
         first = rig.engine.read_page(page(), page_no=1)
         again = rig.engine.read_page(page(), page_no=1)
         other = rig.engine.read_page(page(), page_no=2)  # another page has its own one try
@@ -352,14 +352,14 @@ def test_each_page_is_read_by_the_second_reader_once() -> None:
     # A new document (the next try, or "Read again") is a new reading: its pages may be tried again.
     rig.client.script.append(gemini_map())
     mistral.script.append((map_reply(), 1))
-    assert texts(rig.read(with_second())) == MAP_TEXT
+    assert texts(rig.read(with_backup())) == MAP_TEXT
 
 
-def test_the_map_file_with_a_failing_second_reader_still_fails_as_today() -> None:
+def test_the_map_file_with_a_failing_backup_reader_still_fails_as_today() -> None:
     refused = BadReply("refused_request")
     rig = Rig(FakeMistral(refused, refused), ModelOutputError("invalid_output"))
     socket = build_reader_socket(make_settings(), rig.engine)
-    with rig.engine.document(with_second()), pytest.raises(ReadError, match="no_text"):
+    with rig.engine.document(with_backup()), pytest.raises(ReadError, match="no_text"):
         socket.read(sniff.PNG, png())
     assert len(rig.client.calls) == 1
 
@@ -367,44 +367,44 @@ def test_the_map_file_with_a_failing_second_reader_still_fails_as_today() -> Non
 # --- billing ------------------------------------------------------------------------------------
 
 
-def test_the_second_read_is_billed_to_the_document_as_a_page_read() -> None:
+def test_the_backup_read_is_billed_to_the_document_as_a_page_read() -> None:
     with ledger() as kept:
-        Rig(FakeMistral((map_reply(), 1)), gemini_map()).read(with_second())
+        Rig(FakeMistral((map_reply(), 1)), gemini_map()).read(with_backup())
     rows = {row.model: row for row in kept.rows}
     assert set(rows) == {BY_4, MODEL}
-    mistral, second = rows[BY_4], rows[MODEL]
+    mistral, backup = rows[BY_4], rows[MODEL]
     assert (mistral.kind, mistral.calls, mistral.pages) == ("scan", 1, 1)
-    assert (second.kind, second.calls, second.pages, second.cached) == ("scan", 1, 1, False)
-    assert (second.input_tokens, second.output_tokens, second.thinking) == (1700, 4000, "low")
+    assert (backup.kind, backup.calls, backup.pages, backup.cached) == ("scan", 1, 1, False)
+    assert (backup.input_tokens, backup.output_tokens, backup.thinking) == (1700, 4000, "low")
     assert [pages for pages, _usd in kept.live] == [1, 1]  # #478: both reads count on the day
 
 
-def test_a_failed_second_read_is_still_billed_and_its_tokens_kept_on_the_page() -> None:
+def test_a_failed_backup_read_is_still_billed_and_its_tokens_kept_on_the_page() -> None:
     refused = ModelOutputError("invalid_output", input_tokens=1700, output_tokens=300)
     with ledger() as kept:
-        read = Rig(FakeMistral(BadReply("refused_request")), refused).read(with_second())
+        read = Rig(FakeMistral(BadReply("refused_request")), refused).read(with_backup())
     [row] = kept.rows
     assert (row.model, row.calls, row.pages) == (MODEL, 1, 1)
     assert (read.input_tokens, read.output_tokens, read.read_by) == (1700, 300, BY_4)
 
 
-def test_an_ultra_low_cost_second_reader_reads_once_under_its_ceiling() -> None:
+def test_an_ultra_low_cost_backup_reader_reads_once_under_its_ceiling() -> None:
     compact = "g 0 l -\nt 40 100 70 900 Survey No 42\np 100 100 120 900 Village Wagholi"
     rig = Rig(FakeMistral((map_reply(), 1)), reply({"r": compact}, 2400, 300))
     with ledger() as kept:
-        read = rig.read(with_second(ULC))
+        read = rig.read(with_backup(ULC))
     assert texts(read) == MAP_TEXT
     assert (read.read_by, read.read_thinking) == (FLASH, "minimal")
     [call] = rig.client.calls
     assert (call.model, call.thinking_level) == (FLASH, "minimal")
-    second = next(row for row in kept.rows if row.model == FLASH)
-    assert (second.kind, second.pages) == (ULC_SCAN, 1)
+    backup = next(row for row in kept.rows if row.model == FLASH)
+    assert (backup.kind, backup.pages) == (ULC_SCAN, 1)
 
 
-def test_the_second_read_is_logged_with_ids_and_never_the_text(caplog: pytest.LogCaptureFixture) -> None:
+def test_the_backup_read_is_logged_with_ids_and_never_the_text(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO)
-    Rig(FakeMistral((map_reply(), 1)), gemini_map()).read(with_second())
-    [record] = [record for record in caplog.records if getattr(record, "code", None) == "second_reader"]
+    Rig(FakeMistral((map_reply(), 1)), gemini_map()).read(with_backup())
+    [record] = [record for record in caplog.records if getattr(record, "code", None) == "backup_reader"]
     ids = tuple(getattr(record, name, None) for name in ("customer_id", "document_id", "page_no", "model"))
     assert ids == (CUSTOMER, DOCUMENT, 1, MODEL)
     assert not any(text in record.getMessage() for text in MAP_TEXT)
@@ -413,19 +413,19 @@ def test_the_second_read_is_logged_with_ids_and_never_the_text(caplog: pytest.Lo
 # --- the pipeline -------------------------------------------------------------------------------
 
 
-def job_reading(second: SecondReader | None, user: str | None = "u1") -> _Reading:
-    """The job's reading as the worker resolves it: Mistral OCR 4.1, with ``second``."""
+def job_reading(backup: BackupReader | None, user: str | None = "u1") -> _Reading:
+    """The job's reading as the worker resolves it: Mistral OCR 4.1, with ``backup``."""
     lead = models.Agent(MODEL, "google-vertex", "Gemini")
     asked = _Reading(user, MODEL)
     asked.reading = dataclasses.replace(
         asked.reading,
         reading=models.Reading("single", lead, scan_reader="mistral", mistral_model=OCR_4),
-        second=second,
+        backup=backup,
     )
     return asked
 
 
-def test_the_map_document_that_failed_on_mistral_is_ready_with_the_second_reader() -> None:
+def test_the_map_document_that_failed_on_mistral_is_ready_with_the_backup_reader() -> None:
     failing = gemini_rig(
         Rig(FakeMistral((map_reply(), 1))).engine, checker=FakeChecker(), job_reading=job_reading(None)
     )
@@ -443,7 +443,7 @@ def test_the_map_document_that_failed_on_mistral_is_ready_with_the_second_reader
     assert len(rig.client.calls) == 1
 
 
-def test_a_document_mistral_reads_whole_never_calls_the_second_reader() -> None:
+def test_a_document_mistral_reads_whole_never_calls_the_backup_reader() -> None:
     rig = Rig(FakeMistral((mistral_reply("Total 1,180.00"), 1)))
     system = gemini_rig(rig.engine, checker=FakeChecker(), job_reading=job_reading(NORMAL))
     job = system.run(make_pdf([SCANNED]))
@@ -451,11 +451,11 @@ def test_a_document_mistral_reads_whole_never_calls_the_second_reader() -> None:
     assert [record.read_by for record in system.pages(job)] == [BY_4]
 
 
-def test_the_pipeline_passes_the_second_reader_only_to_a_mistral_document() -> None:
+def test_the_pipeline_passes_the_backup_reader_only_to_a_mistral_document() -> None:
     reader = ScriptedReader({1: pipeline_page(TOTAL, read_by=BY_4)})
     gemini_rig(reader, checker=FakeChecker(), job_reading=job_reading(NORMAL)).run(make_pdf([SCANNED]))
     (opened,) = reader.opened
-    assert opened.second == NORMAL
+    assert opened.backup == NORMAL
     on_gemini = job_reading(NORMAL)
     on_gemini.reading = dataclasses.replace(
         on_gemini.reading, reading=models.Reading("single", models.Agent(MODEL, "google-vertex", "Gemini"))
@@ -463,11 +463,11 @@ def test_the_pipeline_passes_the_second_reader_only_to_a_mistral_document() -> N
     reader = ScriptedReader({1: pipeline_page(TOTAL)})
     gemini_rig(reader, checker=FakeChecker(), job_reading=on_gemini).run(make_pdf([SCANNED]))
     (opened,) = reader.opened
-    assert opened.second is None
+    assert opened.backup is None
 
 
-def test_a_second_reader_is_sent_only_levels_it_takes() -> None:
-    plain = SecondReader("meta-llama/llama-4-scout", "groq", NO_THINKING, thinks=False)
+def test_a_backup_reader_is_sent_only_levels_it_takes() -> None:
+    plain = BackupReader("meta-llama/llama-4-scout", "groq", NO_THINKING, thinks=False)
     reader = ScriptedReader({1: pipeline_page(TOTAL, read_by=BY_4)})
     gemini_rig(reader, checker=FakeChecker(), job_reading=job_reading(plain)).run(make_pdf([SCANNED]))
     (opened,) = reader.opened
@@ -479,7 +479,7 @@ def test_a_second_reader_is_sent_only_levels_it_takes() -> None:
     assert opened.levels[MODEL] == {"low", "high"} and MODEL not in opened.plain
 
 
-def test_a_paused_organisation_reads_nothing_not_even_the_second_reader() -> None:
+def test_a_paused_organisation_reads_nothing_not_even_the_backup_reader() -> None:
     @contextmanager
     def paused(customer_id: str, document_id: str, *, ai_pages: bool = True) -> Iterator[None]:
         raise ReadingPaused(DAILY_LIMIT)
