@@ -1578,11 +1578,11 @@ def _second_needs_gemini(
     with db.operator() as conn:
         catalogue = {row["id"]: row for row in models_sql.list_models(conn, operator.operator_id)}
     chosen = catalogue.get(body.second_model or "")
-    why = None if chosen is None else models.ulc_why(chosen)
-    if chosen is not None and why is None:
+    if chosen is None:  # one not in the catalogue is the save's own ``unavailable``
         return
-    status, code, message = _REFUSALS["ulc_needs_gemini"]
-    if chosen is not None:  # one not in the catalogue is the save's own ``unavailable``
+    why = models.ulc_why(chosen)
+    if why:
+        status, code, message = _REFUSALS["ulc_needs_gemini"]
         raise ApiError(status, code, f"{message} The second reader ({chosen['name']}): {why}")
 
 

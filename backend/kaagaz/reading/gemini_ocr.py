@@ -164,12 +164,13 @@ import each other.
 one picture with no text, or refuses a page (``reader_refused``); either way the page has no lines,
 and a file of such pages fails ``no_text``. With ``DocumentPages.second`` set (the super admin's
 choice, off by default), such a page, and only such a page, is read once more by that model:
-normal (``_read``: the page cache, the page's time left) or Ultra low cost (``_ulc``: once, under
-its ceiling), billed as that read is, in the same document's scope, and its ``read_by`` names the
-model. Once a page an open document (``_first_try``): a page the image or PDF reader reads again
-is asked of Mistral again, never of the second reader. A second read that does not give the
-model's lines (a refusal, a local read, no text) leaves the page as Mistral left it, with the
-tokens billed: nothing is read locally for it, so the file fails as it did. An outage or a key
+normal (``_read``: the page cache, a fresh page timeout within the document's budget) or Ultra
+low cost (``_ulc``: once, under its ceiling), billed as that read is, in the same document's
+scope, and its ``read_by`` names the model. Once a page an open document (``_first_try``): a
+page the image or PDF reader reads again is asked of Mistral again, never of the second reader.
+A second read that does not give the model's lines (a refusal, a local read, no text) leaves the
+page as Mistral left it, with the tokens billed: nothing is read locally for it, so the file
+fails as it did. An outage or a key
 problem of the second reader waits, as a Gemini document does (#664 review), until
 READER_OUTAGE_FALLBACK_MINUTES, after which the page is left as Mistral left it. An outage, a key
 or credit problem, or Mistral not set up raises before any of this, and the document waits as
@@ -1197,10 +1198,11 @@ class GeminiEngine:
         boxes: "Future[list[PixelBox]]",
     ) -> PageRead:
         """#664: the page Mistral read no text on (``first``) read by ``second``, normal (``_read``:
-        the page cache, at the page's time left) or Ultra low cost (``_ulc``: once, under its
-        ceiling), billed as that read is. Its read when it is the model's with lines; else
-        ``first`` with the tokens the try was billed: wherever Gemini alone would read the page
-        locally (a refusal, a timeout, a withdrawn model, past READER_OUTAGE_FALLBACK_MINUTES of
+        the page cache) or Ultra low cost (``_ulc``: once, under its ceiling), billed as that read
+        is. It gets a fresh page timeout (OCR_TIMEOUT_SECONDS from its start), held only by the
+        document's budget, not what Mistral left of the page's. Its read when it is the model's
+        with lines; else ``first`` with the tokens the try was billed: wherever Gemini alone would
+        read the page locally (a refusal, a timeout, a withdrawn model, past READER_OUTAGE_FALLBACK_MINUTES of
         an outage, Ultra low cost's ceiling), nothing is read locally (``_NO_LOCAL``), and no text
         is no read either. An outage or a key problem of ``second`` (``BackendUnavailable``) goes
         up: the document waits, as a Gemini document does (#664 review). With no time left for a
