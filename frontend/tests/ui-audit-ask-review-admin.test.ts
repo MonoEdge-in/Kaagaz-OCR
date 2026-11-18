@@ -68,7 +68,9 @@ describe("Review (R2 to R6)", () => {
     expect(focusIndexAfter(list(0, 0), 0)).toBeNull();
   });
 
-  it("R3: shows one card at a time by default, with Skip and the keys on it", () => {
+  // Changed on purpose (PRD 9 F-17): one card at a time is the default for one document's or one
+  // reason's values; Review itself opens on By document.
+  it("R3: shows one card at a time for one document's or one reason's values, with Skip and the keys on it", () => {
     const queue = read("components/review/ReviewQueue.tsx");
     // Changed on purpose (PRD 9 F-17): Review opens on By document; one document's or one reason's
     // values (from the address) still open one at a time.

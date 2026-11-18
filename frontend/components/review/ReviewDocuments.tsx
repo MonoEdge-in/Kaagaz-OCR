@@ -6,6 +6,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { ScriptText } from "@/app/(app)/documents/[id]/SummaryCard";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ApiError, listDocuments } from "@/lib/api";
 import type { DocumentList, DocumentSummary } from "@/lib/types";
@@ -26,7 +27,9 @@ export function DocumentRows({ documents, total }: { documents: readonly Documen
       <ol className={styles.documents}>
         {documents.map((document, at) => (
           <li key={document.id}>
-            <Link href={openDocumentHref(ids, at)}>{document.display_name}</Link>
+            <Link href={openDocumentHref(ids, at)}>
+              <ScriptText text={document.display_name} />
+            </Link>
             <span className="muted">{toCheckText(document)}</span>
           </li>
         ))}

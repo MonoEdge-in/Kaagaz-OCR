@@ -117,6 +117,7 @@ function Queue({ documentId, initialReason }: { documentId?: string; initialReas
   };
 
   useEffect(() => {
+    if (!values) return; // By document asks for its own list (ReviewDocuments.tsx)
     let cancelled = false;
     listReview(queueParams(0, PAGE_SIZE, documentId, reason))
       .then((result) => {
@@ -132,7 +133,7 @@ function Queue({ documentId, initialReason }: { documentId?: string; initialReas
     return () => {
       cancelled = true;
     };
-  }, [attempt, documentId, reason]);
+  }, [attempt, documentId, reason, values]);
 
   useEffect(() => {
     const id = focusNext.current;

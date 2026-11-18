@@ -64,6 +64,9 @@ describe("F-17 Review by document", () => {
       }),
     );
     expect(html).toContain("challan.pdf");
+    expect(renderToStaticMarkup(createElement(DocumentRows, { documents: [summary(A, "सातबारा.pdf")], total: 1 }))).toContain(
+      '<span lang="mr">सातबारा</span>',
+    );
     expect(html).toContain("1 page to check");
     expect(html).toContain("2 values to review");
     expect(html).toContain(`href="/documents/${A}?tab=attention&amp;next=${B}&amp;from=%2Freview"`);
@@ -85,6 +88,7 @@ describe("F-17 Review by document", () => {
     const queue = read("components/review/ReviewQueue.tsx");
     expect(queue).toContain('useState<QueueView>(documentId || initialReason ? "focus" : "document")');
     expect(queue).toContain('{view === "document" ? <ReviewDocuments /> : null}');
+    expect(queue).toContain("if (!values) return; // By document asks for its own list");
   });
 
   it("puts the reason chips in one Filter menu, the existing RowMenu", () => {
