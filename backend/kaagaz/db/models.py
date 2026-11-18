@@ -56,6 +56,11 @@ ceiling, so no organisation that did not choose it reads differently. #564 [V]: 
 on with OCR_ULTRA_LOW_COST; here that switch is the platform's reader while none is saved, and
 the ceiling it reads at is OCR_PAGE_CEILING_PAISE unless one is saved (``with_env_ulc``).
 
+The backup reader (#664, Tushar, 18 Nov 2026; 0101): for an organisation on Mistral,
+``backup_reader`` (off, openrouter or ultra_low_cost) and ``backup_model``, inherited as one
+(an organisation's off is off), say who reads once a page Mistral read no text on;
+``backup_reader`` checks the model at job time. Off everywhere until the super admin sets it.
+
 The ledger columns (``ledger_tokens_in``/``_out``) are the average tokens a scanned page
 took in the organisation's own ledger of the last LEDGER_DAYS days (MC3); prices never
 leave the server (Tushar, 15 Oct 2026: org admins and members never see cost).
@@ -81,7 +86,7 @@ from sqlalchemy import Connection, RowMapping, text
 from kaagaz.answering.draft import ANSWER_PROMPT_HASH
 from kaagaz.db import ai_settings
 from kaagaz.reading.mistral_ocr import DEFAULT_MISTRAL_MODEL, MISTRAL, OPENROUTER
-from kaagaz.reading.ocr import GEMINI, READER_PROMPT_VERSION, UlcCeiling, UlcPrices
+from kaagaz.reading.ocr import GEMINI, READER_PROMPT_VERSION, BackupReader, UlcCeiling, UlcPrices
 from kaagaz.settings import DEFAULT_PROVIDER, NO_THINKING, Settings
 
 logger = logging.getLogger(__name__)
@@ -168,6 +173,9 @@ _SETTINGS = text(
     " COALESCE(s.scan_reader, p.scan_reader) AS scan_reader,"  # #473
     " COALESCE(s.mistral_model, p.mistral_model) AS mistral_model,"
     " COALESCE(s.ulc_ceiling_paise, p.ulc_ceiling_paise) AS ulc_ceiling_paise,"  # #488
+    # #664: the backup reader and its model inherit as one (an organisation's off is off).
+    " CASE WHEN s.backup_reader IS NULL THEN p.backup_reader ELSE s.backup_reader END AS backup_reader,"
+    " CASE WHEN s.backup_reader IS NULL THEN p.backup_model ELSE s.backup_model END AS backup_model,"
     " COALESCE(s.dynamic, p.dynamic) AND COALESCE(w.cost_saving, true) AS dynamic,"
     " COALESCE(w.cost_saving, true) AS cost_saving,"
     " COALESCE(s.ensemble, false) AND COALESCE(w.ensemble, true) AS ensemble"
@@ -677,6 +685,60 @@ def _ulc_reading(rows: Sequence[RowMapping], allowed: Mapping[Any, Any], *, sett
         ulc=ulc_ceiling(allowed["ulc_ceiling_paise"]),
         **_levels(allowed),
     )
+
+
+_BACKUP_MODEL = text(
+    "SELECT id, name, providers, efforts, price_in_usd_per_m, price_out_usd_per_m, tokens_per_page_in,"
+    " price_request_usd, price_image_usd FROM model_catalog"
+    " WHERE id = :m AND enabled_at IS NOT NULL AND eligible AND verified_prompt_version = :prompt"
+)
+
+
+def backup_reader(
+    conn: Connection, customer_id: str, scan: Reading, *, settings: Settings
+) -> BackupReader | None:
+    """#664 (Tushar, 18 Nov 2026): who reads once a page Mistral read no text on, for a document
+    ``scan`` reads on Mistral (None for any other: never Gemini's or Ultra low cost's pages, never
+    local mode), on a ``Database.customer()`` connection of ``customer_id``. The organisation's
+    ``backup_reader`` and ``backup_model``, else the platform's, as one; None while off. The
+    browser's choice is never trusted (S2): the model must be enabled, eligible, verified for the
+    reader's prompt, of an allowed vendor with an allowed provider and, for Ultra low cost, a Gemini
+    with a known price that takes minimal thinking; else None, logged with the organisation and a
+    code. Normal: the organisation's scan level as the model takes it (``fit_level``); Ultra low
+    cost: minimal, the ceiling (``ulc_ceiling``) and the model's prices. One statement for the
+    settings and one for the model, on Mistral only."""
+    if scan.scan_reader != MISTRAL or scan.mode == "local":
+        return None
+    allowed = effective_settings(conn, customer_id)
+    how, model = allowed["backup_reader"], allowed["backup_model"]
+    if how not in (OPENROUTER, ULTRA_LOW_COST) or model is None:
+        return None
+    row = conn.execute(_BACKUP_MODEL, {"m": model, "prompt": READER_PROMPT_VERSION}).mappings().first()
+    usable = row is not None and _provider(row, settings) is not None
+    if row is not None and usable and how == ULTRA_LOW_COST:
+        usable = ulc_priced(row) and MINIMAL in row["efforts"]
+    if row is None or not usable:
+        logger.warning(
+            "backup reader not usable now",
+            extra={"customer_id": customer_id, "code": "backup_reader_unusable"},
+        )
+        return None
+    agent = _agent(row, settings)
+    levels = frozenset(agent.efforts)
+    if how == ULTRA_LOW_COST:
+        prices = UlcPrices(
+            float(row["price_in_usd_per_m"]),
+            float(row["price_out_usd_per_m"]),
+            row["tokens_per_page_in"],
+            float(row["price_request_usd"]) + float(row["price_image_usd"]),
+        )
+        ceiling = ulc_ceiling(allowed["ulc_ceiling_paise"])
+        return BackupReader(
+            model, agent.provider, MINIMAL, ulc=ceiling, ulc_prices=prices, thinks=agent.thinks, levels=levels
+        )
+    env = settings.ocr_thinking_level
+    thinking = fit_level(agent, allowed["scan_thinking"] or env, env)
+    return BackupReader(model, agent.provider, thinking, thinks=agent.thinks, levels=levels)
 
 
 def max_thinking(row: Mapping[Any, Any] | None) -> str:

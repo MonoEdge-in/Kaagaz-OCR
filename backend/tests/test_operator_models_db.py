@@ -96,6 +96,8 @@ FOLLOWS_DEFAULTS: dict[str, Any] = {
     "mistral_model": None,
     "daily_page_limit": None,  # Changed on purpose (#478)
     "ulc_ceiling_paise": None,  # Changed on purpose (#488)
+    "backup_reader": None,  # Changed on purpose (#664, 0101): the backup reader, and its model
+    "backup_model": None,
     "chat_levels": None,
     "chat_default_level": None,
     "dynamic": None,

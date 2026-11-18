@@ -23,6 +23,7 @@ import type {
   ScanCostAsk,
   ScanLevel,
   ScanReader,
+  BackupReaderWay,
   UsageTotals,
 } from "@/lib/types";
 import { ApiError } from "@/lib/api";
@@ -233,15 +234,72 @@ export const mistralModelOf = (draft: Pick<AiDraft, "mistral_model">, defaults: 
   draft.mistral_model ?? (platform ? null : defaults.mistral_model) ?? env.mistral_model;
 
 /** Pick a reader ("" follows); the Mistral model is let go of unless Mistral then reads, and the
- * ceiling unless ultra low cost then reads (#488). */
+ * ceiling unless ultra low cost then reads (#488). #664 review: an organisation's backup reader
+ * is let go of too unless Mistral then reads (the platform's is every Mistral organisation's). */
 export function pickedReader(draft: AiDraft, value: string, defaults: AiValues, env: AiEnv, platform: boolean): AiDraft {
   const next = { ...draft, scan_reader: (value || null) as ScanReader | null };
   const reader = readerOf(next, defaults, env, platform);
+  const keepBackup = platform || reader === "mistral";
+  const backup = keepBackup ? next.backup_reader : null;
   return {
     ...next,
     mistral_model: reader === "mistral" ? next.mistral_model : null,
-    ulc_ceiling: reader === "ultra_low_cost" ? next.ulc_ceiling : "",
+    // #664 review: the ceiling stays while the backup reader reads with ultra low cost, too.
+    ulc_ceiling: reader === "ultra_low_cost" || backup === "ultra_low_cost" ? next.ulc_ceiling : "",
+    backup_reader: backup,
+    backup_model: keepBackup ? next.backup_model : null,
   };
+}
+
+// The backup reader (#664, Tushar, 18 Nov 2026): a page Mistral reads no text on is read once
+// more by a model the super admin chooses, normal or ultra low cost. Off until chosen.
+export const BACKUP_READER_LABEL = "Backup reader";
+export const BACKUP_READER_HINT =
+  "When Mistral finds no text on a page (a map, a drawing, a page it can't read), that page alone is read once more by this model, billed like any page. Never when Mistral is down or out of credit.";
+const BACKUP_OFF = "Off";
+const BACKUP_WAY_WORDS: Record<Exclude<BackupReaderWay, "off">, string> = { openrouter: "normal read", ultra_low_cost: "ultra low cost" };
+
+type BackupPair = Pick<AiValues, "backup_reader" | "backup_model">;
+
+/** The backup reader's select value: "" follows, "off", or "<way>:<model>". */
+export const backupValue = (values: BackupPair) =>
+  values.backup_reader === null || values.backup_reader === "off" ? (values.backup_reader ?? "") : `${values.backup_reader}:${values.backup_model ?? ""}`;
+
+/** "Gemini 3.5 Flash, normal read", "Off", or null when it follows; a model the catalogue no longer has is its id. */
+export function backupWords(values: BackupPair, catalogue: OperatorModel[]): string | null {
+  if (values.backup_reader === null) return null;
+  if (values.backup_reader === "off" || values.backup_model === null) return BACKUP_OFF;
+  const name = catalogue.find((model) => model.id === values.backup_model)?.name ?? values.backup_model;
+  return `${name}, ${BACKUP_WAY_WORDS[values.backup_reader]}`;
+}
+
+/** The select's options: off (an organisation's own), then each enabled scanning model (and the saved
+ * one), normal or ultra low cost, ultra low cost only for a model that can (else said why), with
+ * the ceiling it reads at (#664 review: ``ceilingPaise``, ``backupCeilingOf``). */
+export function backupOptions(catalogue: OperatorModel[], saved: BackupPair, platform: boolean, ceilingPaise: number) {
+  const models = offered(catalogue, "scan", saved.backup_model === null ? [] : [saved.backup_model]);
+  const atMost = `at most ${ceilingText(ceilingPaise)} a page`;
+  return [
+    ...(platform ? [] : [{ value: "off", words: BACKUP_OFF }]),
+    ...models.flatMap((model) => [
+      { value: `openrouter:${model.id}`, words: `${model.name}, ${BACKUP_WAY_WORDS.openrouter}` },
+      model.ulc_ready
+        ? { value: `ultra_low_cost:${model.id}`, words: `${model.name}, ${BACKUP_WAY_WORDS.ultra_low_cost}, ${atMost}` }
+        : { value: `ultra_low_cost:${model.id}`, words: `${model.name}, ${BACKUP_WAY_WORDS.ultra_low_cost} (not available: ${model.ulc_why})`, disabled: true },
+    ]),
+  ];
+}
+
+/** The ceiling the backup reader reads at under ultra low cost, as the server takes it: the draft's
+ * own, else the platform's (an organisation's), else the server's ₹0.40 (never the .env switch's). */
+export const backupCeilingOf = (draft: Pick<AiDraft, "ulc_ceiling">, defaults: AiValues, env: AiEnv, platform: boolean): number =>
+  parseCeiling(draft.ulc_ceiling) ?? (platform ? null : defaults.ulc_ceiling_paise) ?? env.ulc_ceiling_paise;
+
+/** Pick the backup reader from its select value: the way and the model together. */
+export function pickedBackup(draft: AiDraft, value: string): AiDraft {
+  if (value === "" || value === "off") return { ...draft, backup_reader: value === "off" ? "off" : null, backup_model: null };
+  const at = value.indexOf(":");
+  return { ...draft, backup_reader: value.slice(0, at) as BackupReaderWay, backup_model: value.slice(at + 1) };
 }
 
 /** The banner's lines while Mistral is stopped; null while it reads. The count is every
@@ -287,6 +345,8 @@ export interface AiDraft {
   scan_reader: ScanReader | null; // #473
   mistral_model: MistralModelId | null;
   ulc_ceiling: string; // #488: rupees as typed ("0.30"); empty follows
+  backup_reader: BackupReaderWay | null; // #664: with its model; null follows
+  backup_model: string | null;
   ensemble: boolean; // an organisation's own; never a platform default
   budget: string; // US dollars as typed; empty: no budget (organisation only)
 }
@@ -309,6 +369,8 @@ export function draftOf(values: AiValues, extra: { ensemble: boolean; ai_budget_
     scan_reader: values.scan_reader,
     mistral_model: values.mistral_model,
     ulc_ceiling: values.ulc_ceiling_paise === null ? "" : (values.ulc_ceiling_paise / 100).toFixed(2),
+    backup_reader: values.backup_reader,
+    backup_model: values.backup_model,
     ensemble: extra.ensemble,
     budget: extra.ai_budget_usd === null ? "" : String(extra.ai_budget_usd),
   };
@@ -343,6 +405,8 @@ export function resetSection(draft: AiDraft, section: Section): AiDraft {
         scan_reader: null,
         mistral_model: null,
         ulc_ceiling: "",
+        backup_reader: null,
+        backup_model: null,
       };
     case "chat":
       return { ...draft, chat_models: [], chat_default: null, chat_levels: [], chat_default_level: null };
@@ -454,6 +518,7 @@ export const pagesTodayText = (today: { pages: number; cost_usd: number | null }
 /** Where a problem is shown: next to its field. "form" is the form's own line. */
 export type AiField =
   | "scan_reader"
+  | "backup_reader"
   | "ulc_ceiling_paise"
   | "mistral_model"
   | "scan_models"
@@ -519,6 +584,8 @@ export function aiBody(draft: AiDraft): AiValues {
     mistral_model: draft.mistral_model,
     daily_page_limit: parseDailyPages(draft.daily_page_limit) ?? null,
     ulc_ceiling_paise: parseCeiling(draft.ulc_ceiling) ?? null,
+    backup_reader: draft.backup_reader,
+    backup_model: draft.backup_model,
   };
 }
 
@@ -548,6 +615,8 @@ export function follows(own: AiValues, followed: ScanReader): { scan: "all" | "s
       // #488 review: the ceiling only while ultra low cost really reads, its own or followed.
       ...(own.scan_reader === "openrouter" || own.scan_reader === "ultra_low_cost" ? [] : [own.mistral_model === null]),
       ...((own.scan_reader ?? followed) === "ultra_low_cost" ? [own.ulc_ceiling_paise === null] : []),
+      // #664: the backup reader only while Mistral reads, its own or followed.
+      ...((own.scan_reader ?? followed) === "mistral" ? [own.backup_reader === null] : []),
     ]),
     chat: part([own.chat_models.length === 0, own.chat_levels === null]),
   };
@@ -578,6 +647,7 @@ export function inheritedText(
     | "page_max_output_tokens"
     | "daily_page_limit"
     | "ulc_ceiling_paise"
+    | "backup_reader"
     | "chat_levels"
     | "dynamic",
   defaults: AiValues,
@@ -604,6 +674,8 @@ export function inheritedText(
       return defaults.daily_page_limit === null ? "no limit" : `${formatNumber(defaults.daily_page_limit)} pages`;
     case "ulc_ceiling_paise":
       return ceilingText(defaults.ulc_ceiling_paise ?? serverCeiling(defaults.scan_reader, env));
+    case "backup_reader": // #664: the platform's none is off
+      return backupWords(defaults, catalogue) ?? BACKUP_OFF;
     case "chat_levels":
       return levelText(defaults);
     case "dynamic":
@@ -684,6 +756,12 @@ const DEFAULT_AREAS: {
     now: (v) => (v.ulc_ceiling_paise === null ? "platform default" : ceilingText(v.ulc_ceiling_paise)),
   },
   {
+    area: "backup_reader", // #664, with its model
+    label: BACKUP_READER_LABEL.toLowerCase(),
+    changed: (a, b) => a.backup_reader !== b.backup_reader || a.backup_model !== b.backup_model,
+    now: (v, catalogue) => backupWords(v, catalogue) ?? "platform default",
+  },
+  {
     area: "page_max_output_tokens",
     label: "most output tokens a page",
     changed: (a, b) => a.page_max_output_tokens !== b.page_max_output_tokens,
@@ -721,8 +799,8 @@ const budgetWords = (text: string) => {
 };
 
 /** The save bar's list (board 9): what saving the draft changes, in words; empty: nothing.
- * With the organisation's reply, the Mistral model is left out unless Mistral reads after the save,
- * and the ceiling unless ultra low cost does (#488). */
+ * With the organisation's reply, the Mistral model and the backup reader (#664) are left out unless
+ * Mistral reads after the save, and the ceiling unless ultra low cost does (#488). */
 export function changesText(
   saved: AiDraft,
   draft: AiDraft,
@@ -733,7 +811,8 @@ export function changesText(
   const reader = reply === undefined ? null : readerOf(draft, reply.defaults, reply.env, false);
   const leftOut = (area: string) =>
     reader !== null &&
-    ((area === "mistral_model" && reader !== "mistral") || (area === "ulc_ceiling_paise" && reader !== "ultra_low_cost"));
+    (((area === "mistral_model" || area === "backup_reader") && reader !== "mistral") ||
+      (area === "ulc_ceiling_paise" && reader !== "ultra_low_cost" && draft.backup_reader !== "ultra_low_cost"));
   const changes = DEFAULT_AREAS.filter((each) => each.changed(before, after) && !leftOut(each.area)).map(
     (each) => `${capital(each.label)}: ${each.now(after, catalogue, reply?.env.mistral_models ?? [])}`,
   );
@@ -792,6 +871,8 @@ export function refusalField(code: string): AiField {
       return "scan_reader";
     case "ceiling_out_of_range": // #488
       return "ulc_ceiling_paise";
+    case "backup_reader_incomplete": // #664
+      return "backup_reader";
     default: // unavailable, default_not_allowed, level_not_supported: either area
       return "form";
   }

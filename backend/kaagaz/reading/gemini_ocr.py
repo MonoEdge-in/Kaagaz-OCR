@@ -160,6 +160,22 @@ document's ``version`` names the Mistral model. The page cache, the ledger and a
 are the client's (``MistralClient.read_page``); this module never imports it, so the two never
 import each other.
 
+**The backup reader** (#664, Tushar, 18 Nov 2026: maps failed on Mistral). Mistral reads a map as
+one picture with no text, or refuses a page (``reader_refused``); either way the page has no lines,
+and a file of such pages fails ``no_text``. With ``DocumentPages.backup`` set (the super admin's
+choice, off by default), such a page, and only such a page, is read once more by that model:
+normal (``_read``: the page cache, a fresh page timeout within the document's budget) or Ultra
+low cost (``_ulc``: once, under its ceiling), billed as that read is, in the same document's
+scope, and its ``read_by`` names the model. Once a page an open document (``_first_try``): a
+page the image or PDF reader reads again is asked of Mistral again, never of the backup reader.
+A backup read that does not give the model's lines (a refusal, a local read, no text) leaves the
+page as Mistral left it, with the tokens billed: nothing is read locally for it, so the file
+fails as it did. An outage or a key
+problem of the backup reader waits, as a Gemini document does (#664 review), until
+READER_OUTAGE_FALLBACK_MINUTES, after which the page is left as Mistral left it. An outage, a key
+or credit problem, or Mistral not set up raises before any of this, and the document waits as
+above: the backup reader is never a fallback for Mistral being down.
+
 **Ultra low cost** (#488, Tushar, 4 Nov 2026: a page never costs more than ₹0.20 to ₹0.55). A
 document whose ``DocumentPages.ulc`` is set has each page read once by its model in the compact
 reply (``kaagaz.reading.compact``: INSTRUCTION_COMPACT, COMPACT_SCHEMA; a g3 reply spends about
@@ -236,7 +252,7 @@ from kaagaz.db.engine import Database
 from kaagaz.db.page_reads import PageKey
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading.compact import COMPACT_SCHEMA, INSTRUCTION_COMPACT, decode_compact
-from kaagaz.reading.mistral_ocr import MISTRAL, MISTRAL_SETUP, read_by
+from kaagaz.reading.mistral_ocr import MISTRAL, MISTRAL_SETUP, OPENROUTER, read_by
 from kaagaz.reading.ocr import (
     AGAIN_PASS,
     COMPACT_PROMPT_VERSION,
@@ -249,6 +265,7 @@ from kaagaz.reading.ocr import (
     PATH_PAGE,
     PATH_WORDS,
     READER_PROMPT_VERSION,
+    BackupReader,
     DocumentPages,
     OcrLine,
     OcrTable,
@@ -336,6 +353,9 @@ QUICKEST_THINKING = frozenset({"minimal", LOW_THINKING, NO_THINKING})
 # take it is refused, nothing sent, with THINKING_FALLBACK.
 ULC_THINKING = "minimal"
 THINKING_FALLBACK = "thinking_fallback"
+# #664: the log codes of a page the backup reader read, and of one it did not.
+BACKUP_READER = "backup_reader"
+BACKUP_READER_FAILED = "backup_reader_failed"
 # #488: a page's input estimate: the largest first-call input seen in the document, this much
 # more; else the catalogue's tokens a page in, this much more, never below ULC_INPUT_TOKENS
 # (set below INSTRUCTION, which it is measured against).
@@ -540,6 +560,19 @@ CROPS_SCHEMA: dict[str, Any] = {
 
 _log = logging.getLogger(__name__)
 
+# #664 review: set while a backup read runs (``_backup_read``), so a page its model does not read is
+# never read locally only to be thrown away (``_read_locally`` raises ``_LeftUnread``). A
+# ContextVar, so the reads it starts on threads of their own (``copy_context().run``) see it too.
+_NO_LOCAL: contextvars.ContextVar[bool] = contextvars.ContextVar("gemini_no_local", default=False)
+
+
+class _LeftUnread(Exception):
+    """#664 review: a backup read's page its model did not read, with the tokens it was billed."""
+
+    def __init__(self, tokens: tuple[int, int]) -> None:
+        super().__init__("left_unread")
+        self.tokens = tokens
+
 
 class PageClient(Protocol):
     """The model client's part the reader uses: ``kaagaz.ai.openrouter.OpenRouterClient``."""
@@ -672,6 +705,7 @@ class GeminiEngine:
         self._ulc_seen = 0  # #488: the open document's largest first-call input, in tokens
         self._ulc_rates = (0.0, 0.0)  # #488 review: and the most its replies were billed a token
         self._mistral = mistral
+        self._backup_tried: set[int] = set()  # #664: the open document's pages the backup reader had
 
     @classmethod
     def from_settings(
@@ -707,6 +741,7 @@ class GeminiEngine:
                 raise RuntimeError("the Gemini reader is already reading a document")
             self._pages = pages
             self._region_pages = 0
+            self._backup_tried = set()
             self._ulc_seen, self._ulc_rates = 0, (0.0, 0.0)
             self._prompt = GEMINI_OCR_PROMPT_VERSION if pages.ulc is None else COMPACT_PROMPT_VERSION
             if pages.scan_reader == MISTRAL:  # #473 review: the run names the model that read it
@@ -769,6 +804,8 @@ class GeminiEngine:
                 read = self._mistral.read_page(
                     image, page_no=page_no, pages=pages, sha=sha, found=boxes.result, seconds=seconds
                 )
+                if not read.lines and pages.backup is not None and self._first_try(page_no):
+                    read = self._backup_read(image, page_no, pages, pages.backup, read, sha, boxes)
                 if pages.memo is not None:
                     pages.memo[(page_no, sha)] = read
                 return read
@@ -1138,6 +1175,70 @@ class GeminiEngine:
         if self._mistral is None:
             raise BackendUnavailable(MISTRAL_SETUP)
         self._mistral.ready()
+
+    # The backup reader (#664).
+
+    def _first_try(self, page_no: int) -> bool:
+        """#664: whether the open document's page ``page_no`` has not had its backup read yet,
+        noting that it has now. O(1)."""
+        with self._lock:
+            if page_no in self._backup_tried:
+                return False
+            self._backup_tried.add(page_no)
+            return True
+
+    def _backup_read(
+        self,
+        image: Image.Image,
+        page_no: int,
+        pages: DocumentPages,
+        backup: BackupReader,
+        first: PageRead,
+        sha: str,
+        boxes: "Future[list[PixelBox]]",
+    ) -> PageRead:
+        """#664: the page Mistral read no text on (``first``) read by ``backup``, normal (``_read``:
+        the page cache) or Ultra low cost (``_ulc``: once, under its ceiling), billed as that read
+        is. It gets a fresh page timeout (OCR_TIMEOUT_SECONDS from its start), held only by the
+        document's budget, not what Mistral left of the page's. Its read when it is the model's
+        with lines; else ``first`` with the tokens the try was billed: wherever Gemini alone would
+        read the page locally (a refusal, a timeout, a withdrawn model, past READER_OUTAGE_FALLBACK_MINUTES of
+        an outage, Ultra low cost's ceiling), nothing is read locally (``_NO_LOCAL``), and no text
+        is no read either. An outage or a key problem of ``backup`` (``BackendUnavailable``) goes
+        up: the document waits, as a Gemini document does (#664 review). With no time left for a
+        call, ``first`` at once: nothing sent, nothing read locally."""
+        if self._left() < MIN_CALL_SECONDS:
+            return first
+        on_backup = dataclasses.replace(
+            pages,
+            model=backup.model,
+            provider=backup.provider,
+            thinking=backup.thinking,
+            scan_reader=OPENROUTER,
+            ulc=backup.ulc,
+            ulc_prices=backup.ulc_prices,
+            backup=None,
+        )
+        ids = {"customer_id": pages.customer_id, "document_id": pages.document_id, "page_no": page_no}
+        failed = {**ids, "code": BACKUP_READER_FAILED}
+        no_local = _NO_LOCAL.set(True)
+        try:
+            if backup.ulc is not None:
+                read = self._ulc(image, page_no, on_backup, backup.ulc)
+            else:
+                read = self._read(image, page_no=page_no, pages=on_backup, sha=sha, boxes=boxes)
+        except _LeftUnread as unread:
+            _log.warning("backup reader did not read the page", extra=failed)
+            return _plus(first, *unread.tokens)
+        finally:
+            _NO_LOCAL.reset(no_local)
+        if read.read_by != backup.model or not read.lines:  # no text (or, never, another reader's)
+            _log.warning("backup reader did not read the page", extra=failed)
+            return _plus(first, read.input_tokens, read.output_tokens)
+        _log.info(
+            "page read by the backup reader", extra={**ids, "code": BACKUP_READER, "model": backup.model}
+        )
+        return read
 
     # Dynamic and Ensemble (features 26 and 27, council 15 Oct 2026).
 
@@ -1713,7 +1814,10 @@ class GeminiEngine:
     ) -> PageRead:
         """The page as the local reader reads it, with ``issue`` first and ``tokens``, what
         the model's calls for the page were billed before it was refused (G9). Logs the
-        code only."""
+        code only. #664 review: inside a backup read (``_NO_LOCAL``), ``_LeftUnread`` with the
+        tokens instead: that page keeps Mistral's read, so a local read would be thrown away."""
+        if _NO_LOCAL.get():
+            raise _LeftUnread(tokens)
         read = self._local_reader().read_page(image, page_no=page_no)
         _log.warning("page read by the local reader", extra={"code": code})
         return dataclasses.replace(

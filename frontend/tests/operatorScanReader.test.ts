@@ -53,6 +53,8 @@ const values = (overrides: Partial<AiValues> = {}): AiValues => ({
   mistral_model: null,
   daily_page_limit: null, // Changed on purpose (#478): the daily page limit
   ulc_ceiling_paise: null, // Changed on purpose (#488): the most a page may cost under ultra low cost
+  backup_reader: null, // Changed on purpose (#664): the backup reader
+  backup_model: null,
   ...overrides,
 });
 const NOT_STOPPED: MistralStatus = { stopped: false, code: null, since: null, documents_waiting: 0 };
@@ -91,6 +93,7 @@ const COUNTS: AiDefaults["orgs_inheriting"] = {
   mistral_model: 2,
   daily_page_limit: 1, // Changed on purpose (#478)
   ulc_ceiling_paise: 1, // Changed on purpose (#488)
+  backup_reader: 2, // Changed on purpose (#664)
 };
 
 const fields = (

@@ -45,6 +45,8 @@ const values = (overrides: Partial<AiValues> = {}): AiValues => ({
   mistral_model: null,
   daily_page_limit: null,
   ulc_ceiling_paise: null, // Changed on purpose (#488): the most a page may cost under ultra low cost
+  backup_reader: null, // Changed on purpose (#664): the backup reader
+  backup_model: null,
   ...overrides,
 });
 const ENV: AiEnv = {
@@ -78,6 +80,7 @@ const COUNTS: AiDefaults["orgs_inheriting"] = {
   mistral_model: 1,
   daily_page_limit: 6,
   ulc_ceiling_paise: 6, // Changed on purpose (#488)
+  backup_reader: 2, // Changed on purpose (#664)
 };
 
 const fields = (props: { platform?: boolean; own?: AiValues; defaults?: AiValues; today?: { pages: number; cost_usd: number | null } }) =>

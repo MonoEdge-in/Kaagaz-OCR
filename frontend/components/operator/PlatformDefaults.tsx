@@ -28,6 +28,7 @@ import {
   CEILING_LABEL,
   COST_SAVING,
   KEEP_OWN,
+  BACKUP_READER_LABEL,
   aiBody,
   aiErrors,
   costAsk,
@@ -116,6 +117,8 @@ export function DefaultsSummary({ reply, catalogue }: { reply: AiDefaults; catal
     ...((defaults.scan_reader ?? env.scan_reader) === "ultra_low_cost"
       ? [{ label: CEILING_LABEL, value: inheritedText("ulc_ceiling_paise", defaults, env, catalogue), count: counts.ulc_ceiling_paise }]
       : []),
+    // #664: every Mistral organisation that follows it, whoever the platform reads with.
+    { label: BACKUP_READER_LABEL, value: inheritedText("backup_reader", defaults, env, catalogue), count: counts.backup_reader },
     { label: "Scanning models", value: inheritedText("scan_models", defaults, env, catalogue), count: counts.scan_models },
     { label: "Scanning thinking level", value: inheritedText("scan_thinking", defaults, env, catalogue), count: counts.scan_thinking },
     { label: "Picture detail", value: inheritedText("scan_resolution", defaults, env, catalogue), count: counts.scan_resolution },

@@ -135,6 +135,8 @@ def test_a_customer_never_reads_another_customers_ai_settings_or_answer_models(d
         "scan_reader": None,  # Changed on purpose (#473): who reads the pages, inherited
         "mistral_model": None,
         "ulc_ceiling_paise": None,  # Changed on purpose (#488): Ultra low cost's ceiling, inherited
+        "backup_reader": None,  # Changed on purpose (#664): the backup reader, inherited as one
+        "backup_model": None,
         "dynamic": False,
         "cost_saving": True,  # Changed on purpose (#463 review): whether the switches allow Dynamic
         "ensemble": False,
@@ -179,12 +181,13 @@ def test_the_app_only_reads_the_ai_settings_and_never_verifies_a_model(db: Datab
 # 0070): both saves take Ultra low cost's ceiling last, and its measured cost is the operator's too.
 OP_CALLS = (
     "SELECT * FROM kaagaz_op_org_ai(gen_random_uuid(), gen_random_uuid())",
+    # Changed on purpose (#664, 0101): both saves take the backup reader and its model last.
     "SELECT * FROM kaagaz_op_set_org_ai(gen_random_uuid(), gen_random_uuid(), ARRAY['a/b'], 'a/b',"
     " '{}', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, false, NULL, 'g2', NULL, 1, NULL, NULL,"
-    " NULL, NULL)",
+    " NULL, NULL, NULL, NULL)",
     "SELECT * FROM kaagaz_op_ai_defaults(gen_random_uuid())",
     "SELECT kaagaz_op_set_ai_defaults(gen_random_uuid(), '{}', NULL, '{}', NULL, NULL, NULL, NULL, NULL,"
-    " NULL, ARRAY['low'], 'low', false, 'g2', NULL, 1, NULL, NULL, NULL, NULL)",
+    " NULL, ARRAY['low'], 'low', false, 'g2', NULL, 1, NULL, NULL, NULL, NULL, NULL, NULL)",
     "SELECT * FROM kaagaz_op_scan_cost(gen_random_uuid(), NULL, 'a/b', 'low', 'high', NULL, NULL, NULL,"
     " 'high', 'high')",
     "SELECT * FROM kaagaz_op_mistral_status(gen_random_uuid())",
@@ -334,7 +337,7 @@ def test_both_saves_need_a_fresh_code(db: Database, platform: str) -> None:
             conn.execute(
                 text(
                     "SELECT kaagaz_op_set_ai_defaults(:o, '{}', NULL, '{}', NULL, NULL, NULL, NULL, NULL,"
-                    " NULL, ARRAY['low'], 'low', false, :p, :h, NULL, NULL, NULL, NULL, NULL)"
+                    " NULL, ARRAY['low'], 'low', false, :p, :h, NULL, NULL, NULL, NULL, NULL, NULL, NULL)"
                 ),
                 {"o": platform, "p": PROMPT, "h": ANSWER_PROMPT_HASH},
             ).scalar_one()
@@ -379,6 +382,8 @@ def test_the_organisations_own_log_holds_no_budget_and_the_operators_does(db: Da
         "mistral_model": None,
         "daily_page_limit": None,  # Changed on purpose (#478, 0066): the operator's log only
         "ulc_ceiling_paise": None,  # Changed on purpose (#488, 0070): the operator's log only
+        "backup_reader": None,  # Changed on purpose (#664, 0101): the operator's log only
+        "backup_model": None,
     }  # the scan cost settings: the operator's log only
     assert platform_details == {**details, **hidden, "budget_usd": 12.5}
     with OperatorDatabase(db.engine).operator() as conn:
