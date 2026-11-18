@@ -193,6 +193,8 @@ def test_both_audits_hold_the_scan_cost_settings(db: Database, platform: str) ->
         "mistral_model": None,
         "daily_page_limit": None,  # Changed on purpose (#478)
         "ulc_ceiling_paise": None,  # Changed on purpose (#488)
+        "second_reader": None,  # Changed on purpose (#664)
+        "second_model": None,
     }
     assert not set(hidden) & set(details)
     assert platform_details == {**details, **hidden, "budget_usd": 3}

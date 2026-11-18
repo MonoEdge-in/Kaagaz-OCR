@@ -84,6 +84,14 @@ writes its own audit rows.
   {ceiling_paise, ceiling_usd, pages, usd_per_page, top_usd_per_page, limit_hits}, measured on the
   scope's ``ulc_scan`` ledger rows of the last LEDGER_DAYS days (``kaagaz_op_ulc_cost``; null
   otherwise), and the check's model is "ulc/<paise>/<model>" at minimal thinking.
+* The second reader (#664, Tushar, 18 Nov 2026; 0101): both AI settings carry ``second_reader``
+  (off, openrouter or ultra_low_cost) and ``second_model``, null to inherit as one (the platform's
+  null: off); ``orgs_inheriting.second_reader`` counts the organisations following the platform's.
+  A model exactly with a way to read (400 ``second_reader_incomplete``), an OpenRouter model ID
+  (400), in the catalogue, eligible to scan, enabled and verified, as the scanning models (409
+  ``unavailable``, ``not_verified``), and for Ultra low cost a Gemini with a known price that takes
+  minimal thinking (409 ``ulc_needs_gemini``, with the model's reason), each before a code is used
+  except the save's own. It reads only a page Mistral read no text on; it changes no estimate.
 * ``GET /operator/usage?from&to``: tokens and dollars per organisation and model, days in
   TIMEZONE with both ends included (this month so far when left out), at most
   ``MAX_DAYS``. Never a user or a document: the function has no column for either.
@@ -270,6 +278,12 @@ _REFUSALS = {
         "ulc_needs_gemini",
         "Ultra low cost needs a Gemini model with a known price that can read with minimal thinking.",
     ),
+    # #664: the second reader, a way to read with its model, or off with none.
+    "second_reader_incomplete": (
+        400,
+        "second_reader_incomplete",
+        "Choose the second reader's model, or turn the second reader off.",
+    ),
 }
 
 Level = Literal["low", "medium", "high"]
@@ -279,6 +293,8 @@ Resolution = Literal["low", "high"]  # #463: the picture detail OpenRouter can s
 # (MISTRAL_OCR_MODELS' ids; migration 0065's CHECKs list the same).
 ScanReader = Literal["openrouter", "mistral", "ultra_low_cost"]  # #488: Ultra low cost (0070)
 MistralModelId = Literal["mistral-ocr-4-1", "mistral-ocr-2512"]
+# #664 (0101): how the second reader reads a page Mistral read no text on (models.SECOND_READERS).
+SecondReaderWay = Literal["off", "openrouter", "ultra_low_cost"]
 # #463: a page read's output limit, in tokens (TOKENS_LOW to openrouter.PAGE_MAX_OUTPUT_TOKENS).
 OutputTokens = Annotated[int, Field(strict=True)]
 # #478: a daily page limit (1 to MAX_PAGES_A_DAY, checked by ``_choice``).
@@ -319,6 +335,8 @@ class OrgAiBody(BaseModel):
     mistral_model: MistralModelId | None
     daily_page_limit: DailyPages | None  # #478
     ulc_ceiling_paise: UlcPaise | None  # #488
+    second_reader: SecondReaderWay | None  # #664: null, the platform's (with its model)
+    second_model: ModelId | None
     chat_levels: Levels | None
     chat_default_level: Level | None
     dynamic: bool | None
@@ -440,6 +458,8 @@ class DefaultsBody(BaseModel):
     mistral_model: MistralModelId | None  # null, DEFAULT_MISTRAL_MODEL
     daily_page_limit: DailyPages | None  # #478: null, no limit
     ulc_ceiling_paise: UlcPaise | None  # #488: null, ULC_DEFAULT_PAISE
+    second_reader: SecondReaderWay | None  # #664: null, off
+    second_model: ModelId | None
     chat_levels: Levels
     chat_default_level: Level
     dynamic: bool
@@ -555,6 +575,7 @@ def get_ai_defaults(operator: OperatorSession, db: OperatorDb, context: Context)
                 "mistral_model",
                 "daily_page_limit",  # #478
                 "ulc_ceiling_paise",  # #488
+                "second_reader",  # #664, with its model
             )
         },
     }
@@ -573,6 +594,7 @@ def set_ai_defaults(
 
     choice = _choice(body, context.settings, saved_reader)
     _needs_gemini(db, operator, body, context.settings, platform=None)
+    _second_needs_gemini(db, operator, body)
     step_up = _step_up(db, context, operator, body.code)
     with db.operator() as conn:
         outcome = models_sql.set_ai_defaults(
@@ -627,6 +649,7 @@ def set_org_ai(
 
     choice = _choice(body, context.settings, saved_reader)
     _needs_gemini(db, operator, body, context.settings, platform=_platform(db, operator, body))
+    _second_needs_gemini(db, operator, body)
     step_up = _step_up(db, context, operator, body.code)
     with db.operator() as conn:
         outcome = models_sql.set_org_ai(
@@ -1511,13 +1534,15 @@ def _choice(body: OrgAiBody | DefaultsBody, settings: Settings, saved: Callable[
     (400) and Mistral is newly chosen only on a server where it is set up (#473: 409
     ``mistral_not_set_up``; ``saved()`` the reader saved now, asked only then), both before a
     code is used up."""
-    named = [*body.scan_models, *body.chat_models, body.scan_default, body.chat_default]
+    named = [*body.scan_models, *body.chat_models, body.scan_default, body.chat_default, body.second_model]
     if not all(valid_model_id(model) for model in named if model is not None):
         raise ApiError(400, "bad_request", "A model is not an OpenRouter model ID.")
     _limit(body.page_max_output_tokens)
     if body.daily_page_limit is not None and not 1 <= body.daily_page_limit <= MAX_PAGES_A_DAY:
         raise ApiError(*_REFUSALS["pages_out_of_range"])  # #478, before a code is used up
     _ceiling(body.ulc_ceiling_paise)  # #488, before a code is used up
+    if (body.second_model is not None) != (body.second_reader in (OPENROUTER, ULTRA_LOW_COST)):
+        raise ApiError(*_REFUSALS["second_reader_incomplete"])  # #664, before a code is used up
     if body.scan_reader == MISTRAL and not settings.mistral_ready and saved() != MISTRAL:
         raise ApiError(*_REFUSALS["mistral_not_set_up"])
     return AiChoice(
@@ -1537,7 +1562,28 @@ def _choice(body: OrgAiBody | DefaultsBody, settings: Settings, saved: Callable[
         mistral_model=body.mistral_model,
         daily_page_limit=body.daily_page_limit,
         ulc_ceiling_paise=body.ulc_ceiling_paise,
+        second_reader=body.second_reader,
+        second_model=body.second_model,
     )
+
+
+def _second_needs_gemini(
+    db: OperatorDatabase, operator: CurrentOperator, body: OrgAiBody | DefaultsBody
+) -> None:
+    """#664: 409 ``ulc_needs_gemini`` when the second reader is Ultra low cost and its model is not
+    a catalogue Gemini with a known price that takes minimal thinking (Ultra low cost's own rule,
+    with the model's reason). One catalogue read, only then; before a code is used up."""
+    if body.second_reader != ULTRA_LOW_COST:
+        return
+    with db.operator() as conn:
+        catalogue = {row["id"]: row for row in models_sql.list_models(conn, operator.operator_id)}
+    chosen = catalogue.get(body.second_model or "")
+    why = None if chosen is None else models.ulc_why(chosen)
+    if chosen is not None and why is None:
+        return
+    status, code, message = _REFUSALS["ulc_needs_gemini"]
+    if chosen is not None:  # one not in the catalogue is the save's own ``unavailable``
+        raise ApiError(status, code, f"{message} The second reader ({chosen['name']}): {why}")
 
 
 def _ai(row: RowMapping) -> dict[str, Any]:
@@ -1556,6 +1602,8 @@ def _ai(row: RowMapping) -> dict[str, Any]:
         "mistral_model": row["mistral_model"],
         "daily_page_limit": row["daily_page_limit"],  # #478
         "ulc_ceiling_paise": row["ulc_ceiling_paise"],  # #488
+        "second_reader": row["second_reader"],  # #664
+        "second_model": row["second_model"],
         "chat_levels": None if row["chat_levels"] is None else list(row["chat_levels"]),
         "chat_default_level": row["chat_default_level"],
         "dynamic": row["dynamic"],

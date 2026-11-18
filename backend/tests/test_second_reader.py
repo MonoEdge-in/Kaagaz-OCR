@@ -1,0 +1,424 @@
+"""The second reader (#664, Tushar, 18 Nov 2026): a page Mistral OCR reads no text on is read once
+by the backup model the super admin chose.
+
+How a map ends failed on Mistral today: Mistral answers a map with the whole page as a picture
+(``![img-0.jpeg](img-0.jpeg)``), or refuses it (``reader_refused``: a 400, 413 or 422, a reply
+``page_read`` can't read, or the page's time spent). Either way the page has no lines and nothing
+falls back to another reader (#473), so a file whose every page is like that has no text at all:
+the image and PDF readers raise ``ReadError("no_text")`` and the pipeline fails it for good.
+
+With a second reader set, only such a page is read again, once, by the chosen model, normal or
+Ultra low cost, billed to the document like any page read. An outage, a key or credit problem, or
+Mistral not set up still waits as before; a page Mistral read is never read again; a second read
+that fails leaves the page as Mistral left it.
+
+No network and never a real key: Mistral and Gemini are fakes (``test_mistral_wiring``'s, the
+Gemini one billing each reply as the real client does).
+"""
+
+import dataclasses
+import io
+import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import Any
+
+import pytest
+
+from kaagaz.ai import usage
+from kaagaz.ai.openrouter import PageReply
+from kaagaz.ai.replies import ModelOutputError, ModelUnavailable
+from kaagaz.ai.usage import ULC_SCAN
+from kaagaz.db import models
+from kaagaz.ingestion import sniff
+from kaagaz.ingestion.errors import BackendUnavailable
+from kaagaz.jobs.reading_pause import DAILY_LIMIT, ReadingPaused
+from kaagaz.jobs.worker import JobFailed
+from kaagaz.reading.gemini_ocr import GeminiEngine
+from kaagaz.reading.mistral_reader import BadReply, MistralUnavailable
+from kaagaz.reading.ocr import DocumentPages, PageRead, SecondReader, UlcCeiling, UlcPrices, as_page_engine
+from kaagaz.reading.page_quality import NO_TEXT, READER_REFUSED
+from kaagaz.reading.spans import ReadError
+from kaagaz.reading.wiring import build_reader_socket
+from kaagaz.scanning.gate import DocumentStatus
+from kaagaz.settings import NO_THINKING
+from tests.pdf_builder import make_pdf
+from tests.picture_support import text_like_picture
+from tests.settings_factory import make_settings
+from tests.test_dynamic_reading import ledger
+from tests.test_gemini_ocr import (
+    MODEL,
+    FakeCache,
+    FakeClient,
+    FakeFinder,
+    FakeRapidOcr,
+    line,
+    page,
+    reply,
+    value,
+)
+from tests.test_mistral_wiring import (
+    BY_4,
+    CUSTOMER,
+    DOCUMENT,
+    OCR_4,
+    FakeMistral,
+    H,
+    W,
+    mistral_reply,
+    on_mistral,
+    texts,
+)
+from tests.test_model_choice_pipeline import _Reading
+from tests.test_pipeline_gemini import SCANNED, TOTAL, FakeChecker, ScriptedReader
+from tests.test_pipeline_gemini import page_read as pipeline_page
+from tests.test_pipeline_gemini import rig as gemini_rig
+
+FLASH = "google/gemini-3.5-flash-lite"
+NORMAL = SecondReader(MODEL, "google-vertex", "low")
+PRICES = UlcPrices(
+    price_in_usd_per_m=0.30, price_out_usd_per_m=2.50, tokens_per_page_in=2500, per_call_usd=0.0
+)
+ULC = SecondReader(
+    FLASH, "google-vertex", "minimal", ulc=UlcCeiling(usd=40 / 100 / 88, paise=40), ulc_prices=PRICES
+)
+MAP_TEXT = ["Survey No 42", "Village Wagholi"]
+
+
+class BilledClient(FakeClient):
+    """Gemini's client, each reply (and each refused one's tokens) billed in the usage scope as
+    ``OpenRouterClient`` bills it."""
+
+    def read_page(self, **call: Any) -> PageReply:
+        sent = {"thinking": call["thinking_level"], "resolution": call["media_resolution"]}
+        try:
+            got = super().read_page(**call)
+        except (ModelOutputError, ModelUnavailable) as error:
+            if error.input_tokens or error.output_tokens:
+                usage.record_call(
+                    call["model"], "google-vertex", error.input_tokens, error.output_tokens, 0, 0.001, **sent
+                )
+            raise
+        usage.record_call(
+            call["model"], "google-vertex", got.input_tokens, got.output_tokens, 0, 0.002, **sent
+        )
+        return got
+
+
+class Rig:
+    """The scan reader with a Mistral client (None: not set up here), a Gemini client that must
+    never be called unless scripted, a box finder and a local reader."""
+
+    def __init__(self, mistral: FakeMistral | None, *gemini: Any, **settings: Any) -> None:
+        self.mistral = mistral
+        self.client = BilledClient(*gemini)
+        self.local = FakeRapidOcr()
+        self.engine = GeminiEngine(
+            make_settings(**{"ocr_engine": "gemini", **settings}),
+            client=self.client,
+            pool=FakeFinder(),
+            local=lambda: as_page_engine(self.local),
+            mistral=mistral,
+        )
+
+    def read(self, pages: DocumentPages, page_no: int = 1) -> PageRead:
+        with self.engine.document(pages):
+            return self.engine.read_page(page(), page_no=page_no)
+
+
+def map_reply(*, blocks: bool = False) -> dict[str, Any]:
+    """Mistral's answer for a map: the whole page as one picture, no text (with ``blocks``, OCR
+    4.1's shape, one image block; without, OCR 3's Markdown only)."""
+    markdown = "![img-0.jpeg](img-0.jpeg)"
+    answer: dict[str, Any] = {"markdown": markdown, "dimensions": {"dpi": 200, "width": W, "height": H}}
+    if blocks:
+        corners = {"top_left_x": 0, "top_left_y": 0, "bottom_right_x": W, "bottom_right_y": H}
+        answer["blocks"] = [{"type": "image", "content": markdown, **corners}]
+    return answer
+
+
+def gemini_map() -> PageReply:
+    return reply(value(*(line(text, order=index) for index, text in enumerate(MAP_TEXT))))
+
+
+def with_second(second: SecondReader | None = NORMAL, **more: Any) -> DocumentPages:
+    return on_mistral(FakeCache(), second=second, **more)
+
+
+def png() -> bytes:
+    """A one-page scan that is not blank (a blank page is never sent to a reader)."""
+    buffer = io.BytesIO()
+    text_like_picture(600, 800).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+# --- what Mistral does with a map today ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("blocks", [False, True])
+def test_mistral_reads_a_map_as_a_picture_with_no_text(blocks: bool) -> None:
+    read = Rig(FakeMistral((map_reply(blocks=blocks), 1))).read(on_mistral(FakeCache()))
+    assert (read.lines, read.issues, read.read_by) == ((), (NO_TEXT,), BY_4)
+
+
+@pytest.mark.parametrize("script", [(map_reply(), 1), BadReply("refused_request")])
+def test_a_map_on_mistral_alone_fails_the_file_with_no_text(script: Any) -> None:
+    """The failure Tushar saw: no page of the file has a line, so the reader says no_text, which
+    the pipeline fails for good (``pipeline._or_fail``)."""
+    rig = Rig(FakeMistral(script, script))  # the image reader asks once more at full size
+    socket = build_reader_socket(make_settings(), rig.engine)
+    with rig.engine.document(on_mistral(FakeCache())), pytest.raises(ReadError) as failed:
+        socket.read(sniff.PNG, png())
+    assert failed.value.code == "no_text"
+
+
+# --- the second reader --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        (map_reply(), 1),  # the map: a picture, no text
+        (map_reply(blocks=True), 1),
+        BadReply("refused_request"),  # a 400, 413 or 422
+        ({"markdown": 5}, 1),  # a 200 page_read can't read (bad_reply)
+    ],
+)
+def test_a_page_mistral_read_no_text_on_is_read_by_the_second_reader(script: Any) -> None:
+    rig = Rig(FakeMistral(script), gemini_map())
+    read = rig.read(with_second())
+    assert texts(read) == MAP_TEXT
+    assert (read.read_by, read.read_thinking) == (MODEL, "low")
+    assert READER_REFUSED not in read.issues and NO_TEXT not in read.issues
+    [call] = rig.client.calls
+    assert (call.model, call.provider, call.thinking_level) == (MODEL, "google-vertex", "low")
+    assert rig.local.pages == 0
+
+
+def test_the_map_file_is_read_with_the_second_reader() -> None:
+    rig = Rig(FakeMistral((map_reply(), 1)), gemini_map())
+    socket = build_reader_socket(make_settings(), rig.engine)
+    with rig.engine.document(with_second()):
+        spans = socket.read(sniff.PNG, png())
+    assert [span.text for span in spans] == MAP_TEXT
+
+
+def test_a_page_mistral_read_is_never_read_again() -> None:
+    rig = Rig(FakeMistral((mistral_reply("INVOICE 1042"), 1)))  # Gemini has nothing scripted
+    read = rig.read(with_second())
+    assert (texts(read), read.read_by, rig.client.calls) == (["INVOICE 1042"], BY_4, [])
+
+
+@pytest.mark.parametrize("script", [(map_reply(), 1), BadReply("refused_request")])
+def test_off_nothing_changes(script: Any) -> None:
+    rig = Rig(FakeMistral(script))
+    read = rig.read(with_second(None))
+    assert (read.lines, read.read_by, rig.client.calls, rig.local.pages) == ((), BY_4, [], 0)
+
+
+@pytest.mark.parametrize("code", ["mistral", "mistral_key"])
+def test_an_outage_a_key_or_no_credit_still_waits(code: str) -> None:
+    rig = Rig(FakeMistral(MistralUnavailable(code)))
+    with pytest.raises(BackendUnavailable) as waited:
+        rig.read(with_second())
+    assert str(waited.value) == code
+    assert (rig.client.calls, rig.local.pages) == ([], 0)
+
+
+def test_mistral_not_set_up_still_waits() -> None:
+    rig = Rig(None)
+    with pytest.raises(BackendUnavailable, match=r"^mistral_setup$"):
+        rig.read(with_second())
+    assert rig.client.calls == []
+
+
+def test_a_gemini_document_never_uses_the_second_reader() -> None:
+    rig = Rig(FakeMistral(), ModelOutputError("invalid_output"))
+    read = rig.read(dataclasses.replace(with_second(), scan_reader="openrouter"))
+    assert READER_REFUSED in read.issues and read.read_by == "rapidocr"  # Gemini's own local read
+    assert len(rig.client.calls) == 1 and rig.mistral is not None and rig.mistral.calls == []
+
+
+# --- once a page, and a second read that fails ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ModelOutputError("invalid_output"),  # refused: Gemini alone would read it locally
+        ModelUnavailable("server_error"),  # down: Gemini alone would wait
+        ModelUnavailable("key_rejected"),  # its key: Gemini alone would wait for a person
+    ],
+)
+def test_a_second_read_that_fails_leaves_the_page_as_mistral_left_it(failure: Exception) -> None:
+    rig = Rig(FakeMistral(BadReply("refused_request")), failure)
+    read = rig.read(with_second())
+    assert (read.lines, read.issues, read.read_by) == ((), (READER_REFUSED,), BY_4)
+    assert len(rig.client.calls) == 1
+
+
+def test_no_time_left_the_page_stays_as_mistral_left_it() -> None:
+    rig = Rig(FakeMistral(), ocr_timeout_seconds=60, ocr_seconds_per_page=60)
+    with rig.engine.document(with_second(page_count=1)):
+        rig.client.clock += 60  # the document's time is spent: Mistral refuses (mistral_no_time)
+        read = rig.engine.read_page(page(), page_no=1)
+    assert (read.lines, read.issues, read.read_by) == ((), (READER_REFUSED,), BY_4)
+    assert rig.client.calls == []  # Gemini has no time either: nothing is sent
+
+
+def test_each_page_is_read_by_the_second_reader_once() -> None:
+    """The image and PDF readers read a page that gave nothing once more (at full size, or at the
+    ceiling DPI): Mistral is asked again, the second reader never."""
+    refused = BadReply("refused_request")
+    mistral = FakeMistral(refused, refused, (map_reply(), 1))
+    rig = Rig(mistral, ModelOutputError("invalid_output"), gemini_map())
+    with rig.engine.document(with_second()):
+        first = rig.engine.read_page(page(), page_no=1)
+        again = rig.engine.read_page(page(), page_no=1)
+        other = rig.engine.read_page(page(), page_no=2)  # another page has its own one try
+    assert first.lines == () and again.lines == ()
+    assert texts(other) == MAP_TEXT
+    assert len(mistral.calls) == 3 and len(rig.client.calls) == 2
+    # A new document (the next try, or "Read again") is a new reading: its pages may be tried again.
+    rig.client.script.append(gemini_map())
+    mistral.script.append((map_reply(), 1))
+    assert texts(rig.read(with_second())) == MAP_TEXT
+
+
+def test_the_map_file_with_a_failing_second_reader_still_fails_as_today() -> None:
+    refused = BadReply("refused_request")
+    rig = Rig(FakeMistral(refused, refused), ModelOutputError("invalid_output"))
+    socket = build_reader_socket(make_settings(), rig.engine)
+    with rig.engine.document(with_second()), pytest.raises(ReadError, match="no_text"):
+        socket.read(sniff.PNG, png())
+    assert len(rig.client.calls) == 1
+
+
+# --- billing ------------------------------------------------------------------------------------
+
+
+def test_the_second_read_is_billed_to_the_document_as_a_page_read() -> None:
+    with ledger() as kept:
+        Rig(FakeMistral((map_reply(), 1)), gemini_map()).read(with_second())
+    rows = {row.model: row for row in kept.rows}
+    assert set(rows) == {BY_4, MODEL}
+    mistral, second = rows[BY_4], rows[MODEL]
+    assert (mistral.kind, mistral.calls, mistral.pages) == ("scan", 1, 1)
+    assert (second.kind, second.calls, second.pages, second.cached) == ("scan", 1, 1, False)
+    assert (second.input_tokens, second.output_tokens, second.thinking) == (1700, 4000, "low")
+    assert [pages for pages, _usd in kept.live] == [1, 1]  # #478: both reads count on the day
+
+
+def test_a_failed_second_read_is_still_billed_and_its_tokens_kept_on_the_page() -> None:
+    refused = ModelOutputError("invalid_output", input_tokens=1700, output_tokens=300)
+    with ledger() as kept:
+        read = Rig(FakeMistral(BadReply("refused_request")), refused).read(with_second())
+    [row] = kept.rows
+    assert (row.model, row.calls, row.pages) == (MODEL, 1, 1)
+    assert (read.input_tokens, read.output_tokens, read.read_by) == (1700, 300, BY_4)
+
+
+def test_an_ultra_low_cost_second_reader_reads_once_under_its_ceiling() -> None:
+    compact = "g 0 l -\nt 40 100 70 900 Survey No 42\np 100 100 120 900 Village Wagholi"
+    rig = Rig(FakeMistral((map_reply(), 1)), reply({"r": compact}, 2400, 300))
+    with ledger() as kept:
+        read = rig.read(with_second(ULC))
+    assert texts(read) == MAP_TEXT
+    assert (read.read_by, read.read_thinking) == (FLASH, "minimal")
+    [call] = rig.client.calls
+    assert (call.model, call.thinking_level) == (FLASH, "minimal")
+    second = next(row for row in kept.rows if row.model == FLASH)
+    assert (second.kind, second.pages) == (ULC_SCAN, 1)
+
+
+def test_the_second_read_is_logged_with_ids_and_never_the_text(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO)
+    Rig(FakeMistral((map_reply(), 1)), gemini_map()).read(with_second())
+    [record] = [record for record in caplog.records if getattr(record, "code", None) == "second_reader"]
+    ids = tuple(getattr(record, name, None) for name in ("customer_id", "document_id", "page_no", "model"))
+    assert ids == (CUSTOMER, DOCUMENT, 1, MODEL)
+    assert not any(text in record.getMessage() for text in MAP_TEXT)
+
+
+# --- the pipeline -------------------------------------------------------------------------------
+
+
+def job_reading(second: SecondReader | None, user: str | None = "u1") -> _Reading:
+    """The job's reading as the worker resolves it: Mistral OCR 4.1, with ``second``."""
+    lead = models.Agent(MODEL, "google-vertex", "Gemini")
+    asked = _Reading(user, MODEL)
+    asked.reading = dataclasses.replace(
+        asked.reading,
+        reading=models.Reading("single", lead, scan_reader="mistral", mistral_model=OCR_4),
+        second=second,
+    )
+    return asked
+
+
+def test_the_map_document_that_failed_on_mistral_is_ready_with_the_second_reader() -> None:
+    failing = gemini_rig(
+        Rig(FakeMistral((map_reply(), 1))).engine, checker=FakeChecker(), job_reading=job_reading(None)
+    )
+    with pytest.raises(JobFailed) as failed:
+        failing.run(make_pdf([SCANNED]))
+    assert failed.value.code == "no_text" and failing.status(failing.jobs[0]) == DocumentStatus.FAILED
+    rig = Rig(FakeMistral((map_reply(), 1)), gemini_map())
+    system = gemini_rig(rig.engine, checker=FakeChecker(), job_reading=job_reading(NORMAL))
+    job = system.run(make_pdf([SCANNED]))
+    assert system.status(job) == DocumentStatus.READY
+    [record] = system.pages(job)
+    assert record.read_by == MODEL  # the page says who read it
+    totals = system.totals(job)
+    assert totals.config["read_model"] == BY_4 and totals.pages_gemini == 1  # the run is Mistral's
+    assert len(rig.client.calls) == 1
+
+
+def test_a_document_mistral_reads_whole_never_calls_the_second_reader() -> None:
+    rig = Rig(FakeMistral((mistral_reply("Total 1,180.00"), 1)))
+    system = gemini_rig(rig.engine, checker=FakeChecker(), job_reading=job_reading(NORMAL))
+    job = system.run(make_pdf([SCANNED]))
+    assert system.status(job) == DocumentStatus.READY and rig.client.calls == []
+    assert [record.read_by for record in system.pages(job)] == [BY_4]
+
+
+def test_the_pipeline_passes_the_second_reader_only_to_a_mistral_document() -> None:
+    reader = ScriptedReader({1: pipeline_page(TOTAL, read_by=BY_4)})
+    gemini_rig(reader, checker=FakeChecker(), job_reading=job_reading(NORMAL)).run(make_pdf([SCANNED]))
+    (opened,) = reader.opened
+    assert opened.second == NORMAL
+    on_gemini = job_reading(NORMAL)
+    on_gemini.reading = dataclasses.replace(
+        on_gemini.reading, reading=models.Reading("single", models.Agent(MODEL, "google-vertex", "Gemini"))
+    )
+    reader = ScriptedReader({1: pipeline_page(TOTAL)})
+    gemini_rig(reader, checker=FakeChecker(), job_reading=on_gemini).run(make_pdf([SCANNED]))
+    (opened,) = reader.opened
+    assert opened.second is None
+
+
+def test_a_second_reader_is_sent_only_levels_it_takes() -> None:
+    plain = SecondReader("meta-llama/llama-4-scout", "groq", NO_THINKING, thinks=False)
+    reader = ScriptedReader({1: pipeline_page(TOTAL, read_by=BY_4)})
+    gemini_rig(reader, checker=FakeChecker(), job_reading=job_reading(plain)).run(make_pdf([SCANNED]))
+    (opened,) = reader.opened
+    assert plain.model in opened.plain  # no thinking levels: none sent, a read again too
+    some = dataclasses.replace(NORMAL, levels=frozenset({"low", "high"}))
+    reader = ScriptedReader({1: pipeline_page(TOTAL, read_by=BY_4)})
+    gemini_rig(reader, checker=FakeChecker(), job_reading=job_reading(some)).run(make_pdf([SCANNED]))
+    (opened,) = reader.opened
+    assert opened.levels[MODEL] == {"low", "high"} and MODEL not in opened.plain
+
+
+def test_a_paused_organisation_reads_nothing_not_even_the_second_reader() -> None:
+    @contextmanager
+    def paused(customer_id: str, document_id: str, *, ai_pages: bool = True) -> Iterator[None]:
+        raise ReadingPaused(DAILY_LIMIT)
+        yield  # never: a paused document is not read
+
+    rig = Rig(FakeMistral())
+    system = gemini_rig(
+        rig.engine, checker=FakeChecker(), job_reading=job_reading(NORMAL), reading_pause=paused
+    )
+    job = system.run(make_pdf([SCANNED]))
+    assert system.totals(job).error_code == "paused_daily_limit"
+    assert rig.mistral is not None and rig.mistral.calls == [] and rig.client.calls == []

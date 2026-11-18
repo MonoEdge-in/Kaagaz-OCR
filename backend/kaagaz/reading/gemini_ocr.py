@@ -160,6 +160,20 @@ document's ``version`` names the Mistral model. The page cache, the ledger and a
 are the client's (``MistralClient.read_page``); this module never imports it, so the two never
 import each other.
 
+**The second reader** (#664, Tushar, 18 Nov 2026: maps failed on Mistral). Mistral reads a map as
+one picture with no text, or refuses a page (``reader_refused``); either way the page has no lines,
+and a file of such pages fails ``no_text``. With ``DocumentPages.second`` set (the super admin's
+choice, off by default), such a page, and only such a page, is read once more by that model:
+normal (``_read``: the page cache, the page's time left) or Ultra low cost (``_ulc``: once, under
+its ceiling), billed as that read is, in the same document's scope, and its ``read_by`` names the
+model. Once a page an open document (``_first_try``): a page the image or PDF reader reads again
+is asked of Mistral again, never of the second reader. A second read that does not give the
+model's lines (a refusal or a local read, a wait for an outage or its key, no text) leaves the page
+as Mistral left it, with the tokens billed: it never waits, reads locally or tries again, so the
+file fails as it did. An outage, a key or credit problem, or Mistral not set up raises before any
+of this, and the document waits as above: the second reader is never a fallback for Mistral being
+down.
+
 **Ultra low cost** (#488, Tushar, 4 Nov 2026: a page never costs more than ₹0.20 to ₹0.55). A
 document whose ``DocumentPages.ulc`` is set has each page read once by its model in the compact
 reply (``kaagaz.reading.compact``: INSTRUCTION_COMPACT, COMPACT_SCHEMA; a g3 reply spends about
@@ -236,7 +250,7 @@ from kaagaz.db.engine import Database
 from kaagaz.db.page_reads import PageKey
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading.compact import COMPACT_SCHEMA, INSTRUCTION_COMPACT, decode_compact
-from kaagaz.reading.mistral_ocr import MISTRAL, MISTRAL_SETUP, read_by
+from kaagaz.reading.mistral_ocr import MISTRAL, MISTRAL_SETUP, OPENROUTER, read_by
 from kaagaz.reading.ocr import (
     AGAIN_PASS,
     COMPACT_PROMPT_VERSION,
@@ -256,6 +270,7 @@ from kaagaz.reading.ocr import (
     PageEngine,
     PageRead,
     RapidOcrEngine,
+    SecondReader,
     UlcCeiling,
     UlcPrices,
     as_page_engine,
@@ -336,6 +351,9 @@ QUICKEST_THINKING = frozenset({"minimal", LOW_THINKING, NO_THINKING})
 # take it is refused, nothing sent, with THINKING_FALLBACK.
 ULC_THINKING = "minimal"
 THINKING_FALLBACK = "thinking_fallback"
+# #664: the log codes of a page the second reader read, and of one it did not.
+SECOND_READER = "second_reader"
+SECOND_READER_FAILED = "second_reader_failed"
 # #488: a page's input estimate: the largest first-call input seen in the document, this much
 # more; else the catalogue's tokens a page in, this much more, never below ULC_INPUT_TOKENS
 # (set below INSTRUCTION, which it is measured against).
@@ -672,6 +690,7 @@ class GeminiEngine:
         self._ulc_seen = 0  # #488: the open document's largest first-call input, in tokens
         self._ulc_rates = (0.0, 0.0)  # #488 review: and the most its replies were billed a token
         self._mistral = mistral
+        self._second_tried: set[int] = set()  # #664: the open document's pages the second reader had
 
     @classmethod
     def from_settings(
@@ -707,6 +726,7 @@ class GeminiEngine:
                 raise RuntimeError("the Gemini reader is already reading a document")
             self._pages = pages
             self._region_pages = 0
+            self._second_tried = set()
             self._ulc_seen, self._ulc_rates = 0, (0.0, 0.0)
             self._prompt = GEMINI_OCR_PROMPT_VERSION if pages.ulc is None else COMPACT_PROMPT_VERSION
             if pages.scan_reader == MISTRAL:  # #473 review: the run names the model that read it
@@ -769,6 +789,8 @@ class GeminiEngine:
                 read = self._mistral.read_page(
                     image, page_no=page_no, pages=pages, sha=sha, found=boxes.result, seconds=seconds
                 )
+                if not read.lines and pages.second is not None and self._first_try(page_no):
+                    read = self._second_read(image, page_no, pages, pages.second, read, sha, boxes)
                 if pages.memo is not None:
                     pages.memo[(page_no, sha)] = read
                 return read
@@ -1138,6 +1160,58 @@ class GeminiEngine:
         if self._mistral is None:
             raise BackendUnavailable(MISTRAL_SETUP)
         self._mistral.ready()
+
+    # The second reader (#664).
+
+    def _first_try(self, page_no: int) -> bool:
+        """#664: whether the open document's page ``page_no`` has not had its second read yet,
+        noting that it has now. O(1)."""
+        with self._lock:
+            if page_no in self._second_tried:
+                return False
+            self._second_tried.add(page_no)
+            return True
+
+    def _second_read(
+        self,
+        image: Image.Image,
+        page_no: int,
+        pages: DocumentPages,
+        second: SecondReader,
+        first: PageRead,
+        sha: str,
+        boxes: "Future[list[PixelBox]]",
+    ) -> PageRead:
+        """#664: the page Mistral read no text on (``first``) read by ``second``, normal (``_read``:
+        the page cache, at the page's time left) or Ultra low cost (``_ulc``: once, under its
+        ceiling), billed as that read is. Its read when it is the model's with lines; else
+        ``first`` with the tokens the try was billed: a refusal, a local read, a wait (an outage
+        or a key problem of ``second``) or no text never waits or reads locally here."""
+        on_second = dataclasses.replace(
+            pages,
+            model=second.model,
+            provider=second.provider,
+            thinking=second.thinking,
+            scan_reader=OPENROUTER,
+            ulc=second.ulc,
+            ulc_prices=second.ulc_prices,
+            second=None,
+        )
+        try:
+            if second.ulc is not None:
+                read: PageRead | None = self._ulc(image, page_no, on_second, second.ulc)
+            else:
+                read = self._read(image, page_no=page_no, pages=on_second, sha=sha, boxes=boxes)
+        except BackendUnavailable:
+            read = None
+        ids = {"customer_id": pages.customer_id, "document_id": pages.document_id, "page_no": page_no}
+        if read is None or read.read_by != second.model or not read.lines:
+            _log.warning("second reader did not read the page", extra={**ids, "code": SECOND_READER_FAILED})
+            return first if read is None else _plus(first, read.input_tokens, read.output_tokens)
+        _log.info(
+            "page read by the second reader", extra={**ids, "code": SECOND_READER, "model": second.model}
+        )
+        return read
 
     # Dynamic and Ensemble (features 26 and 27, council 15 Oct 2026).
 

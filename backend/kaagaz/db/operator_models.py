@@ -13,13 +13,14 @@ audit rows.
 * ``set_model_enabled``: enable or disable one model on the platform, with the step of a
   fresh code (step-up). Outcomes: ``done``, ``unchanged``, ``missing``, ``not_eligible``,
   ``not_verified`` (verified neither for the reader's prompt nor for the answer prompt),
-  ``in_use`` (an organisation or the platform defaults still name it), ``step_up`` or
-  ``signed_out``.
+  ``in_use`` (an organisation or the platform defaults still name it, #664: as a second reader
+  too), ``step_up`` or ``signed_out``.
 * ``org_ai`` and ``set_org_ai``: one organisation's own AI settings (``AiChoice``: an
   empty list or a None field inherits the platform's), its Ensemble switch and its monthly
   budget. Outcomes: ``done``, ``missing``, ``deleting``, ``unavailable``,
   ``not_verified``, ``chat_not_verified``, ``level_not_supported``,
-  ``default_not_allowed``, ``step_up`` or ``signed_out``. Any number of scanning models
+  ``default_not_allowed``, ``second_reader_incomplete`` (#664), ``step_up`` or ``signed_out``.
+  Any number of scanning models
   (0037): Ensemble with fewer than two in effect is saved off, still ``done``.
 * ``ai_defaults`` and ``set_ai_defaults``: the platform defaults and how many
   organisations inherit each area; the same outcomes but missing and deleting.
@@ -74,20 +75,21 @@ _RECORD_CHAT = text(
     "UPDATE model_catalog SET chat_verified_prompt = :prompt, chat_verified_at = now() WHERE id = :model"
 )
 # An AiChoice's parameters (sm to dyn) are in the functions' order (0064: sr, ct, cr, pm after st;
-# #473, 0065: rd and mm after the step; #478, 0066: dpl; #488, 0070: ulc last).
+# #473, 0065: rd and mm after the step; #478, 0066: dpl; #488, 0070: ulc; #664, 0101: snd, smd last).
 _SET_ORG_AI = text(
     "SELECT outcome, result_id FROM kaagaz_op_set_org_ai(:o, :c, CAST(:sm AS text[]), CAST(:sd AS text),"
     " CAST(:cm AS text[]), CAST(:cd AS text), CAST(:st AS text), CAST(:sr AS text), CAST(:ct AS text),"
     " CAST(:cr AS text), CAST(:pm AS integer), CAST(:cl AS text[]), CAST(:cdl AS text),"
     " CAST(:dyn AS boolean), :ensemble,"
     " CAST(:budget AS numeric), :scan, :chat, :step, CAST(:rd AS text), CAST(:mm AS text),"
-    " CAST(:dpl AS integer), CAST(:ulc AS integer))"
+    " CAST(:dpl AS integer), CAST(:ulc AS integer), CAST(:snd AS text), CAST(:smd AS text))"
 )
 _SET_AI_DEFAULTS = text(
     "SELECT kaagaz_op_set_ai_defaults(:o, CAST(:sm AS text[]), CAST(:sd AS text), CAST(:cm AS text[]),"
     " CAST(:cd AS text), CAST(:st AS text), CAST(:sr AS text), CAST(:ct AS text), CAST(:cr AS text),"
     " CAST(:pm AS integer), CAST(:cl AS text[]), CAST(:cdl AS text), CAST(:dyn AS boolean), :scan, :chat,"
-    " :step, CAST(:rd AS text), CAST(:mm AS text), CAST(:dpl AS integer), CAST(:ulc AS integer))"
+    " :step, CAST(:rd AS text), CAST(:mm AS text), CAST(:dpl AS integer), CAST(:ulc AS integer),"
+    " CAST(:snd AS text), CAST(:smd AS text))"
 )
 _SCAN_COST = text(
     "SELECT * FROM kaagaz_op_scan_cost(:o, CAST(:c AS uuid), :m, :t, :r, CAST(:cm AS text),"
@@ -120,7 +122,9 @@ class AiChoice:
     #478 (0066): the daily page limit (pages AI may read in one India day); for the platform,
     None is no limit. #488 (0070): Ultra low cost's ceiling, the most one read of a page may cost,
     in paise (20 to 55, 0073; ``scan_reader`` ultra_low_cost reads with it); for the platform,
-    None is ULC_DEFAULT_PAISE."""
+    None is ULC_DEFAULT_PAISE. #664 (0101): the second reader of a page Mistral read no text on,
+    ``second_reader`` (off, openrouter or ultra_low_cost) and ``second_model`` (set exactly with a
+    way to read), inherited as one; for the platform, None is off."""
 
     scan_models: Sequence[str] = ()
     scan_default: str | None = None
@@ -138,6 +142,8 @@ class AiChoice:
     mistral_model: str | None = None
     daily_page_limit: int | None = None
     ulc_ceiling_paise: int | None = None
+    second_reader: str | None = None
+    second_model: str | None = None
 
     def params(self) -> dict[str, object]:
         return {
@@ -157,6 +163,8 @@ class AiChoice:
             "mm": self.mistral_model,
             "dpl": self.daily_page_limit,
             "ulc": self.ulc_ceiling_paise,
+            "snd": self.second_reader,
+            "smd": self.second_model,
         }
 
 
@@ -196,7 +204,8 @@ def org_ai(conn: Connection, operator_id: str, customer_id: str) -> RowMapping |
     """One organisation's own settings (scan_models, scan_default, chat_models,
     chat_default, scan_thinking, chat_levels, chat_default_level, dynamic, scan_resolution,
     careful_thinking, careful_resolution, page_max_output_tokens, scan_reader, mistral_model,
-    daily_page_limit, ulc_ceiling_paise, ensemble) and ai_budget_usd; an empty list or a
+    daily_page_limit, ulc_ceiling_paise, second_reader, second_model, ensemble) and ai_budget_usd;
+    an empty list or a
     NULL field inherits. None when there is no such organisation (or the operator is not enabled)."""
     return (
         conn.execute(text("SELECT * FROM kaagaz_op_org_ai(:o, :c)"), {"o": operator_id, "c": customer_id})
@@ -240,7 +249,7 @@ def ai_defaults(conn: Connection, operator_id: str) -> RowMapping | None:
     """The platform defaults (as ``org_ai``, without ensemble and budget) and
     orgs_inheriting_{scan_models, chat_models, scan_thinking, chat_levels, dynamic,
     scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens, scan_reader,
-    mistral_model, daily_page_limit, ulc_ceiling_paise}: the
+    mistral_model, daily_page_limit, ulc_ceiling_paise, second_reader}: the
     organisations (not being deleted) a change of that area reaches. None for an operator
     who is not enabled."""
     return (

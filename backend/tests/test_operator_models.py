@@ -112,6 +112,8 @@ ORG_ROW = {
     "mistral_model": None,
     "daily_page_limit": None,  # Changed on purpose (#478)
     "ulc_ceiling_paise": None,  # Changed on purpose (#488)
+    "second_reader": None,  # Changed on purpose (#664)
+    "second_model": None,
     "ensemble": True,
     "ai_budget_usd": Decimal("50.00"),
 }
@@ -132,6 +134,8 @@ DEFAULTS_ROW = {
     "mistral_model": None,
     "daily_page_limit": None,  # Changed on purpose (#478)
     "ulc_ceiling_paise": None,  # Changed on purpose (#488)
+    "second_reader": None,  # Changed on purpose (#664)
+    "second_model": None,
     "orgs_inheriting_scan_models": 4,
     "orgs_inheriting_chat_models": 7,
     "orgs_inheriting_scan_thinking": 6,
@@ -145,6 +149,7 @@ DEFAULTS_ROW = {
     "orgs_inheriting_mistral_model": 8,
     "orgs_inheriting_daily_page_limit": 3,  # Changed on purpose (#478)
     "orgs_inheriting_ulc_ceiling_paise": 3,  # Changed on purpose (#488)
+    "orgs_inheriting_second_reader": 2,  # Changed on purpose (#664)
 }
 ORG_BODY: dict[str, Any] = {
     "scan_models": [MODEL, OTHER],
@@ -163,6 +168,8 @@ ORG_BODY: dict[str, Any] = {
     "mistral_model": None,
     "daily_page_limit": None,  # Changed on purpose (#478)
     "ulc_ceiling_paise": None,  # Changed on purpose (#488)
+    "second_reader": None,  # Changed on purpose (#664)
+    "second_model": None,
     "ensemble": True,
     "ai_budget_usd": 12.5,
 }
@@ -183,6 +190,8 @@ DEFAULTS_BODY: dict[str, Any] = {
     "mistral_model": None,
     "daily_page_limit": None,  # Changed on purpose (#478)
     "ulc_ceiling_paise": None,  # Changed on purpose (#488)
+    "second_reader": None,  # Changed on purpose (#664)
+    "second_model": None,
 }
 USAGE_ROW = {
     "customer_id": CID,
@@ -501,6 +510,8 @@ def test_an_organisations_ai_settings_round_trip_with_the_defaults_it_follows(of
             "mistral_model": None,
             "daily_page_limit": None,  # Changed on purpose (#478)
             "ulc_ceiling_paise": None,  # Changed on purpose (#488)
+            "second_reader": None,  # Changed on purpose (#664)
+            "second_model": None,
             "chat_levels": None,
             "chat_default_level": None,
             "dynamic": None,
@@ -519,6 +530,8 @@ def test_an_organisations_ai_settings_round_trip_with_the_defaults_it_follows(of
             "mistral_model": None,
             "daily_page_limit": None,  # Changed on purpose (#478)
             "ulc_ceiling_paise": None,  # Changed on purpose (#488)
+            "second_reader": None,  # Changed on purpose (#664)
+            "second_model": None,
             "chat_levels": ["low", "medium"],
             "chat_default_level": "low",
             "dynamic": False,
@@ -679,6 +692,8 @@ def test_the_platform_defaults_say_how_many_organisations_follow_each_area(offli
             "mistral_model": None,
             "daily_page_limit": None,  # Changed on purpose (#478)
             "ulc_ceiling_paise": None,  # Changed on purpose (#488)
+            "second_reader": None,  # Changed on purpose (#664)
+            "second_model": None,
             "chat_levels": ["low", "medium"],
             "chat_default_level": "low",
             "dynamic": False,
@@ -698,6 +713,7 @@ def test_the_platform_defaults_say_how_many_organisations_follow_each_area(offli
             "mistral_model": 8,
             "daily_page_limit": 3,  # Changed on purpose (#478)
             "ulc_ceiling_paise": 3,  # Changed on purpose (#488)
+            "second_reader": 2,  # Changed on purpose (#664)
         },
     }
     offline.defaults = None  # the operator was disabled meanwhile

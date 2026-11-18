@@ -76,9 +76,10 @@ def test_on_is_refused_until_every_recent_worker_runs_as_kaagaz_worker_and_9b_is
     # Changed on purpose (PR 13, #605): PR 13's migration (0096) is the head; 0097 is still to come.
     # Changed on purpose (#603): WhatsApp's 0098 is the head now; 0099 is still to come.
     # Changed on purpose (#648, Versions): 0099 and 0100 are in; 0101 is still to come.
-    monkeypatch.setattr(person_rule, "NEEDS_REVISION", "0101")
+    # Changed on purpose (#664): the second reader's 0101 is in; 0102 is still to come.
+    monkeypatch.setattr(person_rule, "NEEDS_REVISION", "0102")
     assert _run(db, "on", "--customer", customer)[0] == 2  # the head is below what it needs
-    assert "PR 9b (migration 0101) is not in yet" in capsys.readouterr().err
+    assert "PR 9b (migration 0102) is not in yet" in capsys.readouterr().err
     assert _rows(db, customer) == 0
     monkeypatch.undo()
     assert person_rule.NEEDS_REVISION == "0092"
