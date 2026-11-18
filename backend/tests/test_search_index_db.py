@@ -252,7 +252,8 @@ def test_a_word_or_typo_list_past_the_timeout_is_dropped_and_the_other_still_ans
         ),
     )
 
-    assert [hit.piece_id for hit in run(db, customer, "INV-3003")] == [piece]
+    # Changed on purpose (#666): a word, as a number alone never runs the typo list.
+    assert [hit.piece_id for hit in run(db, customer, "invoice INV-3003")] == [piece]
 
     with pytest.raises(OperationalError) as cancelled, db.customer(customer) as conn:
         conn.execute(text("SELECT set_config('statement_timeout', '200', true)"))

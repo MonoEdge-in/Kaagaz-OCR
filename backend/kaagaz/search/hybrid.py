@@ -62,7 +62,9 @@ The three searches (docs/architecture.md, "Search, in simple terms"):
    with a digit is never a typo (#556, UAT LC-04: "150000" scored 1.0 against
    "1500000"): each must be in the piece as written (``number_words``, matched
    in ``tsv_simple``, so a Marathi ९४०००० is still found by 940000 through its
-   Latin spelling), as on the page (kaagaz/search/page_words.py rule 4).
+   Latin spelling), as on the page (kaagaz/search/page_words.py rule 4). ``q`` is only the
+   question's words of ``TYPO_MIN_LETTERS`` letters or more (``typo_words``, #666), and the list
+   is skipped when there is none or the word list already holds ``CANDIDATES`` pieces.
 3. **Meaning:** cosine distance ``<=>`` between the question's embedding and
    each piece's (V2). Skipped when there is no embedding (no model, or it is
    down): the other two still answer. Only vectors whose ``embedding_model``
@@ -157,6 +159,7 @@ from kaagaz.answering.expansion import NO_EXPANSION, Expansion, word_query
 from kaagaz.answering.hinglish import DATE_WORDS, STOP_WORDS, normalise
 from kaagaz.chunking.script import (
     SOUND_KEY_MIN,
+    WORD_TOKEN,
     fold_digits,
     has_devanagari_letters,
     latin_spelling,
@@ -179,6 +182,10 @@ RRF_K = 60
 MAX_LIMIT = 100
 # pg_trgm word similarity cut-off for the typo tolerant list. PROVISIONAL.
 FUZZY_THRESHOLD = 0.3
+# #666: the typo list checks only words of at least this many letters, counted on their Latin
+# spelling (production, 18 Nov 2026: "map" read 120 MB in 2 s, as almost every piece shares a
+# trigram with a short word). PROVISIONAL.
+TYPO_MIN_LETTERS = 5
 # Every search statement is cancelled after this long (PROVISIONAL). A list that runs out of
 # time is dropped, a code logged, and the others still answer (#619: the word and fuzzy lists
 # too, since 15 Nov 2026).
@@ -810,6 +817,22 @@ def sound_query(question: str) -> str:
     return " ; ".join(group for group in groups if group)
 
 
+def typo_words(question: str) -> str:
+    """#666: the question's words the typo list checks, joined by spaces; "" when none. A word
+    (``WORD_TOKEN``, the viewer's) counts when its Latin spelling has at least ``TYPO_MIN_LETTERS``
+    letters (शिंदे is shinde, 6), never with a digit (a number is matched as written only:
+    ``number_words``) nor one the sound query skips (``_NO_SOUND``: stop, question and date
+    words). O(n)."""
+    kept = []
+    for word in WORD_TOKEN.findall(question):
+        latin = latin_spelling(word) if has_devanagari_letters(word) else word
+        if any(ch.isdigit() for ch in word) or latin.casefold() in _NO_SOUND:
+            continue
+        if sum(ch.isalpha() for ch in latin) >= TYPO_MIN_LETTERS:
+            kept.append(word)
+    return " ".join(kept)
+
+
 def identifiers(question: str) -> list[tuple[tuple[str, ...], str, tuple[int, int]]]:
     """#617 item 9: each Gat, Survey, Khata or Plot number the question names with its kind word,
     in either script ("gat 61", "Survey No. 45/2", "गट नं. ६१", "khata 3"): (the fields that hold
@@ -1088,14 +1111,17 @@ def _lists(
     fuzzy: list[tuple[str, float]] = []
     meaning: list[tuple[str, float]] = []
     if query_text.strip():
-        latin = latin_spelling(query_text) if has_devanagari_letters(query_text) else query_text
-        params = {"c": customer_id, "q": query_text, "ql": latin, "n": CANDIDATES}
         word = _ranked(_word_list(conn, customer_id, query_text, scope, expansion), owners)
-        conn.execute(_SET_FUZZY_THRESHOLD, {"t": str(FUZZY_THRESHOLD)})
-        typo_rows = _in_time(
-            conn, "fuzzy_timeout", lambda: conn.execute(_FUZZY, {**params, **scope.params()}).all()
-        )
-        fuzzy = _ranked(_numbers_as_written(typo_rows or [], number_words(query_text)), owners)
+        typo = typo_words(query_text)
+        # #666: the typo list only for long words, and only while the word list is not full.
+        if typo and len(word) < CANDIDATES:
+            latin = latin_spelling(typo) if has_devanagari_letters(typo) else typo
+            params = {"c": customer_id, "q": typo, "ql": latin, "n": CANDIDATES}
+            conn.execute(_SET_FUZZY_THRESHOLD, {"t": str(FUZZY_THRESHOLD)})
+            typo_rows = _in_time(
+                conn, "fuzzy_timeout", lambda: conn.execute(_FUZZY, {**params, **scope.params()}).all()
+            )
+            fuzzy = _ranked(_numbers_as_written(typo_rows or [], number_words(query_text)), owners)
     if embedding is not None:
         vector = {"c": customer_id, "vec": vector_literal(embedding), "recipe": recipe, "n": CANDIDATES}
         meaning = _meaning(

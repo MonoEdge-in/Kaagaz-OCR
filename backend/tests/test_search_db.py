@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
 
 from kaagaz.answering.expansion import NO_EXPANSION
 from kaagaz.answering.hinglish import normalise
@@ -184,7 +184,7 @@ def test_a_number_matches_only_as_written_while_words_keep_their_typos(db: Datab
 
     assert run(db, customer, "150000") == []
     assert [hit.piece_id for hit in run(db, customer, "1500000")] == [corrected]
-    typo = run(db, customer, "totl 1500000")
+    typo = run(db, customer, "totaal 1500000")  # Changed on purpose (#666): a typo of 5+ letters
     assert [hit.piece_id for hit in typo] == [corrected] and typo[0].fuzzy_score is not None
     assert [hit.piece_id for hit in run(db, customer, "940000")] == [marathi]
     assert run(db, customer, "94000") == []
@@ -208,7 +208,7 @@ def test_an_indian_amount_with_commas_is_one_number_in_the_typo_list(db: Databas
         ],
     )
 
-    grouped = {hit.piece_id: hit for hit in run(db, customer, "totl 1,50,000")}
+    grouped = {hit.piece_id: hit for hit in run(db, customer, "totaal 1,50,000")}  # Changed on purpose (#666)
     assert amount in grouped and grouped[amount].fuzzy_score is not None
     assert other not in grouped or grouped[other].fuzzy_score is None  # 1, 50 and 000 aren't 150000
 
@@ -747,3 +747,105 @@ def test_gut_and_gat_find_each_other(db: Database, question: str, printed: str) 
     hits = run(db, customer, question)
 
     assert [hit.piece_id for hit in hits] == [wanted] and hits[0].word_score is not None
+
+
+# --- #666: the typo list only for long words, and only when the word list is short ----------
+
+
+def _typo_runs(db: Database, customer_id: str, question: str) -> tuple[list[SearchHit], list[dict[str, Any]]]:
+    """``run``'s hits for ``question``, and the parameters of each typo statement it sent."""
+    sent: list[dict[str, Any]] = []
+
+    def seen(_conn: Any, _cursor: Any, statement: str, parameters: Any, *_: Any) -> None:
+        if "word_similarity(" in statement:
+            sent.append(dict(parameters))
+
+    event.listen(db.engine, "before_cursor_execute", seen)
+    try:
+        hits = run(db, customer_id, question)
+    finally:
+        event.remove(db.engine, "before_cursor_execute", seen)
+    return hits, sent
+
+
+def test_a_short_word_never_runs_the_typo_query(db: Database) -> None:
+    """Production, 18 Nov 2026: "map" read 120 MB in 2 s, as almost every piece shares a trigram
+    with a short word. Its exact matches are still found."""
+    customer, _ = new_customer(db)
+    wanted, _ = add_pieces(
+        db, customer, add_document(db, customer), [("Site map of the plot", None), ("Rent paid", None)]
+    )
+
+    hits, sent = _typo_runs(db, customer, "map")
+
+    assert sent == []
+    assert [hit.piece_id for hit in hits] == [wanted] and hits[0].word_score is not None
+
+
+@pytest.mark.parametrize(
+    ("question", "q", "ql"), [("invioce", "invioce", "invioce"), ("shindey", "shindey", "shindey")]
+)
+def test_a_long_misspelled_word_still_finds_its_piece_by_typo(
+    db: Database, question: str, q: str, ql: str
+) -> None:
+    customer, _ = new_customer(db)
+    invoice, shinde, _ = add_pieces(
+        db,
+        customer,
+        add_document(db, customer),
+        [("Tax invoice No 42", None), ("पाटील शिंदे", None), ("Rent paid for August", None)],
+    )
+    wanted = invoice if question == "invioce" else shinde
+
+    hits, sent = _typo_runs(db, customer, question)
+
+    assert [(each["q"], each["ql"]) for each in sent] == [(q, ql)]
+    assert hits[0].piece_id == wanted and hits[0].fuzzy_score is not None and hits[0].fuzzy_score >= 0.3
+
+
+def test_only_the_long_words_are_typo_checked(db: Database) -> None:
+    """A misspelled long word with few exact matches runs the typo query, with that word only:
+    never the short word, the stop word or the number around it. A Devanagari word counts its
+    letters on its Latin spelling (शिंदे is shinde, 6)."""
+    customer, _ = new_customer(db)
+    invoice, shinde = add_pieces(
+        db, customer, add_document(db, customer), [("Tax invoice No 42 map", None), ("पाटील शिंदे", None)]
+    )
+
+    hits, sent = _typo_runs(db, customer, "map of the invioce 42")
+    assert [(each["q"], each["ql"]) for each in sent] == [("invioce", "invioce")]
+    assert hits[0].piece_id == invoice and hits[0].fuzzy_score is not None
+
+    hits, sent = _typo_runs(db, customer, "शिंदे")
+    assert [(each["q"], each["ql"]) for each in sent] == [("शिंदे", "shinde")]
+    assert hits[0].piece_id == shinde
+
+
+@pytest.mark.parametrize("question", ["gat 123", "123", "INV-123"])
+def test_numbers_never_run_the_typo_query_and_are_still_found_as_written(db: Database, question: str) -> None:
+    customer, _ = new_customer(db)
+    wanted, _ = add_pieces(
+        db,
+        customer,
+        add_document(db, customer),
+        [("Gat 123 INV-123 Kusgaon", None), ("Survey 1234 INV-1234", None)],
+    )
+
+    hits, sent = _typo_runs(db, customer, question)
+
+    assert sent == []
+    assert [hit.piece_id for hit in hits] == [wanted] and hits[0].word_score is not None
+
+
+def test_a_word_that_fills_the_exact_list_never_runs_the_typo_query(db: Database) -> None:
+    full, _ = new_customer(db)
+    short, _ = new_customer(db)
+    for customer, count in ((full, hybrid.CANDIDATES), (short, hybrid.CANDIDATES - 1)):
+        pieces: list[tuple[str, list[float] | None]] = [(f"Agreement copy {n}", None) for n in range(count)]
+        add_pieces(db, customer, add_document(db, customer), pieces)
+
+    hits, sent = _typo_runs(db, full, "agreement")
+    assert sent == [] and len(hits) == 10 and all(hit.word_score is not None for hit in hits)
+
+    _, sent = _typo_runs(db, short, "agreement")  # the control: one short of a full list
+    assert [each["q"] for each in sent] == ["agreement"]

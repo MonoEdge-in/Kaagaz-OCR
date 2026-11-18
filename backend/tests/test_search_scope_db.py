@@ -274,14 +274,16 @@ def test_results_are_grouped_by_document_capped_and_count_the_other_pieces(db: D
     for n in range(21):
         add(db, customer, [f"INV-9001 copy {n}", f"INV-9001 line {n}"])
 
-    grouped = documents(db, customer, "INV-9001 grand")
+    # Changed on purpose (#666): "INV-9001 grand" found the 42 pieces without "grand" only through
+    # the typo list's trigrams of the number; it now checks "grand" alone, so the words list finds them.
+    grouped = documents(db, customer, "INV-9001")
 
     assert len({result.best.document_id for result in grouped}) == len(grouped) == 20
     assert grouped[0].best.document_id == three
     assert [result.more for result in grouped] == [2] + [1] * 19
     scores = [result.best.score for result in grouped]
     assert scores == sorted(scores, reverse=True)
-    top3 = documents(db, customer, "INV-9001 grand", most=3)
+    top3 = documents(db, customer, "INV-9001", most=3)
     assert [result.best for result in top3] == [result.best for result in grouped[:3]]
     # Changed on purpose (issue 374, 27 Oct 2026): 101 is allowed, the route asks one past its cap.
     for bad in (0, 102):
