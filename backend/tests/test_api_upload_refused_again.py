@@ -4,7 +4,10 @@ the same bytes sent again are a new document, scanned afresh, and the refused co
 for good in the same transaction, its stored or quarantined file too, with one audit row
 (``document.delete``, ``replaced_by``). A file still bad is refused again; a ready or failed
 copy, or a refused version of a family with others, is still "already in Kaagaz". The folder
-upload's "Add new files only" sends such a file, and two uploads of it at once store one."""
+upload's "Add new files only" sends such a file, and two uploads of it at once store one.
+
+PRD 9 F-03 (D3, #680): a copy in Trash that failed or was never read, alone in its family and seen by
+the uploader, is replaced the same way; a live one, or one in Trash that was read, is not."""
 
 import hashlib
 import io
@@ -155,6 +158,85 @@ def test_a_copy_not_refused_is_still_already_in_kaagaz(db: Database, status: str
     assert _replacements(api, signed) == []
 
 
+# --- PRD 9 F-03 (D3): a failed or never-read copy in Trash ---------------------------------------
+
+
+def _in_trash(api: Api, signed: Signed, status: str) -> str:
+    """CSV uploaded, given ``status`` and moved to Trash: its id."""
+    first: str = _upload(signed).json()["document"]["id"]
+    with api.db.customer(signed.customer_id) as conn:
+        conn.execute(
+            text("UPDATE documents SET status = :s, deleted_at = now() WHERE id = :d"),
+            {"s": status, "d": first},
+        )
+    return first
+
+
+@pytest.mark.parametrize("status", ["failed", "received", "clean", "needs_reader"])
+def test_a_failed_or_never_read_copy_in_trash_is_replaced_with_no_question(db: Database, status: str) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    old = _in_trash(api, signed, status)
+
+    again = _upload(signed)
+
+    assert again.status_code == 201, again.text
+    body = again.json()
+    document = body["document"]["id"]
+    assert (body["duplicate"], body["in_trash"], body["document"]["status"]) == (False, False, "received")
+    assert _row(api, signed, old) is None  # gone for good
+    assert not api.storage.has(signed.customer_id, old)  # its file too
+    assert api.storage.has(signed.customer_id, document)
+    assert _replacements(api, signed) == [(old, {"replaced_by": document})]  # Activity names it
+    _scan(api, signed, document, Verdict.CLEAN)
+    assert _row(api, signed, document).status == "ready"
+
+
+@pytest.mark.parametrize("status", ["ready", "locked"])
+def test_a_copy_in_trash_that_was_read_or_locked_is_still_already_in_trash(db: Database, status: str) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    first = _upload(signed).json()["document"]["id"]
+    with db.customer(signed.customer_id) as conn:
+        conn.execute(
+            text(
+                "UPDATE documents SET status = :s, deleted_at = now(),"
+                " locked_at = CASE WHEN :s = 'locked' THEN now() END,"
+                " locked_by = CASE WHEN :s = 'locked' THEN uploaded_by END WHERE id = :d"
+            ),
+            {"s": status, "d": first},
+        )
+
+    again = _upload(signed)
+
+    assert (again.status_code, again.json()["duplicate"]) == (200, True)
+    assert _row(api, signed, first) is not None
+    assert _replacements(api, signed) == []
+    assert len(api.queue.jobs) == 1
+
+
+def test_a_failed_version_in_trash_of_a_family_with_others_is_still_already_in(db: Database) -> None:
+    """Kaagaz deletes whole families only."""
+    api = Api(db)
+    signed = api.new_signed()
+    first = _upload(signed, data=b"name,amount\nA,1\n").json()["document"]["id"]
+    reply = signed.client.post(
+        f"/api/documents/{first}/versions", files={"file": (CSV_NAME, CSV, "text/csv")}, headers=CSRF
+    )
+    assert reply.status_code == 201, reply.text
+    version = reply.json()["document"]["id"]
+    with db.customer(signed.customer_id) as conn:
+        conn.execute(text("UPDATE documents SET status = 'failed' WHERE id = :d"), {"d": version})
+        conn.execute(
+            text("UPDATE documents SET deleted_at = now() WHERE id IN (:a, :b)"), {"a": first, "b": version}
+        )
+
+    again = _upload(signed)
+
+    assert (again.status_code, again.json()["duplicate"], again.json()["in_trash"]) == (200, True, True)
+    assert _row(api, signed, version) is not None
+
+
 def _refused_version(api: Api, signed: Signed) -> str:
     """A family of two: another file, then CSV as its new version, refused. The version's id."""
     first = _upload(signed, data=b"name,amount\nA,1\n").json()["document"]["id"]
@@ -212,6 +294,17 @@ def test_a_folder_upload_sends_a_file_whose_only_copy_was_refused(db: Database) 
     assert sent.status_code == 201, sent.text
     assert (sent.json()["duplicate"], sent.json()["item"]["state"]) == (False, "stored")
     assert _row(api, signed, refused) is None
+
+
+def test_a_folder_upload_sends_a_file_whose_only_copy_failed_in_trash(db: Database) -> None:
+    """PRD 9 F-03: the database's duplicate check (kaagaz_duplicate, 0102) agrees with the upload."""
+    api = Api(db)
+    signed = api.new_signed()
+    _in_trash(api, signed, "failed")
+
+    row = _register(signed)
+
+    assert (row["state"], row["document_id"]) == ("waiting", None)
 
 
 def test_a_folder_upload_finds_a_refused_version_already_in(db: Database) -> None:

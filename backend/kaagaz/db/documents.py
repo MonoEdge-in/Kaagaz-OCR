@@ -73,7 +73,9 @@ transaction that inserts the new document, which is scanned afresh; one ``docume
 audit row names the new one (``replaced_by``). The refused copy's family lock decides two such
 uploads at once: the second waits, finds it gone, and is a duplicate of the first. A refused
 version of a family with others stays a duplicate (Kaagaz deletes whole families only), and a
-new version (``add_version``) replaces nothing.
+new version (``add_version``) replaces nothing. PRD 9 F-03 (D3, #680): so is a copy in Trash that
+failed or was never read, alone in its family, that the person uploading sees; one read (or locked)
+is still "already in Kaagaz, in Trash".
 """
 
 import dataclasses
@@ -123,8 +125,14 @@ _DUPLICATE = text(
 )
 
 # #554 (module notes): document ``d`` was refused by its scan and is its family's only version.
+# PRD 9 F-03 (D3, #680): or it is in Trash, failed or never read, and the person uploading sees it:
+# kaagaz_duplicate (0102, the same rule, the view read as the owner) says it is not in. This module
+# reads no view (the worker reaches it, #595); with no person (a zip's files) it is a duplicate as before.
 REFUSED_ALONE = (
-    "d.status = 'rejected' AND NOT EXISTS (SELECT 1 FROM documents v"
+    "(d.status = 'rejected' OR (d.deleted_at IS NOT NULL AND d.status IN ('failed', 'received', 'clean',"
+    " 'needs_reader') AND CASE WHEN NULLIF(current_setting('kaagaz.user_id', true), '') IS NULL THEN false"
+    " ELSE (SELECT f.answer FROM kaagaz_duplicate(ARRAY[d.sha256]) f) = 'none' END))"
+    " AND NOT EXISTS (SELECT 1 FROM documents v"
     " WHERE v.customer_id = d.customer_id AND v.family_id = d.family_id AND v.id <> d.id)"
 )
 _REFUSED_COPY = (
