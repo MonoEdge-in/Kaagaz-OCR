@@ -9,7 +9,7 @@ spellings (ENGINEERING_STANDARDS 3.7, leakage).
 import pytest
 
 from kaagaz.chunking.script import SOUND_KEY_MIN, SOUND_WORD_MAX, latin_spelling, sound_key, sound_keys
-from kaagaz.search.hybrid import SOUND_TERMS_MAX, sound_query
+from kaagaz.search.hybrid import SOUND_TERMS_MAX, sound_query, typo_words
 
 # Each group is one word: every spelling, and latin_spelling's of the Devanagari, has the key.
 SAME = [
@@ -152,3 +152,27 @@ def test_the_sound_query_keeps_every_word_before_any_shorter_start_and_at_most_t
     ]
     assert groups[:2] == ["bogvtdr:* | bogvtd | bogvt | bogv", "gikvd:* | gikv"]  # the starts that fit
     assert sum(len(group.split(" | ")) for group in groups) == SOUND_TERMS_MAX == 12
+
+
+# --- #666: the words the typo list checks ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("question", "checked"),
+    [
+        ("map", ""),  # production, 18 Nov 2026: 2 s and 120 MB for a short word
+        ("totl", ""),  # four letters
+        ("total", "total"),  # five
+        ("map of the invioce", "invioce"),
+        ("gat 123", ""),  # numbers are found as written only (#556)
+        ("INV-1042 total2 ९४००० invoice", "invoice"),  # a word with a digit is never a typo
+        ("which document has the agreement?", "agreement"),  # request and stop words never
+        ("invoices last month", "invoices"),  # nor date words, as for the sound query
+        ("शिंदे", "शिंदे"),  # five characters, two letters; shinde on its Latin spelling, 6
+        ("पाटील नाव", "पाटील"),  # patil, 5; nav, 3
+        ("Agreement, Shinde!", "Agreement Shinde"),
+        ("", ""),
+    ],
+)
+def test_the_typo_list_checks_only_words_of_five_letters_or_more(question: str, checked: str) -> None:
+    assert typo_words(question) == checked
