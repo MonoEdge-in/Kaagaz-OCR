@@ -8,6 +8,7 @@ writes the changes in force again; a reviewed mark is no longer hard to read in 
 The API and customer separation: test_api_word_review.py, test_isolation_api_word_review.py.
 """
 
+import dataclasses
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -137,21 +138,22 @@ def test_the_flags_come_from_the_stored_reading(db: Database) -> None:
     assert [(f.kind, f.page_no, f.band, f.reason, f.text, f.score) for f in review.flags] == [
         ("mark", 1, "check", "smudged_print", "4,850", 0.62),
         ("mark", 1, "review", "smudged_print", "[?]", None),
-        ("line", 2, "review", "spot_unconfirmed", "Bill to Patil Stores", None),
+        ("line", 2, "check", "spot_unconfirmed", "Bill to Patil Stores", None),
     ]
     # Changed on purpose (#432, Tushar, 28 Oct 2026): the unsure word (check band) is still a
     # flag, so a change to it is kept, but it is no review item: listed and counted nowhere.
-    assert [flag.text for flag in review.listed] == ["[?]", "Bill to Patil Stores"]
+    # Changed on purpose (PRD 9 F-11, D5): so is the unpinned line now.
+    assert [flag.text for flag in review.listed] == ["[?]"]
     with db.customer(customer) as conn:
         numbers = word_review.counts(conn, customer, document, review)
     assert numbers == {
         "pages": 2,
         "words": 9,
-        "flagged": 2,
-        "by_band": {"check": 0, "review": 2},
+        "flagged": 1,
+        "by_band": {"check": 0, "review": 1},
         "reviewed": 0,
         "resolved": 0,
-        "remaining": 2,
+        "remaining": 1,
         "last_change_at": None,
     }
 
@@ -334,7 +336,8 @@ def test_a_value_the_readers_read_differently_is_verified_only_with_every_flag_i
     with db.customer(customer) as conn:
         numbers = word_review.counts(conn, customer, document, review)
     # Changed on purpose (#432): the unsure word confirmed above is a check, counted nowhere.
-    assert (numbers["flagged"], numbers["reviewed"], numbers["remaining"]) == (3, 1, 2)
+    # Changed on purpose (PRD 9 F-11, D5): so is page 2's unpinned line.
+    assert (numbers["flagged"], numbers["reviewed"], numbers["remaining"]) == (2, 1, 1)
 
 
 KEPT = (
@@ -344,20 +347,59 @@ KEPT = (
 
 
 def test_settling_a_pages_last_review_item_keeps_it_when_its_flags_are_its_only_problem(db: Database) -> None:
-    # #443: page 2's one problem is its line not pinned, so confirming that line settles the page.
-    customer, user, document = saved(db)
-    line = change(db, customer, document, key(load(db, customer, document), "line", "Bill to Patil Stores"),
-                  "Bill to Patil Stores", None, user)  # fmt: skip
-    assert rows(db, customer, KEPT, document) == [(2, user, T0)]
+    # #443: page 1's one problem is its [?] (its unsure word is a check), so confirming the [?]
+    # settles the page.
+    # Changed on purpose (PRD 9 F-11, D5): this was page 2's unpinned line; an unconfirmed spot is a
+    # check now, no review item, so confirming it settles nothing (the test below).
+    customer, user, document = saved(db, issues=("illegible_words",))
+    line = change(db, customer, document, key(load(db, customer, document), "mark", "[?]"), "[?]", None, user)
+    assert rows(db, customer, KEPT, document) == [(1, user, T0)]
     audits = "SELECT action, details FROM audit_log WHERE action LIKE 'word_review.%' ORDER BY id"
     assert rows(db, customer, audits, document)[0][1]["kept"] is True
-    PgPipelineStore(db).save(scanned(customer, document))  # every row replaced, the keep carried
-    assert rows(db, customer, KEPT, document) == [(2, user, T0)]
+    PgPipelineStore(db).save(scanned(customer, document, issues=("illegible_words",)))  # the keep carried
+    assert rows(db, customer, KEPT, document) == [(1, user, T0)]
 
     undo(db, customer, document, line, user, T0 + timedelta(minutes=1))
     assert rows(db, customer, KEPT, document) == []
     action, details = rows(db, customer, audits, document)[1]
-    assert (action, details["kept"], details["page_no"]) == ("word_review.undo", True, 2)
+    assert (action, details["kept"], details["page_no"]) == ("word_review.undo", True, 1)
+
+
+def test_an_unconfirmed_spot_is_a_check_that_still_blocks_its_value(db: Database) -> None:
+    """PRD 9 F-11, D5: a line whose spot no found box confirmed is a check (no red Fix text, not
+    listed or counted), yet a value on it is not Verified while it is open (CLAUDE.md rule 5),
+    even once every review item in the value's box is settled. Edited by a person, it is."""
+    customer, user = new_customer(db)
+    with db.customer(customer) as conn:
+        document = insert_document(conn, customer, uploaded_by=user, detected_type="jpeg")
+    content = scanned(customer, document)
+    blot = BoxLocation(2, 0.32, 0.5, 0.4, 0.55)  # a [?] on the unpinned line, in the value's box
+    spans = (*content.outputs[0].spans, Span("[?]", "[?]", blot, None, origin="ocr", quality="illegible",
+                                             box_source="found"))  # fmt: skip
+    buyer = ExtractedValue(
+        "document", "buyer", "Patil Stores", "Patil Stores", BoxLocation(2, 0.3, 0.5, 0.6, 0.55), None,
+        None, "needs_review", "box_unanchored",
+    )  # fmt: skip
+    output = dataclasses.replace(content.outputs[0], spans=spans)
+    PgPipelineStore(db).save(dataclasses.replace(content, outputs=[output], values=[*content.values, buyer]))
+    buyer_row = "SELECT label, label_reason FROM extracted_values WHERE document_id = :d AND field = 'buyer'"
+    review = load(db, customer, document)
+    line = review.flag(key(review, "line", "Bill to Patil Stores"))
+    assert line is not None and (line.band, line.reason) == ("check", "spot_unconfirmed")
+    assert line not in review.listed
+    blot_key = next(flag.key for flag in review.flags if flag.kind == "mark" and flag.page_no == 2)
+    assert [flag.page_no for flag in review.listed] == [1, 2]  # the two [?]
+
+    change(db, customer, document, blot_key, "[?]", "Patil", user)
+
+    assert rows(db, customer, buyer_row, document) == [("needs_review", "box_unanchored")]
+    assert [page for page, _, _ in rows(db, customer, KEPT, document)] == [2]  # its last review item: kept
+    with db.customer(customer) as conn:
+        word_review.change_word(
+            conn, customer, document, line.key, expected_text="Bill to Patil Stores",
+            new_text="Bill to Patil Stores Pvt", user_id=user, now=T0 + timedelta(minutes=1), line=True,
+        )  # fmt: skip
+    assert rows(db, customer, buyer_row, document)[0][0] == "verified"
 
 
 def test_settling_a_value_read_differently_keeps_its_page(db: Database) -> None:

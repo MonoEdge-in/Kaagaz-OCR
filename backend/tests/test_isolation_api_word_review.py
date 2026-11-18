@@ -8,6 +8,8 @@ for the same ids, so A's 404 comes from the customer (session, routes, SQL and r
 security), never from a broken route or id.
 """
 
+from typing import Any
+
 import pytest
 from sqlalchemy import text
 
@@ -91,19 +93,23 @@ def kept_pages(api: Api, customer_id: str, document_id: str) -> list[int]:
 
 
 def test_a_page_kept_by_its_last_word_is_only_ever_the_customers_own(db: Database) -> None:
-    # #443: settling a page's last review item keeps the page as is. A's change keeps A's page 2
+    # #443: settling a page's last review item keeps the page as is. A's change keeps A's page 1
     # only; B's same scan (same page, same word key) is untouched, and A's undo puts back A's alone.
+    # Changed on purpose (PRD 9 F-11, D5): this settled page 2's unpinned line, a check now (no
+    # review item); page 1's [?], its one review item and its one problem, settles it instead.
     api = Api(db)
     a_user, b_user = api.new_signed("reviewer"), api.new_signed("reviewer")
-    a_doc, b_doc = scan(api, a_user.customer_id), scan(api, b_user.customer_id)
-    a_line = word(flags(a_user, a_doc), "Bill to Patil Stores")
-    b_line = word(flags(b_user, b_doc), "Bill to Patil Stores")
+    one: dict[str, Any] = {"issues": ("illegible_words",)}
+    a_doc = scan(api, a_user.customer_id, "unsure", **one)
+    b_doc = scan(api, b_user.customer_id, "unsure", **one)
+    a_line = word(flags(a_user, a_doc), "[?]")
+    b_line = word(flags(b_user, b_doc), "[?]")
     assert a_line["word_key"] == b_line["word_key"]
     confirm = "/api/documents/{}/flags/{}/confirm"
 
     made = post(a_user, confirm.format(a_doc, a_line["word_key"]), {"expected_text": a_line["text"]})
     assert made.status_code == 200, made.text
-    assert kept_pages(api, a_user.customer_id, a_doc) == [2]
+    assert kept_pages(api, a_user.customer_id, a_doc) == [1]
     assert kept_pages(api, b_user.customer_id, b_doc) == []
 
     own = post(b_user, confirm.format(b_doc, b_line["word_key"]), {"expected_text": b_line["text"]})
@@ -112,4 +118,4 @@ def test_a_page_kept_by_its_last_word_is_only_ever_the_customers_own(db: Databas
     undone = post(a_user, f"/api/documents/{a_doc}/changes/{change}/undo")
     assert undone.status_code == 200, undone.text
     assert kept_pages(api, a_user.customer_id, a_doc) == []
-    assert kept_pages(api, b_user.customer_id, b_doc) == [2]
+    assert kept_pages(api, b_user.customer_id, b_doc) == [1]

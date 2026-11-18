@@ -414,11 +414,13 @@ def page_read(
 
     Lines come from the reply's blocks in order, or from its Markdown when it has none
     (Mistral OCR 3), cleaned (``_clean``). A block's box is scaled by the reply's own
-    ``dimensions`` and clamped to the page (``_block_box``). Only a block of one line is pinned
-    to ``found`` (``gemini_ocr.pinned``); every other line keeps its block's box (the whole page
-    with none) as ``box_source`` "model", and the page gets ``unpinned``. The unsure words are
-    ``_unsure``'s; the grade comes from ``average_page_confidence_score``. O(markdown + blocks +
-    words x log lines), plus ``pinned``'s O(lines x found)."""
+    ``dimensions`` and clamped to the page (``_block_box``). A block of one line is pinned to
+    ``found`` (``gemini_ocr.pinned``); a block of more takes the found rows inside it, one a
+    line in order, when there are as many rows as lines (``_rows``, PRD 9 F-11). Every other
+    line keeps its block's box (the whole page with none) as ``box_source`` "model", and the
+    page gets ``unpinned``. The unsure words are ``_unsure``'s; the grade comes from
+    ``average_page_confidence_score``. O(markdown + blocks x found log found + words x log
+    lines), plus ``pinned``'s O(lines x found)."""
     from kaagaz.reading.gemini_ocr import BOX_SCALE, _Line, pinned  # not at load (module notes)
 
     if not _valid(page):
@@ -433,16 +435,25 @@ def page_read(
             box = _scaled(text.box, width, height, BOX_SCALE)
             pin[index] = _Line(index, text.kind, text.text, box, unsure[index], False, None, text.block or 0)
     pinned_lines = dict(zip(pin, pinned(pin.values(), found, width, height), strict=True))
+    blocks: dict[int | None, tuple[PixelBox, list[int]]] = {}
+    for index, text in enumerate(texts):
+        if not text.single and text.box is not None:  # a line of a block of more (block is set)
+            blocks.setdefault(text.block, (text.box, []))[1].append(index)
+    rows: dict[int, PixelBox] = {}
+    for block_box, indexes in blocks.values():
+        found_rows = _rows(block_box, found)
+        if len(found_rows) == len(indexes):  # PRD 9 F-11: one row a line, else never a guess
+            rows.update(zip(indexes, found_rows, strict=True))
     whole = (0.0, 0.0, float(width), float(height))
     result = tuple(
         pinned_lines.get(index)
         or OcrLine(
             text.text,
-            *(text.box or whole),
+            *rows.get(index, text.box or whole),
             confidence=None,
             kind=text.kind,
             unsure=unsure[index],
-            box_source="model",
+            box_source="found" if index in rows else "model",
             block=text.block,
         )
         for index, text in enumerate(texts)
@@ -627,6 +638,25 @@ def _block_box(block: dict[str, Any], page: dict[str, Any], width: int, height: 
     right = min(float(width), x1 / their_width * width)
     bottom = min(float(height), y1 / their_height * height)
     return (left, top, right, bottom) if left < right and top < bottom else None
+
+
+def _rows(block: PixelBox, found: list[PixelBox]) -> list[PixelBox]:
+    """PRD 9 F-11: the found boxes whose centre lies in ``block``, as rows from the top: a box
+    whose middle height is inside the row above joins it (a table row's cells). Each row is
+    the union of its boxes, clipped to the block. O(found log found)."""
+    x0, y0, x1, y1 = block
+    inside = sorted(
+        (box for box in found if x0 <= (box[0] + box[2]) / 2 <= x1 and y0 <= (box[1] + box[3]) / 2 <= y1),
+        key=lambda box: (box[1] + box[3]) / 2,
+    )
+    rows: list[PixelBox] = []
+    for box in inside:
+        row = rows[-1] if rows else None
+        if row is not None and row[1] <= (box[1] + box[3]) / 2 <= row[3]:
+            rows[-1] = (min(row[0], box[0]), min(row[1], box[1]), max(row[2], box[2]), max(row[3], box[3]))
+        else:
+            rows.append(box)
+    return [(max(r[0], x0), max(r[1], y0), min(r[2], x1), min(r[3], y1)) for r in rows]
 
 
 def _scaled(box: PixelBox, width: int, height: int, scale: float) -> tuple[float, float, float, float]:

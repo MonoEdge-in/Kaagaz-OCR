@@ -423,12 +423,14 @@ def test_boxes_clamped_to_the_page_and_a_flat_box_is_no_box() -> None:
 
 
 def test_only_single_line_blocks_are_pinned() -> None:
+    # Changed on purpose (PRD 9 F-11): a block of two lines is pinned now when the found rows
+    # inside it are two; with one found row it still is not (here), so its lines stay "model".
     blocks = [
         block("text", "Total 500", (200, 100, 1000, 140)),  # one line: (100, 50, 500, 70) ours
-        block("text", "Line one\nLine two", (200, 200, 1000, 300)),  # two lines: never pinned
+        block("text", "Line one\nLine two", (200, 200, 1000, 300)),  # two lines, one found row
         {"type": "text", "content": "No box here"},
     ]
-    found = [(110.0, 52.0, 300.0, 68.0), (100.0, 100.0, 500.0, 125.0), (100.0, 125.0, 500.0, 150.0)]
+    found = [(110.0, 52.0, 300.0, 68.0), (100.0, 100.0, 500.0, 150.0)]
     result = read(page("Total 500\n\nLine one\nLine two\n\nNo box here", blocks), found)
     total, one, two, nobox = result.lines
     assert total.box_source == "found"
@@ -440,6 +442,51 @@ def test_only_single_line_blocks_are_pinned() -> None:
     assert (nobox.x0, nobox.y0, nobox.x1, nobox.y1) == (0, 0, WIDTH, HEIGHT)
     assert "unpinned" in result.issues
     assert result.unpinned_lines == 3
+
+
+def test_a_multi_line_blocks_lines_take_the_found_rows_inside_it() -> None:
+    """PRD 9 F-11: a table block (a challan's rows) whose found rows match its lines one for
+    one: each line gets its row, the union of the row's boxes clipped to the block, as "found".
+    A found box whose centre is outside the block is not the block's."""
+    rows = "| Name | Asha |\n| --- | --- |\n| Amount | 500 |\n| Date | 1 Nov |"
+    blocks = [block("table", rows, (200, 200, 1800, 500))]  # (100, 100, 900, 250) ours
+    found = [
+        (110.0, 105.0, 300.0, 135.0),  # row 1: two cells
+        (500.0, 108.0, 950.0, 132.0),  # past the block's right edge: clipped to 900
+        (110.0, 155.0, 300.0, 185.0),  # row 2
+        (500.0, 157.0, 700.0, 183.0),
+        (110.0, 205.0, 700.0, 235.0),  # row 3: one box
+        (110.0, 300.0, 700.0, 330.0),  # below the block: not its row
+    ]
+    result = read(page(rows, blocks), found)
+    assert texts(result) == ["Name  Asha", "Amount  500", "Date  1 Nov"]
+    assert [line.box_source for line in result.lines] == ["found"] * 3
+    assert [box(line) for line in result.lines] == [
+        (110, 105, 900, 135),
+        (110, 155, 700, 185),
+        (110, 205, 700, 235),
+    ]
+    assert result.issues == ()
+    assert result.unpinned_lines == 0
+
+
+@pytest.mark.parametrize(
+    "found",
+    [
+        [(110.0, 105.0, 800.0, 135.0)],  # one row for two lines
+        [(110.0, 105.0, 800.0, 125.0), (110.0, 160.0, 800.0, 180.0), (110.0, 210.0, 800.0, 240.0)],  # three
+        [],
+    ],
+)
+def test_a_multi_line_block_whose_rows_do_not_match_its_lines_stays_unpinned(
+    found: list[tuple[float, float, float, float]],
+) -> None:
+    """PRD 9 F-11: never a guess. Rows that don't match the lines one for one pin none of them."""
+    content = "Seller: Asha\nBuyer: Ravi"
+    result = read(page(content, [block("text", content, (200, 200, 1800, 500))]), found)
+    assert [line.box_source for line in result.lines] == ["model", "model"]
+    assert [box(line) for line in result.lines] == [(100, 100, 900, 250)] * 2
+    assert result.issues == ("unpinned",)
 
 
 def test_a_single_line_block_with_no_match_is_unpinned() -> None:
