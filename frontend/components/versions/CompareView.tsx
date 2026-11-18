@@ -232,7 +232,6 @@ export function CompareBody({
         const sent = data.pages[index];
         const [left, right] = [data.image_pages.left.includes(page.page_no), data.image_pages.right.includes(page.page_no)];
         const scan =
-          (left || right) &&
           sent?.left_words !== undefined &&
           sent.right_words !== undefined &&
           sent.left_words < FEW_WORDS &&
