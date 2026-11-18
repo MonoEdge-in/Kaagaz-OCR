@@ -403,7 +403,8 @@ def test_a_page_whose_only_problem_is_unpinned_lines_is_off_needs_attention(db: 
 def test_an_unconfirmed_spot_is_a_check_that_still_blocks_its_value(db: Database) -> None:
     """PRD 9 F-11, D5: a line whose spot no found box confirmed is a check (no red Fix text, not
     listed or counted), yet a value on it is not Verified while it is open (CLAUDE.md rule 5),
-    even once every review item in the value's box is settled. Edited by a person, it is."""
+    even once every review item in the value's box is settled, and even once the line's text is edited
+    (#527): the person never saw the doubt on its spot, so only the value's own review verifies it."""
     customer, user = new_customer(db)
     with db.customer(customer) as conn:
         document = insert_document(conn, customer, uploaded_by=user, detected_type="jpeg")
@@ -434,7 +435,8 @@ def test_an_unconfirmed_spot_is_a_check_that_still_blocks_its_value(db: Database
             conn, customer, document, line.key, expected_text="Bill to Patil Stores",
             new_text="Bill to Patil Stores Pvt", user_id=user, now=T0 + timedelta(minutes=1), line=True,
         )  # fmt: skip
-    assert rows(db, customer, buyer_row, document)[0][0] == "verified"
+    # Changed on purpose (PRD 9 F-11, D5): a line edit verified it; the spot doubt was never shown.
+    assert rows(db, customer, buyer_row, document) == [("needs_review", "box_unanchored")]
 
 
 def test_settling_a_value_read_differently_keeps_its_page(db: Database) -> None:

@@ -422,7 +422,7 @@ def test_boxes_clamped_to_the_page_and_a_flat_box_is_no_box() -> None:
             assert "unpinned" in result.issues
 
 
-def test_only_single_line_blocks_are_pinned() -> None:
+def test_a_one_line_block_pins_and_a_block_with_fewer_rows_than_lines_does_not() -> None:
     # Changed on purpose (PRD 9 F-11): a block of two lines is pinned now when the found rows
     # inside it are two; with one found row it still is not (here), so its lines stay "model".
     blocks = [
@@ -486,6 +486,32 @@ def test_a_multi_line_block_whose_rows_do_not_match_its_lines_stays_unpinned(
     result = read(page(content, [block("text", content, (200, 200, 1800, 500))]), found)
     assert [line.box_source for line in result.lines] == ["model", "model"]
     assert [box(line) for line in result.lines] == [(100, 100, 900, 250)] * 2
+    assert result.issues == ("unpinned",)
+
+
+@pytest.mark.parametrize(
+    ("content", "bottom", "found"),
+    [
+        # Row 1's cell wraps to a second line (its own found box) and row 3 is too faint to be
+        # found: three rows for three lines, but not one a line (review of #676).
+        ("Name  Asha\nAmount  500\nDate  1 Nov", 400.0,
+         [(110.0, 105.0, 300.0, 125.0), (500.0, 105.0, 880.0, 125.0), (500.0, 130.0, 880.0, 150.0),
+          (110.0, 200.0, 300.0, 220.0), (500.0, 200.0, 880.0, 220.0)]),
+        # Two lines, the second missed, a stamp found near the bottom.
+        ("Name  Asha\nAmount  500", 250.0, [(110.0, 105.0, 800.0, 125.0), (600.0, 200.0, 850.0, 245.0)]),
+        # Two lines, the first wrapped onto a second found line, the second missed.
+        ("Name  Asha\nAmount  500", 250.0, [(110.0, 105.0, 800.0, 125.0), (110.0, 130.0, 800.0, 150.0)]),
+    ],
+)  # fmt: skip
+def test_rows_that_match_the_count_but_not_the_layout_pin_no_line(
+    content: str, bottom: float, found: list[tuple[float, float, float, float]]
+) -> None:
+    """PRD 9 F-11, CLAUDE.md rule 6: as many rows as lines is not enough; rows not evenly
+    spaced over the block (a wrapped cell, a missed row, a stamp) pin no line of it."""
+    ours = (100.0, 100.0, 900.0, bottom)
+    assert len(mistral_reader._rows(ours, found)) == len(content.split("\n"))  # the count alone would pin
+    result = read(page(content, [block("text", content, (200, 200, 1800, bottom * 2))]), found)
+    assert [line.box_source for line in result.lines] == ["model"] * len(result.lines)
     assert result.issues == ("unpinned",)
 
 

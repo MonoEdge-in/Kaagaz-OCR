@@ -123,9 +123,12 @@ export function settledText(
   );
 }
 
-/** PRD 9 F-15: the main reader's lines on a page, each its spot's source and its text, to compare. */
-export const readLines = (readings: PageReadings): string[] =>
-  (readings.readers.find((reader) => reader.role === "first")?.lines ?? []).map((line) => `${line.box_source ?? ""}|${line.text}`);
+/** PRD 9 F-15: the main reader's lines on a page, each its spot's source and its text, and the
+ * page's word marks (unsure, [?], unpinned), to compare. */
+export const readLines = (readings: PageReadings): string[] => [
+  ...(readings.readers.find((reader) => reader.role === "first")?.lines ?? []).map((line) => `${line.box_source ?? ""}|${line.text}`),
+  ...(readings.marks ?? []).map((mark) => `mark:${mark.quality}|${mark.text}`),
+];
 
 /**
  * PRD 9 F-15: what Read this page again changed, from the page's lines (readLines) before and after

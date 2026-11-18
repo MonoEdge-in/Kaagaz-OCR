@@ -66,6 +66,12 @@ describe("PRD 9 F-15 Read this page again says what changed", () => {
     expect(readLines({ page_no: 1, readers: [] })).toEqual([]);
   });
 
+  it("compares the page's word marks too, so a mark gone or added is a change (review of #676)", () => {
+    const marked = { ...readings([line("Total 500")]), marks: [{ quality: "unsure" as const, region: line("x").region, text: "500" }] };
+    expect(readLines(marked)).toEqual(["found|Total 500", "mark:unsure|500"]);
+    expect(readAgainText(readLines(marked), readLines(readings([line("Total 500")])))).toBe("1 line changed");
+  });
+
   it("says the same result when nothing changed, in any order", () => {
     expect(readAgainText(["found|A", "model|B"], ["model|B", "found|A"])).toBe("Read again: same result");
     expect(readAgainText([], [])).toBe("Read again: same result");
