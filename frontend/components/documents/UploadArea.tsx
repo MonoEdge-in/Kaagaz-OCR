@@ -48,6 +48,7 @@ import {
   getBatch,
   getUploadLimits,
   isStorageFull,
+  moveDocument,
   restoreDocument,
   undoAutofile,
   uploadDocument,
@@ -93,9 +94,11 @@ import {
 } from "./batchTray";
 import type { StoredBatch } from "./batchTray";
 import { BusyLabel } from "./BusyLabel";
+import { MoveDialog } from "./DocumentActions";
 import { droppedItems } from "./folderPick";
-import { shortPathLabel } from "./folderTree";
+import { pathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
+import { libraryErrorText } from "./library";
 import { ALL_DOCUMENTS, libraryHref } from "./libraryQuery";
 import {
   FALLBACK_UPLOAD_LIMITS,
@@ -518,6 +521,81 @@ export function AutofileNote({
         </span>
       )}
     </p>
+  );
+}
+
+/**
+ * PRD 9 F-01 (D1): a file in no folder whose type maps to a department the person can open (the
+ * server's ``suggested_department``): "Not sorted. Looks like Land & Legal · Move there · Pick
+ * another". Move there moves the family as the Move dialog does; Pick another opens that dialog.
+ */
+export function DepartmentSuggestion({ document, tree, onMoved }: { document: DocumentSummary; tree: FolderTree; onMoved(): void }) {
+  const [busy, setBusy] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const [moved, setMoved] = useState<string | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const department = document.suggested_department;
+  if (moved !== null) {
+    return (
+      <p className={styles.small} role="status">
+        {moved}
+      </p>
+    );
+  }
+  if (!department) return null;
+
+  async function moveThere(to: { id: string; name: string }) {
+    if (busy) return;
+    setBusy(true);
+    setFailure(null);
+    try {
+      await moveDocument(document.id, to.id);
+      setMoved(`Moved to ${to.name}.`);
+      onMoved();
+    } catch (caught) {
+      setFailure(libraryErrorText(caught, "document"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <p className={styles.small}>
+        {`Not sorted. Looks like ${department.name}`}
+        {" · "}
+        <button
+          type="button"
+          className={`btn btn-quiet ${styles.inlineAction}`}
+          aria-disabled={busy || undefined}
+          onClick={() => void moveThere(department)}
+        >
+          <BusyLabel busy={busy} idle="Move there" working="Move there" />
+        </button>
+        {" · "}
+        <button type="button" className={`btn btn-quiet ${styles.inlineAction}`} onClick={() => setPicking(true)}>
+          Pick another
+        </button>
+        {failure && (
+          <span className="error-text" role="alert">
+            {" "}
+            {failure}
+          </span>
+        )}
+      </p>
+      {picking && (
+        <MoveDialog
+          items={[document]}
+          tree={tree}
+          onSaved={(message) => {
+            setPicking(false);
+            setMoved(message);
+            onMoved();
+          }}
+          onClose={() => setPicking(false)}
+        />
+      )}
+    </>
   );
 }
 
@@ -995,11 +1073,12 @@ function UploadRow({
           <AutofileNote
             document={ready}
             name={entry.name}
-            filed={ready.folder_id ? filedText(shortPathLabel(tree, ready.folder_id)) : ""}
+            filed={ready.folder_id ? filedText(pathLabel(tree, ready.folder_id)) : ""}
             folderHref={ready.folder_id ? libraryHref({ ...ALL_DOCUMENTS, folderId: ready.folder_id }) : null}
             onUndone={onUndone}
           />
         )}
+        {ready && <DepartmentSuggestion document={ready} tree={tree} onMoved={onUndone} />}
         {document && document.status !== "ready" && !zip && (
           <p className={`error-text ${styles.small}`}>{document.status_message}</p>
         )}

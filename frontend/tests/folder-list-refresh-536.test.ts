@@ -270,6 +270,25 @@ describe("the shell's folder list asks again as soon as new folders exist (#536)
     await act(async () => void (await vi.advanceTimersByTimeAsync(60_000)));
     expect(api.listFolders).toHaveBeenCalledTimes(1);
   });
+
+  // PRD 9 F-01 (D1, Q2): the top bar's Upload has no picker, so it sends no folder and no
+  // department, even with a department last used in this browser: the file waits, Not sorted.
+  it("sends the top bar's files with no folder and no department", async () => {
+    vi.stubGlobal("localStorage", { getItem: () => "tax", setItem: () => undefined, removeItem: () => undefined });
+    api.listFolders.mockResolvedValue({ items: [{ id: "tax", name: "Tax", parent_id: null, kind: "department", created_at: "" }] });
+    api.uploadDocument.mockResolvedValueOnce({ document: document("d1"), duplicate: false, in_trash: false });
+    api.getBatch.mockResolvedValue(batchOf([document("d1")]));
+    const container = await mountShell();
+    await flush();
+    const input = container.all().find((element) => element.getAttribute("id") === "upload-input-shell")!;
+    (input as unknown as { files: File[] }).files = [new File(["abc"], "plot.pdf", { type: "application/pdf" })];
+    await act(async () => void fire(input, "change"));
+    await flush();
+    expect(api.uploadDocument).toHaveBeenCalledTimes(1);
+    const sent = api.uploadDocument.mock.calls[0]!;
+    expect(sent[3]).toBeUndefined(); // folder
+    expect(sent[7]).toBeUndefined(); // department
+  });
 });
 
 describe("the screens' folder lists ask again with the shell's count (#536)", () => {

@@ -588,6 +588,10 @@ def test_an_auto_filing_from_before_the_walls_undone_after_them_is_held_for_its_
     c, _ = api.customer()
     uploader, other = api.sign_in(c), api.sign_in(c)
     _owner(db, _GRANT, {"c": c})
+    # Changed on purpose (PRD 9 F-02, D2): Kaagaz no longer makes the department, so an admin has.
+    with db.customer(c) as conn:
+        accounts = insert_folder(conn, c, uploader.user_id, "Accounts and HR")
+    _owner(db, "UPDATE folders SET kind = 'department' WHERE id = :f", {"f": accounts})
     document = _worker(db, c, uploader.user_id)
     assert _place(db, document) == (None, None)  # day one: open
     worker = PgDocuments(Database(db.engine, WORKER))
@@ -615,6 +619,32 @@ def test_auto_filing_where_the_uploader_sees_gives_nothing(db: Database) -> None
         _owner(db, "SELECT count(*) FROM document_shares WHERE document_id = :d", {"d": document})[0][0] == 0
     )
     assert "given" not in _moves(db, org, "document.autofile")[0]
+
+
+@pytest.mark.parametrize(
+    ("who", "named"),
+    [
+        ("member", True),
+        ("head", True),
+        ("management", True),
+        ("plain", False),
+        ("named", False),
+        ("admin", False),
+    ],
+)
+def test_a_department_suggestion_never_names_one_the_person_cant_open(
+    db: Database, who: str, named: bool
+) -> None:
+    """PRD 9 F-01: an invoice in no folder suggests Finance (an alias of Accounts and HR) only to
+    whom Finance (Department only) is open: its people and Management. An Admin sees every folder's
+    name (0086) but not Finance's files, so is never offered it; nor is anyone outside Finance."""
+    org = _walled(Api(db))
+    top = org.files["top"]
+    _owner(db, "UPDATE documents SET doc_type = 'invoice' WHERE id = :d", {"d": top})
+    status, body = _call(org.people[who], "GET", f"/api/documents/{top}")
+    assert status == 200
+    expected = {"id": org.folders["finance"], "name": "Finance"} if named else None
+    assert body["suggested_department"] == expected
 
 
 def test_only_kaagaz_itself_gives_the_uploader_a_file(db: Database) -> None:

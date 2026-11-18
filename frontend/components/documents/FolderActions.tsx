@@ -6,8 +6,9 @@
 // a taken name, a move into itself, more than 100 levels or a folder that is not
 // empty come back as 409 and are shown as it words them. The screen gives this
 // a new key for each folder, so an open form never outlives its folder.
-// UI audit D12 (16 Oct 2026): the folder column header's "+" is the one New folder (Tushar, 16 Oct
-// 2026: no second button here); it opens the New folder form here (`askNew` counts its presses).
+// UI audit D12 (16 Oct 2026): the folder column header's "+" opens the New folder form here
+// (`askNew` counts its presses). PRD 9 F-18: in a department or folder, a "New folder" button
+// beside Rename and Move opens the same form (testers found no way to make a folder).
 // Suggested names (Tushar, 16 Oct 2026): under the New folder name, up to 4 one-press names from
 // the kinds of documents listed that have no folder yet (folderNameSuggestions, library.ts).
 // #537 (Tushar, 7 Nov 2026): Delete first asks what the folder holds. Empty: the confirm above.
@@ -309,6 +310,14 @@ export function FolderActions({
               {WHO_CAN_SEE}
             </button>
           )}
+          <button
+            type="button"
+            className="btn btn-quiet"
+            aria-expanded={mode === "new"}
+            onClick={(event) => open("new", event)}
+          >
+            New folder<span className="visually-hidden"> here</span>
+          </button>
           <button
             type="button"
             className="btn btn-quiet"

@@ -89,6 +89,19 @@ describe("B4: folder changes reach the shell", () => {
     expect(chosenDepartment(undefined, [tax])).toBeNull(); // nothing picked, nothing kept
     expect(read("components/documents/DocumentsView.tsx")).toContain("const department = chosenDepartment(departmentChoice, departments);");
   });
+
+  // PRD 9 F-01 (D1): the department last used in this browser is never sent in place of a pick.
+  it("never sends the department last used when nothing is picked", async () => {
+    vi.stubGlobal("localStorage", { getItem: () => "tax", setItem: () => undefined, removeItem: () => undefined });
+    const { chosenDepartment } = await import("@/components/files/departments");
+    const tax = { id: "tax", name: "Tax", kind: "department", parent_id: null } as Folder;
+    expect(chosenDepartment(undefined, [tax])).toBeNull();
+    expect(chosenDepartment("gone", [tax])).toBeNull();
+    vi.unstubAllGlobals();
+    for (const file of ["components/dashboard/Dashboard.tsx", "components/shell/Uploads.tsx", "components/documents/DocumentsView.tsx"]) {
+      expect(read(file)).not.toContain("lastDepartment");
+    }
+  });
 });
 
 describe("B5: an opened folder in Trash", () => {

@@ -146,6 +146,7 @@ def _row(
         "last_updated_at": NOW,
         "last_updated_by_name": "Member",
         "department": None,
+        "suggested_department": None,  # Changed on purpose (PRD 9 F-01)
         "pending_suggestion": None,
     }
     return cast(RowMapping, row)

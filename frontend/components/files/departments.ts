@@ -1,6 +1,6 @@
 // Departments (File management F1, F2, F5): top-level folders of kind "department", in the
-// admin's order, and the one this person last uploaded into, kept in this browser. Pure
-// functions, unit tested in node (tests/file-management.test.ts); storage is in try/catch.
+// admin's order. Pure functions, unit tested in node (tests/file-management.test.ts). PRD 9 F-01
+// (D1): only a department picked is sent; the one last used is no longer kept or sent.
 
 import type { FolderTree } from "@/components/documents/folderTree";
 import type { Folder } from "@/lib/types";
@@ -27,33 +27,16 @@ export function departmentOf(tree: FolderTree, folderId: string | null): Folder 
   return node && isDepartment(node.folder) ? node.folder : null;
 }
 
-const LAST_KEY = "kaagaz.upload-department";
-
-/** The department this person last uploaded into, if it is still one; null otherwise. */
-export function lastDepartment(departments: readonly Folder[]): string | null {
-  try {
-    const id = localStorage.getItem(LAST_KEY);
-    return departments.some((department) => department.id === id) ? id : null;
-  } catch {
-    return null; // storage blocked: no memory, no question changes
-  }
-}
-
-/** B4: the department new files go into: the one picked (null: none) while it is still one, else
- * the last one used (lastDepartment). A department deleted since it was picked is not used. */
+/** B4: the department new files go into: the one picked while it is still one, else none (PRD 9
+ * F-01: never the last one used). A department deleted since it was picked is not used. */
 export function chosenDepartment(choice: string | null | undefined, departments: readonly Folder[]): string | null {
-  if (choice === null) return null;
-  if (choice !== undefined && departments.some((department) => department.id === choice)) return choice;
-  return lastDepartment(departments);
+  return departments.some((department) => department.id === choice) ? (choice ?? null) : null;
 }
 
-export function rememberDepartment(id: string | null): void {
-  try {
-    if (id === null) localStorage.removeItem(LAST_KEY);
-    else localStorage.setItem(LAST_KEY, id);
-  } catch {
-    // Storage blocked: the choice is kept for this visit only.
-  }
+/** PRD 9 F-02: where "Let Kaagaz sort files" sends files, to be filed inside: the department of
+ * the place shown, or at All documents the one picked; none in a folder outside any department. */
+export function sortInto(tree: FolderTree, folderId: string | null, picked: string | null): string | null {
+  return folderId === null ? picked : (departmentOf(tree, folderId)?.id ?? null);
 }
 
 /** The next sort_order for a new department: one after the last. */
