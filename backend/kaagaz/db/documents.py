@@ -439,6 +439,7 @@ _REPROCESSED_THIS_HOUR = (
     "SELECT count(*) FROM audit_log WHERE customer_id = :c AND action = 'document.reprocess'"
     " AND created_at > now() - interval '1 hour'"
     " AND details ->> 'via' IS DISTINCT FROM 'unlock'"  # PRD 7 (#605, p2:31): an unlock's read never counts
+    " AND details ->> 'by' IS DISTINCT FROM 'cli'"  # #667: nor the operator's read-again-failed
 )
 _REPROCESSED_LATELY = (
     "SELECT EXISTS (SELECT 1 FROM audit_log WHERE customer_id = :c AND action = 'document.reprocess'"

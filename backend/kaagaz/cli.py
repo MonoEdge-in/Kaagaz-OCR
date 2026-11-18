@@ -120,6 +120,18 @@
   department, type, property, party and year folders with nothing in them, ``folders.prune_empty``'s
   rules), listed by each customer's count; ``--apply`` deletes them and then their parents left
   empty, each audited. Folders people made are never listed. Ids and counts only.
+* ``read-again-failed [--customer ID] [--apply]`` (#667, Tushar, 18 Nov 2026): the documents that
+  failed ``no_text`` on Mistral before their organisation's backup reader (#664) was set: failed
+  ``no_text``, current, out of Trash, not locked, and whose last run read pages with Mistral (its
+  config's ``reading``: scan_reader mistral, not local mode, ``pages_ocr`` above 0; the run is what
+  read it, the organisation's setting may have changed since). Only an organisation whose backup
+  reader would read them now (``models.backup_reader`` on its first such document), else each is
+  skipped with the reason. Without ``--apply`` it lists them, ids and scanned pages; with it, each
+  is queued as Read again queues it (``mark_for_reprocess``, billed to who asked for its last
+  reading, so the reading pause and budget hold it; one with no asker is skipped), audited
+  ``document.reprocess`` with no actor and ``{"by": "cli"}``, READ_AGAIN_BATCH a transaction. No
+  hourly REPROCESS_PER_HOUR (an operator's run), and its rows never count against the users' hour.
+  A queued document is no longer failed, so a second run never queues it again. Ids and counts only.
 * ``check-access`` (PRD 7, #590): works out every live folder's and live document's department
   and private folder again from the folder tree, each customer in its own ``db.customer()``, and
   prints one line for each stored value that differs, then one for each member row whose folder
@@ -195,7 +207,9 @@ from kaagaz.api.auth import ROLES, hash_password
 from kaagaz.api.twostep import box
 from kaagaz.db import audit, customer_purge, person_rule
 from kaagaz.db import customers as customers_sql
+from kaagaz.db import documents as documents_sql
 from kaagaz.db import folders as folders_sql
+from kaagaz.db import models as models_sql
 from kaagaz.db import operator_models as operator_models_sql
 from kaagaz.db import operators as operators_sql
 from kaagaz.db import users as users_sql
@@ -205,7 +219,8 @@ from kaagaz.db.sqlstate import INSUFFICIENT_PRIVILEGE, sqlstate
 from kaagaz.extraction.checks import GSTIN_FIELDS, gstin_valid
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
-from kaagaz.ingestion.ports import RenditionStorage
+from kaagaz.ingestion.pagecount import goes_express
+from kaagaz.ingestion.ports import Job, RenditionStorage
 from kaagaz.ingestion.resolve import UNSUPPORTED, resolve_kind
 from kaagaz.ingestion.spool import HEAD_SIZE
 from kaagaz.jobs import catalog, land_facts
@@ -213,6 +228,7 @@ from kaagaz.jobs.purge import CustomerStorage, purge_customer
 from kaagaz.preparing.page_checks import BlankMeasure, measure_blank
 from kaagaz.preparing.pages import PreparedPages, prepare_pages
 from kaagaz.reading.compact import decode_compact, encode_compact
+from kaagaz.reading.mistral_ocr import MISTRAL
 from kaagaz.reading.ocr import (
     PATH_PAGE,
     PATH_WORDS,
@@ -246,6 +262,8 @@ DEMO_ENV_VAR = "KAAGAZ_DEMO_PASSWORD"
 REEMBED_PROBE = "probe"
 # reembed: the stories one pass embeds (one model call).
 REEMBED_STORIES = 32
+# read-again-failed (#667): the documents one transaction queues.
+READ_AGAIN_BATCH = 50
 
 # Made-up companies on the reserved ".example" domain.
 DEMO_CUSTOMERS = (
@@ -379,6 +397,14 @@ def _parser() -> argparse.ArgumentParser:
     prune = commands.add_parser("prune-folders", help="the empty folders Kaagaz made; --apply deletes them")
     prune.add_argument("--customer-id", help="one customer only (default: every customer)")
     prune.add_argument("--apply", action="store_true", help="delete them (default: only count them)")
+
+    again = commands.add_parser(
+        "read-again-failed",
+        help="read again the documents that failed no_text on Mistral, where a backup reader is set"
+        " (no hourly Read again limit: it queues 50 a transaction)",
+    )
+    again.add_argument("--customer-id", "--customer", help="one customer only (default: every customer)")
+    again.add_argument("--apply", action="store_true", help="queue them (default: only list them)")
 
     commands.add_parser("check-access", help="each stored department and private folder against the tree")
 
@@ -866,6 +892,121 @@ def _prune_folders(db: Database, customer_id: str | None, apply: bool, out: Text
         total += count
     verb = "deleted" if apply else "empty, not deleted (add --apply)"
     out.write(f"{total} folder{'' if total == 1 else 's'} {verb}\n")
+
+
+# read-again-failed (module notes): one customer's documents failed no_text whose last run read with
+# Mistral, oldest first; the run on processing_runs_document, newest first.
+_FAILED_ON_MISTRAL = text(
+    "SELECT d.id, d.page_count, d.read_requested_by, r.pages_ocr FROM documents d"
+    " CROSS JOIN LATERAL (SELECT r.config, r.pages_ocr FROM processing_runs r WHERE r.customer_id = :c"
+    " AND r.document_id = d.id ORDER BY r.started_at DESC, r.id DESC LIMIT 1) r"
+    " WHERE d.customer_id = :c AND d.status = 'failed' AND d.failure_code = 'no_text' AND d.is_current"
+    " AND d.deleted_at IS NULL AND d.locked_at IS NULL AND r.pages_ocr > 0"
+    " AND r.config -> 'reading' ->> 'scan_reader' = :mistral AND r.config -> 'reading' ->> 'mode' <> 'local'"
+    " ORDER BY d.created_at, d.id"
+)
+
+
+def _documents(count: int) -> str:
+    return f"{count} document{'' if count == 1 else 's'}"
+
+
+def _no_backup(conn: Connection, customer: str, document: str, settings: Settings) -> str | None:
+    """Why the backup reader would not read ``document`` now (the worker's own check); None: it would."""
+    scan = models_sql.resolve_scan(conn, customer, document, settings=settings)
+    if models_sql.backup_reader(conn, customer, scan, settings=settings) is not None:
+        return None
+    if models_sql.effective_settings(conn, customer)["backup_reader"] in (None, "off"):
+        return "no backup reader"
+    if scan.scan_reader != MISTRAL or scan.mode == "local":
+        return "it no longer reads with Mistral"
+    return "its backup reader is not usable now"
+
+
+def _queue_again(conn: Connection, customer: str, row: Any, settings: Settings, queue: Any) -> bool:
+    """One document queued as Read again queues it (``reprocess_document``): marked, billed to who
+    asked for its last reading, audited as the command line's, then its job; False when it can't be
+    now (being read, in an Ensemble run, read again in the cooldown). No hourly limit: an operator's."""
+    document = str(row.id)
+    try:
+        previous = documents_sql.mark_for_reprocess(
+            conn, customer, document, per_hour=sys.maxsize, requested_by=str(row.read_requested_by)
+        )
+    except (documents_sql.NotReprocessable, documents_sql.ReprocessLimited):
+        return False
+    if previous is None:
+        return False
+    details: dict[str, audit.DetailValue] = {"status": previous, "by": "cli"}
+    audit.record(
+        conn,
+        customer,
+        actor_user_id=None,
+        action="document.reprocess",
+        target_type="document",
+        target_id=document,
+        details=details,
+    )
+    queue.enqueue(Job(customer, document), express=goes_express(row.page_count, settings.express_max_pages))
+    return True
+
+
+def _read_again_failed(
+    db: Database, settings: Settings, queue: Any, customer_id: str | None, apply: bool, out: TextIO
+) -> None:
+    """read-again-failed: each customer's documents (``_FAILED_ON_MISTRAL``), listed, or queued as
+    Read again queues them, READ_AGAIN_BATCH a transaction; then a total. A queue that is down rolls
+    back its batch only: a run again goes on. O(D) statements for D documents."""
+    if customer_id is None:
+        with db.system() as conn:
+            customers = indexing.customer_ids(conn)
+    else:
+        try:
+            customers = [str(uuid.UUID(customer_id))]
+        except ValueError:
+            raise CliError("the customer id is not valid") from None
+    total = pages = 0
+    for customer in customers:
+        with db.customer(customer) as conn:
+            rows = conn.execute(_FAILED_ON_MISTRAL, {"c": customer, "mistral": MISTRAL}).all()
+            why = None
+            if rows:
+                active = customers_sql.is_active(conn, customer)
+                why = _no_backup(conn, customer, str(rows[0].id), settings) if active else "not active"
+        billed = [row for row in rows if row.read_requested_by is not None]
+        if why:
+            out.write(f"customer {customer}: {_documents(len(rows))} skipped: {why}\n")
+            continue
+        if len(billed) < len(rows):  # with no asker it would be read past the pause and budget
+            unbilled = _documents(len(rows) - len(billed))
+            out.write(f"customer {customer}: {unbilled} skipped: no one asked for its reading\n")
+        if billed and not apply:
+            scanned = sum(row.pages_ocr for row in billed)
+            out.write(
+                f"customer {customer}: {_documents(len(billed))}, {scanned} scanned pages to read again\n"
+            )
+            out.writelines(f"  document {row.id}: {row.pages_ocr} scanned pages\n" for row in billed)
+            total, pages = total + len(billed), pages + scanned
+            continue
+        queued = 0
+        for start in range(0, len(billed), READ_AGAIN_BATCH):
+            try:
+                with db.customer(customer) as conn:
+                    batch = [
+                        _queue_again(conn, customer, row, settings, queue)
+                        for row in billed[start:][:READ_AGAIN_BATCH]
+                    ]
+            except BackendUnavailable as error:
+                raise CliError(
+                    f"{error} unavailable; {total + queued} queued before it, run it again"
+                ) from None
+            queued += sum(batch)
+        if billed:
+            out.write(f"customer {customer}: {queued} queued, {len(billed) - queued} not queued\n")
+        total += queued
+    if apply:
+        out.write(f"{_documents(total)} queued\n")
+    else:
+        out.write(f"{_documents(total)}, {pages} scanned pages, not queued (add --apply)\n")
 
 
 # check-access: each live folder's department (its top-level folder when that is a department) and
@@ -1741,6 +1882,13 @@ def main(
             _measure_compact(db, args.days, stdout)
         elif args.command == "prune-folders":
             _prune_folders(db, args.customer_id, args.apply, stdout)
+        elif args.command == "read-again-failed":
+            settings = settings or Settings.from_env(env)
+            if args.apply and queue is None:
+                from kaagaz.adapters.queue import SqsQueue
+
+                queue = SqsQueue(settings)
+            _read_again_failed(db, settings, queue, args.customer_id, args.apply, stdout)
         elif args.command == "check-access":
             if _check_access(db, stdout):
                 return 1
