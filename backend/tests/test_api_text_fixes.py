@@ -78,7 +78,7 @@ def test_a_line_fixed_through_its_own_flag_shows_fixed_and_marked_with_its_undo(
     assert line["correction"]["change_id"] == saved.json()["change_id"]
     # The same source as the clean copy.
     clean = reviewer.client.get(f"/api/documents/{document_id}/clear-copy").json()["pages"][0]["lines"][0]
-    assert clean == line
+    assert clean == {name: value for name, value in line.items() if name != "box_source"}  # F-16's, Text only
 
 
 def test_a_devanagari_word_fixed_in_a_line_shows_in_it_marked_with_its_undo(db: Database) -> None:
