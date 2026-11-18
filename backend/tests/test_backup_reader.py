@@ -21,7 +21,7 @@ import io
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -328,12 +328,14 @@ def test_an_outage_of_the_backup_reader_leaves_the_document_waiting_not_failed()
 
 def test_no_time_left_the_page_stays_as_mistral_left_it() -> None:
     rig = Rig(FakeMistral(), ocr_timeout_seconds=60, ocr_seconds_per_page=60)
-    with rig.engine.document(with_backup(page_count=1)):
+    pages = with_backup(page_count=1)
+    with rig.engine.document(pages):
         rig.client.clock += 60  # the document's time is spent: Mistral refuses (mistral_no_time)
         read = rig.engine.read_page(page(), page_no=1)
     assert (read.lines, read.issues, read.read_by) == ((), (READER_REFUSED,), BY_4)
     assert rig.client.calls == []  # Gemini has no time either: nothing is sent
     assert rig.local.pages == 0  # #664 review: no local read made only to be thrown away
+    assert {key.model for key in cast(FakeCache, pages.cache).gets} <= {BY_4}  # not even tried
 
 
 def test_each_page_is_read_by_the_backup_reader_once() -> None:
