@@ -1209,6 +1209,7 @@ def me_json(
     recent_connections: Sequence[dict[str, str]] = (),
     access: tuple[bool, Sequence[str], bool, bool],
     whatsapp: bool = False,
+    keycloak_enabled: bool = False,
 ) -> dict[str, Any]:
     """``Me``: who is signed in, their customer, and the session's scope ("app" for a
     member or reviewer, "admin" for an admin; the screen shows Admin only for "admin").
@@ -1237,11 +1238,14 @@ def me_json(
             "email": user.email,
             "display_name": user.display_name,
             "role": user.role,
+            "auth_authority": user.auth_authority,
+            "auth_source": user.auth_source,
             "must_change_password": user.must_change_password,
             "totp_enabled": user.totp_enabled,
             "two_step_turned_off": user.two_step_turned_off,  # by the admin; sign-in is the password
             # The organisation requires it for admins (0068, #481): Account offers no Turn off.
-            "two_step_required": user.two_step_required and user.role == "admin",
+            "two_step_required": user.auth_authority == "legacy"
+            and (keycloak_enabled or (user.two_step_required and user.role == "admin")),
             "can_delete_forever": user.delete_forever_allowed and user.role != "admin",  # the grant
             "email_confirmed": user.email_confirmed or not email_on,
             "google_link_required": needs_google_link(user, "google" in providers),
@@ -1251,6 +1255,7 @@ def me_json(
         "session": {"scope": user.scope},
         "recent_connections": list(recent_connections),
         "providers": list(providers),
+        "keycloak_enabled": keycloak_enabled,
         **({"whatsapp": True} if whatsapp else {}),
     }
 

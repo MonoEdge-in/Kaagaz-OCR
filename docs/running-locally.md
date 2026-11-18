@@ -125,159 +125,29 @@ Open http://localhost:3000.
 * Stop with `docker compose stop` (the worker finishes the job in hand).
   `docker compose down -v` also deletes the data volumes.
 
-## 2b. No Docker for the app
+### Optional local Keycloak sign-in
 
-Start only the stand-ins in Docker:
+The regular `docker compose up --build` path is unchanged: Keycloak stays off and needs no credentials. The opt-in overlay pins Keycloak 26.8.2 and imports [`keycloak/kaagaz-local-realm.json`](../keycloak/kaagaz-local-realm.json). It has no users or external providers; Google Workspace and Microsoft 365 remain disabled pending provider credentials and tenant setup.
 
-```
-docker compose up postgres seaweedfs elasticmq clamav
-```
+Local password sign-in always requires password and OTP. The first sign-in enrolls an authenticator, but does not report OTP as executed; after enrollment, sign out and immediately complete one fresh password-plus-OTP sign-in. The API fails closed unless the token reports executed `pwd` and `otp` and has a fresh `auth_time`; `acr=1` alone is not MFA proof.
 
-No Docker at all: point `DATABASE_URL`, `STORAGE_*` and `QUEUE_*` in `.env`
-at your own PostgreSQL 16+ (with the `vector` and `pg_trgm` extensions),
-S3-compatible store and SQS-compatible queue. Without ClamAV, set
-`SCANNER=eicar_dev`: **laptop only**, it finds the EICAR test file and
-nothing else, so never use it with real files.
+Keycloak imports the file only when the `kaagaz-local` realm is absent; apply later edits in the Admin Console or reset only the local Keycloak data volume.
 
-Then, from `backend/` with its virtual environment (`backend/.venv`), with
-the variables from `.env` loaded into the shell:
-
-```
-pip install -e ".[dev,ocr]"            # once
-alembic upgrade head
-uvicorn kaagaz.api.main:app --port 8000
-python -m kaagaz.worker_main          # in a second terminal
-```
-
-With `OCR_ENGINE=rapidocr`, Marathi and Hindi scans also need RapidOCR's
-Devanagari model (8 MB). The worker never downloads it (the Docker image has
-it), so fetch it once into the package's models folder:
-
-```
-python -c "from rapidocr import LangRec, ModelType, OCRVersion, RapidOCR; RapidOCR(params={'Rec.lang_type': LangRec.DEVANAGARI, 'Rec.ocr_version': OCRVersion.PPOCRV5, 'Rec.model_type': ModelType.MOBILE})"
-```
-
-Without it, those pages stay as the default model read them, and the log says
-`ocr_model_missing`.
-
-The worker makes the storage bucket on its first start if it is missing.
-Ctrl+C stops it after the job in hand. At most once an hour it also deletes
-for good what has been in Trash longer than `TRASH_DAYS` days (30). With the
-model on, every 10 minutes it gives up to 64 pieces their missing meaning vectors.
-
-And the web app, from `frontend/`:
-
-```
-npm ci                                 # once, Node 24 (as frontend/Dockerfile)
-npm run dev                            # http://localhost:3000
-```
-
-It forwards `/api/*` to `BACKEND_URL` (default `http://localhost:8000`).
-
-## 2c. On the EC2 server
-
-One t3.xlarge (4 vCPU, 16 GB, Unlimited CPU credits; pending Vrushit)
-runs `docker-compose.yml` with `docker-compose.prod.yml` laid over it
-(Production on EC2, below). Laptops never use the second file. Scans are read
-by Gemini and the models answer through OpenRouter, so nothing on the server
-needs more than its CPU; RapidOCR runs in the worker as the checker and the
-fallback. The move from the earlier g4dn.xlarge, step by step:
-docs/runbooks/prd5-cpu-server-switch.md.
-
-**The host, once.**
-
-* Docker Compose 2.24.4 or newer (`docker compose version`;
-  `docker-compose.prod.yml` uses `!reset`).
-* At least 20 GB free on `/` for a build: below that, `deploy.sh` prunes the
-  build cache first.
-* A 4 to 8 GB swapfile: the server has 16 GB of memory for everything.
-  `sudo fallocate -l 8G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile`,
-  and a `/swapfile none swap sw 0 0` line in `/etc/fstab`.
-* The security group lets in 443 and 80, nothing else: no SSH, use Session
-  Manager (EC2 PRD D8). With `docker-compose.prod.yml` only Caddy publishes
-  ports (80 and 443, Production on EC2 below). Without it, `docker-compose.yml`
-  still publishes 3000, 8000, 5432, 8333, 9324 and 3310 on the host, and
-  Docker's ports go around the host's own firewall, so the security group is
-  what keeps them closed.
-
-**Check** (the done-when list; each is NOT RUN until done on the server, with
-`dc` as in Production on EC2, below):
-
-1. `dc run --rm worker python -m kaagaz.cli verify-models`: every model and
-   RapidOCR line says PASS.
-2. Seconds per page, inside the worker container (it has the settings; the
-   file must be in the container):
+1. Copy `.env.keycloak-admin.example` to `.env.keycloak-admin`, set a unique `KC_BOOTSTRAP_ADMIN_PASSWORD`, then start the local profile:
 
    ```
-   docker compose cp ./made-up-marathi-scan.png worker:/tmp/scan.png
-   docker compose exec worker python -m kaagaz.cli measure --file /tmp/scan.png
+   docker compose --profile keycloak -f docker-compose.yml -f docker-compose.keycloak.yml up --build
    ```
 
-   Write the numbers into docs/architecture.md, Decisions (the t3.xlarge
-   row). A real document's steps, upload to Ready and the indexing after it,
-   for the last 5 documents read: `dc run --rm migrate python -m kaagaz.cli scan-times --last 5` (PRD 7, #606: the CLI runs as `kaagaz_worker`, so it runs in migrate, `dc run --rm migrate python -m kaagaz.cli <command>`, until JOBS_DATABASE_URL is set, then in worker; in api it is refused).
+2. In the Keycloak admin console at `http://keycloak.localhost:8081`, copy the `kaagaz-web` client secret. Copy `.env.keycloak.example` to `.env.keycloak`, set that secret, and generate a separate `KEYCLOAK_FLOW_ENCRYPTION_KEY` with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Keep `KEYCLOAK_ENABLED=false` here during setup. The API alone receives this file; Keycloak alone receives the admin file.
 
-**RapidOCR, the fallback.** If Gemini misbehaves, set `OCR_ENGINE=rapidocr` in
-`.env` and restart both: `dc up -d --no-deps api worker`. Change it back the same way.
+3. The issuer is `http://keycloak.localhost:8081/realms/kaagaz-local` and the exact redirect is `http://localhost:3000/api/auth/keycloak/callback`; the overlay routes that issuer to Keycloak for the API. Keep `KEYCLOAK_ENABLED=false` in shared `.env`; after setup, change it to `true` only in API-only `.env.keycloak`, then recreate the API with `docker compose --profile keycloak -f docker-compose.yml -f docker-compose.keycloak.yml up -d --no-deps api`.
 
-### Production on EC2
+4. Provision each pilot user in Kaagaz and Keycloak, then explicitly link the accounts from the authenticated Kaagaz flow. An unlinked Keycloak subject cannot enter Kaagaz.
 
-The production server (EC2 Deployment PRD, approved by Vrushit, 4 Oct 2026):
-one EC2 server in Mumbai (`ap-south-1`, section 2c) runs everything above in Docker
-Compose, on one domain over HTTPS. It deploys only the `production` branch.
-**NOT RUN yet:** each go-live check below is NOT RUN until it has run there.
+The official Keycloak 26.8.2 image imported this realm and completed local password sign-in, OTP enrollment and code exchange. Rerun token validation after realm edits. Full Docker Compose, database integration and broker tests have not been run. Keycloak imports the JSON only when the realm is absent from its data volume; update the realm explicitly or reset only the local Keycloak data volume to apply later edits.
 
-Below, `dc` is the two files, run in `/home/ubuntu/kaagaz`:
-
-```
-alias dc='docker compose -f docker-compose.yml -f docker-compose.prod.yml'
-```
-
-`docker-compose.prod.yml` adds `caddy` (`caddy:2` pinned by digest, Caddy
-2.11.6; `infra/caddy/Caddyfile`), the only service that publishes ports: 80
-and 443. Caddy gets and renews the Let's Encrypt certificate for
-`KAAGAZ_DOMAIN`, redirects HTTP to HTTPS, sends `/api/*` to `api:8000` and the
-rest to `frontend:3000`, refuses a body over 110 MB, and logs one JSON line per
-request. Every other port is cleared, every long-running service restarts after
-a crash or a reboot, and every log is rotated (5 files of 20 MB). The job queue
-keeps its messages in the volume `elasticmq-data`, so a job survives a restart;
-one that was being read comes back after its lease (`QUEUE_LEASE_SECONDS`,
-1,200 s).
-
-**Secrets, on the server only.** Two files, both mode 600, never in git:
-`/home/ubuntu/kaagaz/.env` and `/home/ubuntu/kaagaz-secrets/s3.json` (the shape
-of `infra/seaweedfs/s3.json`, with new keys). Start `.env` from `.env.example`:
-every setting is required, so a missing one (`MODEL_ANSWER_MAX_TOKENS`, for
-example) stops the start with its name. Then set these (names and rules only;
-make random values with `openssl rand -base64 48`, or `openssl rand -hex 24`
-for passwords):
-
-| Name | Value or rule |
-|---|---|
-| `SESSION_SECRET` | Random. Changing it signs everyone out |
-| `TOTP_ENCRYPTION_KEY` | Random. If it is lost, every admin's 2FA must be reset |
-| `POSTGRES_PASSWORD`, and the same password in `DATABASE_URL` | Random hex. Postgres takes it only when its volume is first made |
-| `STORAGE_ACCESS_KEY`, `STORAGE_SECRET_KEY` | Random. Must equal the keys in `s3.json` |
-| `COOKIE_SECURE=true`, `MODEL_ENABLED=true`, `OCR_ENGINE=gemini`, `OCR_DPI=300`, `OCR_TIMEOUT_SECONDS=120`, and `OPENROUTER_API_KEY` | As shown; the key is the OpenRouter key with its own credit limit (docs/architecture.md, Decisions) |
-| `KAAGAZ_DOMAIN`, `ACME_EMAIL`, `SEAWEEDFS_S3_CONFIG=/home/ubuntu/kaagaz-secrets/s3.json` | Read by `docker-compose.prod.yml`, which stops with the name of any that is missing |
-
-Keep an offline copy of `.env` and `s3.json` in a password manager. The EBS
-snapshots hold the secrets too, so never share or copy a snapshot out. The Wake
-Lambda's `INSTANCE_ID` and `WAKE_TOKEN` live only in the Lambda console.
-
-**Rotating the keys, every 90 days (#481)**, and at once if one may have leaked
-(a key once sat in git: `open_router_key_replacement.txt`, removed on 3 Nov 2026, so
-rotate the OpenRouter key now). Write each date in the password manager's entry.
-A changed `.env` value reaches the containers with `dc up -d --no-deps api worker`
-(compose recreates them); then update the offline copy.
-
-| Secret | How | Who notices |
-|---|---|---|
-| `OPENROUTER_API_KEY` | A new key on openrouter.ai with the same credit limit and data settings, into `.env`, restart; `dc run --rm worker python -m kaagaz.cli verify-models` says PASS; then delete the old key | Nobody |
-| `MISTRAL_API_KEY` | The same on console.mistral.ai; check zero data retention still covers the account before `MISTRAL_ZDR_APPROVED` stays true | Nobody |
-| `SESSION_SECRET` | `openssl rand -base64 48`, at a quiet time, restart | Everyone, operators too, is signed out, and unexpired emailed links signed with it (confirm your email) stop working: say so first |
-| `TOTP_ENCRYPTION_KEY` | Not the same as `SESSION_SECRET`. Nothing re-encrypts the stored two-step secrets yet, so a new key leaves every one unreadable: after it, run `reset-admin-2fa --email` for each admin and `reset-operator-2fa --email` for each operator (at a terminal), and each enrols again. Until a re-seal command exists (proposed in #481: open each secret with the old key, seal it with the new, one transaction per organisation), rotate this one only on suspicion | Every admin and operator enrols again |
-| `POSTGRES_PASSWORD` and `DATABASE_URL` | Postgres reads `POSTGRES_PASSWORD` only when its volume is new, so set it in the database first, through stdin (never a flag; `read -rs NEW` takes it unseen): `printf "ALTER ROLE kaagaz PASSWORD '%s';\n" "$NEW" \| dc exec -T postgres psql -q -U kaagaz -d kaagaz`, then both lines of `.env`, restart. After #479, the same for each login | Nobody (a few seconds) |
+n" "$NEW" \| dc exec -T postgres psql -q -U kaagaz -d kaagaz`, then both lines of `.env`, restart. After #479, the same for each login | Nobody (a few seconds) |
 | `STORAGE_ACCESS_KEY`, `STORAGE_SECRET_KEY`, and the `STORAGE_ADMIN_` pair | Add a second entry to the identity's `credentials` in `s3.json`, `dc up -d --no-deps --force-recreate seaweedfs`, the new pair into `.env`, restart; then remove the old entry and recreate seaweedfs again | Nobody (seconds of storage restart) |
 | `GOOGLE_CLIENT_SECRET` | Google Cloud console, the OAuth client: add a secret (two may be active), into `.env`, restart, sign in with Google once, then disable the old one | Nobody |
 | SES (`EMAIL_FROM`) | No key: the server's role sends, and AWS rotates its credentials itself. Check its policy allows `ses:SendEmail` from `EMAIL_FROM` only, and that no SMTP user exists | Nobody |

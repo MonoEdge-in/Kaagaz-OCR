@@ -13,7 +13,7 @@ export default async function WhatsAppPage({
 }) {
   const query = await searchParams;
   const params: Record<string, string | undefined> = {};
-  for (const key of ["proved", "error"]) {
+  for (const key of ["proved", "error", "reauth"]) {
     const value = query[key];
     if (typeof value === "string") params[key] = value;
   }

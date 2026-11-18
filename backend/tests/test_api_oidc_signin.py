@@ -9,6 +9,7 @@ import json
 import logging
 import urllib.parse
 import uuid
+from dataclasses import replace
 from datetime import timedelta
 
 import httpx2 as httpx
@@ -118,6 +119,29 @@ def test_member_with_approved_google_gets_app_session(db: Database, google: Fake
         assert [row["last_used_at"] for row in identities.for_user(conn, customer_id, member_id)] == [
             api.clock()
         ]
+
+
+def test_unenrolled_member_cannot_use_direct_google_to_skip_mfa_during_coexistence(
+    db: Database, google: FakeGoogle
+) -> None:
+    api = Api(db, settings=replace(google_settings(), keycloak_enabled=True))
+    customer_id, _ = api.customer()
+    member_id, _email = api.add_user(customer_id, "member")
+    subject = _connect(api, customer_id, member_id)
+    client = api.client()
+
+    reply = _sign_in_at_google(api, google, client, subject)
+
+    assert (reply.status_code, reply.headers["location"]) == (303, "/login?mfa=enrol")
+    assert client.cookies.get(SESSION_COOKIE)
+    assert client.get("/api/documents").status_code == 401
+    me = client.get("/api/auth/me").json()
+    assert me["access"] == {
+        "management": False,
+        "heads": [],
+        "in_department": False,
+        "walled": False,
+    }
 
 
 def test_pending_connection_cannot_sign_in(db: Database, google: FakeGoogle) -> None:
@@ -544,8 +568,16 @@ def test_callback_has_no_referrer_header(db: Database, google: FakeGoogle) -> No
 
 
 def test_the_session_probe_lists_the_providers_that_are_on(db: Database) -> None:
-    assert _api(db).client().get("/api/auth/session").json() == {"signed_in": False, "providers": ["google"]}
-    assert Api(db).client().get("/api/auth/session").json() == {"signed_in": False, "providers": []}
+    assert _api(db).client().get("/api/auth/session").json() == {
+        "signed_in": False,
+        "providers": ["google"],
+        "keycloak_enabled": False,
+    }
+    assert Api(db).client().get("/api/auth/session").json() == {
+        "signed_in": False,
+        "providers": [],
+        "keycloak_enabled": False,
+    }
 
 
 def test_every_me_reply_lists_the_providers_that_are_on(db: Database) -> None:

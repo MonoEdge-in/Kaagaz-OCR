@@ -70,7 +70,7 @@ describe("/admin?tab=", () => {
 
   it("is read by the server page and given to AdminView", () => {
     const page = readFileSync(join(__dirname, "..", "app/(app)/admin/page.tsx"), "utf8");
-    expect(page).toContain("const { tab } = await searchParams;");
+    expect(page).toContain("const { tab, reauth } = await searchParams;");
     expect(page).toContain('tab={typeof tab === "string" ? tab : undefined}');
   });
 });

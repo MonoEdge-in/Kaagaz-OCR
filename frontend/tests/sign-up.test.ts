@@ -128,11 +128,13 @@ describe("the sign-up calls", () => {
 
 describe("the pages", () => {
   it("links the sign-in to /signup only while the server says it is on", () => {
-    expect(read("app/login/page.tsx")).toContain("<SignUpLink />");
+    expect(read("app/login/page.tsx")).toContain("<SignUpLink keycloakEnabled={options.keycloakEnabled} />");
     const link = read("app/login/SignUpLink.tsx");
     expect(link).toContain('href="/signup"');
     expect(link).toContain("setOpen(reply.enabled)");
     expect(link).toContain("useState(false)"); // hidden until the server answers
+    expect(link).toContain("if (keycloakEnabled)"); // no public signup path during the company migration
+    expect(link).toContain("if (!open || keycloakEnabled) return null");
   });
 
   // Changed on purpose (MFA required, 16 Oct 2026): two-step set-up first, then /admin.

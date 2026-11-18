@@ -27,10 +27,10 @@ import {
   OFF_TEXT,
   OFF_WARNING,
   ON_TEXT,
-  REQUIRED_TEXT,
   TURNED_OFF,
   TURNED_ON,
   mayTurnOff,
+  requiredText,
   proofField,
   twoStepError,
   twoStepView,
@@ -116,6 +116,17 @@ export function TwoStepDialog({
     );
   }
 
+  if (me.user.auth_authority === "keycloak") {
+    return (
+      <ActionDialog title="Company sign-in" onClose={onClose} onClosed={onClosed}>
+        <p className={styles.twoStepText}>Your organization manages sign-in and multi-factor authentication.</p>
+        <div className="actions">
+          <button type="button" className="btn" onClick={onClose}>Close</button>
+        </div>
+      </ActionDialog>
+    );
+  }
+
   if (view === "on" && !mayTurnOff(me)) {
     // #481: the super admin requires it for this organisation's admins, so there is nothing to turn off.
     return (
@@ -123,7 +134,7 @@ export function TwoStepDialog({
         <p className={styles.twoStepText}>
           Your two-step sign-in: <strong>On</strong>. {ON_TEXT}
         </p>
-        <p className={styles.note}>{REQUIRED_TEXT}</p>
+        <p className={styles.note}>{requiredText(me)}</p>
         <p className={styles.note}>{LOST_PHONE}</p>
         <div className="actions">
           <button type="button" className="btn" onClick={onClose}>

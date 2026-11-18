@@ -23,6 +23,7 @@ import { ApiError, confirmPassword, deleteTrashedFolderForever, restoreTrashedFo
 import { errorWords } from "@/lib/errorWords";
 import { formatDateTime } from "@/lib/format";
 import { useSession } from "@/lib/session";
+import { beginKeycloakReauth, isKeycloakManaged, isKeycloakReauthRequired, keycloakStartFailure } from "@/lib/keycloak";
 import type { TrashedFolder } from "@/lib/types";
 import { ActionDialog } from "./ActionDialog";
 import { BusyLabel } from "./BusyLabel";
@@ -69,14 +70,15 @@ export function TrashFolderRow({
   onToggle,
   onOpen,
 }: TrashFolderRowProps) {
-  const { refresh } = useSession();
+  const { me, refresh } = useSession();
+  const managed = isKeycloakManaged(me);
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState<"restore" | "forever" | null>(null);
   const [left, setLeft] = useState<number | null>(null); // B18: files still to delete, once the server says
   const [error, setError] = useState<string | null>(null);
   const [password, setPassword] = useState("");
   const [passwordAsked, setPasswordAsked] = useState(false);
-  const needsPassword = askPassword || passwordAsked;
+  const needsPassword = !managed && (askPassword || passwordAsked);
   const passwordId = `forever-folder-password-${folder.id}`;
   const menuButton = useRef<HTMLButtonElement | null>(null);
   const refocusMenu = useRef(false); // a Restore that failed: focus goes back to the menu once it shows again
@@ -114,6 +116,16 @@ export function TrashFolderRow({
         finish("This folder is no longer in Trash."); // restored or deleted elsewhere: the list is asked for again
         return;
       }
+      if (kind === "forever" && managed && isKeycloakReauthRequired(caught)) {
+        setBusy(null);
+        try {
+          await beginKeycloakReauth("delete_forever", window.location.pathname);
+          return;
+        } catch (failed) {
+          setError(keycloakStartFailure(failed));
+          return;
+        }
+      }
       const lost = lostTheRight(caught);
       if (lost) {
         refresh();
@@ -148,9 +160,9 @@ export function TrashFolderRow({
     const typed = needsPassword ? password : null;
     setPassword("");
     void act("forever", async (step) => {
-      if (typed !== null) {
+      if (typed !== null || managed) {
         step.checking = true;
-        await confirmPassword(typed);
+        await confirmPassword(typed ?? undefined);
         step.checking = false;
       }
       await deleteTrashedFolderForever(folder.id, (remaining) => {
@@ -290,6 +302,7 @@ export function TrashFolderRow({
           >
             <div className={library.dialogForm}>
               <p>{folderForeverQuestion(folder)}</p>
+              {managed && <p className="hint">Company sign-in may ask you to verify first. Nothing is deleted during verification; find this folder again and confirm after returning.</p>}
               {needsPassword && (
                 <PasswordField
                   id={passwordId}

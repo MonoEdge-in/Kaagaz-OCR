@@ -21,7 +21,7 @@ import type {
   VersionSuggestion,
 } from "@/lib/types";
 
-vi.mock("@/lib/session", () => ({ useSession: () => ({ refresh: () => undefined }) }));
+vi.mock("@/lib/session", () => ({ useSession: () => ({ refresh: () => undefined }), useOptionalSession: () => null }));
 
 const { ACTIVITY_WORDS, activityDocument, activitySentence, activityWords } = await import("@/components/activity/words");
 const { describeAction } = await import("@/components/admin/logic");

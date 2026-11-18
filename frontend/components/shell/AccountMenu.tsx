@@ -67,6 +67,8 @@ export function AccountMenu({ me, onChanged }: { me: Me; onChanged(): void }) {
   const [twoStep, setTwoStep] = useState(false);
   const [done, setDone] = useState<string | null>(null);
   const name = me.user.display_name;
+  const managed = me.user.auth_authority === "keycloak";
+  const limited = me.user.auth_source === "legacy_limited";
 
   // "everywhere" raises the account's session version on the server, which
   // ends this browser's session too, so both end on the sign-in page. It is a
@@ -147,16 +149,16 @@ export function AccountMenu({ me, onChanged }: { me: Me; onChanged(): void }) {
         <PalettePicker />
 
         {/* Spec 17 Oct 2026: the member's own AI settings, within what the admin left open. */}
-        <Link
+        {!limited && <Link
           href="/settings/ai"
           className={`btn btn-quiet btn-block ${styles.signOut}`}
           onClick={() => document.getElementById(MENU_ID)?.hidePopover()}
         >
           <Icon name="admin" />
           <span>AI settings</span>
-        </Link>
+        </Link>}
         {/* #457 phase 1: Account, Ways to sign in (email and password, and Google), while one is on. */}
-        {me.providers.length > 0 && (
+        {!limited && (me.providers.length > 0 || me.keycloak_enabled === true || managed) && (
           <Link
             href="/settings/sign-in"
             className={`btn btn-quiet btn-block ${styles.signOut}`}
@@ -167,7 +169,7 @@ export function AccountMenu({ me, onChanged }: { me: Me; onChanged(): void }) {
           </Link>
         )}
         {/* #603: Account, WhatsApp, while the server has WhatsApp on. */}
-        {me.whatsapp === true && (
+        {!limited && me.whatsapp === true && (
           <Link
             href="/settings/whatsapp"
             className={`btn btn-quiet btn-block ${styles.signOut}`}
@@ -177,7 +179,7 @@ export function AccountMenu({ me, onChanged }: { me: Me; onChanged(): void }) {
             <span>WhatsApp</span>
           </Link>
         )}
-        <button
+        {!limited && !managed && <button
           type="button"
           className={`btn btn-quiet btn-block ${styles.signOut}`}
           onClick={() => {
@@ -187,8 +189,8 @@ export function AccountMenu({ me, onChanged }: { me: Me; onChanged(): void }) {
         >
           <KIcon name="key" />
           <span>Change password</span>
-        </button>
-        <button
+        </button>}
+        {!limited && !managed && <button
           type="button"
           className={`btn btn-quiet btn-block ${styles.signOut}`}
           onClick={() => {
@@ -198,7 +200,7 @@ export function AccountMenu({ me, onChanged }: { me: Me; onChanged(): void }) {
         >
           <KIcon name="lock" />
           <span>Two-step sign-in</span>
-        </button>
+        </button>}
 
         <div className={styles.signOuts}>
           <button

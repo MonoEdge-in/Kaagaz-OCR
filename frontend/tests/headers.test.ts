@@ -38,6 +38,26 @@ describe("response headers", () => {
     expect((await headersFor("/documents"))["Referrer-Policy"]).toBe("same-origin");
   });
 
+  it("send no referrer from Keycloak start, link, callback and verification routes", async () => {
+    for (const path of [
+      "/api/auth/keycloak/start",
+      "/api/auth/keycloak/link/start",
+      "/api/auth/keycloak/callback",
+      "/api/auth/keycloak/reauth/access/start",
+    ]) {
+      expect((await headersFor(path))["Referrer-Policy"], path).toBe("no-referrer");
+    }
+  });
+
+  it("ignores Keycloak callback requests in Next development request logs", () => {
+    const logging = nextConfig.logging;
+    const incomingRequests = typeof logging === "object" ? logging.incomingRequests : undefined;
+    const ignore = typeof incomingRequests === "object" ? incomingRequests.ignore ?? [] : [];
+    expect(
+      ignore.some((pattern) => pattern.test("/api/auth/keycloak/callback?code=one-time&state=flow-state")),
+    ).toBe(true);
+  });
+
   it("keep the security headers everywhere", async () => {
     for (const path of ["/documents", "/api/documents"]) {
       expect(await headersFor(path), path).toMatchObject({

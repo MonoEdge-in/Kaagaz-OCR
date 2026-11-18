@@ -230,8 +230,9 @@ describe("the limited session (a Google-only person with no passing account)", (
   it("never shows another screen: the app sends the person there first", () => {
     const session = read("lib/session.tsx");
     expect(session).toContain('if (gate !== "connect_google" || pathname === WAYS_PATH) return;');
+    expect(session).toContain('if (gate !== "mfa_enrol" || pathname === WAYS_PATH) return;');
     expect(session).toContain("router.replace(WAYS_PATH);");
-    expect(session).toMatch(/gate === "connect_google" && pathname !== WAYS_PATH/);
+    expect(session).toContain('((gate === "connect_google" || gate === "mfa_enrol") && pathname !== WAYS_PATH)');
     expect(session).toContain("Taking you to Ways to sign in…");
   });
 

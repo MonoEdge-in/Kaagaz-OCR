@@ -71,6 +71,10 @@ export interface Me {
     email: string;
     display_name: string;
     role: Role;
+    /** Credential authority. Missing only on older API responses. */
+    auth_authority?: "legacy" | "keycloak";
+    /** Credential source for this browser session, including MFA-enrollment-only sessions. */
+    auth_source?: "legacy_password" | "legacy_mfa" | "legacy_google_mfa" | "legacy_limited" | "keycloak";
     must_change_password: boolean;
     totp_enabled: boolean; // two-step sign-in is on (required for an admin unless they turned it off)
     two_step_turned_off: boolean; // an admin turned their own two-step off (Tushar, 30 Oct 2026)
@@ -87,6 +91,8 @@ export interface Me {
   };
   customer: { id: string; name: string };
   session: { scope: SessionScope };
+  /** Server configuration only; false or absent means Keycloak sign-in is unavailable. */
+  keycloak_enabled?: boolean;
   // The sign-in providers switched on ("google"), for every role (#457 review): empty while none
   // is, and Ways to sign in is hidden; the copy names only these.
   providers: string[];
@@ -1423,6 +1429,8 @@ export interface AdminUser {
   email: string;
   display_name: string;
   role: Role;
+  /** Admin people endpoints should send this to hide legacy resets for managed users. */
+  auth_authority?: "legacy" | "keycloak";
   disabled: boolean;
   created_at: string;
   locked_until: string | null; // ISO 8601; null when not locked (a passed lock is sent as null)
@@ -2474,7 +2482,7 @@ export interface LockedOpen {
   open: boolean;
   until: string | null; // ISO 8601
   seconds: number | null; // whole seconds left by the server's clock; null when not open
-  via: "password" | "google";
+  via: "password" | "google" | "keycloak";
 }
 
 /** Someone the lock dialog may tick (GET /documents/{id}/lock-preview): everyone who can see

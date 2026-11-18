@@ -68,6 +68,8 @@ def _session(**changes: Any) -> SessionClaims:
         "session_version": 3,
         "expires_at": NOW + 3600,
         "session_id": SID,
+        "auth_source": "legacy_password",
+        "assurance": None,
     }
     return SessionClaims(**{**fields, **changes})
 
@@ -100,7 +102,15 @@ def _signed(payload: dict[str, Any], purpose: bytes, secret: str = SECRET) -> st
 
 
 def _session_payload(**changes: Any) -> dict[str, Any]:
-    payload: dict[str, Any] = {"uid": UID, "cid": CID, "role": "admin", "scope": "app", "ver": 3}
+    payload: dict[str, Any] = {
+        "uid": UID,
+        "cid": CID,
+        "role": "admin",
+        "scope": "app",
+        "ver": 3,
+        "src": "legacy_password",
+        "acr": None,
+    }
     payload["exp"] = NOW + 3600
     payload["sid"] = SID
     payload.update(changes)
@@ -124,6 +134,8 @@ def test_session_payload_is_exactly_the_agreed_json() -> None:
         "ver": 3,
         "exp": NOW + 3600,
         "sid": SID,  # Changed on purpose (#502, 0076)
+        "src": "legacy_password",
+        "acr": None,
     }
 
 
@@ -167,7 +179,7 @@ def test_an_old_sprint_1_cookie_is_refused() -> None:
     assert read_session(old, SECRET, now=NOW) is None
 
 
-@pytest.mark.parametrize("missing", ["uid", "cid", "role", "scope", "ver", "exp"])
+@pytest.mark.parametrize("missing", ["uid", "cid", "role", "scope", "ver", "exp", "sid", "src", "acr"])
 def test_a_session_missing_any_field_is_refused(missing: str) -> None:
     payload = _session_payload()
     del payload[missing]
@@ -181,6 +193,17 @@ def test_the_signed_helper_matches_the_code() -> None:
 
 def test_a_session_with_an_extra_field_is_refused() -> None:
     assert read_session(_signed(_session_payload(sec=SEALED), b"session"), SECRET, now=NOW) is None
+
+
+@pytest.mark.parametrize(
+    ("source", "assurance"),
+    [("unknown", None), ("keycloak", None), ("legacy_mfa", "urn:assurance:mfa")],
+)
+def test_session_auth_source_and_assurance_must_match(source: str, assurance: str | None) -> None:
+    assert (
+        read_session(_signed(_session_payload(src=source, acr=assurance), b"session"), SECRET, now=NOW)
+        is None
+    )
 
 
 @pytest.mark.parametrize("scope", ["root", "", "APP", "Admin", None, 1, ["app"]])
@@ -437,6 +460,25 @@ def test_env_example_lists_the_sign_in_settings() -> None:
     assert settings.admin_session_minutes == 60
     assert len(settings.totp_encryption_key) >= 32
     assert settings.totp_encryption_key != settings.session_secret
+
+
+def test_keycloak_defaults_match_stock_realm_and_worker_mfa_policy_is_optional() -> None:
+    base = Settings.from_env(_example_env())
+    assert base.customer_mfa_required is False
+    settings = Settings.from_env(
+        _example_env(
+            KEYCLOAK_ENABLED="true",
+            KEYCLOAK_ISSUER="http://keycloak.localhost:8081/realms/kaagaz-local",
+            KEYCLOAK_CLIENT_ID="kaagaz-web",
+            KEYCLOAK_CLIENT_SECRET="a-valid-test-keycloak-client-secret-000",
+            KEYCLOAK_REDIRECT_URI="http://localhost:3000/api/auth/keycloak/callback",
+            KEYCLOAK_FLOW_ENCRYPTION_KEY="a-distinct-keycloak-flow-key-for-tests-000",
+            CUSTOMER_MFA_REQUIRED="true",
+        )
+    )
+    assert settings.keycloak_required_acr == "1"
+    assert settings.keycloak_provider_claim == "auth_provider"
+    assert settings.customer_mfa_required is True
 
 
 @pytest.mark.parametrize(

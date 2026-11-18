@@ -9,7 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminUser, PersonAccess } from "@/lib/types";
 
-vi.mock("@/lib/session", () => ({ useSession: () => ({ me: { user: { id: "me" } } }) }));
+vi.mock("@/lib/session", () => ({ useSession: () => ({ me: { user: { id: "me" } } }), useOptionalSession: () => null }));
 
 const { AccessPageView, accessLoadFailure } = await import("@/components/admin/AccessPage");
 const { ApiError } = await import("@/lib/api");

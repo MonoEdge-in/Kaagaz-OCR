@@ -16,6 +16,8 @@ export const TURNED_ON = "Two-step sign-in is on.";
 export const TURNED_OFF = "Two-step sign-in is off. Your other devices are signed out.";
 // #481 (3 Nov 2026): the server's own words when it refuses (routers/auth.py TWO_STEP_REQUIRED).
 export const REQUIRED_TEXT = "Your organisation requires two-step sign-in for admins, so it stays on.";
+export const LEGACY_MFA_REQUIRED_TEXT =
+  "Two-step sign-in is required for legacy accounts while company sign-in is being enabled. It stays on until you move to company sign-in.";
 const SIGNED_OUT = "Your session has ended. Sign in again, then try again.";
 // The server's words for a wrong password, and a missing or wrong code (routers/auth.py).
 export const PASSWORD_NOT_RIGHT = "Your current password is not right.";
@@ -41,7 +43,12 @@ export function twoStepView(me: Me): "on" | "off" {
 /** Whether Turn off is offered: not while the organisation requires it for admins (#481).
  * The server refuses it all the same (409 two_step_required). */
 export function mayTurnOff(me: Me): boolean {
-  return me.user.two_step_required !== true;
+  return me.user.auth_authority !== "keycloak" && me.keycloak_enabled !== true && me.user.two_step_required !== true;
+}
+
+export function requiredText(me: Me): string {
+  if (me.user.auth_authority === "keycloak") return "Your organization manages company sign-in and multi-factor authentication.";
+  return me.keycloak_enabled === true ? LEGACY_MFA_REQUIRED_TEXT : REQUIRED_TEXT;
 }
 
 /** The server's 400 and 409 say what is wrong in plain words; the rest as Change password says it. */

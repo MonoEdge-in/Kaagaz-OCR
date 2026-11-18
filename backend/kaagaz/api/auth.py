@@ -60,6 +60,7 @@ browser's cookie; "sign out everywhere" is what ends a copied token early.
 
 import base64
 import binascii
+import dataclasses
 import hashlib
 import hmac
 import json
@@ -82,6 +83,8 @@ from kaagaz.db.engine import Database
 from kaagaz.settings import Settings
 
 SESSION_COOKIE = "kaagaz_session"
+KEYCLOAK_PROOF_COOKIE = "kaagaz_keycloak_proof"
+KEYCLOAK_PROOF_SECONDS = 5 * 60
 CSRF_HEADER = "x-requested-with"
 CSRF_VALUE = "kaagaz"
 ROLES = ("member", "reviewer", "admin")
@@ -106,6 +109,7 @@ NOTICE_SECONDS = 60
 # Cookies issued before keep the end they were given.
 CAPPED_SECONDS = 24 * 3600
 WHATSAPP_WEBHOOK_PATH = "/api/whatsapp/webhook"  # #603, routers/whatsapp.py
+KEYCLOAK_BACKCHANNEL_PATH = "/api/auth/keycloak/backchannel-logout"
 # WhatsApp's Connect (#603 W3): the person proved it is them (the password and code, or Google), so for
 # this long they may ask for connect codes; the cookie goes to /api/whatsapp only.
 WHATSAPP_PATH = "/api/whatsapp"
@@ -175,6 +179,8 @@ class SessionClaims:
     scope: str  # "app" or "admin"
     session_version: int
     expires_at: int  # seconds since the epoch
+    auth_source: str = "legacy_password"
+    assurance: str | None = None
     capped: bool = False  # given the 24-hour cap while idle hours were set (0040): "cap": true
     # This browser's session (0076, #502): logout writes it to ended_sessions, which every
     # request checks. Random, so a cookie can't name another browser's session.
@@ -202,7 +208,7 @@ class ConfirmClaims:
 _SESSION_PURPOSE = b"session"
 _ENROL_PURPOSE = b"enrol"
 _CONFIRM_PURPOSE = b"confirm"
-_SESSION_FIELDS = frozenset({"uid", "cid", "role", "scope", "ver", "exp", "sid"})
+_SESSION_FIELDS = frozenset({"uid", "cid", "role", "scope", "ver", "exp", "sid", "src", "acr"})
 _ENROL_FIELDS = frozenset({"uid", "cid", "ver", "sec", "exp"})
 _CONFIRM_FIELDS = frozenset({"uid", "cid", "ver", "exp", "sid"})
 _OPERATOR_PURPOSE = b"operator"
@@ -217,6 +223,9 @@ _NOTICE_PURPOSE = b"oidc_notice"
 _NOTICE_FIELDS = frozenset({"em", "exp"})
 _WHATSAPP_PROOF_PURPOSE = b"whatsapp_proof"
 _WHATSAPP_PROOF_FIELDS = frozenset({"uid", "cid", "ver", "exp"})
+_KEYCLOAK_PROOF_PURPOSE = b"keycloak_action_proof"
+_KEYCLOAK_PROOF_FIELDS = frozenset({"uid", "cid", "ver", "sid", "action", "at", "acr", "exp"})
+KEYCLOAK_PROOF_ACTIONS = frozenset({"locked_open", "delete_forever", "whatsapp", "access", "locks"})
 
 
 def session_seconds(scope: str, settings: Settings, idle_hours: int | None = None) -> int:
@@ -243,6 +252,8 @@ def new_session(
     settings: Settings,
     now: int,
     idle_hours: int | None = None,
+    auth_source: str = "legacy_password",
+    assurance: str | None = None,
 ) -> SessionClaims:
     """Claims for a new session that ends one scope lifetime after ``now``."""
     return SessionClaims(
@@ -253,6 +264,8 @@ def new_session(
         session_version=session_version,
         expires_at=now + session_seconds(scope, settings, idle_hours),
         capped=idle_hours is not None,
+        auth_source=auth_source,
+        assurance=assurance,
     )
 
 
@@ -266,6 +279,8 @@ def sign_session(claims: SessionClaims, secret: str) -> str:
             "ver": claims.session_version,
             "exp": claims.expires_at,
             "sid": claims.session_id,
+            "src": claims.auth_source,
+            "acr": claims.assurance,
             **({"cap": True} if claims.capped else {}),  # left out otherwise: older cookies stay valid
         },
         _SESSION_PURPOSE,
@@ -781,11 +796,25 @@ def _claims(data: Any, now: int) -> SessionClaims | None:
         return None
     uid, cid, role, scope = data["uid"], data["cid"], data["role"], data["scope"]
     ver, exp, sid = data["ver"], data["exp"], data["sid"]
+    source, assurance = data["src"], data["acr"]
     if not (isinstance(uid, str) and isinstance(cid, str) and isinstance(role, str) and isinstance(sid, str)):
         return None
     if not isinstance(scope, str) or scope not in SCOPES or role not in ROLES:
         return None
     if scope == "admin" and role != "admin":
+        return None
+    if not isinstance(source, str) or source not in {
+        "legacy_password",
+        "legacy_mfa",
+        "legacy_google",
+        "legacy_google_mfa",
+        "legacy_limited",
+        "keycloak",
+    }:
+        return None
+    if (source == "keycloak") != (isinstance(assurance, str) and bool(assurance)):
+        return None
+    if source != "keycloak" and assurance is not None:
         return None
     if not (_is_version(ver) and _is_int(exp)) or exp <= now:
         return None
@@ -800,6 +829,8 @@ def _claims(data: Any, now: int) -> SessionClaims | None:
         expires_at=exp,
         capped="cap" in data,
         session_id=sid,
+        auth_source=source,
+        assurance=assurance,
     )
 
 
@@ -878,6 +909,93 @@ def clear_session_cookie(response: Response, settings: Settings) -> None:
     )
 
 
+def set_keycloak_proof_cookie(
+    response: Response,
+    user: "CurrentUser",
+    *,
+    session_id: str,
+    action: str,
+    auth_time: int,
+    assurance: str,
+    settings: Settings,
+    now: int,
+) -> None:
+    """Set a short action-bound proof after a fresh, same-user Keycloak callback."""
+    if action not in KEYCLOAK_PROOF_ACTIONS or not assurance:
+        raise ValueError("invalid Keycloak reauthentication proof")
+    response.set_cookie(
+        KEYCLOAK_PROOF_COOKIE,
+        _sign(
+            {
+                "uid": user.user_id,
+                "cid": user.customer_id,
+                "ver": user.session_version,
+                "sid": session_id,
+                "action": action,
+                "at": auth_time,
+                "acr": assurance,
+                "exp": now + KEYCLOAK_PROOF_SECONDS,
+            },
+            _KEYCLOAK_PROOF_PURPOSE,
+            settings.session_secret,
+        ),
+        max_age=KEYCLOAK_PROOF_SECONDS,
+        httponly=True,
+        samesite="strict",
+        secure=settings.cookie_secure,
+        path="/api",
+    )
+
+
+def keycloak_proof_action(
+    request: Request,
+    user: "CurrentUser",
+    *,
+    session_id: str,
+    settings: Settings,
+    now: int,
+) -> str | None:
+    """Return a valid, fresh proof action bound to this Keycloak user and browser session."""
+    data = _verified(
+        request.cookies.get(KEYCLOAK_PROOF_COOKIE) or "",
+        _KEYCLOAK_PROOF_PURPOSE,
+        settings.session_secret,
+    )
+    if not isinstance(data, dict) or set(data) != _KEYCLOAK_PROOF_FIELDS:
+        return None
+    uid, cid, sid, action, assurance = (
+        data.get("uid"),
+        data.get("cid"),
+        data.get("sid"),
+        data.get("action"),
+        data.get("acr"),
+    )
+    version, auth_time, expiry = data.get("ver"), data.get("at"), data.get("exp")
+    if (
+        not isinstance(action, str)
+        or not isinstance(auth_time, int)
+        or isinstance(auth_time, bool)
+        or not isinstance(expiry, int)
+        or isinstance(expiry, bool)
+    ):
+        return None
+    if (
+        uid != user.user_id
+        or cid != user.customer_id
+        or sid != session_id
+        or version != user.session_version
+        or action not in KEYCLOAK_PROOF_ACTIONS
+        or not isinstance(assurance, str)
+        or not hmac.compare_digest(assurance, settings.keycloak_required_acr or "")
+        or not _is_version(version)
+        or expiry <= now
+        or auth_time > now
+        or now - auth_time > KEYCLOAK_PROOF_SECONDS
+    ):
+        return None
+    return action
+
+
 # --- who is calling ------------------------------------------------------------
 
 
@@ -908,6 +1026,10 @@ class CurrentUser:
     google_linked: bool = False
     google_domains: tuple[str, ...] = ()
     google_unchecked: bool = False
+    auth_authority: str = "legacy"
+    auth_source: str = "legacy_password"
+    assurance: str | None = None
+    reauth_action: str | None = None
 
 
 GOOGLE_LINK_REQUIRED = (
@@ -987,7 +1109,12 @@ def current_user_allow_google_link(request: Request) -> CurrentUser:
     user = _signed_in(request)
     if user.must_change_password:
         raise ApiError(403, "password_change_required")
-    if user.role == "admin" and not user.totp_enabled and not user.two_step_turned_off:
+    if (
+        user.auth_authority != "keycloak"
+        and user.role == "admin"
+        and not user.totp_enabled
+        and not user.two_step_turned_off
+    ):
         raise ApiError(403, "mfa_enrol_required")
     return user
 
@@ -995,10 +1122,12 @@ def current_user_allow_google_link(request: Request) -> CurrentUser:
 def current_user_allow_password_change(request: Request) -> CurrentUser:
     """``current_user`` without the password-change gate. Only for /auth/password,
     /auth/logout, /auth/me and /auth/session."""
-    return _signed_in(request)
+    return _signed_in(request, allow_limited=True)
 
 
-def _signed_in(request: Request) -> CurrentUser:
+def _signed_in(
+    request: Request, *, allow_unenrolled_legacy: bool = False, allow_limited: bool = False
+) -> CurrentUser:
     context = get_context(request)
     now = context.clock()
     claims = session_claims(request, context.settings, int(now.timestamp()))
@@ -1008,6 +1137,24 @@ def _signed_in(request: Request) -> CurrentUser:
         context.db, claims.customer_id, claims.user_id, scope=claims.scope, session_id=claims.session_id
     )
     if user is None or user.role != claims.role or user.session_version != claims.session_version:
+        raise ApiError(401, "not_signed_in")
+    if (user.auth_authority == "keycloak") != (claims.auth_source == "keycloak"):
+        raise ApiError(401, "not_signed_in")
+    if claims.auth_source == "keycloak" and claims.assurance != context.settings.keycloak_required_acr:
+        raise ApiError(401, "not_signed_in")
+    if claims.auth_source == "legacy_limited" and not (allow_limited or allow_unenrolled_legacy):
+        raise ApiError(401, "not_signed_in")
+    if (
+        context.settings.keycloak_enabled
+        and user.auth_authority == "legacy"
+        and not user.must_change_password
+        and (
+            (not user.totp_enabled and claims.auth_source != "legacy_limited" and not allow_unenrolled_legacy)
+            or (user.totp_enabled and claims.auth_source not in {"legacy_mfa", "legacy_google_mfa"})
+        )
+    ):
+        # Old signed cookies are deliberately invalidated; an MFA enrollment in another browser
+        # cannot upgrade a password-only session into a trusted session.
         raise ApiError(401, "not_signed_in")
     if user.role == "admin" and claims.scope != "admin":
         # An admin's app session from before 16 Oct 2026 rested on the password alone.
@@ -1021,6 +1168,25 @@ def _signed_in(request: Request) -> CurrentUser:
         # every session of that user alive. Per session needs a server-side session row.
         with context.db.user(user.customer_id, user.user_id) as conn:
             users_sql.touch_seen(conn, user.customer_id, user.user_id, now=now)
+    return dataclasses.replace(
+        user,
+        auth_source=claims.auth_source,
+        assurance=claims.assurance,
+        reauth_action=keycloak_proof_action(
+            request,
+            user,
+            session_id=claims.session_id,
+            settings=context.settings,
+            now=int(now.timestamp()),
+        ),
+    )
+
+
+def current_user_mfa_enrollment(request: Request) -> CurrentUser:
+    """Allow only a legacy user to reach the password-proven TOTP enrollment endpoint."""
+    user = _signed_in(request, allow_unenrolled_legacy=True)
+    if user.auth_authority != "legacy" or user.totp_enabled or user.must_change_password:
+        raise ApiError(403, "forbidden")
     return user
 
 
@@ -1052,6 +1218,7 @@ def load_user(
         idle_hours=row["idle_hours"],
         seen_at=row["seen_at"],
         email_confirmed=bool(row["email_confirmed"]),
+        auth_authority=str(row["auth_authority"]),
         google_on=bool(row["google_on"]),
         google_allowed=bool(row["google_allowed"]),
         google_only=bool(row["google_only"]),
@@ -1064,6 +1231,7 @@ def load_user(
 User = Annotated[CurrentUser, Depends(current_user)]
 UserAllowGoogleLink = Annotated[CurrentUser, Depends(current_user_allow_google_link)]
 UserAllowPasswordChange = Annotated[CurrentUser, Depends(current_user_allow_password_change)]
+UserMfaEnrollment = Annotated[CurrentUser, Depends(current_user_mfa_enrollment)]
 
 
 def require_admin_session(user: User) -> CurrentUser:
@@ -1205,7 +1373,10 @@ OperatorSession = Annotated[CurrentOperator, Depends(current_operator)]
 def csrf_guard(request: Request) -> None:
     """Applied to every route: a state-changing request needs the CSRF header. But Meta's webhook
     (#603), which no browser sends and which reads no cookie: its signature is checked instead."""
-    if request.method in _SAFE_METHODS or request.url.path == WHATSAPP_WEBHOOK_PATH:
+    if request.method in _SAFE_METHODS or request.url.path in {
+        WHATSAPP_WEBHOOK_PATH,
+        KEYCLOAK_BACKCHANNEL_PATH,
+    }:
         return
     if request.headers.get(CSRF_HEADER) != CSRF_VALUE:
         raise ApiError(403, "csrf")

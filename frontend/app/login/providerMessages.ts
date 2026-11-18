@@ -62,9 +62,10 @@ const LABELS: Record<string, string> = { google: "Continue with Google" };
 
 /** A full-width button per provider that is on, starting its sign-in at the API (a GET), with
  * where to go once signed in. */
-export function providerButtons(providers: readonly string[], next: string): ProviderButton[] {
+export function providerButtons(providers: readonly string[], next: string, legacyTemporary = false): ProviderButton[] {
   return providers.flatMap((provider) => {
-    const label = LABELS[provider];
+    const original = LABELS[provider];
+    const label = original && legacyTemporary ? `${original} (existing Kaagaz sign-in)` : original;
     if (label === undefined) return [];
     return [{ provider, label, href: `/api/auth/oidc/${provider}/start?next=${encodeURIComponent(next)}` }];
   });

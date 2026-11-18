@@ -11,6 +11,7 @@ const WAIT_MS = 2000;
 export interface SignInOptions {
   providers: string[];
   emailOn: boolean;
+  keycloakEnabled: boolean;
 }
 
 /** B19: the visitor's IP, the first address of the incoming X-Forwarded-For (Caddy sets it); null without one. */
@@ -41,5 +42,7 @@ export async function signInOptions(get: typeof fetch = fetch, visitor: string |
   return {
     providers: Array.isArray(providers) ? providers.filter((name): name is string => typeof name === "string") : [],
     emailOn: email?.enabled === true,
+    // Fail closed until the backend advertises the public availability flag.
+    keycloakEnabled: session?.keycloak_enabled === true,
   };
 }

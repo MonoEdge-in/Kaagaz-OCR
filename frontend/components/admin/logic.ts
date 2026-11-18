@@ -166,8 +166,12 @@ export function userStatus(user: AdminUser, now: number): StatusPart[] {
   else if (user.locked_until !== null && isLocked(user, now)) {
     parts.push({ text: lockedUntilText(user.locked_until), tone: "danger" });
   } else parts.push({ text: "Active", tone: "ready" });
-  // Plain words (25 Oct 2026): "Two-step", as the rest of the product says, not "2FA".
-  parts.push({ text: user.totp_enabled ? "Two-step: On" : "Two-step: Off", tone: "neutral" });
+  if (user.auth_authority === "keycloak") {
+    parts.push({ text: "Company-managed sign-in", tone: "neutral" });
+  } else {
+    // Plain words (25 Oct 2026): "Two-step", as the rest of the product says, not "2FA".
+    parts.push({ text: user.totp_enabled ? "Two-step: On" : "Two-step: Off", tone: "neutral" });
+  }
   if (user.must_change_password) parts.push({ text: "Temporary password", tone: "neutral" });
   if (user.can_delete_forever) parts.push({ text: "Can delete for good", tone: "neutral" });
   return parts;
@@ -196,7 +200,7 @@ export function userActions(
     toggleDisabled: true,
     unlock: isLocked(user, now),
     resetPassword: true,
-    reset2fa: user.totp_enabled,
+    reset2fa: user.auth_authority !== "keycloak" && user.totp_enabled,
   };
 }
 
@@ -760,6 +764,7 @@ const ACTION_WORDS: Record<string, string> = {
   "auth.identity_approved": "Approved a Google account",
   "auth.identity_declined": "Declined a Google account",
   "auth.identity_unlinked": "Disconnected a Google account",
+  "auth.keycloak_linked": "Connected company sign-in",
   // #507: Google sign-in by organisation and role.
   "auth.identity_link_refused": "A Google account couldn't be connected",
   "auth.identity_reapproval": "A Google account waits for approval again",

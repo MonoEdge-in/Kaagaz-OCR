@@ -11,17 +11,23 @@
 
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
+import { Icon as KIcon } from "@/components/ui/Icon/Icon";
 import { oidcNotice } from "@/lib/api";
+import { keycloakCallbackError, keycloakLoginHref } from "@/lib/keycloak";
 import { oidcErrorMessage, providerButtons } from "./providerMessages";
 import styles from "./login.module.css";
 
 export function ProviderButtons({
   next,
   error,
+  keycloakError = null,
+  keycloakEnabled = false,
   providers,
 }: {
   next: string;
   error: string | null;
+  keycloakError?: string | null;
+  keycloakEnabled?: boolean;
   providers: readonly string[];
 }) {
   const [message, setMessage] = useState<string | null>(
@@ -44,10 +50,18 @@ export function ProviderButtons({
     };
   }, [error]);
 
-  const buttons = providerButtons(providers, next);
+  const buttons = providerButtons(providers, next, keycloakEnabled);
+  const keycloakHref = keycloakLoginHref(keycloakEnabled, next);
+  const keycloakMessage = keycloakCallbackError(keycloakError);
   const calm = error === "cancelled" || error === "waiting";
   return (
     <>
+      {keycloakMessage && (
+        <div className={styles.banner} role="alert">
+          <Icon name="alert" />
+          {keycloakMessage}
+        </div>
+      )}
       {message && calm && (
         <p role="status" className={styles.notice}>
           {message}
@@ -59,7 +73,18 @@ export function ProviderButtons({
           {message}
         </div>
       )}
-      {buttons.length > 0 && (
+      {keycloakHref && (
+        <>
+          <a className={`btn btn-block ${styles.provider}`} href={keycloakHref}>
+            <KIcon name="lock" />
+            Continue with company sign-in
+          </a>
+          <p className="hint">
+            Sign in securely with your company account. Multi-factor authentication is required.
+          </p>
+        </>
+      )}
+      {(buttons.length > 0 || keycloakHref) && (
         <>
           {buttons.map((button) => (
             <a key={button.provider} className={`btn btn-block ${styles.provider}`} href={button.href}>
@@ -68,7 +93,7 @@ export function ProviderButtons({
             </a>
           ))}
           <p className={styles.divider}>
-            <span>or use your email</span>
+            <span>{keycloakEnabled ? "or use your existing Kaagaz sign-in" : "or use your email"}</span>
           </p>
         </>
       )}

@@ -53,6 +53,8 @@ import {
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { useMinuteNow } from "@/components/chat/hooks";
 import { roleName } from "@/components/shell/nav";
+import { useOptionalSession } from "@/lib/session";
+import { beginKeycloakReauth, isKeycloakManaged, isKeycloakReauthRequired, keycloakStartFailure } from "@/lib/keycloak";
 import { closeAllowed, isBackdropClick } from "@/components/ui/drawerLogic";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
@@ -134,11 +136,13 @@ export function UsersPanel({
   adminTwoStep,
   providers,
   whatsapp = false,
+  reauth,
 }: {
   currentUserId: string;
   adminTwoStep: boolean;
   providers: readonly string[];
   whatsapp?: boolean;
+  reauth?: string;
 }) {
   const [attempt, setAttempt] = useState(0);
   const [users, setUsers] = useState<AdminUser[] | null>(null);
@@ -278,6 +282,7 @@ export function UsersPanel({
                   <UserRow
                     key={user.id}
                     user={user}
+                    reauth={reauth}
                     isSelf={user.id === currentUserId}
                     myId={currentUserId}
                     adminTwoStep={adminTwoStep}
@@ -301,7 +306,7 @@ export function UsersPanel({
         {users && <MoreRows shown={Math.min(cap.limit, users.length)} total={users.length} what="users" onMore={cap.showMore} />}
         {/* AD7: two-step is required for admins (0035); one without it sets it up at the next sign-in,
             except an admin who turned their own off (30 Oct 2026). */}
-        {users?.some((user) => user.role === "admin" && !user.totp_enabled && !user.two_step_turned_off) && (
+        {users?.some((user) => user.auth_authority !== "keycloak" && user.role === "admin" && !user.totp_enabled && !user.two_step_turned_off) && (
           <p className="hint">{twoStepNote()}</p>
         )}
       </section>
@@ -392,6 +397,7 @@ export function AccessCell({ user }: { user: AdminUser }) {
 
 function UserRow({
   user,
+  reauth,
   isSelf,
   myId,
   adminTwoStep,
@@ -405,6 +411,7 @@ function UserRow({
   onNotice,
 }: {
   user: AdminUser;
+  reauth?: string;
   isSelf: boolean;
   myId: string;
   adminTwoStep: boolean;
@@ -418,6 +425,7 @@ function UserRow({
   onPasswordReset: (revealed: Revealed) => void;
   onNotice: (notice: Notice) => void;
 }) {
+  const sessionMe = useOptionalSession()?.me ?? null;
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState<Confirming | null>(null);
   const router = useRouter();
@@ -475,11 +483,32 @@ function UserRow({
   };
 
   async function disconnectWhatsApp() {
+    if (isKeycloakManaged(sessionMe) && reauth !== "whatsapp") {
+      setBusy(true);
+      try {
+        await beginKeycloakReauth("whatsapp", `${window.location.pathname}${window.location.search}`);
+      } catch (startError) {
+        onNotice({ problem: true, text: keycloakStartFailure(startError) });
+      } finally {
+        setBusy(false);
+        setConfirming(null);
+      }
+      return;
+    }
     setBusy(true);
     try {
       onWhatsApp(await adminDisconnectWhatsApp(user.id));
       onNotice({ text: `${user.display_name}: WhatsApp disconnected.` });
     } catch (caught) {
+      if (isKeycloakManaged(sessionMe) && isKeycloakReauthRequired(caught)) {
+        try {
+          await beginKeycloakReauth("whatsapp", `${window.location.pathname}${window.location.search}`);
+          return;
+        } catch (startError) {
+          onNotice({ problem: true, text: keycloakStartFailure(startError) });
+          return;
+        }
+      }
       onNotice({ problem: true, text: errorWords(caught) });
     } finally {
       setBusy(false);
@@ -488,6 +517,7 @@ function UserRow({
   }
 
   const can = userActions(user, { isSelf, now });
+  const managed = user.auth_authority === "keycloak";
   const forever = foreverControl(user, { isSelf, adminTwoStep });
   const reason = forever.kind === "allow" ? forever.disabledReason : null;
   const selectId = `role-${user.id}`;
@@ -519,10 +549,10 @@ function UserRow({
     ...(forever.kind === "allow"
       ? [{ label: "Allow Delete forever", description: USER_MENU_HELP.allowForever, onSelect: () => setConfirming("forever"), disabledReason: reason }]
       : []),
-    ...(can.resetPassword
+    ...(can.resetPassword && !managed
       ? [{ label: "Reset password", description: USER_MENU_HELP.password, onSelect: () => setConfirming("password") }]
       : []),
-    ...(can.reset2fa
+    ...(can.reset2fa && !managed
       ? [{ label: "Reset two-step code", description: USER_MENU_HELP.twoStep, onSelect: () => setConfirming("2fa") }]
       : []),
     ...((user.signs_in_with ?? []).some((way) => way !== "password")

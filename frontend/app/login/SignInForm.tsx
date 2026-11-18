@@ -32,6 +32,7 @@ import { ForgotPasswordLink } from "./ForgotPasswordLink";
 import { ProviderButtons } from "./ProviderButtons";
 import { ProviderCodeStep } from "./ProviderCodeStep";
 import { RequiredEnrol } from "./EnrolStep";
+import { LimitedMfaEnrollment } from "./LimitedMfaEnrollment";
 import { ResendConfirm } from "./ResendConfirm";
 import {
   emailError,
@@ -63,16 +64,22 @@ export function SignInForm({
   note,
   next,
   oidcError = null,
+  keycloakError = null,
   providerStep = false,
+  mfaEnrolRequired = false,
   providers,
   emailOn,
+  keycloakEnabled = false,
 }: {
   note: string | null;
   next: string;
   oidcError?: string | null;
+  keycloakError?: string | null;
   providerStep?: boolean;
+  mfaEnrolRequired?: boolean;
   providers: readonly string[];
   emailOn: boolean;
+  keycloakEnabled?: boolean;
 }) {
   const hydrated = useHydrated();
   const [email, setEmail] = useState("");
@@ -180,6 +187,7 @@ export function SignInForm({
   if (enrol) {
     return <RequiredEnrol enrol={enrol} email={normalizeEmail(email)} next={next} onRestart={back} />;
   }
+  if (mfaEnrolRequired) return <LimitedMfaEnrollment next={next} />;
   if (providerStep) return <ProviderCodeStep next={next} />;
 
   const emailDescribedBy = errors.email ? "login-email-error" : undefined;
@@ -193,16 +201,26 @@ export function SignInForm({
         <p className={styles.lead}>
           {askCode
             ? `Two-step sign-in is on for ${normalizeEmail(email)}. Enter the 6-digit code from your authenticator app.`
-            : "Use the email your admin set up for you, or the one you signed up with."}
+            : keycloakEnabled
+              ? "Company sign-in is for accounts that have moved. Existing Kaagaz sign-in remains available during migration."
+              : "Use the email your admin set up for you, or the one you signed up with."}
         </p>
       </div>
       <SignedOutNotice message={note} />
 
-      {!askCode && <ProviderButtons next={next} error={oidcError} providers={providers} />}
+      {!askCode && (
+        <ProviderButtons
+          next={next}
+          error={oidcError}
+          keycloakError={keycloakError}
+          keycloakEnabled={keycloakEnabled}
+          providers={providers}
+        />
+      )}
       {!askCode && (
         <>
           <div className="field">
-            <label htmlFor={FIELD_IDS.email}>Email</label>
+            <label htmlFor={FIELD_IDS.email}>{keycloakEnabled ? "Email (existing Kaagaz sign-in)" : "Email"}</label>
             <input
               id={FIELD_IDS.email}
               className="input"
@@ -231,7 +249,7 @@ export function SignInForm({
 
           <PasswordField
             id={FIELD_IDS.password}
-            label="Password"
+            label={keycloakEnabled ? "Kaagaz password (existing Kaagaz sign-in)" : "Password"}
             value={password}
             onChange={changePassword}
             onBlur={() => {
@@ -277,7 +295,7 @@ export function SignInForm({
         aria-busy={busy || undefined}
       >
         {busy && <span className="spinner" aria-hidden="true" />}
-        {busy ? "Signing in…" : "Sign in"}
+        {busy ? "Signing in…" : keycloakEnabled ? "Sign in with existing Kaagaz account" : "Sign in"}
       </button>
 
       {askCode && (

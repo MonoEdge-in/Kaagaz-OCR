@@ -69,6 +69,8 @@ web_modules/
 .env
 .env.*
 !.env.example
+!.env.keycloak.example
+!.env.keycloak-admin.example
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache
@@ -160,6 +162,8 @@ htmlcov/
 .env
 .env.*
 !.env.example
+!.env.keycloak.example
+!.env.keycloak-admin.example
 *.pem
 *.key
 .aws/

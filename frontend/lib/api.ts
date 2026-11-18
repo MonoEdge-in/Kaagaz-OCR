@@ -330,7 +330,19 @@ export const signUp = (body: { organisation_name: string; name: string; email: s
   request<TwoStepSetup | SignUpConfirming>("POST", "/auth/signup", body);
 /** Who is signed in, 200 either way (issue 378): a signed-out visit logs no expected 401. */
 export const currentSession = () =>
-  request<{ signed_in: true; me: Me } | { signed_in: false; providers?: string[] }>("GET", "/auth/session");
+  request<
+    | { signed_in: true; me: Me }
+    | { signed_in: false; providers?: string[]; keycloak_enabled?: boolean }
+  >("GET", "/auth/session");
+
+/** Start action-bound Keycloak verification. The backend owns the provider URL and callback. */
+export const startKeycloakReauth = (
+  action: "locked_open" | "delete_forever" | "whatsapp" | "access" | "locks",
+  next: string,
+) => request<{ url: string }>("POST", `/auth/keycloak/reauth/${action}/start`, { next });
+/** Prove the local password and MFA before linking this legacy account to Keycloak. */
+export const startKeycloakLink = (password: string, code: string, next: string) =>
+  request<{ url: string }>("POST", "/auth/keycloak/link/start", { password, code, next });
 
 // Ways to sign in (#457 phase 1): every route is 404 while no provider is switched on.
 /** After a provider for anyone with two-step sign-in on: the code (the second-step cookie). */
@@ -356,8 +368,11 @@ export const removeIdentity = (id: string, password?: string) =>
 // Kaagaz on WhatsApp (#603): Account, WhatsApp. The proof (password and code, or Google) is kept
 // 10 minutes in a cookie only /api/whatsapp reads.
 export const whatsappMe = () => request<WhatsAppMe>("GET", "/whatsapp/me");
-export const proveForWhatsApp = (password: string, code?: string) =>
-  request<{ proved: true }>("POST", "/whatsapp/prove", { password, ...(code === undefined ? {} : { code }) });
+export const proveForWhatsApp = (password?: string, code?: string) =>
+  request<{ proved: true }>("POST", "/whatsapp/prove", {
+    ...(password === undefined ? {} : { password }),
+    ...(code === undefined ? {} : { code }),
+  });
 /** For one who signs in with Google only: the code first (two-step on), then Google's address to open. */
 export const proveWithGoogle = (code?: string) =>
   request<{ url: string }>("POST", "/whatsapp/prove/google", code === undefined ? {} : { code });
@@ -406,8 +421,8 @@ export const acceptInvite = (token: string, newPassword: string) =>
   request<{ ok: boolean }>("POST", "/auth/invite/accept", { token, new_password: newPassword });
 export const logoutEverywhere = () => request<void>("POST", "/auth/logout-everywhere");
 /** A granted member or reviewer types their password before Delete forever (a 5-minute cookie). */
-export const confirmPassword = (password: string) =>
-  request<void>("POST", "/auth/confirm-password", { password });
+export const confirmPassword = (password?: string) =>
+  request<void>("POST", "/auth/confirm-password", password === undefined ? {} : { password });
 
 // --- documents -----------------------------------------------------------------
 
@@ -1447,10 +1462,12 @@ export const adminWhatsApp = () => request<WhatsAppAdmin>("GET", "/admin/whatsap
 export const saveAdminWhatsApp = (
   settings: Pick<WhatsAppAdmin, "enabled" | "roles" | "management" | "voice" | "uploads">,
   password?: string, // with the data rules tick: turning it on
+  rulesConfirmed = false,
 ) =>
   request<WhatsAppAdmin>("PUT", "/admin/whatsapp", {
     ...settings,
-    ...(password === undefined ? {} : { password, rules_confirmed: true }),
+    ...(password === undefined ? {} : { password }),
+    ...(rulesConfirmed || password !== undefined ? { rules_confirmed: true } : {}),
   });
 export const adminDisconnectWhatsApp = (userId: string) =>
   request<WhatsAppAdmin>("POST", `/admin/whatsapp/${encodeURIComponent(userId)}/disconnect`);
@@ -1463,7 +1480,10 @@ export const adminDisconnectWhatsApp = (userId: string) =>
 const segment = (part: string) => encodeURIComponent(part);
 export const getPersonAccess = (userId: string) => request<PersonAccess>("GET", `/admin/users/${segment(userId)}/access`);
 export const setManagement = (userId: string, on: boolean, password?: string) =>
-  request<AdminUser>("PUT", `/admin/users/${segment(userId)}/management`, { on, password });
+  request<AdminUser>("PUT", `/admin/users/${segment(userId)}/management`, {
+    on,
+    ...(password === undefined ? {} : { password }),
+  });
 /** Adds the person to the department, or sets their Head tick; `head` left out keeps the tick. */
 export const putMembership = (userId: string, departmentId: string, change: { head?: boolean; password?: string } = {}) =>
   request<{ head: boolean; changed: boolean }>("PUT", `/admin/users/${segment(userId)}/departments/${segment(departmentId)}`, change);
@@ -1479,21 +1499,33 @@ export const setDepartmentOnly = (departmentId: string, on: boolean, password?: 
   request<{ department_only: boolean; members: number; warnings: string[] }>(
     "PUT",
     `/admin/departments/${segment(departmentId)}/department-only`,
-    { on, password },
+    { on, ...(password === undefined ? {} : { password }) },
   );
 export const addNamed = (folderId: string, userId: string, password?: string) =>
-  request<{ changed: boolean }>("PUT", `/folders/${segment(folderId)}/named/${segment(userId)}`, { password });
+  request<{ changed: boolean }>(
+    "PUT",
+    `/folders/${segment(folderId)}/named/${segment(userId)}`,
+    password === undefined ? {} : { password },
+  );
 export const removeNamed = (folderId: string, userId: string) =>
   request<void>("DELETE", `/folders/${segment(folderId)}/named/${segment(userId)}`);
 export const giveFile = (documentId: string, userId: string, password?: string) =>
-  request<{ versions: number; changed: boolean }>("PUT", `/documents/${segment(documentId)}/shares/${segment(userId)}`, { password });
+  request<{ versions: number; changed: boolean }>(
+    "PUT",
+    `/documents/${segment(documentId)}/shares/${segment(userId)}`,
+    password === undefined ? {} : { password },
+  );
 export const takeFile = (documentId: string, userId: string) =>
   request<void>("DELETE", `/documents/${segment(documentId)}/shares/${segment(userId)}`);
 
 // PR 11b: the library's access.
 /** Give files to people at once (at most 100 files and 20 people): how many pairs were new. */
 export const giveFiles = (documentIds: readonly string[], userIds: readonly string[], password?: string) =>
-  request<{ given: number }>("POST", "/documents/shares", { document_ids: documentIds, user_ids: userIds, password });
+  request<{ given: number }>("POST", "/documents/shares", {
+    document_ids: documentIds,
+    user_ids: userIds,
+    ...(password === undefined ? {} : { password }),
+  });
 export type AudienceKind = "documents" | "folders";
 export const getAudience = (kind: AudienceKind, id: string) => request<Audience>("GET", `/${kind}/${segment(id)}/audience`);
 export const checkAudience = (kind: AudienceKind, id: string, userId: string) =>
@@ -1511,7 +1543,7 @@ export const setPrivate = (folderId: string, on: boolean, named: readonly string
     on,
     named,
     ...(dropNamed.length ? { drop_named: dropNamed } : {}),
-    password,
+    ...(password === undefined ? {} : { password }),
   });
 /** PRD 7 PR 10c (#601): who would lose and gain a file, or what a folder holds, were it moved into
  * `into` (null: the top level). The person a file is held for gets counts only (`losing_count`,
@@ -1795,7 +1827,8 @@ export const lockedPageUrl = (documentId: string, pageNo: number) =>
 export const getLockedOpen = () => request<LockedOpen>("GET", "/documents/locked-open");
 /** The person's own Kaagaz password, never a two-step code (decision 5): opens every locked file
  * they may open for 10 minutes in this browser. */
-export const openLocked = (password: string) => request<LockedOpen>("POST", "/documents/locked-open", { password });
+export const openLocked = (password?: string) =>
+  request<LockedOpen>("POST", "/documents/locked-open", password === undefined ? {} : { password });
 /** A person who signs in with Google only confirms with a fresh Google sign-in; Google comes back
  * to `next`. */
 export const confirmWithGoogle = (next: string) =>
@@ -1806,14 +1839,22 @@ export const lockPreview = (id: string) =>
 /** The bulk bar's: everyone who can see any of the files. */
 export const lockPreviewMany = (ids: readonly string[]) =>
   request<{ people: LockPerson[] }>("POST", "/documents/lock-preview", { document_ids: ids });
-export const lockDocument = (id: string, openTo: readonly string[], password: string) =>
+export const lockDocument = (id: string, openTo: readonly string[], password?: string) =>
   request<{ locked: true; versions: number; open_to: number }>("POST", `/documents/${encodeURIComponent(id)}/lock`, {
     open_to: openTo,
-    password,
+    ...(password === undefined ? {} : { password }),
   });
 /** All or nothing: a 409 carries `refused: [{id, reason}]` in its details. */
-export const lockDocuments = (ids: readonly string[], openTo: readonly string[], password: string) =>
-  request<{ locked: number }>("POST", "/documents/lock", { document_ids: ids, open_to: openTo, password });
+export const lockDocuments = (ids: readonly string[], openTo: readonly string[], password?: string) =>
+  request<{ locked: number }>("POST", "/documents/lock", {
+    document_ids: ids,
+    open_to: openTo,
+    ...(password === undefined ? {} : { password }),
+  });
 /** `reading`: its current version is read again (PR 12's unlock_file). */
-export const unlockDocument = (id: string, password: string) =>
-  request<{ unlocked: true; reading: boolean }>("POST", `/documents/${encodeURIComponent(id)}/unlock`, { password });
+export const unlockDocument = (id: string, password?: string) =>
+  request<{ unlocked: true; reading: boolean }>(
+    "POST",
+    `/documents/${encodeURIComponent(id)}/unlock`,
+    password === undefined ? {} : { password },
+  );

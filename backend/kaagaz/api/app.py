@@ -76,6 +76,9 @@ from kaagaz.api.routers import (
     word_review,
     words,
 )
+from kaagaz.api.routers import (
+    keycloak as keycloak_auth,
+)
 from kaagaz.db import person_rule
 from kaagaz.db.engine import Database, OperatorDatabase, make_engine
 from kaagaz.db.sqlstate import sqlstate
@@ -197,6 +200,7 @@ def create_app(
         auth.router,
         email.router,
         oidc.router,
+        keycloak_auth.router,
         whatsapp.router,
         whatsapp_account.router,
         whatsapp_account.admin_router,

@@ -21,6 +21,7 @@ export function canDeleteForever(me: Me): boolean {
 /** An admin without two-step sign-in on (#538), or a granted member or reviewer, types their
  * password before deleting for good. */
 export function foreverNeedsPassword(me: Me): boolean {
+  if (me.user.auth_authority === "keycloak") return false;
   if (me.user.role !== "admin") return me.user.can_delete_forever;
   return sessionScope(me) === "admin" && !me.user.totp_enabled;
 }

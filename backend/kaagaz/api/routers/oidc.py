@@ -290,6 +290,8 @@ def start(provider: ProviderOn, request: Request, context: Context) -> RedirectR
 def connect(
     provider: ProviderOn, body: ConnectBody, user: UserAllowGoogleLink, context: Context
 ) -> JSONResponse:
+    if user.auth_authority == "keycloak":
+        raise ApiError(403, "legacy_auth_disabled")
     if not user.google_on:  # #507: before anything is counted
         raise ApiError(403, "google_off", GOOGLE_OFF)
     if not user.google_allowed:
@@ -309,6 +311,8 @@ def connect(
 @router.post("/auth/oidc/{provider}/confirm")
 def confirm(provider: ProviderOn, body: ConfirmBody, user: User, context: Context) -> JSONResponse:
     """PRD 7 decision 5 (#605): a Google-only person's fresh Google sign-in opens locked files."""
+    if user.auth_authority == "keycloak":
+        raise ApiError(403, "legacy_auth_disabled")
     if not confirms_with_google(user, context.settings):
         raise ApiError(409, "use_password", USE_PASSWORD)
     _per_user_limit(confirm_limits, user, TOO_MANY_CONFIRMS)
@@ -426,6 +430,8 @@ def remove_identity(
     """Disconnect one connection of the user's own, with the password, or cancel a waiting one
     (it never signed in, so no password). Every other browser is signed out, this one stays;
     the password keeps working."""
+    if user.auth_authority == "keycloak":
+        raise ApiError(403, "legacy_auth_disabled")
     _per_user_limit(remove_limits, user, TOO_MANY_REMOVES)
     with context.db.user(user.customer_id, user.user_id) as conn:
         mine = {str(row["id"]): row for row in identities.for_user(conn, user.customer_id, user.user_id)}
@@ -527,6 +533,8 @@ def _sign_in(
     if attempt.disabled:
         _audit_failure(context, attempt.customer_id, attempt.user_id, "disabled")
         raise _Refused("refused")
+    if attempt.auth_authority != "legacy":
+        raise _Refused("refused")
     if not attempt.customer_active:  # disabled, being deleted, or a sign-up still pending
         _audit_failure(context, attempt.customer_id, attempt.user_id, "customer_disabled")
         raise _Refused("refused")
@@ -561,6 +569,21 @@ def _sign_in(
         where = "" if flow.next_path == "/" else "&next=" + urllib.parse.quote(flow.next_path, safe="")
         response = RedirectResponse(f"{LOGIN}?step=code{where}", status_code=303)
         set_pending_cookie(response, pending, context.settings, now=unix(now))
+        return response
+    if context.settings.keycloak_enabled:
+        _, claims = _open_session(
+            context,
+            attempt.customer_id,
+            attempt.user_id,
+            scope=_scope(attempt),
+            action="auth.login",
+            details={"via": provider.name},
+            auth_source="legacy_limited",
+        )
+        next_page = f"{LOGIN}?password=change" if attempt.must_change_password else f"{LOGIN}?mfa=enrol"
+        response = RedirectResponse(next_page, status_code=303)
+        set_session_cookie(response, claims, context.settings, now=unix(now))
+        response.headers["Referrer-Policy"] = "no-referrer"
         return response
     try:
         _, claims = _open_session(

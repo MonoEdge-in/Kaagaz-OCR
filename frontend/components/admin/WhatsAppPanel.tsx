@@ -18,6 +18,13 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { PasswordField } from "@/components/ui/PasswordField";
 import { ApiError, adminWhatsApp, saveAdminWhatsApp } from "@/lib/api";
 import { errorWords } from "@/lib/errorWords";
+import { useOptionalSession } from "@/lib/session";
+import {
+  beginKeycloakReauth,
+  isKeycloakManaged,
+  isKeycloakReauthRequired,
+  keycloakStartFailure,
+} from "@/lib/keycloak";
 import type { WhatsAppAdmin } from "@/lib/types";
 import {
   MANAGEMENT_HINT,
@@ -44,7 +51,9 @@ function said(caught: unknown): string {
   return caught instanceof ApiError ? caught.message : errorWords(caught);
 }
 
-export function WhatsAppPanel({ organisation }: { organisation: string }) {
+export function WhatsAppPanel({ organisation, reauth }: { organisation: string; reauth?: string }) {
+  const me = useOptionalSession()?.me ?? null;
+  const managed = isKeycloakManaged(me);
   const [saved, setSaved] = useState<WhatsAppAdmin | null>(null);
   const [form, setForm] = useState<WhatsAppForm | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -70,18 +79,35 @@ export function WhatsAppPanel({ organisation }: { organisation: string }) {
     };
   }, [attempt]);
 
-  async function save(next: WhatsAppForm, password?: string) {
+  async function save(next: WhatsAppForm, password?: string, rulesConfirmed = false) {
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      const reply = await saveAdminWhatsApp(next, password);
+      if (managed && reauth !== "whatsapp") {
+        try {
+          await beginKeycloakReauth("whatsapp", `${window.location.pathname}${window.location.search}`);
+        } catch (startError) {
+          setError(keycloakStartFailure(startError));
+        }
+        return;
+      }
+      const reply = await saveAdminWhatsApp(next, password, rulesConfirmed);
       setSaved(reply);
       setForm(formOf(reply));
       setPassword("");
       setDialog(null);
       setNotice("Saved.");
     } catch (caught) {
+      if (managed && isKeycloakReauthRequired(caught)) {
+        try {
+          await beginKeycloakReauth("whatsapp", `${window.location.pathname}${window.location.search}`);
+          return;
+        } catch (startError) {
+          setError(keycloakStartFailure(startError));
+          return;
+        }
+      }
       setError(said(caught));
     } finally {
       setBusy(false);
@@ -120,8 +146,8 @@ export function WhatsAppPanel({ organisation }: { organisation: string }) {
           onSubmit={(event) => {
             event.preventDefault();
             if (busy) return;
-            if (saved && tickNeedsPassword(saved, form) && password === "") setError("Enter your password.");
-            else void save(form, saved && tickNeedsPassword(saved, form) ? password : undefined);
+            if (!managed && saved && tickNeedsPassword(saved, form) && password === "") setError("Enter your password.");
+            else void save(form, !managed && saved && tickNeedsPassword(saved, form) ? password : undefined);
           }}
         >
           <fieldset className={styles.settingsGroup}>
@@ -163,7 +189,7 @@ export function WhatsAppPanel({ organisation }: { organisation: string }) {
             </label>
           </fieldset>
           <p className="hint">{SENT_STAYS}</p>
-          {tickNeedsPassword(saved, form) && (
+          {!managed && tickNeedsPassword(saved, form) && (
             <PasswordField
               id="whatsapp-tick-password"
               label="Your Kaagaz password, to let Admins or Management use WhatsApp"
@@ -198,13 +224,14 @@ export function WhatsAppPanel({ organisation }: { organisation: string }) {
         <TurnOn
           organisation={organisation}
           form={form}
+          managed={managed}
           busy={busy}
           error={error}
           onCancel={() => {
             setDialog(null);
             setError(null);
           }}
-          onTurnOn={(next, password) => void save(next, password)}
+          onTurnOn={(next, password) => void save(next, password, true)}
         />
       )}
       {form && (
@@ -228,6 +255,7 @@ export function WhatsAppPanel({ organisation }: { organisation: string }) {
 function TurnOn({
   organisation,
   form,
+  managed,
   busy,
   error,
   onCancel,
@@ -235,10 +263,11 @@ function TurnOn({
 }: {
   organisation: string;
   form: WhatsAppForm;
+  managed: boolean;
   busy: boolean;
   error: string | null;
   onCancel(): void;
-  onTurnOn(next: WhatsAppForm, password: string): void;
+  onTurnOn(next: WhatsAppForm, password?: string): void;
 }) {
   const [voice, setVoice] = useState(true);
   const [uploads, setUploads] = useState(false);
@@ -249,8 +278,10 @@ function TurnOn({
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return;
-    setMissing({ rules: !rules, password: password === "" });
-    if (rules && password !== "") onTurnOn({ ...form, enabled: true, voice, uploads }, password);
+    setMissing({ rules: !rules, password: !managed && password === "" });
+    if (rules && (managed || password !== "")) {
+      onTurnOn({ ...form, enabled: true, voice, uploads }, managed ? undefined : password);
+    }
   }
 
   return (
@@ -275,15 +306,17 @@ function TurnOn({
             {RULES_MISSING}
           </span>
         )}
-        <PasswordField
-          id="whatsapp-admin-password"
-          label="Your Kaagaz password"
-          value={password}
-          onChange={setPassword}
-          autoComplete="current-password"
-          required
-          error={missing.password ? "Enter your password." : null}
-        />
+        {!managed && (
+          <PasswordField
+            id="whatsapp-admin-password"
+            label="Your Kaagaz password"
+            value={password}
+            onChange={setPassword}
+            autoComplete="current-password"
+            required
+            error={missing.password ? "Enter your password." : null}
+          />
+        )}
         {error && (
           <p className="error-text" role="alert">
             {error}

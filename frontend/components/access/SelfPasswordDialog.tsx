@@ -9,6 +9,8 @@ import { useCallback, useId, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { PasswordField } from "@/components/ui/PasswordField";
+import { useOptionalSession } from "@/lib/session";
+import { beginKeycloakReauth, isKeycloakManaged, isKeycloakReauthRequired, keycloakStartFailure } from "@/lib/keycloak";
 import { passwordRetryText, stepAttempt, withPassword } from "./passwordStep";
 import { PASSWORD_BUTTON, PASSWORD_LABEL, PASSWORD_TITLE, selfGrantText } from "./words";
 
@@ -80,6 +82,7 @@ interface OpenStep {
  * the screen knows of) or when the server asks for it; resolves with its reply, or null when the
  * admin cancelled. `dialog`: render it where the screen keeps its dialogs. */
 export function usePasswordStep() {
+  const me = useOptionalSession()?.me ?? null;
   const [open, setOpen] = useState<OpenStep | null>(null);
   // One step at a time: a second ask waits for the first to close, so the dialog never says the
   // wrong "access to …".
@@ -87,32 +90,41 @@ export function usePasswordStep() {
   const steps = useRef(0);
 
   const run = useCallback(
-    <T,>(what: string, send: (password?: string) => Promise<T>, first: boolean) =>
-      withPassword(
-        send,
-        <R,>(attempt: (password: string) => Promise<R>) => {
-          const turn = queue.current.then(
-            () =>
-              new Promise<R | null>((resolve, reject) => {
-                const close = () => setOpen(null);
-                steps.current += 1;
-                setOpen({
-                  key: steps.current,
-                  what,
-                  attempt: stepAttempt(attempt, { close, resolve, reject }),
-                  cancel: () => {
-                    close();
-                    resolve(null);
-                  },
-                });
-              }),
-          );
-          queue.current = turn.catch(() => undefined);
-          return turn;
-        },
-        first,
-      ),
-    [],
+    async <T,>(what: string, send: (password?: string) => Promise<T>, first: boolean): Promise<T | null> => {
+      const ask = <R,>(attempt: (password: string) => Promise<R>) => {
+        const turn = queue.current.then(
+          () =>
+            new Promise<R | null>((resolve, reject) => {
+              const close = () => setOpen(null);
+              steps.current += 1;
+              setOpen({
+                key: steps.current,
+                what,
+                attempt: stepAttempt(attempt, { close, resolve, reject }),
+                cancel: () => {
+                  close();
+                  resolve(null);
+                },
+              });
+            }),
+        );
+        queue.current = turn.catch(() => undefined);
+        return turn;
+      };
+      try {
+        if (isKeycloakManaged(me)) return await send();
+        return await withPassword(send, ask, first);
+      } catch (caught) {
+        if (!isKeycloakReauthRequired(caught)) throw caught;
+        try {
+          await beginKeycloakReauth("access", window.location.pathname);
+          return null;
+        } catch (failed) {
+          throw new Error(keycloakStartFailure(failed));
+        }
+      }
+    },
+    [me],
   );
 
   // A new key each step: nothing typed for one step is left in the next.

@@ -31,11 +31,14 @@ export default async function LoginPage({
         note={signedOutMessage(query)}
         next={pathAfterSignIn(query)}
         oidcError={typeof query.oidc_error === "string" ? query.oidc_error : null}
+        keycloakError={typeof query.keycloak_error === "string" ? query.keycloak_error : null}
         providerStep={query.step === "code"}
+        mfaEnrolRequired={query.mfa === "enrol"}
         providers={options.providers}
         emailOn={options.emailOn}
+        keycloakEnabled={options.keycloakEnabled}
       />
-      <SignUpLink />
+      <SignUpLink keycloakEnabled={options.keycloakEnabled} />
     </AuthFrame>
   );
 }

@@ -86,7 +86,7 @@ _PICTURE_HEADERS = {
 class OpenBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    password: str = Field(min_length=1, max_length=MAX_PASSWORD)
+    password: str | None = Field(default=None, min_length=1, max_length=MAX_PASSWORD)
 
 
 def _state(until: int | None, user: CurrentUser, context: AppContext, now: int) -> dict[str, Any]:
@@ -95,7 +95,11 @@ def _state(until: int | None, user: CurrentUser, context: AppContext, now: int) 
         "open": until is not None,
         "until": None if until is None else datetime.fromtimestamp(until, UTC).isoformat(),
         "seconds": None if until is None else until - now,
-        "via": "google" if confirms_with_google(user, context.settings) else "password",
+        "via": "keycloak"
+        if user.auth_authority == "keycloak"
+        else "google"
+        if confirms_with_google(user, context.settings)
+        else "password",
     }
 
 
@@ -120,7 +124,7 @@ def get_locked_open(request: Request, user: User, context: Context) -> dict[str,
 
 @router.post("/documents/locked-open")
 def open_locked_files(body: OpenBody, request: Request, user: User, context: Context) -> JSONResponse:
-    if confirms_with_google(user, context.settings):  # nothing counted
+    if user.auth_authority != "keycloak" and confirms_with_google(user, context.settings):  # nothing counted
         raise ApiError(409, "google_confirm_required", GOOGLE_INSTEAD)
     _per_user_limit(open_limits, user, TOO_MANY_OPENS)
     now = context.clock()
@@ -132,14 +136,16 @@ def open_locked_files(body: OpenBody, request: Request, user: User, context: Con
         blocked = locked_sql.blocked_until(conn, customer_id, user_id, now=now)
         signed_in_lock = users_sql.peek_attempt(conn, customer_id, user_id, now=now) is None
     tries = 0
-    if blocked is None and not signed_in_lock:
+    if user.auth_authority == "keycloak":
+        prove_password(context, user, body.password, action="locked_open")
+    elif blocked is None and not signed_in_lock:
         with context.db.user(user.customer_id, user.user_id) as conn:
             counted = locked_sql.begin_try(conn, customer_id, user_id, now=now)
         if counted is None:  # blocked a moment ago
             with context.db.user(user.customer_id, user.user_id) as conn:
                 blocked = locked_sql.blocked_until(conn, customer_id, user_id, now=now) or now
         tries = counted or 0
-    if blocked is not None:
+    if blocked is not None and user.auth_authority != "keycloak":
         wait = max(1, int((blocked - now).total_seconds()))
         minutes = -(-wait // 60)
         raise ApiError(
@@ -148,10 +154,11 @@ def open_locked_files(body: OpenBody, request: Request, user: User, context: Con
             f"Too many wrong passwords. Try again in {minutes} {'minute' if minutes == 1 else 'minutes'}.",
             headers={"Retry-After": str(wait)},
         )
-    if signed_in_lock:  # never counted here, so no block comes of it
+    if signed_in_lock and user.auth_authority != "keycloak":  # never counted here, so no block comes of it
         raise password_locked(context)
     try:  # counted on the sign-in lock (p2:58), as every signed-in password is
-        prove_password(context, user, body.password)
+        if user.auth_authority != "keycloak":
+            prove_password(context, user, body.password, action="locked_open")
     except ApiError as refused:
         if refused.code == "wrong_password":
             with context.db.user(user.customer_id, user.user_id) as conn:
@@ -161,7 +168,8 @@ def open_locked_files(body: OpenBody, request: Request, user: User, context: Con
         raise
     with context.db.user(user.customer_id, user.user_id) as conn:
         locked_sql.succeeded(conn, customer_id, user_id)
-        _record(conn, user, "lock.open", {"via": "password"})
+        method = "keycloak" if user.auth_authority == "keycloak" else "password"
+        _record(conn, user, "lock.open", {"via": method})
     until = unix(now) + LOCKED_OPEN_SECONDS
     response = JSONResponse(_state(until, user, context, unix(now)))
     set_locked_open_cookie(response, user, session.session_id, context.settings, until=until)
