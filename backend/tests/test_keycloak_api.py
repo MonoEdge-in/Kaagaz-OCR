@@ -9,6 +9,7 @@ from typing import cast
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from sqlalchemy import Connection
 from sqlalchemy.engine import Engine
@@ -18,7 +19,6 @@ from starlette.testclient import TestClient
 from kaagaz.api import auth, keycloak_oidc
 from kaagaz.api.app import create_app
 from kaagaz.api.auth import CurrentUser, UserAllowGoogleLink, new_session
-from kaagaz.api.context import AppContext
 from kaagaz.api.routers import auth as auth_router
 from kaagaz.api.routers import keycloak as keycloak_router
 from kaagaz.db import keycloak
@@ -366,7 +366,7 @@ def test_bound_flows_reject_another_user_or_browser_and_reauth_rejects_an_unknow
         }
     )
     client = _client(settings=settings)
-    context = cast(AppContext, client.app.state.kaagaz)
+    context = cast(FastAPI, client.app).state.kaagaz
     monkeypatch.setattr(keycloak_router, "_load_active", lambda *args: legacy)
     flow = keycloak.FlowRow(
         nonce="nonce",

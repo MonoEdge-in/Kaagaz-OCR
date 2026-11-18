@@ -119,7 +119,8 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     its voice notes' spend (0098) follows 0097.
     Changed on purpose (#648, 16 Nov 2026): the version finder (0099, 0098 on its branch) follows
     0098, and linking files as versions (0100) follows 0099.
-    Changed on purpose (#664, 18 Nov 2026): the backup reader (0101) follows 0100 and is the head."""
+    Changed on purpose (#664, 18 Nov 2026): the backup reader (0101) follows 0100.
+    Changed on purpose (S2): Keycloak identity foundation (0102) follows 0101 and is the head."""
     scripts = _scripts()
     assert scripts.get_revision("0082").down_revision == "0081"
     assert scripts.get_revision("0083").down_revision == "0082"
@@ -142,4 +143,5 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     assert scripts.get_revision("0099").down_revision == "0098"
     assert scripts.get_revision("0100").down_revision == "0099"
     assert scripts.get_revision("0101").down_revision == "0100"
-    assert scripts.get_heads() == ["0101"]
+    assert scripts.get_revision("0102").down_revision == "0101"
+    assert scripts.get_heads() == ["0102"]

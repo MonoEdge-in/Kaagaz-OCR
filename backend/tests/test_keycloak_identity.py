@@ -15,11 +15,13 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from sqlalchemy import Connection
 
 from kaagaz.api import keycloak_oidc
+from kaagaz.api.auth import CurrentUser
+from kaagaz.api.context import AppContext
 from kaagaz.api.errors import ApiError
 from kaagaz.api.routers.auth import prove_password
 from kaagaz.db import keycloak, whatsapp
 from kaagaz.db.whatsapp import Linked
-from kaagaz.settings import SettingsError, _https_url
+from kaagaz.settings import Settings, SettingsError, _https_url
 from tests.settings_factory import make_settings
 
 NOW = datetime(2026, 11, 17, 10, 0, tzinfo=UTC)
@@ -108,10 +110,10 @@ ISSUER = "https://id.example.test/realms/kaagaz"
 CLIENT_ID = "kaagaz-api"
 ACR = "1"
 PROVIDER_CLAIM = "auth_provider"
-NOW = 1_800_000_000
+OIDC_NOW = 1_800_000_000
 
 
-def _settings(**overrides: object):
+def _settings(**overrides: object) -> Settings:
     values: dict[str, object] = {
         "keycloak_enabled": True,
         "keycloak_issuer": ISSUER,
@@ -192,9 +194,9 @@ def _identity_claims(**overrides: object) -> dict[str, object]:
         "iss": ISSUER,
         "aud": CLIENT_ID,
         "azp": CLIENT_ID,
-        "iat": NOW,
-        "exp": NOW + 60,
-        "auth_time": NOW,
+        "iat": OIDC_NOW,
+        "exp": OIDC_NOW + 60,
+        "auth_time": OIDC_NOW,
         "nonce": "flow-nonce",
         "sub": "opaque-subject",
         "sid": "opaque-keycloak-session",
@@ -259,8 +261,8 @@ def test_compose_alias_is_http_only_for_the_exact_keycloak_issuer() -> None:
         ({"aud": "another-client"}, "bad_token"),
         ({"azp": "another-client"}, "bad_token"),
         ({"acr": "urn:kaagaz:assurance:password"}, "assurance_required"),
-        ({"exp": NOW - 61}, "expired"),
-        ({"iat": NOW + 61}, "expired"),
+        ({"exp": OIDC_NOW - 61}, "expired"),
+        ({"iat": OIDC_NOW + 61}, "expired"),
         ({"sub": None}, "bad_token"),
     ],
 )
@@ -271,7 +273,9 @@ def test_signed_id_token_rejects_wrong_identity_and_assurance_claims(
     _install_fake_provider(monkeypatch, private)
     token = _token(private, _identity_claims(**updates))
     with pytest.raises(keycloak_oidc.OidcError, match=error_code):
-        keycloak_oidc.verified_identity(_settings(), token, nonce="flow-nonce", now=NOW, started_at=NOW)
+        keycloak_oidc.verified_identity(
+            _settings(), token, nonce="flow-nonce", now=OIDC_NOW, started_at=OIDC_NOW
+        )
 
 
 def test_confidential_code_exchange_keeps_secret_in_basic_auth_only(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -326,7 +330,7 @@ def test_rs256_identity_accepts_rotated_key_and_uses_amr_despite_a_stale_broker_
         kid="rotated-key",
     )
     identity = keycloak_oidc.verified_identity(
-        _settings(), token, nonce="flow-nonce", now=NOW, started_at=NOW
+        _settings(), token, nonce="flow-nonce", now=OIDC_NOW, started_at=OIDC_NOW
     )
     assert identity.subject == "opaque-subject"
     assert identity.session_id == "opaque-keycloak-session"
@@ -340,15 +344,19 @@ def test_identity_requires_executed_password_and_otp(monkeypatch: pytest.MonkeyP
     _install_fake_provider(monkeypatch, private)
     token = _token(private, _identity_claims(amr=amr, **{PROVIDER_CLAIM: "company-password"}))
     with pytest.raises(keycloak_oidc.OidcError, match="mfa_verify_again"):
-        keycloak_oidc.verified_identity(_settings(), token, nonce="flow-nonce", now=NOW, started_at=NOW)
+        keycloak_oidc.verified_identity(
+            _settings(), token, nonce="flow-nonce", now=OIDC_NOW, started_at=OIDC_NOW
+        )
 
 
 def test_identity_requires_auth_time_from_this_flow(monkeypatch: pytest.MonkeyPatch) -> None:
     private = _key()
     _install_fake_provider(monkeypatch, private)
-    token = _token(private, _identity_claims(auth_time=NOW - 120))
+    token = _token(private, _identity_claims(auth_time=OIDC_NOW - 120))
     with pytest.raises(keycloak_oidc.OidcError, match="stale_authentication"):
-        keycloak_oidc.verified_identity(_settings(), token, nonce="flow-nonce", now=NOW, started_at=NOW - 30)
+        keycloak_oidc.verified_identity(
+            _settings(), token, nonce="flow-nonce", now=OIDC_NOW, started_at=OIDC_NOW - 30
+        )
 
 
 @pytest.mark.parametrize(
@@ -368,8 +376,8 @@ def test_signed_logout_requires_the_exact_present_event_object(
     claims = {
         "iss": ISSUER,
         "aud": CLIENT_ID,
-        "iat": NOW,
-        "exp": NOW + 60,
+        "iat": OIDC_NOW,
+        "exp": OIDC_NOW + 60,
         "sub": "opaque-subject",
         "sid": "opaque-keycloak-session",
         "jti": "one-time-logout-id",
@@ -377,18 +385,18 @@ def test_signed_logout_requires_the_exact_present_event_object(
     }
     token = _token(private, claims, typ="logout+jwt")
     with pytest.raises(keycloak_oidc.OidcError, match="bad_logout"):
-        keycloak_oidc.verified_logout(_settings(), token, now=NOW)
+        keycloak_oidc.verified_logout(_settings(), token, now=OIDC_NOW)
 
 
 def test_signed_logout_rejects_nonce_and_accepts_valid_event(monkeypatch: pytest.MonkeyPatch) -> None:
     private = _key()
     _install_fake_provider(monkeypatch, private)
-    event = {"http://schemas.openid.net/event/backchannel-logout": {}}
+    event: dict[str, dict[str, object]] = {"http://schemas.openid.net/event/backchannel-logout": {}}
     valid = {
         "iss": ISSUER,
         "aud": CLIENT_ID,
-        "iat": NOW,
-        "exp": NOW + 60,
+        "iat": OIDC_NOW,
+        "exp": OIDC_NOW + 60,
         "sub": "opaque-subject",
         "sid": "opaque-keycloak-session",
         "jti": "one-time-logout-id",
@@ -398,22 +406,24 @@ def test_signed_logout_rejects_nonce_and_accepts_valid_event(monkeypatch: pytest
         keycloak_oidc.verified_logout(
             _settings(),
             _token(private, valid | {"nonce": "bad"}, typ="logout+jwt"),
-            now=NOW,
+            now=OIDC_NOW,
         )
-    assert keycloak_oidc.verified_logout(_settings(), _token(private, valid, typ="logout+jwt"), now=NOW) == (
+    assert keycloak_oidc.verified_logout(
+        _settings(), _token(private, valid, typ="logout+jwt"), now=OIDC_NOW
+    ) == (
         ISSUER,
         "opaque-subject",
         "opaque-keycloak-session",
         "one-time-logout-id",
-        NOW + 60,
+        OIDC_NOW + 60,
     )
 
 
 def test_mapped_password_proof_requires_the_exact_action_cookie() -> None:
-    context = object()
-    matching = SimpleNamespace(auth_authority="keycloak", reauth_action="locks")
-    stale_action = SimpleNamespace(auth_authority="keycloak", reauth_action="access")
-    assert prove_password(context, matching, None, action="locks") is None
+    context = cast(AppContext, object())
+    matching = cast(CurrentUser, SimpleNamespace(auth_authority="keycloak", reauth_action="locks"))
+    stale_action = cast(CurrentUser, SimpleNamespace(auth_authority="keycloak", reauth_action="access"))
+    prove_password(context, matching, None, action="locks")
     with pytest.raises(ApiError) as error:
         prove_password(context, stale_action, None, action="locks")
     assert error.value.code == "keycloak_reauth_required"

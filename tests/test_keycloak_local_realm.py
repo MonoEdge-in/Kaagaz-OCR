@@ -15,6 +15,31 @@ class KeycloakLocalRealmTests(unittest.TestCase):
         self.client = next(client for client in REALM["clients"] if client["clientId"] == "kaagaz-web")
         self.flows = {flow["alias"]: flow for flow in REALM["authenticationFlows"]}
 
+    def test_environment_templates_have_safe_values_and_runtime_names(self) -> None:
+        api_template = ROOT / "keycloak" / "api.env.example"
+        admin_template = ROOT / "keycloak" / "admin.env.example"
+
+        def values(path: Path) -> dict[str, str]:
+            return {
+                key: value
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line and not line.startswith("#")
+                for key, value in [line.split("=", maxsplit=1)]
+            }
+
+        self.assertEqual(
+            {
+                "KEYCLOAK_CLIENT_SECRET": "",
+                "KEYCLOAK_FLOW_ENCRYPTION_KEY": "",
+                "KEYCLOAK_ENABLED": "false",
+            },
+            values(api_template),
+        )
+        self.assertEqual(
+            {"KC_BOOTSTRAP_ADMIN_USERNAME": "local-admin", "KC_BOOTSTRAP_ADMIN_PASSWORD": ""},
+            values(admin_template),
+        )
+
     def test_realm_has_no_users_or_unconfigured_brokers(self) -> None:
         self.assertEqual([], REALM["users"])
         self.assertEqual([], REALM["identityProviders"])

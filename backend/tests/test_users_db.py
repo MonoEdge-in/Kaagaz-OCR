@@ -144,6 +144,7 @@ def test_begin_attempt_counts_before_the_password_check_and_returns_the_sign_in_
         user_id=user_id,
         customer_id=customer_id,
         password_hash="scrypt$not-a-real-hash",
+        auth_authority="legacy",
         role="admin",
         disabled=False,
         session_version=1,

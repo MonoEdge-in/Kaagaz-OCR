@@ -242,7 +242,9 @@ def test_existing_password_only_cookie_is_rejected_during_coexistence(db: Databa
     signed = legacy_api.sign_in(customer_id, "member")
     coexistence_api = Api(db, settings=make_settings(keycloak_enabled=True))
     client = coexistence_api.client()
-    client.cookies.set(SESSION_COOKIE, signed.client.cookies.get(SESSION_COOKIE))
+    token = signed.client.cookies.get(SESSION_COOKIE)
+    assert token is not None
+    client.cookies.set(SESSION_COOKIE, token)
 
     assert client.get("/api/documents").status_code == 401
 

@@ -133,13 +133,13 @@ Local password sign-in always requires password and OTP. The first sign-in enrol
 
 Keycloak imports the file only when the `kaagaz-local` realm is absent; apply later edits in the Admin Console or reset only the local Keycloak data volume.
 
-1. Copy `.env.keycloak-admin.example` to `.env.keycloak-admin`, set a unique `KC_BOOTSTRAP_ADMIN_PASSWORD`, then start the local profile:
+1. Copy `keycloak/admin.env.example` to `.env.keycloak-admin`, set a unique `KC_BOOTSTRAP_ADMIN_PASSWORD`, then start the local profile:
 
    ```
    docker compose --profile keycloak -f docker-compose.yml -f docker-compose.keycloak.yml up --build
    ```
 
-2. In the Keycloak admin console at `http://keycloak.localhost:8081`, copy the `kaagaz-web` client secret. Copy `.env.keycloak.example` to `.env.keycloak`, set that secret, and generate a separate `KEYCLOAK_FLOW_ENCRYPTION_KEY` with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Keep `KEYCLOAK_ENABLED=false` here during setup. The API alone receives this file; Keycloak alone receives the admin file.
+2. In the Keycloak admin console at `http://keycloak.localhost:8081`, copy the `kaagaz-web` client secret. Copy `keycloak/api.env.example` to `.env.keycloak`, set that secret, and generate a separate `KEYCLOAK_FLOW_ENCRYPTION_KEY` with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Keep `KEYCLOAK_ENABLED=false` here during setup. The API alone receives this file; Keycloak alone receives the admin file.
 
 3. The issuer is `http://keycloak.localhost:8081/realms/kaagaz-local` and the exact redirect is `http://localhost:3000/api/auth/keycloak/callback`; the overlay routes that issuer to Keycloak for the API. Keep `KEYCLOAK_ENABLED=false` in shared `.env`; after setup, change it to `true` only in API-only `.env.keycloak`, then recreate the API with `docker compose --profile keycloak -f docker-compose.yml -f docker-compose.keycloak.yml up -d --no-deps api`.
 

@@ -1,4 +1,4 @@
-"""Migration 0101's comments, privilege parity, reversible legacy grants and safety guard."""
+"""Migration 0102's comments, privilege parity, reversible legacy grants and safety guard."""
 
 import subprocess
 from datetime import UTC, datetime
@@ -15,7 +15,7 @@ from tests.test_migration_0037 import _load
 
 pytestmark = pytest.mark.db
 fresh = base.fresh
-M0101 = _load("0101_keycloak_identity.py")
+M0102 = _load("0102_keycloak_identity.py")
 
 
 def test_app_and_worker_rights_match_and_the_new_dictionary_entries_are_complete(db: Database) -> None:
@@ -47,7 +47,7 @@ def test_app_and_worker_rights_match_and_the_new_dictionary_entries_are_complete
 
 def test_downgrade_restores_user_insert_and_update_grants(fresh: tuple[str, Database]) -> None:
     url, db = fresh
-    migrate(url, "0101")
+    migrate(url, "0102")
     customer, _ = new_customer(db)
 
     base._downgrade(url, "0100")
@@ -71,12 +71,12 @@ def test_downgrade_restores_user_insert_and_update_grants(fresh: tuple[str, Data
             == "Updated after downgrade"
         )
 
-    migrate(url, "0101")
+    migrate(url, "0102")
 
 
 def test_downgrade_refuses_to_turn_a_mapped_user_back_into_legacy(fresh: tuple[str, Database]) -> None:
     url, db = fresh
-    migrate(url, "0101")
+    migrate(url, "0102")
     customer, user = new_customer(db)
     now = datetime.now(UTC)
     with db.user(customer, user) as conn:
@@ -99,4 +99,4 @@ def test_downgrade_refuses_to_turn_a_mapped_user_back_into_legacy(fresh: tuple[s
         base._downgrade(url, "0100")
     assert b"cannot downgrade while Keycloak users" in refused.value.stderr
     with db.system() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0101"
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0102"
