@@ -40,6 +40,7 @@ import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { markerId } from "@/components/words/ViewerWords";
 import { markerRect, turnedBox } from "@/components/words/spots";
+import { APPROXIMATE_SPOT } from "@/components/viewer/selection";
 import type { Marker } from "@/components/words/spots";
 import { flagDomId, markLabel } from "@/components/review/wordReview";
 import { pageImageUrl } from "@/lib/api";
@@ -136,6 +137,8 @@ export interface PageViewerProps {
   role?: Role;
   /** #600: the page's turn, clockwise degrees on top of its own. */
   turn?: 0 | 90 | 180 | 270;
+  /** PRD 9 F-16: the highlighted spot was not confirmed: drawn dashed, labelled APPROXIMATE_SPOT. */
+  approximate?: boolean;
 }
 
 export function PageViewer({
@@ -163,6 +166,7 @@ export function PageViewer({
   wordHits = [],
   role,
   turn = 0,
+  approximate = false,
 }: PageViewerProps) {
   const isCrop = crop !== undefined;
   const { ref: measureRef, box, near } = useObservedBox(isCrop);
@@ -444,10 +448,12 @@ export function PageViewer({
               <div
                 key={`${spotKey}:${index}`}
                 ref={index === 0 && !crop ? spotRef : undefined}
-                className={crop ? styles.box : `${styles.box} ${styles.pulse}`}
+                className={`${crop ? styles.box : `${styles.box} ${styles.pulse}`}${approximate ? ` ${styles.approximate}` : ""}`}
                 aria-hidden="true"
                 style={{ left: px.left, top: px.top, width: px.width, height: px.height }}
-              />
+              >
+                {approximate ? <span className={styles.approximateLabel}>{APPROXIMATE_SPOT}</span> : null}
+              </div>
             );
           })}
           {crop

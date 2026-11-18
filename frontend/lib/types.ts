@@ -1026,6 +1026,7 @@ export interface ReadLine {
   table?: { id: string; row: number; col: number; header: boolean } | null; // a table cell's place
   key?: string; // #527: the clean copy's lines only, the line's stable key (a flag's word_key)
   correction?: LineCorrection | null; // #527: the clean copy's lines only; `text` is then the corrected text
+  box_source?: "found" | "model" | null; // PRD 9 F-16: the Text tab's lines only; "model": no found box confirmed its spot
 }
 
 /** #527: the correction in force for a clean copy line; `before_text` is the text it replaced. */

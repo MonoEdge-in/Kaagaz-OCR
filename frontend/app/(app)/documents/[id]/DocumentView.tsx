@@ -99,8 +99,8 @@ import { fieldText } from "@/components/viewer/labels";
 import { lowResolutionText } from "@/components/viewer/panels";
 import { pagesAround, usePageCache } from "@/components/viewer/usePageCache";
 import type { Spot } from "@/components/viewer/panels";
-import { beingRead, canReprocess, loadFailure, settledText } from "@/components/viewer/reprocess";
-import { highlightsOf, initialSelection, pageChange } from "@/components/viewer/selection";
+import { beingRead, canReprocess, loadFailure, readAgainText, readLines, settledText } from "@/components/viewer/reprocess";
+import { APPROXIMATE_NOTE, highlightsOf, initialSelection, pageChange } from "@/components/viewer/selection";
 import { selectSpot } from "@/components/viewer/selection";
 import type { Selection } from "@/components/viewer/selection";
 import { canReview } from "@/components/review/review";
@@ -230,6 +230,8 @@ export function DocumentView({
   // Set when a poll sees reading end: the next detail says what was found ("again": after Read again).
   const settling = useRef<"read" | "again" | null>(null);
   const readingAgain = useRef(false);
+  // PRD 9 F-15: the page Read this page again was asked for, and its lines before (readLines).
+  const readAgainBefore = useRef<{ pageNo: number; lines: string[] } | null>(null);
   // Ready first: the detail shown came while the document was still being understood.
   const loadedUnderstanding = useRef(false);
   // "Add meaning": what it is for, and the button that opened it (focus goes back there).
@@ -306,6 +308,16 @@ export function DocumentView({
         if (beingRead(detail.status) || loadedUnderstanding.current) poll.later();
         if (!beingRead(detail.status) && settling.current) {
           setAnnouncement(settledText(detail, settling.current === "again"));
+        }
+        const again = readAgainBefore.current;
+        if (again && settling.current === "again") {
+          readAgainBefore.current = null; // PRD 9 F-15: once read, what it changed on that page
+          if (detail.status === "ready") {
+            getPageReadings(documentId, again.pageNo).then(
+              (after) => setToast(readAgainText(again.lines, readLines(after))),
+              () => undefined, // the page shows what it has; only the note is left out
+            );
+          }
         }
         settling.current = null;
       })
@@ -419,7 +431,7 @@ export function DocumentView({
     if (bringPageForSpot(selection?.region ?? null, region)) viewerRef.current?.scrollIntoView({ block: "nearest" });
   };
   const showSpot = (spot: Spot, said = `Showing ${spot.name} on page ${spot.region.page}.`) => {
-    choose(selectSpot(spot.region, spot.label));
+    choose({ ...selectSpot(spot.region, spot.label), approximate: spot.approximate }); // PRD 9 F-16
     setAnnouncement(said);
     bringPage(spot.region);
   };
@@ -565,7 +577,9 @@ export function DocumentView({
   const fromLink = regionParam !== null && !(chosen && chosen.linkKey === linkKey);
   const highlightNote = highlighted
     ? `Highlighted: ${fieldText(highlighted.field)}${fromLink ? FROM_LINK : ""}`
-    : undefined;
+    : selection?.approximate
+      ? APPROXIMATE_NOTE
+      : undefined;
   const reloadWith = (message: string, undo?: () => Promise<unknown>) => {
     setToast(message); // its own live region reads it out
     setToastUndo(() => undo ?? null);
@@ -615,6 +629,7 @@ export function DocumentView({
                   onPageChange={changePage}
                   highlights={highlightsOf(selection)}
                   highlightNote={highlightNote}
+                  approximate={selection?.approximate}
                   download={download}
                   marks={words.markersAround}
                   activeMark={words.activeId}
@@ -642,6 +657,7 @@ export function DocumentView({
                   page={page}
                   highlights={highlightsOf(selection)}
                   highlightNote={highlightNote}
+                  approximate={selection?.approximate}
                   pageNumbers={pageNumbers}
                   onPageChange={changePage}
                   marks={words.markers}
@@ -921,9 +937,10 @@ export function DocumentView({
                           userId={me.user.id}
                           canFix={canReview(me.user.role) && detail.deleted_at === null}
                           canUpload={detail.deleted_at === null}
-                          onReadAgain={(reply) => {
+                          onReadAgain={(reply, before) => {
                             merge(reply);
                             readingAgain.current = true;
+                            readAgainBefore.current = before && { pageNo: page.page_no, lines: before };
                             poll.later();
                           }}
                           onKept={keepPage}

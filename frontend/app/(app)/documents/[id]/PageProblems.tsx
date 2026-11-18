@@ -34,7 +34,8 @@ import {
   problemsOf,
 } from "@/components/viewer/pageProblems";
 import type { Fix } from "@/components/viewer/pageProblems";
-import { acceptPage, readPageAgain, uploadVersion } from "@/lib/api";
+import { acceptPage, getPageReadings, readPageAgain, uploadVersion } from "@/lib/api";
+import { readLines } from "@/components/viewer/reprocess";
 import { withFrom } from "@/lib/backLink";
 import type { DocumentSummary, PageSummary } from "@/lib/types";
 import styles from "./DocumentView.module.css";
@@ -45,7 +46,7 @@ export interface PageProblemsProps {
   userId: string;
   canFix: boolean; // a reviewer or an admin, out of Trash
   canUpload: boolean; // out of Trash
-  onReadAgain(reply: DocumentSummary): void;
+  onReadAgain(reply: DocumentSummary, before: string[] | null): void; // before: the page's readLines (PRD 9 F-15)
   onKept(page: PageSummary): void;
   /** Inside the Attention panel, under its page: the fix and the buttons only. */
   inline?: boolean;
@@ -99,12 +100,17 @@ export function PageProblems({
   function send(fix: Fix) {
     if (state.step !== "confirming") return;
     dispatch({ type: "send" });
+    // PRD 9 F-15: the page's lines first (none if they can't be had), to say what changed once read.
     const done =
       fix === "read"
-        ? readPageAgain(documentId, page.page_no).then((reply) => {
-            setAskedAgain(true);
-            onReadAgain(reply);
-          })
+        ? getPageReadings(documentId, page.page_no)
+            .then(readLines, () => null)
+            .then((before) =>
+              readPageAgain(documentId, page.page_no).then((reply) => {
+                setAskedAgain(true);
+                onReadAgain(reply, before);
+              }),
+            )
         : acceptPage(documentId, page.page_no).then(onKept);
     done.then(
       () => dispatch({ type: "sent" }),
