@@ -344,7 +344,8 @@ describe("the document screen (DD6, DD7, DD9)", () => {
     expect(markChipText(mark("Fettari"))).toBe("Fettari");
     expect(markChipText(mark("  "))).toBe("Unsure word");
     const panels = read("app/(app)/documents/[id]/DocumentPanels.tsx");
-    expect(panels).toContain("{index + 1}/{shownMarks.length}");
+    // Changed on purpose (PRD 9 F-14): numbered over the open marks (`at`); `index` stays the page's.
+    expect(panels).toContain("{at + 1}/{shownMarks.length}");
     expect(panels).toContain("aria-label={name}");
     expect(read("components/viewer/PageViewer.tsx")).toContain('data-hot={hotMark === index ? "true" : undefined}');
   });
