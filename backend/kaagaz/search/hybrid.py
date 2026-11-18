@@ -145,7 +145,7 @@ MAX_LIMIT = 100
 FUZZY_THRESHOLD = 0.3
 # Every search statement is cancelled after this long (PROVISIONAL). A meaning
 # list that runs out of time is dropped; the word and fuzzy lists still answer.
-STATEMENT_TIMEOUT_MS = 3000
+STATEMENT_TIMEOUT_MS = 30000
 # A fused search (search_translated: CX6's aspects, the translation) runs at most this many
 # texts' lists at once, each on its own pooled connection (Ask speed, 24 Oct 2026).
 SEARCH_FAN_OUT = 4
