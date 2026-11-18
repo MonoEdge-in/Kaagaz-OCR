@@ -132,6 +132,8 @@
   ``document.reprocess`` with no actor and ``{"by": "cli"}``, READ_AGAIN_BATCH a transaction. No
   hourly REPROCESS_PER_HOUR (an operator's run), and its rows never count against the users' hour.
   A queued document is no longer failed, so a second run never queues it again. Ids and counts only.
+  On a server: ``$DC run --rm migrate python -m kaagaz.cli read-again-failed [--apply]``; migrate
+  has the owner's login and, in docker-compose.prod.yml, the SQS env that ``--apply`` queues to.
 * ``check-access`` (PRD 7, #590): works out every live folder's and live document's department
   and private folder again from the folder tree, each customer in its own ``db.customer()``, and
   prints one line for each stored value that differs, then one for each member row whose folder
@@ -401,7 +403,8 @@ def _parser() -> argparse.ArgumentParser:
     again = commands.add_parser(
         "read-again-failed",
         help="read again the documents that failed no_text on Mistral, where a backup reader is set"
-        " (no hourly Read again limit: it queues 50 a transaction)",
+        " (no hourly Read again limit: it queues 50 a transaction; on a server, run it in migrate:"
+        " $DC run --rm migrate python -m kaagaz.cli read-again-failed)",
     )
     again.add_argument("--customer-id", "--customer", help="one customer only (default: every customer)")
     again.add_argument("--apply", action="store_true", help="queue them (default: only list them)")
