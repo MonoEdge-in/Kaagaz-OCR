@@ -1189,7 +1189,10 @@ class GeminiEngine:
         ``first`` with the tokens the try was billed: a refusal, a local read (past
         READER_OUTAGE_FALLBACK_MINUTES of an outage too) or no text never reads locally here. An
         outage or a key problem of ``second`` (``BackendUnavailable``) goes up: the document
-        waits, as a Gemini document does (#664 review)."""
+        waits, as a Gemini document does (#664 review). With no time left for a call, ``first``
+        at once: nothing sent, nothing read locally."""
+        if self._left() < MIN_CALL_SECONDS:
+            return first
         on_second = dataclasses.replace(
             pages,
             model=second.model,

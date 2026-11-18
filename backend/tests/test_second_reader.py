@@ -288,6 +288,7 @@ def test_no_time_left_the_page_stays_as_mistral_left_it() -> None:
         read = rig.engine.read_page(page(), page_no=1)
     assert (read.lines, read.issues, read.read_by) == ((), (READER_REFUSED,), BY_4)
     assert rig.client.calls == []  # Gemini has no time either: nothing is sent
+    assert rig.local.pages == 0  # #664 review: no local read made only to be thrown away
 
 
 def test_each_page_is_read_by_the_second_reader_once() -> None:
