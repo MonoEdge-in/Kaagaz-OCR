@@ -168,7 +168,7 @@ describe("second reader: the picker", () => {
       "Platform default (Off)",
       "Off",
       "Gemini 3.5 Flash, normal read",
-      "Gemini 3.5 Flash, ultra low cost",
+      "Gemini 3.5 Flash, ultra low cost, at most ₹0.40 a page", // Changed on purpose (#664 review): its ceiling
       "Gemini 3.1 Pro, normal read",
       "Gemini 3.1 Pro, ultra low cost (not available: It can&#x27;t read with minimal thinking.) [disabled]",
     ]);
@@ -241,6 +241,30 @@ describe("second reader: the draft and what it saves", () => {
     // Saved on an organisation that reads with Gemini (an older save): shown, so it can be seen and turned off.
     const hidden = values({ scan_reader: "openrouter", second_reader: "off" });
     expect(fields({ own: hidden })).toContain(`id="${ID}"`);
+  });
+
+  it("shows the ultra low cost ceiling while it reads that way, and keeps it on a reader switch (#664 review)", () => {
+    const CEILING = "ai-ulc-ceiling-paise";
+    const ulcSecond = values({ scan_reader: "mistral", second_reader: "ultra_low_cost", second_model: FLASH.id });
+    expect(fields({ own: MISTRAL })).not.toContain(`id="${CEILING}"`);
+    const html = fields({ own: ulcSecond });
+    expect(html).toContain(`id="${CEILING}"`);
+    expect(html.indexOf(`id="${CEILING}"`)).toBeGreaterThan(html.indexOf(`id="${ID}"`));
+    // The option says the ceiling in effect: the draft's own, else the platform's, else ₹0.40.
+    const option = (html: string) => optionsOf(html, ID).find((words) => words?.startsWith("Gemini 3.5 Flash, ultra low cost"));
+    expect(option(fields({ own: { ...ulcSecond, ulc_ceiling_paise: 30 } }))).toBe("Gemini 3.5 Flash, ultra low cost, at most ₹0.30 a page");
+    expect(option(fields({ own: ulcSecond, defaults: values({ ulc_ceiling_paise: 25 }) }))).toBe(
+      "Gemini 3.5 Flash, ultra low cost, at most ₹0.25 a page",
+    );
+    // Mistral still reads: the ceiling stays with the draft.
+    const typed = { ...draftOf(ulcSecond), ulc_ceiling: "0.30" };
+    expect(pickedReader(typed, "mistral", values(), ENV, false).ulc_ceiling).toBe("0.30");
+    expect(pickedReader(typed, "", MISTRAL, ENV, false).ulc_ceiling).toBe("0.30");
+    expect(changesText(draftOf(ulcSecond), typed, CATALOGUE, { defaults: values(), env: ENV })).toEqual(["Most a page may cost: ₹0.30"]);
+    // Gemini reads instead: the second reader goes, and the ceiling with it.
+    expect(pickedReader(typed, "openrouter", values(), ENV, false)).toMatchObject({ second_reader: null, ulc_ceiling: "" });
+    // On the platform the second reader stays, and so does its ceiling.
+    expect(pickedReader(typed, "openrouter", values(), ENV, true).ulc_ceiling).toBe("0.30");
   });
 
   it("shows the server's refusal of an incomplete pair next to it", () => {

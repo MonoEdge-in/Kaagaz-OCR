@@ -153,6 +153,7 @@ import {
   savedText,
   scanModelsDiffer,
   scanSettings,
+  secondCeilingOf,
   secondOptions,
   secondValue,
   shownErrors,
@@ -657,14 +658,15 @@ export function AiFields(props: {
                   platform={platform}
                   inherit={platform ? "Off" : `Platform default (${from("second_reader")})`}
                   value={secondValue(draft)}
-                  options={secondOptions(catalogue, saved, platform)}
+                  options={secondOptions(catalogue, saved, platform, secondCeilingOf(draft, defaults, env, platform))}
                   hint={SECOND_READER_HINT}
                   problem={<FieldError field="second_reader" errors={errors} />}
                   problemId={errors.second_reader ? `${secondId}-error` : undefined}
                   onPick={(value) => onChange(pickedSecond(draft, value))}
                 />
               )}
-              {ulc && (
+              {(ulc || draft.second_reader === "ultra_low_cost") && (
+                // #664 review: the second reader reads at this ceiling under ultra low cost too.
                 <SettingField
                   id={ceilingId}
                   label={CEILING_LABEL}

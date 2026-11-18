@@ -240,11 +240,13 @@ export function pickedReader(draft: AiDraft, value: string, defaults: AiValues, 
   const next = { ...draft, scan_reader: (value || null) as ScanReader | null };
   const reader = readerOf(next, defaults, env, platform);
   const keepSecond = platform || reader === "mistral";
+  const second = keepSecond ? next.second_reader : null;
   return {
     ...next,
     mistral_model: reader === "mistral" ? next.mistral_model : null,
-    ulc_ceiling: reader === "ultra_low_cost" ? next.ulc_ceiling : "",
-    second_reader: keepSecond ? next.second_reader : null,
+    // #664 review: the ceiling stays while the second reader reads with ultra low cost, too.
+    ulc_ceiling: reader === "ultra_low_cost" || second === "ultra_low_cost" ? next.ulc_ceiling : "",
+    second_reader: second,
     second_model: keepSecond ? next.second_model : null,
   };
 }
@@ -272,19 +274,26 @@ export function secondWords(values: SecondPair, catalogue: OperatorModel[]): str
 }
 
 /** The select's options: off (an organisation's own), then each enabled scanning model (and the saved
- * one), normal or ultra low cost, ultra low cost only for a model that can (else said why). */
-export function secondOptions(catalogue: OperatorModel[], saved: SecondPair, platform: boolean) {
+ * one), normal or ultra low cost, ultra low cost only for a model that can (else said why), with
+ * the ceiling it reads at (#664 review: ``ceilingPaise``, ``secondCeilingOf``). */
+export function secondOptions(catalogue: OperatorModel[], saved: SecondPair, platform: boolean, ceilingPaise: number) {
   const models = offered(catalogue, "scan", saved.second_model === null ? [] : [saved.second_model]);
+  const atMost = `at most ${ceilingText(ceilingPaise)} a page`;
   return [
     ...(platform ? [] : [{ value: "off", words: SECOND_OFF }]),
     ...models.flatMap((model) => [
       { value: `openrouter:${model.id}`, words: `${model.name}, ${SECOND_WAY_WORDS.openrouter}` },
       model.ulc_ready
-        ? { value: `ultra_low_cost:${model.id}`, words: `${model.name}, ${SECOND_WAY_WORDS.ultra_low_cost}` }
+        ? { value: `ultra_low_cost:${model.id}`, words: `${model.name}, ${SECOND_WAY_WORDS.ultra_low_cost}, ${atMost}` }
         : { value: `ultra_low_cost:${model.id}`, words: `${model.name}, ${SECOND_WAY_WORDS.ultra_low_cost} (not available: ${model.ulc_why})`, disabled: true },
     ]),
   ];
 }
+
+/** The ceiling the second reader reads at under ultra low cost, as the server takes it: the draft's
+ * own, else the platform's (an organisation's), else the server's ₹0.40 (never the .env switch's). */
+export const secondCeilingOf = (draft: Pick<AiDraft, "ulc_ceiling">, defaults: AiValues, env: AiEnv, platform: boolean): number =>
+  parseCeiling(draft.ulc_ceiling) ?? (platform ? null : defaults.ulc_ceiling_paise) ?? env.ulc_ceiling_paise;
 
 /** Pick the second reader from its select value: the way and the model together. */
 export function pickedSecond(draft: AiDraft, value: string): AiDraft {
@@ -803,7 +812,7 @@ export function changesText(
   const leftOut = (area: string) =>
     reader !== null &&
     (((area === "mistral_model" || area === "second_reader") && reader !== "mistral") ||
-      (area === "ulc_ceiling_paise" && reader !== "ultra_low_cost"));
+      (area === "ulc_ceiling_paise" && reader !== "ultra_low_cost" && draft.second_reader !== "ultra_low_cost"));
   const changes = DEFAULT_AREAS.filter((each) => each.changed(before, after) && !leftOut(each.area)).map(
     (each) => `${capital(each.label)}: ${each.now(after, catalogue, reply?.env.mistral_models ?? [])}`,
   );
