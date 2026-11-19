@@ -106,6 +106,7 @@ describe("Make private opens the panel at its Make private step (#700)", () => {
     serve({
       "GET /api/folders/sal/audience": { groups: [], everyone_else: 3 },
       "GET /api/folders/sal/private/preview?on=true": { losing: [], gaining: [], files: 3, named_before: [] },
+      "GET /api/folders/sal/private/preview?on=false": { losing: [], gaining: [], files: 3 },
       "PUT /api/folders/sal/private": { private: true, named: [], you_lose_access: false },
     });
     const container = doc.body.appendChild(doc.createElement("div")) as FakeElement;
@@ -117,16 +118,20 @@ describe("Make private opens the panel at its Make private step (#700)", () => {
       abilities: ADMIN,
       place: open,
       start,
-      onClose: () => undefined,
+      onClose: vi.fn(),
       onChanged: vi.fn(),
     };
     await act(async () => root!.render(createElement(AudiencePanel, props)));
     await settle();
-    return props.onChanged;
+    return props;
   }
+  const press = async (text: string) => {
+    await act(async () => void fire(button(text)!, "click", { button: 0 }));
+    await settle();
+  };
 
   it("shows the Make private step first, with its preview, and makes it private from there", async () => {
-    const onChanged = await panel("private");
+    const { onChanged } = await panel("private");
     expect(doc.body.textContent).toContain("Make “Salaries” private?");
     expect(calls.map((call) => `${call.method} ${call.url}`)).toContain("GET /api/folders/sal/private/preview?on=true");
     await act(async () => void fire(button("Make private")!, "click", { button: 0 }));
@@ -137,6 +142,33 @@ describe("Make private opens the panel at its Make private step (#700)", () => {
       body: { on: true, named: [] },
     });
     expect(onChanged).toHaveBeenCalledWith("Salaries is now private.");
+  });
+
+  // Follow-up (lead, 19 Nov): opened straight at the step, Cancel shuts the panel; reached from
+  // inside who can see it, Cancel goes back there, as before.
+  it("opened straight at Make private: Cancel shuts the panel", async () => {
+    const { onClose } = await panel("private");
+    await press("Cancel");
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("Make private reached from who can see it: Cancel goes back there, the panel stays", async () => {
+    const { onClose } = await panel();
+    await press("Make private"); // the panel's
+    expect(doc.body.textContent).toContain("Make “Salaries” private?");
+    await press("Cancel");
+    expect(onClose).not.toHaveBeenCalled();
+    expect(doc.body.textContent).not.toContain("Make “Salaries” private?");
+    expect(button("Make private")).not.toBeNull(); // the audience view's own button again
+  });
+
+  it("opened straight, made private, then a later step's Cancel goes back to who can see it", async () => {
+    const { onClose } = await panel("private");
+    await press("Make private"); // the form's
+    await press("Make open again"); // the panel's, now it is private
+    await press("Cancel");
+    expect(onClose).not.toHaveBeenCalled();
+    expect(button("Make open again")).not.toBeNull();
   });
 
   it("without start, opens on who can see it, as before", async () => {
