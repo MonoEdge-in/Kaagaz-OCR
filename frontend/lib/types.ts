@@ -237,6 +237,8 @@ export interface DocumentSummary {
   department?: { id: string; name: string } | null;
   // "new": this document may be a new version of another; "candidate": a newer one waits on this family.
   pending_suggestion?: { id: string; role: "new" | "candidate" } | null;
+  // PRD 9 F-01: in no folder, the existing department its type maps to that the person can open.
+  suggested_department?: { id: string; name: string } | null;
   // #522: a zip only: where it was unpacked, null until it is (or when it is kept as a file).
   // Its status_message already says "Unpacked: 120 files into folder "X", 3 skipped (...)".
   unpack?: ZipUnpack | null;
@@ -435,6 +437,7 @@ export interface DocumentCompare {
   overview?: string; // #521: "94% the same. 38 words changed on pages 2 and 5. Page 6 is new."
   left_pages?: number | null; // #521 review: each side's page count, for its page images
   right_pages?: number | null;
+  image_pages: { left: number[]; right: number[] }; // PRD 9 F-08: each side's pages with a picture
 }
 
 /** An active person of this company, for the owner picker and the filters. */
@@ -1026,6 +1029,7 @@ export interface ReadLine {
   table?: { id: string; row: number; col: number; header: boolean } | null; // a table cell's place
   key?: string; // #527: the clean copy's lines only, the line's stable key (a flag's word_key)
   correction?: LineCorrection | null; // #527: the clean copy's lines only; `text` is then the corrected text
+  box_source?: "found" | "model" | null; // PRD 9 F-16: the Text tab's lines only; "model": no found box confirmed its spot
 }
 
 /** #527: the correction in force for a clean copy line; `before_text` is the text it replaced. */

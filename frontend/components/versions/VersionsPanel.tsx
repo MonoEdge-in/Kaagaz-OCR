@@ -38,6 +38,7 @@ export function VersionsPanel({
 }) {
   const versions = sortedVersions(detail.versions).reverse();
   const inTrash = detail.deleted_at !== null;
+  const currentSeen = versions.some((version) => version.is_current); // PRD 9 F-07: the list holds only versions seen
   const familyName = versions.find((version) => version.is_current)?.display_name ?? detail.display_name;
   const [separating, setSeparating] = useState<DocumentVersion | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -158,7 +159,7 @@ export function VersionsPanel({
                   <span className="visually-hidden">{` with version ${version.version_no}`}</span>
                 </Link>
               )}
-              {canMakeCurrent(version, inTrash) && (
+              {canMakeCurrent(version, inTrash, currentSeen) && (
                 <button
                   type="button"
                   className="btn btn-quiet"

@@ -2,8 +2,8 @@
 
 // The documents screen: the page header (the app header's Upload is the one upload action,
 // 16 Oct 2026; an empty list's empty state has "Upload files"); the folder tree (beside the
-// list from 1024 px, stacked above it below that), its "+" the one New folder; where you
-// are, with Rename, Move and Delete, and "Read with" at the list's right edge (it sets how
+// list from 1024 px, stacked above it below that), its "+" a New folder; where you
+// are, with New folder (PRD 9 F-18), Rename, Move and Delete, and "Read with" at the list's right edge (it sets how
 // the next uploads are read, from either Upload button or a drop); search inside the
 // documents and the filter chips; the list and its pages. UI audit (16 Oct 2026): "Read
 // with" has its room kept from the first paint, a skeleton until the limits come (D1); with documents listed, the whole
@@ -38,7 +38,7 @@ import { PlaceBadge } from "@/components/access/PlaceBadge";
 import { folderPlace, placeHint, placeKind } from "@/components/access/places";
 import { NOT_FOUND_FOLDER, NOT_FOUND_TEXT, SHARED, hiddenMovedText } from "@/components/access/words";
 import { DepartmentPicker } from "@/components/files/DepartmentPicker";
-import { chosenDepartment, departmentsOf, rememberDepartment } from "@/components/files/departments";
+import { chosenDepartment, departmentsOf, sortInto } from "@/components/files/departments";
 import { DocumentsGrid } from "@/components/files/DocumentsGrid";
 import { FolderTiles } from "@/components/files/FolderTiles";
 import { readViewMode, saveViewMode } from "@/components/files/viewMode";
@@ -183,7 +183,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const [tags, setTags] = useState<Tag[] | null>(null);
   const [tagsError, setTagsError] = useState<string | null>(null);
   const [tagsVersion, setTagsVersion] = useState(0);
-  const [newFolderAsk, setNewFolderAsk] = useState(0); // D12: the folder column's "+", the one New folder
+  const [newFolderAsk, setNewFolderAsk] = useState(0); // D12: the folder column's "+" (PRD 9 F-18: and New folder beside Rename)
   const [dropError, setDropError] = useState<string | null>(null);
   // undone: the words once Undo worked ("Moved back.", "Restored from Trash."). No undo: a note only (#537).
   const [toast, setToast] = useState<{ message: string; undo?: () => Promise<void>; undone?: string } | null>(null);
@@ -389,21 +389,22 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const folderGone = folders !== null && library.folderId !== null && current === null;
   // The folder in the address, even before the folder list has loaded.
   const uploadInto = library.folderId ?? undefined;
-  // F2: outside any folder, the files go into the department picked (the last one used).
+  // F2: outside any folder, the files go into the department picked (PRD 9 F-01: only a pick).
   const departments = useMemo(() => departmentsOf(folders ?? []), [folders]);
   const department = chosenDepartment(departmentChoice, departments);
 
   const openPicker = () => inputRef.current?.click();
   // #484: a whole folder (picked or dropped) keeps its structure, inside the folder shown at first.
   const dropFolders = (entries: FileSystemDirectoryEntry[]) => folderPicking.drop(entries, library.folderId);
-  // Option 2, "Let Kaagaz sort them": loose files only, with no folder and no department, so
-  // auto-filing reads each one and files it, making the folders it needs.
+  // Option 2, "Let Kaagaz sort them": loose files, so auto-filing reads each one and files it,
+  // making the folders it needs. PRD 9 F-02: into the department being viewed (or picked at All
+  // documents), where it files them; with none, by type into an existing department.
   function onChooseToSort(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []);
     event.target.value = "";
     if (files.length === 0) return;
     setTrayOpen(true);
-    void uploads.addFiles(files);
+    void uploads.addFiles(files, undefined, sortInto(tree, library.folderId, department) ?? undefined);
   }
   const addFiles = (files: File[]) => {
     setTrayOpen(true);
@@ -412,7 +413,6 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
 
   function pickDepartment(id: string | null) {
     setDepartmentChoice(id);
-    rememberDepartment(id);
   }
 
   function chooseView(mode: ViewMode) {

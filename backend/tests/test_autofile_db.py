@@ -50,11 +50,17 @@ _AUDIT = (
 # --- helpers ----------------------------------------------------------------------------
 
 
-def organisation(db: Database, *, on: bool = True) -> tuple[str, str]:
+def organisation(db: Database, *, on: bool = True, accounts: bool = True) -> tuple[str, str]:
     """A new customer the operator granted auto-filing, switched on (or off) by its admin,
-    and its admin's id. Written as the owner, as the operator's function does."""
+    and its admin's id. Written as the owner, as the operator's function does.
+    Changed on purpose (PRD 9 F-02, D2): Kaagaz no longer makes a department, so the admin has made
+    "Accounts and HR", where invoices go (``accounts``; False for none)."""
     customer, admin = new_customer(db)
     _owner(db, _GRANT, {"c": customer, "on": on})
+    if accounts:
+        with db.customer(customer) as conn:
+            department = insert_folder(conn, customer, admin, "Accounts and HR")
+            conn.execute(text("UPDATE folders SET kind = 'department' WHERE id = :f"), {"f": department})
     return customer, admin
 
 
@@ -147,14 +153,16 @@ def test_r2_r9_r13_a_new_upload_goes_into_a_new_invoices_folder_its_uploader_own
     assert (invoices[2], invoices[3], invoices[4]) == (department[0], f"type:invoice:{department[0]}", admin)
     assert view(db, customer, document) == "filed"
     assert audit(db, customer) == [  # no actor: Kaagaz did it; ids only
-        ("folder.create", None, {"parent_id": None, "auto": True}),
+        # Changed on purpose (PRD 9 F-02, D2): the department is the admin's, not made here.
         ("folder.create", None, {"parent_id": department[0], "auto": True}),
         ("document.autofile", None, {"folder_id": invoices[0]}),
     ]
 
 
 def test_r9_a_folder_of_that_name_is_adopted_whatever_its_letter_case(db: Database) -> None:
-    customer, admin = organisation(db)
+    customer, admin = organisation(
+        db, accounts=False
+    )  # Changed on purpose (PRD 9 F-02, D2): Finance is the only one
     with db.customer(customer) as conn:
         department = create_folder(
             conn, customer, name="Finance", parent_id=None, created_by=admin, kind="department"
@@ -215,7 +223,9 @@ def test_r6_other_is_skipped_and_said_not_filed(db: Database) -> None:
     assert file(db, customer, document) == "other"
     assert state(db, customer, document) == ("skipped", None)
     assert view(db, customer, document) == "not_filed"
-    assert folders(db, customer) == []
+    assert [f[1] for f in folders(db, customer)] == [
+        "Accounts and HR"
+    ]  # Changed on purpose (PRD 9 F-02, D2): the admin's; nothing made
 
 
 def test_r6_r18_no_type_keeps_it_pending_then_a_read_again_files_it_once(db: Database) -> None:
@@ -226,7 +236,9 @@ def test_r6_r18_no_type_keeps_it_pending_then_a_read_again_files_it_once(db: Dat
     ready(db, customer, document, None)
     assert file(db, customer, document) == "no_type"
     assert (state(db, customer, document), view(db, customer, document)) == (("pending", None), "not_filed")
-    assert folders(db, customer) == []
+    assert [f[1] for f in folders(db, customer)] == [
+        "Accounts and HR"
+    ]  # Changed on purpose (PRD 9 F-02, D2): the admin's; nothing made
 
     read(db, customer, document, "invoice")  # Read again, with the model back
     assert file(db, customer, document) is None  # R5: never twice
@@ -297,7 +309,9 @@ def test_r14_a_family_in_trash_is_not_filed(db: Database) -> None:
 
 
 def test_r3_a_person_moving_it_while_it_is_read_wins_even_to_not_in_a_folder(db: Database) -> None:
-    customer, admin = organisation(db)
+    customer, admin = organisation(
+        db, accounts=False
+    )  # Changed on purpose (PRD 9 F-02, D2): no department, as before
     with db.customer(customer) as conn:
         mine = insert_folder(conn, customer, admin, "Mine")
     into_mine, to_top = upload(db, customer, admin), upload(db, customer, admin)
@@ -331,7 +345,9 @@ def test_r12_a_child_name_taken_by_another_type_keeps_the_file_in_its_department
 
 
 def test_r13_with_no_uploader_a_folder_is_used_or_adopted_but_never_made(db: Database) -> None:
-    customer, admin = organisation(db)
+    customer, admin = organisation(
+        db, accounts=False
+    )  # Changed on purpose (PRD 9 F-02, D2): no department, as before
     nobody = upload(db, customer, None)
     ready(db, customer, nobody)
     assert file(db, customer, nobody) == "no_department"
@@ -575,7 +591,10 @@ def test_stale_flag_a_deleted_folder_of_a_filed_family_in_trash_is_not_filed_any
     assert view(db, customer, document) is None
     assert _undo(member.client, document).json()["error"]["code"] == "in_trash"
     with db.customer(customer) as conn:
-        assert restore_document(conn, customer, document, by=member.user_id) == Placed()  # unwalled (#594)
+        # Changed on purpose (PRD 9 F-02, D2): the admin's department stays when Invoices goes, so the
+        # restore puts the family in it (#594); Kaagaz's own department used to go with Invoices.
+        accounts = next(f[0] for f in folders(db, customer) if f[1] == "Accounts and HR")
+        assert restore_document(conn, customer, document, by=member.user_id) == Placed(into=accounts)
     assert _undo(member.client, document).json()["error"]["code"] == "already_moved"
 
 

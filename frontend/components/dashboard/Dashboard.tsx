@@ -24,7 +24,7 @@ import { askHref } from "@/components/chat/logic";
 import { ALL_DOCUMENTS, NO_DEPARTMENT, libraryHref } from "@/components/documents/libraryQuery";
 import { ACCEPT_ATTRIBUTE } from "@/components/documents/logic";
 import { DepartmentPicker } from "@/components/files/DepartmentPicker";
-import { departmentsOf, lastDepartment, rememberDepartment } from "@/components/files/departments";
+import { departmentsOf } from "@/components/files/departments";
 import { canReview } from "@/components/review/review";
 import { useSharedUploads } from "@/components/shell/Uploads";
 import { Icon } from "@/components/ui/Icon/Icon";
@@ -68,7 +68,7 @@ export function Dashboard() {
   const inputRef = useRef<HTMLInputElement>(null);
   const { uploads, setTrayOpen, foldersChanged } = useSharedUploads(() => setAttempt((n) => n + 1));
   const departments = useMemo(() => departmentsOf(folders), [folders]);
-  const chosen = department === undefined ? lastDepartment(departments) : department;
+  const chosen = department ?? null; // PRD 9 F-01 (D1): only a department picked is sent
 
   useEffect(() => {
     let cancelled = false;
@@ -135,7 +135,6 @@ export function Dashboard() {
 
   function pick(id: string | null) {
     setDepartment(id);
-    rememberDepartment(id);
   }
 
   function ask(event: FormEvent) {

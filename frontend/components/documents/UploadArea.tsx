@@ -40,6 +40,7 @@ import { InStatusBar } from "@/components/shell/StatusBar";
 import { VersionChoice } from "@/components/versions/VersionChoice";
 import type { Chosen } from "@/components/versions/VersionChoice";
 import { VERSION_TEXT, suggestionsText } from "@/components/versions/words";
+import { VersionPopup } from "@/components/versions/VersionPopup";
 import { Icon } from "@/components/ui/Icon";
 import { beingRead } from "@/components/viewer/reprocess";
 import { storyHref, storyTarget } from "@/components/viewer/story";
@@ -93,8 +94,9 @@ import {
 } from "./batchTray";
 import type { StoredBatch } from "./batchTray";
 import { BusyLabel } from "./BusyLabel";
+import { MoveDialog } from "./DocumentActions";
 import { droppedItems, isSkipped } from "./folderPick";
-import { shortPathLabel } from "./folderTree";
+import { pathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
 import { ALL_DOCUMENTS, libraryHref } from "./libraryQuery";
 import {
@@ -530,6 +532,75 @@ export function AutofileNote({
         </span>
       )}
     </p>
+  );
+}
+
+/**
+ * PRD 9 F-01 (D1): a file in no folder whose type maps to a department the person can open (the
+ * server's ``suggested_department``): "Not sorted. Looks like Land & Legal · Move there · Pick
+ * another". Both open the Move dialog, Move there with the department chosen, so its who-can-see
+ * preview and its Undo apply as to any move.
+ */
+export function DepartmentSuggestion({ document, tree, onMoved }: { document: DocumentSummary; tree: FolderTree; onMoved(): void }) {
+  const [dialog, setDialog] = useState<{ to?: string } | null>(null);
+  const [moved, setMoved] = useState<{ words: string; undo?: () => Promise<void> } | null>(null);
+  const department = document.suggested_department;
+  if (moved !== null) {
+    const { undo } = moved;
+    return (
+      <p className={styles.small} role="status">
+        {moved.words}
+        {undo && (
+          <>
+            {" · "}
+            <button
+              type="button"
+              className={`btn btn-quiet ${styles.inlineAction}`}
+              onClick={() =>
+                void undo().then(
+                  () => {
+                    setMoved(null);
+                    onMoved();
+                  },
+                  (caught: unknown) => setMoved({ words: undoErrorText(caught) }),
+                )
+              }
+            >
+              Undo
+            </button>
+          </>
+        )}
+      </p>
+    );
+  }
+  if (!department) return null;
+  return (
+    <>
+      <p className={styles.small}>
+        {`Not sorted. Looks like ${department.name}`}
+        {" · "}
+        <button type="button" className={`btn btn-quiet ${styles.inlineAction}`} onClick={() => setDialog({ to: department.id })}>
+          Move there
+        </button>
+        {" · "}
+        <button type="button" className={`btn btn-quiet ${styles.inlineAction}`} onClick={() => setDialog({})}>
+          Pick another
+        </button>
+      </p>
+      {dialog && (
+        <MoveDialog
+          items={[document]}
+          tree={tree}
+          to={dialog.to}
+          onSaved={(words, _moved, undo) => {
+            setDialog(null);
+            setMoved({ words, undo });
+            onMoved();
+          }}
+          onClose={() => setDialog(null)}
+        />
+      )}
+    </>
   );
 }
 
@@ -1012,11 +1083,12 @@ function UploadRow({
           <AutofileNote
             document={ready}
             name={entry.name}
-            filed={ready.folder_id ? filedText(shortPathLabel(tree, ready.folder_id)) : ""}
+            filed={ready.folder_id ? filedText(pathLabel(tree, ready.folder_id)) : ""}
             folderHref={ready.folder_id ? libraryHref({ ...ALL_DOCUMENTS, folderId: ready.folder_id }) : null}
             onUndone={onUndone}
           />
         )}
+        {ready && <DepartmentSuggestion document={ready} tree={tree} onMoved={onUndone} />}
         {document && document.status !== "ready" && !zip && (
           <p className={`error-text ${styles.small}`}>{document.status_message}</p>
         )}
@@ -1164,6 +1236,8 @@ export function UploadStatus({
           {open && <BatchTray {...tray} onHide={hide} />}
         </div>
       )}
+      {/* PRD 9 F-06: a file just uploaded that looks like a new version is asked in a pop-up. */}
+      <VersionPopup suggestions={Object.values(tray.views).flatMap((view) => view.version_suggestions ?? [])} />
     </InStatusBar>
   );
 }

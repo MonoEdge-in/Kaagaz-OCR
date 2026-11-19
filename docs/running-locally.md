@@ -216,6 +216,7 @@ docs/runbooks/prd5-cpu-server-switch.md.
    Write the numbers into docs/architecture.md, Decisions (the t3.xlarge
    row). A real document's steps, upload to Ready and the indexing after it,
    for the last 5 documents read: `dc run --rm migrate python -m kaagaz.cli scan-times --last 5` (PRD 7, #606: the CLI runs as `kaagaz_worker`, so it runs in migrate, `dc run --rm migrate python -m kaagaz.cli <command>`, until JOBS_DATABASE_URL is set, then in worker; in api it is refused).
+   Pages read before PRD 9 that say uncertain only for unpinned lines: `dc run --rm migrate python -m kaagaz.cli regrade-pages` lists them by organisation, `--apply` grades them good (no model call; on a server only with Vrushit's approval).
 
 **RapidOCR, the fallback.** If Gemini misbehaves, set `OCR_ENGINE=rapidocr` in
 `.env` and restart both: `dc up -d --no-deps api worker`. Change it back the same way.

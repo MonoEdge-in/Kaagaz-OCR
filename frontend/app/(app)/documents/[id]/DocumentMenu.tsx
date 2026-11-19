@@ -11,6 +11,8 @@
 // PRD 7 (PR 13): an Admin's Lock, after the menu's own items (LockDialog.tsx); a locked file
 // has its own screen, with Unlock (LockedDocument.tsx). Locked, this menu goes with the screen:
 // once the file is loaded again, focus goes to the locked screen's heading (onLocked).
+// PRD 9 F-09: Make it a version of… (Admins in an admin session and Management, mayLinkVersions)
+// opens the link dialog with this file fixed; linked, it is said with Undo.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { RefObject } from "react";
@@ -27,6 +29,8 @@ import libraryStyles from "@/components/documents/Library.module.css";
 import { deletedMessage } from "@/components/documents/logic";
 import { placedMessage, restoredMessage, trashQuestion } from "@/components/documents/trash";
 import { LOCK_TEXT } from "@/components/viewer/locked";
+import { LinkDialog } from "@/components/versions/LinkDialog";
+import { fromSummary, mayLinkVersions } from "@/components/versions/link";
 import { ApiError, deleteDocument, listFolders, listTags, restoreDocument } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import type { DocumentDetail, Folder, Tag } from "@/lib/types";
@@ -50,8 +54,8 @@ export function DocumentMenu({
   detail: DocumentDetail;
   readAgain: boolean; // canReprocess
   onReadAgain(): void;
-  /** Renamed, moved, tagged, trashed or restored: say it and load the document again. */
-  onChanged(message: string): void;
+  /** Renamed, moved, tagged, trashed, restored or linked (with its Undo): say it and load it again. */
+  onChanged(message: string, undo?: () => Promise<unknown>): void;
   /** Locked (PR 13): say it, load it again, and focus its locked screen's heading; else onChanged. */
   onLocked?(message: string): void;
 }) {
@@ -64,6 +68,7 @@ export function DocumentMenu({
   const [folders, setFolders] = useState<Folder[] | null>(null);
   const [tags, setTags] = useState<Tag[] | null>(null);
   const [locking, setLocking] = useState(false);
+  const [linking, setLinking] = useState(false);
   const canLock = me.user.role === "admin" && me.session.scope === "admin" && detail.deleted_at === null;
   const items = canLock
     ? [...(more ?? []), { label: LOCK_TEXT.menu, hint: LOCK_TEXT.menuHint, onSelect: () => setLocking(true) }]
@@ -113,6 +118,7 @@ export function DocumentMenu({
       );
     } else if (action === "rename" || action === "move" || action === "tags") setEditing(action);
     else if (action === "give" || action === "audience") setSharing(action);
+    else if (action === "link") setLinking(true);
   }
 
   function trash() {
@@ -141,7 +147,20 @@ export function DocumentMenu({
         onPick={pick}
         toggleRef={holdToggle}
         access={abilities}
+        linkVersions={mayLinkVersions(me) && detail.locked !== true}
       />
+      {linking && (
+        <LinkDialog
+          files={[fromSummary(detail)]}
+          start="pick"
+          fixed={detail.id}
+          onClose={() => setLinking(false)}
+          onLinked={(done) => {
+            setLinking(false);
+            onChanged(done.message, done.undo);
+          }}
+        />
+      )}
       {sharing === "give" && (
         <GiveAccessDialog
           files={[detail]}

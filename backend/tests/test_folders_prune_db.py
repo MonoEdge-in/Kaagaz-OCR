@@ -35,12 +35,13 @@ def test_a_move_drops_the_folders_kaagaz_made_and_never_a_persons(db: Database) 
         mine = insert_folder(conn, customer, admin, "Mine")
 
     person_moves(db, customer, document, mine)
-    assert names(db, customer) == ["Mine"]  # Invoices emptied, then its department
+    # Changed on purpose (PRD 9 F-02, D2): Invoices emptied goes; its department is the admin's, so it stays.
+    assert names(db, customer) == ["Accounts and HR", "Mine"]
     with db.customer(customer) as conn:
-        assert conn.execute(text(_DELETES), {"c": customer}).scalar_one() == 2
+        assert conn.execute(text(_DELETES), {"c": customer}).scalar_one() == 1
 
     person_moves(db, customer, document, None)
-    assert names(db, customer) == ["Mine"]  # a person's folder stays, empty
+    assert names(db, customer) == ["Accounts and HR", "Mine"]  # a person's folder stays, empty
 
 
 def test_a_file_in_trash_keeps_its_folder_until_it_is_deleted_for_good(db: Database) -> None:
@@ -53,7 +54,8 @@ def test_a_file_in_trash_keeps_its_folder_until_it_is_deleted_for_good(db: Datab
 
     with db.customer(customer) as conn:
         assert delete_family_forever(conn, MemoryStorage(), customer, document) == 1
-    assert names(db, customer) == []
+    # Changed on purpose (PRD 9 F-02, D2): the admin's department stays.
+    assert names(db, customer) == ["Accounts and HR"]
 
 
 def test_the_command_counts_the_empty_ones_then_deletes_them(db: Database) -> None:
@@ -71,5 +73,6 @@ def test_the_command_counts_the_empty_ones_then_deletes_them(db: Database) -> No
 
     applied = io.StringIO()
     assert main(["prune-folders", "--customer-id", customer, "--apply"], db=db, environ={}, out=applied) == 0
-    assert applied.getvalue() == f"customer {customer}: 2 deleted\n2 folders deleted\n"
-    assert names(db, customer) == ["Mine"]
+    # Changed on purpose (PRD 9 F-02, D2): only Invoices goes; the department is the admin's.
+    assert applied.getvalue() == f"customer {customer}: 1 deleted\n1 folder deleted\n"
+    assert names(db, customer) == ["Accounts and HR", "Mine"]

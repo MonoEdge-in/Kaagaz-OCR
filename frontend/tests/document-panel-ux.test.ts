@@ -142,7 +142,12 @@ describe("the panel's words and controls", () => {
   it("shows Needs attention only when it holds something (or while reviewing)", () => {
     const view = read(VIEW);
     const tabs = view.slice(view.indexOf("const tabs: TabItem[] = ["), view.indexOf("];", view.indexOf("const tabs: TabItem[] = [")));
-    expect(tabs).toContain('...(attention > 0 || reviewing ? [{ id: "attention" as const, label: "Needs attention", count: attention || undefined }] : []),');
+    // Changed on purpose (PRD 9 F-14): while the words load (attention null) the tab shows with a
+    // loader if a page is on the list; open, it stays at zero (Everything is checked), with no badge.
+    expect(view).toContain("const attentionTab = attention === null ? detail.pages.some(listed) : attention > 0;");
+    expect(tabs).toMatch(
+      /\.\.\.\(attentionTab \|\| reviewing \|\| tabChoice\?\.tab === "attention"\s*\? \[\{ id: "attention" as const, label: "Needs attention", count: attention === null \? \(review\.failed \? undefined : null\) : attention \|\| undefined \}\]\s*: \[\]\),/,
+    );
   });
 
   it("never puts a count of words to check beside Everything is checked", () => {

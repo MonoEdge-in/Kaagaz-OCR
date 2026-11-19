@@ -186,7 +186,7 @@ from kaagaz.api.views import (
     timeline,
 )
 from kaagaz.db import access as access_sql
-from kaagaz.db import audit, autofile, listing, page_turns, reading_days, storage_limits, trash
+from kaagaz.db import audit, autofile, listing, page_turns, reading_days, storage_limits, trash, word_review
 from kaagaz.db import chat as chat_sql
 from kaagaz.db import folder_upload_items as items_sql
 from kaagaz.db import folders as folders_sql
@@ -2065,8 +2065,11 @@ def get_page_readings(document_id: uuid.UUID, page_no: int, user: User, context:
             raise ApiError(404, "not_found")
         rows = listing.page_readings(conn, customer_id, target, page_no)
         marks = listing.page_marks(conn, customer_id, target, page_no)  # PRD 5 U3
+        # PRD 9 F-12: the fixes; this page's alone (a change touches a line on its own page only).
+        live = word_review.in_force(conn, customer_id, target)
+        live = [change for change in live if change["page_no"] == page_no]
         _viewed(conn, user, document_id, "readings")
-    return page_readings(page_no, rows, marks)
+    return page_readings(page_no, rows, marks, live)
 
 
 @router.get("/documents/{document_id}/words")

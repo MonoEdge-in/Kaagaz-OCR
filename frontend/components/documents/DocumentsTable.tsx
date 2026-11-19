@@ -872,7 +872,7 @@ const DocumentRow = memo(function DocumentRow({
   inTrash: boolean;
   deletable: boolean; // it gets a checkbox (selectable)
   readable: boolean; // it may be read again (canReprocess): its status cell may offer Retry
-  linkVersions: boolean; // #648: its menu offers Link to another version…
+  linkVersions: boolean; // #648: its menu offers Make it a version of… (PRD 9 F-09)
   canForever: boolean;
   askPassword: boolean;
   selected: boolean;
@@ -1068,6 +1068,8 @@ const DocumentRow = memo(function DocumentRow({
   const folderPath = !inTrash && document.folder_id && tree.byId.has(document.folder_id) ? pathLabel(tree, document.folder_id) : null;
   // #484: deep down the row shows "A / … / Y / Z"; the whole path is in the row's title.
   const folderShort = folderPath && document.folder_id ? shortPathLabel(tree, document.folder_id) : null;
+  // PRD 9 F-01, F-02 (Q2): in no folder, or not filed by Kaagaz (its type unknown): "Not sorted".
+  const notSorted = !inTrash && !document.shared_with_you && (document.folder_id === null || document.autofile === "not_filed");
   // The facts line under the name, whole, for its title.
   const factsLine = [
     document.sensitivity && labelName(document.sensitivity),
@@ -1076,6 +1078,7 @@ const DocumentRow = memo(function DocumentRow({
     versionCell(document.version_no, newer),
     document.document_date && FILES_TEXT.dated(formatDate(document.document_date)),
     document.shared_with_you ? SHARED.row : folderPath && `In ${folderPath}`,
+    notSorted && "Not sorted",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -1194,6 +1197,7 @@ const DocumentRow = memo(function DocumentRow({
           ) : (
             folderShort && <span className={styles.inFolder}>In {folderShort}</span>
           )}
+          {notSorted && <span className={styles.inFolder}>Not sorted</span>}
         </span>
         {tagList(styles.factTags)}
         {document.newer_version && (

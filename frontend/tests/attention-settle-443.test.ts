@@ -96,12 +96,14 @@ describe("#443 #444 toSettle: what Needs attention asks a person to settle", () 
 
   // Review panel (29 Oct 2026): the words are [] until they load, and stay [] if they cannot be,
   // so a page with five [?] said "1 to check", then 5, or 1 for good.
-  it("counts each page's marked spots, or 1, while the words are not loaded (null), never the page alone", () => {
+  // Changed on purpose (PRD 9 F-14): while the words are not loaded (null) the count is not known
+  // (null, a loader): the marked spots said 31 where the open words were 11 (CC-02).
+  it("is not known while the words are not loaded (null), then counts each open word", () => {
     const marked = page(1, { read_issues: ["illegible_words"], illegible_words: 5 });
-    expect(attentionCount([marked], null)).toBe(5);
-    expect(attentionCount([marked], on(1, 1, 1, 1, 1))).toBe(5); // the same once the five words come
-    expect(attentionCount([page(2, { read_issues: ["faint"] }), page(3, { accepted_at: KEPT, unsure_words: 2 })], null)).toBe(1);
-    expect(toSettle([marked, page(4, { read_quality: "good" })], null)).toEqual({ count: 5, pages: [1] });
+    expect(attentionCount([marked], null)).toBeNull();
+    expect(attentionCount([marked], on(1, 1, 1, 1, 1))).toBe(5); // once the five words come
+    expect(attentionCount([page(2, { read_issues: ["faint"] }), page(3, { accepted_at: KEPT, unsure_words: 2 })], null)).toBeNull();
+    expect(toSettle([marked, page(4, { read_quality: "good" })], null)).toBeNull();
   });
 
   it("is the server's FLAGGED_ISSUES, pinned to it", () => {
@@ -120,7 +122,8 @@ describe("#443 the Attention panel names every page it counts", () => {
       createElement(AttentionPanel, {
         status: "ready",
         pages: [good],
-        open,
+        // Changed on purpose (PRD 9 F-14): the open words carry their spot and text as read (openMarks).
+        open: open.map((each) => ({ ...each, region: { kind: "box" as const, page: 3, box: [0, 0, 1, 0.1] as [number, number, number, number] }, as_read: each.text })),
         current: null,
         marks: [],
         onPage: () => undefined,
@@ -203,7 +206,8 @@ describe("#443 a flagged word in the Text view is fixed or confirmed where it is
 
   it("says a lone mark may be a stray one, in plain words, and starts from it", () => {
     expect(fixBox({ text: "." })).toEqual({
-      hint: "'.' may be a stray mark. Confirm it to leave it as read, or type what the page shows.",
+      // Changed on purpose (PRD 9 F-13, D6): no Confirm button; Save left as it is confirms it.
+      hint: "'.' may be a stray mark. Save it as it is to leave it as read, or type what the page shows.",
       draft: ".",
     });
     expect(fixBox({ text: "--" }).hint).toContain("may be a stray mark");
@@ -211,12 +215,11 @@ describe("#443 a flagged word in the Text view is fixed or confirmed where it is
     expect(fixBox({ text: "[?]" }).draft).toBe("");
   });
 
-  it("offers Confirm between Cancel and Save, which settles each word as it reads (the review's Confirm)", () => {
-    // Changed on purpose (owner's report, 29 Oct 2026): Confirm and Save in one group, so they wrap
-    // together; each button at its own width (text-panel-lines.test.ts).
-    expect(panel).toMatch(
-      /Cancel\s*<\/button>\s*<div className=\{styles\.fixSettle\}>\s*<button type="button" className="btn" disabled=\{box\.busy\} onClick=\{\(\) => void saveFix\(toFix, index, true\)\}>\s*Confirm\s*<\/button>\s*<button type="submit"/,
-    );
+  // Changed on purpose (PRD 9 F-13, D6): one Save. Left as the box began it settles each word as it
+  // reads (the review's Confirm); Cancel and Save only (fix-text-counts-prd9.test.ts).
+  it("settles each word as it reads when Save is pressed with the text as it began", () => {
+    expect(panel).toMatch(/Cancel\s*<\/button>\s*<div className=\{styles\.fixSettle\}>\s*<button type="submit"/);
+    expect(panel).toContain("done = await onFix(each, asRead ? each.text : typed);");
   });
 });
 

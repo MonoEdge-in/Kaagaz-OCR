@@ -8,7 +8,7 @@
 // readers' vote in plain words ("2 of 3 readers read …", voteText). A main reader's line
 // flagged for review carries its band (FlagText.tsx, scan review UX rules, section 2).
 // Vrushit UAT (25 Oct 2026): a main reader's line with a flagged word offers Fix text (the
-// review's Edit), and shows the words people fixed (withFixes).
+// review's Edit), and shows the words people fixed (PRD 9 F-12: as the server sends them).
 // Vrushit UAT 2 (27 Oct 2026, #417): Fix text, or a press on such a line, opens a box under the
 // line to type the word in its place (fixBox says what to type); Save sends it as the review's
 // Edit, Cancel or Esc closes it, and the focus goes back to the line.
@@ -16,12 +16,18 @@
 // the box is open it is the row's one action.
 // #443: the box also offers Confirm, which settles the word as it reads (the review's Confirm), so
 // a stray mark such as a lone "." can be left as it is.
+// PRD 9 (18 Nov 2026): F-12, the main reader's lines come with their fixes from the server, as in
+// Clean copy (a corrected line says so, with Undo), and are asked for again after a Save or an
+// Undo; F-13 (D6), the box has Cancel and Save only, and Save left as the box began confirms the
+// word as read; F-14, a row's red flag is its own line's (rowFlag), never another line of its block.
 
 import { useEffect, useId, useRef, useState } from "react";
 import { FlagText } from "@/components/review/FlagText";
-import { ApiError, getPageReadings } from "@/lib/api";
-import type { ExtractedValue, PageReadings, PageSummary, Region, WordFlag } from "@/lib/types";
+import { ApiError, getPageReadings, undoChange } from "@/lib/api";
+import type { ExtractedValue, LineCorrection, PageReadings, PageSummary, Region, WordFlag } from "@/lib/types";
+import { lineFailure, oneLine } from "./clearCopy";
 import { voteText } from "./labels";
+import { Corrected } from "./ReadClearlyPanel";
 import type { Spot } from "./panels";
 import {
   CHECKER,
@@ -40,10 +46,11 @@ import {
   notSure,
   plural,
   readerHeading,
+  rowFlag,
   secondReaderNote,
+  squash,
   truncatedText,
   visibleText,
-  withFixes,
   wordToFix,
 } from "./scanned";
 import type { PanelLoad } from "./scanned";
@@ -67,13 +74,13 @@ export interface ScannedTextPanelProps {
   // flagged word ([?] too) offers Fix text (a reviewer); #417: the word typed is saved through this.
   onFix?: (flag: WordFlag, text: string) => Promise<{ ok: boolean; message: string }>;
   member?: boolean; // a member: told that only a reviewer or an admin can fix a word (FIX_MEMBER_NOTE)
-  fixed?: WordFlag[]; // the page's words a person fixed: shown in their lines as fixed (withFixes)
+  onUndone?: () => void; // PRD 9 F-12: a line's correction was undone here: its words are asked for again
 }
 
 type Loaded = { key: string; readings: PageReadings } | { key: string; httpStatus: number | null };
 
 export function ScannedTextPanel(props: ScannedTextPanelProps) {
-  const { documentId, page, voted = [], active, cited, onShow, onClose, onAddMeaning, headingRef, flags = [], onFix, member = false, fixed = [] } =
+  const { documentId, page, voted = [], active, cited, onShow, onClose, onAddMeaning, headingRef, flags = [], onFix, member = false, onUndone } =
     props;
   const [attempt, setAttempt] = useState(0);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
@@ -126,27 +133,61 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
     rows.current[holding]?.scrollIntoView({ block: "nearest", behavior: calm ? "auto" : "smooth" });
   }, [holding, active]);
   const fixKey = fixing?.key ?? null;
-  useEffect(() => fixInput.current?.focus(), [fixKey]); // the box opened: its field takes the keys
+  const selectWord = useRef(false); // PRD 9 F-13: the box opened on a word (not a whole line)
+  // The box opened: its field takes the keys, its word selected (PRD 9 F-13), a line's never.
+  useEffect(() => {
+    fixInput.current?.focus();
+    if (selectWord.current) fixInput.current?.select();
+  }, [fixKey]);
+  const [undoing, setUndoing] = useState<string | null>(null); // the change being undone (PRD 9 F-12)
+  const [undoError, setUndoError] = useState<string | null>(null);
+  // PRD 9 F-12: the lines again, in place, with the fixes the server holds now; a reply for a page
+  // no longer shown is dropped.
+  const refresh = () =>
+    getPageReadings(documentId, page.page_no).then(
+      (readings) => setLoaded((now) => (now?.key === key ? { key, readings } : now)),
+      () => undefined, // the lines shown stay
+    );
 
   const openFix = (flag: WordFlag, draft: string, index: number) => {
     const key = fixBoxKey(index, flag);
+    selectWord.current = flag.kind !== "line";
     setFixing((now) => (now?.key === key ? now : { key, text: draft, busy: false, error: null }));
   };
   const closeFix = (index: number) => {
     setFixing(null);
     rows.current[index]?.querySelector("button")?.focus();
   };
-  // Save sends the text typed; Confirm (asRead) sends each word's own text, so it is confirmed.
-  const saveFix = async (flag: WordFlag, index: number, asRead = false) => {
+  // D6 (PRD 9 F-13): one Save. The text as the box began (`draft`, its spaces aside) sends each
+  // word's own text, so it is confirmed as read; any other text is the fix.
+  const saveFix = async (flag: WordFlag, index: number, draft: string) => {
     const row = shown[index]; // #614: the line the Save came from
     if (!onFix || !fixing || fixing.busy || !row) return;
     const typed = fixing.text.trim();
+    // An empty box over a [?] (draft "") is never a confirm: Save asks for the word (CLAUDE.md rule 6).
+    const asRead = draft !== "" && squash(typed) === squash(draft);
     if (typed === "" && !asRead) return setFixing({ ...fixing, error: "Type the word you see on the page." });
     setFixing({ ...fixing, busy: true, error: null });
     let done = { ok: true, message: "" };
     for (const each of fixesFor(flag, flags, row)) if (done.ok) done = await onFix(each, asRead ? each.text : typed);
-    if (done.ok) closeFix(index);
-    else setFixing((now) => now && { ...now, busy: false, error: done.message });
+    if (done.ok) {
+      closeFix(index);
+      void refresh();
+    } else setFixing((now) => now && { ...now, busy: false, error: done.message });
+  };
+  // PRD 9 F-12: Undo of a line's correction, as in Clean copy; then its lines and words again.
+  const undo = async (correction: LineCorrection) => {
+    setUndoing(correction.change_id);
+    setUndoError(null);
+    try {
+      await undoChange(documentId, correction.change_id);
+      onUndone?.();
+    } catch (caught) {
+      setUndoError(lineFailure(caught));
+    } finally {
+      setUndoing(null);
+      void refresh();
+    }
   };
 
   return (
@@ -215,6 +256,11 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
             <p className={styles.muted}>{onFix ? FIX_NOTE : FIX_MEMBER_NOTE}</p>
           )}
           {truncated && <p className={styles.note}>{truncated}</p>}
+          {undoError && (
+            <p className="error-text" role="alert">
+              {undoError}
+            </p>
+          )}
           <div
             className={styles.linesBox}
             role="region"
@@ -226,12 +272,13 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                 const marked = lineMarked(line, cited);
                 const meta = confidenceText(line.confidence, line.origin);
                 const first = reader?.role === "first";
-                const flag = first ? flags.find((each) => sameRegion(each.region, line.region)) : undefined;
+                const flag = first ? rowFlag(flags, line) : undefined;
                 const toFix = first && onFix ? wordToFix(flags, line, lines) : undefined;
-                const read = first ? withFixes(line, fixed) : line.text;
-                const text = visibleText(read);
-                // The line's own flag is asked for as the line shows now (#431: its words fixed).
-                const ask = toFix ? fixBox(toFix.kind === "line" ? { text: read } : toFix) : null;
+                const text = visibleText(line.text);
+                const correction = first ? (line.correction ?? null) : null; // PRD 9 F-12
+                // The line's own flag is asked for as the line shows now (#431: its words fixed), on
+                // one line (PRD 9 F-12: a text box drops a line break, gluing two words).
+                const ask = toFix ? fixBox(toFix.kind === "line" ? { text: oneLine(line.text) } : toFix) : null;
                 const box = toFix && fixing?.key === fixBoxKey(index, toFix) ? fixing : null;
                 const boxId = `${fixId}-${index}`;
                 return (
@@ -249,7 +296,7 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                         className={styles.lineButton}
                         aria-pressed={active !== null && sameRegion(active, line.region)}
                         onClick={() => {
-                          onShow({ name: `line ${index + 1}`, region: line.region, label: null });
+                          onShow({ name: `line ${index + 1}`, region: line.region, label: null, approximate: line.box_source === "model" });
                           if (toFix && ask) openFix(toFix, ask.draft, index);
                         }}
                       >
@@ -291,13 +338,23 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                         </button>
                       )}
                     </div>
+                    {/* PRD 9 F-12: a line a person corrected says so, as in Clean copy; Undo for a reviewer. */}
+                    {correction && (
+                      <Corrected
+                        correction={correction}
+                        id={undefined}
+                        n={index + 1}
+                        busy={undoing === correction.change_id}
+                        onUndo={onFix ? () => void undo(correction) : undefined}
+                      />
+                    )}
                     {toFix && ask && box && (
                       <form
                         id={boxId}
                         className={styles.fix}
                         onSubmit={(event) => {
                           event.preventDefault();
-                          void saveFix(toFix, index);
+                          void saveFix(toFix, index, ask.draft);
                         }}
                       >
                         <label className={styles.fixLabel} htmlFor={`${boxId}-text`}>
@@ -320,15 +377,12 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                             closeFix(index);
                           }}
                         />
-                        {/* [Cancel] [Confirm] [Save] under the field; a narrow panel wraps them. */}
+                        {/* [Cancel] [Save] under the field (D6, PRD 9 F-13); a narrow panel wraps them. */}
                         <div className={styles.fixActions}>
                           <button type="button" className="btn btn-quiet" onClick={() => closeFix(index)}>
                             Cancel
                           </button>
                           <div className={styles.fixSettle}>
-                            <button type="button" className="btn" disabled={box.busy} onClick={() => void saveFix(toFix, index, true)}>
-                              Confirm
-                            </button>
                             <button type="submit" className="btn btn-primary" disabled={box.busy} aria-busy={box.busy || undefined}>
                               Save
                             </button>

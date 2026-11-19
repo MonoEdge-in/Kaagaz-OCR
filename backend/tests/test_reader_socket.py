@@ -344,7 +344,9 @@ class WiringTest(unittest.TestCase):
         socket = build_reader_socket(make_settings(), FakeOcr())
         for kind in ("txt", "md", "json", "html"):
             with self.subTest(kind):
-                self.assertEqual(socket.reader_id(kind), (f"text-{kind}", "1"))
+                # Changed on purpose (PRD 9 F-10): version 2, as a JSON's reading changed (stored for
+                # tracing only: a JSON read before changes on Read again or a new upload).
+                self.assertEqual(socket.reader_id(kind), (f"text-{kind}", "2"))
         for kind in ("docx", "dotx", "doc", "pptx", "ppt", "xls", "zip"):
             with self.subTest(kind), self.assertRaises(NoReader):
                 socket.read(kind, b"")

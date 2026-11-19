@@ -362,6 +362,9 @@ VIEW_READERS = {
     "answering/owners.py": {"_EVERY_RECORD", "_KEYED", "_OWNED", "_RESOLVE", "_SHARES_AS_PRINTED"},
     "answering/unchecked.py": {"_CARD_DOCUMENTS"},
     "db/audit.py": {"_FOLDER_PATHS", "_OF_FAMILY", "_SEEN"},
+    # Changed on purpose (PRD 9 F-02, #681): may Kaagaz sort, i.e. a department the person sees; from the
+    # upload limits API and the WhatsApp channel, as the person; never a worker (the SQL guard's worker test).
+    "db/autofile.py": {"_APPLIES"},
     # Changed on purpose (#605): who may open a locked file (Ask's fixed line), and a route's lock check.
     "db/chat.py": {
         "MARKS", "_DOCUMENT_QUESTIONS", "add_pin", "document_states", "live_document_names",

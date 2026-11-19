@@ -10,6 +10,8 @@ import { formatDate } from "@/lib/format";
 import type { PageProblem, PageSummary, ReadIssue, WordFlag } from "@/lib/types";
 
 export const ALL_CLEAR = "Everything on these pages was read clearly.";
+// PRD 9 F-14: said in Needs attention once nothing is left to check.
+export const ALL_CHECKED = "Everything is checked";
 
 /** The page's problems, one per issue; [] for a good page or a reply from before PR 2. */
 export function problemsOf(page: Pick<PageSummary, "problems" | "read_quality">): PageProblem[] {
@@ -94,19 +96,16 @@ export type OpenWord = Pick<WordFlag, "page_no" | "text" | "reason_text">;
  * and the Text panel's actions follow. Each word still open on the review list (`open`: the review
  * band only, #432), settled by Confirm or Edit; and each page on the attention list (not good, not
  * kept as is) that the server does not keep with its last word (no problem code in read_issues, or
- * one not in FLAGGED_ISSUES), or with none of its words left open, settled by Keep as is. A page kept as is leaves; its open words stay. `open` null: the words are
- * not loaded (yet, or they could not be), so each page on the list counts its marked spots, or 1.
- * O(p + w).
+ * one not in FLAGGED_ISSUES), or with none of its words left open, settled by Keep as is. A page kept as is leaves; its open words stay.
+ * PRD 9 F-14: `open` null (the words not loaded, yet or at all): null, not known; never a number
+ * from the pages' marked spots (it said 31 while the header said 11). O(p + w).
  */
 export function toSettle(
   pages: readonly PageSummary[],
   open: readonly Pick<WordFlag, "page_no">[] | null,
-): { count: number; pages: number[] } {
+): { count: number; pages: number[] } | null {
+  if (open === null) return null;
   const listed = pages.filter((page) => page.read_quality !== "good" && page.accepted_at === null);
-  if (open === null) {
-    const marked = (page: PageSummary) => page.unsure_words + page.illegible_words + page.unpinned_lines || 1;
-    return { count: listed.reduce((sum, page) => sum + marked(page), 0), pages: listed.map((page) => page.page_no) };
-  }
   const withWords = new Set(open.map((word) => word.page_no));
   const keptWithWords = (page: PageSummary) =>
     page.read_issues.length > 0 && page.read_issues.every((issue) => FLAGGED_ISSUES.has(issue));

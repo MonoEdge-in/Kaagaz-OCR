@@ -35,6 +35,7 @@ functions too).
 import base64
 import bisect
 import dataclasses
+import itertools
 import json
 import logging
 import re
@@ -414,11 +415,13 @@ def page_read(
 
     Lines come from the reply's blocks in order, or from its Markdown when it has none
     (Mistral OCR 3), cleaned (``_clean``). A block's box is scaled by the reply's own
-    ``dimensions`` and clamped to the page (``_block_box``). Only a block of one line is pinned
-    to ``found`` (``gemini_ocr.pinned``); every other line keeps its block's box (the whole page
-    with none) as ``box_source`` "model", and the page gets ``unpinned``. The unsure words are
-    ``_unsure``'s; the grade comes from ``average_page_confidence_score``. O(markdown + blocks +
-    words x log lines), plus ``pinned``'s O(lines x found)."""
+    ``dimensions`` and clamped to the page (``_block_box``). A block of one line is pinned to
+    ``found`` (``gemini_ocr.pinned``); a block of more takes the found rows inside it, one a
+    line in order, when there are as many rows as lines, evenly spaced (``_rows``, ``_even``,
+    PRD 9 F-11). Every other line keeps its block's box (the whole page with none) as
+    ``box_source`` "model", and the page gets ``unpinned``. The unsure words are ``_unsure``'s;
+    the grade comes from ``average_page_confidence_score``. O(markdown + blocks x found log found
+    + words x log lines), plus ``pinned``'s O(lines x found)."""
     from kaagaz.reading.gemini_ocr import BOX_SCALE, _Line, pinned  # not at load (module notes)
 
     if not _valid(page):
@@ -433,16 +436,25 @@ def page_read(
             box = _scaled(text.box, width, height, BOX_SCALE)
             pin[index] = _Line(index, text.kind, text.text, box, unsure[index], False, None, text.block or 0)
     pinned_lines = dict(zip(pin, pinned(pin.values(), found, width, height), strict=True))
+    blocks: dict[int | None, tuple[PixelBox, list[int]]] = {}
+    for index, text in enumerate(texts):
+        if not text.single and text.box is not None:  # a line of a block of more (block is set)
+            blocks.setdefault(text.block, (text.box, []))[1].append(index)
+    rows: dict[int, PixelBox] = {}
+    for block_box, indexes in blocks.values():
+        found_rows = _rows(block_box, found)
+        if len(found_rows) == len(indexes) and _even(block_box, found_rows):  # PRD 9 F-11: never a guess
+            rows.update(zip(indexes, found_rows, strict=True))
     whole = (0.0, 0.0, float(width), float(height))
     result = tuple(
         pinned_lines.get(index)
         or OcrLine(
             text.text,
-            *(text.box or whole),
+            *rows.get(index, text.box or whole),
             confidence=None,
             kind=text.kind,
             unsure=unsure[index],
-            box_source="model",
+            box_source="found" if index in rows else "model",
             block=text.block,
         )
         for index, text in enumerate(texts)
@@ -627,6 +639,46 @@ def _block_box(block: dict[str, Any], page: dict[str, Any], width: int, height: 
     right = min(float(width), x1 / their_width * width)
     bottom = min(float(height), y1 / their_height * height)
     return (left, top, right, bottom) if left < right and top < bottom else None
+
+
+def _rows(block: PixelBox, found: list[PixelBox]) -> list[PixelBox]:
+    """PRD 9 F-11: the found boxes whose centre lies in ``block``, as rows from the top: a box
+    whose middle height is inside the row above joins it (a table row's cells). Each row is
+    the union of its boxes, clipped to the block. O(found log found)."""
+    x0, y0, x1, y1 = block
+    inside = sorted(
+        (box for box in found if x0 <= (box[0] + box[2]) / 2 <= x1 and y0 <= (box[1] + box[3]) / 2 <= y1),
+        key=lambda box: (box[1] + box[3]) / 2,
+    )
+    rows: list[PixelBox] = []
+    for box in inside:
+        row = rows[-1] if rows else None
+        if row is not None and row[1] <= (box[1] + box[3]) / 2 <= row[3]:
+            rows[-1] = (min(row[0], box[0]), min(row[1], box[1]), max(row[2], box[2]), max(row[3], box[3]))
+        else:
+            rows.append(box)
+    return [(max(r[0], x0), max(r[1], y0), min(r[2], x1), min(r[3], y1)) for r in rows]
+
+
+def _even(block: PixelBox, rows: list[PixelBox]) -> bool:
+    """PRD 9 F-11, CLAUDE.md rule 6: whether ``rows`` (two or more, ``_rows``) lie evenly over
+    ``block``, so that one row a line is no guess: each row's top within half to one and a half
+    of the middle step from the row above's (a wrapped cell or a missed row breaks it), no row
+    over one and a half times the middle height (a stamp, two rows as one), and neither edge of
+    the block further from its row than three quarters of a step (a row missed there). O(rows log rows)."""
+
+    def middle(values: list[float]) -> float:
+        return sorted(values)[(len(values) - 1) // 2]
+
+    steps = [below[1] - above[1] for above, below in itertools.pairwise(rows)]
+    step, height = middle(steps), middle([row[3] - row[1] for row in rows])
+    return (
+        step > 0
+        and all(step / 2 <= each <= step * 1.5 for each in steps)
+        and all(row[3] - row[1] <= height * 1.5 for row in rows)
+        and rows[0][1] - block[1] <= step * 0.75
+        and block[3] - rows[-1][3] <= step * 0.75
+    )
 
 
 def _scaled(box: PixelBox, width: int, height: int, scale: float) -> tuple[float, float, float, float]:

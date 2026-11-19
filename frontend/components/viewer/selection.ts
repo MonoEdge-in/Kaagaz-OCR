@@ -10,7 +10,12 @@ export interface Selection {
   region: Region | null;
   valueId: string | null;
   label?: Region | null; // the item's label spot too (PRD 3 Y1), on this page or another
+  approximate?: boolean; // PRD 9 F-16: no found box confirmed the spot (a line's box_source "model")
 }
+
+// PRD 9 F-16, Q3: an unconfirmed spot is a dashed box with this label; a confirmed one stays solid.
+export const APPROXIMATE_SPOT = "Approximate spot";
+export const APPROXIMATE_NOTE = "Approximate spot: the reader could not confirm exactly where this line is on the page.";
 
 export function sameRegion(a: Region, b: Region): boolean {
   if (a.kind === "box" && b.kind === "box") {

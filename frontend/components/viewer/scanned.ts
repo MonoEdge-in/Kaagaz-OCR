@@ -1,5 +1,5 @@
 // The words and rules of the Scanned text panel, unit tested in node
-// (tests/viewer-scanned.test.ts). Text is shown as read, with the words people fixed.
+// (tests/viewer-scanned.test.ts). Text is shown as the server sends it (PRD 9 F-12: with its fixes).
 
 import { sameRegion } from "@/components/viewer/selection";
 import { BACKUP_ISSUES } from "@/components/viewer/viewer";
@@ -191,19 +191,24 @@ function centreIn(inner: Region, outer: Region): boolean {
   return x >= rx0 - e && x <= rx1 + e && y >= ry0 - e && y <= ry1 + e;
 }
 
-const squash = (text: string) => text.replace(/\s+/g, " ").trim();
+// PRD 9 F-13, F-14: text compared with its whitespace squashed (a flag's text as read is; a raw line's is not).
+export const squash = (text: string) => text.replace(/\s+/g, " ").trim();
 const area = (region: Region) =>
   region.kind === "box" ? (region.box[2] - region.box[0]) * (region.box[3] - region.box[1]) : 0;
 
 /** #614: a flag is on a row when it is the row's own line flag (the same spot and the same text
  * as read: a reader gives every line of a block the block's box, or the page's), or a word or
  * value whose centre is in the row. Never lineMarked's #523 test: it hung a table-sized line
- * flag on every row inside it, so Fix text on one row saved over another line. */
+ * flag on every row inside it, so Fix text on one row saved over another line.
+ * PRD 9 F-12: or the row's key (its spot and text as read), once a fix changed the text it shows. */
 function onRow(
-  flag: Pick<WordFlag, "region" | "as_read"> & { kind?: WordFlag["kind"] },
-  row: Pick<ReadLine, "region" | "text">,
+  flag: Pick<WordFlag, "region" | "as_read"> & { kind?: WordFlag["kind"]; word_key?: string },
+  row: Pick<ReadLine, "region" | "text" | "key">,
 ): boolean {
-  if (flag.kind === "line") return sameRegion(flag.region, row.region) && squash(flag.as_read) === squash(row.text);
+  if (flag.kind === "line") {
+    const own = squash(flag.as_read) === squash(row.text) || (row.key !== undefined && flag.word_key === row.key);
+    return sameRegion(flag.region, row.region) && own;
+  }
   return centreIn(flag.region, row.region);
 }
 
@@ -227,7 +232,7 @@ export function fixBox(flag: Pick<WordFlag, "text">): { hint: string; draft: str
   const stray = /^[\p{P}\p{S}\s]+$/u.test(flag.text);
   return {
     hint: stray
-      ? `'${flag.text}' may be a stray mark. Confirm it to leave it as read, or type what the page shows.`
+      ? `'${flag.text}' may be a stray mark. Save it as it is to leave it as read, or type what the page shows.`
       : `Type the word you see on the page in place of '${flag.text}'.`,
     draft: flag.text,
   };
@@ -240,9 +245,9 @@ export function fixBox(flag: Pick<WordFlag, "text">): { hint: string; draft: str
  * #614: a word or value is only the smallest of the page's `lines` holding its centre, never a
  * big line's around that line. O(flags + the line's words x lines).
  */
-export function wordToFix<T extends Pick<WordFlag, "kind" | "region" | "as_read">>(
+export function wordToFix<T extends Pick<WordFlag, "kind" | "region" | "as_read"> & { word_key?: string }>(
   flags: readonly T[],
-  line: Pick<ReadLine, "region" | "text">,
+  line: Pick<ReadLine, "region" | "text" | "key">,
   lines: readonly Pick<ReadLine, "region">[],
 ): T | undefined {
   const size = area(line.region);
@@ -254,38 +259,22 @@ export function wordToFix<T extends Pick<WordFlag, "kind" | "region" | "as_read"
 /** What a Save in the fix box settles (#431): the word, and its line's own flag when the line is
  * only that word (a signature read as [?]: one word on the page, flagged twice). #614: only the
  * flag of `row`, the line the Save came from, never another line around it or in its box. */
-export function fixesFor<T extends Pick<WordFlag, "kind" | "region" | "text" | "as_read">>(
+export function fixesFor<T extends Pick<WordFlag, "kind" | "region" | "text" | "as_read"> & { word_key?: string }>(
   flag: T,
   flags: readonly T[],
-  row: Pick<ReadLine, "region" | "text">,
+  row: Pick<ReadLine, "region" | "text" | "key">,
 ): T[] {
   const lineIsWord = (each: T) => each !== flag && each.kind === "line" && each.text === flag.text && onRow(each, row);
   return [flag, ...flags.filter(lineIsWord)];
 }
 
-/**
- * The line as read with the words people fixed in it (Vrushit UAT, 25 Oct 2026: a "[?]" typed
- * in through Fix text). The line's flagged words, fixed or not, are walked left to right on the
- * page, each matched to the next place its text as read appears, so a line with two "[?]" gets
- * each fix in its own place; a word not fixed keeps its place and its text as read. The line's
- * own flag counts only once a person typed it (#431: as read, it is the whole line, and would
- * hide the words fixed in it).
- */
-export function withFixes(
-  line: Pick<ReadLine, "text" | "region">,
-  words: readonly (Pick<WordFlag, "region" | "as_read" | "text"> & { kind?: WordFlag["kind"] })[],
-): string {
-  const left = (word: Pick<WordFlag, "region">) => (word.region.kind === "box" ? word.region.box[0] : 0);
-  const inLine = words
-    .filter((word) => onRow(word, line) && !(word.kind === "line" && word.text === word.as_read))
-    .sort((a, b) => left(a) - left(b));
-  let text = line.text;
-  let from = 0;
-  for (const word of inLine) {
-    const at = word.as_read === "" ? -1 : text.indexOf(word.as_read, from);
-    if (at < 0) continue;
-    text = text.slice(0, at) + word.text + text.slice(at + word.as_read.length);
-    from = at + word.text.length;
-  }
-  return text;
+/** PRD 9 F-14: the flag a row shows in red: at its spot, with its key or its text (squashed), so a
+ * line in a block (a Mistral block's lines share its box) never shows another line's flag. */
+export function rowFlag<T extends Pick<WordFlag, "region" | "as_read" | "word_key">>(
+  flags: readonly T[],
+  row: Pick<ReadLine, "region" | "text" | "key">,
+): T | undefined {
+  const own = (each: T) => each.word_key === row.key || squash(each.as_read) === squash(row.text);
+  return flags.find((each) => sameRegion(each.region, row.region) && own(each));
 }
+

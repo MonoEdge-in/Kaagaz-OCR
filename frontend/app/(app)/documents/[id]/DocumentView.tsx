@@ -99,11 +99,11 @@ import { fieldText } from "@/components/viewer/labels";
 import { lowResolutionText } from "@/components/viewer/panels";
 import { pagesAround, usePageCache } from "@/components/viewer/usePageCache";
 import type { Spot } from "@/components/viewer/panels";
-import { beingRead, canReprocess, loadFailure, settledText } from "@/components/viewer/reprocess";
-import { highlightsOf, initialSelection, pageChange } from "@/components/viewer/selection";
+import { beingRead, canReprocess, loadFailure, readAgainText, readLines, settledText } from "@/components/viewer/reprocess";
+import { APPROXIMATE_NOTE, highlightsOf, initialSelection, pageChange } from "@/components/viewer/selection";
 import { selectSpot } from "@/components/viewer/selection";
 import type { Selection } from "@/components/viewer/selection";
-import { canReview } from "@/components/review/review";
+import { canReview, nextDocumentHref } from "@/components/review/review";
 import { flagDomId, saveWord, settled, trustText } from "@/components/review/wordReview";
 import { Timeline } from "@/components/activity/Timeline";
 import { ACTIVITY_TEXT } from "@/components/activity/words";
@@ -162,6 +162,8 @@ export interface DocumentViewProps {
   wordsParam: string | null;
   fromParam: string | null;
   openErrorParam?: string | null; // PRD 7 (PR 13): a Google confirm that did not open locked files
+  tabParam?: string | null; // PRD 9 F-17: ?tab=attention, opened from Review's By document
+  nextParam?: string | null; // PRD 9 F-17: the documents after it in that list, for Next document
 }
 
 // Said after "Highlighted: <field>" when the spot came in a link (a source card, a search
@@ -192,6 +194,8 @@ export function DocumentView({
   wordsParam,
   fromParam,
   openErrorParam = null,
+  tabParam = null,
+  nextParam = null,
 }: DocumentViewProps) {
   const { me } = useSession();
   const [attempt, setAttempt] = useState(0);
@@ -230,6 +234,8 @@ export function DocumentView({
   // Set when a poll sees reading end: the next detail says what was found ("again": after Read again).
   const settling = useRef<"read" | "again" | null>(null);
   const readingAgain = useRef(false);
+  // PRD 9 F-15: the page Read this page again was asked for, and its lines before (readLines).
+  const readAgainBefore = useRef<{ pageNo: number; lines: string[] } | null>(null);
   // Ready first: the detail shown came while the document was still being understood.
   const loadedUnderstanding = useRef(false);
   // "Add meaning": what it is for, and the button that opened it (focus goes back there).
@@ -306,6 +312,16 @@ export function DocumentView({
         if (beingRead(detail.status) || loadedUnderstanding.current) poll.later();
         if (!beingRead(detail.status) && settling.current) {
           setAnnouncement(settledText(detail, settling.current === "again"));
+        }
+        const again = readAgainBefore.current;
+        if (again && settling.current === "again") {
+          readAgainBefore.current = null; // PRD 9 F-15: once read, what it changed on that page
+          if (detail.status === "ready") {
+            getPageReadings(documentId, again.pageNo).then(
+              (after) => setToast(readAgainText(again.lines, readLines(after))),
+              () => undefined, // the page shows what it has; only the note is left out
+            );
+          }
         }
         settling.current = null;
       })
@@ -419,7 +435,7 @@ export function DocumentView({
     if (bringPageForSpot(selection?.region ?? null, region)) viewerRef.current?.scrollIntoView({ block: "nearest" });
   };
   const showSpot = (spot: Spot, said = `Showing ${spot.name} on page ${spot.region.page}.`) => {
-    choose(selectSpot(spot.region, spot.label));
+    choose({ ...selectSpot(spot.region, spot.label), approximate: spot.approximate }); // PRD 9 F-16
     setAnnouncement(said);
     bringPage(spot.region);
   };
@@ -453,6 +469,9 @@ export function DocumentView({
   // #443: one rule, toSettle; until the words come (or if they cannot), the pages' marked spots count.
   const openWords = review.status === null ? null : openFlags;
   const attention = attentionCount(detail.pages, openWords);
+  // PRD 9 F-14: until the words come (null) the tab shows, with a loader, while a page is on the list.
+  const listed = (each: PageSummary) => each.read_quality !== "good" && each.accepted_at === null;
+  const attentionTab = attention === null ? detail.pages.some(listed) : attention > 0;
   // File management P1 (Changed on purpose, PRD 1 screens): Details (was Overview), Text (was
   // Scanned text), and Questions, Versions and Activity; Needs attention and My words stay.
   // Document panel UX (25 Oct 2026): Needs attention only with something in it (or while
@@ -461,7 +480,10 @@ export function DocumentView({
   // a wide panel shows (it was last, always under More).
   const tabs: TabItem[] = [
     { id: "overview", label: FILES_TEXT.details },
-    ...(attention > 0 || reviewing ? [{ id: "attention" as const, label: "Needs attention", count: attention || undefined }] : []),
+    // PRD 9 F-14: a loader in the badge until known, none at zero; open, the tab stays ("Everything is checked").
+    ...(attentionTab || reviewing || tabChoice?.tab === "attention"
+      ? [{ id: "attention" as const, label: "Needs attention", count: attention === null ? (review.failed ? undefined : null) : attention || undefined }]
+      : []),
     ...(hasScannedText ? [{ id: "scanned" as const, label: "Text" }] : []),
     { id: "words", label: "My words" },
     { id: "questions", label: QUESTIONS_TEXT.heading },
@@ -473,7 +495,7 @@ export function DocumentView({
     setTab("clear");
     document.getElementById(TAB_BAR_ID)?.scrollIntoView({ block: "nearest" });
   };
-  const chosenTab = tabChoice && tabChoice.linkKey === linkKey ? tabChoice.tab : scannedParam === "1" ? "scanned" : "overview";
+  const chosenTab = tabChoice && tabChoice.linkKey === linkKey ? tabChoice.tab : scannedParam === "1" ? "scanned" : tabParam === "attention" ? "attention" : "overview";
   const tab = tabs.some((each) => each.id === chosenTab) ? chosenTab : "overview";
   const setTab = (next: TabId) => setTabChoice({ linkKey, tab: next });
   // A reading problem pressed (U3): its spot on the page, and the line with both readings.
@@ -547,6 +569,7 @@ export function DocumentView({
       : folder
         ? { href: libraryHref({ ...ALL_DOCUMENTS, folderId: folder.id }), name: folder.name }
         : { href: "/documents", name: "documents" });
+  const next = nextDocumentHref(nextParam);
   const chip = statusChip(detail.status, detail.detected_type);
   const barSaysStatus = detail.status !== "rejected" && review.status !== null && review.status.status !== "ready";
   // Trash means deleted: no download from there, only Restore (the Trash view).
@@ -565,7 +588,9 @@ export function DocumentView({
   const fromLink = regionParam !== null && !(chosen && chosen.linkKey === linkKey);
   const highlightNote = highlighted
     ? `Highlighted: ${fieldText(highlighted.field)}${fromLink ? FROM_LINK : ""}`
-    : undefined;
+    : selection?.approximate
+      ? APPROXIMATE_NOTE
+      : undefined;
   const reloadWith = (message: string, undo?: () => Promise<unknown>) => {
     setToast(message); // its own live region reads it out
     setToastUndo(() => undo ?? null);
@@ -615,6 +640,7 @@ export function DocumentView({
                   onPageChange={changePage}
                   highlights={highlightsOf(selection)}
                   highlightNote={highlightNote}
+                  approximate={selection?.approximate}
                   download={download}
                   marks={words.markersAround}
                   activeMark={words.activeId}
@@ -642,6 +668,7 @@ export function DocumentView({
                   page={page}
                   highlights={highlightsOf(selection)}
                   highlightNote={highlightNote}
+                  approximate={selection?.approximate}
                   pageNumbers={pageNumbers}
                   onPageChange={changePage}
                   marks={words.markers}
@@ -687,6 +714,12 @@ export function DocumentView({
                 Back to <ScriptText text={back.name} />
               </span>
             </Link>
+            {next && (
+              <Link href={next} className={styles.back}>
+                Next document
+                <Icon name="chevron-right" />
+              </Link>
+            )}
             <h1 ref={headingRef} tabIndex={-1} className={styles.title}>
               <ScriptText text={detail.display_name} />
             </h1>
@@ -921,9 +954,10 @@ export function DocumentView({
                           userId={me.user.id}
                           canFix={canReview(me.user.role) && detail.deleted_at === null}
                           canUpload={detail.deleted_at === null}
-                          onReadAgain={(reply) => {
+                          onReadAgain={(reply, before) => {
                             merge(reply);
                             readingAgain.current = true;
+                            readAgainBefore.current = before && { pageNo: page.page_no, lines: before };
                             poll.later();
                           }}
                           onKept={keepPage}
@@ -933,6 +967,7 @@ export function DocumentView({
                     status={detail.status}
                     pages={detail.pages}
                     open={openWords}
+                    failed={review.failed} // PRD 9 F-14: "Could not count", as the tab shows no badge
                     current={page?.page_no ?? null}
                     marks={readingMarks}
                     onPage={changePage}
@@ -956,11 +991,9 @@ export function DocumentView({
                     flags={pageFlags}
                     onFix={review.status?.can_review && detail.deleted_at === null ? fixWord : undefined}
                     member={review.status?.can_review === false}
-                    // Every flagged word holds its place; only a person's edit changes its text (an
-                    // Ensemble proposal is not shown as fixed until a person takes it).
-                    fixed={review.flags
-                      .filter((flag) => flag.page_no === page.page_no)
-                      .map((flag) => (flag.change?.action === "edit" ? flag : { ...flag, text: flag.as_read }))}
+                    // PRD 9 F-12: the lines carry their fixes from the server; an Undo there asks for
+                    // the words again (and the page, which the Undo may take off its kept state).
+                    onUndone={() => review.reload()}
                   />
                 )
               ) : shownTab === "clear" ? (
@@ -1022,7 +1055,7 @@ export function DocumentView({
 }
 
 type TabId = "overview" | "attention" | "scanned" | "clear" | "questions" | "versions" | "activity" | "words";
-type TabItem = { id: TabId; label: string; count?: number };
+type TabItem = { id: TabId; label: string; count?: number | null }; // null: not known yet, a loader (PRD 9 F-14)
 const tabId = (id: TabId) => `document-tab-${id}`;
 const tabPanelId = (id: TabId) => `document-panel-${id}`;
 const TAB_BAR_ID = "document-tabs";
@@ -1078,7 +1111,9 @@ function PanelTabs({
               onKeyDown={(event) => onKeyDown(event, index)}
             >
               <span data-label={item.label}>{item.label}</span>
-              {item.count !== undefined && (
+              {item.count === null ? (
+                <span className="spinner" role="status" aria-label="Counting" />
+              ) : item.count !== undefined && (
                 <span
                   className={`tab-count ${styles.tabCount}`}
                   data-zero={item.count === 0 ? "true" : undefined}
@@ -1094,7 +1129,7 @@ function PanelTabs({
           name="the other tabs"
           compact={room < 3}
           items={more.map((item) => ({
-            label: item.count === undefined ? item.label : `${item.label} ${item.count.toLocaleString("en-IN")}`,
+            label: typeof item.count !== "number" ? item.label : `${item.label} ${item.count.toLocaleString("en-IN")}`,
             onSelect: () => onChange(item.id),
           }))}
         />
