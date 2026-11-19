@@ -217,11 +217,12 @@ describe("misclicks", () => {
     );
     // Changed on purpose (UI audit, 16 Oct 2026): AD2, a row's menu lists the destructive action last, under a hairline, 16px down.
     // Changed on purpose (plain words, 25 Oct 2026): each item has a line saying what it does.
+    // Changed on purpose (#711): the menu is smaller, so the destructive action sits 8px from the rest.
     expect(read("components/admin/UsersPanel.tsx")).toContain(
       '{ label: "Disable", description: USER_MENU_HELP.disable, onSelect: () => setConfirming("disable"), destructive: true }',
     );
     expect(noComments(read("components/admin/Admin.module.css"))).toMatch(
-      /\.rowMenuDanger \{\s*margin-top: var\(--space-4\);\s*border-top: 1px solid var\(--border\);/,
+      /\.rowMenuDanger \{\s*margin-top: var\(--space-2\);\s*border-top: 1px solid var\(--border\);/,
     );
   });
 

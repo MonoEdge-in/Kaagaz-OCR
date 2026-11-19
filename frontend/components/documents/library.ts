@@ -128,13 +128,14 @@ export function menuEntries(
 /**
  * Where an open menu goes (D5): under its button, or above it when there is not room
  * below and more above; its end edge lined up with the button's, kept 8px inside the
- * window. Fixed coordinates (the menu is in a portal, so <main> never cuts it).
+ * window. Fixed coordinates (the menu is in a portal, so <main> never cuts it). `maxHeight`: the room
+ * on that side, so a menu taller than it scrolls inside instead of running off the window (#711).
  */
 export function menuPlace(
   button: { top: number; bottom: number; right: number },
   menu: { width: number; height: number },
   view: { width: number; height: number },
-): { top: number; left: number; up: boolean } {
+): { top: number; left: number; up: boolean; maxHeight: number } {
   const gap = 4;
   const edge = 8;
   const below = view.height - button.bottom - gap - edge;
@@ -142,7 +143,7 @@ export function menuPlace(
   const up = menu.height > below && above > below;
   const top = up ? Math.max(edge, button.top - gap - menu.height) : button.bottom + gap;
   const left = Math.min(Math.max(edge, button.right - menu.width), Math.max(edge, view.width - menu.width - edge));
-  return { top, left, up };
+  return { top, left, up, maxHeight: up ? above : below };
 }
 
 /** The menu item focused after a key (Up/Down wrap, Home/End the ends); null for other keys. */

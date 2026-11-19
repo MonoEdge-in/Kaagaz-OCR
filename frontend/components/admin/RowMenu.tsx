@@ -34,12 +34,14 @@ export function menuKeyTarget(key: string, at: number, count: number): number | 
   return null;
 }
 
-function moveFocus(event: KeyboardEvent<HTMLDivElement>) {
+/** The key's action takes focus and is kept in view, the menu scrolling only as far as it needs (#711). */
+export function moveFocus(event: KeyboardEvent<HTMLDivElement>) {
   const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
   const next = menuKeyTarget(event.key, items.indexOf(event.target as HTMLButtonElement), items.length);
   if (next === null) return;
   event.preventDefault();
-  items[next]?.focus();
+  items[next]?.focus({ preventScroll: true });
+  items[next]?.scrollIntoView({ block: "nearest" });
 }
 
 /**
@@ -104,7 +106,8 @@ export function RowMenu({
       >
         {items.map((item, index) => {
           // The line under the label: why it can't be used yet, else what it does. The label
-          // names the item; the line is read as its description.
+          // names the item; the line is read as its description, cut to one line on screen
+          // with its full text as the tooltip (#711).
           const hint = item.disabledReason || item.description;
           const hintId = `${id}-hint-${index}`;
           return (
@@ -115,6 +118,7 @@ export function RowMenu({
               className={item.destructive ? `${styles.rowMenuItem} ${styles.rowMenuDanger}` : styles.rowMenuItem}
               aria-label={hint ? item.label : undefined}
               aria-describedby={hint ? hintId : undefined}
+              title={hint || undefined}
               aria-disabled={item.disabledReason ? true : undefined}
               onClick={(event) => {
                 if (item.disabledReason) return;
