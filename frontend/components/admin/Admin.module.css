@@ -320,7 +320,9 @@
 
 /* AD2: one row's menu (RowMenu.tsx), a native popover under its button, flipped above
    near the window's foot; centred where anchor positioning is missing. The action that
-   takes something away is last, under a hairline, 16px from the rest. */
+   takes something away is last, under a hairline, 8px from the rest. Never taller than
+   the window: a long menu scrolls inside, each hint on one line (its full text is the
+   item's tooltip), issue 711. */
 .rowMenuButton {
   padding-inline: var(--space-2);
 }
@@ -332,7 +334,10 @@
 .rowMenu {
   position: fixed;
   min-width: 12rem;
-  max-width: min(20rem, calc(100% - 2 * var(--space-4)));
+  max-width: min(16rem, calc(100% - 2 * var(--space-4)));
+  max-block-size: calc(100dvh - 2 * var(--space-2));
+  overflow-y: auto;
+  overscroll-behavior: contain;
   margin: 0;
   padding: var(--space-1);
   border: 1px solid var(--border-strong);
@@ -348,6 +353,15 @@
     position-area: bottom span-left;
     position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
   }
+
+  /* The side (below or above) with more room, and only that room: the percentage is of
+     the space between the button and the window's edge. */
+  @supports (position-try-order: most-block-size) {
+    .rowMenu {
+      max-block-size: calc(100% - 2 * var(--space-1));
+      position-try-order: most-block-size;
+    }
+  }
 }
 
 .rowMenuItem {
@@ -355,9 +369,9 @@
   flex-direction: column;
   align-items: flex-start;
   width: 100%;
-  min-height: var(--control-h);
+  min-height: var(--control-min);
   justify-content: center;
-  padding: var(--space-1) var(--space-3);
+  padding: var(--space-1) var(--space-2);
   border: 0;
   border-radius: var(--k-r-3);
   background: transparent;
@@ -379,12 +393,16 @@
 }
 
 .rowMenuHint {
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: var(--fs-sm);
   color: var(--text-secondary);
 }
 
 .rowMenuDanger {
-  margin-top: var(--space-4);
+  margin-top: var(--space-2);
   border-top: 1px solid var(--border);
   border-radius: var(--k-r-3);
   color: var(--critical);

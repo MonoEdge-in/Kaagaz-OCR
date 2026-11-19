@@ -400,6 +400,10 @@ class NoDirectReaderCallsTest(unittest.TestCase):
         "route",
         "page_quality",
         "rapid_pool",
+        # Changed on purpose (#709): the page-turn check reads no document text and makes no
+        # values; like page_quality it only judges a stored page picture (which way is up), so
+        # the API's POST /documents/{id}/straighten may import it. Readers stay behind the socket.
+        "orientation",
     }
     # Changed on purpose (#473, 2 Nov 2026): the operator's settings and the scan's Reading name
     # Mistral's readers and models, and the worker its wait names, so these constants of the

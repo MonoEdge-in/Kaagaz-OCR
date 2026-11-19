@@ -75,6 +75,7 @@ import {
   PageTurnsPluginPackage,
   scrollTopKeepingPage,
   searchHitTarget,
+  type TurnablePage,
   turnPages,
   turnPagesTo,
 } from "@/components/extend/lib/page-turns"
@@ -159,6 +160,12 @@ export type PDFViewerProps = {
   onPageRotationsChange?: (pageRotations: ReadonlyMap<number, number>) => void
   // Changed for Kaagaz (#600): the turn menu waits while the turns are being saved.
   turnMenuDisabled?: boolean
+  // Changed for Kaagaz (#709): "Make all pages wide" and "tall", and "Straighten all pages with
+  // AI", handed to the screen with the pages (it asks the orientation check), and its status line.
+  turnWithAi?: {
+    onPick: (choice: TurnWithAiChoice, pages: readonly TurnablePage[]) => void
+    status: React.ReactNode
+  }
   pageClassName?: (pageNumber: number) => string | undefined
   renderPageOverlay?: (props: PDFViewerPageOverlayProps) => React.ReactNode
   onActivePageChange?: (pageNumber: number) => void
@@ -226,6 +233,8 @@ type PageTurnChange =
   | "tall"
   | "reset"
   | { set: ReadonlyMap<number, number> }
+  | { ai: TurnWithAiChoice }
+type TurnWithAiChoice = "straighten" | "wide" | "tall"
 type ThumbnailSelectionMode = "replace" | "toggle" | "range"
 function getPageIndexRange(from: number, to: number): Set<number> {
   const start = Math.min(from, to)
@@ -877,10 +886,12 @@ function PDFViewerTurnMenu({
   controlsDisabled,
   pickedPages,
   onRotate,
+  turnWithAi,
 }: {
   controlsDisabled: boolean
   pickedPages: number
   onRotate: (change: PageTurnChange) => void
+  turnWithAi?: PDFViewerProps["turnWithAi"]
 }) {
   const id = React.useId()
   const rows = [
@@ -928,6 +939,7 @@ function PDFViewerTurnMenu({
               type="button"
               variant="ghost"
               size="sm"
+              disabled={controlsDisabled}
               onClick={() => onRotate({ pages, direction: -1 })}
             >
               <RotateCcwIcon />
@@ -937,6 +949,7 @@ function PDFViewerTurnMenu({
               type="button"
               variant="ghost"
               size="sm"
+              disabled={controlsDisabled}
               onClick={() => onRotate({ pages, direction: 1 })}
             >
               <RotateCwIcon />
@@ -950,7 +963,8 @@ function PDFViewerTurnMenu({
           variant="ghost"
           size="sm"
           className="justify-start"
-          onClick={() => onRotate("wide")}
+          disabled={controlsDisabled}
+          onClick={() => onRotate(turnWithAi ? { ai: "wide" } : "wide")}
         >
           Make all pages wide
         </Button>
@@ -959,19 +973,34 @@ function PDFViewerTurnMenu({
           variant="ghost"
           size="sm"
           className="justify-start"
-          onClick={() => onRotate("tall")}
+          disabled={controlsDisabled}
+          onClick={() => onRotate(turnWithAi ? { ai: "tall" } : "tall")}
         >
           Make all pages tall
         </Button>
+        {turnWithAi ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="justify-start"
+            disabled={controlsDisabled}
+            onClick={() => onRotate({ ai: "straighten" })}
+          >
+            Straighten all pages with AI
+          </Button>
+        ) : null}
         <Button
           type="button"
           variant="ghost"
           size="sm"
           className="justify-start"
+          disabled={controlsDisabled}
           onClick={() => onRotate("reset")}
         >
           Reset to original
         </Button>
+        {turnWithAi?.status}
       </PopoverContent>
     </Popover>
   )
@@ -993,6 +1022,7 @@ function PDFViewerToolbar({
   onPageChange,
   onRotate,
   turnMenuDisabled = false,
+  turnWithAi,
   onToggleSidebar,
   onZoomChange,
   zoomLevel,
@@ -1014,6 +1044,7 @@ function PDFViewerToolbar({
   onPageChange: (pageNumber: number) => void
   onRotate: (change: PageTurnChange) => void
   turnMenuDisabled?: boolean
+  turnWithAi?: PDFViewerProps["turnWithAi"]
   onToggleSidebar: () => void
   onUploadFile?: (file: File) => void
   onZoomChange: (zoomLevel: ZoomMode | number) => void
@@ -1109,6 +1140,7 @@ function PDFViewerToolbar({
               controlsDisabled={controlsDisabled || turnMenuDisabled}
               pickedPages={pickedPages}
               onRotate={onRotate}
+              turnWithAi={turnWithAi}
             />
           ) : null}
         </div>
@@ -1811,6 +1843,7 @@ type PDFViewerInnerProps = {
   pageRotations?: PDFViewerProps["pageRotations"]
   onPageRotationsChange?: PDFViewerProps["onPageRotationsChange"]
   turnMenuDisabled?: PDFViewerProps["turnMenuDisabled"]
+  turnWithAi?: PDFViewerProps["turnWithAi"]
   pageClassName?: (pageNumber: number) => string | undefined
   renderPageOverlay?: (props: PDFViewerPageOverlayProps) => React.ReactNode
   onActivePageChange?: (pageNumber: number) => void
@@ -1837,6 +1870,7 @@ function PDFViewerInner({
   pageRotations,
   onPageRotationsChange,
   turnMenuDisabled,
+  turnWithAi,
   pageClassName,
   renderPageOverlay,
   onActivePageChange,
@@ -2051,6 +2085,11 @@ function PDFViewerInner({
         documentId
       ]
       const currentDocument = documentState?.document ?? pdfDocument
+      // Changed for Kaagaz (#709): the screen asks the orientation check, then hands the turns in.
+      if (typeof change === "object" && "ai" in change) {
+        turnWithAi?.onPick(change.ai, currentDocument.pages)
+        return true
+      }
       const previousDeltas = pageRotationDeltasRef.current
       let nextDeltas: PageRotationDeltas
       if (change === "reset") {
@@ -2147,6 +2186,7 @@ function PDFViewerInner({
       scroll,
       scrollPlugin,
       thumbnailPlugin,
+      turnWithAi,
       viewportCapability,
     ]
   )
@@ -2300,6 +2340,7 @@ function PDFViewerInner({
           onPageChange={scrollToPage}
           onRotate={rotatePages}
           turnMenuDisabled={turnMenuDisabled}
+          turnWithAi={turnWithAi}
           onToggleSidebar={() => setSidebarOpen((open) => !open)}
           onUploadFile={handleUpload}
           onZoomChange={(zoomLevel) => zoom?.requestZoom(zoomLevel)}
@@ -2448,6 +2489,7 @@ export const PDFViewer = React.forwardRef<PDFViewerHandle, PDFViewerProps>(
       pageRotations,
       onPageRotationsChange,
       turnMenuDisabled,
+      turnWithAi,
       pageClassName,
       renderPageOverlay,
       onActivePageChange,
@@ -2580,6 +2622,7 @@ export const PDFViewer = React.forwardRef<PDFViewerHandle, PDFViewerProps>(
             pageRotations={pageRotations}
             onPageRotationsChange={onPageRotationsChange}
             turnMenuDisabled={turnMenuDisabled}
+            turnWithAi={turnWithAi}
             pageClassName={pageClassName}
             renderPageOverlay={renderPageOverlay}
             onActivePageChange={onActivePageChange}

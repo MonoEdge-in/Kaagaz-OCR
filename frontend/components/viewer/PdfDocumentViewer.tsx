@@ -55,7 +55,7 @@ import {
   wordsChipText,
 } from "./readingMarks";
 import styles from "./PageViewer.module.css";
-import { SaveForEveryone, usePageTurns } from "./SavePageTurns";
+import { SaveForEveryone, TurnWithAiStatus, usePageTurns, useTurnWithAi } from "./SavePageTurns";
 import { centredScroll, mostVisiblePage, panTo } from "./viewer";
 import { wordColour } from "./YourWords";
 
@@ -170,6 +170,8 @@ export function PdfDocumentViewer({
   const viewer = useRef<PDFViewerHandle>(null);
   const turns = usePageTurns(document.id, document.page_turns, userId);
   const [handedTurns, setHandedTurns] = useState(turns.opening);
+  // #709: the turn menu's choices with the orientation check; their turns are handed in as a save's.
+  const ai = useTurnWithAi(document.id, userId, turns, setHandedTurns, onTurnsSaved);
   const [showHighlights, setShowHighlights] = useState(true);
   const [showWords, setShowWords] = useState(() => showWordsByDefault(role));
   const [crowdedOpen, setCrowdedOpen] = useState<readonly number[]>([]); // pages whose chip was pressed
@@ -428,7 +430,17 @@ export function PdfDocumentViewer({
         showDownload={false}
         pageRotations={handedTurns}
         onPageRotationsChange={turns.show}
-        turnMenuDisabled={turns.saving}
+        turnMenuDisabled={ai.busy}
+        turnWithAi={{
+          onPick: (choice, pages) => void ai.run(choice, pages),
+          status: (
+            <TurnWithAiStatus
+              ai={ai}
+              className="flex max-w-72 flex-wrap items-center gap-1 px-2 text-sm"
+              buttonClassName={buttonVariants({ variant: "ghost", size: "sm" })}
+            />
+          ),
+        }}
         renderPageOverlay={overlay}
         onActivePageChange={pageChanged}
         onDocumentLoadSuccess={() => setOpen(true)}
