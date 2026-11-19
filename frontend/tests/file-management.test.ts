@@ -389,10 +389,12 @@ describe("the Versions tab (V9, V10, V12)", () => {
   });
 
   it("offers Make current for a ready version that is not current, out of Trash", () => {
-    expect(canMakeCurrent({ status: "ready", is_current: false }, false)).toBe(true);
-    expect(canMakeCurrent({ status: "ready", is_current: true }, false)).toBe(false);
-    expect(canMakeCurrent({ status: "failed", is_current: false }, false)).toBe(false);
-    expect(canMakeCurrent({ status: "ready", is_current: false }, true)).toBe(false);
+    // Changed on purpose (PRD 9 F-07): a third argument, whether a version the person sees is current.
+    expect(canMakeCurrent({ status: "ready", is_current: false }, false, true)).toBe(true);
+    expect(canMakeCurrent({ status: "ready", is_current: true }, false, true)).toBe(false);
+    expect(canMakeCurrent({ status: "failed", is_current: false }, false, true)).toBe(false);
+    expect(canMakeCurrent({ status: "ready", is_current: false }, true, true)).toBe(false);
+    expect(canMakeCurrent({ status: "ready", is_current: false }, false, false)).toBe(false);
     expect(joinedText("auto")).toBe("Linked on its own");
     expect(joinedText(undefined)).toBe("Uploaded");
   });

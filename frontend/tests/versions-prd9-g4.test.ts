@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { menuEntries } from "@/components/documents/library";
 import { CompareBody } from "@/components/versions/CompareView";
 import { LinkDialog } from "@/components/versions/LinkDialog";
+import { VersionsPanel } from "@/components/versions/VersionsPanel";
 import { VersionPopup } from "@/components/versions/VersionPopup";
 import type { LinkFile } from "@/components/versions/link";
 import type { DocumentCompare, DocumentDetail, Me, VersionSuggestion } from "@/lib/types";
@@ -112,6 +113,29 @@ describe("F-07: the link dialog's latest marker", () => {
     await press(radio); // picked
     await press(byLabel("Move down: plot data.json"));
     expect(latest()).toEqual(["This is the latest: plot data.json"]); // the pick stays
+  });
+});
+
+describe("F-07: Make current only when the family's current version is one the person sees", () => {
+  const family = (currentSeen: boolean) =>
+    ({
+      id: "v1",
+      family_id: "v1",
+      display_name: "plot data.json",
+      deleted_at: null,
+      versions: [
+        { id: "v1", version_no: 1, status: "ready", is_current: false, created_at: "2026-11-17T13:54:00Z", display_name: "plot data.json" },
+        ...(currentSeen
+          ? [{ id: "v2", version_no: 2, status: "ready", is_current: true, created_at: "2026-11-17T15:19:00Z", display_name: "plot data.json" }]
+          : []), // v2, the current one, is out of this person's sight: the server answers 404
+      ],
+    }) as unknown as DocumentDetail;
+
+  it("is offered on a version that is not current while the current one is listed, else not", () => {
+    const shown = renderToStaticMarkup(createElement(VersionsPanel, { detail: family(true), onChanged: () => undefined }));
+    expect(shown).toContain(">Make current<");
+    const hidden = renderToStaticMarkup(createElement(VersionsPanel, { detail: family(false), onChanged: () => undefined }));
+    expect(hidden).not.toContain(">Make current<");
   });
 });
 
