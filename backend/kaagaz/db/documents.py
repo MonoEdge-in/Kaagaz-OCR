@@ -125,12 +125,16 @@ _DUPLICATE = text(
 )
 
 # #554 (module notes): document ``d`` was refused by its scan and is its family's only version.
-# PRD 9 F-03 (D3, #680): or it is in Trash, failed or never read, not locked, and the person uploading
-# sees it: kaagaz_duplicate (0102, the same rule, the view read as the owner) says it is not in. This module
+# PRD 9 F-03 (D3, #680): or it is in Trash, never read (no ready run, no page: a read that failed
+# again after a good one keeps its pages), not locked, and the person uploading sees it: kaagaz_duplicate
+# (0102, the same rule, the view read as the owner) says it is not in. This module
 # reads no view (the worker reaches it, #595); with no person (a zip's files) it is a duplicate as before.
 REFUSED_ALONE = (
     "(d.status = 'rejected' OR (d.deleted_at IS NOT NULL AND d.locked_at IS NULL"
     " AND d.status IN ('failed', 'received', 'clean', 'needs_reader')"
+    " AND NOT EXISTS (SELECT 1 FROM processing_runs r WHERE r.customer_id = d.customer_id"
+    " AND r.document_id = d.id AND r.status = 'ready')"
+    " AND NOT EXISTS (SELECT 1 FROM pages p WHERE p.customer_id = d.customer_id AND p.document_id = d.id)"
     " AND CASE WHEN NULLIF(current_setting('kaagaz.user_id', true), '') IS NULL THEN false"
     " ELSE (SELECT f.answer FROM kaagaz_duplicate(ARRAY[d.sha256]) f) = 'none' END))"
     " AND NOT EXISTS (SELECT 1 FROM documents v"

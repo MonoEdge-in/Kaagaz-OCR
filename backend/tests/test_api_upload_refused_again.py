@@ -218,6 +218,46 @@ def test_a_copy_in_trash_that_was_read_or_locked_is_still_already_in_trash(
     assert len(api.queue.jobs) == 1
 
 
+def test_a_copy_read_once_whose_read_again_failed_is_still_already_in_trash(db: Database) -> None:
+    """Read fine (its pages, corrections and values stay), read again and failed, then moved to Trash:
+    it holds a read, so it is never deleted without the delete-forever right."""
+    api = Api(db)
+    signed = api.new_signed()
+    first = _upload(signed).json()["document"]["id"]
+    _scan(api, signed, first, Verdict.CLEAN)  # read fine: a ready run and its pages
+    assert _row(api, signed, first).status == "ready"
+    with db.customer(signed.customer_id) as conn:  # as a failed read again leaves it, then Trash
+        conn.execute(
+            text("UPDATE documents SET status = 'failed', deleted_at = now() WHERE id = :d"), {"d": first}
+        )
+
+    again = _upload(signed)
+
+    assert (again.status_code, again.json()["duplicate"], again.json()["in_trash"]) == (200, True, True)
+    assert _row(api, signed, first) is not None
+    assert _replacements(api, signed) == []
+
+
+def test_a_failed_copy_in_trash_with_a_page_but_no_ready_run_is_still_already_in(db: Database) -> None:
+    """The backstop: a page saved (a read cut short before it was marked ready) is a read."""
+    api = Api(db)
+    signed = api.new_signed()
+    first = _in_trash(api, signed, "failed")
+    with db.customer(signed.customer_id) as conn:
+        conn.execute(
+            text(
+                "INSERT INTO pages (customer_id, document_id, page_no, width, height, unit)"
+                " VALUES (:c, :d, 1, 1, 1, 'pt')"
+            ),
+            {"c": signed.customer_id, "d": first},
+        )
+
+    again = _upload(signed)
+
+    assert (again.status_code, again.json()["duplicate"]) == (200, True)
+    assert _row(api, signed, first) is not None
+
+
 def test_a_failed_version_in_trash_of_a_family_with_others_is_still_already_in(db: Database) -> None:
     """Kaagaz deletes whole families only."""
     api = Api(db)

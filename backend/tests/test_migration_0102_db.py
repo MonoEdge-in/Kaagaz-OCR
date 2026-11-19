@@ -18,7 +18,14 @@ pytestmark = pytest.mark.db
 fresh = base.fresh
 M0102 = _load("0102_trash_reupload.py")
 _NOW = datetime.now(UTC)
-_SHA = {"failed": "a" * 64, "ready": "b" * 64, "live": "c" * 64, "locked": "d" * 64}
+_SHA = {
+    "failed": "a" * 64,
+    "ready": "b" * 64,
+    "live": "c" * 64,
+    "locked": "d" * 64,
+    "run": "e" * 64,  # failed in Trash, after a good read (a ready run)
+    "paged": "f" * 64,  # failed in Trash, with a page saved
+}
 _ANSWER = "SELECT answer FROM kaagaz_duplicate(ARRAY[:h])"
 _COMMENT = "SELECT obj_description('public.kaagaz_duplicate(text[], bigint[])'::regprocedure, 'pg_proc')"
 
@@ -38,10 +45,11 @@ def test_up_down_and_up_again(fresh: tuple[str, Database]) -> None:
     at_0101 = _state(db)
     customer, user = new_customer(db)
     with db.customer(customer) as conn:
-        # In Trash: failed, ready, and locked while still waiting to be read; live: failed, not in Trash.
+        # In Trash: failed (also after a good read, or with a page), ready, and locked before it was read;
+        # live: failed, not in Trash.
         for name, sha in _SHA.items():
             trash = {} if name == "live" else {"deleted_at": _NOW, "deleted_by": user}
-            status = {"live": "failed", "locked": "received"}.get(name, name)
+            status = {"ready": "ready", "locked": "received"}.get(name, "failed")
             insert_document(conn, customer, sha256=sha, status=status, uploaded_by=user, **trash)
     with db.engine.begin() as conn:  # as the owner: the lock's columns
         conn.execute(
@@ -55,8 +63,25 @@ def test_up_down_and_up_again(fresh: tuple[str, Database]) -> None:
             ),
             {"u": user, "h": _SHA["locked"]},
         )
+        conn.execute(
+            text(
+                "INSERT INTO processing_runs (customer_id, document_id, started_at, finished_at, status)"
+                " SELECT customer_id, id, now(), now(), 'ready' FROM documents WHERE sha256 = :h"
+            ),
+            {"h": _SHA["run"]},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO pages (customer_id, document_id, page_no, width, height, unit)"
+                " SELECT customer_id, id, 1, 1, 1, 'pt' FROM documents WHERE sha256 = :h"
+            ),
+            {"h": _SHA["paged"]},
+        )
     before = _answers(db, customer, user)
-    assert (before["failed"], before["locked"]) == ("visible", "locked_open")
+    assert [before[name] for name in ("failed", "run", "paged", "locked")] == [
+        *["visible"] * 3,
+        "locked_open",
+    ]
 
     migrate(url, "0102")
     at_0102 = _state(db)
