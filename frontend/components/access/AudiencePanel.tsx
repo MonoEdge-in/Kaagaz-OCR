@@ -91,6 +91,8 @@ interface PanelProps {
   onClosed?(): void;
   /** A change was saved: the toast's words; the screen reads the folders again. */
   onChanged(message: string): void;
+  /** #700: opened by the folder's Make private button: its step first (Cancel goes to who can see it). */
+  start?: "private";
 }
 
 /** A read that failed, in words: one not-found text for missing, hidden or locked; the 403 text;
@@ -117,7 +119,7 @@ export function AudiencePanel(props: PanelProps) {
   const [audience, setAudience] = useState<Audience | null>(null);
   const [failed, setFailed] = useState<unknown>(null);
   const [named, setNamed] = useState<NamedList | null>(null);
-  const [mode, setMode] = useState<Mode>({ kind: "view" });
+  const [mode, setMode] = useState<Mode>({ kind: props.start ?? "view" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The last change's words, kept in the dialog as well as the toast (which sits behind it).

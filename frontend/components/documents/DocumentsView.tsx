@@ -29,7 +29,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
-import { accessAbilities } from "@/components/access/abilities";
+import { accessAbilities, privateFirst } from "@/components/access/abilities";
 import { ASK_FOR_ACCESS, asksForAccess } from "@/components/access/askForAccess";
 import { AudiencePanel } from "@/components/access/AudiencePanel";
 import { KeptFromMe } from "@/components/access/KeptFromMe";
@@ -207,7 +207,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const [departmentChoice, setDepartmentChoice] = useState<string | null | undefined>(undefined);
   const [versionFile, setVersionFile] = useState<{ file: File; of: DocumentSummary } | null>(null);
   // PRD 7 (#604): the folder whose Audience panel is open.
-  const [audienceOf, setAudienceOf] = useState<AudienceTarget | null>(null);
+  const [audienceOf, setAudienceOf] = useState<(AudienceTarget & { start?: "private" }) | null>(null);
 
   // #648: who may link versions, the link dialog open, and the groups of possible versions.
   const canLink = mayLinkVersions(me);
@@ -599,6 +599,8 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const place = current ? folderPlace(tree, current.folder.id) : null;
   const abilities = accessAbilities(me, { departmentId: place?.department?.id ?? null });
   const audiencePlace = audienceOf ? folderPlace(tree, audienceOf.id) : null;
+  // #700: the folder's "Who can see this" reads Make private and opens at that step, for who may use it here.
+  const opensPrivate = current !== null && abilities.audience && privateFirst(abilities, place);
 
   // Only an empty list shows this button, in its empty state; the page header never does
   // (Tushar, 16 Oct 2026: two upload buttons): the app header's Upload is the screen's one
@@ -801,9 +803,16 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                 suggestions={nameSuggestions}
                 onAudience={
                   current && abilities.audience
-                    ? () => setAudienceOf({ kind: "folder", id: current.folder.id, name: current.folder.name })
+                    ? () =>
+                        setAudienceOf({
+                          kind: "folder",
+                          id: current.folder.id,
+                          name: current.folder.name,
+                          start: opensPrivate ? "private" : undefined,
+                        })
                     : undefined
                 }
+                makePrivate={opensPrivate}
               />
             )}
           </div>
@@ -1154,6 +1163,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
       {audienceOf && (
         <AudiencePanel
           target={audienceOf}
+          start={audienceOf.start}
           myId={me.user.id}
           abilities={accessAbilities(me, { departmentId: audiencePlace?.department?.id ?? null })}
           place={audiencePlace}
