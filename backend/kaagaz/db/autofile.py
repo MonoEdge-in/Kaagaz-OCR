@@ -141,9 +141,13 @@ APPLIES = (
     " WHERE s.customer_id = :c AND s.task = 'autofile' AND s.level = 'on'"
     " AND (s.user_id IS NULL OR s.user_id = :by))))"
 )
+# PRD 9 F-02 (D2): ``departments``, whether there is a department to sort into (Kaagaz makes none)
+# that the person sees (visible_folders: only the API asks this, never the worker).
 _APPLIES = (
     "SELECT " + APPLIES + " AS pending,"  # noqa: S608 - a fixed fragment, APPLIES
-    " autofile_on, autofile_granted, CAST(:by AS uuid) AS uploaded_by FROM customers WHERE id = :c"
+    " autofile_on, autofile_granted, CAST(:by AS uuid) AS uploaded_by,"
+    " EXISTS (SELECT 1 FROM visible_folders f WHERE f.customer_id = :c AND f.parent_id IS NULL"
+    " AND f.kind = 'department') AS departments FROM customers WHERE id = :c"
 )
 _DEPARTMENTS = (
     "SELECT id, name FROM folders"
@@ -274,9 +278,10 @@ def file_document(conn: Connection, customer_id: str, document_id: str) -> str |
 
 def applies(conn: Connection, customer_id: str, user_id: str) -> bool:
     """Would this user's upload with no folder be filed by its type ("Let Kaagaz sort them",
-    #484)? The insert's rule marks it pending and ``_filing_on`` files it. Three statements."""
+    #484)? The insert's rule marks it pending and ``_filing_on`` files it. PRD 9 F-02: never while
+    the organisation has no department, as Kaagaz makes none. Three statements."""
     row = conn.execute(text(_APPLIES), {"c": customer_id, "by": user_id}).mappings().one()
-    return bool(row["pending"]) and _filing_on(conn, customer_id, row)
+    return bool(row["pending"]) and bool(row["departments"]) and _filing_on(conn, customer_id, row)
 
 
 def _filing_on(conn: Connection, customer_id: str, state: RowMapping) -> bool:
