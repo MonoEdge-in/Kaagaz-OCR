@@ -91,12 +91,16 @@ _FILE_COLUMNS = (
     # auto-filing picks it (by alias, first by name), and only one whose files the person may open:
     # visible_folders is that rule for everyone but an Admin, who sees every folder's name (0086), so
     # for an Admin only an open department or their own (fails closed on a private one). Read only.
+    # Never for a family still waiting to be filed (its first version's autofile 'pending'): between
+    # its ready mark and the filing transaction, a Move there would pull it from its type folder.
     " (SELECT json_build_object('id', s.id, 'name', s.name) FROM visible_folders s"
     f" JOIN (VALUES {_DEPARTMENT_ALIASES}) m (doc_type, alias) ON lower(s.name) = m.alias,"
     " kaagaz_access() a WHERE d.folder_id IS NULL AND m.doc_type = d.doc_type"
     " AND s.customer_id = d.customer_id AND s.parent_id IS NULL AND s.kind = 'department'"
     " AND (NOT a.admin OR a.management OR (s.private_folder_id IS NULL"
     " AND (NOT s.department_only OR s.department_id = ANY (a.departments))))"
+    " AND (SELECT r.autofile FROM visible_documents r WHERE r.customer_id = d.customer_id"
+    " AND r.id = d.family_id) IS DISTINCT FROM 'pending'"
     " ORDER BY lower(s.name), s.id LIMIT 1) AS suggested_department,"
     " (SELECT json_build_object('id', s.id,"
     " 'role', CASE WHEN s.document_id = d.id THEN 'new' ELSE 'candidate' END)"

@@ -356,6 +356,9 @@ def test_prd9_f01_a_file_in_no_folder_suggests_the_existing_department_of_its_ty
     assert suggested("other") is None
     assert suggested("land_record", legal) is None  # a department picked is kept
     assert suggested("land_record", loose) is None
+    # Still waiting to be filed (ready, typed, not yet filed): Kaagaz files it a moment later.
+    pending = api.add_document(customer, uploaded_by=admin, doc_type="land_record", autofile="pending")
+    assert member.client.get(f"/api/documents/{pending}").json()["suggested_department"] is None
 
 
 def test_f2_a_department_form_field_must_be_a_department(db: Database) -> None:

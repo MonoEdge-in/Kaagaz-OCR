@@ -647,6 +647,18 @@ def test_a_department_suggestion_never_names_one_the_person_cant_open(
     assert body["suggested_department"] == expected
 
 
+def test_an_admin_is_suggested_an_open_department(db: Database) -> None:
+    """PRD 9 F-01: the Admin's rule only narrows Department only and private ones; an open
+    department (Sales) is suggested to an Admin who is not in it."""
+    org = _walled(Api(db))
+    top = org.files["top"]
+    _owner(db, "UPDATE folders SET name = 'Operations' WHERE id = :f", {"f": org.folders["sales"]})
+    _owner(db, "UPDATE documents SET doc_type = 'register' WHERE id = :d", {"d": top})
+    status, body = _call(org.people["admin"], "GET", f"/api/documents/{top}")
+    assert status == 200
+    assert body["suggested_department"] == {"id": org.folders["sales"], "name": "Operations"}
+
+
 def test_only_kaagaz_itself_gives_the_uploader_a_file(db: Database) -> None:
     """A person's transaction can't run kaagaz_give_uploader."""
     org = _walled(Api(db))

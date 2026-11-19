@@ -124,8 +124,11 @@ const summary = (more: Partial<DocumentSummary>): DocumentSummary =>
   ({ id: "d1", status: "ready", folder_id: null, autofile: null, suggested_department: null, ...more }) as DocumentSummary;
 
 describe("F-01: Looks like <department>", () => {
-  it("offers the department, and Move there moves the file into it as the Move dialog does", async () => {
-    serve({ "PATCH /api/documents/d1": { status: 200, body: summary({ folder_id: "legal" }) } });
+  it("offers the department; Move there opens the Move dialog with it chosen, its preview, then Undo", async () => {
+    serve({
+      "GET /api/documents/d1/move-preview?folder_id=legal": { status: 200, body: { losing: [], gaining: [{ id: "u2", name: "Ravi" }], files: 1 } },
+      "PATCH /api/documents/d1": { status: 200, body: summary({ folder_id: "legal" }) },
+    });
     const onMoved = vi.fn();
     const screen = await mount(
       createElement(DepartmentSuggestion, {
@@ -137,9 +140,19 @@ describe("F-01: Looks like <department>", () => {
     expect(screen.textContent).toContain("Not sorted. Looks like Land & Legal");
     await act(async () => void fire(button(screen, "Move there")!, "click", { button: 0 }));
     await settle();
-    expect(calls).toEqual([{ url: "/api/documents/d1", method: "PATCH", body: { folder_id: "legal" } }]);
+    const page = doc.body as unknown as FakeElement;
+    const chosen = page.all().find((element) => element.tagName === "INPUT" && element.checked);
+    expect(chosen?.closest("label")?.textContent).toContain("Land & Legal"); // chosen at first
+    expect(calls.map((call) => call.url)).toEqual(["/api/documents/d1/move-preview?folder_id=legal"]); // the who-can-see preview
+    expect(page.textContent).toContain("1 person will be able to see it: Ravi.");
+    await act(async () => void fire(button(page, "Move")!.closest("form")!, "submit"));
+    await settle();
+    expect(calls.slice(1)).toEqual([{ url: "/api/documents/d1", method: "PATCH", body: { folder_id: "legal" } }]);
     expect(onMoved).toHaveBeenCalledTimes(1);
     expect(screen.textContent).toContain("Moved to Land & Legal.");
+    await act(async () => void fire(button(screen, "Undo")!, "click", { button: 0 }));
+    await settle();
+    expect(calls.at(-1)).toEqual({ url: "/api/documents/d1", method: "PATCH", body: { folder_id: null } });
   });
 
   it("says nothing when there is no suggestion", async () => {

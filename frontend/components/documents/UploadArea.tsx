@@ -48,7 +48,6 @@ import {
   getBatch,
   getUploadLimits,
   isStorageFull,
-  moveDocument,
   restoreDocument,
   undoAutofile,
   uploadDocument,
@@ -98,7 +97,6 @@ import { MoveDialog } from "./DocumentActions";
 import { droppedItems } from "./folderPick";
 import { pathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
-import { libraryErrorText } from "./library";
 import { ALL_DOCUMENTS, libraryHref } from "./libraryQuery";
 import {
   FALLBACK_UPLOAD_LIMITS,
@@ -527,72 +525,66 @@ export function AutofileNote({
 /**
  * PRD 9 F-01 (D1): a file in no folder whose type maps to a department the person can open (the
  * server's ``suggested_department``): "Not sorted. Looks like Land & Legal · Move there · Pick
- * another". Move there moves the family as the Move dialog does; Pick another opens that dialog.
+ * another". Both open the Move dialog, Move there with the department chosen, so its who-can-see
+ * preview and its Undo apply as to any move.
  */
 export function DepartmentSuggestion({ document, tree, onMoved }: { document: DocumentSummary; tree: FolderTree; onMoved(): void }) {
-  const [busy, setBusy] = useState(false);
-  const [picking, setPicking] = useState(false);
-  const [moved, setMoved] = useState<string | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
+  const [dialog, setDialog] = useState<{ to?: string } | null>(null);
+  const [moved, setMoved] = useState<{ words: string; undo?: () => Promise<void> } | null>(null);
   const department = document.suggested_department;
   if (moved !== null) {
+    const { undo } = moved;
     return (
       <p className={styles.small} role="status">
-        {moved}
+        {moved.words}
+        {undo && (
+          <>
+            {" · "}
+            <button
+              type="button"
+              className={`btn btn-quiet ${styles.inlineAction}`}
+              onClick={() =>
+                void undo().then(
+                  () => {
+                    setMoved(null);
+                    onMoved();
+                  },
+                  (caught: unknown) => setMoved({ words: undoErrorText(caught) }),
+                )
+              }
+            >
+              Undo
+            </button>
+          </>
+        )}
       </p>
     );
   }
   if (!department) return null;
-
-  async function moveThere(to: { id: string; name: string }) {
-    if (busy) return;
-    setBusy(true);
-    setFailure(null);
-    try {
-      await moveDocument(document.id, to.id);
-      setMoved(`Moved to ${to.name}.`);
-      onMoved();
-    } catch (caught) {
-      setFailure(libraryErrorText(caught, "document"));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <>
       <p className={styles.small}>
         {`Not sorted. Looks like ${department.name}`}
         {" · "}
-        <button
-          type="button"
-          className={`btn btn-quiet ${styles.inlineAction}`}
-          aria-disabled={busy || undefined}
-          onClick={() => void moveThere(department)}
-        >
-          <BusyLabel busy={busy} idle="Move there" working="Move there" />
+        <button type="button" className={`btn btn-quiet ${styles.inlineAction}`} onClick={() => setDialog({ to: department.id })}>
+          Move there
         </button>
         {" · "}
-        <button type="button" className={`btn btn-quiet ${styles.inlineAction}`} onClick={() => setPicking(true)}>
+        <button type="button" className={`btn btn-quiet ${styles.inlineAction}`} onClick={() => setDialog({})}>
           Pick another
         </button>
-        {failure && (
-          <span className="error-text" role="alert">
-            {" "}
-            {failure}
-          </span>
-        )}
       </p>
-      {picking && (
+      {dialog && (
         <MoveDialog
           items={[document]}
           tree={tree}
-          onSaved={(message) => {
-            setPicking(false);
-            setMoved(message);
+          to={dialog.to}
+          onSaved={(words, _moved, undo) => {
+            setDialog(null);
+            setMoved({ words, undo });
             onMoved();
           }}
-          onClose={() => setPicking(false)}
+          onClose={() => setDialog(null)}
         />
       )}
     </>

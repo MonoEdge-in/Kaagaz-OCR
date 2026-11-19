@@ -27,6 +27,7 @@ def test_a_prune_never_deletes_another_companys_empty_folder(db: Database) -> No
         assert prune_empty(conn, a, b_folders) == []
         # Changed on purpose (PRD 9 F-02, D2): only Kaagaz's Invoices goes; the department is the admin's.
         made = [f[0] for f in folders(db, a) if f[3] is not None]
+        assert made  # the control has something to delete
         assert sorted(prune_empty(conn, a, a_folders)) == sorted(made)  # the control
 
     assert sorted(f[0] for f in folders(db, b)) == sorted(b_folders)
