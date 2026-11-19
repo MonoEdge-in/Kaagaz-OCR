@@ -498,6 +498,15 @@ describe("layout guards", () => {
     expect(rulesFor(css, ".dialog[open]")[0]?.body).toMatch(/display:\s*flex;[\s\S]*flex-direction:\s*column/);
   });
 
+  it("draws a dialog's text as the page does, wherever it is mounted (#686)", () => {
+    // The status bar is monospace and nowrap; a dialog mounted in it (the new-version pop-up) inherited both.
+    const dialog = rulesFor("components/documents/ActionDialog.module.css", ".dialog")[0]?.body ?? "";
+    expect(dialog).toMatch(/font-family:\s*var\(--k-font-body\)/);
+    expect(dialog).toMatch(/font-size:\s*var\(--fs-base\)/);
+    expect(dialog).toMatch(/line-height:\s*var\(--k-lh-ui\)/);
+    expect(dialog).toMatch(/white-space:\s*normal/);
+  });
+
   it("moves an upload bar and card without animating width or shadows", () => {
     expect(rulesFor(DOCS_CSS, ".readMeter::-webkit-progress-value").filter((rule) => /transition/.test(rule.body))).toEqual([]);
     expect(rulesFor(DOCS_CSS, ".upload")[0]?.body).not.toMatch(/transition:[^;]*box-shadow/);
