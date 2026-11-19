@@ -46,7 +46,8 @@ describe("navLinks", () => {
   });
 
   it("adds Admin only for an admin with an admin session", () => {
-    expect(labels("admin", "admin")).toEqual(["Home", "Documents", "Ask", "My words", "Review", "Admin"]);
+    // Changed on purpose (#706): an admin session also has Access, just above Admin.
+    expect(labels("admin", "admin")).toEqual(["Home", "Documents", "Ask", "My words", "Review", "Access", "Admin"]);
   });
 
   it("never gives Admin to a non-admin, whatever the scope says", () => {
