@@ -149,10 +149,11 @@ export function notSentText(counts: Pick<TrayCounts, "notSent">): string | null 
 
 const files = (n: number) => `${n} ${n === 1 ? "file" : "files"}`;
 
-/** "Batch of 50 files · 31 ready · 12 reading · 4 waiting · 2 need attention · 1 already uploaded". */
+/** "Batch of 50 files (1 already uploaded) · 31 ready · 12 reading · 4 waiting · 2 need attention";
+ * #693: the already-uploaded files are said with the total they are part of. */
 export function summaryText(counts: TrayCounts): string {
   const parts = [
-    `Batch of ${files(counts.total)}`,
+    `Batch of ${files(counts.total)}${counts.already > 0 ? ` (${counts.already} already uploaded)` : ""}`,
     counts.ready > 0 ? `${counts.ready} ready` : "",
     counts.sending > 0 ? `${counts.sending} sending` : "",
     counts.reading > 0 ? `${counts.reading} reading` : "",
@@ -160,7 +161,6 @@ export function summaryText(counts: TrayCounts): string {
     counts.attention > 0 ? `${counts.attention} ${counts.attention === 1 ? "needs" : "need"} attention` : "",
     counts.failed > 0 ? `${counts.failed} failed` : "",
     counts.stopped > 0 ? `${counts.stopped} stopped` : "",
-    counts.already > 0 ? `${counts.already} already uploaded` : "",
   ];
   return parts.filter(Boolean).join(" · ");
 }

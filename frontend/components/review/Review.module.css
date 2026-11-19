@@ -376,6 +376,11 @@
   cursor: not-allowed;
 }
 
+/* Issue 693: faded as the chat menu's, since the muted ink alone matched a usable segment's. */
+.segment:has(input:disabled) {
+  opacity: 0.55;
+}
+
 /* R3, focus mode: the keys, then Skip at the end of the row. */
 .focusBar {
   display: flex;

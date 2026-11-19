@@ -981,6 +981,14 @@ describe("the activity screens (A5, A6)", () => {
     expect(gone).not.toContain("href=");
   });
 
+  it("says a delete once: Priya deleted a document (#693)", () => {
+    const deleted = entry("document.delete", about("a deleted document", 1, true));
+    const row = render(createElement(TimelineRow, { entry: deleted, showDocument: true })).replace(/<[^>]*>/g, " ");
+    expect(row).toContain("Priya deleted a document");
+    expect(row).not.toContain("a deleted document");
+    expect(activityDocument(deleted)).toBeNull();
+  });
+
   it("renders the admin table's columns and the filter chips, with Export to Excel", () => {
     const html = render(createElement(ActivityTable, { items: [entry("document.label_change", { ...about("Deed.pdf"), folder: { id: LAND, path: "Land & Legal" }, details: { from: "internal", to: "restricted" } })] }));
     for (const column of ["When", "Who", "Action", "Document", "Folder", "Details"]) expect(html).toContain(`>${column}<`);
