@@ -298,7 +298,7 @@ def get_my_access(user: User, context: Context) -> dict[str, Any]:
     them is named or counted: ``walled`` (as /auth/me's) says only that some files are kept to some
     people."""
     me, customer_id = user.user_id, user.customer_id
-    with context.db.user(customer_id, me) as conn:
+    with context.db.user(user.customer_id, user.user_id) as conn:
         management, _, _, walled = access_sql.me(conn)
         member_of = access_sql.departments(conn, customer_id, me)
         named = access_sql.named_on(conn, customer_id, me)
