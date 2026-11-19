@@ -137,6 +137,16 @@ describe("F-07: Make current only when the family's current version is one the p
     const hidden = renderToStaticMarkup(createElement(VersionsPanel, { detail: family(false), onChanged: () => undefined }));
     expect(hidden).not.toContain(">Make current<");
   });
+
+  it("tells a person who may not link versions why, instead of hiding the action (#690)", () => {
+    const reason = "Only Management, or an Admin in an admin session, can link versions.";
+    const cannot = renderToStaticMarkup(createElement(VersionsPanel, { detail: family(true), onChanged: () => undefined }));
+    expect(cannot).toMatch(/<button[^>]*disabled=""[^>]*>Add an older or newer version<\/button>/);
+    expect(cannot).toContain(reason);
+    const can = renderToStaticMarkup(createElement(VersionsPanel, { detail: family(true), onChanged: () => undefined, canLink: true }));
+    expect(can).toMatch(/<button type="button" class="btn">Add an older or newer version<\/button>/);
+    expect(can).not.toContain(reason);
+  });
 });
 
 describe("F-08: page images only for pages that have a picture", () => {
@@ -263,8 +273,10 @@ describe("F-06: the pop-up after an upload that looks like a new version", () =>
     await rerender(createElement(VersionPopup, { suggestions: one }));
     expect(text()).toContain('This looks like a new version of "plot data.json" (81% the same text). Save it as a new version?');
     expect(all().some((element) => element.tagName === "A" && element.getAttribute("href") === "/documents/s1-new/compare?with=s1-old")).toBe(true);
-    expect(button("Yes to all")).toBeNull(); // one pair: no Yes to all
-    await press(button("Yes"));
+    // Changed on purpose (#690): one wording everywhere, as the banner and the Upload tab.
+    expect(text()).toContain("Versions keep one file with its history. Search and Ask use the Current version.");
+    expect(button("Save all as new versions")).toBeNull(); // one pair: no Save all as new versions
+    await press(button("Save as new version"));
     expect(calls).toEqual(["POST /api/version-suggestions/s1/accept"]);
     expect(text()).toContain('Saved as version 2 of "plot data.json".');
     await press(button("Undo"));
@@ -275,7 +287,7 @@ describe("F-06: the pop-up after an upload that looks like a new version", () =>
   it("No keeps it separate; closed, the same suggestion is not asked again here", async () => {
     serve({ "POST /api/version-suggestions/s1/reject": { id: "s1", status: "rejected", document_id: "s1-new" } });
     await mount(createElement(VersionPopup, { suggestions: one }));
-    await press(button("No"));
+    await press(button("Keep both"));
     expect(calls).toEqual(["POST /api/version-suggestions/s1/reject"]);
     expect(text()).toContain("Kept as its own file. Kaagaz won't ask about these two again.");
     await press(button("Close"));
@@ -283,13 +295,13 @@ describe("F-06: the pop-up after an upload that looks like a new version", () =>
     expect(all().find((element) => element.tagName === "DIALOG")).toBeUndefined();
   });
 
-  it("lists several pairs in one pop-up, Yes or No on each and Yes to all", async () => {
+  it("lists several pairs in one pop-up, Save as new version or Keep both on each, and Save all as new versions", async () => {
     serve({ "POST /api/version-suggestions/s1/reject": {}, "POST /api/version-suggestions/s2/accept": {}, "POST /api/version-suggestions/s3/accept": {} });
     const three = [suggestion("s1", "plot data.json"), suggestion("s2", "Lease.pdf", 0.9), suggestion("s3", "Bill.pdf", 0.95)];
     await mount(createElement(VersionPopup, { suggestions: three }));
-    expect(all().filter((element) => element.tagName === "BUTTON" && element.textContent === "Yes")).toHaveLength(3);
-    await press(byLabel("No: plot data.json"));
-    await press(button("Yes to all"));
+    expect(all().filter((element) => element.tagName === "BUTTON" && element.textContent === "Save as new version")).toHaveLength(3);
+    await press(byLabel("Keep both: plot data.json"));
+    await press(button("Save all as new versions"));
     expect(calls).toEqual([
       "POST /api/version-suggestions/s1/reject",
       "POST /api/version-suggestions/s2/accept",
@@ -297,7 +309,7 @@ describe("F-06: the pop-up after an upload that looks like a new version", () =>
     ]);
     expect(text()).toContain('Saved as version 2 of "Lease.pdf".');
     expect(text()).toContain('Saved as version 2 of "Bill.pdf".');
-    expect(button("Yes to all")).toBeNull();
+    expect(button("Save all as new versions")).toBeNull();
   });
 
   it("remembers on this browser what it asked, so a reload does not ask again; works without storage", async () => {

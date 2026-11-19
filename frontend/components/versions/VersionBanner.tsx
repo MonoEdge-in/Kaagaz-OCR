@@ -87,6 +87,7 @@ export function VersionBanner({
   return (
     <div className={styles.banner}>
       <VersionChoice suggestion={suggestion} withNote onDone={(chosen) => onChanged(chosen.message, chosen.undo)} />
+      <p className={styles.bannerText}>{VERSION_TEXT.help}</p>
     </div>
   );
 }

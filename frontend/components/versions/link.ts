@@ -48,6 +48,8 @@ export const LINK_TEXT = {
   connection: "Check your connection, then try again.",
   // The library and the Versions tab (the row menu's words are in documents/library.ts).
   addVersion: "Add an older or newer version",
+  // #690: said beside the greyed-out action, never hidden without a word (mayLinkVersions).
+  onlyManagers: "Only Management, or an Admin in an admin session, can link versions.",
   undoLink: "Undo linking",
   bulk: (n: number) => `Link as versions (${n})`,
   // The Possible versions view (V17) and the Kept apart list (V18).

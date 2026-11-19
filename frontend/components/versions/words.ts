@@ -7,8 +7,10 @@ import type { DocumentDetail, DocumentVersion, VersionSuggestion } from "@/lib/t
 
 export const VERSION_TEXT = {
   // V6, V7: the banner, the upload tray's row and the compare screen (#521: two buttons).
-  asVersion: "Upload as a new version",
-  asFile: "Upload as a new file",
+  // #690: one wording everywhere, the pop-up's too; the file is already uploaded, so "Save as".
+  asVersion: "Save as new version",
+  asFile: "Keep both",
+  help: "Versions keep one file with its history. Search and Ask use the Current version.",
   seeDifferences: "See the differences",
   undo: "Undo",
   noteLabel: "Note for this version (optional)",
@@ -25,9 +27,9 @@ export const VERSION_TEXT = {
   // PRD 9 F-06 (D4): the pop-up once a file just uploaded looks like a new version.
   popupTitle: "A new version?",
   saveAsVersion: "Save it as a new version?",
-  yes: "Yes",
-  no: "No",
-  yesToAll: "Yes to all",
+  yes: "Save as new version",
+  no: "Keep both",
+  yesToAll: "Save all as new versions",
   close: "Close",
   // V12: the Versions tab.
   versions: "Versions",
