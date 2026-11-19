@@ -19,6 +19,7 @@ import type { FolderSource } from "@/components/documents/folderUpload";
 import { FolderReadingDialog, FolderUploadDialog } from "@/components/documents/FolderUploadDialog";
 import { FolderUploadRow } from "@/components/documents/FolderUploadRow";
 import { buildTree } from "@/components/documents/folderTree";
+import { canDeleteForever } from "@/components/documents/trash";
 import { useFolderUploads } from "@/components/documents/useFolderUploads";
 import { ACCEPT_ATTRIBUTE } from "@/components/documents/logic";
 import { UploadStatus, useUploads } from "@/components/documents/UploadArea";
@@ -287,6 +288,7 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
         checkFailing={uploads.checkFailing}
         onClearFinished={uploads.clearFinished}
         onRestore={(key, documentId, name) => void uploads.restore(key, documentId, name)}
+        onReplace={canDeleteForever(me) ? (key) => void uploads.replace(key) : undefined}
         onRetry={(key) => void uploads.retry(key)}
         onRemove={uploads.remove}
         tree={tree}

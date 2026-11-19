@@ -40,6 +40,14 @@ Why some choices:
   and only a family in Trash (409 ``not_in_trash``
   otherwise); its files go inside the same transaction, so if storage cannot be
   reached every row stays and the admin can try again.
+* **Upload as new file** (#697, Tushar, 19 Nov 2026; NEEDS VRUSHIT'S REVIEW): a resumable start
+  may say ``replace_trash``. At its complete, who may delete forever (``_may_replace_from_trash``,
+  else 403 before anything is stored) but with no typed password: when the upload's own bytes find
+  a copy in Trash, unlocked and seen by the person, its family is deleted forever under its lock
+  (``document.replace_from_trash``), then the upload is stored as a new file where it was sent and
+  read (its ``document.upload`` row says ``replaces``). Anything else is answered as before. The
+  delete and the store are two transactions: if the store then fails, the copy stays deleted and
+  the upload can be sent again.
 * **Trash means deleted.** A family in Trash can't be renamed, moved, tagged
   or given a new version: 409 ``in_trash``, checked under the family lock.
 * **Read again** (PRD 2 X1) is for a reviewer or an admin: a ready, failed or
@@ -158,7 +166,14 @@ from sqlalchemy import Connection, RowMapping
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import FormData, UploadFile
 
-from kaagaz.api.auth import CanDeleteForever, CurrentUser, Reviewer, User, deletes_forever_by_password
+from kaagaz.api.auth import (
+    CanDeleteForever,
+    CurrentUser,
+    Reviewer,
+    User,
+    deletes_forever_by_password,
+    require_admin_session,
+)
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.locked import refuse_locked, refuse_locked_id
@@ -255,6 +270,7 @@ class ResumableUploadStart(BaseModel):
     resume_session_id: str | None = None
     folder_upload_id: str | None = None  # #484: optional, checked against the item's
     folder_upload_item_id: str | None = None  # #484: the item names folder, batch and name
+    replace_trash: bool = False  # #697: Upload as new file (module notes)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -687,6 +703,44 @@ def _department(context: AppContext, user: CurrentUser, department_id: str) -> s
     return department_id
 
 
+def _may_replace_from_trash(user: CurrentUser) -> None:
+    """#697: who may delete forever (``require_delete_forever``: an admin session, or a member or
+    reviewer an admin allowed), with no typed password: the upload's own bytes name the copy."""
+    if user.role == "admin":
+        require_admin_session(user)
+    elif not user.delete_forever_allowed:
+        raise ApiError(403, "forbidden")
+
+
+def _replace_from_trash(context: AppContext, user: CurrentUser, document_id: str) -> bool:
+    """#697: the family of ``document_id`` (the upload's duplicate) deleted forever and audited, under
+    its family lock, only while it is in Trash, unlocked and seen by the person; else False and
+    nothing changes (the upload is answered as before). One transaction."""
+    customer_id = user.customer_id
+    with context.db.user(customer_id, user.user_id) as conn:
+        trash.lock_family(conn, customer_id, document_id)
+        row = listing.get_document(conn, customer_id, document_id)  # PRD 7: through the view
+        if row is None or row["locked"]:
+            return False
+        try:
+            versions = delete_family_forever(conn, context.storage, customer_id, document_id)
+        except NotInTrash:  # every version must be in Trash, checked under the lock
+            return False
+        details: dict[str, audit.DetailValue] = {"versions": versions}
+        if user.role != "admin":
+            details["by_grant"] = True
+        audit.record(
+            conn,
+            customer_id,
+            actor_user_id=user.user_id,
+            action="document.replace_from_trash",
+            target_type="document",
+            target_id=document_id,
+            details=details,
+        )
+    return True
+
+
 def _accept(
     context: AppContext,
     user: CurrentUser,
@@ -697,11 +751,23 @@ def _accept(
     asked: _Asked,
     *,
     via: str | None = None,
+    replace_trash: bool = False,
 ) -> dict[str, Any]:
     """An upload's file stored (``_store``), and its reply. ``via``: the way it came when not the
-    browser (#603 W5: ``whatsapp``), in its audit row, with the uploader as its subject."""
+    browser (#603 W5: ``whatsapp``), in its audit row, with the uploader as its subject.
+    ``replace_trash`` (#697, module notes): its copy in Trash is deleted forever first, then it is
+    stored again as a new file."""
+    if replace_trash:
+        _may_replace_from_trash(user)  # before anything is stored
     result, reading = _store(context, user, upload, policy, folder_id, batch_id, asked)
+    replaces = None
+    if replace_trash and result.duplicate and _replace_from_trash(context, user, result.document_id):
+        replaces = result.document_id
+        upload.file.seek(0)
+        result, reading = _store(context, user, upload, policy, folder_id, batch_id, asked)
     details = {**reading.details(), **({"via": via} if via else {})}
+    if replaces:
+        details["replaces"] = replaces
     subject = user.user_id if via else None
     return _upload_reply(
         context, user, result, action="document.upload", details=details or None, subject_user_id=subject
@@ -1086,6 +1152,7 @@ def resumable_candidates(body: ResumableUploadStart, user: User, context: Contex
                 body.fingerprint,
                 batch_id=_form_uuid(body.batch_id),
                 item_id=_form_uuid(body.folder_upload_item_id),
+                replace=body.replace_trash,
             )
         }
 
@@ -1124,6 +1191,7 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
             or row["file_size"] != body.file_size
             or cast(dict[str, Any], row["metadata"]).get("filename") != display_name(body.file_name)
             or cast(dict[str, Any], row["metadata"]).get("fingerprint") != body.fingerprint
+            or bool(cast(dict[str, Any], row["metadata"]).get("replace_trash")) != body.replace_trash
         ):
             raise ApiError(404, "not_found")
         done = cast(dict[str, Any], row["metadata"]).get("completed")
@@ -1179,6 +1247,7 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
         "version_document_id": body.version_document_id,
         "version_note": clean_note(body.version_note),
         "folder_upload_item_id": None if item is None else item.id,
+        "replace_trash": body.replace_trash,
         "parts": {},
     }
     try:
@@ -1348,7 +1417,14 @@ def _store_completed(
                 )
             else:
                 result = _accept(
-                    context, user, upload, policy, metadata.get("folder_id"), metadata.get("batch_id"), asked
+                    context,
+                    user,
+                    upload,
+                    policy,
+                    metadata.get("folder_id"),
+                    metadata.get("batch_id"),
+                    asked,
+                    replace_trash=bool(metadata.get("replace_trash")),
                 )
         except ApiError as refused:
             if refused.status == 429:  # a send slot: the session is kept for the retry

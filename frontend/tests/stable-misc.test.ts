@@ -28,7 +28,8 @@ vi.mock("@/lib/api", async (importOriginal) => ({
   listFolderUploads: async () => ({ items: [] }),
   getPreviousFolderUpload: async () => ({ previous: null }),
 }));
-vi.mock("@/lib/session", () => ({ useSession: () => ({ me: { user: { id: "u1", role: "admin" } } }) }));
+// Changed on purpose (#697): the shell now asks canDeleteForever(me), which reads the session's scope.
+vi.mock("@/lib/session", () => ({ useSession: () => ({ me: { user: { id: "u1", role: "admin" }, session: { scope: "admin" } } }) }));
 vi.mock("@/components/documents/UploadArea", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/components/documents/UploadArea")>()),
   UploadStatus: () => null,

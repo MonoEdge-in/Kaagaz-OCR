@@ -27,6 +27,7 @@ export interface UploadEntry {
   batchId?: string; // the drop it came in (PRD 5 Q1); a new version has its own
   times?: StageTimes; // when it started sending, sent its last byte, and was replied to (U10)
   state: UploadState;
+  asNew?: boolean; // #697: this tab holds the file, so it may be sent again as a new file (not after a reload)
 }
 
 export interface UploadCounts {

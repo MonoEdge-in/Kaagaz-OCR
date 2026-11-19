@@ -49,6 +49,7 @@ import {
   getBatch,
   getUploadLimits,
   isStorageFull,
+  moveDocument,
   restoreDocument,
   undoAutofile,
   uploadDocument,
@@ -93,6 +94,7 @@ import {
   writeStored,
 } from "./batchTray";
 import type { StoredBatch } from "./batchTray";
+import { ActionDialog } from "./ActionDialog";
 import { BusyLabel } from "./BusyLabel";
 import { MoveDialog } from "./DocumentActions";
 import { droppedItems, isSkipped } from "./folderPick";
@@ -103,6 +105,8 @@ import {
   FALLBACK_UPLOAD_LIMITS,
   HIDDEN_COPY,
   LOCKED_COPY,
+  NOT_MOVED,
+  TRASH_COPY,
   canSendAgain,
   copyState,
   estimateIngestSeconds,
@@ -167,6 +171,9 @@ export function useUploads(onUploaded: () => void) {
   );
   // The files this tab still holds, so a file not sent can be sent again (Retry).
   const kept = useRef(new Map<string, Start>());
+  // #697: a drop's file, sent again as a new file in place of its copy in Trash, and the folder
+  // it was going to (where Restore moves that copy). Gone after a reload: then only Restore.
+  const asNew = useRef(new Map<string, { start: Start; into?: string }>());
   // Drops from before a reload: every file the batch API lists gets a row.
   const [restored] = useState(() => new Set(stored.map((batch) => batch.id)));
   const [skipped, setSkipped] = useState(""); // PRD 9 F-04: the last pick's system files, in words
@@ -374,7 +381,10 @@ export function useUploads(onUploaded: () => void) {
       };
       const start: Start = (onProgress, onSent, onWaiting) =>
         uploadDocument(file, userId, onProgress, folderId, reading, batchId, onSent, departmentId, onWaiting);
-      return { entry, file, start };
+      const replace: Start = (onProgress, onSent, onWaiting) =>
+        uploadDocument(file, userId, onProgress, folderId, reading, batchId, onSent, departmentId, onWaiting, true);
+      asNew.current.set(entry.key, { start: replace, into: folderId ?? departmentId });
+      return { entry: { ...entry, asNew: true }, file, start };
     }));
     dispatch({ type: "add", entries: added.map((item) => item.entry) });
     const at = Date.now();
@@ -415,12 +425,21 @@ export function useUploads(onUploaded: () => void) {
     }
   }
 
-  /** Bring back the copy in Trash that a duplicate upload matched. */
+  /** Bring back the copy in Trash that a duplicate upload matched; #697: into the folder the
+   *  upload was going to, or, when that move is refused, where it was, saying why. */
   async function restore(key: string, documentId: string, existingName: string) {
     update(key, { kind: "restoring", documentId, existingName });
     try {
-      await restoreDocument(documentId);
-      update(key, { kind: "restored", documentId, existingName });
+      const back = await restoreDocument(documentId);
+      const into = asNew.current.get(key)?.into;
+      let notMoved: string | undefined;
+      if (into && back.folder_id !== into) {
+        notMoved = await moveDocument(documentId, into).then(
+          () => undefined,
+          (caught: unknown) => (caught instanceof ApiError ? caught.message : NOT_MOVED),
+        );
+      }
+      update(key, { kind: "restored", documentId, existingName, into: notMoved === undefined ? into : undefined, notMoved });
       onUploaded();
     } catch (caught) {
       const restoreError =
@@ -431,9 +450,20 @@ export function useUploads(onUploaded: () => void) {
     }
   }
 
+  /** #697 Upload as new file (asked first): the file sent again, its copy in Trash deleted forever
+   *  by the server, and the row is a new upload like any other, Retry included. */
+  async function replace(key: string) {
+    const start = asNew.current.get(key)?.start;
+    if (!start || notSent(key)) return;
+    kept.current.set(key, start);
+    update(key, { kind: "waiting" });
+    await slots(() => send(key, start, true));
+  }
+
   /** PRD 9 F-04: a row not uploaded (failed or refused) goes; the file this tab held for Retry too. */
   function remove(key: string) {
     kept.current.delete(key);
+    asNew.current.delete(key);
     dispatch({ type: "remove", key });
   }
 
@@ -442,6 +472,7 @@ export function useUploads(onUploaded: () => void) {
   function clearFinished() {
     const busy = new Set(queue.entries.filter(isBusy).map((entry) => entry.batchId));
     const gone = queue.entries.filter((entry) => !isBusy(entry));
+    for (const entry of gone) asNew.current.delete(entry.key);
     dispatch({ type: "clear" });
     setSkipped("");
     setStored((batches) =>
@@ -474,6 +505,7 @@ export function useUploads(onUploaded: () => void) {
     addFiles,
     addVersion,
     restore,
+    replace,
     retry,
     remove,
     skipped,
@@ -756,6 +788,7 @@ export function BatchTray({
   stored,
   onClearFinished,
   onRestore,
+  onReplace,
   onRetry,
   onRemove,
   tree,
@@ -770,6 +803,7 @@ export function BatchTray({
   stored: StoredBatch[];
   onClearFinished: () => void;
   onRestore: (key: string, documentId: string, existingName: string) => void;
+  onReplace?: (key: string) => void; // #697: Upload as new file, for who may delete forever (canDeleteForever)
   onRetry: (key: string) => void;
   onRemove?: (key: string) => void; // PRD 9 F-04: a row not uploaded, when given
   tree: FolderTree; // for "Filed into Invoices" (feature 28)
@@ -801,6 +835,7 @@ export function BatchTray({
       ask={asks?.get(rowDocument(entry) ?? "")}
       onDecided={keep}
       onRestore={onRestore}
+      onReplace={onReplace}
       onRetry={onRetry}
       onRemove={onRemove}
       tree={tree}
@@ -1029,11 +1064,37 @@ export function LockedCopy({ documentId, name }: { documentId: string; name: str
   );
 }
 
+/** #697: what Restore did: into the upload's folder, or where it was (and why), or from Trash. */
+export function restoredText(state: Extract<UploadState, { kind: "restored" }>, tree: FolderTree): string {
+  if (state.notMoved !== undefined) return `${TRASH_COPY.restoredInPlace} ${state.notMoved}`;
+  if (state.into) return TRASH_COPY.restoredInto(pathLabel(tree, state.into));
+  return `Restored “${state.existingName}” from Trash.`;
+}
+
+/** #697: the one question before Upload as new file. [Cancel] [Replace]: Cancel has focus, so
+ *  Enter never deletes by accident; Escape, Close and the backdrop cancel. No password. */
+export function ReplaceDialog({ onCancel, onReplace }: { onCancel: () => void; onReplace: () => void }) {
+  return (
+    <ActionDialog title={TRASH_COPY.confirmTitle} onClose={onCancel}>
+      <p>{TRASH_COPY.confirmBody}</p>
+      <div className="actions">
+        <button type="button" className="btn" data-autofocus onClick={onCancel}>
+          Cancel
+        </button>
+        <button type="button" className="btn btn-danger" onClick={onReplace}>
+          Replace
+        </button>
+      </div>
+    </ActionDialog>
+  );
+}
+
 function UploadRow({
   entry,
   ask,
   onDecided,
   onRestore,
+  onReplace,
   onRetry,
   onRemove,
   tree,
@@ -1044,6 +1105,7 @@ function UploadRow({
   ask?: TrayAsk;
   onDecided(suggestion: VersionSuggestion, chosen: Chosen, undone: boolean): void;
   onRestore: (key: string, documentId: string, existingName: string) => void;
+  onReplace?: (key: string) => void;
   onRetry: (key: string) => void;
   onRemove?: (key: string) => void;
   tree: FolderTree;
@@ -1051,6 +1113,7 @@ function UploadRow({
   canReread: boolean;
 }) {
   const { state } = entry;
+  const [replacing, setReplacing] = useState(false); // #697: the confirm is open
   // After Restore, the Restore button gives way to "Open it": focus follows.
   const focusOnMount = useCallback((element: HTMLAnchorElement | null) => {
     element?.focus();
@@ -1127,30 +1190,49 @@ function UploadRow({
         )}
         {(state.kind === "restoring" || (state.kind === "duplicate" && state.inTrash)) && (
           <>
-            <p className={styles.small}>
-              This file was uploaded before, as “{state.existingName}”, and that copy is in Trash.
-              Nothing new was stored.
-            </p>
+            <p className={styles.small}>{TRASH_COPY.line(state.existingName)}</p>
             <button
               type="button"
-              className={`btn ${styles.inlineAction}`}
+              className={`btn btn-primary ${styles.inlineAction}`}
               aria-disabled={state.kind === "restoring" ? true : undefined}
               onClick={() => {
                 if (state.kind === "duplicate") onRestore(entry.key, state.documentId, state.existingName);
               }}
             >
-              <BusyLabel busy={state.kind === "restoring"} idle="Restore it from Trash" working="Restoring…" />
+              <BusyLabel busy={state.kind === "restoring"} idle={TRASH_COPY.restore} working="Restoring…" />
             </button>
+            {/* #697: a drop's file this tab still holds (none after a reload, nor for a new version):
+                who may delete forever may send it as a new file; anyone else is told to ask an admin. */}
+            {onReplace && entry.asNew && (
+              <button
+                type="button"
+                className={`btn ${styles.inlineAction}`}
+                aria-disabled={state.kind === "restoring" ? true : undefined}
+                onClick={() => state.kind === "duplicate" && setReplacing(true)}
+              >
+                {TRASH_COPY.asNew}
+              </button>
+            )}
+            {!onReplace && entry.asNew && <p className={`muted ${styles.small}`}>{TRASH_COPY.askAdmin}</p>}
             {state.kind === "duplicate" && state.restoreError && (
               <p className={`error-text ${styles.small}`} role="alert">
                 {state.restoreError}
               </p>
             )}
+            {replacing && onReplace && (
+              <ReplaceDialog
+                onCancel={() => setReplacing(false)}
+                onReplace={() => {
+                  setReplacing(false);
+                  onReplace(entry.key);
+                }}
+              />
+            )}
           </>
         )}
         {state.kind === "restored" && (
           <p className={styles.small}>
-            Restored “{state.existingName}” from Trash.{" "}
+            {restoredText(state, tree)}{" "}
             <Link ref={focusOnMount} href={`/documents/${state.documentId}`}>
               Open it
             </Link>

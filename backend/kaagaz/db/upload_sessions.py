@@ -73,10 +73,12 @@ def candidates(
     *,
     batch_id: str | None = None,
     item_id: str | None = None,
+    replace: bool = False,
 ) -> list[dict[str, object]]:
     """Sessions of this file to resume. A finished one only for its own drop (``batch_id``) or
     folder upload item (review of #564): a Retry after a lost reply, which resumes it and gets the
-    stored reply; a new drop of the same file is a new upload."""
+    stored reply; a new drop of the same file is a new upload. #697: only sessions that ask the
+    same of a copy in Trash (``replace``), so Upload as new file never gets the drop's old reply."""
     rows = conn.execute(
         text(
             "SELECT id, metadata FROM upload_sessions WHERE customer_id = :customer AND user_id = :user"
@@ -84,6 +86,7 @@ def candidates(
             " AND metadata->>'fingerprint' = :fingerprint AND expires_at > now()"
             " AND (metadata -> 'completed' IS NULL OR metadata ->> 'batch_id' = :batch"
             " OR metadata ->> 'folder_upload_item_id' = :item)"
+            " AND coalesce(CAST(metadata ->> 'replace_trash' AS boolean), false) = :replace"
             " ORDER BY created_at DESC LIMIT 5"
         ),
         {
@@ -94,6 +97,7 @@ def candidates(
             "fingerprint": fingerprint,
             "batch": batch_id,
             "item": item_id,
+            "replace": replace,
         },
     ).mappings()
     return [{"id": str(row["id"]), "parts": row["metadata"].get("parts", {})} for row in rows]

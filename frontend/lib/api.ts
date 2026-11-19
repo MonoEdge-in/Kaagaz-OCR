@@ -615,10 +615,12 @@ export function uploadDocument(
   onSent?: () => void,
   departmentId?: string, // F2: used by the server when no folder is named
   onWaiting?: UploadWaiting,
+  replaceTrash?: boolean, // #697: Upload as new file: its copy in Trash is deleted forever first
 ): Promise<UploadResult> {
   return resumableUpload(file, {
     file_name: file.name, file_size: file.size, user_id: userId, folder_id: folderId,
     department_id: folderId ? undefined : departmentId, batch_id: batchId, ...readingBody(reading),
+    replace_trash: replaceTrash || undefined,
   }, onProgress, onSent, onWaiting);
 }
 
@@ -647,6 +649,7 @@ type ResumableStart = {
   file_name: string; file_size: number; fingerprint: string; user_id: string; folder_id?: string; department_id?: string;
   batch_id?: string; read_mode?: string; read_model?: string; version_document_id?: string; version_note?: string;
   folder_upload_item_id?: string; // #484: the server takes the folder and batch from the item
+  replace_trash?: boolean; // #697
 };
 const UPLOAD_PART_BYTES = 8 * 1024 * 1024;
 
