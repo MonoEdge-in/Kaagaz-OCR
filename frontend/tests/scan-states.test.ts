@@ -188,6 +188,9 @@ describe("one calm, fixed-height status cell", () => {
     expect(scanningCell).toMatch(/data-tone="working"[^>]*>Scanning<\/span>/);
     expect(scanningCell).toContain("page 6 of 14");
     expect(scanningCell).toContain("About 2 min left");
+    // Issue 692: each line, cut with "…" in a narrow column, keeps its whole words in a title.
+    expect(scanningCell).toContain('title="page 6 of 14"');
+    expect(scanningCell).toContain('title="About 2 min left"');
     expect(scanningCell).toMatch(/<progress[^>]*aria-label="Progress: a.pdf"/);
     expect(scanningCell).not.toMatch(/%|rough guess|Reading page/);
     const readCell = html(read);

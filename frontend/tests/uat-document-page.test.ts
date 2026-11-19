@@ -21,8 +21,9 @@ const VIEW_CSS = "app/(app)/documents/[id]/DocumentView.module.css";
 
 const box = (x0: number, y0: number, x1: number, y1: number) => ({ kind: "box" as const, page: 1, box: [x0, y0, x1, y1] as [number, number, number, number] });
 
-describe("1. the ⋯ menu: Export as Data and Download original above Move to Trash", () => {
-  it("draws the document's own actions, then the review's (Export as Data, Download original), then Move to Trash", () => {
+// Changed on purpose (issue 692): Download original left the menu; the Download button sits beside it.
+describe("1. the ⋯ menu: Export as Data above Move to Trash", () => {
+  it("draws the document's own actions, then the review's (Export as Data), then Move to Trash", () => {
     const menu = read("components/documents/DocumentActions.tsx");
     const own = menu.indexOf("{entries.filter((entry) => !isDanger(entry)).map(entryItem)}");
     const more = menu.indexOf("{more.map((extra, index) => (");
@@ -34,10 +35,10 @@ describe("1. the ⋯ menu: Export as Data and Download original above Move to Tr
 
   it("names it Export as Data and says in plain words what it saves", () => {
     const status = { status: "ready", ensemble: { allowed: false, reason: null, run: null } } as unknown as ReviewStatus;
-    const items = documentMoreItems(status, { onEnsemble: () => undefined, onExport: () => undefined, download: "/f" });
+    const items = documentMoreItems(status, { onEnsemble: () => undefined, onExport: () => undefined });
+    // Changed on purpose (issue 692): no Download original in the menu; the Download button sits beside it.
     expect(items.map((item) => [item.label, item.hint])).toEqual([
       ["Export as Data", "Saves the text as read, page by page, and the values found, as a plain text file (.txt)."],
-      ["Download original", "Save the file exactly as it was uploaded."],
     ]);
   });
 

@@ -823,6 +823,7 @@ function PDFViewerSearchControl({
                 variant="outline"
                 size="icon-sm"
                 aria-label="Previous result"
+                title="Previous result"
                 disabled={isSearching || state.total === 0}
                 onClick={() => navigate(-1)}
               >
@@ -835,6 +836,7 @@ function PDFViewerSearchControl({
                 variant="outline"
                 size="icon-sm"
                 aria-label="Next result"
+                title="Next result"
                 disabled={isSearching || state.total === 0}
                 onClick={() => navigate(1)}
               >

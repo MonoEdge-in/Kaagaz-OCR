@@ -43,7 +43,8 @@ describe("the document page", () => {
     );
   });
 
-  it("keeps Ensemble, Export and Download original in the one ⋯ menu, never a More of the status bar", () => {
+  // Changed on purpose (issue 692): Download original left the menu (the Download button sits beside it).
+  it("keeps Ensemble and Export in the one ⋯ menu, never a More of the status bar", () => {
     expect(read(VIEW)).toContain("more={documentMoreItems(review.status, {");
     expect(read("app/(app)/documents/[id]/WordReview.tsx")).not.toContain("<RowMenu");
     expect(read("components/documents/DocumentActions.tsx")).toContain("{more.map((extra, index) => (");
