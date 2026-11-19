@@ -1,5 +1,5 @@
 // PRD 9 F-04: a pick of files leaves out system files (.DS_Store, Thumbs.db, desktop.ini: folderPick's
-// isSkipped) without a word, as a folder pick does; a row not uploaded (a .docm Kaagaz can't take)
+// isSkipped), as a folder pick does, and one line names them; a row not uploaded (a .docm Kaagaz can't take)
 // can be removed on its own. Run in node with React's own act() and a bare container, as
 // tests/upload-drop-storage-full.test.ts; the API is a fake.
 
@@ -66,6 +66,7 @@ describe("a pick of files with system files and one Kaagaz can't take", () => {
     const [refused, ...more] = uploads.current().entries;
     expect([refused?.name, refused?.state.kind, more]).toEqual(["macro.docm", "error", []]);
     expect(api.uploadDocument).not.toHaveBeenCalled();
+    expect(uploads.current().skipped).toBe("Skipped 3 hidden or system files (.DS_Store, Thumbs.db, desktop.ini).");
 
     await act(async () => uploads.current().remove(refused?.key ?? ""));
     expect(uploads.current().entries).toEqual([]);

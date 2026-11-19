@@ -63,6 +63,13 @@ export const isBusy = (entry: UploadEntry) =>
   entry.state.kind === "reading" ||
   entry.state.kind === "restoring";
 
+/** PRD 9 F-04: the files a pick left out (folderPick's isSkipped), said once in the status line; "" for none. */
+export function skippedText(names: readonly string[]): string {
+  if (names.length === 0) return "";
+  const files = names.length === 1 ? "hidden or system file" : "hidden or system files";
+  return `Skipped ${names.length} ${files} (${names.slice(0, 3).join(", ")}${names.length > 3 ? ", …" : ""}).`;
+}
+
 /** #468: a file still in this tab only (waiting or sending): leaving the page now would lose it. */
 export const uploadsAtRisk = (entries: readonly Pick<UploadEntry, "state">[]) =>
   entries.some((entry) => ["waiting", "sending", "offline", "saving"].includes(entry.state.kind));

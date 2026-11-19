@@ -253,7 +253,7 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
         />
       )}
       <UploadStatus
-        folderText={folderUploads.views.map((view) => view.spoken).join(" · ")}
+        folderText={[...folderUploads.views.map((view) => view.spoken), uploads.skipped].filter(Boolean).join(" · ")}
         folderRows={
           folderUploads.views.length === 0
             ? null

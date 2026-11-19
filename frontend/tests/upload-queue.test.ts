@@ -12,6 +12,7 @@ import {
   isBusy,
   createSlots,
   queueReducer,
+  skippedText,
 } from "@/components/documents/uploadQueue";
 import type { UploadEntry } from "@/components/documents/uploadQueue";
 import type { DocumentSummary } from "@/lib/types";
@@ -164,5 +165,15 @@ describe("removing a row not uploaded (PRD 9 F-04)", () => {
     const twice = queueReducer(once, { type: "remove", key: "lost" });
     expect(twice.entries.map((row) => row.key)).toEqual(["sent", "going"]);
     for (const key of ["sent", "going"]) expect(queueReducer(twice, { type: "remove", key }).entries).toEqual(twice.entries);
+  });
+});
+
+describe("the files a pick left out (PRD 9 F-04)", () => {
+  it("names them once, up to three, and says nothing when none was left out", () => {
+    expect(skippedText([])).toBe("");
+    expect(skippedText([".DS_Store"])).toBe("Skipped 1 hidden or system file (.DS_Store).");
+    expect(skippedText([".DS_Store", "Thumbs.db", "desktop.ini", "~$a.docx"])).toBe(
+      "Skipped 4 hidden or system files (.DS_Store, Thumbs.db, desktop.ini, …).",
+    );
   });
 });

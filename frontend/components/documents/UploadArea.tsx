@@ -118,7 +118,7 @@ import type { UploadState } from "./logic";
 import { checkPages } from "./pageCount";
 import { capReaders, effectiveOf, startReader, useAiSettings } from "@/lib/aiSettings";
 import { DUPLICATE_READER_NOTE, offersChoice, pickedReader, readerOptions, readingToSend } from "./readers";
-import { EMPTY_QUEUE, UPLOADS_AT_ONCE, askBatches, createSlots, followed, isBusy, queueReducer, uploadsAtRisk } from "./uploadQueue";
+import { EMPTY_QUEUE, UPLOADS_AT_ONCE, askBatches, createSlots, followed, isBusy, queueReducer, skippedText, uploadsAtRisk } from "./uploadQueue";
 import type { Followed, UploadEntry } from "./uploadQueue";
 import { NO_TIMES, jobFraction, nextShown, stageOf, valueText } from "./uploadStages";
 import type { Shown, Stage, StageTimes } from "./uploadStages";
@@ -163,6 +163,7 @@ export function useUploads(onUploaded: () => void) {
   const [stored, setStored] = useState<StoredBatch[]>(() => readStored(batchStore(), Date.now()));
   // Drops from before a reload: every file the batch API lists gets a row.
   const [restored] = useState(() => new Set(stored.map((batch) => batch.id)));
+  const [skipped, setSkipped] = useState(""); // PRD 9 F-04: the last pick's system files, in words
   const [views, setViews] = useState<Record<string, BatchView>>({});
   const [slots] = useState(() => createSlots(UPLOADS_AT_ONCE)); // Q2: 3 files at a time in all
 
@@ -351,7 +352,8 @@ export function useUploads(onUploaded: () => void) {
   async function addFiles(files: File[], folderId?: string, departmentId?: string) {
     const userId = me.user.id;
     const reading = readingToSend(limits.readers, reader);
-    // PRD 9 F-04: system files (.DS_Store, Thumbs.db, desktop.ini) are left out without a word, as from a folder pick.
+    // PRD 9 F-04: system files (.DS_Store, Thumbs.db, desktop.ini) are left out, as from a folder pick; one line says so.
+    setSkipped(skippedText(files.filter((file) => isSkipped(file.name)).map((file) => file.name)));
     const batches = inBatches(files.filter((file) => !isSkipped(file.name))).map((group) => ({ batchId: newBatchId(), group }));
     const added = batches.flatMap(({ batchId, group }) => group.map((file) => {
       nextKey.current += 1;
@@ -433,6 +435,7 @@ export function useUploads(onUploaded: () => void) {
   function clearFinished() {
     const busy = new Set(queue.entries.filter(isBusy).map((entry) => entry.batchId));
     dispatch({ type: "clear" });
+    setSkipped("");
     setStored((batches) => batches.filter((batch) => busy.has(batch.id)));
   }
 
@@ -455,6 +458,7 @@ export function useUploads(onUploaded: () => void) {
     restore,
     retry,
     remove,
+    skipped,
     clearFinished,
   };
 }
