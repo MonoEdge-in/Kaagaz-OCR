@@ -55,6 +55,11 @@ def test_only_the_asked_page_comes_back_as_read_in_stored_order(db: Database) ->
     api.add_reader_output(signed.customer_id, document_id, spans, reader="old-reader", reader_version="1.5")
 
     body = _readings(signed, document_id)
+    # Changed on purpose (PRD 9 F-12): the main reader's lines carry their key and correction too, as
+    # the clean copy's (views.clear_line); none is corrected here (test_api_text_fixes.py).
+    first = body["readers"][0]["lines"]
+    assert [line.pop("correction") for line in first] == [None, None, None]
+    assert [len(line.pop("key")) for line in first] == [64, 64, 64]
 
     # Changed on purpose (Read clearly, 19 Oct 2026): each line has its "table" (None here).
     # Changed on purpose (PRD 9 F-16): and its box_source, so a "model" spot is drawn as approximate.

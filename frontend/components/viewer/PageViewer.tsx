@@ -54,7 +54,7 @@ import {
   isWordMark,
   legend,
   markChecked,
-  markName,
+  pageMarkName,
   markRect,
   marksOnPage,
   showByDefault,
@@ -503,7 +503,7 @@ export function PageViewer({
                 const px = markRect(mark, width, height);
                 if (!px) return null;
                 const checked = markChecked(mark, flags);
-                const name = markName(mark, index, problems.length, checked);
+                const name = pageMarkName(problems, index, flags); // PRD 9 F-14: as its chip
                 return (
                   <button
                     key={index}

@@ -149,7 +149,9 @@ describe("the marks layer (PageViewer)", () => {
     expect(buttons).toHaveLength(2);
     expect(buttons[0]).toContain('type="button"');
     expect(buttons[0]).toContain('data-quality="unsure"');
-    expect(buttons[0]).toContain(`aria-label="Unsure word &#x27;Shinde&#x27;, mark 1 of 2"`);
+    // Changed on purpose (PRD 9 F-14): a mark is numbered over the open marks only, as its chip in
+    // Needs attention; with no open word here (none given) it has its plain name.
+    expect(buttons[0]).toContain(`aria-label="Unsure word &#x27;Shinde&#x27;"`);
     expect(buttons[0]).toMatch(/style="left:\d+(\.\d+)?px;top:\d+(\.\d+)?px;width:\d+(\.\d+)?px;height:\d+(\.\d+)?px"/);
     expect(buttons[1]).toContain('data-quality="illegible"');
   });

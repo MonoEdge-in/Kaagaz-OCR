@@ -45,13 +45,14 @@ describe("the open fix box", () => {
     expect(rule(".fix")).toMatch(/padding: var\(--space-2\) var\(--space-2\) var\(--space-3\);/);
   });
 
-  it("gives each button its own width and wraps them, Confirm with Save, never cut off", () => {
+  // Changed on purpose (PRD 9 F-13, D6): Cancel and Save only; Save keeps its group.
+  it("gives each button its own width and wraps them, never cut off", () => {
     expect(rule(".fixActions,\n.fixSettle")).toMatch(/display: flex;\s*flex-wrap: wrap;\s*justify-content: flex-end;/);
-    expect(rule(".fixActions")).toMatch(/^\s*flex-wrap: wrap-reverse;\s*$/); // Confirm and Save on top
+    expect(rule(".fixActions")).toMatch(/^\s*flex-wrap: wrap-reverse;\s*$/); // Save on top
     expect(sheet).not.toMatch(/\.fix\w*[^{]*\{[^}]*\bflex: 1/); // nothing stretched to share the row
     expect(sheet).not.toContain(":global(.btn)");
     expect(panel).toMatch(
-      /<div className=\{styles\.fixActions\}>\s*<button type="button" className="btn btn-quiet" onClick=\{\(\) => closeFix\(index\)\}>\s*Cancel\s*<\/button>\s*<div className=\{styles\.fixSettle\}>\s*<button type="button" className="btn" disabled=\{box\.busy\} onClick=\{[^}]*\}>\s*Confirm\s*<\/button>\s*<button type="submit" className="btn btn-primary"[^>]*>\s*Save\s*<\/button>\s*<\/div>\s*<\/div>/,
+      /<div className=\{styles\.fixActions\}>\s*<button type="button" className="btn btn-quiet" onClick=\{\(\) => closeFix\(index\)\}>\s*Cancel\s*<\/button>\s*<div className=\{styles\.fixSettle\}>\s*<button type="submit" className="btn btn-primary"[^>]*>\s*Save\s*<\/button>\s*<\/div>\s*<\/div>/,
     );
   });
 

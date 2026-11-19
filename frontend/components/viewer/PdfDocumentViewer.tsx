@@ -48,7 +48,7 @@ import {
   focusFirstWord,
   isWordMark,
   markChecked,
-  markName,
+  pageMarkName,
   marksOnPage,
   showWordsByDefault,
   wordMarkView,
@@ -392,7 +392,7 @@ export function PdfDocumentViewer({
             problems.map((mark, index) => {
               if (mark.region.kind !== "box" || (isWordMark(mark) && !words.drawn(mark.region))) return null;
               const checked = markChecked(mark, flags);
-              const name = markName(mark, index, problems.length, checked);
+              const name = pageMarkName(problems, index, flags); // PRD 9 F-14: as its chip
               return (
                 <button
                   key={`problem-${index}`}

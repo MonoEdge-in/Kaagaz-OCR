@@ -14,7 +14,7 @@ import { settled } from "@/components/review/wordReview";
 import { markerRect } from "@/components/words/spots";
 import type { PixelRect } from "@/lib/regions";
 import type { PageSummary, ReadingMark, Region, Role, WordFlag } from "@/lib/types";
-import { visibleText } from "./scanned";
+import { squash, visibleText } from "./scanned";
 import { sameRegion } from "./selection";
 
 export type MarkQuality = ReadingMark["quality"];
@@ -46,6 +46,34 @@ export function markName(mark: ReadingMark, index: number, total: number, checke
 export function markChecked(mark: ReadingMark, flags: readonly Pick<WordFlag, "region" | "state">[]): boolean {
   const here = flags.filter((flag) => sameRegion(flag.region, mark.region));
   return here.length > 0 && here.every(settled);
+}
+
+/** PRD 9 F-14: the Needs attention chips: the marks still open (an open flag at the same spot with
+ * the same text, squashed: a block's lines share its box), each with its index on the page (`hot`). */
+export function openMarks(
+  marks: readonly ReadingMark[],
+  open: readonly Pick<WordFlag, "region" | "as_read">[],
+): { mark: ReadingMark; index: number }[] {
+  const isOpen = (mark: ReadingMark) =>
+    open.some((flag) => sameRegion(flag.region, mark.region) && squash(flag.as_read) === squash(mark.text));
+  return marks.flatMap((mark, index) => (isOpen(mark) ? [{ mark, index }] : []));
+}
+
+/** PRD 9 F-14: a mark's name on the page, as its chip says it: an open one numbered over the page's
+ * open marks ("mark 2 of 11", openMarks); a checked one ", checked", and one with no review item
+ * (a check-band word) its plain name, with no number. O(marks x flags). */
+export function pageMarkName(
+  marks: readonly ReadingMark[],
+  index: number,
+  flags: readonly Pick<WordFlag, "region" | "as_read" | "state">[],
+): string {
+  const mark = marks[index];
+  if (!mark) return "";
+  const open = openMarks(marks, flags.filter((flag) => !settled(flag)));
+  const at = open.findIndex((each) => each.index === index);
+  if (at >= 0) return markName(mark, at, open.length);
+  const name = markName(mark, 0, 1).replace(/, mark 1 of 1$/, "");
+  return markChecked(mark, flags) ? `${name}, checked` : name;
 }
 
 /** The Needs attention tab's short chip (UI audit DD7): the word as read, else what the mark is. */

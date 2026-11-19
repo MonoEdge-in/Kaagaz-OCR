@@ -114,7 +114,9 @@ describe("Show words to check (#523)", () => {
     expect(reviewer).toMatch(/role="switch" aria-checked="true"/);
     expect(drawnWords(reviewer)).toHaveLength(2);
     // Each drawn mark keeps its name for a screen reader.
-    expect(drawnWords(reviewer)[0]).toContain(`aria-label="Unsure word &#x27;w1&#x27;, mark 1 of 3"`);
+    // Changed on purpose (PRD 9 F-14): only an open word is numbered (over the open ones, as its chip); here no
+    // word has a review item, so the name has no "mark n of m".
+    expect(drawnWords(reviewer)[0]).toContain(`aria-label="Unsure word &#x27;w1&#x27;"`);
   });
 });
 
