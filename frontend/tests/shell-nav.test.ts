@@ -22,26 +22,30 @@ describe("navLinks", () => {
   const labels = (role: Role, scope: SessionScope) => navLinks(role, scope).map((l) => l.label);
 
   // Changed on purpose (PRD 1, screens): File management D1, Home (the dashboard) comes first for everyone.
-  it("gives a member Home, Documents, Ask and My words only", () => {
-    expect(labels("member", "app")).toEqual(["Home", "Documents", "Ask", "My words"]);
+  // Changed on purpose (#707): and My access, each person's own.
+  it("gives a member Home, Documents, Ask, My words and My access only", () => {
+    expect(labels("member", "app")).toEqual(["Home", "Documents", "Ask", "My words", "My access"]);
   });
 
   it("gives a member no Review or Admin link, by label or by address", () => {
     const links = navLinks("member", "app");
-    expect(links.map((l) => l.href)).toEqual(["/dashboard", "/documents", "/chat", "/words"]);
+    // Changed on purpose (#707): My access.
+    expect(links.map((l) => l.href)).toEqual(["/dashboard", "/documents", "/chat", "/words", "/my-access"]);
     for (const link of links) {
       expect(link.href).not.toMatch(/^\/(review|admin)(\/|$)/);
       expect(link.label).not.toMatch(/review|admin/i);
     }
   });
 
+  // Changed on purpose (#707): My access.
   it("adds Review for a reviewer", () => {
-    expect(labels("reviewer", "app")).toEqual(["Home", "Documents", "Ask", "My words", "Review"]);
+    expect(labels("reviewer", "app")).toEqual(["Home", "Documents", "Ask", "My words", "My access", "Review"]);
   });
 
   // PRD A1: the same admin account signed in at /login sees no Admin menu.
+  // Changed on purpose (#707): My access.
   it("gives an admin with an app session Review but no Admin", () => {
-    expect(labels("admin", "app")).toEqual(["Home", "Documents", "Ask", "My words", "Review"]);
+    expect(labels("admin", "app")).toEqual(["Home", "Documents", "Ask", "My words", "My access", "Review"]);
     expect(navLinks("admin", "app").map((l) => l.href)).not.toContain("/admin");
   });
 
@@ -52,6 +56,16 @@ describe("navLinks", () => {
   it("never gives Admin to a non-admin, whatever the scope says", () => {
     expect(labels("member", "admin")).toEqual(["Home", "Documents", "Ask", "My words"]);
     expect(labels("reviewer", "admin")).toEqual(["Home", "Documents", "Ask", "My words", "Review"]);
+  });
+
+  // #707: My access for every role, but an Admin in an admin session (who has the Admin tab's Access).
+  it("gives My access to everyone but an Admin in an admin session", () => {
+    for (const role of ["member", "reviewer", "admin"] as const) {
+      const link = navLinks(role, "app").find((l) => l.label === "My access");
+      expect(link?.href).toBe("/my-access");
+      expect(link?.short).toBeUndefined(); // the phone tab bar says "My access" too, as "My words"
+    }
+    expect(labels("admin", "admin")).not.toContain("My access");
   });
 
   it("points Ask at /chat", () => {

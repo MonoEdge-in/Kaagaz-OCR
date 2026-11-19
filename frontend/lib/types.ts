@@ -1455,6 +1455,15 @@ export interface PersonAccess {
   files: { id: string; name: string; path: string | null; given_at: string; given_by: string | null }[];
 }
 
+/** #707, GET /me/access: the signed-in person's own access; `walled`: some files are kept to some people. */
+export interface MyAccess {
+  management: boolean;
+  departments: { id: string; name: string; head: boolean; department_only: boolean }[];
+  private_folders: { id: string; name: string; path: string | null }[];
+  files: { id: string; name: string; path: string | null; given_at: string; given_by: string | null }[];
+  walled: boolean;
+}
+
 /** PRD 7 (#601), GET /admin/departments: one department with its access. */
 export interface AdminDepartment {
   id: string;

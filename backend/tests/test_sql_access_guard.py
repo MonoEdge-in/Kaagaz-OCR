@@ -463,6 +463,9 @@ ACCESS_READERS = {
     # Changed on purpose (#648, after PR 9): a link's versions, each seen first (kaagaz_link_families), with
     # whom each is given to, for its count and Undo; Accept's Undo taking back the gifts the join copied.
     ("db/version_links.py", "_STATE"), ("db/versions.py", "_JOIN_GIFTS"),
+    # Changed on purpose (#707): My access, the person's own gifts (s.user_id = the caller), on files
+    # visible_documents shows them, with who gave each.
+    ("db/access.py", "_GIVEN_TO_ME"),
 }  # fmt: skip
 PR9: dict[tuple[str, str], str] = {
     # Changed on purpose (#648, after PR 9): Undo's name check and the Versions tab's Undo hint.

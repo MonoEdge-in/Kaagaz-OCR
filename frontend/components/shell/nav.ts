@@ -26,6 +26,8 @@ const LINKS: { link: NavLink; roles: readonly Role[]; scope?: SessionScope; mana
   { link: { href: "/chat", label: "Ask", icon: "chat" }, roles: ["member", "reviewer", "admin"] },
   // My words: each user's own, so every role has it.
   { link: { href: "/words", label: "My words", icon: "words" }, roles: ["member", "reviewer", "admin"] },
+  // #707: each person's own access; an Admin in an admin session has the Admin tab's Access.
+  { link: { href: "/my-access", label: "My access", icon: "eye" }, roles: ["member", "reviewer", "admin"], scope: "app" },
   { link: { href: "/review", label: "Review", icon: "review", count: "review" }, roles: ["reviewer", "admin"] },
   // PRD 7 (#601): Management's, a flag not a role. An Admin reads the same in the Admin tab.
   {

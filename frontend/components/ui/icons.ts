@@ -40,6 +40,7 @@ export const ICON_NAMES = [
   "to-top",
   "more",
   "home",
+  "eye",
 ] as const;
 
 export type IconName = (typeof ICON_NAMES)[number];
@@ -203,4 +204,6 @@ export const ICONS: Record<IconName, readonly IconShape[]> = {
   "to-top": [path("M5 4h14"), path("M12 20V8"), path("M7 13l5-5 5 5")],
   // Three dots in a row: more actions for this row (Ask screen polish, 17 Oct 2026).
   more: [circle(5.5, 12, 1), circle(12, 12, 1), circle(18.5, 12, 1)],
+  // An open eye: what you can see (My access, #707).
+  eye: [EYE, circle(12, 12, 2.5)],
 };
