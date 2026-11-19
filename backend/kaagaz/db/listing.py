@@ -757,7 +757,7 @@ _SET_READINGS_TIMEOUT = text("SELECT set_config('statement_timeout', :ms, true)"
 # one and says ``truncated`` (views.page_readings).
 _PAGE_READINGS = text(
     "SELECT ro.role, ro.reader, ro.reader_version, l.ord, l.text, l.cut, l.confidence, l.origin,"  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
-    " l.kind, l.region, l.table_id, l.table_row, l.table_col, l.table_header"
+    " l.kind, l.region, l.table_id, l.table_row, l.table_col, l.table_header, l.box_source"
     " FROM reader_outputs ro"
     " LEFT JOIN LATERAL (SELECT * FROM (SELECT e.ord, left(e.span ->> 'raw', :max_chars) AS text,"
     " e.span ->> 'table_id' AS table_id, CAST(e.span ->> 'row' AS integer) AS table_row,"
@@ -765,6 +765,7 @@ _PAGE_READINGS = text(
     " length(e.span ->> 'raw') > :max_chars AS cut,"
     " CAST(e.span ->> 'confidence' AS double precision) AS confidence,"
     " e.span ->> 'origin' AS origin, e.span ->> 'kind' AS kind, e.span -> 'region' AS region,"
+    " e.span ->> 'box_source' AS box_source,"  # PRD 9 F-16: a "model" spot is drawn as approximate
     " sum(length(left(e.span ->> 'raw', :max_chars))) OVER (ORDER BY e.ord) AS upto"
     " FROM jsonb_array_elements(ro.output) WITH ORDINALITY AS e(span, ord)"
     " WHERE (e.span -> 'region' ->> 'page')::int = :page_no"

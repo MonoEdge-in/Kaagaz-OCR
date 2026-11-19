@@ -101,6 +101,25 @@
   pointer-events: none;
 }
 
+/* PRD 9 F-16, Q3: a spot no found box confirmed (a line's box_source "model") is dashed and
+   labelled "Approximate spot" above its top edge, so it never reads as the exact place. */
+.approximate {
+  border-style: dashed;
+}
+
+.approximateLabel {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 4px;
+  padding: 0 4px;
+  border-radius: var(--k-r-1);
+  background: var(--paper);
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
 /* On the full page, a new spot settles onto its value: a fade and a slight shrink, once
    (motion pass, 16 Oct 2026: transform and opacity only, no ring).
    The global prefers-reduced-motion rule (globals.css) cuts it to nothing. */

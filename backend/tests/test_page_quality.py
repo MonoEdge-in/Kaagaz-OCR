@@ -146,11 +146,16 @@ def test_f2_unreadable_no_text_or_refused_or_poor_with_over_30_percent_illegible
     assert grade(("illegible_words",), model_quality="fair", words=10, illegible=9) == "uncertain"
 
 
-def test_f2_uncertain_unsure_illegible_unpinned_disputed_low_resolution_or_any_issue() -> None:
+def test_f2_uncertain_unsure_illegible_disputed_low_resolution_or_any_issue_but_unpinned_alone() -> None:
     assert grade(unsure=1) == "uncertain"
     assert grade(illegible=1) == "uncertain"
-    for code in ("unpinned", "readers_disagree", "low_resolution", "read_locally", "blurry"):
+    for code in ("readers_disagree", "low_resolution", "read_locally", "blurry"):
         assert grade((code,)) == "uncertain", code
+    # Changed on purpose (PRD 9 F-11, D5): unpinned lines alone leave a page good (off Needs
+    # attention); with any other issue or a marked word it is uncertain as before.
+    assert grade(("unpinned",)) == "good"
+    assert grade(("unpinned", "blurry")) == "uncertain"
+    assert grade(("unpinned",), unsure=1) == "uncertain"
 
 
 def test_f2_good_none_of_these() -> None:

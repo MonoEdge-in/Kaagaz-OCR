@@ -118,7 +118,10 @@ def org(db: Database, *, word_file: bool = False) -> Iterator[dict[str, Any]]:
         )
     # The word 4,850 marked illegible, so Ensemble on flagged words reads it (#432: an unsure
     # word is a check, which is no review item and not sent).
-    PgPipelineStore(db).save(scanned(customer, document, quality="illegible"))
+    # Changed on purpose (PRD 9 F-11, D5): an unpinned line alone is a check, no review item, so
+    # Ensemble on flagged words leaves it out; page 2 is graded unreadable here, which keeps its
+    # line a review item, so the run still reads two pages.
+    PgPipelineStore(db).save(scanned(customer, document, quality="illegible", page_two="unreadable"))
     storage = MemoryStorage()
     storage.put(customer, document, io.BytesIO(data))
     if word_file:

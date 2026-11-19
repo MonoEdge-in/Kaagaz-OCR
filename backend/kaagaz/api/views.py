@@ -858,7 +858,7 @@ def page_readings(
             reader["truncated"] = True
             continue
         used += len(line)
-        reader["lines"].append(_line(row))
+        reader["lines"].append({**_line(row), "box_source": row["box_source"]})  # PRD 9 F-16
         reader["truncated"] = bool(row["cut"])
     shown = [{"quality": mark["quality"], "region": mark["region"], "text": mark["text"]} for mark in marks]
     return {"page_no": page_no, "readers": readers, "marks": shown}

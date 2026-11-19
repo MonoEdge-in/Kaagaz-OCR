@@ -79,9 +79,11 @@ from kaagaz.db.documents import accept_page
 from kaagaz.db.trash import lock_family
 from kaagaz.db.visibility import SEEN_DOCUMENT
 from kaagaz.extraction.flags import (
+    CHECK,
     COVERED_REASONS,
     LINE,
     REVIEW,
+    SPOT_UNCONFIRMED,
     VALUE,
     Flag,
     centre_in,
@@ -748,7 +750,7 @@ def _apply(
             value["label"] == "needs_review"
             and value["label_reason"] in COVERED_REASONS
             and bool(box)
-            and all(f.key in reviewed for f in box)
+            and all(f.key in reviewed and not _spot_doubt(f) for f in box)
         )
         if not verify and value["label"] == "verified":
             skipped["values"] += 1
@@ -796,6 +798,13 @@ def _apply(
             )
     value_keys.key_values(conn, ids["c"], [str(entry["id"]) for entry in written_values])  # 0049
     return {"values": written_values, "pieces": written_pieces, "skipped": skipped}
+
+
+def _spot_doubt(flag: Flag) -> bool:
+    """PRD 9 F-11, D5: an unpinned line's check (no review item, so never shown as a doubt on its
+    spot). No word change settles it for a value in its box: a person edited its text, not its
+    spot, so only the value's own review verifies that value (CLAUDE.md rule 5)."""
+    return flag.kind == LINE and flag.band == CHECK and flag.reason == SPOT_UNCONFIRMED
 
 
 def _choice(final: str, value: Mapping[Any, Any]) -> str:

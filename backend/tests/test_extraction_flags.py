@@ -133,11 +133,17 @@ def test_lines_are_flagged_only_when_unpinned_backup_read_or_on_an_unreadable_pa
     backup = span_flag(span(**line, box_source="model", read_issues=["read_locally"]))
     rapid = span_flag(span(kind=None, quality=None, box_source=None, read_issues=["reader_refused"]))
     unreadable = span_flag(span(**line, read_quality="unreadable", read_issues=["faint"]))
+    # Changed on purpose (PRD 9 F-11, D5): an unconfirmed spot alone is a check, no review item
+    # (no red Fix text, not in Needs attention); it still holds back a value on it (word_review).
     assert unpinned is not None and (unpinned.kind, unpinned.band, unpinned.reason) == (
         LINE,
-        "review",
+        "check",
         "spot_unconfirmed",
     )
+    # On an unreadable page it stays a review item, as any line there is.
+    on_unreadable = span_flag(span(**line, box_source="model", read_quality="unreadable"))
+    assert on_unreadable is not None
+    assert (on_unreadable.band, on_unreadable.reason) == ("review", "spot_unconfirmed")
     assert backup is not None and (backup.band, backup.reason) == ("review", "backup_reader")
     assert rapid is not None and (rapid.kind, rapid.reason) == (LINE, "backup_reader")
     assert unreadable is not None and (unreadable.band, unreadable.reason) == ("review", "faint_print")
