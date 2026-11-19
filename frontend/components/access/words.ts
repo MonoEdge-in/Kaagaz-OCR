@@ -107,6 +107,21 @@ export const noFilesText = (name: string) => `No files have been given to ${name
 /** "Added 3 Nov 2026 by Ravi", "Given 3 Nov 2026" (by someone no longer listed). */
 export const byLine = (verb: string, day: string, by: string | null | undefined) => (by ? `${verb} ${day} by ${by}` : `${verb} ${day}`);
 
+// --- the Access list (#706; /access) -------------------------------------------------------------
+
+export const ACCESS_LIST = {
+  title: "Access",
+  intro: "Who can see what. Open a person to change their departments, private folders and files given.",
+  departments: "Departments",
+  privateFolders: "Private folders", // links to Documents: a folder is made private there
+  privateFoldersHint: "A private folder shows the people icon in Documents. Open it and choose Who can see this.",
+  loading: "Loading the people…",
+  loadFailed: "Could not load the people.",
+  empty: "No one is here yet.",
+  addPeople: "Add people on the Users tab",
+  open: "Access",
+} as const;
+
 // --- the Departments tab -------------------------------------------------------------------------
 
 export const headLine = (heads: readonly Person[]) => (heads.length ? `Head: ${heads.map((h) => h.name).join(", ")}` : "No head yet");

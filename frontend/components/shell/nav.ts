@@ -28,11 +28,14 @@ const LINKS: { link: NavLink; roles: readonly Role[]; scope?: SessionScope; mana
   { link: { href: "/words", label: "My words", icon: "words" }, roles: ["member", "reviewer", "admin"] },
   { link: { href: "/review", label: "Review", icon: "review", count: "review" }, roles: ["reviewer", "admin"] },
   // PRD 7 (#601): Management's, a flag not a role. An Admin reads the same in the Admin tab.
+  // #706: "Activity" on the phone tab bar, so it never reads as the admins' Access below.
   {
-    link: { href: "/access-activity", label: "Access activity", icon: "history", short: "Access" },
+    link: { href: "/access-activity", label: "Access activity", icon: "history", short: "Activity" },
     roles: ["member", "reviewer", "admin"],
     management: true,
   },
+  // #706: every person's access (/access), for exactly who sees Admin.
+  { link: { href: "/access", label: "Access", icon: "admin" }, roles: ["admin"], scope: "admin" },
   // PRD A1: an admin signed in at /login gets no Admin menu.
   { link: { href: "/admin", label: "Admin", icon: "admin" }, roles: ["admin"], scope: "admin" },
 ];
