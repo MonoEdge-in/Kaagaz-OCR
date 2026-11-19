@@ -149,6 +149,15 @@ export function notSentText(counts: Pick<TrayCounts, "notSent">): string | null 
 
 const files = (n: number) => `${n} ${n === 1 ? "file" : "files"}`;
 
+/** #699: the tray's Cancel for files still waiting: one at once, all of a drop after one question. */
+export const CANCEL_TEXT = {
+  one: (name: string) => `Cancel upload of ${name}`,
+  all: "Cancel all waiting",
+  question: (n: number) => `Cancel ${n} waiting ${n === 1 ? "file" : "files"}?`,
+  yes: "Cancel files",
+  no: "Keep them",
+};
+
 /** "Batch of 50 files (1 already uploaded) · 31 ready · 12 reading · 4 waiting · 2 need attention";
  * #693: the already-uploaded files are said with the total they are part of. */
 export function summaryText(counts: TrayCounts): string {

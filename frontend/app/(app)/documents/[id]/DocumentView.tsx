@@ -150,6 +150,7 @@ import { PageProblems } from "./PageProblems";
 import { ReadAgain } from "./ReadAgain";
 import { ReviewPanel } from "./ReviewPanel";
 import { StoryPanel } from "./StoryPanel";
+import { TrashPreview } from "./TrashPreview";
 import { ScriptText, SummaryCard, withResolved } from "./SummaryCard";
 import styles from "./DocumentView.module.css";
 import { ExportDialog, SummaryBar, documentMoreItems, exportData, useEnsembleStart, useWordReview } from "./WordReview";
@@ -621,15 +622,17 @@ export function DocumentView({
       />
       <div ref={layoutRef} className={styles.layout} style={{ "--split": `${split}%` } as CSSProperties}>
         <section ref={viewerRef} id="document-page" className={styles.viewer} aria-label="Page">
-          {(lowResolution ?? lowRoom) && (
+          {detail.deleted_at === null && (lowResolution ?? lowRoom) && (
             <p className={styles.trashNotice} role="note" style={lowResolution ? undefined : { visibility: "hidden" }}>
               <Icon name="alert" />
               <span>{lowResolution ?? lowRoom}</span>
             </p>
           )}
           {/* SoW 19 Oct 2026: a PDF in extend-hq/ui's viewer, every page in one scroll; photos
-              and sheets keep PageViewer. */}
-          {page && viewsAsPdf(detail.detected_type) ? (
+              and sheets keep PageViewer. #698: in Trash neither (its file and pages are not served). */}
+          {detail.deleted_at !== null ? (
+            <TrashPreview detail={detail} onRestored={reloadWith} />
+          ) : page && viewsAsPdf(detail.detected_type) ? (
             <div className={styles.pdfPane}>
               {/* #246 A8: a throw in the viewer shows in this pane only, not the whole screen. */}
               <ViewerBoundary key={detail.id} download={download}>
@@ -791,7 +794,7 @@ export function DocumentView({
                 scanningIcon={STATUS_ICONS[chip.tone]}
                 reviewing={reviewing}
                 reviewRef={reviewButton}
-                onReview={() => startReview()}
+                onReview={detail.deleted_at === null ? () => startReview() : undefined}
                 onEnsemble={(scope) => void ensemble.ask(scope)}
                 ensembleBusy={ensemble.busy}
                 ensembleError={ensemble.error}
@@ -922,7 +925,7 @@ export function DocumentView({
                   <RelatedPanel detail={detail} />
                   <StoryPanel documentId={detail.id} inTrash={detail.deleted_at !== null} />
                 </>
-              ) : shownTab === "attention" && reviewing && review.status ? (
+              ) : shownTab === "attention" && reviewing && review.status && detail.deleted_at === null ? (
                 <ReviewPanel
                   detail={detail}
                   review={review}

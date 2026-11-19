@@ -558,6 +558,24 @@
   border-radius: var(--k-r-4);
 }
 
+/* Issue 698: a document in Trash: why there is no preview, and Restore, centred where the page would be. */
+.trashPreview {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  min-height: min(60dvh, 32rem);
+  padding: var(--space-8) var(--space-4);
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.trashPreview p {
+  margin: 0;
+}
+
 .valuesHeading {
   display: flex;
   align-items: center;

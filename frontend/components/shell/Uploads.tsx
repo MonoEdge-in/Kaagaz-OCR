@@ -291,6 +291,7 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
         onReplace={canDeleteForever(me) ? (key) => void uploads.replace(key) : undefined}
         onRetry={(key) => void uploads.retry(key)}
         onRemove={uploads.remove}
+        onCancel={uploads.cancel}
         tree={tree}
         onUndone={notify}
         canReread={canReview(me.user.role)}

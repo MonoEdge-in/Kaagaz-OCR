@@ -55,7 +55,9 @@ export type QueueEvent =
   | { type: "batch"; batchId: string; documents: DocumentSummary[]; add: boolean }
   | { type: "clear" }
   // PRD 9 F-04: one failed or refused row taken out (its Remove button); any other row stays.
-  | { type: "remove"; key: string };
+  | { type: "remove"; key: string }
+  // #699: files still waiting taken out (Cancel, Cancel all waiting); never sent, no part of their drop.
+  | { type: "cancel"; keys: string[] };
 
 export const isBusy = (entry: UploadEntry) =>
   entry.state.kind === "waiting" ||
@@ -148,6 +150,16 @@ export function queueReducer(queue: UploadQueue, event: QueueEvent): UploadQueue
         ...queue,
         entries: queue.entries.filter((entry) => entry.key !== event.key || entry.state.kind !== "error"),
       };
+    case "cancel": {
+      const gone = new Set(
+        queue.entries.filter((entry) => event.keys.includes(entry.key) && entry.state.kind === "waiting").map((entry) => entry.key),
+      );
+      return settle({
+        ...queue,
+        entries: queue.entries.filter((entry) => !gone.has(entry.key)),
+        batch: queue.batch.filter((key) => !gone.has(key)),
+      });
+    }
   }
 }
 

@@ -247,7 +247,7 @@ export interface SummaryBarProps {
   scanningIcon: KIconName; // #549: its chip's icon, so a failure isn't drawn with a clock
   reviewing: boolean;
   reviewRef: RefObject<HTMLButtonElement | null>;
-  onReview(): void;
+  onReview?(): void; // #698: none in Trash, so no Check it (its crops are page pictures)
   onEnsemble(scope: EnsembleScope): void;
   ensembleBusy: boolean;
   ensembleError: string | null;
@@ -320,7 +320,7 @@ export function SummaryBar(props: SummaryBarProps) {
           <KIcon name={line.clear ? "check" : ready ? "eye" : props.scanningIcon} className={styles.statusIcon} />
           <span className="tabular">{line.text}</span>
         </p>
-        {ready && status.remaining > 0 && (
+        {ready && status.remaining > 0 && onReview && (
           <button ref={reviewRef} type="button" className="btn" aria-pressed={reviewing} onClick={onReview}>
             {checkLabel(status)}
           </button>
