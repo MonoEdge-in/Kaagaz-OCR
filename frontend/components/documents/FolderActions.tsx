@@ -22,7 +22,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, MouseEvent } from "react";
 import { includesMe } from "@/components/access/passwordStep";
 import { usePasswordStep } from "@/components/access/SelfPasswordDialog";
-import { WHO_CAN_SEE, moveEffectText, quoted } from "@/components/access/words";
+import { MAKE_PRIVATE, MAKE_PRIVATE_HELP, WHO_CAN_SEE, moveEffectText, quoted } from "@/components/access/words";
 import { Icon } from "@/components/ui/Icon";
 import { createFolder, deleteFolder, folderMovePreview, folderSummary, updateFolder } from "@/lib/api";
 import type { FolderSummary, MovePreview } from "@/lib/types";
@@ -50,6 +50,8 @@ export interface FolderActionsProps {
   suggestions?: readonly string[];
   /** PRD 7 (#604): "Who can see this" opens the Audience panel; left out for who may not use it. */
   onAudience?(): void;
+  /** #700: that button reads Make private (it opens the panel at that step: privateFirst). */
+  makePrivate?: boolean;
   /** PRD 7 (#604): the signed-in person, for the password step of a move that opens a folder to them. */
   myId?: string;
 }
@@ -87,6 +89,7 @@ export function FolderActions({
   suggestions = [],
   admin = false,
   onAudience,
+  makePrivate = false,
   myId = "",
 }: FolderActionsProps) {
   const [mode, setMode] = useState<Mode | null>(null);
@@ -306,8 +309,14 @@ export function FolderActions({
       {current && (
         <div className={styles.folderButtons}>
           {onAudience && (
-            <button type="button" className="btn btn-quiet" aria-haspopup="dialog" onClick={onAudience}>
-              {WHO_CAN_SEE}
+            <button
+              type="button"
+              className="btn btn-quiet"
+              aria-haspopup="dialog"
+              onClick={onAudience}
+              title={makePrivate ? MAKE_PRIVATE_HELP : undefined}
+            >
+              {makePrivate ? MAKE_PRIVATE : WHO_CAN_SEE}
             </button>
           )}
           <button

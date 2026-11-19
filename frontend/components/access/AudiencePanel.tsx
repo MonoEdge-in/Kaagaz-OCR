@@ -91,6 +91,8 @@ interface PanelProps {
   onClosed?(): void;
   /** A change was saved: the toast's words; the screen reads the folders again. */
   onChanged(message: string): void;
+  /** #700: opened by the folder's Make private button: its step first, and its Cancel shuts the panel. */
+  start?: "private";
 }
 
 /** A read that failed, in words: one not-found text for missing, hidden or locked; the 403 text;
@@ -117,7 +119,10 @@ export function AudiencePanel(props: PanelProps) {
   const [audience, setAudience] = useState<Audience | null>(null);
   const [failed, setFailed] = useState<unknown>(null);
   const [named, setNamed] = useState<NamedList | null>(null);
-  const [mode, setMode] = useState<Mode>({ kind: "view" });
+  const [mode, setMode] = useState<Mode>({ kind: props.start ?? "view" });
+  // #700: still on the step it was opened at (start): Cancel there shuts the panel, as the person
+  // never asked for who can see it; once back on that view, every Cancel goes back to it.
+  const [direct, setDirect] = useState(props.start !== undefined);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The last change's words, kept in the dialog as well as the toast (which sits behind it).
@@ -151,6 +156,7 @@ export function AudiencePanel(props: PanelProps) {
   }, [target.kind, target.id, withNamed, attempt]);
 
   const back = () => {
+    setDirect(false);
     setError(null);
     setMode({ kind: "view" });
   };
@@ -247,7 +253,7 @@ export function AudiencePanel(props: PanelProps) {
             department={place?.department?.name ?? null}
             busy={busy}
             error={error}
-            onCancel={back}
+            onCancel={direct ? props.onClose : back}
             onConfirm={switchPrivate}
           />
         )}

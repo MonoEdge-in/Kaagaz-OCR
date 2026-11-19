@@ -261,6 +261,7 @@ export const everyoneElseText = (n: number) =>
 // --- Private, and its named list ------------------------------------------------------------------
 
 export const MAKE_PRIVATE = "Make private";
+export const MAKE_PRIVATE_HELP = "Only the people you choose can see the files in this folder."; // #700: the folder's button
 export const MAKE_OPEN = "Make open again";
 export const NAME_PEOPLE = "Name people who can still see it";
 export const NAMED_HEADING = "Named on this folder";
