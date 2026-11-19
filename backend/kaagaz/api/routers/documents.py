@@ -147,20 +147,24 @@ Why some choices:
 """
 
 import hashlib
+import io
 import logging
 import math
+import threading
 import uuid
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from os.path import splitext
+from time import monotonic
 from typing import Annotated, Any, Literal, cast
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import JSONResponse
+from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection, RowMapping
 from starlette.concurrency import run_in_threadpool
@@ -244,8 +248,10 @@ from kaagaz.ingestion.ports import (
 )
 from kaagaz.ingestion.service import UploadResult, UploadService
 from kaagaz.jobs.reading_pause import BUDGET, DAILY_LIMIT, pause_reason
+from kaagaz.reading import orientation
 from kaagaz.reading.ocr import GEMINI
 from kaagaz.reading.office import PDF_KINDS as OFFICE_PDF_KINDS
+from kaagaz.reading.rapid_pool import RapidOcrPool
 from kaagaz.search import page_words
 from kaagaz.settings import Settings
 
@@ -2125,6 +2131,62 @@ def get_page_image(document_id: uuid.UUID, page_no: int, user: User, context: Co
         media_type="image/webp",
         headers={"Content-Security-Policy": "sandbox", "Cache-Control": "private, no-store"},
     )
+
+
+# Straighten pages (#709; NEEDS VRUSHIT'S REVIEW: RapidOCR now also runs in the API process, here
+# alone): at most one check at a time per process, on one RapidOCR slot whose models load on the
+# first check, of at most STRAIGHTEN_MAX_PAGES pages, for at most STRAIGHTEN_SECONDS.
+STRAIGHTEN_MAX_PAGES = 50
+STRAIGHTEN_SECONDS = 120.0
+_straightening = threading.Lock()
+_straighten_pool = RapidOcrPool(1)
+
+
+@router.post("/documents/{document_id}/straighten")
+def straighten_pages(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
+    """The turn each page needs to put its writing upright (``orientation.upright_turn``): the
+    clockwise turn on top of the file's own (the page picture is drawn with it), as the viewer's
+    page turns and ``page_rotations`` count it. ``pages`` names only pages to turn; ``unsure``,
+    the pages it could not tell, has no picture for, or had no time left for. Read-only: the
+    viewer applies the turns. Who may ask is who may see the page image (above)."""
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        row = _readable_or_409(conn, user, document_id)
+    if row["status"] == "rejected":
+        raise ApiError(404, "not_found")
+    count = row["page_count"]
+    if count is None:
+        raise ApiError(409, "not_ready", "Kaagaz is still counting this file's pages. Try again in a minute.")
+    if count > STRAIGHTEN_MAX_PAGES:
+        message = f"Kaagaz can check up to {STRAIGHTEN_MAX_PAGES} pages at a time. This file has {count}."
+        raise ApiError(409, "too_many_pages", message)
+    if not _straightening.acquire(blocking=False):
+        message = "Kaagaz is checking another file's pages. Try again in a moment."
+        raise ApiError(429, "rate_limited", message, headers={"Retry-After": "10"})
+    pages: list[dict[str, int]] = []
+    unsure: list[int] = []
+    try:
+        deadline = monotonic() + STRAIGHTEN_SECONDS
+        for page_no in range(1, count + 1):
+            turn = None
+            if monotonic() < deadline:
+                try:
+                    stored = context.storage.get_page_image(user.customer_id, str(document_id), page_no)
+                except BlobNotFound:
+                    stored = None
+                if stored is not None:
+                    with Image.open(io.BytesIO(stored)) as picture:
+                        turn = orientation.upright_turn(_straighten_pool, picture)
+            if turn is None:
+                unsure.append(page_no)
+            elif turn:
+                pages.append({"page_no": page_no, "turn": turn})
+    finally:
+        _straightening.release()
+    logger.info(
+        "pages straightened",
+        extra={"document_id": str(document_id), "turned": len(pages), "unsure": len(unsure)},
+    )
+    return {"pages": pages, "unsure": unsure}
 
 
 @router.get("/documents/{document_id}/pages/{page_no}/readings")
