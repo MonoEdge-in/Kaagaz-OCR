@@ -72,13 +72,15 @@ describe("DD5: the split between the page and the panels", () => {
 describe("D5: a row's menu", () => {
   const view = { width: 1200, height: 800 };
   it("opens under its button, its end on the button's end", () => {
+    // Changed on purpose (#711): the place also says how tall the menu may be, the room on its side.
     const place = menuPlace({ top: 100, bottom: 136, right: 900 }, { width: 208, height: 200 }, view);
-    expect(place).toEqual({ top: 140, left: 692, up: false });
+    expect(place).toEqual({ top: 140, left: 692, up: false, maxHeight: 652 });
   });
 
   it("flips above near the window's bottom, and stays 8px inside the window", () => {
+    // Changed on purpose (#711): the place also says how tall the menu may be, the room on its side.
     const up = menuPlace({ top: 700, bottom: 736, right: 900 }, { width: 208, height: 200 }, view);
-    expect(up).toEqual({ top: 496, left: 692, up: true });
+    expect(up).toEqual({ top: 496, left: 692, up: true, maxHeight: 688 });
     expect(menuPlace({ top: 100, bottom: 136, right: 100 }, { width: 208, height: 50 }, view).left).toBe(8);
   });
 
