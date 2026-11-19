@@ -22,7 +22,6 @@ import libraryStyles from "@/components/documents/Library.module.css";
 import {
   ABOUT_ENSEMBLE,
   CHANGES_NOTE,
-  DOWNLOAD_LABEL,
   ENSEMBLE_DOCUMENT,
   ENSEMBLE_FLAGGED,
   ENSEMBLE_INFO,
@@ -435,10 +434,11 @@ export function SummaryBar(props: SummaryBarProps) {
 
 /** The document's "⋯" menu items from the review (24 Oct 2026: one menu, no "More" of its own):
  * Run Ensemble on full document (when the API allows it, else disabled with its reason while
- * scanning), Export (disabled until scanning finishes) and Download original. */
+ * scanning) and Export (disabled until scanning finishes). Issue 692: no Download original here,
+ * the Download button sits beside the menu. */
 export function documentMoreItems(
   status: ReviewStatus | null,
-  actions: { onEnsemble(scope: EnsembleScope): void; onExport(): void; download: string | null },
+  actions: { onEnsemble(scope: EnsembleScope): void; onExport(): void },
 ): MoreItem[] {
   if (!status) return [];
   const ready = status.status === "ready";
@@ -463,14 +463,11 @@ export function documentMoreItems(
       onSelect: actions.onExport,
       disabledReason: ready ? null : EXPORT_WAIT,
     },
-    ...(actions.download
-      ? [{ label: DOWNLOAD_LABEL, hint: "Save the file exactly as it was uploaded.", onSelect: () => downloadFile(actions.download ?? "") }]
-      : []),
   ];
 }
 
-/** A download, never a page change: the original file (as the header's Download link), or a file made here. */
-function downloadFile(href: string, name = "") {
+/** A download, never a page change: a file made here. */
+function downloadFile(href: string, name: string) {
   const link = document.createElement("a");
   link.href = href;
   link.download = name;

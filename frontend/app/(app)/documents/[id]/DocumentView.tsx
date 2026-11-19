@@ -900,7 +900,6 @@ export function DocumentView({
                 more={documentMoreItems(review.status, {
                   onEnsemble: (scope) => void ensemble.ask(scope),
                   onExport: () => setExporting(true),
-                  download,
                 })}
               />
             </div>
@@ -1128,6 +1127,7 @@ function PanelTabs({
         <RowMenu
           name="the other tabs"
           compact={room < 3}
+          label={room < 3 ? "More tabs" : undefined}
           items={more.map((item) => ({
             label: typeof item.count !== "number" ? item.label : `${item.label} ${item.count.toLocaleString("en-IN")}`,
             onSelect: () => onChange(item.id),

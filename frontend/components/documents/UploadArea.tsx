@@ -34,7 +34,7 @@
 // only (module variables: a reload starts at the organisation's default again).
 
 import Link from "next/link";
-import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useId, useMemo, useReducer, useRef, useState } from "react";
 import type { DragEvent, ReactNode } from "react";
 import { InStatusBar } from "@/components/shell/StatusBar";
 import { VersionChoice } from "@/components/versions/VersionChoice";
@@ -1218,6 +1218,17 @@ export function UploadStatus({
     onOpenChange(false);
     toggle.current?.focus();
   }
+  // Issue 692: Escape closes the open tray wherever focus is (on the Uploads button, or nowhere
+  // after a click), not only inside it; an Escape in a dialog is that dialog's.
+  const onEscape = useEffectEvent((event: KeyboardEvent) => {
+    if (event.key === "Escape" && !(event.target as HTMLElement | null)?.closest?.("dialog")) hide();
+  });
+  useEffect(() => {
+    if (!open) return;
+    const listener = (event: KeyboardEvent) => onEscape(event);
+    document.addEventListener("keydown", listener);
+    return () => document.removeEventListener("keydown", listener);
+  }, [open]);
   return (
     <InStatusBar>
       <p className={styles.barLine} aria-live="polite">
@@ -1244,9 +1255,6 @@ export function UploadStatus({
           id={`${id}-uploads`}
           className={`motion-pop ${styles.trayPanel}`}
           hidden={!open}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") hide();
-          }}
         >
           {/* Drawn only while open: closed, nobody sees its rows redraw. */}
           {open && <BatchTray {...tray} onHide={hide} />}

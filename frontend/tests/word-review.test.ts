@@ -418,9 +418,10 @@ describe("Ensemble", () => {
     // document, Export and Download original are in the document's "⋯" menu, not a menu here.
     expect(none).not.toContain("Run Ensemble on full document");
     const status_ = status({ flagged: 0, reviewed: 0, remaining: 0, summary: "Scan complete · 14 pages · 2,431 words · Nothing flagged" });
-    const items = documentMoreItems(status_, { onEnsemble: () => undefined, onExport: () => undefined, download: "/f" });
+    const items = documentMoreItems(status_, { onEnsemble: () => undefined, onExport: () => undefined });
     // Changed on purpose (Vrushit UAT, 25 Oct 2026): Export is "Export as Data", the read text as a .txt.
-    expect(items.map((item) => item.label)).toEqual(["Run Ensemble on full document", "Export as Data", "Download original"]);
+    // Changed on purpose (issue 692): no Download original in the menu; the Download button sits beside it.
+    expect(items.map((item) => item.label)).toEqual(["Run Ensemble on full document", "Export as Data"]);
     expect(items.every((item) => item.hint.length > 0)).toBe(true);
   });
 

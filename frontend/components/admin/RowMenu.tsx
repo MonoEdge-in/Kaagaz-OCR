@@ -47,7 +47,7 @@ function moveFocus(event: KeyboardEvent<HTMLDivElement>) {
  * icon-only ⋯ button instead of "More" (a narrow list, Ask screen polish, 17 Oct 2026).
  * `status`: the compact button's own name, tooltip and class when it also carries a state
  * (a summary card value not checked yet, #453). `label`: the button's words in place of "More"
- * (PRD 9 F-17: Review's "Filter: Any reason").
+ * (PRD 9 F-17: Review's "Filter: Any reason"), or the compact button's name (issue 692: "More tabs").
  */
 export function RowMenu({
   name,
@@ -70,7 +70,7 @@ export function RowMenu({
       {compact ? (
         <IconButton
           icon="more"
-          label={status?.label ?? `More actions for ${name}`}
+          label={status?.label ?? label ?? `More actions for ${name}`}
           title={status?.tip}
           className={status ? `btn-quiet ${status.className}` : "btn-quiet"}
           popoverTarget={id}

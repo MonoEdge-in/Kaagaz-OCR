@@ -736,6 +736,7 @@ export function PageViewer({
               aria-checked={showWords}
               className={`btn btn-quiet ${styles.wordsSwitch}`}
               aria-label="Show words to check"
+              title={showWords ? "Hide words to check" : "Show words to check"}
               onClick={() => setShowWords((on) => !on)}
             >
               <Icon name="eye-alert" />
