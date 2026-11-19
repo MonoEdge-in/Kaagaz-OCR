@@ -691,6 +691,16 @@
   gap: var(--space-1);
 }
 
+/* Issue 709: the orientation check's status line and its Undo; wraps on a narrow screen. */
+.turnStatus {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 18rem;
+  padding-inline: var(--space-2);
+}
+
 .turnRow > span {
   flex: 1;
   padding-inline: var(--space-2);
