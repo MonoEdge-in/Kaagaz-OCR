@@ -39,6 +39,7 @@ from sqlalchemy import Connection, RowMapping, text
 from sqlalchemy.exc import IntegrityError
 
 from kaagaz.chunking.context import document_part
+from kaagaz.db import autofile
 from kaagaz.db.documents import STUCK, folder_missing
 from kaagaz.db.folders import FolderNotFound, prune_empty
 from kaagaz.db.review import WAITING_VALUE
@@ -58,6 +59,12 @@ _LAST_UPLOAD = (
 _LAST_UPLOADER = (
     "(SELECT lu.uploaded_by FROM visible_documents lu WHERE lu.customer_id = d.customer_id"
     " AND lu.family_id = d.family_id ORDER BY lu.created_at DESC LIMIT 1)"
+)
+# PRD 9 F-01: (type, department name in lower case) for every alias of each type's department.
+_DEPARTMENT_ALIASES = ", ".join(
+    f"('{doc_type}', '{alias.lower()}')"
+    for doc_type, department in autofile.DEPARTMENTS.items()
+    for alias in autofile.DEPARTMENT_ALIASES[department]
 )
 _FILE_COLUMNS = (
     " d.owner_id, d.sensitivity, d.document_date, d.version_note,"  # noqa: S608 - fixed fragments only
@@ -80,6 +87,21 @@ _FILE_COLUMNS = (
     " SELECT json_build_object('id', dep.id, 'name', dep.name) FROM up"
     " JOIN visible_folders dep ON dep.customer_id = d.customer_id AND dep.id = up.id"
     " WHERE up.parent_id IS NULL AND dep.kind = 'department') AS department,"
+    # PRD 9 F-01 (D1): a file in no folder, the existing department its type maps to, as
+    # auto-filing picks it (by alias, first by name), and only one whose files the person may open:
+    # visible_folders is that rule for everyone but an Admin, who sees every folder's name (0086), so
+    # for an Admin only an open department or their own (fails closed on a private one). Read only.
+    # Never for a family still waiting to be filed (its first version's autofile 'pending'): between
+    # its ready mark and the filing transaction, a Move there would pull it from its type folder.
+    " (SELECT json_build_object('id', s.id, 'name', s.name) FROM visible_folders s"
+    f" JOIN (VALUES {_DEPARTMENT_ALIASES}) m (doc_type, alias) ON lower(s.name) = m.alias,"
+    " kaagaz_access() a WHERE d.folder_id IS NULL AND m.doc_type = d.doc_type"
+    " AND s.customer_id = d.customer_id AND s.parent_id IS NULL AND s.kind = 'department'"
+    " AND (NOT a.admin OR a.management OR (s.private_folder_id IS NULL"
+    " AND (NOT s.department_only OR s.department_id = ANY (a.departments))))"
+    " AND (SELECT r.autofile FROM visible_documents r WHERE r.customer_id = d.customer_id"
+    " AND r.id = d.family_id) IS DISTINCT FROM 'pending'"
+    " ORDER BY lower(s.name), s.id LIMIT 1) AS suggested_department,"
     " (SELECT json_build_object('id', s.id,"
     " 'role', CASE WHEN s.document_id = d.id THEN 'new' ELSE 'candidate' END)"
     f" FROM version_suggestions s WHERE s.customer_id = d.customer_id AND {LIVE_SUGGESTION}"
@@ -210,12 +232,26 @@ _OF_TYPE = " AND d.detected_type = :detected_type"
 # PRD 7 (#601): Shared with me, the files given to the person directly (every version is given).
 _SHARED = " AND d.id IN (SELECT kaagaz_shared_with_me())"
 # PRD 5 U2 "Needs attention": a page unreadable or uncertain still on the attention list
-# (not kept as is), or a value to review; the same rows _COLUMNS counts.
+# (not kept as is), or a value to review; the same rows _COLUMNS counts. PRD 9 F-17: or a line an
+# Ensemble run read differently (changed or unresolved) and nobody has settled (no word change in
+# force on its key, word_review.state), still on the page as read (word_review._FLAG_SPANS's match:
+# a first-reader OCR line with that text and spot), which Needs attention counts on any page. The
+# reading's key is its line's flag key (ensemble.targets). Only a document with such a reading
+# reads its own stored lines; others stop at the index ensemble_readings_document.
 _NEEDS_ATTENTION = (
     " AND (EXISTS (SELECT 1 FROM pages pa WHERE pa.customer_id = :c AND pa.document_id = d.id"  # noqa: S608 - a fixed fragment, review.WAITING_VALUE
     " AND pa.read_quality IN ('unreadable', 'uncertain') AND pa.accepted_at IS NULL)"
     " OR EXISTS (SELECT 1 FROM extracted_values v WHERE v.customer_id = :c"
-    f" AND v.document_id = d.id AND {WAITING_VALUE}))"
+    f" AND v.document_id = d.id AND {WAITING_VALUE})"
+    " OR EXISTS (SELECT 1 FROM ensemble_readings er WHERE er.customer_id = :c AND er.document_id = d.id"
+    " AND er.outcome IN ('changed', 'unresolved')"
+    " AND NOT EXISTS (SELECT 1 FROM word_changes w WHERE w.customer_id = :c AND w.document_id = d.id"
+    " AND w.word_key = er.word_key AND w.undone_at IS NULL)"
+    " AND EXISTS (SELECT 1 FROM reader_outputs ro"
+    " CROSS JOIN LATERAL jsonb_array_elements(ro.output) AS e(span)"
+    " WHERE ro.customer_id = :c AND ro.document_id = d.id AND ro.role = 'first'"
+    " AND e.span ->> 'origin' = 'ocr' AND e.span ->> 'kind' IS NOT NULL"
+    " AND e.span ->> 'text' = er.before_text AND e.span -> 'region' = er.region)))"
 )
 _UPLOADED_FROM = " AND d.created_at >= :uploaded_from"
 _UPLOADED_TO = " AND d.created_at < :uploaded_to"
@@ -744,7 +780,7 @@ _SET_READINGS_TIMEOUT = text("SELECT set_config('statement_timeout', :ms, true)"
 _PAGE_READINGS = text(
     "SELECT ro.role, ro.reader, ro.reader_version, l.ord, l.text, l.cut, l.confidence, l.origin,"  # noqa: S608 - a fixed fragment, visibility.SEEN_DOCUMENT
     " l.as_read, l.page_no,"
-    " l.kind, l.region, l.table_id, l.table_row, l.table_col, l.table_header"
+    " l.kind, l.region, l.table_id, l.table_row, l.table_col, l.table_header, l.box_source"
     " FROM reader_outputs ro"
     " LEFT JOIN LATERAL (SELECT * FROM (SELECT e.ord, left(e.span ->> 'raw', :max_chars) AS text,"
     " e.span ->> 'table_id' AS table_id, CAST(e.span ->> 'row' AS integer) AS table_row,"
@@ -753,6 +789,7 @@ _PAGE_READINGS = text(
     " length(e.span ->> 'raw') > :max_chars AS cut,"
     " CAST(e.span ->> 'confidence' AS double precision) AS confidence,"
     " e.span ->> 'origin' AS origin, e.span ->> 'kind' AS kind, e.span -> 'region' AS region,"
+    " e.span ->> 'box_source' AS box_source,"  # PRD 9 F-16: a "model" spot is drawn as approximate
     " sum(length(left(e.span ->> 'raw', :max_chars))) OVER (ORDER BY e.ord) AS upto"
     " FROM jsonb_array_elements(ro.output) WITH ORDINALITY AS e(span, ord)"
     " WHERE (e.span -> 'region' ->> 'page')::int = :page_no"

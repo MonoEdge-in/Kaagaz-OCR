@@ -260,7 +260,8 @@ def compare(
     """Compare (V11): ``{left_id, right_id, pages: [{page_no, changes, truncated, runs: [{kind,
     text}]}], summary, overview}``, kind same, removed (only in ``with``) or added (only in
     ``id``); each page also counts its words changed and each side's words, and ``overview``
-    says it all in plain words (#521, See the differences)."""
+    says it all in plain words (#521, See the differences); ``image_pages`` each side's pages with
+    a picture (PRD 9 F-08)."""
     customer_id, right, left = user.customer_id, str(document_id), str(other)
     with context.db.user(customer_id, user.user_id) as conn:
         rows = [listing.get_document(conn, customer_id, each) for each in (left, right)]
@@ -275,6 +276,11 @@ def compare(
         if any(row is not None and row["deleted_at"] is not None for row in rows):
             raise ApiError(409, "in_trash", _IN_TRASH)
         texts = [versions_sql.page_texts(conn, customer_id, each) for each in (left, right)]
+        # PRD 9 F-08: the pages with a picture; a text file (JSON, TXT, CSV) has none to show.
+        pictured = [
+            [row["page_no"] for row in listing.list_pages(conn, customer_id, each) if row["has_image"]]
+            for each in (left, right)
+        ]
         for each in sorted({left, right}):  # #482: a view of each, in one order (the view locks)
             audit.record_view(conn, customer_id, actor_user_id=user.user_id, document_id=each, via="compare")
     # The diff runs after the transaction, so no pooled connection waits on it.
@@ -282,4 +288,5 @@ def compare(
     share = versions.exact_overlap(*texts)  # #521: See the differences' summary line
     said = versions.overview(found["pages"], share, truncated=found["truncated"])
     counts = {"left_pages": rows[0]["page_count"], "right_pages": rows[1]["page_count"]}  # type: ignore[index]
-    return {"left_id": left, "right_id": right, **found, "overview": said, **counts}
+    images = {"image_pages": {"left": pictured[0], "right": pictured[1]}}
+    return {"left_id": left, "right_id": right, **found, "overview": said, **counts, **images}

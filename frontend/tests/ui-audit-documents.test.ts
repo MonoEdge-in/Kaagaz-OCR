@@ -251,7 +251,9 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
     // tooltip too); the place's own "+ New folder" button is gone, and the column shows at every
     // width (stacked above the list below 1024px, no drawer), so the "+" is always there.
     const actions = read("components/documents/FolderActions.tsx");
-    expect(actions).not.toMatch(/>\s*New folder\s*</);
+    // Changed on purpose (PRD 9 F-18): testers found no way to make a folder, so the place's header
+    // has a "New folder" button beside Rename and Move again; the column's "+" stays.
+    expect(actions).toContain('New folder<span className="visually-hidden"> here</span>');
     expect(actions).not.toContain('<Icon name="plus" />');
     expect(view).not.toContain("<Drawer");
     expect(css("components/documents/Library.module.css")).toMatch(/^\.treePane \{\s*display: flex;/m);

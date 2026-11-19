@@ -39,10 +39,13 @@ def granted(api: Api, customer_id: str) -> list[str]:
 
 def ready(db: Database) -> tuple[Api, Signed, str]:
     """A reviewer of an organisation with the grant, and a ready scan with 3 flags on 2 pages."""
+    # Changed on purpose (PRD 9 F-11, D5): an unpinned line alone is a check, no review item, so
+    # Ensemble on flagged words leaves it out; page 2 is graded unreadable here, which keeps its
+    # line a review item, so the run still reads two pages.
     api = Api(db, settings=GEMINI)
     signed = api.new_signed("reviewer")
     granted(api, signed.customer_id)
-    return api, signed, scan(api, signed.customer_id)
+    return api, signed, scan(api, signed.customer_id, page_two="unreadable")
 
 
 def start(signed: Signed, document_id: str, scope: str = "flagged", keys: list[str] | None = None) -> Any:
@@ -58,8 +61,9 @@ def test_ensemble_on_flagged_words_reads_the_review_items_only(db: Database) -> 
 
     estimate = reviewer.client.get(f"/api/documents/{document_id}/ensemble/estimate?scope=flagged")
 
-    assert estimate.json() == {"pages": 2, "words": 2, "seconds": 2 * 2 * ensemble_sql.SECONDS_PER_READ}
-    assert len(flags(reviewer, document_id)) == 2
+    # Changed on purpose (PRD 9 F-11, D5): so is page 2's unpinned line now; the [?] alone is sent.
+    assert estimate.json() == {"pages": 1, "words": 1, "seconds": 1 * 2 * ensemble_sql.SECONDS_PER_READ}
+    assert len(flags(reviewer, document_id)) == 1
 
 
 def test_a_reviewer_starts_a_run_once_and_the_review_shows_it(db: Database) -> None:

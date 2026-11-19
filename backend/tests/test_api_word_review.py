@@ -21,11 +21,12 @@ pytestmark = pytest.mark.db
 FORBIDDEN = {"code": "forbidden", "message": "You don't have permission to do this."}
 
 
-def scan(api: Api, customer_id: str, quality: str = "illegible") -> str:
-    """A ready scan, saved as test_word_review_db.scanned makes it: 3 flags on 2 pages, all
-    review items (#432: with ``quality`` "unsure" the word 4,850 is a check, no review item)."""
+def scan(api: Api, customer_id: str, quality: str = "illegible", **more: Any) -> str:
+    """A ready scan, saved as test_word_review_db.scanned makes it: 3 flags on 2 pages, the two
+    word marks review items (#432: with ``quality`` "unsure" the word 4,850 is a check, no review
+    item; PRD 9 D5: page 2's unpinned line is a check too). ``more`` goes to ``scanned``."""
     document_id = api.add_document(customer_id, detected_type="jpeg", page_count=2)
-    PgPipelineStore(api.db).save(scanned(customer_id, document_id, quality=quality))
+    PgPipelineStore(api.db).save(scanned(customer_id, document_id, quality=quality, **more))
     return document_id
 
 
@@ -52,20 +53,21 @@ def test_the_review_status_counts_and_says_the_summary_bar(db: Database) -> None
     reply = reviewer.client.get(f"/api/documents/{document_id}/review-status")
 
     assert reply.status_code == 200, reply.text
+    # Changed on purpose (PRD 9 F-11, D5): page 2's unpinned line is a check, so 2 review items, not 3.
     assert reply.json() == {
         "pages": 2,
         "words": 9,
-        "flagged": 3,
-        "by_band": {"check": 0, "review": 3},
+        "flagged": 2,
+        "by_band": {"check": 0, "review": 2},
         "reviewed": 0,
         "resolved": 0,
-        "remaining": 3,
+        "remaining": 2,
         "last_change_at": None,
         "status": "ready",
-        "summary": "Scan complete · 2 pages · 9 words · 3 flagged for review",
+        "summary": "Scan complete · 2 pages · 9 words · 2 flagged for review",
         "export": {
             "ready": False,
-            "message": "3 flagged words not yet reviewed. Export anyway or review first.",
+            "message": "2 flagged words not yet reviewed. Export anyway or review first.",
         },
         "can_review": True,
         "ensemble": {"allowed": False, "reason": router.ENSEMBLE_OFF, "run": None},
@@ -77,7 +79,8 @@ def test_the_review_status_counts_and_says_the_summary_bar(db: Database) -> None
 
 def test_a_check_word_is_no_review_item_so_the_list_and_counts_agree(db: Database) -> None:
     # #432 (Tushar, 28 Oct 2026): "Don't take reviews on ?": an unsure word (check band, a
-    # second look is wise) is neither listed nor counted; the [?] and the unpinned line are.
+    # second look is wise) is neither listed nor counted; the [?] is.
+    # Changed on purpose (PRD 9 F-11, D5): the unpinned line is a check now, neither listed nor counted.
     api = Api(db)
     reviewer = api.new_signed("reviewer")
     document_id = scan(api, reviewer.customer_id, quality="unsure")
@@ -85,12 +88,9 @@ def test_a_check_word_is_no_review_item_so_the_list_and_counts_agree(db: Databas
     listed = flags(reviewer, document_id)
     status = reviewer.client.get(f"/api/documents/{document_id}/review-status").json()
 
-    assert [(item["text"], item["band"]) for item in listed] == [
-        ("[?]", "review"),
-        ("Bill to Patil Stores", "review"),
-    ]
-    assert (status["flagged"], status["by_band"], status["remaining"]) == (2, {"check": 0, "review": 2}, 2)
-    assert status["summary"] == "Scan complete · 2 pages · 9 words · 2 flagged for review"
+    assert [(item["text"], item["band"]) for item in listed] == [("[?]", "review")]
+    assert (status["flagged"], status["by_band"], status["remaining"]) == (1, {"check": 0, "review": 1}, 1)
+    assert status["summary"] == "Scan complete · 2 pages · 9 words · 1 flagged for review"
     assert status["remaining"] == len([item for item in listed if item["state"] == "open"])
 
 
@@ -118,8 +118,9 @@ def test_members_see_flags_without_other_readings_and_change_nothing(db: Databas
     member = api.sign_in(reviewer.customer_id, "member")
 
     seen = flags(member, document_id)
-    assert [item["alternatives"] for item in seen] == [None, None, None]
-    assert [item["alternatives"] for item in flags(reviewer, document_id)] == [[], [], []]
+    # Changed on purpose (PRD 9 F-11, D5): two review items; the unpinned line is a check.
+    assert [item["alternatives"] for item in seen] == [None, None]
+    assert [item["alternatives"] for item in flags(reviewer, document_id)] == [[], []]
     key = seen[0]["word_key"]
     for path, body in (
         (f"flags/{key}/confirm", {"expected_text": "4,850"}),
@@ -175,8 +176,10 @@ def test_a_reviewer_edits_a_word_and_undoes_it(db: Database, role: str) -> None:
         409,
         {"code": "changed_since", "message": router.MESSAGES["changed_since"]},
     )
-    assert len(flags(signed, document_id, "?state=open")) == 2
-    assert [item["kind"] for item in flags(signed, document_id, "?page=2")] == ["line"]
+    # Changed on purpose (PRD 9 F-11, D5): page 2's unpinned line is a check, no review item.
+    assert len(flags(signed, document_id, "?state=open")) == 1
+    assert [item["kind"] for item in flags(signed, document_id, "?page=1")] == ["mark", "mark"]
+    assert flags(signed, document_id, "?page=2") == []
 
     history = signed.client.get(f"{base}/changes").json()
     [item] = history["items"]
@@ -189,7 +192,7 @@ def test_a_reviewer_edits_a_word_and_undoes_it(db: Database, role: str) -> None:
     )
     assert signed.client.get(f"{base}/changes?source=ensemble").json()["items"] == []
     status = signed.client.get(f"{base}/review-status").json()
-    assert (status["reviewed"], status["remaining"], status["last_change_at"] is not None) == (1, 2, True)
+    assert (status["reviewed"], status["remaining"], status["last_change_at"] is not None) == (1, 1, True)
 
     undone = post(signed, f"{base}/changes/{item['id']}/undo")
     assert undone.status_code == 200, undone.text
@@ -219,9 +222,10 @@ def test_the_history_is_newest_first_in_pages(db: Database) -> None:
         )
         api.clock.advance(1)
 
-    first = reviewer.client.get(f"{base}/changes?limit=2").json()
-    assert [item["after_text"] for item in first["items"]] == ["Bill to Patil Stores", "[?]"]
-    assert [item["can_undo"] for item in first["items"]] == [True, False]
-    rest = reviewer.client.get(f"{base}/changes?limit=2&before={first['next_before']}").json()
+    # Changed on purpose (PRD 9 F-11, D5): two review items (the unpinned line is a check), so pages of 1.
+    first = reviewer.client.get(f"{base}/changes?limit=1").json()
+    assert [item["after_text"] for item in first["items"]] == ["[?]"]
+    assert [item["can_undo"] for item in first["items"]] == [True]
+    rest = reviewer.client.get(f"{base}/changes?limit=1&before={first['next_before']}").json()
     assert ([item["after_text"] for item in rest["items"]], rest["next_before"]) == (["4,850"], None)
     assert reviewer.client.get(f"{base}/changes?before={uuid.uuid4()}").status_code == 404

@@ -14,9 +14,10 @@ reading says now (kaagaz/db/word_review.py reads the rows). A flag is one of:
   (``ocr_script``).
 
 Bands (spec section 2): ``review`` (unclear source, please confirm) for an illegible mark,
-an unpinned line, any line or mark on a backup-read or unreadable page, and readings that
-differ; ``check`` (a second look is wise) for an unsure mark and a low-confidence or
-other-script value. Everything else is High: no flag.
+any line or mark on a backup-read or unreadable page, and readings that differ; ``check`` (a
+second look is wise) for an unsure mark, an unpinned line (PRD 9 D5: an unconfirmed spot alone
+is no review item, yet a value in its box is not Verified while it is open, word_review._apply)
+and a low-confidence or other-script value. Everything else is High: no flag.
 
 Reasons are plain words (Tushar's list, 16 Oct 2026), from the page's F1 issues where one
 explains the word, else from the flag itself; never "unusual font" (nothing measures it).
@@ -133,8 +134,8 @@ def span_flag(row: Mapping[Any, Any]) -> Flag | None:
         reason = BACKUP_READER if backup else page_reason(issues)
     elif backup:
         kind, band, reason = LINE, REVIEW, BACKUP_READER
-    elif row["box_source"] == "model":
-        kind, band, reason = LINE, REVIEW, SPOT_UNCONFIRMED
+    elif row["box_source"] == "model":  # PRD 9 D5: alone, a check; it still holds back its values
+        kind, band, reason = LINE, REVIEW if unreadable else CHECK, SPOT_UNCONFIRMED
     elif unreadable:
         kind, band, reason = LINE, REVIEW, page_reason(issues)
     elif row.get("ensemble"):

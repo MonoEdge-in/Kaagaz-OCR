@@ -33,6 +33,8 @@ from tests.test_versions import (
     _ITEMS,
     _MARATHI,
     _SATBARA,
+    PLOT,
+    PLOT_EDITED,
     _extended,
     _invoice,
     _name_similarity,
@@ -546,6 +548,70 @@ def test_521_monthly_bills_with_one_name_and_account_number_are_not_suggested(db
     assert _suggestions(db, customer) == []
 
 
+def test_prd9_f06_a_short_file_uploaded_again_with_two_values_edited_is_suggested(db: Database) -> None:
+    """PRD 9 F-06 (VER-01): plot data.json, 11 words, uploaded again under its name with two values
+    edited. Under MIN_WORDS it has no fingerprint, so only the name counted (one signal) and nothing
+    was suggested; now the two short texts are compared word by word (9 of 11). Accepted (the
+    pop-up's Yes, the banner's Accept), it is version 2 and current."""
+    api = Api(db)
+    signed = api.new_signed()
+    customer = signed.customer_id
+    old = _doc(api, signed, PLOT.split(), "plot data.json", hours_ago=48, doc_type=None)
+    _old(db, customer, old)
+    new = _doc(api, signed, PLOT_EDITED.split(), "plot data.json", hours_ago=0, doc_type=None)
+    _spot(db, customer, new)
+    assert [row[:4] for row in _suggestions(db, customer)] == [(new, old, "suggested", "pending")]
+    assert _stored(db, customer) == [(0.8182, True)]
+    assert _family(db, customer, new)[:3] == (new, 1, True)  # never linked on its own (#521)
+    banner = signed.client.get(f"/api/documents/{new}").json()["version_suggestion"]
+    assert banner["reasons"] == "81% the same text"
+    suggestion = _suggestion_id(db, customer, new)
+    accepted = signed.client.post(f"/api/version-suggestions/{suggestion}/accept", headers=CSRF)
+    assert accepted.status_code == 200, accepted.text
+    assert _family(db, customer, new)[:3] == (old, 2, True)
+    assert _family(db, customer, old)[:3] == (old, 1, False)
+
+
+def test_prd9_f06_a_short_file_with_other_words_under_its_name_is_not_suggested(db: Database) -> None:
+    """The same name and a short text, but under 80% of the words in common: one signal only."""
+    api = Api(db)
+    signed = api.new_signed()
+    customer = signed.customer_id
+    old = _doc(api, signed, PLOT.split(), "plot data.json", hours_ago=48, doc_type=None)
+    _old(db, customer, old)
+    other = '{"layout": "Wakad", "survey": [9, 10], "plots_total": 3, "contact": "Head office"}'
+    new = _doc(api, signed, other.split(), "plot data.json", hours_ago=0, doc_type=None)
+    with db.customer(customer) as conn:
+        assert versions_sql.spot(conn, customer, new) == "none"
+    assert _suggestions(db, customer) == []
+
+
+def test_prd9_f06_short_monthly_bills_of_one_name_and_account_number_are_not_suggested(db: Database) -> None:
+    """Review of #678: #521's monthly bills, but short (60 words): one name key and account number,
+    a quarter of the words other numbers. Word by word 75%, under the 80% the short rule needs, so
+    the share never stands for the floor of name and identifier."""
+    api = Api(db)
+    signed = api.new_signed()
+    customer = signed.customer_id
+    template = _text(12, 45)
+
+    def bill(month: int) -> list[str]:
+        words = list(template)
+        for place in range(15):
+            words.insert(place * 4, f"{month}{place:02}")
+        return words
+
+    names = ("Invoice 2025-01.pdf", "Invoice 2025-02.pdf")
+    old = _doc(api, signed, bill(1), names[0], hours_ago=48, doc_type="invoice")
+    _old(db, customer, old)
+    new = _doc(api, signed, bill(2), names[1], hours_ago=0, doc_type="invoice")
+    _link(db, customer, old, new, "account_number")
+    assert versions.word_share({1: " ".join(bill(1))}, {1: " ".join(bill(2))}) == 0.75
+    with db.customer(customer) as conn:
+        assert versions_sql.spot(conn, customer, new) == "none"
+    assert _suggestions(db, customer) == []
+
+
 def test_521_two_near_copies_of_one_batch_spotted_at_once_are_matched_once(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -837,6 +903,22 @@ def test_521_see_the_differences_of_a_suggested_pair_says_it_in_plain_words(
         True,
         "These files are long, so only the first part is compared.",
     )
+
+
+def test_prd9_f08_compare_says_which_pages_of_each_side_have_a_picture(db: Database) -> None:
+    """PRD 9 F-08 (VER-07): the reply names each side's pages with a picture (``pages.has_image``),
+    so the screen asks for page images of those only: none for a text file (a sheet of cells), the
+    scan's pages for a PDF."""
+    api = Api(db)
+    signed = api.new_signed()
+    customer = signed.customer_id
+    old, new = _satbaras(api, db, signed)
+    api.add_page(customer, old, 1, unit="cells")
+    for page_no in (1, 2):
+        api.add_page(customer, new, page_no)
+    _spot(db, customer, new)
+    body = signed.client.get(f"/api/documents/{new}/compare", params={"with": old}).json()
+    assert body["image_pages"] == {"left": [], "right": [1, 2]}
 
 
 def test_521_the_same_text_in_other_bytes_is_a_near_match_whose_text_is_the_same(db: Database) -> None:

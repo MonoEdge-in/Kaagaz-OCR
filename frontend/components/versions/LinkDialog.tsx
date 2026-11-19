@@ -7,7 +7,8 @@
 // a family already chosen is left out (it comes with its family).
 // 2, Put them in order: oldest first, by the document's own date, else the upload; drag a file, or
 // use its arrows (the keyboard's and a phone's way), and "This is the latest" picks the one Ask
-// answers from (it starts on the newest).
+// answers from (PRD 9 F-07: it starts on the newest upload, then moves with the last row after a
+// reorder, until the person picks one).
 // 3, Check and link: the server's preview says which file Ask will answer from, where the files
 // will be kept and who would lose access (V15). An Admin whose link opens a file to themselves
 // types their password (403 password_required), as a folder move asks.
@@ -37,6 +38,7 @@ import {
   moved,
   movedTo,
   needsPassword,
+  newestUpload,
   undoLink,
 } from "./link";
 import type { LinkFile } from "./link";
@@ -71,7 +73,9 @@ export function LinkDialog({
   const [step, setStep] = useState<Step>(start === "pick" ? 1 : 2);
   const [chosen, setChosen] = useState<LinkFile[]>(() => [...files]);
   const [order, setOrder] = useState<string[]>(() => files.map((file) => file.id));
-  const [latest, setLatest] = useState<string | null>(startLatest ?? files.at(-1)?.id ?? null);
+  const [picked, setPicked] = useState<string | null>(startLatest ?? null);
+  const [reordered, setReordered] = useState(false);
+  const latest = picked ?? (reordered ? order.at(-1) : newestUpload(chosen)?.id) ?? null;
   const [preview, setPreview] = useState<LinkPreview | null>(null);
   const [password, setPassword] = useState<string | null>(null); // null: not asked for
   const [busy, setBusy] = useState(false);
@@ -79,9 +83,9 @@ export function LinkDialog({
   const body = linkBody(order, latest);
 
   function toOrder() {
-    const sorted = byDate(chosen);
-    setOrder(sorted.map((file) => file.id));
-    setLatest(sorted.at(-1)?.id ?? null);
+    setOrder(byDate(chosen).map((file) => file.id));
+    setPicked(null);
+    setReordered(false);
     setError(null);
     setStep(2);
   }
@@ -144,7 +148,16 @@ export function LinkDialog({
         </p>
         {step === 1 && <PickStep chosen={chosen} fixed={fixed} onChosen={setChosen} />}
         {step === 2 && (
-          <OrderStep files={chosen} order={order} latest={latest} onOrder={setOrder} onLatest={setLatest} />
+          <OrderStep
+            files={chosen}
+            order={order}
+            latest={latest}
+            onOrder={(next) => {
+              setOrder(next);
+              setReordered(true);
+            }}
+            onLatest={setPicked}
+          />
         )}
         {step === 3 && preview && (
           <ConfirmStep preview={preview} files={order.length} password={password} onPassword={setPassword} />

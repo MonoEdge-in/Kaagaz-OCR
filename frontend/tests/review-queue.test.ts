@@ -5,7 +5,6 @@ import {
   checkChoice,
   checkReasonsText,
   focusAfterResolve,
-  groupByDocument,
   leftToReview,
   parseReason,
   queueParams,
@@ -184,16 +183,9 @@ describe("the reason filter", () => {
     });
   });
 
-  it("groups the cards shown by document, in the order each first appears", () => {
-    const other = (id: string): ReviewItem => ({ ...item(id), document_id: "d2", document_name: "Register.jpg" });
-    const groups = groupByDocument([item("a"), other("b"), item("c")]);
-    expect(groups.map((group) => [group.id, group.name, group.items.map((i) => i.value.id)])).toEqual([
-      ["d1", "Bill.pdf", ["a", "c"]],
-      ["d2", "Register.jpg", ["b"]],
-    ]);
-    expect(groupByDocument([])).toEqual([]);
-  });
-
+  // Changed on purpose (PRD 9 F-17): By document lists documents now (ReviewDocuments.tsx), not the
+  // value cards grouped by document, so groupByDocument and its test are gone; the new list is
+  // tested in review-by-document.test.ts.
   it("reads the select's value, anything else meaning every reason", () => {
     expect(parseReason("low_confidence")).toBe("low_confidence");
     expect(parseReason("")).toBeNull();

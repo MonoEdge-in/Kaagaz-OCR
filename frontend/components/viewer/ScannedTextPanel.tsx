@@ -296,7 +296,7 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                         className={styles.lineButton}
                         aria-pressed={active !== null && sameRegion(active, line.region)}
                         onClick={() => {
-                          onShow({ name: `line ${index + 1}`, region: line.region, label: null });
+                          onShow({ name: `line ${index + 1}`, region: line.region, label: null, approximate: line.box_source === "model" });
                           if (toFix && ask) openFix(toFix, ask.draft, index);
                         }}
                       >

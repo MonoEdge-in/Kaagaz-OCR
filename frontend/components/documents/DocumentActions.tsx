@@ -56,7 +56,7 @@ export interface RowMenuProps {
   /** The document screen's menu (DD2): Read again first when `readAgain`. */
   place?: "list" | "document";
   readAgain?: boolean;
-  /** #648 (V13): Link to another version… (Admins and Management). */
+  /** #648 (V13): Make it a version of… (Admins and Management; PRD 9 F-09). */
   linkVersions?: boolean;
   /** The document screen's other actions (24 Oct 2026: Ensemble, Export as Data, Download original),
    * after the menu's own and before Move to Trash, each with one plain line; disabled ones say why. */
@@ -461,16 +461,18 @@ export interface MoveFormProps {
   /** A folder was made here: the screen asks for the folders again. */
   onFolderCreated?(): void;
   onCancel(): void;
+  /** PRD 9 F-01: the place chosen at first ("Looks like X", Move there), in place of the suggested one. */
+  to?: string;
 }
 
-export function MoveForm({ items, tree, suggestions = [], onSaved, onFolderCreated, onCancel }: MoveFormProps) {
+export function MoveForm({ items, tree, suggestions = [], onSaved, onFolderCreated, onCancel, to }: MoveFormProps) {
   const places = new Set(items.map((item) => item.folder_id ?? TOP));
   const current = places.size === 1 ? [...places][0] : null; // where they all are now
   const [suggested] = useState(() => moveSuggestion(items, tree)); // kept while the folders reload
   const suggestedId = suggested && "folderId" in suggested ? suggested.folderId : null;
   const suggestedName = suggested && "newName" in suggested ? suggested.newName : null;
   const [choice, setChoice] = useState<string | null>(
-    suggestedId ?? (suggestedName !== null ? SUGGESTED_NEW : null),
+    to ?? suggestedId ?? (suggestedName !== null ? SUGGESTED_NEW : null),
   );
   const [newName, setNewName] = useState("");
   const [busy, setBusy] = useState(false);

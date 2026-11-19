@@ -6,7 +6,8 @@ Each kind (``kaagaz/ingestion/resolve.py``) is made plain text first:
   harmless as text; nothing is rendered.
 * ``json``: refused with ``too_deep`` when it nests deeper than ``JSON_MAX_DEPTH``, counted
   before it is parsed, so ``json.loads`` never recurses that far; then parsed and written out
-  again with an indent of 2 and every character as itself, one value to a line.
+  again with an indent of 2 and every character as itself, one value to a line; one with a
+  repeated key is read as it is typed, so no value is lost (PRD 9 F-10).
 * ``html``: its text only, by the standard library's ``html.parser``: ``script``, ``style``,
   ``noscript``, ``template`` and ``head`` are dropped with all they hold, except the title,
   which is the first line; comments too. A block (a paragraph, a heading, a list item, a table
@@ -53,7 +54,7 @@ _SPACES = re.compile(r"\s+")
 class TextReader:
     # Stored with the output (reader_outputs). Only the standard library is used, so the
     # version is this module's own: raise it when what it reads changes.
-    version = "1"
+    version = "2"  # PRD 9 F-10: a JSON with a repeated key is read as typed
 
     def __init__(self, kind: str, *, max_lines: int) -> None:
         """``max_lines``: the most lines with text a file may have (no default: limits are
@@ -106,12 +107,21 @@ def _json_text(text: str) -> str:
     if json_depth(text) > JSON_MAX_DEPTH:
         raise ReadError("too_deep")
     malformed = False
+    repeated: list[bool] = []
+
+    def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
+        if len({key for key, _ in items}) < len(items):
+            repeated.append(True)
+        return dict(items)
+
     try:
-        value = json.loads(text)
+        value = json.loads(text, object_pairs_hook=pairs)
     except ValueError:  # JSONDecodeError, or an integer too long to convert
         malformed = True
     if malformed:
         raise ReadError("malformed_json")
+    if repeated:  # PRD 9 F-10: parsed, a repeated key keeps only its last value; read it as typed
+        return text
     return json.dumps(value, indent=2, ensure_ascii=False)
 
 

@@ -99,11 +99,11 @@ import { fieldText } from "@/components/viewer/labels";
 import { lowResolutionText } from "@/components/viewer/panels";
 import { pagesAround, usePageCache } from "@/components/viewer/usePageCache";
 import type { Spot } from "@/components/viewer/panels";
-import { beingRead, canReprocess, loadFailure, settledText } from "@/components/viewer/reprocess";
-import { highlightsOf, initialSelection, pageChange } from "@/components/viewer/selection";
+import { beingRead, canReprocess, loadFailure, readAgainText, readLines, settledText } from "@/components/viewer/reprocess";
+import { APPROXIMATE_NOTE, highlightsOf, initialSelection, pageChange } from "@/components/viewer/selection";
 import { selectSpot } from "@/components/viewer/selection";
 import type { Selection } from "@/components/viewer/selection";
-import { canReview } from "@/components/review/review";
+import { canReview, nextDocumentHref } from "@/components/review/review";
 import { flagDomId, saveWord, settled, trustText } from "@/components/review/wordReview";
 import { Timeline } from "@/components/activity/Timeline";
 import { ACTIVITY_TEXT } from "@/components/activity/words";
@@ -162,6 +162,8 @@ export interface DocumentViewProps {
   wordsParam: string | null;
   fromParam: string | null;
   openErrorParam?: string | null; // PRD 7 (PR 13): a Google confirm that did not open locked files
+  tabParam?: string | null; // PRD 9 F-17: ?tab=attention, opened from Review's By document
+  nextParam?: string | null; // PRD 9 F-17: the documents after it in that list, for Next document
 }
 
 // Said after "Highlighted: <field>" when the spot came in a link (a source card, a search
@@ -192,6 +194,8 @@ export function DocumentView({
   wordsParam,
   fromParam,
   openErrorParam = null,
+  tabParam = null,
+  nextParam = null,
 }: DocumentViewProps) {
   const { me } = useSession();
   const [attempt, setAttempt] = useState(0);
@@ -230,6 +234,8 @@ export function DocumentView({
   // Set when a poll sees reading end: the next detail says what was found ("again": after Read again).
   const settling = useRef<"read" | "again" | null>(null);
   const readingAgain = useRef(false);
+  // PRD 9 F-15: the page Read this page again was asked for, and its lines before (readLines).
+  const readAgainBefore = useRef<{ pageNo: number; lines: string[] } | null>(null);
   // Ready first: the detail shown came while the document was still being understood.
   const loadedUnderstanding = useRef(false);
   // "Add meaning": what it is for, and the button that opened it (focus goes back there).
@@ -306,6 +312,16 @@ export function DocumentView({
         if (beingRead(detail.status) || loadedUnderstanding.current) poll.later();
         if (!beingRead(detail.status) && settling.current) {
           setAnnouncement(settledText(detail, settling.current === "again"));
+        }
+        const again = readAgainBefore.current;
+        if (again && settling.current === "again") {
+          readAgainBefore.current = null; // PRD 9 F-15: once read, what it changed on that page
+          if (detail.status === "ready") {
+            getPageReadings(documentId, again.pageNo).then(
+              (after) => setToast(readAgainText(again.lines, readLines(after))),
+              () => undefined, // the page shows what it has; only the note is left out
+            );
+          }
         }
         settling.current = null;
       })
@@ -419,7 +435,7 @@ export function DocumentView({
     if (bringPageForSpot(selection?.region ?? null, region)) viewerRef.current?.scrollIntoView({ block: "nearest" });
   };
   const showSpot = (spot: Spot, said = `Showing ${spot.name} on page ${spot.region.page}.`) => {
-    choose(selectSpot(spot.region, spot.label));
+    choose({ ...selectSpot(spot.region, spot.label), approximate: spot.approximate }); // PRD 9 F-16
     setAnnouncement(said);
     bringPage(spot.region);
   };
@@ -479,7 +495,7 @@ export function DocumentView({
     setTab("clear");
     document.getElementById(TAB_BAR_ID)?.scrollIntoView({ block: "nearest" });
   };
-  const chosenTab = tabChoice && tabChoice.linkKey === linkKey ? tabChoice.tab : scannedParam === "1" ? "scanned" : "overview";
+  const chosenTab = tabChoice && tabChoice.linkKey === linkKey ? tabChoice.tab : scannedParam === "1" ? "scanned" : tabParam === "attention" ? "attention" : "overview";
   const tab = tabs.some((each) => each.id === chosenTab) ? chosenTab : "overview";
   const setTab = (next: TabId) => setTabChoice({ linkKey, tab: next });
   // A reading problem pressed (U3): its spot on the page, and the line with both readings.
@@ -553,6 +569,7 @@ export function DocumentView({
       : folder
         ? { href: libraryHref({ ...ALL_DOCUMENTS, folderId: folder.id }), name: folder.name }
         : { href: "/documents", name: "documents" });
+  const next = nextDocumentHref(nextParam);
   const chip = statusChip(detail.status, detail.detected_type);
   const barSaysStatus = detail.status !== "rejected" && review.status !== null && review.status.status !== "ready";
   // Trash means deleted: no download from there, only Restore (the Trash view).
@@ -571,7 +588,9 @@ export function DocumentView({
   const fromLink = regionParam !== null && !(chosen && chosen.linkKey === linkKey);
   const highlightNote = highlighted
     ? `Highlighted: ${fieldText(highlighted.field)}${fromLink ? FROM_LINK : ""}`
-    : undefined;
+    : selection?.approximate
+      ? APPROXIMATE_NOTE
+      : undefined;
   const reloadWith = (message: string, undo?: () => Promise<unknown>) => {
     setToast(message); // its own live region reads it out
     setToastUndo(() => undo ?? null);
@@ -621,6 +640,7 @@ export function DocumentView({
                   onPageChange={changePage}
                   highlights={highlightsOf(selection)}
                   highlightNote={highlightNote}
+                  approximate={selection?.approximate}
                   download={download}
                   marks={words.markersAround}
                   activeMark={words.activeId}
@@ -648,6 +668,7 @@ export function DocumentView({
                   page={page}
                   highlights={highlightsOf(selection)}
                   highlightNote={highlightNote}
+                  approximate={selection?.approximate}
                   pageNumbers={pageNumbers}
                   onPageChange={changePage}
                   marks={words.markers}
@@ -693,6 +714,12 @@ export function DocumentView({
                 Back to <ScriptText text={back.name} />
               </span>
             </Link>
+            {next && (
+              <Link href={next} className={styles.back}>
+                Next document
+                <Icon name="chevron-right" />
+              </Link>
+            )}
             <h1 ref={headingRef} tabIndex={-1} className={styles.title}>
               <ScriptText text={detail.display_name} />
             </h1>
@@ -927,9 +954,10 @@ export function DocumentView({
                           userId={me.user.id}
                           canFix={canReview(me.user.role) && detail.deleted_at === null}
                           canUpload={detail.deleted_at === null}
-                          onReadAgain={(reply) => {
+                          onReadAgain={(reply, before) => {
                             merge(reply);
                             readingAgain.current = true;
+                            readAgainBefore.current = before && { pageNo: page.page_no, lines: before };
                             poll.later();
                           }}
                           onKept={keepPage}

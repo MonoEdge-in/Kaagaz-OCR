@@ -445,6 +445,7 @@ def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
         "stuck",  # changed on purpose (issue 407): may be read again while still in progress
         "shared_with_you",  # changed on purpose (PRD 7, #601): in a folder the person can't see
         "locked",  # changed on purpose (PRD 7, #605): opened only as page pictures, never read
+        "suggested_department",  # Changed on purpose (PRD 9 F-01): the department its type maps to
     }
     assert (document["folder_id"], document["tags"]) == (None, [])
     assert (document["pages_unreadable"], document["pages_uncertain"], document["values_to_review"]) == (

@@ -5,7 +5,8 @@
   HASHES blake2b values (each seed its own salt) and LSH in BANDS bands of ROWS values, each
   band hashed to one number. Under MIN_WORDS words there is none. Values are signed 64-bit,
   so they fit ``bigint``. ``exact_overlap`` (#521) counts the same shingles exactly: 64 hashes
-  estimate an overlap near 0.8 only to about 0.05 either way.
+  estimate an overlap near 0.8 only to about 0.05 either way. ``word_share`` (PRD 9 F-06)
+  compares two short texts word by word, where an edit breaks too many 5-word runs.
 * ``name_key`` (V2): the rule of migration 0041's ``NAME_KEY``, step for step, so a new
   upload's key is the same as the backfill's (tests/test_versions_db.py compares them).
 * ``outcome`` (V4): the scoring table, ``reasons`` the banner's plain words (V6, NB-17).
@@ -20,6 +21,7 @@ import hashlib
 import math
 import re
 import unicodedata
+from collections import Counter
 from collections.abc import Iterable, Mapping
 from difflib import SequenceMatcher
 from typing import Any
@@ -43,6 +45,10 @@ TEXT_SIGNAL, NAME_SIGNAL, TEXT_ALONE = 0.8, 0.6, 0.8
 # bills: one name key and account number, other text).
 TEXT_FLOOR = 0.5
 SUGGESTED = "suggested"
+# PRD 9 F-06: texts of at most this many words each are also compared word by word (word_share).
+# Each edit breaks up to SHINGLE runs, so under about 100 words two edits take the runs under 80%;
+# #521's two invoices of one template (139 words) stay on the runs.
+SHORT_WORDS = 100
 # V17 (#648): the most files in one group of possible versions (the issue's 20).
 MAX_GROUP = 20
 
@@ -111,6 +117,18 @@ def exact_overlap(first: Mapping[int, str], second: Mapping[int, str]) -> float 
     return len(mine & theirs) / len(mine | theirs)
 
 
+def word_share(first: Mapping[int, str], second: Mapping[int, str]) -> float | None:
+    """PRD 9 F-06: the share of two short texts' words in common (``words``, pages in order), each
+    word counted as often as it is in both: 2 x common / (both counts), so 9 of 11 words the same
+    each side is 82%; at most 0.99 unless the words are the same in the same order (it ignores the
+    order). None unless each has 1 to SHORT_WORDS words. O(w)."""
+    a, b = ([word for n in sorted(pages) for word in words(pages[n])] for pages in (first, second))
+    if not 0 < len(a) <= SHORT_WORDS or not 0 < len(b) <= SHORT_WORDS:
+        return None
+    share = 2 * sum((Counter(a) & Counter(b)).values()) / (len(a) + len(b))
+    return share if a == b else min(share, 0.99)
+
+
 # --- V2: the name key, as 0041's NAME_KEY -------------------------------------------------
 _EXTENSION = re.compile(r"\.[A-Za-z0-9]{1,5}\Z")
 _DATE = re.compile(r"[0-9]{1,4}[-./][0-9]{1,2}[-./][0-9]{1,4}")
@@ -136,11 +154,17 @@ def name_key(display_name: str) -> str:
 # --- V4 and V6 --------------------------------------------------------------------------
 
 
-def outcome(text_overlap: float | None, name_similarity: float | None, shared_identifier: bool) -> str | None:
+def outcome(
+    text_overlap: float | None, name_similarity: float | None, shared_identifier: bool, *, short: bool = False
+) -> str | None:
     """V4 (#521): ``suggested`` or None (nothing); a person always decides. A shared identifier
     alone is never enough, and two signals without the text need TEXT_FLOOR of it when there is
-    a text overlap (None: a text under MIN_WORDS words)."""
+    a text overlap (None: a text under MIN_WORDS words). ``short`` (PRD 9 F-06): the overlap is
+    ``word_share``: suggested only at TEXT_SIGNAL with the name or an identifier, never alone nor as
+    the floor of the other two (short forms and bills of one template share their words)."""
     text, name = text_overlap or 0.0, name_similarity or 0.0
+    if short:
+        return SUGGESTED if text >= TEXT_SIGNAL and (name >= NAME_SIGNAL or shared_identifier) else None
     if text >= TEXT_ALONE:
         return SUGGESTED
     signals = (text >= TEXT_SIGNAL) + (name >= NAME_SIGNAL) + shared_identifier

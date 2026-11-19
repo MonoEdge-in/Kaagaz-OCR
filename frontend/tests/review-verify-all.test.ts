@@ -33,7 +33,9 @@ describe("Verify all on the review queue", () => {
     expect(queue).toMatch(/onClick=\{\(\) => void verifyAll\(\)\}[\s\S]*ref=\{focusOnMount\}[\s\S]*Cancel/);
     expect(queue).toContain('role="group"');
     expect(queue).toContain("inert={verifyingAll}");
-    expect(queue).toContain("disabled={loadingMore || verifyingAll}");
+    // Changed on purpose (PRD 9 F-17): the reasons are one Filter menu now; its choices still can't be
+    // used while Verify all runs.
+    expect(queue).toContain("disabledReason: loadingMore || verifyingAll ?");
   });
 
   it("says what it did in one line", () => {

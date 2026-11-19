@@ -63,7 +63,6 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ("db/autofile.py", "_PRE_CHECK"): (SHARED_WITH_WORKER, f"auto-filing; {_UPLOAD}"),
     ("db/autofile.py", "_STATE"): (SHARED_WITH_WORKER, f"auto-filing; {_UPLOAD}"),
     ("db/autofile.py", "_BY_KEY"): (SHARED_WITH_WORKER, "auto-filing finds its folder"),
-    ("db/autofile.py", "_BY_NAME"): (SHARED_WITH_WORKER, "auto-filing finds its folder"),
     ("db/autofile.py", "_DEPARTMENTS"): (SHARED_WITH_WORKER, "auto-filing finds its department"),
     ("db/autofile.py", "_SAME_NUMBER"): (SHARED_WITH_WORKER, "auto-filing finds its folder"),
     ("db/autofile.py", "_CHILD"): (SHARED_WITH_WORKER, "auto-filing finds its folder"),
@@ -435,6 +434,8 @@ NOT_EXISTS_CHECKED: dict[tuple[str, str], str] = {
     ("answering/fixed_queries.py", "_EXTREME_VALUE"): "SAME:the visible document's own invoice",
     ("answering/fixed_queries.py", "_TOP_GROUP"): "SAME:the visible document's own invoice",
     ("answering/hard_to_read.py", "_WORD_MARKS"): "SAME:the visible document's own word changes",
+    # Changed on purpose (PRD 9 F-17, #673): an Ensemble line is open while no change in force has its key.
+    ("db/listing.py", "_NEEDS_ATTENTION"): "SAME:the visible document's own word changes",
     ("db/chat.py", "MARKS"): "SAME:the visible document's own learning removals",
     ("db/documents.py", "REFUSED_ALONE"): _ALL_OR_NONE,
     ("db/folder_uploads.py", "_INSERT_LEVEL"): "FEWER_OK:Q12, a hidden sibling's name meets its unique index",
@@ -517,10 +518,6 @@ PR9: dict[tuple[str, str], str] = {
     (
         "db/autofile.py",
         "_BY_KEY",
-    ): "FEWER_OK:auto-filing runs as the worker; a folder hidden from a person is not reused (Q12)",
-    (
-        "db/autofile.py",
-        "_BY_NAME",
     ): "FEWER_OK:auto-filing runs as the worker; a folder hidden from a person is not reused (Q12)",
     (
         "db/autofile.py",
