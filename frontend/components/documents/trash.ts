@@ -183,6 +183,12 @@ export function foreverQuestion(document: Pick<DocumentSummary, "version_no" | "
   return `Delete ${withVersions(document)} for good? ${gone}`;
 }
 
+/** #698: said where the page would be for a document in Trash (its file and pages are not served). */
+export const TRASH_PREVIEW_TEXT = {
+  why: "This file is in Trash, so it can't be previewed.",
+  fix: "Restore it to see it.",
+};
+
 export function restoredMessage(name: string): string {
   return `Restored ${name}.`;
 }

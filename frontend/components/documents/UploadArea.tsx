@@ -42,6 +42,7 @@ import type { Chosen } from "@/components/versions/VersionChoice";
 import { VERSION_TEXT, suggestionsText } from "@/components/versions/words";
 import { VersionPopup } from "@/components/versions/VersionPopup";
 import { Icon } from "@/components/ui/Icon";
+import { IconButton } from "@/components/ui/IconButton";
 import { beingRead } from "@/components/viewer/reprocess";
 import { storyHref, storyTarget } from "@/components/viewer/story";
 import {
@@ -72,6 +73,7 @@ import type {
 } from "@/lib/types";
 import { usePoll } from "@/lib/usePoll";
 import {
+  CANCEL_TEXT,
   NOT_FILED_TEXT,
   UNDONE_TEXT,
   batchFraction,
@@ -93,6 +95,7 @@ import {
   writeStored,
 } from "./batchTray";
 import type { StoredBatch } from "./batchTray";
+import { ActionDialog } from "./ActionDialog";
 import { BusyLabel } from "./BusyLabel";
 import { MoveDialog } from "./DocumentActions";
 import { droppedItems, isSkipped } from "./folderPick";
@@ -128,6 +131,7 @@ import { WrapName } from "./WrapName";
 import { ZipUnpackNote } from "./ZipUnpackNote";
 import { zipNote } from "./zipUnpack";
 import styles from "./Documents.module.css";
+import library from "./Library.module.css";
 
 type Start = (onProgress: (fraction: number) => void, onSent: () => void, onWaiting: UploadWaiting) => Promise<UploadResult>;
 /** One drop of files: the API's words once one of them was refused for storage (#516). */
@@ -321,8 +325,9 @@ export function useUploads(onUploaded: () => void) {
 
   /** Count a PDF's or TIFF's pages (kept for the time estimate), then send it, unless it has too many. */
   async function checkThenSend(key: string, file: File, start: Start, follow: boolean, drop?: Drop) {
-    if (notSent(key) || dropFull(key, drop)) return;
+    if (!kept.current.has(key) || notSent(key) || dropFull(key, drop)) return; // #699: cancelled while waiting
     const { pages, problem } = await checkPages(file, limits.max_pages);
+    if (!kept.current.has(key)) return; // #699: cancelled while its pages were counted
     dispatch({ type: "change", key, change: { pages } });
     if (problem) update(key, { kind: "error", message: problem });
     else if (!notSent(key) && !dropFull(key, drop)) await send(key, start, follow, drop);
@@ -437,6 +442,17 @@ export function useUploads(onUploaded: () => void) {
     dispatch({ type: "remove", key });
   }
 
+  /** #699: files still waiting go and are never sent (checkThenSend skips a file this tab no longer holds). */
+  function cancel(keys: string[]) {
+    const waiting = queue.entries.filter((entry) => keys.includes(entry.key) && entry.state.kind === "waiting");
+    for (const entry of waiting) kept.current.delete(entry.key);
+    dispatch({ type: "cancel", keys });
+    // A drop with nothing left is forgotten: the server never heard of it, and the tray shows no line for it.
+    const left = new Set(queue.entries.filter((entry) => !waiting.includes(entry)).map((entry) => entry.batchId));
+    const emptied = new Set(waiting.map((entry) => entry.batchId).filter((id) => id !== undefined && !left.has(id)));
+    if (emptied.size > 0) setStored((batches) => batches.filter((batch) => !emptied.has(batch.id)));
+  }
+
   /** The finished rows go, and so do the drops with nothing left to follow; a drop still going
    *  remembers the documents taken out, so they never come back, after a reload either (#688). */
   function clearFinished() {
@@ -476,6 +492,7 @@ export function useUploads(onUploaded: () => void) {
     restore,
     retry,
     remove,
+    cancel,
     skipped,
     clearFinished,
   };
@@ -758,6 +775,7 @@ export function BatchTray({
   onRestore,
   onRetry,
   onRemove,
+  onCancel,
   tree,
   onUndone,
   canReread,
@@ -772,6 +790,7 @@ export function BatchTray({
   onRestore: (key: string, documentId: string, existingName: string) => void;
   onRetry: (key: string) => void;
   onRemove?: (key: string) => void; // PRD 9 F-04: a row not uploaded, when given
+  onCancel?: (keys: string[]) => void; // #699: files still waiting, when given
   tree: FolderTree; // for "Filed into Invoices" (feature 28)
   onUndone: () => void;
   canReread: boolean; // a reviewer or an admin: may read a document again
@@ -782,6 +801,7 @@ export function BatchTray({
   // #521 review: what was decided on a row, by suggestion id, kept until Clear finished, so a
   // later poll that no longer asks it never takes the words and Undo away.
   const [decided, setDecided] = useState<ReadonlyMap<string, TrayDecided>>(() => new Map());
+  const [cancelling, setCancelling] = useState<{ batchId: string; keys: string[] } | null>(null); // #699: asked first
   if (entries.length === 0 && folderRows === null) return null;
   const settled = entries.some((entry) => !isBusy(entry));
   const keep = (suggestion: VersionSuggestion, chosen: Chosen, undone: boolean) =>
@@ -794,7 +814,17 @@ export function BatchTray({
     if (entry.batchId) batches.set(entry.batchId, [...(batches.get(entry.batchId) ?? []), entry]);
     else loose.push(entry);
   }
-  const row = (entry: UploadEntry, asks?: ReadonlyMap<string, TrayAsk>) => (
+  // #699: a file cancelled at once; focus goes to the next waiting file's Cancel in its drop, else
+  // the drop's line, else the tray's heading, so it is never lost to the page.
+  const cancelOne = (rows: UploadEntry[], key: string, line: string | null) => {
+    const waiting = rows.filter((entry) => entry.state.kind === "waiting");
+    const at = waiting.findIndex((entry) => entry.key === key);
+    const next = waiting[at + 1] ?? waiting[at - 1];
+    const to = next ? cancelId(next.key) : line !== null && rows.length > 1 ? line : "uploads-heading";
+    document.getElementById(to)?.focus();
+    onCancel?.([key]);
+  };
+  const row = (entry: UploadEntry, rows: UploadEntry[], line: string | null, asks?: ReadonlyMap<string, TrayAsk>) => (
     <UploadRow
       key={entry.key}
       entry={entry}
@@ -803,6 +833,7 @@ export function BatchTray({
       onRestore={onRestore}
       onRetry={onRetry}
       onRemove={onRemove}
+      onCancel={onCancel && (() => cancelOne(rows, entry.key, line))}
       tree={tree}
       onUndone={onUndone}
       canReread={canReread}
@@ -812,7 +843,7 @@ export function BatchTray({
   return (
     <section className={styles.uploadsSection} aria-labelledby="uploads-heading">
       <div className={styles.uploadsHead}>
-        <h2 id="uploads-heading" className={styles.smallHeading}>
+        <h2 id="uploads-heading" className={styles.smallHeading} tabIndex={-1}>
           Uploads
         </h2>
         <span className={styles.uploadsActions}>
@@ -850,17 +881,26 @@ export function BatchTray({
         const found = view?.version_suggestions?.[0];
         // A server restart fails a drop's files one by one: one button sends them all again.
         const notSentRows = rows.filter((entry) => entry.state.kind === "error" && entry.state.retry);
+        const waitingKeys = rows.filter((entry) => entry.state.kind === "waiting").map((entry) => entry.key); // #699
         const first = found ? { document_id: found.document.id, display_name: found.document.name } : undefined;
         // #521: each file that looks like a new version gets the choice on its own row.
         const asked = trayChoices(view?.version_suggestions ?? [], decided);
         return (
           <div key={id} className={styles.batch}>
             <div className={styles.batchHead}>
-              <p className={styles.batchSummary}>
+              <p id={batchLineId(id)} className={styles.batchSummary} tabIndex={-1}>
                 {summaryText(counts)}
               </p>
               {left && <span className={`muted ${styles.small} ${styles.timeLeft}`}>{left}</span>}
             </div>
+            {onCancel && waitingKeys.length > 1 && (
+              <div className={styles.uploadsActions}>
+                <button type="button" className="btn" onClick={() => setCancelling({ batchId: id, keys: waitingKeys })}>
+                  <Icon name="close" />
+                  {CANCEL_TEXT.all}
+                </button>
+              </div>
+            )}
             {notSent && (
               <p className={`error-text ${styles.small}`}>
                 <strong>{notSent}</strong>
@@ -884,14 +924,41 @@ export function BatchTray({
                 </button>
               </div>
             )}
-            <ul className={styles.uploads}>{rows.map((entry) => row(entry, asked))}</ul>
+            <ul className={styles.uploads}>{rows.map((entry) => row(entry, rows, batchLineId(id), asked))}</ul>
           </div>
         );
       })}
-      {loose.length > 0 && <ul className={styles.uploads}>{loose.map((entry) => row(entry))}</ul>}
+      {loose.length > 0 && <ul className={styles.uploads}>{loose.map((entry) => row(entry, loose, null))}</ul>}
+      {cancelling && onCancel && (
+        <ActionDialog
+          title={CANCEL_TEXT.question(cancelling.keys.length)}
+          onClose={() => setCancelling(null)}
+          // After a cancel the button that opened it is gone: the drop's line, or the tray's heading.
+          onClosed={() => (document.getElementById(batchLineId(cancelling.batchId)) ?? document.getElementById("uploads-heading"))?.focus()}
+        >
+          <div className={library.formButtons}>
+            <button
+              type="button"
+              className={`btn btn-danger ${library.apart}`}
+              onClick={() => {
+                setCancelling(null);
+                onCancel(cancelling.keys);
+              }}
+            >
+              {CANCEL_TEXT.yes}
+            </button>
+            <button type="button" className="btn" data-autofocus onClick={() => setCancelling(null)}>
+              {CANCEL_TEXT.no}
+            </button>
+          </div>
+        </ActionDialog>
+      )}
     </section>
   );
 }
+
+const cancelId = (key: string) => `cancel-${key}`; // #699: a waiting file's Cancel, for focus after a cancel
+const batchLineId = (id: string) => `batch-line-${id}`; // #699: a drop's line, for focus after a cancel
 
 /**
  * One drop's bar: its files' own fractions weighed by their pages, with the bytes of the
@@ -1036,6 +1103,7 @@ function UploadRow({
   onRestore,
   onRetry,
   onRemove,
+  onCancel,
   tree,
   onUndone,
   canReread,
@@ -1046,6 +1114,7 @@ function UploadRow({
   onRestore: (key: string, documentId: string, existingName: string) => void;
   onRetry: (key: string) => void;
   onRemove?: (key: string) => void;
+  onCancel?: () => void;
   tree: FolderTree;
   onUndone: () => void;
   canReread: boolean;
@@ -1177,6 +1246,9 @@ function UploadRow({
             <Icon name="close" />
             Remove<span className="visually-hidden">{` ${entry.name}`}</span>
           </button>
+        )}
+        {state.kind === "waiting" && onCancel && (
+          <IconButton id={cancelId(entry.key)} icon="close" label={CANCEL_TEXT.one(entry.name)} className="btn-quiet" onClick={onCancel} />
         )}
         {story !== null && (
           <Link href={storyHref(story)} className={`${styles.inlineAction} ${styles.storyLink}`}>

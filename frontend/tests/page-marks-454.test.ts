@@ -173,5 +173,6 @@ describe("the document screen's marks and notice (#454)", () => {
 
   it("keeps the low-resolution notice's room on every page of a PDF that has one", () => {
     expect(view).toContain("const lowRoom = viewsAsPdf(detail.detected_type) ? (detail.pages.map(lowNote).find((note) => note !== null) ?? null) : null;");
-    expect(view).toMatch(/\{\(lowResolution \?\? lowRoom\) && \(\s*<p className=\{styles\.trashNotice\} role="note" style=\{lowResolution \? undefined : \{ visibility: "hidden" \}\}>/);  });
+    // Changed on purpose (#698): a document in Trash shows no page, so no low-resolution notice either.
+    expect(view).toMatch(/\{detail\.deleted_at === null && \(lowResolution \?\? lowRoom\) && \(\s*<p className=\{styles\.trashNotice\} role="note" style=\{lowResolution \? undefined : \{ visibility: "hidden" \}\}>/);  });
 });

@@ -289,6 +289,7 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
         onRestore={(key, documentId, name) => void uploads.restore(key, documentId, name)}
         onRetry={(key) => void uploads.retry(key)}
         onRemove={uploads.remove}
+        onCancel={uploads.cancel}
         tree={tree}
         onUndone={notify}
         canReread={canReview(me.user.role)}
