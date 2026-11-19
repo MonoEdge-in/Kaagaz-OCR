@@ -41,9 +41,10 @@ export interface UploadQueue {
   finished: UploadCounts | null; // the batch that settled last, until the next starts or Clear
   settled: number; // how many batches have settled
   filed: number; // #536: files seen filed by Kaagaz (feature 28), which may have made a folder for them
+  cleared: string[]; // #688: the documents Clear finished took out; a batch's answer never adds them back
 }
 
-export const EMPTY_QUEUE: UploadQueue = { entries: [], batch: [], finished: null, settled: 0, filed: 0 };
+export const EMPTY_QUEUE: UploadQueue = { entries: [], batch: [], finished: null, settled: 0, filed: 0, cleared: [] };
 
 export type QueueEvent =
   | { type: "add"; entries: UploadEntry[] }
@@ -81,7 +82,7 @@ export function followed(document: DocumentSummary): UploadState {
     : { kind: "done", documentId: document.id, document };
 }
 
-const documentOf = (state: UploadState) =>
+export const documentOf = (state: UploadState) =>
   state.kind === "reading" || state.kind === "done" ? state.documentId : null;
 
 /** Feature 28: read, then filed by Kaagaz, maybe into a folder it made just then. */
@@ -124,7 +125,7 @@ export function queueReducer(queue: UploadQueue, event: QueueEvent): UploadQueue
       });
       const added = event.add
         ? event.documents
-            .filter((document) => !seen.has(document.id))
+            .filter((document) => !seen.has(document.id) && !queue.cleared.includes(document.id))
             .map((document) => ({
               key: `document-${document.id}`,
               name: document.display_name,
@@ -136,8 +137,11 @@ export function queueReducer(queue: UploadQueue, event: QueueEvent): UploadQueue
         : [];
       return settle({ ...queue, entries: [...entries, ...added], filed: queue.filed + filed });
     }
-    case "clear":
-      return { ...queue, entries: queue.entries.filter(isBusy), finished: null };
+    case "clear": {
+      const gone = queue.entries.filter((entry) => !isBusy(entry)).map((entry) => documentOf(entry.state));
+      const cleared = [...queue.cleared, ...gone.filter((id): id is string => id !== null)];
+      return { ...queue, entries: queue.entries.filter(isBusy), finished: null, cleared };
+    }
     case "remove":
       return {
         ...queue,

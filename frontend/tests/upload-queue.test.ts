@@ -147,6 +147,22 @@ describe("following a stored file (U10)", () => {
     expect(after.entries.map((row) => row.key)).toEqual(["a", "document-d2"]);
     expect(after.entries[1]).toMatchObject({ name: "d2.pdf", size: 1000, pages: 2, batchId: "b1" });
   });
+
+  it("never brings back a row Clear finished took out, while the drop's other files go on (#688)", () => {
+    const queue = queueReducer(EMPTY_QUEUE, {
+      type: "add",
+      entries: [
+        entry("a", { kind: "done", documentId: "d1", document: doc("d1") }),
+        entry("b", { kind: "reading", documentId: "d2", document: doc("d2", { status: "received" }) }),
+      ],
+    });
+    const cleared = queueReducer(queue, { type: "clear" });
+    expect(cleared.entries.map((row) => row.key)).toEqual(["b"]);
+    expect(cleared.cleared).toEqual(["d1"]);
+    const documents = [doc("d1"), doc("d2", { status: "received" }), doc("d3", { status: "received" })];
+    const asked = queueReducer(cleared, { type: "batch", batchId: "b1", documents, add: true });
+    expect(asked.entries.map((row) => row.key)).toEqual(["b", "document-d3"]); // d3 is new; d1 stays gone
+  });
 });
 
 describe("removing a row not uploaded (PRD 9 F-04)", () => {

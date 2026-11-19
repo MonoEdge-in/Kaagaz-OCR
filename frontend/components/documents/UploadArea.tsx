@@ -120,7 +120,7 @@ import type { UploadState } from "./logic";
 import { checkPages } from "./pageCount";
 import { capReaders, effectiveOf, startReader, useAiSettings } from "@/lib/aiSettings";
 import { DUPLICATE_READER_NOTE, offersChoice, pickedReader, readerOptions, readingToSend } from "./readers";
-import { EMPTY_QUEUE, UPLOADS_AT_ONCE, askBatches, createSlots, followed, isBusy, queueReducer, skippedText, uploadsAtRisk } from "./uploadQueue";
+import { EMPTY_QUEUE, UPLOADS_AT_ONCE, askBatches, createSlots, documentOf, followed, isBusy, queueReducer, skippedText, uploadsAtRisk } from "./uploadQueue";
 import type { Followed, UploadEntry } from "./uploadQueue";
 import { NO_TIMES, jobFraction, nextShown, stageOf, valueText } from "./uploadStages";
 import type { Shown, Stage, StageTimes } from "./uploadStages";
@@ -148,7 +148,13 @@ export function useUploads(onUploaded: () => void) {
   const nextKey = useRef(0);
   // The server's words once another account has signed in here; then nothing more is sent.
   const stopped = useRef<string | null>(null);
-  const [queue, dispatch] = useReducer(queueReducer, EMPTY_QUEUE);
+  // The drops of the last 24 hours (batchTray.ts), and the batch API's latest view of each.
+  const [stored, setStored] = useState<StoredBatch[]>(() => readStored(batchStore(), Date.now()));
+  // #688: what Clear finished took out before a reload stays out.
+  const [queue, dispatch] = useReducer(queueReducer, stored, (batches) => ({
+    ...EMPTY_QUEUE,
+    cleared: batches.flatMap((batch) => batch.cleared),
+  }));
   const [loadedLimits, setLimits] = useState<UploadLimits>(FALLBACK_UPLOAD_LIMITS);
   const [limitsLoaded, setLimitsLoaded] = useState(false); // D1: "Read with" holds its room until then
   const [reader, setReader] = useState<string | null>(sessionReader);
@@ -161,8 +167,6 @@ export function useUploads(onUploaded: () => void) {
   );
   // The files this tab still holds, so a file not sent can be sent again (Retry).
   const kept = useRef(new Map<string, Start>());
-  // The drops of the last 24 hours (batchTray.ts), and the batch API's latest view of each.
-  const [stored, setStored] = useState<StoredBatch[]>(() => readStored(batchStore(), Date.now()));
   // Drops from before a reload: every file the batch API lists gets a row.
   const [restored] = useState(() => new Set(stored.map((batch) => batch.id)));
   const [skipped, setSkipped] = useState(""); // PRD 9 F-04: the last pick's system files, in words
@@ -374,7 +378,7 @@ export function useUploads(onUploaded: () => void) {
     }));
     dispatch({ type: "add", entries: added.map((item) => item.entry) });
     const at = Date.now();
-    setStored((before) => [...batches.map(({ batchId }) => ({ id: batchId, at, already: 0, notSent: 0 })), ...before]);
+    setStored((before) => [...batches.map(({ batchId }) => ({ id: batchId, at, already: 0, notSent: 0, cleared: [] })), ...before]);
     const sending = added.filter((item) => item.entry.state.kind === "waiting");
     for (const { entry, start } of sending) kept.current.set(entry.key, start);
     const drop: Drop = { full: null };
@@ -433,12 +437,24 @@ export function useUploads(onUploaded: () => void) {
     dispatch({ type: "remove", key });
   }
 
-  /** The finished rows go, and so do the drops with nothing left to follow. */
+  /** The finished rows go, and so do the drops with nothing left to follow; a drop still going
+   *  remembers the documents taken out, so they never come back, after a reload either (#688). */
   function clearFinished() {
     const busy = new Set(queue.entries.filter(isBusy).map((entry) => entry.batchId));
+    const gone = queue.entries.filter((entry) => !isBusy(entry));
     dispatch({ type: "clear" });
     setSkipped("");
-    setStored((batches) => batches.filter((batch) => busy.has(batch.id)));
+    setStored((batches) =>
+      batches
+        .filter((batch) => busy.has(batch.id))
+        .map((batch) => ({
+          ...batch,
+          cleared: [
+            ...batch.cleared,
+            ...gone.flatMap((entry) => (entry.batchId === batch.id ? (documentOf(entry.state) ?? []) : [])),
+          ],
+        })),
+    );
   }
 
   const { entries, finished, settled, filed } = queue;
