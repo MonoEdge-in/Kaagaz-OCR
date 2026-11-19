@@ -1,0 +1,15 @@
+{
+  "rules": [
+    {
+      "rulePriority": 1,
+      "description": "Build cache that a newer build replaced (it loses its tag) after 7 days",
+      "selection": {
+        "tagStatus": "untagged",
+        "countType": "sinceImagePushed",
+        "countUnit": "days",
+        "countNumber": 7
+      },
+      "action": { "type": "expire" }
+    }
+  ]
+}

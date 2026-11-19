@@ -1,9 +1,16 @@
-# Built inside the image from package-lock.json, never copied from the laptop.
+# Kept out of the build context. `COPY . .` in the Dockerfile would otherwise send all of
+# this to the builder, bust the cache on unrelated files, and could bake a local .env into
+# the image.
+.env
+.env.*
 node_modules
+npm-debug.log*
+*.tsbuildinfo
 .next
 out
 coverage
-*.tsbuildinfo
-.env
-.env.*
-npm-debug.log*
+.turbo
+*.log
+.DS_Store
+Dockerfile
+.dockerignore

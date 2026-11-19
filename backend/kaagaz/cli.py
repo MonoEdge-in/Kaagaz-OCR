@@ -165,7 +165,7 @@ from pathlib import Path
 from typing import IO, Any, Protocol, TextIO
 
 import boto3
-from sqlalchemy import Connection, RowMapping, text
+from sqlalchemy import Connection, RowMapping, create_engine, text
 
 from kaagaz import ops_alert, verify_models
 from kaagaz.adapters.email import Mailer
@@ -183,7 +183,7 @@ from kaagaz.db import operator_models as operator_models_sql
 from kaagaz.db import operators as operators_sql
 from kaagaz.db import users as users_sql
 from kaagaz.db.document_stories import recipe_tag as story_tag
-from kaagaz.db.engine import Database, make_engine
+from kaagaz.db.engine import Database, make_engine, normalise_url
 from kaagaz.extraction.checks import GSTIN_FIELDS, gstin_valid
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -250,6 +250,10 @@ BACKUP_REGION = "ap-south-1"
 BACKUP_PART_BYTES = 32 * 1024 * 1024
 # The commands that read the settings but no database.
 NO_DATABASE = ("backup-files", "restore-files", "disk-alert", "ops-alert")
+# schema-check's exit codes, which the deploy stops on (infra/ec2/deploy.sh, step 2). 0 is a
+# match and 2 is any other error, so these start at 3.
+SCHEMA_BEHIND = 3
+SCHEMA_AHEAD = 4
 
 
 class CliError(Exception):
@@ -374,6 +378,8 @@ def _parser() -> argparse.ArgumentParser:
     alert.add_argument("--text", required=True)
 
     commands.add_parser("queue-depth", help="each lane's waiting, in-flight and delayed job counts")
+    commands.add_parser("schema-check", help="is the database on this image's migration head? (read-only)")
+    commands.add_parser("ensure-bucket", help="make the storage bucket if it is missing")
     return parser
 
 
@@ -1453,6 +1459,61 @@ def _file_backup(command: str, files: FileBackup, source: IO[bytes], out: IO[byt
         raise CliError(str(error)) from None
 
 
+def _schema_verdict(current: set[str], heads: set[str], known: set[str]) -> tuple[int, str]:
+    """schema-check's answer: its exit code and the one line it prints.
+
+    A database whose every revision this image has a file for is behind, and an empty one
+    is behind by every migration. A database holding a revision this image has never heard
+    of is ahead of it: that is a rollback's database, not a deploy's, and the deploy stops.
+    A rollback never runs this check, and ``alembic upgrade head`` on such a database
+    changes nothing by itself (migrations/env.py, ``database_ahead``).
+    """
+    if current == heads:
+        return 0, f"schema matches: {sorted(heads)}"
+    if current <= known:
+        return SCHEMA_BEHIND, f"database is BEHIND: at {sorted(current)}, image needs {sorted(heads)}"
+    return (
+        SCHEMA_AHEAD,
+        f"database is AHEAD of this image: at {sorted(current)}, image knows up to {sorted(heads)}",
+    )
+
+
+def _schema_check(database_url: str, out: TextIO) -> int:
+    """Is the database on this image's migration head? Read-only, so it changes nothing.
+
+    The deploy runs this in place of a migration: with one central database a schema
+    change is a deliberate, scheduled act, never a side effect of a deploy. A person runs
+    ``dc run --rm migrate`` after a dump (docs/running-locally.md, "Deploys and rollback").
+
+    ``alembic.ini`` sits beside the ``kaagaz`` package, in the image and in a checkout, and
+    its ``script_location`` is relative to itself, so this works from any directory. The URL
+    comes from ``DATABASE_URL`` and is normalised exactly as migrations/env.py normalises it,
+    so the check connects the way the migration would. Prints revision ids only, never
+    content (CLAUDE.md never-do 3).
+    """
+    from alembic.config import Config
+    from alembic.runtime.migration import MigrationContext
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(Path(__file__).parents[1] / "alembic.ini")))
+    heads = set(script.get_heads())
+    engine = create_engine(
+        normalise_url(database_url),
+        connect_args={"options": "-c default_transaction_read_only=on"},
+    )
+    try:
+        with engine.connect() as connection:
+            current = set(MigrationContext.configure(connection).get_current_heads())
+    finally:
+        engine.dispose()
+
+    # Every revision this image has a file for, as migrations/env.py works it out.
+    known = {revision.revision for revision in script.walk_revisions()}
+    code, line = _schema_verdict(current, heads, known)
+    out.write(line + "\n")
+    return code
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -1519,6 +1580,19 @@ def main(
             # No keys: boto3 finds the machine's own role.
             client = backup_bucket or boto3.client("s3", region_name=BACKUP_REGION)
             stdout.write(_backup_upload(client, args.bucket, args.key, source) + "\n")
+            return 0
+        if args.command == "schema-check":  # the migration head only: no settings, no database built
+            url = env.get("DATABASE_URL", "").strip()
+            if not url:
+                raise CliError("DATABASE_URL is not set")
+            return _schema_check(url, stdout)
+        if args.command == "ensure-bucket":  # storage only, no database (the deploy's step 2b)
+            if file_store is None:
+                from kaagaz.adapters.storage import S3Storage
+
+                file_store = S3Storage(settings or Settings.from_env(env))
+            file_store.ensure_bucket()
+            stdout.write("storage bucket: ready\n")
             return 0
         if args.command in NO_DATABASE:
             checked = settings or Settings.from_env(env)

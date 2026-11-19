@@ -3,10 +3,23 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml <command>
 #
-# Deploys go through infra/ec2/deploy.sh, never `up -d --build` by hand: that
-# would rebuild kaagaz-*:local, the live images, and run migrate with them.
+# The server's .env sets COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml, so a
+# plain `docker compose ps`, `logs -f api` or `run --rm migrate` there uses both files and
+# the live image tags.
+#
+# Deploys go through GitHub Actions (CI/CD Phase 3), which runs infra/ec2/deploy.sh
+# through SSM. Never `up`, `pull` or `build` an app service by hand.
 #
 # What it changes:
+#   - api, worker, migrate and frontend run the images CI built and pushed to ECR:
+#     <KAAGAZ_REGISTRY>/kaagaz/backend:<BACKEND_TAG> and kaagaz/frontend:<FRONTEND_TAG>.
+#     deploy.sh writes both tags into .env after a good deploy. `build` is removed and
+#     pull_policy is never, so a missing image fails loudly instead of being built or
+#     pulled here by surprise.
+#   - No deploy runs migrate. A schema change is a deliberate, scheduled act:
+#       BACKEND_TAG=<commit> docker compose run --rm migrate
+#     A deploy only checks the database is on the image's head (kaagaz schema-check).
+#     Nothing depends on migrate here, so starting api or the workers never runs it.
 #   - Only caddy publishes ports (80 and 443). Every other port is cleared with
 #     `!reset` (Docker Compose 2.24.4 or newer), so the services meet only on
 #     Docker's own networks.
@@ -37,7 +50,8 @@
 #     and need none (LibreOffice, RapidOCR and pi-heif included). clamav, postgres
 #     and caddy start as root and are left as they are.
 #
-# The server's .env sets KAAGAZ_DOMAIN, ACME_EMAIL, the bucket name
+# The server's .env sets COMPOSE_FILE, KAAGAZ_REGISTRY
+# (<account>.dkr.ecr.ap-south-1.amazonaws.com), KAAGAZ_DOMAIN, ACME_EMAIL, the bucket name
 # (kaagaz-prod-files) and SEAWEEDFS_S3_CONFIG (until the seaweedfs block below is
 # deleted); compose stops with the name of any that is missing. It must NOT set
 # STORAGE_ACCESS_KEY, its secret, or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY: any
@@ -116,6 +130,9 @@ services:
   # server's own AWS role, never a key: the storage admin key (#477) is SeaweedFS's alone, so
   # its key and docker-compose.yml's check for it are left out here.
   migrate:
+    image: ${KAAGAZ_REGISTRY:?set KAAGAZ_REGISTRY in .env}/kaagaz/backend:${BACKEND_TAG:-not-deployed}
+    build: !reset null
+    pull_policy: never
     logging: *logging
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
@@ -130,13 +147,14 @@ services:
       - -c
       - >-
         alembic upgrade head &&
-        python -c "from kaagaz.adapters.storage import S3Storage;
-        from kaagaz.settings import Settings;
-        S3Storage(Settings.from_env()).ensure_bucket()"
+        python -m kaagaz.cli ensure-bucket
     # docker-compose.yml's list without seaweedfs. `run migrate` starts these.
     depends_on: !reset []
 
   api:
+    image: ${KAAGAZ_REGISTRY:?set KAAGAZ_REGISTRY in .env}/kaagaz/backend:${BACKEND_TAG:-not-deployed}
+    build: !reset null
+    pull_policy: never
     ports: !reset []
     restart: unless-stopped
     logging: *logging
@@ -151,12 +169,14 @@ services:
       # The number of worker copies below, not docker-compose.yml's laptop "1".
       # OpenRouter RPM is reserved centrally in PostgreSQL across API and worker processes.
       WORKER_REPLICAS: ${WORKER_REPLICAS:-3}
-    # docker-compose.yml's list without seaweedfs or elasticmq (jobs are in Amazon SQS).
-    depends_on: !override
-      migrate:
-        condition: service_completed_successfully
+    # None: deploy.sh starts api itself, and docker rollout's `up` would otherwise run
+    # migrate first (a migration on every deploy).
+    depends_on: !reset {}
 
   worker:
+    image: ${KAAGAZ_REGISTRY:?set KAAGAZ_REGISTRY in .env}/kaagaz/backend:${BACKEND_TAG:-not-deployed}
+    build: !reset null
+    pull_policy: never
     logging: *logging # restart: unless-stopped is already in docker-compose.yml
     mem_limit: 3g # each copy
     memswap_limit: 3g
@@ -171,14 +191,16 @@ services:
     environment:
       <<: [*s3-env, *sqs-env]
       WORKER_REPLICAS: ${WORKER_REPLICAS:-3}
-    # docker-compose.yml's list without seaweedfs or elasticmq (jobs are in Amazon SQS).
+    # clamav only: no seaweedfs or elasticmq (jobs are in Amazon SQS), and no migrate (a
+    # deploy never migrates).
     depends_on: !override
-      migrate:
-        condition: service_completed_successfully
       clamav:
         condition: service_healthy
 
   frontend:
+    image: ${KAAGAZ_REGISTRY:?set KAAGAZ_REGISTRY in .env}/kaagaz/frontend:${FRONTEND_TAG:-not-deployed}
+    build: !reset null
+    pull_policy: never
     ports: !reset []
     restart: unless-stopped
     logging: *logging
@@ -186,6 +208,9 @@ services:
     memswap_limit: 1g
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
+    # None: deploy.sh starts frontend itself, and docker rollout's `up` would otherwise
+    # start api too.
+    depends_on: !reset {}
 
   # HTTPS in front of everything (infra/caddy/Caddyfile): the Let's Encrypt
   # certificate for KAAGAZ_DOMAIN, /api/* to api, the rest to frontend.

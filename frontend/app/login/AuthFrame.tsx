@@ -5,7 +5,7 @@
 // names or counts) and the form on the right. Below 760 px the panel is a short
 // band above the form. The one motion: the panel's words fade in once.
 // Google Analytics (#457 phase 4): its choice under the form on the public pages, while
-// NEXT_PUBLIC_GA_ID is set; never on the operator's sign-in.
+// GA_ID is set; never on the operator's sign-in.
 
 import type { ReactNode } from "react";
 import { Analytics } from "@/components/analytics/Analytics";
@@ -22,7 +22,7 @@ export function AuthFrame({
   children: ReactNode;
 }) {
   // Read when the app is built (a NEXT_PUBLIC_ value); unset or malformed, nothing at all.
-  const gaMeasurementId = gaId(process.env.NEXT_PUBLIC_GA_ID);
+  const gaMeasurementId = gaId(process.env.GA_ID);
   return (
     <div className={styles.page}>
       <div className={styles.theme}>

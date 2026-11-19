@@ -1,290 +1,309 @@
 #!/usr/bin/env bash
-# Deploys the production branch on the EC2 server (EC2 PRD, WP-E; #246).
+# Deploys one service from an ECR image on this server (CI/CD Phase 3).
 #
-# kaagaz-deploy.timer runs this as ubuntu, 2 minutes after boot and then every
-# 5 minutes. When origin/production has a commit that is not deployed yet:
-#   1. It moves the checkout to it and builds kaagaz-backend:<commit> and
-#      kaagaz-frontend:<commit>. The running containers keep serving.
-#   2. It runs the migrations in a throwaway container from the new backend
-#      image. The running containers still keep serving.
-#   3. Only then it points kaagaz-backend:local and kaagaz-frontend:local (the
-#      images compose runs) at the new images, starts them and waits for api
-#      and frontend to be healthy (frontend too since #477, 3 Nov 2026: a broken
-#      website was once reported deployed).
-#   4. If either is not healthy in time, it points :local back at the previous
-#      images and starts those again.
-# A failed build or migration changes no container and is tried again on the
-# next run. A release that was rolled back is held: not tried again, while the
-# next commit on production is. Otherwise each run puts :local back on the
-# live images recorded in IMAGES_FILE (undoing a hand `dc build` or a rollback
-# cut short), starts anything that is down, and hands Caddy the checkout's
-# Caddyfile if it changed (CADDY_FILE). Each run prints one line: the
-# commit, then deployed, unchanged, held, failed or "rolled back to <commit>".
+#   deploy.sh backend|frontend <commit> [--rollback]
 #
-# `deploy.sh --rollback` puts the previous images back (run it again to go
-# forward): docs/running-locally.md, "Deploys and rollback".
+# GitHub Actions runs it through SSM (.github/workflows/_deploy.yml → the
+# Kaagaz-Deploy SSM document), as ubuntu. Nothing is built here, and no migration
+# runs: with one central database a schema change is a deliberate, scheduled act
+# (`docker compose run --rm migrate`), never a side effect of a deploy.
 #
-# ASSUMPTION: a rollback never runs a downgrade migration, so the older code
-# runs on the newer schema. That is safe only while migrations only add
-# (ADR 0052, M1); nothing checks it yet. A rollback also runs with the
-# checkout's compose files and Caddyfile, those of the newest commit, so every
-# release must keep them working for the release before it.
+#   1. Room on the disk.
+#   2. Config: a deploy checks out <commit>'s compose files and Caddyfile; a rollback
+#      keeps the current ones, so every release must keep its compose files working for
+#      the release before it. An infra service whose compose config changed is updated
+#      now: clamav with docker rollout (the workers keep scanning on the old one until
+#      the new one is healthy), caddy recreated (a few seconds without the site; rare).
+#      Unchanged ones are left alone.
+#   3. Pull <registry>/kaagaz/<service>:<commit>.
+#   4. Backend only, from the new image, before anything is switched:
+#      `kaagaz schema-check` (read-only, backend/kaagaz/cli.py). It stops on a
+#      database BEHIND the image (run the migration first) and, unless --rollback, on
+#      one AHEAD of it. A rollback accepts AHEAD: older code on a newer schema, safe
+#      only while migrations only add (ADR 0052, M1). Then `kaagaz ensure-bucket`.
+#   5. Roll out api or frontend with docker rollout: the old container serves until
+#      the new one is healthy; if it never is, the new one is removed and nothing
+#      has changed.
+#   6. A changed Caddyfile is reloaded, after the switch, so a new route never points
+#      at an app that is not there yet. Caddy reloads without dropping connections, and
+#      keeps its running config if it refuses the file.
+#   7. Record the tag in .env (BACKEND_TAG, FRONTEND_TAG), which every docker compose
+#      command on the server reads, so `docker compose ps` and the rest just work.
+#   8. Backend only: recreate the workers (each finishes the job in hand first,
+#      stop_grace_period 600 s).
+#   9. Keep the live image and the newest other one (the quick way back) per
+#      service; remove the rest.
 #
-# ASSUMPTION (S3, <date>): a rollback runs the previous images with these compose
-# files, which point at AWS S3. Every release that can be rolled back to must
-# therefore work with S3: the S3-capable code was deployed first while still
-# configured for SeaweedFS, and the switch to S3 came as a separate step.
-#
-# The live and previous images are kept; older commit images are removed after
-# a good deploy. Docker's build cache is pruned after each good deploy, keeping
-# what the current images use and anything used in the last 7 days, and also
-# before a build when / is low on space (a full disk once cut a pip download
-# short). Volumes are never pruned. PROVISIONAL: 7 days and 20 GB, watch on the
-# server.
+# A changed deploy.sh takes effect on the next run (git replaces files, so this
+# running copy is never edited under bash's feet).
 set -euo pipefail
 
 KAAGAZ_DIR=/home/ubuntu/kaagaz
-# The commit whose images are live, written only once the app is healthy on them.
-DEPLOYED_FILE=/home/ubuntu/.kaagaz-deployed
-# Two lines: the commit whose images are live, then the one to roll back to.
-# This is what :local must point at.
-IMAGES_FILE=/home/ubuntu/.kaagaz-images
-# A production commit that was rolled back, so the timer does not deploy it again.
-ROLLED_BACK_FILE=/home/ubuntu/.kaagaz-rolled-back
-# A copy of the Caddyfile Caddy last loaded from this script (#246 D8). Caddy's
-# container mounts infra/caddy/Caddyfile, but a checkout replaces a changed file
-# with a new one, which a running container never sees.
+ENV_FILE="$KAAGAZ_DIR/.env"
+# A copy of the Caddyfile Caddy last loaded (#246 D8): a checkout replaces a changed
+# file with a new one, which Caddy's running container never sees.
 CADDY_FILE=/home/ubuntu/.kaagaz-caddyfile
 LOCK_FILE=/tmp/kaagaz-deploy.lock
+AWS_REGION=ap-south-1
+# Room for one pulled release (nothing is built here).
+MIN_FREE_GB=5
+# api's healthcheck: start_period 20 s, then up to 12 tries 10 s apart.
+ROLLOUT_TIMEOUT=180
+# clamav loads its signatures before it is healthy (start_period 6m in docker-compose.yml).
+CLAMAV_ROLLOUT_TIMEOUT=420
 COMPOSE=(-f docker-compose.yml -f docker-compose.prod.yml)
-# Every service but migrate. They are always started with --no-deps, so no
-# `up -d` runs migrate through depends_on: an older image's migrate fails on a
-# newer database and leaves the app stopped (24 Oct 2026). Only step 2 runs it.
-# SeaweedFS retired for AWS S3 (<date>): never started from here. Its old container
-# keeps running read-only as a fallback until <date + 14 days>, then is removed by hand.
-# ElasticMQ retired for Amazon SQS the same way (<date>): never started from here.
-INFRA=(clamav caddy)
-APPS=(api worker frontend)
-BUILD_CACHE_KEEP=168h
-MIN_FREE_GB=20
-# api's healthcheck (docker-compose.yml) gives up after about 140 s, frontend's
-# after about 80 s.
-HEALTH_TIMEOUT_SECONDS=180
+# kaagaz schema-check's exit codes (backend/kaagaz/cli.py: SCHEMA_BEHIND, SCHEMA_AHEAD).
+SCHEMA_BEHIND=3
+SCHEMA_AHEAD=4
 
+log() { printf '%s %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
+die() {
+  log "FAILED: $*" >&2
+  exit 1
+}
+usage() {
+  echo "usage: deploy.sh backend|frontend <commit> [--rollback]" >&2
+  exit 2
+}
+
+service="${1:-}"
+tag="${2:-}"
 rollback=false
-case "${1:-}" in
+[[ "$service" =~ ^(backend|frontend)$ && "$tag" =~ ^[0-9a-f]{40}$ ]] || usage
+case "${3:-}" in
   "") ;;
   --rollback) rollback=true ;;
-  *)
-    echo "usage: deploy.sh [--rollback]" >&2
-    exit 2
-    ;;
+  *) usage ;;
 esac
+[[ $# -le 3 ]] || usage
 
-# Held for the whole run. If another deploy or the nightly backup (pgdump.sh)
-# still holds it, leave quietly.
+# Held for the whole run. A second deploy waits for it rather than racing it.
 exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-  if [[ "$rollback" == true ]]; then
-    echo "a deploy or the nightly backup holds $LOCK_FILE (journalctl -u kaagaz-deploy -u kaagaz-pgdump -n 5); try --rollback again when it ends" >&2
-    exit 1
-  fi
-  exit 0
-fi
+flock -w 1200 9 || die "another deploy has held $LOCK_FILE for 20 minutes"
 
 cd "$KAAGAZ_DIR"
 
-report() {
-  printf '%s %s\n' "$1" "$2"
+# A KEY=value line of the server's .env (the last one wins, as in compose). Only lines that
+# start with KEY= count; anything else is ignored. Quotes around the value are removed.
+# .env is read, never sourced: it is compose's format, not a shell script.
+env_value() {
+  sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1 | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/"
 }
 
-# Never fatal: a failed prune leaves the deploy as it was.
-prune_build_cache() {
-  if ! docker builder prune -f --filter "until=$BUILD_CACHE_KEEP" >/dev/null; then
-    echo "docker builder prune failed; carrying on" >&2
-  fi
+# Sets KEY=value in .env, replacing the line or adding it, in one atomic move.
+set_env_value() {
+  local tmp
+  tmp="$(mktemp "$ENV_FILE.XXXXXX")"
+  awk -v k="$1" -v v="$2" '
+    index($0, k "=") == 1 { if (!done) print k "=" v; done = 1; next }
+    { print }
+    END { if (!done) print k "=" v }
+  ' "$ENV_FILE" >"$tmp"
+  chmod --reference="$ENV_FILE" "$tmp"
+  mv -f "$tmp" "$ENV_FILE"
 }
 
-# Gives both app images tagged $1 the tag $2 as well.
-tag_images() {
-  docker tag "kaagaz-backend:$1" "kaagaz-backend:$2" && docker tag "kaagaz-frontend:$1" "kaagaz-frontend:$2"
+# Every line of .env must be blank, a comment or KEY=value; anything else (a pasted shell
+# prompt, a stray command) breaks every docker compose command, so stop here and say where.
+if bad="$(grep -nvE '^[[:space:]]*($|#|[A-Za-z_][A-Za-z0-9_]*=)' "$ENV_FILE")"; then
+  die "$ENV_FILE has lines that are not KEY=value (fix or delete them):
+$bad"
+fi
+
+KAAGAZ_REGISTRY="$(env_value KAAGAZ_REGISTRY)"
+[[ -n "$KAAGAZ_REGISTRY" ]] || die "KAAGAZ_REGISTRY is not set in $ENV_FILE"
+
+dc() { docker compose "${COMPOSE[@]}" "$@"; }
+
+# Compose must be able to read .env and both files before anything runs that depends on
+# them; otherwise every later step fails with a misleading message (a frontend "not
+# healthy" after 0 s). Checked once now, and again after the commit's own compose files
+# are checked out (step 2), since those may differ.
+check_compose() {
+  local errors
+  errors="$(dc config --quiet 2>&1)" || die "docker compose cannot read its configuration$1:
+$errors"
+}
+check_compose ""
+
+# A kaagaz CLI command (backend/kaagaz/cli.py) in a throwaway container of the
+# backend image being deployed, as the migrate service: the owner's DATABASE_URL (it
+# can read alembic_version, and schema-check connects the way a migration would) and
+# S3 through the instance role. --no-deps, and its own command replaced, so no
+# migration runs.
+kaagaz_cli() {
+  dc run --rm --no-deps -T migrate \
+    python -c 'import sys; from kaagaz.cli import main; sys.exit(main(sys.argv[1:]))' "$@"
 }
 
-# Records commit $1 as live and $2 as the one to roll back to. Called only once
-# the app is healthy on $1.
-save_state() {
-  printf '%s\n%s\n' "$1" "$2" >"$IMAGES_FILE.tmp"
-  mv -f "$IMAGES_FILE.tmp" "$IMAGES_FILE"
-  printf '%s\n' "$1" >"$DEPLOYED_FILE.tmp"
-  mv -f "$DEPLOYED_FILE.tmp" "$DEPLOYED_FILE"
-}
-
-# Whether service $1's container reports healthy.
-healthy() {
-  local id
-  id="$(docker compose "${COMPOSE[@]}" ps -q "$1")" || return 1
-  [[ -n "$id" && "$(docker inspect -f '{{.State.Health.Status}}' "$id" 2>/dev/null)" == healthy ]]
-}
-
-wait_for_app() {
-  local waited=0
-  until healthy api && healthy frontend; do
-    if ((waited >= HEALTH_TIMEOUT_SECONDS)); then
-      return 1
-    fi
-    sleep 5
-    waited=$((waited + 5))
-  done
-}
-
-# Starts the app on the images of commit $1 again.
-roll_back_to() {
-  tag_images "$1" local && docker compose "${COMPOSE[@]}" up -d --no-deps "${APPS[@]}" && wait_for_app
-}
-
-# When the checkout's Caddyfile differs from CADDY_FILE, hands it to Caddy on
-# stdin and reloads it: open connections finish, and a file Caddy refuses leaves
-# its running config in place. Recorded only once loaded, so a failed reload is
-# tried again on the next run. Never fatal.
+# Hands Caddy the checkout's Caddyfile when it differs from CADDY_FILE: open
+# connections finish, and a file Caddy refuses leaves its running config in place.
+# Never fatal; a failed reload is tried again on the next deploy.
 reload_caddy() {
   if cmp -s infra/caddy/Caddyfile "$CADDY_FILE"; then
+    log "Caddyfile: unchanged, no reload"
     return 0
   fi
-  if ! docker compose "${COMPOSE[@]}" exec -T caddy \
-    sh -c 'cat >/tmp/Caddyfile && caddy reload --config /tmp/Caddyfile --adapter caddyfile' \
+  log "Caddyfile: changed, reloading caddy"
+  if ! dc exec -T caddy sh -c 'cat >/tmp/Caddyfile && caddy reload --config /tmp/Caddyfile --adapter caddyfile' \
     <infra/caddy/Caddyfile >/dev/null; then
-    echo "caddy reload failed; Caddy keeps its previous config" >&2
+    log "Caddyfile: caddy refused or could not reload it; it keeps its previous config (tried again next deploy)"
     return 0
   fi
-  cp -f infra/caddy/Caddyfile "$CADDY_FILE" || echo "could not record $CADDY_FILE; caddy reloads again next run" >&2
-  echo "caddy reloaded the changed Caddyfile" >&2
+  cp -f infra/caddy/Caddyfile "$CADDY_FILE" || log "could not record $CADDY_FILE; caddy reloads again next deploy"
+  log "Caddyfile: reloaded"
 }
 
-# Removes the commit images other than the live one ($1) and the previous one
-# ($2), then untagged leftovers. Never fatal.
-prune_images() {
-  local repo tag
-  for repo in kaagaz-backend kaagaz-frontend; do
-    while read -r tag; do
-      if [[ "$tag" != local && "$tag" != "$1" && "$tag" != "$2" ]]; then
-        docker image rm "$repo:$tag" >/dev/null || echo "could not remove $repo:$tag; carrying on" >&2
-      fi
-    done < <(docker image ls --format '{{.Tag}}' "$repo")
-  done
-  if ! docker image prune -f >/dev/null; then
-    echo "docker image prune failed; the deploy itself is done" >&2
+# docker rollout replaces running containers; with none running (the first start,
+# or a crash) it has nothing to replace, so start the service plainly and wait for
+# its healthcheck instead.
+roll_out() {
+  local svc=$1 timeout=${2:-$ROLLOUT_TIMEOUT}
+  if [[ -n "$(dc ps -q "$svc")" ]]; then
+    docker rollout "${COMPOSE[@]}" --timeout "$timeout" "$svc"
+  else
+    dc up -d --no-deps --wait --wait-timeout "$timeout" "$svc"
   fi
 }
 
-current=""
-previous=""
-if [[ -f "$IMAGES_FILE" ]]; then
-  { read -r current && read -r previous; } <"$IMAGES_FILE" || true
-fi
+# The compose config hash a service would get now, and the one its running container was
+# made with (compose labels each container with it). Empty when none runs.
+wanted_hash() { dc config --hash "$1" | awk '{print $2}'; }
+running_hash() {
+  local id
+  id="$(dc ps -q "$1" | head -n 1)"
+  [[ -n "$id" ]] || return 0
+  docker inspect -f '{{index .Config.Labels "com.docker.compose.config-hash"}}' "$id"
+}
+
+# Updates only the infra services that need it, each the least disruptive way, and logs
+# every decision (skipped, started, updated), so a deploy's log shows what it touched.
+apply_infra() {
+  local svc have
+  for svc in "${infra[@]}"; do
+    have="$(running_hash "$svc")"
+    if [[ -n "$have" && "$have" == "$(wanted_hash "$svc")" ]]; then
+      log "$svc: configuration unchanged, skipping"
+      continue
+    fi
+    if [[ -z "$have" ]]; then
+      log "$svc: not running, starting it"
+    else
+      log "$svc: configuration changed, applying update"
+    fi
+    case "$svc" in
+      clamav)
+        log "clamav: rolling out; the workers scan on the current instance until the new one is healthy (up to ${CLAMAV_ROLLOUT_TIMEOUT}s)"
+        roll_out clamav "$CLAMAV_ROLLOUT_TIMEOUT" ||
+          die "clamav: the new instance was not healthy within ${CLAMAV_ROLLOUT_TIMEOUT}s; the current one keeps scanning"
+        ;;
+      caddy)
+        log "caddy: recreating the container; the site is unreachable for a few seconds"
+        dc up -d --no-deps caddy || die "caddy: did not start; see docker compose logs caddy"
+        ;;
+      *)
+        log "$svc: recreating the container"
+        dc up -d --no-deps "$svc" || die "$svc: did not start; see docker compose logs $svc"
+        ;;
+    esac
+    log "$svc: update completed"
+  done
+}
+
+# Per service, keeps the live image and the newest other one (docker lists the
+# newest first), and removes the rest. Never fatal.
+prune_images() {
+  local svc live kept image_tag
+  for svc in backend frontend; do
+    live="$(env_value "${svc^^}_TAG")"
+    kept=false
+    while read -r image_tag; do
+      if [[ "$image_tag" == "<none>" || "$image_tag" == "$live" ]]; then
+        continue
+      fi
+      if [[ "$kept" == false ]]; then
+        kept=true
+        continue
+      fi
+      docker image rm "$KAAGAZ_REGISTRY/kaagaz/$svc:$image_tag" >/dev/null 2>&1 ||
+        log "could not remove kaagaz/$svc:$image_tag; carrying on"
+    done < <(docker image ls --format '{{.Tag}}' "$KAAGAZ_REGISTRY/kaagaz/$svc")
+  done
+  docker image prune -f >/dev/null || log "docker image prune failed; the deploy itself is done"
+}
 
 if [[ "$rollback" == true ]]; then
-  if [[ -z "$previous" ]]; then
-    echo "no previous images to roll back to (see $IMAGES_FILE)" >&2
-    exit 1
-  fi
-  if ! roll_back_to "$previous"; then
-    echo "api or frontend is not healthy on $previous within ${HEALTH_TIMEOUT_SECONDS}s; see docker compose ps -a" >&2
-    report "$current" failed
-    exit 1
-  fi
-  # Hold the production commit the checkout is on, so the timer leaves it.
-  git rev-parse HEAD >"$ROLLED_BACK_FILE"
-  save_state "$previous" "$current"
-  report "$current" "rolled back to $previous"
-  exit 0
-fi
-
-deployed=""
-if [[ -f "$DEPLOYED_FILE" ]]; then
-  read -r deployed <"$DEPLOYED_FILE" || true
-fi
-rolled_back=""
-if [[ -f "$ROLLED_BACK_FILE" ]]; then
-  read -r rolled_back <"$ROLLED_BACK_FILE" || true
-fi
-
-if ! git fetch --quiet origin production; then
-  report "${deployed:-none}" failed
-  exit 1
-fi
-target="$(git rev-parse origin/production)"
-
-if [[ "$target" != "$deployed" && "$target" != "$rolled_back" ]]; then
-  # git replaces changed files with new ones, so this running copy of the
-  # script is not changed under bash's feet.
-  if ! git reset --quiet --hard origin/production; then
-    report "$target" failed
-    exit 1
-  fi
-  free_gb="$(df --output=avail -BG / | tail -n 1 | tr -dc '0-9' || true)"
-  if [[ -n "$free_gb" ]] && ((free_gb < MIN_FREE_GB)); then
-    echo "low disk: $free_gb GB free; a build needs about $MIN_FREE_GB GB" >&2
-    prune_build_cache
-  fi
-  # The first deploy with this script: if api is healthy, name the running
-  # images after the deployed commit, so there is something to roll back to.
-  if [[ -z "$current" ]]; then
-    if [[ -n "$deployed" ]] && healthy api && tag_images local "$deployed"; then
-      current="$deployed"
-      save_state "$current" ""
-    else
-      echo "no previous release to roll back to: no $DEPLOYED_FILE, or api is not healthy" >&2
-    fi
-  fi
-  # 1. Build the new images beside the running ones.
-  if ! KAAGAZ_TAG="$target" docker compose "${COMPOSE[@]}" build; then
-    report "$target" failed
-    exit 1
-  fi
-  # 2. Migrate first, from the new image, while the old containers serve.
-  if ! KAAGAZ_TAG="$target" docker compose "${COMPOSE[@]}" run --rm -T migrate; then
-    echo "migrate failed; site still on ${current:-the running images}" >&2
-    report "$target" failed
-    exit 1
-  fi
-  # 3. Switch: compose runs :local, now the new images, then the health check.
-  # No --remove-orphans: a service the release before needs is never removed.
-  if tag_images "$target" local && docker compose "${COMPOSE[@]}" up -d --no-deps "${INFRA[@]}" "${APPS[@]}" &&
-    wait_for_app; then
-    if [[ "$current" != "$target" ]]; then
-      previous="$current"
-    fi
-    save_state "$target" "$previous"
-    prune_images "$target" "$previous"
-    prune_build_cache
-    report "$target" deployed
-    exit 0
-  fi
-  # 4. Not healthy in time: hold the commit first, so even if this run is cut
-  # short the next one puts :local back on the live images, then roll back.
-  echo "api or frontend is not healthy on $target within ${HEALTH_TIMEOUT_SECONDS}s" >&2
-  printf '%s\n' "$target" >"$ROLLED_BACK_FILE"
-  if [[ -n "$current" ]] && roll_back_to "$current"; then
-    report "$target" "rolled back to $current"
-    exit 1
-  fi
-  echo "no healthy previous images to roll back to; see docker compose ps -a" >&2
-  report "$target" failed
-  exit 1
-fi
-
-# :local follows the recorded live images, then anything down is started.
-if [[ -n "$current" ]] && ! tag_images "$current" local; then
-  report "$target" failed
-  exit 1
-fi
-if ! docker compose "${COMPOSE[@]}" up -d --no-deps "${INFRA[@]}" "${APPS[@]}"; then
-  report "$target" failed
-  exit 1
-fi
-reload_caddy
-if [[ "$target" == "$rolled_back" && "$target" != "$deployed" ]]; then
-  report "$target" held
+  log "rolling $service back to $tag (current config kept)"
 else
-  report "$target" unchanged
+  log "deploying $service $tag"
 fi
+
+# ---- 1. Room on the disk ----
+free_gb="$(df --output=avail -BG / | tail -n 1 | tr -dc '0-9')"
+((free_gb >= MIN_FREE_GB)) || die "only $free_gb GB free on /, need $MIN_FREE_GB GB (try: docker image prune -a, journalctl --vacuum-size=200M)"
+
+# ---- 2. Config (compose files, Caddyfile) from the commit being deployed ----
+if [[ "$rollback" == false ]]; then
+  git fetch --quiet origin "$tag" || die "git fetch $tag"
+  git -c advice.detachedHead=false checkout --quiet --force --detach "$tag" || die "git checkout $tag"
+  check_compose " (with $tag's compose files)"
+fi
+# Every service but the apps (caddy, clamav and whatever else this release's compose
+# files run here).
+mapfile -t infra < <(dc config --services | grep -vxE 'api|worker|frontend|migrate' || true)
+apply_infra
+
+# ---- 3. Pull the image ----
+image="$KAAGAZ_REGISTRY/kaagaz/$service:$tag"
+aws ecr get-login-password --region "$AWS_REGION" |
+  docker login --username AWS --password-stdin "$KAAGAZ_REGISTRY" >/dev/null ||
+  die "ECR login (does the instance role allow ECR pulls?)"
+log "pulling $image"
+docker pull --quiet "$image" >/dev/null || die "pull $image (is that commit's image in ECR?)"
+
+# From here compose runs the new tag for this service (a shell variable beats .env).
+if [[ "$service" == backend ]]; then
+  export BACKEND_TAG="$tag"
+else
+  export FRONTEND_TAG="$tag"
+fi
+
+# ---- 4. Backend: the database must be on the image's migration head ----
+if [[ "$service" == backend ]]; then
+  rc=0
+  kaagaz_cli schema-check || rc=$?
+  case "$rc" in
+    0) ;;
+    "$SCHEMA_AHEAD")
+      if [[ "$rollback" == true ]]; then
+        log "rollback: older code on a newer schema (migrations only add, ADR 0052 M1)"
+      else
+        die "the database is ahead of $tag; deploy a newer commit, or use the rollback workflow"
+      fi
+      ;;
+    "$SCHEMA_BEHIND")
+      die "run the migration first (BACKEND_TAG=$tag docker compose run --rm migrate, at a safe time, after a dump), then deploy again; nothing was switched"
+      ;;
+    *) die "schema-check could not answer (exit $rc); nothing was switched" ;;
+  esac
+  kaagaz_cli ensure-bucket || die "ensure-bucket; nothing was switched"
+fi
+
+# ---- 5-8. Switch, Caddyfile, record, workers ----
+if [[ "$service" == backend ]]; then
+  log "rolling out api"
+  roll_out api || die "api was not healthy on $tag within ${ROLLOUT_TIMEOUT}s; the previous api keeps serving"
+  reload_caddy
+  set_env_value BACKEND_TAG "$tag"
+  log "recreating the workers (each finishes its job first, up to 10 minutes)"
+  dc up -d --no-deps worker || die "workers did not start on $tag (api is on it); see docker compose ps -a"
+else
+  log "rolling out frontend"
+  roll_out frontend || die "frontend was not healthy on $tag within ${ROLLOUT_TIMEOUT}s; the previous frontend keeps serving"
+  reload_caddy
+  set_env_value FRONTEND_TAG "$tag"
+fi
+
+# ---- 9. Old images ----
+prune_images
+log "done: $service is on $tag"

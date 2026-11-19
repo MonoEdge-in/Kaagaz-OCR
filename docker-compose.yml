@@ -7,35 +7,25 @@
 # Only the stand-ins, to run the API and worker on the laptop itself:
 #   docker compose up postgres seaweedfs elasticmq clamav
 #
-# Image versions are pinned; Dependabot proposes updates. Every port is published
-# on 127.0.0.1 only: reachable from this laptop, never from its network (A21).
+# Image versions are pinned; Dependabot proposes updates.
 name: kaagaz-ocr
 
 # Shared by the three backend containers (migrate, api, worker): one image,
-# built from backend/Dockerfile, with a different command each. On the server,
-# infra/ec2/deploy.sh sets KAAGAZ_TAG to a commit to build and migrate a new
-# release beside the running one; :local is always what runs.
+# built from backend/Dockerfile, with a different command each. On the servers
+# nothing is built: docker-compose.prod.yml runs the images CI pushed to ECR.
 x-backend: &backend
-  image: kaagaz-backend:${KAAGAZ_TAG:-local}
+  image: kaagaz-backend:local
   build:
     context: ./backend
     args:
-      # The commit the image is built from, shown on the operator's Health page (#246 O1).
-      KAAGAZ_COMMIT: ${KAAGAZ_TAG:-local}
+      # The commit the image is built from, shown by /api/health (#246 O1).
+      # "local" here; CI passes the commit id.
+      KAAGAZ_COMMIT: local
   env_file: .env
   environment: &backend-env
     # .env keeps localhost for running on the laptop; inside Docker the
     # services reach each other by service name.
-    # The app's own login (#479): APP_DATABASE_URL once .env sets it (the server, host
-    # postgres), the owner's until then. Only migrate gets the owner's (below), and no
-    # backend container gets the master password itself, nor the workers the super admin's.
-    DATABASE_URL: ${APP_DATABASE_URL:-postgresql://${POSTGRES_USER:-kaagaz}:${POSTGRES_PASSWORD:-kaagaz}@postgres:5432/${POSTGRES_DB:-kaagaz}}
-    POSTGRES_PASSWORD: ""
-    OPS_DATABASE_URL: ""
-    # env_file hands every .env line to each container; the storage admin key is migrate's
-    # alone (#477), so it is blanked here and migrate sets its own below.
-    STORAGE_ADMIN_ACCESS_KEY: ""
-    STORAGE_ADMIN_SECRET_KEY: ""
+    DATABASE_URL: ${APP_DATABASE_URL:-postgresql://${POSTGRES_USER:-kaagaz}:${POSTGRES_PASSWORD:-kaagaz}@${POSTGRES_HOST:-postgres}:5432/${POSTGRES_DB:-kaagaz}}
     STORAGE_ENDPOINT_URL: http://seaweedfs:8333
     QUEUE_ENDPOINT_URL: http://elasticmq:9324
     QUEUE_URL: http://elasticmq:9324/000000000000/kaagaz-jobs
@@ -66,10 +56,8 @@ services:
       retries: 20
 
   # File storage with the S3 API (Amazon S3 in AWS). One process runs the
-  # master, volume server, filer and S3 gateway. The keys are in
-  # infra/seaweedfs/s3.json (#477, 3 Nov 2026): the app's (STORAGE_ACCESS_KEY in
-  # .env) may read, write and list its own bucket only; the admin key
-  # (STORAGE_ADMIN_ACCESS_KEY) is migrate's alone, to create the bucket.
+  # master, volume server, filer and S3 gateway. The access key is in
+  # infra/seaweedfs/s3.json and must match STORAGE_ACCESS_KEY in .env.
   seaweedfs:
     image: chrislusf/seaweedfs:4.48
     networks:
@@ -154,15 +142,16 @@ services:
       retries: 5
       start_period: 6m
 
-  # One-shot: database migrations, then the storage bucket, then it exits.
+  # One-shot: database migrations, then the storage bucket, then it exits. On a
+  # server a person runs it at a chosen time; deploys never do (CI/CD Phase 3).
   migrate:
     <<: *backend
     networks:
       - data
     environment:
       <<: *backend-env
-      # The owner's login: the migrations and the owner-only CLI commands (#479).
-      DATABASE_URL: postgresql://${POSTGRES_USER:-kaagaz}:${POSTGRES_PASSWORD:-kaagaz}@postgres:5432/${POSTGRES_DB:-kaagaz}
+
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-kaagaz}:${POSTGRES_PASSWORD:-kaagaz}@${POSTGRES_HOST:-postgres}:5432/${POSTGRES_DB:-kaagaz}}
       # Only migrate creates the bucket, so only it gets the storage admin key (#477).
       STORAGE_ACCESS_KEY: ${STORAGE_ADMIN_ACCESS_KEY:-kaagaz-local-admin}
       STORAGE_SECRET_KEY: ${STORAGE_ADMIN_SECRET_KEY:-kaagaz-local-admin-secret-laptop-only}
@@ -175,9 +164,7 @@ services:
         test -n "$$STORAGE_ACCESS_KEY" && test -n "$$STORAGE_SECRET_KEY" ||
         { echo "set STORAGE_ADMIN_ACCESS_KEY and STORAGE_ADMIN_SECRET_KEY in .env: migrate makes the storage bucket with them" >&2; exit 1; };
         alembic upgrade head &&
-        python -c "from kaagaz.adapters.storage import S3Storage;
-        from kaagaz.settings import Settings;
-        S3Storage(Settings.from_env()).ensure_bucket()"
+        python -m kaagaz.cli ensure-bucket
     depends_on:
       postgres:
         condition: service_healthy
@@ -258,19 +245,19 @@ services:
       args:
         # Next.js writes the /api rewrite into the build (frontend/Dockerfile).
         BACKEND_URL: http://api:8000
-        # Google Analytics on the public pages (#457 phase 4), from .env; empty, none.
-        NEXT_PUBLIC_GA_ID: ${NEXT_PUBLIC_GA_ID:-}
-    image: kaagaz-frontend:${KAAGAZ_TAG:-local}
+    image: kaagaz-frontend:local
+    environment:
+      # Google Analytics on the public pages (#457 phase 4), read when the app runs, not
+      # baked into the build: from this machine's .env (each server's own); empty, none.
+      GA_ID: ${GA_ID:-}
     networks:
       - edge
     ports:
       - "127.0.0.1:3000:3000"
     healthcheck:
-      # The slim image has no curl or wget (#477, 3 Nov 2026). fetch follows redirects;
-      # any answer but 2xx, or none in 5 s, fails the check. infra/ec2/deploy.sh waits for it.
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/login', {signal: AbortSignal.timeout(5000)}).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then((r) => process.exit(r.status < 500 ? 0 : 1), () => process.exit(1))"]
       interval: 10s
-      timeout: 10s
+      timeout: 5s
       retries: 6
       start_period: 20s
     depends_on:

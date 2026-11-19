@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "2.2",
+  "description": "Kaagaz: run infra/ec2/deploy.sh for one service (CI/CD Phase 3). The only command GitHub's deploy role may run on the server.",
+  "parameters": {
+    "service": {
+      "type": "String",
+      "description": "backend or frontend",
+      "allowedValues": ["backend", "frontend"]
+    },
+    "tag": {
+      "type": "String",
+      "description": "The image's commit id (40 hex characters)",
+      "allowedPattern": "^[0-9a-f]{40}$"
+    },
+    "mode": {
+      "type": "String",
+      "description": "deploy: config from the commit, the schema must match. rollback: current config, a newer schema accepted.",
+      "allowedValues": ["deploy", "rollback"]
+    }
+  },
+  "mainSteps": [
+    {
+      "action": "aws:runShellScript",
+      "name": "deploy",
+      "inputs": {
+        "timeoutSeconds": "2400",
+        "runCommand": [
+          "set -eu",
+          "if [ '{{ mode }}' = rollback ]; then set -- --rollback; else set --; fi",
+          "exec sudo -H -u ubuntu /home/ubuntu/kaagaz/infra/ec2/deploy.sh '{{ service }}' '{{ tag }}' \"$@\""
+        ]
+      }
+    }
+  ]
+}
