@@ -63,7 +63,6 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ("db/autofile.py", "_PRE_CHECK"): (SHARED_WITH_WORKER, f"auto-filing; {_UPLOAD}"),
     ("db/autofile.py", "_STATE"): (SHARED_WITH_WORKER, f"auto-filing; {_UPLOAD}"),
     ("db/autofile.py", "_BY_KEY"): (SHARED_WITH_WORKER, "auto-filing finds its folder"),
-    ("db/autofile.py", "_BY_NAME"): (SHARED_WITH_WORKER, "auto-filing finds its folder"),
     ("db/autofile.py", "_DEPARTMENTS"): (SHARED_WITH_WORKER, "auto-filing finds its department"),
     ("db/autofile.py", "_SAME_NUMBER"): (SHARED_WITH_WORKER, "auto-filing finds its folder"),
     ("db/autofile.py", "_CHILD"): (SHARED_WITH_WORKER, "auto-filing finds its folder"),
@@ -517,10 +516,6 @@ PR9: dict[tuple[str, str], str] = {
     (
         "db/autofile.py",
         "_BY_KEY",
-    ): "FEWER_OK:auto-filing runs as the worker; a folder hidden from a person is not reused (Q12)",
-    (
-        "db/autofile.py",
-        "_BY_NAME",
     ): "FEWER_OK:auto-filing runs as the worker; a folder hidden from a person is not reused (Q12)",
     (
         "db/autofile.py",

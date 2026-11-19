@@ -96,7 +96,7 @@ _FILE_COLUMNS = (
     " kaagaz_access() a WHERE d.folder_id IS NULL AND m.doc_type = d.doc_type"
     " AND s.customer_id = d.customer_id AND s.parent_id IS NULL AND s.kind = 'department'"
     " AND (NOT a.admin OR a.management OR (s.private_folder_id IS NULL"
-    " AND (NOT s.department_only OR s.id = ANY (a.departments))))"
+    " AND (NOT s.department_only OR s.department_id = ANY (a.departments))))"
     " ORDER BY lower(s.name), s.id LIMIT 1) AS suggested_department,"
     " (SELECT json_build_object('id', s.id,"
     " 'role', CASE WHEN s.document_id = d.id THEN 'new' ELSE 'candidate' END)"
