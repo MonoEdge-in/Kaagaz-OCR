@@ -18,7 +18,7 @@ pytestmark = pytest.mark.db
 fresh = base.fresh
 M0102 = _load("0102_trash_reupload.py")
 _NOW = datetime.now(UTC)
-_SHA = {"failed": "a" * 64, "ready": "b" * 64, "live": "c" * 64}  # live: failed, not in Trash
+_SHA = {"failed": "a" * 64, "ready": "b" * 64, "live": "c" * 64, "locked": "d" * 64}
 _ANSWER = "SELECT answer FROM kaagaz_duplicate(ARRAY[:h])"
 _COMMENT = "SELECT obj_description('public.kaagaz_duplicate(text[], bigint[])'::regprocedure, 'pg_proc')"
 
@@ -38,23 +38,35 @@ def test_up_down_and_up_again(fresh: tuple[str, Database]) -> None:
     at_0101 = _state(db)
     customer, user = new_customer(db)
     with db.customer(customer) as conn:
+        # In Trash: failed, ready, and locked while still waiting to be read; live: failed, not in Trash.
         for name, sha in _SHA.items():
-            live = name == "live"  # the others in Trash
-            trash = {} if live else {"deleted_at": _NOW, "deleted_by": user}
-            insert_document(
-                conn, customer, sha256=sha, status="failed" if live else name, uploaded_by=user, **trash
-            )
-    assert _answers(db, customer, user) == {"failed": "visible", "ready": "visible", "live": "visible"}
+            trash = {} if name == "live" else {"deleted_at": _NOW, "deleted_by": user}
+            status = {"live": "failed", "locked": "received"}.get(name, name)
+            insert_document(conn, customer, sha256=sha, status=status, uploaded_by=user, **trash)
+    with db.engine.begin() as conn:  # as the owner: the lock's columns
+        conn.execute(
+            text("UPDATE documents SET locked_at = now(), locked_by = :u WHERE sha256 = :h"),
+            {"u": user, "h": _SHA["locked"]},
+        )
+        conn.execute(  # and they may open it, so they see it: the lock alone keeps it
+            text(
+                "INSERT INTO lock_grants (customer_id, document_id, user_id, given_by)"
+                " SELECT customer_id, id, :u, :u FROM documents WHERE sha256 = :h"
+            ),
+            {"u": user, "h": _SHA["locked"]},
+        )
+    before = _answers(db, customer, user)
+    assert (before["failed"], before["locked"]) == ("visible", "locked_open")
 
     migrate(url, "0102")
     at_0102 = _state(db)
-    assert _answers(db, customer, user) == {"failed": "none", "ready": "visible", "live": "visible"}
+    assert _answers(db, customer, user) == {**before, "failed": "none"}  # only the failed copy in Trash
     with db.system() as conn:
         assert "PRD 9 F-03" in conn.execute(text(_COMMENT)).scalar_one()
 
     base._downgrade(url, "0101")
     assert _state(db) == at_0101  # every function body and comment as 0091 left them
-    assert _answers(db, customer, user) == {"failed": "visible", "ready": "visible", "live": "visible"}
+    assert _answers(db, customer, user) == before
 
     migrate(url, "0102")
     assert _state(db) == at_0102

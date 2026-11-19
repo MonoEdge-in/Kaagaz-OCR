@@ -63,11 +63,11 @@ describe("a pick of files with system files and one Kaagaz can't take", () => {
     const picked = [".DS_Store", "Thumbs.db", "desktop.ini", "macro.docm"].map((name) => new File(["x"], name));
     await act(() => uploads.current().addFiles(picked));
 
-    const rows = uploads.current().entries;
-    expect(rows.map((row) => [row.name, row.state.kind])).toEqual([["macro.docm", "error"]]);
+    const [refused, ...more] = uploads.current().entries;
+    expect([refused?.name, refused?.state.kind, more]).toEqual(["macro.docm", "error", []]);
     expect(api.uploadDocument).not.toHaveBeenCalled();
 
-    await act(async () => uploads.current().remove(rows[0].key));
+    await act(async () => uploads.current().remove(refused?.key ?? ""));
     expect(uploads.current().entries).toEqual([]);
     await uploads.unmount();
   });

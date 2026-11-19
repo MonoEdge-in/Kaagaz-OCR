@@ -192,8 +192,11 @@ def test_a_failed_or_never_read_copy_in_trash_is_replaced_with_no_question(db: D
     assert _row(api, signed, document).status == "ready"
 
 
-@pytest.mark.parametrize("status", ["ready", "locked"])
-def test_a_copy_in_trash_that_was_read_or_locked_is_still_already_in_trash(db: Database, status: str) -> None:
+@pytest.mark.parametrize(("status", "locked"), [("ready", False), ("locked", True), ("received", True)])
+def test_a_copy_in_trash_that_was_read_or_locked_is_still_already_in_trash(
+    db: Database, status: str, locked: bool
+) -> None:
+    """A locked copy, even one locked before it was read (received), was locked on purpose (#605)."""
     api = Api(db)
     signed = api.new_signed()
     first = _upload(signed).json()["document"]["id"]
@@ -201,10 +204,10 @@ def test_a_copy_in_trash_that_was_read_or_locked_is_still_already_in_trash(db: D
         conn.execute(
             text(
                 "UPDATE documents SET status = :s, deleted_at = now(),"
-                " locked_at = CASE WHEN :s = 'locked' THEN now() END,"
-                " locked_by = CASE WHEN :s = 'locked' THEN uploaded_by END WHERE id = :d"
+                " locked_at = CASE WHEN :l THEN now() END,"
+                " locked_by = CASE WHEN :l THEN uploaded_by END WHERE id = :d"
             ),
-            {"s": status, "d": first},
+            {"s": status, "l": locked, "d": first},
         )
 
     again = _upload(signed)

@@ -5,8 +5,9 @@ decision D3, #680, 19 Nov 2026). NEEDS VRUSHIT'S APPROVAL: a security-definer fu
   upload replaces it) was one refused by its scan, alone in its family (#554). Now also one in
   Trash whose status is ``failed``, ``received``, ``clean`` or ``needs_reader`` (never read), alone
   in its family, that the person sees (``visible_documents``, as the answer's own ``seen``), so a
-  copy they can't see is still ``hidden`` and is never deleted. A ``ready`` or ``locked`` copy is
-  still in. ``db/documents.py``'s ``REFUSED_ALONE`` is the same rule for the delete itself.
+  copy they can't see is still ``hidden`` and is never deleted. A ``ready`` copy, or a locked one
+  (``locked_at``, whatever its status), is still in. ``db/documents.py``'s ``REFUSED_ALONE`` is
+  the same rule for the delete itself.
 * The live body is read back and its rule replaced exactly once, or the migration stops (0101's
   way); CREATE OR REPLACE keeps the owner, grants, SECURITY DEFINER and empty search path. Its
   comment says so. Catalog only: no table is locked, read or written.
@@ -45,7 +46,8 @@ OLD = _0091._REFUSED_ALONE
 _STATUS = "d.status = 'rejected'"
 NEW = OLD.replace(
     _STATUS,
-    f"({_STATUS} OR (d.deleted_at IS NOT NULL AND d.status IN ('failed', 'received', 'clean', 'needs_reader')"
+    f"({_STATUS} OR (d.deleted_at IS NOT NULL AND d.locked_at IS NULL"
+    " AND d.status IN ('failed', 'received', 'clean', 'needs_reader')"
     f" AND {_0091._SEES.format(view='documents', me=_0091._ME, id='d.id')}))",
     1,
 )
