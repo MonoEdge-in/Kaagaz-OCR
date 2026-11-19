@@ -210,12 +210,26 @@ _OF_TYPE = " AND d.detected_type = :detected_type"
 # PRD 7 (#601): Shared with me, the files given to the person directly (every version is given).
 _SHARED = " AND d.id IN (SELECT kaagaz_shared_with_me())"
 # PRD 5 U2 "Needs attention": a page unreadable or uncertain still on the attention list
-# (not kept as is), or a value to review; the same rows _COLUMNS counts.
+# (not kept as is), or a value to review; the same rows _COLUMNS counts. PRD 9 F-17: or a line an
+# Ensemble run read differently (changed or unresolved) and nobody has settled (no word change in
+# force on its key, word_review.state), still on the page as read (word_review._FLAG_SPANS's match:
+# a first-reader OCR line with that text and spot), which Needs attention counts on any page. The
+# reading's key is its line's flag key (ensemble.targets). Only a document with such a reading
+# reads its own stored lines; others stop at the index ensemble_readings_document.
 _NEEDS_ATTENTION = (
     " AND (EXISTS (SELECT 1 FROM pages pa WHERE pa.customer_id = :c AND pa.document_id = d.id"  # noqa: S608 - a fixed fragment, review.WAITING_VALUE
     " AND pa.read_quality IN ('unreadable', 'uncertain') AND pa.accepted_at IS NULL)"
     " OR EXISTS (SELECT 1 FROM extracted_values v WHERE v.customer_id = :c"
-    f" AND v.document_id = d.id AND {WAITING_VALUE}))"
+    f" AND v.document_id = d.id AND {WAITING_VALUE})"
+    " OR EXISTS (SELECT 1 FROM ensemble_readings er WHERE er.customer_id = :c AND er.document_id = d.id"
+    " AND er.outcome IN ('changed', 'unresolved')"
+    " AND NOT EXISTS (SELECT 1 FROM word_changes w WHERE w.customer_id = :c AND w.document_id = d.id"
+    " AND w.word_key = er.word_key AND w.undone_at IS NULL)"
+    " AND EXISTS (SELECT 1 FROM reader_outputs ro"
+    " CROSS JOIN LATERAL jsonb_array_elements(ro.output) AS e(span)"
+    " WHERE ro.customer_id = :c AND ro.document_id = d.id AND ro.role = 'first'"
+    " AND e.span ->> 'origin' = 'ocr' AND e.span ->> 'kind' IS NOT NULL"
+    " AND e.span ->> 'text' = er.before_text AND e.span -> 'region' = er.region)))"
 )
 _UPLOADED_FROM = " AND d.created_at >= :uploaded_from"
 _UPLOADED_TO = " AND d.created_at < :uploaded_to"

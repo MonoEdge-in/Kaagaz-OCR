@@ -32,6 +32,8 @@ describe("F-17 Review by document", () => {
       "3 pages to check · 3 values to review",
     );
     expect(toCheckText(summary(A, "a", { values_to_review: 1 }))).toBe("1 value to review");
+    // Listed only for a line an Ensemble run read differently: no page or value count to give.
+    expect(toCheckText(summary(A, "a"))).toBe("Lines to check");
   });
 
   it("opens a document on its Needs attention tab, carrying the documents after it and the way back", () => {

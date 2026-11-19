@@ -312,16 +312,16 @@ export function reasonText(reason: ReviewReason | null): string {
  */
 export const REVIEW_DOCUMENTS = { attention: true, limit: 50 } as const;
 
-/** "2 pages to check · 3 values to review". */
+/** "2 pages to check · 3 values to review"; "Lines to check" when it is listed only for lines an
+ * Ensemble run read differently (counted when the document is opened). */
 export function toCheckText(document: Pick<DocumentSummary, "pages_unreadable" | "pages_uncertain" | "values_to_review">): string {
   const pages = document.pages_unreadable + document.pages_uncertain;
   const values = document.values_to_review;
-  return [
+  const parts = [
     pages > 0 ? `${pages} page${pages === 1 ? "" : "s"} to check` : "",
     values > 0 ? `${values} value${values === 1 ? "" : "s"} to review` : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(" · ") : "Lines to check";
 }
 
 const DOCUMENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
