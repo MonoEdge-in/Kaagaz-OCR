@@ -44,13 +44,55 @@ export function turnPagesTo(
   shape: "wide" | "tall"
 ): Map<number, Rotation> {
   const wrongShape = pages.flatMap((page, pageIndex) => {
-    const sideways = (page.rotation + (turns.get(pageIndex) ?? 0)) % 2 === 1
-    const width = sideways ? page.size.height : page.size.width
-    const height = sideways ? page.size.width : page.size.height
-    const shown = width > height ? "wide" : height > width ? "tall" : null
+    const shown = shapeShown(page, turns.get(pageIndex) ?? 0)
     return shown && shown !== shape ? [pageIndex] : []
   })
   return turnPages(turns, wrongShape, 1)
+}
+
+/** A page's shape with the person's turn on top of its own; null for a square page. */
+function shapeShown(page: TurnablePage, turn: number): "wide" | "tall" | null {
+  const sideways = (page.rotation + turn) % 2 === 1
+  const width = sideways ? page.size.height : page.size.width
+  const height = sideways ? page.size.width : page.size.height
+  return width > height ? "wide" : height > width ? "tall" : null
+}
+
+/** #709: the orientation check's answer (POST /documents/{id}/straighten), by page number from 1:
+ * the clockwise turn on top of the file's own that puts a page's writing upright (pages already
+ * upright left out), and the pages it couldn't tell. */
+export type CheckedTurns = {
+  pages: readonly { page_no: number; turn: number }[]
+  unsure: readonly number[]
+}
+
+/**
+ * #709: the turns after the orientation check. Straighten (no shape): each page it could tell
+ * gets the turn that puts its writing upright (none for a page already upright). "Wide" or
+ * "tall": that turn when it gives the page the shape asked for (so an upside-down page of the
+ * right shape is put upright), else a quarter turn right of it. A page it couldn't tell keeps its
+ * turn (Straighten) or gets the shape rule (turnPagesTo).
+ */
+export function turnPagesUpright(
+  turns: PageTurns,
+  pages: readonly TurnablePage[],
+  checked: CheckedTurns,
+  shape?: "wide" | "tall"
+): Map<number, Rotation> {
+  const upright = new Map(
+    checked.pages.map(({ page_no, turn }) => [page_no - 1, normalizeRotation(turn / 90)])
+  )
+  const unsure = new Set(checked.unsure.map((pageNo) => pageNo - 1))
+  const byShape = shape ? turnPagesTo(turns, pages, shape) : turns
+  const next = new Map<number, Rotation>()
+  pages.forEach((page, pageIndex) => {
+    let turn = upright.get(pageIndex) ?? 0
+    const shown = shapeShown(page, turn)
+    if (unsure.has(pageIndex)) turn = byShape.get(pageIndex) ?? 0
+    else if (shape && shown && shown !== shape) turn = normalizeRotation(turn + 1)
+    if (turn) next.set(pageIndex, turn)
+  })
+  return next
 }
 
 /** Every page on its own, its turn the file's and the person's together. */

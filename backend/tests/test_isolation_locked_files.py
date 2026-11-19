@@ -486,6 +486,7 @@ REFUSED = {
     ("POST", "/api/documents/{document_id}/separate"),
     ("POST", "/api/documents/{document_id}/separate/undo"),
     ("GET", "/api/documents/{document_id}/compare"),
+    ("POST", "/api/documents/{document_id}/straighten"),  # Changed on purpose (#709): reads the pages
 }
 # Changed on purpose (PR 13): what a person who may open it does only while their 10-minute check
 # is live (403 locked_open_required without it): its page pictures, and turning its pages (no

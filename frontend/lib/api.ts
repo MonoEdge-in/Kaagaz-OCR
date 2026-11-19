@@ -596,6 +596,11 @@ export const savePageTurnsForEveryone = (
     user_id: userId,
   });
 
+/** Which way up each page's writing is (#709): the turn each page needs on top of the file's own
+ * (pages already upright left out) and the pages it couldn't tell. Saves nothing. */
+export const straightenPages = (id: string) =>
+  request<{ pages: PageTurnSaved[]; unsure: number[] }>("POST", `/documents/${encodeURIComponent(id)}/straighten`);
+
 /**
  * Upload one file with progress (fetch cannot report upload progress, XHR can),
  * into a folder when one is given, else at the top level. userId is who was

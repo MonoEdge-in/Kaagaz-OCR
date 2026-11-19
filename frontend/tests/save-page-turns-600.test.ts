@@ -195,6 +195,9 @@ describe("the photo turn menu", () => {
     await press(inGroup("All pages", "Turn left"));
     expect(byId("shown")).toBe("[[0,3]]");
     await press(button("Reset to original"));
+    // Changed on purpose (#709): Make all pages wide asks the orientation check first; a page it
+    // couldn't tell gets the shape rule, as before.
+    serve({ pages: [], unsure: [1, 2] });
     await press(button("Make all pages wide"));
     expect(byId("shown")).toBe("[[0,1]]"); // only the tall photo
     expect(button("Save for everyone")).not.toBeNull();

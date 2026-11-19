@@ -3,19 +3,20 @@
 // The turn menu for photos and scanned images (#600, the lead's decision 4: sideways phone photos
 // are common), the same choices as the PDF viewer's (#589): this page or all pages a quarter turn
 // left or right, every page made wide or tall, and Reset to original; a file of one page has only
-// its own row and Reset. It stays open, so an upside down page takes two presses, and waits while
-// a save is on its way. A choice shows on this screen only, until "Save for everyone" beside it
-// (SavePageTurns.tsx). A native popover, a dialog as the chat's composer menus are: Esc or a press
+// its own row and Reset. #709: wide and tall ask the orientation check, and "Straighten all pages
+// with AI" (a file of one page too) turns them upright and saves them (useTurnWithAi). It stays
+// open, so an upside down page takes two presses, and waits while a save or the check is on its
+// way. A choice shows on this screen only, until "Save for everyone" beside it (SavePageTurns.tsx). A native popover, a dialog as the chat's composer menus are: Esc or a press
 // outside closes it.
 
 import { useId } from "react";
 import type { ReactNode } from "react";
-import { turnPages, turnPagesTo } from "@/components/extend/lib/page-turns";
+import { turnPages } from "@/components/extend/lib/page-turns";
 import type { PageTurns } from "@/components/extend/lib/page-turns";
 import { IconButton } from "@/components/ui/IconButton";
 import type { PageSummary, PageTurnSaved } from "@/lib/types";
-import { SaveForEveryone, usePageTurns } from "./SavePageTurns";
-import type { PageTurnsState } from "./SavePageTurns";
+import { SaveForEveryone, TurnWithAiStatus, usePageTurns, useTurnWithAi } from "./SavePageTurns";
+import type { AiTurnChoice, PageTurnsState } from "./SavePageTurns";
 import styles from "./PageViewer.module.css";
 
 /** Holds a file's page turns for the page viewer drawn inside it (keyed by the file). */
@@ -60,8 +61,15 @@ export function PageTurnMenu({
     { label: "This page", indexes: [pageNo - 1] },
     ...(many ? [{ label: "All pages", indexes: pages.map((page) => page.page_no - 1) }] : []),
   ];
+  // #709: wide, tall and Straighten ask the orientation check (useTurnWithAi); every choice waits for it.
+  const ai = useTurnWithAi(documentId, userId, turns, turns.show, onTurnsSaved);
   const choice = (label: string, next: () => Map<number, number>) => (
-    <button type="button" className="btn btn-quiet" disabled={turns.saving} onClick={() => turns.show(next())}>
+    <button type="button" className="btn btn-quiet" disabled={ai.busy} onClick={() => turns.show(next())}>
+      {label}
+    </button>
+  );
+  const aiChoice = (label: string, picked: AiTurnChoice) => (
+    <button type="button" className="btn btn-quiet" disabled={ai.busy} onClick={() => void ai.run(picked, shapes)}>
       {label}
     </button>
   );
@@ -90,9 +98,11 @@ export function PageTurnMenu({
             {choice("Turn right", () => turnPages(shown, row.indexes, 1))}
           </div>
         ))}
-        {many ? choice("Make all pages wide", () => turnPagesTo(shown, shapes, "wide")) : null}
-        {many ? choice("Make all pages tall", () => turnPagesTo(shown, shapes, "tall")) : null}
+        {many ? aiChoice("Make all pages wide", "wide") : null}
+        {many ? aiChoice("Make all pages tall", "tall") : null}
+        {aiChoice("Straighten all pages with AI", "straighten")}
         {choice("Reset to original", () => new Map())}
+        <TurnWithAiStatus ai={ai} className={styles.turnStatus} buttonClassName="btn btn-quiet" />
       </div>
       <SaveForEveryone
         documentId={documentId}
