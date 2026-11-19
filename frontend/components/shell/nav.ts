@@ -26,13 +26,18 @@ const LINKS: { link: NavLink; roles: readonly Role[]; scope?: SessionScope; mana
   { link: { href: "/chat", label: "Ask", icon: "chat" }, roles: ["member", "reviewer", "admin"] },
   // My words: each user's own, so every role has it.
   { link: { href: "/words", label: "My words", icon: "words" }, roles: ["member", "reviewer", "admin"] },
+  // #707: each person's own access; an Admin in an admin session has the Admin tab's Access.
+  { link: { href: "/my-access", label: "My access", icon: "eye" }, roles: ["member", "reviewer", "admin"], scope: "app" },
   { link: { href: "/review", label: "Review", icon: "review", count: "review" }, roles: ["reviewer", "admin"] },
   // PRD 7 (#601): Management's, a flag not a role. An Admin reads the same in the Admin tab.
+  // #706: "Activity" on the phone tab bar, so it never reads as the admins' Access below.
   {
-    link: { href: "/access-activity", label: "Access activity", icon: "history", short: "Access" },
+    link: { href: "/access-activity", label: "Access activity", icon: "history", short: "Activity" },
     roles: ["member", "reviewer", "admin"],
     management: true,
   },
+  // #706: every person's access (/access), for exactly who sees Admin.
+  { link: { href: "/access", label: "Access", icon: "key" }, roles: ["admin"], scope: "admin" },
   // PRD A1: an admin signed in at /login gets no Admin menu.
   { link: { href: "/admin", label: "Admin", icon: "admin" }, roles: ["admin"], scope: "admin" },
 ];

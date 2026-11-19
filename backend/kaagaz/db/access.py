@@ -65,7 +65,8 @@ _HOLDS_PRIVATE = text(
     " AND private AND id <> :f)"
 )
 _DEPARTMENTS = text(
-    "SELECT m.user_id, m.department_id, f.name, m.is_head, m.added_at, m.added_by FROM department_members m"
+    "SELECT m.user_id, m.department_id, f.name, m.is_head, m.added_at, m.added_by, f.department_only"
+    " FROM department_members m"
     " JOIN visible_folders f ON f.customer_id = m.customer_id AND f.id = m.department_id"
     " WHERE m.customer_id = :c AND (CAST(:u AS uuid) IS NULL OR m.user_id = CAST(:u AS uuid))"
     " ORDER BY lower(f.name), f.id"
@@ -80,6 +81,19 @@ _NAMED_ON = text(
 # owner-rights kaagaz_admin_given_to (0091) checks the caller; ``:c`` keeps another customer's id at none.
 _GIVEN_TO = text(
     "SELECT * FROM kaagaz_admin_given_to(CAST(:u AS uuid)) WHERE CAST(:c AS uuid) = kaagaz_current_customer()"
+)
+# #707, My access: the files given to the caller (:u), one per family (its current version's name and
+# folder), only those they can still see (visible_documents: in Trash, or locked and not opened to
+# them, it leaves the list), with who gave each.
+_GIVEN_TO_ME = text(
+    "SELECT * FROM (SELECT DISTINCT ON (c.family_id) c.id, c.display_name, c.folder_id, s.given_at,"
+    " g.display_name AS given_by FROM document_shares s"
+    " JOIN visible_documents v ON v.customer_id = s.customer_id AND v.id = s.document_id"
+    " JOIN visible_documents c"
+    " ON c.customer_id = v.customer_id AND c.family_id = v.family_id AND c.is_current"
+    " LEFT JOIN users g ON g.customer_id = s.customer_id AND g.id = s.given_by"
+    " WHERE s.customer_id = :c AND s.user_id = :u AND c.deleted_at IS NULL"
+    " ORDER BY c.family_id, s.given_at) x ORDER BY lower(x.display_name), x.id"
 )
 _PEOPLE_ON = text(
     "SELECT u.id, u.display_name FROM private_folder_members p"
@@ -265,6 +279,11 @@ def named_on(conn: Connection, customer_id: str, user_id: str) -> Sequence[RowMa
 def given_to(conn: Connection, customer_id: str, user_id: str) -> Sequence[RowMapping]:
     """The live files given to ``user_id``, one per family."""
     return conn.execute(_GIVEN_TO, {"c": customer_id, "u": user_id}).mappings().all()
+
+
+def given_to_me(conn: Connection, customer_id: str, user_id: str) -> Sequence[RowMapping]:
+    """The live files given to the caller ``user_id`` that they can still see, one per family, by name."""
+    return conn.execute(_GIVEN_TO_ME, {"c": customer_id, "u": user_id}).mappings().all()
 
 
 def paths(conn: Connection, customer_id: str, folder_ids: Sequence[str]) -> dict[str, str]:

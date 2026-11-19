@@ -17,6 +17,7 @@ import type {
   AdminChange,
   AdminDepartment,
   DepartmentMember,
+  MyAccess,
   PersonAccess,
   PlacePreview,
   HiddenMove,
@@ -1464,6 +1465,8 @@ export const adminDisconnectWhatsApp = (userId: string) =>
 
 /** A path part: an id typed into the address bar may hold "/" or "?". */
 const segment = (part: string) => encodeURIComponent(part);
+/** #707: My access, the signed-in person's own. */
+export const getMyAccess = () => request<MyAccess>("GET", "/me/access");
 export const getPersonAccess = (userId: string) => request<PersonAccess>("GET", `/admin/users/${segment(userId)}/access`);
 export const setManagement = (userId: string, on: boolean, password?: string) =>
   request<AdminUser>("PUT", `/admin/users/${segment(userId)}/management`, { on, password });
