@@ -76,9 +76,11 @@ export function AttentionPanel({
   hot = null,
   onHot = () => undefined,
   fix = null,
+  failed = false,
 }: {
   /** The shown page's fix (PageProblems inline), under its reasons: one box (24 Oct 2026). */
   fix?: ReactNode;
+  failed?: boolean; // PRD 9 F-14: the words could not be loaded: "Could not count", never a spinner for ever
   status: DocumentStatus;
   pages: PageSummary[];
   // the words still open on the review list; null until they load (toSettle). PRD 9 F-14: with their
@@ -109,9 +111,12 @@ export function AttentionPanel({
             {lead.count.toLocaleString("en-IN")} to check
           </span>
         )}
-        {lead === undefined && (
-          <span className="spinner" role="status" aria-label="Counting what is left to check" />
-        )}
+        {lead === undefined &&
+          (failed ? (
+            <span className={styles.pageNote}>Could not count</span>
+          ) : (
+            <span className="spinner" role="status" aria-label="Counting what is left to check" />
+          ))}
       </h2>
       {lead && <p className={styles.attentionLead}>{lead.text}</p>}
       {lead === null && problemPages.length > 0 && <p className={styles.attentionLead}>{ALL_CHECKED}</p>}

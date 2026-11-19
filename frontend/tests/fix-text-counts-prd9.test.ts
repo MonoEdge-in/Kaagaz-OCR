@@ -16,7 +16,7 @@ import { AttentionPanel, attentionCount } from "@/app/(app)/documents/[id]/Docum
 import { ALL_CHECKED, toSettle } from "@/components/viewer/pageProblems";
 import { openMarks } from "@/components/viewer/readingMarks";
 import * as scanned from "@/components/viewer/scanned";
-import { fixBox, rowFlag, squash, wordToFix } from "@/components/viewer/scanned";
+import { TWICE, fixBox, rowFlag, seenTwice, squash, wordToFix } from "@/components/viewer/scanned";
 import type { PageSummary, ReadingMark, WordFlag } from "@/lib/types";
 
 const ROOT = join(__dirname, "..");
@@ -99,7 +99,7 @@ describe("PRD 9 F-13 the fix box: Cancel and Save, and Save unchanged confirms",
   });
 
   it("confirms a word saved as it began, spaces aside, and saves any other text as the fix", () => {
-    expect(PANEL).toContain("const asRead = squash(typed) === squash(draft);");
+    expect(PANEL).toContain('const asRead = draft !== "" && squash(typed) === squash(draft);');
     expect(PANEL).toContain("done = await onFix(each, asRead ? each.text : typed);");
     expect(PANEL).toContain("void saveFix(toFix, index, ask.draft);");
     expect(squash("Shop 4,  DAREGAO\nWest ")).toBe(squash("Shop 4, DAREGAO West"));
@@ -199,5 +199,41 @@ describe("PRD 9 F-14 Needs attention: one number, open items only", () => {
     expect(VIEW).toMatch(/count: attention === null \? \(review\.failed \? undefined : null\) : attention \|\| undefined/);
     expect(VIEW).toContain('tabChoice?.tab === "attention"');
     expect(VIEW).toMatch(/item\.count === null \? \(\s*<span className="spinner/);
+  });
+});
+
+// PRD 9 review of #683.
+describe("PRD 9 F-13 review: an empty [?] is never confirmed, and a word twice in its line is not saved blind", () => {
+  it("asks for the word when Save is pressed on an empty [?] box, never confirms it as read", () => {
+    expect(fixBox({ text: "[?]" }).draft).toBe("");
+    expect(PANEL).toContain('if (typed === "" && !asRead) return setFixing({ ...fixing, error: "Type the word you see on the page." });');
+  });
+
+  it("says to fix the whole line when the word is in it more than once, and saves nothing", () => {
+    const twice = flag("mark", "[?]", [0.1, 0.1, 0.2, 0.15]);
+    expect(seenTwice(twice, { text: "[?] Sharma  [?]" })).toBe(true);
+    expect(seenTwice(twice, { text: "[?] Sharma Traders" })).toBe(false);
+    expect(seenTwice(flag("line", "[?] Sharma [?]", BLOCK), { text: "[?] Sharma [?]" })).toBe(false); // the line itself
+    expect(TWICE).toBe("This word appears more than once in the line. Fix the whole line in Clean copy instead.");
+    expect(PANEL).toContain("if (!asRead && seenTwice(flag, row)) return setFixing({ ...fixing, error: TWICE });");
+  });
+
+  it("says Could not count in the header when the words could not be loaded, not a spinner for ever", () => {
+    const html = renderToStaticMarkup(
+      createElement(AttentionPanel, {
+        status: "ready",
+        pages: [page(1)],
+        open: null,
+        failed: true,
+        current: 1,
+        marks: [],
+        onPage: () => undefined,
+        onMark: () => undefined,
+        onCheck: () => undefined,
+      }),
+    );
+    expect(html).toContain("Could not count");
+    expect(html).not.toContain("spinner");
+    expect(VIEW).toContain("failed={review.failed}");
   });
 });

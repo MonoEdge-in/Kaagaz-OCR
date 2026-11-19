@@ -27,11 +27,12 @@ CITY_RAW, CITY = "नमस्ते  [?]\nमुंबई", "नमस्ते
 
 def scan(api: Api, customer_id: str) -> str:
     """A one-page scan: two lines whose raw text holds a line break and a double space (the
-    second in Devanagari, with an unread word marked [?] inside it)."""
+    second in Devanagari, with an unread word marked [?] inside it). Both spots are unconfirmed,
+    so each line has a flag of its own."""
     document_id = api.add_document(customer_id, detected_type="jpeg")
     spans = (
         Span(ROAD, ROAD_RAW, ROAD_BOX, None, "paragraph", "ocr", quality="ok", box_source="model"),
-        Span(CITY, CITY_RAW, CITY_BOX, 0.97, "paragraph", "ocr", quality="ok", box_source="found"),
+        Span(CITY, CITY_RAW, CITY_BOX, 0.97, "paragraph", "ocr", quality="ok", box_source="model"),
         Span("[?]", "[?]", MARK_BOX, 0.2, None, "ocr", quality="illegible"),
     )
     pages = [PageRecord(PageInfo(1, 595.0, 842.0, "pt"), True, "ocr")]
@@ -105,3 +106,28 @@ def test_a_devanagari_word_fixed_in_a_line_shows_in_it_marked_with_its_undo(db: 
     assert undone.status_code == 200, undone.text
     city = text_tab(reviewer, document_id)[1]
     assert (city["text"], city["correction"]) == (CITY_RAW, None)
+
+
+def test_confirming_a_line_after_a_word_fixed_in_it_keeps_the_fix(db: Database) -> None:
+    # PRD 9 review of #683: the line's box starts from its text now (the word fixed); Save unchanged
+    # confirms the line flag as read, which writes nothing, so the word's fix stays in the line.
+    api = Api(db)
+    reviewer = api.new_signed("reviewer")
+    document_id = scan(api, reviewer.customer_id)
+    mark, city = key("mark", MARK_BOX, "[?]"), key("line", CITY_BOX, CITY)
+    fixed = reviewer.client.post(
+        f"/api/documents/{document_id}/flags/{mark}/edit",
+        json={"text": "दुनिया", "expected_text": "[?]"},
+        headers=CSRF,
+    )
+    assert fixed.status_code == 200, fixed.text
+
+    confirmed = reviewer.client.post(
+        f"/api/documents/{document_id}/flags/{city}/confirm", json={"expected_text": CITY}, headers=CSRF
+    )
+
+    assert confirmed.status_code == 200, confirmed.text
+    line = text_tab(reviewer, document_id)[1]
+    assert (line["text"], line["correction"]["change_id"]) == ("नमस्ते दुनिया मुंबई", fixed.json()["change"]["id"])
+    clean = reviewer.client.get(f"/api/documents/{document_id}/clear-copy").json()["pages"][0]["lines"][1]
+    assert clean["text"] == "नमस्ते दुनिया मुंबई"

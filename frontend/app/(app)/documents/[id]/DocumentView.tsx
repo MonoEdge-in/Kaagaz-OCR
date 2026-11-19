@@ -939,6 +939,7 @@ export function DocumentView({
                     status={detail.status}
                     pages={detail.pages}
                     open={openWords}
+                    failed={review.failed} // PRD 9 F-14: "Could not count", as the tab shows no badge
                     current={page?.page_no ?? null}
                     marks={readingMarks}
                     onPage={changePage}

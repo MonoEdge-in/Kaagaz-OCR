@@ -588,15 +588,17 @@ def in_force(conn: Connection, customer_id: str, document_id: str) -> list[RowMa
     return [change for change in changes if change["undone_at"] is None]
 
 
-def line_correction(row: Mapping[Any, Any], live: Sequence[RowMapping]) -> RowMapping | None:
+def line_correction(
+    row: Mapping[Any, Any], live: Sequence[RowMapping], word: RowMapping | None
+) -> RowMapping | None:
     """The line's own latest change in force (``live``, oldest first) when it corrects the line:
-    an edit, back to the text as read too, or any change to other text; else the last change of a
-    word or value inside it that ``line_text`` wrote into it (PRD 9 F-12: the line shows as
-    corrected, with that change's Undo); else None."""
+    an edit, back to the text as read too, or any change to other text; else ``word``, the last
+    change of a word or value inside it that ``line_now`` wrote into it (PRD 9 F-12: the line shows
+    as corrected, with that change's Undo), or None."""
     key = line_key(row)
     change = next((change for change in reversed(live) if change["word_key"] == key), None)
     if change is None or (change["action"] != "edit" and change["after_text"] == row["as_read"]):
-        return _line_now(row, live)[1]
+        return word
     return change
 
 
@@ -606,17 +608,20 @@ def line_text(row: Mapping[Any, Any], live: Sequence[RowMapping]) -> str | None:
     inside it (its box, or its centre) where the word's text is there once, as ``_apply`` wrote
     it. None when no change touches it (the clean copy then shows the text as the reader gave
     it). O(changes)."""
-    return _line_now(row, live)[0]
+    return line_now(row, live)[0]
 
 
-def _line_now(row: Mapping[Any, Any], live: Sequence[RowMapping]) -> tuple[str | None, RowMapping | None]:
-    """``line_text``, and the last change of a word or value inside the line that it wrote, or None."""
+def line_now(row: Mapping[Any, Any], live: Sequence[RowMapping]) -> tuple[str | None, RowMapping | None]:
+    """``line_text``, and the last change of a word or value inside the line that it wrote, or None.
+    The line's own change sets its text only when it changes it (PRD 9 review of #683: a confirm
+    of the line as read, after a word in it was fixed, writes nothing, so the fix stays)."""
     key, text_now, touched, word = line_key(row), str(row["as_read"]), False, None
     for change in live:
         before, after = str(change["before_text"]), str(change["after_text"])
         if change["word_key"] == key:
-            touched = touched or change["action"] == "edit" or after != text_now
-            text_now = after
+            if change["action"] == "edit" or before != after:
+                touched = touched or change["action"] == "edit" or after != text_now
+                text_now = after
         elif (
             change["kind"] != LINE
             and before != after

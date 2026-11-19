@@ -2065,7 +2065,9 @@ def get_page_readings(document_id: uuid.UUID, page_no: int, user: User, context:
             raise ApiError(404, "not_found")
         rows = listing.page_readings(conn, customer_id, target, page_no)
         marks = listing.page_marks(conn, customer_id, target, page_no)  # PRD 5 U3
-        live = word_review.in_force(conn, customer_id, target)  # PRD 9 F-12: the fixes
+        # PRD 9 F-12: the fixes; this page's alone (a change touches a line on its own page only).
+        live = word_review.in_force(conn, customer_id, target)
+        live = [change for change in live if change["page_no"] == page_no]
         _viewed(conn, user, document_id, "readings")
     return page_readings(page_no, rows, marks, live)
 

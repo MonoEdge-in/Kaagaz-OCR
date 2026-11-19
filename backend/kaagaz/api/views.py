@@ -903,8 +903,8 @@ def clear_line(row: RowMapping, live: Sequence[RowMapping]) -> dict[str, Any]:
     """A clean copy's ``ReadLine`` (#527): with its ``key`` and the ``correction`` in force (who
     and when, and ``before_text``, the line as first shown); ``text`` is the line's text now
     when a change in force touches it (``word_review.line_text``). O(changes)."""
-    change = word_review.line_correction(row, live)
-    text_now = word_review.line_text(row, live)
+    text_now, word = word_review.line_now(row, live)
+    change = word_review.line_correction(row, live, word)
     line = {**_line(row), "key": word_review.line_key(row), "correction": None}
     if text_now is not None:
         line["text"] = text_now

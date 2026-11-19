@@ -48,7 +48,9 @@ import {
   readerHeading,
   rowFlag,
   secondReaderNote,
+  seenTwice,
   squash,
+  TWICE,
   truncatedText,
   visibleText,
   wordToFix,
@@ -164,8 +166,10 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
     const row = shown[index]; // #614: the line the Save came from
     if (!onFix || !fixing || fixing.busy || !row) return;
     const typed = fixing.text.trim();
-    const asRead = squash(typed) === squash(draft);
+    // An empty box over a [?] (draft "") is never a confirm: Save asks for the word (CLAUDE.md rule 6).
+    const asRead = draft !== "" && squash(typed) === squash(draft);
     if (typed === "" && !asRead) return setFixing({ ...fixing, error: "Type the word you see on the page." });
+    if (!asRead && seenTwice(flag, row)) return setFixing({ ...fixing, error: TWICE }); // no one place for it
     setFixing({ ...fixing, busy: true, error: null });
     let done = { ok: true, message: "" };
     for (const each of fixesFor(flag, flags, row)) if (done.ok) done = await onFix(each, asRead ? each.text : typed);
