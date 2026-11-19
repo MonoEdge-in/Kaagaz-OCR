@@ -115,9 +115,10 @@ export function activitySentence(entry: Entry): string {
   return `${activityWho(entry)} ${activityWords(entry)}`;
 }
 
-/** The document a row is about; null when it is not about one; a deleted one says so. */
+/** The document a row is about; null when it is not about one, or for a delete, whose words
+ * already say "deleted a document" (#693); a deleted one says so. */
 export function activityDocument(entry: Entry): string | null {
-  if (!entry.document) return null;
+  if (!entry.document || entry.action === "document.delete") return null;
   return entry.document.deleted || entry.document.name === null ? "a deleted document" : entry.document.name;
 }
 

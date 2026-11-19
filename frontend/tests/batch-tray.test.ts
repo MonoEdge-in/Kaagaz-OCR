@@ -199,8 +199,9 @@ describe("each file's place in the tray", () => {
       already: 1,
       notSent: 0,
     });
+    // Changed on purpose (#693): the already-uploaded file is said next to the total it is part of.
     expect(summaryText(counts)).toBe(
-      "Batch of 9 files · 1 ready · 2 sending · 1 reading · 1 waiting · 1 needs attention · 2 failed · 1 already uploaded",
+      "Batch of 9 files (1 already uploaded) · 1 ready · 2 sending · 1 reading · 1 waiting · 1 needs attention · 2 failed",
     );
   });
 
@@ -217,8 +218,9 @@ describe("each file's place in the tray", () => {
       already: 1,
       notSent: 0, // Changed on purpose (#468): the new count
     };
+    // Changed on purpose (#693): the already-uploaded file is said next to the total it is part of.
     expect(summaryText(counts)).toBe(
-      "Batch of 50 files · 31 ready · 12 reading · 4 waiting · 2 need attention · 1 already uploaded",
+      "Batch of 50 files (1 already uploaded) · 31 ready · 12 reading · 4 waiting · 2 need attention",
     );
     expect(summaryText(trayCounts([row("one", done(doc("o")))]))).toBe("Batch of 1 file · 1 ready");
   });
