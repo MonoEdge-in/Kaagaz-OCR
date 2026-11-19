@@ -23,7 +23,6 @@ import { useFolderUploads } from "@/components/documents/useFolderUploads";
 import { ACCEPT_ATTRIBUTE } from "@/components/documents/logic";
 import { UploadStatus, useUploads } from "@/components/documents/UploadArea";
 import { NOTIFY_MS } from "@/components/documents/uploadQueue";
-import { departmentsOf, lastDepartment } from "@/components/files/departments";
 import { canReview } from "@/components/review/review";
 import { getPreviousFolderUpload, listFolders } from "@/lib/api";
 import { useSession } from "@/lib/session";
@@ -90,8 +89,8 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
   // filing committing, it is never seen filed, and the list waits for the next change or a visit.
   const foldersChanged = uploads.settled + uploads.filed + folderUploadsChanged;
 
-  // The folders, for "Filed into Invoices" in the tray, "In Tax" in a folder upload's rows and
-  // the department a file goes into; asked again whenever new folders may exist.
+  // The folders, for "Filed into Invoices" in the tray and "In Tax" in a folder upload's rows;
+  // asked again whenever new folders may exist.
   useEffect(() => {
     let cancelled = false;
     listFolders().then(
@@ -200,7 +199,7 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
     event.target.value = "";
     if (files.length === 0) return;
     setTrayOpen(true);
-    void uploads.addFiles(files, undefined, lastDepartment(departmentsOf(folders)) ?? undefined);
+    void uploads.addFiles(files); // PRD 9 F-01 (D1, Q2): nothing picked here, so no folder: Not sorted
   }
 
   return (

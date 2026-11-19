@@ -379,6 +379,7 @@ def document_summary(
         "updated_at": None if row["last_updated_at"] is None else iso(row["last_updated_at"]),
         "updated_by": row["last_updated_by_name"],
         "department": row["department"],
+        "suggested_department": row["suggested_department"],  # PRD 9 F-01: {id, name} or null
         "pending_suggestion": row["pending_suggestion"],
     }
     if row["detected_type"] == "zip":

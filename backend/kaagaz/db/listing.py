@@ -39,6 +39,7 @@ from sqlalchemy import Connection, RowMapping, text
 from sqlalchemy.exc import IntegrityError
 
 from kaagaz.chunking.context import document_part
+from kaagaz.db import autofile
 from kaagaz.db.documents import STUCK, folder_missing
 from kaagaz.db.folders import FolderNotFound, prune_empty
 from kaagaz.db.review import WAITING_VALUE
@@ -58,6 +59,12 @@ _LAST_UPLOAD = (
 _LAST_UPLOADER = (
     "(SELECT lu.uploaded_by FROM visible_documents lu WHERE lu.customer_id = d.customer_id"
     " AND lu.family_id = d.family_id ORDER BY lu.created_at DESC LIMIT 1)"
+)
+# PRD 9 F-01: (type, department name in lower case) for every alias of each type's department.
+_DEPARTMENT_ALIASES = ", ".join(
+    f"('{doc_type}', '{alias.lower()}')"
+    for doc_type, department in autofile.DEPARTMENTS.items()
+    for alias in autofile.DEPARTMENT_ALIASES[department]
 )
 _FILE_COLUMNS = (
     " d.owner_id, d.sensitivity, d.document_date, d.version_note,"  # noqa: S608 - fixed fragments only
@@ -80,6 +87,21 @@ _FILE_COLUMNS = (
     " SELECT json_build_object('id', dep.id, 'name', dep.name) FROM up"
     " JOIN visible_folders dep ON dep.customer_id = d.customer_id AND dep.id = up.id"
     " WHERE up.parent_id IS NULL AND dep.kind = 'department') AS department,"
+    # PRD 9 F-01 (D1): a file in no folder, the existing department its type maps to, as
+    # auto-filing picks it (by alias, first by name), and only one whose files the person may open:
+    # visible_folders is that rule for everyone but an Admin, who sees every folder's name (0086), so
+    # for an Admin only an open department or their own (fails closed on a private one). Read only.
+    # Never for a family still waiting to be filed (its first version's autofile 'pending'): between
+    # its ready mark and the filing transaction, a Move there would pull it from its type folder.
+    " (SELECT json_build_object('id', s.id, 'name', s.name) FROM visible_folders s"
+    f" JOIN (VALUES {_DEPARTMENT_ALIASES}) m (doc_type, alias) ON lower(s.name) = m.alias,"
+    " kaagaz_access() a WHERE d.folder_id IS NULL AND m.doc_type = d.doc_type"
+    " AND s.customer_id = d.customer_id AND s.parent_id IS NULL AND s.kind = 'department'"
+    " AND (NOT a.admin OR a.management OR (s.private_folder_id IS NULL"
+    " AND (NOT s.department_only OR s.department_id = ANY (a.departments))))"
+    " AND (SELECT r.autofile FROM visible_documents r WHERE r.customer_id = d.customer_id"
+    " AND r.id = d.family_id) IS DISTINCT FROM 'pending'"
+    " ORDER BY lower(s.name), s.id LIMIT 1) AS suggested_department,"
     " (SELECT json_build_object('id', s.id,"
     " 'role', CASE WHEN s.document_id = d.id THEN 'new' ELSE 'candidate' END)"
     f" FROM version_suggestions s WHERE s.customer_id = d.customer_id AND {LIVE_SUGGESTION}"

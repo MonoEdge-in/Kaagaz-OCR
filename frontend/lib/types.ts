@@ -237,6 +237,8 @@ export interface DocumentSummary {
   department?: { id: string; name: string } | null;
   // "new": this document may be a new version of another; "candidate": a newer one waits on this family.
   pending_suggestion?: { id: string; role: "new" | "candidate" } | null;
+  // PRD 9 F-01: in no folder, the existing department its type maps to that the person can open.
+  suggested_department?: { id: string; name: string } | null;
   // #522: a zip only: where it was unpacked, null until it is (or when it is kept as a file).
   // Its status_message already says "Unpacked: 120 files into folder "X", 3 skipped (...)".
   unpack?: ZipUnpack | null;

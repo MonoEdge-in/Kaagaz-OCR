@@ -187,7 +187,7 @@ def _land(survey: str | None, place: str | None = "Wakad") -> dict[str, Any]:
 
 
 def test_f2_f3_land_and_its_deed_file_by_property_and_44_slash_2_stays_apart(db: Database) -> None:
-    customer, admin = organisation(db)
+    customer, admin = organisation(db, accounts=False)
     department = _department(db, customer, admin)
     satbara = upload(db, customer, admin, folder=department)  # F2: auto-filing still runs in a department
     assert _read(db, customer, satbara, "land_record", _land("४४")) == "filed"
@@ -207,7 +207,7 @@ def test_f2_f3_land_and_its_deed_file_by_property_and_44_slash_2_stays_apart(db:
 
 
 def test_f3_a_land_record_with_no_survey_number_and_others_file_by_year(db: Database) -> None:
-    customer, admin = organisation(db)
+    customer, admin = organisation(db, accounts=False)
     department = _department(db, customer, admin, "Accounts")
     land = upload(db, customer, admin, folder=department)
     with db.customer(customer) as conn:
@@ -225,30 +225,23 @@ def test_f3_a_land_record_with_no_survey_number_and_others_file_by_year(db: Data
     assert kinds["Land records"] == kinds["Letters"] == "category"
 
 
-def test_f3_a_file_without_a_department_gets_one_and_is_filed_inside_it(db: Database) -> None:
-    customer, admin = organisation(db)
+# Changed on purpose (PRD 9 F-02, D2): Kaagaz never creates a department. With no Land & Legal
+# (or an alias of it), a land record in no folder stays in no folder, Not sorted, and no folder
+# is made; it used to create Land & Legal and file inside it.
+def test_f3_a_file_without_a_department_makes_none_and_stays_not_sorted(db: Database) -> None:
+    customer, admin = organisation(db, accounts=False)
     document = upload(db, customer, admin)
-    _read(db, customer, document, "land_record", _land("44"))
-    name, kind, key, parent, department = _place(db, customer, document)
-    assert (name, kind, parent, department) == (
-        "Survey 44, Wakad",
-        "property",
-        "Land records",
-        "Land & Legal",
-    )
-    assert key == "property:vkd:44"
+    assert _read(db, customer, document, "land_record", _land("44")) == "no_department"
+    assert _folder_names(db, customer) == []
     with db.customer(customer) as conn:
-        assert (
-            conn.execute(
-                text("SELECT kind FROM folders WHERE customer_id = :c AND name = 'Land & Legal'"),
-                {"c": customer},
-            ).scalar_one()
-            == "department"
-        )
+        row = conn.execute(
+            text("SELECT folder_id, autofile FROM documents WHERE id = :d"), {"d": document}
+        ).one()
+    assert tuple(row) == (None, "skipped")  # the list's "not_filed": Not sorted
 
 
 def test_f3_auto_filing_reuses_an_existing_finance_department(db: Database) -> None:
-    customer, admin = organisation(db)
+    customer, admin = organisation(db, accounts=False)
     department = _department(db, customer, admin, "Finance")
     document = upload(db, customer, admin)
     _read(db, customer, document, "invoice", {})
@@ -276,7 +269,7 @@ def _folder_names(db: Database, customer: str) -> list[str]:
 def test_f3_a_property_folder_found_elsewhere_leaves_no_empty_department_or_category(db: Database) -> None:
     """Issue 414: the property's folder is used wherever it is, so the department and category
     above where it would have gone are never made: before, they were made first and left empty."""
-    customer, admin = organisation(db)
+    customer, admin = organisation(db, accounts=False)
     revenue = _department(db, customer, admin, "Revenue")
     first = upload(db, customer, admin, folder=revenue)
     _read(db, customer, first, "land_record", _land("53", "Daregav"))
@@ -294,7 +287,9 @@ def test_f3_a_property_folder_found_elsewhere_leaves_no_empty_department_or_cate
 
 
 def test_f3_a_property_folder_found_from_another_department_makes_no_empty_category(db: Database) -> None:
-    customer, admin = organisation(db)
+    customer, admin = organisation(db, accounts=False)
+    # Changed on purpose (PRD 9 F-02, D2): Kaagaz no longer makes Land & Legal, so an admin has.
+    _department(db, customer, admin)
     first = upload(db, customer, admin)
     _read(db, customer, first, "land_record", _land("53", "Daregav"))
     accounts = _department(db, customer, admin, "Accounts")
@@ -312,7 +307,9 @@ def test_v6_accepting_a_newer_version_of_a_family_in_no_folder_keeps_the_newcome
     """Issue 414: the newcomer was filed into "Survey 53, Daregav", made for it; its family sat in
     no folder. Accepting it moved it to the top level and left that folder empty. Now the
     family joins it there, and the audit row names that folder."""
-    customer, admin = organisation(db, on=False)
+    customer, admin = organisation(db, on=False, accounts=False)
+    # Changed on purpose (PRD 9 F-02, D2): Kaagaz no longer makes Land & Legal, so an admin has.
+    _department(db, customer, admin)
     older = upload(db, customer, admin)  # read while auto-filing was off: in no folder
     _read(db, customer, older, "land_record", _land("53", "Daregav"))
     _owner(db, "UPDATE customers SET autofile_on = true WHERE id = :c", {"c": customer})
@@ -334,6 +331,34 @@ def test_v6_accepting_a_newer_version_of_a_family_in_no_folder_keeps_the_newcome
             text("SELECT folder_id::text FROM documents WHERE id = :d"), {"d": older}
         ).scalar()
     assert (details["from_folder_id"], details["folder_id"]) == (folder, folder)
+
+
+def test_prd9_f01_a_file_in_no_folder_suggests_the_existing_department_of_its_type(db: Database) -> None:
+    """PRD 9 F-01 (D1): read only, from doc_type through DEPARTMENTS and DEPARTMENT_ALIASES, an
+    existing department ("Land and Legal" is an alias of Land & Legal); none for a type with no
+    department here, an unmapped type, or a file already in a folder."""
+    api = Api(db)
+    customer, admin = api.customer()
+    member = api.sign_in(customer)
+    legal = _department(db, customer, admin, "Land and Legal")
+    _department(db, customer, admin, "Sales")
+    loose = api.add_folder(customer, admin, "Loose")
+
+    def suggested(doc_type: str, folder: str | None = None) -> Any:
+        document = api.add_document(customer, uploaded_by=admin, doc_type=doc_type, folder_id=folder)
+        reply = member.client.get(f"/api/documents/{document}")
+        assert reply.status_code == 200, reply.text
+        return reply.json()["suggested_department"]
+
+    assert suggested("land_record") == {"id": legal, "name": "Land and Legal"}
+    assert suggested("contract") == {"id": legal, "name": "Land and Legal"}
+    assert suggested("letter") is None  # no Correspondence here: nothing is made or named
+    assert suggested("other") is None
+    assert suggested("land_record", legal) is None  # a department picked is kept
+    assert suggested("land_record", loose) is None
+    # Still waiting to be filed (ready, typed, not yet filed): Kaagaz files it a moment later.
+    pending = api.add_document(customer, uploaded_by=admin, doc_type="land_record", autofile="pending")
+    assert member.client.get(f"/api/documents/{pending}").json()["suggested_department"] is None
 
 
 def test_f2_a_department_form_field_must_be_a_department(db: Database) -> None:

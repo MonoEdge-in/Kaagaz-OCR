@@ -461,16 +461,18 @@ export interface MoveFormProps {
   /** A folder was made here: the screen asks for the folders again. */
   onFolderCreated?(): void;
   onCancel(): void;
+  /** PRD 9 F-01: the place chosen at first ("Looks like X", Move there), in place of the suggested one. */
+  to?: string;
 }
 
-export function MoveForm({ items, tree, suggestions = [], onSaved, onFolderCreated, onCancel }: MoveFormProps) {
+export function MoveForm({ items, tree, suggestions = [], onSaved, onFolderCreated, onCancel, to }: MoveFormProps) {
   const places = new Set(items.map((item) => item.folder_id ?? TOP));
   const current = places.size === 1 ? [...places][0] : null; // where they all are now
   const [suggested] = useState(() => moveSuggestion(items, tree)); // kept while the folders reload
   const suggestedId = suggested && "folderId" in suggested ? suggested.folderId : null;
   const suggestedName = suggested && "newName" in suggested ? suggested.newName : null;
   const [choice, setChoice] = useState<string | null>(
-    suggestedId ?? (suggestedName !== null ? SUGGESTED_NEW : null),
+    to ?? suggestedId ?? (suggestedName !== null ? SUGGESTED_NEW : null),
   );
   const [newName, setNewName] = useState("");
   const [busy, setBusy] = useState(false);
