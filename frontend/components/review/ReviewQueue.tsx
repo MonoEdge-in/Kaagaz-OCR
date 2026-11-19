@@ -10,10 +10,14 @@
 // keys 1, 2, E, S and Enter, and moves on by itself after a save or a skip.
 // Verify all (beside "Value N of M") asks once, inline, then verifies every value the
 // filters show in one call; the queue is locked until it ends, then loads again.
+// PRD 9 F-17: Review opens on "By document" (ReviewDocuments.tsx), the documents with open values
+// or open word flags, unless the address asks for one document's or one reason's values; the
+// reason chips are one Filter menu (RowMenu), for the value views.
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { RowMenu } from "@/components/admin/RowMenu";
 import { StillLoading } from "@/components/shell/StillLoading";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
@@ -31,10 +35,10 @@ import {
   focusAfterResolve,
   focusIndexAfter,
   focusProgress,
-  groupByDocument,
   leftToReview,
   parseReason,
   queueParams,
+  reasonText,
   resolvedMessage,
   reviewHref,
   verifyAllFilters,
@@ -43,6 +47,7 @@ import {
   withoutItem,
 } from "./review";
 import { ReviewCard, reviewTitleId } from "./ReviewCard";
+import { ReviewDocuments } from "./ReviewDocuments";
 import styles from "./Review.module.css";
 
 const PAGE_SIZE = 20;
@@ -83,7 +88,8 @@ function Queue({ documentId, initialReason }: { documentId?: string; initialReas
   const [loadingMore, setLoadingMore] = useState(false);
   const [saved, setSaved] = useState("");
   const [reason, setReason] = useState<ReviewReason | null>(initialReason);
-  const [view, setView] = useState<QueueView>("focus");
+  const [view, setView] = useState<QueueView>(documentId || initialReason ? "focus" : "document");
+  const values = view !== "document"; // the value views: One at a time and All items
   // Focus mode: the card shown (its place in the list) and how many were settled in this visit.
   const [index, setIndex] = useState(0);
   const [done, setDone] = useState(0);
@@ -111,6 +117,7 @@ function Queue({ documentId, initialReason }: { documentId?: string; initialReas
   };
 
   useEffect(() => {
+    if (!values) return; // By document asks for its own list (ReviewDocuments.tsx)
     let cancelled = false;
     listReview(queueParams(0, PAGE_SIZE, documentId, reason))
       .then((result) => {
@@ -126,7 +133,7 @@ function Queue({ documentId, initialReason }: { documentId?: string; initialReas
     return () => {
       cancelled = true;
     };
-  }, [attempt, documentId, reason]);
+  }, [attempt, documentId, reason, values]);
 
   useEffect(() => {
     const id = focusNext.current;
@@ -247,33 +254,33 @@ function Queue({ documentId, initialReason }: { documentId?: string; initialReas
   return (
     <div className="page">
       <Header back={back} />
-      {/* desktop/Review.html: the reasons as a row of pill chips, the one shown pressed. */}
-      <div className={`k-chip-row ${styles.reasons}`} role="group" aria-label="Show values where">
-        {[{ value: null, text: "Any reason" }, ...REASON_FILTERS].map((choice) => (
-          <button
-            key={choice.value ?? "any"}
-            type="button"
-            className="k-chip"
-            aria-pressed={reason === choice.value}
-            // A "Show more" still loading belongs to the old filter: wait for it. So does Verify all.
-            disabled={loadingMore || verifyingAll}
-            onClick={() => {
-              if (reason === choice.value) return;
-              setMoreError(null);
-              setAllResult(null);
-              setConfirmingAll(false);
-              setReason(choice.value);
-              // In the address too, so a document opened from a card leads back to this list (#436).
-              window.history.replaceState(null, "", reviewHref(documentId, choice.value));
-              setIndex(0);
-              setDone(0);
-              setAttempt((n) => n + 1); // the loading state until the filtered list comes
-            }}
-          >
-            {choice.text}
-          </button>
-        ))}
-      </div>
+      {/* PRD 9 F-17: the reasons in one Filter menu, the one shown said on its button. */}
+      {values ? (
+        <div className={styles.reasons}>
+          <RowMenu
+            name="the reasons"
+            label={`Filter: ${reasonText(reason)}`}
+            items={[{ value: null, text: "Any reason" }, ...REASON_FILTERS].map((choice) => ({
+              label: choice.text,
+              description: reason === choice.value ? "Shown now" : undefined,
+              // A "Show more" still loading belongs to the old filter: wait for it. So does Verify all.
+              disabledReason: loadingMore || verifyingAll ? "Wait until the list has loaded." : null,
+              onSelect: () => {
+                if (reason === choice.value) return;
+                setMoreError(null);
+                setAllResult(null);
+                setConfirmingAll(false);
+                setReason(choice.value);
+                // In the address too, so a document opened from a card leads back to this list (#436).
+                window.history.replaceState(null, "", reviewHref(documentId, choice.value));
+                setIndex(0);
+                setDone(0);
+                setAttempt((n) => n + 1); // the loading state until the filtered list comes
+              },
+            }))}
+          />
+        </div>
+      ) : null}
       {/* Native radios: arrow keys move between them, and Tab stops once (R6). */}
       <div className={styles.segments} role="radiogroup" aria-label="Show">
         {QUEUE_VIEWS.map((choice) => (
@@ -289,6 +296,7 @@ function Queue({ documentId, initialReason }: { documentId?: string; initialReas
           </label>
         ))}
       </div>
+      {view === "document" ? <ReviewDocuments /> : null}
       <p className={announcement ? styles.saved : "visually-hidden"} aria-live="polite">
         {announcement ? <Icon name="check-seal" size={16} /> : null}
         {announcement}
@@ -305,7 +313,7 @@ function Queue({ documentId, initialReason }: { documentId?: string; initialReas
         </p>
       ) : null}
 
-      {failed && !loaded ? (
+      {values && failed && !loaded ? (
         <div className={styles.errorBanner} role="alert">
           <Icon name="alert" className={styles.errorIcon} />
           <div className={styles.errorBody}>
@@ -319,7 +327,7 @@ function Queue({ documentId, initialReason }: { documentId?: string; initialReas
         </div>
       ) : null}
 
-      {!loaded && !failed ? (
+      {values && !loaded && !failed ? (
         <>
           <p className="visually-hidden" role="status">
             Loading the review queue…
@@ -333,7 +341,7 @@ function Queue({ documentId, initialReason }: { documentId?: string; initialReas
         </>
       ) : null}
 
-      {loaded ? (
+      {values && loaded ? (
         loaded.total === 0 ? (
           <EmptyState
             icon="check-seal"
@@ -422,20 +430,6 @@ function Queue({ documentId, initialReason }: { documentId?: string; initialReas
                 ) : (
                   <p className="muted">Loading the next value…</p>
                 )
-              ) : view === "document" ? (
-                groupByDocument(loaded.items).map((group) => (
-                  <section key={group.id} className={styles.group} aria-labelledby={`review-group-${group.id}`}>
-                    <h2 id={`review-group-${group.id}`} className={styles.groupHeading}>
-                      {group.name}
-                      <span className="muted">{` · ${group.items.length} shown`}</span>
-                    </h2>
-                    <div className={styles.cards}>
-                      {group.items.map((item) => (
-                        <ReviewCard key={item.value.id} item={item} onResolved={onResolved} />
-                      ))}
-                    </div>
-                  </section>
-                ))
               ) : (
                 <div className={styles.cards}>
                   {loaded.items.map((item) => (

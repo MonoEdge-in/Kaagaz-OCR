@@ -68,9 +68,13 @@ describe("Review (R2 to R6)", () => {
     expect(focusIndexAfter(list(0, 0), 0)).toBeNull();
   });
 
-  it("R3: shows one card at a time by default, with Skip and the keys on it", () => {
+  // Changed on purpose (PRD 9 F-17): one card at a time is the default for one document's or one
+  // reason's values; Review itself opens on By document.
+  it("R3: shows one card at a time for one document's or one reason's values, with Skip and the keys on it", () => {
     const queue = read("components/review/ReviewQueue.tsx");
-    expect(queue).toContain('useState<QueueView>("focus")');
+    // Changed on purpose (PRD 9 F-17): Review opens on By document; one document's or one reason's
+    // values (from the address) still open one at a time.
+    expect(queue).toContain('useState<QueueView>(documentId || initialReason ? "focus" : "document")');
     expect(queue).toContain("<ReviewCard key={shown.value.id} item={shown} onResolved={onResolved} onSkip={skip} />");
     const card = read("components/review/ReviewCard.tsx");
     expect(card).toContain("onKeyDown={onSkip ? onKeyDown : undefined}");
@@ -88,7 +92,8 @@ describe("Review (R2 to R6)", () => {
   });
 
   it("R6: picks the view with one segmented control of native radios", () => {
-    expect(QUEUE_VIEWS.map((view) => view.text)).toEqual(["One at a time", "All items", "By document"]);
+    // Changed on purpose (PRD 9 F-17): By document first, the view Review opens on.
+    expect(QUEUE_VIEWS.map((view) => view.text)).toEqual(["By document", "One at a time", "All items"]);
     const queue = read("components/review/ReviewQueue.tsx");
     expect(queue).toContain('role="radiogroup" aria-label="Show"');
     expect(queue).not.toContain('type="checkbox"');

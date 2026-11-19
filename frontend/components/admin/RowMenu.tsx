@@ -46,18 +46,21 @@ function moveFocus(event: KeyboardEvent<HTMLDivElement>) {
  * `name` says whose actions they are ("Ravi Sharma"), for screen readers. `compact`: an
  * icon-only ⋯ button instead of "More" (a narrow list, Ask screen polish, 17 Oct 2026).
  * `status`: the compact button's own name, tooltip and class when it also carries a state
- * (a summary card value not checked yet, #453).
+ * (a summary card value not checked yet, #453). `label`: the button's words in place of "More"
+ * (PRD 9 F-17: Review's "Filter: Any reason").
  */
 export function RowMenu({
   name,
   items,
   compact = false,
   status,
+  label,
 }: {
   name: string;
   items: RowMenuItem[];
   compact?: boolean;
   status?: { label: string; tip: string; className: string };
+  label?: string;
 }) {
   const id = useId();
   const anchor = `--row-menu-${id.replace(/[^\w-]/g, "")}`;
@@ -82,8 +85,8 @@ export function RowMenu({
           aria-haspopup="menu"
           style={{ anchorName: anchor }}
         >
-          More
-          <span className="visually-hidden"> actions for {name}</span>
+          {label ?? "More"}
+          {label ? null : <span className="visually-hidden"> actions for {name}</span>}
           <Icon name="chevron-right" size={14} className={styles.rowMenuCaret} />
         </button>
       )}
