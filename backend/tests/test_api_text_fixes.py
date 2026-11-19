@@ -8,10 +8,13 @@ copy (``views.clear_line``): its key, its text now, and the correction in force 
 from typing import Any
 
 import pytest
+from sqlalchemy import text
 
+from kaagaz.chunking.piece import Piece
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.extraction.flags import word_key
+from kaagaz.extraction.values import ExtractedValue
 from kaagaz.pipeline import DocumentContent, PageRecord, ReaderOutput
 from kaagaz.reading.spans import BoxLocation, PageInfo, Span, location_to_json
 from tests.test_api_support import CSRF, Api, Signed
@@ -131,3 +134,101 @@ def test_confirming_a_line_after_a_word_fixed_in_it_keeps_the_fix(db: Database) 
     assert (line["text"], line["correction"]["change_id"]) == ("नमस्ते दुनिया मुंबई", fixed.json()["change"]["id"])
     clean = reviewer.client.get(f"/api/documents/{document_id}/clear-copy").json()["pages"][0]["lines"][1]
     assert clean["text"] == "नमस्ते दुनिया मुंबई"
+
+
+# #685: a word whose text is in its line more than once ("[?] Sharma [?]") is written in its own place:
+# its rank among the line's flags with that text, left to right, stored with the change.
+TWICE_BOX = BoxLocation(1, 0.1, 0.5, 0.9, 0.55)
+FIRST_BOX = BoxLocation(1, 0.1, 0.5, 0.2, 0.55)
+SECOND_BOX = BoxLocation(1, 0.7, 0.5, 0.8, 0.55)
+TWICE = "[?] Sharma [?]"
+VALUE_ROW = "SELECT value_text FROM extracted_values WHERE document_id = :d"
+PIECE_ROW = "SELECT text FROM pieces WHERE document_id = :d ORDER BY seq"
+
+
+def scan_twice(api: Api, customer_id: str) -> str:
+    """A line holding [?] twice, each its own mark; a value that is the whole line; a piece holding
+    the line and one more [?] on another line."""
+    document_id = api.add_document(customer_id, detected_type="jpeg")
+    spans = (
+        Span(TWICE, TWICE, TWICE_BOX, 0.9, "paragraph", "ocr", quality="ok", box_source="found"),
+        Span(CITY, CITY_RAW, CITY_BOX, 0.97, "paragraph", "ocr", quality="ok", box_source="found"),
+        Span("[?]", "[?]", SECOND_BOX, 0.2, None, "ocr", quality="illegible"),
+        Span("[?]", "[?]", FIRST_BOX, 0.2, None, "ocr", quality="illegible"),
+    )
+    pages = [PageRecord(PageInfo(1, 595.0, 842.0, "pt"), True, "ocr")]
+    outputs = [ReaderOutput("first", "google/gemini-3.1-pro-preview", "1", spans)]
+    pieces = [Piece(customer_id, document_id, f"{TWICE}\n{CITY}", (TWICE_BOX, CITY_BOX), "verified")]
+    value = ExtractedValue(
+        "document", "buyer_name", TWICE, TWICE, TWICE_BOX, 0.9, None, "needs_review", "low_confidence", None
+    )
+    content = DocumentContent(customer_id, document_id, pages, outputs, pieces, [value], reader="gemini")
+    PgPipelineStore(api.db).save(content)
+    return document_id
+
+
+def stored(api: Api, customer_id: str, sql: str, document_id: str) -> list[str]:
+    with api.db.customer(customer_id) as conn:
+        return [str(row[0]) for row in conn.execute(text(sql), {"d": document_id}).all()]
+
+
+def edit_mark(signed: Signed, document_id: str, location: BoxLocation, typed: str) -> Any:
+    mark = key("mark", location, "[?]")
+    body = {"text": typed, "expected_text": "[?]"}
+    return signed.client.post(f"/api/documents/{document_id}/flags/{mark}/edit", json=body, headers=CSRF)
+
+
+def test_a_word_twice_in_its_line_is_fixed_in_its_own_place_everywhere(db: Database) -> None:
+    api = Api(db)
+    reviewer = api.new_signed("reviewer")
+    document_id = scan_twice(api, reviewer.customer_id)
+
+    second = edit_mark(reviewer, document_id, SECOND_BOX, "Traders")
+
+    assert second.status_code == 200, second.text
+    assert text_tab(reviewer, document_id)[0]["text"] == "[?] Sharma Traders"
+    assert stored(api, reviewer.customer_id, PIECE_ROW, document_id) == [f"[?] Sharma Traders\n{CITY}"]
+    assert stored(api, reviewer.customer_id, VALUE_ROW, document_id) == ["[?] Sharma Traders"]
+
+    first = edit_mark(reviewer, document_id, FIRST_BOX, "Ravi")  # now once in the line: as before
+
+    assert first.status_code == 200, first.text
+    line = text_tab(reviewer, document_id)[0]
+    assert (line["text"], line["correction"]["change_id"]) == (
+        "Ravi Sharma Traders",
+        first.json()["change"]["id"],
+    )
+    clean = reviewer.client.get(f"/api/documents/{document_id}/clear-copy").json()["pages"][0]["lines"][0]
+    assert clean["text"] == "Ravi Sharma Traders"
+    assert stored(api, reviewer.customer_id, PIECE_ROW, document_id) == [f"Ravi Sharma Traders\n{CITY}"]
+
+    for change in (first, second):  # the latest first
+        undone = reviewer.client.post(
+            f"/api/documents/{document_id}/changes/{change.json()['change']['id']}/undo", headers=CSRF
+        )
+        assert undone.status_code == 200, undone.text
+    assert text_tab(reviewer, document_id)[0]["text"] == TWICE
+    assert stored(api, reviewer.customer_id, PIECE_ROW, document_id) == [f"{TWICE}\n{CITY}"]
+    assert stored(api, reviewer.customer_id, VALUE_ROW, document_id) == [TWICE]
+
+
+def test_a_word_twice_in_its_line_whose_place_is_not_known_is_refused(db: Database) -> None:
+    # Only one of the two [?] is flagged: which one it is can't be told, so nothing is guessed.
+    api = Api(db)
+    reviewer = api.new_signed("reviewer")
+    document_id = api.add_document(reviewer.customer_id, detected_type="jpeg")
+    spans = (
+        Span(TWICE, TWICE, TWICE_BOX, 0.9, "paragraph", "ocr", quality="ok", box_source="found"),
+        Span("[?]", "[?]", SECOND_BOX, 0.2, None, "ocr", quality="illegible"),
+    )
+    pages = [PageRecord(PageInfo(1, 595.0, 842.0, "pt"), True, "ocr")]
+    outputs = [ReaderOutput("first", "google/gemini-3.1-pro-preview", "1", spans)]
+    PgPipelineStore(api.db).save(
+        DocumentContent(reviewer.customer_id, document_id, pages, outputs, [], [], reader="gemini")
+    )
+
+    reply = edit_mark(reviewer, document_id, SECOND_BOX, "Traders")
+
+    assert (reply.status_code, reply.json()["error"]["code"]) == (409, "twice"), reply.text
+    assert "Fix the whole line in Clean copy" in reply.json()["error"]["message"]
+    assert text_tab(reviewer, document_id)[0]["text"] == TWICE

@@ -63,6 +63,7 @@ gathers thousands of changes.
 """
 
 import json
+import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -81,6 +82,7 @@ from kaagaz.db.visibility import SEEN_DOCUMENT
 from kaagaz.extraction.flags import (
     COVERED_REASONS,
     LINE,
+    MARK,
     REVIEW,
     VALUE,
     Flag,
@@ -362,6 +364,10 @@ def change_word(
     after = before if new_text is None else new_text
     if line and after == names.one_line(shown):
         raise Refused("unchanged")
+    # #685: a word fixed where its text is in its line more than once goes in its own place.
+    place = None
+    if flag.kind == MARK and after != before and reading_id is None:
+        place = _place(conn, customer_id, document_id, flag, before, review, latest)
     action = "keep" if reading_id is not None else "confirm" if after == before and not line else "edit"
     inserted = conn.execute(
         _INSERT_CHANGE,
@@ -387,8 +393,21 @@ def change_word(
     if person:
         reviewed.add(key)
     applied = _apply(
-        conn, ids, flag, before, after, review.flags, reviewed, user_id, change_id, verify=person, votes=votes
+        conn,
+        ids,
+        flag,
+        before,
+        after,
+        review.flags,
+        reviewed,
+        user_id,
+        change_id,
+        verify=person,
+        votes=votes,
+        place=place,
     )
+    if place is not None:
+        applied["place"] = place  # read by line_now, and by reapply after a read again
     applied["flag"] = {"band": flag.band, "reason": flag.reason}
     if _keep_settled_page(conn, ids, flag, review.listed, latest, user_id, inserted.created_at):
         applied["kept"] = True
@@ -517,6 +536,7 @@ def reapply(
             change_id,
             verify=verify,
             only=only,
+            place=(change["applied"] or {}).get("place"),
         )
         before_applied = change["applied"] or {}
         if only is not None:
@@ -528,7 +548,7 @@ def reapply(
                 "values": skipped["values"] + applied["skipped"]["values"],
             }
         applied["flag"] = before_applied.get("flag")
-        for kept in ("kept", "line"):
+        for kept in ("kept", "line", "place"):
             if kept in before_applied:
                 applied[kept] = before_applied[kept]
         conn.execute(_SET_APPLIED, {"c": customer_id, "id": change_id, "applied": json.dumps(applied)})
@@ -618,6 +638,12 @@ def line_now(row: Mapping[Any, Any], live: Sequence[RowMapping]) -> tuple[str | 
     key, text_now, touched, word = line_key(row), str(row["as_read"]), False, None
     for change in live:
         before, after = str(change["before_text"]), str(change["after_text"])
+        place = (change["applied"] or {}).get("place")
+        if place is not None:  # #685: the word goes in its own place in its own line, no other
+            new = _put(text_now, before, after, place) if place["line"] == key else None
+            if new is not None:
+                text_now, touched, word = new, True, change
+            continue
         if change["word_key"] == key:
             if change["action"] == "edit" or before != after:
                 touched = touched or change["action"] == "edit" or after != text_now
@@ -657,6 +683,66 @@ def line_part(before: str, after: str, part: str) -> str | None:
         return None
     new = after[start : end + len(after) - len(before)]
     return new if new.strip() else None
+
+
+def _place(
+    conn: Connection,
+    customer_id: str,
+    document_id: str,
+    flag: Flag,
+    before: str,
+    review: Review,
+    latest: Mapping[str, RowMapping],
+) -> dict[str, Any] | None:
+    """#685: where a word goes in its line: the line's key and its text now, and the word's rank
+    (from 0) among the line's word marks with that text, left to right, so a piece holding the
+    text elsewhere too, or a line holding it twice, gets it in its own place. None when that can't
+    be told and the line holds the text once (it is written where it is there once, as before);
+    Refused (``twice``) when a line holds it more than once: never a guess. One statement more."""
+    live = [change for change in review.changes if change["undone_at"] is None]
+    held = []
+    for row in lines(conn, customer_id, document_id).values():
+        if int(row["page_no"]) == flag.page_no and _inside(flag.region, row["region"]):
+            now = line_text(row, live) or str(row["as_read"])
+            if occurrences(now, before) > 0:
+                held.append((row, now))
+    if len(held) == 1:
+        row, now = held[0]
+        same = [
+            each
+            for each in review.flags
+            if each.kind == MARK
+            and each.page_no == flag.page_no
+            and current_text(each, latest) == before
+            and _inside(each.region, row["region"])
+        ]
+        same.sort(key=lambda each: float(each.region["box"][0]) if "box" in each.region else 0.0)
+        keys = [each.key for each in same]
+        if len(same) == occurrences(now, before) and flag.key in keys:
+            return {"line": line_key(row), "text": now, "nth": keys.index(flag.key)}
+    if any(occurrences(now, before) > 1 for _, now in held):
+        raise Refused("twice")
+    return None
+
+
+def _put(text_now: str, before: str, after: str, place: Mapping[str, Any]) -> str | None:
+    """#685: ``text_now`` with the word in its place (``_place``): the line's ``nth`` ``before``,
+    where ``text_now`` holds the line once (a piece, or the line itself) or lies once in it around
+    that word (a value on the line); else None. O(len(text_now) + len(line))."""
+    line, nth = str(place["text"]), int(place["nth"])
+    starts = [found.start() for found in re.finditer(f"(?={re.escape(before)})", line)] if before else []
+    if nth >= len(starts):
+        return None
+    at = starts[nth]
+    if occurrences(text_now, line) == 1:
+        at += text_now.index(line)
+    elif occurrences(line, text_now) == 1 and line.index(text_now) <= at <= line.index(text_now) + len(
+        text_now
+    ) - len(before):
+        at -= line.index(text_now)
+    else:
+        return None
+    return text_now[:at] + after + text_now[at + len(before) :]
 
 
 def _same(a: str, b: str) -> int:
@@ -732,10 +818,12 @@ def _apply(
     verify: bool = True,
     votes: Mapping[str, Any] | None = None,
     only: Collection[str] | None = None,
+    place: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write one change into the values and pieces of the word's page, and verify each
     value whose box flags are all reviewed. Returns what was written (``applied``), and how
-    many values and pieces over the word were not (``skipped``, #527 review). With
+    many values and pieces over the word were not (``skipped``, #527 review). With ``place``
+    (#685, ``_place``) a word whose text is there more than once goes in its own place (``_put``). With
     ``verify`` False (a Keep) no value is Verified and a Verified one is left as it is;
     ``votes`` go on the flag's own value."""
     params = {**ids, "p": flag.page_no}
@@ -751,6 +839,8 @@ def _apply(
         new: str | None = None
         if mine and after != text_now:
             new = after
+        elif not mine and place is not None and before != after and occurrences(text_now, before) > 1:
+            new = _put(text_now, before, after, place)
         elif not mine and before != after and occurrences(text_now, before) == 1:
             new = text_now.replace(before, after, 1)
         elif not mine and flag.kind == LINE and before != after and _inside(value["region"], flag.region):
@@ -797,10 +887,13 @@ def _apply(
             old = str(piece["text"])
             if not any(_holds(region, flag.region) for region in piece["regions"]):
                 continue
-            if occurrences(old, before) != 1:
+            if occurrences(old, before) == 1:
+                new_piece: str | None = old.replace(before, after, 1)
+            else:  # #685: in its own place, else not written
+                new_piece = None if place is None else _put(old, before, after, place)
+            if new_piece is None:
                 skipped["pieces"] += 1
                 continue
-            new_piece = old.replace(before, after, 1)
             latin = piece_latin(new_piece)
             conn.execute(_SET_PIECE_TEXT, {**ids, "id": str(piece["id"]), "t": new_piece, "latin": latin})
             written_pieces.append(

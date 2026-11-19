@@ -66,8 +66,17 @@ MESSAGES = {
     "empty_text": "Type the correct text.",
     "hidden_text": "Type the line without line breaks or hidden characters.",
     "unchanged": "The line already reads that way.",
+    "twice": "This word appears more than once in its line, and which one it is can't be told."
+    " Fix the whole line in Clean copy instead.",
 }
-STATUS = {"not_found": 404, "in_trash": 409, "not_ready": 409, "changed_since": 409, "not_latest": 409}
+STATUS = {
+    "not_found": 404,
+    "in_trash": 409,
+    "not_ready": 409,
+    "changed_since": 409,
+    "not_latest": 409,
+    "twice": 409,
+}
 ENSEMBLE_WAIT = "Ensemble is available when scanning finishes."
 ENSEMBLE_ROLE = "Only reviewers and admins can run Ensemble."
 ENSEMBLE_OFF = "Ensemble is not turned on for your organisation."

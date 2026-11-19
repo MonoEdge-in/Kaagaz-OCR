@@ -16,7 +16,7 @@ import { AttentionPanel, attentionCount } from "@/app/(app)/documents/[id]/Docum
 import { ALL_CHECKED, toSettle } from "@/components/viewer/pageProblems";
 import { openMarks, pageMarkName } from "@/components/viewer/readingMarks";
 import * as scanned from "@/components/viewer/scanned";
-import { TWICE, fixBox, rowFlag, seenTwice, squash, wordToFix } from "@/components/viewer/scanned";
+import { fixBox, rowFlag, squash, wordToFix } from "@/components/viewer/scanned";
 import type { PageSummary, ReadingMark, WordFlag } from "@/lib/types";
 
 const ROOT = join(__dirname, "..");
@@ -203,19 +203,19 @@ describe("PRD 9 F-14 Needs attention: one number, open items only", () => {
 });
 
 // PRD 9 review of #683.
-describe("PRD 9 F-13 review: an empty [?] is never confirmed, and a word twice in its line is not saved blind", () => {
+describe("PRD 9 F-13 review: an empty [?] is never confirmed, and a word twice in its line goes to the server", () => {
   it("asks for the word when Save is pressed on an empty [?] box, never confirms it as read", () => {
     expect(fixBox({ text: "[?]" }).draft).toBe("");
     expect(PANEL).toContain('if (typed === "" && !asRead) return setFixing({ ...fixing, error: "Type the word you see on the page." });');
   });
 
-  it("says to fix the whole line when the word is in it more than once, and saves nothing", () => {
-    const twice = flag("mark", "[?]", [0.1, 0.1, 0.2, 0.15]);
-    expect(seenTwice(twice, { text: "[?] Sharma  [?]" })).toBe(true);
-    expect(seenTwice(twice, { text: "[?] Sharma Traders" })).toBe(false);
-    expect(seenTwice(flag("line", "[?] Sharma [?]", BLOCK), { text: "[?] Sharma [?]" })).toBe(false); // the line itself
-    expect(TWICE).toBe("This word appears more than once in the line. Fix the whole line in Clean copy instead.");
-    expect(PANEL).toContain("if (!asRead && seenTwice(flag, row)) return setFixing({ ...fixing, error: TWICE });");
+  // Changed on purpose (#685): the server places a word that is in its line more than once (its rank
+  // among the line's marks with that text, test_api_text_fixes.py); where it can't tell, it refuses
+  // (409 twice) and the box shows its words. So the panel no longer refuses on its own.
+  it("leaves a word twice in its line to the server, which places it or says why not", () => {
+    expect(scanned).not.toHaveProperty("seenTwice");
+    expect(PANEL).not.toContain("seenTwice");
+    expect(PANEL).toContain("else setFixing((now) => now && { ...now, busy: false, error: done.message });");
   });
 
   it("says Could not count in the header when the words could not be loaded, not a spinner for ever", () => {

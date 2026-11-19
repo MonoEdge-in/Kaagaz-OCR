@@ -278,11 +278,3 @@ export function rowFlag<T extends Pick<WordFlag, "region" | "as_read" | "word_ke
   return flags.find((each) => sameRegion(each.region, row.region) && own(each));
 }
 
-// PRD 9 review of #683: a word's fix is written where its text is in its line once only
-// (word_review.line_now, as the search pieces): said instead of saving a fix that could not show.
-export const TWICE = "This word appears more than once in the line. Fix the whole line in Clean copy instead.";
-
-/** True when a word or value flag's text is in its line more than once, so its fix has no one place. */
-export function seenTwice(flag: Pick<WordFlag, "kind" | "text">, row: Pick<ReadLine, "text">): boolean {
-  return flag.kind !== "line" && flag.text !== "" && squash(row.text).split(flag.text).length > 2;
-}
