@@ -165,6 +165,9 @@ export const CARD = {
   title: "Everyone can see every file today.",
   text: "Want to keep some files to some people?",
   steps: ["Name a head for each department.", "Keep a department to its people.", "Make private folders."],
+  // #701: heads named alone keep no file to anyone; said in place of the text and steps.
+  headsOnly:
+    "Heads are named, but every file is still open to everyone. Make a department Department only, or a folder private, to keep files to some people.",
   setUp: "Set up access",
   notNow: "Not now",
 } as const;
