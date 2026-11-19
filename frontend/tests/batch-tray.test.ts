@@ -87,6 +87,7 @@ const TRAY = {
   onClearFinished: () => undefined,
   onRestore: () => undefined,
   onRetry: () => undefined,
+  onRemove: () => undefined, // PRD 9 F-04: a row not uploaded can be removed
   tree: buildTree([]),
   onUndone: () => undefined,
   canReread: true,
@@ -164,6 +165,14 @@ describe("each file's place in the tray", () => {
     const tray = (checkFailing: boolean) => renderToStaticMarkup(createElement(BatchTray, { ...TRAY, entries: rows, checkFailing }));
     expect(tray(true)).toContain(CANT_CHECK_TEXT);
     expect(tray(false)).not.toContain(CANT_CHECK_TEXT);
+  });
+
+  it("offers Remove on each row not uploaded, failed or refused, and on no other (PRD 9 F-04)", () => {
+    const tray = (entries: UploadEntry[]) => renderToStaticMarkup(createElement(BatchTray, { ...TRAY, entries }));
+    const refused = row("macro", { kind: "error", message: "Kaagaz can’t read .docm files." });
+    const lost = row("lost", { kind: "error", message: "Not sent.", retry: true });
+    expect(tray([refused, lost]).match(/>Remove<span class="visually-hidden"> (macro|lost)\.pdf</g)).toHaveLength(2);
+    expect(tray([row("ready", done(doc("r")))])).not.toContain(">Remove<");
   });
 
   it("offers Retry all not sent on a drop with two or more files not sent, and not with one", () => {

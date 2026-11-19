@@ -252,7 +252,7 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
         />
       )}
       <UploadStatus
-        folderText={folderUploads.views.map((view) => view.spoken).join(" · ")}
+        folderText={[...folderUploads.views.map((view) => view.spoken), uploads.skipped].filter(Boolean).join(" · ")}
         folderRows={
           folderUploads.views.length === 0
             ? null
@@ -288,6 +288,7 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
         onClearFinished={uploads.clearFinished}
         onRestore={(key, documentId, name) => void uploads.restore(key, documentId, name)}
         onRetry={(key) => void uploads.retry(key)}
+        onRemove={uploads.remove}
         tree={tree}
         onUndone={notify}
         canReread={canReview(me.user.role)}

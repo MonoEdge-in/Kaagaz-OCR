@@ -95,7 +95,7 @@ import {
 import type { StoredBatch } from "./batchTray";
 import { BusyLabel } from "./BusyLabel";
 import { MoveDialog } from "./DocumentActions";
-import { droppedItems } from "./folderPick";
+import { droppedItems, isSkipped } from "./folderPick";
 import { pathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
 import { ALL_DOCUMENTS, libraryHref } from "./libraryQuery";
@@ -120,7 +120,7 @@ import type { UploadState } from "./logic";
 import { checkPages } from "./pageCount";
 import { capReaders, effectiveOf, startReader, useAiSettings } from "@/lib/aiSettings";
 import { DUPLICATE_READER_NOTE, offersChoice, pickedReader, readerOptions, readingToSend } from "./readers";
-import { EMPTY_QUEUE, UPLOADS_AT_ONCE, askBatches, createSlots, followed, isBusy, queueReducer, uploadsAtRisk } from "./uploadQueue";
+import { EMPTY_QUEUE, UPLOADS_AT_ONCE, askBatches, createSlots, followed, isBusy, queueReducer, skippedText, uploadsAtRisk } from "./uploadQueue";
 import type { Followed, UploadEntry } from "./uploadQueue";
 import { NO_TIMES, jobFraction, nextShown, stageOf, valueText } from "./uploadStages";
 import type { Shown, Stage, StageTimes } from "./uploadStages";
@@ -165,6 +165,7 @@ export function useUploads(onUploaded: () => void) {
   const [stored, setStored] = useState<StoredBatch[]>(() => readStored(batchStore(), Date.now()));
   // Drops from before a reload: every file the batch API lists gets a row.
   const [restored] = useState(() => new Set(stored.map((batch) => batch.id)));
+  const [skipped, setSkipped] = useState(""); // PRD 9 F-04: the last pick's system files, in words
   const [views, setViews] = useState<Record<string, BatchView>>({});
   const [slots] = useState(() => createSlots(UPLOADS_AT_ONCE)); // Q2: 3 files at a time in all
 
@@ -353,7 +354,9 @@ export function useUploads(onUploaded: () => void) {
   async function addFiles(files: File[], folderId?: string, departmentId?: string) {
     const userId = me.user.id;
     const reading = readingToSend(limits.readers, reader);
-    const batches = inBatches(files).map((group) => ({ batchId: newBatchId(), group }));
+    // PRD 9 F-04: system files (.DS_Store, Thumbs.db, desktop.ini) are left out, as from a folder pick; one line says so.
+    setSkipped(skippedText(files.filter((file) => isSkipped(file.name)).map((file) => file.name)));
+    const batches = inBatches(files.filter((file) => !isSkipped(file.name))).map((group) => ({ batchId: newBatchId(), group }));
     const added = batches.flatMap(({ batchId, group }) => group.map((file) => {
       nextKey.current += 1;
       const problem = validateUpload(file, limits);
@@ -424,10 +427,17 @@ export function useUploads(onUploaded: () => void) {
     }
   }
 
+  /** PRD 9 F-04: a row not uploaded (failed or refused) goes; the file this tab held for Retry too. */
+  function remove(key: string) {
+    kept.current.delete(key);
+    dispatch({ type: "remove", key });
+  }
+
   /** The finished rows go, and so do the drops with nothing left to follow. */
   function clearFinished() {
     const busy = new Set(queue.entries.filter(isBusy).map((entry) => entry.batchId));
     dispatch({ type: "clear" });
+    setSkipped("");
     setStored((batches) => batches.filter((batch) => busy.has(batch.id)));
   }
 
@@ -449,6 +459,8 @@ export function useUploads(onUploaded: () => void) {
     addVersion,
     restore,
     retry,
+    remove,
+    skipped,
     clearFinished,
   };
 }
@@ -729,6 +741,7 @@ export function BatchTray({
   onClearFinished,
   onRestore,
   onRetry,
+  onRemove,
   tree,
   onUndone,
   canReread,
@@ -742,6 +755,7 @@ export function BatchTray({
   onClearFinished: () => void;
   onRestore: (key: string, documentId: string, existingName: string) => void;
   onRetry: (key: string) => void;
+  onRemove?: (key: string) => void; // PRD 9 F-04: a row not uploaded, when given
   tree: FolderTree; // for "Filed into Invoices" (feature 28)
   onUndone: () => void;
   canReread: boolean; // a reviewer or an admin: may read a document again
@@ -772,6 +786,7 @@ export function BatchTray({
       onDecided={keep}
       onRestore={onRestore}
       onRetry={onRetry}
+      onRemove={onRemove}
       tree={tree}
       onUndone={onUndone}
       canReread={canReread}
@@ -1004,6 +1019,7 @@ function UploadRow({
   onDecided,
   onRestore,
   onRetry,
+  onRemove,
   tree,
   onUndone,
   canReread,
@@ -1013,6 +1029,7 @@ function UploadRow({
   onDecided(suggestion: VersionSuggestion, chosen: Chosen, undone: boolean): void;
   onRestore: (key: string, documentId: string, existingName: string) => void;
   onRetry: (key: string) => void;
+  onRemove?: (key: string) => void;
   tree: FolderTree;
   onUndone: () => void;
   canReread: boolean;
@@ -1137,6 +1154,12 @@ function UploadRow({
           <button type="button" className={`btn ${styles.inlineAction}`} onClick={() => onRetry(entry.key)}>
             <Icon name="refresh" />
             Retry<span className="visually-hidden">{` ${entry.name}`}</span>
+          </button>
+        )}
+        {state.kind === "error" && onRemove && (
+          <button type="button" className={`btn ${styles.inlineAction}`} onClick={() => onRemove(entry.key)}>
+            <Icon name="close" />
+            Remove<span className="visually-hidden">{` ${entry.name}`}</span>
           </button>
         )}
         {story !== null && (

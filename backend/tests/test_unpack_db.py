@@ -198,6 +198,21 @@ def test_a_file_whose_only_copy_was_refused_is_stored_again_from_the_zip(unpacki
     assert unpacking.rows("SELECT id FROM documents WHERE id = :d", d=refused.document_id) == []
 
 
+def test_a_file_whose_copy_failed_in_trash_is_still_a_duplicate_from_the_zip(unpacking: Unpacking) -> None:
+    """PRD 9 F-03: the worker has no person, so it can't tell whether the zip's uploader sees a failed
+    copy in Trash; it is kept, as before (only an upload by a person replaces it)."""
+    failed = unpacking.upload(b"failed,once\n1,2\n", "earlier.csv")
+    unpacking.execute(
+        "UPDATE documents SET status = 'failed', deleted_at = now() WHERE id = :d", d=failed.document_id
+    )
+    data = make_zip([("c.csv", b"failed,once\n1,2\n")])
+    record = unpacking.upload(data)
+    unpacking.unpack(record, data)
+    found = unpacking.result(record)
+    assert found is not None and (found.stored, found.duplicate, found.failed) == (0, 1, 0)
+    assert len(unpacking.rows("SELECT id FROM documents WHERE id = :d", d=failed.document_id)) == 1
+
+
 def test_a_second_zip_of_the_same_name_gets_a_folder_of_its_own(unpacking: Unpacking) -> None:
     with unpacking.db.customer(unpacking.customer_id) as conn:
         insert_folder(conn, unpacking.customer_id, unpacking.user_id, "Archive")

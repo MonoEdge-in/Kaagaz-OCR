@@ -51,7 +51,9 @@ export type QueueEvent =
   // A batch's documents as GET /api/batches/{id} gave them: each file's own row follows
   // its document; with add (a drop from before a reload), the others get rows too.
   | { type: "batch"; batchId: string; documents: DocumentSummary[]; add: boolean }
-  | { type: "clear" };
+  | { type: "clear" }
+  // PRD 9 F-04: one failed or refused row taken out (its Remove button); any other row stays.
+  | { type: "remove"; key: string };
 
 export const isBusy = (entry: UploadEntry) =>
   entry.state.kind === "waiting" ||
@@ -60,6 +62,13 @@ export const isBusy = (entry: UploadEntry) =>
   entry.state.kind === "saving" ||
   entry.state.kind === "reading" ||
   entry.state.kind === "restoring";
+
+/** PRD 9 F-04: the files a pick left out (folderPick's isSkipped), said once in the status line; "" for none. */
+export function skippedText(names: readonly string[]): string {
+  if (names.length === 0) return "";
+  const files = names.length === 1 ? "hidden or system file" : "hidden or system files";
+  return `Skipped ${names.length} ${files} (${names.slice(0, 3).join(", ")}${names.length > 3 ? ", …" : ""}).`;
+}
 
 /** #468: a file still in this tab only (waiting or sending): leaving the page now would lose it. */
 export const uploadsAtRisk = (entries: readonly Pick<UploadEntry, "state">[]) =>
@@ -129,6 +138,11 @@ export function queueReducer(queue: UploadQueue, event: QueueEvent): UploadQueue
     }
     case "clear":
       return { ...queue, entries: queue.entries.filter(isBusy), finished: null };
+    case "remove":
+      return {
+        ...queue,
+        entries: queue.entries.filter((entry) => entry.key !== event.key || entry.state.kind !== "error"),
+      };
   }
 }
 
