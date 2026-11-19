@@ -435,6 +435,8 @@ NOT_EXISTS_CHECKED: dict[tuple[str, str], str] = {
     ("answering/fixed_queries.py", "_EXTREME_VALUE"): "SAME:the visible document's own invoice",
     ("answering/fixed_queries.py", "_TOP_GROUP"): "SAME:the visible document's own invoice",
     ("answering/hard_to_read.py", "_WORD_MARKS"): "SAME:the visible document's own word changes",
+    # Changed on purpose (PRD 9 F-17, #673): an Ensemble line is open while no change in force has its key.
+    ("db/listing.py", "_NEEDS_ATTENTION"): "SAME:the visible document's own word changes",
     ("db/chat.py", "MARKS"): "SAME:the visible document's own learning removals",
     ("db/documents.py", "REFUSED_ALONE"): _ALL_OR_NONE,
     ("db/folder_uploads.py", "_INSERT_LEVEL"): "FEWER_OK:Q12, a hidden sibling's name meets its unique index",
