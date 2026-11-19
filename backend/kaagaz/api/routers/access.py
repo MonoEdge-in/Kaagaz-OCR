@@ -289,6 +289,50 @@ def get_user_access(user_id: uuid.UUID, user: AdminSession, context: Context) ->
     }
 
 
+@router.get("/me/access")
+def get_my_access(user: User, context: Context) -> dict[str, Any]:
+    """My access (#707), any role: the Access page's lists for the caller only, ``{management,
+    departments: [{id, name, head, department_only}], private_folders: [{id, name, path}], files:
+    [{id, name, path, given_at, given_by}], walled}``; ``files`` only those they can still see,
+    ``given_by`` a name (None: Kaagaz gave it), paths through the folders they see. Nothing kept from
+    them is named or counted: ``walled`` (as /auth/me's) says only that some files are kept to some
+    people."""
+    me, customer_id = user.user_id, user.customer_id
+    with context.db.user(customer_id, me) as conn:
+        management, _, _, walled = access_sql.me(conn)
+        member_of = access_sql.departments(conn, customer_id, me)
+        named = access_sql.named_on(conn, customer_id, me)
+        given = access_sql.given_to_me(conn, customer_id, me)
+        places = [str(row["id"]) for row in named] + [str(r["folder_id"]) for r in given if r["folder_id"]]
+        paths = access_sql.paths(conn, customer_id, places)
+    return {
+        "management": management,
+        "departments": [
+            {
+                "id": str(row["department_id"]),
+                "name": row["name"],
+                "head": bool(row["is_head"]),
+                "department_only": bool(row["department_only"]),
+            }
+            for row in member_of
+        ],
+        "private_folders": [
+            {"id": str(row["id"]), "name": row["name"], "path": paths.get(str(row["id"]))} for row in named
+        ],
+        "files": [
+            {
+                "id": str(row["id"]),
+                "name": row["display_name"],
+                "path": None if row["folder_id"] is None else paths.get(str(row["folder_id"])),
+                "given_at": iso(row["given_at"]),
+                "given_by": row["given_by"],
+            }
+            for row in given
+        ],
+        "walled": walled,
+    }
+
+
 @admin_router.put("/admin/users/{user_id}/management")
 def set_management(
     user_id: uuid.UUID,

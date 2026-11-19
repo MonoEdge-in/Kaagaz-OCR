@@ -391,12 +391,13 @@ export function AccessPageView({
   );
 }
 
-function LoadFailed({ failed, onRetry }: { failed: string; onRetry(): void }) {
+/** Shared with My access (#707), which says `title` in its own words. */
+export function LoadFailed({ failed, onRetry, title = ACCESS_PAGE.loadFailed }: { failed: string; onRetry(): void; title?: string }) {
   return (
     <div className={styles.errorBanner} role="alert">
       <Icon name="alert" className={styles.errorIcon} />
       <div className={styles.errorBody}>
-        <p className={styles.errorTitle}>{ACCESS_PAGE.loadFailed}</p>
+        <p className={styles.errorTitle}>{title}</p>
         <p>{failed}</p>
       </div>
       <button type="button" className="btn" onClick={onRetry}>
@@ -416,7 +417,8 @@ function BackLink() {
   );
 }
 
-function Section({
+/** Shared with My access (#707), read only there (`onGive` null). */
+export function Section({
   title,
   empty,
   onGive,

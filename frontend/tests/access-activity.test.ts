@@ -187,7 +187,8 @@ describe("Management's Access activity link and call", () => {
     navLinks(role, scope, management).map((link) => link.label);
 
   it("shows the link to Management only, never to an Admin (the Admin tab has it all)", () => {
-    expect(labels("member", "app", true)).toEqual(["Home", "Documents", "Ask", "My words", "Access activity"]);
+    // Changed on purpose (#707): My access, everyone's.
+    expect(labels("member", "app", true)).toEqual(["Home", "Documents", "Ask", "My words", "My access", "Access activity"]);
     expect(labels("reviewer", "app", true)).toContain("Access activity");
     // Changed on purpose (#706): an admin session also has Access, just above Admin.
     expect(labels("admin", "admin", true)).toEqual(["Home", "Documents", "Ask", "My words", "Review", "Access", "Admin"]);

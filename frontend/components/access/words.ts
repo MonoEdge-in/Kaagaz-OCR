@@ -124,6 +124,29 @@ export const ACCESS_LIST = {
   disabled: "Disabled", // the Users tab's word for a turned-off account
 } as const;
 
+// --- My access (#707): the person's own, and why ----------------------------------------------
+
+export const MY_ACCESS = {
+  title: "My access",
+  intro: "What you can see in Kaagaz, and why.",
+  loading: "Loading your access…",
+  loadFailed: "Could not load your access.",
+  departments: "Departments",
+  privateFolders: "Private folders",
+  files: "Files given to you",
+  management: "You see every file (Management).",
+  head: "You're its Head: you can see who has access to its files.",
+  named: "You're named on this private folder.",
+  noDepartments: "No departments yet.",
+  noFolders: "You aren't named on any private folder.",
+  noFiles: "No files have been given to you.",
+  kept: "Some files are kept to other people. Ask an admin if you need one.",
+} as const;
+export const memberWhy = (department: string, departmentOnly: boolean) =>
+  departmentOnly ? `${department} is Department only: you see its files because you're in it.` : `You're in ${department}.`;
+/** "Given to you by Ravi, 3 Nov 2026.", or "Given to you on 3 Nov 2026." when Kaagaz gave it (auto-filing). */
+export const givenWhy = (day: string, by: string | null) => (by ? `Given to you by ${by}, ${day}.` : `Given to you on ${day}.`);
+
 // --- the Departments tab -------------------------------------------------------------------------
 
 export const headLine = (heads: readonly Person[]) => (heads.length ? `Head: ${heads.map((h) => h.name).join(", ")}` : "No head yet");

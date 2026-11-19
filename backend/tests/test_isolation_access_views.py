@@ -345,8 +345,10 @@ def test_day_one_never_runs_the_given_or_lock_lookups(db: Database) -> None:
 VIEW_READERS = {
     # Changed on purpose (#601): the access API's writes, and 10b's Departments tab and one-time card.
     # Changed on purpose (#601, PR 10c): in_department (_ME); a folder holding what the person can't see.
+    # Changed on purpose (#707): My access, the files given to the caller that they can still see.
     "db/access.py": {
-        "_DEPARTMENTS", "_DEPARTMENT_LIST", "_HOLDS_PRIVATE", "_KEEPS", "_ME", "_NAMED_ON", "_PLACE",
+        "_DEPARTMENTS", "_DEPARTMENT_LIST", "_GIVEN_TO_ME", "_HOLDS_PRIVATE", "_KEEPS", "_ME", "_NAMED_ON",
+        "_PLACE",
     },
     # PR 8 (#602): Ask, reached from the API only (the SQL guard's worker test).
     "answering/clarify.py": {"_ANY_KEYS", "_CANDIDATES", "_NEAR", "_PICKED_PAGE"},
