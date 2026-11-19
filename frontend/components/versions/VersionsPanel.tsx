@@ -46,6 +46,7 @@ export function VersionsPanel({
   const [editing, setEditing] = useState<string | null>(null);
   const [linking, setLinking] = useState(false);
   const [undoPassword, setUndoPassword] = useState<string | null>(null); // null: not asked for
+  const noteId = useId();
   const linkable = canLink && !inTrash && detail.locked !== true;
   const canUndoLink = canLink && !inTrash && detail.version_link?.can_undo === true;
 
@@ -89,6 +90,17 @@ export function VersionsPanel({
         {VERSION_TEXT.versions}
       </h2>
       {versions.length < 2 && <p className="muted">{VERSION_TEXT.onlyOne}</p>}
+      {!canLink && !inTrash && detail.locked !== true && (
+        <div className={styles.versionActions}>
+          {/* #690: not hidden without a word; who may link is unchanged (mayLinkVersions). */}
+          <button type="button" className="btn" disabled aria-describedby={`${noteId}-link`}>
+            {LINK_TEXT.addVersion}
+          </button>
+          <p id={`${noteId}-link`} className={styles.bannerText}>
+            {LINK_TEXT.onlyManagers}
+          </p>
+        </div>
+      )}
       {(linkable || canUndoLink) && (
         <div className={styles.versionActions}>
           {linkable && (

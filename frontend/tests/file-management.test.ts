@@ -309,8 +309,10 @@ describe("the new-version banner (V6, V7)", () => {
     );
     expect(byName).toContain("This looks like a new version of &quot;7/12 Survey 44 Wakad.pdf&quot; (same name and same survey number).");
     // Changed on purpose (#521, Tushar's council): the two buttons and See the differences.
-    expect(ask).toContain(">Upload as a new version<");
-    expect(ask).toContain(">Upload as a new file<");
+    // Changed on purpose (#690): one wording everywhere; the file is already uploaded, so "Save as".
+    expect(ask).toContain(">Save as new version<");
+    expect(ask).toContain(">Keep both<");
+    expect(ask).toContain("Versions keep one file with its history. Search and Ask use the Current version."); // #690
     expect(ask).toContain(">See the differences<");
     expect(ask).toContain('href="/documents/d3/compare?with=d1"');
     expect(ask).toContain("Note for this version (optional)");

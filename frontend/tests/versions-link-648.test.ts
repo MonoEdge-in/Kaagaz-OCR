@@ -490,7 +490,10 @@ describe("the Versions tab (V13, V16)", () => {
     expect(panel(true, { version_link: { id: "l1", linked_at: "2026-11-16T10:00:00Z", can_undo: false } })).not.toContain(
       "Undo linking",
     );
-    expect(panel(false)).not.toContain("Add an older or newer version");
+    // Changed on purpose (#690): greyed out with the reason, never hidden without a word; never usable.
+    expect(panel(false)).toMatch(/<button[^>]*disabled=""[^>]*>Add an older or newer version<\/button>/);
+    expect(panel(false)).not.toMatch(/<button type="button" class="btn">Add an older or newer version<\/button>/);
+    expect(panel(false)).toContain("Only Management, or an Admin in an admin session, can link versions.");
     expect(panel(false)).not.toContain("Undo linking");
     expect(panel(true, { deleted_at: "2026-11-16T10:00:00Z" })).not.toContain("Add an older or newer version");
   });

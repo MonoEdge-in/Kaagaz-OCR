@@ -1,5 +1,5 @@
 // #521 (Tushar, 6 Nov 2026): a near match is only ever suggested, with two buttons, Upload as a
-// new version and Upload as a new file, the share of the text and See the differences (the
+// new version and Keep both, the share of the text and See the differences (the
 // banner, the upload tray's row and the compare screen); Make it a separate file on the
 // Versions tab. The server's side: backend tests/test_versions*.py.
 
@@ -60,7 +60,7 @@ describe("Pattern A: the words and the share of the text", () => {
     expect(bannerTitle("Lease.pdf", "99% the same text")).toBe('This looks like a new version of "Lease.pdf" (99% the same text).');
   });
 
-  it("highlights Upload as a new version for the same name (0.8 or more), else Upload as a new file", () => {
+  it("highlights Save as new version for the same name (0.8 or more), else Keep both", () => {
     expect(highlightVersion(suggestion({ name_similarity: 0.8 }))).toBe(true);
     expect(highlightVersion(suggestion({ name_similarity: 0.79 }))).toBe(false);
     expect(highlightVersion(suggestion({ name_similarity: null }))).toBe(false);
@@ -69,14 +69,14 @@ describe("Pattern A: the words and the share of the text", () => {
   it("renders the two buttons, the highlight by name and See the differences", () => {
     const other = render(createElement(VersionChoice, { suggestion: suggestion(), onDone: () => undefined }));
     expect(other).toContain('This looks like a new version of &quot;7/12 Survey 44 Wakad.pdf&quot; (86% the same text).');
-    expect(other).toMatch(/<button[^>]*data-highlight="false"[^>]*>Upload as a new version<\/button>/);
-    expect(other).toMatch(/<button[^>]*data-highlight="true"[^>]*>Upload as a new file<\/button>/); // the NDA case
+    expect(other).toMatch(/<button[^>]*data-highlight="false"[^>]*>Save as new version<\/button>/);
+    expect(other).toMatch(/<button[^>]*data-highlight="true"[^>]*>Keep both<\/button>/); // the NDA case
     expect(other).toContain('href="/documents/d3/compare?with=d1"');
     expect(other).toContain(">See the differences<");
     const same = render(
       createElement(VersionChoice, { suggestion: suggestion({ name_similarity: 1 }), onDone: () => undefined }),
     );
-    expect(same).toMatch(/<button[^>]*data-highlight="true"[^>]*>Upload as a new version<\/button>/);
+    expect(same).toMatch(/<button[^>]*data-highlight="true"[^>]*>Save as new version<\/button>/);
   });
 
   it("accepts or keeps apart, with the words after each and Undo after a version", async () => {
@@ -124,8 +124,9 @@ describe("Pattern A: the words and the share of the text", () => {
       }),
     );
     expect(html).toContain("1 file looks like a new version"); // the summary stays
-    expect(html).toContain(">Upload as a new version<");
-    expect(html).toContain(">Upload as a new file<");
+    // Changed on purpose (#690): one wording everywhere; the file is already uploaded, so "Save as".
+    expect(html).toContain(">Save as new version<");
+    expect(html).toContain(">Keep both<");
     expect(html).toContain(">See the differences<");
   });
 });
@@ -200,8 +201,8 @@ describe("See the differences", () => {
 
   it("puts the decision at the bottom for a suggested pair", () => {
     const html = render(createElement(CompareBody, { data, choice: suggestion(), onChosen: () => undefined }));
-    expect(html.indexOf(">Upload as a new version<")).toBeGreaterThan(html.indexOf("new owner"));
-    expect(html).toContain(">Upload as a new file<");
+    expect(html.indexOf(">Save as new version<")).toBeGreaterThan(html.indexOf("new owner"));
+    expect(html).toContain(">Keep both<");
     expect(html).not.toContain(">See the differences<"); // already here
   });
 

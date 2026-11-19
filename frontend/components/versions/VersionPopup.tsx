@@ -70,6 +70,7 @@ export function VersionPopup({ suggestions }: { suggestions: readonly VersionSug
   return (
     <ActionDialog title={VERSION_TEXT.popupTitle} onClose={close} canClose={() => !busy} wide={rows.length > 1}>
       <div className={library.dialogForm}>
+        <p className={styles.bannerText}>{VERSION_TEXT.help}</p>
         <ul className={styles.versions}>
           {rows.map((each) => {
             const chosen = answers.get(each.id);
