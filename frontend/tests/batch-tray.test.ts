@@ -431,13 +431,24 @@ describe("a batch id per drop", () => {
 });
 
 describe("remembered in this browser", () => {
-  const batch: StoredBatch = { id: ID, at: NOW - 1000, already: 1, notSent: 0 };
+  // Changed on purpose (#688): a drop also remembers the documents Clear finished took out (ids only).
+  const batch: StoredBatch = { id: ID, at: NOW - 1000, already: 1, notSent: 0, cleared: [] };
 
   it("keeps only ids and counts, never a file name, and reads them back", () => {
     const store = new MemoryStore();
     writeStored(store, [batch], NOW);
     expect(JSON.parse(store.getItem(STORE_KEY) ?? "")).toEqual([batch]);
-    expect(Object.keys(batch).sort()).toEqual(["already", "at", "id", "notSent"]);
+    expect(Object.keys(batch).sort()).toEqual(["already", "at", "cleared", "id", "notSent"]);
+    expect(readStored(store, NOW)).toEqual([batch]);
+  });
+
+  it("remembers the documents Clear finished took out, ids only; a drop kept before this has none (#688)", () => {
+    const store = new MemoryStore();
+    const gone = "7a1c2d3e-4a5b-4c6d-8e7f-901a2b3c4d5e";
+    const { cleared: _none, ...older } = batch;
+    store.setItem(STORE_KEY, JSON.stringify([{ ...batch, cleared: [gone.toUpperCase(), "secret.pdf", 7] }]));
+    expect(readStored(store, NOW)).toEqual([{ ...batch, cleared: [gone] }]);
+    store.setItem(STORE_KEY, JSON.stringify([older]));
     expect(readStored(store, NOW)).toEqual([batch]);
   });
 

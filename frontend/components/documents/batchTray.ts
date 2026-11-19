@@ -357,6 +357,7 @@ export interface StoredBatch {
   at: number; // Date.now() when it was dropped
   already: number; // refused as already uploaded: the batch API does not list them
   notSent: number; // not sent: after a reload the file must be chosen again
+  cleared: string[]; // #688: the document ids Clear finished took out, so a reload never shows them again
 }
 
 type Store = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -384,12 +385,19 @@ export function readStored(store: Store | null, now: number): StoredBatch[] {
   const batches: StoredBatch[] = [];
   for (const item of parsed as unknown[]) {
     if (typeof item !== "object" || item === null) continue;
-    const { id, at, already, notSent } = item as Record<string, unknown>;
+    const { id, at, already, notSent, cleared } = item as Record<string, unknown>;
     const when = whole(at);
     const kept = { already: whole(already), notSent: whole(notSent) };
     if (typeof id !== "string" || !UUID.test(id) || when === null || now - when >= KEEP_MS || when > now) continue;
     if (kept.already === null || kept.notSent === null) continue;
-    batches.push({ id: id.toLowerCase(), at: when, already: kept.already, notSent: kept.notSent });
+    const gone = Array.isArray(cleared) ? cleared.filter((each): each is string => typeof each === "string" && UUID.test(each)) : [];
+    batches.push({
+      id: id.toLowerCase(),
+      at: when,
+      already: kept.already,
+      notSent: kept.notSent,
+      cleared: gone.map((each) => each.toLowerCase()),
+    });
   }
   return batches.sort((a, b) => b.at - a.at);
 }
