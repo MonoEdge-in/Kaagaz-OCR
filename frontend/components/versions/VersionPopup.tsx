@@ -4,8 +4,9 @@
 // pop-up asks 'This looks like a new version of "X" (82% the same text). Save it as a new version?',
 // one row a pair: Yes (the banner's Accept: the next version, and Current), No (kept apart, never
 // asked again) and See the differences; Yes to all when there are several. An answered row says what
-// was done, with Undo after Yes. Each suggestion is asked here once: closed, the Upload tab's row
-// and the document's banner still ask (the fallback).
+// was done, with Undo after Yes. Each suggestion is asked here once, also after a reload (kept on
+// this browser in localStorage, which may be off: then it asks again, which is safe); closed, the
+// Upload tab's row and the document's banner still ask (the fallback).
 
 import Link from "next/link";
 import { useState } from "react";
@@ -18,13 +19,23 @@ import type { Chosen } from "./VersionChoice";
 import { VERSION_TEXT, bannerTitle, reasonsText } from "./words";
 import styles from "./Versions.module.css";
 
+const askedKey = (id: string) => `kaagaz.version-asked.${id}`;
+
+function askedBefore(id: string): boolean {
+  try {
+    return window.localStorage.getItem(askedKey(id)) === "1";
+  } catch {
+    return false;
+  }
+}
+
 export function VersionPopup({ suggestions }: { suggestions: readonly VersionSuggestion[] }) {
   const [rows, setRows] = useState<VersionSuggestion[]>([]); // the pop-up's, in the order they came
   const [asked, setAsked] = useState<ReadonlySet<string>>(() => new Set()); // shown here once already
   const [answers, setAnswers] = useState<ReadonlyMap<string, Chosen>>(() => new Map());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const fresh = suggestions.filter((each) => each.status === "pending" && each.outcome === "suggested" && !asked.has(each.id));
+  const fresh = suggestions.filter((each) => each.status === "pending" && each.outcome === "suggested" && !asked.has(each.id) && !askedBefore(each.id));
   if (fresh.length > 0) {
     // A new suggestion from the poll joins the pop-up (state set while rendering, React's way).
     setAsked(new Set([...asked, ...fresh.map((each) => each.id)]));
@@ -46,6 +57,11 @@ export function VersionPopup({ suggestions }: { suggestions: readonly VersionSug
   }
   const open = rows.filter((each) => !answers.has(each.id));
   const close = () => {
+    try {
+      for (const each of rows) window.localStorage.setItem(askedKey(each.id), "1");
+    } catch {
+      // not kept: asked again after a reload
+    }
     setRows([]);
     setAnswers(new Map());
     setError(null);

@@ -300,6 +300,30 @@ describe("F-06: the pop-up after an upload that looks like a new version", () =>
     expect(button("Yes to all")).toBeNull();
   });
 
+  it("remembers on this browser what it asked, so a reload does not ask again; works without storage", async () => {
+    const store = new Map<string, string>();
+    (window as unknown as { localStorage: unknown }).localStorage = {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => void store.set(key, value),
+    };
+    await mount(createElement(VersionPopup, { suggestions: one }));
+    await press(button("Close")); // closed without an answer
+    await act(async () => root?.unmount());
+    root = null;
+    await mount(createElement(VersionPopup, { suggestions: one })); // the page loaded again
+    expect(all().find((element) => element.tagName === "DIALOG")).toBeUndefined();
+    await act(async () => root?.unmount());
+    root = null;
+    const blocked = () => {
+      throw new Error("storage off");
+    };
+    (window as unknown as { localStorage: unknown }).localStorage = { getItem: blocked, setItem: blocked };
+    await mount(createElement(VersionPopup, { suggestions: one }));
+    expect(text()).toContain("Save it as a new version?"); // storage off: it still asks
+    await press(button("Close"));
+    expect(all().find((element) => element.tagName === "DIALOG")).toBeUndefined();
+  });
+
   it("asks only pending suggestions, never one already answered or linked on its own", async () => {
     const answered = [{ ...suggestion("s1", "a.pdf"), status: "accepted" as const }, { ...suggestion("s2", "b.pdf"), outcome: "auto" as const }];
     await mount(createElement(VersionPopup, { suggestions: answered }));
