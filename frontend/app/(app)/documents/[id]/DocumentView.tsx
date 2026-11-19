@@ -794,7 +794,7 @@ export function DocumentView({
                 scanningIcon={STATUS_ICONS[chip.tone]}
                 reviewing={reviewing}
                 reviewRef={reviewButton}
-                onReview={() => startReview()}
+                onReview={detail.deleted_at === null ? () => startReview() : undefined}
                 onEnsemble={(scope) => void ensemble.ask(scope)}
                 ensembleBusy={ensemble.busy}
                 ensembleError={ensemble.error}
@@ -925,7 +925,7 @@ export function DocumentView({
                   <RelatedPanel detail={detail} />
                   <StoryPanel documentId={detail.id} inTrash={detail.deleted_at !== null} />
                 </>
-              ) : shownTab === "attention" && reviewing && review.status ? (
+              ) : shownTab === "attention" && reviewing && review.status && detail.deleted_at === null ? (
                 <ReviewPanel
                   detail={detail}
                   review={review}

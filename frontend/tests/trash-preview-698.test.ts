@@ -8,9 +8,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { act, createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DocumentDetail } from "@/lib/types";
+import type { DocumentDetail, ReviewStatus } from "@/lib/types";
+import { SummaryBar } from "../app/(app)/documents/[id]/WordReview";
 import { TrashPreview } from "../app/(app)/documents/[id]/TrashPreview";
 import { FakeDocument, FakeElement, fire, install } from "./fake-dom";
 
@@ -102,5 +104,46 @@ describe("the document screen for a document in Trash (#698)", () => {
     expect(viewer.indexOf("<TrashPreview")).toBeLessThan(viewer.indexOf("<PageViewer"));
     // After Restore the detail is asked for again and the toast says it (reloadWith), no page reload.
     expect(viewer).toMatch(/<TrashPreview detail=\{detail\} onRestored=\{reloadWith\} \/>/);
+  });
+});
+
+// Follow-up (lead, 19 Nov): no review mode in Trash either; its word crops are page pictures too.
+describe("no Check it for a document in Trash (#698)", () => {
+  const page = readFileSync(join(__dirname, "../app/(app)/documents/[id]/DocumentView.tsx"), "utf8");
+  const status = {
+    pages: 2, words: 40, flagged: 3, by_band: { check: 3, review: 0 }, reviewed: 0, resolved: 0, remaining: 3,
+    last_change_at: null, status: "ready", summary: "Scan complete", export: { ready: false, message: "" },
+    can_review: true, ensemble: { allowed: false, reason: null, run: null },
+  } as unknown as ReviewStatus;
+  const bar = (onReview?: () => void) =>
+    renderToStaticMarkup(
+      createElement(SummaryBar, {
+        documentId: "d1",
+        review: { status, flags: [], failed: false, reload: () => undefined, reloadWords: () => undefined, replace: () => undefined, setRun: () => undefined },
+        scanning: "",
+        scanningIcon: "clock",
+        reviewing: false,
+        reviewRef: { current: null },
+        onReview,
+        onEnsemble: () => undefined,
+        ensembleBusy: false,
+        ensembleError: null,
+        onExport: () => undefined,
+        download: null,
+        say: () => undefined,
+        detailsId: "document-details",
+        detailsOpen: false,
+        onDetails: () => undefined,
+      }),
+    );
+
+  it("the status line offers Check it only when given a way to start the review", () => {
+    expect(bar(() => undefined)).toContain(">Check them<");
+    expect(bar()).not.toContain(">Check them<");
+  });
+
+  it("the document screen gives none in Trash, and never shows the review panel there", () => {
+    expect(page).toContain("onReview={detail.deleted_at === null ? () => startReview() : undefined}");
+    expect(page).toContain('shownTab === "attention" && reviewing && review.status && detail.deleted_at === null ? (');
   });
 });
