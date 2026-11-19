@@ -14,7 +14,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { AttentionPanel, attentionCount } from "@/app/(app)/documents/[id]/DocumentPanels";
 import { ALL_CHECKED, toSettle } from "@/components/viewer/pageProblems";
-import { openMarks } from "@/components/viewer/readingMarks";
+import { openMarks, pageMarkName } from "@/components/viewer/readingMarks";
 import * as scanned from "@/components/viewer/scanned";
 import { TWICE, fixBox, rowFlag, seenTwice, squash, wordToFix } from "@/components/viewer/scanned";
 import type { PageSummary, ReadingMark, WordFlag } from "@/lib/types";
@@ -235,5 +235,25 @@ describe("PRD 9 F-13 review: an empty [?] is never confirmed, and a word twice i
     expect(html).toContain("Could not count");
     expect(html).not.toContain("spinner");
     expect(VIEW).toContain("failed={review.failed}");
+  });
+});
+
+// PRD 9 F-14 (owner, 19 Nov 2026): the page's marks said "mark 17 of 32" where the chips said "2 of 11".
+describe("PRD 9 F-14 a mark on the page is named as its chip", () => {
+  const spot = (box: Box, text: string, quality: ReadingMark["quality"] = "illegible"): ReadingMark => ({ quality, region: region(box), text });
+  const marks = [spot([0.1, 0.1, 0.2, 0.15], "[?]"), spot([0.3, 0.1, 0.4, 0.15], "Rs", "unsure"), spot([0.5, 0.1, 0.6, 0.15], "40")];
+  const flags = [
+    flag("mark", "[?]", [0.1, 0.1, 0.2, 0.15], { state: "reviewed" }), // fixed: checked
+    flag("mark", "40", [0.5, 0.1, 0.6, 0.15]), // open
+  ];
+
+  it("numbers an open mark over the open marks, and a checked or unflagged one not at all", () => {
+    expect(pageMarkName(marks, 2, flags)).toBe("Hard to read '40', mark 1 of 1");
+    expect(pageMarkName(marks, 0, flags)).toBe("Hard to read '[?]', checked");
+    expect(pageMarkName(marks, 1, flags)).toBe("Unsure word 'Rs'"); // a check-band word: no review item
+  });
+
+  it.each(["components/viewer/PageViewer.tsx", "components/viewer/PdfDocumentViewer.tsx"])("%s names each mark so", (path) => {
+    expect(read(path)).toContain("const name = pageMarkName(problems, index, flags);");
   });
 });

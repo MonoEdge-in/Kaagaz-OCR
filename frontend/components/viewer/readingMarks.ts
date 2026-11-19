@@ -59,6 +59,23 @@ export function openMarks(
   return marks.flatMap((mark, index) => (isOpen(mark) ? [{ mark, index }] : []));
 }
 
+/** PRD 9 F-14: a mark's name on the page, as its chip says it: an open one numbered over the page's
+ * open marks ("mark 2 of 11", openMarks); a checked one ", checked", and one with no review item
+ * (a check-band word) its plain name, with no number. O(marks x flags). */
+export function pageMarkName(
+  marks: readonly ReadingMark[],
+  index: number,
+  flags: readonly Pick<WordFlag, "region" | "as_read" | "state">[],
+): string {
+  const mark = marks[index];
+  if (!mark) return "";
+  const open = openMarks(marks, flags.filter((flag) => !settled(flag)));
+  const at = open.findIndex((each) => each.index === index);
+  if (at >= 0) return markName(mark, at, open.length);
+  const name = markName(mark, 0, 1).replace(/, mark 1 of 1$/, "");
+  return markChecked(mark, flags) ? `${name}, checked` : name;
+}
+
 /** The Needs attention tab's short chip (UI audit DD7): the word as read, else what the mark is. */
 export function markChipText(mark: ReadingMark): string {
   return visibleText(mark.text).trim() || MARK_WORDS[mark.quality].name;
