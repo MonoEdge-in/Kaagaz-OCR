@@ -949,3 +949,24 @@ def test_a_live_links_folder_is_kept_whoever_prunes_it(db: Database) -> None:
     status, reply = _undo(management, org, "y")
     assert status == 200, reply
     assert _state(db, org, "y")["y"]["folder_id"] == made
+
+
+def test_prd9_f07_make_current_after_a_link_holds_and_a_current_version_out_of_sight_is_not_found(
+    db: Database,
+) -> None:
+    """PRD 9 F-07: given and fin linked (fin the latest, current); Make current on given, then on
+    fin: each switch holds, and the Versions tab says so after a reload. The plain reviewer sees
+    given (it was given to them) but not fin (in Finance): their Make current on given was a 500
+    (the unique current index: the version out of their sight stayed current); now it is not found
+    and nothing changes."""
+    org = _org(Api(db))
+    management, plain = org.people["management"], org.people["plain"]
+    assert _link(management, org, ["given", "fin"], "fin")[0] == 200
+    for name, shown in (("given", [True, False]), ("fin", [False, True])):
+        assert _post(management, f"/documents/{org.files[name]}/make-current")[0] == 200
+        detail = management.client.get(f"/api/documents/{org.files['given']}").json()
+        assert [v["is_current"] for v in detail["versions"]] == shown
+    before = _everything(db, org)
+    status, reply = _post(plain, f"/documents/{org.files['given']}/make-current")
+    assert (status, reply["error"]["code"]) == (404, "not_found")
+    assert _everything(db, org) == before

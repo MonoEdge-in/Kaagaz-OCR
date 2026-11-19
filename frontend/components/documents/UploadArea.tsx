@@ -40,6 +40,7 @@ import { InStatusBar } from "@/components/shell/StatusBar";
 import { VersionChoice } from "@/components/versions/VersionChoice";
 import type { Chosen } from "@/components/versions/VersionChoice";
 import { VERSION_TEXT, suggestionsText } from "@/components/versions/words";
+import { VersionPopup } from "@/components/versions/VersionPopup";
 import { Icon } from "@/components/ui/Icon";
 import { beingRead } from "@/components/viewer/reprocess";
 import { storyHref, storyTarget } from "@/components/viewer/story";
@@ -1141,6 +1142,8 @@ export function UploadStatus({
           {open && <BatchTray {...tray} onHide={hide} />}
         </div>
       )}
+      {/* PRD 9 F-06: a file just uploaded that looks like a new version is asked in a pop-up. */}
+      <VersionPopup suggestions={Object.values(tray.views).flatMap((view) => view.version_suggestions ?? [])} />
     </InStatusBar>
   );
 }

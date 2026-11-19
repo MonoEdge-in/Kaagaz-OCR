@@ -4,7 +4,8 @@
 // (#521): the summary in plain words ("94% the same. 38 words changed on pages 2 and 5."), then
 // two columns, page by page; removed words in red and struck through on the left, added words
 // in green and underlined on the right, each also marked − or + and named for screen readers
-// (never colour alone); a page with little text (a scan) shows the two page images instead.
+// (never colour alone); a page with little text (a scan) shows its page images too, only where the
+// page has a picture (PRD 9 F-08: a JSON, TXT or CSV file has none, so only its text).
 // "Jump to next change" (the button, or N) goes to each change in turn. For a suggested pair
 // the decision sits at the bottom, Upload as a new version or Upload as a new file
 // (VersionChoice); after it the page goes to where it came from (?from=, as a document's back
@@ -187,11 +188,11 @@ export function CompareBody({
 
   const before = choice ? VERSION_TEXT.yours(choice.candidate.name) : VERSION_TEXT.before;
   const after = choice ? VERSION_TEXT.upload(choice.document.name) : VERSION_TEXT.after;
-  // A side's page image only when that file has the page; else it says so.
-  const image = (id: string, pageNo: number, pagesThere: number | null | undefined, whose: string) =>
+  // A side's page image only when that file has the page (else it says so) and it has a picture (F-08).
+  const image = (id: string, pageNo: number, pagesThere: number | null | undefined, pictured: boolean, whose: string) =>
     pagesThere !== null && pagesThere !== undefined && pageNo > pagesThere ? (
       <p className="muted">{VERSION_TEXT.noPage(pageNo)}</p>
-    ) : (
+    ) : pictured ? (
       <Image
         src={pageImageUrl(id, pageNo)}
         alt={`${VERSION_TEXT.page(pageNo)}, ${whose}`}
@@ -199,7 +200,7 @@ export function CompareBody({
         height={800}
         unoptimized
       />
-    );
+    ) : null;
   return (
     <div data-compare-area="true" onKeyDown={onKey}>
       <header className={styles.compareHead}>
@@ -229,6 +230,7 @@ export function CompareBody({
       </div>
       {pages.map((page, index) => {
         const sent = data.pages[index];
+        const [left, right] = [data.image_pages.left.includes(page.page_no), data.image_pages.right.includes(page.page_no)];
         const scan =
           sent?.left_words !== undefined &&
           sent.right_words !== undefined &&
@@ -240,8 +242,8 @@ export function CompareBody({
             {sent?.truncated && <p className="muted">{VERSION_TEXT.truncated}</p>}
             {scan && (
               <div className={styles.pageImages}>
-                {image(data.left_id, page.page_no, data.left_pages, before)}
-                {image(data.right_id, page.page_no, data.right_pages, after)}
+                {image(data.left_id, page.page_no, data.left_pages, left, before)}
+                {image(data.right_id, page.page_no, data.right_pages, right, after)}
               </div>
             )}
             <div className={styles.columns}>

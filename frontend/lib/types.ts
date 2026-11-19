@@ -435,6 +435,7 @@ export interface DocumentCompare {
   overview?: string; // #521: "94% the same. 38 words changed on pages 2 and 5. Page 6 is new."
   left_pages?: number | null; // #521 review: each side's page count, for its page images
   right_pages?: number | null;
+  image_pages: { left: number[]; right: number[] }; // PRD 9 F-08: each side's pages with a picture
 }
 
 /** An active person of this company, for the owner picker and the filters. */

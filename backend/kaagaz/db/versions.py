@@ -20,7 +20,8 @@ Why here: the family rules next to their SQL. Every function takes a connection 
   documents rule, ``document_links``; it counts as a shared identifier only for the same
   type), never a pair already suggested or answered either way. MAX_CANDIDATES are scored
   (``versions.outcome``) on the exact text overlap where both texts are within V11's limits,
-  else on the estimate, stored marked as such (#521); the best wins (text, then name, then the
+  else on the estimate, stored marked as such (#521), and two short texts word by word (PRD 9
+  F-06, ``scored``); the best wins (text, then name, then the
   newest current version). It is only ever suggested: a person accepts it or keeps it separate
   (#521; a suggestion linked on its own before that stays ``auto``, Undo included).
   Uploaded earlier: this is its new version. Uploaded later, still
@@ -160,20 +161,29 @@ def scored(
     ``name_similarity`` and ``shared_identifier``): ranked by the estimate (stable: in the order
     fetched after that), the best MAX_CANDIDATES counted exactly where both texts are within V11's
     limits (#521), and those ``versions.outcome`` suggests, each with its overlap, whether that was
-    counted exactly, and its name similarity. Spotting keeps the best; the version finder (V17)
-    keeps them all. O(w) for the w words read."""
+    counted exactly, and its name similarity. Two short texts the runs don't suggest are compared
+    word by word too (PRD 9 F-06, ``versions.word_share``), a signal that needs the name or an
+    identifier; a candidate's text is read only when both have a fingerprint or this text is short.
+    Spotting keeps the best; the version finder (V17) keeps them all. O(w) for the w words read."""
     estimated = [(versions.overlap(minhash, row["text_minhash"]), row) for row in fetched]
     estimated.sort(key=lambda pair: pair[0] or 0.0, reverse=True)
-    mine: dict[int, str] | None = None
+    mine = page_texts(conn, customer_id, document_id) if estimated else {}
+    short = sum(len(versions.words(text)) for text in mine.values()) <= versions.SHORT_WORDS
     found = []
     for overlap, row in estimated[:MAX_CANDIDATES]:
         exact = None
+        theirs = page_texts(conn, customer_id, str(row["id"])) if overlap is not None or short else {}
         if overlap is not None:  # both have a fingerprint: count it exactly when within the limits
-            mine = page_texts(conn, customer_id, document_id) if mine is None else mine
-            counted = versions.exact_overlap(mine, page_texts(conn, customer_id, str(row["id"])))
+            counted = versions.exact_overlap(mine, theirs)
             overlap, exact = (overlap, False) if counted is None else (counted, True)
         name = None if row["name_similarity"] is None else float(row["name_similarity"])
-        if versions.outcome(overlap, name, row["shared_identifier"] is not None) is not None:
+        identifier = row["shared_identifier"] is not None
+        suggested = versions.outcome(overlap, name, identifier)
+        share = versions.word_share(mine, theirs)
+        if suggested is None and share is not None and share > (overlap or 0.0):
+            overlap, exact = share, True
+            suggested = versions.outcome(share, name, identifier, short=True)
+        if suggested is not None:
             found.append((row, overlap, exact, name))
     return found
 
@@ -652,7 +662,13 @@ def join_again(
 
 
 # --- V10: make current ------------------------------------------------------------------
-_STATE = text("SELECT status, is_current, version_no FROM documents WHERE customer_id = :c AND id = :d")
+# PRD 9 F-07: and whether the person sees the family's current version (the per-person rule hides
+# the others); a family with a ready version always has one.
+_STATE = text(
+    "SELECT status, is_current, version_no, EXISTS (SELECT 1 FROM documents o WHERE o.customer_id = :c"
+    " AND o.family_id = :f AND o.is_current) AS current_seen"
+    " FROM documents WHERE customer_id = :c AND id = :d"
+)
 # The others first, then this one: the unique index documents_current is checked row by row.
 _OTHERS_NOT_CURRENT = text(
     "UPDATE documents SET is_current = false WHERE customer_id = :c AND family_id = :f AND id <> :d"
@@ -664,13 +680,16 @@ _THIS_CURRENT = text("UPDATE documents SET is_current = true WHERE customer_id =
 def make_current(conn: Connection, customer_id: str, document_id: str, *, by: str) -> None:
     """V10: this ready version, out of Trash, is its family's one current version, in one
     transaction under the family lock, audited as ``version.make_current``. Raises Refused:
-    not_found or not_ready; trash.InTrash in Trash. O(v log D)."""
+    not_found (also when the current version is one the person can't see: it can't be made not
+    current, PRD 9 F-07) or not_ready; trash.InTrash in Trash. O(v log D)."""
     family = lock_live_family(conn, customer_id, document_id)
     if family is None:
         raise Refused("not_found")
     _refuse_locked(conn, customer_id, family)
     params = {"c": customer_id, "d": document_id, "f": family}
     state = conn.execute(_STATE, params).mappings().one()
+    if not state["current_seen"]:
+        raise Refused("not_found")
     if state["status"] != "ready":
         raise Refused("not_ready")
     conn.execute(_OTHERS_NOT_CURRENT, params)

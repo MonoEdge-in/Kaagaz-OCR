@@ -22,6 +22,13 @@ export const VERSION_TEXT = {
   working: "Saving…",
   // V5: the upload tray.
   review: "Review",
+  // PRD 9 F-06 (D4): the pop-up once a file just uploaded looks like a new version.
+  popupTitle: "A new version?",
+  saveAsVersion: "Save it as a new version?",
+  yes: "Yes",
+  no: "No",
+  yesToAll: "Yes to all",
+  close: "Close",
   // V12: the Versions tab.
   versions: "Versions",
   current: "Current",
@@ -178,9 +185,15 @@ export function joinedText(joined: DocumentVersion["joined"]): string {
   return VERSION_TEXT.joinedUploaded;
 }
 
-/** Make current (V10) is offered for a ready version that is not current, out of Trash. */
-export function canMakeCurrent(version: Pick<DocumentVersion, "status" | "is_current">, inTrash: boolean): boolean {
-  return !inTrash && !version.is_current && version.status === "ready";
+/** Make current (V10) is offered for a ready version that is not current, out of Trash, while a
+ * version the person sees is current (`currentSeen`, PRD 9 F-07: one out of their sight can't be
+ * made not current, so the server says 404). */
+export function canMakeCurrent(
+  version: Pick<DocumentVersion, "status" | "is_current">,
+  inTrash: boolean,
+  currentSeen: boolean,
+): boolean {
+  return !inTrash && currentSeen && !version.is_current && version.status === "ready";
 }
 
 /** A note as saved: spaces collapsed, null when empty; a problem when it is too long. */
