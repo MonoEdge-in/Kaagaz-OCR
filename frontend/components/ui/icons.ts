@@ -40,6 +40,7 @@ export const ICON_NAMES = [
   "to-top",
   "more",
   "home",
+  "key",
 ] as const;
 
 export type IconName = (typeof ICON_NAMES)[number];
@@ -203,4 +204,6 @@ export const ICONS: Record<IconName, readonly IconShape[]> = {
   "to-top": [path("M5 4h14"), path("M12 20V8"), path("M7 13l5-5 5 5")],
   // Three dots in a row: more actions for this row (Ask screen polish, 17 Oct 2026).
   more: [circle(5.5, 12, 1), circle(12, 12, 1), circle(18.5, 12, 1)],
+  // A key, the kit's drawing (components/ui/Icon/icons.ts): the admins' Access link (#706).
+  key: [circle(8, 15, 4), path("M11 12l9-9M17 6l3 3")],
 };

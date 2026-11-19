@@ -35,7 +35,7 @@ const LINKS: { link: NavLink; roles: readonly Role[]; scope?: SessionScope; mana
     management: true,
   },
   // #706: every person's access (/access), for exactly who sees Admin.
-  { link: { href: "/access", label: "Access", icon: "admin" }, roles: ["admin"], scope: "admin" },
+  { link: { href: "/access", label: "Access", icon: "key" }, roles: ["admin"], scope: "admin" },
   // PRD A1: an admin signed in at /login gets no Admin menu.
   { link: { href: "/admin", label: "Admin", icon: "admin" }, roles: ["admin"], scope: "admin" },
 ];

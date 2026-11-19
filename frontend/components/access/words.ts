@@ -113,13 +113,15 @@ export const ACCESS_LIST = {
   title: "Access",
   intro: "Who can see what. Open a person to change their departments, private folders and files given.",
   departments: "Departments",
-  privateFolders: "Private folders", // links to Documents: a folder is made private there
-  privateFoldersHint: "A private folder shows the people icon in Documents. Open it and choose Who can see this.",
+  people: "People",
+  privateFolders: "Private folders",
+  noPrivateFolders: "No private folders yet. Open a folder in Documents and choose Make private.",
   loading: "Loading the people…",
-  loadFailed: "Could not load the people.",
+  loadFailed: "Could not load the people and private folders.",
   empty: "No one is here yet.",
   addPeople: "Add people on the Users tab",
   open: "Access",
+  disabled: "Disabled", // the Users tab's word for a turned-off account
 } as const;
 
 // --- the Departments tab -------------------------------------------------------------------------
