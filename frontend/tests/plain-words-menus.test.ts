@@ -10,7 +10,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { RowMenu } from "@/components/admin/RowMenu";
-import { USER_MENU_HELP } from "@/components/admin/UsersPanel";
+import { USER_MENU_HELP, roleQuestion } from "@/components/admin/UsersPanel";
 import { MYSELF_HELP } from "@/components/access/words";
 import { ACTION_HELP } from "@/components/documents/library";
 import { orgConfirm } from "@/components/operator/confirms";
@@ -90,6 +90,18 @@ describe("the admin's user menu", () => {
       expect(items, label).toMatch(new RegExp(`label: "${label}"[^}]*onSelect: \\(\\) => setConfirming\\(`));
     }
     expect(items).toMatch(/label: "Disable"[^}]*destructive: true/);
+  });
+
+  it("asks before changing a role: picking one sends nothing until Change role, Cancel keeps it (#693)", () => {
+    expect(roleQuestion("Priya", "member")).toBe("Change Priya's role to Member?");
+    const select = panel.slice(panel.indexOf("id={selectId}"), panel.indexOf("</select>", panel.indexOf("id={selectId}")));
+    expect(select).toContain("value={user.role}"); // the select shows the saved role until the change is made
+    expect(select).toContain("setNewRole(role)");
+    expect(select).not.toMatch(/change\(|updateUser\(/);
+    const dialog = panel.slice(panel.indexOf("{newRole && ("), panel.indexOf("</ActionDialog>", panel.indexOf("{newRole && (")));
+    expect(dialog).toContain("{roleQuestion(user.display_name, newRole)}");
+    expect(dialog).toMatch(/onClick=\{\(\) => setNewRole\(null\)\}>\s*Cancel/);
+    expect(dialog).toMatch(/onClick=\{\(\) => void change\(\{ role: newRole \}, [^\n]*\n\s*>[\s\S]*Change role/);
   });
 
   it("says the item's own verb on the confirm button", () => {
