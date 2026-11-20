@@ -288,8 +288,15 @@ class MemoryDocuments(MemoryRepository):
         return replace(record, locked=True)
 
     def still_open(self, customer_id: str, document_id: str, run_id: str) -> bool:
-        """PRD 7 (#605): the run is open and the version not locked, as PgDocuments.still_open."""
-        return self._open(customer_id, document_id, run_id) and (customer_id, document_id) not in self.locked
+        """PRD 7 (#605): the run is open and the version not locked nor in Trash (#713), as
+        PgDocuments.still_open."""
+        record = super().get(customer_id, document_id)
+        in_trash = record is not None and record.in_trash
+        return (
+            self._open(customer_id, document_id, run_id)
+            and (customer_id, document_id) not in self.locked
+            and not in_trash
+        )
 
     def save_locked_pages(
         self, customer_id: str, document_id: str, pages: Sequence[PageRecord], *, run: FinishedRun | None

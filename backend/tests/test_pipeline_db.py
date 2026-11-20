@@ -22,11 +22,11 @@ from typing import Any
 import pytest
 from sqlalchemy import text
 
-from kaagaz.db.documents import PgDocuments, mark_for_reprocess
+from kaagaz.db.documents import PgDocuments, mark_for_reprocess, stop_reading
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.db.runs import PgRuns
-from kaagaz.db.trash import lock_family, restore_document
+from kaagaz.db.trash import lock_family, restore_document, trash_document
 from kaagaz.extraction.card import CARD_PROMPT_HASH
 from kaagaz.extraction.understanding import ModelBudget
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -491,6 +491,108 @@ def test_a_stale_delivery_after_a_reprocess_does_not_fail_the_document(db: Datab
         None,
     )
     assert runs_of(db, customer, doc) == [("superseded", None), ("ready", None), ("ready", None)]
+
+
+# --- #713: Stop and Cancel -----------------------------------------------------------------
+
+
+def _uploaded(db: Database) -> tuple[str, str, str, MemoryStorage]:
+    """(customer, its admin, a CSV uploaded and not read yet, its storage)."""
+    customer, admin = new_customer(db)
+    storage = MemoryStorage()
+    upload = UploadService(PIPELINE_POLICY, PgDocuments(db), storage, MemoryQueue())
+    return (
+        customer,
+        admin,
+        upload.accept(customer, io.BytesIO(CSV), display_name=CSV_NAME).document_id,
+        storage,
+    )
+
+
+def _stop(db: Database, customer: str, doc: str) -> None:
+    with db.customer(customer) as conn:
+        assert stop_reading(conn, customer, doc, now=moving_clock())
+
+
+def _revive(db: Database, customer: str) -> list[Job]:
+    sent: list[Job] = []
+    revive_stuck(
+        db, lambda job, tries: sent.append(job), lambda c: c != customer, stale_seconds=0, max_attempts=5
+    )
+    return sent
+
+
+def test_713_a_queued_job_of_a_stopped_file_reads_nothing_and_no_sweep_takes_it(db: Database) -> None:
+    customer, _, doc, storage = _uploaded(db)
+    _stop(db, customer, doc)
+
+    with_runs(db, storage)(Job(customer, doc), lambda: None)  # acknowledged: settled, never read
+
+    assert one(db, customer, "SELECT status, failure_code FROM documents WHERE id = :d", doc) == (
+        "failed",
+        "stopped",
+    )
+    assert runs_of(db, customer, doc) == []
+    assert counts(db, customer, doc)["pages"] == 0
+    assert _revive(db, customer) == []  # failed: never revived
+
+
+def test_713_a_reading_under_way_stops_at_its_next_step_when_stopped_and_read_again_resumes_it(
+    db: Database,
+) -> None:
+    customer, _, doc, storage = _uploaded(db)
+    held = GatedSocket(real_socket())
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        delivery = pool.submit(with_runs(db, storage, held), Job(customer, doc), lambda: None)
+        assert held.entered.wait(timeout=10)  # scanned, its run open, the reader on it
+        _stop(db, customer, doc)
+        held.release.set()  # the call in flight finishes
+        delivery.result(timeout=20)  # acknowledged: no error, so no retry
+
+    assert one(db, customer, "SELECT status, failure_code FROM documents WHERE id = :d", doc) == (
+        "failed",
+        "stopped",
+    )
+    assert runs_of(db, customer, doc) == [("failed", "stopped")]
+    assert counts(db, customer, doc)["pages"] == 0  # nothing of the reading saved
+    assert _revive(db, customer) == []
+
+    read_again(db, customer, doc)
+    with_runs(db, storage)(Job(customer, doc), lambda: None)
+    assert one(db, customer, "SELECT status, failure_code FROM documents WHERE id = :d", doc) == (
+        "ready",
+        None,
+    )
+    assert runs_of(db, customer, doc) == [("failed", "stopped"), ("ready", None)]
+
+
+def test_713_a_reading_under_way_stops_at_its_next_step_when_cancelled_and_reads_again_once_restored(
+    db: Database,
+) -> None:
+    customer, admin, doc, storage = _uploaded(db)
+    held = GatedSocket(real_socket())
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        delivery = pool.submit(with_runs(db, storage, held), Job(customer, doc), lambda: None)
+        assert held.entered.wait(timeout=10)
+        with db.customer(customer) as conn:  # Cancel: Move to Trash
+            assert trash_document(conn, customer, doc, by=admin, now=moving_clock())
+        held.release.set()
+        delivery.result(timeout=20)
+
+    assert one(db, customer, "SELECT status, deleted_at IS NOT NULL FROM documents WHERE id = :d", doc) == (
+        "clean",
+        True,
+    )
+    assert runs_of(db, customer, doc) == [("superseded", None)]
+    assert counts(db, customer, doc)["pages"] == 0
+    assert _revive(db, customer) == []  # in Trash: left alone
+
+    with db.customer(customer) as conn:
+        assert restore_document(conn, customer, doc, by=admin)
+    sent = _revive(db, customer)
+    assert [job.document_id for job in sent] == [doc]
+    with_runs(db, storage)(sent[0], lambda: None)
+    assert one(db, customer, "SELECT status FROM documents WHERE id = :d", doc) == ("ready",)
 
 
 class GatedScanner(FakeScanner):

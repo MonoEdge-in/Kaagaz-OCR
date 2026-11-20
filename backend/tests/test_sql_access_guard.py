@@ -99,6 +99,8 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
         SHARED_WITH_WORKER,
         "reprocess and read again: _document_or_404 first",
     ),
+    # Changed on purpose (#713): Stop's change returns the row it stopped (RETURNING id).
+    ("db/documents.py", "_STOP"): (WRITE_AFTER_CHECK, "POST /documents/{id}/stop: _document_or_404 first"),
     ("db/documents.py", "_REQUEST_PAGE"): (
         WRITE_AFTER_CHECK,
         "POST .../pages/{n}/read-again: _readable_or_409 first",
