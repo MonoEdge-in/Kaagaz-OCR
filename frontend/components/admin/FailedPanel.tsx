@@ -122,7 +122,7 @@ export function FailedPanel() {
                       </Link>
                     </td>
                     <td role="cell" data-label="Status">
-                      <StatusChip status={item.status} failureCode={item.failure_code} />
+                      <StatusChip status={item.status} />
                     </td>
                     <td role="cell" data-label="What happened" className={styles.wrap}>
                       {item.message}

@@ -231,7 +231,7 @@ function settle(queue: UploadQueue): UploadQueue {
   if (queue.batch.length === 0 || queue.entries.some(isBusy)) return queue;
   const counts: UploadCounts = { uploaded: 0, already: 0, failed: 0 };
   for (const entry of queue.entries) {
-    if (!queue.batch.includes(entry.key) || entry.state.kind === "cancelled") continue; // #713: in Trash, not uploaded
+    if (!queue.batch.includes(entry.key)) continue;
     if (entry.state.kind === "done") counts.uploaded += 1;
     else if (entry.state.kind === "error") counts.failed += 1;
     else counts.already += 1;

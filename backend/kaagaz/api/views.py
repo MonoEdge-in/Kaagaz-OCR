@@ -193,8 +193,6 @@ def status_message(
     if status == "failed" and failure_code == "customer_disabled":
         # The worker came to it while the organisation was turned off (0014): nothing was read.
         return "This file was not read because your organisation was turned off. Read it again."
-    if status == "failed" and failure_code == "stopped":
-        return "Reading was stopped. Read it again to start it again."  # #713: Stop
     if status == "failed" and failure_code in FILE_FAILURES:
         return FILE_FAILURES[failure_code]  # #522: a read again can't help; another copy can
     if status == "failed":

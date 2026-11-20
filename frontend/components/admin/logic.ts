@@ -705,7 +705,6 @@ const ACTION_WORDS: Record<string, string> = {
   "document.rename": "Renamed a document",
   "document.tags": "Changed a document's tags",
   "document.reprocess": "Asked to read a document again",
-  "document.stop": "Stopped reading a document", // #713
   "document.read_upgrade": "Read a document again after an upgrade",
   "document.land_facts": "Read a land record's owners and places again", // PRD 6 D3
   "document.page_accept": "Kept a page as it was read",
