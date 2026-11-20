@@ -225,9 +225,9 @@ class _Focus(PgFocus):
         return Profile(document_id, "focus.pdf", "", ())
 
 
-def test_an_other_document_question_reads_what_its_translated_search_gave_before() -> None:
+def test_an_other_document_question_reads_from_its_translated_search_s_pool() -> None:
     """ "Any other document" leaves the focus out and reads one piece a document (step 22): from the
-    translated search's first ANSWER_MAX_EVIDENCE hits, as before the search fetched more."""
+    translated search's first ``_evidence_limit`` hits (the pool, #722)."""
     held = [
         dataclasses.replace(piece(f"doc-{n}.pdf", f"{WORD}: {NAME} ({n})"), meaning_score=0.7)
         for n in range(12)
@@ -251,7 +251,9 @@ def test_an_other_document_question_reads_what_its_translated_search_gave_before
     assert search.translations  # the translated search ran
     read = [blocks for _, user in fake.prompts if (blocks := evidence_blocks(user))]
     shown = sorted(text.rsplit("(", 1)[1].rstrip(")\n ") for text in read[0].values())
-    assert shown == ["1", "2", "3", "4"]  # held[0] is the focus; the first 5 hits less it
+    # Changed on purpose (merge of #719 and #722): the pool is 15 hits, so the focus no longer takes
+    # one of the 5 documents read, as it did when the cut was ANSWER_MAX_EVIDENCE.
+    assert shown == ["1", "2", "3", "4", "5"]
 
 
 @pytest.mark.db
