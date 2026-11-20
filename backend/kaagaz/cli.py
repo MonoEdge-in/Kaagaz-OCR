@@ -1152,17 +1152,35 @@ def _score_ask(
     db: Database, settings: Settings, model: ModelClient | None, args: argparse.Namespace, out: TextIO
 ) -> None:
     """#721: ``scorecard.run`` over ``--questions`` for ``--customer-id``, each search in that
-    customer's transaction (``AnswerService``), on the organisation (no person); ``model`` None:
-    no model call, else its calls billed to the customer, as reembed's."""
+    customer's transaction (``AnswerService``), on the organisation (no person). No model call
+    without --embed or --answers; with one, the configured clients (a test's ``model``), built as
+    the API builds Ask's (api/app.py), their calls billed to the customer, as reembed's. A question
+    searched without its meaning vector (the embedding failed) is counted and said, never hidden."""
     try:
         items = scorecard.load(args.questions.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise CliError(f"score-ask: {error}") from None
+    translator = None
+    if not (args.embed or args.answers):
+        model = None
+    elif model is None:
+        model = build_model_client(settings, db=db)
+        if model is None:
+            raise CliError("score-ask --embed or --answers needs the model: set MODEL_ENABLED=true")
+        timeout = settings.model_translate_timeout_seconds  # the translation waits at most this
+        translator = build_model_client(settings, chat_timeout_seconds=timeout, db=db)
     customer = args.customer_id
-    service = AnswerService(db=db, model=model, settings=settings, clock=lambda: datetime.now(UTC))
+    service = AnswerService(
+        db=db, model=model, settings=settings, clock=lambda: datetime.now(UTC), translator=translator or model
+    )
+    blind = 0
 
     def evidence(question: str) -> Sequence[Hit]:
-        return service.evidence_hits(customer, question, user_id=None)
+        nonlocal blind
+        hits, meant = service.evidence_hits(customer, question, user_id=None)
+        if model is not None and not meant:
+            blind += 1
+        return hits
 
     def cited(question: str) -> list[tuple[str, int, int]]:
         found = service.answer(customer, question)
@@ -1171,6 +1189,8 @@ def _score_ask(
     kind = "chat" if args.answers else "search"
     with nullcontext() if model is None else usage_scope(db, customer_id=customer, user_id=None, kind=kind):
         scorecard.run(items, evidence, out, cited if args.answers else None)
+    if blind:
+        out.write(f"searched by words only, the embedding failed: {blind} of {len(items)} questions\n")
 
 
 def _check_access(db: Database, out: TextIO) -> int:
@@ -2024,12 +2044,7 @@ def main(
             if _check_access(db, stdout):
                 return 1
         elif args.command == "score-ask":
-            settings = settings or Settings.from_env(env)
-            if (args.embed or args.answers) and model is None:
-                model = build_model_client(settings)
-                if model is None:
-                    raise CliError("score-ask --embed or --answers needs the model: set MODEL_ENABLED=true")
-            _score_ask(db, settings, model if args.embed or args.answers else None, args, stdout)
+            _score_ask(db, settings or Settings.from_env(env), model, args, stdout)
         elif args.command == "cost-saving":
             stdout.write(cost_saving_report(_ready_runs(db, args.customer_id, args.last)) + "\n")
         elif args.command in CUSTOMER_STATUS:

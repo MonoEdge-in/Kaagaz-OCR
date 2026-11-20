@@ -1,5 +1,5 @@
 """``kaagaz score-ask`` end to end on PostgreSQL (#721): the seed questions
-(tests/fixtures/ask_seed.json) over seeded documents, with no model, as one customer."""
+(tests/fixtures/ask_seed.json) over seeded documents, as one customer, and its model calls."""
 
 import io
 import json
@@ -9,11 +9,14 @@ from pathlib import Path
 import pytest
 from sqlalchemy import text
 
+from kaagaz.ai.client import ModelUnavailable
 from kaagaz.chunking.script import piece_latin
 from kaagaz.cli import main
 from kaagaz.db.engine import Database
 from tests.db_support import insert_document, new_customer
 from tests.settings_factory import make_settings
+from tests.test_answering_golden import FakeModel
+from tests.test_search_db import axis
 
 pytestmark = pytest.mark.db
 
@@ -67,26 +70,60 @@ def seed(db: Database, customer_id: str) -> None:
                 )
 
 
-def score(db: Database, customer_id: str) -> list[str]:
+def score(db: Database, customer_id: str, *flags: str, model: FakeModel | None = None) -> list[str]:
     out = io.StringIO()
-    argv = ["score-ask", "--customer-id", customer_id, "--questions", str(SEED)]
-    assert main(argv, db=db, environ={}, out=out, settings=make_settings(answer_max_evidence=8)) == 0
+    argv = ["score-ask", "--customer-id", customer_id, "--questions", str(SEED), *flags]
+    settings = make_settings(answer_max_evidence=8)
+    assert main(argv, db=db, environ={}, out=out, settings=settings, model=model) == 0
     return out.getvalue().splitlines()
 
 
-def test_the_seed_set_scores_end_to_end_with_no_model(db: Database) -> None:
+class Embeds(FakeModel):
+    """Embeds each text as the search's own size of vector (``FakeModel``'s is three numbers)."""
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        super().embed(texts)
+        return [axis(0) for _ in texts]
+
+
+SEED_SCORES = [
+    "all: page recall 0.80, any page found 4 of 5, MRR 0.67",
+    "list: page recall 1.00, any page found 1 of 1, MRR 0.33",
+    "unknown: page recall 0.75, any page found 3 of 4, MRR 0.75",
+    "missed 1 of 1 pages: When was the property bought?",
+]
+
+
+def test_the_seed_set_scores_end_to_end_with_no_model_call(db: Database) -> None:
+    customer, _ = new_customer(db)
+    seed(db, customer)
+    model = Embeds()
+
+    lines = score(db, customer, model=model)
+
+    # The quote is the 13th hit: kept (3rd) only because one page keeps at most two slots (#722).
+    assert lines == SEED_SCORES
+    assert (model.embedded, model.prompts) == ([], [])  # no flag: no model call at all
+
+
+def test_embed_adds_one_embedding_call_a_question_and_nothing_else(db: Database) -> None:
+    customer, _ = new_customer(db)
+    seed(db, customer)
+    model = Embeds()
+
+    lines = score(db, customer, "--embed", model=model)
+
+    assert lines == SEED_SCORES  # the seed's pieces have no vectors: the meaning list adds nothing
+    assert len(model.embedded) == 5 and model.prompts == []
+
+
+def test_a_failed_embedding_is_said_never_scored_as_if_searched_by_meaning(db: Database) -> None:
     customer, _ = new_customer(db)
     seed(db, customer)
 
-    lines = score(db, customer)
+    lines = score(db, customer, "--embed", model=FakeModel(embed_error=ModelUnavailable("timeout")))
 
-    # The quote is the 13th hit: found only because one page keeps at most two slots (#722).
-    assert lines[0] == "all: recall 4 of 5 (0.80), MRR 0.67"
-    assert lines[1:] == [
-        "fact: recall 3 of 4 (0.75), MRR 0.75",
-        "list: recall 1 of 1 (1.00), MRR 0.33",
-        "missed: When was the property bought?",
-    ]
+    assert lines[-1] == "searched by words only, the embedding failed: 5 of 5 questions"
 
 
 @pytest.mark.isolation
@@ -95,4 +132,4 @@ def test_another_customers_documents_never_count(db: Database) -> None:
     theirs, _ = new_customer(db)
     seed(db, theirs)
 
-    assert score(db, mine)[0] == "all: recall 0 of 5 (0.00), MRR 0.00"
+    assert score(db, mine)[0] == "all: page recall 0.00, any page found 0 of 5, MRR 0.00"

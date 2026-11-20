@@ -1,21 +1,22 @@
 """Score Ask's retrieval over a question file, for one customer (#721; ``kaagaz score-ask``).
 
 The file is JSON, a list of questions, each with the documents (as named in the library) and
-pages that answer it, and an optional kind of your own to group the scores by::
+pages that answer it::
 
-    [{"question": "What is the GST rate on cement?",
-      "expect": [{"document": "tax-note.pdf", "pages": [2]}],
-      "kind": "fact"}]
+    [{"question": "Compare the rent in the two leases",
+      "expect": [{"document": "lease-a.pdf", "pages": [2]}, {"document": "lease-b.pdf", "pages": [3]}]}]
 
 Each question goes through the search Ask's search route runs (``AnswerService.evidence_hits``:
 the hits it keeps as evidence, as the customer, under row level security), with no model call:
 words and typos only. ``--embed`` adds the meaning list (one embedding call a question).
-``--answers`` asks each question in full as Ask does (model calls: the rewrite, embeddings and the
-draft) and checks every citation is on an expected page.
+``--answers`` asks each question in full as Ask does (model calls: the rewrite, the translation,
+embeddings and the draft) and checks every citation is on an expected page.
 
-It prints recall (an expected page among the kept evidence), MRR (1 / the rank of the first
-such piece, 0 when none), each kind's, and each question it missed. Questions and document
-text stay in the operator's terminal, never a log.
+It prints, for all questions and for each kind Ask reads them as (``slots.question_kind``):
+the page recall (each question's share of its expected pages among the kept evidence, averaged),
+how many questions had any expected page kept, and MRR (1 / the rank of the first kept piece on
+an expected page, 0 when none); then each question with an expected page missing. Questions and
+document text stay in the operator's terminal, never a log.
 """
 
 import json
@@ -24,6 +25,7 @@ from dataclasses import dataclass
 from typing import Any, TextIO
 
 from kaagaz.answering.evidence import Hit
+from kaagaz.answering.slots import question_kind
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,7 +38,13 @@ class Expected:
 class Item:
     question: str
     expected: tuple[Expected, ...]
-    kind: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Score:
+    found: int  # expected pages among the kept evidence
+    expected: int
+    rank: int | None  # of the first kept piece on an expected page
 
 
 def load(text: str) -> list[Item]:
@@ -48,15 +56,15 @@ def load(text: str) -> list[Item]:
 
 
 def _item(at: int, entry: Any) -> Item:
-    problem = ValueError(f"question {at}: needs a question, expect [{{document, pages}}] and at most a kind")
+    problem = ValueError(f"question {at}: needs a question and expect [{{document, pages}}]")
     if not isinstance(entry, dict) or not _text(entry.get("question")):
         raise problem
-    expect, kind = entry.get("expect"), entry.get("kind")
-    if not isinstance(expect, list) or not expect or not (kind is None or isinstance(kind, str)):
+    expect = entry.get("expect")
+    if not isinstance(expect, list) or not expect:
         raise problem
     if not all(isinstance(e, dict) and _text(e.get("document")) and _pages(e.get("pages")) for e in expect):
         raise problem
-    return Item(entry["question"], tuple(Expected(e["document"], tuple(e["pages"])) for e in expect), kind)
+    return Item(entry["question"], tuple(Expected(e["document"], tuple(e["pages"])) for e in expect))
 
 
 def _text(value: Any) -> bool:
@@ -84,6 +92,18 @@ def first_rank(item: Item, hits: Sequence[Hit]) -> int | None:
     return None
 
 
+def score(item: Item, hits: Sequence[Hit]) -> Score:
+    """How many of ``item``'s expected pages the kept ``hits`` (best first) cover, and the rank of
+    the first hit on one. O(h * p)."""
+    wanted = {(e.document, p) for e in item.expected for p in e.pages}
+    found = {
+        (document, p)
+        for document, p in wanted
+        if any(h.document_name == document and h.page_from <= p <= h.page_to for h in hits)
+    }
+    return Score(len(found), len(wanted), first_rank(item, hits))
+
+
 def run(
     items: Sequence[Item],
     evidence: Callable[[str], Sequence[Hit]],
@@ -92,27 +112,30 @@ def run(
 ) -> None:
     """Score each item's ``evidence`` hits; with ``answer`` (a full answer's citations, each its
     document name and pages), its citations too. Prints the scores to ``out``."""
-    ranks: list[int | None] = []
+    scores: list[Score] = []
     right = total = answered = 0
     for item in items:
-        ranks.append(first_rank(item, evidence(item.question)))
+        scores.append(score(item, evidence(item.question)))
         citations = [] if answer is None else answer(item.question)
         right += sum(on_expected_page(item, *citation) for citation in citations)
         total += len(citations)
         answered += bool(citations)
-    out.write(_line("all", ranks) + "\n")
-    for kind in sorted({item.kind for item in items if item.kind is not None}):
-        out.write(_line(kind, [r for item, r in zip(items, ranks, strict=True) if item.kind == kind]) + "\n")
+    out.write(_line("all", scores) + "\n")
+    kinds = [question_kind(item.question) for item in items]
+    for kind in sorted(set(kinds)):
+        out.write(_line(kind, [s for s, k in zip(scores, kinds, strict=True) if k == kind]) + "\n")
     if answer is not None:
         share = f"{right / total:.2f}" if total else "-"
         out.write(f"citations on an expected page: {right} of {total} ({share}), ")
         out.write(f"{answered} of {len(items)} answered\n")
-    for item, rank in zip(items, ranks, strict=True):
-        if rank is None:
-            out.write(f"missed: {item.question}\n")
+    for item, marked in zip(items, scores, strict=True):
+        if marked.found < marked.expected:
+            missed = marked.expected - marked.found
+            out.write(f"missed {missed} of {marked.expected} pages: {item.question}\n")
 
 
-def _line(name: str, ranks: Sequence[int | None]) -> str:
-    found = [rank for rank in ranks if rank is not None]
-    mrr = sum(1 / rank for rank in found) / len(ranks)
-    return f"{name}: recall {len(found)} of {len(ranks)} ({len(found) / len(ranks):.2f}), MRR {mrr:.2f}"
+def _line(name: str, scores: Sequence[Score]) -> str:
+    recall = sum(s.found / s.expected for s in scores) / len(scores)
+    some = sum(s.found > 0 for s in scores)
+    mrr = sum(1 / s.rank for s in scores if s.rank is not None) / len(scores)
+    return f"{name}: page recall {recall:.2f}, any page found {some} of {len(scores)}, MRR {mrr:.2f}"
