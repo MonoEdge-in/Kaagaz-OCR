@@ -292,6 +292,10 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
         onRetry={(key) => void uploads.retry(key)}
         onRemove={uploads.remove}
         onCancel={uploads.cancel}
+        onStopOrCancel={uploads.stopOrCancel}
+        onReadAgain={uploads.readAgain}
+        // #713: Upload again opens the file picker, the screen's own first, as the top bar's Upload does.
+        onUploadAgain={() => (document.getElementById("upload-input") ?? document.getElementById(SHELL_UPLOAD_INPUT_ID))?.click()}
         tree={tree}
         onUndone={notify}
         canReread={canReview(me.user.role)}

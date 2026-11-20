@@ -276,6 +276,39 @@
   border-color: var(--critical);
 }
 
+/* Issue 713: stopped by a person (amber: nothing went wrong, Read again starts it), and cancelled (red: in Trash). */
+.upload[data-state="stopped"] .badge {
+  border-color: var(--k-review);
+  color: var(--k-review);
+  background: var(--k-review-soft);
+}
+
+.upload[data-state="cancelled"] .badge {
+  border-color: var(--critical);
+  color: var(--critical);
+}
+
+/* Issue 713: a row's status line with Stop and Cancel on its right; on a phone they wrap under it. */
+.rowLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-2);
+}
+
+.rowActions {
+  display: inline-flex;
+  gap: var(--space-1);
+  margin-inline-start: auto;
+}
+
+/* Cancel moves the file to Trash: the destructive tone, quiet or not. */
+.rowActions .dangerQuiet,
+.uploadsActions .dangerButton {
+  --btn-fg: var(--critical);
+}
+
 .progressRow {
   display: flex;
   align-items: center;

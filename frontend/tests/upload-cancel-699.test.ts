@@ -246,13 +246,14 @@ describe("the tray's Cancel buttons (#699)", () => {
     expect(html.match(/aria-label="Cancel upload of [a-z0-9]+\.pdf" title="Cancel upload of [a-z0-9]+\.pdf"/g)).toEqual([
       'aria-label="Cancel upload of w1.pdf" title="Cancel upload of w1.pdf"',
     ]);
-    expect(html).not.toContain("Cancel all waiting"); // one waiting file: its own Cancel is enough
+    // Changed on purpose (#713): the button reads "Cancel all" (it covers files already sent too).
+    expect(html).not.toContain(">Cancel all<"); // one waiting file: its own Cancel is enough
   });
 
   it("offers Cancel all waiting at the drop's top with two or more waiting, above its files", async () => {
     const html = await tray([entry("s", sending), entry("w1", waiting), entry("w2", waiting)]);
-    expect(html).toContain(">Cancel all waiting<");
-    expect(html.indexOf("Cancel all waiting")).toBeLessThan(html.indexOf(">s.pdf<"));
+    expect(html).toContain(">Cancel all<"); // Changed on purpose (#713): "Cancel all"
+    expect(html.indexOf(">Cancel all<")).toBeLessThan(html.indexOf(">s.pdf<"));
   });
 
   it("shows no Cancel when the tray is given no onCancel", async () => {
@@ -314,7 +315,7 @@ describe("pressing the tray's Cancel buttons (#699)", () => {
 
   it("Cancel all waiting asks once, Keep them first; Keep them keeps every file, Cancel files cancels them", async () => {
     const tray = await pressable([entry("s", sending), entry("w1", waiting), entry("w2", waiting)]);
-    await tray.press("Cancel all waiting");
+    await tray.press("Cancel all"); // Changed on purpose (#713): "Cancel all"
     const dialog = tray.doc.body.all().find((each) => each.tagName === "DIALOG");
     expect(dialog?.textContent).toContain("Cancel 2 waiting files?");
     expect(tray.doc.activeElement?.textContent).toBe("Keep them");
@@ -322,7 +323,7 @@ describe("pressing the tray's Cancel buttons (#699)", () => {
     expect(tray.asked).toEqual([]);
     expect(tray.doc.body.all().some((each) => each.tagName === "DIALOG")).toBe(false);
 
-    await tray.press("Cancel all waiting");
+    await tray.press("Cancel all"); // Changed on purpose (#713): "Cancel all"
     await tray.press("Cancel files");
     expect(tray.asked).toEqual([["w1", "w2"]]);
     expect(tray.doc.body.textContent).toContain("Batch of 1 file · 1 sending"); // the line, counted at once
