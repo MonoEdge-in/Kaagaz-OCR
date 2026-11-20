@@ -59,13 +59,14 @@ def test_one_document_keeps_three_slots_and_the_next_hits_take_the_rest() -> Non
 
 
 def test_capped_hits_fill_the_slots_no_other_hit_can() -> None:
-    """A question about one document still gets every slot, best first."""
+    """A question about one document still gets every slot: the capped hits fill it, after the rest."""
     mine = pages(A_PDF, 4, 4, 4, 5, 6)
     other = pages(B_PDF, 2)
 
     kept = spread([*mine, *other], 5)
 
-    assert kept == [mine[0], mine[1], mine[2], mine[3], other[0]]  # rank order; mine[4] is the 6th
+    # mine[2] (a third of page 4) and mine[4] (a fourth of the file) wait; mine[2] fills the last slot
+    assert kept == [mine[0], mine[1], mine[3], other[0], mine[2]]
 
 
 def test_fewer_hits_than_slots_keeps_them_all_in_order() -> None:

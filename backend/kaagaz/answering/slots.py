@@ -11,7 +11,7 @@ Which: the search ranks pieces; one page or one file often holds the best severa
 fills every slot with near repeats while the page that answers waits just below. ``spread``
 keeps at most PAGE_CAP pieces of one page and DOCUMENT_CAP of one document, and gives the freed
 slots to the next ranked hits. A question about one document still gets every slot: when too
-few other hits are left, the capped ones fill the rest, best first. The search is asked for
+few other hits are left, the capped ones fill the rest, after them. The search is asked for
 POOL_PER_SLOT hits a slot, so there are next ranked hits to take.
 
 A "which documents" question keeps its own rule and count (each document once, service
@@ -43,24 +43,24 @@ POOL_PER_SLOT = 3  # hits searched a slot: enough next ranked hits to take a cap
 
 def spread[H: Hit](hits: Sequence[H], slots: int) -> list[H]:
     """The best ``slots`` of ``hits`` (best first), at most PAGE_CAP of one page (its first) and
-    DOCUMENT_CAP of one document, the next ranked hits taking the freed slots; slots still free
-    then take the capped hits, best first. Kept in rank order."""
+    DOCUMENT_CAP of one document, the next ranked hits taking the freed slots, in rank order; slots
+    still free then take the capped hits, best first, after them (a repeat of a page goes below a
+    page of its own, so the draft's prompt keeps it in its middle, ``draft.edges``)."""
     pages: Counter[tuple[str, int]] = Counter()
     documents: Counter[str] = Counter()
-    kept: list[int] = []
-    capped: list[int] = []
-    for at, hit in enumerate(hits):
+    kept: list[H] = []
+    capped: list[H] = []
+    for hit in hits:
         if len(kept) == slots:
             break
         page = (hit.document_id, hit.page_from)
         if pages[page] < PAGE_CAP and documents[hit.document_id] < DOCUMENT_CAP:
             pages[page] += 1
             documents[hit.document_id] += 1
-            kept.append(at)
+            kept.append(hit)
         else:
-            capped.append(at)
-    kept += capped[: slots - len(kept)]
-    return [hits[at] for at in sorted(kept)]
+            capped.append(hit)
+    return kept + capped[: slots - len(kept)]
 
 
 def question_kind(question: str) -> Kind:
