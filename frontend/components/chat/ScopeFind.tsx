@@ -6,7 +6,8 @@
 // they are choosing. A department or folder asks in it and its subfolders; files toggle in and
 // out of the files asked about (up to MAX_FILES). Files come from GET /documents (?q=, by name,
 // only what this person can open), asked once typing pauses; folders from the tree already loaded.
-// The files chosen stay listed under "Chosen files"; a list cut short, or the 50-file cap, says so.
+// The files chosen stay listed under "Chosen files", below the results (and how many more were
+// chosen before the box showed them); a list cut short, or the 50-file cap, says so.
 
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/ui/Icon/Icon";
@@ -131,6 +132,7 @@ export function ScopeFind({
     const file = seen.get(fileId);
     return file ? [fileRow(file)] : [];
   });
+  const earlier = picked.length - chosen.length; // chosen before this box showed them (a link, a restore)
   const lookedUp = failed !== query;
   const looking = query.length >= FIND_FROM && current === null && lookedUp;
   const nothing = query.length >= FIND_FROM && lookedUp && !looking && places.length === 0 && fileRows.length === 0;
@@ -151,8 +153,6 @@ export function ScopeFind({
       <p id={`${id}-find-hint`} className="hint">
         Find a department, folder or file by name.
       </p>
-      <Group heading="Chosen files" rows={chosen} />
-      {picked.length >= MAX_FILES ? <p className="hint">You can ask about up to {MAX_FILES} files at once.</p> : null}
       <Group heading="Departments" rows={places.filter((place) => place.department).map(placeRow("department"))} />
       <Group heading="Folders" rows={places.filter((place) => !place.department).map(placeRow("folder"))} />
       <Group heading="Files" rows={fileRows} />
@@ -161,6 +161,13 @@ export function ScopeFind({
           Showing {current.items.length} of {current.total} files. Type more of the name to narrow it.
         </p>
       ) : null}
+      <Group heading="Chosen files" rows={chosen} />
+      {earlier > 0 ? (
+        <p className="hint">
+          {chosen.length > 0 ? `And ${earlier} more` : earlier} {earlier === 1 ? "file" : "files"} chosen earlier.
+        </p>
+      ) : null}
+      {picked.length >= MAX_FILES ? <p className="hint">You can ask about up to {MAX_FILES} files at once.</p> : null}
       {looking ? (
         <p className="muted" role="status">
           Looking for files…

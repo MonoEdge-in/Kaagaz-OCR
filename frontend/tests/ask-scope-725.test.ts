@@ -200,10 +200,10 @@ describe("the review of #725", () => {
     const deep = buildTree([
       { id: "p", name: "Wakad", parent_id: null, created_at: "2026-10-01" },
       ...Array.from({ length: 9 }, (_, n) => ({ id: `c${n}`, name: `Plot ${n}`, parent_id: "p", created_at: "2026-10-01" })),
-      { id: "z", name: "Old Wakad maps", parent_id: null, created_at: "2026-10-01" },
+      { id: "z", name: "Zilla Wakad maps", parent_id: null, created_at: "2026-10-01" },
     ]);
-    // Names first, in tree order (A to Z), then places: never cut before "Old Wakad maps".
-    expect(findFolders(deep, "wakad").map((found) => found.id)).toEqual(["z", "p", "c0", "c1", "c2", "c3", "c4", "c5"]);
+    // Names first, in tree order, then places: "Zilla Wakad maps" sorts after Wakad's 9 plots, yet stays.
+    expect(findFolders(deep, "wakad").map((found) => found.id)).toEqual(["p", "z", "c0", "c1", "c2", "c3", "c4", "c5"]);
   });
 
   it("clears a failed lookup once it works, and never says nothing matched files it could not look at", async () => {
@@ -239,5 +239,40 @@ describe("the review of #725", () => {
     await type("land");
     expect(doc.body.textContent).toContain("Showing 1 of 37 files. Type more of the name to narrow it.");
     expect(doc.body.textContent).toContain("You can ask about up to 50 files at once.");
+  });
+});
+
+describe("Enter in the find box (#725 re-check)", () => {
+  it("neither sends the question nor closes the panel; Enter on a choice still closes it", async () => {
+    vi.stubGlobal("HTMLInputElement", FakeElement); // the fake DOM's every element is one
+    const { ComposerMenu } = await import("@/components/chat/ComposerMenu");
+    const container = doc.body.appendChild(doc.createElement("div")) as FakeElement;
+    const { createRoot } = await import("react-dom/client");
+    root = createRoot(container as unknown as Element);
+    const choices = [
+      createElement("input", { key: "find", type: "search", "aria-label": "find" }),
+      createElement("input", { key: "pick", type: "radio", "aria-label": "pick", readOnly: true }),
+    ];
+    await act(async () => root!.render(createElement(ComposerMenu, { label: "All documents", name: "Where to ask", title: "t" }, choices)));
+    const panel = all().find((element) => element.getAttribute("popover") === "auto")!;
+    const hidePopover = vi.fn();
+    Object.assign(panel, { hidePopover });
+    const input = (label: string) => all().find((element) => element.getAttribute("aria-label") === label)!;
+    let sent = true;
+    await act(async () => void (sent = fire(input("find"), "keydown", { key: "Enter" })));
+    expect([sent, hidePopover.mock.calls.length]).toEqual([false, 0]); // the form never submits
+    await act(async () => void (sent = fire(input("pick"), "keydown", { key: "Enter" })));
+    expect([sent, hidePopover.mock.calls.length]).toEqual([false, 1]);
+  });
+});
+
+describe("files chosen earlier (#725 re-check)", () => {
+  it("lists the chosen files below the results and counts the ones it has not shown", async () => {
+    api.listDocuments.mockResolvedValue({ items: [file("x1", "Land deed.pdf")], total: 1 });
+    const { type } = await showFind({ kind: "documents", ids: ["x1", "e1", "e2"] });
+    expect(doc.body.textContent).toContain("3 files chosen earlier."); // none of them shown yet
+    await type("land");
+    expect(headings().slice(-2)).toEqual(["Files", "Chosen files"]); // below the results
+    expect(doc.body.textContent).toContain("And 2 more files chosen earlier.");
   });
 });

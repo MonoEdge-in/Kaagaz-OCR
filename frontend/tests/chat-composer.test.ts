@@ -98,8 +98,8 @@ describe("the toolbar chips", () => {
   it("open each panel above its chip, close on Enter instead of sending, and move focus inside", () => {
     const menu = read("components/chat/ComposerMenu.tsx");
     expect(menu).toContain('event.key === "Enter" && event.target instanceof HTMLInputElement');
-    // #725 review: never in a search box (the scope's find box), where Enter belongs to the typing.
-    expect(menu).toMatch(/event.target instanceof HTMLInputElement && event.target.type !== "search"/);
+    // #725 review: never sends from any box; in a search box (the find box) the panel stays open.
+    expect(menu).toMatch(/event\.preventDefault\(\);\s*if \(event\.target\.type !== "search"\) event\.currentTarget\.hidePopover\(\);/);
     expect(menu).toContain("event.currentTarget.hidePopover();");
     expect(menu).toContain('menu.querySelector<HTMLElement>("input:checked:enabled")');
     const css = read("components/chat/Chat.module.css");
