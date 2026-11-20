@@ -4,11 +4,13 @@
 // question was understood, what a source card may still show of its
 // document, and what the question box sends or gets back.
 
+import { SHARED } from "@/components/access/words";
 import { pageLink } from "@/lib/regions";
 import type {
   Answer,
   AnswerSentence,
   Citation,
+  FilePage,
   ListedDocument,
   Mentions,
   Message,
@@ -150,6 +152,35 @@ export function listedDocuments(answer: Pick<Answer, "documents" | "citations">)
     more: others.size,
   };
 }
+
+/** #718: the files a new answer lists with their pages (Sources by file); [] for an answer saved
+ * before, which shows its sources one by one as it did. */
+export function sourceFiles(answer: Pick<Answer, "documents">): (ListedDocument & { pages: FilePage[] })[] {
+  return (answer.documents ?? []).flatMap((doc) => (doc.pages ? [{ ...doc, pages: doc.pages }] : []));
+}
+
+/** #718: a file's place, "Land & Legal › Sale deeds"; "Shared with you" in a folder this person
+ * can't see (null); nothing at the top level or on an answer saved before. */
+export function folderPathText(path: readonly string[] | null | undefined): string {
+  if (path === null) return SHARED.row;
+  return (path ?? []).join(" › ");
+}
+
+/** "1 page", "3 pages". */
+export const pageCountText = (n: number) => plural(n, "page", "pages");
+
+/** #718: a page's citation numbers, "[1] [3]", or "Also matches" for a page the search found. */
+export function pageCiteText(page: Pick<FilePage, "citations">): string {
+  return page.citations.length > 0 ? page.citations.map((n) => `[${n}]`).join(" ") : "Also matches";
+}
+
+/** #718: "Open" on a file's page: the page at its spot, lit, with the asker's words (package H). */
+export function filePageLink(documentId: string, page: FilePage, terms: readonly string[] = []): string {
+  return pageLink(documentId, page.page_no, citationRegion(page), { words: linkWords(...terms) });
+}
+
+/** #719: the searched files shown before "Show N more" (design board 2). */
+export const SEARCHED_SHOWN = 7;
 
 /** The figure a value source prints, as printed ("₹1,234.00" of "total_amount: ₹1,234.00");
  * null for a piece of text or a source that is gone. */

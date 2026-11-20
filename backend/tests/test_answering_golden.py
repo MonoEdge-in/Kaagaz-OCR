@@ -33,6 +33,7 @@ from kaagaz.answering.evidence import number_evidence
 from kaagaz.answering.expansion import NO_EXPANSION, Expansion
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, Figure, FixedRow, ValueRef
 from kaagaz.answering.service import Answer, AnswerService
+from kaagaz.answering.sources import SEARCHED_PIECES
 from kaagaz.db.engine import Database
 from kaagaz.db.models import Agent, ChatChoice
 from kaagaz.search.scope import EVERYTHING, Scope
@@ -67,7 +68,7 @@ ANSWER_KEYS = {
     "documents",
     "assumptions",
 }
-DOCUMENT_KEYS = {"document_id", "title", "why", "citations"}  # PRD 6 A
+DOCUMENT_KEYS = {"document_id", "title", "why", "citations", "pages", "path"}  # PRD 6 A; #718
 CITATION_KEYS = {
     "n",
     "kind",
@@ -564,7 +565,7 @@ def assert_well_formed(answer: Answer) -> None:
     """The properties every answer keeps, answered or not (no source, no answer)."""
     data = answer.to_json()
     # Changed on purpose (24 Oct 2026): an outage adds ``outage`` (KZ-006, never "busy").
-    assert set(data) - {"outage", "outage_reason"} == ANSWER_KEYS  # #535: a timeout says so
+    assert set(data) - {"outage", "outage_reason", "searched_files"} == ANSWER_KEYS  # #535, #719
     assert data.get("outage", True) is True and ("outage" in data) == answer.unavailable
     assert data["route"] in {"fixed_query", "search"}
     # PRD 6 A: v2, the opening is the API's, nothing assumed yet; at most 10 documents listed,
@@ -796,7 +797,9 @@ def test_no_model_gives_the_extractive_answer() -> None:
     assert answer.citations[0].regions == INVOICE.regions
     assert answer.label == "verified"
     assert answer.normalized_question == "What is the grand total of INV-1042?"
-    assert retriever.calls == [(A, "grand total inv-1042", None, SETTINGS.answer_max_evidence)]
+    # Changed on purpose (#719): the search fetches SEARCHED_PIECES of its fused list for the files
+    # searched; the evidence read stays ANSWER_MAX_EVIDENCE (test_ask_sources.py).
+    assert retriever.calls == [(A, "grand total inv-1042", None, SEARCHED_PIECES)]
 
 
 def test_a_model_answer_is_used_and_cited() -> None:

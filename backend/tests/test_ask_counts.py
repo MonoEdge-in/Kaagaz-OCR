@@ -23,6 +23,7 @@ from kaagaz.answering.exhaustive import (
     pages_with,
 )
 from kaagaz.answering.service import Answer, AnswerService
+from kaagaz.answering.sources import SEARCHED_PIECES
 from kaagaz.search.hybrid import MAX_LIMIT
 from kaagaz.search.scope import EVERYTHING, Scope
 from tests.test_answering_golden import (
@@ -531,7 +532,9 @@ def test_a_which_documents_question_reads_each_document_once() -> None:
         assert sum(hit.text in block for block in drafted[0]) == 1, hit.document_name
 
     service.answer(A, "Where did Krishna Jindal sign?")  # any other question: as before
-    assert retriever.calls[-1][3] == SETTINGS.answer_max_evidence
+    assert (
+        retriever.calls[-1][3] == SEARCHED_PIECES
+    )  # Changed on purpose (#719): fetched for the files searched
 
 
 def _drafted(pieces: list[FakeHit], question: str, scope: Scope = EVERYTHING) -> tuple[int, list[str]]:
@@ -563,4 +566,5 @@ def test_one_document_is_read_as_before() -> None:
     scope = Scope(document_ids=(many[0].document_id,))
     others = [piece("b.pdf", "Buyer: Krishna Jindal")]
     limit, read = _drafted([*many, *others], "which document have krishna jindal name", scope)
-    assert (limit, len(read)) == (SETTINGS.answer_max_evidence, SETTINGS.answer_max_evidence)
+    # Changed on purpose (#719): the search fetches SEARCHED_PIECES for the files searched; reads as before.
+    assert (limit, len(read)) == (SEARCHED_PIECES, SETTINGS.answer_max_evidence)

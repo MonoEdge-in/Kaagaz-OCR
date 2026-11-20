@@ -168,7 +168,8 @@ def test_with_no_choice_the_answer_is_as_before() -> None:
     model = TeamModel({"fake-chat": honest})
     answer = ask(model)
     assert model.calls == [{"model": None, "thinking": None, "provider": None, "deadline": None}]
-    assert set(answer.to_json()) == ANSWER_KEYS  # old answers and old shapes render unchanged
+    # Changed on purpose (#719): a searched answer adds searched_files; every other key as before.
+    assert set(answer.to_json()) - {"searched_files"} == ANSWER_KEYS  # old shapes render unchanged
 
 
 def test_two_models_that_agree_keep_verified() -> None:

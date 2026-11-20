@@ -355,6 +355,8 @@ VIEW_READERS = {
     "answering/exhaustive.py": {"_IN_SCOPE", "_PIECES"},
     # Changed on purpose (#644): package K's focus profile and related documents, through the view.
     "answering/focus.py": {"_MATCHES", "_PROFILE"},
+    # Changed on purpose (#718): an answer's folder paths, reached from Ask (the API) only.
+    "answering/sources.py": {"_DOCUMENT_PATHS"},
     "answering/fixed_queries.py": {
         "_AVAILABLE_FIELDS", "_COUNT_DOCUMENTS", "_COUNT_INVOICES", "_EXTREME_VALUE", "_FIGURES",
         "_TOP_GROUP", "_VALUE_REFS",
