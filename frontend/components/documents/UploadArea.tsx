@@ -86,6 +86,7 @@ import {
   canCancel,
   canStop,
   filedText,
+  inFlight,
   inBatches,
   keptCounts,
   leftText,
@@ -95,6 +96,7 @@ import {
   rowKind,
   statusBarText,
   stoppedByYou,
+  stoppedRow,
   summaryText,
   trayActionKeys,
   trayCounts,
@@ -187,6 +189,8 @@ export function useUploads(onUploaded: () => void) {
   // #697: a drop's file, sent again as a new file in place of its copy in Trash, and the folder
   // it was going to (where Restore moves that copy). Gone after a reload: then only Restore.
   const asNew = useRef(new Map<string, { start: Start; into?: string }>());
+  // #713: files asked to stop or cancel while still being sent: done once stored (send).
+  const askedToStop = useRef(new Map<string, { action: TrayAction; done: (why: string | null) => void }>());
   // Drops from before a reload: every file the batch API lists gets a row.
   const [restored] = useState(() => new Set(stored.map((batch) => batch.id)));
   const [skipped, setSkipped] = useState(""); // PRD 9 F-04: the last pick's system files, in words
@@ -330,7 +334,13 @@ export function useUploads(onUploaded: () => void) {
           : { kind: "done", documentId: result.document.id };
       dispatch({ type: "change", key, change: { state, times: { ...times } } });
       onUploaded();
+      // #713: asked to stop or cancel while it was being sent: done now it is stored.
+      const wanted = askedToStop.current.get(key);
+      askedToStop.current.delete(key);
+      wanted?.done(state.kind === "reading" ? await act(wanted.action, key, state.documentId) : STOP_TEXT.notApplied);
     } catch (caught) {
+      askedToStop.current.get(key)?.done(null); // never stored: nothing to stop
+      askedToStop.current.delete(key);
       stopped.current ??= sessionChangedMessage(caught);
       const retry = stopped.current === null && canSendAgain(caught) && kept.current.has(key);
       const message = uploadErrorText(caught, navigator.onLine, retry);
@@ -492,36 +502,64 @@ export function useUploads(onUploaded: () => void) {
     if (emptied.size > 0) setStored((batches) => batches.filter((batch) => !emptied.has(batch.id)));
   }
 
-  /** #713: Stop or Cancel (Move to Trash) files already sent, one call a file as a selection's actions
-   *  are (components/documents/trash.ts); how many the server refused, and the first one's words. */
+  /** #713: Stop or Cancel (Move to Trash) one stored file; why the server refused, or null. */
+  async function act(action: TrayAction, key: string, documentId: string): Promise<string | null> {
+    try {
+      if (action === "stop") {
+        dispatch({ type: "change", key, change: { state: followed(await stopDocument(documentId)), byYou: true } });
+      } else {
+        await deleteDocument(documentId);
+        update(key, { kind: "cancelled", documentId });
+      }
+      return null;
+    } catch (caught) {
+      return caught instanceof ApiError ? caught.message : "Check your connection, then try again.";
+    }
+  }
+
+  /** #713: Stop or Cancel files already sent, one call a file as a selection's actions are
+   *  (components/documents/trash.ts); a file still being sent is asked to, and done once it is stored
+   *  (send). How many could not be, with the first one's words, once all are done. */
   async function stopOrCancel(action: TrayAction, keys: string[]): Promise<{ count: number; why: string }> {
     const refused = { count: 0, why: "" };
+    const note = (why: string | null) => {
+      if (why === null) return;
+      refused.count += 1;
+      refused.why ||= why;
+    };
+    const later: Promise<void>[] = [];
     for (const entry of queue.entries) {
-      if (!keys.includes(entry.key) || entry.state.kind !== "reading") continue;
-      const { documentId } = entry.state;
-      try {
-        if (action === "stop") update(entry.key, followed(await stopDocument(documentId)));
-        else {
-          await deleteDocument(documentId);
-          update(entry.key, { kind: "cancelled", documentId });
-        }
-      } catch (caught) {
-        refused.count += 1;
-        refused.why ||= caught instanceof ApiError ? caught.message : "Check your connection, then try again.";
+      if (!keys.includes(entry.key)) continue;
+      if (entry.state.kind === "reading") note(await act(action, entry.key, entry.state.documentId));
+      else if (inFlight(entry)) {
+        later.push(
+          new Promise((done) =>
+            askedToStop.current.set(entry.key, {
+              action,
+              done: (why) => {
+                note(why);
+                done();
+              },
+            }),
+          ),
+        );
       }
     }
+    await Promise.all(later);
     onUploaded();
     return refused;
   }
 
-  /** #713: Read again a file stopped in the tray; it is followed again while it is read. Why not, or null. */
+  /** #713: Read again a file stopped in the tray; it is followed again while it is read. Why not, or
+   *  null; too soon after its last Read again (the cooldown, security A8), when it may be. */
   async function readAgain(key: string, documentId: string): Promise<string | null> {
     try {
-      update(key, followed(await reprocessDocument(documentId)));
+      dispatch({ type: "change", key, change: { state: followed(await reprocessDocument(documentId)), byYou: false } });
       onUploaded();
       return null;
     } catch (caught) {
-      return reprocessErrorText(caught);
+      const reason = caught instanceof ApiError ? (caught.details as { reason?: string } | undefined)?.reason : undefined;
+      return reason === "cooldown" ? STOP_TEXT.cooldown : reprocessErrorText(caught);
     }
   }
 
@@ -963,8 +1001,8 @@ export function BatchTray({
   const question = asking
     ? trayQuestion(
         asking.action,
-        askedRows.map((entry) => entry.name),
-        askedRows.every((entry) => entry.state.kind === "waiting"),
+        askedRows.filter((entry) => entry.state.kind !== "waiting").map((entry) => entry.name),
+        askedRows.filter((entry) => entry.state.kind === "waiting").length,
       )
     : null;
 
@@ -1091,6 +1129,7 @@ export function BatchTray({
           }}
         >
           {question.note && <p className={`muted ${styles.small}`}>{question.note}</p>}
+          {question.notSent && <p className={styles.small}>{question.notSent}</p>}
           {/* #713 (owner's mockup): the safe answer is the primary one and has the focus. */}
           <div className={library.formButtons}>
             <button
@@ -1316,7 +1355,7 @@ function UploadRow({
     element?.focus();
   }, []);
   const kind = rowKind(entry);
-  const mine = stoppedByYou(entry); // #713: stopped on purpose: no failure
+  const mine = stoppedRow(entry); // #713: stopped on purpose: no failure, Read again starts it
   const failed = (kind === "failed" || kind === "stopped") && !mine;
   const stage = stageOf(state);
   const story = storyTarget(state); // a finished file offers its story section, never a dialog
@@ -1395,7 +1434,7 @@ function UploadRow({
         )}
         {mine && (
           <p className={styles.small}>
-            {STOP_TEXT.stoppedLine}{" "}
+            {stoppedByYou(entry) ? STOP_TEXT.stoppedLine : document?.status_message}{" "}
             {onReadAgain && state.kind === "done" && (
               <button type="button" className={`btn ${styles.inlineAction}`} onClick={() => onReadAgain(state.documentId)}>
                 <Icon name="refresh" />

@@ -747,13 +747,14 @@ export function DocumentView({
               )}
               {position && <span className={styles.meta}>{versionText(position)}</span>}
             </p>
-            {/* #713: while it is read, Stop (it stays here) or Cancel (to Trash), each asked first. */}
-            {beingRead(detail.status) && detail.deleted_at === null && (
+            {/* #713: while it is read for the first time, Stop (it stays here) or Cancel (to Trash), each
+                asked first; Cancel only for a file of one version (Trash takes every version). */}
+            {beingRead(detail.status) && detail.deleted_at === null && detail.read_before !== true && (
               <StopCancel
                 documentId={detail.id}
                 name={detail.display_name}
                 canStop={canReview(me.user.role)}
-                canCancel={detail.can_delete}
+                canCancel={detail.can_delete && detail.versions.length <= 1}
                 onDone={(message) => {
                   focusAfterReload();
                   reloadWith(message);

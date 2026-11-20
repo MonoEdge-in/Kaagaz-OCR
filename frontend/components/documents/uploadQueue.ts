@@ -28,6 +28,7 @@ export interface UploadEntry {
   times?: StageTimes; // when it started sending, sent its last byte, and was replied to (U10)
   state: UploadState;
   asNew?: boolean; // #697: this tab holds the file, so it may be sent again as a new file (not after a reload)
+  byYou?: boolean; // #713: stopped from this tab, by who pressed Stop here ("Stopped by you")
 }
 
 export interface UploadCounts {
@@ -85,8 +86,9 @@ export function followed(document: DocumentSummary): UploadState {
     : { kind: "done", documentId: document.id, document };
 }
 
+// #713: a cancelled file too: once the batch lists it again (restored from Trash), its row follows it.
 export const documentOf = (state: UploadState) =>
-  state.kind === "reading" || state.kind === "done" ? state.documentId : null;
+  state.kind === "reading" || state.kind === "done" || state.kind === "cancelled" ? state.documentId : null;
 
 /** Feature 28: read, then filed by Kaagaz, maybe into a folder it made just then. */
 const isFiled = (state: UploadState) => state.kind === "done" && state.document?.autofile === "filed";

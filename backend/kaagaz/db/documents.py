@@ -89,7 +89,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 
-from kaagaz.db import audit, autofile, customers, folders, storage_limits, versions
+from kaagaz.db import audit, autofile, customers, folders, storage_limits, trash, versions
 from kaagaz.db.engine import Database, unavailable, user_or_customer
 from kaagaz.db.runs import close_running, finish_run, is_run_open
 from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, INSUFFICIENT_PRIVILEGE, retry_on_deadlock, sqlstate
@@ -283,12 +283,10 @@ _LOCKED = (
     "UPDATE documents SET status = 'locked', failure_code = NULL, page_count = :pages, progress = NULL,"
     " is_current = :current WHERE customer_id = :c AND id = :d"
 )
-# The run, and the version not locked and not in Trash (#713: Cancel moves it there): one query on
-# two primary keys. The version is read FOR SHARE, so a lock or a move to Trash under way (its FOR
-# NO KEY UPDATE) is waited for and then seen.
+# The run, and the version not locked: one query on two primary keys. The version is read FOR
+# SHARE, so a lock under way (its FOR NO KEY UPDATE) is waited for and then seen.
 _STILL_OPEN = (
-    "SELECT r.status = 'running' AND d.locked_at IS NULL AND d.deleted_at IS NULL"
-    " FROM documents d JOIN processing_runs r"
+    "SELECT r.status = 'running' AND d.locked_at IS NULL FROM documents d JOIN processing_runs r"
     " ON r.customer_id = d.customer_id AND r.document_id = d.id AND r.id = :r"
     " WHERE d.customer_id = :c AND d.id = :d FOR SHARE OF d"
 )
@@ -685,32 +683,28 @@ def fail_stuck(
 
 # --- Stop (#713) ---------------------------------------------------------------------
 
-STOPPED = "stopped"
-# Only a file still waiting, checked or read, out of Trash and not locked. A hold of the reading
-# pause ends with it, so a Read again later is not held by a pause that has passed.
-_STOP = (
-    "UPDATE documents SET status = 'failed', failure_code = 'stopped', reading_held = NULL"
-    " WHERE customer_id = :c AND id = :d AND status IN ('received', 'clean')"
-    " AND deleted_at IS NULL AND locked_at IS NULL RETURNING id"
-)
+
+class NotStoppable(Exception):
+    """Stop refused: not waiting, checked or read (or gone, in Trash or locked); ``read_before``
+    when it is being read again after a reading that finished (Tushar, 20 Nov 2026: that goes on)."""
+
+    def __init__(self, document_id: str, *, read_before: bool = False) -> None:
+        super().__init__(document_id)
+        self.read_before = read_before
 
 
-def stop_reading(conn: Connection, customer_id: str, document_id: str, *, now: datetime) -> bool:
-    """Stop: the document failed with ``stopped``, its runs still ``running`` ended failed with the
-    same code, and its read-again marks cleared, as ``fail_stuck``; False when it is not being
-    waited on, checked or read (or is gone, in Trash or locked), and then nothing changes. Under
-    the family lock, so a move to Trash or a lock under way is waited for. A worker on it stops at
-    its next step (its run is closed); a queued job is skipped (the status is settled); the stuck
-    sweep never takes it (failed). ``conn`` comes from ``Database.user``; the caller checked the
-    file through the view and audits it. 2 to 4 statements."""
-    if lock_family(conn, customer_id, document_id) is None:
-        return False
-    params = {"c": customer_id, "d": document_id}
-    if conn.execute(text(_STOP), params).first() is None:
-        return False
-    close_running(conn, customer_id, document_id, status="failed", error_code=STOPPED, now=now)
-    conn.execute(text(_CLEAR_READ_AGAIN), params)
-    return True
+def stop_reading(conn: Connection, customer_id: str, document_id: str, *, now: datetime) -> None:
+    """Stop the document (``trash.stop_reading``, its rule and effects), under the family lock, so
+    a move to Trash or a lock under way is waited for. Raises NotStoppable, and nothing changes,
+    when it can't be. ``conn`` comes from ``Database.user``; the caller checked the file through
+    the view and audits it. 2 to 5 statements."""
+    family_id = lock_family(conn, customer_id, document_id)
+    if family_id is None:
+        raise NotStoppable(document_id)
+    if conn.execute(text(_READ_BEFORE), {"c": customer_id, "d": document_id, "fence": None}).scalar_one():
+        raise NotStoppable(document_id, read_before=True)
+    if not trash.stop_reading(conn, customer_id, family_id, now=now, document_id=document_id):
+        raise NotStoppable(document_id)
 
 
 # --- read one page again, and Keep as is (PRD 5 F5) ----------------------------
@@ -1171,8 +1165,8 @@ class PgDocuments:
             retry_on_deadlock(transaction, customer_id=customer_id, document_id=document_id)
 
     def still_open(self, customer_id: str, document_id: str, run_id: str) -> bool:
-        """PRD 7 (#605): ``run_id`` is still running and the version is not locked, nor in Trash
-        (#713), after a lock or a move to Trash under way, if any. One query."""
+        """PRD 7 (#605): ``run_id`` is still running and the version is not locked (after a lock
+        under way, if any). One query."""
         with unavailable(), user_or_customer(self._db, customer_id, self._user_id) as conn:
             params = {"c": customer_id, "d": document_id, "r": run_id}
             return bool(conn.execute(text(_STILL_OPEN), params).scalar())

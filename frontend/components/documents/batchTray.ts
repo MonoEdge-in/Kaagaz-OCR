@@ -186,19 +186,40 @@ export const STOP_TEXT = {
   cancelOne: (name: string) => `Cancel ${name} and move it to Trash`,
   stopAll: "Stop all",
   note: "A page being read right now finishes first.",
+  notSent: (n: number) => `${n} not sent yet ${n === 1 ? "is" : "are"} cancelled.`,
   keep: { stop: "Keep reading", cancel: "Keep them", cancelOne: "Keep it" },
-  stoppedLine: "Stopped by you. It stays in Documents.",
+  stoppedLine: "Stopped by you. It stays in Documents.", // only on the row of who pressed Stop here
+  stoppedPage: "Stopped. It stays in Documents.", // the document page's line after its Stop
   cancelledLine: "Cancelled. Moved to Trash.",
   readAgain: "Read again",
   uploadAgain: "Upload again",
+  cooldown: "You can read it again in 10 minutes.", // Read again's per-file cooldown (security A8)
+  notApplied: "It was already in Kaagaz, so nothing was being read.", // asked while sending: a copy
 };
 
-/** A row a reviewer or an admin may stop (Read again's right): on the server, waiting, checked or read. */
-export const canStop = (entry: Pick<UploadEntry, "state">, canReread: boolean) => canReread && entry.state.kind === "reading";
+/** Still being sent from this tab: stopped or cancelled once it is stored (useUploads). */
+export const inFlight = (entry: Pick<UploadEntry, "state">) => ["sending", "saving", "offline"].includes(entry.state.kind);
 
-/** A row its person may cancel (Move to Trash's right, ``can_delete``): on the server, waiting, checked or read. */
-export const canCancel = (entry: Pick<UploadEntry, "state">) =>
-  entry.state.kind === "reading" && entry.state.document.can_delete === true;
+/** Being read again after a reading that finished: never stopped (Tushar, 20 Nov 2026). */
+const readBefore = (entry: Pick<UploadEntry, "state">) => entry.state.kind === "reading" && entry.state.document.read_before === true;
+
+/** A row a reviewer or an admin may stop (Read again's right): on the server, waiting, checked or read
+ * for the first time, or still being sent. */
+export const canStop = (entry: Pick<UploadEntry, "state">, canReread: boolean) =>
+  canReread && ((entry.state.kind === "reading" && !readBefore(entry)) || inFlight(entry));
+
+/**
+ * A row its person may cancel (Move to Trash's right, ``can_delete``): on the server, waiting, checked
+ * or read for the first time, or still being sent. Never a version (Trash takes every version of the
+ * file, so Cancel would take the ones before it too).
+ */
+export const canCancel = (entry: Pick<UploadEntry, "state" | "versionOf">) =>
+  entry.versionOf === undefined &&
+  ((entry.state.kind === "reading" &&
+    entry.state.document.can_delete === true &&
+    entry.state.document.version_no === 1 &&
+    !readBefore(entry)) ||
+    inFlight(entry));
 
 /**
  * The files a drop's Stop all or Cancel all acts on: those it may stop (or cancel), and every file
@@ -206,7 +227,7 @@ export const canCancel = (entry: Pick<UploadEntry, "state">) =>
  * cancelled); Cancel all also with two or more waiting (#699's rule). O(n).
  */
 export function trayActionKeys(
-  rows: readonly Pick<UploadEntry, "key" | "state">[],
+  rows: readonly Pick<UploadEntry, "key" | "state" | "versionOf">[],
   action: TrayAction,
   canReread: boolean,
 ): { keys: string[]; shown: boolean } {
@@ -217,20 +238,21 @@ export function trayActionKeys(
 }
 
 /**
- * The question before Stop or Cancel of the files ``names``, its note, and its buttons: one file
- * named, or a count; files none of which was sent yet (``waitingOnly``) keep #699's question (they
- * never reach Documents or Trash).
+ * The question before Stop or Cancel of the files ``names`` already sent (or being sent), its notes,
+ * and its buttons: one file named, or a count; ``notSent`` files not sent yet are only cancelled, said
+ * on a line of its own. None sent: #699's question (they never reach Documents or Trash).
  */
 export function trayQuestion(
   action: TrayAction,
   names: readonly string[],
-  waitingOnly = false,
-): { title: string; note: string | null; yes: string; no: string } {
+  notSent = 0,
+): { title: string; note: string | null; notSent: string | null; yes: string; no: string } {
   const n = names.length;
   const one = n === 1 ? names[0] : undefined;
-  if (waitingOnly) {
-    return { title: CANCEL_TEXT.question(n), note: null, yes: CANCEL_TEXT.yes, no: CANCEL_TEXT.no };
+  if (n === 0) {
+    return { title: CANCEL_TEXT.question(notSent), note: null, notSent: null, yes: CANCEL_TEXT.yes, no: CANCEL_TEXT.no };
   }
+  const also = notSent > 0 ? STOP_TEXT.notSent(notSent) : null;
   if (action === "stop") {
     return {
       title:
@@ -238,6 +260,7 @@ export function trayQuestion(
           ? `Stop ${one}? It stays in Documents and you can read it again later.`
           : `Stop ${files(n)}? They stay in Documents and you can read them again later.`,
       note: STOP_TEXT.note,
+      notSent: also,
       yes: one !== undefined ? "Stop file" : "Stop files",
       no: STOP_TEXT.keep.stop,
     };
@@ -248,21 +271,25 @@ export function trayQuestion(
         ? `Cancel ${one}? It moves to Trash and you can upload it again.`
         : `Cancel ${files(n)}? They move to Trash and you can upload them again.`,
     note: STOP_TEXT.note,
+    notSent: also,
     yes: one !== undefined ? "Cancel file" : "Cancel files",
     no: one !== undefined ? STOP_TEXT.keep.cancelOne : STOP_TEXT.keep.cancel,
   };
 }
 
-/** A row stopped by a person (#713), not by the organisation turned off: "Stopped by you". */
-export const stoppedByYou = (entry: Pick<UploadEntry, "state">) =>
+/** A row stopped (#713): by a person, not by the organisation turned off. Read again starts it. */
+export const stoppedRow = (entry: Pick<UploadEntry, "state">) =>
   entry.state.kind === "done" && entry.state.document?.status === "failed" && entry.state.document.failure_code === "stopped";
 
+/** Stopped from this tab, by who pressed Stop here: "Stopped by you" (Tushar, 20 Nov 2026). */
+export const stoppedByYou = (entry: Pick<UploadEntry, "state" | "byYou">) => stoppedRow(entry) && entry.byYou === true;
+
 /**
- * The drop's line once something was stopped or cancelled: "1 stopped. 2 cancelled and moved to
+ * The drop's line once something was stopped or cancelled here: "1 stopped. 2 cancelled and moved to
  * Trash."; then what was refused, in the server's words ("1 couldn't be stopped. …"); "" for none.
  */
 export function trayResultText(
-  rows: readonly Pick<UploadEntry, "state">[],
+  rows: readonly Pick<UploadEntry, "state" | "byYou">[],
   refused: { action: TrayAction; count: number; why: string } | null = null,
 ): string {
   const stopped = rows.filter(stoppedByYou).length;

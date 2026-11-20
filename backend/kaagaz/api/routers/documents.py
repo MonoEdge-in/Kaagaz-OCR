@@ -219,6 +219,7 @@ from kaagaz.db.documents import (
     EnsembleRunning,
     NotInTrash,
     NotReprocessable,
+    NotStoppable,
     PgDocuments,
     ReprocessLimited,
     accept_page,
@@ -1720,7 +1721,9 @@ def reprocess_document(
         except NotReprocessable:
             raise ApiError(409, "not_reprocessable") from None
         except ReprocessLimited as limited:
-            raise ApiError(429, "rate_limited", _REPROCESS_LIMITED[limited.reason]) from None
+            # #713: which limit, so a stopped file's Read again can say when it may be read again.
+            words, reason = _REPROCESS_LIMITED[limited.reason], {"reason": limited.reason}
+            raise ApiError(429, "rate_limited", words, details=reason) from None
         _refuse_while_paused(conn, customer_id, previous, context.clock())
         if previous is None:  # deleted in the moment since
             raise ApiError(404, "not_found")
@@ -1768,6 +1771,8 @@ def _read_again_express(context: AppContext, row: RowMapping) -> bool:
 # --- Stop (#713) ----------------------------------------------------------------------
 
 _NOT_STOPPABLE = "Only a file still waiting, being checked or being read can be stopped."
+# Tushar, 20 Nov 2026: a file read before is never stopped while it is read again.
+_ALREADY_READ = "This file was already read. Reading again will finish."
 
 
 @router.post("/documents/{document_id}/stop")
@@ -1775,18 +1780,23 @@ def stop_document(document_id: uuid.UUID, user: Reviewer, context: Context) -> d
     """Stop reading a file (#713) and return its summary, now ``failed`` with ``stopped``; Read
     again starts it again. Who may read it again may stop it: a reviewer or an admin, on a file
     the view shows them (else 404, as for one that never was). Only one waiting, being checked or
-    being read: in Trash 409 ``in_trash``, locked 409 ``locked``, anything else 409
-    ``not_stoppable``. One transaction: the family lock, the change and its runs closed
-    (``stop_reading``), the ``document.stop`` audit row. A model call already in flight finishes;
-    the worker stops before its next step. A selection is stopped one call a file, as Move to
-    Trash and Read again are (components/documents/trash.ts)."""
+    being read for the first time: in Trash 409 ``in_trash``, locked 409 ``locked``, one read
+    before 409 ``already_read``, anything else 409 ``not_stoppable``. One transaction: the
+    family lock, the change and its runs closed (``stop_reading``), the ``document.stop`` audit
+    row. A model call already in flight finishes; the worker stops before its next step. A
+    selection is stopped one call a file, as Move to Trash and Read again are
+    (components/documents/trash.ts)."""
     customer_id, target = user.customer_id, str(document_id)
     with context.db.user(customer_id, user.user_id) as conn:
         row = _document_or_404(conn, user, document_id)
         if row["deleted_at"] is not None:
             raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.")
-        if not stop_reading(conn, customer_id, target, now=context.clock()):
-            raise ApiError(409, "not_stoppable", _NOT_STOPPABLE)
+        try:
+            stop_reading(conn, customer_id, target, now=context.clock())
+        except NotStoppable as refused:
+            if refused.read_before:
+                raise ApiError(409, "already_read", _ALREADY_READ) from None
+            raise ApiError(409, "not_stoppable", _NOT_STOPPABLE) from None
         audit.record(
             conn,
             customer_id,

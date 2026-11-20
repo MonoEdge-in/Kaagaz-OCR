@@ -15,7 +15,7 @@ export function StatusChip({
   status: DocumentStatus;
   text?: string;
   detectedType?: DetectedType;
-  failureCode?: string | null; // #713: a stopped one says "Stopped by you"
+  failureCode?: string | null; // #713: a stopped one says "Stopped"
 }) {
   const chip = statusChip(status, detectedType, failureCode);
   return (

@@ -151,6 +151,9 @@ _COLUMNS = (
     # may be read again; and while it waits for the reader ({"step": "waiting"}), its last
     # run's code, which says what it waits on (on the index processing_runs_document).
     f" {STUCK} AS stuck,"
+    # #713: being read again after a reading that finished, so never stopped (Tushar, 20 Nov 2026).
+    " d.status IN ('received', 'clean') AND EXISTS (SELECT 1 FROM processing_runs rb"
+    " WHERE rb.customer_id = d.customer_id AND rb.document_id = d.id AND rb.status = 'ready') AS read_before,"
     " CASE WHEN d.status IN ('received', 'clean') AND d.progress ->> 'step' = 'waiting'"
     " THEN (SELECT r.error_code FROM processing_runs r WHERE r.customer_id = d.customer_id"
     " AND r.document_id = d.id ORDER BY r.started_at DESC LIMIT 1) END AS waiting_code,"

@@ -346,6 +346,7 @@ def document_summary(
         ),
         "progress": in_progress(row["status"], row["progress"]),
         "stuck": bool(row["stuck"]),  # issue 407: may be read again (db/documents.py STUCK)
+        "read_before": bool(row["read_before"]),  # #713: read again after a finished reading: no Stop
         "locked": bool(row["locked"]),  # PRD 7 (#605): opened only as page pictures, never read
         "time_left": document_time_left(row, now=now),
         "understanding": understanding(row, now=now),  # ready, its card and map still coming

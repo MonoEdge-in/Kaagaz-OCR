@@ -36,7 +36,7 @@ export function StopCancel({
     try {
       if (action === "stop") await stopDocument(documentId);
       else await deleteDocument(documentId);
-      onDone(action === "stop" ? STOP_TEXT.stoppedLine : STOP_TEXT.cancelledLine);
+      onDone(action === "stop" ? STOP_TEXT.stoppedPage : STOP_TEXT.cancelledLine);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "Check your connection, then try again.");
     }

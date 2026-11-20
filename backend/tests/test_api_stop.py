@@ -162,3 +162,104 @@ def test_each_file_of_a_selection_is_stopped_on_its_own(db: Database) -> None:
         ("failed", "stopped"),
     ]
     assert api.audit_actions(c).count("document.stop") == 2
+
+
+def ready_run(api: Api, customer_id: str, document_id: str) -> None:
+    """A reading of it that finished: the file was read before."""
+    with api.db.customer(customer_id) as conn:
+        conn.execute(
+            text(
+                "INSERT INTO processing_runs (customer_id, document_id, started_at, finished_at, status)"
+                " VALUES (:c, :d, now() - interval '1 hour', now() - interval '1 hour', 'ready')"
+            ),
+            {"c": customer_id, "d": document_id},
+        )
+
+
+def test_a_file_read_before_is_never_stopped_while_it_is_read_again(db: Database) -> None:
+    """Tushar, 20 Nov 2026: its reading again goes on, in plain words; nothing changes."""
+    api = Api(db)
+    admin = api.new_signed("admin")
+    c = admin.customer_id
+    doc = api.add_document(c, status="clean")
+    ready_run(api, c, doc)
+    open_run(api, c, doc)
+    assert admin.client.get(f"/api/documents/{doc}").json()["read_before"] is True
+
+    reply = stop(admin, doc)
+
+    assert (reply.status_code, reply.json()["error"]) == (
+        409,
+        {"code": "already_read", "message": "This file was already read. Reading again will finish."},
+    )
+    assert stored(api, c, doc) == ("clean", None, None, None)
+    assert runs(api, c, doc) == [("ready", None), ("running", None)]
+    assert "document.stop" not in api.audit_actions(c)
+
+
+def test_a_first_reading_is_not_read_before(db: Database) -> None:
+    api = Api(db)
+    admin = api.new_signed("admin")
+    doc = api.add_document(admin.customer_id, status="clean")
+    assert admin.client.get(f"/api/documents/{doc}").json()["read_before"] is False
+
+
+def test_a_read_again_too_soon_after_a_stop_says_which_limit(db: Database) -> None:
+    """Both Read again limits stay (Tushar, 20 Nov 2026); the 429 says which one, so the screen can
+    say when it may be read again."""
+    api = Api(db)
+    reviewer = api.new_signed("reviewer")
+    doc = api.add_document(reviewer.customer_id, status="clean")
+    assert stop(reviewer, doc).status_code == 200
+    assert reviewer.client.post(f"/api/documents/{doc}/reprocess", headers=CSRF).status_code == 200
+    assert stop(reviewer, doc).status_code == 200
+
+    reply = reviewer.client.post(f"/api/documents/{doc}/reprocess", headers=CSRF)
+
+    assert reply.status_code == 429
+    assert reply.json()["error"] == {
+        "code": "rate_limited",
+        "message": (
+            "This document was sent to be read again less than 10 minutes ago. Please wait and try again."
+        ),
+        "details": {"reason": "cooldown"},
+    }
+
+
+def test_cancel_stops_a_file_being_read_and_restored_it_is_stopped(db: Database) -> None:
+    """Cancel is Move to Trash (its rights and its Activity row); a file still waiting, checked or
+    read for the first time is stopped first, so restored it says Stopped, never Reading."""
+    api = Api(db)
+    admin = api.new_signed("admin")
+    c = admin.customer_id
+    doc = api.add_document(c, status="clean")
+    open_run(api, c, doc)
+
+    assert admin.client.delete(f"/api/documents/{doc}", headers=CSRF).status_code == 204
+
+    assert stored(api, c, doc)[:2] == ("failed", "stopped")
+    assert runs(api, c, doc) == [("failed", "stopped")]
+    assert api.audit_actions(c)[-1] == "document.trash"
+    restored = admin.client.post(f"/api/documents/{doc}/restore", headers=CSRF).json()
+    assert (restored["status"], restored["failure_code"]) == ("failed", "stopped")
+
+
+def test_cancel_then_the_same_file_uploaded_again_is_a_new_file(db: Database) -> None:
+    """#684: a copy in Trash never read (a cancelled one) never blocks: the same bytes uploaded again
+    by the same person are stored as a new file and the Trash copy goes."""
+    from tests.test_api_folder_upload_files import ResumableStorage
+    from tests.test_api_trash_replace import exists, upload
+
+    api = Api(db, storage=ResumableStorage())
+    admin = api.new_admin()
+    first = upload(admin)
+    assert first.status_code == 201, first.text
+    old = first.json()["document"]["id"]
+    assert admin.client.delete(f"/api/documents/{old}", headers=CSRF).status_code == 204
+
+    again = upload(admin)
+
+    assert again.status_code == 201, again.text
+    assert (again.json()["duplicate"], again.json()["in_trash"]) == (False, False)
+    assert again.json()["document"]["id"] != old
+    assert not exists(api, old)
