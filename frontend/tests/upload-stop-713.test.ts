@@ -208,6 +208,21 @@ describe("the counts (#713)", () => {
     expect(queue.entries[0]?.state).toEqual({ kind: "done", documentId: "id-c", document: stoppedDoc("id-c") });
     expect(rowKind(queue.entries[0]!)).toBe("stopped");
   });
+
+  it("keeps a cancelled row cancelled when a poll read before the Cancel still says it is being read", () => {
+    let queue = queueReducer(EMPTY_QUEUE, { type: "add", entries: [entry("c", cancelled("id-c"))] });
+    queue = queueReducer(queue, { type: "batch", batchId: BATCH, documents: [doc("id-c", { status: "clean" })], add: false });
+    expect(queue.entries[0]?.state).toEqual(cancelled("id-c")); // never "Reading…" again: later polls skip it (Trash)
+    expect(queue.finished).toEqual({ uploaded: 0, already: 0, failed: 0 }); // the drop settles
+  });
+
+  it("forgets who stopped a file once it is read again, so a later Stop by someone else is not 'by you'", () => {
+    let queue = queueReducer(EMPTY_QUEUE, { type: "add", entries: [mine("s")] });
+    queue = queueReducer(queue, { type: "batch", batchId: BATCH, documents: [doc("s", { status: "received" })], add: false });
+    expect(queue.entries[0]?.byYou).toBe(false);
+    queue = queueReducer(queue, { type: "batch", batchId: BATCH, documents: [stoppedDoc("s")], add: false });
+    expect(trayResultText(queue.entries)).toBe(""); // stopped, but not from this tab this time
+  });
 });
 
 describe("which files may be stopped or cancelled (#713)", () => {
@@ -280,6 +295,13 @@ describe("the tray's Stop and Cancel (#713)", () => {
     ]);
     expect(html).toContain('aria-label="Stop reading r.pdf">Stop</button>');
     expect(html).toContain('aria-label="Cancel r.pdf and move it to Trash">Cancel</button>');
+  });
+
+  it("says a file asked to stop or cancel while it is still being sent will be, once sent", async () => {
+    const html = await tray([entry("s", sending, { asked: "stop" }), entry("t", sending, { asked: "cancel" }), entry("u", sending)]);
+    expect(html).toContain("Will stop once sent.");
+    expect(html).toContain("Will be cancelled once sent.");
+    expect(html.match(/once sent\./g)).toHaveLength(2); // u was not asked
   });
 
   it("offers nothing on a file read before, being read again", async () => {
@@ -636,6 +658,58 @@ describe("stopping and cancelling through the queue (#713)", () => {
     expect(api.stopDocument).toHaveBeenCalledWith("id-a");
     expect(refused).toEqual({ count: 0, why: "" });
     expect(uploadStateText(uploads.current().entries[0]!.state)).toBe("Stopped");
+    await uploads.unmount();
+  });
+
+  it("notes every file still being sent before the first call, so one stored meanwhile is still stopped", async () => {
+    // a is stored at once; b's upload waits. a's Stop is held while b finishes sending.
+    api.uploadDocument.mockImplementation((file: File) =>
+      file.name === "a.pdf"
+        ? Promise.resolve({ document: doc("id-a"), duplicate: false, in_trash: false })
+        : new Promise((resolve) => replies.push(resolve)),
+    );
+    let releaseA = () => undefined as void;
+    api.stopDocument.mockImplementation((id: string) =>
+      id === "id-a" ? new Promise((resolve) => (releaseA = () => resolve(stoppedDoc(id)))) : Promise.resolve(stoppedDoc(id)),
+    );
+    const uploads = await mount();
+    await act(async () => void uploads.current().addFiles([new File(["x"], "a.pdf"), new File(["x"], "b.pdf")]));
+    const [a, b] = uploads.current().entries;
+    expect([a?.state.kind, b?.state.kind]).toEqual(["reading", "sending"]);
+    expect(uploads.current().entries.map((each) => each.asked)).toEqual([undefined, undefined]);
+
+    let result: unknown = "pending";
+    await act(async () => void uploads.current().stopOrCancel("stop", [a!.key, b!.key]).then((r) => (result = r)));
+    expect(uploads.current().entries[1]?.asked).toBe("stop"); // "Will stop once sent."
+    await act(async () => replies[0]?.({ document: doc("id-b"), duplicate: false, in_trash: false })); // b stored
+    await act(async () => releaseA());
+
+    expect(api.stopDocument.mock.calls.map(([id]) => id).sort()).toEqual(["id-a", "id-b"]);
+    expect(result).toEqual({ count: 0, why: "" });
+    expect(uploads.current().entries.map((each) => [uploadStateText(each.state), each.asked])).toEqual([
+      ["Stopped", undefined],
+      ["Stopped", undefined],
+    ]);
+    await uploads.unmount();
+  });
+
+  it("a second Stop or Cancel of a file still being sent never hangs the first: both are done once it is stored", async () => {
+    api.uploadDocument.mockImplementation(() => new Promise((resolve) => replies.push(resolve)));
+    api.stopDocument.mockImplementation(async (id: string) => stoppedDoc(id));
+    const uploads = await mount();
+    await act(async () => void uploads.current().addFiles([new File(["x"], "a.pdf")]));
+    const [a] = uploads.current().entries;
+    const results: unknown[] = [];
+    await act(async () => void uploads.current().stopOrCancel("stop", [a!.key]).then((r) => results.push(["stop", r])));
+    await act(async () => void uploads.current().stopOrCancel("cancel", [a!.key]).then((r) => results.push(["cancel", r])));
+    await act(async () => replies[0]?.({ document: doc("id-a"), duplicate: false, in_trash: false }));
+
+    expect(api.stopDocument).toHaveBeenCalledWith("id-a");
+    expect(api.deleteDocument).toHaveBeenCalledWith("id-a");
+    expect(results).toEqual([
+      ["stop", { count: 0, why: "" }],
+      ["cancel", { count: 0, why: "" }],
+    ]);
     await uploads.unmount();
   });
 

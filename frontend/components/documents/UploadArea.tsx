@@ -189,8 +189,9 @@ export function useUploads(onUploaded: () => void) {
   // #697: a drop's file, sent again as a new file in place of its copy in Trash, and the folder
   // it was going to (where Restore moves that copy). Gone after a reload: then only Restore.
   const asNew = useRef(new Map<string, { start: Start; into?: string }>());
-  // #713: files asked to stop or cancel while still being sent: done once stored (send).
-  const askedToStop = useRef(new Map<string, { action: TrayAction; done: (why: string | null) => void }>());
+  // #713: files asked to stop or cancel while still being sent, each ask in order (a second never
+  // drops the first): done once stored (send).
+  const askedToStop = useRef(new Map<string, { action: TrayAction; done: (why: string | null) => void }[]>());
   // Drops from before a reload: every file the batch API lists gets a row.
   const [restored] = useState(() => new Set(stored.map((batch) => batch.id)));
   const [skipped, setSkipped] = useState(""); // PRD 9 F-04: the last pick's system files, in words
@@ -332,14 +333,16 @@ export function useUploads(onUploaded: () => void) {
         : follow
           ? followed(result.document)
           : { kind: "done", documentId: result.document.id };
-      dispatch({ type: "change", key, change: { state, times: { ...times } } });
+      dispatch({ type: "change", key, change: { state, times: { ...times }, asked: undefined } });
       onUploaded();
-      // #713: asked to stop or cancel while it was being sent: done now it is stored.
-      const wanted = askedToStop.current.get(key);
+      // #713: asked to stop or cancel while it was being sent: done now it is stored, each ask in order.
+      const wanted = askedToStop.current.get(key) ?? [];
       askedToStop.current.delete(key);
-      wanted?.done(state.kind === "reading" ? await act(wanted.action, key, state.documentId) : STOP_TEXT.notApplied);
+      for (const ask of wanted) {
+        ask.done(state.kind === "reading" ? await act(ask.action, key, state.documentId) : STOP_TEXT.notApplied);
+      }
     } catch (caught) {
-      askedToStop.current.get(key)?.done(null); // never stored: nothing to stop
+      for (const ask of askedToStop.current.get(key) ?? []) ask.done(null); // never stored: nothing to stop
       askedToStop.current.delete(key);
       stopped.current ??= sessionChangedMessage(caught);
       const retry = stopped.current === null && canSendAgain(caught) && kept.current.has(key);
@@ -527,23 +530,25 @@ export function useUploads(onUploaded: () => void) {
       refused.count += 1;
       refused.why ||= why;
     };
-    const later: Promise<void>[] = [];
-    for (const entry of queue.entries) {
-      if (!keys.includes(entry.key)) continue;
+    const rows = queue.entries.filter((entry) => keys.includes(entry.key));
+    // First, with no wait, every file still being sent is noted (after any earlier ask of it), so
+    // one stored while the calls below run is never missed (send reads the note).
+    const later = rows.filter(inFlight).map(
+      (entry) =>
+        new Promise<void>((done) => {
+          const ask = {
+            action,
+            done: (why: string | null) => {
+              note(why);
+              done();
+            },
+          };
+          askedToStop.current.set(entry.key, [...(askedToStop.current.get(entry.key) ?? []), ask]);
+          dispatch({ type: "change", key: entry.key, change: { asked: action } }); // "Will stop once sent."
+        }),
+    );
+    for (const entry of rows) {
       if (entry.state.kind === "reading") note(await act(action, entry.key, entry.state.documentId));
-      else if (inFlight(entry)) {
-        later.push(
-          new Promise((done) =>
-            askedToStop.current.set(entry.key, {
-              action,
-              done: (why) => {
-                note(why);
-                done();
-              },
-            }),
-          ),
-        );
-      }
     }
     await Promise.all(later);
     onUploaded();
@@ -1550,6 +1555,7 @@ function UploadRow({
             Remove<span className="visually-hidden">{` ${entry.name}`}</span>
           </button>
         )}
+        {entry.asked && inFlight(entry) && <p className={`muted ${styles.small}`}>{STOP_TEXT.onceSent[entry.asked]}</p>}
         {state.kind === "waiting" && onCancel && (
           <IconButton id={cancelId(entry.key)} icon="close" label={CANCEL_TEXT.one(entry.name)} className="btn-quiet" onClick={onCancel} />
         )}

@@ -195,6 +195,8 @@ export const STOP_TEXT = {
   uploadAgain: "Upload again",
   cooldown: "You can read it again in 10 minutes.", // Read again's per-file cooldown (security A8)
   notApplied: "It was already in Kaagaz, so nothing was being read.", // asked while sending: a copy
+  // asked while it is still being sent: done once it is stored (useUploads)
+  onceSent: { stop: "Will stop once sent.", cancel: "Will be cancelled once sent." },
 };
 
 /** Still being sent from this tab: stopped or cancelled once it is stored (useUploads). */

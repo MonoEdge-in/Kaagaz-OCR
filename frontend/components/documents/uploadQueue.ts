@@ -11,6 +11,7 @@ import { beingRead } from "@/components/viewer/reprocess";
 import { ApiError } from "@/lib/api";
 import { POLL_STEPS_MS } from "@/lib/poll";
 import type { BatchView, DocumentSummary, UploadReading } from "@/lib/types";
+import type { TrayAction } from "./batchTray";
 import type { UploadState } from "./logic";
 import type { StageTimes } from "./uploadStages";
 
@@ -29,6 +30,7 @@ export interface UploadEntry {
   state: UploadState;
   asNew?: boolean; // #697: this tab holds the file, so it may be sent again as a new file (not after a reload)
   byYou?: boolean; // #713: stopped from this tab, by who pressed Stop here ("Stopped by you")
+  asked?: TrayAction; // #713: asked to stop or cancel while still being sent: done once it is stored
 }
 
 export interface UploadCounts {
@@ -124,9 +126,12 @@ export function queueReducer(queue: UploadQueue, event: QueueEvent): UploadQueue
         const document = id === null ? undefined : byId.get(id);
         if (!document) return entry;
         seen.add(document.id);
+        // #713: a poll read before the Cancel committed: in Trash now, so later polls never list it.
+        if (entry.state.kind === "cancelled" && beingRead(document.status)) return entry;
         const state = followed(document);
         if (isFiled(state) && !isFiled(entry.state)) filed += 1;
-        return { ...entry, state };
+        // #713: read again (by anyone): a later Stop is not "by you" unless pressed here again.
+        return { ...entry, state, byYou: state.kind === "reading" ? false : entry.byYou };
       });
       const added = event.add
         ? event.documents
