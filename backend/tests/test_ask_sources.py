@@ -13,6 +13,7 @@ from kaagaz.answering.focus import PgFocus, Profile
 from kaagaz.answering.service import Answer, AnswerService, Citation
 from kaagaz.api import views
 from kaagaz.db.engine import Database
+from kaagaz.search.scope import EVERYTHING
 from tests.test_answering_golden import (
     INVOICE,
     NOW,
@@ -227,12 +228,15 @@ class _Focus(PgFocus):
 
 def test_an_other_document_question_reads_from_its_translated_search_s_pool() -> None:
     """ "Any other document" leaves the focus out and reads one piece a document (step 22): from the
-    translated search's first ``_evidence_limit`` hits (the pool, #722)."""
-    held = [
-        dataclasses.replace(piece(f"doc-{n}.pdf", f"{WORD}: {NAME} ({n})"), meaning_score=0.7)
-        for n in range(12)
-    ]
-    search = Search(held, held, {hit.piece_id: 0.7 for hit in held})
+    translated search's first ``_evidence_limit`` hits (the pool, #722), though it fetched more."""
+
+    def held(n: int) -> FakeHit:
+        return dataclasses.replace(piece(f"doc-{n}.pdf", f"{WORD}: {NAME} ({n})"), meaning_score=0.7)
+
+    # The pool's 15 hits hold the focus (doc-0) and 3 other documents; doc-4 and doc-5 come after it.
+    pool = [held(1), held(2), held(3), *(held(0) for _ in range(12))]
+    hits = [*pool, held(4), held(5)]
+    search = Search(hits, hits, {hit.piece_id: 0.7 for hit in hits})
     fake = FakeModel(drafts())
     answer_service = AnswerService(
         db=UNUSED_DB,
@@ -246,14 +250,13 @@ def test_an_other_document_question_reads_from_its_translated_search_s_pool() ->
         translated_search=search,
         focus=_Focus(),
     )
+    assert answer_service._evidence_limit("Who is the cultivator?", EVERYTHING) == len(pool)
     question = "Who is the cultivator of this in any other document?"
-    answer_service.answer(A, question, last_cited=[held[0].document_id])
+    answer_service.answer(A, question, last_cited=[pool[-1].document_id])
     assert search.translations  # the translated search ran
     read = [blocks for _, user in fake.prompts if (blocks := evidence_blocks(user))]
     shown = sorted(text.rsplit("(", 1)[1].rstrip(")\n ") for text in read[0].values())
-    # Changed on purpose (merge of #719 and #722): the pool is 15 hits, so the focus no longer takes
-    # one of the 5 documents read, as it did when the cut was ANSWER_MAX_EVIDENCE.
-    assert shown == ["1", "2", "3", "4", "5"]
+    assert shown == ["1", "2", "3"]  # never doc-4 or doc-5, past the pool
 
 
 @pytest.mark.db

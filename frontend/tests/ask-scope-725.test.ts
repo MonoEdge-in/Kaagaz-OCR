@@ -182,3 +182,62 @@ describe("the find box", () => {
     expect(chosen[2]).toEqual({ kind: "folder", folderId: "d1", subfolders: true });
   });
 });
+
+describe("the review of #725", () => {
+  it("says when a department or folder leaves out what is inside it", () => {
+    expect(scopeText({ kind: "folder", folderId: "d1", subfolders: false }, tree, null)).toBe(
+      "Ask in department: Land & Legal (not its folders)",
+    );
+    expect(scopeText({ kind: "folder", folderId: "f2", subfolders: false }, tree, null)).toBe(
+      "Ask in folder: Land & Legal › Land records (not its subfolders)",
+    );
+    expect(removeScopeLabel({ kind: "folder", folderId: "d1", subfolders: false }, tree, null)).toBe(
+      "Remove department Land & Legal",
+    );
+  });
+
+  it("lists folders whose name matches before those whose place alone does, then cuts to 8", () => {
+    const deep = buildTree([
+      { id: "p", name: "Wakad", parent_id: null, created_at: "2026-10-01" },
+      ...Array.from({ length: 9 }, (_, n) => ({ id: `c${n}`, name: `Plot ${n}`, parent_id: "p", created_at: "2026-10-01" })),
+      { id: "z", name: "Old Wakad maps", parent_id: null, created_at: "2026-10-01" },
+    ]);
+    // Names first, in tree order (A to Z), then places: never cut before "Old Wakad maps".
+    expect(findFolders(deep, "wakad").map((found) => found.id)).toEqual(["z", "p", "c0", "c1", "c2", "c3", "c4", "c5"]);
+  });
+
+  it("clears a failed lookup once it works, and never says nothing matched files it could not look at", async () => {
+    api.listDocuments.mockRejectedValueOnce(new Error("offline"));
+    const { type } = await showFind({ kind: "all" });
+    await type("zebra");
+    expect(doc.body.textContent).toContain("Could not look for files right now.");
+    expect(doc.body.textContent).not.toContain("No department, folder or file matches");
+    api.listDocuments.mockResolvedValue({ items: [file("x1", "Zebra crossing.pdf")], total: 1 });
+    await type("zebr");
+    await type("zebra");
+    expect(rowsOf("Files")).toHaveLength(1);
+    expect(doc.body.textContent).not.toContain("Could not look for files right now.");
+  });
+
+  it("keeps the chosen files listed when the search moves on", async () => {
+    api.listDocuments.mockResolvedValueOnce({ items: [file("x1", "Land deed.pdf")], total: 1 });
+    const { chosen, type } = await showFind({ kind: "documents", ids: ["x1"] });
+    await type("land");
+    api.listDocuments.mockResolvedValue({ items: [file("x2", "Map.pdf")], total: 1 });
+    await type("map");
+    const [kept] = rowsOf("Chosen files");
+    expect(kept!.textContent).toContain("Land deed.pdf");
+    expect(kept!.getAttribute("aria-pressed")).toBe("true");
+    await act(async () => void fire(kept!, "click", { button: 0 }));
+    expect(chosen).toEqual([{ kind: "all" }]); // taken out, none left
+  });
+
+  it("says when the files shown are cut short, and at the 50-file cap", async () => {
+    api.listDocuments.mockResolvedValue({ items: [file("x1", "Land deed.pdf")], total: 37 });
+    const full = Array.from({ length: MAX_FILES }, (_, n) => `f${n}`);
+    const { type } = await showFind({ kind: "documents", ids: full });
+    await type("land");
+    expect(doc.body.textContent).toContain("Showing 1 of 37 files. Type more of the name to narrow it.");
+    expect(doc.body.textContent).toContain("You can ask about up to 50 files at once.");
+  });
+});

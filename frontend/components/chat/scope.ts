@@ -134,8 +134,9 @@ export function scopeText(
       if (tree === null) return "One folder";
       const folder = tree.byId.get(scope.folderId)?.folder;
       if (!folder) return "A folder that was deleted";
-      if (isDepartment(folder) && scope.subfolders) return `Ask in department: ${folder.name}`;
-      return `Ask in folder: ${folderPathText(tree, scope.folderId)}${scope.subfolders ? " (and its subfolders)" : ""}`;
+      if (isDepartment(folder)) return `Ask in department: ${folder.name}${scope.subfolders ? "" : " (not its folders)"}`;
+      const which = scope.subfolders ? " (and its subfolders)" : " (not its subfolders)";
+      return `Ask in folder: ${folderPathText(tree, scope.folderId)}${which}`;
     }
     case "documents":
       if (scope.ids.length === 1) return documentName ? `Ask about file: ${documentName}` : "Ask about 1 file";
@@ -176,21 +177,21 @@ export interface FoundFolder {
   department: boolean; // a department: asked in with all its folders
 }
 
-/** #720, #725: the departments and folders whose name or place holds `query`, any case, in tree
- * order, at most `most`; none for an empty query. O(f * d) for f folders of depth d, stopping at
- * the `most`th match. */
+/** #720, #725: the departments and folders whose name holds `query` (any case, in tree order), then
+ * those whose place alone holds it, at most `most`; none for an empty query. O(f * d) for f folders
+ * of depth d. */
 export function findFolders(tree: FolderTree, query: string, most = 8): FoundFolder[] {
   const wanted = query.trim().toLocaleLowerCase();
-  const found: FoundFolder[] = [];
-  if (!wanted) return found;
+  if (!wanted) return [];
+  const named: FoundFolder[] = [];
+  const placed: FoundFolder[] = [];
   for (const node of inTreeOrder(tree)) {
     const path = folderPathText(tree, node.folder.id);
-    if (path.toLocaleLowerCase().includes(wanted)) {
-      found.push({ id: node.folder.id, name: node.folder.name, path, department: isDepartment(node.folder) });
-    }
-    if (found.length === most) break;
+    const found = { id: node.folder.id, name: node.folder.name, path, department: isDepartment(node.folder) };
+    if (node.folder.name.toLocaleLowerCase().includes(wanted)) named.push(found);
+    else if (path.toLocaleLowerCase().includes(wanted)) placed.push(found);
   }
-  return found;
+  return [...named, ...placed].slice(0, most);
 }
 
 /** The most files one question asks about (backend/kaagaz/search/scope.py MAX_DOCUMENT_IDS). */
@@ -216,7 +217,7 @@ export function removeScopeLabel(scope: ChatScope, tree: FolderTree | null, docu
   if (scope.kind === "folder") {
     const folder = tree?.byId.get(scope.folderId)?.folder;
     if (!folder) return null;
-    return `Remove ${isDepartment(folder) && scope.subfolders ? "department" : "folder"} ${folder.name}`;
+    return `Remove ${isDepartment(folder) ? "department" : "folder"} ${folder.name}`;
   }
   if (scope.kind !== "documents" || scope.ids.length === 0) return null;
   if (scope.ids.length > 1) return `Remove ${scope.ids.length} files`;

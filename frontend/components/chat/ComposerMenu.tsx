@@ -17,9 +17,10 @@ export function closeMenu(inside: Element) {
   inside.closest<HTMLElement>("[popover]")?.hidePopover();
 }
 
-/** Enter on a choice in a panel closes it, instead of sending the question. */
+/** Enter on a choice in a panel closes it, instead of sending the question; never in a search box
+ * (#725: the scope's find box), where Enter belongs to the typing. */
 function closeOnEnter(event: KeyboardEvent<HTMLElement>) {
-  if (event.key === "Enter" && event.target instanceof HTMLInputElement) {
+  if (event.key === "Enter" && event.target instanceof HTMLInputElement && event.target.type !== "search") {
     event.preventDefault();
     event.currentTarget.hidePopover();
   }

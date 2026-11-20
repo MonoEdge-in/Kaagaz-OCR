@@ -73,3 +73,28 @@ describe("the scope picker, pressed", () => {
     expect(chosen[1]).toEqual({ kind: "all" });
   });
 });
+
+describe("One folder (#725 review)", () => {
+  it("picks the first folder with its subfolders, as the find box does", async () => {
+    const { ScopePicker } = await import("@/components/chat/ScopePicker");
+    const chosen: unknown[] = [];
+    const container = doc.body.appendChild(doc.createElement("div")) as FakeElement;
+    const { createRoot } = await import("react-dom/client");
+    root = createRoot(container as unknown as Element);
+    const picker = (scope: { kind: "all" } | { kind: "folder"; folderId: string; subfolders: boolean }) =>
+      createElement(ScopePicker, {
+        state: { scope, changed: false, documents: null, announce: false },
+        locked: null,
+        onChoose: (pick) => chosen.push(pick),
+      });
+    // A folder chosen loads the folders; then all documents, so "One folder" can be picked.
+    await act(async () => root!.render(picker({ kind: "folder", folderId: "f4", subfolders: false })));
+    await act(async () => undefined);
+    await act(async () => root!.render(picker({ kind: "all" })));
+    await act(async () => undefined);
+    const radio = all().filter((element) => element.tagName === "INPUT" && element.type === "radio")[1]!;
+    radio.checked = true;
+    await press(radio);
+    expect(chosen).toEqual([{ kind: "folder", folderId: "f1", subfolders: true }]);
+  });
+});

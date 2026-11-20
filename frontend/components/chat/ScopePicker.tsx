@@ -125,7 +125,8 @@ export function ScopePicker({
             checked={scope.kind === "folder"}
             disabled={firstFolder === undefined}
             onChange={() => {
-              if (firstFolder) onChoose({ kind: "folder", folderId: firstFolder, subfolders: false });
+              // #725: with its subfolders, as the find box and "Ask in this folder" choose it.
+              if (firstFolder) onChoose({ kind: "folder", folderId: firstFolder, subfolders: true });
             }}
           >
             One folder

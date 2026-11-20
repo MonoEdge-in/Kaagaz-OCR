@@ -6,6 +6,7 @@
 // they are choosing. A department or folder asks in it and its subfolders; files toggle in and
 // out of the files asked about (up to MAX_FILES). Files come from GET /documents (?q=, by name,
 // only what this person can open), asked once typing pauses; folders from the tree already loaded.
+// The files chosen stay listed under "Chosen files"; a list cut short, or the 50-file cap, says so.
 
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/ui/Icon/Icon";
@@ -13,7 +14,7 @@ import type { KIconName } from "@/components/ui/Icon/Icon";
 import type { FolderTree } from "@/components/documents/folderTree";
 import { listDocuments } from "@/lib/api";
 import type { DocumentSummary } from "@/lib/types";
-import { EVERY_DOCUMENT, filePlace, findFolders, pickFile } from "./scope";
+import { EVERY_DOCUMENT, MAX_FILES, filePlace, findFolders, pickFile } from "./scope";
 import type { ChatScope, ChosenScope } from "./scope";
 import styles from "./Chat.module.css";
 
@@ -72,8 +73,10 @@ export function ScopeFind({
   onChoose: (scope: ChosenScope) => void;
 }) {
   const [find, setFind] = useState("");
-  const [files, setFiles] = useState<{ query: string; items: DocumentSummary[] } | null>(null);
+  const [files, setFiles] = useState<{ query: string; items: DocumentSummary[]; total: number } | null>(null);
   const [failed, setFailed] = useState<string | null>(null); // the query whose file lookup failed
+  // Every file shown so far, by id, so the chosen ones stay listed when the search moves on.
+  const [seen, setSeen] = useState<ReadonlyMap<string, DocumentSummary>>(new Map());
   const query = find.trim();
 
   useEffect(() => {
@@ -81,8 +84,11 @@ export function ScopeFind({
     let cancelled = false;
     const timer = setTimeout(() => {
       listDocuments({ q: query, limit: FILES_SHOWN, status: "ready" })
-        .then(({ items }) => {
-          if (!cancelled) setFiles({ query, items });
+        .then(({ items, total }) => {
+          if (cancelled) return;
+          setFiles({ query, items, total });
+          setFailed(null);
+          setSeen((known) => new Map([...known, ...items.map((item) => [item.id, item] as const)]));
         })
         .catch(() => {
           if (!cancelled) setFailed(query);
@@ -107,7 +113,7 @@ export function ScopeFind({
     onPick: inPlace(place.id),
   });
   const picked = scope.kind === "documents" ? scope.ids : [];
-  const fileRows: Row[] = (files?.query === query ? files.items : []).map((file) => ({
+  const fileRow = (file: DocumentSummary): Row => ({
     id: file.id,
     name: file.display_name,
     place: filePlace(tree, file),
@@ -118,9 +124,16 @@ export function ScopeFind({
       const ids = pickFile(picked, file.id);
       if (ids) onChoose(ids.length > 0 ? { kind: "documents", ids } : EVERY_DOCUMENT);
     },
-  }));
-  const looking = query.length >= FIND_FROM && files?.query !== query && failed !== query;
-  const nothing = query.length >= FIND_FROM && !looking && places.length === 0 && fileRows.length === 0;
+  });
+  const current = files?.query === query ? files : null;
+  const fileRows = (current?.items ?? []).map(fileRow);
+  const chosen = picked.flatMap((fileId) => {
+    const file = seen.get(fileId);
+    return file ? [fileRow(file)] : [];
+  });
+  const lookedUp = failed !== query;
+  const looking = query.length >= FIND_FROM && current === null && lookedUp;
+  const nothing = query.length >= FIND_FROM && lookedUp && !looking && places.length === 0 && fileRows.length === 0;
 
   return (
     <div className={styles.scopeFolder}>
@@ -138,15 +151,22 @@ export function ScopeFind({
       <p id={`${id}-find-hint`} className="hint">
         Find a department, folder or file by name.
       </p>
+      <Group heading="Chosen files" rows={chosen} />
+      {picked.length >= MAX_FILES ? <p className="hint">You can ask about up to {MAX_FILES} files at once.</p> : null}
       <Group heading="Departments" rows={places.filter((place) => place.department).map(placeRow("department"))} />
       <Group heading="Folders" rows={places.filter((place) => !place.department).map(placeRow("folder"))} />
       <Group heading="Files" rows={fileRows} />
+      {current && current.total > current.items.length ? (
+        <p className="hint">
+          Showing {current.items.length} of {current.total} files. Type more of the name to narrow it.
+        </p>
+      ) : null}
       {looking ? (
         <p className="muted" role="status">
           Looking for files…
         </p>
       ) : null}
-      {failed === query && query !== "" ? <p className="error-text">Could not look for files right now.</p> : null}
+      {!lookedUp && query !== "" ? <p className="error-text">Could not look for files right now.</p> : null}
       {nothing ? (
         <p className="hint" role="status">
           No department, folder or file matches “{query}”. To ask about everything, choose All documents above.

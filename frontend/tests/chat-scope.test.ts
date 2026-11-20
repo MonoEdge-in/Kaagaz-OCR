@@ -158,7 +158,7 @@ describe("the scope chip's words", () => {
   it("names every document, a folder by its path, and documents", () => {
     expect(scopeText(EVERY_DOCUMENT, null, null)).toBe("All documents");
     // Changed on purpose (#725): the words say exactly what is chosen, a place with "›".
-    expect(scopeText(FOLDER, tree, null)).toBe("Ask in folder: Suppliers › 2026");
+    expect(scopeText(FOLDER, tree, null)).toBe("Ask in folder: Suppliers › 2026 (not its subfolders)"); // #725 review
     expect(scopeText({ kind: "folder", folderId: "f1", subfolders: true }, tree, null)).toBe(
       "Ask in folder: Suppliers (and its subfolders)",
     );
