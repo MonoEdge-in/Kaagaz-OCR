@@ -172,12 +172,12 @@
   border-radius: var(--k-r-4);
   background: var(--k-raised);
   color: var(--fg);
+  flex-direction: column;
+  gap: var(--space-3);
 }
 
 .account:popover-open {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
 }
 
 @media (min-width: 1024px) {
